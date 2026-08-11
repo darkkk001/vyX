@@ -69,10 +69,17 @@ export const config = {
   matcher: [
     /*
      * Match everything except:
-     * - /api/* (internal routes handle their own auth/scoping)
+     * - /api/internal/* (called by this middleware itself — matching it
+     *   here would recurse into resolve-broker forever)
      * - /_next/* (Next.js internals)
      * - static files (favicon, images, etc.)
+     *
+     * Every other /api/* route (e.g. /api/trade/*) IS matched, since those
+     * routes need the x-broker-* headers this middleware attaches — a
+     * narrower matcher that excluded all of /api silently broke broker
+     * resolution for every trade API call while leaving page loads working,
+     * which is exactly the bug this comment is here to prevent regressing.
      */
-    "/((?!api|_next/static|_next/image|favicon.ico|.*\\..*).*)",
+    "/((?!api/internal|_next/static|_next/image|favicon.ico|.*\\..*).*)",
   ],
 };
