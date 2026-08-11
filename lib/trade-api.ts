@@ -1,0 +1,88 @@
+// Thin fetch wrapper for the /api/trade/* routes used by the WebTrader
+// client component. Every call relies on the httpOnly session cookie for
+// auth — no tokens handled in JS.
+
+async function call<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(path, {
+    ...init,
+    headers: { "Content-Type": "application/json", ...init?.headers },
+  });
+  const body = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new Error(body?.error ?? `request to ${path} failed (${response.status})`);
+  }
+  return body as T;
+}
+
+export type AccountInfo = {
+  id: string;
+  accountNumber: string;
+  accountType: "DEMO" | "LIVE";
+  currency: string;
+  leverage: number;
+  balance: string;
+  credit: string;
+  status: string;
+};
+
+export type ApiPosition = {
+  id: string;
+  side: "BUY" | "SELL";
+  volume: string;
+  openPrice: string;
+  slPrice: string | null;
+  tpPrice: string | null;
+  closePrice: string | null;
+  realizedPnl: string | null;
+  status: "OPEN" | "CLOSED";
+  openedAt: string;
+  closedAt: string | null;
+  symbol: { name: string; digits: number; contractSize?: string };
+};
+
+export type ApiOrder = {
+  id: string;
+  side: "BUY" | "SELL";
+  type: "MARKET" | "LIMIT" | "STOP";
+  volume: string;
+  requestedPrice: string | null;
+  slPrice: string | null;
+  tpPrice: string | null;
+  status: string;
+  symbol: { name: string; digits: number };
+};
+
+export const tradeApi = {
+  me: () => call<AccountInfo>("/api/trade/me"),
+  positions: () => call<ApiPosition[]>("/api/trade/positions"),
+  orders: () => call<ApiOrder[]>("/api/trade/orders"),
+  history: (params: { from?: string; to?: string; symbol?: string }) => {
+    const qs = new URLSearchParams();
+    if (params.from) qs.set("from", params.from);
+    if (params.to) qs.set("to", params.to);
+    if (params.symbol) qs.set("symbol", params.symbol);
+    return call<ApiPosition[]>(`/api/trade/history?${qs.toString()}`);
+  },
+  placeOrder: (body: {
+    symbol: string;
+    side: "BUY" | "SELL";
+    type: "MARKET" | "LIMIT" | "STOP";
+    volume: number;
+    price: number;
+    slPrice?: number | null;
+    tpPrice?: number | null;
+    idempotencyKey: string;
+  }) => call("/api/trade/orders", { method: "POST", body: JSON.stringify(body) }),
+  cancelOrder: (id: string) => call(`/api/trade/orders/${id}`, { method: "DELETE" }),
+  fillOrder: (id: string, price: number) =>
+    call(`/api/trade/orders/${id}/fill`, { method: "POST", body: JSON.stringify({ price }) }),
+  editPositionSlTp: (
+    id: string,
+    body: { currentPrice: number; slPrice?: number | null; tpPrice?: number | null }
+  ) => call(`/api/trade/positions/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  closePosition: (id: string, closePrice: number) =>
+    call(`/api/trade/positions/${id}/close`, { method: "POST", body: JSON.stringify({ closePrice }) }),
+  login: (accountNumber: string, password: string) =>
+    call("/api/trade/login", { method: "POST", body: JSON.stringify({ accountNumber, password }) }),
+  logout: () => call("/api/trade/logout", { method: "POST" }),
+};
