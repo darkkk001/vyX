@@ -34,6 +34,8 @@ export type ApiPosition = {
   tpPrice: string | null;
   closePrice: string | null;
   realizedPnl: string | null;
+  swap: string;
+  commission: string;
   status: "OPEN" | "CLOSED";
   openedAt: string;
   closedAt: string | null;
@@ -80,8 +82,11 @@ export const tradeApi = {
     id: string,
     body: { currentPrice: number; slPrice?: number | null; tpPrice?: number | null }
   ) => call(`/api/trade/positions/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
-  closePosition: (id: string, closePrice: number) =>
-    call(`/api/trade/positions/${id}/close`, { method: "POST", body: JSON.stringify({ closePrice }) }),
+  closePosition: (id: string, closePrice: number, volume?: number) =>
+    call(`/api/trade/positions/${id}/close`, {
+      method: "POST",
+      body: JSON.stringify({ closePrice, ...(volume != null ? { volume } : {}) }),
+    }),
   login: (accountNumber: string, password: string) =>
     call("/api/trade/login", { method: "POST", body: JSON.stringify({ accountNumber, password }) }),
   logout: () => call("/api/trade/logout", { method: "POST" }),

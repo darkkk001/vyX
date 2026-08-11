@@ -1,11 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
 import { computeRealizedPnl } from "@/lib/trading";
 
-// Closing a position is the one place a trade changes the account balance.
-// Realized P&L is computed server-side and applied atomically alongside a
-// ledger Transaction row — never a silent balance overwrite.
+// Closing (fully or partially) is the one place a trade changes the
+// account balance. Realized P&L is computed server-side and applied
+// atomically alongside a ledger Transaction row — never a silent balance
+// overwrite. A partial close (volume < position.volume) reduces the
+// position's volume and keeps it OPEN rather than closing it outright;
+// the Transaction row is still the authoritative record of what was
+// realized and when.
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -33,11 +38,29 @@ export async function POST(
     return NextResponse.json({ error: "position is not open" }, { status: 409 });
   }
 
+  let closeVolume = position.volume;
+  if (body?.volume != null) {
+    let requested: Prisma.Decimal;
+    try {
+      requested = new Prisma.Decimal(String(body.volume));
+    } catch {
+      return NextResponse.json({ error: "invalid volume" }, { status: 400 });
+    }
+    if (requested.lte(0) || requested.gt(position.volume)) {
+      return NextResponse.json(
+        { error: `volume must be between 0 and ${position.volume}` },
+        { status: 400 }
+      );
+    }
+    closeVolume = requested;
+  }
+  const isPartial = closeVolume.lt(position.volume);
+
   const realizedPnl = computeRealizedPnl({
     side: position.side,
     openPrice: position.openPrice,
     closePrice,
-    volume: position.volume,
+    volume: closeVolume,
     contractSize: position.symbol.contractSize,
   });
 
@@ -46,15 +69,20 @@ export async function POST(
     const balanceBefore = account.balance;
     const balanceAfter = balanceBefore.add(realizedPnl);
 
-    const closedPosition = await tx.position.update({
-      where: { id: position.id },
-      data: {
-        status: "CLOSED",
-        closePrice,
-        realizedPnl,
-        closedAt: new Date(),
-      },
-    });
+    const updatedPosition = isPartial
+      ? await tx.position.update({
+          where: { id: position.id },
+          data: { volume: position.volume.sub(closeVolume) },
+        })
+      : await tx.position.update({
+          where: { id: position.id },
+          data: {
+            status: "CLOSED",
+            closePrice,
+            realizedPnl,
+            closedAt: new Date(),
+          },
+        });
 
     await tx.account.update({
       where: { id: session.accountId },
@@ -72,10 +100,11 @@ export async function POST(
         balanceAfter,
         referenceType: "Position",
         referenceId: position.id,
+        note: isPartial ? `Partial close: ${closeVolume} lots @ ${closePrice}` : null,
       },
     });
 
-    return { position: closedPosition, transaction };
+    return { position: updatedPosition, transaction, partial: isPartial };
   });
 
   return NextResponse.json(result);
