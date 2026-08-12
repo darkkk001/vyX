@@ -974,6 +974,10 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
     return () => window.removeEventListener("resize", onResize);
   }, [drawChart]);
 
+  function zoomIn() { setChartZoom((z) => Math.max(15, Math.round(z / 1.3))); }
+  function zoomOut() { setChartZoom((z) => Math.min(300, Math.round(z * 1.3))); }
+  function resetChartView() { setChartZoom(80); setChartViewOffset(0); }
+
   // Mouse-wheel zoom — React's onWheel is passive by default so
   // preventDefault() there is silently ignored; a native listener is
   // required to stop the page from scrolling while zooming the chart.
@@ -1370,6 +1374,16 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
                 <div className="draw-tool-sep" />
                 <button className="draw-tool-btn" onClick={() => { drawingsRef.current[activeSymbol] = []; forceDrawingsRerender((v) => v + 1); drawChart(); pushToast("Drawings cleared for " + activeSymbol); }} title="Clear all drawings">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 6h18" /><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" /></svg>
+                </button>
+                <div className="draw-tool-sep" />
+                <button className="draw-tool-btn" onClick={zoomIn} title="Zoom in">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="7" /><line x1="21" y1="21" x2="16.65" y2="16.65" /><line x1="8" y1="11" x2="14" y2="11" /><line x1="11" y1="8" x2="11" y2="14" /></svg>
+                </button>
+                <button className="draw-tool-btn" onClick={zoomOut} title="Zoom out">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="7" /><line x1="21" y1="21" x2="16.65" y2="16.65" /><line x1="8" y1="11" x2="14" y2="11" /></svg>
+                </button>
+                <button className="draw-tool-btn" onClick={resetChartView} title="Reset view / jump to latest">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><polyline points="3 3 3 8 8 8" /></svg>
                 </button>
               </div>
               <canvas
