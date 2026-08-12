@@ -233,9 +233,36 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
   useEffect(() => { refreshHistory(); }, [refreshHistory]);
 
   // ---------- price tick ----------
+  const liveTicksRef = useRef<Record<string, { bid: number; ask: number }>>({});
   useEffect(() => {
-    const interval = setInterval(() => setMarket((prev) => tickMarket(prev)), 1500);
+    const interval = setInterval(() => setMarket((prev) => tickMarket(prev, liveTicksRef.current)), 1500);
     return () => clearInterval(interval);
+  }, []);
+
+  // Polls the MT5 EA bridge feed (see /api/internal/price-feed) so real
+  // ticks blend into the tick loop above without restarting its interval.
+  useEffect(() => {
+    let cancelled = false;
+    async function poll() {
+      try {
+        const rows = await tradeApi.prices();
+        if (cancelled) return;
+        const next: Record<string, { bid: number; ask: number }> = {};
+        const now = Date.now();
+        for (const row of rows) {
+          // Ignore stale rows (EA/terminal offline) so the chart falls back
+          // to simulation instead of freezing on the last real tick.
+          if (now - new Date(row.updatedAt).getTime() > 15000) continue;
+          next[row.symbol] = { bid: parseFloat(row.bid), ask: parseFloat(row.ask) };
+        }
+        liveTicksRef.current = next;
+      } catch {
+        // feed unreachable — keep simulating, nothing to surface to the trader
+      }
+    }
+    poll();
+    const interval = setInterval(poll, 2000);
+    return () => { cancelled = true; clearInterval(interval); };
   }, []);
 
   const positionPnl = useCallback(

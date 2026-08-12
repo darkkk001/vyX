@@ -43,6 +43,8 @@ export type ApiPosition = {
   symbol: { name: string; digits: number; contractSize?: string };
 };
 
+export type ApiLivePrice = { symbol: string; bid: string; ask: string; updatedAt: string };
+
 export type ApiOrder = {
   id: string;
   side: "BUY" | "SELL";
@@ -57,6 +59,7 @@ export type ApiOrder = {
 
 export const tradeApi = {
   me: () => call<AccountInfo>("/api/trade/me"),
+  prices: () => call<ApiLivePrice[]>("/api/trade/prices"),
   positions: () => call<ApiPosition[]>("/api/trade/positions"),
   orders: () => call<ApiOrder[]>("/api/trade/orders"),
   history: (params: { from?: string; to?: string; symbol?: string }) => {

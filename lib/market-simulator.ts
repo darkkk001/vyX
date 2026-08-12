@@ -92,33 +92,53 @@ function tfMillis(tf: "M1" | "M5" | "H1") {
   return tf === "M1" ? 2000 : tf === "M5" ? 6000 : 15000; // compressed for demo purposes
 }
 
+function applyBidAsk(m: MarketState, bid: number, ask: number) {
+  m.prevBid = m.bid;
+  m.bid = bid;
+  m.ask = ask;
+  m.high = Math.max(m.high, m.bid);
+  m.low = Math.min(m.low, m.bid);
+
+  (["M1", "M5", "H1"] as const).forEach((tf) => {
+    const period = tfMillis(tf);
+    const bucket = Math.floor(Date.now() / period);
+    const candles = m.candles[tf];
+    if (m.lastCandleStart[tf] !== bucket) {
+      m.lastCandleStart[tf] = bucket;
+      candles.push({ o: m.bid, h: m.bid, l: m.bid, c: m.bid, t: bucket });
+      if (candles.length > 120) candles.shift();
+    } else if (candles.length) {
+      const c = candles[candles.length - 1];
+      c.h = Math.max(c.h, m.bid);
+      c.l = Math.min(c.l, m.bid);
+      c.c = m.bid;
+    }
+  });
+}
+
 // Mutates and returns a new top-level object (shallow clone) so React
 // re-renders on tick, while each MarketState is mutated in place for
 // perf (candle arrays would be expensive to deep-clone every second).
-export function tickMarket(market: Record<string, MarketState>): Record<string, MarketState> {
-  for (const m of Object.values(market)) {
-    m.prevBid = m.bid;
+//
+// liveTicks (optional): real bid/ask pulled from a broker's own MT5
+// terminal via the price-feed bridge (see app/api/internal/price-feed).
+// Symbols present there use the real tick instead of the random walk;
+// everything else keeps simulating, so a partial feed (e.g. the EA only
+// covers forex majors) degrades gracefully instead of breaking symbols
+// it doesn't know about.
+export function tickMarket(
+  market: Record<string, MarketState>,
+  liveTicks?: Record<string, { bid: number; ask: number }>
+): Record<string, MarketState> {
+  for (const [name, m] of Object.entries(market)) {
+    const live = liveTicks?.[name];
+    if (live) {
+      applyBidAsk(m, live.bid, live.ask);
+      continue;
+    }
     const drift = (Math.random() - 0.5) * m.def.vol;
-    m.bid = Math.max(m.def.vol, m.bid + drift);
-    m.ask = m.bid + spreadFor(m.def);
-    m.high = Math.max(m.high, m.bid);
-    m.low = Math.min(m.low, m.bid);
-
-    (["M1", "M5", "H1"] as const).forEach((tf) => {
-      const period = tfMillis(tf);
-      const bucket = Math.floor(Date.now() / period);
-      const candles = m.candles[tf];
-      if (m.lastCandleStart[tf] !== bucket) {
-        m.lastCandleStart[tf] = bucket;
-        candles.push({ o: m.bid, h: m.bid, l: m.bid, c: m.bid, t: bucket });
-        if (candles.length > 120) candles.shift();
-      } else if (candles.length) {
-        const c = candles[candles.length - 1];
-        c.h = Math.max(c.h, m.bid);
-        c.l = Math.min(c.l, m.bid);
-        c.c = m.bid;
-      }
-    });
+    const bid = Math.max(m.def.vol, m.bid + drift);
+    applyBidAsk(m, bid, bid + spreadFor(m.def));
   }
   return { ...market };
 }

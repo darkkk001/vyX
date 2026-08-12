@@ -274,6 +274,18 @@ model Symbol {
   positions     Position[]
 }
 
+/// Latest tick per symbol, pushed by an MT5 EA bridge (see
+// app/api/internal/price-feed). Broker-agnostic raw market price — each
+// broker's BrokerSymbol.spreadMarkup is applied on top when quoting a
+// trader. Phase 5 replaces this source with a real LP FIX feed without
+// touching anything downstream, since consumers only read bid/ask here.
+model LivePrice {
+  symbol    String   @id // matches Symbol.name, e.g. "EURUSD"
+  bid       Decimal  @db.Decimal(18, 5)
+  ask       Decimal  @db.Decimal(18, 5)
+  updatedAt DateTime @updatedAt
+}
+
 // Per-broker override: spread markup, swap, lot limits, enable/disable.
 model BrokerSymbol {
   id           String  @id @default(cuid())
