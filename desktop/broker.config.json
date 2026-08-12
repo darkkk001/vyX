@@ -1,4 +1,6 @@
 {
   "brokerName": "VyXTrader",
-  "subdomain": "acmefx.vyxtrader.com"
+  "subdomain": "vyxtrader.com",
+  "rootDomain": "vyxtrader.com",
+  "mode": "launcher"
 }

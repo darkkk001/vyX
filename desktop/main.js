@@ -3,7 +3,16 @@ const path = require("path");
 const fs = require("fs");
 
 const config = JSON.parse(fs.readFileSync(path.join(__dirname, "broker.config.json"), "utf-8"));
-const startUrl = `https://${config.subdomain}/trade`;
+// "launcher" (no broker baked in) opens the root-domain server picker,
+// same role as MT5's server dropdown — the trader picks their broker there,
+// which then sends them on to that specific broker's own login. "broker"
+// mode skips straight to one broker's WebTrader.
+const isLauncher = config.mode === "launcher";
+const startUrl = `https://${config.subdomain}${isLauncher ? "/launch" : "/trade"}`;
+// In launcher mode navigation must be allowed to roam across broker
+// subdomains (that's the whole point); in broker mode it stays locked to
+// that one broker's own subdomain.
+const allowedHost = isLauncher ? config.rootDomain : config.subdomain;
 
 // No default Electron menu — this is a trading terminal, not a browser.
 Menu.setApplicationMenu(null);
@@ -42,7 +51,8 @@ function createWindow() {
   });
   win.webContents.on("will-navigate", (event, url) => {
     const target = new URL(url);
-    if (!target.hostname.endsWith(config.subdomain.split(":")[0])) {
+    const host = allowedHost.split(":")[0];
+    if (target.hostname !== host && !target.hostname.endsWith(`.${host}`)) {
       event.preventDefault();
       shell.openExternal(url);
     }

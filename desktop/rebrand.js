@@ -1,6 +1,9 @@
 #!/usr/bin/env node
-// Rebrands this Electron shell for one broker before packaging.
-// Usage: node rebrand.js --name "AcmeFX" --subdomain "acmefx.vyxtrader.com" [--icon path/to/icon.ico]
+// Rebrands this Electron shell for one broker before packaging — points it
+// straight at that broker's WebTrader (mode: "broker"), skipping the
+// root-domain server picker entirely, same as how a broker-branded MT5
+// build comes with its server pre-selected.
+// Usage: node rebrand.js --name "AcmeFX" --subdomain "acmefx.vyxtrader.com" [--icon path/to/icon.ico] [--root vyxtrader.com]
 // Then:  npm run build   (produces the branded .exe in desktop/release/)
 
 const fs = require("fs");
@@ -14,17 +17,20 @@ function arg(name) {
 const name = arg("name");
 const subdomain = arg("subdomain");
 const iconPath = arg("icon");
+// Assumes a standard two-label root (vyxtrader.com) unless overridden —
+// fine for this platform's actual domain, not a general-purpose PSL parser.
+const rootDomain = arg("root") || subdomain?.split(".").slice(-2).join(".");
 
 if (!name || !subdomain) {
-  console.error('Usage: node rebrand.js --name "AcmeFX" --subdomain "acmefx.vyxtrader.com" [--icon path/to/icon.ico]');
+  console.error('Usage: node rebrand.js --name "AcmeFX" --subdomain "acmefx.vyxtrader.com" [--icon path/to/icon.ico] [--root vyxtrader.com]');
   process.exit(1);
 }
 
 fs.writeFileSync(
   path.join(__dirname, "broker.config.json"),
-  JSON.stringify({ brokerName: name, subdomain }, null, 2) + "\n"
+  JSON.stringify({ brokerName: name, subdomain, rootDomain, mode: "broker" }, null, 2) + "\n"
 );
-console.log(`broker.config.json -> ${name} @ ${subdomain}`);
+console.log(`broker.config.json -> ${name} @ ${subdomain} (root: ${rootDomain})`);
 
 if (iconPath) {
   if (!iconPath.toLowerCase().endsWith(".ico")) {
