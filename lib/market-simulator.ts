@@ -89,7 +89,7 @@ export function createInitialMarket(): Record<string, MarketState> {
 }
 
 function tfMillis(tf: "M1" | "M5" | "H1") {
-  return tf === "M1" ? 2000 : tf === "M5" ? 6000 : 15000; // compressed for demo purposes
+  return tf === "M1" ? 60_000 : tf === "M5" ? 300_000 : 3_600_000;
 }
 
 function applyBidAsk(m: MarketState, bid: number, ask: number) {
