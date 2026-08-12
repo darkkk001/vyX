@@ -33,8 +33,13 @@ export default function LaunchPage() {
       setError("Select a server");
       return;
     }
+    // Broker.subdomain in the DB (and this API) is just the label
+    // ("acmefx"), not a full host — build the real one off whatever root
+    // domain this page itself is being served from (works in prod and any
+    // preview/dev environment without hardcoding vyxtrader.com here).
+    const rootHost = window.location.hostname.replace(/^www\./, "");
     const qs = accountNumber ? `?account=${encodeURIComponent(accountNumber)}` : "";
-    window.location.href = `https://${subdomain}/trade/login${qs}`;
+    window.location.href = `https://${subdomain}.${rootHost}/trade/login${qs}`;
   }
 
   return (
