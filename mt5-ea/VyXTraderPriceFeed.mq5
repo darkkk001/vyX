@@ -32,10 +32,10 @@ void OnDeinit(const int reason)
    EventKillTimer();
 }
 
-string Base64UrlEncode(string input)
+string Base64UrlEncode(string src)
 {
    uchar bytes[];
-   int len = StringToCharArray(input, bytes, 0, StringLen(input), CP_UTF8) - 1; // drop null terminator
+   int len = StringToCharArray(src, bytes, 0, StringLen(src), CP_UTF8) - 1; // drop null terminator
    ArrayResize(bytes, len);
 
    string alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
