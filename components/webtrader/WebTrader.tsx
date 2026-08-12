@@ -15,6 +15,14 @@ import {
 import { tradeApi, type AccountInfo, type ApiPosition, type ApiOrder } from "@/lib/trade-api";
 import KLineChartPanel, { type KLineChartHandle, type ChartLine } from "./KLineChartPanel";
 
+declare global {
+  interface Window {
+    // Exposed by desktop/preload.js only when running inside the Electron
+    // shell — absent in a normal browser tab.
+    vyxDesktop?: { isDesktop: true };
+  }
+}
+
 type Timeframe = "1m" | "5m" | "15m" | "1h" | "4h" | "1d";
 const TF_LABELS: { key: Timeframe; label: string }[] = [
   { key: "1m", label: "1m" },
@@ -182,10 +190,22 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
   const equityHistoryRef = useRef<number[]>([]);
   const sparklineRef = useRef<HTMLCanvasElement>(null);
 
-  const pushToast = useCallback((message: string) => {
+  // `important: true` also fires a native OS notification when running
+  // inside the desktop app (see desktop/preload.js) — for background events
+  // a trader wouldn't otherwise see while the window isn't focused (alerts,
+  // SL/TP hits). Plain user-triggered actions (clicking Buy, closing a
+  // position) skip that: the trader is already looking at the screen.
+  const pushToast = useCallback((message: string, important = false) => {
     const id = nextId();
     setToasts((prev) => [...prev, { id, message }]);
     setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 2200);
+    if (important && typeof window !== "undefined" && window.vyxDesktop?.isDesktop && "Notification" in window) {
+      try {
+        new Notification("VyXTrader", { body: message });
+      } catch {
+        // ignore — notification permission or platform quirk, toast already shown
+      }
+    }
   }, []);
 
   const askPrompt = useCallback((message: string, defaultValue: string, onSubmit: (value: string) => void) => {
@@ -366,6 +386,15 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
 
   // margin call banner
   const marginCall = positions.length > 0 && isFinite(marginLevel) && marginLevel < 100;
+  const marginCallNotifiedRef = useRef(false);
+  useEffect(() => {
+    if (marginCall && !marginCallNotifiedRef.current) {
+      marginCallNotifiedRef.current = true;
+      pushToast("Margin call — your margin level is below 100%", true);
+    } else if (!marginCall) {
+      marginCallNotifiedRef.current = false;
+    }
+  }, [marginCall, pushToast]);
 
   function selectSymbol(name: string) {
     if (name === activeSymbol) return;
@@ -384,7 +413,7 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
         const hit = a.condition === "above" ? m.bid >= a.price : m.bid <= a.price;
         if (hit) {
           changed = true;
-          pushToast(`Alert triggered — ${a.symbol} reached ${fmt(a.price, m.def.digits)}`);
+          pushToast(`Alert triggered — ${a.symbol} reached ${fmt(a.price, m.def.digits)}`, true);
           setAlertHistory((h) => [{ ...a, triggered: true, time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) }, ...h]);
           return { ...a, triggered: true };
         }
@@ -408,7 +437,7 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
         tradeApi.closePosition(p.id, price)
           .then((res) => {
             const pnl = (res as { transaction: { amount: string } }).transaction.amount;
-            pushToast(`${p.symbol.name} closed — ${hitType} hit — ${parseFloat(pnl) >= 0 ? "+" : ""}${parseFloat(pnl).toFixed(2)} USD`);
+            pushToast(`${p.symbol.name} closed — ${hitType} hit — ${parseFloat(pnl) >= 0 ? "+" : ""}${parseFloat(pnl).toFixed(2)} USD`, true);
             return Promise.all([refreshPositions(), refreshHistory(), refreshAccount()]);
           })
           .catch(() => {})
@@ -443,7 +472,7 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
         fillingIds.current.add(o.id);
         tradeApi.fillOrder(o.id, price)
           .then(() => {
-            pushToast(`${o.symbol.name} pending order triggered — ${o.side} ${o.volume}`);
+            pushToast(`${o.symbol.name} pending order triggered — ${o.side} ${o.volume}`, true);
             return Promise.all([refreshOrders(), refreshPositions()]);
           })
           .catch(() => {})

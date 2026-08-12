@@ -7,7 +7,12 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "build": "electron-builder --win"
+    "build": "electron-builder --win",
+    "publish": "node publish.js"
+  },
+  "dependencies": {
+    "electron-updater": "^6.3.9",
+    "electron-window-state": "^5.0.3"
   },
   "devDependencies": {
     "electron": "^33.4.11",
@@ -16,7 +21,7 @@
   "build": {
     "appId": "com.bigfishtech.vyxtrader",
     "productName": "VyXTrader",
-    "files": ["main.js", "preload.js", "broker.config.json"],
+    "files": ["main.js", "preload.js", "broker.config.json", "screens/**/*"],
     "directories": { "output": "release" },
     "win": {
       "target": "nsis",
@@ -26,6 +31,10 @@
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true
+    },
+    "publish": {
+      "provider": "generic",
+      "url": "https://vyxtrader.com/desktop-updates/"
     }
   }
 }
