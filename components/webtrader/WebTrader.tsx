@@ -193,7 +193,7 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
   const fillingIds = useRef<Set<string>>(new Set());
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const chartScaleRef = useRef<{ min: number; max: number; range: number; leftPad: number; rightPad: number; topPad: number; chartH: number; chartW: number; candleW: number } | null>(null);
+  const chartScaleRef = useRef<{ min: number; max: number; range: number; leftPad: number; rightPad: number; topPad: number; chartH: number; chartW: number; candleW: number; rightAlignOffset: number } | null>(null);
   const equityHistoryRef = useRef<number[]>([]);
   const sparklineRef = useRef<HTMLCanvasElement>(null);
 
@@ -839,7 +839,7 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
     const chartW = w - leftPad - rightPad, chartH = h - topPad - bottomPad;
     if (candles.length === 0) return;
 
-    const visibleCount = Math.min(candles.length, chartZoom);
+    const visibleCount = chartZoom; // zoom-driven slot count, independent of how much data actually exists
     const maxOffset = Math.max(0, candles.length - visibleCount);
     const offset = Math.min(maxOffset, Math.max(0, chartViewOffset));
     const windowEnd = candles.length - offset;
@@ -861,8 +861,16 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
     const pad = (max - min) * 0.08;
     max += pad; min -= pad;
     const range = max - min || 1;
-    const candleW = chartW / visibleCandles.length;
-    chartScaleRef.current = { min, max, range, leftPad, rightPad, topPad, chartH, chartW, candleW };
+    // candleW is driven by the zoom level (visibleCount slots), not by how
+    // much data actually exists — otherwise a symbol with only a handful of
+    // real candles so far (feed just started) stretches those few candles
+    // across the whole width, making zoom in/out invisible since there's
+    // nothing more to reveal. rightAlignOffset anchors real data to the
+    // right edge (latest candle at the right), leaving blank space on the
+    // left when there aren't enough candles yet to fill the window.
+    const candleW = chartW / visibleCount;
+    const rightAlignOffset = visibleCount - visibleCandles.length;
+    chartScaleRef.current = { min, max, range, leftPad, rightPad, topPad, chartH, chartW, candleW, rightAlignOffset };
 
     const priceToY = (price: number) => topPad + (1 - (price - min) / range) * chartH;
 
@@ -876,7 +884,7 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
     }
 
     visibleCandles.forEach((c, i) => {
-      const x = leftPad + i * candleW + candleW / 2;
+      const x = leftPad + (rightAlignOffset + i) * candleW + candleW / 2;
       const yOpen = priceToY(c.o), yClose = priceToY(c.c), yHigh = priceToY(c.h), yLow = priceToY(c.l);
       const up = c.c >= c.o;
       ctx.strokeStyle = ctx.fillStyle = up ? "#16C784" : "#EA3943";
@@ -928,7 +936,7 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
 
     // user drawings
     const drawings = drawingsRef.current[activeSymbol] || [];
-    const indexToX = (idx: number) => leftPad + idx * candleW + candleW / 2;
+    const indexToX = (idx: number) => leftPad + (rightAlignOffset + idx) * candleW + candleW / 2;
     drawings.forEach((d) => {
       if (d.type === "hline") {
         const y = priceToY(d.price);
@@ -1004,7 +1012,7 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
   function xToIndex(x: number) {
     const s = chartScaleRef.current;
     if (!s) return 0;
-    return Math.round((x - s.leftPad - s.candleW / 2) / s.candleW);
+    return Math.round((x - s.leftPad - s.candleW / 2) / s.candleW) - s.rightAlignOffset;
   }
   function findLineNearY(y: number) {
     type Candidate = { kind: "pos"; id: string; field: "sl" | "tp"; price: number };
@@ -1078,8 +1086,7 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
       const s = chartScaleRef.current;
       const candleW = s ? s.candleW : 6;
       const deltaCandles = Math.round((crosshairRef.current.x - panDragRef.current.startX) / candleW);
-      const visibleCount = Math.min(candles.length, chartZoom);
-      const maxOffset = Math.max(0, candles.length - visibleCount);
+      const maxOffset = Math.max(0, candles.length - chartZoom);
       setChartViewOffset(Math.min(maxOffset, Math.max(0, panDragRef.current.startOffset + deltaCandles)));
       e.currentTarget.style.cursor = "grabbing";
       return;
