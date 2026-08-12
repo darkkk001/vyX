@@ -183,6 +183,7 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
   const crosshairRef = useRef<{ x: number; y: number } | null>(null);
   const draggingLineRef = useRef<null | { kind: "pos"; id: string; field: "sl" | "tp"; price: number; originalPrice: number }>(null);
   const [chartViewOffset, setChartViewOffset] = useState(0);
+  const [chartZoom, setChartZoom] = useState(80); // visible candle count; smaller = zoomed in
   const panDragRef = useRef<null | { startX: number; startOffset: number }>(null);
   useEffect(() => { setChartViewOffset(0); }, [activeSymbol, currentTf]);
 
@@ -796,7 +797,7 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
     const chartW = w - leftPad - rightPad, chartH = h - topPad - bottomPad;
     if (candles.length === 0) return;
 
-    const visibleCount = Math.min(candles.length, 80);
+    const visibleCount = Math.min(candles.length, chartZoom);
     const maxOffset = Math.max(0, candles.length - visibleCount);
     const offset = Math.min(maxOffset, Math.max(0, chartViewOffset));
     const windowEnd = candles.length - offset;
@@ -922,7 +923,7 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
       ctx.fillStyle = "#E4E7EB"; ctx.textAlign = "left"; ctx.textBaseline = "middle";
       ctx.fillText(price.toFixed(m.def.digits), leftPad + chartW + 6, crosshair.y);
     }
-  }, [candles, positions, pendingOrders, activeSymbol, m, chartViewOffset]);
+  }, [candles, positions, pendingOrders, activeSymbol, m, chartViewOffset, chartZoom]);
 
   useEffect(() => { drawChart(); }, [drawChart]);
   useEffect(() => {
@@ -930,6 +931,21 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, [drawChart]);
+
+  // Mouse-wheel zoom — React's onWheel is passive by default so
+  // preventDefault() there is silently ignored; a native listener is
+  // required to stop the page from scrolling while zooming the chart.
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    function onWheel(e: WheelEvent) {
+      e.preventDefault();
+      const factor = e.deltaY > 0 ? 1.15 : 1 / 1.15;
+      setChartZoom((z) => Math.min(300, Math.max(15, Math.round(z * factor))));
+    }
+    canvas.addEventListener("wheel", onWheel, { passive: false });
+    return () => canvas.removeEventListener("wheel", onWheel);
+  }, []);
 
   function yToPrice(y: number) {
     const s = chartScaleRef.current;
@@ -1013,7 +1029,7 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
       const s = chartScaleRef.current;
       const candleW = s ? s.candleW : 6;
       const deltaCandles = Math.round((crosshairRef.current.x - panDragRef.current.startX) / candleW);
-      const visibleCount = Math.min(candles.length, 80);
+      const visibleCount = Math.min(candles.length, chartZoom);
       const maxOffset = Math.max(0, candles.length - visibleCount);
       setChartViewOffset(Math.min(maxOffset, Math.max(0, panDragRef.current.startOffset + deltaCandles)));
       e.currentTarget.style.cursor = "grabbing";
