@@ -169,6 +169,7 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
   const [symbolSearch, setSymbolSearch] = useState("");
   const [fileMenuOpen, setFileMenuOpen] = useState(false);
   const [toolsMenuOpen, setToolsMenuOpen] = useState(false);
+  const [helpMenuOpen, setHelpMenuOpen] = useState(false);
   // Read once client-side (useEffect, not render) — window.vyxDesktop
   // doesn't exist during SSR, and JSX reading it directly there would
   // throw "window is not defined".
@@ -1026,7 +1027,6 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
         <div className="topbar">
           <div className="topbar-left">
             <div className="nav">
-              <div className="item active">Trade</div>
               <div style={{ position: "relative" }}>
                 <div className="item" onClick={() => { setFileMenuOpen((v) => !v); setToolsMenuOpen(false); }}>File</div>
                 {fileMenuOpen ? (
@@ -1048,6 +1048,27 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
                 ) : null}
               </div>
               <div className="item" onClick={() => { setReportsOpen(true); setReportRows(null); }}>Reports</div>
+              <div style={{ position: "relative" }}>
+                <div className="item" onClick={() => setHelpMenuOpen((v) => !v)}>Help</div>
+                {helpMenuOpen ? (
+                  <div className="account-dropdown show" style={{ top: "100%", left: 0, width: 190 }}>
+                    <div
+                      className="acc-option"
+                      style={{ cursor: "pointer", padding: "8px 10px" }}
+                      onClick={() => { setHelpMenuOpen(false); window.open("mailto:support@vyxtrader.com", "_blank"); }}
+                    >
+                      Contact support
+                    </div>
+                    <div
+                      className="acc-option"
+                      style={{ cursor: "pointer", padding: "8px 10px" }}
+                      onClick={() => { setHelpMenuOpen(false); pushToast("VyXTrader — B2B white-label trading platform"); }}
+                    >
+                      About
+                    </div>
+                  </div>
+                ) : null}
+              </div>
             </div>
           </div>
           <span className="broker-logo topbar-center">
@@ -1067,7 +1088,11 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
                 color: connected ? "var(--buy)" : "var(--sell)",
               }}
             >
-              <span style={{ width: 6, height: 6, borderRadius: "50%", background: "currentColor", flexShrink: 0 }} />
+              <svg width="13" height="10" viewBox="0 0 15 12" style={{ flexShrink: 0 }}>
+                {[{ h: 4, y: 8 }, { h: 6.5, y: 5.5 }, { h: 9, y: 3 }, { h: 12, y: 0 }].map((b, i) => (
+                  <rect key={i} x={i * 3.9} y={b.y} width="2.6" height={b.h} rx="0.6" fill={connected ? "var(--buy)" : i === 0 ? "var(--sell)" : "#3a4150"} />
+                ))}
+              </svg>
               {connected ? "Connected" : "Disconnected"}
             </span>
           </span>

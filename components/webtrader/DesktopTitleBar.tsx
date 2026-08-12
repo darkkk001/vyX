@@ -37,9 +37,12 @@ export default function DesktopTitleBar({
         {brokerName}
         {server ? <span style={{ color: "#5A6472" }}> — {server}</span> : null}
       </span>
-      <span style={{ width: 7, height: 7, borderRadius: "50%", background: connected ? "#16C784" : "#EA3943", marginLeft: 4 }} title={connected ? "Connected" : "Disconnected"} />
 
       <div style={{ flex: 1 }} />
+
+      <span title={connected ? "Connected" : "Disconnected"} style={{ display: "flex", alignItems: "center", marginRight: 8 }}>
+        <SignalBars connected={connected} />
+      </span>
 
       <div
         // @ts-expect-error -- WebkitAppRegion isn't in the CSSProperties typings
@@ -66,6 +69,33 @@ export default function DesktopTitleBar({
         </TitleBarButton>
       </div>
     </div>
+  );
+}
+
+function SignalBars({ connected }: { connected: boolean }) {
+  const active = "#16C784";
+  const dim = "#EA3943";
+  const off = "#2a303c";
+  const bars = [
+    { h: 4, y: 8 },
+    { h: 6.5, y: 5.5 },
+    { h: 9, y: 3 },
+    { h: 12, y: 0 },
+  ];
+  return (
+    <svg width="15" height="12" viewBox="0 0 15 12">
+      {bars.map((b, i) => (
+        <rect
+          key={i}
+          x={i * 3.9}
+          y={b.y}
+          width="2.6"
+          height={b.h}
+          rx="0.6"
+          fill={connected ? active : i === 0 ? dim : off}
+        />
+      ))}
+    </svg>
   );
 }
 
