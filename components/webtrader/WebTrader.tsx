@@ -17,6 +17,8 @@ import KLineChartPanel, { type KLineChartHandle, type ChartLine } from "./KLineC
 import DesktopTitleBar from "./DesktopTitleBar";
 import SessionClock from "./SessionClock";
 import NewsPanel from "./NewsPanel";
+import ChartCell from "./ChartCell";
+import { computeChartLines } from "@/lib/chart-lines";
 
 declare global {
   interface Window {
@@ -167,6 +169,13 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
   const [accountDropdownOpen, setAccountDropdownOpen] = useState(false);
   const [symbolDropdownOpen, setSymbolDropdownOpen] = useState(false);
   const [symbolSearch, setSymbolSearch] = useState("");
+  const [chartLayout, setChartLayout] = useState<"single" | "grid">("single");
+  const [gridCells, setGridCells] = useState<{ symbol: string; tf: Timeframe }[]>([
+    { symbol: "XAUUSD", tf: "H1" },
+    { symbol: "EURUSD", tf: "H1" },
+    { symbol: "BTCUSD", tf: "H1" },
+    { symbol: "GBPUSD", tf: "H1" },
+  ]);
   const [fileMenuOpen, setFileMenuOpen] = useState(false);
   const [toolsMenuOpen, setToolsMenuOpen] = useState(false);
   const [helpMenuOpen, setHelpMenuOpen] = useState(false);
@@ -428,45 +437,61 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
     return () => { cancelled = true; clearInterval(interval); };
   }, [appendLog]);
 
-  // Seeds real OHLC history (see /api/trade/candles) into the active
-  // symbol+timeframe on selection, replacing the synthetic seed. A symbol
-  // with no feed history yet (empty response) just keeps simulating — no
-  // real data to show, nothing to seed.
+  // Seeds real OHLC history (see /api/trade/candles) for a symbol+timeframe,
+  // replacing the synthetic seed. A symbol with no feed history yet (empty
+  // response) just keeps simulating — no real data to show, nothing to
+  // seed. Shared by the single-chart focus effect below and the
+  // multi-chart grid (each cell seeds its own symbol+tf independently).
+  const seedRealCandles = useCallback(async (symbol: string, tf: Timeframe) => {
+    try {
+      const rows = await tradeApi.candles(symbol, tf);
+      if (rows.length === 0) return;
+      const lastBucket = new Date(rows[rows.length - 1].bucketStart).getTime();
+      setMarket((prev) => {
+        const ms = prev[symbol];
+        if (!ms) return prev;
+        return {
+          ...prev,
+          [symbol]: {
+            ...ms,
+            candles: {
+              ...ms.candles,
+              [tf]: rows.map((r) => ({
+                o: parseFloat(r.open),
+                h: parseFloat(r.high),
+                l: parseFloat(r.low),
+                c: parseFloat(r.close),
+                t: new Date(r.bucketStart).getTime(),
+              })),
+            },
+            lastCandleStart: { ...ms.lastCandleStart, [tf]: lastBucket },
+          },
+        };
+      });
+    } catch {
+      // no real history yet — keep the synthetic seed
+    }
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
-    const tf = currentTf;
+    (async () => { if (!cancelled) await seedRealCandles(activeSymbol, currentTf); })();
+    return () => { cancelled = true; };
+  }, [activeSymbol, currentTf, seedRealCandles]);
+
+  // Multi-chart grid: each cell seeds its own symbol+timeframe the same way
+  // the focused chart does above, independently.
+  useEffect(() => {
+    if (chartLayout !== "grid") return;
+    let cancelled = false;
     (async () => {
-      try {
-        const rows = await tradeApi.candles(activeSymbol, tf);
-        if (cancelled || rows.length === 0) return;
-        const lastBucket = new Date(rows[rows.length - 1].bucketStart).getTime();
-        setMarket((prev) => {
-          const ms = prev[activeSymbol];
-          if (!ms) return prev;
-          return {
-            ...prev,
-            [activeSymbol]: {
-              ...ms,
-              candles: {
-                ...ms.candles,
-                [tf]: rows.map((r) => ({
-                  o: parseFloat(r.open),
-                  h: parseFloat(r.high),
-                  l: parseFloat(r.low),
-                  c: parseFloat(r.close),
-                  t: new Date(r.bucketStart).getTime(),
-                })),
-              },
-              lastCandleStart: { ...ms.lastCandleStart, [tf]: lastBucket },
-            },
-          };
-        });
-      } catch {
-        // no real history yet — keep the synthetic seed
+      for (const cell of gridCells) {
+        if (cancelled) return;
+        await seedRealCandles(cell.symbol, cell.tf);
       }
     })();
     return () => { cancelled = true; };
-  }, [activeSymbol, currentTf]);
+  }, [chartLayout, gridCells, seedRealCandles]);
 
   const positionPnl = useCallback(
     (p: ApiPosition): number => {
@@ -991,26 +1016,10 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
   // ---------- chart ----------
   const candles: Candle[] = m.candles[currentTf];
 
-  const chartLines: ChartLine[] = useMemo(() => {
-    const lines: ChartLine[] = [];
-    positions
-      .filter((p) => p.symbol.name === activeSymbol)
-      .forEach((p) => {
-        lines.push({ id: `pos-${p.id}`, price: parseFloat(p.openPrice), color: p.side === "BUY" ? "#16C784" : "#EA3943" });
-        if (p.slPrice) lines.push({ id: `pos-${p.id}-sl`, price: parseFloat(p.slPrice), color: "#EA3943", dashed: true });
-        if (p.tpPrice) lines.push({ id: `pos-${p.id}-tp`, price: parseFloat(p.tpPrice), color: "#16C784", dashed: true });
-      });
-    pendingOrders
-      .filter((o) => o.symbol.name === activeSymbol)
-      .forEach((o) => {
-        if (!o.requestedPrice) return;
-        const color = o.side === "BUY" ? "#16C784" : "#EA3943";
-        lines.push({ id: `ord-${o.id}`, price: parseFloat(o.requestedPrice), color, dashed: true });
-        if (o.slPrice) lines.push({ id: `ord-${o.id}-sl`, price: parseFloat(o.slPrice), color: "#EA3943", dashed: true });
-        if (o.tpPrice) lines.push({ id: `ord-${o.id}-tp`, price: parseFloat(o.tpPrice), color: "#16C784", dashed: true });
-      });
-    return lines;
-  }, [positions, pendingOrders, activeSymbol]);
+  const chartLines: ChartLine[] = useMemo(
+    () => computeChartLines(activeSymbol, positions, pendingOrders),
+    [positions, pendingOrders, activeSymbol]
+  );
 
   function handleChartContextMenuPrice(price: number, clientX: number, clientY: number) {
     setChartContextMenu({ x: clientX, y: clientY, price });
@@ -1429,58 +1438,97 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10" /><line x1="12" y1="16" x2="12" y2="12" /><line x1="12" y1="8" x2="12.01" y2="8" /></svg>
                 </button>
               </div>
-              <div className="timeframes">
-                {TF_LABELS.map((tf) => (
-                  <button key={tf.key} className={`tf-btn${currentTf === tf.key ? " active" : ""}`} onClick={() => setCurrentTf(tf.key)}>{tf.label}</button>
-                ))}
-              </div>
-            </div>
-            <div className="chart-area">
-              <div className="drawing-toolbar">
-                <button className="draw-tool-btn" onClick={() => chartRef.current?.addOverlay("trendLine")} title="Trend line">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="4" y1="20" x2="20" y2="4" /></svg>
-                </button>
-                <button className="draw-tool-btn" onClick={() => chartRef.current?.addOverlay("horizontalStraightLine")} title="Horizontal line">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="3" y1="12" x2="21" y2="12" /></svg>
-                </button>
-                <button className="draw-tool-btn" onClick={() => chartRef.current?.addOverlay("fibonacciLine")} title="Fibonacci retracement">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="3" y1="6" x2="21" y2="6" /><line x1="3" y1="12" x2="21" y2="12" /><line x1="3" y1="18" x2="21" y2="18" /></svg>
-                </button>
-                <button className="draw-tool-btn" onClick={() => chartRef.current?.addOverlay("rectangle")} title="Rectangle">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="5" width="18" height="14" rx="1" /></svg>
-                </button>
-                <button className="draw-tool-btn" onClick={() => chartRef.current?.addOverlay("simpleAnnotation")} title="Text">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="4 7 4 4 20 4 20 7" /><line x1="12" y1="4" x2="12" y2="20" /></svg>
-                </button>
-                <div className="draw-tool-sep" />
-                <button className="draw-tool-btn" onClick={() => { chartRef.current?.removeAllDrawings(); pushToast("Drawings cleared"); }} title="Clear all drawings">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 6h18" /><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" /></svg>
-                </button>
-                <div className="draw-tool-sep" />
-                <button className={`draw-tool-btn${maActive ? " active" : ""}`} onClick={toggleMaIndicator} title="Moving average">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 17c3-8 5-8 8 0s5 8 8 0" /></svg>
-                </button>
-              </div>
-              <KLineChartPanel
-                ref={chartRef}
-                candles={candles}
-                digits={m.def.digits}
-                lines={chartLines}
-                onContextMenuPrice={handleChartContextMenuPrice}
-              />
-              {chartContextMenu ? (
-                <div className="wl-context-menu show" style={{ left: chartContextMenu.x, top: chartContextMenu.y }}>
-                  <div className="wl-ctx-title">@ {fmt(chartContextMenu.price, m.def.digits)} — {chartContextMenu.price < m.bid ? "below" : "above"} market</div>
-                  {(chartContextMenu.price < m.bid
-                    ? [{ type: "buy_limit" as PendingType, label: "Buy limit here" }, { type: "sell_stop" as PendingType, label: "Sell stop here" }]
-                    : [{ type: "sell_limit" as PendingType, label: "Sell limit here" }, { type: "buy_stop" as PendingType, label: "Buy stop here" }]
-                  ).map((it) => (
-                    <div key={it.type} className="wl-ctx-item" onClick={() => { quickPlacePendingAtPrice(it.type, chartContextMenu.price); setChartContextMenu(null); }}>
-                      <span>{it.label}</span>
-                    </div>
+              {chartLayout === "single" ? (
+                <div className="timeframes">
+                  {TF_LABELS.map((tf) => (
+                    <button key={tf.key} className={`tf-btn${currentTf === tf.key ? " active" : ""}`} onClick={() => setCurrentTf(tf.key)}>{tf.label}</button>
                   ))}
                 </div>
               ) : null}
+              <div style={{ display: "flex", gap: 3, background: "var(--bg-2)", padding: 3, borderRadius: 8, marginLeft: 8 }}>
+                <button
+                  title="Single chart"
+                  onClick={() => setChartLayout("single")}
+                  style={{ width: 26, height: 24, borderRadius: 5, border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", background: chartLayout === "single" ? "var(--bg-4)" : "transparent", color: chartLayout === "single" ? "var(--text-1)" : "var(--text-3)" }}
+                >
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="1" /></svg>
+                </button>
+                <button
+                  title="2x2 grid"
+                  onClick={() => setChartLayout("grid")}
+                  style={{ width: 26, height: 24, borderRadius: 5, border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", background: chartLayout === "grid" ? "var(--bg-4)" : "transparent", color: chartLayout === "grid" ? "var(--text-1)" : "var(--text-3)" }}
+                >
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="8" height="8" rx="1" /><rect x="13" y="3" width="8" height="8" rx="1" /><rect x="3" y="13" width="8" height="8" rx="1" /><rect x="13" y="13" width="8" height="8" rx="1" /></svg>
+                </button>
+              </div>
+            </div>
+            <div className="chart-area">
+              {chartLayout === "single" ? (
+                <>
+                  <div className="drawing-toolbar">
+                    <button className="draw-tool-btn" onClick={() => chartRef.current?.addOverlay("trendLine")} title="Trend line">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="4" y1="20" x2="20" y2="4" /></svg>
+                    </button>
+                    <button className="draw-tool-btn" onClick={() => chartRef.current?.addOverlay("horizontalStraightLine")} title="Horizontal line">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="3" y1="12" x2="21" y2="12" /></svg>
+                    </button>
+                    <button className="draw-tool-btn" onClick={() => chartRef.current?.addOverlay("fibonacciLine")} title="Fibonacci retracement">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="3" y1="6" x2="21" y2="6" /><line x1="3" y1="12" x2="21" y2="12" /><line x1="3" y1="18" x2="21" y2="18" /></svg>
+                    </button>
+                    <button className="draw-tool-btn" onClick={() => chartRef.current?.addOverlay("rectangle")} title="Rectangle">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="5" width="18" height="14" rx="1" /></svg>
+                    </button>
+                    <button className="draw-tool-btn" onClick={() => chartRef.current?.addOverlay("simpleAnnotation")} title="Text">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="4 7 4 4 20 4 20 7" /><line x1="12" y1="4" x2="12" y2="20" /></svg>
+                    </button>
+                    <div className="draw-tool-sep" />
+                    <button className="draw-tool-btn" onClick={() => { chartRef.current?.removeAllDrawings(); pushToast("Drawings cleared"); }} title="Clear all drawings">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 6h18" /><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" /></svg>
+                    </button>
+                    <div className="draw-tool-sep" />
+                    <button className={`draw-tool-btn${maActive ? " active" : ""}`} onClick={toggleMaIndicator} title="Moving average">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 17c3-8 5-8 8 0s5 8 8 0" /></svg>
+                    </button>
+                  </div>
+                  <KLineChartPanel
+                    ref={chartRef}
+                    candles={candles}
+                    digits={m.def.digits}
+                    lines={chartLines}
+                    onContextMenuPrice={handleChartContextMenuPrice}
+                  />
+                  {chartContextMenu ? (
+                    <div className="wl-context-menu show" style={{ left: chartContextMenu.x, top: chartContextMenu.y }}>
+                      <div className="wl-ctx-title">@ {fmt(chartContextMenu.price, m.def.digits)} — {chartContextMenu.price < m.bid ? "below" : "above"} market</div>
+                      {(chartContextMenu.price < m.bid
+                        ? [{ type: "buy_limit" as PendingType, label: "Buy limit here" }, { type: "sell_stop" as PendingType, label: "Sell stop here" }]
+                        : [{ type: "sell_limit" as PendingType, label: "Sell limit here" }, { type: "buy_stop" as PendingType, label: "Buy stop here" }]
+                      ).map((it) => (
+                        <div key={it.type} className="wl-ctx-item" onClick={() => { quickPlacePendingAtPrice(it.type, chartContextMenu.price); setChartContextMenu(null); }}>
+                          <span>{it.label}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                </>
+              ) : (
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gridTemplateRows: "1fr 1fr", gap: 1, background: "var(--border)", height: "100%", overflow: "hidden" }}>
+                  {gridCells.map((cell, i) => (
+                    <ChartCell
+                      key={i}
+                      symbol={cell.symbol}
+                      tf={cell.tf}
+                      m={market[cell.symbol]}
+                      positions={positions}
+                      pendingOrders={pendingOrders}
+                      focused={cell.symbol === activeSymbol && cell.tf === currentTf}
+                      onFocus={() => { selectSymbol(cell.symbol); setCurrentTf(cell.tf); }}
+                      onSymbolChange={(sym) => setGridCells((prev) => prev.map((c, idx) => (idx === i ? { ...c, symbol: sym } : c)))}
+                      onTfChange={(tf) => setGridCells((prev) => prev.map((c, idx) => (idx === i ? { ...c, tf } : c)))}
+                    />
+                  ))}
+                </div>
+              )}
             </div>
 
             <div className="row-resizer" onMouseDown={startResize("bottom")} />
