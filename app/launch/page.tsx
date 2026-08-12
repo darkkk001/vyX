@@ -64,7 +64,7 @@ export default function LaunchPage() {
       >
         <h1 style={{ fontSize: 18, margin: "0 0 4px" }}>VyXTrader</h1>
         <p style={{ fontSize: 12, color: "#8891a6", margin: "0 0 8px" }}>
-          Select your broker's server to continue.
+          Select your broker&apos;s server to continue.
         </p>
 
         <label style={{ fontSize: 12, color: "#8891a6" }}>Server</label>
