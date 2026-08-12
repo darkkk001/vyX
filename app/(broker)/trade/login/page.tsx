@@ -1,12 +1,24 @@
 "use client";
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { tradeApi } from "@/lib/trade-api";
 
 export default function TradeLoginPage() {
+  return (
+    <Suspense fallback={null}>
+      <TradeLoginForm />
+    </Suspense>
+  );
+}
+
+function TradeLoginForm() {
   const router = useRouter();
-  const [accountNumber, setAccountNumber] = useState("");
+  const searchParams = useSearchParams();
+  // Prefilled when arriving from the root-domain server picker (app/launch)
+  // — that page only knows which server the trader picked, not their
+  // password, so it hands off here for the actual credential entry.
+  const [accountNumber, setAccountNumber] = useState(searchParams.get("account") ?? "");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);

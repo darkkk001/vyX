@@ -20,8 +20,17 @@ export async function middleware(request: NextRequest) {
   const hostname = host.split(":")[0];
   const rootDomain = (process.env.ROOT_DOMAIN ?? "localhost:3000").split(":")[0];
 
+  // The apex domain 308-redirects to www (Vercel domain config), so the
+  // hostname actually seen here on most root-domain traffic is
+  // "www.<ROOT_DOMAIN>", not the bare root — without this, every request to
+  // the live site's root domain fell through to the custom-domain lookup
+  // below, which always failed and rewrote to /broker-not-found. This broke
+  // the Super Admin app (and anything else meant to live at the root)
+  // entirely in production.
   const isRootOrSuperAdmin =
-    hostname === rootDomain || hostname === `${SUPER_ADMIN_SUBDOMAIN}.${rootDomain}`;
+    hostname === rootDomain ||
+    hostname === `www.${rootDomain}` ||
+    hostname === `${SUPER_ADMIN_SUBDOMAIN}.${rootDomain}`;
 
   if (isRootOrSuperAdmin) {
     return NextResponse.next();
