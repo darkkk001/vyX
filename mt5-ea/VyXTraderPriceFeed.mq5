@@ -34,9 +34,9 @@ void OnDeinit(const int reason)
 
 string Base64UrlEncode(string src)
 {
+   int len = StringLen(src); // payload is pure ASCII (hex secret + JSON), 1 char = 1 byte
    uchar bytes[];
-   int len = StringToCharArray(src, bytes, 0, StringLen(src), CP_UTF8) - 1; // drop null terminator
-   ArrayResize(bytes, len);
+   StringToCharArray(src, bytes, 0, len, CP_UTF8);
 
    string alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
    string result = "";

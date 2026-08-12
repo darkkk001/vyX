@@ -15,23 +15,12 @@ export async function GET(
 ) {
   const { payload } = await params;
   let decoded: { secret?: string; ticks?: unknown } = {};
-  let jsonAttempt = "";
   try {
     const base64 = payload.replace(/-/g, "+").replace(/_/g, "/");
-    jsonAttempt = Buffer.from(base64, "base64").toString("utf-8");
-    decoded = JSON.parse(jsonAttempt);
-  } catch (e) {
-    // TEMP DEBUG — remove once the EA payload mismatch is diagnosed.
-    return NextResponse.json(
-      {
-        error: "bad payload",
-        debugReceivedPayload: payload,
-        debugReceivedLength: payload.length,
-        debugDecodeAttempt: jsonAttempt,
-        debugErrorMessage: e instanceof Error ? e.message : String(e),
-      },
-      { status: 400 }
-    );
+    const json = Buffer.from(base64, "base64").toString("utf-8");
+    decoded = JSON.parse(json);
+  } catch {
+    return NextResponse.json({ error: "bad payload" }, { status: 400 });
   }
   return ingestTicks(decoded.secret ?? null, decoded.ticks ?? null);
 }
