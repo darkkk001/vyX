@@ -1,6 +1,8 @@
 import "server-only";
+import bcrypt from "bcryptjs";
 import { SignJWT, jwtVerify } from "jose";
 import { cookies, headers } from "next/headers";
+import { prisma } from "@/lib/prisma";
 
 export const ACCOUNT_SESSION_COOKIE_NAME = "vyx_trade_session";
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 7; // 7 days
@@ -57,6 +59,25 @@ export async function getAccountSession(): Promise<AccountSessionPayload | null>
   if (!requestBrokerId || requestBrokerId !== session.brokerId) return null;
 
   return session;
+}
+
+// Shared by the JSON login route (WebTrader's own fetch-based login) and
+// the form-POST login-redirect route (the root-domain launcher's cross-site
+// submit) — same credential check, same constant-shape failure either way.
+export async function authenticateAccount(
+  brokerId: string,
+  accountNumber: string,
+  password: string
+) {
+  if (!accountNumber || !password) return null;
+
+  const account = await prisma.account.findUnique({ where: { accountNumber } });
+  if (!account || account.brokerId !== brokerId || account.status !== "ACTIVE") return null;
+
+  const passwordMatches = await bcrypt.compare(password, account.passwordHash);
+  if (!passwordMatches) return null;
+
+  return account;
 }
 
 export function accountSessionCookieOptions() {

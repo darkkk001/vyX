@@ -6,18 +6,23 @@ type PublicBroker = { name: string; subdomain: string; logoUrl: string | null };
 
 // Root-domain "pick your server" screen — the generic desktop app build (no
 // broker baked in) and anyone landing on the bare domain start here, same
-// role as MT5's server dropdown. Password isn't collected here: this page
-// only decides which broker subdomain to send the trader to, then their
-// actual login happens on that broker's own /trade/login (same origin as
-// the session cookie it sets) — carrying a password across domains via a
-// redirect would mean putting it in a URL, which we don't do.
+// role as MT5's single login+password+server screen. Submitting does a real
+// cross-site <form method="POST"> to the picked broker's own subdomain
+// (app/api/trade/login-redirect) — a top-level navigation, which browsers
+// allow across origins unlike fetch/XHR — so the password never has to
+// travel through a URL, and the session cookie that route sets ends up
+// correctly scoped to that broker's subdomain, not this launcher's root
+// domain.
 export default function LaunchPage() {
   const [brokers, setBrokers] = useState<PublicBroker[] | null>(null);
   const [subdomain, setSubdomain] = useState("");
   const [accountNumber, setAccountNumber] = useState("");
+  const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [rootHost, setRootHost] = useState("");
 
   useEffect(() => {
+    setRootHost(window.location.hostname.replace(/^www\./, ""));
     fetch("/api/public/brokers")
       .then((r) => r.json())
       .then((list: PublicBroker[]) => {
@@ -27,19 +32,21 @@ export default function LaunchPage() {
       .catch(() => setError("Could not load broker list"));
   }, []);
 
-  function handleSubmit(event: React.FormEvent) {
-    event.preventDefault();
-    if (!subdomain) {
+  // Broker.subdomain (from the API) is just the label ("acmefx"), not a
+  // full host — build the real one off whatever root domain this page
+  // itself is being served from, so this keeps working the same in prod,
+  // preview, or local dev without hardcoding vyxtrader.com here.
+  const actionUrl = subdomain && rootHost ? `https://${subdomain}.${rootHost}/api/trade/login-redirect` : undefined;
+
+  function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+    if (!actionUrl) {
+      event.preventDefault();
       setError("Select a server");
       return;
     }
-    // Broker.subdomain in the DB (and this API) is just the label
-    // ("acmefx"), not a full host — build the real one off whatever root
-    // domain this page itself is being served from (works in prod and any
-    // preview/dev environment without hardcoding vyxtrader.com here).
-    const rootHost = window.location.hostname.replace(/^www\./, "");
-    const qs = accountNumber ? `?account=${encodeURIComponent(accountNumber)}` : "";
-    window.location.href = `https://${subdomain}.${rootHost}/trade/login${qs}`;
+    setError(null);
+    // No preventDefault from here — this is a real form submission that
+    // navigates the browser to another origin.
   }
 
   return (
@@ -55,6 +62,8 @@ export default function LaunchPage() {
       }}
     >
       <form
+        method="POST"
+        action={actionUrl}
         onSubmit={handleSubmit}
         style={{
           width: 340,
@@ -68,9 +77,7 @@ export default function LaunchPage() {
         }}
       >
         <h1 style={{ fontSize: 18, margin: "0 0 4px" }}>VyXTrader</h1>
-        <p style={{ fontSize: 12, color: "#8891a6", margin: "0 0 8px" }}>
-          Select your broker&apos;s server to continue.
-        </p>
+        <p style={{ fontSize: 12, color: "#8891a6", margin: "0 0 8px" }}>Sign in to your account.</p>
 
         <label style={{ fontSize: 12, color: "#8891a6" }}>Server</label>
         <select
@@ -98,11 +105,30 @@ export default function LaunchPage() {
           )}
         </select>
 
-        <label style={{ fontSize: 12, color: "#8891a6" }}>Account number (optional)</label>
+        <label style={{ fontSize: 12, color: "#8891a6" }}>Account number</label>
         <input
+          name="accountNumber"
           placeholder="Account number"
           value={accountNumber}
           onChange={(e) => setAccountNumber(e.target.value)}
+          required
+          style={{
+            background: "#161c2b",
+            border: "1px solid #262e42",
+            borderRadius: 6,
+            padding: "8px 10px",
+            color: "#e8ecf4",
+          }}
+        />
+
+        <label style={{ fontSize: 12, color: "#8891a6" }}>Password</label>
+        <input
+          name="password"
+          type="password"
+          placeholder="Password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          required
           style={{
             background: "#161c2b",
             border: "1px solid #262e42",
@@ -127,7 +153,7 @@ export default function LaunchPage() {
             cursor: "pointer",
           }}
         >
-          Continue
+          Sign in
         </button>
       </form>
     </main>

@@ -20,7 +20,11 @@ function TradeLoginForm() {
   // password, so it hands off here for the actual credential entry.
   const [accountNumber, setAccountNumber] = useState(searchParams.get("account") ?? "");
   const [password, setPassword] = useState("");
-  const [error, setError] = useState<string | null>(null);
+  // Set when bounced back here by /api/trade/login-redirect (the
+  // root-domain launcher's single-screen login failing invalid credentials).
+  const [error, setError] = useState<string | null>(
+    searchParams.get("error") ? "Invalid account number or password" : null
+  );
   const [submitting, setSubmitting] = useState(false);
 
   async function handleSubmit(event: React.FormEvent) {

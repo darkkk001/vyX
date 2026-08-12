@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import bcrypt from "bcryptjs";
-import { prisma } from "@/lib/prisma";
 import {
+  authenticateAccount,
   createAccountSessionToken,
   ACCOUNT_SESSION_COOKIE_NAME,
   accountSessionCookieOptions,
@@ -20,20 +19,11 @@ export async function POST(request: NextRequest) {
   const accountNumber = typeof body?.accountNumber === "string" ? body.accountNumber.trim() : "";
   const password = typeof body?.password === "string" ? body.password : "";
 
-  if (!accountNumber || !password) {
-    return NextResponse.json({ error: "accountNumber and password are required" }, { status: 400 });
-  }
-
-  const account = await prisma.account.findUnique({ where: { accountNumber } });
-
-  // Constant-shape response whether the account exists, belongs to a
-  // different broker, or the password is wrong — avoid leaking any of it.
-  if (!account || account.brokerId !== brokerId || account.status !== "ACTIVE") {
-    return NextResponse.json({ error: "invalid credentials" }, { status: 401 });
-  }
-
-  const passwordMatches = await bcrypt.compare(password, account.passwordHash);
-  if (!passwordMatches) {
+  // Constant-shape response whether the account doesn't exist, belongs to a
+  // different broker, is inactive, or the password is wrong — avoid leaking
+  // any of it.
+  const account = await authenticateAccount(brokerId, accountNumber, password);
+  if (!account) {
     return NextResponse.json({ error: "invalid credentials" }, { status: 401 });
   }
 
