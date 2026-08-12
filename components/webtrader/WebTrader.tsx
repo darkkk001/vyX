@@ -99,6 +99,44 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
   const [oneClick, setOneClick] = useState(false);
   const [balanceHidden, setBalanceHidden] = useState(false);
 
+  // ---------- resizable panel layout ----------
+  const [orderPanelWidth, setOrderPanelWidth] = useState(260);
+  const [watchlistWidth, setWatchlistWidth] = useState(210);
+  const [bottomPanelHeight, setBottomPanelHeight] = useState(190);
+  const resizeStateRef = useRef<{ kind: "order" | "watchlist" | "bottom"; startPos: number; startSize: number } | null>(null);
+
+  const startResize = useCallback((kind: "order" | "watchlist" | "bottom") => (e: React.MouseEvent) => {
+    e.preventDefault();
+    const startSize = kind === "order" ? orderPanelWidth : kind === "watchlist" ? watchlistWidth : bottomPanelHeight;
+    resizeStateRef.current = { kind, startPos: kind === "bottom" ? e.clientY : e.clientX, startSize };
+  }, [orderPanelWidth, watchlistWidth, bottomPanelHeight]);
+
+  useEffect(() => {
+    function onMove(e: MouseEvent) {
+      const rs = resizeStateRef.current;
+      if (!rs) return;
+      if (rs.kind === "bottom") {
+        const delta = rs.startPos - e.clientY;
+        setBottomPanelHeight(Math.min(500, Math.max(120, rs.startSize + delta)));
+      } else if (rs.kind === "order") {
+        const delta = e.clientX - rs.startPos;
+        setOrderPanelWidth(Math.min(420, Math.max(200, rs.startSize + delta)));
+      } else {
+        const delta = rs.startPos - e.clientX;
+        setWatchlistWidth(Math.min(420, Math.max(160, rs.startSize + delta)));
+      }
+    }
+    function onUp() {
+      resizeStateRef.current = null;
+    }
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, []);
+
   const [activeBottomTab, setActiveBottomTab] = useState<BottomTab>("positions");
   const [histFrom, setHistFrom] = useState("");
   const [histTo, setHistTo] = useState("");
@@ -144,6 +182,9 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
   const drawingInProgressRef = useRef<{ startX: number; startY: number; endX: number; endY: number } | null>(null);
   const crosshairRef = useRef<{ x: number; y: number } | null>(null);
   const draggingLineRef = useRef<null | { kind: "pos"; id: string; field: "sl" | "tp"; price: number; originalPrice: number }>(null);
+  const [chartViewOffset, setChartViewOffset] = useState(0);
+  const panDragRef = useRef<null | { startX: number; startOffset: number }>(null);
+  useEffect(() => { setChartViewOffset(0); }, [activeSymbol, currentTf]);
 
   const [toasts, setToasts] = useState<Toast[]>([]);
   const closingIds = useRef<Set<string>>(new Set());
@@ -728,20 +769,26 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
     const chartW = w - leftPad - rightPad, chartH = h - topPad - bottomPad;
     if (candles.length === 0) return;
 
+    const visibleCount = Math.min(candles.length, 80);
+    const maxOffset = Math.max(0, candles.length - visibleCount);
+    const offset = Math.min(maxOffset, Math.max(0, chartViewOffset));
+    const windowEnd = candles.length - offset;
+    const visibleCandles = candles.slice(Math.max(0, windowEnd - visibleCount), windowEnd);
+
     const symPositions = positions.filter((p) => p.symbol.name === activeSymbol);
     const symPending = pendingOrders.filter((o) => o.symbol.name === activeSymbol);
     const posPrices: number[] = [];
     symPositions.forEach((p) => { posPrices.push(parseFloat(p.openPrice)); if (p.slPrice) posPrices.push(parseFloat(p.slPrice)); if (p.tpPrice) posPrices.push(parseFloat(p.tpPrice)); });
     symPending.forEach((o) => { if (o.requestedPrice) posPrices.push(parseFloat(o.requestedPrice)); if (o.slPrice) posPrices.push(parseFloat(o.slPrice)); if (o.tpPrice) posPrices.push(parseFloat(o.tpPrice)); });
 
-    const candlePrices = candles.flatMap((c) => [c.h, c.l]);
-    const allPrices = candlePrices.concat(posPrices).concat([m.bid]);
+    const candlePrices = visibleCandles.flatMap((c) => [c.h, c.l]);
+    const allPrices = candlePrices.concat(posPrices).concat(offset === 0 ? [m.bid] : []);
     let max = Math.max(...allPrices), min = Math.min(...allPrices);
     if (max === min) { max += 1; min -= 1; }
     const pad = (max - min) * 0.08;
     max += pad; min -= pad;
     const range = max - min || 1;
-    const candleW = chartW / candles.length;
+    const candleW = chartW / visibleCandles.length;
     chartScaleRef.current = { min, max, range, leftPad, rightPad, topPad, chartH, chartW, candleW };
 
     const priceToY = (price: number) => topPad + (1 - (price - min) / range) * chartH;
@@ -755,7 +802,7 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
       ctx.fillText(priceAtY.toFixed(m.def.digits), leftPad + chartW + 6, y);
     }
 
-    candles.forEach((c, i) => {
+    visibleCandles.forEach((c, i) => {
       const x = leftPad + i * candleW + candleW / 2;
       const yOpen = priceToY(c.o), yClose = priceToY(c.c), yHigh = priceToY(c.h), yLow = priceToY(c.l);
       const up = c.c >= c.o;
@@ -801,8 +848,10 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
       const color = o.side === "BUY" ? "#16C784" : "#EA3943";
       drawPriceLine(parseFloat(o.requestedPrice), color, [2, 4], `${o.type} ${parseFloat(o.volume).toFixed(2)}`, false);
     });
-    const currentPriceUp = candles.length > 1 ? m.bid >= candles[candles.length - 2].c : true;
-    drawPriceLine(m.bid, currentPriceUp ? "#16C784" : "#EA3943", [1, 3], fmt(m.bid, m.def.digits), false);
+    if (offset === 0) {
+      const currentPriceUp = candles.length > 1 ? m.bid >= candles[candles.length - 2].c : true;
+      drawPriceLine(m.bid, currentPriceUp ? "#16C784" : "#EA3943", [1, 3], fmt(m.bid, m.def.digits), false);
+    }
 
     // user drawings
     const drawings = drawingsRef.current[activeSymbol] || [];
@@ -846,7 +895,7 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
       ctx.fillStyle = "#E4E7EB"; ctx.textAlign = "left"; ctx.textBaseline = "middle";
       ctx.fillText(price.toFixed(m.def.digits), leftPad + chartW + 6, crosshair.y);
     }
-  }, [candles, positions, pendingOrders, activeSymbol, m]);
+  }, [candles, positions, pendingOrders, activeSymbol, m, chartViewOffset]);
 
   useEffect(() => { drawChart(); }, [drawChart]);
   useEffect(() => {
@@ -919,6 +968,8 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
     const line = findLineNearY(y);
     if (line) {
       draggingLineRef.current = { ...line, originalPrice: line.price };
+    } else if (activeDrawTool === "cursor") {
+      panDragRef.current = { startX: x, startOffset: chartViewOffset };
     }
   }
 
@@ -931,22 +982,37 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
       drawChart();
       return;
     }
+    if (panDragRef.current) {
+      const s = chartScaleRef.current;
+      const candleW = s ? s.candleW : 6;
+      const deltaCandles = Math.round((crosshairRef.current.x - panDragRef.current.startX) / candleW);
+      const visibleCount = Math.min(candles.length, 80);
+      const maxOffset = Math.max(0, candles.length - visibleCount);
+      setChartViewOffset(Math.min(maxOffset, Math.max(0, panDragRef.current.startOffset + deltaCandles)));
+      e.currentTarget.style.cursor = "grabbing";
+      return;
+    }
     if (draggingLineRef.current) {
       const newPrice = yToPrice(crosshairRef.current.y);
       if (newPrice != null) draggingLineRef.current.price = newPrice;
       e.currentTarget.style.cursor = "ns-resize";
     } else {
-      e.currentTarget.style.cursor = activeDrawTool !== "cursor" ? "crosshair" : findLineNearY(crosshairRef.current.y) ? "ns-resize" : "crosshair";
+      e.currentTarget.style.cursor = activeDrawTool !== "cursor" ? "crosshair" : findLineNearY(crosshairRef.current.y) ? "ns-resize" : "grab";
     }
     drawChart();
   }
 
   function handleCanvasMouseLeave() {
+    panDragRef.current = null;
     if (!draggingLineRef.current && !drawingInProgressRef.current) crosshairRef.current = null;
     drawChart();
   }
 
   async function handleCanvasMouseUp() {
+    if (panDragRef.current) {
+      panDragRef.current = null;
+      return;
+    }
     if (drawingInProgressRef.current) {
       const dip = drawingInProgressRef.current;
       const startPrice = yToPrice(dip.startY), endPrice = yToPrice(dip.endY);
@@ -1021,8 +1087,17 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
               <div className="item" onClick={() => setActiveBottomTab("history")}>History</div>
             </div>
           </div>
+          <span className="broker-logo topbar-center">
+            <span className="broker-logo-mark">
+              {brokerLogoUrl ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={brokerLogoUrl} alt={brokerName} />
+              ) : brokerName.charAt(0).toUpperCase()}
+            </span>
+            <span className="broker-logo-text">{brokerName.toUpperCase()}</span>
+          </span>
           <div className="topbar-right">
-            <span className="trader-name">{account?.fullName ?? ""}</span>
+            <span className="trader-name">{balanceHidden ? "••••••" : account?.fullName ?? ""}</span>
             <button className="eye-toggle-btn" onClick={() => setBalanceHidden((v) => !v)} title={balanceHidden ? "Show balance" : "Hide balance"}>
               {balanceHidden ? (
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17.94 17.94A10.94 10.94 0 0 1 12 20c-7 0-11-8-11-8a18.5 18.5 0 0 1 5.06-5.94M9.9 4.24A10.94 10.94 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" /><line x1="1" y1="1" x2="23" y2="23" /></svg>
@@ -1030,15 +1105,6 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></svg>
               )}
             </button>
-            <span className="broker-logo">
-              <span className="broker-logo-mark">
-                {brokerLogoUrl ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img src={brokerLogoUrl} alt={brokerName} />
-                ) : brokerName.charAt(0).toUpperCase()}
-              </span>
-              <span className="broker-logo-text">{brokerName.toUpperCase()}</span>
-            </span>
             <div className="account-switcher">
               <div className={`mode-toggle${account?.accountType === "LIVE" ? " live" : ""}`} onClick={() => setAccountDropdownOpen((v) => !v)}>
                 <span className="mono mode-toggle-acc-num">{account?.accountNumber ?? "..."}</span>
@@ -1072,7 +1138,7 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
           </div>
         </div>
 
-        <div className="main">
+        <div className="main" style={{ gridTemplateColumns: `${orderPanelWidth}px 6px 1fr 6px ${watchlistWidth}px` }}>
           {/* ---------- ORDER PANEL (left) ---------- */}
           <div className="order-panel">
             <div className="section-label" style={{ paddingLeft: 0 }}>Order ticket</div>
@@ -1180,6 +1246,8 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
             </div>
           </div>
 
+          <div className="col-resizer" onMouseDown={startResize("order")} />
+
           {/* ---------- CENTER (chart) ---------- */}
           <div className="center">
             <div className="chart-header">
@@ -1243,7 +1311,9 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
               ) : null}
             </div>
 
-            <div className="bottom-panel">
+            <div className="row-resizer" onMouseDown={startResize("bottom")} />
+
+            <div className="bottom-panel" style={{ height: bottomPanelHeight }}>
               <div className="tabs-row">
                 <div className="tabs">
                   <div className={`tab${activeBottomTab === "positions" ? " active" : ""}`} onClick={() => setActiveBottomTab("positions")}>Positions ({acctPositions.length})</div>
@@ -1421,6 +1491,8 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
             </div>
           </div>
 
+          <div className="col-resizer" onMouseDown={startResize("watchlist")} />
+
           {/* ---------- WATCHLIST (right) ---------- */}
           <div className="watchlist" onContextMenu={(e) => { e.preventDefault(); setWlMenuOpen(true); setWlContextMenu({ x: e.clientX, y: e.clientY }); }}>
             <div className="section-label">Watchlist</div>
@@ -1487,10 +1559,12 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
               <span className="status-label">Equity</span><span className="status-value mono">{balanceHidden ? "••••••" : fmt(equity, 2)}</span>
               <canvas ref={sparklineRef} width={70} height={20} className="equity-spark" />
             </div>
+          </div>
+          <div className="status-item statusbar-center"><span className="status-label">Open P/L</span><span className="status-value mono" style={{ color: floatingPnl === 0 ? "var(--text-1)" : floatingPnl >= 0 ? "var(--buy)" : "var(--sell)" }}>{balanceHidden ? "••••" : (floatingPnl >= 0 ? "+" : "") + floatingPnl.toFixed(2)}</span></div>
+          <div className="statusbar-right">
             <div className="status-item"><span className="status-label">Margin level</span><span className="status-value mono" style={{ color: !isFinite(marginLevel) ? "var(--text-1)" : marginLevel < 100 ? "var(--sell)" : marginLevel < 200 ? "#FAC775" : "var(--buy)" }}>{balanceHidden ? "••••" : isFinite(marginLevel) ? marginLevel.toFixed(0) + "%" : "—"}</span></div>
             <div className="status-item"><span className="status-label">Free margin</span><span className="status-value mono">{balanceHidden ? "••••••" : fmt(freeMargin, 2)}</span></div>
           </div>
-          <div className="status-item"><span className="status-label">Open P/L</span><span className="status-value mono" style={{ color: floatingPnl === 0 ? "var(--text-1)" : floatingPnl >= 0 ? "var(--buy)" : "var(--sell)" }}>{balanceHidden ? "••••" : (floatingPnl >= 0 ? "+" : "") + floatingPnl.toFixed(2)}</span></div>
         </div>
       </div>
 
