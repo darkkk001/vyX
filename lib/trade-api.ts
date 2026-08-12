@@ -45,6 +45,16 @@ export type ApiPosition = {
 
 export type ApiLivePrice = { symbol: string; bid: string; ask: string; updatedAt: string };
 
+export type ApiCandle = {
+  symbol: string;
+  timeframe: "M1" | "M5" | "H1";
+  bucketStart: string;
+  open: string;
+  high: string;
+  low: string;
+  close: string;
+};
+
 export type ApiOrder = {
   id: string;
   side: "BUY" | "SELL";
@@ -60,6 +70,8 @@ export type ApiOrder = {
 export const tradeApi = {
   me: () => call<AccountInfo>("/api/trade/me"),
   prices: () => call<ApiLivePrice[]>("/api/trade/prices"),
+  candles: (symbol: string, tf: "M1" | "M5" | "H1") =>
+    call<ApiCandle[]>(`/api/trade/candles?symbol=${encodeURIComponent(symbol)}&tf=${tf}`),
   positions: () => call<ApiPosition[]>("/api/trade/positions"),
   orders: () => call<ApiOrder[]>("/api/trade/orders"),
   history: (params: { from?: string; to?: string; symbol?: string }) => {

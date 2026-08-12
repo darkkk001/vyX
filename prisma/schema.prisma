@@ -286,6 +286,31 @@ model LivePrice {
   updatedAt DateTime @updatedAt
 }
 
+enum CandleTimeframe {
+  M1
+  M5
+  H1
+}
+
+/// Real OHLC history built from the same MT5 EA ticks that feed LivePrice,
+/// aggregated at write time (see lib/price-feed.ts) so chart reads never
+/// need to aggregate raw ticks. bucketStart is the timeframe-aligned window
+/// start (e.g. H1 buckets to the top of the hour). Broker-agnostic, same as
+/// LivePrice.
+model Candle {
+  symbol      String
+  timeframe   CandleTimeframe
+  bucketStart DateTime
+  open        Decimal         @db.Decimal(18, 5)
+  high        Decimal         @db.Decimal(18, 5)
+  low         Decimal         @db.Decimal(18, 5)
+  close       Decimal         @db.Decimal(18, 5)
+  updatedAt   DateTime        @updatedAt
+
+  @@id([symbol, timeframe, bucketStart])
+  @@index([symbol, timeframe, bucketStart])
+}
+
 // Per-broker override: spread markup, swap, lot limits, enable/disable.
 model BrokerSymbol {
   id           String  @id @default(cuid())

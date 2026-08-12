@@ -6,6 +6,7 @@ import {
   SYMBOL_DEFS,
   createInitialMarket,
   tickMarket,
+  tfMillis,
   fmt,
   money,
   type MarketState,
@@ -265,6 +266,47 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
     const interval = setInterval(poll, 2000);
     return () => { cancelled = true; clearInterval(interval); };
   }, []);
+
+  // Seeds real OHLC history (see /api/trade/candles) into the active
+  // symbol+timeframe on selection, replacing the synthetic seed. A symbol
+  // with no feed history yet (empty response) just keeps simulating — no
+  // real data to show, nothing to seed.
+  useEffect(() => {
+    let cancelled = false;
+    const tf = TF_TO_SIM[currentTf];
+    (async () => {
+      try {
+        const rows = await tradeApi.candles(activeSymbol, tf);
+        if (cancelled || rows.length === 0) return;
+        const period = tfMillis(tf);
+        const lastBucket = Math.floor(new Date(rows[rows.length - 1].bucketStart).getTime() / period);
+        setMarket((prev) => {
+          const ms = prev[activeSymbol];
+          if (!ms) return prev;
+          return {
+            ...prev,
+            [activeSymbol]: {
+              ...ms,
+              candles: {
+                ...ms.candles,
+                [tf]: rows.map((r) => ({
+                  o: parseFloat(r.open),
+                  h: parseFloat(r.high),
+                  l: parseFloat(r.low),
+                  c: parseFloat(r.close),
+                  t: Math.floor(new Date(r.bucketStart).getTime() / period),
+                })),
+              },
+              lastCandleStart: { ...ms.lastCandleStart, [tf]: lastBucket },
+            },
+          };
+        });
+      } catch {
+        // no real history yet — keep the synthetic seed
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [activeSymbol, currentTf]);
 
   const positionPnl = useCallback(
     (p: ApiPosition): number => {

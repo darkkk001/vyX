@@ -88,7 +88,7 @@ export function createInitialMarket(): Record<string, MarketState> {
   return market;
 }
 
-function tfMillis(tf: "M1" | "M5" | "H1") {
+export function tfMillis(tf: "M1" | "M5" | "H1") {
   return tf === "M1" ? 60_000 : tf === "M5" ? 300_000 : 3_600_000;
 }
 
@@ -106,7 +106,7 @@ function applyBidAsk(m: MarketState, bid: number, ask: number) {
     if (m.lastCandleStart[tf] !== bucket) {
       m.lastCandleStart[tf] = bucket;
       candles.push({ o: m.bid, h: m.bid, l: m.bid, c: m.bid, t: bucket });
-      if (candles.length > 120) candles.shift();
+      if (candles.length > 300) candles.shift(); // matches the chart's max zoom-out (chartZoom cap)
     } else if (candles.length) {
       const c = candles[candles.length - 1];
       c.h = Math.max(c.h, m.bid);
