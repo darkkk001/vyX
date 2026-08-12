@@ -176,6 +176,21 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
   const [isDesktopApp, setIsDesktopApp] = useState(false);
   useEffect(() => setIsDesktopApp(!!window.vyxDesktop?.isDesktop), []);
 
+  // "default" = the newer palette, "classic" = the original WebTrader
+  // colors — same components/markup either way, see the
+  // .wt-root[data-theme="default"] override in webtrader.css. Persisted
+  // per-browser/per-install since it's a personal preference, not
+  // account data.
+  const [theme, setTheme] = useState<"classic" | "default">("default");
+  useEffect(() => {
+    const saved = localStorage.getItem("vyx-theme");
+    if (saved === "classic" || saved === "default") setTheme(saved);
+  }, []);
+  function changeTheme(next: "classic" | "default") {
+    setTheme(next);
+    localStorage.setItem("vyx-theme", next);
+  }
+
   const [reportsOpen, setReportsOpen] = useState(false);
   const [reportFrom, setReportFrom] = useState("");
   const [reportTo, setReportTo] = useState("");
@@ -378,13 +393,16 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
   // which is distinct from (and rarer than) an individual symbol just
   // having no live tick from the EA.
   const [connected, setConnected] = useState(true);
+  const [pingMs, setPingMs] = useState<number | null>(null);
   useEffect(() => {
     let cancelled = false;
     let wasConnected = true;
     async function poll() {
+      const startedAt = performance.now();
       try {
         const rows = await tradeApi.prices();
         if (cancelled) return;
+        setPingMs(Math.round(performance.now() - startedAt));
         const next: Record<string, { bid: number; ask: number }> = {};
         const now = Date.now();
         for (const row of rows) {
@@ -400,6 +418,7 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
         // feed unreachable — keep simulating, nothing to surface to the trader
         if (wasConnected) { appendLog("Connection lost"); wasConnected = false; }
         setConnected(false);
+        setPingMs(null);
       }
     }
     poll();
@@ -1017,7 +1036,7 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
   const serverName = account ? `${brokerName}-${account.accountType === "LIVE" ? "Live" : "Demo"}` : brokerName;
 
   return (
-    <div className="wt-root">
+    <div className="wt-root" data-theme={theme}>
       <DesktopTitleBar brokerName={brokerName} server={serverName} connected={connected} />
       <div id="app">
         <div className={`margin-call-banner${marginCall ? " show" : ""}`}>
@@ -1044,6 +1063,14 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
                   <div className="account-dropdown show" style={{ top: "100%", left: 0, width: 180 }}>
                     <div className="acc-option" style={{ cursor: "pointer", padding: "8px 10px" }} onClick={() => { setToolsMenuOpen(false); setChangePasswordOpen(true); }}>Change password</div>
                     <div className="acc-option" style={{ cursor: "pointer", padding: "8px 10px" }} onClick={() => { setToolsMenuOpen(false); setActiveBottomTab("logs"); }}>View logs</div>
+                    <div style={{ height: 1, background: "var(--border)", margin: "4px 0" }} />
+                    <div style={{ padding: "4px 10px 2px", fontSize: 10, color: "var(--text-3)", textTransform: "uppercase" }}>Theme</div>
+                    <div className="acc-option" style={{ cursor: "pointer", padding: "8px 10px", display: "flex", justifyContent: "space-between" }} onClick={() => changeTheme("default")}>
+                      Default {theme === "default" ? <span style={{ color: "var(--buy)" }}>✓</span> : null}
+                    </div>
+                    <div className="acc-option" style={{ cursor: "pointer", padding: "8px 10px", display: "flex", justifyContent: "space-between" }} onClick={() => changeTheme("classic")}>
+                      Classic {theme === "classic" ? <span style={{ color: "var(--buy)" }}>✓</span> : null}
+                    </div>
                   </div>
                 ) : null}
               </div>
@@ -1622,6 +1649,11 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
 
         <div className="statusbar">
           <div className="statusbar-left">
+            <div className="status-item">
+              <span style={{ width: 6, height: 6, borderRadius: "50%", background: connected ? "var(--buy)" : "var(--sell)" }} />
+              <span className="status-value" style={{ fontSize: 11 }}>{connected ? "Connected" : "Disconnected"} · {serverName}</span>
+            </div>
+            <div className="status-item"><span className="status-label">Ping</span><span className="status-value mono">{pingMs != null ? `${pingMs}ms` : "—"}</span></div>
             <div className="status-item"><span className="status-label">Balance</span><span className="status-value mono">{balanceHidden ? "••••••" : account ? fmt(parseFloat(account.balance), 2) : "—"}</span></div>
             <div className="status-item">
               <span className="status-label">Equity</span><span className="status-value mono">{balanceHidden ? "••••••" : fmt(equity, 2)}</span>

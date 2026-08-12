@@ -6,11 +6,17 @@
 
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
+/* "Classic" palette (the original WebTrader look) — default unless
+   data-theme="default" is set on .wt-root (see WebTrader.tsx's theme
+   state, persisted to localStorage). Every color the UI uses is a
+   variable here specifically so a theme swap is just overriding these,
+   not touching every component's CSS. */
 .wt-root {
   --bg-0: #07090C;
   --bg-1: #0B0F14;
   --bg-2: #0E1319;
   --bg-3: #131A22;
+  --bg-4: #1A222C;
   --border: #1E242C;
   --border-strong: #262E38;
   --text-1: #EDEFF2;
@@ -18,11 +24,41 @@
   --text-3: #5A6472;
   --buy: #16C784;
   --buy-bg: #0F2A1E;
+  --buy-glow: rgba(22, 199, 132, .18);
   --sell: #EA3943;
   --sell-bg: #2A0F11;
+  --sell-glow: rgba(234, 57, 67, .16);
+  --accent: var(--brand-primary, #16C784);
+  --accent-bg: #0F2A1E;
+  --accent-glow: rgba(22, 199, 132, .18);
   --brand: var(--brand-primary, #16C784);
   --brand-dim: #0F2A1E;
   --radius: 10px;
+}
+
+/* "Default" palette — from the reference desktop-workstation design
+   (deeper background, glowing buy/sell, purple accent for focus/active
+   states). Same components, same markup — only these values change. */
+.wt-root[data-theme="default"] {
+  --bg-0: #050608;
+  --bg-1: #0A0C10;
+  --bg-2: #0E1116;
+  --bg-3: #151920;
+  --bg-4: #1B2028;
+  --border: #1C2129;
+  --border-strong: #262C36;
+  --text-1: #EEF0F3;
+  --text-2: #8A93A3;
+  --text-3: #565F6E;
+  --buy: #1FD68A;
+  --buy-bg: #0D2A20;
+  --buy-glow: rgba(31, 214, 138, .18);
+  --sell: #F0475A;
+  --sell-bg: #2E1218;
+  --sell-glow: rgba(240, 71, 90, .16);
+  --accent: #7C6FFF;
+  --accent-bg: #211E42;
+  --accent-glow: rgba(124, 111, 255, .22);
 }
 
 .wt-root * { box-sizing: border-box; margin: 0; padding: 0; }
