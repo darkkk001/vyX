@@ -19,7 +19,11 @@ async function ingestTicks(secret: string | null, ticksRaw: unknown) {
     return NextResponse.json({ error: "price feed not configured" }, { status: 503 });
   }
   if (secret !== configuredSecret) {
-    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+    // TEMP DEBUG — remove once the EA auth mismatch is diagnosed.
+    return NextResponse.json(
+      { error: "unauthorized", debugReceivedSecret: secret, debugReceivedLength: secret?.length ?? 0 },
+      { status: 401 }
+    );
   }
 
   const ticks: Tick[] = Array.isArray(ticksRaw) ? ticksRaw : ticksRaw ? [ticksRaw as Tick] : [];
