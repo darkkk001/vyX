@@ -9,7 +9,7 @@
 #property strict
 #property version   "1.00"
 
-input string ServerUrl            = "https://vyxtrader.com/api/internal/price-feed";
+input string ServerUrl            = "https://www.vyxtrader.com/api/internal/price-feed";
 input string ApiSecret            = "a572bf5ea373c634fb63c0c3b6b21db4b4ad8f0d50056d2a";
 input int    PushIntervalSeconds  = 1;
 
