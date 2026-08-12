@@ -32,19 +32,40 @@ void OnDeinit(const int reason)
    EventKillTimer();
 }
 
-string UrlEncode(string str)
+string Base64UrlEncode(string input)
 {
-   string unreserved = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.~";
+   uchar bytes[];
+   int len = StringToCharArray(input, bytes, 0, StringLen(input), CP_UTF8) - 1; // drop null terminator
+   ArrayResize(bytes, len);
+
+   string alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
    string result = "";
-   int len = StringLen(str);
-   for (int i = 0; i < len; i++)
+   int i;
+   for (i = 0; i + 2 < len; i += 3)
    {
-      string c = StringSubstr(str, i, 1);
-      if (StringFind(unreserved, c) >= 0)
-         result += c;
-      else
-         result += StringFormat("%%%02X", StringGetCharacter(str, i));
+      int n = (bytes[i] << 16) | (bytes[i + 1] << 8) | bytes[i + 2];
+      result += StringSubstr(alphabet, (n >> 18) & 63, 1);
+      result += StringSubstr(alphabet, (n >> 12) & 63, 1);
+      result += StringSubstr(alphabet, (n >> 6) & 63, 1);
+      result += StringSubstr(alphabet, n & 63, 1);
    }
+   int rem = len - i;
+   if (rem == 1)
+   {
+      int n = bytes[i] << 16;
+      result += StringSubstr(alphabet, (n >> 18) & 63, 1);
+      result += StringSubstr(alphabet, (n >> 12) & 63, 1);
+   }
+   else if (rem == 2)
+   {
+      int n = (bytes[i] << 16) | (bytes[i + 1] << 8);
+      result += StringSubstr(alphabet, (n >> 18) & 63, 1);
+      result += StringSubstr(alphabet, (n >> 12) & 63, 1);
+      result += StringSubstr(alphabet, (n >> 6) & 63, 1);
+   }
+
+   StringReplace(result, "+", "-");
+   StringReplace(result, "/", "_");
    return result;
 }
 
@@ -65,11 +86,13 @@ void OnTimer()
    json += "]";
    if (first) return; // nothing resolved, don't push an empty array
 
-   // Sent as a GET with the payload URL-encoded in the query string — some
-   // network paths between broker MT5 terminals and the server silently
-   // downgrade POST to GET and drop the body, so GET is the transport that
-   // actually survives (confirmed via the server's own request log).
-   string url = ServerUrl + "?secret=" + UrlEncode(ApiSecret) + "&data=" + UrlEncode(json);
+   // secret + ticks travel base64url-encoded in the URL PATH, not the query
+   // string — some network paths between broker MT5 terminals and the
+   // server strip query strings entirely (confirmed via the server echoing
+   // back what it received: secret/data both arrived null), so nothing
+   // after "?" survives. A path segment isn't touched by that.
+   string payload = "{\"secret\":\"" + ApiSecret + "\",\"ticks\":" + json + "}";
+   string url = ServerUrl + "/" + Base64UrlEncode(payload);
 
    uchar noData[];
    uchar result[];
