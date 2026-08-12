@@ -847,12 +847,15 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
 
     const symPositions = positions.filter((p) => p.symbol.name === activeSymbol);
     const symPending = pendingOrders.filter((o) => o.symbol.name === activeSymbol);
-    const posPrices: number[] = [];
-    symPositions.forEach((p) => { posPrices.push(parseFloat(p.openPrice)); if (p.slPrice) posPrices.push(parseFloat(p.slPrice)); if (p.tpPrice) posPrices.push(parseFloat(p.tpPrice)); });
-    symPending.forEach((o) => { if (o.requestedPrice) posPrices.push(parseFloat(o.requestedPrice)); if (o.slPrice) posPrices.push(parseFloat(o.slPrice)); if (o.tpPrice) posPrices.push(parseFloat(o.tpPrice)); });
 
+    // Position/pending-order price lines are drawn below (drawPriceLine
+    // already skips anything outside the visible band) but deliberately
+    // excluded from the auto-range here — a position opened far from the
+    // current price (e.g. a demo position from before the live feed was
+    // wired up) would otherwise stretch the scale so hard every candle
+    // collapses into a flat line.
     const candlePrices = visibleCandles.flatMap((c) => [c.h, c.l]);
-    const allPrices = candlePrices.concat(posPrices).concat(offset === 0 ? [m.bid] : []);
+    const allPrices = candlePrices.concat(offset === 0 ? [m.bid] : []);
     let max = Math.max(...allPrices), min = Math.min(...allPrices);
     if (max === min) { max += 1; min -= 1; }
     const pad = (max - min) * 0.08;
