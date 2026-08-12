@@ -167,6 +167,19 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
   const [accountDropdownOpen, setAccountDropdownOpen] = useState(false);
   const [symbolDropdownOpen, setSymbolDropdownOpen] = useState(false);
   const [symbolSearch, setSymbolSearch] = useState("");
+  const [fileMenuOpen, setFileMenuOpen] = useState(false);
+  const [toolsMenuOpen, setToolsMenuOpen] = useState(false);
+  // Read once client-side (useEffect, not render) — window.vyxDesktop
+  // doesn't exist during SSR, and JSX reading it directly there would
+  // throw "window is not defined".
+  const [isDesktopApp, setIsDesktopApp] = useState(false);
+  useEffect(() => setIsDesktopApp(!!window.vyxDesktop?.isDesktop), []);
+
+  const [reportsOpen, setReportsOpen] = useState(false);
+  const [reportFrom, setReportFrom] = useState("");
+  const [reportTo, setReportTo] = useState("");
+  const [reportRows, setReportRows] = useState<ApiPosition[] | null>(null);
+  const [reportLoading, setReportLoading] = useState(false);
   const [fundsModalOpen, setFundsModalOpen] = useState(false);
   const [fundsTab, setFundsTab] = useState<"deposit" | "withdraw">("deposit");
   const [fundsAmount, setFundsAmount] = useState("");
@@ -275,6 +288,36 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
     } else {
       window.location.href = "/trade/login";
     }
+  }
+
+  async function generateReport() {
+    setReportLoading(true);
+    try {
+      setReportRows(await tradeApi.history({ from: reportFrom, to: reportTo }));
+    } catch {
+      pushToast("Failed to generate report");
+    } finally {
+      setReportLoading(false);
+    }
+  }
+
+  function exportReportCsv() {
+    if (!reportRows || reportRows.length === 0) return;
+    const header = ["Symbol", "Side", "Volume", "Open Price", "Close Price", "Swap", "Commission", "P&L", "Opened At", "Closed At"];
+    const lines = reportRows.map((p) =>
+      [
+        p.symbol.name, p.side, p.volume, p.openPrice, p.closePrice ?? "",
+        p.swap, p.commission, p.realizedPnl ?? "", p.openedAt, p.closedAt ?? "",
+      ].map((v) => `"${String(v).replace(/"/g, '""')}"`).join(",")
+    );
+    const csv = [header.join(","), ...lines].join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `vyxtrader-statement${reportFrom ? `-${reportFrom}` : ""}${reportTo ? `-${reportTo}` : ""}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
   }
 
   async function handleChangePassword(event: React.FormEvent) {
@@ -984,8 +1027,27 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
           <div className="topbar-left">
             <div className="nav">
               <div className="item active">Trade</div>
-              <div className="item" onClick={() => pushToast("Portfolio view coming soon")}>Portfolio</div>
-              <div className="item" onClick={() => setActiveBottomTab("history")}>History</div>
+              <div style={{ position: "relative" }}>
+                <div className="item" onClick={() => { setFileMenuOpen((v) => !v); setToolsMenuOpen(false); }}>File</div>
+                {fileMenuOpen ? (
+                  <div className="account-dropdown show" style={{ top: "100%", left: 0, width: 180 }} onClick={() => setFileMenuOpen(false)}>
+                    <div className="acc-option" style={{ cursor: "pointer", padding: "8px 10px" }} onClick={handleLogout}>Switch account</div>
+                    {isDesktopApp ? (
+                      <div className="acc-option" style={{ cursor: "pointer", padding: "8px 10px" }} onClick={() => window.vyxDesktop?.close()}>Exit</div>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+              <div style={{ position: "relative" }}>
+                <div className="item" onClick={() => { setToolsMenuOpen((v) => !v); setFileMenuOpen(false); }}>Tools</div>
+                {toolsMenuOpen ? (
+                  <div className="account-dropdown show" style={{ top: "100%", left: 0, width: 180 }}>
+                    <div className="acc-option" style={{ cursor: "pointer", padding: "8px 10px" }} onClick={() => { setToolsMenuOpen(false); setChangePasswordOpen(true); }}>Change password</div>
+                    <div className="acc-option" style={{ cursor: "pointer", padding: "8px 10px" }} onClick={() => { setToolsMenuOpen(false); setActiveBottomTab("logs"); }}>View logs</div>
+                  </div>
+                ) : null}
+              </div>
+              <div className="item" onClick={() => { setReportsOpen(true); setReportRows(null); }}>Reports</div>
             </div>
           </div>
           <span className="broker-logo topbar-center">
@@ -1683,6 +1745,80 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
                 <button type="submit" className="modal-btn primary" disabled={cpSubmitting}>{cpSubmitting ? "Saving…" : "Save"}</button>
               </div>
             </form>
+          </div>
+        </div>
+      ) : null}
+
+      {/* ---------- Reports (account statement) modal ---------- */}
+      {reportsOpen ? (
+        <div className="modal-overlay show" onClick={(e) => { if (e.target === e.currentTarget) setReportsOpen(false); }}>
+          <div className="modal-wrap">
+            <button className="modal-close" onClick={() => setReportsOpen(false)}>✕</button>
+            <div className="generic-modal-card" style={{ width: 460 }}>
+              <div className="generic-modal-title">Account statement</div>
+              <div style={{ display: "flex", gap: 8, alignItems: "flex-end", marginBottom: 12 }}>
+                <div style={{ flex: 1 }}>
+                  <label style={{ fontSize: 11, color: "var(--text-3)", display: "block", marginBottom: 3 }}>From</label>
+                  <input type="date" className="mono" value={reportFrom} onChange={(e) => setReportFrom(e.target.value)} style={{ width: "100%" }} />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <label style={{ fontSize: 11, color: "var(--text-3)", display: "block", marginBottom: 3 }}>To</label>
+                  <input type="date" className="mono" value={reportTo} onChange={(e) => setReportTo(e.target.value)} style={{ width: "100%" }} />
+                </div>
+                <button className="modal-btn primary" onClick={generateReport} disabled={reportLoading}>{reportLoading ? "…" : "Generate"}</button>
+              </div>
+
+              {reportRows ? (
+                (() => {
+                  const closed = reportRows.filter((p) => p.status === "CLOSED");
+                  const pnls = closed.map((p) => parseFloat(p.realizedPnl ?? "0"));
+                  const netPnl = pnls.reduce((a, b) => a + b, 0);
+                  const wins = pnls.filter((v) => v > 0).length;
+                  const losses = pnls.filter((v) => v < 0).length;
+                  const winRate = closed.length ? ((wins / closed.length) * 100).toFixed(1) : "0.0";
+                  return (
+                    <>
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8, marginBottom: 12 }}>
+                        {[
+                          { label: "Trades", value: String(closed.length) },
+                          { label: "Win rate", value: `${winRate}%` },
+                          { label: "Wins / Losses", value: `${wins} / ${losses}` },
+                          { label: "Net P&L", value: money(netPnl), color: netPnl >= 0 ? "var(--buy)" : "var(--sell)" },
+                        ].map((s) => (
+                          <div key={s.label} style={{ background: "var(--bg-2)", border: "1px solid var(--border)", borderRadius: 6, padding: "8px 10px" }}>
+                            <div className="net-pos-detail" style={{ marginBottom: 3 }}>{s.label}</div>
+                            <div className="mono" style={{ color: s.color }}>{s.value}</div>
+                          </div>
+                        ))}
+                      </div>
+                      <div style={{ maxHeight: 240, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 6 }}>
+                        {closed.length === 0 ? (
+                          <div className="empty-state">No closed trades in this range</div>
+                        ) : (
+                          closed.map((p) => (
+                            <div key={p.id} className="simple-row" style={{ padding: "6px 10px" }}>
+                              <div className="simple-left">
+                                <span className="pos-symbol">{p.symbol.name}</span>
+                                <span className="net-pos-detail mono">{p.side} {parseFloat(p.volume).toFixed(2)} @ {p.openPrice} → {p.closePrice ?? "—"}</span>
+                              </div>
+                              <div className="simple-right mono" style={{ color: parseFloat(p.realizedPnl ?? "0") >= 0 ? "var(--buy)" : "var(--sell)" }}>
+                                {money(parseFloat(p.realizedPnl ?? "0"))}
+                              </div>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                      <div className="modal-actions" style={{ marginTop: 16 }}>
+                        <button className="modal-btn secondary" onClick={() => setReportsOpen(false)}>Close</button>
+                        <button className="modal-btn primary" onClick={exportReportCsv} disabled={closed.length === 0}>Export CSV</button>
+                      </div>
+                    </>
+                  );
+                })()
+              ) : (
+                <div className="net-pos-detail" style={{ padding: "8px 0" }}>Pick a date range and click Generate.</div>
+              )}
+            </div>
           </div>
         </div>
       ) : null}
