@@ -199,6 +199,23 @@
 #modeToggleAccNum, .mode-toggle-acc-num { color: var(--text-3); font-size: 10px; }
 #modeToggleLabel, .mode-toggle-label { font-size: 9.5px; font-weight: 600; letter-spacing: .02em; }
 
+/* ---------- ICON RAIL ---------- */
+.rail {
+  background: var(--bg-1); border-right: 1px solid var(--border);
+  display: flex; flex-direction: column; align-items: center;
+  padding: 12px 0; gap: 4px; overflow: hidden;
+}
+.rail-item {
+  width: 34px; height: 34px; border-radius: 8px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--text-3); cursor: pointer; background: transparent; border: none;
+  transition: background .15s, color .15s;
+}
+.rail-item:hover { background: var(--bg-3); color: var(--text-2); }
+.rail-item.active { background: var(--accent-bg); color: var(--accent); }
+.rail-sep { width: 22px; height: 1px; background: var(--border); margin: 6px 0; }
+.rail-bottom { margin-top: auto; }
+
 /* ---------- MAIN GRID ---------- */
 .main { flex: 1; display: grid; overflow: hidden; }
 .col-resizer { cursor: col-resize; background: transparent; position: relative; }
