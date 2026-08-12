@@ -97,6 +97,7 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
   const [tpInput, setTpInput] = useState("");
   const [pendingMarketSide, setPendingMarketSide] = useState<"BUY" | "SELL" | null>(null);
   const [oneClick, setOneClick] = useState(false);
+  const [balanceHidden, setBalanceHidden] = useState(false);
 
   const [activeBottomTab, setActiveBottomTab] = useState<BottomTab>("positions");
   const [histFrom, setHistFrom] = useState("");
@@ -228,6 +229,17 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
   const equity = account ? parseFloat(account.balance) + floatingPnl : 0;
   const freeMargin = equity - usedMargin;
   const marginLevel = usedMargin > 0 ? (equity / usedMargin) * 100 : Infinity;
+
+  const wlGridTemplate = useMemo(() => {
+    const widths = ["1fr"]; // symbol
+    if (columnPrefs.signal) widths.push("0.4fr");
+    widths.push("0.95fr"); // price
+    if (columnPrefs.change) widths.push("0.75fr");
+    if (columnPrefs.spread) widths.push("0.7fr");
+    if (columnPrefs.high) widths.push("0.8fr");
+    if (columnPrefs.low) widths.push("0.8fr");
+    return `18px ${widths.join(" ")} 20px`;
+  }, [columnPrefs]);
 
   // equity sparkline
   useEffect(() => {
@@ -1010,6 +1022,14 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
             </div>
           </div>
           <div className="topbar-right">
+            <span className="trader-name">{account?.fullName ?? ""}</span>
+            <button className="eye-toggle-btn" onClick={() => setBalanceHidden((v) => !v)} title={balanceHidden ? "Show balance" : "Hide balance"}>
+              {balanceHidden ? (
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17.94 17.94A10.94 10.94 0 0 1 12 20c-7 0-11-8-11-8a18.5 18.5 0 0 1 5.06-5.94M9.9 4.24A10.94 10.94 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" /><line x1="1" y1="1" x2="23" y2="23" /></svg>
+              ) : (
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></svg>
+              )}
+            </button>
             <span className="broker-logo">
               <span className="broker-logo-mark">
                 {brokerLogoUrl ? (
@@ -1032,7 +1052,7 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
                       <span className="acc-option-num mono">{account?.accountNumber}</span>
                       <span className={`acc-badge ${account?.accountType === "LIVE" ? "live" : "demo"}`}>{account?.accountType}</span>
                     </div>
-                    <div className="acc-option-balance mono">{account ? money(parseFloat(account.balance)) : ""}</div>
+                    <div className="acc-option-balance mono">{balanceHidden ? "••••••" : account ? money(parseFloat(account.balance)) : ""}</div>
                   </div>
                   <div className="net-pos-detail" style={{ padding: "8px 10px" }}>
                     To trade another account, log out and sign in with its account number.
@@ -1405,7 +1425,7 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
           <div className="watchlist" onContextMenu={(e) => { e.preventDefault(); setWlMenuOpen(true); setWlContextMenu({ x: e.clientX, y: e.clientY }); }}>
             <div className="section-label">Watchlist</div>
             <input className="wl-search mono" placeholder="Search symbol..." value={watchlistFilter} onChange={(e) => setWatchlistFilter(e.target.value)} />
-            <div className="wl-header">
+            <div className="wl-header" style={{ gridTemplateColumns: wlGridTemplate }}>
               <span></span><span>Symbol</span>
               {columnPrefs.signal ? <span>Signal</span> : null}
               <span>Price</span>
@@ -1421,7 +1441,7 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
                 const changePct = ((row.bid - row.dayOpen) / row.dayOpen) * 100;
                 const flash = row.bid > row.prevBid ? "up" : row.bid < row.prevBid ? "down" : "";
                 return (
-                  <div key={name} className={`wl-item${name === activeSymbol ? " active" : ""}`} onClick={() => selectSymbol(name)} onDoubleClick={() => openQuickOrder(name)} {...attachDragHandlers(name)}>
+                  <div key={name} className={`wl-item${name === activeSymbol ? " active" : ""}`} style={{ gridTemplateColumns: wlGridTemplate }} onClick={() => selectSymbol(name)} onDoubleClick={() => openQuickOrder(name)} {...attachDragHandlers(name)}>
                     <span className="wl-drag-handle">⋮⋮</span>
                     <span className="wl-cell wl-symbol">{name}</span>
                     {columnPrefs.signal ? <span className={`wl-cell wl-signal ${row.bid >= row.dayOpen ? "wl-pos" : "wl-neg"}`}>{row.bid >= row.dayOpen ? "▲" : "▼"}</span> : null}
@@ -1462,15 +1482,15 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
 
         <div className="statusbar">
           <div className="statusbar-left">
-            <div className="status-item"><span className="status-label">Balance</span><span className="status-value mono">{account ? fmt(parseFloat(account.balance), 2) : "—"}</span></div>
+            <div className="status-item"><span className="status-label">Balance</span><span className="status-value mono">{balanceHidden ? "••••••" : account ? fmt(parseFloat(account.balance), 2) : "—"}</span></div>
             <div className="status-item">
-              <span className="status-label">Equity</span><span className="status-value mono">{fmt(equity, 2)}</span>
+              <span className="status-label">Equity</span><span className="status-value mono">{balanceHidden ? "••••••" : fmt(equity, 2)}</span>
               <canvas ref={sparklineRef} width={70} height={20} className="equity-spark" />
             </div>
-            <div className="status-item"><span className="status-label">Margin level</span><span className="status-value mono" style={{ color: !isFinite(marginLevel) ? "var(--text-1)" : marginLevel < 100 ? "var(--sell)" : marginLevel < 200 ? "#FAC775" : "var(--buy)" }}>{isFinite(marginLevel) ? marginLevel.toFixed(0) + "%" : "—"}</span></div>
-            <div className="status-item"><span className="status-label">Free margin</span><span className="status-value mono">{fmt(freeMargin, 2)}</span></div>
+            <div className="status-item"><span className="status-label">Margin level</span><span className="status-value mono" style={{ color: !isFinite(marginLevel) ? "var(--text-1)" : marginLevel < 100 ? "var(--sell)" : marginLevel < 200 ? "#FAC775" : "var(--buy)" }}>{balanceHidden ? "••••" : isFinite(marginLevel) ? marginLevel.toFixed(0) + "%" : "—"}</span></div>
+            <div className="status-item"><span className="status-label">Free margin</span><span className="status-value mono">{balanceHidden ? "••••••" : fmt(freeMargin, 2)}</span></div>
           </div>
-          <div className="status-item"><span className="status-label">Open P/L</span><span className="status-value mono" style={{ color: floatingPnl === 0 ? "var(--text-1)" : floatingPnl >= 0 ? "var(--buy)" : "var(--sell)" }}>{(floatingPnl >= 0 ? "+" : "") + floatingPnl.toFixed(2)}</span></div>
+          <div className="status-item"><span className="status-label">Open P/L</span><span className="status-value mono" style={{ color: floatingPnl === 0 ? "var(--text-1)" : floatingPnl >= 0 ? "var(--buy)" : "var(--sell)" }}>{balanceHidden ? "••••" : (floatingPnl >= 0 ? "+" : "") + floatingPnl.toFixed(2)}</span></div>
         </div>
       </div>
 

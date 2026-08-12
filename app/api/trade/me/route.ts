@@ -19,6 +19,7 @@ export async function GET() {
       balance: true,
       credit: true,
       status: true,
+      fullName: true,
     },
   });
 

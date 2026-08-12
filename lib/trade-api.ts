@@ -23,6 +23,7 @@ export type AccountInfo = {
   balance: string;
   credit: string;
   status: string;
+  fullName: string;
 };
 
 export type ApiPosition = {
