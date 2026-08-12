@@ -289,7 +289,13 @@ model LivePrice {
 enum CandleTimeframe {
   M1
   M5
+  M30
   H1
+  H4
+  D1
+  W1
+  MN1
+  Y1
 }
 
 /// Real OHLC history built from the same MT5 EA ticks that feed LivePrice,

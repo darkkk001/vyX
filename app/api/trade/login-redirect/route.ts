@@ -24,6 +24,10 @@ export async function POST(request: NextRequest) {
   const form = await request.formData().catch(() => null);
   const accountNumber = String(form?.get("accountNumber") ?? "").trim();
   const password = String(form?.get("password") ?? "");
+  // Only present in the submitted form data when the checkbox was checked
+  // (standard HTML behavior) — passed through so the desktop app knows
+  // whether to remember this broker for next launch.
+  const remember = form?.get("remember") ? "1" : "0";
 
   const account = await authenticateAccount(brokerId, accountNumber, password);
   if (!account) {
@@ -36,7 +40,7 @@ export async function POST(request: NextRequest) {
     brokerId: account.brokerId,
   });
 
-  const response = NextResponse.redirect(`${origin}/trade`, { status: 303 });
+  const response = NextResponse.redirect(`${origin}/trade?remember=${remember}`, { status: 303 });
   response.cookies.set(ACCOUNT_SESSION_COOKIE_NAME, token, accountSessionCookieOptions());
   return response;
 }

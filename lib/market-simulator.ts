@@ -29,6 +29,9 @@ export const SYMBOL_DEFS: SymbolDef[] = [
   { name: "NAS100", category: "INDICES", digits: 1, base: 18240.0, vol: 5.5, contractSize: 1 },
 ];
 
+export type Timeframe = "M1" | "M5" | "M30" | "H1" | "H4" | "D1" | "W1" | "MN1" | "Y1";
+export const TIMEFRAMES: Timeframe[] = ["M1", "M5", "M30", "H1", "H4", "D1", "W1", "MN1", "Y1"];
+
 export type Candle = { o: number; h: number; l: number; c: number; t: number };
 
 export type MarketState = {
@@ -39,12 +42,53 @@ export type MarketState = {
   dayOpen: number;
   high: number;
   low: number;
-  candles: Record<"M1" | "M5" | "H1", Candle[]>;
-  lastCandleStart: Record<"M1" | "M5" | "H1", number>;
+  candles: Record<Timeframe, Candle[]>;
+  // Unix ms of the current open bucket's start per timeframe — comparing
+  // against a fresh bucketStartMs() each tick is what decides "still the
+  // same bar" vs "start a new one".
+  lastCandleStart: Record<Timeframe, number>;
 };
 
 export function spreadFor(def: SymbolDef): number {
   return def.digits >= 3 ? def.vol * 0.6 : def.base * 0.00006;
+}
+
+// M1..D1 are fixed-duration and bucket cleanly by floor-division. W1/MN1/Y1
+// aren't — weeks don't align to the epoch at a Monday boundary, and
+// months/years vary in length — so those need real calendar math instead
+// of a fixed millisecond divisor. Mirrors lib/price-feed.ts's server-side
+// bucketing exactly, so client-simulated and server-fed candles for the
+// same timeframe always land on the same bucket boundaries.
+const FIXED_MS: Partial<Record<Timeframe, number>> = {
+  M1: 60_000,
+  M5: 300_000,
+  M30: 1_800_000,
+  H1: 3_600_000,
+  H4: 14_400_000,
+  D1: 86_400_000,
+};
+
+// Approximate spacing, only used for spacing the synthetic seed history —
+// calendar timeframes don't have a true fixed length, this just needs to
+// be "roughly right" for that.
+export function tfMillis(tf: Timeframe): number {
+  if (FIXED_MS[tf]) return FIXED_MS[tf]!;
+  if (tf === "W1") return 7 * 86_400_000;
+  if (tf === "MN1") return 30 * 86_400_000;
+  return 365 * 86_400_000; // Y1
+}
+
+function bucketStartMs(tf: Timeframe, now: number): number {
+  const fixed = FIXED_MS[tf];
+  if (fixed) return Math.floor(now / fixed) * fixed;
+
+  const d = new Date(now);
+  if (tf === "W1") {
+    const daysSinceMonday = (d.getUTCDay() + 6) % 7; // getUTCDay: 0=Sun..6=Sat
+    return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - daysSinceMonday);
+  }
+  if (tf === "MN1") return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1);
+  return Date.UTC(d.getUTCFullYear(), 0, 1); // Y1
 }
 
 export function createInitialMarket(): Record<string, MarketState> {
@@ -59,8 +103,8 @@ export function createInitialMarket(): Record<string, MarketState> {
       dayOpen: def.base,
       high: def.base,
       low: def.base,
-      candles: { M1: [], M5: [], H1: [] },
-      lastCandleStart: { M1: 0, M5: 0, H1: 0 },
+      candles: Object.fromEntries(TIMEFRAMES.map((tf) => [tf, []])) as Record<Timeframe, Candle[]>,
+      lastCandleStart: Object.fromEntries(TIMEFRAMES.map((tf) => [tf, 0])) as Record<Timeframe, number>,
     };
   }
   // Seed some initial candle history so charts aren't empty on load. t is a
@@ -74,7 +118,7 @@ export function createInitialMarket(): Record<string, MarketState> {
       m.ask = m.bid + spreadFor(m.def);
       m.high = Math.max(m.high, m.bid);
       m.low = Math.min(m.low, m.bid);
-      (["M1", "M5", "H1"] as const).forEach((tf) => {
+      TIMEFRAMES.forEach((tf) => {
         const candles = m.candles[tf];
         const last = candles[candles.length - 1];
         const every = tf === "M1" ? 1 : tf === "M5" ? 3 : 6;
@@ -92,10 +136,6 @@ export function createInitialMarket(): Record<string, MarketState> {
   return market;
 }
 
-export function tfMillis(tf: "M1" | "M5" | "H1") {
-  return tf === "M1" ? 60_000 : tf === "M5" ? 300_000 : 3_600_000;
-}
-
 function applyBidAsk(m: MarketState, bid: number, ask: number) {
   m.prevBid = m.bid;
   m.bid = bid;
@@ -103,13 +143,12 @@ function applyBidAsk(m: MarketState, bid: number, ask: number) {
   m.high = Math.max(m.high, m.bid);
   m.low = Math.min(m.low, m.bid);
 
-  (["M1", "M5", "H1"] as const).forEach((tf) => {
-    const period = tfMillis(tf);
-    const bucket = Math.floor(Date.now() / period);
+  TIMEFRAMES.forEach((tf) => {
+    const start = bucketStartMs(tf, Date.now());
     const candles = m.candles[tf];
-    if (m.lastCandleStart[tf] !== bucket) {
-      m.lastCandleStart[tf] = bucket;
-      candles.push({ o: m.bid, h: m.bid, l: m.bid, c: m.bid, t: bucket * period });
+    if (m.lastCandleStart[tf] !== start) {
+      m.lastCandleStart[tf] = start;
+      candles.push({ o: m.bid, h: m.bid, l: m.bid, c: m.bid, t: start });
       if (candles.length > 300) candles.shift(); // matches the chart's max zoom-out (chartZoom cap)
     } else if (candles.length) {
       const c = candles[candles.length - 1];

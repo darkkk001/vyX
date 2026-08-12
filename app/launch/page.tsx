@@ -21,9 +21,12 @@ export default function LaunchPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [rootHost, setRootHost] = useState("");
+  const [rememberMe, setRememberMe] = useState(true);
+  const [isDesktop, setIsDesktop] = useState(false);
 
   useEffect(() => {
     setRootHost(window.location.hostname.replace(/^www\./, ""));
+    setIsDesktop(!!window.vyxDesktop?.isDesktop);
     fetch("/api/public/brokers")
       .then((r) => r.json())
       .then((list: PublicBroker[]) => {
@@ -141,6 +144,20 @@ export default function LaunchPage() {
             color: "#e8ecf4",
           }}
         />
+
+        {isDesktop ? (
+          <label style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 12, color: "#8891a6", cursor: "pointer" }}>
+            <input
+              type="checkbox"
+              name="remember"
+              value="1"
+              checked={rememberMe}
+              onChange={(e) => setRememberMe(e.target.checked)}
+              style={{ margin: 0 }}
+            />
+            Remember me on this device
+          </label>
+        ) : null}
 
         {error ? <p style={{ color: "#f0526a", margin: 0, fontSize: 13 }}>{error}</p> : null}
 

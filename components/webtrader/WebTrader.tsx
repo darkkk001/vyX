@@ -6,15 +6,17 @@ import {
   SYMBOL_DEFS,
   createInitialMarket,
   tickMarket,
-  tfMillis,
   fmt,
   money,
   type MarketState,
   type Candle,
+  type Timeframe,
 } from "@/lib/market-simulator";
 import { tradeApi, type AccountInfo, type ApiPosition, type ApiOrder } from "@/lib/trade-api";
 import KLineChartPanel, { type KLineChartHandle, type ChartLine } from "./KLineChartPanel";
 import DesktopTitleBar from "./DesktopTitleBar";
+import SessionClock from "./SessionClock";
+import NewsPanel from "./NewsPanel";
 
 declare global {
   interface Window {
@@ -32,18 +34,17 @@ declare global {
   }
 }
 
-type Timeframe = "1m" | "5m" | "15m" | "1h" | "4h" | "1d";
 const TF_LABELS: { key: Timeframe; label: string }[] = [
-  { key: "1m", label: "1m" },
-  { key: "5m", label: "5m" },
-  { key: "15m", label: "15m" },
-  { key: "1h", label: "1H" },
-  { key: "4h", label: "4H" },
-  { key: "1d", label: "1D" },
+  { key: "M1", label: "1m" },
+  { key: "M5", label: "5m" },
+  { key: "M30", label: "30m" },
+  { key: "H1", label: "1H" },
+  { key: "H4", label: "4H" },
+  { key: "D1", label: "D" },
+  { key: "W1", label: "W" },
+  { key: "MN1", label: "M" },
+  { key: "Y1", label: "Y" },
 ];
-const TF_TO_SIM: Record<Timeframe, "M1" | "M5" | "H1"> = {
-  "1m": "M1", "5m": "M5", "15m": "M5", "1h": "H1", "4h": "H1", "1d": "H1",
-};
 
 type BottomTab = "positions" | "net" | "orders" | "history" | "analytics" | "logs";
 type LogEntry = { id: number; time: string; message: string };
@@ -93,7 +94,7 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
   const [wlMenuOpen, setWlMenuOpen] = useState(false);
 
   const [activeSymbol, setActiveSymbol] = useState("XAUUSD");
-  const [currentTf, setCurrentTf] = useState<Timeframe>("1h");
+  const [currentTf, setCurrentTf] = useState<Timeframe>("H1");
 
   const [account, setAccount] = useState<AccountInfo | null>(null);
   const [positions, setPositions] = useState<ApiPosition[]>([]);
@@ -164,6 +165,8 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
   const [alertsTab, setAlertsTab] = useState<"active" | "history">("active");
 
   const [accountDropdownOpen, setAccountDropdownOpen] = useState(false);
+  const [symbolDropdownOpen, setSymbolDropdownOpen] = useState(false);
+  const [symbolSearch, setSymbolSearch] = useState("");
   const [fundsModalOpen, setFundsModalOpen] = useState(false);
   const [fundsTab, setFundsTab] = useState<"deposit" | "withdraw">("deposit");
   const [fundsAmount, setFundsAmount] = useState("");
@@ -206,7 +209,12 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
 
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const appendLog = useCallback((message: string) => {
-    setLogs((prev) => [{ id: nextId(), time: new Date().toLocaleTimeString(), message }, ...prev].slice(0, 200));
+    const now = new Date();
+    // Explicit HH:MM:SS rather than toLocaleTimeString() — locale defaults
+    // vary (some omit seconds), and execution time down to the second is
+    // the whole point of a trade log.
+    const time = [now.getHours(), now.getMinutes(), now.getSeconds()].map((n) => n.toString().padStart(2, "0")).join(":");
+    setLogs((prev) => [{ id: nextId(), time, message }, ...prev].slice(0, 200));
   }, []);
 
   const equityHistoryRef = useRef<number[]>([]);
@@ -301,9 +309,13 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
 
   // A successful account load means this session is valid on this broker's
   // subdomain — remember it (desktop only) so next launch skips the server
-  // picker and comes straight back here instead.
+  // picker and comes straight back here instead. Skipped when the launcher's
+  // "Remember me" checkbox was unchecked (?remember=0 on the /trade redirect
+  // from /api/trade/login-redirect); defaults to remembering when arriving
+  // any other way (e.g. logging in directly on a broker-specific build).
   useEffect(() => {
-    if (account && window.vyxDesktop?.isDesktop) {
+    const remember = new URLSearchParams(window.location.search).get("remember");
+    if (account && window.vyxDesktop?.isDesktop && remember !== "0") {
       window.vyxDesktop.rememberBroker(window.location.hostname);
     }
   }, [account]);
@@ -357,13 +369,12 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
   // real data to show, nothing to seed.
   useEffect(() => {
     let cancelled = false;
-    const tf = TF_TO_SIM[currentTf];
+    const tf = currentTf;
     (async () => {
       try {
         const rows = await tradeApi.candles(activeSymbol, tf);
         if (cancelled || rows.length === 0) return;
-        const period = tfMillis(tf);
-        const lastBucket = Math.floor(new Date(rows[rows.length - 1].bucketStart).getTime() / period);
+        const lastBucket = new Date(rows[rows.length - 1].bucketStart).getTime();
         setMarket((prev) => {
           const ms = prev[activeSymbol];
           if (!ms) return prev;
@@ -609,7 +620,7 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
         symbol: activeSymbol, side, type: "MARKET", volume, price: refPrice,
         slPrice: sl, tpPrice: tp, idempotencyKey: crypto.randomUUID(),
       });
-      pushToast(`${side === "BUY" ? "Bought" : "Sold"} ${volume} lots of ${activeSymbol}`);
+      pushToast(`${side === "BUY" ? "Bought" : "Sold"} ${volume} lots of ${activeSymbol} @ ${fmt(refPrice, m.def.digits)}`);
       await Promise.all([refreshPositions(), refreshAccount()]);
     } catch (err) {
       pushToast(err instanceof Error ? err.message : "order failed");
@@ -643,12 +654,13 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
 
   async function oneClickTrade(symbolName: string, side: "BUY" | "SELL") {
     const mm = market[symbolName];
+    const ocPrice = side === "BUY" ? mm.ask : mm.bid;
     try {
       await tradeApi.placeOrder({
         symbol: symbolName, side, type: "MARKET", volume,
-        price: side === "BUY" ? mm.ask : mm.bid, idempotencyKey: crypto.randomUUID(),
+        price: ocPrice, idempotencyKey: crypto.randomUUID(),
       });
-      pushToast(`${side === "BUY" ? "Bought" : "Sold"} ${volume} lots of ${symbolName} — one-click`);
+      pushToast(`${side === "BUY" ? "Bought" : "Sold"} ${volume} lots of ${symbolName} @ ${fmt(ocPrice, mm.def.digits)} — one-click`);
       await Promise.all([refreshPositions(), refreshAccount()]);
     } catch (err) {
       pushToast(err instanceof Error ? err.message : "order failed");
@@ -857,7 +869,7 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
     if (error) { pushToast(error); return; }
     try {
       await tradeApi.placeOrder({ symbol: quickOrder.symbol, side, type: "MARKET", volume: vol, price: refPrice, slPrice: sl, tpPrice: tp, idempotencyKey: crypto.randomUUID() });
-      pushToast(`${side === "BUY" ? "Bought" : "Sold"} ${vol} lots of ${quickOrder.symbol}`);
+      pushToast(`${side === "BUY" ? "Bought" : "Sold"} ${vol} lots of ${quickOrder.symbol} @ ${fmt(refPrice, mm.def.digits)}`);
       setQuickOrder(null);
       await Promise.all([refreshPositions(), refreshAccount()]);
     } catch (err) {
@@ -912,7 +924,7 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
   }
 
   // ---------- chart ----------
-  const candles: Candle[] = m.candles[TF_TO_SIM[currentTf]];
+  const candles: Candle[] = m.candles[currentTf];
 
   const chartLines: ChartLine[] = useMemo(() => {
     const lines: ChartLine[] = [];
@@ -974,7 +986,6 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
               <div className="item active">Trade</div>
               <div className="item" onClick={() => pushToast("Portfolio view coming soon")}>Portfolio</div>
               <div className="item" onClick={() => setActiveBottomTab("history")}>History</div>
-              <div className="item" onClick={() => setActiveBottomTab("logs")}>Logs</div>
             </div>
           </div>
           <span className="broker-logo topbar-center">
@@ -986,9 +997,17 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
             </span>
             <span className="broker-logo-text">{brokerName.toUpperCase()}</span>
             <span
-              title={connected ? `Connected — ${serverName}` : "Disconnected"}
-              style={{ width: 7, height: 7, borderRadius: "50%", background: connected ? "var(--buy)" : "var(--sell)", marginLeft: 8, display: "inline-block" }}
-            />
+              title={serverName}
+              style={{
+                display: "inline-flex", alignItems: "center", gap: 5, marginLeft: 10,
+                padding: "2px 8px", borderRadius: 4, fontSize: 10.5, fontWeight: 600,
+                background: connected ? "var(--buy-bg)" : "var(--sell-bg)",
+                color: connected ? "var(--buy)" : "var(--sell)",
+              }}
+            >
+              <span style={{ width: 6, height: 6, borderRadius: "50%", background: "currentColor", flexShrink: 0 }} />
+              {connected ? "Connected" : "Disconnected"}
+            </span>
           </span>
           <div className="topbar-right">
             <span className="trader-name">{balanceHidden ? "••••••" : account?.fullName ?? ""}</span>
@@ -1154,6 +1173,9 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
                 <span className="switch-slider" />
               </label>
             </div>
+
+            <SessionClock />
+            <NewsPanel />
           </div>
 
           <div className="col-resizer" onMouseDown={startResize("order")} />
@@ -1161,8 +1183,36 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
           {/* ---------- CENTER (chart) ---------- */}
           <div className="center">
             <div className="chart-header">
-              <div className="chart-title">
-                <div className="chart-symbol">{activeSymbol}</div>
+              <div className="chart-title" style={{ position: "relative" }}>
+                <div className="chart-symbol" style={{ cursor: "pointer", display: "flex", alignItems: "center", gap: 4 }} onClick={() => { setSymbolDropdownOpen((v) => !v); setSymbolSearch(""); }}>
+                  {activeSymbol}
+                  <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 9l6 6 6-6" /></svg>
+                </div>
+                {symbolDropdownOpen ? (
+                  <div className="account-dropdown show" style={{ top: "100%", left: 0, width: 220 }}>
+                    <input
+                      className="wl-search mono"
+                      autoFocus
+                      placeholder="Search symbol..."
+                      value={symbolSearch}
+                      onChange={(e) => setSymbolSearch(e.target.value)}
+                      style={{ margin: 6, width: "calc(100% - 12px)" }}
+                    />
+                    <div style={{ maxHeight: 260, overflowY: "auto" }}>
+                      {SYMBOL_DEFS.filter((s) => s.name.toLowerCase().includes(symbolSearch.toLowerCase())).map((s) => (
+                        <div
+                          key={s.name}
+                          className={`acc-option${s.name === activeSymbol ? " active" : ""}`}
+                          style={{ cursor: "pointer", padding: "7px 10px" }}
+                          onClick={() => { selectSymbol(s.name); setSymbolDropdownOpen(false); }}
+                        >
+                          <span className="mono">{s.name}</span>
+                          <span className="net-pos-detail" style={{ marginLeft: 8 }}>{s.category}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
                 <div className="chart-price mono" style={{ color: m.bid >= m.prevBid ? "var(--buy)" : "var(--sell)" }}>{fmt(m.bid, m.def.digits)}</div>
                 <div className="chart-change mono" style={{ background: m.bid >= m.dayOpen ? "var(--buy-bg)" : "var(--sell-bg)", color: m.bid >= m.dayOpen ? "var(--buy)" : "var(--sell)" }}>
                   {(((m.bid - m.dayOpen) / m.dayOpen) * 100 >= 0 ? "+" : "") + (((m.bid - m.dayOpen) / m.dayOpen) * 100).toFixed(2)}%
