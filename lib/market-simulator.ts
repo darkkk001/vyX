@@ -103,8 +103,8 @@ export function createInitialMarket(): Record<string, MarketState> {
       dayOpen: def.base,
       high: def.base,
       low: def.base,
-      candles: Object.fromEntries(TIMEFRAMES.map((tf) => [tf, []])) as Record<Timeframe, Candle[]>,
-      lastCandleStart: Object.fromEntries(TIMEFRAMES.map((tf) => [tf, 0])) as Record<Timeframe, number>,
+      candles: TIMEFRAMES.reduce((acc, tf) => { acc[tf] = []; return acc; }, {} as Record<Timeframe, Candle[]>),
+      lastCandleStart: TIMEFRAMES.reduce((acc, tf) => { acc[tf] = 0; return acc; }, {} as Record<Timeframe, number>),
     };
   }
   // Seed some initial candle history so charts aren't empty on load. t is a
