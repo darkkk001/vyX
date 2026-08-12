@@ -6,9 +6,24 @@
 <style>
   html, body { height: 100%; margin: 0; background: #07090C; }
   body {
-    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    display: flex; flex-direction: column;
     font-family: -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
-    color: #e8ecf4; text-align: center; padding: 0 24px;
+    color: #e8ecf4;
+  }
+  .titlebar {
+    -webkit-app-region: drag;
+    height: 32px; flex-shrink: 0; display: flex; align-items: center;
+    background: #0b0e14; border-bottom: 1px solid #1b2130; padding: 0 10px;
+  }
+  .titlebar button {
+    -webkit-app-region: no-drag;
+    width: 32px; height: 32px; margin-left: auto; background: transparent; border: none;
+    color: #8891a6; cursor: pointer; font-size: 14px;
+  }
+  .titlebar button:hover { background: #1b2130; color: #e8ecf4; }
+  .content {
+    flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    text-align: center; padding: 0 24px;
   }
   .mark {
     width: 56px; height: 56px; border-radius: 12px; background: #EA3943;
@@ -17,19 +32,29 @@
   }
   h1 { font-size: 16px; margin: 0 0 6px; }
   p { font-size: 13px; color: #8891a6; margin: 0 0 20px; max-width: 340px; }
-  button {
+  button.retry {
     background: #2f7dfb; border: none; border-radius: 6px; padding: 10px 22px;
     color: white; font-weight: 600; font-size: 13px; cursor: pointer;
   }
-  button:hover { filter: brightness(1.1); }
+  button.retry:hover { filter: brightness(1.1); }
 </style>
 </head>
 <body>
-  <div class="mark">!</div>
-  <h1>Can&apos;t reach the server</h1>
-  <p>Check your internet connection, then try again.</p>
-  <button id="retry">Retry</button>
+  <div class="titlebar">
+    <button id="min" title="Minimize">–</button>
+    <button id="close" title="Close">✕</button>
+  </div>
+  <div class="content">
+    <div class="mark">!</div>
+    <h1>Can&apos;t reach the server</h1>
+    <p>Check your internet connection, then try again.</p>
+    <button class="retry" id="retry">Retry</button>
+  </div>
   <script>
+    if (window.vyxDesktop) {
+      document.getElementById("min").onclick = window.vyxDesktop.minimize;
+      document.getElementById("close").onclick = window.vyxDesktop.close;
+    }
     var params = new URLSearchParams(location.search);
     var target = params.get("url") || "";
     document.getElementById("retry").onclick = function () {

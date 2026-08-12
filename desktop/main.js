@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, shell, Tray, session } = require("electron");
+const { app, BrowserWindow, Menu, shell, Tray, session, ipcMain } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const windowStateKeeper = require("electron-window-state");
@@ -10,7 +10,8 @@ const config = JSON.parse(fs.readFileSync(path.join(__dirname, "broker.config.js
 // which then sends them on to that specific broker's own login. "broker"
 // mode skips straight to one broker's WebTrader.
 const isLauncher = config.mode === "launcher";
-const remoteUrl = `https://${config.subdomain}${isLauncher ? "/launch" : "/trade"}`;
+const launchUrl = `https://${config.subdomain}/launch`;
+const brokerUrl = `https://${config.subdomain}/trade`;
 // In launcher mode navigation must be allowed to roam across broker
 // subdomains (that's the whole point); in broker mode it stays locked to
 // that one broker's own subdomain.
@@ -19,7 +20,44 @@ const iconPath = path.join(__dirname, "build", "icon.ico");
 const loadingPath = path.join(__dirname, "screens", "loading.html");
 const offlinePath = path.join(__dirname, "screens", "offline.html");
 
-// No default Electron menu — this is a trading terminal, not a browser.
+// Which broker subdomain to reopen straight to next launch, remembered so
+// the trader isn't back at the server picker every time — the actual
+// "still logged in" part comes from the session cookie persisting on its
+// own (Electron's default session is disk-backed), this only decides which
+// URL to point at. Only meaningful in launcher mode; a broker-specific
+// build always has exactly one broker anyway.
+const rememberedBrokerPath = path.join(app.getPath("userData"), "remembered-broker.json");
+function getRememberedBroker() {
+  try {
+    return JSON.parse(fs.readFileSync(rememberedBrokerPath, "utf-8")).hostname || null;
+  } catch {
+    return null;
+  }
+}
+function setRememberedBroker(hostname) {
+  try {
+    fs.writeFileSync(rememberedBrokerPath, JSON.stringify({ hostname }));
+  } catch {
+    // non-fatal — worst case the picker shows again next launch
+  }
+}
+function clearRememberedBroker() {
+  try {
+    fs.unlinkSync(rememberedBrokerPath);
+  } catch {
+    // already gone
+  }
+}
+
+function startUrlFor() {
+  if (!isLauncher) return brokerUrl;
+  const remembered = getRememberedBroker();
+  return remembered ? `https://${remembered}/trade` : launchUrl;
+}
+
+// No default Electron menu — this is a trading terminal, not a browser,
+// and the window has its own custom title bar (see below) rendered by
+// WebTrader itself when window.vyxDesktop.isDesktop is set.
 Menu.setApplicationMenu(null);
 
 let mainWindow = null;
@@ -39,6 +77,7 @@ function createWindow() {
     title: config.brokerName,
     backgroundColor: "#07090C",
     icon: iconPath,
+    frame: false,
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -50,23 +89,21 @@ function createWindow() {
   mainWindow = win;
 
   win.once("ready-to-show", () => win.show());
-
-  // The web app's own <title> ("VyXTrader" or whatever it renders) would
-  // otherwise overwrite this window's title on every navigation; keep it on
-  // the broker's configured name instead.
   win.on("page-title-updated", (event) => event.preventDefault());
+  win.on("maximize", () => win.webContents.send("win:maximized-changed", true));
+  win.on("unmaximize", () => win.webContents.send("win:maximized-changed", false));
 
   // Splash first (instant, local), then swap to the real remote page —
   // otherwise a slow/unreachable connection just leaves a blank white
   // window with no feedback.
   win.loadFile(loadingPath);
-  const swapToRemote = setTimeout(() => win.loadURL(remoteUrl), 350);
+  const swapToRemote = setTimeout(() => win.loadURL(startUrlFor()), 350);
   win.once("close", () => clearTimeout(swapToRemote));
 
   win.webContents.on("did-fail-load", (_event, _code, _desc, failedUrl, isMainFrame) => {
     if (!isMainFrame) return;
     if (failedUrl.startsWith("file://")) return; // the offline page itself failing — don't loop
-    win.loadFile(offlinePath, { query: { url: remoteUrl } });
+    win.loadFile(offlinePath, { query: { url: startUrlFor() } });
   });
 
   // Keep the terminal on the broker's own domain (or, in launcher mode, any
@@ -98,6 +135,18 @@ function createWindow() {
     }
   });
 }
+
+ipcMain.on("win:minimize", () => mainWindow?.minimize());
+ipcMain.on("win:toggle-maximize", () => {
+  if (!mainWindow) return;
+  if (mainWindow.isMaximized()) mainWindow.unmaximize();
+  else mainWindow.maximize();
+});
+ipcMain.on("win:close", () => mainWindow?.close());
+ipcMain.on("auth:remember-broker", (_event, hostname) => {
+  if (typeof hostname === "string" && hostname) setRememberedBroker(hostname);
+});
+ipcMain.on("auth:forget-broker", () => clearRememberedBroker());
 
 function createTray() {
   tray = new Tray(iconPath);

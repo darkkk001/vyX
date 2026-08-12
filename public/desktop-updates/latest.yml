@@ -1,8 +1,8 @@
-version: 0.1.0
+version: 0.2.0
 files:
-  - url: VyXTrader Setup 0.1.0.exe
-    sha512: 2F4A2ZLSBaI/jtd+aW6XlwuiZQmTxd745NRc+DJ+8WkxqnF8nFgFo4zwKmekxWhRSLvuiog3UpXdXdPp+kLcnQ==
-    size: 82042807
-path: VyXTrader Setup 0.1.0.exe
-sha512: 2F4A2ZLSBaI/jtd+aW6XlwuiZQmTxd745NRc+DJ+8WkxqnF8nFgFo4zwKmekxWhRSLvuiog3UpXdXdPp+kLcnQ==
-releaseDate: '2026-08-12T17:45:29.711Z'
+  - url: VyXTrader Setup 0.2.0.exe
+    sha512: zwQy3zVKTHUH7QD0N55HbP8fRQxFQsmEI8tIaBU7xdRJlDFS8sbRbpdezAXM9bQGrxOVX5sAUtMC8CegPwBpSQ==
+    size: 82043792
+path: VyXTrader Setup 0.2.0.exe
+sha512: zwQy3zVKTHUH7QD0N55HbP8fRQxFQsmEI8tIaBU7xdRJlDFS8sbRbpdezAXM9bQGrxOVX5sAUtMC8CegPwBpSQ==
+releaseDate: '2026-08-12T18:18:30.758Z'

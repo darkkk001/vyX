@@ -1,6 +1,6 @@
 {
   "name": "vyxtrader-desktop",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Native Windows wrapper around a broker's VyXTrader WebTrader — same app, rebranded per broker via broker.config.json + build/icon.ico.",
   "author": "BigFish Technologies LLC",

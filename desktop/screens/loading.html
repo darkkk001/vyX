@@ -6,9 +6,23 @@
 <style>
   html, body { height: 100%; margin: 0; background: #07090C; }
   body {
-    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    display: flex; flex-direction: column;
     font-family: -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
     color: #e8ecf4;
+  }
+  .titlebar {
+    -webkit-app-region: drag;
+    height: 32px; flex-shrink: 0; display: flex; align-items: center;
+    background: #0b0e14; border-bottom: 1px solid #1b2130; padding: 0 10px;
+  }
+  .titlebar button {
+    -webkit-app-region: no-drag;
+    width: 32px; height: 32px; margin-left: auto; background: transparent; border: none;
+    color: #8891a6; cursor: pointer; font-size: 14px;
+  }
+  .titlebar button:hover { background: #1b2130; color: #e8ecf4; }
+  .content {
+    flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
   }
   .mark {
     width: 56px; height: 56px; border-radius: 12px; background: #16C784;
@@ -25,8 +39,20 @@
 </style>
 </head>
 <body>
-  <div class="mark">V</div>
-  <div class="spinner"></div>
-  <p style="margin-top:12px;">Connecting…</p>
+  <div class="titlebar">
+    <button id="min" title="Minimize">–</button>
+    <button id="close" title="Close">✕</button>
+  </div>
+  <div class="content">
+    <div class="mark">V</div>
+    <div class="spinner"></div>
+    <p style="margin-top:12px;">Connecting…</p>
+  </div>
+  <script>
+    if (window.vyxDesktop) {
+      document.getElementById("min").onclick = window.vyxDesktop.minimize;
+      document.getElementById("close").onclick = window.vyxDesktop.close;
+    }
+  </script>
 </body>
 </html>

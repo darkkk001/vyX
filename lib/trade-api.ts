@@ -106,4 +106,6 @@ export const tradeApi = {
   login: (accountNumber: string, password: string) =>
     call("/api/trade/login", { method: "POST", body: JSON.stringify({ accountNumber, password }) }),
   logout: () => call("/api/trade/logout", { method: "POST" }),
+  changePassword: (currentPassword: string, newPassword: string) =>
+    call("/api/trade/change-password", { method: "POST", body: JSON.stringify({ currentPassword, newPassword }) }),
 };

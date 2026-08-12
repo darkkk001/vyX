@@ -14,12 +14,21 @@ import {
 } from "@/lib/market-simulator";
 import { tradeApi, type AccountInfo, type ApiPosition, type ApiOrder } from "@/lib/trade-api";
 import KLineChartPanel, { type KLineChartHandle, type ChartLine } from "./KLineChartPanel";
+import DesktopTitleBar from "./DesktopTitleBar";
 
 declare global {
   interface Window {
     // Exposed by desktop/preload.js only when running inside the Electron
     // shell — absent in a normal browser tab.
-    vyxDesktop?: { isDesktop: true };
+    vyxDesktop?: {
+      isDesktop: true;
+      minimize: () => void;
+      toggleMaximize: () => void;
+      close: () => void;
+      onMaximizedChange: (cb: (isMaximized: boolean) => void) => () => void;
+      rememberBroker: (hostname: string) => void;
+      forgetBroker: () => void;
+    };
   }
 }
 
@@ -36,7 +45,8 @@ const TF_TO_SIM: Record<Timeframe, "M1" | "M5" | "H1"> = {
   "1m": "M1", "5m": "M5", "15m": "M5", "1h": "H1", "4h": "H1", "1d": "H1",
 };
 
-type BottomTab = "positions" | "net" | "orders" | "history" | "analytics";
+type BottomTab = "positions" | "net" | "orders" | "history" | "analytics" | "logs";
+type LogEntry = { id: number; time: string; message: string };
 type OrderMode = "market" | "pending";
 type PendingType = "buy_limit" | "sell_limit" | "buy_stop" | "sell_stop";
 type Toast = { id: number; message: string };
@@ -183,9 +193,21 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
   const chartRef = useRef<KLineChartHandle>(null);
   const [maActive, setMaActive] = useState(false);
 
+  const [changePasswordOpen, setChangePasswordOpen] = useState(false);
+  const [cpCurrent, setCpCurrent] = useState("");
+  const [cpNew, setCpNew] = useState("");
+  const [cpConfirm, setCpConfirm] = useState("");
+  const [cpError, setCpError] = useState<string | null>(null);
+  const [cpSubmitting, setCpSubmitting] = useState(false);
+
   const [toasts, setToasts] = useState<Toast[]>([]);
   const closingIds = useRef<Set<string>>(new Set());
   const fillingIds = useRef<Set<string>>(new Set());
+
+  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const appendLog = useCallback((message: string) => {
+    setLogs((prev) => [{ id: nextId(), time: new Date().toLocaleTimeString(), message }, ...prev].slice(0, 200));
+  }, []);
 
   const equityHistoryRef = useRef<number[]>([]);
   const sparklineRef = useRef<HTMLCanvasElement>(null);
@@ -199,6 +221,7 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
     const id = nextId();
     setToasts((prev) => [...prev, { id, message }]);
     setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 2200);
+    appendLog(message);
     if (important && typeof window !== "undefined" && window.vyxDesktop?.isDesktop && "Notification" in window) {
       try {
         new Notification("VyXTrader", { body: message });
@@ -206,7 +229,7 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
         // ignore — notification permission or platform quirk, toast already shown
       }
     }
-  }, []);
+  }, [appendLog]);
 
   const askPrompt = useCallback((message: string, defaultValue: string, onSubmit: (value: string) => void) => {
     setGenericModalValue(defaultValue);
@@ -227,6 +250,43 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
     setHistory(await tradeApi.history({ from: histFrom, to: histTo, symbol: histSymbol }).catch(() => []));
   }, [histFrom, histTo, histSymbol]);
 
+  // "Switch account" — log out, then either back to the root-domain server
+  // picker (desktop, so a different broker can be picked) or this broker's
+  // own login page (plain web tab).
+  async function handleLogout() {
+    try {
+      await tradeApi.logout();
+    } catch {
+      // session cookie clears server-side regardless; proceed to navigate away
+    }
+    if (window.vyxDesktop?.isDesktop) {
+      window.vyxDesktop.forgetBroker();
+      const parts = window.location.hostname.split(".");
+      const root = parts.length > 2 ? parts.slice(1).join(".") : window.location.hostname;
+      window.location.href = `https://${root}/launch`;
+    } else {
+      window.location.href = "/trade/login";
+    }
+  }
+
+  async function handleChangePassword(event: React.FormEvent) {
+    event.preventDefault();
+    setCpError(null);
+    if (cpNew.length < 8) { setCpError("New password must be at least 8 characters"); return; }
+    if (cpNew !== cpConfirm) { setCpError("New passwords don't match"); return; }
+    setCpSubmitting(true);
+    try {
+      await tradeApi.changePassword(cpCurrent, cpNew);
+      pushToast("Password changed");
+      setChangePasswordOpen(false);
+      setCpCurrent(""); setCpNew(""); setCpConfirm("");
+    } catch (err) {
+      setCpError(err instanceof Error ? err.message : "failed to change password");
+    } finally {
+      setCpSubmitting(false);
+    }
+  }
+
   useEffect(() => {
     (async () => {
       try {
@@ -239,6 +299,15 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
   }, []);
   useEffect(() => { refreshHistory(); }, [refreshHistory]);
 
+  // A successful account load means this session is valid on this broker's
+  // subdomain — remember it (desktop only) so next launch skips the server
+  // picker and comes straight back here instead.
+  useEffect(() => {
+    if (account && window.vyxDesktop?.isDesktop) {
+      window.vyxDesktop.rememberBroker(window.location.hostname);
+    }
+  }, [account]);
+
   // ---------- price tick ----------
   const liveTicksRef = useRef<Record<string, { bid: number; ask: number }>>({});
   useEffect(() => {
@@ -248,8 +317,14 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
 
   // Polls the MT5 EA bridge feed (see /api/internal/price-feed) so real
   // ticks blend into the tick loop above without restarting its interval.
+  // Doubles as the connection-status signal (see DesktopTitleBar / topbar
+  // indicator) — a thrown fetch means the server itself is unreachable,
+  // which is distinct from (and rarer than) an individual symbol just
+  // having no live tick from the EA.
+  const [connected, setConnected] = useState(true);
   useEffect(() => {
     let cancelled = false;
+    let wasConnected = true;
     async function poll() {
       try {
         const rows = await tradeApi.prices();
@@ -263,14 +338,18 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
           next[row.symbol] = { bid: parseFloat(row.bid), ask: parseFloat(row.ask) };
         }
         liveTicksRef.current = next;
+        if (!wasConnected) { appendLog("Connection restored"); wasConnected = true; }
+        setConnected(true);
       } catch {
         // feed unreachable — keep simulating, nothing to surface to the trader
+        if (wasConnected) { appendLog("Connection lost"); wasConnected = false; }
+        setConnected(false);
       }
     }
     poll();
     const interval = setInterval(poll, 2000);
     return () => { cancelled = true; clearInterval(interval); };
-  }, []);
+  }, [appendLog]);
 
   // Seeds real OHLC history (see /api/trade/candles) into the active
   // symbol+timeframe on selection, replacing the synthetic seed. A symbol
@@ -879,8 +958,11 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
     netBySymbol.set(p.symbol.name, entry);
   });
 
+  const serverName = account ? `${brokerName}-${account.accountType === "LIVE" ? "Live" : "Demo"}` : brokerName;
+
   return (
     <div className="wt-root">
+      <DesktopTitleBar brokerName={brokerName} server={serverName} connected={connected} />
       <div id="app">
         <div className={`margin-call-banner${marginCall ? " show" : ""}`}>
           Margin call — your margin level is below 100%. Deposit funds or close positions to avoid stop-out.
@@ -892,6 +974,7 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
               <div className="item active">Trade</div>
               <div className="item" onClick={() => pushToast("Portfolio view coming soon")}>Portfolio</div>
               <div className="item" onClick={() => setActiveBottomTab("history")}>History</div>
+              <div className="item" onClick={() => setActiveBottomTab("logs")}>Logs</div>
             </div>
           </div>
           <span className="broker-logo topbar-center">
@@ -902,6 +985,10 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
               ) : brokerName.charAt(0).toUpperCase()}
             </span>
             <span className="broker-logo-text">{brokerName.toUpperCase()}</span>
+            <span
+              title={connected ? `Connected — ${serverName}` : "Disconnected"}
+              style={{ width: 7, height: 7, borderRadius: "50%", background: connected ? "var(--buy)" : "var(--sell)", marginLeft: 8, display: "inline-block" }}
+            />
           </span>
           <div className="topbar-right">
             <span className="trader-name">{balanceHidden ? "••••••" : account?.fullName ?? ""}</span>
@@ -929,6 +1016,22 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
                   </div>
                   <div className="net-pos-detail" style={{ padding: "8px 10px" }}>
                     To trade another account, log out and sign in with its account number.
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", borderTop: "1px solid var(--border)" }}>
+                    <button
+                      className="wl-ctx-item"
+                      style={{ background: "transparent", border: "none", textAlign: "left", width: "100%", cursor: "pointer", color: "var(--text-2)" }}
+                      onClick={() => { setAccountDropdownOpen(false); setChangePasswordOpen(true); }}
+                    >
+                      Change password
+                    </button>
+                    <button
+                      className="wl-ctx-item"
+                      style={{ background: "transparent", border: "none", textAlign: "left", width: "100%", cursor: "pointer", color: "var(--sell)" }}
+                      onClick={handleLogout}
+                    >
+                      Log out
+                    </button>
                   </div>
                 </div>
               ) : null}
@@ -1133,6 +1236,7 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
                   <div className={`tab${activeBottomTab === "orders" ? " active" : ""}`} onClick={() => setActiveBottomTab("orders")}>Orders ({pendingOrders.length})</div>
                   <div className={`tab${activeBottomTab === "history" ? " active" : ""}`} onClick={() => setActiveBottomTab("history")}>History</div>
                   <div className={`tab${activeBottomTab === "analytics" ? " active" : ""}`} onClick={() => setActiveBottomTab("analytics")}>Analytics</div>
+                  <div className={`tab${activeBottomTab === "logs" ? " active" : ""}`} onClick={() => setActiveBottomTab("logs")}>Logs</div>
                 </div>
                 {activeBottomTab === "positions" ? (
                   <div className="bulk-actions">
@@ -1298,6 +1402,21 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
               {activeBottomTab === "analytics" ? (
                 <div className="panel-body">
                   <AnalyticsGrid trades={history} />
+                </div>
+              ) : null}
+
+              {activeBottomTab === "logs" ? (
+                <div className="panel-body">
+                  {logs.length === 0 ? (
+                    <div className="net-pos-detail" style={{ padding: "12px 4px" }}>No events yet.</div>
+                  ) : (
+                    logs.map((l) => (
+                      <div key={l.id} className="mono" style={{ display: "flex", gap: 10, padding: "5px 4px", fontSize: 11, borderBottom: "1px solid var(--border)", color: "var(--text-2)" }}>
+                        <span style={{ color: "var(--text-3)", flexShrink: 0 }}>{l.time}</span>
+                        <span>{l.message}</span>
+                      </div>
+                    ))
+                  )}
                 </div>
               ) : null}
             </div>
@@ -1470,6 +1589,50 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
                 <button className="modal-btn primary" onClick={() => { genericModal.onConfirm(genericModal.showInput ? genericModalValue : ""); setGenericModal(null); }}>{genericModal.okLabel}</button>
               </div>
             </div>
+          </div>
+        </div>
+      ) : null}
+
+      {/* ---------- Change password modal ---------- */}
+      {changePasswordOpen ? (
+        <div className="modal-overlay show" onClick={(e) => { if (e.target === e.currentTarget) setChangePasswordOpen(false); }}>
+          <div className="modal-wrap">
+            <button className="modal-close" onClick={() => setChangePasswordOpen(false)}>✕</button>
+            <form className="generic-modal-card" onSubmit={handleChangePassword}>
+              <div className="generic-modal-title">Change password</div>
+              <input
+                className="generic-modal-input mono"
+                type="password"
+                placeholder="Current password"
+                autoFocus
+                value={cpCurrent}
+                onChange={(e) => setCpCurrent(e.target.value)}
+                required
+                style={{ marginBottom: 8 }}
+              />
+              <input
+                className="generic-modal-input mono"
+                type="password"
+                placeholder="New password (min. 8 characters)"
+                value={cpNew}
+                onChange={(e) => setCpNew(e.target.value)}
+                required
+                style={{ marginBottom: 8 }}
+              />
+              <input
+                className="generic-modal-input mono"
+                type="password"
+                placeholder="Confirm new password"
+                value={cpConfirm}
+                onChange={(e) => setCpConfirm(e.target.value)}
+                required
+              />
+              {cpError ? <p style={{ color: "var(--sell)", fontSize: 12, margin: "8px 0 0" }}>{cpError}</p> : null}
+              <div className="modal-actions" style={{ marginTop: 16 }}>
+                <button type="button" className="modal-btn secondary" onClick={() => setChangePasswordOpen(false)}>Cancel</button>
+                <button type="submit" className="modal-btn primary" disabled={cpSubmitting}>{cpSubmitting ? "Saving…" : "Save"}</button>
+              </div>
+            </form>
           </div>
         </div>
       ) : null}

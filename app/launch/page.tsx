@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import DesktopTitleBar from "@/components/webtrader/DesktopTitleBar";
 
 type PublicBroker = { name: string; subdomain: string; logoUrl: string | null };
 
@@ -50,12 +51,15 @@ export default function LaunchPage() {
   }
 
   return (
-    <main
-      style={{
-        minHeight: "100vh",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
+    <div style={{ height: "100vh", display: "flex", flexDirection: "column" }}>
+      <DesktopTitleBar brokerName="VyXTrader" server="" connected={true} />
+      <main
+        style={{
+          flex: 1,
+          minHeight: 0,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
         background: "#0b0e14",
         color: "#e8ecf4",
         fontFamily: "-apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif",
@@ -156,6 +160,7 @@ export default function LaunchPage() {
           Sign in
         </button>
       </form>
-    </main>
+      </main>
+    </div>
   );
 }

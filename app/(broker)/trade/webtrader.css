@@ -34,12 +34,17 @@
   height: 100vh;
   overflow: hidden;
   -webkit-font-smoothing: antialiased;
+  display: flex;
+  flex-direction: column;
 }
 
 .wt-root .mono { font-family: 'JetBrains Mono', ui-monospace, monospace; }
 
-/* ---------- APP SHELL ---------- */
-#app { display: flex; flex-direction: column; height: 100vh; }
+/* ---------- APP SHELL ----------
+   flex: 1 (not a fixed 100vh) so the desktop title bar — a sibling before
+   #app, rendered only inside the Electron shell — gets to claim its own
+   space instead of #app's fixed height pushing content past the viewport. */
+#app { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 
 /* ---------- TOPBAR ---------- */
 .topbar {
