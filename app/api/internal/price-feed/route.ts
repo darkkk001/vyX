@@ -13,18 +13,16 @@ import { prisma } from "@/lib/prisma";
 
 type Tick = { symbol: string; bid: number; ask: number };
 
-export async function POST(request: NextRequest) {
-  const secret = process.env.PRICE_FEED_SECRET;
-  if (!secret) {
+async function ingestTicks(secret: string | null, ticksRaw: unknown) {
+  const configuredSecret = process.env.PRICE_FEED_SECRET;
+  if (!configuredSecret) {
     return NextResponse.json({ error: "price feed not configured" }, { status: 503 });
   }
-  const auth = request.headers.get("authorization");
-  if (auth !== `Bearer ${secret}`) {
+  if (secret !== configuredSecret) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
 
-  const body = await request.json().catch(() => null);
-  const ticks: Tick[] = Array.isArray(body) ? body : body ? [body] : [];
+  const ticks: Tick[] = Array.isArray(ticksRaw) ? ticksRaw : ticksRaw ? [ticksRaw as Tick] : [];
   const valid = ticks.filter(
     (t) => typeof t?.symbol === "string" && Number.isFinite(t.bid) && Number.isFinite(t.ask)
   );
@@ -43,4 +41,31 @@ export async function POST(request: NextRequest) {
   );
 
   return NextResponse.json({ ok: true, count: valid.length });
+}
+
+export async function POST(request: NextRequest) {
+  const auth = request.headers.get("authorization");
+  const secret = auth?.startsWith("Bearer ") ? auth.slice(7) : null;
+  const body = await request.json().catch(() => null);
+  return ingestTicks(secret, body);
+}
+
+// Fallback transport: some network paths between broker MT5 terminals and
+// Vercel (ISP/AV transparent proxies) silently downgrade POST to GET,
+// dropping the body — observed in production via Vercel's request log
+// showing a GET arriving for what the EA sent as POST. GET with the ticks
+// URL-encoded in the query string survives those paths.
+export async function GET(request: NextRequest) {
+  const { searchParams } = new URL(request.url);
+  const secret = searchParams.get("secret");
+  const data = searchParams.get("data");
+  let ticksRaw: unknown = null;
+  if (data) {
+    try {
+      ticksRaw = JSON.parse(data);
+    } catch {
+      ticksRaw = null;
+    }
+  }
+  return ingestTicks(secret, ticksRaw);
 }

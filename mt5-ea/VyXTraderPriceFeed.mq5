@@ -32,6 +32,22 @@ void OnDeinit(const int reason)
    EventKillTimer();
 }
 
+string UrlEncode(string str)
+{
+   string unreserved = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.~";
+   string result = "";
+   int len = StringLen(str);
+   for (int i = 0; i < len; i++)
+   {
+      string c = StringSubstr(str, i, 1);
+      if (StringFind(unreserved, c) >= 0)
+         result += c;
+      else
+         result += StringFormat("%%%02X", StringGetCharacter(str, i));
+   }
+   return result;
+}
+
 void OnTimer()
 {
    string json = "[";
@@ -49,16 +65,18 @@ void OnTimer()
    json += "]";
    if (first) return; // nothing resolved, don't push an empty array
 
-   uchar postData[];
-   int dataLength = StringToCharArray(json, postData, 0, StringLen(json), CP_UTF8) - 1;
-   ArrayResize(postData, dataLength);
+   // Sent as a GET with the payload URL-encoded in the query string — some
+   // network paths between broker MT5 terminals and the server silently
+   // downgrade POST to GET and drop the body, so GET is the transport that
+   // actually survives (confirmed via the server's own request log).
+   string url = ServerUrl + "?secret=" + UrlEncode(ApiSecret) + "&data=" + UrlEncode(json);
 
+   uchar noData[];
    uchar result[];
    string resultHeaders;
-   string headers = "Content-Type: application/json\r\nAuthorization: Bearer " + ApiSecret + "\r\n";
 
    ResetLastError();
-   int res = WebRequest("POST", ServerUrl, headers, 5000, postData, result, resultHeaders);
+   int res = WebRequest("GET", url, "", 5000, noData, result, resultHeaders);
    if (res == -1)
    {
       int err = GetLastError();
