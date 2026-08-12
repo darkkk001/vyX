@@ -63,7 +63,10 @@ export function createInitialMarket(): Record<string, MarketState> {
       lastCandleStart: { M1: 0, M5: 0, H1: 0 },
     };
   }
-  // Seed some initial candle history so charts aren't empty on load.
+  // Seed some initial candle history so charts aren't empty on load. t is a
+  // real (if fake-spaced) Unix ms timestamp, same as live-ticked candles,
+  // since the chart library renders the time axis from it directly.
+  const seedNow = Date.now();
   for (let i = 0; i < 80; i++) {
     for (const m of Object.values(market)) {
       const drift = (Math.random() - 0.5) * m.def.vol;
@@ -75,8 +78,9 @@ export function createInitialMarket(): Record<string, MarketState> {
         const candles = m.candles[tf];
         const last = candles[candles.length - 1];
         const every = tf === "M1" ? 1 : tf === "M5" ? 3 : 6;
+        const t = seedNow - (79 - i) * tfMillis(tf);
         if (!last || i % every === 0) {
-          candles.push({ o: m.bid, h: m.bid, l: m.bid, c: m.bid, t: i });
+          candles.push({ o: m.bid, h: m.bid, l: m.bid, c: m.bid, t });
         } else {
           last.h = Math.max(last.h, m.bid);
           last.l = Math.min(last.l, m.bid);
@@ -105,7 +109,7 @@ function applyBidAsk(m: MarketState, bid: number, ask: number) {
     const candles = m.candles[tf];
     if (m.lastCandleStart[tf] !== bucket) {
       m.lastCandleStart[tf] = bucket;
-      candles.push({ o: m.bid, h: m.bid, l: m.bid, c: m.bid, t: bucket });
+      candles.push({ o: m.bid, h: m.bid, l: m.bid, c: m.bid, t: bucket * period });
       if (candles.length > 300) candles.shift(); // matches the chart's max zoom-out (chartZoom cap)
     } else if (candles.length) {
       const c = candles[candles.length - 1];

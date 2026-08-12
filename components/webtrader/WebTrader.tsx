@@ -13,6 +13,7 @@ import {
   type Candle,
 } from "@/lib/market-simulator";
 import { tradeApi, type AccountInfo, type ApiPosition, type ApiOrder } from "@/lib/trade-api";
+import KLineChartPanel, { type KLineChartHandle, type ChartLine } from "./KLineChartPanel";
 
 type Timeframe = "1m" | "5m" | "15m" | "1h" | "4h" | "1d";
 const TF_LABELS: { key: Timeframe; label: string }[] = [
@@ -32,11 +33,6 @@ type OrderMode = "market" | "pending";
 type PendingType = "buy_limit" | "sell_limit" | "buy_stop" | "sell_stop";
 type Toast = { id: number; message: string };
 type Alert = { id: number; symbol: string; condition: "above" | "below"; price: number; triggered: boolean; time?: string };
-type Drawing =
-  | { type: "hline"; price: number }
-  | { type: "trendline"; startIdx: number; startPrice: number; endIdx: number; endPrice: number }
-  | { type: "text"; idx: number; price: number; text: string };
-type DrawTool = "cursor" | "trendline" | "hline" | "text";
 
 let idCounter = 1;
 function nextId() {
@@ -176,24 +172,13 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
 
   const [wlContextMenu, setWlContextMenu] = useState<{ x: number; y: number } | null>(null);
   const [chartContextMenu, setChartContextMenu] = useState<{ x: number; y: number; price: number } | null>(null);
-
-  const [activeDrawTool, setActiveDrawTool] = useState<DrawTool>("cursor");
-  const drawingsRef = useRef<Record<string, Drawing[]>>({});
-  const [, forceDrawingsRerender] = useState(0);
-  const drawingInProgressRef = useRef<{ startX: number; startY: number; endX: number; endY: number } | null>(null);
-  const crosshairRef = useRef<{ x: number; y: number } | null>(null);
-  const draggingLineRef = useRef<null | { kind: "pos"; id: string; field: "sl" | "tp"; price: number; originalPrice: number }>(null);
-  const [chartViewOffset, setChartViewOffset] = useState(0);
-  const [chartZoom, setChartZoom] = useState(80); // visible candle count; smaller = zoomed in
-  const panDragRef = useRef<null | { startX: number; startOffset: number }>(null);
-  useEffect(() => { setChartViewOffset(0); }, [activeSymbol, currentTf]);
+  const chartRef = useRef<KLineChartHandle>(null);
+  const [maActive, setMaActive] = useState(false);
 
   const [toasts, setToasts] = useState<Toast[]>([]);
   const closingIds = useRef<Set<string>>(new Set());
   const fillingIds = useRef<Set<string>>(new Set());
 
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const chartScaleRef = useRef<{ min: number; max: number; range: number; leftPad: number; rightPad: number; topPad: number; chartH: number; chartW: number; candleW: number; rightAlignOffset: number } | null>(null);
   const equityHistoryRef = useRef<number[]>([]);
   const sparklineRef = useRef<HTMLCanvasElement>(null);
 
@@ -294,7 +279,7 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
                   h: parseFloat(r.high),
                   l: parseFloat(r.low),
                   c: parseFloat(r.close),
-                  t: Math.floor(new Date(r.bucketStart).getTime() / period),
+                  t: new Date(r.bucketStart).getTime(),
                 })),
               },
               lastCandleStart: { ...ms.lastCandleStart, [tf]: lastBucket },
@@ -818,342 +803,36 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
     };
   }
 
-  // ---------- chart draw ----------
+  // ---------- chart ----------
   const candles: Candle[] = m.candles[TF_TO_SIM[currentTf]];
 
-  const drawChart = useCallback(() => {
-    const canvas = canvasRef.current;
-    const wrap = canvas?.parentElement;
-    if (!canvas || !wrap) return;
-    const dpr = window.devicePixelRatio || 1;
-    const w = wrap.clientWidth, h = wrap.clientHeight;
-    canvas.width = w * dpr; canvas.height = h * dpr;
-    canvas.style.width = w + "px"; canvas.style.height = h + "px";
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, w, h);
-    ctx.font = "10px JetBrains Mono, monospace";
+  const chartLines: ChartLine[] = useMemo(() => {
+    const lines: ChartLine[] = [];
+    positions
+      .filter((p) => p.symbol.name === activeSymbol)
+      .forEach((p) => {
+        lines.push({ id: `pos-${p.id}`, price: parseFloat(p.openPrice), color: p.side === "BUY" ? "#16C784" : "#EA3943" });
+        if (p.slPrice) lines.push({ id: `pos-${p.id}-sl`, price: parseFloat(p.slPrice), color: "#EA3943", dashed: true });
+        if (p.tpPrice) lines.push({ id: `pos-${p.id}-tp`, price: parseFloat(p.tpPrice), color: "#16C784", dashed: true });
+      });
+    pendingOrders
+      .filter((o) => o.symbol.name === activeSymbol)
+      .forEach((o) => {
+        if (!o.requestedPrice) return;
+        const color = o.side === "BUY" ? "#16C784" : "#EA3943";
+        lines.push({ id: `ord-${o.id}`, price: parseFloat(o.requestedPrice), color, dashed: true });
+        if (o.slPrice) lines.push({ id: `ord-${o.id}-sl`, price: parseFloat(o.slPrice), color: "#EA3943", dashed: true });
+        if (o.tpPrice) lines.push({ id: `ord-${o.id}-tp`, price: parseFloat(o.tpPrice), color: "#16C784", dashed: true });
+      });
+    return lines;
+  }, [positions, pendingOrders, activeSymbol]);
 
-    const leftPad = 8, rightPad = 56, topPad = 10, bottomPad = 22;
-    const chartW = w - leftPad - rightPad, chartH = h - topPad - bottomPad;
-    if (candles.length === 0) return;
-
-    const visibleCount = chartZoom; // zoom-driven slot count, independent of how much data actually exists
-    const maxOffset = Math.max(0, candles.length - visibleCount);
-    const offset = Math.min(maxOffset, Math.max(0, chartViewOffset));
-    const windowEnd = candles.length - offset;
-    const visibleCandles = candles.slice(Math.max(0, windowEnd - visibleCount), windowEnd);
-
-    const symPositions = positions.filter((p) => p.symbol.name === activeSymbol);
-    const symPending = pendingOrders.filter((o) => o.symbol.name === activeSymbol);
-
-    // Position/pending-order price lines are drawn below (drawPriceLine
-    // already skips anything outside the visible band) but deliberately
-    // excluded from the auto-range here — a position opened far from the
-    // current price (e.g. a demo position from before the live feed was
-    // wired up) would otherwise stretch the scale so hard every candle
-    // collapses into a flat line.
-    const candlePrices = visibleCandles.flatMap((c) => [c.h, c.l]);
-    const allPrices = candlePrices.concat(offset === 0 ? [m.bid] : []);
-    let max = Math.max(...allPrices), min = Math.min(...allPrices);
-    if (max === min) { max += 1; min -= 1; }
-    const pad = (max - min) * 0.08;
-    max += pad; min -= pad;
-    const range = max - min || 1;
-    // candleW is driven by the zoom level (visibleCount slots), not by how
-    // much data actually exists — otherwise a symbol with only a handful of
-    // real candles so far (feed just started) stretches those few candles
-    // across the whole width, making zoom in/out invisible since there's
-    // nothing more to reveal. rightAlignOffset anchors real data to the
-    // right edge (latest candle at the right), leaving blank space on the
-    // left when there aren't enough candles yet to fill the window.
-    const candleW = chartW / visibleCount;
-    const rightAlignOffset = visibleCount - visibleCandles.length;
-    chartScaleRef.current = { min, max, range, leftPad, rightPad, topPad, chartH, chartW, candleW, rightAlignOffset };
-
-    const priceToY = (price: number) => topPad + (1 - (price - min) / range) * chartH;
-
-    ctx.strokeStyle = "rgba(255,255,255,0.04)"; ctx.fillStyle = "#5A6472";
-    ctx.textAlign = "left"; ctx.textBaseline = "middle";
-    for (let i = 0; i <= 5; i++) {
-      const y = topPad + (chartH / 5) * i;
-      ctx.beginPath(); ctx.moveTo(leftPad, y); ctx.lineTo(leftPad + chartW, y); ctx.lineWidth = 1; ctx.stroke();
-      const priceAtY = max - (range / 5) * i;
-      ctx.fillText(priceAtY.toFixed(m.def.digits), leftPad + chartW + 6, y);
-    }
-
-    visibleCandles.forEach((c, i) => {
-      const x = leftPad + (rightAlignOffset + i) * candleW + candleW / 2;
-      const yOpen = priceToY(c.o), yClose = priceToY(c.c), yHigh = priceToY(c.h), yLow = priceToY(c.l);
-      const up = c.c >= c.o;
-      ctx.strokeStyle = ctx.fillStyle = up ? "#16C784" : "#EA3943";
-      ctx.beginPath(); ctx.moveTo(x, yHigh); ctx.lineTo(x, yLow); ctx.lineWidth = 1; ctx.stroke();
-      const bodyTop = Math.min(yOpen, yClose);
-      const bodyH = Math.max(Math.abs(yClose - yOpen), 1.5);
-      ctx.fillRect(x - candleW * 0.32, bodyTop, candleW * 0.64, bodyH);
-    });
-
-    function drawPriceLine(price: number, color: string, dash: number[], label: string, draggable: boolean) {
-      const y = priceToY(price);
-      if (y < topPad || y > topPad + chartH) return;
-      ctx!.strokeStyle = color; ctx!.globalAlpha = 0.5; ctx!.setLineDash(dash); ctx!.lineWidth = 1.25;
-      ctx!.beginPath(); ctx!.moveTo(leftPad, y); ctx!.lineTo(leftPad + chartW, y); ctx!.stroke();
-      ctx!.setLineDash([]); ctx!.globalAlpha = 1;
-      if (draggable) {
-        ctx!.beginPath(); ctx!.arc(leftPad + 9, y, 3.5, 0, Math.PI * 2); ctx!.fillStyle = color; ctx!.fill();
-        ctx!.strokeStyle = "#07090C"; ctx!.lineWidth = 1; ctx!.stroke();
-      }
-      const chipW = rightPad - 4, chipH = 16, chipX = leftPad + chartW + 2, chipY = y - chipH / 2;
-      ctx!.fillStyle = color;
-      ctx!.beginPath();
-      ctx!.moveTo(chipX + 4, chipY);
-      ctx!.arcTo(chipX + chipW, chipY, chipX + chipW, chipY + chipH, 4);
-      ctx!.arcTo(chipX + chipW, chipY + chipH, chipX, chipY + chipH, 4);
-      ctx!.arcTo(chipX, chipY + chipH, chipX, chipY, 4);
-      ctx!.arcTo(chipX, chipY, chipX + chipW, chipY, 4);
-      ctx!.closePath(); ctx!.fill();
-      ctx!.fillStyle = "#04140C"; ctx!.textAlign = "left"; ctx!.textBaseline = "middle"; ctx!.font = "9px JetBrains Mono, monospace";
-      ctx!.fillText(label.length > 11 ? label.slice(0, 11) : label, chipX + 5, y);
-      ctx!.font = "10px JetBrains Mono, monospace";
-    }
-
-    symPositions.forEach((p) => {
-      const openPrice = parseFloat(p.openPrice);
-      drawPriceLine(openPrice, p.side === "BUY" ? "#16C784" : "#EA3943", [], `${p.side} ${parseFloat(p.volume).toFixed(2)}`, false);
-      if (p.slPrice) drawPriceLine(parseFloat(p.slPrice), "#EA3943", [4, 3], "S/L " + fmt(parseFloat(p.slPrice), p.symbol.digits), true);
-      if (p.tpPrice) drawPriceLine(parseFloat(p.tpPrice), "#16C784", [4, 3], "T/P " + fmt(parseFloat(p.tpPrice), p.symbol.digits), true);
-    });
-    symPending.forEach((o) => {
-      if (!o.requestedPrice) return;
-      const color = o.side === "BUY" ? "#16C784" : "#EA3943";
-      drawPriceLine(parseFloat(o.requestedPrice), color, [2, 4], `${o.type} ${parseFloat(o.volume).toFixed(2)}`, false);
-    });
-    if (offset === 0) {
-      const currentPriceUp = candles.length > 1 ? m.bid >= candles[candles.length - 2].c : true;
-      drawPriceLine(m.bid, currentPriceUp ? "#16C784" : "#EA3943", [1, 3], fmt(m.bid, m.def.digits), false);
-    }
-
-    // user drawings
-    const drawings = drawingsRef.current[activeSymbol] || [];
-    const indexToX = (idx: number) => leftPad + (rightAlignOffset + idx) * candleW + candleW / 2;
-    drawings.forEach((d) => {
-      if (d.type === "hline") {
-        const y = priceToY(d.price);
-        if (y >= topPad && y <= topPad + chartH) {
-          ctx.strokeStyle = "#F0B90B"; ctx.lineWidth = 1.3; ctx.setLineDash([]);
-          ctx.beginPath(); ctx.moveTo(leftPad, y); ctx.lineTo(leftPad + chartW, y); ctx.stroke();
-        }
-      } else if (d.type === "trendline") {
-        const x1 = indexToX(d.startIdx), y1 = priceToY(d.startPrice), x2 = indexToX(d.endIdx), y2 = priceToY(d.endPrice);
-        ctx.strokeStyle = "#F0B90B"; ctx.lineWidth = 1.5; ctx.setLineDash([]);
-        ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
-        ctx.fillStyle = "#F0B90B";
-        ctx.beginPath(); ctx.arc(x1, y1, 3, 0, Math.PI * 2); ctx.fill();
-        ctx.beginPath(); ctx.arc(x2, y2, 3, 0, Math.PI * 2); ctx.fill();
-      } else if (d.type === "text") {
-        const x = indexToX(d.idx), y = priceToY(d.price);
-        ctx.fillStyle = "#F0B90B"; ctx.font = "11px Inter, sans-serif"; ctx.textAlign = "left"; ctx.textBaseline = "bottom";
-        ctx.fillText(d.text, x, y - 4);
-      }
-    });
-
-    const inProgress = drawingInProgressRef.current;
-    if (inProgress) {
-      ctx.strokeStyle = "rgba(240,185,11,0.6)"; ctx.lineWidth = 1.5; ctx.setLineDash([3, 3]);
-      ctx.beginPath(); ctx.moveTo(inProgress.startX, inProgress.startY); ctx.lineTo(inProgress.endX, inProgress.endY); ctx.stroke();
-      ctx.setLineDash([]);
-    }
-
-    const crosshair = crosshairRef.current;
-    if (crosshair && crosshair.x >= leftPad && crosshair.x <= leftPad + chartW && crosshair.y >= topPad && crosshair.y <= topPad + chartH) {
-      ctx.strokeStyle = "#5A6472"; ctx.setLineDash([3, 3]); ctx.lineWidth = 1;
-      ctx.beginPath(); ctx.moveTo(crosshair.x, topPad); ctx.lineTo(crosshair.x, topPad + chartH); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(leftPad, crosshair.y); ctx.lineTo(leftPad + chartW, crosshair.y); ctx.stroke();
-      ctx.setLineDash([]);
-      const price = min + range * (topPad + chartH - crosshair.y) / chartH;
-      ctx.fillStyle = "#131A22"; ctx.fillRect(leftPad + chartW + 1, crosshair.y - 8, rightPad - 2, 16);
-      ctx.fillStyle = "#E4E7EB"; ctx.textAlign = "left"; ctx.textBaseline = "middle";
-      ctx.fillText(price.toFixed(m.def.digits), leftPad + chartW + 6, crosshair.y);
-    }
-  }, [candles, positions, pendingOrders, activeSymbol, m, chartViewOffset, chartZoom]);
-
-  useEffect(() => { drawChart(); }, [drawChart]);
-  useEffect(() => {
-    const onResize = () => drawChart();
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
-  }, [drawChart]);
-
-  function zoomIn() { setChartZoom((z) => Math.max(15, Math.round(z / 1.3))); }
-  function zoomOut() { setChartZoom((z) => Math.min(300, Math.round(z * 1.3))); }
-  function resetChartView() { setChartZoom(80); setChartViewOffset(0); }
-
-  // Mouse-wheel zoom — React's onWheel is passive by default so
-  // preventDefault() there is silently ignored; a native listener is
-  // required to stop the page from scrolling while zooming the chart.
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    function onWheel(e: WheelEvent) {
-      e.preventDefault();
-      const factor = e.deltaY > 0 ? 1.15 : 1 / 1.15;
-      setChartZoom((z) => Math.min(300, Math.max(15, Math.round(z * factor))));
-    }
-    canvas.addEventListener("wheel", onWheel, { passive: false });
-    return () => canvas.removeEventListener("wheel", onWheel);
-  }, []);
-
-  function yToPrice(y: number) {
-    const s = chartScaleRef.current;
-    if (!s) return null;
-    return s.min + s.range * (s.topPad + s.chartH - y) / s.chartH;
-  }
-  function xToIndex(x: number) {
-    const s = chartScaleRef.current;
-    if (!s) return 0;
-    return Math.round((x - s.leftPad - s.candleW / 2) / s.candleW) - s.rightAlignOffset;
-  }
-  function findLineNearY(y: number) {
-    type Candidate = { kind: "pos"; id: string; field: "sl" | "tp"; price: number };
-    let closest: Candidate | null = null;
-    let closestDist = 7;
-    const s = chartScaleRef.current;
-    if (!s) return null;
-    const priceToY = (price: number) => s.topPad + (1 - (price - s.min) / s.range) * s.chartH;
-    for (const p of positions.filter((p) => p.symbol.name === activeSymbol)) {
-      if (p.slPrice) {
-        const ly = priceToY(parseFloat(p.slPrice));
-        const dist = Math.abs(ly - y);
-        if (dist < closestDist) { closest = { kind: "pos", id: p.id, field: "sl", price: parseFloat(p.slPrice) }; closestDist = dist; }
-      }
-      if (p.tpPrice) {
-        const ly = priceToY(parseFloat(p.tpPrice));
-        const dist = Math.abs(ly - y);
-        if (dist < closestDist) { closest = { kind: "pos", id: p.id, field: "tp", price: parseFloat(p.tpPrice) }; closestDist = dist; }
-      }
-    }
-    return closest;
+  function handleChartContextMenuPrice(price: number, clientX: number, clientY: number) {
+    setChartContextMenu({ x: clientX, y: clientY, price });
   }
 
-  function handleCanvasMouseDown(e: React.MouseEvent<HTMLCanvasElement>) {
-    const rect = e.currentTarget.getBoundingClientRect();
-    const x = e.clientX - rect.left, y = e.clientY - rect.top;
-    if (activeDrawTool === "hline") {
-      const price = yToPrice(y);
-      if (price != null) {
-        drawingsRef.current[activeSymbol] = [...(drawingsRef.current[activeSymbol] || []), { type: "hline", price }];
-        forceDrawingsRerender((v) => v + 1);
-        drawChart();
-      }
-      return;
-    }
-    if (activeDrawTool === "text") {
-      const price = yToPrice(y);
-      const idx = xToIndex(x);
-      if (price != null) {
-        askPrompt("Enter annotation text:", "", (text) => {
-          if (!text) return;
-          drawingsRef.current[activeSymbol] = [...(drawingsRef.current[activeSymbol] || []), { type: "text", idx, price, text }];
-          forceDrawingsRerender((v) => v + 1);
-          drawChart();
-        });
-      }
-      return;
-    }
-    if (activeDrawTool === "trendline") {
-      drawingInProgressRef.current = { startX: x, startY: y, endX: x, endY: y };
-      return;
-    }
-    const line = findLineNearY(y);
-    if (line) {
-      draggingLineRef.current = { ...line, originalPrice: line.price };
-    } else if (activeDrawTool === "cursor") {
-      panDragRef.current = { startX: x, startOffset: chartViewOffset };
-    }
-  }
-
-  function handleCanvasMouseMove(e: React.MouseEvent<HTMLCanvasElement>) {
-    const rect = e.currentTarget.getBoundingClientRect();
-    crosshairRef.current = { x: e.clientX - rect.left, y: e.clientY - rect.top };
-    if (drawingInProgressRef.current) {
-      drawingInProgressRef.current.endX = crosshairRef.current.x;
-      drawingInProgressRef.current.endY = crosshairRef.current.y;
-      drawChart();
-      return;
-    }
-    if (panDragRef.current) {
-      const s = chartScaleRef.current;
-      const candleW = s ? s.candleW : 6;
-      const deltaCandles = Math.round((crosshairRef.current.x - panDragRef.current.startX) / candleW);
-      const maxOffset = Math.max(0, candles.length - chartZoom);
-      setChartViewOffset(Math.min(maxOffset, Math.max(0, panDragRef.current.startOffset + deltaCandles)));
-      e.currentTarget.style.cursor = "grabbing";
-      return;
-    }
-    if (draggingLineRef.current) {
-      const newPrice = yToPrice(crosshairRef.current.y);
-      if (newPrice != null) draggingLineRef.current.price = newPrice;
-      e.currentTarget.style.cursor = "ns-resize";
-    } else {
-      e.currentTarget.style.cursor = activeDrawTool !== "cursor" ? "crosshair" : findLineNearY(crosshairRef.current.y) ? "ns-resize" : "grab";
-    }
-    drawChart();
-  }
-
-  function handleCanvasMouseLeave() {
-    panDragRef.current = null;
-    if (!draggingLineRef.current && !drawingInProgressRef.current) crosshairRef.current = null;
-    drawChart();
-  }
-
-  async function handleCanvasMouseUp() {
-    if (panDragRef.current) {
-      panDragRef.current = null;
-      return;
-    }
-    if (drawingInProgressRef.current) {
-      const dip = drawingInProgressRef.current;
-      const startPrice = yToPrice(dip.startY), endPrice = yToPrice(dip.endY);
-      const startIdx = xToIndex(dip.startX), endIdx = xToIndex(dip.endX);
-      if (startPrice != null && endPrice != null && (startIdx !== endIdx || Math.abs(startPrice - endPrice) > 0)) {
-        drawingsRef.current[activeSymbol] = [...(drawingsRef.current[activeSymbol] || []), { type: "trendline", startIdx, startPrice, endIdx, endPrice }];
-        forceDrawingsRerender((v) => v + 1);
-      }
-      drawingInProgressRef.current = null;
-      drawChart();
-      return;
-    }
-    const dragging = draggingLineRef.current;
-    if (!dragging) return;
-    draggingLineRef.current = null;
-    const p = positions.find((x) => x.id === dragging.id);
-    if (p) {
-      const mm = market[p.symbol.name];
-      const testSl = dragging.field === "sl" ? dragging.price : p.slPrice ? parseFloat(p.slPrice) : null;
-      const testTp = dragging.field === "tp" ? dragging.price : p.tpPrice ? parseFloat(p.tpPrice) : null;
-      const error = isValidSlTpForSide(p.side, testSl, testTp, mm.bid);
-      if (error) { pushToast(error); drawChart(); return; }
-      try {
-        await tradeApi.editPositionSlTp(p.id, { currentPrice: mm.bid, ...(dragging.field === "sl" ? { slPrice: dragging.price } : { tpPrice: dragging.price }) });
-        pushToast(`${p.symbol.name} ${dragging.field.toUpperCase()} moved to ${fmt(dragging.price, p.symbol.digits)}`);
-        await refreshPositions();
-      } catch (err) {
-        pushToast(err instanceof Error ? err.message : "failed to update");
-      }
-    }
-    drawChart();
-  }
-
-  function handleChartContextMenu(e: React.MouseEvent) {
-    e.preventDefault();
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const rect = canvas.getBoundingClientRect();
-    const y = e.clientY - rect.top;
-    const price = yToPrice(y);
-    if (price == null) return;
-    setChartContextMenu({ x: e.clientX, y: e.clientY, price });
+  function toggleMaIndicator() {
+    setMaActive(chartRef.current?.toggleMA() ?? false);
   }
 
   if (loadError) {
@@ -1369,41 +1048,36 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
             </div>
             <div className="chart-area">
               <div className="drawing-toolbar">
-                <button className={`draw-tool-btn${activeDrawTool === "cursor" ? " active" : ""}`} onClick={() => setActiveDrawTool("cursor")} title="Crosshair">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="12" y1="2" x2="12" y2="22" /><line x1="2" y1="12" x2="22" y2="12" /></svg>
-                </button>
-                <button className={`draw-tool-btn${activeDrawTool === "trendline" ? " active" : ""}`} onClick={() => setActiveDrawTool("trendline")} title="Trend line">
+                <button className="draw-tool-btn" onClick={() => chartRef.current?.addOverlay("trendLine")} title="Trend line">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="4" y1="20" x2="20" y2="4" /></svg>
                 </button>
-                <button className={`draw-tool-btn${activeDrawTool === "hline" ? " active" : ""}`} onClick={() => setActiveDrawTool("hline")} title="Horizontal line">
+                <button className="draw-tool-btn" onClick={() => chartRef.current?.addOverlay("horizontalStraightLine")} title="Horizontal line">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="3" y1="12" x2="21" y2="12" /></svg>
                 </button>
-                <button className={`draw-tool-btn${activeDrawTool === "text" ? " active" : ""}`} onClick={() => setActiveDrawTool("text")} title="Text">
+                <button className="draw-tool-btn" onClick={() => chartRef.current?.addOverlay("fibonacciLine")} title="Fibonacci retracement">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="3" y1="6" x2="21" y2="6" /><line x1="3" y1="12" x2="21" y2="12" /><line x1="3" y1="18" x2="21" y2="18" /></svg>
+                </button>
+                <button className="draw-tool-btn" onClick={() => chartRef.current?.addOverlay("rectangle")} title="Rectangle">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="5" width="18" height="14" rx="1" /></svg>
+                </button>
+                <button className="draw-tool-btn" onClick={() => chartRef.current?.addOverlay("simpleAnnotation")} title="Text">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="4 7 4 4 20 4 20 7" /><line x1="12" y1="4" x2="12" y2="20" /></svg>
                 </button>
                 <div className="draw-tool-sep" />
-                <button className="draw-tool-btn" onClick={() => { drawingsRef.current[activeSymbol] = []; forceDrawingsRerender((v) => v + 1); drawChart(); pushToast("Drawings cleared for " + activeSymbol); }} title="Clear all drawings">
+                <button className="draw-tool-btn" onClick={() => { chartRef.current?.removeAllDrawings(); pushToast("Drawings cleared"); }} title="Clear all drawings">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 6h18" /><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" /></svg>
                 </button>
                 <div className="draw-tool-sep" />
-                <button className="draw-tool-btn" onClick={zoomIn} title="Zoom in">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="7" /><line x1="21" y1="21" x2="16.65" y2="16.65" /><line x1="8" y1="11" x2="14" y2="11" /><line x1="11" y1="8" x2="11" y2="14" /></svg>
-                </button>
-                <button className="draw-tool-btn" onClick={zoomOut} title="Zoom out">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="7" /><line x1="21" y1="21" x2="16.65" y2="16.65" /><line x1="8" y1="11" x2="14" y2="11" /></svg>
-                </button>
-                <button className="draw-tool-btn" onClick={resetChartView} title="Reset view / jump to latest">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><polyline points="3 3 3 8 8 8" /></svg>
+                <button className={`draw-tool-btn${maActive ? " active" : ""}`} onClick={toggleMaIndicator} title="Moving average">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 17c3-8 5-8 8 0s5 8 8 0" /></svg>
                 </button>
               </div>
-              <canvas
-                ref={canvasRef}
-                className="chart-canvas"
-                onMouseDown={handleCanvasMouseDown}
-                onMouseMove={handleCanvasMouseMove}
-                onMouseUp={handleCanvasMouseUp}
-                onMouseLeave={handleCanvasMouseLeave}
-                onContextMenu={handleChartContextMenu}
+              <KLineChartPanel
+                ref={chartRef}
+                candles={candles}
+                digits={m.def.digits}
+                lines={chartLines}
+                onContextMenuPrice={handleChartContextMenuPrice}
               />
               {chartContextMenu ? (
                 <div className="wl-context-menu show" style={{ left: chartContextMenu.x, top: chartContextMenu.y }}>
