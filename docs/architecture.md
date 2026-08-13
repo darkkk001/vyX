@@ -1,7 +1,7 @@
 # VyXTrader — System Architecture (Phase 0)
 
-Status: **§6 resolved — ADR-001 through ADR-003 accepted, see `decisions.md`.**
-Remaining `/docs` files still need writing before Phase 1 starts (§8).
+Status: **Phase 0 complete.** §6 resolved — ADR-001 through ADR-003
+accepted, see `decisions.md`. All 12 `/docs` files written (§8).
 
 ---
 
@@ -302,12 +302,13 @@ here, just the option the spec itself already pointed at.
 
 ---
 
-## 8. Immediate Next Steps (pending §6 approval)
+## 8. Immediate Next Steps
 
-1. Resolve Decisions 1-3 above.
-2. Write the remaining `/docs` files (`trading-engine.md`, `risk-engine.md`,
-   `execution.md`, `market-data.md`, `database.md`, `api.md`,
-   `authentication.md`, `security.md`, `deployment.md`, `testing.md`,
-   `decisions.md`) — `database.md` and `api.md` in particular depend on
-   how Decision 2 resolves.
-3. Only then: Phase 1 (Rust workspace scaffold).
+1. ~~Resolve Decisions 1-3 above.~~ Done — see `decisions.md` (ADR-001
+   through ADR-003).
+2. ~~Write the remaining `/docs` files~~ Done: `trading-engine.md`,
+   `risk-engine.md`, `execution.md`, `market-data.md`, `database.md`,
+   `api.md`, `authentication.md`, `security.md`, `deployment.md`,
+   `testing.md`, `decisions.md` all exist alongside this file.
+3. Next: Phase 1 (Rust workspace scaffold) — not started yet, per the
+   spec's own rule not to begin implementation before Phase 0 review.

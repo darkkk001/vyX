@@ -1,0 +1,62 @@
+# Security
+
+## 1. Today
+
+- **Secrets**: environment variables (Vercel project env vars) —
+  `DATABASE_URL`, `DIRECT_URL`, JWT signing keys, `PRICE_FEED_SECRET`,
+  `FINNHUB_API_KEY`. No secrets manager/vault in front of these; standard
+  for the project's current scale.
+- **Transport**: HTTPS everywhere via Vercel's TLS termination; the MT5
+  EA's price-feed calls go over HTTPS to the same domain.
+- **Passwords**: bcrypt, both trader and admin accounts. Never logged,
+  never returned in any API response.
+- **Auth tokens**: httpOnly cookies only — never exposed to JS, never put
+  in a URL. The one place a password-adjacent flow could have leaked into
+  a URL (the cross-site launcher login) was deliberately built as a real
+  form POST specifically to avoid that (see `authentication.md` §1).
+- **Input validation**: per-route, ad hoc (each handler checks its own
+  body shape) — no shared schema-validation layer (e.g. zod) applied
+  uniformly today. A real gap worth closing but not yet flagged as
+  blocking for Phase 0.
+- **Audit logging**: `AuditLog` model already exists and is used for
+  sensitive admin actions (balance adjustments, leverage changes, KYC
+  approval, admin permission changes, manual position closes) —
+  documented in the schema's own header comment. Carries forward
+  unchanged as the audit trail for both today's admin actions and, later,
+  the Risk module's accept/reject/margin-call decisions (see
+  `risk-engine.md` §3).
+- **Desktop app integrity**: `electron-updater` checks a signed
+  `latest.yml`/artifact set served from `public/desktop-updates/` on the
+  same Vercel deployment. Update payloads are not currently code-signed
+  with an OS-level certificate (Windows/macOS code signing) — acceptable
+  for the current pre-production/demo stage, called out explicitly here
+  as something a real production launch needs before general distribution.
+
+## 2. Target additions
+
+- **Rate limiting**: Redis-backed, per `authentication.md` §2 — login
+  attempts first, extendable to order-placement rate limits if abuse
+  patterns ever require it (not needed today, not built preemptively).
+- **Input validation**: a shared schema-validation layer (e.g. zod) at
+  the API Gateway boundary, applied uniformly to every incoming request
+  before it reaches OMS/Risk — closes the ad hoc gap above without
+  requiring every route handler to reinvent validation.
+- **Trading Core boundary**: the Rust core (OMS/Risk/Execution) is itself
+  a second internal trust boundary — the Gateway is the only thing that
+  talks to it, and only over an internal network path (not
+  internet-reachable), matching spec's general "defense in depth" framing
+  without inventing new requirements beyond what's already implied by the
+  Gateway/Core split in `architecture.md` §2.
+- **Code signing**: desktop update artifacts (both the current Electron
+  app and the future Tauri app, per ADR-001) should be OS-code-signed
+  before any real production rollout to end users outside this
+  engagement's testing — flagged as a pre-launch checklist item, not
+  built now since no certificate currently exists for this project.
+
+## 3. Explicitly out of scope for Phase 0
+
+Penetration testing, formal threat modeling, and compliance
+certification (SOC 2, PCI, etc.) are real needs for a live financial
+product but are business/process work, not architecture — not addressed
+in this document set. Flagged here only so their absence isn't mistaken
+for an oversight.
