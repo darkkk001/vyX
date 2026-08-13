@@ -2,12 +2,10 @@
 
 **Implementation status:** the `orders`/`positions`/`ledger_entries`
 schema in §2-3 exists as a real migration
-(`engine/migrations/20260813000000_trading_core_tables.sql`) and is
-written to by `order-management::db` — but has **not been applied to the
-live Neon database yet**. Same manual-apply pattern as the existing
-`prisma/migrations/*` files this engagement: run it by hand in Neon's SQL
-Editor before any code that touches these tables is actually exercised
-against production.
+(`engine/migrations/20260813000000_trading_core_tables.sql`), has been
+applied to the live Neon database (same manual Neon SQL Editor process as
+the existing `prisma/migrations/*` files), and is written to by
+`order-management::db`.
 
 ## 1. Today
 

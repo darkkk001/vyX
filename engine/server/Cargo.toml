@@ -1,0 +1,21 @@
+[package]
+name = "server"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "trading-core-server"
+path = "src/main.rs"
+
+[dependencies]
+protocol = { path = "../protocol" }
+order-management = { path = "../order-management" }
+tokio.workspace = true
+axum.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rust_decimal.workspace = true
+sqlx.workspace = true
+async-nats.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

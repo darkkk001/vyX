@@ -1,5 +1,13 @@
 # API
 
+**Implementation status:** `services/api-gateway` exists as a skeleton —
+session auth (reusing the existing trader JWT, see `authentication.md`)
+and one route, `POST /v1/orders/market`, forwarding to
+`engine/server`'s `trading-core-server`. It does not yet read
+Account/Symbol/LivePrice from Postgres itself (see §4's resolution below)
+— those fields are trusted from the caller for now. Standalone service,
+own `package.json`, doesn't touch the root Next.js app or its build.
+
 ## 1. Today
 
 Every route lives directly under `app/api/` as a Next.js route handler —
@@ -69,10 +77,15 @@ extraction, so a future breaking change (Manager/Back Office consuming
 the same Gateway) doesn't force a lockstep client/server deploy the way
 today's unversioned routes would.
 
-## 4. Open question for Phase 1
+## 4. Auth resolution (was: open question for Phase 1)
 
-Whether trader auth (`trade/login`, `trade/me`, session issuance) lives
-in the Gateway or stays a thin Next.js concern that the Gateway trusts via
-a forwarded/verified cookie — depends on how `authentication.md`'s
-Redis-backed session design resolves; not decided here to avoid this doc
-and that one disagreeing with each other.
+**Resolved for now:** trader auth issuance (`trade/login`,
+`trade/login-redirect`) stays in Next.js unchanged; the Gateway
+independently verifies the same JWT (same secret, same cookie name) on
+each request rather than trusting a forwarded header. This is what's
+actually implemented in `services/api-gateway/src/auth.ts` today. It's an
+interim answer, not the final one — once `authentication.md` §2's
+Redis-backed opaque session lands, the Gateway's verification swaps from
+"check the JWT signature" to "look up the session in Redis," and Next.js
+stops minting self-contained JWTs. Both docs should update together when
+that happens, not independently.

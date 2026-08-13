@@ -318,17 +318,32 @@ here, just the option the spec itself already pointed at.
    stop-out evaluation, candle bucketing, internal-strategy fill pricing.
    See `/engine/README.md`.
 4. Phase 2 (Trading Core) — first slice done: Postgres schema for the
-   Rust-owned tables (`engine/migrations/`, per ADR-002 — not yet applied
-   to the live database, needs to be run manually the same way prior
-   Prisma migrations were), a `sqlx`-based persistence layer in
+   Rust-owned tables (`engine/migrations/`, per ADR-002 — applied to the
+   live database), a `sqlx`-based persistence layer in
    `order-management::db`, a real `place_market_order` orchestration
    function wiring OMS -> Risk -> Execution -> Position in one
    transaction (matching the sequence diagram in `trading-engine.md` §2),
    and NATS event publishing (`order-management::events`) after each
-   commit. Still open: the API Gateway that would actually call
-   `place_market_order` (today nothing invokes it — it's a library
-   function, not a running service yet), Redis/session wiring, and the
+   commit.
+5. Phase 2 continued — API Gateway skeleton: `engine/server` is a new
+   Rust binary (`trading-core-server`, Axum) exposing
+   `POST /v1/orders/market` over HTTP, wired to `place_market_order`; this
+   is what makes the Trading Core an actual running service instead of a
+   library nothing calls. `services/api-gateway` is a new standalone
+   TypeScript service (own `package.json`, doesn't touch the root Next.js
+   app) that verifies the existing trader JWT session
+   (`vyx_trade_session`, same secret as `lib/account-auth.ts`) and
+   forwards authenticated order requests to `trading-core-server`. Both
+   verified locally: the Rust server builds clean, the Gateway
+   type-checks, builds, and its health/auth-rejection behavior was
+   smoke-tested end to end.
+
+   **Known gap, stated plainly:** the Gateway does not yet look up the
+   caller's account/symbol/price data in Postgres (Account.leverage/
+   balance/credit, Symbol.contractSize, LivePrice) — those fields are
+   currently trusted from the request body as-is rather than fetched.
+   That lookup, Redis/session hardening (`authentication.md` §2), and the
    margin-monitor loop actually running continuously against live ticks
    (`margin::evaluate` exists and is tested, but nothing calls it on a
-   schedule yet). The existing Next.js trading path is untouched
+   schedule) remain open. The existing Next.js trading path is untouched
    throughout, per ADR-003.

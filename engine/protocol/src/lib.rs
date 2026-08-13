@@ -6,13 +6,20 @@
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
+// SCREAMING_SNAKE_CASE on the wire to match the existing Next.js API's
+// JSON convention ("BUY"/"SELL", see app/api/trade/orders/route.ts) —
+// the Rust variant names stay idiomatic PascalCase, only the serde
+// representation changes, so this crate's Rust call sites are unaffected.
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum OrderSide {
     Buy,
     Sell,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum OrderType {
     Market,
     Limit,
@@ -26,6 +33,7 @@ pub enum OrderType {
 /// (PENDING -> ACCEPTED -> FILLED/REJECTED/CANCELLED). See
 /// docs/trading-engine.md §2.1 for the full transition diagram.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum OrderStatus {
     New,
     Validating,
