@@ -12,12 +12,15 @@
     "decimal.js": "^10.6.0",
     "express": "^5.1.0",
     "ioredis": "^6.0.0",
-    "pg": "^8.23.0"
+    "nats": "^2.29.3",
+    "pg": "^8.23.0",
+    "ws": "^8.21.3"
   },
   "devDependencies": {
     "@types/express": "^5.0.3",
     "@types/node": "^20",
     "@types/pg": "^8.21.0",
+    "@types/ws": "^8.18.1",
     "tsx": "^4.23.12",
     "typescript": "^5"
   }

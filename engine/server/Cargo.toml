@@ -11,6 +11,7 @@ path = "src/main.rs"
 protocol = { path = "../protocol" }
 order-management = { path = "../order-management" }
 margin = { path = "../margin" }
+market-data = { path = "../market-data" }
 tokio.workspace = true
 axum.workspace = true
 serde.workspace = true

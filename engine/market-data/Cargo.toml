@@ -13,3 +13,7 @@ async-nats.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 chrono.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+rust_decimal_macros = "1"

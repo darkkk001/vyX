@@ -400,3 +400,23 @@ here, just the option the spec itself already pointed at.
 
    Nothing else open from the original Phase 1/2 gap list. The existing
    Next.js trading path is untouched throughout, per ADR-003.
+
+10. **Phase 3 (Market Data) — first slice done:** the Rust ingest path
+    (`engine/market-data::db`/`::ingest`) ports `lib/price-feed.ts`'s
+    `LivePrice`/`Candle` upsert SQL unchanged (same `ON CONFLICT ...
+    GREATEST/LEAST` bucket-widening), reusing the already-tested pure
+    bucketing logic from Phase 1. `engine/server` exposes it as
+    `POST /internal/price-feed` (header-secret auth, same
+    `PRICE_FEED_SECRET` value as the Next.js side). `lib/price-feed.ts`
+    now forwards to that route (`TRADING_CORE_URL`) instead of writing
+    Prisma directly — Market Data Core is the sole writer of
+    `LivePrice`/`Candle` in practice now, not just by documented intent
+    (`market-data.md` §3). Each ingested tick also publishes to NATS on
+    `price.tick.{symbol}`. The MT5 EA itself is untouched — Next.js stays
+    a thin proxy in front of the Rust route rather than the EA being
+    repointed directly, so there's no live-broker disruption; a direct
+    EA→Rust cutover is a deliberately separate later step. See
+    `market-data.md` §5 for the full implementation-status writeup,
+    including the WebSocket fan-out (`services/api-gateway/src/ws.ts`)
+    that replaced part of `WebTrader.tsx`'s client-side price polling
+    with a push.

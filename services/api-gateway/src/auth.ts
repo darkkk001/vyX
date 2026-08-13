@@ -44,29 +44,35 @@ export interface AuthedRequest extends Request {
   session?: AccountSessionPayload;
 }
 
+// Looks up the Redis-backed session from a raw Cookie header — shared by
+// requireTraderSession (REST) and src/ws.ts (the price-stream WebSocket
+// upgrade, which has no Express request/response to hang a middleware
+// off of, just the raw HTTP upgrade request's headers).
+export async function getTraderSession(
+  cookieHeader: string | undefined
+): Promise<AccountSessionPayload | null> {
+  const token = readCookie(cookieHeader, SESSION_COOKIE_NAME);
+  if (!token) return null;
+
+  const raw = await getRedis().get(sessionKey(token));
+  if (!raw) return null;
+
+  try {
+    return JSON.parse(raw) as AccountSessionPayload;
+  } catch {
+    return null;
+  }
+}
+
 // Requires the request to also carry an X-Broker-Id header the caller
 // resolved independently (the Gateway doesn't do subdomain resolution
 // itself yet — that's still middleware.ts's job on the Next.js side,
 // see docs/api.md §1) — a session minted for one broker is never valid
 // against another, same rule as the existing getAccountSession().
 export async function requireTraderSession(req: AuthedRequest, res: Response, next: NextFunction) {
-  const token = readCookie(req.headers.cookie, SESSION_COOKIE_NAME);
-  if (!token) {
+  const payload = await getTraderSession(req.headers.cookie);
+  if (!payload) {
     res.status(401).json({ error: "no session" });
-    return;
-  }
-
-  const raw = await getRedis().get(sessionKey(token));
-  if (!raw) {
-    res.status(401).json({ error: "invalid session" });
-    return;
-  }
-
-  let payload: AccountSessionPayload;
-  try {
-    payload = JSON.parse(raw) as AccountSessionPayload;
-  } catch {
-    res.status(401).json({ error: "invalid session" });
     return;
   }
 

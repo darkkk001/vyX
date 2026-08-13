@@ -10,7 +10,7 @@
 
 use axum::{
     extract::State,
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     routing::{get, post},
     Json, Router,
 };
@@ -24,6 +24,7 @@ use std::sync::Arc;
 struct AppState {
     pool: PgPool,
     nats: async_nats::Client,
+    price_feed_secret: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -105,6 +106,69 @@ async fn place_market_order(
     Ok(Json(outcome.into()))
 }
 
+// Accepts a single tick or an array — same flexibility as today's
+// Next.js handler (lib/price-feed.ts), which the thin forwarder in
+// app/api/internal/price-feed/* preserves on its side of the hop.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum TicksBody {
+    Single(Tick),
+    Many(Vec<Tick>),
+}
+
+impl TicksBody {
+    fn into_vec(self) -> Vec<Tick> {
+        match self {
+            TicksBody::Single(t) => vec![t],
+            TicksBody::Many(ts) => ts,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct PriceFeedResponse {
+    ok: bool,
+    count: usize,
+}
+
+/// MT5 EA bridge ingest — see ../../docs/market-data.md §2. Reached only
+/// via the Next.js thin forwarder (app/api/internal/price-feed/*), not
+/// directly by any MT5 terminal; the base64-path workaround that exists
+/// on that Next.js route is for a network intermediary between real MT5
+/// terminals and Vercel, irrelevant to this internal hop, so a plain
+/// header carries the shared secret here.
+async fn ingest_price_feed(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<TicksBody>,
+) -> Result<Json<PriceFeedResponse>, (StatusCode, String)> {
+    let provided = headers
+        .get("x-price-feed-secret")
+        .and_then(|v| v.to_str().ok());
+    if provided != Some(state.price_feed_secret.as_str()) {
+        return Err((StatusCode::UNAUTHORIZED, "unauthorized".to_string()));
+    }
+
+    let ticks: Vec<Tick> = body
+        .into_vec()
+        .into_iter()
+        .filter(|t| !t.symbol.is_empty())
+        .collect();
+    if ticks.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "no valid ticks in body".to_string()));
+    }
+
+    let count = ticks.len();
+    market_data::ingest::ingest_ticks(&state.pool, &state.nats, &ticks)
+        .await
+        .map_err(|err| {
+            tracing::error!(?err, "ingest_ticks failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
+        })?;
+
+    Ok(Json(PriceFeedResponse { ok: true, count }))
+}
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt::init();
@@ -112,6 +176,7 @@ async fn main() {
     let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
     let nats_url = std::env::var("NATS_URL").unwrap_or_else(|_| "nats://127.0.0.1:4222".to_string());
     let port: u16 = std::env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(8081);
+    let price_feed_secret = std::env::var("PRICE_FEED_SECRET").expect("PRICE_FEED_SECRET must be set");
 
     let pool = db::connect_pool(&database_url)
         .await
@@ -133,11 +198,12 @@ async fn main() {
         std::time::Duration::from_secs(monitor_interval_secs),
     );
 
-    let state = Arc::new(AppState { pool, nats });
+    let state = Arc::new(AppState { pool, nats, price_feed_secret });
 
     let app = Router::new()
         .route("/health", get(health))
         .route("/v1/orders/market", post(place_market_order))
+        .route("/internal/price-feed", post(ingest_price_feed))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", port))

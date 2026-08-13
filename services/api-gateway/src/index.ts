@@ -5,8 +5,10 @@
 // the current app/api/trade/* path keeps serving traffic unmodified per
 // ADR-003 until a broker is explicitly cut over.
 
+import { createServer } from "node:http";
 import express from "express";
 import ordersRouter from "./routes/orders.js";
+import { attachPriceStream } from "./ws.js";
 
 const app = express();
 app.use(express.json());
@@ -17,7 +19,18 @@ app.get("/health", (_req, res) => {
 
 app.use("/v1/orders", ordersRouter);
 
+// A plain http.Server (not app.listen's implicit one) so the WebSocket
+// price stream (src/ws.ts) can hook the server's "upgrade" event
+// alongside Express handling normal HTTP requests on the same port.
+const server = createServer(app);
+
 const port = Number(process.env.PORT ?? 8080);
-app.listen(port, () => {
+const natsUrl = process.env.NATS_URL ?? "nats://127.0.0.1:4222";
+
+attachPriceStream(server, natsUrl).catch((err) => {
+  console.error("failed to start price stream (NATS unreachable?)", err);
+});
+
+server.listen(port, () => {
   console.log(`api-gateway listening on :${port}`);
 });

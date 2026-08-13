@@ -8,6 +8,9 @@
 use chrono::{DateTime, Datelike, TimeZone, Utc};
 use protocol::Tick;
 
+pub mod db;
+pub mod ingest;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Timeframe {
     M1,

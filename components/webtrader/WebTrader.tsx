@@ -437,6 +437,49 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
     return () => { cancelled = true; clearInterval(interval); };
   }, [appendLog]);
 
+  // Pushed ticks from the API Gateway's price-tick WebSocket
+  // (services/api-gateway/src/ws.ts, fed by NATS from the Rust Market
+  // Data Core — see docs/market-data.md §2). Updates the same
+  // liveTicksRef the poll above writes, so tickMarket needs no changes;
+  // this just makes ticks land sooner than the 2s poll interval. The poll
+  // stays running as the connection-status signal and as a fallback if
+  // the socket can't connect (e.g. NEXT_PUBLIC_GATEWAY_WS_URL unset in an
+  // environment that hasn't been cut over to the Gateway yet) — this
+  // effect fails silently rather than surfacing its own error state.
+  useEffect(() => {
+    let cancelled = false;
+    let socket: WebSocket | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+    function connect() {
+      if (cancelled) return;
+      const base = process.env.NEXT_PUBLIC_GATEWAY_WS_URL ?? "ws://127.0.0.1:8080";
+      socket = new WebSocket(`${base}/v1/prices/stream`);
+      socket.onmessage = (event) => {
+        try {
+          const tick = JSON.parse(event.data) as { symbol: string; bid: number; ask: number };
+          liveTicksRef.current = {
+            ...liveTicksRef.current,
+            [tick.symbol]: { bid: tick.bid, ask: tick.ask },
+          };
+        } catch {
+          // malformed frame — ignore, next tick will correct the picture
+        }
+      };
+      socket.onclose = () => {
+        if (!cancelled) reconnectTimer = setTimeout(connect, 3000);
+      };
+      socket.onerror = () => socket?.close();
+    }
+    connect();
+
+    return () => {
+      cancelled = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      socket?.close();
+    };
+  }, []);
+
   // Seeds real OHLC history (see /api/trade/candles) for a symbol+timeframe,
   // replacing the synthetic seed. A symbol with no feed history yet (empty
   // response) just keeps simulating — no real data to show, nothing to

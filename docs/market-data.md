@@ -81,3 +81,56 @@ entirely.
 - Tick-level history retention (only OHLC candles are persisted today,
   raw ticks are not) — revisit only if a future feature needs
   sub-candle-resolution replay; not needed for anything currently planned.
+
+## 5. Implementation status
+
+**Ingest — done.** `engine/market-data::db` has `upsert_live_price`/
+`upsert_candle`, porting §1's SQL unchanged (including the `Timeframe::
+Mn1` → Postgres `"MN1"` mapping quirk). `engine/market-data::ingest::
+ingest_ticks` wraps both in one transaction per batch (matching the
+original `prisma.$transaction`) and, only after commit, publishes each
+tick to NATS on `price.tick.{symbol}` (best-effort — a broadcast failure
+never rolls back or blocks a write that already succeeded, same rule as
+`order_management::events`). `engine/server` exposes this as
+`POST /internal/price-feed`, auth'd via an `x-price-feed-secret` header
+(not the `[payload]/route.ts` base64-path scheme — that workaround is for
+the network path between real MT5 terminals and Vercel, irrelevant to
+this internal Next.js→Rust hop).
+
+**Transport — unchanged for the EA, by design.** `lib/price-feed.ts`'s
+`ingestTicks` no longer touches Prisma; it forwards the validated ticks to
+the Rust route (`TRADING_CORE_URL`) and passes the response straight
+through. Both existing route files
+(`app/api/internal/price-feed/route.ts` and `.../[payload]/route.ts`)
+are untouched — from the MT5 EA's point of view nothing changed. Repointing
+an EA directly at the Rust service (skipping the Next.js hop) is a
+deliberately separate, later cutover once that service has a stable
+public deployment — not done here, to avoid any live-broker disruption.
+
+**Fan-out — done for the first hop.** `services/api-gateway/src/ws.ts`
+subscribes to `price.tick.*` on NATS once at startup and re-broadcasts
+every message verbatim to every WebSocket client connected at
+`/v1/prices/stream`. Auth is the same Redis-backed trader-session cookie
+`requireTraderSession` checks for REST routes, minus that middleware's
+`X-Broker-Id` cross-check — a browser's native `WebSocket` can't attach
+custom headers, only cookies ride along automatically, and ticks are
+broker-agnostic raw market data (§3), so "a valid trader session exists"
+is the whole trust requirement here. `WebTrader.tsx` now opens this
+socket and updates `liveTicksRef` on each message, landing ticks sooner
+than the pre-existing 2s poll of `/api/trade/prices` — that poll is left
+running as the connection-status indicator and as a fallback for any
+environment where `NEXT_PUBLIC_GATEWAY_WS_URL` isn't set yet (i.e. hasn't
+been cut over to the Gateway). Retiring the poll entirely is a later
+cleanup once the WS path has proven itself live.
+
+**Still open / explicitly not done in this slice:**
+- The margin monitor (`order_management::monitor`) still polls Postgres
+  every `MARGIN_MONITOR_INTERVAL_SECS` rather than reacting to the NATS
+  tick stream this slice just added — a live stream now exists to drive
+  it, but wiring the monitor off of it is separate follow-up work, not
+  bundled into this slice.
+- `db::get_live_price` (the synchronous read `docs/execution.md`'s
+  Execution module will need) is implemented but not called from
+  anywhere yet — Execution module integration is its own later slice.
+- Per-broker EA auth and tick-level history retention (both listed above)
+  are unaffected — still open, still deliberately deferred.
