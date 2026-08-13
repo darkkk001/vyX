@@ -5,7 +5,7 @@
 //! and a synchronous read path for the Execution module — see
 //! ../../docs/market-data.md §2).
 
-use chrono::{DateTime, Datelike, TimeZone, Utc, Weekday};
+use chrono::{DateTime, Datelike, TimeZone, Utc};
 use protocol::Tick;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -107,6 +107,7 @@ pub fn candle_updates_for_tick(tick: &Tick, now: DateTime<Utc>) -> Vec<CandleUpd
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Weekday;
 
     #[test]
     fn m1_floors_to_the_minute() {
