@@ -25,6 +25,7 @@
 //! force-close is tracked as a ledger delta rather than a direct balance
 //! write.
 
+use crate::calc::{close_price_for, equity, floating_pnl, load_account_state, used_margin, AccountState};
 use crate::db;
 use margin::{evaluate, MarginThresholds, MonitorAction};
 use protocol::TradingEvent;
@@ -32,21 +33,6 @@ use rust_decimal::Decimal;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use sqlx::PgPool;
-
-fn floating_pnl(side: protocol::OrderSide, open_price: Decimal, close_price: Decimal, contract_size: Decimal, volume: Decimal) -> Decimal {
-    let diff = match side {
-        protocol::OrderSide::Buy => close_price - open_price,
-        protocol::OrderSide::Sell => open_price - close_price,
-    };
-    diff * contract_size * volume
-}
-
-fn close_price_for(side: protocol::OrderSide, bid: Decimal, ask: Decimal) -> Decimal {
-    match side {
-        protocol::OrderSide::Buy => bid,
-        protocol::OrderSide::Sell => ask,
-    }
-}
 
 enum SlTpReason {
     StopLoss,
@@ -145,47 +131,6 @@ async fn close_sl_tp_triggered(
     }
 
     Ok(())
-}
-
-struct AccountState {
-    effective_balance: Decimal,
-    credit: Decimal,
-    leverage: u32,
-    positions: Vec<db::OpenPositionWithMarket>,
-}
-
-fn used_margin(state: &AccountState) -> Decimal {
-    state
-        .positions
-        .iter()
-        .map(|p| risk::required_margin(p.volume, p.contract_size, p.open_price, state.leverage))
-        .sum()
-}
-
-fn equity(state: &AccountState) -> Decimal {
-    let floating: Decimal = state
-        .positions
-        .iter()
-        .filter_map(|p| {
-            let (bid, ask) = (p.bid?, p.ask?);
-            Some(floating_pnl(p.side, p.open_price, close_price_for(p.side, bid, ask), p.contract_size, p.volume))
-        })
-        .sum();
-    state.effective_balance + state.credit + floating
-}
-
-async fn load_account_state(pool: &PgPool, account_id: &str) -> Result<Option<AccountState>, sqlx::Error> {
-    let Some(funds) = db::get_account_funds(pool, account_id).await? else {
-        return Ok(None);
-    };
-    let ledger_sum = db::get_ledger_sum(pool, account_id).await?;
-    let positions = db::get_open_positions_with_market(pool, account_id).await?;
-    Ok(Some(AccountState {
-        effective_balance: funds.balance + ledger_sum,
-        credit: funds.credit,
-        leverage: funds.leverage.max(1) as u32,
-        positions,
-    }))
 }
 
 enum CloseAttempt {
@@ -369,25 +314,8 @@ mod tests {
     use protocol::OrderSide;
     use rust_decimal_macros::dec;
 
-    #[test]
-    fn floating_pnl_matches_lib_trading_ts_formula() {
-        // Mirrors lib/trading.ts's computeRealizedPnl exactly — same
-        // BUY/SELL diff direction, same contractSize*volume multiplier.
-        let buy_profit = floating_pnl(OrderSide::Buy, dec!(1.10000), dec!(1.10050), dec!(100000), dec!(1));
-        assert_eq!(buy_profit, dec!(50.00000));
-
-        let sell_profit = floating_pnl(OrderSide::Sell, dec!(1.10000), dec!(1.09950), dec!(100000), dec!(1));
-        assert_eq!(sell_profit, dec!(50.00000));
-
-        let buy_loss = floating_pnl(OrderSide::Buy, dec!(1.10000), dec!(1.09950), dec!(100000), dec!(1));
-        assert_eq!(buy_loss, dec!(-50.00000));
-    }
-
-    #[test]
-    fn close_price_is_bid_for_buy_ask_for_sell() {
-        assert_eq!(close_price_for(OrderSide::Buy, dec!(1.10000), dec!(1.10020)), dec!(1.10000));
-        assert_eq!(close_price_for(OrderSide::Sell, dec!(1.10000), dec!(1.10020)), dec!(1.10020));
-    }
+    // floating_pnl/close_price_for's own tests now live in calc.rs, where
+    // those functions moved to.
 
     fn position(
         side: OrderSide,

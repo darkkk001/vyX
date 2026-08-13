@@ -43,6 +43,15 @@ fn type_to_str(t: OrderType) -> &'static str {
     }
 }
 
+fn type_from_str(s: &str) -> OrderType {
+    match s {
+        "MARKET" => OrderType::Market,
+        "LIMIT" => OrderType::Limit,
+        "STOP" => OrderType::Stop,
+        other => panic!("unknown order_type in database: {other}"),
+    }
+}
+
 fn status_to_str(s: OrderStatus) -> &'static str {
     match s {
         OrderStatus::New => "NEW",
@@ -234,6 +243,101 @@ pub async fn get_order(pool: &PgPool, order_id: &str) -> Result<Option<OrderRow>
         volume,
         created_at,
     }))
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Pending-order (LIMIT/STOP) trigger support — see pending_orders.rs.
+// ─────────────────────────────────────────────────────────────────────
+
+/// Read-only lookup into Prisma-owned `Symbol` (ADR-002 — reading another
+/// module's table isn't a boundary violation, only writing it would be;
+/// same reasoning as `get_account_funds` below). Needed at trigger time
+/// to compute required margin for the order about to fill.
+pub async fn get_symbol_contract_size(pool: &PgPool, symbol: &str) -> Result<Option<Decimal>, sqlx::Error> {
+    let row: Option<(Decimal,)> =
+        sqlx::query_as(r#"SELECT "contractSize" FROM "Symbol" WHERE name = $1"#)
+            .bind(symbol)
+            .fetch_optional(pool)
+            .await?;
+    Ok(row.map(|(cs,)| cs))
+}
+
+#[derive(Debug, Clone)]
+pub struct PendingOrder {
+    pub id: String,
+    pub broker_id: String,
+    pub account_id: String,
+    pub symbol: String,
+    pub side: OrderSide,
+    pub order_type: OrderType,
+    pub volume: Decimal,
+    pub requested_price: Decimal,
+    pub sl_price: Option<Decimal>,
+    pub tp_price: Option<Decimal>,
+}
+
+/// Every ACCEPTED LIMIT/STOP order for one symbol — narrowed by symbol
+/// (unlike the margin monitor's account scan, which can't narrow by
+/// symbol since floating P&L across *any* symbol affects an account's
+/// equity) because a pending order can only ever trigger off its own
+/// symbol's price.
+pub async fn get_pending_orders_for_symbol(
+    pool: &PgPool,
+    symbol: &str,
+) -> Result<Vec<PendingOrder>, sqlx::Error> {
+    #[allow(clippy::type_complexity)]
+    let rows: Vec<(String, String, String, String, String, String, Decimal, Decimal, Option<Decimal>, Option<Decimal>)> =
+        sqlx::query_as(
+            r#"SELECT id, broker_id, account_id, symbol, side::text, type::text,
+                      volume, requested_price, sl_price, tp_price
+               FROM orders
+               WHERE symbol = $1 AND status = 'ACCEPTED'::order_status
+                 AND type IN ('LIMIT'::order_type, 'STOP'::order_type)"#,
+        )
+        .bind(symbol)
+        .fetch_all(pool)
+        .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(
+            |(id, broker_id, account_id, symbol, side, order_type, volume, requested_price, sl_price, tp_price)| {
+                PendingOrder {
+                    id,
+                    broker_id,
+                    account_id,
+                    symbol,
+                    side: side_from_str(&side),
+                    order_type: type_from_str(&order_type),
+                    volume,
+                    requested_price,
+                    sl_price,
+                    tp_price,
+                }
+            },
+        )
+        .collect())
+}
+
+/// Atomically claims a pending order for routing — `UPDATE ... WHERE
+/// status = 'ACCEPTED'` means only one caller can win this if two ticks
+/// (or a tick and the same order re-appearing in a later scan) both try
+/// to trigger the same order concurrently; the loser sees
+/// `rows_affected() == 0` and treats that as "someone else is already
+/// handling this," not an error. Same idempotency pattern as
+/// `close_position_with_ledger_entry`.
+pub async fn try_claim_order_for_routing(
+    tx: &mut sqlx::PgTransaction<'_>,
+    order_id: &str,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query(
+        r#"UPDATE orders SET status = 'ROUTING'::order_status, updated_at = now()
+           WHERE id = $1 AND status = 'ACCEPTED'::order_status"#,
+    )
+    .bind(order_id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(result.rows_affected() == 1)
 }
 
 // ─────────────────────────────────────────────────────────────────────

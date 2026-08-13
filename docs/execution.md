@@ -105,6 +105,45 @@ rejected cleanly with the reason above; the pre-existing free-margin
 rejection still fires correctly now that it runs after the price fetch
 instead of before.
 
-Still open: slippage/requote modeling, commission/swap moving
-server-side, and LIMIT/STOP trigger logic (§2.1 step 3) — none of these
-are touched by the above, all still exactly as described in §4.
+**§2.1 step 3 (LIMIT/STOP trigger logic) — done.** `place_pending_order`
+(`order-management/src/lib.rs`) inserts a LIMIT/STOP order straight to
+`ACCEPTED` — no fill, no position, and deliberately **no margin check**
+at placement time, matching how MT5-style platforms actually behave: a
+pending order doesn't reserve margin while it waits, only a filled
+position does. Validates the requested price is on the correct side of
+the current market first though (BUY LIMIT below the current ask, BUY
+STOP above it, SELL LIMIT above the current bid, SELL STOP below it) —
+otherwise it's not really a *pending* order, just a market order with
+extra steps.
+
+The trigger side is a new module, `order-management/src/pending_orders.rs`,
+scanning ACCEPTED LIMIT/STOP orders for exactly the ticked symbol on
+every tick (narrower than the margin monitor's account-wide scan — a
+pending order can only ever trigger off its own symbol). `engine/server`
+subscribes to `price.tick.*` once and fans each tick out to both the
+margin monitor and this scan concurrently (`tokio::join!`), rather than
+running two separate NATS subscriptions. When a trigger price is
+crossed, the module does the exact margin check `place_market_order`
+does — the one place a pending order's fate can differ from what the
+trader saw at placement: if free margin no longer covers it by the time
+it triggers, it's rejected then instead of opening a position. Reuses
+`db::try_claim_order_for_routing` (an idempotent, status-guarded
+`UPDATE ... WHERE status = 'ACCEPTED'`) for the same double-trigger
+protection as `close_position_with_ledger_entry` gives stop-out/SL-TP.
+`calc.rs` is new too — the equity/used-margin math that used to live
+only in `monitor.rs` moved there so this module could reuse it instead
+of duplicating the formula.
+
+Verified live end to end: a BUY LIMIT placed below market accepted
+without any margin check; a BUY LIMIT placed above the current ask
+rejected at placement with a clear reason; the accepted order filled
+correctly (right price, right side) and opened a position once a
+crossing tick arrived; a second, deliberately oversized LIMIT order
+accepted fine at placement then rejected with the correct "insufficient
+free margin" reason once its own crossing tick arrived, proving the
+margin check really is deferred to trigger time and not silently
+skipped.
+
+Still open: slippage/requote modeling and commission/swap moving
+server-side — neither touched by the above, both still exactly as
+described in §4.

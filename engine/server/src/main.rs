@@ -4,9 +4,9 @@
 //! deployment; only the Gateway talks to it (../../docs/security.md §2's
 //! second trust boundary).
 //!
-//! This is the first concrete slice: MARKET order placement only. LIMIT/
-//! STOP, cancel/modify, and account/position queries aren't exposed yet —
-//! see ../../docs/trading-engine.md's implementation-status note.
+//! MARKET and LIMIT/STOP order placement are exposed; cancel/modify and
+//! account/position queries aren't yet — see
+//! ../../docs/trading-engine.md's implementation-status note.
 
 use axum::{
     extract::State,
@@ -15,8 +15,11 @@ use axum::{
     Json, Router,
 };
 use futures_util::StreamExt;
-use order_management::{db, events, PlaceMarketOrderOutcome, PlaceMarketOrderRequest};
-use protocol::{OrderSide, Tick};
+use order_management::{
+    db, events, PlaceMarketOrderOutcome, PlaceMarketOrderRequest, PlacePendingOrderOutcome,
+    PlacePendingOrderRequest,
+};
+use protocol::{OrderSide, OrderType, Tick};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
@@ -108,6 +111,66 @@ async fn place_market_order(
     Ok(Json(outcome.into()))
 }
 
+#[derive(Debug, Deserialize)]
+struct PlacePendingOrderBody {
+    broker_id: String,
+    account_id: String,
+    symbol: String,
+    side: OrderSide,
+    order_type: OrderType,
+    volume: Decimal,
+    requested_price: Decimal,
+    sl_price: Option<Decimal>,
+    tp_price: Option<Decimal>,
+    // No equity/used_margin/contract_size here, unlike
+    // PlaceMarketOrderBody — a pending order doesn't reserve margin while
+    // it waits, see PlacePendingOrderRequest's doc comment.
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "status", rename_all = "SCREAMING_SNAKE_CASE")]
+enum PlacePendingOrderResponse {
+    Accepted { order_id: String },
+    Rejected { order_id: String, reason: String },
+}
+
+impl From<PlacePendingOrderOutcome> for PlacePendingOrderResponse {
+    fn from(outcome: PlacePendingOrderOutcome) -> Self {
+        match outcome {
+            PlacePendingOrderOutcome::Accepted { order_id } => PlacePendingOrderResponse::Accepted { order_id },
+            PlacePendingOrderOutcome::Rejected { order_id, reason } => {
+                PlacePendingOrderResponse::Rejected { order_id, reason }
+            }
+        }
+    }
+}
+
+async fn place_pending_order(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<PlacePendingOrderBody>,
+) -> Result<Json<PlacePendingOrderResponse>, (StatusCode, String)> {
+    let req = PlacePendingOrderRequest {
+        broker_id: body.broker_id,
+        account_id: body.account_id,
+        symbol: body.symbol,
+        side: body.side,
+        order_type: body.order_type,
+        volume: body.volume,
+        requested_price: body.requested_price,
+        sl_price: body.sl_price,
+        tp_price: body.tp_price,
+    };
+
+    let outcome = order_management::place_pending_order(&state.pool, &state.nats, req)
+        .await
+        .map_err(|err| {
+            tracing::error!(?err, "place_pending_order failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
+        })?;
+
+    Ok(Json(outcome.into()))
+}
+
 // Accepts a single tick or an array — same flexibility as today's
 // Next.js handler (lib/price-feed.ts), which the thin forwarder in
 // app/api/internal/price-feed/* preserves on its side of the hop.
@@ -171,29 +234,47 @@ async fn ingest_price_feed(
     Ok(Json(PriceFeedResponse { ok: true, count }))
 }
 
-/// Subscribes the margin monitor to the Market Data Core's tick stream
-/// (../../docs/market-data.md §2) so it reacts to real price movement
-/// instead of only the polling timer in `order_management::monitor::
-/// spawn`. Every symbol's ticks land on `price.tick.*`; the monitor
-/// doesn't currently narrow evaluation to accounts holding that specific
-/// symbol (see order_management::monitor::run_once — it scans every
-/// account with an open position), so any tick is a valid trigger to
-/// re-check everyone. `run_once_guarded` makes a burst of ticks collapse
-/// into one pass rather than piling up concurrent scans.
-async fn spawn_margin_monitor_tick_trigger(
+/// Subscribes once to the Market Data Core's tick stream
+/// (../../docs/market-data.md §2) and fans each tick out to both
+/// tick-driven consumers this binary runs, so the payload is only
+/// deserialized once per message:
+/// - the margin monitor (`order_management::monitor`) — any tick is a
+///   valid trigger to re-check every account with an open position (it
+///   doesn't narrow by symbol, since floating P&L across *any* symbol an
+///   account holds affects its equity). `run_once_guarded` makes a burst
+///   of ticks collapse into one pass rather than piling up concurrent
+///   scans.
+/// - the pending-order trigger (`order_management::pending_orders`) —
+///   scoped to this tick's own symbol, since a LIMIT/STOP order can only
+///   ever trigger off its own symbol's price.
+///
+/// Run concurrently via `tokio::join!` per tick (both are independent
+/// reads/writes against the same pool, safe to overlap) rather than one
+/// waiting on the other.
+async fn spawn_tick_driven_triggers(
     pool: PgPool,
     nats: async_nats::Client,
     thresholds: margin::MarginThresholds,
     guard: order_management::monitor::RunGuard,
 ) -> Result<(), async_nats::SubscribeError> {
     let mut sub = nats.subscribe("price.tick.*").await?;
-    tracing::info!("margin monitor: subscribed to price.tick.*");
+    tracing::info!("tick-driven triggers: subscribed to price.tick.*");
     tokio::spawn(async move {
         while let Some(msg) = sub.next().await {
-            tracing::debug!(subject = %msg.subject, "margin monitor: tick received, triggering evaluation");
-            order_management::monitor::run_once_guarded(&pool, &nats, thresholds, &guard).await;
+            let tick: Tick = match serde_json::from_slice(&msg.payload) {
+                Ok(t) => t,
+                Err(err) => {
+                    tracing::warn!(?err, subject = %msg.subject, "tick-driven triggers: failed to deserialize tick payload");
+                    continue;
+                }
+            };
+            tracing::debug!(symbol = %tick.symbol, "tick-driven triggers: tick received");
+            tokio::join!(
+                order_management::monitor::run_once_guarded(&pool, &nats, thresholds, &guard),
+                order_management::pending_orders::check_symbol_for_triggers(&pool, &nats, &tick),
+            );
         }
-        tracing::warn!("margin monitor: price.tick.* subscription ended, tick-driven triggering stopped");
+        tracing::warn!("tick-driven triggers: price.tick.* subscription ended");
     });
     Ok(())
 }
@@ -215,9 +296,10 @@ async fn main() {
     // Margin monitor — see order_management::monitor's module doc. Two
     // trigger sources sharing one guard so they never run concurrently:
     // the polling timer below (a safety net for quiet periods) and the
-    // NATS tick subscription (spawn_margin_monitor_tick_trigger, the
-    // primary path — reacts to real price movement instead of waiting
-    // for the next poll).
+    // NATS tick subscription (spawn_tick_driven_triggers, the primary
+    // path — reacts to real price movement instead of waiting for the
+    // next poll). That same subscription also drives the pending-order
+    // trigger (order_management::pending_orders).
     let monitor_interval_secs: u64 = std::env::var("MARGIN_MONITOR_INTERVAL_SECS")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -231,15 +313,16 @@ async fn main() {
         std::time::Duration::from_secs(monitor_interval_secs),
         monitor_guard.clone(),
     );
-    spawn_margin_monitor_tick_trigger(pool.clone(), nats.clone(), monitor_thresholds, monitor_guard)
+    spawn_tick_driven_triggers(pool.clone(), nats.clone(), monitor_thresholds, monitor_guard)
         .await
-        .expect("failed to subscribe margin monitor to price.tick.*");
+        .expect("failed to subscribe tick-driven triggers to price.tick.*");
 
     let state = Arc::new(AppState { pool, nats, price_feed_secret });
 
     let app = Router::new()
         .route("/health", get(health))
         .route("/v1/orders/market", post(place_market_order))
+        .route("/v1/orders/pending", post(place_pending_order))
         .route("/internal/price-feed", post(ingest_price_feed))
         .with_state(state);
 

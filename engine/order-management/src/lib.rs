@@ -6,9 +6,11 @@
 //! persists the result in one transaction, per the sequence diagram in
 //! ../../docs/trading-engine.md §2.
 
+pub mod calc;
 pub mod db;
 pub mod events;
 pub mod monitor;
+pub mod pending_orders;
 
 use protocol::{Fill, OrderSide, OrderStatus, OrderType, RiskRejection, Tick, TradingEvent};
 use rust_decimal::Decimal;
@@ -226,12 +228,139 @@ pub async fn place_market_order(
     })
 }
 
+/// Everything OMS needs to place a pending LIMIT/STOP order — see
+/// ../../docs/execution.md §2.1 step 3. Unlike `PlaceMarketOrderRequest`,
+/// there's no `equity`/`used_margin` here: a pending order doesn't
+/// reserve margin while it waits (matches how MT5-style platforms
+/// behave — margin is checked when the order actually triggers and
+/// opens a position, not while it's sitting unfilled). See
+/// `pending_orders.rs` for that trigger-time check.
+pub struct PlacePendingOrderRequest {
+    pub broker_id: String,
+    pub account_id: String,
+    pub symbol: String,
+    pub side: OrderSide,
+    pub order_type: OrderType,
+    pub volume: Decimal,
+    pub requested_price: Decimal,
+    pub sl_price: Option<Decimal>,
+    pub tp_price: Option<Decimal>,
+}
+
+#[derive(Debug)]
+pub enum PlacePendingOrderOutcome {
+    Accepted { order_id: String },
+    Rejected { order_id: String, reason: String },
+}
+
+/// A pending order's requested price has to be on the side of the
+/// current market that makes it a real pending order, not an order that
+/// would just fill immediately if routed as-is:
+/// - BUY LIMIT: below the current ask (buy cheaper than now)
+/// - BUY STOP: above the current ask (buy a breakout)
+/// - SELL LIMIT: above the current bid (sell higher than now)
+/// - SELL STOP: below the current bid (sell a breakdown)
+///
+/// A `MARKET` order_type reaching this function is a caller bug (
+/// `engine/server` should only route LIMIT/STOP here) — rejected the
+/// same way rather than panicking, since it's still safe to handle as an
+/// ordinary rejection.
+fn validate_pending_price_side(
+    side: OrderSide,
+    order_type: OrderType,
+    requested_price: Decimal,
+    current: &Tick,
+) -> Result<(), String> {
+    match (side, order_type) {
+        (OrderSide::Buy, OrderType::Limit) if requested_price >= current.ask => {
+            Err(format!("BUY LIMIT price {requested_price} must be below the current ask {}", current.ask))
+        }
+        (OrderSide::Buy, OrderType::Stop) if requested_price <= current.ask => {
+            Err(format!("BUY STOP price {requested_price} must be above the current ask {}", current.ask))
+        }
+        (OrderSide::Sell, OrderType::Limit) if requested_price <= current.bid => {
+            Err(format!("SELL LIMIT price {requested_price} must be above the current bid {}", current.bid))
+        }
+        (OrderSide::Sell, OrderType::Stop) if requested_price >= current.bid => {
+            Err(format!("SELL STOP price {requested_price} must be below the current bid {}", current.bid))
+        }
+        (_, OrderType::Market) => Err("pending orders must be LIMIT or STOP, not MARKET".to_string()),
+        _ => Ok(()),
+    }
+}
+
+/// Places a LIMIT/STOP order in ACCEPTED status — no fill, no position,
+/// no margin check yet. `pending_orders::check_symbol_for_triggers`
+/// (called from `engine/server`'s tick subscription) does the rest once
+/// price actually crosses `requested_price`.
+pub async fn place_pending_order(
+    pool: &PgPool,
+    nats: &async_nats::Client,
+    req: PlacePendingOrderRequest,
+) -> Result<PlacePendingOrderOutcome, PlaceOrderError> {
+    let mut tx = pool.begin().await?;
+
+    let order_id = db::insert_order(
+        &mut tx,
+        &db::NewOrder {
+            broker_id: req.broker_id.clone(),
+            account_id: req.account_id.clone(),
+            symbol: req.symbol.clone(),
+            side: req.side,
+            order_type: req.order_type,
+            volume: req.volume,
+            requested_price: Some(req.requested_price),
+            sl_price: req.sl_price,
+            tp_price: req.tp_price,
+        },
+    )
+    .await?;
+
+    db::set_status(&mut tx, &order_id, OrderStatus::Validating).await?;
+
+    // Same "OMS fetches its own price" rule as place_market_order — used
+    // here only to validate the pending price is on the correct side of
+    // today's market, not to fill anything yet.
+    let current_tick = match market_data::db::get_live_price(pool, &req.symbol).await? {
+        Some((bid, ask)) => Tick { symbol: req.symbol.clone(), bid, ask },
+        None => {
+            let reason = format!("no live price for {}", req.symbol);
+            db::set_rejected(&mut tx, &order_id, &reason).await?;
+            tx.commit().await?;
+            publish_best_effort(
+                nats,
+                &TradingEvent::OrderRejected(RiskRejection { order_id: order_id.clone(), reason: reason.clone() }),
+            )
+            .await;
+            return Ok(PlacePendingOrderOutcome::Rejected { order_id, reason });
+        }
+    };
+
+    if let Err(reason) = validate_pending_price_side(req.side, req.order_type, req.requested_price, &current_tick) {
+        db::set_rejected(&mut tx, &order_id, &reason).await?;
+        tx.commit().await?;
+        publish_best_effort(
+            nats,
+            &TradingEvent::OrderRejected(RiskRejection { order_id: order_id.clone(), reason: reason.clone() }),
+        )
+        .await;
+        return Ok(PlacePendingOrderOutcome::Rejected { order_id, reason });
+    }
+
+    db::set_status(&mut tx, &order_id, OrderStatus::Accepted).await?;
+    tx.commit().await?;
+
+    publish_best_effort(nats, &TradingEvent::OrderAccepted { order_id: order_id.clone() }).await;
+
+    Ok(PlacePendingOrderOutcome::Accepted { order_id })
+}
+
 /// The order is already committed to Postgres by the time this is called
 /// — a NATS publish failure means a connected client's UI is stale until
 /// its next poll/reconnect, not that trading state is wrong. Logged, not
 /// propagated as an error, on that basis (see ../../docs/security.md's
 /// framing of Postgres as sole authoritative state).
-async fn publish_best_effort(nats: &async_nats::Client, event: &TradingEvent) {
+pub(crate) async fn publish_best_effort(nats: &async_nats::Client, event: &TradingEvent) {
     if let Err(err) = events::publish(nats, event).await {
         tracing::warn!(?err, "failed to publish trading event to NATS");
     }
@@ -266,6 +395,48 @@ mod tests {
                     "{terminal:?} should not transition to {target:?}"
                 );
             }
+        }
+    }
+
+    mod pending_price_validation {
+        use super::*;
+        use rust_decimal_macros::dec;
+
+        fn tick() -> Tick {
+            Tick { symbol: "EURUSD".into(), bid: dec!(1.10000), ask: dec!(1.10020) }
+        }
+
+        #[test]
+        fn buy_limit_must_be_below_current_ask() {
+            assert!(validate_pending_price_side(OrderSide::Buy, OrderType::Limit, dec!(1.09000), &tick()).is_ok());
+            assert!(validate_pending_price_side(OrderSide::Buy, OrderType::Limit, dec!(1.10020), &tick()).is_err());
+            assert!(validate_pending_price_side(OrderSide::Buy, OrderType::Limit, dec!(1.11000), &tick()).is_err());
+        }
+
+        #[test]
+        fn buy_stop_must_be_above_current_ask() {
+            assert!(validate_pending_price_side(OrderSide::Buy, OrderType::Stop, dec!(1.11000), &tick()).is_ok());
+            assert!(validate_pending_price_side(OrderSide::Buy, OrderType::Stop, dec!(1.10020), &tick()).is_err());
+            assert!(validate_pending_price_side(OrderSide::Buy, OrderType::Stop, dec!(1.09000), &tick()).is_err());
+        }
+
+        #[test]
+        fn sell_limit_must_be_above_current_bid() {
+            assert!(validate_pending_price_side(OrderSide::Sell, OrderType::Limit, dec!(1.11000), &tick()).is_ok());
+            assert!(validate_pending_price_side(OrderSide::Sell, OrderType::Limit, dec!(1.10000), &tick()).is_err());
+            assert!(validate_pending_price_side(OrderSide::Sell, OrderType::Limit, dec!(1.09000), &tick()).is_err());
+        }
+
+        #[test]
+        fn sell_stop_must_be_below_current_bid() {
+            assert!(validate_pending_price_side(OrderSide::Sell, OrderType::Stop, dec!(1.09000), &tick()).is_ok());
+            assert!(validate_pending_price_side(OrderSide::Sell, OrderType::Stop, dec!(1.10000), &tick()).is_err());
+            assert!(validate_pending_price_side(OrderSide::Sell, OrderType::Stop, dec!(1.11000), &tick()).is_err());
+        }
+
+        #[test]
+        fn market_order_type_always_rejected() {
+            assert!(validate_pending_price_side(OrderSide::Buy, OrderType::Market, dec!(1.00000), &tick()).is_err());
         }
     }
 }

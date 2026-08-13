@@ -94,4 +94,78 @@ router.post("/market", requireTraderSession, async (req: AuthedRequest, res) => 
   res.status(upstream.status).json(data);
 });
 
+// POST /v1/orders/pending — LIMIT/STOP orders, per docs/execution.md
+// §2.1 step 3. No equity/used_margin computed or forwarded here, unlike
+// /market: a pending order doesn't reserve margin while it waits — OMS
+// checks margin at trigger time instead (order_management::
+// pending_orders), the one place a pending order's outcome can still
+// differ from what the trader saw at placement.
+interface PlacePendingOrderBody {
+  symbol: string;
+  side: "BUY" | "SELL";
+  order_type: "LIMIT" | "STOP";
+  volume: string;
+  requested_price: string;
+  sl_price?: string;
+  tp_price?: string;
+}
+
+router.post("/pending", requireTraderSession, async (req: AuthedRequest, res) => {
+  const body = req.body as Partial<PlacePendingOrderBody>;
+  if (!body.symbol || !body.side || !body.order_type || !body.volume || !body.requested_price) {
+    res.status(400).json({
+      error: "missing required order fields: symbol, side, order_type, volume, requested_price",
+    });
+    return;
+  }
+  if (body.order_type !== "LIMIT" && body.order_type !== "STOP") {
+    res.status(400).json({ error: "order_type must be LIMIT or STOP" });
+    return;
+  }
+  if (!new Decimal(body.volume).isPositive()) {
+    res.status(400).json({ error: "volume must be positive" });
+    return;
+  }
+
+  const session = req.session!;
+  const brokerId = req.headers["x-broker-id"] as string;
+
+  const account = await getAccount(session.accountId, brokerId);
+  if (!account) {
+    res.status(404).json({ error: "account not found" });
+    return;
+  }
+  if (account.status !== "ACTIVE") {
+    res.status(403).json({ error: "account is not active" });
+    return;
+  }
+
+  const contractSize = await getSymbolContractSize(body.symbol);
+  if (!contractSize) {
+    res.status(400).json({ error: `unknown symbol: ${body.symbol}` });
+    return;
+  }
+
+  const payload = {
+    broker_id: brokerId,
+    account_id: session.accountId,
+    symbol: body.symbol,
+    side: body.side,
+    order_type: body.order_type,
+    volume: body.volume,
+    requested_price: body.requested_price,
+    sl_price: body.sl_price,
+    tp_price: body.tp_price,
+  };
+
+  const upstream = await fetch(`${TRADING_CORE_URL}/v1/orders/pending`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  const data = await upstream.json();
+  res.status(upstream.status).json(data);
+});
+
 export default router;

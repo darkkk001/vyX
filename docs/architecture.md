@@ -458,3 +458,21 @@ here, just the option the spec itself already pointed at.
     fallback masking it, which a too-tight first timing test briefly
     misidentified as a bug before a longer wait disproved it). See
     `risk-engine.md` §5.
+
+14. **LIMIT/STOP orders**, closing `execution.md` §2.1 step 3 — the last
+    unimplemented step in Execution's own documented design.
+    `place_pending_order` accepts a LIMIT/STOP order with no margin
+    reserved while it waits (only placement-time price-side validation);
+    a new `order-management::pending_orders` module, driven by the same
+    `price.tick.*` subscription the margin monitor uses (now fanned out
+    to both concurrently from one subscription, not two), checks the
+    real margin requirement only when the order actually triggers —
+    matching `place_market_order`'s check exactly — and fills or rejects
+    accordingly. Reuses the stop-out/SL-TP idempotent-claim pattern
+    (`try_claim_order_for_routing`) for the same double-trigger
+    protection. `POST /v1/orders/pending` added to both `engine/server`
+    and the Gateway. Verified live: placement-time price-side rejection,
+    trigger-time fill at the correct price opening a real position, and
+    trigger-time margin rejection for a deliberately oversized order that
+    placement let through (proving the margin check truly defers to
+    trigger time). See `execution.md` §5.
