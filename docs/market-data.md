@@ -123,12 +123,28 @@ environment where `NEXT_PUBLIC_GATEWAY_WS_URL` isn't set yet (i.e. hasn't
 been cut over to the Gateway). Retiring the poll entirely is a later
 cleanup once the WS path has proven itself live.
 
-**Still open / explicitly not done in this slice:**
-- The margin monitor (`order_management::monitor`) still polls Postgres
-  every `MARGIN_MONITOR_INTERVAL_SECS` rather than reacting to the NATS
-  tick stream this slice just added — a live stream now exists to drive
-  it, but wiring the monitor off of it is separate follow-up work, not
-  bundled into this slice.
+**Margin monitor — now tick-driven (follow-up to the above, same day).**
+`order_management::monitor` is triggered two ways now, funneled through a
+shared `RunGuard` (`tokio::sync::Mutex`, `try_lock`-based) so they never
+run concurrently: the pre-existing polling timer (kept as a safety net
+for quiet periods — same poll-as-fallback pattern as `WebTrader.tsx`'s
+socket) and a new NATS subscription in `engine/server` to `price.tick.*`,
+which is now the primary trigger — a real price move re-checks every
+account with an open position immediately instead of waiting for the
+next poll. Making the monitor triggerable from two concurrent sources
+exposed a real bug in `close_position_with_ledger_entry`: its `UPDATE`
+had no `WHERE status = 'OPEN'` guard, so two overlapping passes on the
+same account could both "successfully" force-close the same position and
+each write their own ledger entry, double-counting realized P&L. Fixed
+with a status-guarded, idempotent update (`rows_affected() == 0` means
+someone else already closed it — treated as a no-op, not an error).
+Verified live: seeded a test broker/account/position, published a tick
+that pushed it deep into stop-out, confirmed the position closed with
+the correct realized P&L, exactly one ledger entry, and a `margin.stop_out`
+NATS event — then replayed the same adverse tick and confirmed no second
+close and no duplicate ledger entry.
+
+**Still open / explicitly not done:**
 - `db::get_live_price` (the synchronous read `docs/execution.md`'s
   Execution module will need) is implemented but not called from
   anywhere yet — Execution module integration is its own later slice.

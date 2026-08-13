@@ -420,3 +420,13 @@ here, just the option the spec itself already pointed at.
     including the WebSocket fan-out (`services/api-gateway/src/ws.ts`)
     that replaced part of `WebTrader.tsx`'s client-side price polling
     with a push.
+
+11. **Margin monitor made tick-driven**, same-day follow-up to #10:
+    `order_management::monitor` now reacts to the `price.tick.*` stream
+    #10 added, not just its polling timer (kept as a quiet-period safety
+    net). Adding a second concurrent trigger source exposed and fixed a
+    real double-close race in `close_position_with_ledger_entry` (no
+    `WHERE status = 'OPEN'` guard on the force-close `UPDATE`) — now
+    idempotent. Verified live end to end, including replaying the same
+    stop-out-triggering tick to confirm no duplicate close/ledger entry.
+    See `market-data.md` §5.

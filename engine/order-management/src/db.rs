@@ -340,22 +340,36 @@ pub async fn get_open_positions_with_market(
 /// Force-closes one position (stop-out) and records the realized P&L as a
 /// ledger entry, in one transaction. `close_price` is whatever the caller
 /// already resolved (bid for a BUY, ask for a SELL — see monitor.rs).
+///
+/// Idempotent via `AND status = 'OPEN'` + `rows_affected()`: now that the
+/// monitor can be triggered both by the polling timer and by every
+/// incoming tick (see monitor.rs's module doc), two evaluation passes can
+/// legitimately race on the same account. Without this guard both could
+/// "successfully" close the same position and each insert their own
+/// ledger entry — double-counting realized P&L. Returns `None` (no
+/// ledger entry written) when the position had already been closed by a
+/// concurrent pass by the time this one's UPDATE ran.
 pub async fn close_position_with_ledger_entry(
     tx: &mut sqlx::PgTransaction<'_>,
     position_id: &str,
     account_id: &str,
     close_price: Decimal,
     realized_pnl: Decimal,
-) -> Result<String, sqlx::Error> {
-    sqlx::query(
+) -> Result<Option<String>, sqlx::Error> {
+    let result = sqlx::query(
         r#"UPDATE positions SET status = 'CLOSED'::position_status, close_price = $1,
-           realized_pnl = $2, closed_at = now() WHERE id = $3"#,
+           realized_pnl = $2, closed_at = now()
+           WHERE id = $3 AND status = 'OPEN'::position_status"#,
     )
     .bind(close_price)
     .bind(realized_pnl)
     .bind(position_id)
     .execute(&mut **tx)
     .await?;
+
+    if result.rows_affected() == 0 {
+        return Ok(None);
+    }
 
     let entry_id = Uuid::new_v4().to_string();
     sqlx::query(
@@ -369,5 +383,5 @@ pub async fn close_position_with_ledger_entry(
     .execute(&mut **tx)
     .await?;
 
-    Ok(entry_id)
+    Ok(Some(entry_id))
 }

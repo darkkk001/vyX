@@ -14,6 +14,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use futures_util::StreamExt;
 use order_management::{db, events, PlaceMarketOrderOutcome, PlaceMarketOrderRequest};
 use protocol::{OrderSide, Tick};
 use rust_decimal::Decimal;
@@ -169,6 +170,31 @@ async fn ingest_price_feed(
     Ok(Json(PriceFeedResponse { ok: true, count }))
 }
 
+/// Subscribes the margin monitor to the Market Data Core's tick stream
+/// (../../docs/market-data.md §2) so it reacts to real price movement
+/// instead of only the polling timer in `order_management::monitor::
+/// spawn`. Every symbol's ticks land on `price.tick.*`; the monitor
+/// doesn't currently narrow evaluation to accounts holding that specific
+/// symbol (see order_management::monitor::run_once — it scans every
+/// account with an open position), so any tick is a valid trigger to
+/// re-check everyone. `run_once_guarded` makes a burst of ticks collapse
+/// into one pass rather than piling up concurrent scans.
+async fn spawn_margin_monitor_tick_trigger(
+    pool: PgPool,
+    nats: async_nats::Client,
+    thresholds: margin::MarginThresholds,
+    guard: order_management::monitor::RunGuard,
+) -> Result<(), async_nats::SubscribeError> {
+    let mut sub = nats.subscribe("price.tick.*").await?;
+    tokio::spawn(async move {
+        while sub.next().await.is_some() {
+            order_management::monitor::run_once_guarded(&pool, &nats, thresholds, &guard).await;
+        }
+        tracing::warn!("margin monitor: price.tick.* subscription ended, tick-driven triggering stopped");
+    });
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt::init();
@@ -183,20 +209,28 @@ async fn main() {
         .expect("failed to connect to Postgres");
     let nats = events::connect(&nats_url).await.expect("failed to connect to NATS");
 
-    // Margin monitor — see order_management::monitor. Polling interval is
-    // a placeholder cadence, not a tick-driven trigger (no running Rust
-    // market-data ingest service exists yet to drive this off real ticks
-    // — see docs/market-data.md's implementation status).
+    // Margin monitor — see order_management::monitor's module doc. Two
+    // trigger sources sharing one guard so they never run concurrently:
+    // the polling timer below (a safety net for quiet periods) and the
+    // NATS tick subscription (spawn_margin_monitor_tick_trigger, the
+    // primary path — reacts to real price movement instead of waiting
+    // for the next poll).
     let monitor_interval_secs: u64 = std::env::var("MARGIN_MONITOR_INTERVAL_SECS")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(5);
+    let monitor_guard = order_management::monitor::new_run_guard();
+    let monitor_thresholds = margin::MarginThresholds::default();
     order_management::monitor::spawn(
         pool.clone(),
         nats.clone(),
-        margin::MarginThresholds::default(),
+        monitor_thresholds,
         std::time::Duration::from_secs(monitor_interval_secs),
+        monitor_guard.clone(),
     );
+    spawn_margin_monitor_tick_trigger(pool.clone(), nats.clone(), monitor_thresholds, monitor_guard)
+        .await
+        .expect("failed to subscribe margin monitor to price.tick.*");
 
     let state = Arc::new(AppState { pool, nats, price_feed_secret });
 
