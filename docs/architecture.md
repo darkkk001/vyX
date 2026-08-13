@@ -310,12 +310,25 @@ here, just the option the spec itself already pointed at.
    `risk-engine.md`, `execution.md`, `market-data.md`, `database.md`,
    `api.md`, `authentication.md`, `security.md`, `deployment.md`,
    `testing.md`, `decisions.md` all exist alongside this file.
-3. Phase 1 (Rust workspace scaffold) — started: `/engine` exists with all
+3. Phase 1 (Rust workspace scaffold) — done: `/engine` exists with all
    8 module crates (`protocol`, `market-data`, `order-management`,
-   `position`, `risk`, `margin`, `execution`, `ledger`), each with a
-   Cargo.toml and a scaffold `lib.rs`. Pure-function logic with no I/O
-   dependency is implemented and unit-tested now (state-machine legality,
-   the margin formula, margin-call/stop-out evaluation, candle bucketing,
-   internal-strategy fill pricing) — see `/engine/README.md`. Postgres/
-   Redis/NATS wiring and the API Gateway extraction are still open; the
-   existing Next.js trading path is untouched throughout, per ADR-003.
+   `position`, `risk`, `margin`, `execution`, `ledger`). Pure-function
+   logic with no I/O dependency is implemented and unit-tested (16 tests,
+   0 failures): state-machine legality, the margin formula, margin-call/
+   stop-out evaluation, candle bucketing, internal-strategy fill pricing.
+   See `/engine/README.md`.
+4. Phase 2 (Trading Core) — first slice done: Postgres schema for the
+   Rust-owned tables (`engine/migrations/`, per ADR-002 — not yet applied
+   to the live database, needs to be run manually the same way prior
+   Prisma migrations were), a `sqlx`-based persistence layer in
+   `order-management::db`, a real `place_market_order` orchestration
+   function wiring OMS -> Risk -> Execution -> Position in one
+   transaction (matching the sequence diagram in `trading-engine.md` §2),
+   and NATS event publishing (`order-management::events`) after each
+   commit. Still open: the API Gateway that would actually call
+   `place_market_order` (today nothing invokes it — it's a library
+   function, not a running service yet), Redis/session wiring, and the
+   margin-monitor loop actually running continuously against live ticks
+   (`margin::evaluate` exists and is tested, but nothing calls it on a
+   schedule yet). The existing Next.js trading path is untouched
+   throughout, per ADR-003.

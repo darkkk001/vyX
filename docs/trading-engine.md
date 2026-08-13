@@ -5,6 +5,19 @@ Risk, Margin, and Execution are their own docs (`risk-engine.md`,
 `execution.md`) — this one is the order lifecycle and the module boundary
 around it.
 
+**Implementation status:** the MARKET-order path in §2.1/§2.3 is
+implemented — `engine/order-management::place_market_order` runs the full
+NEW → VALIDATING → ACCEPTED|REJECTED → ROUTING → FILLED sequence in one
+Postgres transaction, calling `risk::check_free_margin` and
+`execution::execute_market_order`, publishing a NATS event after commit.
+Not yet wired: anything that actually *calls* `place_market_order` — it's
+a library function today, not exposed behind the API Gateway (`api.md`
+§4 is still open), and the account/symbol figures it needs (equity,
+used_margin, contract_size, leverage) are passed in by the caller rather
+than fetched, since OMS doesn't own that Prisma data (ADR-002). LIMIT/STOP
+orders, cancel/modify, and the position-application step beyond "insert
+one position per fill" remain undone.
+
 ---
 
 ## 1. Today (Next.js/Prisma, unchanged until cutover)
