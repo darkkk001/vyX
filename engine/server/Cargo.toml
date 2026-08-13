@@ -10,6 +10,7 @@ path = "src/main.rs"
 [dependencies]
 protocol = { path = "../protocol" }
 order-management = { path = "../order-management" }
+margin = { path = "../margin" }
 tokio.workspace = true
 axum.workspace = true
 serde.workspace = true

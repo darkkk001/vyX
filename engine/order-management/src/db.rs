@@ -235,3 +235,139 @@ pub async fn get_order(pool: &PgPool, order_id: &str) -> Result<Option<OrderRow>
         created_at,
     }))
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// Margin monitor support — see monitor.rs. Reads Account (Prisma-owned,
+// ADR-002) the same way services/api-gateway/src/db.ts does for the
+// same reason: the monitor needs balance/credit/leverage to compute
+// equity, and only Prisma writes that table, but reading it isn't a
+// boundary violation — only writing it would be. This module never
+// writes to "Account".
+// ─────────────────────────────────────────────────────────────────────
+
+#[derive(Debug)]
+pub struct AccountFunds {
+    pub balance: Decimal,
+    pub credit: Decimal,
+    pub leverage: i32,
+}
+
+pub async fn get_account_funds(pool: &PgPool, account_id: &str) -> Result<Option<AccountFunds>, sqlx::Error> {
+    let row = sqlx::query_as::<_, (Decimal, Decimal, i32)>(
+        r#"SELECT balance, credit, leverage FROM "Account" WHERE id = $1"#,
+    )
+    .bind(account_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|(balance, credit, leverage)| AccountFunds { balance, credit, leverage }))
+}
+
+/// Sum of every ledger entry recorded for this account so far. Account.balance
+/// is Prisma-owned and this crate never writes to it (see above) — realized
+/// P&L from a force-close still needs to count toward the account's true
+/// current balance, so it's tracked here as a delta on top of whatever
+/// Account.balance currently holds, rather than requiring a cross-boundary
+/// write. Callers (this monitor, and services/api-gateway) both compute
+/// "effective balance" as `Account.balance + get_ledger_sum(...)`.
+pub async fn get_ledger_sum(pool: &PgPool, account_id: &str) -> Result<Decimal, sqlx::Error> {
+    let (sum,): (Decimal,) = sqlx::query_as(
+        "SELECT COALESCE(SUM(amount), 0) FROM ledger_entries WHERE account_id = $1",
+    )
+    .bind(account_id)
+    .fetch_one(pool)
+    .await?;
+    Ok(sum)
+}
+
+pub async fn get_account_ids_with_open_positions(pool: &PgPool) -> Result<Vec<String>, sqlx::Error> {
+    let rows: Vec<(String,)> =
+        sqlx::query_as("SELECT DISTINCT account_id FROM positions WHERE status = 'OPEN'")
+            .fetch_all(pool)
+            .await?;
+    Ok(rows.into_iter().map(|(id,)| id).collect())
+}
+
+#[derive(Debug, Clone)]
+pub struct OpenPositionWithMarket {
+    pub id: String,
+    pub symbol: String,
+    pub side: OrderSide,
+    pub volume: Decimal,
+    pub open_price: Decimal,
+    pub contract_size: Decimal,
+    pub bid: Option<Decimal>,
+    pub ask: Option<Decimal>,
+}
+
+/// LEFT JOIN on LivePrice, same reasoning as
+/// services/api-gateway/src/db.ts's getOpenPositionsSummary: a position
+/// whose symbol has no current tick still counts toward margin at its
+/// open price (dropping it would understate risk) but can't contribute a
+/// floating P&L figure — callers treat `bid`/`ask: None` as "skip this
+/// one for P&L, not for margin."
+pub async fn get_open_positions_with_market(
+    pool: &PgPool,
+    account_id: &str,
+) -> Result<Vec<OpenPositionWithMarket>, sqlx::Error> {
+    let rows: Vec<(String, String, String, Decimal, Decimal, Decimal, Option<Decimal>, Option<Decimal>)> =
+        sqlx::query_as(
+            r#"SELECT p.id, p.symbol, p.side::text, p.volume, p.open_price, s."contractSize",
+                      lp.bid, lp.ask
+               FROM positions p
+               JOIN "Symbol" s ON s.name = p.symbol
+               LEFT JOIN "LivePrice" lp ON lp.symbol = p.symbol
+               WHERE p.account_id = $1 AND p.status = 'OPEN'"#,
+        )
+        .bind(account_id)
+        .fetch_all(pool)
+        .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|(id, symbol, side, volume, open_price, contract_size, bid, ask)| OpenPositionWithMarket {
+            id,
+            symbol,
+            side: side_from_str(&side),
+            volume,
+            open_price,
+            contract_size,
+            bid,
+            ask,
+        })
+        .collect())
+}
+
+/// Force-closes one position (stop-out) and records the realized P&L as a
+/// ledger entry, in one transaction. `close_price` is whatever the caller
+/// already resolved (bid for a BUY, ask for a SELL — see monitor.rs).
+pub async fn close_position_with_ledger_entry(
+    tx: &mut sqlx::PgTransaction<'_>,
+    position_id: &str,
+    account_id: &str,
+    close_price: Decimal,
+    realized_pnl: Decimal,
+) -> Result<String, sqlx::Error> {
+    sqlx::query(
+        r#"UPDATE positions SET status = 'CLOSED'::position_status, close_price = $1,
+           realized_pnl = $2, closed_at = now() WHERE id = $3"#,
+    )
+    .bind(close_price)
+    .bind(realized_pnl)
+    .bind(position_id)
+    .execute(&mut **tx)
+    .await?;
+
+    let entry_id = Uuid::new_v4().to_string();
+    sqlx::query(
+        r#"INSERT INTO ledger_entries (id, account_id, entry_type, amount, related_position_id)
+           VALUES ($1, $2, 'REALIZED_PNL'::ledger_entry_type, $3, $4)"#,
+    )
+    .bind(&entry_id)
+    .bind(account_id)
+    .bind(realized_pnl)
+    .bind(position_id)
+    .execute(&mut **tx)
+    .await?;
+
+    Ok(entry_id)
+}

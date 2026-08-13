@@ -113,3 +113,19 @@ export async function getOpenPositionsSummary(
 
   return { usedMargin, floatingPnl };
 }
+
+// Account.balance is Prisma-owned and this service never writes it. When
+// engine/order-management::monitor force-closes a position (stop-out), it
+// records the realized P&L as a ledger_entries row instead of writing
+// Account.balance directly (a cross-boundary write ADR-002 doesn't allow)
+// — see engine/order-management/src/db.rs's get_ledger_sum doc comment.
+// So the account's true current balance is Account.balance PLUS every
+// ledger entry recorded since — both this Gateway and the Rust monitor
+// compute "effective balance" the same way, from the same two sources.
+export async function getLedgerSum(accountId: string): Promise<Decimal> {
+  const { rows } = await pool.query(
+    `SELECT COALESCE(SUM(amount), 0) AS total FROM ledger_entries WHERE account_id = $1`,
+    [accountId]
+  );
+  return new Decimal(rows[0].total ?? 0);
+}

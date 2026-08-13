@@ -35,6 +35,14 @@ For every incoming order:
    defaults to "no limit" so existing demo brokers are unaffected until a
    broker admin sets one.
 
+**Implementation status:** §2.2 below is implemented —
+`engine/order-management::monitor`, polling on an interval rather than
+literally per-tick (see `market-data.md`'s implementation status for
+why), covering both the margin-call notification and the stop-out
+force-close, including how a force-close's realized P&L is recorded
+without violating `Account.balance`'s Prisma ownership (see
+`architecture.md`'s Phase 2 log for the resolution).
+
 ### 2.2 Ongoing margin monitoring (async, runs continuously against live prices)
 
 Not order-triggered — runs on every price tick from the Market Data Core

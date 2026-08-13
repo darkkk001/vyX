@@ -118,6 +118,21 @@ async fn main() {
         .expect("failed to connect to Postgres");
     let nats = events::connect(&nats_url).await.expect("failed to connect to NATS");
 
+    // Margin monitor — see order_management::monitor. Polling interval is
+    // a placeholder cadence, not a tick-driven trigger (no running Rust
+    // market-data ingest service exists yet to drive this off real ticks
+    // — see docs/market-data.md's implementation status).
+    let monitor_interval_secs: u64 = std::env::var("MARGIN_MONITOR_INTERVAL_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(5);
+    order_management::monitor::spawn(
+        pool.clone(),
+        nats.clone(),
+        margin::MarginThresholds::default(),
+        std::time::Duration::from_secs(monitor_interval_secs),
+    );
+
     let state = Arc::new(AppState { pool, nats });
 
     let app = Router::new()

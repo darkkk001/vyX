@@ -359,10 +359,31 @@ here, just the option the spec itself already pointed at.
    would understate risk). Formula matches `lib/trading.ts`'s
    `computeRealizedPnl` exactly. `equity = balance + credit + floatingPnl`.
 
-   Still open: Redis/session hardening (`authentication.md` §2), and the
-   margin-monitor loop actually running continuously against live ticks
-   (`margin::evaluate` exists and is tested, but nothing calls it on a
-   schedule — this is now the main remaining gap between "risk-checked at
-   order time" and the full ongoing margin-call/stop-out behavior
-   described in `risk-engine.md` §2.2). The existing Next.js trading path
-   is untouched throughout, per ADR-003.
+8. Phase 2 continued — margin monitor implemented:
+   `order_management::monitor` polls every account with an open position
+   on an interval (`MARGIN_MONITOR_INTERVAL_SECS`, default 5s — not
+   literally tick-driven yet, since no running Rust market-data ingest
+   service exists to trigger it off real ticks; polling is the honest
+   interim substitute, see `market-data.md`'s implementation status),
+   computes equity/used margin the same way the order-placement path
+   does, and calls `margin::evaluate`. On margin call it publishes a
+   `margin.call` NATS event. On stop-out it force-closes the account's
+   worst (most negative floating P&L) closeable position, records the
+   realized P&L as a `ledger_entries` row, and repeats until the account
+   is back above the stop-out threshold or runs out of closeable
+   positions — bounded by the account's own open-position count, so it
+   can't loop unboundedly. Spawned as a background task alongside the
+   Axum server in `engine/server`.
+
+   **Resolved a real ownership question along the way:** `Account.balance`
+   is Prisma-owned (ADR-002) and this crate never writes it, but
+   force-closing a position realizes P&L that has to count toward the
+   account's true balance somehow. Resolution: `ledger_entries` (already
+   Rust-owned) is the delta trail — "effective balance" = `Account.balance
+   + SUM(ledger_entries.amount)`. Both the monitor and
+   `services/api-gateway` (order placement's equity calc) now compute it
+   this way identically, so nobody has to cross the ownership boundary to
+   write a number the other side already owns.
+
+   Still open: Redis/session hardening (`authentication.md` §2). The
+   existing Next.js trading path is untouched throughout, per ADR-003.

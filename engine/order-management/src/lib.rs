@@ -8,6 +8,7 @@
 
 pub mod db;
 pub mod events;
+pub mod monitor;
 
 use protocol::{Fill, OrderSide, OrderStatus, OrderType, RiskRejection, Tick, TradingEvent};
 use rust_decimal::Decimal;

@@ -11,7 +11,7 @@ import { Router } from "express";
 import { Decimal } from "decimal.js";
 import type { AuthedRequest } from "../auth.js";
 import { requireTraderSession } from "../auth.js";
-import { getAccount, getLivePrice, getOpenPositionsSummary, getSymbolContractSize } from "../db.js";
+import { getAccount, getLedgerSum, getLivePrice, getOpenPositionsSummary, getSymbolContractSize } from "../db.js";
 
 const router = Router();
 
@@ -62,7 +62,9 @@ router.post("/market", requireTraderSession, async (req: AuthedRequest, res) => 
   }
 
   const { usedMargin, floatingPnl } = await getOpenPositionsSummary(session.accountId, account.leverage);
-  const equity = account.balance.plus(account.credit).plus(floatingPnl);
+  const ledgerSum = await getLedgerSum(session.accountId);
+  const effectiveBalance = account.balance.plus(ledgerSum);
+  const equity = effectiveBalance.plus(account.credit).plus(floatingPnl);
 
   const payload = {
     broker_id: brokerId,

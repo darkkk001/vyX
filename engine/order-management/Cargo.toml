@@ -6,7 +6,9 @@ edition.workspace = true
 [dependencies]
 protocol = { path = "../protocol" }
 risk = { path = "../risk" }
+margin = { path = "../margin" }
 execution = { path = "../execution" }
+ledger = { path = "../ledger" }
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
