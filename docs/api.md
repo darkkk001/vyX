@@ -7,8 +7,8 @@ itself fetches Account/Symbol/LivePrice from Postgres (`src/db.ts`, plain
 `pg`, read-only) before forwarding to `engine/server`'s
 `trading-core-server`. A client can only specify which order to place,
 never its own margin/price. Standalone service, own `package.json`,
-doesn't touch the root Next.js app or its build. Known remaining gap:
-equity doesn't include floating P&L of open positions yet.
+doesn't touch the root Next.js app or its build. Equity includes floating
+P&L of open positions (matches `lib/trading.ts`'s P&L formula exactly).
 
 ## 1. Today
 

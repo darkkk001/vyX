@@ -351,10 +351,18 @@ here, just the option the spec itself already pointed at.
    Money math uses `decimal.js` throughout, matching the project's
    Decimal-only rule.
 
-   Still open: floating P&L isn't included in the equity calculation yet
-   (needs a per-position unrealized-P&L calc against current price —
-   `risk-engine.md`'s margin-monitor territory, not built), Redis/session
-   hardening (`authentication.md` §2), and the margin-monitor loop
-   actually running continuously against live ticks (`margin::evaluate`
-   exists and is tested, but nothing calls it on a schedule). The
-   existing Next.js trading path is untouched throughout, per ADR-003.
+7. Phase 2 continued — equity now includes floating P&L: `getOpenPositionsSummary`
+   (`services/api-gateway/src/db.ts`) computes both used margin and
+   unrealized P&L for the account's open Rust-owned positions in one
+   query (LEFT JOIN on `LivePrice` so a position with no current tick
+   still counts toward margin, just not toward P&L — silently dropping it
+   would understate risk). Formula matches `lib/trading.ts`'s
+   `computeRealizedPnl` exactly. `equity = balance + credit + floatingPnl`.
+
+   Still open: Redis/session hardening (`authentication.md` §2), and the
+   margin-monitor loop actually running continuously against live ticks
+   (`margin::evaluate` exists and is tested, but nothing calls it on a
+   schedule — this is now the main remaining gap between "risk-checked at
+   order time" and the full ongoing margin-call/stop-out behavior
+   described in `risk-engine.md` §2.2). The existing Next.js trading path
+   is untouched throughout, per ADR-003.

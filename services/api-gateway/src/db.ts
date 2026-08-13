@@ -59,20 +59,57 @@ export async function getLivePrice(symbol: string): Promise<LivePriceRow | null>
   return { bid: new Decimal(rows[0].bid), ask: new Decimal(rows[0].ask) };
 }
 
-// Sum of required margin across the account's open Rust-owned positions
-// (engine/migrations' `positions` table, lowercase/snake_case — a
-// separate table family from Prisma's PascalCase `Position`, per
-// docs/database.md §3). Joins to "Symbol" for each position's contract
-// size since positions can span multiple symbols; leverage is
-// account-level so it's applied once, outside the SQL sum.
-export async function getUsedMargin(accountId: string, leverage: number): Promise<Decimal> {
+export interface OpenPositionsSummary {
+  usedMargin: Decimal;
+  floatingPnl: Decimal;
+}
+
+// Used margin AND floating P&L across the account's open Rust-owned
+// positions (engine/migrations' `positions` table, lowercase/snake_case
+// — a separate table family from Prisma's PascalCase `Position`, per
+// docs/database.md §3), in one query since both need the same
+// per-position join to "Symbol" (contract size) and "LivePrice" (current
+// bid/ask). LEFT JOIN on LivePrice rather than INNER: a position whose
+// symbol currently has no live tick (shouldn't normally happen, per
+// docs/market-data.md, but isn't impossible) still counts toward used
+// margin at its own open price — silently dropping it would understate
+// risk, which is the wrong direction to be wrong in — but contributes 0
+// floating P&L rather than a guess.
+//
+// Floating P&L formula matches lib/trading.ts's computeRealizedPnl
+// exactly (BUY: (closePrice - openPrice), SELL: (openPrice - closePrice),
+// times contractSize times volume) — "close" here is bid for an open BUY
+// (what closing it now would fill at) and ask for an open SELL, mirroring
+// engine/execution's fill-side convention.
+export async function getOpenPositionsSummary(
+  accountId: string,
+  leverage: number
+): Promise<OpenPositionsSummary> {
   const { rows } = await pool.query(
-    `SELECT COALESCE(SUM(p.volume * s."contractSize" * p.open_price), 0) AS notional
+    `SELECT p.side::text AS side, p.volume, p.open_price, s."contractSize" AS contract_size,
+            lp.bid, lp.ask
      FROM positions p
      JOIN "Symbol" s ON s.name = p.symbol
+     LEFT JOIN "LivePrice" lp ON lp.symbol = p.symbol
      WHERE p.account_id = $1 AND p.status = 'OPEN'`,
     [accountId]
   );
-  const notional = new Decimal(rows[0].notional ?? 0);
-  return notional.div(leverage);
+
+  let usedMargin = new Decimal(0);
+  let floatingPnl = new Decimal(0);
+
+  for (const row of rows) {
+    const volume = new Decimal(row.volume);
+    const openPrice = new Decimal(row.open_price);
+    const contractSize = new Decimal(row.contract_size);
+
+    usedMargin = usedMargin.plus(volume.times(contractSize).times(openPrice).div(leverage));
+
+    if (row.bid == null || row.ask == null) continue;
+    const closePrice = row.side === "BUY" ? new Decimal(row.bid) : new Decimal(row.ask);
+    const diff = row.side === "BUY" ? closePrice.minus(openPrice) : openPrice.minus(closePrice);
+    floatingPnl = floatingPnl.plus(diff.times(contractSize).times(volume));
+  }
+
+  return { usedMargin, floatingPnl };
 }

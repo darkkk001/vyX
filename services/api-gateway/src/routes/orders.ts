@@ -11,7 +11,7 @@ import { Router } from "express";
 import { Decimal } from "decimal.js";
 import type { AuthedRequest } from "../auth.js";
 import { requireTraderSession } from "../auth.js";
-import { getAccount, getLivePrice, getSymbolContractSize, getUsedMargin } from "../db.js";
+import { getAccount, getLivePrice, getOpenPositionsSummary, getSymbolContractSize } from "../db.js";
 
 const router = Router();
 
@@ -61,14 +61,8 @@ router.post("/market", requireTraderSession, async (req: AuthedRequest, res) => 
     return;
   }
 
-  const usedMargin = await getUsedMargin(session.accountId, account.leverage);
-  // Equity = balance + credit + floating P&L of open positions. Floating
-  // P&L isn't included yet — that needs a per-position unrealized-P&L
-  // calc against current price (docs/risk-engine.md's margin-monitor
-  // territory, not built yet) — so equity is understated whenever the
-  // account has open positions in profit, and overstated when in loss.
-  // Flagged here rather than silently treated as exact.
-  const equity = account.balance.plus(account.credit);
+  const { usedMargin, floatingPnl } = await getOpenPositionsSummary(session.accountId, account.leverage);
+  const equity = account.balance.plus(account.credit).plus(floatingPnl);
 
   const payload = {
     broker_id: brokerId,
