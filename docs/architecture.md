@@ -310,5 +310,12 @@ here, just the option the spec itself already pointed at.
    `risk-engine.md`, `execution.md`, `market-data.md`, `database.md`,
    `api.md`, `authentication.md`, `security.md`, `deployment.md`,
    `testing.md`, `decisions.md` all exist alongside this file.
-3. Next: Phase 1 (Rust workspace scaffold) — not started yet, per the
-   spec's own rule not to begin implementation before Phase 0 review.
+3. Phase 1 (Rust workspace scaffold) — started: `/engine` exists with all
+   8 module crates (`protocol`, `market-data`, `order-management`,
+   `position`, `risk`, `margin`, `execution`, `ledger`), each with a
+   Cargo.toml and a scaffold `lib.rs`. Pure-function logic with no I/O
+   dependency is implemented and unit-tested now (state-machine legality,
+   the margin formula, margin-call/stop-out evaluation, candle bucketing,
+   internal-strategy fill pricing) — see `/engine/README.md`. Postgres/
+   Redis/NATS wiring and the API Gateway extraction are still open; the
+   existing Next.js trading path is untouched throughout, per ADR-003.

@@ -37,6 +37,11 @@ yarn-error.log*
 # vercel
 .vercel
 
+# rust (engine/)
+/engine/target/
+**/target/
+Cargo.lock
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts

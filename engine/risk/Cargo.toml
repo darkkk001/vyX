@@ -1,0 +1,12 @@
+[package]
+name = "risk"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+protocol = { path = "../protocol" }
+rust_decimal.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+rust_decimal_macros = "1"

@@ -1,0 +1,14 @@
+[package]
+name = "order-management"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+protocol = { path = "../protocol" }
+tokio.workspace = true
+serde.workspace = true
+rust_decimal.workspace = true
+sqlx.workspace = true
+async-nats.workspace = true
+thiserror.workspace = true
+tracing.workspace = true

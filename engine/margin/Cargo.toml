@@ -1,0 +1,12 @@
+[package]
+name = "margin"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+protocol = { path = "../protocol" }
+risk = { path = "../risk" }
+rust_decimal.workspace = true
+
+[dev-dependencies]
+rust_decimal_macros = "1"

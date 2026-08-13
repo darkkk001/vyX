@@ -1,0 +1,10 @@
+[package]
+name = "ledger"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+protocol = { path = "../protocol" }
+rust_decimal.workspace = true
+serde.workspace = true
+sqlx.workspace = true
