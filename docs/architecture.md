@@ -338,12 +338,23 @@ here, just the option the spec itself already pointed at.
    type-checks, builds, and its health/auth-rejection behavior was
    smoke-tested end to end.
 
-   **Known gap, stated plainly:** the Gateway does not yet look up the
-   caller's account/symbol/price data in Postgres (Account.leverage/
-   balance/credit, Symbol.contractSize, LivePrice) — those fields are
-   currently trusted from the request body as-is rather than fetched.
-   That lookup, Redis/session hardening (`authentication.md` §2), and the
-   margin-monitor loop actually running continuously against live ticks
-   (`margin::evaluate` exists and is tested, but nothing calls it on a
-   schedule) remain open. The existing Next.js trading path is untouched
-   throughout, per ADR-003.
+6. Phase 2 continued — closed the "trusts the client" gap: the Gateway
+   now fetches Account (balance/credit/leverage/status), Symbol
+   (contractSize), and LivePrice itself via a read-only `pg` client
+   (`services/api-gateway/src/db.ts` — plain SQL, not Prisma Client,
+   since sharing a generated Prisma client across two independently
+   -installed npm packages needs monorepo/workspace tooling this project
+   doesn't have; that would mean touching the root `package.json`, out of
+   scope for closing this specific gap) and computes used margin from the
+   account's open Rust-owned positions. A client can now only specify
+   *which* order to place, never fake its own balance/margin/price.
+   Money math uses `decimal.js` throughout, matching the project's
+   Decimal-only rule.
+
+   Still open: floating P&L isn't included in the equity calculation yet
+   (needs a per-position unrealized-P&L calc against current price —
+   `risk-engine.md`'s margin-monitor territory, not built), Redis/session
+   hardening (`authentication.md` §2), and the margin-monitor loop
+   actually running continuously against live ticks (`margin::evaluate`
+   exists and is tested, but nothing calls it on a schedule). The
+   existing Next.js trading path is untouched throughout, per ADR-003.

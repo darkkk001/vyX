@@ -1,12 +1,14 @@
 # API
 
-**Implementation status:** `services/api-gateway` exists as a skeleton —
-session auth (reusing the existing trader JWT, see `authentication.md`)
-and one route, `POST /v1/orders/market`, forwarding to
-`engine/server`'s `trading-core-server`. It does not yet read
-Account/Symbol/LivePrice from Postgres itself (see §4's resolution below)
-— those fields are trusted from the caller for now. Standalone service,
-own `package.json`, doesn't touch the root Next.js app or its build.
+**Implementation status:** `services/api-gateway` exists as a working
+first slice — session auth (reusing the existing trader JWT, see
+`authentication.md`) and one route, `POST /v1/orders/market`, which
+itself fetches Account/Symbol/LivePrice from Postgres (`src/db.ts`, plain
+`pg`, read-only) before forwarding to `engine/server`'s
+`trading-core-server`. A client can only specify which order to place,
+never its own margin/price. Standalone service, own `package.json`,
+doesn't touch the root Next.js app or its build. Known remaining gap:
+equity doesn't include floating P&L of open positions yet.
 
 ## 1. Today
 
