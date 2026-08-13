@@ -8,23 +8,19 @@ Format: one entry per decision. Status is one of `Proposed`, `Accepted`,
 
 ## ADR-001 — Desktop shell: Electron vs Tauri
 
-**Status:** Proposed — awaiting approval
+**Status:** Accepted — **Tauri**, per explicit direction.
 
-**Context:** The spec defaults to Tauri. A working Electron desktop app
-already exists from earlier in this engagement (frameless title bar,
-tray, notifications, auto-update, per-broker rebrand tooling).
+**Context:** A working Electron desktop app exists from earlier in this
+engagement (frameless title bar, tray, notifications, auto-update,
+per-broker rebrand tooling). It stays in place and keeps working as-is —
+nothing about it breaks today — but the target desktop app for the
+Trading Core ecosystem (Phase 4) is built in Tauri, not evolved from the
+Electron shell.
 
-**Options:**
-- Keep Electron (already built, working, larger binary/memory footprint)
-- Migrate to Tauri (spec default, smaller footprint, Rust-native — could
-  share code with the new Trading Core, but is a full rebuild of desktop
-  chrome that just got finished)
-
-**Recommendation:** Keep Electron now; revisit for a v2 once the Trading
-Core exists and a concrete reason to share Rust code with the desktop
-shell shows up.
-
-**Decision:** _pending_
+**Decision:** Tauri for the new desktop workstation (Phase 4). The
+existing Electron app (`desktop/`) is not deleted; it continues to serve
+the current Next.js-only web app until Phase 4 replaces it. Migration
+notes captured in `deployment.md`.
 
 ---
 
