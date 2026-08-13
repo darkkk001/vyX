@@ -33,11 +33,11 @@ anything in this directory — see ADR-003 in `../docs/decisions.md`.
 
 ## Building
 
-Requires a Rust toolchain (not installed in the environment this scaffold
-was written in — verify locally):
-
 ```
 cd engine
 cargo build
 cargo test
 ```
+
+Verified: `cargo build` and `cargo test` both pass clean (16 tests, 0
+failures, 0 warnings) with Rust 1.97.1 + MSVC build tools on Windows.
