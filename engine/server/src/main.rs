@@ -187,8 +187,10 @@ async fn spawn_margin_monitor_tick_trigger(
     guard: order_management::monitor::RunGuard,
 ) -> Result<(), async_nats::SubscribeError> {
     let mut sub = nats.subscribe("price.tick.*").await?;
+    tracing::info!("margin monitor: subscribed to price.tick.*");
     tokio::spawn(async move {
-        while sub.next().await.is_some() {
+        while let Some(msg) = sub.next().await {
+            tracing::debug!(subject = %msg.subject, "margin monitor: tick received, triggering evaluation");
             order_management::monitor::run_once_guarded(&pool, &nats, thresholds, &guard).await;
         }
         tracing::warn!("margin monitor: price.tick.* subscription ended, tick-driven triggering stopped");

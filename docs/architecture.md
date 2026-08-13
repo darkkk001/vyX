@@ -442,3 +442,19 @@ here, just the option the spec itself already pointed at.
     payload, a clean rejection for a symbol with no live price, and
     confirmation the pre-existing free-margin rejection still fires
     correctly with the reordered checks. See `execution.md` §5.
+
+13. **Per-position SL/TP is now actually enforced** — a gap found while
+    auditing for exactly this class of issue, not something either this
+    doc or `risk-engine.md` had previously flagged as deferred. Until
+    now, nothing server-side ever closed a position when price reached
+    the trader's own stop-loss/take-profit; only unrelated margin-ratio
+    stop-out could force-close anything. `order_management::monitor`
+    checks every open position's SL/TP against the current tick before
+    its margin-level check, closing any that crossed and publishing
+    `position.stop_loss_hit`/`position.take_profit_hit`. Verified live: a
+    BUY's SL and a SELL's TP both triggered correctly on the same tick
+    with correct realized P&L, and the tick-driven trigger confirmed to
+    actually fire within about a second (not just the polling-timer
+    fallback masking it, which a too-tight first timing test briefly
+    misidentified as a bug before a longer wait disproved it). See
+    `risk-engine.md` §5.

@@ -1,8 +1,11 @@
-//! Margin monitor — see ../../docs/risk-engine.md §2.2. One pass: every
-//! account with an open position gets its margin level checked; margin
-//! calls are published as events, stop-outs force-close positions until
-//! the account is back above the stop-out threshold or runs out of
-//! positions to close.
+//! Margin monitor — see ../../docs/risk-engine.md §2.2. One pass, per
+//! account with an open position: first, every position whose own SL/TP
+//! has been crossed closes (independent of margin — a trader's stop loss
+//! protects them even nowhere near a margin call); then the account's
+//! margin level is checked on whatever positions remain — margin calls
+//! are published as events, stop-outs force-close positions until the
+//! account is back above the stop-out threshold or runs out of positions
+//! to close.
 //!
 //! Triggered two ways, both funneled through `run_once_guarded` so they
 //! never run concurrently (see that function's doc, and db.rs's
@@ -43,6 +46,105 @@ fn close_price_for(side: protocol::OrderSide, bid: Decimal, ask: Decimal) -> Dec
         protocol::OrderSide::Buy => bid,
         protocol::OrderSide::Sell => ask,
     }
+}
+
+enum SlTpReason {
+    StopLoss,
+    TakeProfit,
+}
+
+/// Whether a position's own SL/TP has been crossed by the current
+/// market, independent of the account's margin level — a trader's stop
+/// loss protects them even while their account is nowhere near a margin
+/// call. Uses the same close-price convention as everything else here
+/// (bid for a BUY, ask for a SELL — the price closing it *now* would
+/// actually fill at). SL is checked before TP so a position that somehow
+/// gapped through both in one tick reports the more conservative reason;
+/// in practice only one can be true for a given side's price levels
+/// (SL below/at TP for a BUY, above/at TP for a SELL — enforced at order
+/// time by lib/trading.ts's `validateSlTp`, mirrored server-side there,
+/// not re-validated here).
+fn sl_tp_trigger(p: &db::OpenPositionWithMarket) -> Option<SlTpReason> {
+    let (bid, ask) = (p.bid?, p.ask?);
+    let close_price = close_price_for(p.side, bid, ask);
+    let crossed = |level: Decimal, is_below_trigger: bool| {
+        if is_below_trigger { close_price <= level } else { close_price >= level }
+    };
+    match p.side {
+        protocol::OrderSide::Buy => {
+            if p.sl_price.is_some_and(|sl| crossed(sl, true)) {
+                return Some(SlTpReason::StopLoss);
+            }
+            if p.tp_price.is_some_and(|tp| crossed(tp, false)) {
+                return Some(SlTpReason::TakeProfit);
+            }
+        }
+        protocol::OrderSide::Sell => {
+            if p.sl_price.is_some_and(|sl| crossed(sl, false)) {
+                return Some(SlTpReason::StopLoss);
+            }
+            if p.tp_price.is_some_and(|tp| crossed(tp, true)) {
+                return Some(SlTpReason::TakeProfit);
+            }
+        }
+    }
+    None
+}
+
+/// Closes every position in `state` whose SL/TP has been crossed —
+/// unlike `force_close_worst` (stop-out), this isn't "pick the single
+/// worst one," every triggered position closes in this pass, since each
+/// is an independent trader-chosen exit level, not a margin-driven
+/// rescue. Uses the same idempotent `close_position_with_ledger_entry`
+/// as stop-out, so a race against another concurrent pass (or a manual
+/// close arriving at the same moment) is a silent no-op, not a double
+/// close — see db.rs's idempotency note.
+async fn close_sl_tp_triggered(
+    pool: &PgPool,
+    nats: &async_nats::Client,
+    account_id: &str,
+    state: &mut AccountState,
+) -> Result<(), sqlx::Error> {
+    let triggered: Vec<(usize, SlTpReason, Decimal, Decimal)> = state
+        .positions
+        .iter()
+        .enumerate()
+        .filter_map(|(i, p)| {
+            let reason = sl_tp_trigger(p)?;
+            let (bid, ask) = (p.bid?, p.ask?);
+            let close_price = close_price_for(p.side, bid, ask);
+            let pnl = floating_pnl(p.side, p.open_price, close_price, p.contract_size, p.volume);
+            Some((i, reason, close_price, pnl))
+        })
+        .collect();
+
+    // Remove highest-index-first so earlier indices in `triggered` stay
+    // valid as we go.
+    for (idx, reason, close_price, pnl) in triggered.into_iter().rev() {
+        let position = state.positions.remove(idx);
+
+        let mut tx = pool.begin().await?;
+        let closed =
+            db::close_position_with_ledger_entry(&mut tx, &position.id, account_id, close_price, pnl).await?;
+        tx.commit().await?;
+
+        let Some(_entry_id) = closed else {
+            continue; // already closed by a concurrent pass — nothing to credit or publish
+        };
+        state.effective_balance += pnl;
+
+        let event = match reason {
+            SlTpReason::StopLoss => {
+                TradingEvent::StopLossHit { account_id: account_id.to_string(), position_id: position.id }
+            }
+            SlTpReason::TakeProfit => {
+                TradingEvent::TakeProfitHit { account_id: account_id.to_string(), position_id: position.id }
+            }
+        };
+        publish_best_effort(nats, &event).await;
+    }
+
+    Ok(())
 }
 
 struct AccountState {
@@ -145,6 +247,15 @@ async fn evaluate_account(
     let Some(mut state) = load_account_state(pool, account_id).await? else {
         return Ok(());
     };
+    if state.positions.is_empty() {
+        return Ok(());
+    }
+
+    // SL/TP resolves first: it's the trader's own chosen exit, independent
+    // of margin level, and closing these here means the margin/stop-out
+    // loop below only ever considers positions that are still actually
+    // open.
+    close_sl_tp_triggered(pool, nats, account_id, &mut state).await?;
     if state.positions.is_empty() {
         return Ok(());
     }
@@ -276,5 +387,67 @@ mod tests {
     fn close_price_is_bid_for_buy_ask_for_sell() {
         assert_eq!(close_price_for(OrderSide::Buy, dec!(1.10000), dec!(1.10020)), dec!(1.10000));
         assert_eq!(close_price_for(OrderSide::Sell, dec!(1.10000), dec!(1.10020)), dec!(1.10020));
+    }
+
+    fn position(
+        side: OrderSide,
+        bid: Decimal,
+        ask: Decimal,
+        sl_price: Option<Decimal>,
+        tp_price: Option<Decimal>,
+    ) -> db::OpenPositionWithMarket {
+        db::OpenPositionWithMarket {
+            id: "pos1".into(),
+            symbol: "EURUSD".into(),
+            side,
+            volume: dec!(1),
+            open_price: dec!(1.10000),
+            contract_size: dec!(100000),
+            bid: Some(bid),
+            ask: Some(ask),
+            sl_price,
+            tp_price,
+        }
+    }
+
+    #[test]
+    fn buy_sl_triggers_when_bid_drops_to_or_below_it() {
+        let p = position(OrderSide::Buy, dec!(1.09000), dec!(1.09020), Some(dec!(1.09000)), Some(dec!(1.12000)));
+        assert!(matches!(sl_tp_trigger(&p), Some(SlTpReason::StopLoss)));
+
+        let above_sl = position(OrderSide::Buy, dec!(1.09500), dec!(1.09520), Some(dec!(1.09000)), Some(dec!(1.12000)));
+        assert!(sl_tp_trigger(&above_sl).is_none());
+    }
+
+    #[test]
+    fn buy_tp_triggers_when_bid_rises_to_or_above_it() {
+        let p = position(OrderSide::Buy, dec!(1.12000), dec!(1.12020), Some(dec!(1.09000)), Some(dec!(1.12000)));
+        assert!(matches!(sl_tp_trigger(&p), Some(SlTpReason::TakeProfit)));
+    }
+
+    #[test]
+    fn sell_sl_triggers_when_ask_rises_to_or_above_it() {
+        let p = position(OrderSide::Sell, dec!(1.10980), dec!(1.11000), Some(dec!(1.11000)), Some(dec!(1.08000)));
+        assert!(matches!(sl_tp_trigger(&p), Some(SlTpReason::StopLoss)));
+    }
+
+    #[test]
+    fn sell_tp_triggers_when_ask_drops_to_or_below_it() {
+        let p = position(OrderSide::Sell, dec!(1.07980), dec!(1.08000), Some(dec!(1.11000)), Some(dec!(1.08000)));
+        assert!(matches!(sl_tp_trigger(&p), Some(SlTpReason::TakeProfit)));
+    }
+
+    #[test]
+    fn no_sl_or_tp_set_never_triggers() {
+        let p = position(OrderSide::Buy, dec!(0.50000), dec!(0.50020), None, None);
+        assert!(sl_tp_trigger(&p).is_none());
+    }
+
+    #[test]
+    fn no_live_price_never_triggers() {
+        let mut p = position(OrderSide::Buy, dec!(1.09000), dec!(1.09020), Some(dec!(1.09000)), None);
+        p.bid = None;
+        p.ask = None;
+        assert!(sl_tp_trigger(&p).is_none());
     }
 }

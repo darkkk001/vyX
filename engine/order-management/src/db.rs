@@ -297,6 +297,8 @@ pub struct OpenPositionWithMarket {
     pub contract_size: Decimal,
     pub bid: Option<Decimal>,
     pub ask: Option<Decimal>,
+    pub sl_price: Option<Decimal>,
+    pub tp_price: Option<Decimal>,
 }
 
 /// LEFT JOIN on LivePrice, same reasoning as
@@ -304,36 +306,55 @@ pub struct OpenPositionWithMarket {
 /// whose symbol has no current tick still counts toward margin at its
 /// open price (dropping it would understate risk) but can't contribute a
 /// floating P&L figure — callers treat `bid`/`ask: None` as "skip this
-/// one for P&L, not for margin."
+/// one for P&L, not for margin." `sl_price`/`tp_price` ride along so
+/// monitor.rs can check both margin AND per-position SL/TP triggers from
+/// this one query, rather than a second round-trip.
 pub async fn get_open_positions_with_market(
     pool: &PgPool,
     account_id: &str,
 ) -> Result<Vec<OpenPositionWithMarket>, sqlx::Error> {
-    let rows: Vec<(String, String, String, Decimal, Decimal, Decimal, Option<Decimal>, Option<Decimal>)> =
-        sqlx::query_as(
-            r#"SELECT p.id, p.symbol, p.side::text, p.volume, p.open_price, s."contractSize",
-                      lp.bid, lp.ask
-               FROM positions p
-               JOIN "Symbol" s ON s.name = p.symbol
-               LEFT JOIN "LivePrice" lp ON lp.symbol = p.symbol
-               WHERE p.account_id = $1 AND p.status = 'OPEN'"#,
-        )
-        .bind(account_id)
-        .fetch_all(pool)
-        .await?;
+    #[allow(clippy::type_complexity)]
+    let rows: Vec<(
+        String,
+        String,
+        String,
+        Decimal,
+        Decimal,
+        Decimal,
+        Option<Decimal>,
+        Option<Decimal>,
+        Option<Decimal>,
+        Option<Decimal>,
+    )> = sqlx::query_as(
+        r#"SELECT p.id, p.symbol, p.side::text, p.volume, p.open_price, s."contractSize",
+                  lp.bid, lp.ask, p.sl_price, p.tp_price
+           FROM positions p
+           JOIN "Symbol" s ON s.name = p.symbol
+           LEFT JOIN "LivePrice" lp ON lp.symbol = p.symbol
+           WHERE p.account_id = $1 AND p.status = 'OPEN'"#,
+    )
+    .bind(account_id)
+    .fetch_all(pool)
+    .await?;
 
     Ok(rows
         .into_iter()
-        .map(|(id, symbol, side, volume, open_price, contract_size, bid, ask)| OpenPositionWithMarket {
-            id,
-            symbol,
-            side: side_from_str(&side),
-            volume,
-            open_price,
-            contract_size,
-            bid,
-            ask,
-        })
+        .map(
+            |(id, symbol, side, volume, open_price, contract_size, bid, ask, sl_price, tp_price)| {
+                OpenPositionWithMarket {
+                    id,
+                    symbol,
+                    side: side_from_str(&side),
+                    volume,
+                    open_price,
+                    contract_size,
+                    bid,
+                    ask,
+                    sl_price,
+                    tp_price,
+                }
+            },
+        )
         .collect())
 }
 

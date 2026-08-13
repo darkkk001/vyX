@@ -22,6 +22,8 @@ fn subject_for(event: &TradingEvent) -> &'static str {
         TradingEvent::OrderExpired { .. } => "order.expired",
         TradingEvent::MarginCall { .. } => "margin.call",
         TradingEvent::StopOut { .. } => "margin.stop_out",
+        TradingEvent::StopLossHit { .. } => "position.stop_loss_hit",
+        TradingEvent::TakeProfitHit { .. } => "position.take_profit_hit",
     }
 }
 

@@ -80,4 +80,10 @@ pub enum TradingEvent {
     OrderExpired { order_id: String },
     MarginCall { account_id: String, margin_level: Decimal },
     StopOut { account_id: String, closed_position_ids: Vec<String> },
+    /// Position auto-closed because price crossed the trader's own
+    /// stop-loss/take-profit level — distinct from `StopOut`, which is
+    /// margin-ratio-driven and independent of any per-position SL/TP the
+    /// trader set. See docs/risk-engine.md §2.2 / order_management::monitor.
+    StopLossHit { account_id: String, position_id: String },
+    TakeProfitHit { account_id: String, position_id: String },
 }

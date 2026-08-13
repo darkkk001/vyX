@@ -84,3 +84,29 @@ dispute resolution, mirroring the existing `AuditLog` model's role today.
 - Hedged-position margin treatment (netting vs gross) — current schema
   has no concept of hedging at all (one order → one position, 1:1); needs
   a decision before Phase 2 if the spec requires hedged accounts.
+
+## 5. Implementation status
+
+**§2.2 built, plus a gap this doc never flagged: per-position SL/TP
+enforcement.** Neither this doc nor the pre-existing Next.js path
+(`app/api/trade/*`) ever specified or implemented anything that actually
+*closes* a position when price crosses the trader's own stop-loss/take-
+profit — `lib/trading.ts`'s `validateSlTp` only checks a submitted SL/TP
+is on the correct side of the entry price at order time, nothing ever
+watched for it being *reached* afterward. A trader's "stop loss" was
+cosmetic: the only thing that could force-close their position was
+margin-ratio stop-out, an unrelated mechanism keyed to account equity,
+not their chosen price level. `order_management::monitor` now checks
+every open position's own SL/TP against the current tick first, before
+the margin-level check runs (§2.2's flow above), and closes any that
+crossed — independently per position, not "worst one only" like stop-out
+— publishing `position.stop_loss_hit` / `position.take_profit_hit` NATS
+events. Reuses `close_position_with_ledger_entry`'s idempotent close
+(same protection against a double-close race as stop-out). Verified live
+against a real Postgres: a BUY's SL and a SELL's TP both correctly
+triggered and closed on the same tick, each with the correct realized
+P&L; confirmed the tick-driven trigger (not just the polling-timer
+fallback) actually fires this within about a second of the tick arriving
+(round-trip latency to a remote Postgres, not a same-region deployment —
+see `deployment.md`'s "network-adjacent to Postgres and NATS for
+latency" note, this is exactly why that matters).
