@@ -1,17 +1,27 @@
 // POST /v1/orders/market — forwards to the Rust Trading Core's HTTP
 // server (engine/server), per docs/api.md §2.
 //
-// Every risk-check input (equity, used margin, contract size, current
-// price) is fetched here from Postgres, never trusted from the request
-// body — a client can only say "which symbol, which side, how much,"
-// nothing that would let it fake its own margin or price. This closes
-// the gap flagged in docs/api.md/architecture.md's original skeleton.
+// Every risk-check input (equity, used margin, contract size) is fetched
+// here from Postgres, never trusted from the request body — a client can
+// only say "which symbol, which side, how much," nothing that would let
+// it fake its own margin. This closes the gap flagged in
+// docs/api.md/architecture.md's original skeleton.
+//
+// The current tick is deliberately NOT fetched or forwarded here anymore
+// — OMS (engine/order-management::place_market_order) now reads Market
+// Data Core's live price itself, per docs/execution.md §2.1's "never the
+// client-supplied price" (where "client" meant this Gateway too, not
+// just the end user's browser). This Gateway was already reading the
+// real Postgres value, not something the browser could fake, but routing
+// the fill price through one fewer hop closes the staleness window
+// between "Gateway fetched it" and "OMS actually fills" and matches the
+// documented target architecture exactly.
 
 import { Router } from "express";
 import { Decimal } from "decimal.js";
 import type { AuthedRequest } from "../auth.js";
 import { requireTraderSession } from "../auth.js";
-import { getAccount, getLedgerSum, getLivePrice, getOpenPositionsSummary, getSymbolContractSize } from "../db.js";
+import { getAccount, getLedgerSum, getOpenPositionsSummary, getSymbolContractSize } from "../db.js";
 
 const router = Router();
 
@@ -55,12 +65,6 @@ router.post("/market", requireTraderSession, async (req: AuthedRequest, res) => 
     return;
   }
 
-  const livePrice = await getLivePrice(body.symbol);
-  if (!livePrice) {
-    res.status(400).json({ error: `no live price for ${body.symbol}` });
-    return;
-  }
-
   const { usedMargin, floatingPnl } = await getOpenPositionsSummary(session.accountId, account.leverage);
   const ledgerSum = await getLedgerSum(session.accountId);
   const effectiveBalance = account.balance.plus(ledgerSum);
@@ -78,11 +82,6 @@ router.post("/market", requireTraderSession, async (req: AuthedRequest, res) => 
     used_margin: usedMargin.toString(),
     contract_size: contractSize.toString(),
     leverage: account.leverage,
-    current_tick: {
-      symbol: body.symbol,
-      bid: livePrice.bid.toString(),
-      ask: livePrice.ask.toString(),
-    },
   };
 
   const upstream = await fetch(`${TRADING_CORE_URL}/v1/orders/market`, {

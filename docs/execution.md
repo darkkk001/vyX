@@ -70,3 +70,41 @@ the Market Data Core.
   order time in the existing UI math (`lib/trading.ts` `computeRealizedPnl`);
   needs to move server-side into Execution or OMS as part of Phase 2, not
   assumed to already be correct.
+
+## 5. Implementation status
+
+**§2.1 step 1 (read current bid/ask from Market Data Core, not a
+caller-supplied price) — done.** `place_market_order`
+(`engine/order-management/src/lib.rs`) fetches the tick itself via
+`market_data::db::get_live_price(pool, &req.symbol)` — a direct Postgres
+read against `"LivePrice"` (same table Market Data Core writes, per
+`market-data.md` §3; reading another module's table read-only isn't an
+ADR-002 boundary violation, only writing it would be, same reasoning
+already established for reading `Account`). `PlaceMarketOrderRequest` no
+longer has a `current_tick` field at all — it was removed, not just
+ignored, so the "don't trust a caller-supplied price" rule can't
+regress by someone re-populating it. `services/api-gateway/src/routes/
+orders.ts` correspondingly stopped fetching and forwarding a `LivePrice`
+row for this purpose (`getLivePrice` was dead-code'd out of
+`services/api-gateway/src/db.ts` too, since that was its only caller);
+the Gateway previously already read the real Postgres value rather than
+trusting the browser, so this wasn't a live exploit — the point of the
+change is one fewer hop between "the price OMS fills at" and what Market
+Data Core actually has, closing a staleness window, and matching this
+doc's own target architecture instead of half-implementing it.
+
+No live price for the order's symbol is now a first-class rejection
+("no live price for {symbol}"), going through the exact same
+insert-order-then-reject path as a risk rejection — not a 500, not a
+silent fallback.
+
+Verified live end to end (seeded broker/account/symbol/price against a
+real Postgres): a BUY filled at exactly the seeded ask with no price in
+the request payload at all; a known symbol with no `LivePrice` row
+rejected cleanly with the reason above; the pre-existing free-margin
+rejection still fires correctly now that it runs after the price fetch
+instead of before.
+
+Still open: slippage/requote modeling, commission/swap moving
+server-side, and LIMIT/STOP trigger logic (§2.1 step 3) — none of these
+are touched by the above, all still exactly as described in §4.

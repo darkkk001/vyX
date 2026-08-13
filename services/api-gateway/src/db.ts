@@ -48,17 +48,6 @@ export async function getSymbolContractSize(symbol: string): Promise<Decimal | n
   return new Decimal(rows[0].contractSize);
 }
 
-export interface LivePriceRow {
-  bid: Decimal;
-  ask: Decimal;
-}
-
-export async function getLivePrice(symbol: string): Promise<LivePriceRow | null> {
-  const { rows } = await pool.query(`SELECT bid, ask FROM "LivePrice" WHERE symbol = $1`, [symbol]);
-  if (rows.length === 0) return null;
-  return { bid: new Decimal(rows[0].bid), ask: new Decimal(rows[0].ask) };
-}
-
 export interface OpenPositionsSummary {
   usedMargin: Decimal;
   floatingPnl: Decimal;

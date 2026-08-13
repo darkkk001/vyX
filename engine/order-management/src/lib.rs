@@ -63,6 +63,16 @@ pub fn transition(from: OrderStatus, to: OrderStatus) -> Result<OrderStatus, Tra
 /// reaching into tables it doesn't own. Wiring up who supplies these
 /// (the API Gateway, reading Prisma) is Phase 2 integration work still
 /// open — see ../../docs/api.md §4.
+///
+/// Deliberately does NOT include the current tick/price — that used to
+/// be caller-supplied (the API Gateway's own Postgres read), which
+/// worked but wasn't what ../../docs/execution.md §2.1 specifies
+/// ("current best bid/ask from the Market Data Core... never the
+/// client-supplied price," where "client" there means whoever calls this
+/// function, not just the end user's browser). `place_market_order` now
+/// fetches it itself via `market_data::db::get_live_price` — one fewer
+/// hop between "the price OMS fills at" and "the price Market Data Core
+/// actually has right now."
 pub struct PlaceMarketOrderRequest {
     pub broker_id: String,
     pub account_id: String,
@@ -75,7 +85,6 @@ pub struct PlaceMarketOrderRequest {
     pub used_margin: Decimal,
     pub contract_size: Decimal,
     pub leverage: u32,
-    pub current_tick: Tick,
 }
 
 #[derive(Debug)]
@@ -129,7 +138,30 @@ pub async fn place_market_order(
 
     db::set_status(&mut tx, &order_id, OrderStatus::Validating).await?;
 
-    let required = risk::required_margin(req.volume, req.contract_size, req.current_tick.bid, req.leverage);
+    // Market Data Core's own current view, not a value the caller handed
+    // in — see PlaceMarketOrderRequest's doc comment. Read against `pool`
+    // directly (not `tx`): it's a point-in-time read of a table this
+    // crate doesn't own (ADR-002), not something that needs snapshot
+    // consistency with the order-row insert above.
+    let current_tick = match market_data::db::get_live_price(pool, &req.symbol).await? {
+        Some((bid, ask)) => Tick { symbol: req.symbol.clone(), bid, ask },
+        None => {
+            let reason = format!("no live price for {}", req.symbol);
+            db::set_rejected(&mut tx, &order_id, &reason).await?;
+            tx.commit().await?;
+            publish_best_effort(
+                nats,
+                &TradingEvent::OrderRejected(RiskRejection {
+                    order_id: order_id.clone(),
+                    reason: reason.clone(),
+                }),
+            )
+            .await;
+            return Ok(PlaceMarketOrderOutcome::Rejected { order_id, reason });
+        }
+    };
+
+    let required = risk::required_margin(req.volume, req.contract_size, current_tick.bid, req.leverage);
     if let Err(reject_reason) = risk::check_free_margin(req.equity, req.used_margin, required) {
         let reason = reject_reason.to_string();
         db::set_rejected(&mut tx, &order_id, &reason).await?;
@@ -152,7 +184,7 @@ pub async fn place_market_order(
         &order_id,
         req.side,
         req.volume,
-        &req.current_tick,
+        &current_tick,
         execution::ExecutionStrategy::Internal,
     );
 

@@ -39,12 +39,14 @@ struct PlaceMarketOrderBody {
     tp_price: Option<Decimal>,
     // Risk-check inputs the Gateway must supply today — OMS doesn't fetch
     // account/symbol data itself (Prisma-owned, ADR-002). See
-    // ../../docs/trading-engine.md's implementation-status note.
+    // ../../docs/trading-engine.md's implementation-status note. The
+    // current tick is NOT one of these — OMS fetches that itself from
+    // Market Data Core (see PlaceMarketOrderRequest's doc comment in
+    // order-management/src/lib.rs), so it isn't part of this body.
     equity: Decimal,
     used_margin: Decimal,
     contract_size: Decimal,
     leverage: u32,
-    current_tick: Tick,
 }
 
 #[derive(Debug, Serialize)]
@@ -94,7 +96,6 @@ async fn place_market_order(
         used_margin: body.used_margin,
         contract_size: body.contract_size,
         leverage: body.leverage,
-        current_tick: body.current_tick,
     };
 
     let outcome = order_management::place_market_order(&state.pool, &state.nats, req)

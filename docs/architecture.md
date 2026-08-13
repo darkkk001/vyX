@@ -430,3 +430,15 @@ here, just the option the spec itself already pointed at.
     idempotent. Verified live end to end, including replaying the same
     stop-out-triggering tick to confirm no duplicate close/ledger entry.
     See `market-data.md` §5.
+
+12. **Execution now reads its own live price**, closing the last item
+    `execution.md` §4 had flagged from Phase 2's original skeleton:
+    `place_market_order` fetches the current tick itself from Market
+    Data Core instead of trusting a `current_tick` the API Gateway
+    supplied in the request. `PlaceMarketOrderRequest` had the field
+    removed outright (not just unused), and the Gateway's matching
+    `getLivePrice` read was deleted as dead code. Verified live: a fill
+    at the correct seeded price with zero price data in the request
+    payload, a clean rejection for a symbol with no live price, and
+    confirmation the pre-existing free-margin rejection still fires
+    correctly with the reordered checks. See `execution.md` §5.
