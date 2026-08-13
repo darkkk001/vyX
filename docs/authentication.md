@@ -27,26 +27,58 @@ No revocation mechanism exists (a JWT is valid until it expires — there
 is no server-side "sign out everywhere" or blocklist), and no rate
 limiting on login attempts. Both are real gaps, not stopgaps-by-design.
 
-## 2. Target: Redis-backed sessions
+## 2. Redis-backed sessions — implemented
 
-Per `architecture.md` §4, Redis is introduced specifically to close the
-two gaps above:
+Trader sessions (`lib/account-auth.ts`) are now Redis-backed opaque
+tokens, not self-contained JWTs:
 
-- Session tokens become **opaque references** to a Redis-held session
-  record, not self-contained JWTs — this is what makes revocation
-  possible (delete the Redis key, the session is dead immediately,
-  vs. a JWT that stays valid until its own expiry no matter what the
-  server does).
-- Cookie model stays identical (httpOnly, same-scoping-per-broker
-  discipline) — this is a backing-store change, not a client-visible
-  behavior change.
-- Redis also backs login-attempt rate limiting (per account, per IP) —
-  new, doesn't exist today.
+- `createAccountSession` generates a random 32-byte token
+  (`crypto.randomBytes(32).toString("hex")`), stores
+  `trader_session:{token} -> JSON.stringify({accountId, brokerId})` in
+  Redis with a 7-day TTL, and that token is what goes in the
+  `vyx_trade_session` cookie — the cookie itself is meaningless without
+  the matching Redis record.
+- `verifyAccountSessionToken` looks up that Redis key instead of checking
+  a JWT signature. `revokeAccountSession` (called from
+  `app/api/trade/logout`) deletes it — this is what makes logout **real**
+  now: before this change, logout only cleared the cookie client-side,
+  and a captured JWT stayed valid until its own 7-day expiry regardless.
+- Cookie model is otherwise identical (httpOnly, same-scoping-per-broker
+  discipline via the `x-broker-id` cross-check in `getAccountSession`) —
+  this was a backing-store change, not a client-visible behavior change.
+- Login-attempt rate limiting (`lib/rate-limit.ts`, fixed-window counter):
+  5 attempts per minute per `(broker, accountNumber)`, checked in both
+  `trade/login` and `trade/login-redirect` before the bcrypt compare, so
+  a locked-out account doesn't even cost that. Scoped to account number,
+  not IP — an IP-based layer is a possible future addition, not built.
+- `services/api-gateway`'s own session check (`src/auth.ts`) reads the
+  same Redis key directly — no shared code between the two (separate npm
+  packages, same constraint noted in `api.md`/`database.md` for Prisma),
+  but same convention, so a session revoked anywhere is invalid
+  everywhere immediately.
+- Admin sessions (`lib/auth.ts`) are **unchanged** — still JWT-based. Only
+  trader sessions were in scope for this; admin-session hardening would
+  be separate work, not silently bundled in here.
 - **Redis is never authoritative** — a Redis outage means sessions can't
   be validated (users get logged out / can't log in), not that trading
-  data becomes wrong or unavailable. This matches spec §16 exactly and is
-  consistent with ADR's framing of Postgres as sole source of truth for
-  anything financial.
+  data becomes wrong or unavailable. Matches spec §16 and the ADRs'
+  framing of Postgres as sole source of truth for anything financial.
+- Local dev/test Redis: Memurai (Windows-native, Redis-protocol-compatible,
+  installed via `winget install Memurai.MemuraiDeveloper`) running as a
+  Windows service on the default port. Production should use a managed
+  Redis (Upstash was the original recommendation in `deployment.md` §2) —
+  Memurai is a local-only substitute, not what should be pointed at from
+  a deployed environment.
+
+Verified locally against Memurai: session create/verify/revoke round-trip,
+TTL correctness, unknown-token rejection, and the rate limiter's
+5-allowed/6th-blocked boundary all pass. The full Gateway auth path was
+also exercised end to end: no cookie → 401, valid session with a
+mismatched `x-broker-id` → 403, valid session with the correct broker →
+auth passes through (failed downstream only because the test used a
+placeholder `DATABASE_URL`, not because of anything auth-related). The
+root Next.js app type-checks clean after these changes (`npx tsc
+--noEmit`, 0 errors).
 
 The two-session-system split (trader vs. admin) carries forward
 unchanged — Manager and Back Office (new, per `architecture.md` §3) get

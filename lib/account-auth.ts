@@ -1,8 +1,9 @@
 import "server-only";
 import bcrypt from "bcryptjs";
-import { SignJWT, jwtVerify } from "jose";
+import crypto from "node:crypto";
 import { cookies, headers } from "next/headers";
 import { prisma } from "@/lib/prisma";
+import { getRedis } from "@/lib/redis";
 
 export const ACCOUNT_SESSION_COOKIE_NAME = "vyx_trade_session";
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 7; // 7 days
@@ -12,40 +13,47 @@ export type AccountSessionPayload = {
   brokerId: string;
 };
 
-function secretKey() {
-  const secret = process.env.ADMIN_SESSION_SECRET;
-  if (!secret) {
-    throw new Error("ADMIN_SESSION_SECRET is not set");
-  }
-  // Deliberately reuses the admin secret rather than adding a second env
-  // var — the two token types carry different payload shapes and cookie
-  // names, so there's no confusion risk, and it keeps setup to one secret.
-  return new TextEncoder().encode(secret);
+// Redis-backed opaque sessions (docs/authentication.md §2), replacing the
+// original self-contained JWT. The cookie now holds a random token that's
+// meaningless on its own — the actual session data lives in Redis, keyed
+// by that token, so deleting the Redis key revokes the session
+// immediately (a JWT stays valid until its own expiry no matter what the
+// server does; that's the gap this closes). Redis is never authoritative
+// for anything financial — an outage here means sessions can't be
+// validated, not that trading data is wrong (docs/security.md §2).
+function sessionKey(token: string) {
+  return `trader_session:${token}`;
 }
 
-export async function createAccountSessionToken(payload: AccountSessionPayload) {
-  return new SignJWT({ ...payload })
-    .setProtectedHeader({ alg: "HS256" })
-    .setIssuedAt()
-    .setExpirationTime(`${SESSION_TTL_SECONDS}s`)
-    .sign(secretKey());
+export async function createAccountSession(payload: AccountSessionPayload): Promise<string> {
+  const token = crypto.randomBytes(32).toString("hex");
+  await getRedis().set(sessionKey(token), JSON.stringify(payload), "EX", SESSION_TTL_SECONDS);
+  return token;
 }
 
 export async function verifyAccountSessionToken(
   token: string
 ): Promise<AccountSessionPayload | null> {
+  const raw = await getRedis().get(sessionKey(token));
+  if (!raw) return null;
   try {
-    const { payload } = await jwtVerify(token, secretKey());
-    return payload as unknown as AccountSessionPayload;
+    return JSON.parse(raw) as AccountSessionPayload;
   } catch {
     return null;
   }
 }
 
+// Real revocation — deletes the Redis-held session record so the token in
+// the (now-cleared) cookie can never be replayed, even if an attacker
+// captured it before logout.
+export async function revokeAccountSession(token: string): Promise<void> {
+  await getRedis().del(sessionKey(token));
+}
+
 // Server Components / route handlers: read the current trader session, if
 // any, and cross-check it against the broker resolved by middleware.ts for
 // this request — a session minted under one broker must never be usable
-// against another broker's data, even if the JWT itself is valid.
+// against another broker's data, even if the token itself is valid.
 export async function getAccountSession(): Promise<AccountSessionPayload | null> {
   const cookieStore = await cookies();
   const token = cookieStore.get(ACCOUNT_SESSION_COOKIE_NAME)?.value;

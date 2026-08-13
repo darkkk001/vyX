@@ -385,5 +385,18 @@ here, just the option the spec itself already pointed at.
    this way identically, so nobody has to cross the ownership boundary to
    write a number the other side already owns.
 
-   Still open: Redis/session hardening (`authentication.md` §2). The
-   existing Next.js trading path is untouched throughout, per ADR-003.
+9. Phase 1 item closed — Redis-backed sessions: trader sessions
+   (`lib/account-auth.ts`) are now Redis-backed opaque tokens instead of
+   self-contained JWTs, so logout (`app/api/trade/logout`) actually
+   revokes the session immediately rather than only clearing a cookie
+   whose JWT would otherwise stay valid until its own expiry. Login-attempt
+   rate limiting (`lib/rate-limit.ts`) added to both login routes. This
+   *does* touch the live Next.js login/logout routes (`trade/login`,
+   `trade/login-redirect`, `trade/logout`) — done carefully, verified with
+   a full type-check of the whole app (0 errors) plus functional tests
+   against a local Redis-compatible server (Memurai) before considering it
+   done. `services/api-gateway` reads the same Redis session convention.
+   Admin sessions (`lib/auth.ts`) are unchanged — out of scope here.
+
+   Nothing else open from the original Phase 1/2 gap list. The existing
+   Next.js trading path is untouched throughout, per ADR-003.

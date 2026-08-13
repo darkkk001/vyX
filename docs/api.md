@@ -79,15 +79,12 @@ extraction, so a future breaking change (Manager/Back Office consuming
 the same Gateway) doesn't force a lockstep client/server deploy the way
 today's unversioned routes would.
 
-## 4. Auth resolution (was: open question for Phase 1)
+## 4. Auth resolution — Redis-backed, both sides agree
 
-**Resolved for now:** trader auth issuance (`trade/login`,
-`trade/login-redirect`) stays in Next.js unchanged; the Gateway
-independently verifies the same JWT (same secret, same cookie name) on
-each request rather than trusting a forwarded header. This is what's
-actually implemented in `services/api-gateway/src/auth.ts` today. It's an
-interim answer, not the final one — once `authentication.md` §2's
-Redis-backed opaque session lands, the Gateway's verification swaps from
-"check the JWT signature" to "look up the session in Redis," and Next.js
-stops minting self-contained JWTs. Both docs should update together when
-that happens, not independently.
+Trader auth issuance (`trade/login`, `trade/login-redirect`) stays in
+Next.js; the Gateway independently verifies the session by reading the
+same Redis key (`trader_session:{token}`) `lib/account-auth.ts` writes —
+see `authentication.md` §2 for the full implementation. Both sides read
+the same convention rather than one trusting a header the other
+forwarded, so a session revoked anywhere (logout, or a future admin
+"kill session" action) is invalid everywhere immediately.

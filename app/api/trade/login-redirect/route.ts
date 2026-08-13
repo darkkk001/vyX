@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
   authenticateAccount,
-  createAccountSessionToken,
+  createAccountSession,
   ACCOUNT_SESSION_COOKIE_NAME,
   accountSessionCookieOptions,
 } from "@/lib/account-auth";
+import { checkRateLimit } from "@/lib/rate-limit";
 
 // Landing point for the root-domain launcher's (app/launch) single-screen
 // login — a real cross-site <form method="POST"> submit (a top-level
@@ -29,13 +30,19 @@ export async function POST(request: NextRequest) {
   // whether to remember this broker for next launch.
   const remember = form?.get("remember") ? "1" : "0";
 
+  const { allowed } = await checkRateLimit(`login:${brokerId}:${accountNumber}`, 5, 60);
+  if (!allowed) {
+    const qs = accountNumber ? `?error=1&account=${encodeURIComponent(accountNumber)}` : "?error=1";
+    return NextResponse.redirect(`${origin}/trade/login${qs}`, { status: 303 });
+  }
+
   const account = await authenticateAccount(brokerId, accountNumber, password);
   if (!account) {
     const qs = accountNumber ? `?error=1&account=${encodeURIComponent(accountNumber)}` : "?error=1";
     return NextResponse.redirect(`${origin}/trade/login${qs}`, { status: 303 });
   }
 
-  const token = await createAccountSessionToken({
+  const token = await createAccountSession({
     accountId: account.id,
     brokerId: account.brokerId,
   });

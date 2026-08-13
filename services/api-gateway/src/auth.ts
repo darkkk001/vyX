@@ -1,13 +1,14 @@
-// Verifies the same JWT the existing Next.js app issues
-// (lib/account-auth.ts) — same cookie name, same secret, same payload
-// shape. Deliberately NOT the Redis-backed opaque session described in
-// docs/authentication.md §2 (that doesn't exist yet); this is the
-// currently-real auth mechanism, reused rather than re-invented, per
-// docs/api.md §4's open question resolving toward "trust a session the
-// Gateway itself verifies" for now.
+// Verifies the same Redis-backed opaque session lib/account-auth.ts now
+// issues (docs/authentication.md §2) — same cookie name, same Redis key
+// convention (`trader_session:{token}`), same JSON payload shape. This
+// replaced JWT verification: a JWT stays valid until its own expiry no
+// matter what the server does, which meant "logout" here was only ever
+// cosmetic. Reading the session from Redis means logout (or an admin
+// force-revoking a session) takes effect immediately, everywhere that
+// checks it — including this Gateway.
 
 import type { NextFunction, Request, Response } from "express";
-import { jwtVerify } from "jose";
+import { Redis } from "ioredis";
 
 const SESSION_COOKIE_NAME = "vyx_trade_session";
 
@@ -16,10 +17,18 @@ export type AccountSessionPayload = {
   brokerId: string;
 };
 
-function secretKey() {
-  const secret = process.env.ADMIN_SESSION_SECRET;
-  if (!secret) throw new Error("ADMIN_SESSION_SECRET is not set");
-  return new TextEncoder().encode(secret);
+let redis: Redis | null = null;
+function getRedis(): Redis {
+  if (!redis) {
+    const url = process.env.REDIS_URL;
+    if (!url) throw new Error("REDIS_URL is not set");
+    redis = new Redis(url);
+  }
+  return redis;
+}
+
+function sessionKey(token: string) {
+  return `trader_session:${token}`;
 }
 
 function readCookie(cookieHeader: string | undefined, name: string): string | null {
@@ -47,10 +56,15 @@ export async function requireTraderSession(req: AuthedRequest, res: Response, ne
     return;
   }
 
+  const raw = await getRedis().get(sessionKey(token));
+  if (!raw) {
+    res.status(401).json({ error: "invalid session" });
+    return;
+  }
+
   let payload: AccountSessionPayload;
   try {
-    const verified = await jwtVerify(token, secretKey());
-    payload = verified.payload as unknown as AccountSessionPayload;
+    payload = JSON.parse(raw) as AccountSessionPayload;
   } catch {
     res.status(401).json({ error: "invalid session" });
     return;
