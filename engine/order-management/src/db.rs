@@ -505,6 +505,16 @@ pub struct OpenPositionWithMarket {
 /// one for P&L, not for margin." `sl_price`/`tp_price` ride along so
 /// monitor.rs can check both margin AND per-position SL/TP triggers from
 /// this one query, rather than a second round-trip.
+///
+/// The join condition also requires the tick be fresh (updated in the
+/// last 15s, same threshold as `market_data::db::get_live_price` and
+/// `WebTrader.tsx`'s chart) — without this, a dead feed leaves `lp.bid`/
+/// `lp.ask` frozen at their last real values forever, and every consumer
+/// here (SL/TP triggers, stop-out's worst-position pick, floating P&L)
+/// would keep evaluating against a wrong, unmoving price with no signal
+/// anything was stale. A stale tick now behaves exactly like no tick at
+/// all — `bid`/`ask: None` — which every consumer already handles
+/// correctly per the paragraph above.
 pub async fn get_open_positions_with_market(
     pool: &PgPool,
     account_id: &str,
@@ -526,7 +536,7 @@ pub async fn get_open_positions_with_market(
                   lp.bid, lp.ask, p.sl_price, p.tp_price
            FROM positions p
            JOIN "Symbol" s ON s.name = p.symbol
-           LEFT JOIN "LivePrice" lp ON lp.symbol = p.symbol
+           LEFT JOIN "LivePrice" lp ON lp.symbol = p.symbol AND lp."updatedAt" > now() - interval '15 seconds'
            WHERE p.account_id = $1 AND p.status = 'OPEN'"#,
     )
     .bind(account_id)

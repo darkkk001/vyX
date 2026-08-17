@@ -85,15 +85,27 @@ pub async fn upsert_candle(
 /// diagram calls out for the Execution module. Not wired into Execution
 /// yet (separate slice); added now since the query is a one-liner against
 /// a table this crate already owns.
+/// A frozen feed is more dangerous than no feed at all: with no staleness
+/// check, a dead MT5 EA leaves `LivePrice` sitting at whatever bid/ask it
+/// last saw, and every caller here (order fills, margin/SL-TP/stop-out
+/// evaluation via order-management's own live-price join) would keep
+/// trading against that stale number indefinitely with no signal
+/// anything was wrong. 15s matches the staleness threshold already
+/// established for the chart (`components/webtrader/WebTrader.tsx`'s
+/// `now - updatedAt > 15000`) — one convention, not two independently
+/// invented numbers. Filtering in SQL against Postgres's own `now()`
+/// (the same clock `upsert_live_price` writes `updatedAt` from) avoids
+/// any client-clock-skew concern a Rust-side comparison would have.
 pub async fn get_live_price(
     pool: &PgPool,
     symbol: &str,
 ) -> Result<Option<(Decimal, Decimal)>, sqlx::Error> {
-    let row: Option<(Decimal, Decimal)> =
-        sqlx::query_as(r#"SELECT bid, ask FROM "LivePrice" WHERE symbol = $1"#)
-            .bind(symbol)
-            .fetch_optional(pool)
-            .await?;
+    let row: Option<(Decimal, Decimal)> = sqlx::query_as(
+        r#"SELECT bid, ask FROM "LivePrice" WHERE symbol = $1 AND "updatedAt" > now() - interval '15 seconds'"#,
+    )
+    .bind(symbol)
+    .fetch_optional(pool)
+    .await?;
     Ok(row)
 }
 

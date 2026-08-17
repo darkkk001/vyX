@@ -70,6 +70,16 @@ export interface OpenPositionsSummary {
 // times contractSize times volume) — "close" here is bid for an open BUY
 // (what closing it now would fill at) and ask for an open SELL, mirroring
 // engine/execution's fill-side convention.
+//
+// The join also requires the tick be fresh (updated in the last 15s,
+// same threshold as market_data::db::get_live_price and WebTrader.tsx's
+// chart) -- without this, a dead price feed (MT5 EA today, any future
+// paid/FIX feed later -- this check is source-agnostic since it's keyed
+// off LivePrice.updatedAt, not who wrote it) leaves bid/ask frozen at
+// their last real value forever, and equity computed from a frozen price
+// would keep permitting trades that a real price would have blocked.
+// Treating a stale tick as "no tick" (bid/ask: null) reuses the same
+// skip-this-one-for-P&L handling already below, no new case to add.
 export async function getOpenPositionsSummary(
   accountId: string,
   leverage: number
@@ -79,7 +89,7 @@ export async function getOpenPositionsSummary(
             lp.bid, lp.ask
      FROM positions p
      JOIN "Symbol" s ON s.name = p.symbol
-     LEFT JOIN "LivePrice" lp ON lp.symbol = p.symbol
+     LEFT JOIN "LivePrice" lp ON lp.symbol = p.symbol AND lp."updatedAt" > now() - interval '15 seconds'
      WHERE p.account_id = $1 AND p.status = 'OPEN'`,
     [accountId]
   );
