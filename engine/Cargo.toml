@@ -11,6 +11,7 @@ members = [
     "ledger",
     "server",
     "loadtest",
+    "parallel-run",
 ]
 
 [workspace.package]

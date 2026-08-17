@@ -59,6 +59,36 @@ core:
    equivalence — not automated further here since it depends on
    infrastructure (staging environment mirroring both paths) that doesn't
    exist yet.
+
+   **Tooling now exists, reframed (2026-08-17) — this item's own premise
+   didn't hold once investigated.** `engine/parallel-run` (`cargo run -p
+   parallel-run`) submits the same nominal order to both paths and
+   reports what each side does — it does **not** assert equivalence,
+   because "equivalent" isn't actually the right goal between these two
+   systems today. Confirmed, not assumed: zero margin/exposure/max-
+   position code exists anywhere in the Next.js path (`app/`, `lib/`) —
+   it fills whatever the client asks, at whatever price the client
+   supplies (its own route comment calls this "a deliberate, temporary
+   simplification... replaces this wholesale in Phase 5"); Rust always
+   fetches its own price and fully gates on margin/exposure/max-
+   positions. Live-verified both concrete divergences this implies: (1)
+   given the *same* seeded reference price, Rust's fill price differs
+   from Legacy's by exactly the broker's configured `spreadMarkup` —
+   Legacy applies no server-side markup at all; (2) a 100-lot order with
+   insufficient margin fills unconditionally on Legacy and is correctly
+   `REJECTED` on Rust with a specific reason. Neither is a bug to
+   reconcile — Legacy is a documented Phase 2 stopgap, and Rust doing
+   the *correct* thing is the point of Phase 5, not a divergence to
+   suppress. "Equivalence" as literally written above isn't achievable
+   until Legacy either backports these checks or a broker is fully
+   retired from that path — this tool exists to make that fact
+   concrete and re-checkable, not to paper over it.
+
+   **Still missing**: this is a one-shot **local** diagnostic, not the
+   *sustained, staging-environment* monitoring "for a period" this item
+   originally envisioned — that still needs a real hosted staging
+   environment (hosting decisions per `deployment.md` §2 remain
+   undecided), a genuine infrastructure gap this tool doesn't close.
 3. Rollback plan: since the old Next.js path stays live and unmodified
    throughout (ADR-003), rollback for a broker is "point them back," not
    a data migration in reverse — this is the main practical benefit of
