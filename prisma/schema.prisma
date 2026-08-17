@@ -135,6 +135,9 @@ model Broker {
   customDomain String?      @unique // trade.brokername.com
   tier         BrokerTier   @default(STANDARD)
   status       BrokerStatus @default(ACTIVE)
+  // Max open positions an account may hold at once, across all symbols.
+  // Null = no limit — see docs/risk-engine.md §2.1 step 5.
+  maxOpenPositionsPerAccount Int?
 
   // Branding — resolved at request time, never hardcoded or baked into a build.
   logoUrl      String?
@@ -331,6 +334,11 @@ model BrokerSymbol {
   swapLong     Decimal @default(0) @db.Decimal(10, 4)
   swapShort    Decimal @default(0) @db.Decimal(10, 4)
   enabled      Boolean @default(true)
+  // Max total open volume (lots) an account may hold in this symbol at
+  // once, summed across all its open positions. Null = no limit, so
+  // existing brokers are unaffected until an admin sets one — see
+  // docs/risk-engine.md §2.1 step 5.
+  maxExposure  Decimal? @db.Decimal(18, 2)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

@@ -179,6 +179,21 @@ pub async fn place_market_order(
         return Ok(PlaceMarketOrderOutcome::Rejected { order_id, reason });
     }
 
+    // §2.1 step 5 — per-broker exposure limits. Last of the admission
+    // checks, matching risk-engine.md's own ordering: cheaper/simpler
+    // checks (enabled, lot size, margin) reject first.
+    let exposure = db::get_symbol_exposure(pool, &req.account_id, &req.symbol).await?;
+    let max_exposure = symbol_config.as_ref().and_then(|cfg| cfg.max_exposure);
+    if let Err(reject_reason) = risk::check_symbol_exposure(exposure.open_volume, req.volume, max_exposure) {
+        let reason = reject_order(tx, nats, &order_id, reject_reason.to_string()).await?;
+        return Ok(PlaceMarketOrderOutcome::Rejected { order_id, reason });
+    }
+    let max_open_positions = db::get_broker_max_open_positions(pool, &req.broker_id).await?;
+    if let Err(reject_reason) = risk::check_max_open_positions(exposure.open_position_count, max_open_positions) {
+        let reason = reject_order(tx, nats, &order_id, reject_reason.to_string()).await?;
+        return Ok(PlaceMarketOrderOutcome::Rejected { order_id, reason });
+    }
+
     db::set_status(&mut tx, &order_id, OrderStatus::Accepted).await?;
     db::set_status(&mut tx, &order_id, OrderStatus::Routing).await?;
 

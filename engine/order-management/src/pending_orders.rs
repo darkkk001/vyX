@@ -18,6 +18,7 @@
 use crate::calc::{self, load_account_state};
 use crate::{db, publish_best_effort, reject_order, PlaceOrderError};
 use protocol::{Fill, OrderSide, OrderType, Tick, TradingEvent};
+use rust_decimal::Decimal;
 
 fn is_triggered(order: &db::PendingOrder, tick: &Tick) -> bool {
     match (order.side, order.order_type) {
@@ -92,10 +93,28 @@ async fn trigger_order(
         return Ok(());
     }
 
+    // §2.1 step 5 — exposure limits, checked here at trigger time like
+    // margin above (not at placement — see lib.rs's place_pending_order
+    // comment), since only an actual fill changes an account's exposure.
+    // `state` (loaded above for the margin check) already has every open
+    // position, so this doesn't need its own DB round trip.
+    let symbol_config = db::get_broker_symbol_config(pool, &order.broker_id, &order.symbol).await?;
+    let open_volume: Decimal = state.positions.iter().filter(|p| p.symbol == order.symbol).map(|p| p.volume).sum();
+    let max_exposure = symbol_config.as_ref().and_then(|cfg| cfg.max_exposure);
+    if let Err(reject_reason) = risk::check_symbol_exposure(open_volume, order.volume, max_exposure) {
+        reject_order(tx, nats, &order.id, reject_reason.to_string()).await?;
+        return Ok(());
+    }
+    let max_open_positions = db::get_broker_max_open_positions(pool, &order.broker_id).await?;
+    if let Err(reject_reason) = risk::check_max_open_positions(state.positions.len() as i64, max_open_positions) {
+        reject_order(tx, nats, &order.id, reject_reason.to_string()).await?;
+        return Ok(());
+    }
+
     // Broker's own markup on top of the raw tick — see pricing.rs and
     // lib.rs's place_market_order (same logic, same fallback-to-raw for
-    // a missing Symbol row).
-    let quoted_tick = match db::get_broker_symbol_config(pool, &order.broker_id, &order.symbol).await? {
+    // a missing Symbol row). Reuses the config fetched above.
+    let quoted_tick = match &symbol_config {
         Some(cfg) => crate::pricing::apply_spread_markup(tick, cfg.spread_markup, cfg.digits),
         None => tick.clone(),
     };

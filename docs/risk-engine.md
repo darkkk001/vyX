@@ -88,9 +88,24 @@ both concerns, extended into `db::get_broker_symbol_config` (renamed from
 time since volume can't change after placement; symbol-enabled isn't
 rechecked at trigger time either — mid-flight-disable behavior for
 already-accepted pending orders is intentionally left to a future
-decision rather than assumed here. Per-broker exposure limits (max
-volume per symbol, max open positions per account) from step 5 remain
-open — those need new schema/config that doesn't exist today.
+decision rather than assumed here.
+
+**§2.1 step 5 (exposure limits) now implemented too.** Needed new schema
+— `BrokerSymbol.maxExposure` (max total open volume per account in one
+symbol, summed across positions) and `Broker.maxOpenPositionsPerAccount`
+(max open positions per account, any symbol) — added via
+`prisma/migrations/20260817000000_exposure_limits`, both nullable
+(`null` = no limit, so existing brokers/demo data are unaffected until an
+admin sets one; no admin UI to set them exists yet, same as
+`spreadMarkup`/`minLot`/`maxLot` today — direct DB edit only). Enforced
+by `risk::check_symbol_exposure`/`risk::check_max_open_positions`, wired
+into `place_market_order` (checked against a fresh read of the account's
+open positions) and `pending_orders::trigger_order` (checked at trigger
+time, not placement — same reasoning as the margin check: exposure only
+actually changes once a fill happens, and `trigger_order` already has
+every open position loaded for the margin check, so this piggybacks on
+that instead of a second query). Not rechecked in `place_pending_order`
+at placement time for the same reason margin isn't.
 
 ## 4. Open questions for Phase 2
 

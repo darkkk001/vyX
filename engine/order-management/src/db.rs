@@ -257,6 +257,10 @@ pub struct BrokerSymbolConfig {
     pub min_lot: Decimal,
     pub max_lot: Decimal,
     pub lot_step: Decimal,
+    // Null whether the BrokerSymbol row is missing entirely or present
+    // with no limit set — both mean "no limit" to risk::check_symbol_exposure,
+    // so no COALESCE needed here unlike the other columns above.
+    pub max_exposure: Option<Decimal>,
 }
 
 /// `Symbol.digits` always resolves if the symbol exists at all; the LEFT
@@ -270,9 +274,11 @@ pub async fn get_broker_symbol_config(
     broker_id: &str,
     symbol: &str,
 ) -> Result<Option<BrokerSymbolConfig>, sqlx::Error> {
-    let row: Option<(i32, Decimal, bool, Decimal, Decimal, Decimal)> = sqlx::query_as(
+    #[allow(clippy::type_complexity)]
+    let row: Option<(i32, Decimal, bool, Decimal, Decimal, Decimal, Option<Decimal>)> = sqlx::query_as(
         r#"SELECT s.digits, COALESCE(bs."spreadMarkup", 0), COALESCE(bs.enabled, true),
-                  COALESCE(bs."minLot", 0.01), COALESCE(bs."maxLot", 100), COALESCE(bs."lotStep", 0.01)
+                  COALESCE(bs."minLot", 0.01), COALESCE(bs."maxLot", 100), COALESCE(bs."lotStep", 0.01),
+                  bs."maxExposure"
            FROM "Symbol" s
            LEFT JOIN "BrokerSymbol" bs ON bs."symbolId" = s.id AND bs."brokerId" = $1
            WHERE s.name = $2"#,
@@ -281,14 +287,54 @@ pub async fn get_broker_symbol_config(
     .bind(symbol)
     .fetch_optional(pool)
     .await?;
-    Ok(row.map(|(digits, spread_markup, enabled, min_lot, max_lot, lot_step)| BrokerSymbolConfig {
+    Ok(row.map(|(digits, spread_markup, enabled, min_lot, max_lot, lot_step, max_exposure)| BrokerSymbolConfig {
         digits,
         spread_markup,
         enabled,
         min_lot,
         max_lot,
         lot_step,
+        max_exposure,
     }))
+}
+
+/// §2.1 step 5's account-wide half: `Broker.maxOpenPositionsPerAccount`.
+/// A broker row not existing (shouldn't happen for an order already tied
+/// to a valid `broker_id`) collapses to the same `None`/no-limit result
+/// as a `NULL` column, rather than a separate error case to handle.
+pub async fn get_broker_max_open_positions(pool: &PgPool, broker_id: &str) -> Result<Option<i32>, sqlx::Error> {
+    let row: Option<(Option<i32>,)> =
+        sqlx::query_as(r#"SELECT "maxOpenPositionsPerAccount" FROM "Broker" WHERE id = $1"#)
+            .bind(broker_id)
+            .fetch_optional(pool)
+            .await?;
+    Ok(row.and_then(|(v,)| v))
+}
+
+pub struct SymbolExposure {
+    pub open_volume: Decimal,
+    pub open_position_count: i64,
+}
+
+/// Narrower than `get_open_positions_with_market`/`load_account_state`
+/// (no Symbol/LivePrice join) — §2.1 step 5's checks only need two
+/// aggregates over this account's open positions, not per-position P&L
+/// inputs. Used by `place_market_order`, which (unlike the pending-order
+/// trigger path) doesn't already have an `AccountState` loaded.
+pub async fn get_symbol_exposure(
+    pool: &PgPool,
+    account_id: &str,
+    symbol: &str,
+) -> Result<SymbolExposure, sqlx::Error> {
+    let (open_volume, open_position_count): (Decimal, i64) = sqlx::query_as(
+        r#"SELECT COALESCE(SUM(volume) FILTER (WHERE symbol = $2), 0), COUNT(*)
+           FROM positions WHERE account_id = $1 AND status = 'OPEN'"#,
+    )
+    .bind(account_id)
+    .bind(symbol)
+    .fetch_one(pool)
+    .await?;
+    Ok(SymbolExposure { open_volume, open_position_count })
 }
 
 // ─────────────────────────────────────────────────────────────────────

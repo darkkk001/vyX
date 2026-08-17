@@ -21,6 +21,10 @@ pub enum RiskRejectReason {
         max_lot: String,
         lot_step: String,
     },
+    #[error("symbol exposure limit exceeded: {new_total} would exceed the broker's max of {max_exposure}")]
+    ExposureLimitExceeded { new_total: String, max_exposure: String },
+    #[error("account already has {current} open position(s), broker max is {max}")]
+    MaxOpenPositionsExceeded { current: i64, max: i32 },
 }
 
 /// Standard forex margin formula, per ../../docs/risk-engine.md §2.1.3:
@@ -97,6 +101,45 @@ pub fn check_lot_size(
     }
 }
 
+/// §2.1 step 5, first half: `BrokerSymbol.maxExposure` caps an account's
+/// total open volume in one symbol, summed across every open position —
+/// not a per-order limit like `check_lot_size`. `max_exposure: None`
+/// (broker never configured one) always passes, matching every other
+/// broker-config check in this module's "missing config doesn't block
+/// trading" convention.
+pub fn check_symbol_exposure(
+    current_open_volume: Decimal,
+    order_volume: Decimal,
+    max_exposure: Option<Decimal>,
+) -> Result<(), RiskRejectReason> {
+    let Some(max) = max_exposure else { return Ok(()) };
+    let new_total = current_open_volume + order_volume;
+    if new_total <= max {
+        Ok(())
+    } else {
+        Err(RiskRejectReason::ExposureLimitExceeded {
+            new_total: new_total.to_string(),
+            max_exposure: max.to_string(),
+        })
+    }
+}
+
+/// §2.1 step 5, second half: `Broker.maxOpenPositionsPerAccount` caps how
+/// many positions (any symbol) an account can hold open at once.
+/// `current_open_count` is the count *before* the order under
+/// consideration would open one more.
+pub fn check_max_open_positions(
+    current_open_count: i64,
+    max_open_positions: Option<i32>,
+) -> Result<(), RiskRejectReason> {
+    let Some(max) = max_open_positions else { return Ok(()) };
+    if current_open_count < max as i64 {
+        Ok(())
+    } else {
+        Err(RiskRejectReason::MaxOpenPositionsExceeded { current: current_open_count, max })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -159,5 +202,32 @@ mod tests {
     #[test]
     fn lot_size_zero_step_only_checks_range() {
         assert!(check_lot_size(dec!(0.5), dec!(0.01), dec!(100), Decimal::ZERO).is_ok());
+    }
+
+    #[test]
+    fn symbol_exposure_no_limit_always_passes() {
+        assert!(check_symbol_exposure(dec!(1000), dec!(1000), None).is_ok());
+    }
+
+    #[test]
+    fn symbol_exposure_within_limit_is_ok() {
+        assert!(check_symbol_exposure(dec!(3), dec!(2), Some(dec!(5))).is_ok());
+    }
+
+    #[test]
+    fn symbol_exposure_rejects_when_new_total_exceeds_max() {
+        assert!(check_symbol_exposure(dec!(4), dec!(2), Some(dec!(5))).is_err());
+    }
+
+    #[test]
+    fn max_open_positions_no_limit_always_passes() {
+        assert!(check_max_open_positions(1000, None).is_ok());
+    }
+
+    #[test]
+    fn max_open_positions_rejects_at_or_above_max() {
+        assert!(check_max_open_positions(4, Some(5)).is_ok());
+        assert!(check_max_open_positions(5, Some(5)).is_err());
+        assert!(check_max_open_positions(6, Some(5)).is_err());
     }
 }
