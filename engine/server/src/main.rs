@@ -380,8 +380,14 @@ async fn main() {
     let nats_url = std::env::var("NATS_URL").unwrap_or_else(|_| "nats://127.0.0.1:4222".to_string());
     let port: u16 = std::env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(8081);
     let price_feed_secret = std::env::var("PRICE_FEED_SECRET").expect("PRICE_FEED_SECRET must be set");
+    // sqlx's own default (10) was silently the concurrency ceiling for
+    // order placement -- see db::connect_pool's doc comment.
+    let db_pool_max_connections: u32 = std::env::var("DATABASE_POOL_MAX_CONNECTIONS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(20);
 
-    let pool = db::connect_pool(&database_url)
+    let pool = db::connect_pool(&database_url, db_pool_max_connections)
         .await
         .expect("failed to connect to Postgres");
     let nats = events::connect(&nats_url).await.expect("failed to connect to NATS");

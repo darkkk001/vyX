@@ -16,8 +16,20 @@ use rust_decimal::Decimal;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-pub async fn connect_pool(database_url: &str) -> Result<PgPool, sqlx::Error> {
-    PgPool::connect(database_url).await
+/// `max_connections` matters under concurrent order placement: a single
+/// `place_market_order` call makes several sequential round-trips (a
+/// transaction plus a handful of separate pre-transaction reads), each
+/// briefly holding a pool connection. The bare `PgPool::connect`
+/// default (10) was silently the ceiling here -- a benchmark run at
+/// concurrency 20 against this default returned `PoolTimedOut` on 193
+/// of 200 requests (see docs/testing.md §2's Concurrency/latency
+/// benchmark row). Callers set this explicitly rather than relying on
+/// sqlx's own default.
+pub async fn connect_pool(database_url: &str, max_connections: u32) -> Result<PgPool, sqlx::Error> {
+    sqlx::postgres::PgPoolOptions::new()
+        .max_connections(max_connections)
+        .connect(database_url)
+        .await
 }
 
 fn side_to_str(s: OrderSide) -> &'static str {
