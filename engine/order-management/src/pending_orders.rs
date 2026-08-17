@@ -16,8 +16,8 @@
 //! time it triggers, it's rejected here instead of opening a position.
 
 use crate::calc::{self, load_account_state};
-use crate::{db, publish_best_effort, PlaceOrderError};
-use protocol::{Fill, OrderSide, OrderType, RiskRejection, Tick, TradingEvent};
+use crate::{db, publish_best_effort, reject_order, PlaceOrderError};
+use protocol::{Fill, OrderSide, OrderType, Tick, TradingEvent};
 
 fn is_triggered(order: &db::PendingOrder, tick: &Tick) -> bool {
     match (order.side, order.order_type) {
@@ -72,38 +72,31 @@ async fn trigger_order(
     }
 
     let Some(state) = load_account_state(pool, &order.account_id).await? else {
-        let reason = "account not found".to_string();
-        db::set_rejected(&mut tx, &order.id, &reason).await?;
-        tx.commit().await?;
-        publish_reject(nats, &order.id, reason).await;
+        reject_order(tx, nats, &order.id, "account not found".to_string()).await?;
         return Ok(());
     };
 
     let Some(contract_size) = db::get_symbol_contract_size(pool, &order.symbol).await? else {
-        let reason = "unknown symbol".to_string();
-        db::set_rejected(&mut tx, &order.id, &reason).await?;
-        tx.commit().await?;
-        publish_reject(nats, &order.id, reason).await;
+        reject_order(tx, nats, &order.id, "unknown symbol".to_string()).await?;
         return Ok(());
     };
 
     // Same margin check place_market_order does — the one place a
     // pending order's outcome can differ from what the trader saw at
-    // placement time (see module doc comment).
+    // placement time (see module doc comment). Lot size and
+    // symbol-enabled were already checked at placement (lib.rs's
+    // place_pending_order) and don't need rechecking here.
     let required = risk::required_margin(order.volume, contract_size, tick.bid, state.leverage);
     if let Err(reject_reason) = risk::check_free_margin(calc::equity(&state), calc::used_margin(&state), required) {
-        let reason = reject_reason.to_string();
-        db::set_rejected(&mut tx, &order.id, &reason).await?;
-        tx.commit().await?;
-        publish_reject(nats, &order.id, reason).await;
+        reject_order(tx, nats, &order.id, reject_reason.to_string()).await?;
         return Ok(());
     }
 
     // Broker's own markup on top of the raw tick — see pricing.rs and
     // lib.rs's place_market_order (same logic, same fallback-to-raw for
     // a missing Symbol row).
-    let quoted_tick = match db::get_symbol_pricing(pool, &order.broker_id, &order.symbol).await? {
-        Some(pricing) => crate::pricing::apply_spread_markup(tick, pricing.spread_markup, pricing.digits),
+    let quoted_tick = match db::get_broker_symbol_config(pool, &order.broker_id, &order.symbol).await? {
+        Some(cfg) => crate::pricing::apply_spread_markup(tick, cfg.spread_markup, cfg.digits),
         None => tick.clone(),
     };
 
@@ -141,14 +134,6 @@ async fn trigger_order(
     .await;
 
     Ok(())
-}
-
-async fn publish_reject(nats: &async_nats::Client, order_id: &str, reason: String) {
-    publish_best_effort(
-        nats,
-        &TradingEvent::OrderRejected(RiskRejection { order_id: order_id.to_string(), reason }),
-    )
-    .await;
 }
 
 #[cfg(test)]

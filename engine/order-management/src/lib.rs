@@ -149,34 +149,33 @@ pub async fn place_market_order(
     let current_tick = match market_data::db::get_live_price(pool, &req.symbol).await? {
         Some((bid, ask)) => Tick { symbol: req.symbol.clone(), bid, ask },
         None => {
-            let reason = format!("no live price for {}", req.symbol);
-            db::set_rejected(&mut tx, &order_id, &reason).await?;
-            tx.commit().await?;
-            publish_best_effort(
-                nats,
-                &TradingEvent::OrderRejected(RiskRejection {
-                    order_id: order_id.clone(),
-                    reason: reason.clone(),
-                }),
-            )
-            .await;
+            let reason = reject_order(tx, nats, &order_id, format!("no live price for {}", req.symbol)).await?;
             return Ok(PlaceMarketOrderOutcome::Rejected { order_id, reason });
         }
     };
 
+    // Fetched once, used for both admission checks below and the markup
+    // application further down — one DB round-trip covers both, since
+    // both live on the same BrokerSymbol row. A `None` here (the Symbol
+    // row itself doesn't exist) is a rare, benign case rather than a hard
+    // error — see get_broker_symbol_config's doc comment — so admission
+    // checks are skipped, matching the existing markup fallback.
+    let symbol_config = db::get_broker_symbol_config(pool, &req.broker_id, &req.symbol).await?;
+
+    if let Some(cfg) = &symbol_config {
+        if let Err(reject_reason) = risk::check_symbol_enabled(cfg.enabled) {
+            let reason = reject_order(tx, nats, &order_id, reject_reason.to_string()).await?;
+            return Ok(PlaceMarketOrderOutcome::Rejected { order_id, reason });
+        }
+        if let Err(reject_reason) = risk::check_lot_size(req.volume, cfg.min_lot, cfg.max_lot, cfg.lot_step) {
+            let reason = reject_order(tx, nats, &order_id, reject_reason.to_string()).await?;
+            return Ok(PlaceMarketOrderOutcome::Rejected { order_id, reason });
+        }
+    }
+
     let required = risk::required_margin(req.volume, req.contract_size, current_tick.bid, req.leverage);
     if let Err(reject_reason) = risk::check_free_margin(req.equity, req.used_margin, required) {
-        let reason = reject_reason.to_string();
-        db::set_rejected(&mut tx, &order_id, &reason).await?;
-        tx.commit().await?;
-        publish_best_effort(
-            nats,
-            &TradingEvent::OrderRejected(RiskRejection {
-                order_id: order_id.clone(),
-                reason: reason.clone(),
-            }),
-        )
-        .await;
+        let reason = reject_order(tx, nats, &order_id, reject_reason.to_string()).await?;
         return Ok(PlaceMarketOrderOutcome::Rejected { order_id, reason });
     }
 
@@ -184,14 +183,10 @@ pub async fn place_market_order(
     db::set_status(&mut tx, &order_id, OrderStatus::Routing).await?;
 
     // Broker's own markup on top of Market Data Core's raw price — see
-    // pricing.rs. Missing/unconfigured BrokerSymbol just means zero
-    // markup (get_symbol_pricing's own doc comment), so a `None` here
-    // (symbol row itself doesn't exist) is the only case worth a fallback
-    // rather than a hard error — the risk check above already proved a
-    // live price and a valid order exist, so this is a rare, benign
-    // "pricing config missing" case, not treated as fatal.
-    let quoted_tick = match db::get_symbol_pricing(pool, &req.broker_id, &req.symbol).await? {
-        Some(pricing) => pricing::apply_spread_markup(&current_tick, pricing.spread_markup, pricing.digits),
+    // pricing.rs. Reuses the config fetched above rather than a second
+    // round-trip.
+    let quoted_tick = match &symbol_config {
+        Some(cfg) => pricing::apply_spread_markup(&current_tick, cfg.spread_markup, cfg.digits),
         None => current_tick.clone(),
     };
 
@@ -337,27 +332,30 @@ pub async fn place_pending_order(
     let current_tick = match market_data::db::get_live_price(pool, &req.symbol).await? {
         Some((bid, ask)) => Tick { symbol: req.symbol.clone(), bid, ask },
         None => {
-            let reason = format!("no live price for {}", req.symbol);
-            db::set_rejected(&mut tx, &order_id, &reason).await?;
-            tx.commit().await?;
-            publish_best_effort(
-                nats,
-                &TradingEvent::OrderRejected(RiskRejection { order_id: order_id.clone(), reason: reason.clone() }),
-            )
-            .await;
+            let reason = reject_order(tx, nats, &order_id, format!("no live price for {}", req.symbol)).await?;
             return Ok(PlacePendingOrderOutcome::Rejected { order_id, reason });
         }
     };
 
     if let Err(reason) = validate_pending_price_side(req.side, req.order_type, req.requested_price, &current_tick) {
-        db::set_rejected(&mut tx, &order_id, &reason).await?;
-        tx.commit().await?;
-        publish_best_effort(
-            nats,
-            &TradingEvent::OrderRejected(RiskRejection { order_id: order_id.clone(), reason: reason.clone() }),
-        )
-        .await;
+        let reason = reject_order(tx, nats, &order_id, reason).await?;
         return Ok(PlacePendingOrderOutcome::Rejected { order_id, reason });
+    }
+
+    // Same admission checks as place_market_order (§2.1) — a disabled
+    // symbol or an out-of-bounds lot shouldn't even be accepted as
+    // pending, rather than sitting there until trigger time only to
+    // reject then. Lot size doesn't need rechecking at trigger time
+    // (pending_orders.rs) since volume never changes after placement.
+    if let Some(cfg) = db::get_broker_symbol_config(pool, &req.broker_id, &req.symbol).await? {
+        if let Err(reject_reason) = risk::check_symbol_enabled(cfg.enabled) {
+            let reason = reject_order(tx, nats, &order_id, reject_reason.to_string()).await?;
+            return Ok(PlacePendingOrderOutcome::Rejected { order_id, reason });
+        }
+        if let Err(reject_reason) = risk::check_lot_size(req.volume, cfg.min_lot, cfg.max_lot, cfg.lot_step) {
+            let reason = reject_order(tx, nats, &order_id, reject_reason.to_string()).await?;
+            return Ok(PlacePendingOrderOutcome::Rejected { order_id, reason });
+        }
     }
 
     db::set_status(&mut tx, &order_id, OrderStatus::Accepted).await?;
@@ -373,6 +371,29 @@ pub async fn place_pending_order(
 /// its next poll/reconnect, not that trading state is wrong. Logged, not
 /// propagated as an error, on that basis (see ../../docs/security.md's
 /// framing of Postgres as sole authoritative state).
+/// Shared tail of every admission-rejection path: mark the order
+/// rejected, commit that (a rejection is itself a terminal state worth
+/// persisting even though nothing else in the transaction happened), and
+/// publish the event. Takes `tx` by value since a rejection always
+/// commits and ends the transaction's life — there's nothing left for
+/// the caller to do with it. Returns the reason so each call site can
+/// still build its own `Outcome::Rejected` variant.
+pub(crate) async fn reject_order(
+    mut tx: sqlx::Transaction<'_, sqlx::Postgres>,
+    nats: &async_nats::Client,
+    order_id: &str,
+    reason: String,
+) -> Result<String, PlaceOrderError> {
+    db::set_rejected(&mut tx, order_id, &reason).await?;
+    tx.commit().await?;
+    publish_best_effort(
+        nats,
+        &TradingEvent::OrderRejected(RiskRejection { order_id: order_id.to_string(), reason: reason.clone() }),
+    )
+    .await;
+    Ok(reason)
+}
+
 pub(crate) async fn publish_best_effort(nats: &async_nats::Client, event: &TradingEvent) {
     if let Err(err) = events::publish(nats, event).await {
         tracing::warn!(?err, "failed to publish trading event to NATS");

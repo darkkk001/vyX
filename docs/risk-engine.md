@@ -75,6 +75,23 @@ itself except its own audit trail of risk decisions (accept/reject
 reasons, margin-call/stop-out events) — kept for compliance and support
 dispute resolution, mirroring the existing `AuditLog` model's role today.
 
+**§2.1 steps 2 and part of 5 also now implemented:** neither Gateway nor
+the Rust core ever checked `BrokerSymbol.enabled`, `minLot`, `maxLot`, or
+`lotStep` — `RiskRejectReason::SymbolDisabled` existed in `engine/risk`
+but nothing ever constructed it. `risk::check_symbol_enabled` and
+`risk::check_lot_size` (steps counted from `min_lot`, MT5 convention) now
+run in both `place_market_order` and `place_pending_order`
+(`engine/order-management/src/lib.rs`), fetched from the same
+`BrokerSymbol` row `pricing.rs`'s markup already reads — one query covers
+both concerns, extended into `db::get_broker_symbol_config` (renamed from
+`get_symbol_pricing`). Lot size isn't rechecked at pending-order trigger
+time since volume can't change after placement; symbol-enabled isn't
+rechecked at trigger time either — mid-flight-disable behavior for
+already-accepted pending orders is intentionally left to a future
+decision rather than assumed here. Per-broker exposure limits (max
+volume per symbol, max open positions per account) from step 5 remain
+open — those need new schema/config that doesn't exist today.
+
 ## 4. Open questions for Phase 2
 
 - Whether margin-call/stop-out thresholds are broker-level config or
