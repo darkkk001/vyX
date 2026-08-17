@@ -154,13 +154,60 @@ was judged sufficient real evidence without that risk, and is disclosed
 as the one deliberately-untested step rather than silently assumed to
 work.
 
+**`rememberBroker`/`forgetBroker` persistence + launcher mode — done
+(2026-08-17).** Direct port of `desktop/main.js`'s
+`getRememberedBroker()`/`setRememberedBroker()`/`clearRememberedBroker()`
++ `startUrlFor()`: `broker.config.json.mode` is now a real input, not
+just read-and-ignored — `"broker"` mode (today's only real-world case)
+is unchanged; `"launcher"` mode reads a `remembered-broker.json` from
+Tauri's `app_data_dir()` (the direct equivalent of Electron's
+`app.getPath("userData")`) and opens the remembered broker's `/trade`
+directly, or the root domain's `/launch` picker (a real, already-existing
+route, `app/launch/page.tsx`) if nothing's remembered yet. Two new
+commands, `remember_broker`/`forget_broker`, replace the init script's
+no-op stubs — the web app's existing `window.vyxDesktop.rememberBroker(
+hostname)` (called once after login) and `.forgetBroker()` (called on
+logout) now do the real thing, no web-app changes.
+
+Deliberately out of scope, per the user's own explicit choice when asked
+which parity gap to pick up next: navigation lockdown (`desktop/main.js`'s
+separate `allowedHost`/`will-navigate` enforcement) — launcher mode
+works today only because Tauri's existing `remote.urls` capability
+already permits any `*.vyxtrader.com` subdomain broadly enough, not
+because this slice added per-broker restriction.
+
+**Live-verified, both directions of the read path for real**: with
+`broker.config.json` temporarily in launcher mode pointed at the local
+dev server (reverted after), a fresh launch with no remembered-broker
+file correctly requested `/launch` (confirmed via the dev server's
+request log, including the picker's own `/api/public/brokers` fetch);
+after hand-placing a real seeded broker's hostname into a
+`remembered-broker.json` at the app's actual, source-confirmed
+`app_data_dir()` path (`tauri-2.11.5/src/path/desktop.rs:247`, not
+guessed) and relaunching, it skipped `/launch` entirely and went
+straight to that broker's `/trade` → `/trade/login`. **Caught and fixed
+a real test-methodology bug along the way**: the first hand-written test
+file (via PowerShell's `Set-Content -Encoding utf8`) silently failed to
+be read back, because that encoding prepends a UTF-8 BOM which
+`serde_json` correctly rejects — not a bug in the shipped Rust code
+(`write_remembered_broker` never touches PowerShell and never emits a
+BOM), but the failure mode looked identical to a real one until
+diagnosed by inspecting the file's raw bytes. **Write path**: the real
+call sites (`WebTrader.tsx`'s login/logout handlers) need a live
+session this sandbox can't drive via GUI automation, so instead the
+`write_remembered_broker`/`read_remembered_broker`/`clear_remembered_broker`
+functions themselves were called directly from a temporary debug-only
+code path with a fake hostname — confirmed the file is written with
+the exact expected JSON shape, read back correctly, and cleanly removed
+on clear. The JS→invoke wiring itself (a real browser click actually
+triggering `remember_broker`) stays disclosed as unverified, not
+claimed.
+
 **Still not at Electron parity** — `deployment.md` §3's own cutover
 precondition list is the tracking spec for what else is needed before
-any broker could actually rely on this instead of Electron:
-`rememberBroker`/`forgetBroker` real persistence + launcher/root-domain
-mode (currently no-op stubs so the web app's calls don't throw, but they
-don't do anything yet), navigation lockdown, splash/offline screens,
-window-state persistence across restarts.
+any broker could actually rely on this instead of Electron: navigation
+lockdown, splash/offline screens, window-state persistence across
+restarts.
 
 ---
 

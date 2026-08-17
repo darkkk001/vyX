@@ -1,11 +1,11 @@
 // VyXTrader Tauri desktop shell -- core-shell slice only, see
 // docs/decisions.md ADR-001 and this repo's CLAUDE.md for exactly what's
-// still deferred (remembered-broker persistence, navigation lockdown,
-// splash/offline screens, window-state persistence). Same "no local
-// server or database here, it only points at the already-deployed site"
-// principle as desktop/README.md's Electron app -- this app has no local
-// frontend of its own, the window is built programmatically pointing at
-// the broker's real deployed WebTrader.
+// still deferred (navigation lockdown, splash/offline screens,
+// window-state persistence). Same "no local server or database here, it
+// only points at the already-deployed site" principle as
+// desktop/README.md's Electron app -- this app has no local frontend of
+// its own, the window is built programmatically pointing at the
+// broker's real deployed WebTrader.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use serde::Deserialize;
@@ -23,15 +23,58 @@ struct BrokerConfig {
     #[serde(rename = "brokerName")]
     broker_name: String,
     subdomain: String,
-    // rootDomain/mode are read but unused in this slice -- launcher mode
-    // (root-domain server picker) is explicitly deferred, single-broker
-    // mode only for now. Kept in the struct so the config file's full
-    // shape stays stable for when launcher mode is picked up.
-    #[allow(dead_code)]
+    // Only meaningful in "launcher" mode (root-domain broker picker) --
+    // see start_url_for() below. Unused in "broker" mode, the only mode
+    // any committed broker.config.json actually ships with today.
     #[serde(rename = "rootDomain")]
     root_domain: String,
-    #[allow(dead_code)]
     mode: String,
+}
+
+// Direct port of desktop/main.js's getRememberedBroker()/
+// setRememberedBroker()/clearRememberedBroker(), using Tauri's
+// app_data_dir() in place of Electron's app.getPath("userData"). Only
+// meaningful in launcher mode -- a single-broker build always has
+// exactly one broker anyway, so nothing to remember.
+fn remembered_broker_path(app: &tauri::AppHandle) -> tauri::Result<std::path::PathBuf> {
+    Ok(app.path().app_data_dir()?.join("remembered-broker.json"))
+}
+
+fn read_remembered_broker(app: &tauri::AppHandle) -> Option<String> {
+    let path = remembered_broker_path(app).ok()?;
+    let raw = std::fs::read_to_string(path).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    value.get("hostname")?.as_str().map(|s| s.to_string())
+}
+
+fn write_remembered_broker(app: &tauri::AppHandle, hostname: &str) {
+    let Ok(path) = remembered_broker_path(app) else { return };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    // Non-fatal on failure -- worst case the picker shows again next
+    // launch, same reasoning as desktop/main.js's own try/catch here.
+    let _ = std::fs::write(&path, serde_json::json!({ "hostname": hostname }).to_string());
+}
+
+fn clear_remembered_broker(app: &tauri::AppHandle) {
+    if let Ok(path) = remembered_broker_path(app) {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+// Direct port of desktop/main.js's startUrlFor(): broker mode always
+// goes straight to that one broker's /trade (today's only real-world
+// mode); launcher mode goes to the remembered broker's /trade if one
+// exists, else the root domain's /launch picker page (app/launch/page.tsx).
+fn start_url_for(config: &BrokerConfig, app: &tauri::AppHandle) -> String {
+    if config.mode != "launcher" {
+        return format!("https://{}/trade", config.subdomain);
+    }
+    match read_remembered_broker(app) {
+        Some(hostname) => format!("https://{hostname}/trade"),
+        None => format!("https://{}/launch", config.root_domain),
+    }
 }
 
 fn load_broker_config() -> BrokerConfig {
@@ -75,6 +118,22 @@ fn win_close(window: tauri::Window) {
     let _ = window.close();
 }
 
+// Direct equivalent of desktop/main.js's auth:remember-broker/
+// auth:forget-broker IPC handlers -- called from the init script's
+// window.vyxDesktop bridge, which the web app already calls
+// unconditionally on login/logout regardless of desktop shell.
+#[tauri::command]
+fn remember_broker(app: tauri::AppHandle, hostname: String) {
+    if !hostname.is_empty() {
+        write_remembered_broker(&app, &hostname);
+    }
+}
+
+#[tauri::command]
+fn forget_broker(app: tauri::AppHandle) {
+    clear_remembered_broker(&app);
+}
+
 // Direct port of desktop/main.js's entire auto-update surface: check,
 // silently download+install if found, notify once on success. No
 // "Check for Updates" UI, no forced relaunch -- the update applies on
@@ -110,10 +169,10 @@ async fn check_for_updates(
 // expect -- see their `declare global { interface Window { vyxDesktop?
 // {...} } }`. Matching that shape exactly means zero changes to the web
 // app; it doesn't know or care which desktop shell it's running in, only
-// whether window.vyxDesktop exists. rememberBroker/forgetBroker are
-// no-op stubs here -- launcher mode (the only mode that actually needs
-// them) is deferred, but the web app calls them unconditionally in
-// desktop mode, so they must exist rather than being undefined.
+// whether window.vyxDesktop exists. rememberBroker/forgetBroker invoke
+// the remember_broker/forget_broker commands above -- real no-ops in
+// broker mode in practice (nothing reads the file start_url_for()
+// doesn't already ignore), real persistence in launcher mode.
 //
 // Also requests OS notification permission up front -- WebTrader.tsx's
 // pushToast (see `if (important && ... && "Notification" in window) {
@@ -150,8 +209,8 @@ const VYX_DESKTOP_INIT_SCRIPT: &str = r#"
         unlistenPromise.then(function (unlisten) { unlisten(); });
       };
     },
-    rememberBroker: function () {},
-    forgetBroker: function () {},
+    rememberBroker: function (hostname) { window.__TAURI__.core.invoke("remember_broker", { hostname: hostname }); },
+    forgetBroker: function () { window.__TAURI__.core.invoke("forget_broker"); },
   };
 
   var notif = window.__TAURI__.notification;
@@ -165,10 +224,6 @@ const VYX_DESKTOP_INIT_SCRIPT: &str = r#"
 
 fn main() {
     let config = load_broker_config();
-    // Same hardcoded https:// scheme as desktop/main.js's own
-    // brokerUrl/launchUrl construction -- this app only ever points at a
-    // real deployed broker, never a local dev server.
-    let broker_url = format!("https://{}/trade", config.subdomain);
     let broker_name = config.broker_name.clone();
 
     // Shared between the tray menu's "Quit" handler and the window's
@@ -185,9 +240,19 @@ fn main() {
         ))
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .invoke_handler(tauri::generate_handler![win_minimize, win_toggle_maximize, win_close])
+        .invoke_handler(tauri::generate_handler![
+            win_minimize,
+            win_toggle_maximize,
+            win_close,
+            remember_broker,
+            forget_broker
+        ])
         .setup(move |app| {
-            let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(broker_url.parse().unwrap()))
+            // Same hardcoded https:// scheme as desktop/main.js's own
+            // brokerUrl/launchUrl construction -- this app only ever
+            // points at a real deployed broker, never a local dev server.
+            let start_url = start_url_for(&config, app.handle());
+            let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(start_url.parse().unwrap()))
                 .title(&config.broker_name)
                 .inner_size(1440.0, 900.0)
                 .min_inner_size(1024.0, 640.0)

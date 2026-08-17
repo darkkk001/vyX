@@ -166,9 +166,21 @@ SQL Editor.
   verified the Ed25519 signature end-to-end. Deliberately not verified:
   actually running the installer (`install()`) against this machine —
   judged too risky to trigger unattended, disclosed rather than assumed.
-  Still explicitly deferred, not silently missing: `rememberBroker`/
-  `forgetBroker` real persistence + launcher/root-domain mode, navigation
-  lockdown, splash/offline screens, window-state persistence.
+  `rememberBroker`/`forgetBroker` persistence + launcher/root-domain mode
+  are also done: `broker.config.json.mode: "launcher"` opens the
+  remembered broker's `/trade` directly (via a `remembered-broker.json`
+  in Tauri's app data dir, same idea as Electron's userData file) or the
+  root domain's `/launch` picker if nothing's remembered — `"broker"`
+  mode (today's only real-world use) is unchanged. Live-verified both
+  directions of the read path for real (fresh launch → `/launch`;
+  remembered broker present → straight to that broker's `/trade`,
+  confirmed via the dev server's request log) and the write/read/clear
+  file logic directly; the actual login/logout click that triggers it in
+  the browser wasn't GUI-driven, disclosed as such. Navigation lockdown
+  was explicitly left out of this slice (the user's own choice when
+  asked which parity gap to do next). Still explicitly deferred, not
+  silently missing: navigation lockdown, splash/offline screens,
+  window-state persistence.
 - **Phase 5** (real execution engine / LP FIX feed) — partially started.
   Note: this doc's phase numbering disagrees with `docs/architecture.md`
   §7's own table (which calls Phase 5 "Mobile") — never reconciled,
