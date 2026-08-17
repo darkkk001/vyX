@@ -747,3 +747,89 @@ here, just the option the spec itself already pointed at.
     account linked to itself as its own IB returned a clean 400; paying
     a relationship with zero pending commission returned a clean 400
     instead of a `$0` payout.
+
+22. **Rust engine — cancel + modify order support (a real "Phase 5"
+    disambiguation).** `CLAUDE.md` calls Phase 5 "real execution engine /
+    LP FIX feed," but this doc's own phase table (§7) says Phase 5 =
+    Mobile — the two docs never agreed. Investigated what "Phase 5" could
+    actually mean here: a real LP FIX feed has zero design anywhere (one
+    placeholder `ExecutionStrategy::Aggregated` enum comment, no FIX
+    library in the workspace, no protocol spec) and needs a real
+    liquidity-provider business relationship the user doesn't have —
+    not buildable in this sandbox, same category of external blocker as
+    the MT5 EA compile step or a real Vercel Blob token. User chose the
+    concrete, achievable half instead: the already-substantially-built
+    internal Rust execution engine (`order-management`, `risk`) had one
+    confirmed real gap against `testing.md`'s own broker-cutover smoke
+    test ("place, fill, **modify**, close") — cancel and modify orders,
+    completely unimplemented anywhere (no function, no route,
+    `engine/server`'s own header comment said so).
+
+    The `position`/`ledger` crates looked like a second gap but turned
+    out to be a false lead: `order-management` already writes
+    positions/ledger rows directly via tested, working inline `sqlx` —
+    "completing" those placeholder crates would only refactor working
+    code for architectural tidiness, no new capability, real regression
+    risk for zero gain. User confirmed skipping that, scoping this
+    slice to cancel/modify only.
+
+    **Parity target, not the original spec.** `trading-engine.md`'s
+    target API describes `ModifyOrder(order_id, sl?, tp?, price?)` on a
+    still-pending order — but the *live* Next.js/Prisma path instead
+    lets a trader edit an **open position's** SL/TP
+    (`app/api/trade/positions/[id]/route.ts` PATCH, validated via
+    `lib/trading.ts`'s `validateSlTp`), and cancels a resting **order**
+    (`app/api/trade/orders/[id]/route.ts` DELETE, Prisma `PENDING` only
+    — Rust's `ACCEPTED`). Cutover-readiness means matching what the live
+    app actually does, not the aspirational spec nothing has ever used,
+    so `order_management::cancel_order` targets an order (`ACCEPTED`
+    only, matching `is_legal_transition`'s existing `(Accepted,
+    Cancelled)`) and `order_management::modify_position_sl_tp` targets a
+    position (`OPEN` only). New `risk::validate_sl_tp` is a direct Rust
+    port of `lib/trading.ts`'s `validateSlTp`, full unit-test coverage.
+    Two new routes, same handler shape as the existing two:
+    `POST /v1/orders/{id}/cancel`, `POST /v1/positions/{id}/modify`.
+    `TradingEvent::OrderCancelled`/subject `order.cancelled` already
+    existed in `protocol`/`events.rs`, unused until now.
+
+    Also found and fixed, while researching this: ADR-002 and ADR-003
+    (`decisions.md`) — the two decisions this entire slice's schema
+    assumptions rest on — were still marked "Proposed — awaiting
+    approval" despite the live code already fully committing to both
+    (separate Rust-owned tables in the same Postgres instance; old
+    Next.js path kept running unmodified). Flipped both to Accepted,
+    same stale-doc-closing pattern as this session's other fixes.
+
+    **Verified live end-to-end**, not just unit tests — this sandbox has
+    a working Rust toolchain, a local `nats-server.exe`, and the real
+    `db.prisma.io` Postgres already has the Rust-owned tables, so the
+    actual `engine/server` HTTP binary was run for real: `cargo build
+    --workspace`/`cargo test --workspace` clean (27 existing +
+    21 `risk` tests, including 6 new `validate_sl_tp` cases, all
+    passing); placed a pending LIMIT order, cancelled it, confirmed
+    `orders.status = 'CANCELLED'` in Postgres directly; cancelling the
+    same order again returned a clean 409 (`InvalidStatus`), not a
+    double-cancel; cancelling with the wrong `account_id` returned a
+    clean 404, not a leak of the real owner; placed a MARKET order
+    (filled immediately against a seeded `LivePrice` tick), modified the
+    resulting position's SL/TP with valid, correctly-sided values,
+    confirmed in Postgres; an incorrectly-sided SL returned a clean 400
+    instead of a bad write; closed the position directly (the existing,
+    already-tested `close_position_with_ledger_entry` logic, not a new
+    route — manual/trader-initiated close has no HTTP route yet, a
+    separate, out-of-scope gap noted but not built this slice) and
+    confirmed a further modify attempt against it returned a clean 409;
+    a modify attempt with the wrong `account_id` returned a clean 404.
+    All seeded test rows (orders, the position, checked for stray
+    ledger entries — none written, since this symbol has no configured
+    commission) cleaned up afterward.
+
+    **Not done, explicitly out of scope for this slice**: the real LP
+    FIX feed (needs a real LP relationship first); a broker-selection
+    mechanism to actually route a broker to the Rust path (no schema
+    field, no code, anywhere — ADR-003's "Accepted" status is the
+    *strategy*, not proof cutover itself is ready); the parallel-run
+    test infrastructure `testing.md` §4 calls for (needs a staging
+    environment that doesn't exist); manual/trader-initiated position
+    close (only the SL/TP-triggered and margin-monitor-triggered close
+    paths exist); the `position`/`ledger` crate refactor (see above).

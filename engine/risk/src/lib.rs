@@ -3,6 +3,7 @@
 //! ongoing margin-monitor loop (§2.2) needs a live price feed and Postgres
 //! access and is Phase 2 work once market-data/position are wired up.
 
+use protocol::OrderSide;
 use rust_decimal::Decimal;
 use thiserror::Error;
 
@@ -25,6 +26,48 @@ pub enum RiskRejectReason {
     ExposureLimitExceeded { new_total: String, max_exposure: String },
     #[error("account already has {current} open position(s), broker max is {max}")]
     MaxOpenPositionsExceeded { current: i64, max: i32 },
+    #[error("{0}")]
+    InvalidStopLevels(String),
+}
+
+/// Side-aware SL/TP validation against a reference price — direct Rust
+/// port of `lib/trading.ts`'s `validateSlTp` (the Next.js path's own
+/// server-side check, re-run here since a modify request lands on this
+/// engine directly, not through that route). A BUY's stop-loss must sit
+/// below the reference price and take-profit above it; a SELL is the
+/// mirror image. `None` for either means "not being set/changed" and
+/// skips that half of the check.
+pub fn validate_sl_tp(
+    side: OrderSide,
+    reference_price: Decimal,
+    sl_price: Option<Decimal>,
+    tp_price: Option<Decimal>,
+) -> Result<(), RiskRejectReason> {
+    if let Some(sl) = sl_price {
+        let invalid = match side {
+            OrderSide::Buy => sl >= reference_price,
+            OrderSide::Sell => sl <= reference_price,
+        };
+        if invalid {
+            let side_word = if side == OrderSide::Buy { "below" } else { "above" };
+            return Err(RiskRejectReason::InvalidStopLevels(format!(
+                "SL must be {side_word} the reference price for a {side:?}"
+            )));
+        }
+    }
+    if let Some(tp) = tp_price {
+        let invalid = match side {
+            OrderSide::Buy => tp <= reference_price,
+            OrderSide::Sell => tp >= reference_price,
+        };
+        if invalid {
+            let side_word = if side == OrderSide::Buy { "above" } else { "below" };
+            return Err(RiskRejectReason::InvalidStopLevels(format!(
+                "TP must be {side_word} the reference price for a {side:?}"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Standard forex margin formula, per ../../docs/risk-engine.md §2.1.3:
@@ -229,5 +272,48 @@ mod tests {
         assert!(check_max_open_positions(4, Some(5)).is_ok());
         assert!(check_max_open_positions(5, Some(5)).is_err());
         assert!(check_max_open_positions(6, Some(5)).is_err());
+    }
+
+    mod sl_tp_validation {
+        use super::*;
+
+        #[test]
+        fn buy_sl_must_be_below_reference() {
+            assert!(validate_sl_tp(OrderSide::Buy, dec!(1.10000), Some(dec!(1.09000)), None).is_ok());
+            assert!(validate_sl_tp(OrderSide::Buy, dec!(1.10000), Some(dec!(1.10000)), None).is_err());
+            assert!(validate_sl_tp(OrderSide::Buy, dec!(1.10000), Some(dec!(1.11000)), None).is_err());
+        }
+
+        #[test]
+        fn buy_tp_must_be_above_reference() {
+            assert!(validate_sl_tp(OrderSide::Buy, dec!(1.10000), None, Some(dec!(1.11000))).is_ok());
+            assert!(validate_sl_tp(OrderSide::Buy, dec!(1.10000), None, Some(dec!(1.10000))).is_err());
+            assert!(validate_sl_tp(OrderSide::Buy, dec!(1.10000), None, Some(dec!(1.09000))).is_err());
+        }
+
+        #[test]
+        fn sell_sl_must_be_above_reference() {
+            assert!(validate_sl_tp(OrderSide::Sell, dec!(1.10000), Some(dec!(1.11000)), None).is_ok());
+            assert!(validate_sl_tp(OrderSide::Sell, dec!(1.10000), Some(dec!(1.10000)), None).is_err());
+            assert!(validate_sl_tp(OrderSide::Sell, dec!(1.10000), Some(dec!(1.09000)), None).is_err());
+        }
+
+        #[test]
+        fn sell_tp_must_be_below_reference() {
+            assert!(validate_sl_tp(OrderSide::Sell, dec!(1.10000), None, Some(dec!(1.09000))).is_ok());
+            assert!(validate_sl_tp(OrderSide::Sell, dec!(1.10000), None, Some(dec!(1.10000))).is_err());
+            assert!(validate_sl_tp(OrderSide::Sell, dec!(1.10000), None, Some(dec!(1.11000))).is_err());
+        }
+
+        #[test]
+        fn both_none_always_ok() {
+            assert!(validate_sl_tp(OrderSide::Buy, dec!(1.10000), None, None).is_ok());
+            assert!(validate_sl_tp(OrderSide::Sell, dec!(1.10000), None, None).is_ok());
+        }
+
+        #[test]
+        fn both_valid_together_is_ok() {
+            assert!(validate_sl_tp(OrderSide::Buy, dec!(1.10000), Some(dec!(1.09000)), Some(dec!(1.11000))).is_ok());
+        }
     }
 }

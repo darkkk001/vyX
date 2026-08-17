@@ -193,3 +193,20 @@ rows; confirmed `claim_position_for_swap`'s exact SQL succeeds once and
 then correctly returns zero rows on a same-day retry (the idempotency
 guard); confirmed the running ledger total for the test account matches
 `-commission + swap` exactly.
+
+**Order cancel + position SL/TP modify — done (2026-08-17).**
+`order_management::cancel_order` (`ACCEPTED` orders only, matching a
+resting LIMIT/STOP) and `order_management::modify_position_sl_tp`
+(`OPEN` positions only, validated via the new `risk::validate_sl_tp`)
+close the cutover-readiness gap `testing.md`'s broker smoke test
+requires — see `trading-engine.md`'s implementation-status note for why
+modify targets a position, not an order. Verified live against the real
+Postgres via the actual `engine/server` HTTP routes
+(`POST /v1/orders/{id}/cancel`, `POST /v1/positions/{id}/modify`), a
+locally-run `nats-server`: place→cancel→confirm `CANCELLED` in Postgres;
+cancel again on the same order → clean 409, not a double-cancel; cancel
+with the wrong `account_id` → clean 404, not a leak of the real owner;
+place→fill a MARKET order→modify the resulting position with a valid,
+correctly-sided SL/TP → confirmed in Postgres; an incorrectly-sided SL →
+clean 400; the position closed, then a modify attempt against it →
+clean 409.

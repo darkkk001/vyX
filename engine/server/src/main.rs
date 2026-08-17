@@ -4,20 +4,20 @@
 //! deployment; only the Gateway talks to it (../../docs/security.md §2's
 //! second trust boundary).
 //!
-//! MARKET and LIMIT/STOP order placement are exposed; cancel/modify and
-//! account/position queries aren't yet — see
-//! ../../docs/trading-engine.md's implementation-status note.
+//! MARKET and LIMIT/STOP order placement, order cancel, and position
+//! SL/TP modify are exposed; account/position query routes aren't yet —
+//! see ../../docs/trading-engine.md's implementation-status note.
 
 use axum::{
-    extract::State,
+    extract::{Path, State},
     http::{HeaderMap, StatusCode},
     routing::{get, post},
     Json, Router,
 };
 use futures_util::StreamExt;
 use order_management::{
-    db, events, PlaceMarketOrderOutcome, PlaceMarketOrderRequest, PlacePendingOrderOutcome,
-    PlacePendingOrderRequest,
+    db, events, CancelOrderOutcome, ModifyPositionOutcome, PlaceMarketOrderOutcome,
+    PlaceMarketOrderRequest, PlacePendingOrderOutcome, PlacePendingOrderRequest,
 };
 use protocol::{OrderSide, OrderType, Tick};
 use rust_decimal::Decimal;
@@ -169,6 +169,99 @@ async fn place_pending_order(
         })?;
 
     Ok(Json(outcome.into()))
+}
+
+#[derive(Debug, Deserialize)]
+struct CancelOrderBody {
+    account_id: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "status", rename_all = "SCREAMING_SNAKE_CASE")]
+enum CancelOrderResponse {
+    Cancelled { order_id: String },
+}
+
+/// Cancels a resting order — see order_management::cancel_order's doc
+/// comment for why only a still-pending LIMIT/STOP can ever legally
+/// reach here. `NotFound`/`InvalidStatus` map to HTTP status rather than
+/// the tagged-enum body the two placement routes use, since those are
+/// the two failure shapes every consumer of this route needs to branch
+/// on distinctly (404 vs 409), not just display.
+async fn cancel_order(
+    State(state): State<Arc<AppState>>,
+    Path(order_id): Path<String>,
+    Json(body): Json<CancelOrderBody>,
+) -> Result<Json<CancelOrderResponse>, (StatusCode, String)> {
+    let outcome = order_management::cancel_order(&state.pool, &state.nats, &order_id, &body.account_id)
+        .await
+        .map_err(|err| {
+            tracing::error!(?err, "cancel_order failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
+        })?;
+
+    match outcome {
+        CancelOrderOutcome::Cancelled { order_id } => Ok(Json(CancelOrderResponse::Cancelled { order_id })),
+        CancelOrderOutcome::NotFound => Err((StatusCode::NOT_FOUND, "order not found".to_string())),
+        CancelOrderOutcome::InvalidStatus { status } => Err((
+            StatusCode::CONFLICT,
+            format!("cannot cancel an order in status {status:?}"),
+        )),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ModifyPositionBody {
+    account_id: String,
+    current_price: Decimal,
+    sl_price: Option<Decimal>,
+    tp_price: Option<Decimal>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "status", rename_all = "SCREAMING_SNAKE_CASE")]
+enum ModifyPositionResponse {
+    Updated {
+        sl_price: Option<Decimal>,
+        tp_price: Option<Decimal>,
+    },
+}
+
+/// Edits an open position's SL/TP — see
+/// order_management::modify_position_sl_tp's doc comment for why this
+/// targets a position, not the order-level `ModifyOrder` in
+/// docs/trading-engine.md's original spec (matches what the legacy
+/// Next.js path already does).
+async fn modify_position(
+    State(state): State<Arc<AppState>>,
+    Path(position_id): Path<String>,
+    Json(body): Json<ModifyPositionBody>,
+) -> Result<Json<ModifyPositionResponse>, (StatusCode, String)> {
+    let outcome = order_management::modify_position_sl_tp(
+        &state.pool,
+        &body.account_id,
+        &position_id,
+        body.current_price,
+        body.sl_price,
+        body.tp_price,
+    )
+    .await
+    .map_err(|err| {
+        tracing::error!(?err, "modify_position_sl_tp failed");
+        (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
+    })?;
+
+    match outcome {
+        ModifyPositionOutcome::Updated { sl_price, tp_price } => {
+            Ok(Json(ModifyPositionResponse::Updated { sl_price, tp_price }))
+        }
+        ModifyPositionOutcome::NotFound => Err((StatusCode::NOT_FOUND, "position not found".to_string())),
+        ModifyPositionOutcome::InvalidStatus { status } => Err((
+            StatusCode::CONFLICT,
+            format!("position is not open (status: {status:?})"),
+        )),
+        ModifyPositionOutcome::ValidationFailed { reason } => Err((StatusCode::BAD_REQUEST, reason)),
+    }
 }
 
 // Accepts a single tick or an array — same flexibility as today's
@@ -335,6 +428,8 @@ async fn main() {
         .route("/health", get(health))
         .route("/v1/orders/market", post(place_market_order))
         .route("/v1/orders/pending", post(place_pending_order))
+        .route("/v1/orders/{order_id}/cancel", post(cancel_order))
+        .route("/v1/positions/{position_id}/modify", post(modify_position))
         .route("/internal/price-feed", post(ingest_price_feed))
         .with_state(state);
 

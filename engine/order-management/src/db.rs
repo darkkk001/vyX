@@ -81,6 +81,24 @@ fn status_from_str(s: &str) -> OrderStatus {
     }
 }
 
+/// `positions.status` — no equivalent type in `protocol` (only order-side
+/// state made it there), and this crate is position's sole writer per
+/// ADR-002, so it's defined here rather than adding a dependency on the
+/// still-placeholder `position` crate just for one enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PositionStatus {
+    Open,
+    Closed,
+}
+
+fn position_status_from_str(s: &str) -> PositionStatus {
+    match s {
+        "OPEN" => PositionStatus::Open,
+        "CLOSED" => PositionStatus::Closed,
+        other => panic!("unknown position_status in database: {other}"),
+    }
+}
+
 pub struct NewOrder {
     pub broker_id: String,
     pub account_id: String,
@@ -214,6 +232,61 @@ pub async fn insert_position(
     Ok(id)
 }
 
+#[derive(Debug)]
+pub struct PositionRow {
+    pub id: String,
+    pub account_id: String,
+    pub side: OrderSide,
+    pub status: PositionStatus,
+    pub sl_price: Option<Decimal>,
+    pub tp_price: Option<Decimal>,
+}
+
+/// Single-position lookup by id, for the modify-SL/TP path's ownership
+/// and status check — narrower than `get_open_positions_with_market`
+/// (no market-price join, not account-scoped), which exists for a
+/// different caller (the margin monitor) with a different shape need.
+pub async fn get_position(pool: &PgPool, position_id: &str) -> Result<Option<PositionRow>, sqlx::Error> {
+    let row = sqlx::query_as::<_, (String, String, String, String, Option<Decimal>, Option<Decimal>)>(
+        r#"SELECT id, account_id, side::text, status::text, sl_price, tp_price
+           FROM positions WHERE id = $1"#,
+    )
+    .bind(position_id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(|(id, account_id, side, status, sl_price, tp_price)| PositionRow {
+        id,
+        account_id,
+        side: side_from_str(&side),
+        status: position_status_from_str(&status),
+        sl_price,
+        tp_price,
+    }))
+}
+
+/// Sets a position's SL/TP to the caller-supplied final values (each
+/// `None` = no stop on that side). Unlike the legacy Next.js route's
+/// `undefined`-vs-`null` PATCH semantics, this always writes both
+/// columns — see the module-level design note in the plan for why: this
+/// HTTP surface is only ever called by services/api-gateway, which can
+/// resolve "unchanged" itself before calling, so there's no need for a
+/// three-state "field omitted" concept here.
+pub async fn update_position_sl_tp(
+    tx: &mut sqlx::PgTransaction<'_>,
+    position_id: &str,
+    sl_price: Option<Decimal>,
+    tp_price: Option<Decimal>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(r#"UPDATE positions SET sl_price = $1, tp_price = $2 WHERE id = $3"#)
+        .bind(sl_price)
+        .bind(tp_price)
+        .bind(position_id)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
 /// Charges a position's one-time open commission — a `COMMISSION` ledger
 /// entry (negative: a cost, reducing effective balance the same way
 /// `get_ledger_sum`'s doc comment describes for stop-out P&L) plus the
@@ -261,6 +334,25 @@ pub struct OrderRow {
     pub status: OrderStatus,
     pub volume: Decimal,
     pub created_at: DateTime<Utc>,
+}
+
+/// Atomically cancels a resting order — `WHERE status = 'ACCEPTED'` means
+/// only a still-waiting LIMIT/STOP can be cancelled this way (mirrors
+/// the legacy Next.js path's "only PENDING can be cancelled" rule,
+/// app/api/trade/orders/[id]/route.ts). Returns whether a row was
+/// actually claimed, same idempotent-claim pattern as
+/// `try_claim_order_for_routing`: a caller retrying after a lost
+/// response, or a race with the order triggering at the same instant,
+/// sees `false` rather than double-cancelling or erroring.
+pub async fn cancel_order(tx: &mut sqlx::PgTransaction<'_>, order_id: &str) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query(
+        r#"UPDATE orders SET status = 'CANCELLED'::order_status, updated_at = now()
+           WHERE id = $1 AND status = 'ACCEPTED'::order_status"#,
+    )
+    .bind(order_id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(result.rows_affected() == 1)
 }
 
 pub async fn get_order(pool: &PgPool, order_id: &str) -> Result<Option<OrderRow>, sqlx::Error> {

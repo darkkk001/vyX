@@ -26,7 +26,7 @@ notes captured in `deployment.md`.
 
 ## ADR-002 — Trading Core data ownership boundary
 
-**Status:** Proposed — awaiting approval
+**Status:** Accepted (2026-08-17 — formalizing what the code already does)
 
 **Context:** The Rust Trading Core needs authoritative tables for orders,
 positions, and ledger entries. Today those are Prisma-owned
@@ -42,13 +42,18 @@ that also holds `Broker`/`AdminUser`/`Account`/`KycRecord`/`Symbol`/etc.
 **Recommendation:** (a) — one authoritative Postgres instance, clear
 per-table ownership, no cross-database consistency problem to solve.
 
-**Decision:** _pending_
+**Decision:** (a). Found sitting as "pending" during the cancel/modify
+order-support work despite `engine/migrations/20260813000000_trading_core_tables.sql`
+already implementing exactly this — snake_case `orders`/`positions`/
+`ledger_entries` tables in the same Postgres instance, deliberately not
+foreign-keyed to Prisma's tables. A real doc/reality gap, closed the same
+way other stale-doc findings were fixed this session, not a new decision.
 
 ---
 
 ## ADR-003 — Cutover strategy while the Rust core is being built
 
-**Status:** Proposed — awaiting approval
+**Status:** Accepted (2026-08-17 — formalizing what the code already does)
 
 **Context:** Spec Phase 1-2 implies a build-out period where the Rust core
 exists but isn't finished. The current Next.js/Prisma order-placement path
@@ -63,7 +68,19 @@ exists but isn't finished. The current Next.js/Prisma order-placement path
 **Recommendation:** Keep the current path running — matches the project
 rule against destroying working functionality mid-rewrite.
 
-**Decision:** _pending_
+**Decision:** Keep the current path running. Same as ADR-002, found
+still "pending" while every relevant piece of code (the Next.js path
+untouched, `services/api-gateway` a new parallel surface nothing routes
+through yet) already acts on this recommendation. Formalized here rather
+than left inconsistent. **Not yet satisfied**: no broker-selection
+mechanism exists anywhere (no `Broker` field, no code flag) to actually
+route a given broker to one path or the other when cutover is eventually
+triggered, and the parallel-run comparison infrastructure `testing.md`
+§4 calls for is explicitly not built. Accepting the *strategy* here
+doesn't mean cutover is ready — see `trading-engine.md`'s
+implementation-status note for what's actually done so far (cancel/modify
+order support, as of this same date) versus what cutover itself still
+needs.
 
 ---
 

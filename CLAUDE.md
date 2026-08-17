@@ -115,8 +115,32 @@ SQL Editor.
   No live/automatic payout on every trade — an admin clicks "Pay" to
   move the calculated amount through the `Transaction` ledger onto the
   IB's own account balance (`app/api/manage/ib-relationships`).
-- **Phase 4** (Electron desktop wrapper) — not started.
-- **Phase 5** (real execution engine / LP FIX feed) — not started.
+- **Phase 4** (desktop) — a working Electron shell already exists
+  (`desktop/`: thin WebTrader wrapper, per-broker rebrand tooling,
+  auto-update, tray, notifications) and keeps working as-is. Per
+  `docs/decisions.md` ADR-001, the actual Trading Core-era desktop app
+  is planned in **Tauri**, not evolved from Electron — that Tauri build
+  has not been started, and isn't urgent since the Electron app already
+  covers today's needs.
+- **Phase 5** (real execution engine / LP FIX feed) — partially started.
+  Note: this doc's phase numbering disagrees with `docs/architecture.md`
+  §7's own table (which calls Phase 5 "Mobile") — never reconciled,
+  flagged rather than silently picked one. The internal Rust execution
+  engine (`engine/order-management`, `engine/risk`) now has cancel +
+  modify order support (`POST /v1/orders/{id}/cancel`,
+  `POST /v1/positions/{id}/modify` on `engine/server`) — the concrete
+  gap `docs/testing.md`'s own broker-cutover smoke test required, live-
+  verified against the real Postgres. Modify targets an **open
+  position's** SL/TP, not a still-pending order, matching what the live
+  Next.js path already does — see `docs/trading-engine.md`'s
+  implementation-status note. Still not done: an actual
+  broker-selection mechanism to route a broker to this engine (no
+  schema field or code exists anywhere for this), the parallel-run
+  cutover test infrastructure (`docs/testing.md` §4, needs a staging
+  environment that doesn't exist), and the real LP FIX feed itself —
+  zero design exists for that anywhere, and it needs an actual
+  liquidity-provider business relationship the user doesn't have yet,
+  not something buildable in this sandbox.
 
 Known simplifications, flagged deliberately rather than hidden: demo/live
 account switching requires logging out and back in with the other account

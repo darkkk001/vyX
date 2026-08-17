@@ -422,6 +422,127 @@ pub(crate) async fn publish_best_effort(nats: &async_nats::Client, event: &Tradi
     }
 }
 
+#[derive(Debug)]
+pub enum CancelOrderOutcome {
+    Cancelled { order_id: String },
+    /// Covers both "no such order" and "exists but belongs to a
+    /// different account" — same collapsing the legacy Next.js route
+    /// does (app/api/trade/orders/[id]/route.ts's `!order ||
+    /// order.accountId !== session.accountId`), so a wrong account_id
+    /// never confirms an order's existence.
+    NotFound,
+    InvalidStatus { status: OrderStatus },
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum CancelOrderError {
+    #[error(transparent)]
+    Db(#[from] sqlx::Error),
+}
+
+/// Cancels a resting LIMIT/STOP order sitting in `ACCEPTED` — the only
+/// status this is legal from (`is_legal_transition`'s `(Accepted,
+/// Cancelled)`), mirroring the legacy Next.js path's "only PENDING can
+/// be cancelled" rule. A MARKET order is filled synchronously within
+/// `place_market_order` itself, so by the time a caller could reach this
+/// function it's already terminal (FILLED/REJECTED) — cancel is only
+/// ever meaningful for a still-waiting pending order.
+pub async fn cancel_order(
+    pool: &PgPool,
+    nats: &async_nats::Client,
+    order_id: &str,
+    account_id: &str,
+) -> Result<CancelOrderOutcome, CancelOrderError> {
+    let Some(order) = db::get_order(pool, order_id).await? else {
+        return Ok(CancelOrderOutcome::NotFound);
+    };
+    if order.account_id != account_id {
+        return Ok(CancelOrderOutcome::NotFound);
+    }
+    if order.status != OrderStatus::Accepted {
+        return Ok(CancelOrderOutcome::InvalidStatus { status: order.status });
+    }
+
+    let mut tx = pool.begin().await?;
+    let claimed = db::cancel_order(&mut tx, order_id).await?;
+    if !claimed {
+        // Lost a race with the order triggering (or another cancel call)
+        // between the read above and this claim -- re-report its actual
+        // current status rather than falsely confirming cancellation.
+        tx.rollback().await?;
+        let current = db::get_order(pool, order_id).await?;
+        return Ok(match current {
+            Some(o) => CancelOrderOutcome::InvalidStatus { status: o.status },
+            None => CancelOrderOutcome::NotFound,
+        });
+    }
+    tx.commit().await?;
+
+    publish_best_effort(nats, &TradingEvent::OrderCancelled { order_id: order_id.to_string() }).await;
+
+    Ok(CancelOrderOutcome::Cancelled { order_id: order_id.to_string() })
+}
+
+#[derive(Debug)]
+pub enum ModifyPositionOutcome {
+    Updated {
+        sl_price: Option<Decimal>,
+        tp_price: Option<Decimal>,
+    },
+    NotFound,
+    InvalidStatus {
+        status: db::PositionStatus,
+    },
+    ValidationFailed {
+        reason: String,
+    },
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ModifyPositionError {
+    #[error(transparent)]
+    Db(#[from] sqlx::Error),
+}
+
+/// Edits an open position's SL/TP — same operation as the legacy
+/// Next.js path's `PATCH /api/trade/positions/[id]`, not the
+/// order-level `ModifyOrder` in docs/trading-engine.md's original
+/// target spec (nothing in the live app has ever needed that; this
+/// mirrors what traders actually do today). `current_price` is
+/// caller-supplied (the Gateway's own Market Data Core read) rather
+/// than fetched here, same reasoning as `PlaceMarketOrderRequest` not
+/// including a tick -- kept out here deliberately so this function
+/// doesn't gain its own Market Data Core dependency for one read the
+/// caller already has to make anyway to show the trader a current price.
+pub async fn modify_position_sl_tp(
+    pool: &PgPool,
+    account_id: &str,
+    position_id: &str,
+    current_price: Decimal,
+    sl_price: Option<Decimal>,
+    tp_price: Option<Decimal>,
+) -> Result<ModifyPositionOutcome, ModifyPositionError> {
+    let Some(position) = db::get_position(pool, position_id).await? else {
+        return Ok(ModifyPositionOutcome::NotFound);
+    };
+    if position.account_id != account_id {
+        return Ok(ModifyPositionOutcome::NotFound);
+    }
+    if position.status != db::PositionStatus::Open {
+        return Ok(ModifyPositionOutcome::InvalidStatus { status: position.status });
+    }
+
+    if let Err(reason) = risk::validate_sl_tp(position.side, current_price, sl_price, tp_price) {
+        return Ok(ModifyPositionOutcome::ValidationFailed { reason: reason.to_string() });
+    }
+
+    let mut tx = pool.begin().await?;
+    db::update_position_sl_tp(&mut tx, position_id, sl_price, tp_price).await?;
+    tx.commit().await?;
+
+    Ok(ModifyPositionOutcome::Updated { sl_price, tp_price })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

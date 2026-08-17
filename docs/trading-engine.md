@@ -15,8 +15,26 @@ a library function today, not exposed behind the API Gateway (`api.md`
 §4 is still open), and the account/symbol figures it needs (equity,
 used_margin, contract_size, leverage) are passed in by the caller rather
 than fetched, since OMS doesn't own that Prisma data (ADR-002). LIMIT/STOP
-orders, cancel/modify, and the position-application step beyond "insert
-one position per fill" remain undone.
+orders are implemented (`place_pending_order` + `pending_orders.rs`'s
+trigger scan). Cancel and modify are now implemented too, as of
+2026-08-17 — but **modify targets a position's SL/TP, not an order**, a
+deliberate deviation from §2.3's `ModifyOrder(order_id, sl?, tp?,
+price?)` spec below: the live Next.js/Prisma path this mirrors
+(`app/api/trade/positions/[id]/route.ts` PATCH) only ever lets a trader
+edit an *open position's* stop levels, never a still-pending order's
+price/SL/TP, so that's what cutover-readiness required matching —
+`order_management::cancel_order` (order-level, `ACCEPTED` only) and
+`order_management::modify_position_sl_tp` (position-level, `OPEN` only,
+validated via the new `risk::validate_sl_tp`), exposed as
+`POST /v1/orders/{id}/cancel` and `POST /v1/positions/{id}/modify`.
+Live-verified against the real Postgres: place→cancel, cancel-twice
+(409), wrong-account cancel (404), place→fill→modify (valid + invalid
+SL rejection), modify-after-close (409), wrong-account modify (404) —
+see `architecture.md`'s log for the full walkthrough. The
+position-application step beyond "insert one position per fill" (i.e.
+increase/reduce on top of an existing position, not just open/close)
+remains undone — out of scope for this slice, which only needed
+cancel/modify per `testing.md`'s cutover smoke test.
 
 ---
 
