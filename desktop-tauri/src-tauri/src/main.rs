@@ -240,6 +240,13 @@ fn main() {
         ))
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        // Direct equivalent of desktop/main.js's electron-window-state
+        // usage -- restores x/y/width/height/maximized on the next
+        // launch, auto-saves on move/resize/close. Needs no other
+        // wiring: it hooks on_window_ready for every window, including
+        // ours built programmatically below, not just ones declared in
+        // tauri.conf.json.
+        .plugin(tauri_plugin_window_state::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             win_minimize,
             win_toggle_maximize,
