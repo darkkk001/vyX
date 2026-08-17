@@ -296,7 +296,7 @@ here, just the option the spec itself already pointed at.
 | Phase 3 — Market Data | Extends the existing MT5 EA bridge + candle aggregation, moved into Rust |
 | Phase 4 — Desktop | New Tauri app per ADR-001; current Electron app stays live until it's ready to cut over |
 | Phase 5 — Mobile | New, not started |
-| Phase 6 — Manager | New, not started (old roadmap's Phase 3 backoffice work never began either) |
+| Phase 6 — Manager | Started: first screen (symbol/spread config, `app/manage/`) live — see `authentication.md` §3. Rest (positions/exposure dashboard, groups, users) not started. |
 | Phase 7 — Back Office | New, not started |
 | Phase 8 — Advanced | New, not started |
 
@@ -476,3 +476,20 @@ here, just the option the spec itself already pointed at.
     trigger-time margin rejection for a deliberately oversized order that
     placement let through (proving the margin check truly defers to
     trigger time). See `execution.md` §5.
+
+15. **Phase 6 (Manager) — first screen: symbol/spread config.** Closes a
+    real, standing gap: `BrokerSymbol`'s pricing/risk fields
+    (`spreadMarkup`, lot limits, swap, `commissionPerLot`, `maxExposure`)
+    had zero admin UI — direct DB edit only, even though the Rust engine
+    had been reading and enforcing all of them for several slices already.
+    New `app/manage/` route group, modeled on MT5's own Manager terminal
+    Symbols tab (one grid, one row per symbol, per-row save) per the
+    user's explicit request. Lives on the broker's own subdomain, not a
+    new `manager.<ROOT_DOMAIN>` subdomain — a deliberate, confirmed
+    deviation from this doc's own §3 target framing, since the
+    `/apps/*` monorepo split hasn't happened and would've been unrelated
+    setup work for one screen. New `MANAGER` role under the existing
+    admin-session system (not a new one), plus a `getAdminSession()`
+    hardening (broker-scoped sessions now cross-check `x-broker-id`) that
+    benefits every broker-scoped admin role, not just this one. See
+    `authentication.md` §3 for the full writeup and live verification.

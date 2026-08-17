@@ -62,6 +62,20 @@ async function main() {
     },
   });
 
+  // Manager (dealing desk) demo login -- app/manage/*, see
+  // app/manage/symbols/page.tsx.
+  const managerPassword = await bcrypt.hash("ChangeMe123!", 10);
+  await prisma.adminUser.upsert({
+    where: { email: "manager@acmefx.com" },
+    update: {},
+    create: {
+      email: "manager@acmefx.com",
+      passwordHash: managerPassword,
+      role: "MANAGER",
+      brokerId: acmeFx.id,
+    },
+  });
+
   const symbolDefs = [
     { name: "EURUSD", baseCurrency: "EUR", quoteCurrency: "USD", digits: 5, contractSize: "100000", category: "FOREX" },
     { name: "GBPUSD", baseCurrency: "GBP", quoteCurrency: "USD", digits: 5, contractSize: "100000", category: "FOREX" },
@@ -140,6 +154,7 @@ async function main() {
   console.log("Seeded:", { acmeFx: acmeFx.subdomain, novaMarkets: novaMarkets.subdomain });
   console.log("Super admin login: super@vyxtrader.com / ChangeMe123!");
   console.log("Demo trading logins: 50001234 / Demo1234! (AcmeFX), 50005678 / Demo1234! (Nova Markets)");
+  console.log("Manager login (acmefx.<domain>/manage/login): manager@acmefx.com / ChangeMe123!");
 }
 
 main()

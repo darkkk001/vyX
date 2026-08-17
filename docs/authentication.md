@@ -96,6 +96,40 @@ user needs more than one role) — not designed further here since it's an
 implementation detail of `authentication.md`'s scope, not an
 architectural one; flagged as Phase 1 work.
 
+**First slice implemented.** `MANAGER` added to `AdminRole` (`BROKER_ADMIN`
+can use the same screens — it's a strict superset). Manager lives on the
+**broker's own subdomain** at `/manage/*` (`app/manage/`), not a new
+`manager.<ROOT_DOMAIN>` subdomain as `architecture.md`/`deployment.md`'s
+target framing implied — confirmed with the user: no monorepo
+restructuring exists yet to justify a separate app/deployment for one
+screen, and the broker-subdomain approach is actually simpler since
+`middleware.ts` already resolves `x-broker-id` there for free (a
+`manager.<ROOT_DOMAIN>` approach would have needed a new middleware
+branch, mirroring `SUPER_ADMIN_SUBDOMAIN`, and Manager would've had no
+`x-broker-id` header to cross-check against at all).
+
+`getAdminSession()` (`lib/auth.ts`) now cross-checks a broker-scoped
+session's `brokerId` against the request's resolved `x-broker-id`,
+exactly the rule `lib/account-auth.ts`'s `getAccountSession()` already
+applies to trader sessions (§2 above) — closes the same class of gap for
+every broker-scoped admin role, not just `MANAGER` (`BROKER_ADMIN`/
+`SUPPORT` had no UI to exploit this before, so no behavior change for
+them today). Super Admin (`brokerId: null`) is unaffected. New
+`app/api/manage/login/route.ts` (not the existing `/api/admin/login`)
+additionally requires the login's resolved `x-broker-id` match the
+account's `brokerId` — otherwise an admin from Broker A's team could log
+in on Broker B's subdomain with correct credentials, since Super Admin's
+shared login route never needed that check (it never runs where
+`x-broker-id` is set).
+
+Verified live end to end (dev server, curl with a spoofed `Host` header
+resolving to a real seeded broker subdomain): manager login succeeds and
+sets the session cookie; the same cookie against a *different* broker's
+subdomain gets rejected (307 redirect on the page, 403 on the API); no
+session at all gets the same rejection; Super Admin credentials are
+correctly refused on `/manage/login`; an admin's own correct credentials
+against the *wrong* broker's subdomain are correctly refused too.
+
 ## 4. Open questions for Phase 1
 
 - Exact Redis session record shape (TTL, sliding-expiry vs fixed) — not

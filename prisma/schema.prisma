@@ -42,6 +42,11 @@ enum AdminRole {
   SUPER_ADMIN // BigFish Technologies staff — brokerId is null
   BROKER_ADMIN // broker-scoped admin, full backoffice access
   SUPPORT // broker-scoped, restricted permissions
+  // Manager app (dealing desk) — broker-scoped, narrower than
+  // BROKER_ADMIN (e.g. can edit symbol/spread config, not KYC/finance).
+  // Always has a non-null brokerId (app-level rule, same as
+  // BROKER_ADMIN/SUPPORT) — see docs/authentication.md §3.
+  MANAGER
 }
 
 enum AdminStatus {
