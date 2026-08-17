@@ -66,4 +66,38 @@ mod tests {
         let action = evaluate(dec!(300), dec!(1000), MarginThresholds::default());
         assert_eq!(action, MonitorAction::StopOut);
     }
+
+    /// `< thresholds.call_level`, not `<=` -- exactly at the call level is
+    /// still Ok. Implied by the code, previously unasserted.
+    #[test]
+    fn exactly_at_call_level_is_ok() {
+        let action = evaluate(dec!(1000), dec!(1000), MarginThresholds::default()); // level = 100
+        assert_eq!(action, MonitorAction::Ok);
+    }
+
+    /// Same "< not <=" semantic at the stop-out boundary -- exactly at
+    /// the stop-out level is still just a MarginCall, not a StopOut.
+    #[test]
+    fn exactly_at_stop_out_level_is_margin_call() {
+        let action = evaluate(dec!(500), dec!(1000), MarginThresholds::default()); // level = 50
+        assert_eq!(action, MonitorAction::MarginCall);
+    }
+
+    #[test]
+    fn flat_account_is_ok() {
+        let action = evaluate(dec!(5000), dec!(0), MarginThresholds::default());
+        assert_eq!(action, MonitorAction::Ok);
+    }
+
+    /// Every other test uses MarginThresholds::default() -- this proves
+    /// a broker-specific threshold configuration actually changes the
+    /// outcome, not just that the default happens to work.
+    #[test]
+    fn custom_thresholds_are_respected() {
+        let thresholds = MarginThresholds { call_level: dec!(150), stop_out_level: dec!(80) };
+        // level = 120: Ok under the default (100/50) thresholds, but
+        // MarginCall under these broker-specific ones.
+        let action = evaluate(dec!(1200), dec!(1000), thresholds);
+        assert_eq!(action, MonitorAction::MarginCall);
+    }
 }

@@ -140,4 +140,53 @@ mod tests {
             Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap()
         );
     }
+
+    /// Only M1 had a dedicated test before this -- the other 5
+    /// fixed-millisecond timeframes were untested (docs/testing.md §2's
+    /// Market Data Core gate: candle-bucketing correctness).
+    #[test]
+    fn fixed_timeframes_floor_correctly() {
+        let now = Utc.with_ymd_and_hms(2026, 8, 13, 10, 37, 45).unwrap();
+        assert_eq!(bucket_start(Timeframe::M5, now), Utc.with_ymd_and_hms(2026, 8, 13, 10, 35, 0).unwrap());
+        assert_eq!(bucket_start(Timeframe::M30, now), Utc.with_ymd_and_hms(2026, 8, 13, 10, 30, 0).unwrap());
+        assert_eq!(bucket_start(Timeframe::H1, now), Utc.with_ymd_and_hms(2026, 8, 13, 10, 0, 0).unwrap());
+        assert_eq!(bucket_start(Timeframe::H4, now), Utc.with_ymd_and_hms(2026, 8, 13, 8, 0, 0).unwrap());
+        assert_eq!(bucket_start(Timeframe::D1, now), Utc.with_ymd_and_hms(2026, 8, 13, 0, 0, 0).unwrap());
+    }
+
+    /// candle_updates_for_tick had zero test coverage -- this is the
+    /// function every DB writer actually consumes per tick, not just
+    /// bucket_start in isolation.
+    #[test]
+    fn candle_updates_for_tick_covers_every_timeframe() {
+        use rust_decimal_macros::dec;
+
+        let tick = Tick { symbol: "EURUSD".into(), bid: dec!(1.10000), ask: dec!(1.10020) };
+        let now = Utc.with_ymd_and_hms(2026, 8, 13, 10, 30, 45).unwrap();
+        let updates = candle_updates_for_tick(&tick, now);
+
+        assert_eq!(updates.len(), TIMEFRAMES.len());
+        for update in &updates {
+            assert_eq!(update.symbol, "EURUSD");
+            assert_eq!(update.open, tick.bid);
+            assert_eq!(update.high, tick.bid);
+            assert_eq!(update.low, tick.bid);
+            assert_eq!(update.close, tick.bid);
+        }
+    }
+
+    #[test]
+    fn candle_updates_for_tick_bucket_starts_match_bucket_start_directly() {
+        use rust_decimal_macros::dec;
+
+        let tick = Tick { symbol: "EURUSD".into(), bid: dec!(1.10000), ask: dec!(1.10020) };
+        let now = Utc.with_ymd_and_hms(2026, 8, 13, 10, 30, 45).unwrap();
+        let updates = candle_updates_for_tick(&tick, now);
+
+        let m1 = updates.iter().find(|u| u.timeframe == Timeframe::M1).unwrap();
+        assert_eq!(m1.bucket_start, bucket_start(Timeframe::M1, now));
+
+        let w1 = updates.iter().find(|u| u.timeframe == Timeframe::W1).unwrap();
+        assert_eq!(w1.bucket_start, bucket_start(Timeframe::W1, now));
+    }
 }

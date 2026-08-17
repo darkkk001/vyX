@@ -566,12 +566,38 @@ mod tests {
     #[test]
     fn terminal_states_have_no_outgoing_transitions() {
         for terminal in [Filled, Rejected, Cancelled, Expired] {
-            for target in [New, Validating, Accepted, Routing, PartiallyFilled, Filled] {
+            for target in [New, Validating, Accepted, Routing, PartiallyFilled, Filled, Rejected, Expired] {
                 assert!(
                     !is_legal_transition(terminal, target),
                     "{terminal:?} should not transition to {target:?}"
                 );
             }
+        }
+    }
+
+    /// docs/testing.md §2's OMS gate: "every legal transition... has a
+    /// unit test." is_legal_transition's match arms define exactly 11
+    /// legal (from, to) pairs -- asserted here in one place rather than
+    /// only implicitly via the happy-path tests above, which exercise a
+    /// subset. Includes (Accepted, Cancelled) and (PartiallyFilled,
+    /// Cancelled), the two pairs cancel_order depends on.
+    #[test]
+    fn every_documented_legal_transition_is_legal() {
+        let legal_pairs = [
+            (New, Validating),
+            (Validating, Accepted),
+            (Validating, Rejected),
+            (Accepted, Routing),
+            (Accepted, Cancelled),
+            (Accepted, Expired),
+            (Routing, PartiallyFilled),
+            (Routing, Filled),
+            (Routing, Rejected),
+            (PartiallyFilled, Filled),
+            (PartiallyFilled, Cancelled),
+        ];
+        for (from, to) in legal_pairs {
+            assert!(is_legal_transition(from, to), "{from:?} -> {to:?} should be legal");
         }
     }
 
