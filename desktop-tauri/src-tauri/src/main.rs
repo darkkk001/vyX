@@ -10,8 +10,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use serde::Deserialize;
-use std::sync::Mutex;
-use tauri::{Emitter, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use tauri::menu::{CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder};
+use tauri::tray::{TrayIconBuilder, TrayIconEvent};
+use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+use tauri_plugin_autostart::ManagerExt;
 
 #[derive(Debug, Deserialize)]
 struct BrokerConfig {
@@ -107,8 +111,20 @@ fn main() {
     // brokerUrl/launchUrl construction -- this app only ever points at a
     // real deployed broker, never a local dev server.
     let broker_url = format!("https://{}/trade", config.subdomain);
+    let broker_name = config.broker_name.clone();
+
+    // Shared between the tray menu's "Quit" handler and the window's
+    // close-request handler below -- mirrors desktop/main.js's module-
+    // level `isQuitting` flag exactly: closing the window normally hides
+    // it instead (so background price alerts / SL-TP notifications keep
+    // working), only the tray's own Quit item actually exits.
+    let is_quitting = Arc::new(AtomicBool::new(false));
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .invoke_handler(tauri::generate_handler![win_minimize, win_toggle_maximize, win_close])
         .setup(move |app| {
             let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(broker_url.parse().unwrap()))
@@ -122,22 +138,92 @@ fn main() {
                 .initialization_script(VYX_DESKTOP_INIT_SCRIPT)
                 .build()?;
 
-            // Mirrors desktop/main.js's win.on("maximize"/"unmaximize", ...)
-            // -> win:maximized-changed push. Tauri 2 has no single portable
-            // "maximized changed" event, so this diffs is_maximized() across
-            // Resized events and only emits when it actually flips.
+            // --- System tray -- direct port of desktop/main.js's
+            // createTray()/refreshTrayMenu(), same item order: Show, sep,
+            // Launch at startup (checkbox), sep, Quit.
+            let autostart = app.autolaunch();
+            let autostart_enabled = autostart.is_enabled().unwrap_or(false);
+
+            let show_item = MenuItemBuilder::with_id("show", format!("Show {broker_name}")).build(app)?;
+            let autostart_item =
+                CheckMenuItemBuilder::with_id("autostart", "Launch at startup").checked(autostart_enabled).build(app)?;
+            let quit_item = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
+            let tray_menu = MenuBuilder::new(app)
+                .item(&show_item)
+                .separator()
+                .item(&autostart_item)
+                .separator()
+                .item(&quit_item)
+                .build()?;
+
+            let tray_window = window.clone();
+            let tray_is_quitting = is_quitting.clone();
+            let _tray = TrayIconBuilder::new()
+                .icon(app.default_window_icon().cloned().expect("bundle.icon must be set in tauri.conf.json"))
+                .tooltip(&broker_name)
+                .menu(&tray_menu)
+                .on_menu_event(move |app_handle, event| match event.id().as_ref() {
+                    "show" => {
+                        let _ = tray_window.show();
+                        let _ = tray_window.set_focus();
+                    }
+                    "autostart" => {
+                        let autostart = app_handle.autolaunch();
+                        let enabled = autostart.is_enabled().unwrap_or(false);
+                        let _ = if enabled { autostart.disable() } else { autostart.enable() };
+                    }
+                    "quit" => {
+                        tray_is_quitting.store(true, Ordering::SeqCst);
+                        app_handle.exit(0);
+                    }
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    // Left-click shows the window -- matches Electron's
+                    // tray.on("click", () => mainWindow?.show()).
+                    if let TrayIconEvent::Click { .. } = event {
+                        if let Some(win) = tray.app_handle().get_webview_window("main") {
+                            let _ = win.show();
+                            let _ = win.set_focus();
+                        }
+                    }
+                })
+                .build(app)?;
+
+            // Single combined event handler -- Tauri's on_window_event only
+            // keeps the most recently registered closure per window, so
+            // both behaviors below (maximize tracking + close-to-tray) have
+            // to live in one registration, not two separate calls.
+            //
+            // 1) Mirrors desktop/main.js's win.on("maximize"/"unmaximize",
+            //    ...) -> win:maximized-changed push. Tauri 2 has no single
+            //    portable "maximized changed" event, so this diffs
+            //    is_maximized() across Resized events and only emits when
+            //    it actually flips.
+            // 2) Closing the window minimizes to tray instead of quitting --
+            //    matches win.on("close", ...) exactly (see its own comment:
+            //    "so background price alerts / SL-TP notifications keep
+            //    working"). Only the tray's Quit item (or OS shutdown)
+            //    actually exits.
             let last_maximized = Mutex::new(window.is_maximized().unwrap_or(false));
-            let emit_window = window.clone();
-            window.on_window_event(move |event| {
-                if let WindowEvent::Resized(_) = event {
-                    if let Ok(is_max) = emit_window.is_maximized() {
+            let event_window = window.clone();
+            window.on_window_event(move |event| match event {
+                WindowEvent::Resized(_) => {
+                    if let Ok(is_max) = event_window.is_maximized() {
                         let mut last = last_maximized.lock().unwrap();
                         if *last != is_max {
                             *last = is_max;
-                            let _ = emit_window.emit("maximized-changed", is_max);
+                            let _ = event_window.emit("maximized-changed", is_max);
                         }
                     }
                 }
+                WindowEvent::CloseRequested { api, .. } => {
+                    if !is_quitting.load(Ordering::SeqCst) {
+                        api.prevent_close();
+                        let _ = event_window.hide();
+                    }
+                }
+                _ => {}
             });
 
             Ok(())

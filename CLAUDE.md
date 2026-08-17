@@ -131,11 +131,18 @@ SQL Editor.
   Electron parity. Per-broker rebrand tooling (`desktop-tauri/rebrand.js`,
   a direct port of `desktop/rebrand.js` — `deployment.md` §3's own
   stated precondition before any broker can actually cut over to it) is
-  now done too, live-verified. Still explicitly deferred, not silently
-  missing: system tray/minimize-to-tray, native notifications, auto-
-  update, `rememberBroker`/`forgetBroker` real persistence + launcher/
-  root-domain mode, navigation lockdown, splash/offline screens,
-  window-state persistence.
+  now done too, live-verified. System tray + minimize-to-tray are also
+  done: closing the window hides it instead of quitting (live-verified
+  by sending the window a real `WM_CLOSE` and confirming the process
+  survives), a tray icon/menu (`Show <broker>` / `Launch at startup`
+  checkbox via `tauri-plugin-autostart` / `Quit`) matches
+  `desktop/main.js`'s exact item order — the `Quit` item's actual click
+  path is code-reviewed, not click-tested (no tray-icon-click automation
+  available in this sandbox), disclosed as such. Still explicitly
+  deferred, not silently missing: native notifications, auto-update,
+  `rememberBroker`/`forgetBroker` real persistence + launcher/root-domain
+  mode, navigation lockdown, splash/offline screens, window-state
+  persistence.
 - **Phase 5** (real execution engine / LP FIX feed) — partially started.
   Note: this doc's phase numbering disagrees with `docs/architecture.md`
   §7's own table (which calls Phase 5 "Mobile") — never reconciled,

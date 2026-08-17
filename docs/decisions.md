@@ -52,13 +52,32 @@ is already written, matching the original script's exact ordering); a
 full rebrand with a real `.ico` writes the correct config and copies a
 byte-identical icon file (confirmed via checksum).
 
+**System tray + minimize-to-tray — done (2026-08-17).** Direct port of
+`desktop/main.js`'s `createTray()`/`refreshTrayMenu()`/`win.on("close",
+...)`: closing the window hides it instead of quitting (a module-level
+`is_quitting` flag, set only by the tray's own `Quit` item, mirrors
+`isQuitting` exactly — background price alerts/SL-TP notifications keep
+working, same reasoning as the original), a tray icon/menu in the same
+order (`Show <broker>`, separator, `Launch at startup` checkbox via
+`tauri-plugin-autostart`, separator, `Quit`), left-clicking the tray
+icon shows the window. Live-verified the close-to-tray path for real:
+sent the running window a genuine `WM_CLOSE` (the same signal an OS
+close-button click sends, via `PostMessage` from PowerShell) and
+confirmed the process survived — proof the interception is real, not
+just code that compiles. **Disclosed limitation**: the tray menu's
+`Quit` item itself is code-reviewed (correct order — flag set, then
+`app_handle.exit(0)` — matching Electron's `isQuitting = true;
+app.quit();`) but not click-tested; no tray-icon-click automation is
+available in this sandbox, same category as this ADR's own earlier
+"not visually/pixel confirmed" note.
+
 **Still not at Electron parity** — `deployment.md` §3's own cutover
 precondition list is the tracking spec for what else is needed before
-any broker could actually rely on this instead of Electron: system tray/
-minimize-to-tray, native OS notifications, auto-update
-(`tauri-plugin-updater`), `rememberBroker`/`forgetBroker` real
-persistence + launcher/root-domain mode (currently no-op stubs so the
-web app's calls don't throw, but they don't do anything yet), navigation
+any broker could actually rely on this instead of Electron: native OS
+notifications, auto-update (`tauri-plugin-updater`), `rememberBroker`/
+`forgetBroker` real persistence + launcher/root-domain mode (currently
+no-op stubs so the web app's calls don't throw, but they don't do
+anything yet), navigation
 lockdown, splash/offline screens, window-state persistence across
 restarts.
 
