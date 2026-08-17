@@ -1,0 +1,104 @@
+name: Desktop Tauri Release
+
+# Automates the manual release process documented (until now) in
+# docs/deployment.md's "Cutting a release" note: sign + build the NSIS
+# installer, generate the update manifest via desktop-tauri/publish.js,
+# and commit the result to public/desktop-tauri-updates/ so Vercel serves
+# it as the live update feed. Manual workflow_dispatch trigger only, by
+# explicit choice -- no tag-push or auto-trigger, so a release only
+# happens when someone deliberately clicks the button.
+#
+# Requires two repository secrets that only a human can set (Settings >
+# Secrets and variables > Actions): TAURI_SIGNING_PRIVATE_KEY (the full
+# contents of desktop-tauri/src-tauri/.updater-keys/vyxtrader.key, which
+# is gitignored and never committed) and TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+# (empty string -- the key has no password, matching how it was
+# generated). See docs/deployment.md for the exact one-time setup steps.
+on:
+  workflow_dispatch:
+    inputs:
+      notes:
+        description: "Release notes (optional -- publish.js falls back to 'VyXTrader {version}' if left blank)"
+        required: false
+        type: string
+
+# Prevents two release runs from racing and committing conflicting
+# update-feed artifacts.
+concurrency:
+  group: desktop-tauri-release
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop-tauri/src-tauri
+
+      # Fails fast with a clear message, rather than letting `tauri
+      # build` fail deep inside signing with a confusing error -- hit
+      # exactly that class of confusing failure once already while
+      # building auto-update manually (see docs/deployment.md).
+      - name: Verify signing secret is configured
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY repository secret is not set. Add it under Settings > Secrets and variables > Actions -- see docs/deployment.md for exact setup steps. Aborting before attempting a build that can't be signed."
+            exit 1
+          fi
+
+      - name: Install desktop-tauri dependencies
+        working-directory: desktop-tauri
+        run: npm install
+
+      # TAURI_SIGNING_PRIVATE_KEY_PASSWORD is genuinely empty (the key
+      # has no password) -- that's expected, not a missing-secret bug,
+      # so it's intentionally not part of the check above.
+      - name: Build signed release
+        working-directory: desktop-tauri
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: npx tauri build --bundles nsis
+
+      - name: Generate update manifest
+        working-directory: desktop-tauri
+        shell: bash
+        env:
+          RELEASE_NOTES: ${{ inputs.notes }}
+        run: |
+          if [ -n "$RELEASE_NOTES" ]; then
+            node publish.js --notes "$RELEASE_NOTES"
+          else
+            node publish.js
+          fi
+
+      # Same "commit and push the repo to publish this update" step
+      # publish.js already prints as its own last line -- just automated
+      # instead of a human running it by hand.
+      - name: Publish update feed
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add public/desktop-tauri-updates
+          if git diff --cached --quiet; then
+            echo "No changes to publish -- public/desktop-tauri-updates already up to date."
+          else
+            git commit -m "Publish desktop-tauri release"
+            git push
+          fi
