@@ -87,7 +87,7 @@ SQL Editor.
   ledger-safe position close incl. partial close, MT5 EA live price
   bridge) — done, verified live.
 - **Phase 3** (backoffice depth: KYC review flow, real deposit/withdraw
-  processing, IB/commission) — partially started. Deposit/withdraw
+  processing, IB/commission) — done. Deposit/withdraw
   requests are live: a trader submits one from WebTrader's funds modal
   (`app/api/trade/funds-requests`), it sits `PENDING` with balance
   untouched, and a `BROKER_ADMIN` approves or rejects it from the
@@ -106,7 +106,15 @@ SQL Editor.
   from `app/manage/kyc` — document images are only ever served through
   an authenticated, broker-scoped proxy route
   (`app/api/manage/kyc-requests/[id]/document`), never a raw Blob URL.
-  IB/commission remains not started.
+  IB/commission is now also live, closing out Phase 3: a `BROKER_ADMIN`
+  links an existing account as the IB for another (`IbRelationship`,
+  `app/manage/ib`), and pending commission is calculated on read from
+  the client's `CLOSED` `Position`s since `IbRelationship.lastPayoutAt`
+  (`PER_LOT`: rate × lots; `PERCENTAGE`: rate% of the broker's own
+  trading-commission revenue on those trades — see `lib/commission.ts`).
+  No live/automatic payout on every trade — an admin clicks "Pay" to
+  move the calculated amount through the `Transaction` ledger onto the
+  IB's own account balance (`app/api/manage/ib-relationships`).
 - **Phase 4** (Electron desktop wrapper) — not started.
 - **Phase 5** (real execution engine / LP FIX feed) — not started.
 

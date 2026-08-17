@@ -486,6 +486,11 @@ model IbRelationship {
   clientAccount   Account        @relation("ClientAccount", fields: [clientAccountId], references: [id])
   commissionType  CommissionType
   commissionRate  Decimal        @db.Decimal(10, 4)
+  // Null = never paid -- pending commission is computed on read from
+  // CLOSED Positions on clientAccountId with closedAt after this (or
+  // all-time if null), not stored/accrued anywhere. Set to now() each
+  // time a payout is made (app/api/manage/ib-relationships/[id]/route.ts).
+  lastPayoutAt    DateTime?      @db.Timestamptz(3)
 
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)

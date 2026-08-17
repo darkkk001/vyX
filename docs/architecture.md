@@ -296,7 +296,7 @@ here, just the option the spec itself already pointed at.
 | Phase 3 — Market Data | Extends the existing MT5 EA bridge + candle aggregation, moved into Rust |
 | Phase 4 — Desktop | New Tauri app per ADR-001; current Electron app stays live until it's ready to cut over |
 | Phase 5 — Mobile | New, not started |
-| Phase 6 — Manager | All originally-planned Phase 3/6 backoffice depth now live: symbol/spread config, positions/exposure dashboard, manual position open/close, groups/accounts, deposit/withdraw approval, and KYC review (`app/manage/`) — see `authentication.md` §3 and this doc's log below. |
+| Phase 6 — Manager | All originally-planned Phase 3/6 backoffice depth now live: symbol/spread config, positions/exposure dashboard, manual position open/close, groups/accounts, deposit/withdraw approval, KYC review, and IB/commission (`app/manage/`) — see `authentication.md` §3 and this doc's log below. |
 | Phase 7 — Back Office | New, not started |
 | Phase 8 — Advanced | New, not started |
 
@@ -684,3 +684,66 @@ here, just the option the spec itself already pointed at.
     `BLOB_READ_WRITE_TOKEN` is absent — the document-proxy route
     initially threw a raw 500 here during testing, fixed to match the
     same pre-check pattern the upload route already had).
+
+21. **Phase 3/6 — IB/commission, closing out Phase 3 entirely.** Unlike
+    every other Phase 3/6 slice, `IbRelationship` (broker → IB account →
+    client account, `commissionType`, `commissionRate`) already existed
+    in the schema since the very first migration, but nothing had ever
+    created a row or written a commission `Transaction` for one — no
+    trader-facing stub, no spec text anywhere (`TransactionType.COMMISSION`
+    was already used, but only by the Rust engine for the *trading*
+    commission charged to a client on position open, a separate concern
+    from an IB's payout cut). Only one schema addition:
+    `IbRelationship.lastPayoutAt` (null = never paid). Deliberately no
+    accrual/ledger table — pending commission is computed on read from
+    `CLOSED` `Position` rows on the client account with `closedAt` after
+    `lastPayoutAt` (`lib/commission.ts`): `PER_LOT` is `rate × Σvolume`;
+    `PERCENTAGE` is `rate% × Σ(Position.commission)`, i.e. the IB's cut
+    of the broker's own trading-commission revenue on those trades — a
+    standard revenue-share basis, but an assumption on my part since no
+    spec exists to confirm it. Payout (`BROKER_ADMIN` only, `PATCH
+    .../[id] {action:"PAY"}`) recomputes the pending amount server-side
+    inside the same `$transaction` that moves it (never trusts a
+    client-supplied figure — a position can close between page render
+    and the "Pay" click), same balanceBefore/balanceAfter-never-increment
+    pattern as every other ledger write this session.
+
+    **DB migration-history gap found during verification.** The live
+    connection provided for this slice (`db.prisma.io`, not the
+    `ep-*.neon.tech` host `CLAUDE.md` still describes) turned out to be
+    a real but far-behind database — `_prisma_migrations` stopped at
+    `20260812234500_extended_timeframes`, missing every migration from
+    the rest of this session (`exposure_limits`, `commission_per_lot`,
+    `manager_role`, `timestamptz`, `groups`, `transaction_review`,
+    `kyc_front_back`) plus the one this slice adds. Caught immediately
+    because seeding a `MANAGER` admin for the permission-boundary test
+    failed with `invalid input value for enum "AdminRole": "MANAGER"` —
+    an enum value that another migration was supposed to have already
+    added. Applied all seven missing migrations' existing SQL files (in
+    filename order, each in its own transaction, each recorded into
+    `_prisma_migrations`) to bring the database fully in line with
+    `schema.prisma`; `prisma migrate status` confirmed "Database schema
+    is up to date" afterward, and every other `/manage/*` screen was
+    spot-checked (200 OK) post-catch-up to confirm nothing else broke.
+    This DB is now the one this feature (and presumably future ones)
+    should keep using.
+
+    Verified live: created both a `PER_LOT` (rate $5/lot × 1.50 lots
+    closed → `7.5000`) and a `PERCENTAGE` (rate 25% × $100 broker
+    commission revenue → `25.0000`) relationship against seeded
+    `CLOSED` `Position` rows, confirming the listed `pendingCommission`
+    matched the hand-calculated value for both formulas; paid the
+    `PER_LOT` one and confirmed `Account.balance` (`1000 → 1007.5000`),
+    the `COMMISSION` `Transaction` (`balanceBefore`/`balanceAfter`,
+    `referenceType: "IbRelationship"`), the `IB_COMMISSION_PAID`
+    `AuditLog` row, and `lastPayoutAt` all landed correctly, and that
+    `pendingCommission` recomputed to `0.0000` immediately after (only
+    positions closed after the new `lastPayoutAt` would count); a
+    second broker's `BROKER_ADMIN` got an empty list and a clean 404 on
+    both the relationship's id and a `PAY` attempt against it; `MANAGER`
+    got a clean 403; a duplicate client-link attempt (a second IB
+    against an already-linked client) returned a clean 409, not a raw
+    500, off the existing `clientAccountId @unique` constraint; an
+    account linked to itself as its own IB returned a clean 400; paying
+    a relationship with zero pending commission returned a clean 400
+    instead of a `$0` payout.
