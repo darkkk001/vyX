@@ -150,3 +150,41 @@ close and no duplicate ledger entry.
   anywhere yet — Execution module integration is its own later slice.
 - Per-broker EA auth and tick-level history retention (both listed above)
   are unaffected — still open, still deliberately deferred.
+
+**Staleness protection added.** Found via a real incident report (a
+previous system kept trading against a frozen price after its feed
+died, with nothing anywhere checking tick age). `market_data::db::
+get_live_price` now requires the tick be updated within the last 15s
+(the threshold already established for the chart in `WebTrader.tsx`) —
+older than that returns `None`, indistinguishable from no tick at all,
+so a dead feed now fails order placement cleanly ("no live price for
+{symbol}") instead of filling at a stale number. `order_management::db::
+get_open_positions_with_market`'s `LivePrice` join and
+`services/api-gateway`'s `getOpenPositionsSummary` got the same fix, so
+the margin monitor, SL/TP triggers, stop-out, and order-placement equity
+all stop trusting a frozen tick too. This is keyed off
+`LivePrice.updatedAt`, not the EA specifically, so it protects against
+any future feed source going stale the same way (a paid/FIX feed
+included) — see `architecture.md`'s Phase 2 log for the full writeup and
+live verification.
+
+**EA direct-mode transport added, not yet cut over.** `mt5-ea/
+VyXTraderPriceFeed.mq5` now supports a second transport (`UseDirectMode`
+input, off by default) — a plain `POST /internal/price-feed` straight to
+`engine/server` with the shared secret in an `x-price-feed-secret`
+header and a JSON array body, matching that route's existing contract
+exactly (no code changes needed on the Rust side). This does **not**
+change today's live behavior: `UseDirectMode` defaults to `false`, so
+the EA keeps using the GET+base64-path proxy transport through Next.js
+unless explicitly reconfigured. Enabling it for real is still blocked on
+the same thing §5's "Transport" note above already flagged:
+`engine/server` needs a stable public deployment first (confirmed with
+the user: it's currently local/dev only, no public URL yet) — this
+change only means flipping `UseDirectMode`/`DirectServerUrl` will be a
+config change, not a code change, once that deployment exists. The new
+POST transport hasn't been exercised against a real MT5 terminal's
+network path (the base64-path workaround the proxy transport uses exists
+for a network quirk specific to that path — see the file's own comment —
+and it's unknown whether the same quirk affects a POST body/header), so
+it should be watched via the EA's `Print()` logging the first time it's
+actually enabled on a live terminal.

@@ -7,11 +7,24 @@
 //| LivePrice table this EA feeds.                                    |
 //+------------------------------------------------------------------+
 #property strict
-#property version   "1.00"
+#property version   "1.10"
 
 input string ServerUrl            = "https://www.vyxtrader.com/api/internal/price-feed";
 input string ApiSecret            = "a572bf5ea373c634fb63c0c3b6b21db4b4ad8f0d50056d2a";
 input int    PushIntervalSeconds  = 1;
+
+// Direct mode — talks straight to the Rust Trading Core's Market Data
+// Core (engine/server's POST /internal/price-feed), skipping the Next.js
+// proxy hop entirely. OFF by default: engine/server has no public
+// deployment yet (see docs/market-data.md §5's "Transport — unchanged
+// for the EA, by design"), so flipping this on before that exists just
+// points the EA at nothing. Once engine/server is deployed somewhere
+// reachable, set UseDirectMode=true and DirectServerUrl to its base URL
+// (e.g. "https://api.vyxtrader.com") — no other code change needed.
+// Uses the same ApiSecret as the proxy path (one shared secret across
+// both transports, per market-data.md §1).
+input bool   UseDirectMode        = false;
+input string DirectServerUrl      = "";
 
 // Map VyXTrader's canonical symbol name -> this broker's actual MT5 symbol
 // name. Edit the right-hand column if your account suffixes symbols
@@ -69,29 +82,16 @@ string Base64UrlEncode(string src)
    return result;
 }
 
-void OnTimer()
+// GET with the base64url-path workaround, to the Next.js proxy — the
+// live, unchanged-since-forever transport. secret + ticks travel
+// base64url-encoded in the URL PATH, not the query string — some network
+// paths between broker MT5 terminals and the server strip query strings
+// entirely (confirmed via the server echoing back what it received:
+// secret/data both arrived null), so nothing after "?" survives. A path
+// segment isn't touched by that.
+void SendViaProxy(string ticksJson)
 {
-   string json = "[";
-   bool first = true;
-   for (int i = 0; i < ArraySize(CanonicalNames); i++)
-   {
-      if (StringLen(BrokerNames[i]) == 0) continue;
-      double bid = SymbolInfoDouble(BrokerNames[i], SYMBOL_BID);
-      double ask = SymbolInfoDouble(BrokerNames[i], SYMBOL_ASK);
-      if (bid <= 0 || ask <= 0) continue; // not in Market Watch / wrong name
-      if (!first) json += ",";
-      json += StringFormat("{\"symbol\":\"%s\",\"bid\":%.5f,\"ask\":%.5f}", CanonicalNames[i], bid, ask);
-      first = false;
-   }
-   json += "]";
-   if (first) return; // nothing resolved, don't push an empty array
-
-   // secret + ticks travel base64url-encoded in the URL PATH, not the query
-   // string — some network paths between broker MT5 terminals and the
-   // server strip query strings entirely (confirmed via the server echoing
-   // back what it received: secret/data both arrived null), so nothing
-   // after "?" survives. A path segment isn't touched by that.
-   string payload = "{\"secret\":\"" + ApiSecret + "\",\"ticks\":" + json + "}";
+   string payload = "{\"secret\":\"" + ApiSecret + "\",\"ticks\":" + ticksJson + "}";
    string url = ServerUrl + "/" + Base64UrlEncode(payload);
 
    uchar noData[];
@@ -111,6 +111,77 @@ void OnTimer()
    else if (res != 200)
    {
       Print("VyXTraderPriceFeed: server responded ", res, " — ", CharArrayToString(result));
+   }
+}
+
+// POST straight to engine/server's own route (see the UseDirectMode doc
+// comment above) — plain JSON array body, shared secret in a header, no
+// base64/path workaround. That workaround exists specifically for
+// whatever strips query strings between a broker's MT5 terminal and
+// Vercel; engine/server is a different deployment target entirely, so
+// this transport is untested against the same network path and should
+// be watched (via the Print() below) after first enabling it, same as
+// any new production transport would be.
+void SendDirect(string ticksJson)
+{
+   string url = DirectServerUrl + "/internal/price-feed";
+   string headers = "Content-Type: application/json\r\nx-price-feed-secret: " + ApiSecret + "\r\n";
+
+   uchar body[];
+   StringToCharArray(ticksJson, body, 0, StringLen(ticksJson), CP_UTF8);
+   // StringToCharArray appends a trailing null terminator; WebRequest
+   // would otherwise send it as a stray extra byte, so the array is
+   // trimmed back to the actual JSON length before the request.
+   ArrayResize(body, StringLen(ticksJson));
+
+   uchar result[];
+   string resultHeaders;
+
+   ResetLastError();
+   int res = WebRequest("POST", url, headers, 5000, body, result, resultHeaders);
+   if (res == -1)
+   {
+      int err = GetLastError();
+      if (err == 4060)
+         Print("VyXTraderPriceFeed (direct): add ", DirectServerUrl, " under Tools > Options > Expert Advisors > Allow WebRequest for listed URL, then re-attach this EA");
+      else
+         Print("VyXTraderPriceFeed (direct): WebRequest failed, error ", err);
+   }
+   else if (res != 200)
+   {
+      Print("VyXTraderPriceFeed (direct): server responded ", res, " — ", CharArrayToString(result));
+   }
+}
+
+void OnTimer()
+{
+   string json = "[";
+   bool first = true;
+   for (int i = 0; i < ArraySize(CanonicalNames); i++)
+   {
+      if (StringLen(BrokerNames[i]) == 0) continue;
+      double bid = SymbolInfoDouble(BrokerNames[i], SYMBOL_BID);
+      double ask = SymbolInfoDouble(BrokerNames[i], SYMBOL_ASK);
+      if (bid <= 0 || ask <= 0) continue; // not in Market Watch / wrong name
+      if (!first) json += ",";
+      json += StringFormat("{\"symbol\":\"%s\",\"bid\":%.5f,\"ask\":%.5f}", CanonicalNames[i], bid, ask);
+      first = false;
+   }
+   json += "]";
+   if (first) return; // nothing resolved, don't push an empty array
+
+   if (UseDirectMode)
+   {
+      if (StringLen(DirectServerUrl) == 0)
+      {
+         Print("VyXTraderPriceFeed: UseDirectMode is on but DirectServerUrl is empty, skipping push");
+         return;
+      }
+      SendDirect(json);
+   }
+   else
+   {
+      SendViaProxy(json);
    }
 }
 //+------------------------------------------------------------------+
