@@ -55,6 +55,10 @@ desktop-tauri/src-tauri/gen/
 # half. See docs/deployment.md's desktop-updates section.
 desktop-tauri/src-tauri/.updater-keys/
 
+# engine/scripts/staging-up.sh's runtime state -- PID files, process
+# logs, and the parallel-run.jsonl results log, all machine/run-specific.
+engine/scripts/.staging/
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts

@@ -84,11 +84,46 @@ core:
    retired from that path — this tool exists to make that fact
    concrete and re-checkable, not to paper over it.
 
-   **Still missing**: this is a one-shot **local** diagnostic, not the
-   *sustained, staging-environment* monitoring "for a period" this item
-   originally envisioned — that still needs a real hosted staging
-   environment (hosting decisions per `deployment.md` §2 remain
-   undecided), a genuine infrastructure gap this tool doesn't close.
+   **Sustained-monitoring mode — done for local use (2026-08-18).**
+   `engine/parallel-run` no longer has to be one-shot: set
+   `PARALLEL_RUN_LOOP_SECS` to run both scenarios repeatedly on that
+   interval (seeding fixtures once, cleaning up once at the end, whether
+   that's a normal stop, `PARALLEL_RUN_MAX_ITERATIONS` being reached, or
+   Ctrl+C) instead of exiting after one pass. Each iteration appends one
+   structured JSON line to `PARALLEL_RUN_LOG`
+   (default `parallel-run.jsonl`) — a reviewable history over "a
+   period," not just a point-in-time snapshot, alongside the existing
+   human-readable narration. New `engine/scripts/staging-up.sh` /
+   `staging-down.sh` bring up the local pieces this needs (`nats-server`
+   + `engine/server`, both as background processes with PID/log files
+   under `engine/scripts/.staging/`) and start the loop-mode monitor
+   automatically — plain bash around the same native binaries every
+   Rust-engine verification this whole engagement has already used
+   (no Docker anywhere in this sandbox or this repo; the scripts carry
+   over to a real Linux host unchanged). They deliberately don't manage
+   the Next.js dev server's lifecycle — only check it's reachable and
+   say so plainly if not.
+
+   Live-verified for real, not just described: built the release
+   binaries, brought the whole local stack up via `staging-up.sh`, let
+   it run 3 real loop iterations, confirmed both scenarios' expected
+   divergences (spread-markup delta, margin-check rejection) landed
+   correctly in `parallel-run.jsonl` every time, confirmed the process
+   exited and cleaned up its own fixtures on hitting the iteration cap,
+   independently verified zero leftover rows via a direct DB query (not
+   just trusting the tool's own "cleaned up" message), then confirmed
+   `staging-down.sh` stopped every remaining process — checked
+   independently via the OS process list, not just the script's own
+   exit code.
+
+   **Still missing, and explicitly not attempted here**: this proves the
+   mechanism works on a local machine. Actually running it *sustained*
+   (hours/days, unattended) on real hosted infrastructure is the user's
+   own next step — they have a VPS already and plan to deploy the whole
+   `vyX` folder there once everything's proven locally, which is exactly
+   what this pass was for. No hosting was provisioned and no VPS access
+   exists from this sandbox; that step needs the user's own
+   credentials/action, not more engineering here.
 3. Rollback plan: since the old Next.js path stays live and unmodified
    throughout (ADR-003), rollback for a broker is "point them back," not
    a data migration in reverse — this is the main practical benefit of

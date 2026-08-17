@@ -13,10 +13,23 @@
 //! Self-seeds a throwaway broker/symbol-config/trader account/price tick
 //! and unconditionally cleans all of it up at the end, same discipline
 //! as `loadtest`.
+//!
+//! One-shot by default (unchanged). Set `PARALLEL_RUN_LOOP_SECS` to a
+//! positive number of seconds to instead run both scenarios repeatedly
+//! on that interval until interrupted (Ctrl+C) or
+//! `PARALLEL_RUN_MAX_ITERATIONS` is reached -- the "sustained... for a
+//! period" monitoring docs/testing.md §4 originally called for, closing
+//! that gap for local use (see docs/testing.md and
+//! engine/scripts/staging-up.sh for the environment this runs inside).
+//! Each iteration appends one JSON line to `PARALLEL_RUN_LOG` (default
+//! `parallel-run.jsonl`) alongside the existing human-readable narration
+//! on stdout, so a long run leaves a reviewable history, not just a
+//! last-seen snapshot.
 
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
+use std::io::Write;
 use uuid::Uuid;
 
 const TEST_SYMBOL_NAME: &str = "MKPTEST";
@@ -255,92 +268,201 @@ async fn cleanup(pool: &PgPool, fixtures: &Fixtures) -> Result<(), Box<dyn std::
     Ok(())
 }
 
+#[derive(Debug, Serialize)]
+struct ScenarioRecord {
+    legacy_status: String,
+    legacy_fill_price: Option<String>,
+    rust_status: &'static str,
+    rust_fill_price: Option<Decimal>,
+    rust_reject_reason: Option<String>,
+    delta_vs_legacy: Option<Decimal>,
+}
+
+#[derive(Debug, Serialize)]
+struct IterationRecord {
+    timestamp: chrono::DateTime<chrono::Utc>,
+    iteration: u64,
+    happy_path: ScenarioRecord,
+    margin_check: ScenarioRecord,
+}
+
+/// Runs both comparison scenarios once against freshly-seeded fixtures.
+/// Prints the same human-readable narration the original one-shot tool
+/// always did, and additionally returns a structured record for the
+/// JSON-lines log -- the narration is for a human watching a terminal,
+/// the record is for later/automated review of a long run.
+async fn run_iteration(
+    http: &reqwest::Client,
+    pool: &PgPool,
+    nextjs_url: &str,
+    trading_core_url: &str,
+    fixtures: &Fixtures,
+    iteration: u64,
+) -> Result<IterationRecord, Box<dyn std::error::Error>> {
+    legacy_login(http, nextjs_url, &fixtures.broker_host, &fixtures.account_number).await?;
+
+    // --- Scenario 1: happy-path fill ---
+    println!("--- Scenario 1: happy-path fill (0.10 lots) ---");
+    let (legacy_order_id, _legacy_pos_id, legacy_status, legacy_fill_price) =
+        legacy_place_order(http, nextjs_url, &fixtures.broker_host, "0.10", "2000.20000").await?;
+    println!("Legacy: order {legacy_order_id} status={legacy_status} filled_price={legacy_fill_price:?}");
+
+    refresh_live_price(pool).await?;
+    let rust_outcome =
+        rust_place_order(http, trading_core_url, fixtures, Decimal::new(10, 2), Decimal::new(100_000_000_00, 2)).await?;
+    let happy_path = match &rust_outcome {
+        RustOrderResponse::Filled { order_id, fill_price, .. } => {
+            println!("Rust:   order {order_id} status=FILLED fill_price={fill_price}");
+            let delta = legacy_fill_price.as_ref().and_then(|lp| {
+                let legacy_dec: Decimal = lp.parse().ok()?;
+                let delta = fill_price - legacy_dec;
+                println!(
+                    "        Delta vs Legacy: {delta} -- EXPECTED, not a bug: Rust applies the broker's \
+                     configured spreadMarkup (1.0 pip here) on top of the raw tick, Legacy applies none \
+                     server-side (it just echoes back whatever price the client sent)."
+                );
+                Some(delta)
+            });
+            ScenarioRecord {
+                legacy_status: legacy_status.clone(),
+                legacy_fill_price: legacy_fill_price.clone(),
+                rust_status: "FILLED",
+                rust_fill_price: Some(*fill_price),
+                rust_reject_reason: None,
+                delta_vs_legacy: delta,
+            }
+        }
+        RustOrderResponse::Rejected { reason, .. } => {
+            println!("Rust:   REJECTED unexpectedly in the happy-path scenario: {reason}");
+            ScenarioRecord {
+                legacy_status: legacy_status.clone(),
+                legacy_fill_price: legacy_fill_price.clone(),
+                rust_status: "REJECTED",
+                rust_fill_price: None,
+                rust_reject_reason: Some(reason.clone()),
+                delta_vs_legacy: None,
+            }
+        }
+    };
+    println!();
+
+    // --- Scenario 2: margin-check divergence ---
+    println!("--- Scenario 2: margin-check divergence (100 lots, tiny Rust equity) ---");
+    let (legacy_order_id2, _legacy_pos_id2, legacy_status2, legacy_fill_price2) =
+        legacy_place_order(http, nextjs_url, &fixtures.broker_host, "100", "2000.20000").await?;
+    println!(
+        "Legacy: order {legacy_order_id2} status={legacy_status2} filled_price={legacy_fill_price2:?} \
+         -- filled unconditionally, Legacy performs NO margin check at all."
+    );
+
+    refresh_live_price(pool).await?;
+    let rust_outcome2 =
+        rust_place_order(http, trading_core_url, fixtures, Decimal::new(100, 0), Decimal::new(100, 0)).await?;
+    let margin_check = match &rust_outcome2 {
+        RustOrderResponse::Rejected { order_id, reason } => {
+            println!("Rust:   order {order_id} status=REJECTED reason=\"{reason}\"");
+            ScenarioRecord {
+                legacy_status: legacy_status2.clone(),
+                legacy_fill_price: legacy_fill_price2.clone(),
+                rust_status: "REJECTED",
+                rust_fill_price: None,
+                rust_reject_reason: Some(reason.clone()),
+                delta_vs_legacy: None,
+            }
+        }
+        RustOrderResponse::Filled { order_id, fill_price, .. } => {
+            println!("Rust:   order {order_id} status=FILLED unexpectedly (expected a margin rejection)");
+            ScenarioRecord {
+                legacy_status: legacy_status2.clone(),
+                legacy_fill_price: legacy_fill_price2.clone(),
+                rust_status: "FILLED",
+                rust_fill_price: Some(*fill_price),
+                rust_reject_reason: None,
+                delta_vs_legacy: None,
+            }
+        }
+    };
+    println!(
+        "        This divergence is INTENTIONAL and EXPECTED, not something to reconcile: Legacy's \
+         Phase 2 order path has never had a margin/exposure/max-position gate (confirmed: zero \
+         margin-related code anywhere in app/ or lib/) -- it's a documented temporary stopgap, not a \
+         feature Rust needs to match. \"Equivalence\" between these two paths isn't the right goal \
+         until Legacy either backports these checks or a broker is fully retired from it."
+    );
+    println!();
+
+    Ok(IterationRecord { timestamp: chrono::Utc::now(), iteration, happy_path, margin_check })
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
     let nextjs_url = std::env::var("NEXTJS_URL").unwrap_or_else(|_| "http://localhost:3000".to_string());
     let trading_core_url =
         std::env::var("TRADING_CORE_URL").unwrap_or_else(|_| "http://127.0.0.1:8081".to_string());
+    let loop_secs: u64 = std::env::var("PARALLEL_RUN_LOOP_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let max_iterations: Option<u64> =
+        std::env::var("PARALLEL_RUN_MAX_ITERATIONS").ok().and_then(|s| s.parse().ok());
+    let log_path = std::env::var("PARALLEL_RUN_LOG").unwrap_or_else(|_| "parallel-run.jsonl".to_string());
 
     let pool = PgPool::connect(&database_url).await?;
     let http = reqwest::Client::builder().cookie_store(true).build()?;
 
     println!("=== Parallel-run diagnostic (Legacy Next.js vs Rust engine) ===");
     println!("This does NOT assert equivalence -- see engine/parallel-run's module doc for why.\n");
+    if loop_secs > 0 {
+        println!(
+            "Sustained-monitoring mode: running every {loop_secs}s, appending results to {log_path}. \
+             Ctrl+C to stop.\n"
+        );
+    }
 
     let fixtures = seed(&pool).await?;
     println!("Seeded broker_id={} account_number={}\n", fixtures.broker_id, fixtures.account_number);
 
-    let run = async {
-        legacy_login(&http, &nextjs_url, &fixtures.broker_host, &fixtures.account_number).await?;
+    let mut log_file = std::fs::OpenOptions::new().create(true).append(true).open(&log_path)?;
 
-        // --- Scenario 1: happy-path fill ---
-        println!("--- Scenario 1: happy-path fill (0.10 lots) ---");
-        let (legacy_order_id, _legacy_pos_id, legacy_status, legacy_fill_price) =
-            legacy_place_order(&http, &nextjs_url, &fixtures.broker_host, "0.10", "2000.20000").await?;
-        println!("Legacy: order {legacy_order_id} status={legacy_status} filled_price={legacy_fill_price:?}");
-
-        refresh_live_price(&pool).await?;
-        let rust_outcome =
-            rust_place_order(&http, &trading_core_url, &fixtures, Decimal::new(10, 2), Decimal::new(100_000_000_00, 2)).await?;
-        match &rust_outcome {
-            RustOrderResponse::Filled { order_id, fill_price, .. } => {
-                println!("Rust:   order {order_id} status=FILLED fill_price={fill_price}");
-                if let Some(lp) = &legacy_fill_price {
-                    let legacy_dec: Decimal = lp.parse().unwrap_or_default();
-                    let delta = fill_price - legacy_dec;
-                    println!(
-                        "        Delta vs Legacy: {delta} -- EXPECTED, not a bug: Rust applies the broker's \
-                         configured spreadMarkup (1.0 pip here) on top of the raw tick, Legacy applies none \
-                         server-side (it just echoes back whatever price the client sent)."
-                    );
+    let mut iteration: u64 = 0;
+    let outcome: Result<(), Box<dyn std::error::Error>> = loop {
+        iteration += 1;
+        match run_iteration(&http, &pool, &nextjs_url, &trading_core_url, &fixtures, iteration).await {
+            Ok(record) => {
+                let line = serde_json::to_string(&record)?;
+                writeln!(log_file, "{line}")?;
+                log_file.flush()?;
+            }
+            Err(e) => {
+                eprintln!("Iteration {iteration} hit an error: {e}");
+                if loop_secs == 0 {
+                    break Err(e);
                 }
             }
-            RustOrderResponse::Rejected { reason, .. } => {
-                println!("Rust:   REJECTED unexpectedly in the happy-path scenario: {reason}");
+        }
+
+        if loop_secs == 0 {
+            break Ok(());
+        }
+        if let Some(max) = max_iterations {
+            if iteration >= max {
+                println!("Reached PARALLEL_RUN_MAX_ITERATIONS={max}, stopping.");
+                break Ok(());
             }
         }
-        println!();
 
-        // --- Scenario 2: margin-check divergence ---
-        println!("--- Scenario 2: margin-check divergence (100 lots, tiny Rust equity) ---");
-        let (legacy_order_id2, _legacy_pos_id2, legacy_status2, legacy_fill_price2) =
-            legacy_place_order(&http, &nextjs_url, &fixtures.broker_host, "100", "2000.20000").await?;
-        println!(
-            "Legacy: order {legacy_order_id2} status={legacy_status2} filled_price={legacy_fill_price2:?} \
-             -- filled unconditionally, Legacy performs NO margin check at all."
-        );
-
-        refresh_live_price(&pool).await?;
-        let rust_outcome2 =
-            rust_place_order(&http, &trading_core_url, &fixtures, Decimal::new(100, 0), Decimal::new(100, 0)).await?;
-        match &rust_outcome2 {
-            RustOrderResponse::Rejected { order_id, reason } => {
-                println!("Rust:   order {order_id} status=REJECTED reason=\"{reason}\"");
-            }
-            RustOrderResponse::Filled { order_id, .. } => {
-                println!("Rust:   order {order_id} status=FILLED unexpectedly (expected a margin rejection)");
+        tokio::select! {
+            _ = tokio::time::sleep(std::time::Duration::from_secs(loop_secs)) => {}
+            _ = tokio::signal::ctrl_c() => {
+                println!("\nReceived Ctrl+C, stopping after {iteration} iteration(s)...");
+                break Ok(());
             }
         }
-        println!(
-            "        This divergence is INTENTIONAL and EXPECTED, not something to reconcile: Legacy's \
-             Phase 2 order path has never had a margin/exposure/max-position gate (confirmed: zero \
-             margin-related code anywhere in app/ or lib/) -- it's a documented temporary stopgap, not a \
-             feature Rust needs to match. \"Equivalence\" between these two paths isn't the right goal \
-             until Legacy either backports these checks or a broker is fully retired from it."
-        );
-        println!();
-
-        Ok::<(), Box<dyn std::error::Error>>(())
-    }
-    .await;
-
-    if let Err(e) = &run {
-        eprintln!("Diagnostic run hit an error: {e}");
-    }
+    };
 
     cleanup(&pool, &fixtures).await?;
     println!("Cleaned up all seeded fixtures.");
 
-    run
+    outcome
 }
