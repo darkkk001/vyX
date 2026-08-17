@@ -176,11 +176,20 @@ SQL Editor.
   remembered broker present → straight to that broker's `/trade`,
   confirmed via the dev server's request log) and the write/read/clear
   file logic directly; the actual login/logout click that triggers it in
-  the browser wasn't GUI-driven, disclosed as such. Navigation lockdown
-  was explicitly left out of this slice (the user's own choice when
-  asked which parity gap to do next). Still explicitly deferred, not
-  silently missing: navigation lockdown, splash/offline screens,
-  window-state persistence.
+  the browser wasn't GUI-driven, disclosed as such.
+  Window-state persistence (`tauri-plugin-window-state`), navigation
+  lockdown (direct port of `will-navigate`/`setWindowOpenHandler`), and
+  splash/offline screens (direct port of the loading/offline HTML
+  swap, with a proactive reachability check standing in for Tauri
+  having no `did-fail-load` equivalent) are now also done, each
+  live-verified end to end — see `docs/decisions.md` ADR-001 for the
+  full detail, including two real bugs hit and fixed while verifying
+  the splash/offline piece (a too-tight reachability timeout, and a
+  missing `custom-protocol` Cargo feature that silently prevented local
+  content from loading at all). **This closes every Electron-parity gap
+  named for `desktop-tauri/`** — the only remaining precondition for an
+  actual broker cutover is a business/support decision (how long
+  Electron and Tauri run side by side), not more engineering work.
 - **Phase 5** (real execution engine / LP FIX feed) — partially started.
   Note: this doc's phase numbering disagrees with `docs/architecture.md`
   §7's own table (which calls Phase 5 "Mobile") — never reconciled,

@@ -203,11 +203,68 @@ on clear. The JS→invoke wiring itself (a real browser click actually
 triggering `remember_broker`) stays disclosed as unverified, not
 claimed.
 
-**Still not at Electron parity** — `deployment.md` §3's own cutover
-precondition list is the tracking spec for what else is needed before
-any broker could actually rely on this instead of Electron: navigation
-lockdown, splash/offline screens, window-state persistence across
-restarts.
+**Window-state persistence, navigation lockdown, and splash/offline
+screens — all done (2026-08-18), closing out every remaining item on
+this ADR's own Electron-parity list.**
+
+*Window-state persistence*: direct equivalent of `electron-window-state`
+via `tauri-plugin-window-state`, needing no wiring beyond registering
+the plugin — it hooks `on_window_ready` for any window, including ours
+built programmatically, not just ones declared in `tauri.conf.json`.
+Live-verified with a real resize+close+relaunch cycle: moved/resized the
+window via Win32 `MoveWindow`, sent a real `WM_CLOSE` for a genuine
+graceful exit (the plugin only persists on `RunEvent::Exit`, confirmed
+via its source — temporarily bypassed the close-to-tray interception for
+this one test pass only), inspected the resulting `.window-state.json`
+against the set geometry, then relaunched and read the actual window
+rect back via `GetWindowRect` — exact match.
+
+*Navigation lockdown*: direct port of `desktop/main.js`'s
+`will-navigate`/`setWindowOpenHandler` via `WebviewWindowBuilder`'s real
+`on_navigation`/`on_new_window` hooks (confirmed against the installed
+tauri crate source first) plus `tauri-plugin-opener` for "open
+externally." Live-verified with real webview-initiated navigation
+(`window.location.href`/`window.open()` evaluated inside the running
+webview, the same mechanism a real click uses): a same-host navigation
+proceeded; an off-host attempt was blocked and `window.url()` read back
+immediately after confirmed the location genuinely never changed; a
+denied `window.open()` left the process's window count at exactly one.
+
+*Splash + offline screens*: direct port of `win.loadFile(loadingPath)` +
+delayed `win.loadURL(...)` + `did-fail-load` → offline page. Tauri's
+`PageLoadEvent` only has `Started`/`Finished` (confirmed against source)
+— no failure hook to react to like Electron's `did-fail-load` — so this
+checks proactively instead: a HEAD request to the target URL (redirects
+counted as reachable, since the real `/trade` route 307s) decides
+whether to swap the splash screen to the real app or to a local
+`offline.html`, both at startup and on every Retry click (a new
+`retry_connection` command). Hit and fixed two real bugs while
+verifying, both worth remembering: the reachability check's timeout was
+initially too tight (5s) for a genuinely slow-but-working response — a
+local dev server's cold first-compile took ~12s for one route, and a
+tighter timeout misread that as unreachable, widened to 15s; and this
+app needed the `tauri` crate's `custom-protocol` Cargo feature enabled
+unconditionally (it never uses a devUrl proxy) for local content to
+serve at all — without it the window silently never loaded splash.html.
+Also spent real effort chasing a *third*, ultimately false alarm:
+`window.url()` reports a stale value for several seconds after any
+navigation regardless of scheme (local, external, or `data:`), so it
+isn't a reliable liveness signal — switched to reading
+`window.location.href`/`document.title` back from the real DOM via a
+temporary debug command, which is what actually proved content was
+rendering correctly. Live-verified all three real paths end to end with
+actual DOM ground truth and dev-server request logs, not just code
+review: unreachable → offline.html and stays there; reachable → splash
+swaps to the real broker's `/trade` → `/trade/login`; offline → bring
+the server back up externally → click the real Retry button (its own
+click handler, not a direct command call) → lands on the real login
+page.
+
+**Electron parity for `desktop-tauri/` is now complete** against every
+item this ADR and `deployment.md` §3 named — the only remaining
+precondition for actually cutting brokers over is a business/support
+decision (§3 step 2's "overlap period," deliberately left open there),
+not more engineering work here.
 
 ---
 
