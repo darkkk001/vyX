@@ -110,9 +110,17 @@ pub enum PlaceOrderError {
     Db(#[from] sqlx::Error),
 }
 
-/// The MARKET-order path through NEW -> VALIDATING -> ACCEPTED|REJECTED ->
-/// ROUTING -> FILLED, all in one Postgres transaction (see
-/// ../../docs/trading-engine.md §2, §2.1's atomicity requirement). Does
+/// The MARKET-order path conceptually passes through NEW -> VALIDATING ->
+/// ACCEPTED|REJECTED -> ROUTING -> FILLED (see ../../docs/trading-engine.md
+/// §2, §2.1's atomicity requirement), all in one Postgres transaction --
+/// but only the terminal status (via `db::set_filled`/`db::set_rejected`)
+/// is ever actually persisted. The intermediate writes were removed as a
+/// round-trip optimization (docs/testing.md's Concurrency/latency
+/// benchmark row): Postgres's default READ COMMITTED isolation means
+/// nothing outside this transaction can ever observe an uncommitted
+/// intermediate value, so writing NEW->VALIDATING->ACCEPTED->ROUTING as
+/// separate UPDATEs before the final commit was pure network cost with no
+/// observable effect -- the committed row is identical either way. Does
 /// not publish NATS events itself — the caller does that after `commit()`
 /// succeeds, since an event about a transaction that might still roll
 /// back would be a lie. See ../../docs/api.md §2.1 for who consumes those
@@ -139,8 +147,6 @@ pub async fn place_market_order(
         },
     )
     .await?;
-
-    db::set_status(&mut tx, &order_id, OrderStatus::Validating).await?;
 
     // Market Data Core's own current view, not a value the caller handed
     // in — see PlaceMarketOrderRequest's doc comment. Read against `pool`
@@ -182,21 +188,20 @@ pub async fn place_market_order(
 
     // §2.1 step 5 — per-broker exposure limits. Last of the admission
     // checks, matching risk-engine.md's own ordering: cheaper/simpler
-    // checks (enabled, lot size, margin) reject first.
-    let exposure = db::get_symbol_exposure(pool, &req.account_id, &req.symbol).await?;
+    // checks (enabled, lot size, margin) reject first. Both aggregates
+    // fetched in one round trip -- see get_exposure_and_max_positions's
+    // doc comment.
+    let (exposure, max_open_positions) =
+        db::get_exposure_and_max_positions(pool, &req.broker_id, &req.account_id, &req.symbol).await?;
     let max_exposure = symbol_config.as_ref().and_then(|cfg| cfg.max_exposure);
     if let Err(reject_reason) = risk::check_symbol_exposure(exposure.open_volume, req.volume, max_exposure) {
         let reason = reject_order(tx, nats, &order_id, reject_reason.to_string()).await?;
         return Ok(PlaceMarketOrderOutcome::Rejected { order_id, reason });
     }
-    let max_open_positions = db::get_broker_max_open_positions(pool, &req.broker_id).await?;
     if let Err(reject_reason) = risk::check_max_open_positions(exposure.open_position_count, max_open_positions) {
         let reason = reject_order(tx, nats, &order_id, reject_reason.to_string()).await?;
         return Ok(PlaceMarketOrderOutcome::Rejected { order_id, reason });
     }
-
-    db::set_status(&mut tx, &order_id, OrderStatus::Accepted).await?;
-    db::set_status(&mut tx, &order_id, OrderStatus::Routing).await?;
 
     // Broker's own markup on top of Market Data Core's raw price — see
     // pricing.rs. Reuses the config fetched above rather than a second
@@ -345,8 +350,6 @@ pub async fn place_pending_order(
         },
     )
     .await?;
-
-    db::set_status(&mut tx, &order_id, OrderStatus::Validating).await?;
 
     // Same "OMS fetches its own price" rule as place_market_order — used
     // here only to validate the pending price is on the correct side of

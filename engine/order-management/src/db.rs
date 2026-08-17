@@ -499,6 +499,32 @@ pub async fn get_symbol_exposure(
     Ok(SymbolExposure { open_volume, open_position_count })
 }
 
+/// `get_symbol_exposure` + `get_broker_max_open_positions` in one round
+/// trip via two independent subqueries -- both are §2.1 step 5 checks
+/// read together by `place_market_order`, with no dependency between
+/// them, so there's no reason to pay two separate network round trips
+/// for them. The two single-purpose functions above stay as they are
+/// for any other caller that only needs one value.
+pub async fn get_exposure_and_max_positions(
+    pool: &PgPool,
+    broker_id: &str,
+    account_id: &str,
+    symbol: &str,
+) -> Result<(SymbolExposure, Option<i32>), sqlx::Error> {
+    let (open_volume, open_position_count, max_open_positions): (Decimal, i64, Option<i32>) = sqlx::query_as(
+        r#"SELECT
+             (SELECT COALESCE(SUM(volume) FILTER (WHERE symbol = $3), 0) FROM positions WHERE account_id = $2),
+             (SELECT COUNT(*) FROM positions WHERE account_id = $2 AND status = 'OPEN'),
+             (SELECT "maxOpenPositionsPerAccount" FROM "Broker" WHERE id = $1)"#,
+    )
+    .bind(broker_id)
+    .bind(account_id)
+    .bind(symbol)
+    .fetch_one(pool)
+    .await?;
+    Ok((SymbolExposure { open_volume, open_position_count }, max_open_positions))
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Pending-order (LIMIT/STOP) trigger support — see pending_orders.rs.
 // ─────────────────────────────────────────────────────────────────────
