@@ -246,6 +246,38 @@ pub async fn get_order(pool: &PgPool, order_id: &str) -> Result<Option<OrderRow>
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// Broker-specific pricing — see pricing.rs.
+// ─────────────────────────────────────────────────────────────────────
+
+pub struct SymbolPricing {
+    pub digits: i32,
+    pub spread_markup: Decimal,
+}
+
+/// `Symbol.digits` always resolves if the symbol exists at all; the
+/// LEFT JOIN means an unconfigured `BrokerSymbol` row (broker hasn't set
+/// up this symbol) defaults to zero markup via `COALESCE` rather than
+/// failing the read — a missing admin config shouldn't block trading,
+/// it just means no markup applies yet.
+pub async fn get_symbol_pricing(
+    pool: &PgPool,
+    broker_id: &str,
+    symbol: &str,
+) -> Result<Option<SymbolPricing>, sqlx::Error> {
+    let row: Option<(i32, Decimal)> = sqlx::query_as(
+        r#"SELECT s.digits, COALESCE(bs."spreadMarkup", 0)
+           FROM "Symbol" s
+           LEFT JOIN "BrokerSymbol" bs ON bs."symbolId" = s.id AND bs."brokerId" = $1
+           WHERE s.name = $2"#,
+    )
+    .bind(broker_id)
+    .bind(symbol)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|(digits, spread_markup)| SymbolPricing { digits, spread_markup }))
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // Pending-order (LIMIT/STOP) trigger support — see pending_orders.rs.
 // ─────────────────────────────────────────────────────────────────────
 

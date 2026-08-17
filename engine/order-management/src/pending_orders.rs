@@ -99,7 +99,15 @@ async fn trigger_order(
         return Ok(());
     }
 
-    let fill = execution::execute_market_order(&order.id, order.side, order.volume, tick, execution::ExecutionStrategy::Internal);
+    // Broker's own markup on top of the raw tick — see pricing.rs and
+    // lib.rs's place_market_order (same logic, same fallback-to-raw for
+    // a missing Symbol row).
+    let quoted_tick = match db::get_symbol_pricing(pool, &order.broker_id, &order.symbol).await? {
+        Some(pricing) => crate::pricing::apply_spread_markup(tick, pricing.spread_markup, pricing.digits),
+        None => tick.clone(),
+    };
+
+    let fill = execution::execute_market_order(&order.id, order.side, order.volume, &quoted_tick, execution::ExecutionStrategy::Internal);
 
     db::set_filled(&mut tx, &order.id, fill.price, fill.volume).await?;
 

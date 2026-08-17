@@ -11,6 +11,7 @@ pub mod db;
 pub mod events;
 pub mod monitor;
 pub mod pending_orders;
+pub mod pricing;
 
 use protocol::{Fill, OrderSide, OrderStatus, OrderType, RiskRejection, Tick, TradingEvent};
 use rust_decimal::Decimal;
@@ -182,11 +183,23 @@ pub async fn place_market_order(
     db::set_status(&mut tx, &order_id, OrderStatus::Accepted).await?;
     db::set_status(&mut tx, &order_id, OrderStatus::Routing).await?;
 
+    // Broker's own markup on top of Market Data Core's raw price — see
+    // pricing.rs. Missing/unconfigured BrokerSymbol just means zero
+    // markup (get_symbol_pricing's own doc comment), so a `None` here
+    // (symbol row itself doesn't exist) is the only case worth a fallback
+    // rather than a hard error — the risk check above already proved a
+    // live price and a valid order exist, so this is a rare, benign
+    // "pricing config missing" case, not treated as fatal.
+    let quoted_tick = match db::get_symbol_pricing(pool, &req.broker_id, &req.symbol).await? {
+        Some(pricing) => pricing::apply_spread_markup(&current_tick, pricing.spread_markup, pricing.digits),
+        None => current_tick.clone(),
+    };
+
     let fill = execution::execute_market_order(
         &order_id,
         req.side,
         req.volume,
-        &current_tick,
+        &quoted_tick,
         execution::ExecutionStrategy::Internal,
     );
 
