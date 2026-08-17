@@ -18,33 +18,20 @@
 // documented target architecture exactly.
 
 import { Router } from "express";
-import { Decimal } from "decimal.js";
 import type { AuthedRequest } from "../auth.js";
 import { requireTraderSession } from "../auth.js";
 import { getAccount, getLedgerSum, getOpenPositionsSummary, getSymbolContractSize } from "../db.js";
+import { placeMarketOrderSchema, placePendingOrderSchema, validateBody } from "../validation.js";
+import type { z } from "zod";
 
 const router = Router();
 
 const TRADING_CORE_URL = process.env.TRADING_CORE_URL ?? "http://127.0.0.1:8081";
 
-interface PlaceMarketOrderBody {
-  symbol: string;
-  side: "BUY" | "SELL";
-  volume: string;
-  sl_price?: string;
-  tp_price?: string;
-}
+type PlaceMarketOrderBody = z.infer<typeof placeMarketOrderSchema>;
 
-router.post("/market", requireTraderSession, async (req: AuthedRequest, res) => {
-  const body = req.body as Partial<PlaceMarketOrderBody>;
-  if (!body.symbol || !body.side || !body.volume) {
-    res.status(400).json({ error: "missing required order fields: symbol, side, volume" });
-    return;
-  }
-  if (!new Decimal(body.volume).isPositive()) {
-    res.status(400).json({ error: "volume must be positive" });
-    return;
-  }
+router.post("/market", requireTraderSession, validateBody(placeMarketOrderSchema), async (req: AuthedRequest, res) => {
+  const body = req.body as PlaceMarketOrderBody;
 
   const session = req.session!;
   const brokerId = req.headers["x-broker-id"] as string;
@@ -100,32 +87,10 @@ router.post("/market", requireTraderSession, async (req: AuthedRequest, res) => 
 // checks margin at trigger time instead (order_management::
 // pending_orders), the one place a pending order's outcome can still
 // differ from what the trader saw at placement.
-interface PlacePendingOrderBody {
-  symbol: string;
-  side: "BUY" | "SELL";
-  order_type: "LIMIT" | "STOP";
-  volume: string;
-  requested_price: string;
-  sl_price?: string;
-  tp_price?: string;
-}
+type PlacePendingOrderBody = z.infer<typeof placePendingOrderSchema>;
 
-router.post("/pending", requireTraderSession, async (req: AuthedRequest, res) => {
-  const body = req.body as Partial<PlacePendingOrderBody>;
-  if (!body.symbol || !body.side || !body.order_type || !body.volume || !body.requested_price) {
-    res.status(400).json({
-      error: "missing required order fields: symbol, side, order_type, volume, requested_price",
-    });
-    return;
-  }
-  if (body.order_type !== "LIMIT" && body.order_type !== "STOP") {
-    res.status(400).json({ error: "order_type must be LIMIT or STOP" });
-    return;
-  }
-  if (!new Decimal(body.volume).isPositive()) {
-    res.status(400).json({ error: "volume must be positive" });
-    return;
-  }
+router.post("/pending", requireTraderSession, validateBody(placePendingOrderSchema), async (req: AuthedRequest, res) => {
+  const body = req.body as PlacePendingOrderBody;
 
   const session = req.session!;
   const brokerId = req.headers["x-broker-id"] as string;

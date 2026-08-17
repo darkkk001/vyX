@@ -53,7 +53,29 @@
   engagement's testing — flagged as a pre-launch checklist item, not
   built now since no certificate currently exists for this project.
 
-## 3. Explicitly out of scope for Phase 0
+## 3. Implementation status
+
+**§2's input-validation gap — closed for the order routes.**
+`services/api-gateway/src/validation.ts` adds zod schemas for both
+`POST /v1/orders/market` and `/pending`, applied as Express middleware
+before the handler runs. Replaces the old per-route `if (!body.x)`
+checks, which never validated `volume`/`sl_price`/`tp_price`/
+`requested_price` as real decimal strings — malformed input there either
+threw uncaught out of `new Decimal(...)` (Express's default HTML 500,
+not a clean API error) or got forwarded to the Rust core for a wasted
+round trip before rejection. Decimal validity is checked via decimal.js
+itself (the same parser everything else in this service already trusts),
+not a hand-rolled regex. All validation issues are reported in one
+response, not just the first. Found and fixed a real latent bug along
+the way: decimal.js's own `isPositive()` treats zero as positive (sign
+>= 0), so the original `!new Decimal(volume).isPositive()` check would
+have let a zero-volume order through — replaced with `gt(0)`. Verified
+directly against the schemas (valid/invalid volume, side, symbol,
+order_type, sl_price/tp_price/requested_price, multi-issue reporting) —
+this needs no live DB/NATS since it's pure request-shape validation, so
+it was checked standalone rather than through the full stack.
+
+## 4. Explicitly out of scope for Phase 0
 
 Penetration testing, formal threat modeling, and compliance
 certification (SOC 2, PCI, etc.) are real needs for a live financial
