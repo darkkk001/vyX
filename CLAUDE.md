@@ -128,12 +128,14 @@ SQL Editor.
   web-app changes needed**, it doesn't know which shell it's in. Live-
   verified: launches as a real window, resolves a real broker subdomain,
   loads WebTrader's login page exactly as a browser would. Still not at
-  Electron parity — explicitly deferred, not silently missing: system
-  tray/minimize-to-tray, native notifications, auto-update, the
-  per-broker rebrand CLI (`deployment.md` §3's own stated precondition
-  before any broker can actually cut over to it), `rememberBroker`/
-  `forgetBroker` real persistence + launcher/root-domain mode,
-  navigation lockdown, splash/offline screens, window-state persistence.
+  Electron parity. Per-broker rebrand tooling (`desktop-tauri/rebrand.js`,
+  a direct port of `desktop/rebrand.js` — `deployment.md` §3's own
+  stated precondition before any broker can actually cut over to it) is
+  now done too, live-verified. Still explicitly deferred, not silently
+  missing: system tray/minimize-to-tray, native notifications, auto-
+  update, `rememberBroker`/`forgetBroker` real persistence + launcher/
+  root-domain mode, navigation lockdown, splash/offline screens,
+  window-state persistence.
 - **Phase 5** (real execution engine / LP FIX feed) — partially started.
   Note: this doc's phase numbering disagrees with `docs/architecture.md`
   §7's own table (which calls Phase 5 "Mobile") — never reconciled,

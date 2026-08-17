@@ -39,18 +39,28 @@ navigation sequence a browser would produce). Not visually/pixel
 confirmed (no screenshot capability in this sandbox) — same category of
 disclosed limitation as this engagement's MT5 EA `.mq5` compile step.
 
-**Not yet at Electron parity** — `deployment.md` §3's own cutover
-precondition list is the tracking spec for what's still needed before
+**Per-broker rebrand tooling — done (2026-08-17).** `deployment.md`
+§3.4 named this as a hard blocker before any broker can rely on Tauri
+instead of Electron. `desktop-tauri/rebrand.js` is a direct port of
+`desktop/rebrand.js` — identical CLI (`--name`/`--subdomain`/`--icon`/
+`--root`), identical `broker.config.json` shape, identical validation
+(`.ico`-only, both required args present) — only the icon's destination
+differs (`src-tauri/icons/icon.ico` instead of `build/icon.ico`).
+Live-verified all three paths: missing required args exits 1 with the
+usage string; a non-`.ico` icon is rejected (after `broker.config.json`
+is already written, matching the original script's exact ordering); a
+full rebrand with a real `.ico` writes the correct config and copies a
+byte-identical icon file (confirmed via checksum).
+
+**Still not at Electron parity** — `deployment.md` §3's own cutover
+precondition list is the tracking spec for what else is needed before
 any broker could actually rely on this instead of Electron: system tray/
 minimize-to-tray, native OS notifications, auto-update
-(`tauri-plugin-updater`), the per-broker rebrand CLI equivalent to
-`desktop/rebrand.js` (explicitly named in that section as a hard
-blocker — "without it, Tauri isn't yet at feature parity for this
-project's actual use case," still true), `rememberBroker`/
-`forgetBroker` real persistence + launcher/root-domain mode (currently
-no-op stubs so the web app's calls don't throw, but they don't do
-anything yet), navigation lockdown, splash/offline screens, window-state
-persistence across restarts.
+(`tauri-plugin-updater`), `rememberBroker`/`forgetBroker` real
+persistence + launcher/root-domain mode (currently no-op stubs so the
+web app's calls don't throw, but they don't do anything yet), navigation
+lockdown, splash/offline screens, window-state persistence across
+restarts.
 
 ---
 
