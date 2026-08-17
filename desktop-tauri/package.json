@@ -1,0 +1,13 @@
+{
+  "name": "vyxtrader-desktop-tauri",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Tauri desktop shell -- core-shell slice, see docs/decisions.md ADR-001. Not yet at Electron feature parity; see engine/docs status notes for what's deferred.",
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

@@ -119,9 +119,21 @@ SQL Editor.
   (`desktop/`: thin WebTrader wrapper, per-broker rebrand tooling,
   auto-update, tray, notifications) and keeps working as-is. Per
   `docs/decisions.md` ADR-001, the actual Trading Core-era desktop app
-  is planned in **Tauri**, not evolved from Electron — that Tauri build
-  has not been started, and isn't urgent since the Electron app already
-  covers today's needs.
+  is planned in **Tauri**, not evolved from Electron. The Tauri **core
+  shell** now exists (`desktop-tauri/`): a frameless window pointed at a
+  broker's deployed WebTrader, bridging the exact same `window.vyxDesktop`
+  contract (`isDesktop`/`minimize`/`toggleMaximize`/`close`/
+  `onMaximizedChange`/`rememberBroker`/`forgetBroker`) `WebTrader.tsx`/
+  `DesktopTitleBar.tsx` already consume from the Electron app — **zero
+  web-app changes needed**, it doesn't know which shell it's in. Live-
+  verified: launches as a real window, resolves a real broker subdomain,
+  loads WebTrader's login page exactly as a browser would. Still not at
+  Electron parity — explicitly deferred, not silently missing: system
+  tray/minimize-to-tray, native notifications, auto-update, the
+  per-broker rebrand CLI (`deployment.md` §3's own stated precondition
+  before any broker can actually cut over to it), `rememberBroker`/
+  `forgetBroker` real persistence + launcher/root-domain mode,
+  navigation lockdown, splash/offline screens, window-state persistence.
 - **Phase 5** (real execution engine / LP FIX feed) — partially started.
   Note: this doc's phase numbering disagrees with `docs/architecture.md`
   §7's own table (which calls Phase 5 "Mobile") — never reconciled,

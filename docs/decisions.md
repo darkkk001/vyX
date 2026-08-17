@@ -22,6 +22,36 @@ existing Electron app (`desktop/`) is not deleted; it continues to serve
 the current Next.js-only web app until Phase 4 replaces it. Migration
 notes captured in `deployment.md`.
 
+**Update (2026-08-17) — core shell built.** `desktop-tauri/` is a
+frameless window pointed at a broker's deployed WebTrader, matching the
+exact `window.vyxDesktop` contract the web app already consumes from the
+Electron app (confirmed by reading `WebTrader.tsx`/`DesktopTitleBar.tsx`
+directly — every desktop-only behavior there gates on that one global's
+shape, not on anything Electron-specific), via a Tauri
+`initialization_script` that wraps three custom commands
+(`win_minimize`/`win_toggle_maximize`/`win_close`) plus a diffed
+`maximized-changed` event. Zero web-app changes were needed. Live-
+verified: real window process launches (confirmed via the OS process
+list, correct title from `broker.config.json`), correctly resolves a
+real broker subdomain and loads through to WebTrader's login page (
+confirmed via the dev server's own request log showing the exact
+navigation sequence a browser would produce). Not visually/pixel
+confirmed (no screenshot capability in this sandbox) — same category of
+disclosed limitation as this engagement's MT5 EA `.mq5` compile step.
+
+**Not yet at Electron parity** — `deployment.md` §3's own cutover
+precondition list is the tracking spec for what's still needed before
+any broker could actually rely on this instead of Electron: system tray/
+minimize-to-tray, native OS notifications, auto-update
+(`tauri-plugin-updater`), the per-broker rebrand CLI equivalent to
+`desktop/rebrand.js` (explicitly named in that section as a hard
+blocker — "without it, Tauri isn't yet at feature parity for this
+project's actual use case," still true), `rememberBroker`/
+`forgetBroker` real persistence + launcher/root-domain mode (currently
+no-op stubs so the web app's calls don't throw, but they don't do
+anything yet), navigation lockdown, splash/offline screens, window-state
+persistence across restarts.
+
 ---
 
 ## ADR-002 — Trading Core data ownership boundary
