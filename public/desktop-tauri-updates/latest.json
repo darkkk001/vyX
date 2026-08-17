@@ -1,0 +1,11 @@
+{
+  "version": "0.1.0",
+  "notes": "VyXTrader 0.1.0",
+  "pub_date": "2026-08-17T21:00:39.361Z",
+  "platforms": {
+    "windows-x86_64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTMmJJTjZKK1lOYm1acGlpN0VHZE1YU053b2ZsVTBGc01iOFRIdVNzakd5a0tjaEhVeXRKQ3hkTng2S0FIQkFTNFN5MW5hYnlRR1Y3K0ZkVmxwV2FRNERVOVA2M2VFL1FvPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg3MDAwNDM4CWZpbGU6VnlYVHJhZGVyXzAuMS4wX3g2NC1zZXR1cC5leGUKbm5DYStYYjE1RCtLM1NieHpCcERjL0pRRnNkYVFxb2lZOFBLNW5WemhCaWhHU1daOHpBbk9PK1N2NmNGaWlsdEQrZVBHU0tSZzhWWU13WGN3YiswQnc9PQo=",
+      "url": "https://vyxtrader.com/desktop-tauri-updates/VyXTrader_0.1.0_x64-setup.exe"
+    }
+  }
+}
