@@ -296,7 +296,7 @@ here, just the option the spec itself already pointed at.
 | Phase 3 — Market Data | Extends the existing MT5 EA bridge + candle aggregation, moved into Rust |
 | Phase 4 — Desktop | New Tauri app per ADR-001; current Electron app stays live until it's ready to cut over |
 | Phase 5 — Mobile | New, not started |
-| Phase 6 — Manager | Started: symbol/spread config, positions/exposure dashboard, and manual position open/close (`app/manage/`) live — see `authentication.md` §3 and this doc's log below. Rest (groups, users, deposit/withdraw ops) not started. |
+| Phase 6 — Manager | Started: symbol/spread config, positions/exposure dashboard, manual position open/close, and groups/accounts (`app/manage/`) live — see `authentication.md` §3 and this doc's log below. Rest (deposit/withdraw ops, KYC) not started. |
 | Phase 7 — Back Office | New, not started |
 | Phase 8 — Advanced | New, not started |
 
@@ -555,3 +555,45 @@ here, just the option the spec itself already pointed at.
     Confirmed broker-scoping: opening a position against a different
     broker's account with this session was cleanly rejected
     ("account not found"), not permitted or leaked across tenants.
+
+18. **Phase 6 (Manager) — fourth/fifth features: Groups + Accounts.**
+    `Group` is a brand-new model (`prisma/migrations/20260817050000_groups`)
+    — the first real answer to `risk-engine.md` §4's open question
+    ("whether margin-call/stop-out thresholds are broker-level config...
+    needs its own migration when this is actually built"). Deliberately
+    scoped narrower than full settings-inheritance: assigning an account
+    to a group copies the group's `leverage` onto `Account.leverage`
+    once, at assignment time, rather than making the Rust engine's
+    order-placement hot path (`get_account_funds` in
+    `engine/order-management/src/db.rs`) resolve an account's effective
+    leverage through its group live — that would mean changing the
+    trading engine in the same change as adding two admin screens.
+    `marginCallLevel`/`stopOutLevel` are stored/shown, not yet read by
+    `engine/margin`'s (still-hardcoded, still not wired to a live
+    monitor loop) `MarginThresholds` — flagged in `risk-engine.md`, not
+    hidden. First real usage of three more previously-aspirational
+    `AuditLog` action strings: `"BALANCE_ADJUSTMENT"`, `"LEVERAGE_CHANGE"`,
+    and `TransactionType.ADJUSTMENT` (all existed as schema enum values/
+    doc-comment conventions with zero application code before this,
+    same pattern as `MANUAL_POSITION_CLOSE` before the previous slice).
+
+    New permission split, read directly from `AdminRole.MANAGER`'s own
+    schema comment ("narrower than BROKER_ADMIN... not KYC/finance"):
+    balance adjustment and direct leverage edits require `BROKER_ADMIN`;
+    group CRUD and assigning an account to a group stay open to
+    `MANAGER` too, same category as the symbols screen. This is the
+    first Manager route to enforce a permission difference *between*
+    the two roles rather than gating both identically.
+
+    Verified live against a real Postgres, both seeded roles
+    (`manager@acmefx.com` / `admin@acmefx.com`): created a group with a
+    distinct leverage as `MANAGER` (allowed); assigned an account to it
+    as `MANAGER`, confirmed `Account.leverage` actually changed to the
+    group's value and an `"ACCOUNT_GROUP_CHANGED"` audit row exists;
+    confirmed `MANAGER` gets a clean 403 attempting a direct leverage
+    edit or a balance adjustment on the same account; confirmed
+    `BROKER_ADMIN` can do both — leverage edit applied correctly,
+    balance adjustment produced an exact `balanceBefore`/`balanceAfter`
+    matching the requested amount with a real `Transaction` row and
+    `"BALANCE_ADJUSTMENT"` audit row; confirmed broker-scoping (a
+    different broker's account was cleanly rejected, not leaked).

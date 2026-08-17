@@ -109,10 +109,15 @@ at placement time for the same reason margin isn't.
 
 ## 4. Open questions for Phase 2
 
-- Whether margin-call/stop-out thresholds are broker-level config or
-  per-account overridable — the current schema has no per-account
-  override mechanism for anything risk-related; needs its own migration
-  when this is actually built, not assumed here.
+- ~~Whether margin-call/stop-out thresholds are broker-level config or
+  per-account overridable~~ **Partially resolved:** `Group.marginCallLevel`/
+  `stopOutLevel` (`prisma/migrations/20260817050000_groups`, Manager's
+  Groups screen) answer the storage question — group-level, accounts
+  opt in by assignment. **Not yet resolved:** `engine/margin`'s
+  `MarginThresholds` is still hardcoded and reads neither `Group` nor
+  anything else — wiring a group's stored levels into a live monitor
+  loop is a separate, later integration (see `architecture.md`'s Phase 6
+  log, item 18, for the deliberate scope cut).
 - Hedged-position margin treatment (netting vs gross) — current schema
   has no concept of hedging at all (one order → one position, 1:1); needs
   a decision before Phase 2 if the spec requires hedged accounts.

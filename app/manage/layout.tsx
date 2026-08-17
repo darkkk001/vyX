@@ -23,6 +23,8 @@ export default async function ManageLayout({ children }: { children: React.React
           <strong>VyXTrader Manager</strong>
           <Link href="/manage/symbols">Symbols</Link>
           <Link href="/manage/positions">Positions</Link>
+          <Link href="/manage/accounts">Accounts</Link>
+          <Link href="/manage/groups">Groups</Link>
         </nav>
       ) : null}
       {children}

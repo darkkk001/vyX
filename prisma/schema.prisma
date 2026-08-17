@@ -159,6 +159,7 @@ model Broker {
   orders          Order[]
   positions       Position[]
   auditLogs       AuditLog[]
+  groups          Group[]
 }
 
 model AdminUser {
@@ -200,6 +201,11 @@ model Account {
   balance       Decimal       @default(0) @db.Decimal(18, 4)
   credit        Decimal       @default(0) @db.Decimal(18, 4) // non-withdrawable bonus
   status        AccountStatus @default(ACTIVE)
+  // Null = ungrouped (every account before this feature existed, and any
+  // new one until an admin assigns it) -- see Group's own comment for
+  // what assigning a group actually does today.
+  groupId       String?
+  group         Group?        @relation(fields: [groupId], references: [id])
 
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
@@ -213,6 +219,33 @@ model Account {
   ibLinkAsClient IbRelationship?  @relation("ClientAccount")
 
   @@unique([brokerId, email, accountType])
+  @@index([brokerId])
+  @@index([groupId])
+}
+
+// Settings template accounts can be assigned to (per-broker). Deliberately
+// NOT yet read by the Rust engine's margin/order path -- see
+// docs/risk-engine.md's implementation-status note. Assigning an account
+// to a group copies `leverage` onto Account.leverage once, at assignment
+// time (see app/api/manage/accounts/[id]/route.ts) -- Account.leverage
+// stays the one value every trading code path already reads;
+// marginCallLevel/stopOutLevel are stored/displayed only for now.
+model Group {
+  id              String  @id @default(cuid())
+  brokerId        String
+  broker          Broker  @relation(fields: [brokerId], references: [id])
+  name            String
+  leverage        Int     @default(100)
+  marginCallLevel Decimal @default(100) @db.Decimal(6, 2)
+  stopOutLevel    Decimal @default(50) @db.Decimal(6, 2)
+  isDefault       Boolean @default(false)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  accounts Account[]
+
+  @@unique([brokerId, name])
   @@index([brokerId])
 }
 
