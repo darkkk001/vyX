@@ -5,7 +5,7 @@
 No automated test suite exists in the current Next.js codebase — no unit
 tests, no integration tests, no E2E tests. Verification during this
 engagement has been manual (build locally, click through the WebTrader
-UI, build/launch the Electron `.exe` locally). This is a real gap, stated
+UI, build/launch the Tauri desktop app locally). This is a real gap, stated
 plainly rather than implied — it means the "never destroy existing
 working functionality" rule (ADR-003) has so far been upheld by manual
 QA, not a regression suite.

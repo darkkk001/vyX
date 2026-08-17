@@ -22,7 +22,8 @@ import { computeChartLines } from "@/lib/chart-lines";
 
 declare global {
   interface Window {
-    // Exposed by desktop/preload.js only when running inside the Electron
+    // Exposed by the Tauri desktop shell's init script
+    // (desktop-tauri/src-tauri/src/main.rs) only when running inside that
     // shell — absent in a normal browser tab.
     vyxDesktop?: {
       isDesktop: true;

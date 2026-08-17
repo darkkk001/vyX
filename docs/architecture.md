@@ -32,11 +32,15 @@ VyXTrader today is a single Next.js 15 monolith:
   fall back to a client-side random-walk simulator
   (`lib/market-simulator.ts`). This is explicitly a Phase-5-stopgap by
   design, already documented as such in the existing codebase.
-- **Desktop**: an **Electron** wrapper (`desktop/`) — built earlier in this
-  engagement, already working (frameless custom title bar, system tray,
-  native notifications, auto-update via a generic feed, per-broker
-  rebranding via `broker.config.json` + an icon swap). It loads the same
-  web app's pages in a native window; it does not embed any trading logic
+- **Desktop**: a **Tauri** (Rust + React/TypeScript) app (`desktop-tauri/`)
+  — per ADR-001, the sole desktop shell now (an earlier Electron app,
+  `desktop/`, was built first, reached full parity comparison, then was
+  removed once Tauri matched it feature-for-feature and was confirmed to
+  have no real installed users — see ADR-001's update log in
+  `decisions.md`). Frameless custom title bar, system tray, native
+  notifications, auto-update via a signed feed, per-broker rebranding via
+  `broker.config.json` + an icon swap. It loads the same web app's pages
+  in a native window; it does not embed any trading logic
   of its own.
 - **Mobile, Manager app, Back Office**: do not exist yet. The current
   Super Admin (`app/(super-admin)`) covers a thin slice of what "Manager"
@@ -107,8 +111,8 @@ not rewriting them, wherever the current code already does the job):
                      once that moves into the Trading Core
   /manager        ← new — broker/dealing/risk/ops tool (spec §17)
   /backoffice     ← new — CRM/KYC/finance/reporting (spec §18)
-  /desktop        ← current desktop/ (Electron), stays live until Phase 4;
-                     new Tauri app added alongside it — see ADR-001
+  /desktop        ← current desktop-tauri/ (Tauri) — see ADR-001;
+                     the earlier Electron app has been removed
   /mobile         ← new — Flutter (spec §16)
 
 /engine           ← NEW — the Rust Trading Core
@@ -211,26 +215,29 @@ ADR-003); this section keeps the original context/options for reference.
 
 ### Decision 1 — Desktop shell: keep Electron, or migrate to Tauri?
 
-**Resolved: Tauri (ADR-001).** The spec's default is Tauri ("Do NOT use
-Electron unless there is a specific documented requirement that Tauri
-cannot satisfy"), and that's the call for the Phase 4 Trading Core
-desktop workstation. The existing Electron app (frameless custom title
-bar, system tray with minimize-to-tray, native OS notifications,
-`electron-updater` wired to a real update feed, per-broker rebranding via
-`broker.config.json` + `rebrand.js`) is not thrown away — it stays in
-place and keeps serving the current Next.js-only web app until Phase 4's
-Tauri app is ready to replace it.
+**Resolved: Tauri (ADR-001), and now fully executed.** The spec's default
+is Tauri ("Do NOT use Electron unless there is a specific documented
+requirement that Tauri cannot satisfy"), and that's the call for the
+Phase 4 Trading Core desktop workstation. An Electron app was built
+first (frameless custom title bar, system tray with minimize-to-tray,
+native OS notifications, `electron-updater` wired to a real update feed,
+per-broker rebranding via `broker.config.json` + `rebrand.js`) and kept
+running while the Tauri app was built out to match it feature-for-feature.
+Once Tauri reached full parity and it was confirmed the Electron app had
+never had any real installed users (testing-only), the Electron app
+(`desktop/`) was removed entirely — Tauri (`desktop-tauri/`) is now the
+only desktop shell.
 
-| | Electron (current) | Tauri (Phase 4 target) |
+| | Electron (removed) | Tauri (current) |
 |---|---|---|
-| Status | Built, tested, working today | New build |
+| Status | Built, tested, then removed once Tauri reached parity | Built, tested, live |
 | Binary size | ~80MB installer | Typically 3-10MB (uses the OS's native webview) |
 | Memory footprint | Higher (bundles Chromium) | Lower (no bundled browser engine) |
 | Backend language | Node.js (JS/TS) | Rust — shares code/types directly with the Trading Core |
 | Ecosystem/maturity | Very mature, huge community | Newer, smaller but growing fast, backed seriously |
 
-Migration/cutover notes for replacing the Electron shell live in
-`deployment.md` once written.
+Full migration/cutover history lives in `deployment.md` and
+`decisions.md` ADR-001.
 
 ### Decision 2 — Where does the Rust Trading Core's data live, and how does today's Prisma-owned data migrate?
 
@@ -294,7 +301,7 @@ here, just the option the spec itself already pointed at.
 | Phase 1 — Core Foundation | New: Rust workspace, Postgres/Redis/NATS wiring, API Gateway extraction, auth rework |
 | Phase 2 — Trading Core | New: the actual OMS/Risk/Margin/Position/Ledger Rust modules |
 | Phase 3 — Market Data | Extends the existing MT5 EA bridge + candle aggregation, moved into Rust |
-| Phase 4 — Desktop | New Tauri app per ADR-001; current Electron app stays live until it's ready to cut over |
+| Phase 4 — Desktop | Tauri app per ADR-001 — done, at full Electron parity; the earlier Electron app has been removed |
 | Phase 5 — Mobile | New, not started |
 | Phase 6 — Manager | All originally-planned Phase 3/6 backoffice depth now live: symbol/spread config, positions/exposure dashboard, manual position open/close, groups/accounts, deposit/withdraw approval, KYC review, and IB/commission (`app/manage/`) — see `authentication.md` §3 and this doc's log below. |
 | Phase 7 — Back Office | New, not started |

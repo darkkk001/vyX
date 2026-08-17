@@ -2,9 +2,10 @@
 
 import { useEffect, useState } from "react";
 
-// Renders only inside the Electron shell (frame:false — see desktop/main.js
-// — has no native title bar of its own). Nothing renders in a normal
-// browser tab, where the OS/browser chrome already provides this.
+// Renders only inside the Tauri desktop shell (frameless window, no
+// native title bar of its own — see desktop-tauri/src-tauri/src/main.rs's
+// `.decorations(false)`). Nothing renders in a normal browser tab, where
+// the OS/browser chrome already provides this.
 export default function DesktopTitleBar({
   brokerName,
   server,

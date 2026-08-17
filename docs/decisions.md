@@ -266,6 +266,23 @@ precondition for actually cutting brokers over is a business/support
 decision (§3 step 2's "overlap period," deliberately left open there),
 not more engineering work here.
 
+**Electron removed (2026-08-18).** With Tauri at full parity confirmed
+above, and after confirming with the user that the Electron app
+(`desktop/`) had never had any real installed users — testing-only,
+this whole engagement — the user asked for it to be removed outright
+rather than kept running in parallel for an "overlap period." Deleted
+`desktop/` (the entire Electron app) and `public/desktop-updates/` (its
+published update feed). `desktop-tauri/` is now the only desktop shell;
+this ADR's own cutover step 2 ("both apps available side by side for
+some overlap period") is moot — there's nothing left to overlap with.
+Updated every doc that described Electron as current/live
+(`CLAUDE.md`, `architecture.md`, `security.md`, `testing.md`,
+`deployment.md`, `README.md`) and the handful of code comments in
+`components/webtrader/` that referenced `desktop/main.js`/
+`desktop/preload.js` by path. No functional change to the web app or
+Tauri app themselves — this was a removal of now-dead code and its
+docs, not a behavior change.
+
 ---
 
 ## ADR-002 — Trading Core data ownership boundary

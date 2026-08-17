@@ -115,12 +115,14 @@ SQL Editor.
   No live/automatic payout on every trade — an admin clicks "Pay" to
   move the calculated amount through the `Transaction` ledger onto the
   IB's own account balance (`app/api/manage/ib-relationships`).
-- **Phase 4** (desktop) — a working Electron shell already exists
-  (`desktop/`: thin WebTrader wrapper, per-broker rebrand tooling,
-  auto-update, tray, notifications) and keeps working as-is. Per
-  `docs/decisions.md` ADR-001, the actual Trading Core-era desktop app
-  is planned in **Tauri**, not evolved from Electron. The Tauri **core
-  shell** now exists (`desktop-tauri/`): a frameless window pointed at a
+- **Phase 4** (desktop) — **Tauri** (`desktop-tauri/`) is the desktop
+  app, per `docs/decisions.md` ADR-001. An Electron app (`desktop/`) was
+  built first and kept running while Tauri was built out to match it;
+  once Tauri reached full parity and the Electron app was confirmed to
+  have never had any real installed users (testing-only), it was removed
+  outright (2026-08-18) rather than kept running in parallel — see
+  ADR-001's final update. The Tauri **core shell** (`desktop-tauri/`): a
+  frameless window pointed at a
   broker's deployed WebTrader, bridging the exact same `window.vyxDesktop`
   contract (`isDesktop`/`minimize`/`toggleMaximize`/`close`/
   `onMaximizedChange`/`rememberBroker`/`forgetBroker`) `WebTrader.tsx`/
@@ -186,10 +188,11 @@ SQL Editor.
   full detail, including two real bugs hit and fixed while verifying
   the splash/offline piece (a too-tight reachability timeout, and a
   missing `custom-protocol` Cargo feature that silently prevented local
-  content from loading at all). **This closes every Electron-parity gap
-  named for `desktop-tauri/`** — the only remaining precondition for an
-  actual broker cutover is a business/support decision (how long
-  Electron and Tauri run side by side), not more engineering work.
+  content from loading at all). **This closed every Electron-parity gap
+  named for `desktop-tauri/`**, and with parity reached and no real
+  installed Electron users to strand, the Electron app was removed
+  entirely (2026-08-18) instead of being kept running side by side —
+  Tauri is now the only desktop app.
 - **Phase 5** (real execution engine / LP FIX feed) — partially started.
   Note: this doc's phase numbering disagrees with `docs/architecture.md`
   §7's own table (which calls Phase 5 "Mobile") — never reconciled,

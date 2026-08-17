@@ -23,6 +23,6 @@ Broker tenant resolution is host-based, so in local dev you need to hit the app 
 
 ## Stack
 
-Next.js 15 + TypeScript (backoffice/CRM/WebTrader) · PostgreSQL via Prisma (pinned to v6 — v7 requires driver-adapter config not yet worth the complexity at this stage) · Node.js + Redis execution engine (later phase, dedicated VPS) · TimescaleDB for tick history (later phase) · Electron wrapper for desktop (later phase).
+Next.js 15 + TypeScript (backoffice/CRM/WebTrader) · PostgreSQL via Prisma (pinned to v6 — v7 requires driver-adapter config not yet worth the complexity at this stage) · Node.js + Redis execution engine (later phase, dedicated VPS) · TimescaleDB for tick history (later phase) · Tauri (Rust + React/TypeScript) app for desktop.
 
 See the project's build-order documentation for the full phased plan.

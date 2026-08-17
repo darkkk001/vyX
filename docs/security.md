@@ -25,12 +25,20 @@
   unchanged as the audit trail for both today's admin actions and, later,
   the Risk module's accept/reject/margin-call decisions (see
   `risk-engine.md` §3).
-- **Desktop app integrity**: `electron-updater` checks a signed
-  `latest.yml`/artifact set served from `public/desktop-updates/` on the
-  same Vercel deployment. Update payloads are not currently code-signed
-  with an OS-level certificate (Windows/macOS code signing) — acceptable
-  for the current pre-production/demo stage, called out explicitly here
-  as something a real production launch needs before general distribution.
+- **Desktop app integrity**: the Tauri desktop app's `tauri-plugin-updater`
+  checks a manifest (`latest.json`) served from
+  `public/desktop-tauri-updates/` on the same Vercel deployment, and
+  refuses to install anything not Ed25519-signed by this project's own
+  signing key (see `deployment.md` for where that key lives and how a
+  release is cut). That's real cryptographic trust for the update
+  *payload* — separate from, and not a substitute for, OS-level code
+  signing (Windows Authenticode / macOS notarization) on the installer
+  `.exe` itself, which still isn't done — acceptable for the current
+  pre-production/demo stage, called out explicitly here as something a
+  real production launch needs before general distribution. (The earlier
+  Electron app used `electron-updater` against an unsigned
+  `latest.yml`/artifact feed; it has since been removed, see
+  `decisions.md` ADR-001.)
 
 ## 2. Target additions
 
@@ -47,11 +55,12 @@
   internet-reachable), matching spec's general "defense in depth" framing
   without inventing new requirements beyond what's already implied by the
   Gateway/Core split in `architecture.md` §2.
-- **Code signing**: desktop update artifacts (both the current Electron
-  app and the future Tauri app, per ADR-001) should be OS-code-signed
-  before any real production rollout to end users outside this
-  engagement's testing — flagged as a pre-launch checklist item, not
-  built now since no certificate currently exists for this project.
+- **Code signing**: the Tauri desktop app's installer `.exe` should be
+  OS-code-signed (Windows Authenticode) before any real production
+  rollout to end users outside this engagement's testing — flagged as a
+  pre-launch checklist item, not built now since no certificate
+  currently exists for this project. Separate from, and in addition to,
+  the Ed25519 update-payload signing already in place (see §1 above).
 
 ## 3. Implementation status
 

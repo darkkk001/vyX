@@ -13,14 +13,11 @@
 - **Build**: `prisma generate` runs as part of the Vercel build script
   (this was a real, already-fixed failure earlier in this engagement —
   Vercel's build didn't have a generated Prisma client without it).
-- **Desktop app updates (Electron)**: `desktop/publish.js` copies release
-  artifacts (`.exe`, `.blockmap`, `latest.yml`) into `public/desktop-updates/`,
-  which Vercel serves as static files — `electron-updater`'s "generic"
-  provider points at that URL. No separate update-hosting infrastructure.
-- **Desktop app updates (Tauri)** — done (2026-08-17): same "static files
-  under `public/`, served by the existing Vercel deployment" pattern, at
-  a **separate** path (`public/desktop-tauri-updates/`) so the two apps'
-  update channels don't collide during the ADR-001 cutover window.
+- **Desktop app updates (Tauri, the only desktop app — the earlier
+  Electron app and its `public/desktop-updates/` feed were removed
+  2026-08-18, see `decisions.md` ADR-001)** — done (2026-08-17): static
+  files under `public/desktop-tauri-updates/`, served by the existing
+  Vercel deployment, no separate update-hosting infrastructure.
   `desktop-tauri/publish.js` hand-builds the manifest `tauri-plugin-updater`
   expects (Tauri v2 doesn't auto-generate one the way electron-builder
   does) — `{version, notes, pub_date, platforms: {"windows-x86_64":
@@ -112,26 +109,20 @@
 | NATS | New — managed (e.g. Synadia) or self-hosted alongside the Trading Core | Implementation detail, Phase 1 |
 | Redis | New — managed (e.g. Upstash, which is Vercel-native and fits the current stack well) | Cache/session only, never authoritative (see `authentication.md`, `security.md`) |
 | Postgres | Neon (unchanged) | One instance, per ADR-002 |
-| Desktop (Electron, current) | Same `public/desktop-updates/` feed | Stays live until Phase 4 cutover per ADR-001 |
-| Desktop (Tauri, new) | `public/desktop-tauri-updates/` feed, same Vercel deployment — done | Two update channels coexist during the cutover window |
+| Desktop (Tauri, the only desktop app) | `public/desktop-tauri-updates/` feed, same Vercel deployment — done | Electron app removed 2026-08-18 per ADR-001, once Tauri reached full parity |
 | Mobile (Flutter) | App Store / Play Store | New, standard mobile distribution — not further specified here |
 
-## 3. Electron → Tauri cutover (ADR-001)
+## 3. Electron → Tauri cutover (ADR-001) — complete
 
-1. Tauri app built and tested independently — does not touch the live
-   Electron app or its update feed.
-2. Both apps available side by side for some overlap period (exact
-   duration not decided here — a business/support call, not an
-   architecture one).
-3. New installs default to the Tauri app once it's verified stable;
-   existing Electron installs keep receiving updates from their existing
-   feed until a decision is made to sunset it — no forced migration that
-   could strand a broker's traders mid-session.
-4. `desktop/rebrand.js`'s per-broker rebranding tooling gets a Tauri
-   equivalent before any broker relies on the new app for white-labeling
-   — without it, Tauri isn't yet at feature parity for this project's
-   actual use case (white-label resale), and cutover shouldn't happen
-   before parity.
+Tauri was built and tested independently alongside the existing
+Electron app, reached full feature parity (per-broker rebranding, tray,
+notifications, auto-update, window-state, navigation lockdown,
+splash/offline screens — see `decisions.md` ADR-001 for the full list
+and how each was verified), and only then — with the Electron app
+confirmed to have never had any real installed users — was the Electron
+app (`desktop/`) removed outright (2026-08-18), rather than kept running
+in parallel for an overlap period. Tauri (`desktop-tauri/`) is now the
+only desktop app.
 
 ## 4. Open questions for Phase 1
 
