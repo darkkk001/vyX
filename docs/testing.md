@@ -96,6 +96,38 @@ core:
 
 ## 5. Explicitly out of scope for Phase 0
 
-Load testing at production scale, chaos/fault-injection testing, and a
-CI pipeline's exact tool choice (GitHub Actions vs. something else) are
+Load testing at production scale and chaos/fault-injection testing are
 implementation/process decisions for Phase 1+, not architecture.
+
+**CI pipeline — decided and built (2026-08-18).** GitHub Actions,
+`.github/workflows/engine-ci.yml`, scoped to `engine/` only (the Rust
+Trading Core workspace — not the Next.js web app, which has no
+automated test suite yet per §1 above, and not `desktop-tauri/`'s own
+separate Cargo project). Runs on push to `main` and
+`claude/vyxtrader-platform-setup-0odm99` and on PRs targeting `main`,
+path-filtered to `engine/**` so unrelated commits don't trigger it.
+`cargo build --workspace --all-targets` and `cargo test --workspace`
+are hard gates; `cargo clippy`/`cargo fmt --check` run but don't fail
+the job (the workspace has pre-existing warnings/formatting diffs
+neither of those introduced — see below — so making them hard gates now
+would fail CI on day one for code this task wasn't asked to touch;
+cleaning that up is a separate follow-up, not bundled in here).
+
+**No Postgres/NATS service container in CI, deliberately.** Confirmed
+before relying on it, not assumed: `order-management/src/db.rs` and
+`market-data/src/db.rs` already document (and were grepped to confirm,
+zero real hits) that this workspace uses runtime-checked
+`sqlx::query`/`query_as` everywhere, never the compile-time
+`sqlx::query!`/`query_as!` macros — so building/testing the whole
+workspace needs no live database anywhere, unlike `loadtest`/
+`parallel-run` (deliberately excluded from CI for exactly that reason —
+they need a real running Postgres+NATS+server, which belongs with the
+still-missing parallel-run staging environment, §4's own open item, not
+this build/test gate).
+
+**Known pre-existing gaps this CI surfaces but doesn't fix**: the
+workspace isn't `cargo fmt`-clean (real diffs in `execution`,
+`loadtest`) and `cargo clippy` currently reports 3 warnings (two
+inconsistent-digit-grouping, one `await_holding_lock` in `loadtest`) —
+none introduced by adding CI, all pre-existing, none fixed here since
+that wasn't in scope for "add a CI pipeline."

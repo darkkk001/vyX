@@ -98,6 +98,9 @@
   (specific provider) — deliberately left open here; a Phase 1
   implementation decision, not an architectural one that needs
   pre-approval like ADR-001 through ADR-003 did.
-- CI/CD pipeline for the Rust workspace (test/benchmark gates referenced
-  in `testing.md` and ADR-003) — needs its own setup once the Rust
-  workspace exists in Phase 1.
+- ~~CI/CD pipeline for the Rust workspace~~ — done (2026-08-18):
+  `.github/workflows/engine-ci.yml`, build+test as hard gates,
+  clippy/fmt informational only. See `testing.md` §5 for full detail.
+  The benchmark gates themselves (`testing.md` §2's concurrency/latency
+  row) still aren't part of CI — `loadtest` needs a real Postgres+NATS,
+  deliberately not spun up automatically; still a manual run.

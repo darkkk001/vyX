@@ -1,0 +1,65 @@
+name: Engine CI
+
+# Covers only engine/ -- the Rust Trading Core workspace. Deliberately
+# scoped there, not the Next.js web app (no automated test suite exists
+# for it yet, see docs/testing.md §1) or desktop-tauri/ (its own,
+# separate Cargo project outside this workspace).
+#
+# No Postgres/NATS service container here on purpose: engine/order-management
+# and engine/market-data's db.rs modules deliberately use runtime-checked
+# sqlx::query/query_as rather than the compile-time sqlx::query!/query_as!
+# macros (see their own doc comments), specifically so this workspace
+# builds and tests without a live database anywhere. Confirmed before
+# relying on it -- grepped the whole workspace for real (non-comment)
+# uses of the `!` macros: none.
+on:
+  push:
+    branches:
+      - main
+      - claude/vyxtrader-platform-setup-0odm99
+    paths:
+      - "engine/**"
+      - ".github/workflows/engine-ci.yml"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "engine/**"
+      - ".github/workflows/engine-ci.yml"
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine
+
+      # Hard gates -- a real compile or test failure fails this job.
+      - name: Build
+        run: cargo build --workspace --all-targets
+        working-directory: engine
+
+      - name: Test
+        run: cargo test --workspace
+        working-directory: engine
+
+      # Informational only -- the workspace isn't clippy-clean or
+      # fmt-clean yet (pre-existing, not introduced by this workflow;
+      # see docs/testing.md §5), so these report without blocking merges
+      # until that's cleaned up as its own separate task.
+      - name: Clippy (non-blocking)
+        run: cargo clippy --workspace --all-targets
+        working-directory: engine
+        continue-on-error: true
+
+      - name: Format check (non-blocking)
+        run: cargo fmt --check
+        working-directory: engine
+        continue-on-error: true
