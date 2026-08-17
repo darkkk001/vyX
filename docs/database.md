@@ -75,7 +75,7 @@ move.
 - Whether Rust connects via `sqlx` or `diesel` — implementation detail,
   not architectural; left to Phase 1.
 
-## 6. Real gap found: `DateTime` columns aren't timezone-aware
+## 6. `DateTime` columns weren't timezone-aware — fixed
 
 Every `DateTime` field in `schema.prisma` (`LivePrice.updatedAt`,
 `Order`/`Position`/`Account` timestamps, etc.) maps to Postgres
@@ -100,10 +100,32 @@ are at risk. Worked around locally in the positions dashboard by moving
 the comparison into a raw SQL query (`prisma.$queryRaw`, mirroring the
 Rust engine's approach) rather than fixing the schema.
 
-**Not fixed here** — this is a schema-wide gap (every `DateTime` field,
-not just `LivePrice.updatedAt`), and the correct fix
-(`@db.Timestamptz` + a migration with an explicit `USING` clause stating
-the assumed source timezone for existing data) touches every table with
-a timestamp column. That's a bigger, separate decision than fits inside
-an unrelated dashboard change — flagged here for whoever picks it up
-next, not silently patched around everywhere.
+**Fixed, as its own follow-up change** (the user explicitly asked for
+this after the dashboard work flagged it — not silently expanded into
+an unrelated change). Every `DateTime` field across all 13 Prisma models
+(25 columns total — full list in
+`prisma/migrations/20260817040000_timestamptz/migration.sql`) now
+carries `@db.Timestamptz(3)`. Migration:
+`ALTER TABLE ... ALTER COLUMN "col" TYPE TIMESTAMPTZ(3) USING "col" AT
+TIME ZONE 'UTC'` — safe specifically because every existing row was
+written with the Postgres session timezone at GMT (confirmed via `SHOW
+timezone`), so the naive stored digits already *are* the correct UTC
+instant; `AT TIME ZONE 'UTC'` just promotes them to a properly-tagged
+timestamptz without shifting anything. Applied atomically (one
+transaction, all 26 `ALTER COLUMN` statements — `Candle.bucketStart` is
+part of that table's composite primary key, changing its type in place
+preserves the underlying instant and therefore uniqueness).
+
+Verified live: captured `Broker.createdAt`, `AdminUser.lastLoginAt`, and
+`LivePrice.updatedAt` as raw text before and after — wall-clock digits
+identical, only the offset suffix (`+00`) was added, confirming no data
+shift. Re-ran the exact repro that first surfaced this (write a fresh
+`LivePrice` row, read it back via a plain Node `pg` client, compute
+`Date.now() - updatedAt.getTime()` client-side) — now correctly reports
+an age in the hundreds of milliseconds instead of hours. Both Manager
+screens (`/manage/symbols`, `/manage/positions`) re-verified working
+against the migrated schema with no regressions.
+
+The Rust-owned tables (`orders`/`positions`/`ledger_entries`,
+`engine/migrations`) were never affected by this — they already declared
+`TIMESTAMPTZ` from the start.

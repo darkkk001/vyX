@@ -148,8 +148,8 @@ model Broker {
   logoUrl      String?
   primaryColor String? // CSS custom property override, e.g. "#1e8a5f"
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
 
   adminUsers      AdminUser[]
   accounts        Account[]
@@ -169,10 +169,10 @@ model AdminUser {
   passwordHash String
   role         AdminRole
   status       AdminStatus @default(ACTIVE)
-  lastLoginAt  DateTime?
+  lastLoginAt  DateTime? @db.Timestamptz(3)
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
 
   reviewedKyc    KycRecord[]    @relation("KycReviewedBy")
   createdTxns    Transaction[]  @relation("TransactionCreatedBy")
@@ -201,8 +201,8 @@ model Account {
   credit        Decimal       @default(0) @db.Decimal(18, 4) // non-withdrawable bonus
   status        AccountStatus @default(ACTIVE)
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
 
   kycRecord    KycRecord?
   transactions Transaction[]
@@ -227,10 +227,10 @@ model KycRecord {
   rejectionReason  String?
   reviewedByAdminId String?
   reviewedByAdmin  AdminUser? @relation("KycReviewedBy", fields: [reviewedByAdminId], references: [id])
-  reviewedAt       DateTime?
+  reviewedAt       DateTime? @db.Timestamptz(3)
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -255,7 +255,7 @@ model Transaction {
   createdByAdminId String?
   createdByAdmin AdminUser?        @relation("TransactionCreatedBy", fields: [createdByAdminId], references: [id])
 
-  createdAt DateTime @default(now())
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
 
   @@index([brokerId])
   @@index([accountId])
@@ -274,8 +274,8 @@ model Symbol {
   contractSize Decimal        @default(100000) @db.Decimal(18, 4)
   category     SymbolCategory
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
 
   brokerSymbols BrokerSymbol[]
   orders        Order[]
@@ -291,7 +291,7 @@ model LivePrice {
   symbol    String   @id // matches Symbol.name, e.g. "EURUSD"
   bid       Decimal  @db.Decimal(18, 5)
   ask       Decimal  @db.Decimal(18, 5)
-  updatedAt DateTime @updatedAt
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
 }
 
 enum CandleTimeframe {
@@ -314,12 +314,12 @@ enum CandleTimeframe {
 model Candle {
   symbol      String
   timeframe   CandleTimeframe
-  bucketStart DateTime
+  bucketStart DateTime        @db.Timestamptz(3)
   open        Decimal         @db.Decimal(18, 5)
   high        Decimal         @db.Decimal(18, 5)
   low         Decimal         @db.Decimal(18, 5)
   close       Decimal         @db.Decimal(18, 5)
-  updatedAt   DateTime        @updatedAt
+  updatedAt   DateTime        @updatedAt @db.Timestamptz(3)
 
   @@id([symbol, timeframe, bucketStart])
   @@index([symbol, timeframe, bucketStart])
@@ -354,8 +354,8 @@ model BrokerSymbol {
   // docs/risk-engine.md §2.1 step 5.
   maxExposure  Decimal? @db.Decimal(18, 2)
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
 
   @@unique([brokerId, symbolId])
   @@index([brokerId])
@@ -381,12 +381,12 @@ model Order {
   tpPrice         Decimal?    @db.Decimal(18, 5)
   status          OrderStatus @default(PENDING)
   filledPrice     Decimal?    @db.Decimal(18, 5)
-  filledAt        DateTime?
+  filledAt        DateTime? @db.Timestamptz(3)
   rejectionReason String?
   idempotencyKey  String // client-supplied, unique per account
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
 
   position Position?
 
@@ -418,8 +418,8 @@ model Position {
   closedByAdminId String?
   closedByAdmin AdminUser?     @relation("PositionClosedBy", fields: [closedByAdminId], references: [id])
 
-  openedAt DateTime  @default(now())
-  closedAt DateTime?
+  openedAt DateTime  @default(now()) @db.Timestamptz(3)
+  closedAt DateTime? @db.Timestamptz(3)
 
   @@index([brokerId])
   @@index([accountId])
@@ -440,8 +440,8 @@ model IbRelationship {
   commissionType  CommissionType
   commissionRate  Decimal        @db.Decimal(10, 4)
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
 
   @@index([brokerId])
   @@index([ibAccountId])
@@ -463,7 +463,7 @@ model AuditLog {
   oldValue      Json?
   newValue      Json?
 
-  createdAt DateTime @default(now())
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
 
   @@index([brokerId])
   @@index([entityType, entityId])
