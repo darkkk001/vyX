@@ -16,6 +16,7 @@ use tauri::tray::{TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_notification::NotificationExt;
+use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_updater::UpdaterExt;
 
 #[derive(Debug, Deserialize)]
@@ -67,6 +68,18 @@ fn clear_remembered_broker(app: &tauri::AppHandle) {
 // goes straight to that one broker's /trade (today's only real-world
 // mode); launcher mode goes to the remembered broker's /trade if one
 // exists, else the root domain's /launch picker page (app/launch/page.tsx).
+// Direct port of desktop/main.js's `allowedHost`: in launcher mode
+// navigation must be allowed to roam across broker subdomains (that's
+// the whole point of the picker); in broker mode it stays locked to
+// that one broker's own subdomain.
+fn allowed_host_for(config: &BrokerConfig) -> &str {
+    if config.mode == "launcher" {
+        &config.root_domain
+    } else {
+        &config.subdomain
+    }
+}
+
 fn start_url_for(config: &BrokerConfig, app: &tauri::AppHandle) -> String {
     if config.mode != "launcher" {
         return format!("https://{}/trade", config.subdomain);
@@ -240,6 +253,7 @@ fn main() {
         ))
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_opener::init())
         // Direct equivalent of desktop/main.js's electron-window-state
         // usage -- restores x/y/width/height/maximized on the next
         // launch, auto-saves on move/resize/close. Needs no other
@@ -259,6 +273,13 @@ fn main() {
             // brokerUrl/launchUrl construction -- this app only ever
             // points at a real deployed broker, never a local dev server.
             let start_url = start_url_for(&config, app.handle());
+            // Direct port of desktop/main.js's allowedHost.split(":")[0]
+            // comparison -- config values in this codebase sometimes
+            // carry an explicit port (local dev testing), so the host
+            // check ignores it exactly like the Electron reference does.
+            let allowed_host = allowed_host_for(&config).split(':').next().unwrap_or("").to_string();
+            let nav_app_handle = app.handle().clone();
+            let new_window_app_handle = app.handle().clone();
             let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(start_url.parse().unwrap()))
                 .title(&config.broker_name)
                 .inner_size(1440.0, 900.0)
@@ -267,6 +288,32 @@ fn main() {
                 // WebTrader renders its own title bar (DesktopTitleBar.tsx)
                 // once it detects window.vyxDesktop.isDesktop.
                 .decorations(false)
+                // Direct port of desktop/main.js's will-navigate handler:
+                // in-place navigation outside the broker's own domain (or,
+                // in launcher mode, the root domain) opens in the OS
+                // browser instead of following it inside the app. Local
+                // asset pages (splash/offline, a non-http(s) scheme) are
+                // always allowed, mirroring Electron's own
+                // `if (url.startsWith("file://")) return`.
+                .on_navigation(move |url| {
+                    if url.scheme() != "http" && url.scheme() != "https" {
+                        return true;
+                    }
+                    let host = url.host_str().unwrap_or("");
+                    if host == allowed_host || host.ends_with(&format!(".{allowed_host}")) {
+                        true
+                    } else {
+                        let _ = nav_app_handle.opener().open_url(url.to_string(), None::<&str>);
+                        false
+                    }
+                })
+                // Direct port of desktop/main.js's setWindowOpenHandler:
+                // any window.open()/target="_blank" opens in the OS
+                // browser instead of inside the app.
+                .on_new_window(move |url, _features| {
+                    let _ = new_window_app_handle.opener().open_url(url.to_string(), None::<&str>);
+                    tauri::webview::NewWindowResponse::Deny
+                })
                 .initialization_script(VYX_DESKTOP_INIT_SCRIPT)
                 .build()?;
 
