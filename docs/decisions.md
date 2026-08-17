@@ -283,6 +283,47 @@ Updated every doc that described Electron as current/live
 Tauri app themselves — this was a removal of now-dead code and its
 docs, not a behavior change.
 
+**Manager and Super Admin desktop apps started (2026-08-18) — core
+shell only.** The user wants all three platform surfaces (Client/
+Trading, Manager/Broker Admin, Super Admin) as separate installable
+desktop apps, each eventually as full-featured as the Client app's
+`desktop-tauri/`. Explicit project decision: **three separate Tauri
+projects/modules**, not one shared codebase parameterized by app
+type — `manager-tauri/` and `admin-tauri/` are new siblings to
+`desktop-tauri/`, each with their own `Cargo.toml`/`main.rs`, mirroring
+its patterns rather than importing from it.
+
+Confirmed by reading the actual routing code before building anything:
+Manager/Broker Admin logs in at a specific broker's own subdomain +
+`/manage/login` (`app/manage/login/page.tsx` →
+`app/api/manage/login/route.ts`, which requires the broker-scoped
+`x-broker-id` match — same broker-scoping the Client app already
+handles); Super Admin logs in at the fixed `admin.<ROOT_DOMAIN>`
+subdomain (`middleware.ts`'s `SUPER_ADMIN_SUBDOMAIN`), not broker-scoped
+at all. Neither `app/manage/` nor `app/(super-admin)/` has any
+desktop-aware UI today (no `DesktopTitleBar`-equivalent component,
+unlike WebTrader) — going frameless for either would need new web-app
+UI work first, so both new apps use a **decorated** (OS-native title
+bar) window instead for this pass, deferring frameless + a custom title
+bar as a named follow-up.
+
+This first pass is **core shell only** for both — a real window, real
+login flow, nothing else — matching how `desktop-tauri/`'s own first
+slice worked before tray/notifications/auto-update/etc. were added one
+at a time across many separate commits. Live-verified against the real
+local dev server for both: `manager-tauri/` launches and lands on
+`GET /manage/login 200` (a real bug caught and fixed in the process —
+the first attempt pointed at the bare `/manage` path, which 404s, since
+`app/manage/` has a `layout.tsx` but no root `page.tsx`); `admin-tauri/`
+launches and lands on `GET /login 200`, with no broker-resolution
+request in the dev server log, correctly, since Super Admin isn't
+broker-scoped. Both confirmed via the dev server's own request log, not
+just "the window opened." Explicitly deferred for both, named rather
+than silently missing: system tray, native notifications, auto-update,
+window-state persistence, navigation lockdown, splash/offline screens,
+a custom frameless title bar, and (`manager-tauri/` only) per-broker
+rebrand tooling.
+
 ---
 
 ## ADR-002 — Trading Core data ownership boundary

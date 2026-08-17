@@ -193,6 +193,27 @@ SQL Editor.
   installed Electron users to strand, the Electron app was removed
   entirely (2026-08-18) instead of being kept running side by side —
   Tauri is now the only desktop app.
+  **Manager and Super Admin desktop apps — core shell only, done
+  (2026-08-18).** Two new, deliberately separate Tauri projects
+  (`manager-tauri/` for Broker Admin + Manager, `admin-tauri/` for
+  Super Admin — separate apps/modules by explicit project decision, not
+  a shared codebase with `desktop-tauri/`), each a native window
+  pointed at the real login flow (`{broker}/manage/login` and
+  `admin.{rootDomain}/login` respectively — **not** the bare `/manage`
+  path, which 404s; caught live rather than assumed). Both use a
+  **decorated** (OS-native title bar) window, not frameless — neither
+  `app/manage/` nor `app/(super-admin)/` has a custom title-bar
+  component the way WebTrader's `DesktopTitleBar.tsx` does, so going
+  frameless would need new web-app UI work first, explicitly deferred.
+  Live-verified both against the real local dev server: confirmed via
+  the dev server's request log that each launches and lands on its real
+  login page (`GET /manage/login 200`, `GET /login 200` with no broker
+  resolution attempted, correctly, since Super Admin isn't broker-scoped).
+  Still explicitly deferred for both, matching every other Tauri
+  core-shell slice's own pattern: system tray, native notifications,
+  auto-update, window-state persistence, navigation lockdown,
+  splash/offline screens, a custom frameless title bar, and (for
+  `manager-tauri/` only) per-broker rebrand tooling.
 - **Phase 5** (real execution engine / LP FIX feed) — partially started.
   Note: this doc's phase numbering disagrees with `docs/architecture.md`
   §7's own table (which calls Phase 5 "Mobile") — never reconciled,

@@ -1,0 +1,13 @@
+{
+  "name": "vyxtrader-admin-tauri",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Tauri desktop shell for the Super Admin app (app/(super-admin)/) -- core-shell slice only. Sibling to desktop-tauri/ (Client/Trading terminal) and manager-tauri/ (Broker Admin + Manager), deliberately a separate app/module per project decision, not a shared codebase. Not broker-scoped -- Super Admin lives at a fixed admin.<rootDomain> subdomain, no per-broker config needed.",
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

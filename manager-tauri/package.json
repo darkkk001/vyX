@@ -1,0 +1,13 @@
+{
+  "name": "vyxtrader-manager-tauri",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Tauri desktop shell for the Manager app (Broker Admin + Manager roles, app/manage/) -- core-shell slice only. Sibling to desktop-tauri/ (Client/Trading terminal) and admin-tauri/ (Super Admin), deliberately a separate app/module per project decision, not a shared codebase.",
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}
