@@ -84,6 +84,27 @@ fn win_close(window: tauri::Window) {
 // no-op stubs here -- launcher mode (the only mode that actually needs
 // them) is deferred, but the web app calls them unconditionally in
 // desktop mode, so they must exist rather than being undefined.
+//
+// Also requests OS notification permission up front -- WebTrader.tsx's
+// pushToast (see `if (important && ... && "Notification" in window) {
+// new Notification("VyXTrader", { body: message }) }`) is written
+// against the standard browser Notification API. WebView2 (Chromium)
+// already implements that API natively, so **no polyfill of
+// window.Notification is needed at all** -- WebTrader's call site works
+// completely unchanged. Confirmed by reading tauri-plugin-notification
+// 2.3.3's actual shipped JS shim (api-iife.js, the exact bundle
+// `withGlobalTauri` injects as window.__TAURI__.notification): its
+// isPermissionGranted/requestPermission/sendNotification all read/call
+// the browser's own `window.Notification` object directly -- the plugin
+// is a thin permission-plumbing layer on top of it, not a replacement.
+// (An earlier version of this script *did* try to replace
+// window.Notification with a wrapper that called into this same plugin
+// API -- since the plugin calls back into window.Notification itself,
+// that was direct infinite recursion, caught by reading the plugin's
+// source before shipping it, not by a runtime crash.) The only real gap
+// versus a normal browser is that a frameless kiosk-style window has no
+// address-bar UI for a permission prompt, so permission is requested
+// proactively here at startup instead of lazily on first toast.
 const VYX_DESKTOP_INIT_SCRIPT: &str = r#"
 (function () {
   window.vyxDesktop = {
@@ -102,6 +123,13 @@ const VYX_DESKTOP_INIT_SCRIPT: &str = r#"
     rememberBroker: function () {},
     forgetBroker: function () {},
   };
+
+  var notif = window.__TAURI__.notification;
+  notif.isPermissionGranted().then(function (granted) {
+    if (!granted) {
+      notif.requestPermission();
+    }
+  });
 })();
 "#;
 
@@ -125,6 +153,7 @@ fn main() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
         ))
+        .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![win_minimize, win_toggle_maximize, win_close])
         .setup(move |app| {
             let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(broker_url.parse().unwrap()))

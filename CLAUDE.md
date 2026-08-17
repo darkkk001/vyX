@@ -138,8 +138,23 @@ SQL Editor.
   checkbox via `tauri-plugin-autostart` / `Quit`) matches
   `desktop/main.js`'s exact item order — the `Quit` item's actual click
   path is code-reviewed, not click-tested (no tray-icon-click automation
-  available in this sandbox), disclosed as such. Still explicitly
-  deferred, not silently missing: native notifications, auto-update,
+  available in this sandbox), disclosed as such. Native OS notifications
+  are also done: WebTrader's `pushToast` already calls the standard
+  `new Notification("VyXTrader", { body })` for important events (margin
+  call, price alert, SL/TP hit, pending order trigger), and since
+  WebView2 implements that browser API natively, **no polyfill was
+  needed at all** — the app just requests permission proactively at
+  startup via `tauri-plugin-notification`. (An earlier attempt to wrap
+  `window.Notification` in a Tauri-plugin-routed polyfill was caught and
+  reverted before shipping — reading the plugin's own shipped JS showed
+  its API delegates back to `window.Notification`, so overwriting it
+  would have been infinite recursion the moment a toast actually fired;
+  see `docs/decisions.md` ADR-001.) Live-verified the app builds against
+  the real plugin, launches, and stays alive/responsive after the
+  startup permission request runs; an actual end-to-end OS toast was not
+  manually triggered (needs a logged-in trading session hitting a real
+  alert, no GUI automation in this sandbox), disclosed as such. Still
+  explicitly deferred, not silently missing: auto-update,
   `rememberBroker`/`forgetBroker` real persistence + launcher/root-domain
   mode, navigation lockdown, splash/offline screens, window-state
   persistence.

@@ -71,13 +71,51 @@ app.quit();`) but not click-tested; no tray-icon-click automation is
 available in this sandbox, same category as this ADR's own earlier
 "not visually/pixel confirmed" note.
 
+**Native OS notifications — done (2026-08-17).** WebTrader's `pushToast`
+(`components/webtrader/WebTrader.tsx`) fires a real `new Notification
+("VyXTrader", { body })` for "important" events (margin call, price
+alert, SL/TP hit, pending order trigger) whenever `window.vyxDesktop?.
+isDesktop && "Notification" in window`. The first implementation
+attempt replaced `window.Notification` with a wrapper routing through
+`tauri-plugin-notification`'s JS API — reading the plugin's actual
+shipped bundle (`tauri-plugin-notification` 2.3.3's `api-iife.js`)
+before shipping showed that was wrong: the plugin's own
+`isPermissionGranted`/`requestPermission`/`sendNotification` all read or
+call the browser's native `window.Notification` directly, so
+overwriting it created direct infinite recursion the moment a
+notification actually fired (plugin → `window.Notification` → the
+wrapper → plugin → ...). Caught by reading the dependency's source, not
+by a runtime crash. **Corrected design: no polyfill of
+`window.Notification` at all** — WebView2 already implements the
+standard browser API natively, so WebTrader's existing call site needs
+zero changes, same "zero web-app changes" property as every other piece
+of this bridge. The only real gap versus a normal browser is that this
+frameless kiosk-style window has no address-bar UI for a permission
+prompt, so `desktop-tauri/src-tauri/src/main.rs`'s init script now just
+calls `tauri-plugin-notification`'s `isPermissionGranted`/
+`requestPermission` once at startup to request it proactively. Live-
+verified: real `cargo build` against the actual installed plugin crate;
+the corrected init script's method names (`isPermissionGranted`/
+`requestPermission`/`sendNotification`) cross-checked directly against
+the plugin's shipped JS source rather than assumed; the app process
+launched pointed at a real seeded broker through the real dev server,
+navigated correctly through to the login page, and stayed alive and
+`Responding: True` several seconds after the init script (including the
+startup permission request) ran — no hang, no crash. **Disclosed
+limitation**: an actual "important" toast requires a logged-in trading
+session hitting a real margin-call/alert/SL-TP/pending-trigger event,
+which needs GUI interaction (login, place an order) this sandbox has no
+automation for — the end-to-end "toast → visible Windows notification"
+path itself was not manually click-triggered/visually confirmed, same
+disclosed category as this ADR's own "not visually/pixel confirmed" and
+"Quit item not click-tested" notes.
+
 **Still not at Electron parity** — `deployment.md` §3's own cutover
 precondition list is the tracking spec for what else is needed before
-any broker could actually rely on this instead of Electron: native OS
-notifications, auto-update (`tauri-plugin-updater`), `rememberBroker`/
-`forgetBroker` real persistence + launcher/root-domain mode (currently
-no-op stubs so the web app's calls don't throw, but they don't do
-anything yet), navigation
+any broker could actually rely on this instead of Electron: auto-update
+(`tauri-plugin-updater`), `rememberBroker`/`forgetBroker` real
+persistence + launcher/root-domain mode (currently no-op stubs so the
+web app's calls don't throw, but they don't do anything yet), navigation
 lockdown, splash/offline screens, window-state persistence across
 restarts.
 
