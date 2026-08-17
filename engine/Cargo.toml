@@ -10,6 +10,7 @@ members = [
     "execution",
     "ledger",
     "server",
+    "loadtest",
 ]
 
 [workspace.package]
