@@ -16,6 +16,13 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "icon": ["icons/icon.ico"]
+    "icon": ["icons/icon.ico"],
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDZFMERFNjI3N0E4MzZDQjYKUldTMmJJTjZKK1lOYnVkMDhGTUFjYk8vUDIzeGo5SFJIbFdZUXFTVFprTGV1WXd4VFh0Mnpqc1YK",
+      "endpoints": ["https://vyxtrader.com/desktop-tauri-updates/latest.json"]
+    }
   }
 }

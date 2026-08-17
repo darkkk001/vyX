@@ -5,7 +5,8 @@
   "description": "Tauri desktop shell -- core-shell slice, see docs/decisions.md ADR-001. Not yet at Electron feature parity; see engine/docs status notes for what's deferred.",
   "scripts": {
     "dev": "tauri dev",
-    "build": "tauri build"
+    "build": "tauri build",
+    "publish": "node publish.js"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2"

@@ -110,14 +110,57 @@ path itself was not manually click-triggered/visually confirmed, same
 disclosed category as this ADR's own "not visually/pixel confirmed" and
 "Quit item not click-tested" notes.
 
+**Auto-update — done (2026-08-17).** Direct functional port of Electron's
+entire auto-update surface (`desktop/main.js`'s single
+`autoUpdater.checkForUpdatesAndNotify()` call, gated to
+`app.isPackaged`, silently swallowing "no feed reachable"): a
+`#[cfg(not(debug_assertions))]`-gated startup check via
+`tauri-plugin-updater`, which downloads and installs silently and fires
+one native notification (via the bridge from the previous slice) on
+success — no "Check for Updates" UI, no forced relaunch, same minimal
+UX. Uses a real Ed25519 (minisign) signing keypair generated for this
+project; the private half is gitignored and lives only on the machine
+that cuts a release, never committed — see `deployment.md`'s new
+"Desktop app updates (Tauri)" section for the full operational detail
+(where the key lives, what losing it means, and two real build-time
+gotchas hit while verifying this: the bundler's signing step only reads
+`TAURI_SIGNING_PRIVATE_KEY` as literal key content, not a path env var,
+despite the CLI's own `signer generate` output suggesting the path
+variant also works; and reading that content into the env var must
+happen in the same shell as the build — round-tripping it through
+PowerShell's `$env:` assignment from a separately-read variable produced
+a key the signer rejected as an invalid password, while reading and
+exporting it in one Bash `export VAR="$(cat ...)"` step worked
+reliably). `desktop-tauri/publish.js` (new) hand-builds the update
+manifest `tauri-plugin-updater` expects, since Tauri v2 doesn't
+auto-generate one — verified against the plugin's actual
+`RemoteRelease`/`ReleaseManifestPlatform` struct definitions in its
+source, not assumed. **Live-verified for real**, more thoroughly than
+most earlier slices: ran an actual signed release build (`tauri build`
+with `bundle.createUpdaterArtifacts: true`), served the resulting
+manifest + installer from the real local dev server standing in for
+`vyxtrader.com`, and ran the built release binary with the update
+endpoint temporarily pointed at it — it fetched the manifest, correctly
+detected a newer version, downloaded the real installer bytes over
+HTTP, and **successfully verified the Ed25519 signature** against the
+generated keypair (all bytes accounted for: downloaded size matched the
+installer exactly). Deliberately stopped short of calling `install()`
+itself during verification — that runs the NSIS installer against this
+real machine, which isn't something to trigger from an unattended
+verification pass with no way to supervise or cancel an installer UI;
+proving `download()` (fetch + full cryptographic verification, the same
+code path `download_and_install()` calls internally before installing)
+was judged sufficient real evidence without that risk, and is disclosed
+as the one deliberately-untested step rather than silently assumed to
+work.
+
 **Still not at Electron parity** — `deployment.md` §3's own cutover
 precondition list is the tracking spec for what else is needed before
-any broker could actually rely on this instead of Electron: auto-update
-(`tauri-plugin-updater`), `rememberBroker`/`forgetBroker` real
-persistence + launcher/root-domain mode (currently no-op stubs so the
-web app's calls don't throw, but they don't do anything yet), navigation
-lockdown, splash/offline screens, window-state persistence across
-restarts.
+any broker could actually rely on this instead of Electron:
+`rememberBroker`/`forgetBroker` real persistence + launcher/root-domain
+mode (currently no-op stubs so the web app's calls don't throw, but they
+don't do anything yet), navigation lockdown, splash/offline screens,
+window-state persistence across restarts.
 
 ---
 

@@ -49,6 +49,12 @@ Cargo.lock
 # same "don't commit build output" reasoning as target/ above.
 desktop-tauri/src-tauri/gen/
 
+# tauri updater signing key -- NEVER commit this. Anyone with this file
+# can sign an "update" the app will trust. Public key lives in
+# tauri.conf.json (that's meant to be committed); this is the private
+# half. See docs/deployment.md's desktop-updates section.
+desktop-tauri/src-tauri/.updater-keys/
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts

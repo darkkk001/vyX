@@ -153,11 +153,22 @@ SQL Editor.
   the real plugin, launches, and stays alive/responsive after the
   startup permission request runs; an actual end-to-end OS toast was not
   manually triggered (needs a logged-in trading session hitting a real
-  alert, no GUI automation in this sandbox), disclosed as such. Still
-  explicitly deferred, not silently missing: auto-update,
-  `rememberBroker`/`forgetBroker` real persistence + launcher/root-domain
-  mode, navigation lockdown, splash/offline screens, window-state
-  persistence.
+  alert, no GUI automation in this sandbox), disclosed as such.
+  Auto-update is also done: a startup-only check (production builds
+  only) via `tauri-plugin-updater`, silently downloads+installs and
+  notifies once on success — direct port of Electron's own single-call
+  `checkForUpdatesAndNotify()` surface, no new UI. Updates are
+  Ed25519-signed; the signing private key is gitignored and lives only
+  on the release-cutting machine, never committed — see
+  `docs/deployment.md` for where it lives and what losing it means.
+  Live-verified with a real signed release build: it fetched a real
+  update manifest, downloaded the real installer bytes, and successfully
+  verified the Ed25519 signature end-to-end. Deliberately not verified:
+  actually running the installer (`install()`) against this machine —
+  judged too risky to trigger unattended, disclosed rather than assumed.
+  Still explicitly deferred, not silently missing: `rememberBroker`/
+  `forgetBroker` real persistence + launcher/root-domain mode, navigation
+  lockdown, splash/offline screens, window-state persistence.
 - **Phase 5** (real execution engine / LP FIX feed) — partially started.
   Note: this doc's phase numbering disagrees with `docs/architecture.md`
   §7's own table (which calls Phase 5 "Mobile") — never reconciled,

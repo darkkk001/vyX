@@ -1,12 +1,11 @@
 // VyXTrader Tauri desktop shell -- core-shell slice only, see
 // docs/decisions.md ADR-001 and this repo's CLAUDE.md for exactly what's
-// deferred (tray, notifications, auto-update, per-broker rebrand CLI,
-// remembered-broker persistence, navigation lockdown, splash/offline
-// screens, window-state persistence). Same "no local server or database
-// here, it only points at the already-deployed site" principle as
-// desktop/README.md's Electron app -- this app has no local frontend of
-// its own, the window is built programmatically pointing at the broker's
-// real deployed WebTrader.
+// still deferred (remembered-broker persistence, navigation lockdown,
+// splash/offline screens, window-state persistence). Same "no local
+// server or database here, it only points at the already-deployed site"
+// principle as desktop/README.md's Electron app -- this app has no local
+// frontend of its own, the window is built programmatically pointing at
+// the broker's real deployed WebTrader.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use serde::Deserialize;
@@ -16,6 +15,8 @@ use tauri::menu::{CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder};
 use tauri::tray::{TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 use tauri_plugin_autostart::ManagerExt;
+use tauri_plugin_notification::NotificationExt;
+use tauri_plugin_updater::UpdaterExt;
 
 #[derive(Debug, Deserialize)]
 struct BrokerConfig {
@@ -72,6 +73,35 @@ fn win_toggle_maximize(window: tauri::Window) {
 #[tauri::command]
 fn win_close(window: tauri::Window) {
     let _ = window.close();
+}
+
+// Direct port of desktop/main.js's entire auto-update surface: check,
+// silently download+install if found, notify once on success. No
+// "Check for Updates" UI, no forced relaunch -- the update applies on
+// the app's next natural restart, matching electron-updater's own
+// checkForUpdatesAndNotify() behavior exactly rather than inventing new
+// UX Electron doesn't have. Any failure (no update feed reachable, no
+// update available, download/signature-verification failure) is
+// swallowed by the caller -- same as Electron's own
+// `.catch(() => { /* not fatal, app already runs */ })`.
+// Only called from the #[cfg(not(debug_assertions))] block in .setup()
+// below -- unused (by design) in debug builds, same reasoning as the
+// #[allow(dead_code)] on BrokerConfig's root_domain/mode fields above.
+#[cfg_attr(debug_assertions, allow(dead_code))]
+async fn check_for_updates(
+    app: tauri::AppHandle,
+    broker_name: String,
+) -> tauri_plugin_updater::Result<()> {
+    if let Some(update) = app.updater()?.check().await? {
+        update.download_and_install(|_, _| {}, || {}).await?;
+        let _ = app
+            .notification()
+            .builder()
+            .title(&broker_name)
+            .body("A new version has been downloaded. Restart to apply it.")
+            .show();
+    }
+    Ok(())
 }
 
 // Injected before every page load (including the remote broker page --
@@ -154,6 +184,7 @@ fn main() {
             None,
         ))
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![win_minimize, win_toggle_maximize, win_close])
         .setup(move |app| {
             let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(broker_url.parse().unwrap()))
@@ -254,6 +285,18 @@ fn main() {
                 }
                 _ => {}
             });
+
+            // Same gate as Electron's `if (app.isPackaged)` -- only check
+            // for updates in a real release build, never in `tauri dev`/
+            // debug builds pointed at a local broker.
+            #[cfg(not(debug_assertions))]
+            {
+                let update_handle = app.handle().clone();
+                let update_broker_name = broker_name.clone();
+                tauri::async_runtime::spawn(async move {
+                    let _ = check_for_updates(update_handle, update_broker_name).await;
+                });
+            }
 
             Ok(())
         })
