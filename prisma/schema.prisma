@@ -38,6 +38,20 @@ enum BrokerStatus {
   SUSPENDED
 }
 
+// See ADR-003 (docs/decisions.md) -- the broker-selection mechanism
+// cutover needs. LEGACY = Next.js/Prisma trading path (every broker,
+// today). RUST = the Rust trading-core engine. Setting this to RUST
+// does NOT currently change any trading behavior -- no app/api/trade/*
+// route reads this field yet, deliberately: ADR-003's own cutover gates
+// (docs/testing.md §2 -- an automated test suite to compare against, a
+// benchmark run) aren't met. This field exists so the selection
+// mechanism is in place before those gates are, not so it does
+// anything yet.
+enum ExecutionEngine {
+  LEGACY
+  RUST
+}
+
 enum AdminRole {
   SUPER_ADMIN // BigFish Technologies staff — brokerId is null
   BROKER_ADMIN // broker-scoped admin, full backoffice access
@@ -140,6 +154,8 @@ model Broker {
   customDomain String?      @unique // trade.brokername.com
   tier         BrokerTier   @default(STANDARD)
   status       BrokerStatus @default(ACTIVE)
+  // See ExecutionEngine's own doc comment -- currently decorative.
+  executionEngine ExecutionEngine @default(LEGACY)
   // Max open positions an account may hold at once, across all symbols.
   // Null = no limit — see docs/risk-engine.md §2.1 step 5.
   maxOpenPositionsPerAccount Int?

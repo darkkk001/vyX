@@ -32,6 +32,7 @@ export async function GET() {
       customDomain: true,
       tier: true,
       status: true,
+      executionEngine: true,
       logoUrl: true,
       primaryColor: true,
       createdAt: true,

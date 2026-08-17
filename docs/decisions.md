@@ -72,15 +72,28 @@ rule against destroying working functionality mid-rewrite.
 still "pending" while every relevant piece of code (the Next.js path
 untouched, `services/api-gateway` a new parallel surface nothing routes
 through yet) already acts on this recommendation. Formalized here rather
-than left inconsistent. **Not yet satisfied**: no broker-selection
-mechanism exists anywhere (no `Broker` field, no code flag) to actually
-route a given broker to one path or the other when cutover is eventually
-triggered, and the parallel-run comparison infrastructure `testing.md`
-§4 calls for is explicitly not built. Accepting the *strategy* here
-doesn't mean cutover is ready — see `trading-engine.md`'s
-implementation-status note for what's actually done so far (cancel/modify
-order support, as of this same date) versus what cutover itself still
-needs.
+than left inconsistent. Accepting the *strategy* here doesn't mean
+cutover is ready — see `trading-engine.md`'s implementation-status note
+for what's actually done so far (cancel/modify order support) versus
+what cutover itself still needs.
+
+**Update (2026-08-17):** the broker-selection mechanism this note
+originally flagged as missing now exists — `Broker.executionEngine`
+(`LEGACY`/`RUST`), settable only by `SUPER_ADMIN` via
+`PATCH /api/admin/brokers/[id]` (`app/(super-admin)/brokers`'s new
+"Engine" column). **Deliberately inert**: no `app/api/trade/*` route
+reads this field yet, on purpose — setting a broker to `RUST` today
+changes nothing about how its trades are processed, live-verified by
+placing a real order for a `RUST`-flagged broker through the normal
+Next.js path and confirming it still landed only in Prisma's `Order`/
+`Position` tables, zero rows in the Rust-owned `orders` table. **Still
+not satisfied**: the parallel-run comparison infrastructure `testing.md`
+§4 calls for, and the test/benchmark gates (`testing.md` §2) themselves
+— the switch existing doesn't mean cutover is ready, only that the
+mechanism to eventually flip it is in place ahead of those gates
+clearing, same ordering ADR-002/ADR-003's original scaffolding-ahead-of-
+implementation pattern already used elsewhere (e.g. the `position`/
+`ledger` crates).
 
 ---
 

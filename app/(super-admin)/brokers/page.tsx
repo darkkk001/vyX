@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { getAdminSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import CreateBrokerForm from "./CreateBrokerForm";
+import EngineSwitch from "./EngineSwitch";
 
 export default async function BrokersPage() {
   const session = await getAdminSession();
@@ -21,6 +22,7 @@ export default async function BrokersPage() {
             <th align="left">Subdomain</th>
             <th align="left">Tier</th>
             <th align="left">Status</th>
+            <th align="left">Engine</th>
           </tr>
         </thead>
         <tbody>
@@ -30,6 +32,9 @@ export default async function BrokersPage() {
               <td>{broker.subdomain}</td>
               <td>{broker.tier}</td>
               <td>{broker.status}</td>
+              <td>
+                <EngineSwitch brokerId={broker.id} initialEngine={broker.executionEngine} />
+              </td>
             </tr>
           ))}
         </tbody>

@@ -833,3 +833,41 @@ here, just the option the spec itself already pointed at.
     environment that doesn't exist); manual/trader-initiated position
     close (only the SL/TP-triggered and margin-monitor-triggered close
     paths exist); the `position`/`ledger` crate refactor (see above).
+
+23. **Broker execution-engine switch — the mechanism item 22 flagged as
+    missing, built as deliberately inert config.** `Broker.executionEngine`
+    (`LEGACY`/`RUST`, default `LEGACY`) plus a `SUPER_ADMIN`-only
+    `PATCH /api/admin/brokers/[id]` and a new "Engine" column on
+    `app/(super-admin)/brokers` (`EngineSwitch.tsx`, same row-level
+    `<select>`+Save pattern as the Manager app's account/group editor).
+    Update wrapped in a `$transaction` with a `BROKER_EXECUTION_ENGINE_CHANGED`
+    `AuditLog` row, same pattern as every other admin-mutation this
+    session. Uses `lib/auth.ts`'s shared `requireAdminRole` helper rather
+    than the sibling `brokers/route.ts`'s older hand-rolled
+    `session.role !== "SUPER_ADMIN"` check, which predates that helper
+    and was explicitly left un-migrated per its own comment — new code
+    prefers the shared one.
+
+    **Deliberately, provably inert.** User explicitly scoped this to the
+    switch itself, not wiring it into trading — branching the four
+    trading routes (place/cancel/modify/close) would also require
+    branching every *read* endpoint (pending orders, positions, history)
+    or a cut-over broker's traders would see empty lists, `services/
+    api-gateway` is genuinely unreachable in production today (no proxy/
+    rewrite configured, no host decided), and ADR-003's own cutover
+    gates (an automated test suite, a benchmark run) aren't met — flipping
+    real trading traffic before those exist would undermine the exact
+    safety rationale ADR-003 was written for. So no `app/api/trade/*`
+    route reads this field. Verified live: `SUPER_ADMIN` set a broker to
+    `RUST`, confirmed the `AuditLog` row and the column value in
+    Postgres; a `BROKER_ADMIN` session got a clean 403; an invalid value
+    got a clean 400; a missing broker id got a clean 404; then, with
+    that same broker still flagged `RUST`, a real trader placed a MARKET
+    order through the ordinary `POST /api/trade/orders` and it landed
+    exclusively in Prisma's `Order`/`Position` tables — confirmed zero
+    matching rows in the Rust-owned `orders` table for that account,
+    proving the flag genuinely changes nothing yet. `docs/decisions.md`
+    ADR-003 updated to record the mechanism now exists while the actual
+    gates still don't. All seeded test rows (two admins, one trader
+    account, the order/position, the audit row) cleaned up afterward,
+    broker's `executionEngine` reset to `LEGACY`.

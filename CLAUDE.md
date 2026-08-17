@@ -133,14 +133,18 @@ SQL Editor.
   verified against the real Postgres. Modify targets an **open
   position's** SL/TP, not a still-pending order, matching what the live
   Next.js path already does — see `docs/trading-engine.md`'s
-  implementation-status note. Still not done: an actual
-  broker-selection mechanism to route a broker to this engine (no
-  schema field or code exists anywhere for this), the parallel-run
-  cutover test infrastructure (`docs/testing.md` §4, needs a staging
-  environment that doesn't exist), and the real LP FIX feed itself —
-  zero design exists for that anywhere, and it needs an actual
-  liquidity-provider business relationship the user doesn't have yet,
-  not something buildable in this sandbox.
+  implementation-status note. The broker-selection mechanism now also
+  exists — `Broker.executionEngine` (`LEGACY`/`RUST`), `SUPER_ADMIN`-only
+  via `PATCH /api/admin/brokers/[id]` and a new "Engine" column on
+  `app/(super-admin)/brokers` — but it's **deliberately inert**: no
+  `app/api/trade/*` route reads it yet, live-verified by placing a real
+  order for a `RUST`-flagged broker and confirming it still landed only
+  in Prisma's tables. Still not done: the parallel-run cutover test
+  infrastructure (`docs/testing.md` §4, needs a staging environment that
+  doesn't exist), the test/benchmark gates themselves (`docs/testing.md`
+  §2), and the real LP FIX feed — zero design exists for that anywhere,
+  and it needs an actual liquidity-provider business relationship the
+  user doesn't have yet, not something buildable in this sandbox.
 
 Known simplifications, flagged deliberately rather than hidden: demo/live
 account switching requires logging out and back in with the other account
