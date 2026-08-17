@@ -26,6 +26,7 @@ export default async function ManageLayout({ children }: { children: React.React
           <Link href="/manage/accounts">Accounts</Link>
           <Link href="/manage/groups">Groups</Link>
           {session!.role === "BROKER_ADMIN" ? <Link href="/manage/funds">Funds</Link> : null}
+          {session!.role === "BROKER_ADMIN" ? <Link href="/manage/kyc">KYC</Link> : null}
         </nav>
       ) : null}
       {children}

@@ -98,7 +98,15 @@ SQL Editor.
   not real money movement) and no funds-hold/reservation on a pending
   withdrawal (validated against current balance at both request and
   approval time instead — see `Transaction.reviewedByAdminId`'s schema
-  comment). KYC review flow and IB/commission remain not started.
+  comment). KYC review is also live: a trader uploads front/back ID
+  photos via WebTrader's "Verify identity" modal
+  (`app/api/trade/kyc`), stored **privately** in Vercel Blob (needs
+  `BLOB_READ_WRITE_TOKEN` set to actually work — not configured in
+  every environment), and a `BROKER_ADMIN` reviews/approves/rejects
+  from `app/manage/kyc` — document images are only ever served through
+  an authenticated, broker-scoped proxy route
+  (`app/api/manage/kyc-requests/[id]/document`), never a raw Blob URL.
+  IB/commission remains not started.
 - **Phase 4** (Electron desktop wrapper) — not started.
 - **Phase 5** (real execution engine / LP FIX feed) — not started.
 

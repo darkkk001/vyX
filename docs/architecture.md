@@ -296,7 +296,7 @@ here, just the option the spec itself already pointed at.
 | Phase 3 — Market Data | Extends the existing MT5 EA bridge + candle aggregation, moved into Rust |
 | Phase 4 — Desktop | New Tauri app per ADR-001; current Electron app stays live until it's ready to cut over |
 | Phase 5 — Mobile | New, not started |
-| Phase 6 — Manager | Started: symbol/spread config, positions/exposure dashboard, manual position open/close, groups/accounts, and deposit/withdraw approval (`app/manage/`) live — see `authentication.md` §3 and this doc's log below. Rest (KYC review) not started. |
+| Phase 6 — Manager | All originally-planned Phase 3/6 backoffice depth now live: symbol/spread config, positions/exposure dashboard, manual position open/close, groups/accounts, deposit/withdraw approval, and KYC review (`app/manage/`) — see `authentication.md` §3 and this doc's log below. |
 | Phase 7 — Back Office | New, not started |
 | Phase 8 — Advanced | New, not started |
 
@@ -641,3 +641,46 @@ here, just the option the spec itself already pointed at.
     rejected that same withdrawal cleanly; confirmed `MANAGER` gets 403
     on the list/approve API *and* a redirect on the page itself; confirmed
     broker-scoping (a different broker's request was cleanly rejected).
+
+20. **Phase 3/6 — KYC review, closing out the last item.** Unlike every
+    prior Manager-app slice, there was no existing trader-facing UI stub
+    to wire up (WebTrader had zero KYC/Identity/Verify references) — both
+    the trader submission modal and the admin review screen are new.
+    First real file-upload route in the codebase (`@vercel/blob`, newly
+    added dependency) — user explicitly wanted real upload buttons
+    (front/back ID photos), not a pasted-URL placeholder. Documents are
+    stored with `access: "private"` (not the more common "public" Blob
+    access) since these are ID-document PII: the only way to ever read
+    one back is a server-side `get()` call holding
+    `BLOB_READ_WRITE_TOKEN`, so there's no raw, fetchable URL to leak in
+    the first place, even to another authenticated admin. The admin
+    review screen never renders a Blob URL directly — every document
+    view goes through `app/api/manage/kyc-requests/[id]/document`, which
+    checks admin auth + broker-match, then proxies the stream back (the
+    browser's network tab only ever shows this app's own domain).
+    `KycRecord.documentUrl` renamed to `documentFrontUrl` + new
+    `documentBackUrl` (zero existing rows, safe rename — nothing had
+    ever created a `KycRecord` before this). Resubmission is allowed
+    over a `REJECTED` record, refused (409, before ever touching Blob)
+    over a `PENDING`/`APPROVED` one.
+
+    **Known, disclosed limitation:** this sandbox has no
+    `BLOB_READ_WRITE_TOKEN` connected, so the actual upload-to-Blob and
+    read-from-Blob calls could not be exercised end-to-end here — set
+    that env var (a real Vercel Blob store) before this is live for
+    real. Verified live instead: seeded a `PENDING` `KycRecord` directly
+    (bypassing the unavailable upload step) and exercised the full
+    review state machine for real — approve and reject both set
+    `status`/`reviewedByAdminId`/`reviewedAt`(/`rejectionReason`)
+    correctly with matching `AuditLog` rows; confirmed broker-scoping
+    (a different broker's record was cleanly rejected, not leaked,
+    both for approval and for the list endpoint); confirmed the
+    trader-facing resubmission guard actually returns before calling
+    Blob at all (a resubmission attempt against an `APPROVED` record
+    returned a clean 409, not a crash, proving the guard runs first);
+    confirmed the missing-token failure mode is graceful everywhere
+    it can be hit (both the upload route and the document-proxy route
+    return a clean 503 rather than an unhandled exception when
+    `BLOB_READ_WRITE_TOKEN` is absent — the document-proxy route
+    initially threw a raw 500 here during testing, fixed to match the
+    same pre-check pattern the upload route already had).

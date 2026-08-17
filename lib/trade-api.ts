@@ -14,6 +14,18 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
   return body as T;
 }
 
+// Same as call(), minus the forced JSON content-type -- a FormData body
+// needs the browser to set its own multipart boundary, which an
+// explicit Content-Type header would override and break.
+async function callForm<T>(path: string, body: FormData): Promise<T> {
+  const response = await fetch(path, { method: "POST", body });
+  const responseBody = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new Error(responseBody?.error ?? `request to ${path} failed (${response.status})`);
+  }
+  return responseBody as T;
+}
+
 export type AccountInfo = {
   id: string;
   accountNumber: string;
@@ -78,6 +90,13 @@ export type ApiFundsRequest = {
   createdAt: string;
 };
 
+export type ApiKycStatus = {
+  status: "PENDING" | "APPROVED" | "REJECTED";
+  documentType: string;
+  rejectionReason: string | null;
+  createdAt: string;
+} | null;
+
 export const tradeApi = {
   me: () => call<AccountInfo>("/api/trade/me"),
   prices: () => call<ApiLivePrice[]>("/api/trade/prices"),
@@ -117,6 +136,14 @@ export const tradeApi = {
   fundsHistory: () => call<ApiFundsRequest[]>("/api/trade/funds-requests"),
   submitFundsRequest: (body: { type: "DEPOSIT" | "WITHDRAWAL"; amount: number; note?: string }) =>
     call<ApiFundsRequest>("/api/trade/funds-requests", { method: "POST", body: JSON.stringify(body) }),
+  kycStatus: () => call<ApiKycStatus>("/api/trade/kyc"),
+  submitKyc: (documentType: string, front: File, back: File) => {
+    const form = new FormData();
+    form.set("documentType", documentType);
+    form.set("front", front);
+    form.set("back", back);
+    return callForm<{ status: string; documentType: string }>("/api/trade/kyc", form);
+  },
   login: (accountNumber: string, password: string) =>
     call("/api/trade/login", { method: "POST", body: JSON.stringify({ accountNumber, password }) }),
   logout: () => call("/api/trade/logout", { method: "POST" }),

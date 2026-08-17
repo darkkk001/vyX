@@ -12,7 +12,7 @@ import {
   type Candle,
   type Timeframe,
 } from "@/lib/market-simulator";
-import { tradeApi, type AccountInfo, type ApiPosition, type ApiOrder, type ApiFundsRequest } from "@/lib/trade-api";
+import { tradeApi, type AccountInfo, type ApiPosition, type ApiOrder, type ApiFundsRequest, type ApiKycStatus } from "@/lib/trade-api";
 import KLineChartPanel, { type KLineChartHandle, type ChartLine } from "./KLineChartPanel";
 import DesktopTitleBar from "./DesktopTitleBar";
 import SessionClock from "./SessionClock";
@@ -245,6 +245,14 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
   const [cpError, setCpError] = useState<string | null>(null);
   const [cpSubmitting, setCpSubmitting] = useState(false);
 
+  const [kycModalOpen, setKycModalOpen] = useState(false);
+  const [kycStatus, setKycStatus] = useState<ApiKycStatus>(null);
+  const [kycDocumentType, setKycDocumentType] = useState("passport");
+  const [kycFront, setKycFront] = useState<File | null>(null);
+  const [kycBack, setKycBack] = useState<File | null>(null);
+  const [kycError, setKycError] = useState<string | null>(null);
+  const [kycSubmitting, setKycSubmitting] = useState(false);
+
   const [toasts, setToasts] = useState<Toast[]>([]);
   const closingIds = useRef<Set<string>>(new Set());
   const fillingIds = useRef<Set<string>>(new Set());
@@ -300,6 +308,7 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
     setHistory(await tradeApi.history({ from: histFrom, to: histTo, symbol: histSymbol }).catch(() => []));
   }, [histFrom, histTo, histSymbol]);
   const refreshFundsHistory = useCallback(async () => setFundsHistory(await tradeApi.fundsHistory().catch(() => [])), []);
+  const refreshKycStatus = useCallback(async () => setKycStatus(await tradeApi.kycStatus().catch(() => null)), []);
 
   // "Switch account" — log out, then either back to the root-domain server
   // picker (desktop, so a different broker can be picked) or this broker's
@@ -1119,6 +1128,7 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
                 {toolsMenuOpen ? (
                   <div className="account-dropdown show" style={{ top: "100%", left: 0, width: 180 }}>
                     <div className="acc-option" style={{ cursor: "pointer", padding: "8px 10px" }} onClick={() => { setToolsMenuOpen(false); setChangePasswordOpen(true); }}>Change password</div>
+                    <div className="acc-option" style={{ cursor: "pointer", padding: "8px 10px" }} onClick={() => { setToolsMenuOpen(false); setKycModalOpen(true); refreshKycStatus(); }}>Verify identity</div>
                     <div className="acc-option" style={{ cursor: "pointer", padding: "8px 10px" }} onClick={() => { setToolsMenuOpen(false); setActiveBottomTab("logs"); }}>View logs</div>
                     <div style={{ height: 1, background: "var(--border)", margin: "4px 0" }} />
                     <div style={{ padding: "4px 10px 2px", fontSize: 10, color: "var(--text-3)", textTransform: "uppercase" }}>Theme</div>
@@ -1989,6 +1999,101 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
                 <button type="submit" className="modal-btn primary" disabled={cpSubmitting}>{cpSubmitting ? "Saving…" : "Save"}</button>
               </div>
             </form>
+          </div>
+        </div>
+      ) : null}
+
+      {/* ---------- Verify identity (KYC) modal ---------- */}
+      {kycModalOpen ? (
+        <div className="modal-overlay show" onClick={(e) => { if (e.target === e.currentTarget) setKycModalOpen(false); }}>
+          <div className="modal-wrap">
+            <button className="modal-close" onClick={() => setKycModalOpen(false)}>✕</button>
+            <div className="generic-modal-card" style={{ width: 320 }}>
+              <div className="generic-modal-title">Verify identity</div>
+              {kycStatus && kycStatus.status !== "REJECTED" ? (
+                <>
+                  <p style={{ fontSize: 13, margin: "8px 0" }}>
+                    Status:{" "}
+                    <strong style={{ color: kycStatus.status === "APPROVED" ? "var(--buy)" : undefined }}>
+                      {kycStatus.status}
+                    </strong>
+                  </p>
+                  <p style={{ fontSize: 12, color: "var(--text-3)" }}>
+                    {kycStatus.status === "PENDING"
+                      ? "Your documents are under review."
+                      : "Your identity is verified."}
+                  </p>
+                  <div className="modal-actions" style={{ marginTop: 16 }}>
+                    <button type="button" className="modal-btn secondary" onClick={() => setKycModalOpen(false)}>Close</button>
+                  </div>
+                </>
+              ) : (
+                <form
+                  onSubmit={async (e) => {
+                    e.preventDefault();
+                    setKycError(null);
+                    if (!kycFront || !kycBack) {
+                      setKycError("Both document sides are required");
+                      return;
+                    }
+                    setKycSubmitting(true);
+                    try {
+                      await tradeApi.submitKyc(kycDocumentType, kycFront, kycBack);
+                      pushToast("Identity documents submitted — pending review");
+                      setKycFront(null);
+                      setKycBack(null);
+                      await refreshKycStatus();
+                    } catch (err) {
+                      setKycError(err instanceof Error ? err.message : "failed to submit documents");
+                    } finally {
+                      setKycSubmitting(false);
+                    }
+                  }}
+                >
+                  {kycStatus?.status === "REJECTED" ? (
+                    <p style={{ fontSize: 12, color: "var(--sell)", margin: "0 0 8px" }}>
+                      Previous submission rejected{kycStatus.rejectionReason ? `: ${kycStatus.rejectionReason}` : "."} Please
+                      resubmit.
+                    </p>
+                  ) : null}
+                  <select
+                    className="generic-modal-input mono"
+                    value={kycDocumentType}
+                    onChange={(e) => setKycDocumentType(e.target.value)}
+                    style={{ marginBottom: 8, width: "100%" }}
+                  >
+                    <option value="passport">Passport</option>
+                    <option value="national_id">National ID</option>
+                    <option value="drivers_license">Driver&apos;s license</option>
+                  </select>
+                  <div className="field-group" style={{ marginBottom: 8 }}>
+                    <div className="field-label" style={{ fontSize: 11, marginBottom: 4 }}>Document front</div>
+                    <input
+                      type="file"
+                      accept="image/jpeg,image/png,application/pdf"
+                      onChange={(e) => setKycFront(e.target.files?.[0] ?? null)}
+                      required
+                    />
+                  </div>
+                  <div className="field-group" style={{ marginBottom: 8 }}>
+                    <div className="field-label" style={{ fontSize: 11, marginBottom: 4 }}>Document back</div>
+                    <input
+                      type="file"
+                      accept="image/jpeg,image/png,application/pdf"
+                      onChange={(e) => setKycBack(e.target.files?.[0] ?? null)}
+                      required
+                    />
+                  </div>
+                  {kycError ? <p style={{ color: "var(--sell)", fontSize: 12, margin: "8px 0 0" }}>{kycError}</p> : null}
+                  <div className="modal-actions" style={{ marginTop: 16 }}>
+                    <button type="button" className="modal-btn secondary" onClick={() => setKycModalOpen(false)}>Cancel</button>
+                    <button type="submit" className="modal-btn primary" disabled={kycSubmitting}>
+                      {kycSubmitting ? "Submitting…" : "Submit"}
+                    </button>
+                  </div>
+                </form>
+              )}
+            </div>
           </div>
         </div>
       ) : null}

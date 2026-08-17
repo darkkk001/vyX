@@ -256,7 +256,8 @@ model KycRecord {
   account          Account   @relation(fields: [accountId], references: [id])
   status           KycStatus @default(PENDING)
   documentType     String // passport | national_id | drivers_license
-  documentUrl      String
+  documentFrontUrl String
+  documentBackUrl  String?
   addressProofUrl  String?
   rejectionReason  String?
   reviewedByAdminId String?
