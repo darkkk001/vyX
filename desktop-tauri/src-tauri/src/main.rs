@@ -1,11 +1,9 @@
-// VyXTrader Tauri desktop shell -- core-shell slice only, see
-// docs/decisions.md ADR-001 and this repo's CLAUDE.md for exactly what's
-// still deferred (navigation lockdown, splash/offline screens,
-// window-state persistence). Same "no local server or database here, it
-// only points at the already-deployed site" principle as
+// VyXTrader Tauri desktop shell -- see docs/decisions.md ADR-001 for the
+// full feature-by-feature history. Same "no local server or database
+// here, it only points at the already-deployed site" principle as
 // desktop/README.md's Electron app -- this app has no local frontend of
-// its own, the window is built programmatically pointing at the
-// broker's real deployed WebTrader.
+// its own beyond the splash/offline screens, the main window is built
+// programmatically pointing at the broker's real deployed WebTrader.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use serde::Deserialize;
@@ -147,6 +145,53 @@ fn forget_broker(app: tauri::AppHandle) {
     clear_remembered_broker(&app);
 }
 
+// Managed app state holding the real broker/launcher URL start_url_for()
+// computed at startup -- retry_connection (below) needs it and has no
+// other way to reach it, since it's otherwise local to main()'s setup
+// closure.
+struct StartUrl(String);
+
+// Tauri's PageLoadEvent only has Started/Finished -- no failure/error
+// variant exists (confirmed against the installed tauri crate source),
+// so unlike Electron's did-fail-load this can't react to a failed
+// navigation after the fact. Instead it checks proactively: a short HEAD
+// request decides whether to navigate to the real app or the local
+// offline page, both at startup and on every Retry click. The real app
+// path (/trade) 307-redirects rather than 200s directly (confirmed via
+// this session's own earlier dev-server testing), so redirects count as
+// reachable too, not just a bare 200.
+async fn is_reachable(url: &str) -> bool {
+    reqwest::Client::new()
+        .head(url)
+        // 15s, not a tight few seconds -- a real deployment is normally
+        // fast, but this also has to tolerate a genuinely slow first
+        // response without false-negativing into the offline page (hit
+        // this exact failure mode while verifying: a local dev server's
+        // cold first-compile took ~12s for a single route, which a
+        // tighter timeout misread as "unreachable").
+        .timeout(std::time::Duration::from_secs(15))
+        .send()
+        .await
+        .map(|res| res.status().is_success() || res.status().is_redirection())
+        .unwrap_or(false)
+}
+
+// Invoked by offline.html's Retry button. Re-runs the same reachability
+// check and only navigates away from the offline page if it now
+// succeeds -- if still unreachable, the offline page just stays put
+// (its own button re-enables itself once the invoke's promise settles).
+#[tauri::command]
+async fn retry_connection(app: tauri::AppHandle) {
+    let start_url = app.state::<StartUrl>().0.clone();
+    if is_reachable(&start_url).await {
+        if let Some(window) = app.get_webview_window("main") {
+            if let Ok(url) = start_url.parse() {
+                let _ = window.navigate(url);
+            }
+        }
+    }
+}
+
 // Direct port of desktop/main.js's entire auto-update surface: check,
 // silently download+install if found, notify once on success. No
 // "Check for Updates" UI, no forced relaunch -- the update applies on
@@ -266,13 +311,15 @@ fn main() {
             win_toggle_maximize,
             win_close,
             remember_broker,
-            forget_broker
+            forget_broker,
+            retry_connection
         ])
         .setup(move |app| {
             // Same hardcoded https:// scheme as desktop/main.js's own
             // brokerUrl/launchUrl construction -- this app only ever
             // points at a real deployed broker, never a local dev server.
             let start_url = start_url_for(&config, app.handle());
+            app.manage(StartUrl(start_url.clone()));
             // Direct port of desktop/main.js's allowedHost.split(":")[0]
             // comparison -- config values in this codebase sometimes
             // carry an explicit port (local dev testing), so the host
@@ -280,7 +327,11 @@ fn main() {
             let allowed_host = allowed_host_for(&config).split(':').next().unwrap_or("").to_string();
             let nav_app_handle = app.handle().clone();
             let new_window_app_handle = app.handle().clone();
-            let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(start_url.parse().unwrap()))
+            // Splash first (instant, local) -- swapped to the real
+            // remote URL (or offline.html) below once a reachability
+            // check settles, exactly mirroring desktop/main.js's own
+            // win.loadFile(loadingPath) + delayed win.loadURL(...).
+            let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("splash.html".into()))
                 .title(&config.broker_name)
                 .inner_size(1440.0, 900.0)
                 .min_inner_size(1024.0, 640.0)
@@ -292,10 +343,15 @@ fn main() {
                 // in-place navigation outside the broker's own domain (or,
                 // in launcher mode, the root domain) opens in the OS
                 // browser instead of following it inside the app. Local
-                // asset pages (splash/offline, a non-http(s) scheme) are
-                // always allowed, mirroring Electron's own
-                // `if (url.startsWith("file://")) return`.
+                // asset pages (splash/offline) are always allowed --
+                // Tauri's local content is served either from a `tauri://`
+                // scheme or, on Windows/Android, `http://tauri.localhost`
+                // (a fixed hostname, not configurable per-app), mirroring
+                // Electron's own `if (url.startsWith("file://")) return`.
                 .on_navigation(move |url| {
+                    if url.scheme() == "tauri" || url.host_str() == Some("tauri.localhost") {
+                        return true;
+                    }
                     if url.scheme() != "http" && url.scheme() != "https" {
                         return true;
                     }
@@ -316,6 +372,39 @@ fn main() {
                 })
                 .initialization_script(VYX_DESKTOP_INIT_SCRIPT)
                 .build()?;
+
+            // Reachability check decides whether to swap the splash
+            // screen to the real broker URL or to offline.html -- see
+            // is_reachable()'s own comment for why this is proactive
+            // instead of reactive like Electron's did-fail-load.
+            // offline.html's URL uses Tauri's local-content origin
+            // directly (confirmed empirically while verifying this --
+            // on_navigation's own log showed the splash page's real,
+            // actual URL as `http://tauri.localhost/splash.html` -- NOT
+            // derived from window.url() right after .build(), which was
+            // separately observed to report a stale "about:blank" for a
+            // window's first several seconds regardless of scheme,
+            // local/external/data:, so it can't be used as a live
+            // signal here). This project only ships a Windows build
+            // (`bundle.targets`/`win`-only, matching the Electron
+            // reference's own `electron-builder --win`), so this fixed
+            // hostname doesn't need to handle other platforms' `tauri://`
+            // convention.
+            {
+                let check_window = window.clone();
+                let target_url = start_url.clone();
+                let offline_url: tauri::Url = "http://tauri.localhost/offline.html".parse()?;
+                tauri::async_runtime::spawn(async move {
+                    let url_to_load = if is_reachable(&target_url).await {
+                        target_url.parse().ok()
+                    } else {
+                        Some(offline_url)
+                    };
+                    if let Some(url) = url_to_load {
+                        let _ = check_window.navigate(url);
+                    }
+                });
+            }
 
             // --- System tray -- direct port of desktop/main.js's
             // createTray()/refreshTrayMenu(), same item order: Show, sep,
