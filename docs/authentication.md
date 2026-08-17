@@ -139,3 +139,50 @@ against the *wrong* broker's subdomain are correctly refused too.
   to the Gateway — depends on how much of `trade/login`/`trade/me` moves
   per `api.md` §4; the two docs should resolve together in Phase 1, not
   independently guessed at now.
+
+## 5. AdminUser provisioning
+
+Until this slice, no route anywhere created an `AdminUser` row at all —
+every admin/manager login used during this engagement's development was
+hand-seeded directly via SQL. A freshly created broker
+(`app/api/admin/brokers` `POST`) ended with zero admin accounts and no
+way to give it one through the app. Not previously documented anywhere
+because it was fully undesigned, not just unbuilt.
+
+**Who can create whom** (new rule):
+- `SUPER_ADMIN` creates `BROKER_ADMIN`/`MANAGER`/`SUPPORT` for **any**
+  broker (`POST /api/admin/admins`, `app/(super-admin)/admins`) — this
+  is what actually closes the new-broker gap.
+- `BROKER_ADMIN` creates the same three roles for **their own broker
+  only** (`POST /api/manage/admins`, `app/manage/team`) — self-service
+  teammate onboarding without Super Admin involvement every time.
+- Neither surface can create `SUPER_ADMIN` — platform-level accounts
+  stay out of self-service scope; the first Super Admin account was
+  itself seeded directly, not created through any UI.
+- `MANAGER`/`SUPPORT` get no team-management access — gated
+  `BROKER_ADMIN`-only, the same tier as Funds/KYC/IB, not the broader
+  `["MANAGER","BROKER_ADMIN"]` gate the Symbols/Positions/Groups/
+  Accounts screens use.
+
+**Password**: creator sets an initial password directly at creation
+time — no email/invite infrastructure exists anywhere in this codebase
+to build an invite flow on top of. Same `bcrypt.hash(password, 10)`
+convention and the same 8-character minimum already enforced by
+`app/api/trade/change-password/route.ts`.
+
+**Self-protection** (`app/api/manage/admins/[id]/route.ts`): a
+`BROKER_ADMIN` cannot change their own `AdminStatus` — the first
+precedent in this codebase for blocking self-mutation, added because
+disabling your own account would be an accidental, unrecoverable-through-
+the-app lockout.
+
+Verified live end to end: a `SUPER_ADMIN` created a `BROKER_ADMIN` for a
+broker seeded with zero admins, and that account logged in for real
+(not just a row existing); that `BROKER_ADMIN` created a `MANAGER` via
+`/manage/team`, who also logged in for real with the correctly narrowed
+nav; disabling that `MANAGER`'s status correctly blocked their next
+login attempt; a `MANAGER` session got a clean 403 attempting team
+management; a different broker's `BROKER_ADMIN` couldn't see or create
+into this broker; a duplicate email returned a clean 409; a short
+password returned a clean 400; a `BROKER_ADMIN` attempting to change
+their own status got a clean 400, not a silent no-op.

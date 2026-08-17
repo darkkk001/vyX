@@ -1,4 +1,5 @@
 import { redirect } from "next/navigation";
+import Link from "next/link";
 import { getAdminSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import CreateBrokerForm from "./CreateBrokerForm";
@@ -15,6 +16,7 @@ export default async function BrokersPage() {
   return (
     <main style={{ maxWidth: 720, margin: "2rem auto", fontFamily: "sans-serif" }}>
       <h1>Brokers</h1>
+      <p><Link href="/admins">Manage admins &rarr;</Link></p>
       <table style={{ width: "100%", borderCollapse: "collapse", marginBottom: "2rem" }}>
         <thead>
           <tr>
