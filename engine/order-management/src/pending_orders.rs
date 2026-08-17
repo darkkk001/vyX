@@ -123,7 +123,7 @@ async fn trigger_order(
 
     db::set_filled(&mut tx, &order.id, fill.price, fill.volume).await?;
 
-    db::insert_position(
+    let position_id = db::insert_position(
         &mut tx,
         &db::NewPosition {
             broker_id: order.broker_id.clone(),
@@ -138,6 +138,11 @@ async fn trigger_order(
         },
     )
     .await?;
+
+    // Same one-time open commission as place_market_order — see
+    // BrokerSymbolConfig's doc comment and db.rs's record_commission.
+    let commission = symbol_config.as_ref().map_or(Decimal::ZERO, |cfg| cfg.commission_per_lot * fill.volume);
+    db::record_commission(&mut tx, &position_id, &order.account_id, commission).await?;
 
     tx.commit().await?;
 

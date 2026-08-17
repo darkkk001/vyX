@@ -214,6 +214,44 @@ pub async fn insert_position(
     Ok(id)
 }
 
+/// Charges a position's one-time open commission — a `COMMISSION` ledger
+/// entry (negative: a cost, reducing effective balance the same way
+/// `get_ledger_sum`'s doc comment describes for stop-out P&L) plus the
+/// running total on `positions.commission` for fast display (see
+/// `20260817020000_commission_and_swap.sql`'s comment on why that column
+/// exists alongside the ledger row instead of only the ledger row).
+/// No-op if `commission` is zero — a broker with no commission configured
+/// (the default) shouldn't write a $0 ledger entry for every trade.
+pub async fn record_commission(
+    tx: &mut sqlx::PgTransaction<'_>,
+    position_id: &str,
+    account_id: &str,
+    commission: Decimal,
+) -> Result<(), sqlx::Error> {
+    if commission.is_zero() {
+        return Ok(());
+    }
+
+    sqlx::query(r#"UPDATE positions SET commission = commission + $1 WHERE id = $2"#)
+        .bind(commission)
+        .bind(position_id)
+        .execute(&mut **tx)
+        .await?;
+
+    sqlx::query(
+        r#"INSERT INTO ledger_entries (id, account_id, entry_type, amount, related_position_id)
+           VALUES ($1, $2, 'COMMISSION'::ledger_entry_type, $3, $4)"#,
+    )
+    .bind(Uuid::new_v4().to_string())
+    .bind(account_id)
+    .bind(-commission)
+    .bind(position_id)
+    .execute(&mut **tx)
+    .await?;
+
+    Ok(())
+}
+
 #[derive(Debug)]
 pub struct OrderRow {
     pub id: String,
@@ -261,24 +299,37 @@ pub struct BrokerSymbolConfig {
     // with no limit set — both mean "no limit" to risk::check_symbol_exposure,
     // so no COALESCE needed here unlike the other columns above.
     pub max_exposure: Option<Decimal>,
+    // Flat fee per lot, charged once at position open — see swap.rs's
+    // module doc and lib.rs's place_market_order for where this actually
+    // gets applied.
+    pub commission_per_lot: Decimal,
+    // Account-currency per lot per day, applied by the daily rollover job
+    // (swap.rs) — see BrokerSymbol.swapLong/swapShort's schema comment
+    // for the unit convention.
+    pub swap_long: Decimal,
+    pub swap_short: Decimal,
 }
+
+#[allow(clippy::type_complexity)]
+type BrokerSymbolConfigRow =
+    (i32, Decimal, bool, Decimal, Decimal, Decimal, Option<Decimal>, Decimal, Decimal, Decimal);
 
 /// `Symbol.digits` always resolves if the symbol exists at all; the LEFT
 /// JOIN means an unconfigured `BrokerSymbol` row (broker hasn't set up
 /// this symbol) defaults via `COALESCE` to zero markup, enabled, and the
-/// same min/max/step defaults `BrokerSymbol`'s own schema uses — a
-/// missing admin config shouldn't block trading, it just means the
-/// broker hasn't customized anything for this symbol yet.
+/// same min/max/step/commission/swap defaults `BrokerSymbol`'s own schema
+/// uses — a missing admin config shouldn't block trading, it just means
+/// the broker hasn't customized anything for this symbol yet.
 pub async fn get_broker_symbol_config(
     pool: &PgPool,
     broker_id: &str,
     symbol: &str,
 ) -> Result<Option<BrokerSymbolConfig>, sqlx::Error> {
-    #[allow(clippy::type_complexity)]
-    let row: Option<(i32, Decimal, bool, Decimal, Decimal, Decimal, Option<Decimal>)> = sqlx::query_as(
+    let row: Option<BrokerSymbolConfigRow> = sqlx::query_as(
         r#"SELECT s.digits, COALESCE(bs."spreadMarkup", 0), COALESCE(bs.enabled, true),
                   COALESCE(bs."minLot", 0.01), COALESCE(bs."maxLot", 100), COALESCE(bs."lotStep", 0.01),
-                  bs."maxExposure"
+                  bs."maxExposure", COALESCE(bs."commissionPerLot", 0),
+                  COALESCE(bs."swapLong", 0), COALESCE(bs."swapShort", 0)
            FROM "Symbol" s
            LEFT JOIN "BrokerSymbol" bs ON bs."symbolId" = s.id AND bs."brokerId" = $1
            WHERE s.name = $2"#,
@@ -287,15 +338,22 @@ pub async fn get_broker_symbol_config(
     .bind(symbol)
     .fetch_optional(pool)
     .await?;
-    Ok(row.map(|(digits, spread_markup, enabled, min_lot, max_lot, lot_step, max_exposure)| BrokerSymbolConfig {
-        digits,
-        spread_markup,
-        enabled,
-        min_lot,
-        max_lot,
-        lot_step,
-        max_exposure,
-    }))
+    Ok(row.map(
+        |(digits, spread_markup, enabled, min_lot, max_lot, lot_step, max_exposure, commission_per_lot, swap_long, swap_short)| {
+            BrokerSymbolConfig {
+                digits,
+                spread_markup,
+                enabled,
+                min_lot,
+                max_lot,
+                lot_step,
+                max_exposure,
+                commission_per_lot,
+                swap_long,
+                swap_short,
+            }
+        },
+    ))
 }
 
 /// §2.1 step 5's account-wide half: `Broker.maxOpenPositionsPerAccount`.
@@ -481,6 +539,104 @@ pub async fn get_account_ids_with_open_positions(pool: &PgPool) -> Result<Vec<St
             .fetch_all(pool)
             .await?;
     Ok(rows.into_iter().map(|(id,)| id).collect())
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Daily swap rollover — see swap.rs.
+// ─────────────────────────────────────────────────────────────────────
+
+pub struct PositionForSwap {
+    pub id: String,
+    pub broker_id: String,
+    pub account_id: String,
+    pub symbol: String,
+    pub side: OrderSide,
+    pub volume: Decimal,
+}
+
+/// Candidates for today's rollover — every OPEN position not yet charged
+/// today. Compares against Postgres's own `CURRENT_DATE` (not a
+/// Rust-side date), same reasoning as the staleness checks in
+/// `market_data::db::get_live_price`: one clock, no skew between what
+/// this query considers "today" and what `claim_position_for_swap`'s
+/// `now()` writes.
+pub async fn get_positions_due_for_swap(pool: &PgPool) -> Result<Vec<PositionForSwap>, sqlx::Error> {
+    let rows: Vec<(String, String, String, String, String, Decimal)> = sqlx::query_as(
+        r#"SELECT id, broker_id, account_id, symbol, side::text, volume
+           FROM positions
+           WHERE status = 'OPEN' AND (last_swap_at IS NULL OR last_swap_at::date < CURRENT_DATE)"#,
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, broker_id, account_id, symbol, side, volume)| PositionForSwap {
+            id,
+            broker_id,
+            account_id,
+            symbol,
+            side: side_from_str(&side),
+            volume,
+        })
+        .collect())
+}
+
+/// Idempotent claim, same `rows_affected() == 1` pattern as
+/// `try_claim_order_for_routing`: the `WHERE` repeats the exact
+/// "due today" condition from `get_positions_due_for_swap` so a position
+/// that raced onto someone else's list (or already got charged between
+/// that read and this claim) is a clean no-op here, not a double charge.
+pub async fn claim_position_for_swap(tx: &mut sqlx::PgTransaction<'_>, position_id: &str) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query(
+        r#"UPDATE positions SET last_swap_at = now()
+           WHERE id = $1 AND status = 'OPEN'
+             AND (last_swap_at IS NULL OR last_swap_at::date < CURRENT_DATE)"#,
+    )
+    .bind(position_id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(result.rows_affected() == 1)
+}
+
+/// ISO weekday (Monday=1..Sunday=7) for `CURRENT_DATE`, from Postgres's
+/// own clock — see swap.rs's module doc for why this isn't read from the
+/// Rust process's clock instead.
+pub async fn get_current_weekday(pool: &PgPool) -> Result<i32, sqlx::Error> {
+    let (dow,): (f64,) = sqlx::query_as("SELECT EXTRACT(ISODOW FROM CURRENT_DATE)").fetch_one(pool).await?;
+    Ok(dow as i32)
+}
+
+/// Records the swap charge/credit itself, once a position has already
+/// been claimed via `claim_position_for_swap` — a running total on
+/// `positions.swap` (display) plus a `SWAP` ledger entry (the
+/// authoritative money movement), same two-writes-in-one-transaction
+/// shape as `record_commission`. Unlike commission, the sign comes
+/// straight from the broker's configured `swapLong`/`swapShort` rate,
+/// not forced negative — a swap can legitimately be a credit.
+pub async fn apply_swap(
+    tx: &mut sqlx::PgTransaction<'_>,
+    position_id: &str,
+    account_id: &str,
+    swap_amount: Decimal,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(r#"UPDATE positions SET swap = swap + $1 WHERE id = $2"#)
+        .bind(swap_amount)
+        .bind(position_id)
+        .execute(&mut **tx)
+        .await?;
+
+    sqlx::query(
+        r#"INSERT INTO ledger_entries (id, account_id, entry_type, amount, related_position_id)
+           VALUES ($1, $2, 'SWAP'::ledger_entry_type, $3, $4)"#,
+    )
+    .bind(Uuid::new_v4().to_string())
+    .bind(account_id)
+    .bind(swap_amount)
+    .bind(position_id)
+    .execute(&mut **tx)
+    .await?;
+
+    Ok(())
 }
 
 #[derive(Debug, Clone)]

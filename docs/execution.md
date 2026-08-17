@@ -66,10 +66,13 @@ the Market Data Core.
 - Slippage/requote modeling for MARKET orders during fast price moves —
   the current system has zero precedent for this (it doesn't check the
   price at all today), so this is new design, not a migration.
-- Commission/swap application point — currently computed client-side at
-  order time in the existing UI math (`lib/trading.ts` `computeRealizedPnl`);
-  needs to move server-side into Execution or OMS as part of Phase 2, not
-  assumed to already be correct.
+- ~~Commission/swap application point~~ **Resolved and implemented** — see
+  §5. This doc's framing was slightly stale: commission/swap weren't
+  actually computed client-side anywhere (`lib/trading.ts`'s
+  `computeRealizedPnl` never touched either), `Position.swap`/
+  `commission` just sat at their schema default of 0 forever, and one
+  spot in `WebTrader.tsx`'s symbol-info panel showed hardcoded fake
+  values ("-1.20"/"+0.35") rather than real data.
 
 ## 5. Implementation status
 
@@ -144,6 +147,49 @@ free margin" reason once its own crossing tick arrived, proving the
 margin check really is deferred to trigger time and not silently
 skipped.
 
-Still open: slippage/requote modeling and commission/swap moving
-server-side — neither touched by the above, both still exactly as
-described in §4.
+Still open: slippage/requote modeling — untouched by the above, still
+exactly as described in §4.
+
+**Commission/swap — implemented.** Two decisions confirmed with the user
+first, since neither had an existing convention to inherit: commission
+is a flat fee per lot, charged once at position open (round-turn, not
+split between open/close); swap is a daily rollover job (MT5-style),
+not computed once at close.
+
+New `BrokerSymbol.commissionPerLot` (flat fee/lot, default 0). Applied in
+both `place_market_order` and `pending_orders::trigger_order` right after
+the fill: `db::record_commission` writes a `COMMISSION` ledger entry
+(negative — a cost) and bumps `positions.commission`'s running total, in
+the same transaction as the fill/position-insert, so it's atomic with
+everything else per the state-machine's own atomicity rule. No-ops (no
+$0 ledger row) when a broker hasn't configured a rate.
+
+Swap reuses `BrokerSymbol.swapLong`/`swapShort` (existed in the schema
+already, never actually read anywhere) — a new `order_management::swap`
+module runs as a background job (`engine/server`, polling every 5 min by
+default), charging every OPEN position not yet charged today. "Today" and
+"which weekday" are both read from Postgres's own `CURRENT_DATE`, not the
+Rust process's clock — same one-clock reasoning as the staleness checks
+`market_data::db::get_live_price` added. Wednesday charges 3x (rolls the
+weekend into one charge, the common MT5-broker default; not
+broker-configurable yet — flagged, not hidden). Idempotent via the same
+claim-then-apply pattern as `try_claim_order_for_routing`
+(`positions.last_swap_at`'s date guard), so polling more often than once
+a day is harmless — a position already charged today just isn't a
+candidate again until tomorrow.
+
+New columns: `positions.commission`/`swap` (running totals for display,
+mirroring the legacy Prisma `Position` model's same two columns) and
+`positions.last_swap_at` (rollover's idempotency key) —
+`engine/migrations/20260817020000_commission_and_swap.sql`, hand-applied
+per `CLAUDE.md`'s offline-migration workflow (this crate's schema isn't
+Prisma-tracked, ADR-002).
+
+Verified live against a real Postgres: seeded a BUY position with
+`commissionPerLot=7`, `swapLong=-6.5`; confirmed
+`record_commission`/`apply_swap`'s exact SQL produces the right
+`positions.commission`/`swap` totals and matching negative `ledger_entries`
+rows; confirmed `claim_position_for_swap`'s exact SQL succeeds once and
+then correctly returns zero rows on a same-day retry (the idempotency
+guard); confirmed the running ledger total for the test account matches
+`-commission + swap` exactly.

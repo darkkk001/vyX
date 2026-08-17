@@ -12,6 +12,7 @@ pub mod events;
 pub mod monitor;
 pub mod pending_orders;
 pub mod pricing;
+pub mod swap;
 
 use protocol::{Fill, OrderSide, OrderStatus, OrderType, RiskRejection, Tick, TradingEvent};
 use rust_decimal::Decimal;
@@ -219,7 +220,7 @@ pub async fn place_market_order(
         &mut tx,
         &db::NewPosition {
             broker_id: req.broker_id,
-            account_id: req.account_id,
+            account_id: req.account_id.clone(),
             symbol: req.symbol,
             origin_order_id: order_id.clone(),
             side: req.side,
@@ -230,6 +231,12 @@ pub async fn place_market_order(
         },
     )
     .await?;
+
+    // Flat per-lot commission, charged once at open (round-turn, not
+    // split between open/close) — see BrokerSymbolConfig's doc comment
+    // and db.rs's record_commission.
+    let commission = symbol_config.as_ref().map_or(Decimal::ZERO, |cfg| cfg.commission_per_lot * fill.volume);
+    db::record_commission(&mut tx, &position_id, &req.account_id, commission).await?;
 
     tx.commit().await?;
 

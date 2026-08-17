@@ -331,9 +331,18 @@ model BrokerSymbol {
   minLot       Decimal @default(0.01) @db.Decimal(10, 2)
   maxLot       Decimal @default(100) @db.Decimal(10, 2)
   lotStep      Decimal @default(0.01) @db.Decimal(10, 2)
+  // Account-currency amount per standard lot per day held overnight —
+  // not points/pips, to avoid needing per-symbol pip-size math the way
+  // spreadMarkup does. Negative = cost to the trader, positive = credit.
+  // Applied by the daily rollover job (order_management::swap) — see
+  // docs/risk-engine.md and execution.md's commission/swap sections.
   swapLong     Decimal @default(0) @db.Decimal(10, 4)
   swapShort    Decimal @default(0) @db.Decimal(10, 4)
   enabled      Boolean @default(true)
+  // Flat fee per lot, charged once when a position opens (round-turn,
+  // not split between open/close). Null-safe default of 0 means existing
+  // brokers charge no commission until an admin sets a rate.
+  commissionPerLot Decimal @default(0) @db.Decimal(10, 2)
   // Max total open volume (lots) an account may hold in this symbol at
   // once, summed across all its open positions. Null = no limit, so
   // existing brokers are unaffected until an admin sets one — see

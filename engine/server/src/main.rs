@@ -317,6 +317,18 @@ async fn main() {
         .await
         .expect("failed to subscribe tick-driven triggers to price.tick.*");
 
+    // Daily swap rollover — see order_management::swap's module doc. Not
+    // tick-driven like the monitor: it only needs to notice a calendar
+    // day has turned over, so a short poll interval (default 5 min) just
+    // means rollover starts promptly after midnight rather than needing
+    // exact-instant scheduling; the claim's date guard makes polling more
+    // often than that harmless.
+    let swap_poll_interval_secs: u64 = std::env::var("SWAP_ROLLOVER_POLL_INTERVAL_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(300);
+    order_management::swap::spawn(pool.clone(), std::time::Duration::from_secs(swap_poll_interval_secs));
+
     let state = Arc::new(AppState { pool, nats, price_feed_secret });
 
     let app = Router::new()
