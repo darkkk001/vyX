@@ -69,6 +69,15 @@ export type ApiOrder = {
   symbol: { name: string; digits: number };
 };
 
+export type ApiFundsRequest = {
+  id: string;
+  type: "DEPOSIT" | "WITHDRAWAL";
+  status: "PENDING" | "COMPLETED" | "REJECTED" | "CANCELLED";
+  amount: string;
+  note: string | null;
+  createdAt: string;
+};
+
 export const tradeApi = {
   me: () => call<AccountInfo>("/api/trade/me"),
   prices: () => call<ApiLivePrice[]>("/api/trade/prices"),
@@ -105,6 +114,9 @@ export const tradeApi = {
       method: "POST",
       body: JSON.stringify({ closePrice, ...(volume != null ? { volume } : {}) }),
     }),
+  fundsHistory: () => call<ApiFundsRequest[]>("/api/trade/funds-requests"),
+  submitFundsRequest: (body: { type: "DEPOSIT" | "WITHDRAWAL"; amount: number; note?: string }) =>
+    call<ApiFundsRequest>("/api/trade/funds-requests", { method: "POST", body: JSON.stringify(body) }),
   login: (accountNumber: string, password: string) =>
     call("/api/trade/login", { method: "POST", body: JSON.stringify({ accountNumber, password }) }),
   logout: () => call("/api/trade/logout", { method: "POST" }),

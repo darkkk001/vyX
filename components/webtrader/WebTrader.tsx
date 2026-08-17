@@ -12,7 +12,7 @@ import {
   type Candle,
   type Timeframe,
 } from "@/lib/market-simulator";
-import { tradeApi, type AccountInfo, type ApiPosition, type ApiOrder } from "@/lib/trade-api";
+import { tradeApi, type AccountInfo, type ApiPosition, type ApiOrder, type ApiFundsRequest } from "@/lib/trade-api";
 import KLineChartPanel, { type KLineChartHandle, type ChartLine } from "./KLineChartPanel";
 import DesktopTitleBar from "./DesktopTitleBar";
 import SessionClock from "./SessionClock";
@@ -210,6 +210,8 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
   const [fundsModalOpen, setFundsModalOpen] = useState(false);
   const [fundsTab, setFundsTab] = useState<"deposit" | "withdraw">("deposit");
   const [fundsAmount, setFundsAmount] = useState("");
+  const [fundsSubmitting, setFundsSubmitting] = useState(false);
+  const [fundsHistory, setFundsHistory] = useState<ApiFundsRequest[]>([]);
 
   const [symbolInfoOpen, setSymbolInfoOpen] = useState(false);
   const [shareData, setShareData] = useState<null | {
@@ -297,6 +299,7 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
   const refreshHistory = useCallback(async () => {
     setHistory(await tradeApi.history({ from: histFrom, to: histTo, symbol: histSymbol }).catch(() => []));
   }, [histFrom, histTo, histSymbol]);
+  const refreshFundsHistory = useCallback(async () => setFundsHistory(await tradeApi.fundsHistory().catch(() => [])), []);
 
   // "Switch account" — log out, then either back to the root-domain server
   // picker (desktop, so a different broker can be picked) or this broker's
@@ -1291,7 +1294,7 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
                 </div>
               ) : null}
             </div>
-            <button className="funds-btn" onClick={() => setFundsModalOpen(true)}>
+            <button className="funds-btn" onClick={() => { setFundsModalOpen(true); refreshFundsHistory(); }}>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="2" y="5" width="20" height="14" rx="2" /><line x1="2" y1="10" x2="22" y2="10" /></svg>
               Funds
             </button>
@@ -2141,14 +2144,65 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
               <button
                 className={`confirm-market-btn ${fundsTab === "deposit" ? "buy" : "sell"}`}
                 style={{ display: "block", marginTop: 12 }}
-                onClick={() => {
-                  setFundsModalOpen(false);
-                  setFundsAmount("");
-                  pushToast("Deposit/withdraw requests go through the backoffice review flow (Phase 3) — not yet available.");
+                disabled={fundsSubmitting}
+                onClick={async () => {
+                  const amount = parseFloat(fundsAmount);
+                  if (!Number.isFinite(amount) || amount <= 0) {
+                    pushToast("Enter a valid amount");
+                    return;
+                  }
+                  setFundsSubmitting(true);
+                  try {
+                    await tradeApi.submitFundsRequest({
+                      type: fundsTab === "deposit" ? "DEPOSIT" : "WITHDRAWAL",
+                      amount,
+                    });
+                    setFundsAmount("");
+                    pushToast(
+                      fundsTab === "deposit"
+                        ? "Deposit request submitted — pending review"
+                        : "Withdrawal request submitted — pending review"
+                    );
+                    await refreshFundsHistory();
+                  } catch (err) {
+                    pushToast(err instanceof Error ? err.message : "failed to submit request");
+                  } finally {
+                    setFundsSubmitting(false);
+                  }
                 }}
               >
-                {fundsTab === "deposit" ? "Deposit funds" : "Request withdrawal"}
+                {fundsSubmitting ? "Submitting..." : fundsTab === "deposit" ? "Deposit funds" : "Request withdrawal"}
               </button>
+
+              {fundsHistory.length > 0 ? (
+                <>
+                  <div className="section-label" style={{ paddingLeft: 0, marginTop: 14 }}>Recent requests</div>
+                  <div style={{ maxHeight: 140, overflowY: "auto" }}>
+                    {fundsHistory.map((r) => (
+                      <div
+                        key={r.id}
+                        style={{
+                          display: "flex",
+                          justifyContent: "space-between",
+                          fontSize: 12,
+                          padding: "4px 0",
+                          borderBottom: "1px solid rgba(255,255,255,0.08)",
+                        }}
+                      >
+                        <span>{r.type === "DEPOSIT" ? "Deposit" : "Withdrawal"}</span>
+                        <span className="mono">{money(parseFloat(r.amount))}</span>
+                        <span
+                          style={{
+                            color: r.status === "COMPLETED" ? "var(--buy)" : r.status === "REJECTED" ? "var(--sell)" : undefined,
+                          }}
+                        >
+                          {r.status}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              ) : null}
             </div>
           </div>
         </div>

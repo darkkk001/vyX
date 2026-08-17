@@ -87,10 +87,18 @@ SQL Editor.
   ledger-safe position close incl. partial close, MT5 EA live price
   bridge) — done, verified live.
 - **Phase 3** (backoffice depth: KYC review flow, real deposit/withdraw
-  processing, IB/commission) — not started. Deposit/withdraw currently
-  shows a "not built yet" toast rather than faking a balance change —
-  keep that honesty when building it out; wire it through the
-  `Transaction` ledger like everything else.
+  processing, IB/commission) — partially started. Deposit/withdraw
+  requests are live: a trader submits one from WebTrader's funds modal
+  (`app/api/trade/funds-requests`), it sits `PENDING` with balance
+  untouched, and a `BROKER_ADMIN` approves or rejects it from the
+  Manager app (`app/manage/funds`, `app/api/manage/funds-requests`) —
+  only approval moves real balance, through the `Transaction` ledger,
+  matching the "no faking a balance change" rule this line used to warn
+  about. No payment gateway integration (still a request/ledger tracker,
+  not real money movement) and no funds-hold/reservation on a pending
+  withdrawal (validated against current balance at both request and
+  approval time instead — see `Transaction.reviewedByAdminId`'s schema
+  comment). KYC review flow and IB/commission remain not started.
 - **Phase 4** (Electron desktop wrapper) — not started.
 - **Phase 5** (real execution engine / LP FIX feed) — not started.
 

@@ -296,7 +296,7 @@ here, just the option the spec itself already pointed at.
 | Phase 3 — Market Data | Extends the existing MT5 EA bridge + candle aggregation, moved into Rust |
 | Phase 4 — Desktop | New Tauri app per ADR-001; current Electron app stays live until it's ready to cut over |
 | Phase 5 — Mobile | New, not started |
-| Phase 6 — Manager | Started: symbol/spread config, positions/exposure dashboard, manual position open/close, and groups/accounts (`app/manage/`) live — see `authentication.md` §3 and this doc's log below. Rest (deposit/withdraw ops, KYC) not started. |
+| Phase 6 — Manager | Started: symbol/spread config, positions/exposure dashboard, manual position open/close, groups/accounts, and deposit/withdraw approval (`app/manage/`) live — see `authentication.md` §3 and this doc's log below. Rest (KYC review) not started. |
 | Phase 7 — Back Office | New, not started |
 | Phase 8 — Advanced | New, not started |
 
@@ -597,3 +597,47 @@ here, just the option the spec itself already pointed at.
     matching the requested amount with a real `Transaction` row and
     `"BALANCE_ADJUSTMENT"` audit row; confirmed broker-scoping (a
     different broker's account was cleanly rejected, not leaked).
+
+19. **Phase 3/6 — deposit/withdraw requests.** Closes `CLAUDE.md`'s own
+    flagged gap: WebTrader's funds modal (Deposit/Withdraw tabs, amount
+    input — already fully built) previously ended in a stub toast
+    ("goes through the backoffice review flow (Phase 3) — not yet
+    available"). That stub text described the exact design the schema
+    already had fields for: `Transaction.type` has `DEPOSIT`/
+    `WITHDRAWAL`, `Transaction.status` **defaults to `PENDING`** — but
+    nothing in the codebase created a `PENDING` transaction or resolved
+    one to `COMPLETED`/`REJECTED`, confirmed via full-repo search.
+    Modeled as a state-machine transition on the existing `Transaction`
+    row (`PENDING → COMPLETED`/`REJECTED`), not a new model — mirrors
+    the `Order`/`Position` convention of a non-terminal row with
+    placeholder values finalized on transition. New
+    `Transaction.reviewedByAdminId` (mirrors `KycRecord.reviewedByAdminId`)
+    and `updatedAt` (this is the first `Transaction` field to ever
+    change after creation — every other type has always been
+    create-once-`COMPLETED`). Balance only ever moves on approval, never
+    at submission. A withdrawal is checked against the account's balance
+    twice — once at request time, again at approval time (trading
+    activity in between can invalidate a request that fit when
+    submitted) — approving a now-unaffordable withdrawal is refused
+    rather than allowed to push balance negative. Approval/rejection is
+    `BROKER_ADMIN`-only (`app/manage/funds`), same finance carve-out as
+    balance adjustment/leverage edits — this whole screen redirects
+    `MANAGER` sessions outright rather than just hiding controls, since
+    every action on it is finance.
+
+    Verified live end to end against a real Postgres (trader session via
+    Redis — Memurai was already running as a local Windows service,
+    just needed `REDIS_URL` pointed at it): submitted a deposit and a
+    within-balance withdrawal as a trader, confirmed both `PENDING` with
+    `balanceBefore == balanceAfter == currentBalance`; confirmed a
+    withdrawal request for more than the balance was refused at
+    submission; approved the deposit as `BROKER_ADMIN`, confirmed
+    `Account.balance` increased by exactly the requested amount with a
+    correct `Transaction`/`AuditLog` pair; deliberately dropped the
+    account's balance below the pending withdrawal's amount (simulating
+    trading losses since the request) and confirmed approval was
+    correctly refused with no partial state (`$transaction` rollback
+    verified: the row stayed `PENDING`, balance stayed untouched); then
+    rejected that same withdrawal cleanly; confirmed `MANAGER` gets 403
+    on the list/approve API *and* a redirect on the page itself; confirmed
+    broker-scoping (a different broker's request was cleanly rejected).

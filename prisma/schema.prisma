@@ -177,6 +177,7 @@ model AdminUser {
 
   reviewedKyc    KycRecord[]    @relation("KycReviewedBy")
   createdTxns    Transaction[]  @relation("TransactionCreatedBy")
+  reviewedTxns   Transaction[]  @relation("TransactionReviewedBy")
   auditLogs      AuditLog[]     @relation("AuditLogActor")
   closedPosition Position[]     @relation("PositionClosedBy")
 
@@ -287,8 +288,20 @@ model Transaction {
   note           String?
   createdByAdminId String?
   createdByAdmin AdminUser?        @relation("TransactionCreatedBy", fields: [createdByAdminId], references: [id])
+  // Who approved/rejected a PENDING request (deposit/withdrawal) --
+  // mirrors KycRecord.reviewedByAdminId's existing pattern. Null for
+  // rows that never went through a review step (e.g. TRADE_PNL,
+  // ADJUSTMENT, both created directly as COMPLETED).
+  reviewedByAdminId String?
+  reviewedByAdmin AdminUser?        @relation("TransactionReviewedBy", fields: [reviewedByAdminId], references: [id])
 
   createdAt DateTime @default(now()) @db.Timestamptz(3)
+  // First Transaction field to change after creation -- a PENDING
+  // deposit/withdrawal request transitions to COMPLETED/REJECTED on
+  // review (see app/api/manage/funds-requests/[id]/route.ts). Every
+  // other Transaction type is still created once, already COMPLETED,
+  // and never touched again.
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
 
   @@index([brokerId])
   @@index([accountId])
