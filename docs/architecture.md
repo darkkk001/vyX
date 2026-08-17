@@ -296,7 +296,7 @@ here, just the option the spec itself already pointed at.
 | Phase 3 — Market Data | Extends the existing MT5 EA bridge + candle aggregation, moved into Rust |
 | Phase 4 — Desktop | New Tauri app per ADR-001; current Electron app stays live until it's ready to cut over |
 | Phase 5 — Mobile | New, not started |
-| Phase 6 — Manager | Started: first screen (symbol/spread config, `app/manage/`) live — see `authentication.md` §3. Rest (positions/exposure dashboard, groups, users) not started. |
+| Phase 6 — Manager | Started: symbol/spread config and positions/exposure dashboard (`app/manage/`) live — see `authentication.md` §3 and this doc's log below. Rest (groups, users, deposit/withdraw ops) not started. |
 | Phase 7 — Back Office | New, not started |
 | Phase 8 — Advanced | New, not started |
 
@@ -493,3 +493,22 @@ here, just the option the spec itself already pointed at.
     hardening (broker-scoped sessions now cross-check `x-broker-id`) that
     benefits every broker-scoped admin role, not just this one. See
     `authentication.md` §3 for the full writeup and live verification.
+
+16. **Phase 6 (Manager) — second screen: positions/exposure dashboard.**
+    `app/manage/positions/page.tsx`. Two views: net exposure per symbol
+    (buy volume − sell volume — what a dealing desk actually watches, not
+    raw position count) and a full open-positions list with live floating
+    P&L, both broker-scoped off the same `getAdminSession()` guard as the
+    symbols screen. Reads Prisma's `Position` table, not the Rust-owned
+    `positions` table — per ADR-003 no broker has cut over to the Rust
+    engine yet, so Prisma's table is where real trading data actually
+    lives today (same table the trader-facing view already reads);
+    revisit once a broker cuts over. Found and worked around a real
+    schema gap along the way — see `database.md` §6 (`DateTime` columns
+    aren't timezone-aware, flagged there rather than fixed schema-wide).
+    Verified live: exposure aggregation and floating P&L both hand-checked
+    against seeded positions with known open prices and a known current
+    price, correct in both directions (BUY/SELL); pre-existing real demo
+    positions from earlier manual testing rendered correctly alongside
+    the seeded ones, confirming this isn't only correct against synthetic
+    data.

@@ -74,3 +74,36 @@ move.
   that's a new design decision, not a migration of the existing shape.
 - Whether Rust connects via `sqlx` or `diesel` — implementation detail,
   not architectural; left to Phase 1.
+
+## 6. Real gap found: `DateTime` columns aren't timezone-aware
+
+Every `DateTime` field in `schema.prisma` (`LivePrice.updatedAt`,
+`Order`/`Position`/`Account` timestamps, etc.) maps to Postgres
+`timestamp without time zone` by default — none have `@db.Timestamptz`.
+Found while building the Manager positions dashboard
+(`app/manage/positions/page.tsx`): comparing `LivePrice.updatedAt`
+against `Date.now()` in JavaScript (via `prisma.livePrice.findMany` +
+a client-side comparison) silently produced a multi-hour-wrong
+staleness result — a value written seconds earlier showed as hours
+stale. Root cause: a `timestamp without time zone` value round-tripped
+through a Node driver gets interpreted in whatever timezone the
+*client machine* is set to, not UTC, so the same stored value reads
+differently depending on where the reading process runs.
+
+This doesn't affect any comparison done entirely inside Postgres (the
+Rust engine's own staleness checks — `market_data::db::get_live_price`,
+`order_management::db::get_open_positions_with_market` — compare
+`updatedAt` against Postgres's own `now()` in the same query, which
+stays internally consistent regardless of the column's tz-naive
+storage) — only cross-language/client-side comparisons of these columns
+are at risk. Worked around locally in the positions dashboard by moving
+the comparison into a raw SQL query (`prisma.$queryRaw`, mirroring the
+Rust engine's approach) rather than fixing the schema.
+
+**Not fixed here** — this is a schema-wide gap (every `DateTime` field,
+not just `LivePrice.updatedAt`), and the correct fix
+(`@db.Timestamptz` + a migration with an explicit `USING` clause stating
+the assumed source timezone for existing data) touches every table with
+a timestamp column. That's a bigger, separate decision than fits inside
+an unrelated dashboard change — flagged here for whoever picks it up
+next, not silently patched around everywhere.

@@ -1,0 +1,31 @@
+import Link from "next/link";
+import { getAdminSession, requireAdminRole } from "@/lib/auth";
+
+// Nav bar shared across every /manage/* page once a manager screen exists
+// to link to -- only shown when actually signed in (so /manage/login
+// itself stays a plain, standalone form).
+export default async function ManageLayout({ children }: { children: React.ReactNode }) {
+  const session = await getAdminSession();
+  const isManager = requireAdminRole(session, ["MANAGER", "BROKER_ADMIN"]);
+
+  return (
+    <div style={{ fontFamily: "sans-serif" }}>
+      {isManager ? (
+        <nav
+          style={{
+            display: "flex",
+            gap: 20,
+            padding: "12px 24px",
+            borderBottom: "1px solid #ddd",
+            fontSize: 14,
+          }}
+        >
+          <strong>VyXTrader Manager</strong>
+          <Link href="/manage/symbols">Symbols</Link>
+          <Link href="/manage/positions">Positions</Link>
+        </nav>
+      ) : null}
+      {children}
+    </div>
+  );
+}
