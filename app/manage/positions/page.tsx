@@ -3,35 +3,8 @@ import { Prisma } from "@prisma/client";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { computeRealizedPnl } from "@/lib/trading";
-
-type FreshPrice = { symbol: string; bid: Prisma.Decimal; ask: Prisma.Decimal };
-
-// Same 15s staleness threshold as everywhere else this convention is
-// used (WebTrader.tsx's chart, market_data::db::get_live_price,
-// services/api-gateway's getOpenPositionsSummary) -- a frozen LivePrice
-// row is worse than no price at all for a risk dashboard too: showing a
-// dealing desk a floating P&L computed off a dead feed could hide real
-// exposure rather than flag it.
-//
-// Filtered in raw SQL, not `prisma.livePrice.findMany` + a JS Date
-// comparison: LivePrice.updatedAt is `timestamp without time zone` (no
-// `@db.Timestamptz` in schema.prisma), so a value read back through a
-// Node driver gets interpreted in whatever timezone the CLIENT machine
-// is set to, not UTC -- comparing it against `Date.now()` in JS silently
-// produced a multi-hour-wrong answer during testing here (every price
-// showed stale even seconds after being written). Comparing entirely in
-// Postgres, against its own now(), sidesteps that ambiguity the same way
-// the Rust engine's staleness queries already do -- this is a real,
-// standing schema gap (flagged to the user separately, not fixed here:
-// widening it to every DateTime column is a bigger, separate call).
-async function getFreshPrices(symbolNames: string[]): Promise<Map<string, FreshPrice>> {
-  if (symbolNames.length === 0) return new Map();
-  const rows = await prisma.$queryRaw<FreshPrice[]>`
-    SELECT symbol, bid, ask FROM "LivePrice"
-    WHERE symbol = ANY(${symbolNames}) AND "updatedAt" > now() - interval '15 seconds'
-  `;
-  return new Map(rows.map((r) => [r.symbol, r]));
-}
+import { getFreshPrices } from "@/lib/live-price";
+import PositionsManager, { type ExposureRow, type PositionRow, type AccountOption, type SymbolOption } from "./PositionsManager";
 
 // Reads Prisma's `Position` table, not the Rust-owned `positions` table
 // (engine/migrations) -- per ADR-003, no broker has been cut over to the
@@ -57,7 +30,10 @@ export default async function ManagerPositionsPage() {
   const symbolNames = [...new Set(positions.map((p) => p.symbol.name))];
   const priceBySymbol = await getFreshPrices(symbolNames);
 
-  const rows = positions.map((p) => {
+  // Decimal instances can't cross the Server->Client Component boundary
+  // (RSC serialization) -- every value handed to <PositionsManager> is a
+  // plain string, same convention as SymbolConfigRow on the symbols screen.
+  const rows: PositionRow[] = positions.map((p) => {
     const lp = priceBySymbol.get(p.symbol.name);
     const currentPrice = lp ? (p.side === "BUY" ? lp.bid : lp.ask) : null;
     const floatingPnl = currentPrice
@@ -69,13 +45,25 @@ export default async function ManagerPositionsPage() {
           contractSize: p.symbol.contractSize,
         })
       : null;
-    return { ...p, currentPrice, floatingPnl };
+    return {
+      id: p.id,
+      accountNumber: p.account.accountNumber,
+      accountFullName: p.account.fullName,
+      symbolName: p.symbol.name,
+      digits: p.symbol.digits,
+      side: p.side,
+      volume: p.volume.toString(),
+      openPrice: p.openPrice.toFixed(p.symbol.digits),
+      currentPrice: currentPrice ? currentPrice.toFixed(p.symbol.digits) : null,
+      floatingPnl: floatingPnl ? floatingPnl.toFixed(2) : null,
+      openedAt: p.openedAt.toISOString().replace("T", " ").slice(0, 19),
+    };
   });
 
   // Per-symbol net exposure -- what a dealing desk actually watches: not
   // "how many positions" but "how much unhedged risk does this book
   // carry per symbol," i.e. net BUY volume minus net SELL volume.
-  type Exposure = {
+  type ExposureAcc = {
     symbol: string;
     digits: number;
     count: number;
@@ -83,28 +71,64 @@ export default async function ManagerPositionsPage() {
     sellVolume: Prisma.Decimal;
     currentPrice: Prisma.Decimal | null;
   };
-  const bySymbol = new Map<string, Exposure>();
-  for (const row of rows) {
-    const key = row.symbol.name;
+  const bySymbol = new Map<string, ExposureAcc>();
+  for (const p of positions) {
+    const lp = priceBySymbol.get(p.symbol.name);
+    const currentPrice = lp ? (p.side === "BUY" ? lp.bid : lp.ask) : null;
+    const key = p.symbol.name;
     const entry = bySymbol.get(key) ?? {
       symbol: key,
-      digits: row.symbol.digits,
+      digits: p.symbol.digits,
       count: 0,
       buyVolume: new Prisma.Decimal(0),
       sellVolume: new Prisma.Decimal(0),
-      currentPrice: row.currentPrice,
+      currentPrice,
     };
     entry.count += 1;
-    entry.buyVolume = row.side === "BUY" ? entry.buyVolume.plus(row.volume) : entry.buyVolume;
-    entry.sellVolume = row.side === "SELL" ? entry.sellVolume.plus(row.volume) : entry.sellVolume;
+    entry.buyVolume = p.side === "BUY" ? entry.buyVolume.plus(p.volume) : entry.buyVolume;
+    entry.sellVolume = p.side === "SELL" ? entry.sellVolume.plus(p.volume) : entry.sellVolume;
     bySymbol.set(key, entry);
   }
-  const exposureRows = [...bySymbol.values()].sort((a, b) => a.symbol.localeCompare(b.symbol));
+  const exposureRows: ExposureRow[] = [...bySymbol.values()]
+    .sort((a, b) => a.symbol.localeCompare(b.symbol))
+    .map((e) => {
+      const net = e.buyVolume.minus(e.sellVolume);
+      return {
+        symbol: e.symbol,
+        count: e.count,
+        buyVolume: e.buyVolume.toFixed(2),
+        sellVolume: e.sellVolume.toFixed(2),
+        netExposure: net.toFixed(2),
+        currentPrice: e.currentPrice ? e.currentPrice.toFixed(e.digits) : null,
+      };
+    });
 
-  const totalFloatingPnl = rows.reduce(
-    (sum, r) => (r.floatingPnl ? sum.plus(r.floatingPnl) : sum),
-    new Prisma.Decimal(0)
-  );
+  const totalFloatingPnl = positions
+    .reduce((sum, p) => {
+      const lp = priceBySymbol.get(p.symbol.name);
+      if (!lp) return sum;
+      const currentPrice = p.side === "BUY" ? lp.bid : lp.ask;
+      return sum.plus(
+        computeRealizedPnl({ side: p.side, openPrice: p.openPrice, closePrice: currentPrice, volume: p.volume, contractSize: p.symbol.contractSize })
+      );
+    }, new Prisma.Decimal(0))
+    .toFixed(2);
+
+  const accounts: AccountOption[] = (
+    await prisma.account.findMany({
+      where: { brokerId, status: "ACTIVE" },
+      select: { id: true, accountNumber: true, fullName: true },
+      orderBy: { accountNumber: "asc" },
+    })
+  ).map((a) => ({ id: a.id, accountNumber: a.accountNumber, fullName: a.fullName }));
+
+  const tradableSymbols: SymbolOption[] = (
+    await prisma.brokerSymbol.findMany({
+      where: { brokerId, enabled: true },
+      include: { symbol: { select: { id: true, name: true } } },
+      orderBy: { symbol: { name: "asc" } },
+    })
+  ).map((bs) => ({ id: bs.symbol.id, name: bs.symbol.name }));
 
   return (
     <main style={{ maxWidth: 1400, margin: "2rem auto", fontFamily: "sans-serif", padding: "0 1rem" }}>
@@ -112,117 +136,11 @@ export default async function ManagerPositionsPage() {
       <p style={{ color: "#666" }}>
         {rows.length} open position{rows.length === 1 ? "" : "s"} across this broker. Total floating
         P&L:{" "}
-        <span style={{ color: totalFloatingPnl.gte(0) ? "green" : "crimson", fontFamily: "monospace" }}>
-          {totalFloatingPnl.toFixed(2)}
+        <span style={{ color: Number(totalFloatingPnl) >= 0 ? "green" : "crimson", fontFamily: "monospace" }}>
+          {totalFloatingPnl}
         </span>
       </p>
-
-      <h2>Exposure by symbol</h2>
-      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, marginBottom: "2rem" }}>
-        <thead>
-          <tr>
-            <th align="left" style={{ padding: "6px 8px", borderBottom: "1px solid #ccc" }}>Symbol</th>
-            <th align="right" style={{ padding: "6px 8px", borderBottom: "1px solid #ccc" }}>Positions</th>
-            <th align="right" style={{ padding: "6px 8px", borderBottom: "1px solid #ccc" }}>Buy volume</th>
-            <th align="right" style={{ padding: "6px 8px", borderBottom: "1px solid #ccc" }}>Sell volume</th>
-            <th align="right" style={{ padding: "6px 8px", borderBottom: "1px solid #ccc" }}>Net exposure</th>
-            <th align="right" style={{ padding: "6px 8px", borderBottom: "1px solid #ccc" }}>Current price</th>
-          </tr>
-        </thead>
-        <tbody>
-          {exposureRows.length === 0 ? (
-            <tr>
-              <td colSpan={6} style={{ padding: "12px 8px", color: "#999" }}>No open positions.</td>
-            </tr>
-          ) : (
-            exposureRows.map((e) => {
-              const net = e.buyVolume.minus(e.sellVolume);
-              return (
-                <tr key={e.symbol}>
-                  <td style={{ padding: "6px 8px", borderBottom: "1px solid #eee", fontFamily: "monospace" }}>{e.symbol}</td>
-                  <td align="right" style={{ padding: "6px 8px", borderBottom: "1px solid #eee" }}>{e.count}</td>
-                  <td align="right" style={{ padding: "6px 8px", borderBottom: "1px solid #eee", fontFamily: "monospace" }}>{e.buyVolume.toFixed(2)}</td>
-                  <td align="right" style={{ padding: "6px 8px", borderBottom: "1px solid #eee", fontFamily: "monospace" }}>{e.sellVolume.toFixed(2)}</td>
-                  <td
-                    align="right"
-                    style={{
-                      padding: "6px 8px",
-                      borderBottom: "1px solid #eee",
-                      fontFamily: "monospace",
-                      color: net.isZero() ? undefined : net.gt(0) ? "green" : "crimson",
-                    }}
-                  >
-                    {net.gt(0) ? "+" : ""}
-                    {net.toFixed(2)}
-                  </td>
-                  <td align="right" style={{ padding: "6px 8px", borderBottom: "1px solid #eee", fontFamily: "monospace" }}>
-                    {e.currentPrice ? e.currentPrice.toFixed(e.digits) : "—"}
-                  </td>
-                </tr>
-              );
-            })
-          )}
-        </tbody>
-      </table>
-
-      <h2>Open positions</h2>
-      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-        <thead>
-          <tr>
-            <th align="left" style={{ padding: "6px 8px", borderBottom: "1px solid #ccc" }}>Account</th>
-            <th align="left" style={{ padding: "6px 8px", borderBottom: "1px solid #ccc" }}>Symbol</th>
-            <th align="left" style={{ padding: "6px 8px", borderBottom: "1px solid #ccc" }}>Side</th>
-            <th align="right" style={{ padding: "6px 8px", borderBottom: "1px solid #ccc" }}>Volume</th>
-            <th align="right" style={{ padding: "6px 8px", borderBottom: "1px solid #ccc" }}>Open price</th>
-            <th align="right" style={{ padding: "6px 8px", borderBottom: "1px solid #ccc" }}>Current price</th>
-            <th align="right" style={{ padding: "6px 8px", borderBottom: "1px solid #ccc" }}>Floating P&L</th>
-            <th align="left" style={{ padding: "6px 8px", borderBottom: "1px solid #ccc" }}>Opened</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.length === 0 ? (
-            <tr>
-              <td colSpan={8} style={{ padding: "12px 8px", color: "#999" }}>No open positions.</td>
-            </tr>
-          ) : (
-            rows.map((p) => (
-              <tr key={p.id}>
-                <td style={{ padding: "6px 8px", borderBottom: "1px solid #eee" }}>
-                  {p.account.accountNumber}
-                  <div style={{ fontSize: 11, color: "#999" }}>{p.account.fullName}</div>
-                </td>
-                <td style={{ padding: "6px 8px", borderBottom: "1px solid #eee", fontFamily: "monospace" }}>{p.symbol.name}</td>
-                <td style={{ padding: "6px 8px", borderBottom: "1px solid #eee", color: p.side === "BUY" ? "green" : "crimson" }}>
-                  {p.side}
-                </td>
-                <td align="right" style={{ padding: "6px 8px", borderBottom: "1px solid #eee", fontFamily: "monospace" }}>
-                  {p.volume.toFixed(2)}
-                </td>
-                <td align="right" style={{ padding: "6px 8px", borderBottom: "1px solid #eee", fontFamily: "monospace" }}>
-                  {p.openPrice.toFixed(p.symbol.digits)}
-                </td>
-                <td align="right" style={{ padding: "6px 8px", borderBottom: "1px solid #eee", fontFamily: "monospace" }}>
-                  {p.currentPrice ? p.currentPrice.toFixed(p.symbol.digits) : "—"}
-                </td>
-                <td
-                  align="right"
-                  style={{
-                    padding: "6px 8px",
-                    borderBottom: "1px solid #eee",
-                    fontFamily: "monospace",
-                    color: !p.floatingPnl ? undefined : p.floatingPnl.gte(0) ? "green" : "crimson",
-                  }}
-                >
-                  {p.floatingPnl ? p.floatingPnl.toFixed(2) : "—"}
-                </td>
-                <td style={{ padding: "6px 8px", borderBottom: "1px solid #eee", fontSize: 11, color: "#999" }}>
-                  {p.openedAt.toISOString().replace("T", " ").slice(0, 19)}
-                </td>
-              </tr>
-            ))
-          )}
-        </tbody>
-      </table>
+      <PositionsManager exposureRows={exposureRows} positionRows={rows} accounts={accounts} symbols={tradableSymbols} />
     </main>
   );
 }

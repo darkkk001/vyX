@@ -296,7 +296,7 @@ here, just the option the spec itself already pointed at.
 | Phase 3 — Market Data | Extends the existing MT5 EA bridge + candle aggregation, moved into Rust |
 | Phase 4 — Desktop | New Tauri app per ADR-001; current Electron app stays live until it's ready to cut over |
 | Phase 5 — Mobile | New, not started |
-| Phase 6 — Manager | Started: symbol/spread config and positions/exposure dashboard (`app/manage/`) live — see `authentication.md` §3 and this doc's log below. Rest (groups, users, deposit/withdraw ops) not started. |
+| Phase 6 — Manager | Started: symbol/spread config, positions/exposure dashboard, and manual position open/close (`app/manage/`) live — see `authentication.md` §3 and this doc's log below. Rest (groups, users, deposit/withdraw ops) not started. |
 | Phase 7 — Back Office | New, not started |
 | Phase 8 — Advanced | New, not started |
 
@@ -512,3 +512,46 @@ here, just the option the spec itself already pointed at.
     positions from earlier manual testing rendered correctly alongside
     the seeded ones, confirming this isn't only correct against synthetic
     data.
+
+17. **Phase 6 (Manager) — third feature: manual position open/close.**
+    `app/api/manage/positions/route.ts` (open) and
+    `app/api/manage/positions/[id]/close/route.ts` (close), UI in
+    `PositionsManager.tsx`. The user's own first word for the close
+    action was "delete" — clarified against `CLAUDE.md`'s own
+    non-negotiable rule ("never delete executed trades... corrections
+    are compensating entries") before writing any code: this is a state
+    transition (OPEN → CLOSED, same state machine as every other close),
+    never a row deletion. First real usage of two things the schema
+    already anticipated but nothing wrote: `Position.closedByAdminId`
+    and the `"MANUAL_POSITION_CLOSE"` `AuditLog` action (both existed as
+    schema fields/doc-comment conventions with zero application code
+    using them until now). Mirrors the trader-initiated close route's
+    exact money-math ($transaction reads `Account.balance`, computes
+    `balanceAfter` explicitly rather than `increment`, writes a
+    `TRADE_PNL` `Transaction` row) — same correctness, admin-scoped
+    instead of trader-owned, plus the new `closedByAdminId`/`AuditLog`
+    writes. Confirmed with the user: price for both open and close comes
+    from `LivePrice` automatically (same 15s freshness rule as
+    `database.md` §6, factored into a shared `lib/live-price.ts` used by
+    this feature and the positions dashboard both) rather than an
+    admin-typed value, since a wrong manually-entered price would
+    mis-book a real account's balance. No margin check on manual open —
+    matches the existing trader-facing MARKET order route's own current
+    baseline (confirmed via code search: no margin check exists there
+    either), not a new gap introduced by this feature.
+
+    Verified live end to end against a real Postgres: opened a BUY
+    position, confirmed the correct ask-price fill and a
+    `MANUAL_POSITION_OPEN` audit row; partial-closed 0.4 of 1.0 lots at a
+    known bid, confirmed the exact expected realized P&L, an exact
+    matching `Account.balance` delta, the position staying `OPEN` at the
+    reduced volume, and a `TRADE_PNL` `Transaction` row with correct
+    `balanceBefore`/`balanceAfter`; the staleness rule fired for real
+    (not just as a manufactured test) when enough wall-clock time passed
+    between steps, rejecting the follow-up close attempt with "no live
+    price" until the price was refreshed — then closed the remaining 0.6
+    lots fully, confirmed `status: CLOSED`, `closedByAdminId` set to the
+    acting admin, and the second `MANUAL_POSITION_CLOSE` audit row.
+    Confirmed broker-scoping: opening a position against a different
+    broker's account with this session was cleanly rejected
+    ("account not found"), not permitted or leaked across tenants.
