@@ -38,25 +38,66 @@
   (`plugins.updater.pubkey`, safe to commit). The **private** half lives
   only at `desktop-tauri/src-tauri/.updater-keys/vyxtrader.key` on
   whichever machine cuts a release — gitignored, generated once via
-  `npx @tauri-apps/cli signer generate -w <path>` with no password (no CI
-  secret store exists for this project yet, see §4). **This key is not
-  backed up anywhere else.** Losing it means every already-installed
+  `npx @tauri-apps/cli signer generate -w <path>` with no password. Its
+  only other copy is (once set up, see below) a GitHub Actions
+  repository secret for the automated release workflow — not itself a
+  backup, just a second place the same one key lives, so losing the
+  local file still doesn't strand the key if the secret was already
+  set. **This key is not backed up anywhere durable outside these two
+  places.** Losing it means every already-installed
   Tauri app can never trust a future signed update again — there is no
   recovery path short of shipping a fresh install with a new pubkey to
   every affected user. Back it up somewhere durable outside the repo
   before relying on this for real releases.
 
-  **Cutting a release**: `TAURI_SIGNING_PRIVATE_KEY` (the key file's
-  contents, not the path — the CLI's bundler-level signing step only
-  reads the content-form env var, confirmed by testing both) and
-  `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (empty string) must both be set
-  when running `tauri build`, or it either fails outright or hangs
-  waiting on an interactive password prompt with no TTY to answer it —
-  hit exactly this while verifying this feature. Reading the key's
-  content into the env var must happen in the same shell that runs the
-  build (a value round-tripped through PowerShell's `$env:` assignment
-  from a separately-read variable failed signature decoding in testing;
-  reading and exporting it in one Bash step worked reliably).
+  **Cutting a release — automated (2026-08-18).**
+  `.github/workflows/desktop-tauri-release.yml`, a manual
+  `workflow_dispatch` button (GitHub → Actions tab → "Desktop Tauri
+  Release" → "Run workflow"; deliberately not tag- or push-triggered,
+  so a release only happens when someone clicks it on purpose) that
+  runs the full sign → build → generate manifest → publish sequence on
+  a `windows-latest` runner and commits `public/desktop-tauri-updates/`
+  back to the branch automatically — the exact same steps
+  `publish.js`'s own final printed line already told a human to do by
+  hand, just no longer manual. An optional `notes` input becomes the
+  release's `--notes` (see `publish.js`); leave it blank to fall back
+  to `publish.js`'s own default. The version published is always
+  whatever `tauri.conf.json`'s `version` field says at the time — bump
+  that in a normal commit before running the workflow if cutting a new
+  version, same as the old manual process.
+
+  **One-time setup required before this can actually build a signed
+  release** (a human action, not something achievable from this
+  sandbox — the signing key is a secret this tooling deliberately never
+  had a way to expose): add two repository secrets under **Settings →
+  Secrets and variables → Actions → New repository secret**:
+  - `TAURI_SIGNING_PRIVATE_KEY` — the full contents of
+    `desktop-tauri/src-tauri/.updater-keys/vyxtrader.key` (open that
+    file locally and paste its entire contents as the secret value).
+  - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` — leave the value empty (the
+    key genuinely has no password; this is expected, not a mistake).
+
+  Until both secrets are set, the workflow fails immediately and
+  clearly at an explicit early check (`TAURI_SIGNING_PRIVATE_KEY
+  repository secret is not set...`) rather than deep inside a
+  `tauri build` signing error — the same confusing "wrong password"
+  class of failure hit once already while building this feature
+  manually (see the gotchas noted below, still true for anyone running
+  this locally instead of via the workflow).
+
+  **Cutting a release manually (still works, e.g. for local testing)**:
+  `TAURI_SIGNING_PRIVATE_KEY` (the key file's contents, not the path —
+  the CLI's bundler-level signing step only reads the content-form env
+  var, confirmed by testing both) and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
+  (empty string) must both be set when running `tauri build`, or it
+  either fails outright or hangs waiting on an interactive password
+  prompt with no TTY to answer it. Reading the key's content into the
+  env var must happen in the same shell that runs the build (a value
+  round-tripped through PowerShell's `$env:` assignment from a
+  separately-read variable failed signature decoding in testing;
+  reading and exporting it in one Bash step worked reliably) — the
+  workflow above avoids this specific footgun entirely by setting both
+  as step-scoped `env:` on the one step that needs them.
 - **MT5 EA**: not "deployed" in the usual sense — it's a `.mq5` file a
   broker installs into their own MT5 terminal, calling back to
   `/api/internal/price-feed/[payload]` on the same Vercel deployment.
