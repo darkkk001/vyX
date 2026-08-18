@@ -273,6 +273,20 @@ SQL Editor.
   `docs/architecture.md`'s status re-check for the full writeup.
   Deferred, named: max drawdown, free-margin checks, trading hours,
   account-level overrides.
+  **Exposure monitor — filters, sorting, per-symbol Client P&L
+  (2026-08-18).** Pure read/display upgrade to Positions & Exposure
+  (`app/manage/(shell)/positions/`) — no schema change, no new route.
+  Six filters (Symbol/Account/Group/IB/Long-Short/Profit-Loss), all
+  client-side (same pattern `AccountsManager.tsx`'s search box uses);
+  `Sort by` (Symbol/Exposure/Risk); a new per-symbol Client Floating
+  P&L column; the broker-wide total now recomputes from whatever the
+  filters currently show instead of always being the full-broker figure.
+  Verified by replicating the exact filter/aggregation logic in a
+  standalone script against real seeded positions/accounts/IB
+  relationship/group/live-prices, not just a screenshot — all 9 tested
+  filter combinations produced hand-verified correct totals. All seeded
+  test data deleted afterward. See `docs/architecture.md`'s status
+  re-check for the full writeup.
 - **Phase 5** (real execution engine / LP FIX feed) — partially started.
   Note: this doc's phase numbering disagrees with `docs/architecture.md`
   §7's own table (which calls Phase 5 "Mobile") — never reconciled,

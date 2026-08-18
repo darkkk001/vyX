@@ -1,17 +1,28 @@
 import { redirect } from "next/navigation";
-import { Prisma } from "@prisma/client";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { computeRealizedPnl } from "@/lib/trading";
 import { getFreshPrices } from "@/lib/live-price";
 import { PageHeader } from "@/components/ui/PageHeader";
-import PositionsManager, { type ExposureRow, type PositionRow, type AccountOption, type SymbolOption } from "./PositionsManager";
+import PositionsManager, {
+  type PositionRow,
+  type AccountOption,
+  type SymbolOption,
+  type GroupOption,
+  type IbOption,
+} from "./PositionsManager";
 
 // Reads Prisma's `Position` table, not the Rust-owned `positions` table
 // (engine/migrations) -- per ADR-003, no broker has been cut over to the
 // Rust engine yet, so Prisma's Position is where actual live trading
 // data exists today. Same table app/api/trade/positions/route.ts already
 // reads for the trader-facing view. Revisit once a broker cuts over.
+//
+// Exposure aggregation, per-symbol Client Floating P&L, and the
+// broker-wide Total floating P&L all live in PositionsManager.tsx now,
+// recomputed from whichever subset the exposure monitor's filters leave
+// -- this page only fetches the full open-position set (+ the group/IB
+// info each filter needs) and hands it over as plain rows.
 export default async function ManagerPositionsPage() {
   const session = await getAdminSession();
   if (!requireAdminRole(session, ["MANAGER", "BROKER_ADMIN"]) || !session!.brokerId) {
@@ -22,7 +33,15 @@ export default async function ManagerPositionsPage() {
   const positions = await prisma.position.findMany({
     where: { brokerId, status: "OPEN" },
     include: {
-      account: { select: { accountNumber: true, fullName: true } },
+      account: {
+        select: {
+          accountNumber: true,
+          fullName: true,
+          groupId: true,
+          group: { select: { name: true } },
+          ibLinkAsClient: { select: { ibAccountId: true } },
+        },
+      },
       symbol: { select: { name: true, digits: true, contractSize: true } },
     },
     orderBy: { openedAt: "desc" },
@@ -48,8 +67,12 @@ export default async function ManagerPositionsPage() {
       : null;
     return {
       id: p.id,
+      accountId: p.accountId,
       accountNumber: p.account.accountNumber,
       accountFullName: p.account.fullName,
+      groupId: p.account.groupId,
+      groupName: p.account.group?.name ?? null,
+      ibAccountId: p.account.ibLinkAsClient?.ibAccountId ?? null,
       symbolName: p.symbol.name,
       digits: p.symbol.digits,
       side: p.side,
@@ -60,60 +83,6 @@ export default async function ManagerPositionsPage() {
       openedAt: p.openedAt.toISOString().replace("T", " ").slice(0, 19),
     };
   });
-
-  // Per-symbol net exposure -- what a dealing desk actually watches: not
-  // "how many positions" but "how much unhedged risk does this book
-  // carry per symbol," i.e. net BUY volume minus net SELL volume.
-  type ExposureAcc = {
-    symbol: string;
-    digits: number;
-    count: number;
-    buyVolume: Prisma.Decimal;
-    sellVolume: Prisma.Decimal;
-    currentPrice: Prisma.Decimal | null;
-  };
-  const bySymbol = new Map<string, ExposureAcc>();
-  for (const p of positions) {
-    const lp = priceBySymbol.get(p.symbol.name);
-    const currentPrice = lp ? (p.side === "BUY" ? lp.bid : lp.ask) : null;
-    const key = p.symbol.name;
-    const entry = bySymbol.get(key) ?? {
-      symbol: key,
-      digits: p.symbol.digits,
-      count: 0,
-      buyVolume: new Prisma.Decimal(0),
-      sellVolume: new Prisma.Decimal(0),
-      currentPrice,
-    };
-    entry.count += 1;
-    entry.buyVolume = p.side === "BUY" ? entry.buyVolume.plus(p.volume) : entry.buyVolume;
-    entry.sellVolume = p.side === "SELL" ? entry.sellVolume.plus(p.volume) : entry.sellVolume;
-    bySymbol.set(key, entry);
-  }
-  const exposureRows: ExposureRow[] = [...bySymbol.values()]
-    .sort((a, b) => a.symbol.localeCompare(b.symbol))
-    .map((e) => {
-      const net = e.buyVolume.minus(e.sellVolume);
-      return {
-        symbol: e.symbol,
-        count: e.count,
-        buyVolume: e.buyVolume.toFixed(2),
-        sellVolume: e.sellVolume.toFixed(2),
-        netExposure: net.toFixed(2),
-        currentPrice: e.currentPrice ? e.currentPrice.toFixed(e.digits) : null,
-      };
-    });
-
-  const totalFloatingPnl = positions
-    .reduce((sum, p) => {
-      const lp = priceBySymbol.get(p.symbol.name);
-      if (!lp) return sum;
-      const currentPrice = p.side === "BUY" ? lp.bid : lp.ask;
-      return sum.plus(
-        computeRealizedPnl({ side: p.side, openPrice: p.openPrice, closePrice: currentPrice, volume: p.volume, contractSize: p.symbol.contractSize })
-      );
-    }, new Prisma.Decimal(0))
-    .toFixed(2);
 
   const accounts: AccountOption[] = (
     await prisma.account.findMany({
@@ -131,21 +100,28 @@ export default async function ManagerPositionsPage() {
     })
   ).map((bs) => ({ id: bs.symbol.id, name: bs.symbol.name }));
 
+  const groups: GroupOption[] = (
+    await prisma.group.findMany({ where: { brokerId }, select: { id: true, name: true }, orderBy: { name: "asc" } })
+  ).map((g) => ({ id: g.id, name: g.name }));
+
+  const ibRelationships = await prisma.ibRelationship.findMany({
+    where: { brokerId },
+    select: { ibAccountId: true, ibAccount: { select: { accountNumber: true, fullName: true } } },
+  });
+  const ibOptions: IbOption[] = [...new Map(ibRelationships.map((r) => [r.ibAccountId, r])).values()]
+    .map((r) => ({ id: r.ibAccountId, accountNumber: r.ibAccount.accountNumber, fullName: r.ibAccount.fullName }))
+    .sort((a, b) => a.accountNumber.localeCompare(b.accountNumber));
+
   return (
     <main className="mx-auto max-w-[1400px]">
-      <PageHeader
-        title="Positions & Exposure"
-        description={`${rows.length} open position${rows.length === 1 ? "" : "s"} across this broker.`}
-        action={
-          <div className="text-right">
-            <p className="text-xs text-slate-500">Total floating P&L</p>
-            <p className={`font-mono text-lg font-semibold ${Number(totalFloatingPnl) >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
-              {totalFloatingPnl}
-            </p>
-          </div>
-        }
+      <PageHeader title="Positions & Exposure" description={`${rows.length} open position${rows.length === 1 ? "" : "s"} across this broker.`} />
+      <PositionsManager
+        positionRows={rows}
+        accounts={accounts}
+        symbols={tradableSymbols}
+        groups={groups}
+        ibOptions={ibOptions}
       />
-      <PositionsManager exposureRows={exposureRows} positionRows={rows} accounts={accounts} symbols={tradableSymbols} />
     </main>
   );
 }

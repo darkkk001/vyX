@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Card } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
@@ -9,19 +9,14 @@ import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
 
-export type ExposureRow = {
-  symbol: string;
-  count: number;
-  buyVolume: string;
-  sellVolume: string;
-  netExposure: string;
-  currentPrice: string | null;
-};
-
 export type PositionRow = {
   id: string;
+  accountId: string;
   accountNumber: string;
   accountFullName: string;
+  groupId: string | null;
+  groupName: string | null;
+  ibAccountId: string | null;
   symbolName: string;
   digits: number;
   side: "BUY" | "SELL";
@@ -34,22 +29,129 @@ export type PositionRow = {
 
 export type AccountOption = { id: string; accountNumber: string; fullName: string };
 export type SymbolOption = { id: string; name: string };
+export type GroupOption = { id: string; name: string };
+export type IbOption = { id: string; accountNumber: string; fullName: string };
 
-// Exposure table (display only) + an "open a position" form + the open
-// positions table with a per-row Close action (full or partial volume).
-// Same fetch/error/submitting-state shape as SymbolConfigTable.tsx.
+type SideFilter = "ALL" | "BUY" | "SELL";
+type PlFilter = "ALL" | "PROFIT" | "LOSS";
+type SortMode = "symbol" | "exposure" | "risk";
+
+const NO_GROUP = "__none__";
+const NO_IB = "__none__";
+
+// Exposure monitor: filters, sorting, per-symbol Client Floating P&L, an
+// "open a position" form, and the open positions table with a per-row
+// Close action (full or partial volume). Filtering is entirely
+// client-side (same pattern AccountsManager.tsx's own search box uses)
+// -- the exposure aggregate and the broker-wide total both recompute
+// from whichever subset the filters leave, via useMemo, so they always
+// stay in sync with what's on screen.
 export default function PositionsManager({
-  exposureRows,
   positionRows,
   accounts,
   symbols,
+  groups,
+  ibOptions,
 }: {
-  exposureRows: ExposureRow[];
   positionRows: PositionRow[];
   accounts: AccountOption[];
   symbols: SymbolOption[];
+  groups: GroupOption[];
+  ibOptions: IbOption[];
 }) {
   const router = useRouter();
+
+  // --- Filters ---
+  const [symbolFilter, setSymbolFilter] = useState("ALL");
+  const [accountFilter, setAccountFilter] = useState("ALL");
+  const [groupFilter, setGroupFilter] = useState("ALL");
+  const [ibFilter, setIbFilter] = useState("ALL");
+  const [sideFilter, setSideFilter] = useState<SideFilter>("ALL");
+  const [plFilter, setPlFilter] = useState<PlFilter>("ALL");
+  const [sortMode, setSortMode] = useState<SortMode>("symbol");
+
+  // Only accounts that actually have an open position -- filtering
+  // positions by an account with none would always show nothing.
+  const accountsWithPositions = useMemo(() => {
+    const ids = new Set(positionRows.map((p) => p.accountId));
+    return accounts.filter((a) => ids.has(a.id));
+  }, [positionRows, accounts]);
+
+  const filteredPositions = useMemo(() => {
+    return positionRows.filter((p) => {
+      if (symbolFilter !== "ALL" && p.symbolName !== symbolFilter) return false;
+      if (accountFilter !== "ALL" && p.accountId !== accountFilter) return false;
+      if (groupFilter !== "ALL") {
+        if (groupFilter === NO_GROUP ? p.groupId !== null : p.groupId !== groupFilter) return false;
+      }
+      if (ibFilter !== "ALL") {
+        if (ibFilter === NO_IB ? p.ibAccountId !== null : p.ibAccountId !== ibFilter) return false;
+      }
+      if (sideFilter !== "ALL" && p.side !== sideFilter) return false;
+      if (plFilter !== "ALL") {
+        const pnl = p.floatingPnl != null ? Number(p.floatingPnl) : null;
+        if (pnl == null) return false;
+        if (plFilter === "PROFIT" && pnl <= 0) return false;
+        if (plFilter === "LOSS" && pnl >= 0) return false;
+      }
+      return true;
+    });
+  }, [positionRows, symbolFilter, accountFilter, groupFilter, ibFilter, sideFilter, plFilter]);
+
+  const exposureRows = useMemo(() => {
+    type Acc = {
+      symbol: string;
+      digits: number;
+      count: number;
+      buyVolume: number;
+      sellVolume: number;
+      currentPrice: string | null;
+      floatingPnl: number;
+    };
+    const bySymbol = new Map<string, Acc>();
+    for (const p of filteredPositions) {
+      const entry = bySymbol.get(p.symbolName) ?? {
+        symbol: p.symbolName,
+        digits: p.digits,
+        count: 0,
+        buyVolume: 0,
+        sellVolume: 0,
+        currentPrice: p.currentPrice,
+        floatingPnl: 0,
+      };
+      entry.count += 1;
+      const volume = Number(p.volume);
+      if (p.side === "BUY") entry.buyVolume += volume;
+      else entry.sellVolume += volume;
+      if (p.floatingPnl != null) entry.floatingPnl += Number(p.floatingPnl);
+      bySymbol.set(p.symbolName, entry);
+    }
+    const rows = [...bySymbol.values()].map((e) => ({
+      symbol: e.symbol,
+      count: e.count,
+      buyVolume: e.buyVolume.toFixed(2),
+      sellVolume: e.sellVolume.toFixed(2),
+      netExposure: (e.buyVolume - e.sellVolume).toFixed(2),
+      netExposureNum: e.buyVolume - e.sellVolume,
+      currentPrice: e.currentPrice,
+      floatingPnl: e.floatingPnl,
+    }));
+    if (sortMode === "exposure") {
+      rows.sort((a, b) => Math.abs(b.netExposureNum) - Math.abs(a.netExposureNum));
+    } else if (sortMode === "risk") {
+      // Highest risk to the broker = symbols where clients are currently
+      // winning the most (positive client P&L = money owed if closed now).
+      rows.sort((a, b) => b.floatingPnl - a.floatingPnl);
+    } else {
+      rows.sort((a, b) => a.symbol.localeCompare(b.symbol));
+    }
+    return rows;
+  }, [filteredPositions, sortMode]);
+
+  const totalFloatingPnl = useMemo(
+    () => filteredPositions.reduce((sum, p) => sum + (p.floatingPnl != null ? Number(p.floatingPnl) : 0), 0),
+    [filteredPositions]
+  );
 
   // --- Open position form ---
   const [accountId, setAccountId] = useState(accounts[0]?.id ?? "");
@@ -105,7 +207,116 @@ export default function PositionsManager({
 
   return (
     <div className="flex flex-col gap-6">
-      <Card title="Exposure by symbol">
+      <Card title="Filters">
+        <div className="flex flex-wrap items-end gap-3">
+          <div className="flex flex-col gap-1.5">
+            <label className="text-xs font-medium text-slate-500">Symbol</label>
+            <Select value={symbolFilter} onChange={(e) => setSymbolFilter(e.target.value)} className="w-32">
+              <option value="ALL">All</option>
+              {symbols.map((s) => (
+                <option key={s.id} value={s.name}>
+                  {s.name}
+                </option>
+              ))}
+            </Select>
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <label className="text-xs font-medium text-slate-500">Account</label>
+            <Select value={accountFilter} onChange={(e) => setAccountFilter(e.target.value)} className="w-44">
+              <option value="ALL">All</option>
+              {accountsWithPositions.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.accountNumber} — {a.fullName}
+                </option>
+              ))}
+            </Select>
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <label className="text-xs font-medium text-slate-500">Group</label>
+            <Select value={groupFilter} onChange={(e) => setGroupFilter(e.target.value)} className="w-36">
+              <option value="ALL">All</option>
+              <option value={NO_GROUP}>— ungrouped —</option>
+              {groups.map((g) => (
+                <option key={g.id} value={g.id}>
+                  {g.name}
+                </option>
+              ))}
+            </Select>
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <label className="text-xs font-medium text-slate-500">IB</label>
+            <Select value={ibFilter} onChange={(e) => setIbFilter(e.target.value)} className="w-44">
+              <option value="ALL">All</option>
+              <option value={NO_IB}>— no IB —</option>
+              {ibOptions.map((ib) => (
+                <option key={ib.id} value={ib.id}>
+                  {ib.accountNumber} — {ib.fullName}
+                </option>
+              ))}
+            </Select>
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <label className="text-xs font-medium text-slate-500">Side</label>
+            <Select value={sideFilter} onChange={(e) => setSideFilter(e.target.value as SideFilter)} className="w-28">
+              <option value="ALL">All</option>
+              <option value="BUY">Long (BUY)</option>
+              <option value="SELL">Short (SELL)</option>
+            </Select>
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <label className="text-xs font-medium text-slate-500">P&L</label>
+            <Select value={plFilter} onChange={(e) => setPlFilter(e.target.value as PlFilter)} className="w-28">
+              <option value="ALL">All</option>
+              <option value="PROFIT">Profit</option>
+              <option value="LOSS">Loss</option>
+            </Select>
+          </div>
+          {symbolFilter !== "ALL" ||
+          accountFilter !== "ALL" ||
+          groupFilter !== "ALL" ||
+          ibFilter !== "ALL" ||
+          sideFilter !== "ALL" ||
+          plFilter !== "ALL" ? (
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => {
+                setSymbolFilter("ALL");
+                setAccountFilter("ALL");
+                setGroupFilter("ALL");
+                setIbFilter("ALL");
+                setSideFilter("ALL");
+                setPlFilter("ALL");
+              }}
+            >
+              Clear filters
+            </Button>
+          ) : null}
+        </div>
+      </Card>
+
+      <Card
+        title="Exposure by symbol"
+        description={`${filteredPositions.length} position${filteredPositions.length === 1 ? "" : "s"} in view`}
+        action={
+          <div className="flex items-center gap-4">
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-medium text-slate-500">Sort by</label>
+              <Select value={sortMode} onChange={(e) => setSortMode(e.target.value as SortMode)} className="w-32">
+                <option value="symbol">Symbol</option>
+                <option value="exposure">Exposure</option>
+                <option value="risk">Risk</option>
+              </Select>
+            </div>
+            <div className="text-right">
+              <p className="text-xs text-slate-500">Total floating P&L</p>
+              <p className={`font-mono text-lg font-semibold ${totalFloatingPnl >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
+                {totalFloatingPnl.toFixed(2)}
+              </p>
+            </div>
+          </div>
+        }
+      >
         <Table>
           <TableHead>
             <TableHeaderCell>Symbol</TableHeaderCell>
@@ -113,11 +324,12 @@ export default function PositionsManager({
             <TableHeaderCell align="right">Buy volume</TableHeaderCell>
             <TableHeaderCell align="right">Sell volume</TableHeaderCell>
             <TableHeaderCell align="right">Net exposure</TableHeaderCell>
+            <TableHeaderCell align="right">Client floating P&L</TableHeaderCell>
             <TableHeaderCell align="right">Current price</TableHeaderCell>
           </TableHead>
           <TableBody>
             {exposureRows.length === 0 ? (
-              <TableEmptyState colSpan={6}>No open positions.</TableEmptyState>
+              <TableEmptyState colSpan={7}>No open positions match the current filters.</TableEmptyState>
             ) : (
               exposureRows.map((e) => (
                 <TableRow key={e.symbol}>
@@ -132,10 +344,13 @@ export default function PositionsManager({
                   <TableCell
                     align="right"
                     mono
-                    className={Number(e.netExposure) === 0 ? "" : Number(e.netExposure) > 0 ? "text-emerald-600" : "text-rose-600"}
+                    className={e.netExposureNum === 0 ? "" : e.netExposureNum > 0 ? "text-emerald-600" : "text-rose-600"}
                   >
-                    {Number(e.netExposure) > 0 ? "+" : ""}
+                    {e.netExposureNum > 0 ? "+" : ""}
                     {e.netExposure}
+                  </TableCell>
+                  <TableCell align="right" mono className={e.floatingPnl >= 0 ? "text-emerald-600" : "text-rose-600"}>
+                    {e.floatingPnl.toFixed(2)}
                   </TableCell>
                   <TableCell align="right" mono>
                     {e.currentPrice ?? "—"}
@@ -184,7 +399,7 @@ export default function PositionsManager({
         </form>
       </Card>
 
-      <Card title="Open positions">
+      <Card title="Open positions" description="Reflects the filters above">
         <Table>
           <TableHead>
             <TableHeaderCell>Account</TableHeaderCell>
@@ -198,10 +413,10 @@ export default function PositionsManager({
             <TableHeaderCell />
           </TableHead>
           <TableBody>
-            {positionRows.length === 0 ? (
-              <TableEmptyState colSpan={9}>No open positions.</TableEmptyState>
+            {filteredPositions.length === 0 ? (
+              <TableEmptyState colSpan={9}>No open positions match the current filters.</TableEmptyState>
             ) : (
-              positionRows.map((p) => (
+              filteredPositions.map((p) => (
                 <TableRow key={p.id}>
                   <TableCell>
                     {p.accountNumber}

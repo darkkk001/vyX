@@ -93,6 +93,34 @@ API. All seeded test rows (5 test positions/orders, the seeded loss
 transaction, every limit set during testing) were cleaned up and account
 balance/broker/symbol config restored to their pre-test values afterward.
 
+**Exposure monitor — filters, sorting, per-symbol Client P&L, closed
+same day.** Spec §9's next-named gap after risk management. Pure read/
+display upgrade — no schema change, no new API route; the Positions &
+Exposure screen (`app/manage/(shell)/positions/`) already had the core
+per-symbol BUY/SELL/NET aggregate, just none of the six filters (Symbol/
+Account/Group/IB/Long-Short/Profit-Loss), no sorting, and no per-symbol
+Client Floating P&L (only a broker-wide total existed). Filtering moved
+client-side (same pattern `AccountsManager.tsx`'s own search box already
+uses) rather than adding URL/searchParams plumbing — `page.tsx` fetches
+every open position once (broadened to include each account's `group`
+and `ibLinkAsClient`), `PositionsManager.tsx` computes the filtered
+subset and the exposure aggregate from it via `useMemo`, so both stay in
+sync as filters change. Added a `Sort by` control (`Symbol` / `Exposure`
+— descending `|net|` / `Risk` — descending Client Floating P&L, on the
+reading that a symbol where clients are winning the most is the
+broker's biggest payout liability if closed now).
+
+Verified by replicating the exact filter/aggregation logic in a
+standalone script against real seeded data (three positions across two
+accounts, one IB relationship, one group assignment, two live prices set
+to force a clear profit on one position and a loss on another) rather
+than eyeballing a screenshot — every one of the nine tested filter
+combinations (unfiltered, each of the six filters individually, plus a
+combined case) produced hand-verifiable, correct totals and per-symbol
+rows. All seeded positions/orders/accounts/IB relationship/group
+assignment/live prices were deleted afterward, restoring the broker to
+its pre-test state.
+
 ---
 
 ## 1. Current State (what exists today, before this spec)
