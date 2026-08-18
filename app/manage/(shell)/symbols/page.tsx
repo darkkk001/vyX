@@ -20,6 +20,7 @@ const DEFAULTS = {
   enabled: true,
   commissionPerLot: "0",
   maxExposure: null as string | null,
+  tradingMode: "BOTH" as const,
 };
 
 export default async function ManagerSymbolsPage() {
@@ -50,6 +51,7 @@ export default async function ManagerSymbolsPage() {
       enabled: cfg ? cfg.enabled : DEFAULTS.enabled,
       commissionPerLot: cfg ? cfg.commissionPerLot.toString() : DEFAULTS.commissionPerLot,
       maxExposure: cfg ? (cfg.maxExposure ? cfg.maxExposure.toString() : null) : DEFAULTS.maxExposure,
+      tradingMode: cfg ? cfg.tradingMode : DEFAULTS.tradingMode,
     };
   });
 

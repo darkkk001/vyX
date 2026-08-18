@@ -33,6 +33,7 @@ export default async function ManagerAccountsPage() {
     status: a.status,
     groupId: a.groupId,
     groupName: a.group?.name ?? null,
+    maxDailyLoss: a.maxDailyLoss ? a.maxDailyLoss.toString() : null,
   }));
 
   const groupOptions: GroupOption[] = groups.map((g) => ({ id: g.id, name: g.name }));

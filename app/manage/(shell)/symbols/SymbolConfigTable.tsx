@@ -4,8 +4,11 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell } from "@/components/ui/Table";
 import { Input } from "@/components/ui/Input";
+import { Select } from "@/components/ui/Select";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { Button } from "@/components/ui/Button";
+
+export type TradingMode = "BOTH" | "BUY_ONLY" | "SELL_ONLY";
 
 export type SymbolConfigRow = {
   symbolId: string;
@@ -21,6 +24,7 @@ export type SymbolConfigRow = {
   enabled: boolean;
   commissionPerLot: string;
   maxExposure: string | null;
+  tradingMode: TradingMode;
 };
 
 type EditableField = "spreadMarkup" | "minLot" | "maxLot" | "lotStep" | "swapLong" | "swapShort" | "commissionPerLot" | "maxExposure";
@@ -57,6 +61,11 @@ export default function SymbolConfigTable({ initialRows }: { initialRows: Symbol
     setSavedId(null);
   }
 
+  function updateTradingMode(symbolId: string, tradingMode: TradingMode) {
+    setRows((prev) => prev.map((r) => (r.symbolId === symbolId ? { ...r, tradingMode } : r)));
+    setSavedId(null);
+  }
+
   async function save(row: SymbolConfigRow) {
     setSavingId(row.symbolId);
     setErrors((prev) => ({ ...prev, [row.symbolId]: "" }));
@@ -86,6 +95,7 @@ export default function SymbolConfigTable({ initialRows }: { initialRows: Symbol
       <TableHead>
         <TableHeaderCell>Symbol</TableHeaderCell>
         <TableHeaderCell>Enabled</TableHeaderCell>
+        <TableHeaderCell title="Restrict which side can trade even when enabled">Trading mode</TableHeaderCell>
         {NUMERIC_FIELDS.map((f) => (
           <TableHeaderCell key={f.key} title={f.title} className="whitespace-nowrap">
             {f.label}
@@ -102,6 +112,17 @@ export default function SymbolConfigTable({ initialRows }: { initialRows: Symbol
             </TableCell>
             <TableCell>
               <Checkbox checked={row.enabled} onChange={() => toggleEnabled(row.symbolId)} />
+            </TableCell>
+            <TableCell>
+              <Select
+                value={row.tradingMode}
+                onChange={(e) => updateTradingMode(row.symbolId, e.target.value as TradingMode)}
+                className="w-32"
+              >
+                <option value="BOTH">Both</option>
+                <option value="BUY_ONLY">Buy only</option>
+                <option value="SELL_ONLY">Sell only</option>
+              </Select>
             </TableCell>
             {NUMERIC_FIELDS.map((f) => (
               <TableCell key={f.key}>

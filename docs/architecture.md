@@ -53,6 +53,46 @@ assumed:
   exist as Tauri shells already (`desktop-tauri/`, `manager-tauri/`,
   `admin-tauri/`) — see `decisions.md`'s manager/admin-desktop entries.
 
+**Risk management — config + real enforcement, closed same day.** User
+picked this as the top gap to close first. Real finding along the way:
+building risk *config* alone would have been decorative a third time —
+`Broker.maxOpenPositionsPerAccount` already existed in the schema since
+migration `20260817000000_exposure_limits` but was never read by any
+live route (only by the unwired Rust engine). Since neither live order
+path (`app/api/trade/orders`, `app/api/manage/positions`) calls the Rust
+Core at all (per this doc's own re-check above), this pass built real
+enforcement on the path that actually executes trades today — new
+`lib/risk.ts` (7 checks: broker trading-halt, symbol BUY_ONLY/SELL_ONLY,
+lot-step, max-open-positions, symbol max-exposure, broker total-exposure,
+account max-daily-loss), wired into both live routes, plus a new
+`BROKER_ADMIN`-only `/manage/risk` screen and `tradingMode`/
+`maxDailyLoss` fields added to the existing Symbols/Accounts screens.
+Explicitly deferred, named rather than dropped: max drawdown (needs
+equity-history tracking), free-margin/margin-level checks (needs an
+equity calculator that doesn't exist in the live TS path — really part
+of the not-yet-picked Trading-Core-routing gap), trading hours,
+account-level overrides beyond symbol/broker.
+
+Live-verified against the real local dev server, not just code review:
+halted the broker and confirmed both the trader order route and
+Manager's manual-open route rejected a real order, then un-halted and
+confirmed both worked again; set a symbol `BUY_ONLY` and confirmed a
+real SELL was rejected while BUY still filled; submitted a volume that
+wasn't a valid lot-step multiple and confirmed rejection, then a valid
+one filled; set `maxOpenPositionsPerAccount` to the account's real
+current open-position count and confirmed the next order was rejected;
+set a symbol's `maxExposure` below the account's current open volume in
+that symbol and confirmed rejection; set the broker's
+`totalExposureLimit` low and confirmed an order on a *different* symbol
+was still correctly rejected (broker-wide, not per-symbol); seeded a
+real `-500` `TRADE_PNL` `Transaction` row, set `maxDailyLoss: 100`, and
+confirmed further orders were rejected; confirmed a normal unconstrained
+order still succeeds after all seven checks were added (regression);
+confirmed `MANAGER` gets a clean redirect on the page and `403` on the
+API. All seeded test rows (5 test positions/orders, the seeded loss
+transaction, every limit set during testing) were cleaned up and account
+balance/broker/symbol config restored to their pre-test values afterward.
+
 ---
 
 ## 1. Current State (what exists today, before this spec)

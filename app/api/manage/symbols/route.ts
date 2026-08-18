@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import { Prisma } from "@prisma/client";
+import { Prisma, TradingMode } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
+
+const TRADING_MODES: TradingMode[] = ["BOTH", "BUY_ONLY", "SELL_ONLY"];
 
 // BrokerSymbol's own schema defaults (prisma/schema.prisma) -- mirrored
 // here so a symbol with no configured row yet still displays real,
@@ -20,6 +22,7 @@ const DEFAULTS = {
   enabled: true,
   commissionPerLot: "0",
   maxExposure: null as string | null,
+  tradingMode: "BOTH" as TradingMode,
 };
 
 async function requireManager() {
@@ -57,6 +60,7 @@ export async function GET() {
       enabled: cfg ? cfg.enabled : DEFAULTS.enabled,
       commissionPerLot: cfg ? cfg.commissionPerLot.toString() : DEFAULTS.commissionPerLot,
       maxExposure: cfg ? (cfg.maxExposure ? cfg.maxExposure.toString() : null) : DEFAULTS.maxExposure,
+      tradingMode: cfg ? cfg.tradingMode : DEFAULTS.tradingMode,
     };
   });
 
@@ -74,6 +78,7 @@ interface PatchBody {
   enabled: boolean;
   commissionPerLot: string;
   maxExposure: string | null;
+  tradingMode: TradingMode;
 }
 
 // Decimal.js isn't a dependency of this app (only services/api-gateway
@@ -118,9 +123,20 @@ export async function PATCH(request: NextRequest) {
   const maxExposureRaw = body?.maxExposure;
   const maxExposure = maxExposureRaw == null || maxExposureRaw === "" ? null : parseDecimal(maxExposureRaw);
   const enabled = typeof body?.enabled === "boolean" ? body.enabled : null;
+  const tradingMode = TRADING_MODES.includes(body?.tradingMode as TradingMode) ? (body!.tradingMode as TradingMode) : null;
 
-  if (!spreadMarkup || !minLot || !maxLot || !lotStep || !swapLong || !swapShort || !commissionPerLot || enabled === null) {
-    return NextResponse.json({ error: "all fields must be valid numbers/booleans" }, { status: 400 });
+  if (
+    !spreadMarkup ||
+    !minLot ||
+    !maxLot ||
+    !lotStep ||
+    !swapLong ||
+    !swapShort ||
+    !commissionPerLot ||
+    enabled === null ||
+    tradingMode === null
+  ) {
+    return NextResponse.json({ error: "all fields must be valid numbers/booleans/tradingMode" }, { status: 400 });
   }
   if (maxExposureRaw != null && maxExposureRaw !== "" && !maxExposure) {
     return NextResponse.json({ error: "maxExposure must be a valid number or empty" }, { status: 400 });
@@ -154,6 +170,7 @@ export async function PATCH(request: NextRequest) {
     enabled,
     commissionPerLot,
     maxExposure,
+    tradingMode,
   };
 
   const updated = await prisma.brokerSymbol.upsert({
@@ -180,6 +197,7 @@ export async function PATCH(request: NextRequest) {
             enabled: existing.enabled,
             commissionPerLot: existing.commissionPerLot.toString(),
             maxExposure: existing.maxExposure?.toString() ?? null,
+            tradingMode: existing.tradingMode,
           }
         : DEFAULTS,
       newValue: {
@@ -192,6 +210,7 @@ export async function PATCH(request: NextRequest) {
         enabled: updated.enabled,
         commissionPerLot: updated.commissionPerLot.toString(),
         maxExposure: updated.maxExposure?.toString() ?? null,
+        tradingMode: updated.tradingMode,
       },
     },
   });
@@ -207,5 +226,6 @@ export async function PATCH(request: NextRequest) {
     enabled: updated.enabled,
     commissionPerLot: updated.commissionPerLot.toString(),
     maxExposure: updated.maxExposure?.toString() ?? null,
+    tradingMode: updated.tradingMode,
   });
 }

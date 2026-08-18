@@ -143,6 +143,12 @@ enum CommissionType {
   PERCENTAGE
 }
 
+enum TradingMode {
+  BOTH
+  BUY_ONLY
+  SELL_ONLY
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // Tenancy
 // ─────────────────────────────────────────────────────────────────────────
@@ -159,6 +165,14 @@ model Broker {
   // Max open positions an account may hold at once, across all symbols.
   // Null = no limit — see docs/risk-engine.md §2.1 step 5.
   maxOpenPositionsPerAccount Int?
+  // Non-null = all new orders/positions across the broker are rejected
+  // (existing open positions are untouched) -- see lib/risk.ts's
+  // checkTradingHalted. The timestamp is itself the audit trail entry
+  // point (when it was set); who set it lives in the paired AuditLog row.
+  tradingHaltedAt DateTime? @db.Timestamptz(3)
+  // Sum of open volume (lots) across every symbol for this broker. Null
+  // = no limit -- see lib/risk.ts's checkBrokerExposure.
+  totalExposureLimit Decimal? @db.Decimal(18, 2)
 
   // Branding — resolved at request time, never hardcoded or baked into a build.
   logoUrl      String?
@@ -218,6 +232,12 @@ model Account {
   balance       Decimal       @default(0) @db.Decimal(18, 4)
   credit        Decimal       @default(0) @db.Decimal(18, 4) // non-withdrawable bonus
   status        AccountStatus @default(ACTIVE)
+  // Null = no limit. When set, new orders are rejected once today's
+  // realized P&L (SUM of TRADE_PNL Transaction rows since local
+  // midnight) is already at or below -maxDailyLoss -- see
+  // lib/risk.ts's checkMaxDailyLoss. Existing open positions are
+  // untouched; this only blocks new trading for the rest of the day.
+  maxDailyLoss  Decimal?      @db.Decimal(18, 2)
   // Null = ungrouped (every account before this feature existed, and any
   // new one until an admin assigns it) -- see Group's own comment for
   // what assigning a group actually does today.
@@ -407,6 +427,10 @@ model BrokerSymbol {
   swapLong     Decimal @default(0) @db.Decimal(10, 4)
   swapShort    Decimal @default(0) @db.Decimal(10, 4)
   enabled      Boolean @default(true)
+  // BOTH (default) / BUY_ONLY / SELL_ONLY -- rejects orders on the
+  // disallowed side even when the symbol is otherwise enabled. See
+  // lib/risk.ts's checkSymbolTradingMode.
+  tradingMode  TradingMode @default(BOTH)
   // Flat fee per lot, charged once when a position opens (round-turn,
   // not split between open/close). Null-safe default of 0 means existing
   // brokers charge no commission until an admin sets a rate.

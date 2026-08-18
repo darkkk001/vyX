@@ -21,6 +21,7 @@ export type AccountRow = {
   status: "ACTIVE" | "SUSPENDED" | "CLOSED";
   groupId: string | null;
   groupName: string | null;
+  maxDailyLoss: string | null;
 };
 
 export type GroupOption = { id: string; name: string };
@@ -88,6 +89,10 @@ export default function AccountsManager({
     await patchAccount(row.id, { leverage: n });
   }
 
+  async function changeMaxDailyLoss(row: AccountRow, value: string) {
+    await patchAccount(row.id, { maxDailyLoss: value.trim() === "" ? null : value.trim() });
+  }
+
   async function submitAdjustment(row: AccountRow) {
     setBusyId(row.id);
     setErrors((prev) => ({ ...prev, [row.id]: "" }));
@@ -126,11 +131,14 @@ export default function AccountsManager({
           <TableHeaderCell align="right">Balance</TableHeaderCell>
           <TableHeaderCell align="right">Credit</TableHeaderCell>
           <TableHeaderCell>Status</TableHeaderCell>
+          <TableHeaderCell align="right" title="Reject new orders once today's realized loss reaches this amount">
+            Max daily loss
+          </TableHeaderCell>
           <TableHeaderCell />
         </TableHead>
         <TableBody>
           {filtered.length === 0 ? (
-            <TableEmptyState colSpan={8}>No accounts match.</TableEmptyState>
+            <TableEmptyState colSpan={9}>No accounts match.</TableEmptyState>
           ) : (
             filtered.map((row) => (
               <Fragment key={row.id}>
@@ -189,6 +197,22 @@ export default function AccountsManager({
                       <Badge tone={statusTone[row.status]}>{row.status}</Badge>
                     )}
                   </TableCell>
+                  <TableCell align="right" mono>
+                    {canManageFinance ? (
+                      <Input
+                        type="text"
+                        inputMode="decimal"
+                        mono
+                        placeholder="no limit"
+                        defaultValue={row.maxDailyLoss ?? ""}
+                        disabled={busyId === row.id}
+                        onBlur={(e) => e.target.value !== (row.maxDailyLoss ?? "") && changeMaxDailyLoss(row, e.target.value)}
+                        className="w-24 text-right"
+                      />
+                    ) : (
+                      row.maxDailyLoss ?? "—"
+                    )}
+                  </TableCell>
                   <TableCell className="whitespace-nowrap">
                     {canManageFinance ? (
                       <Button size="sm" onClick={() => setAdjustOpenId(adjustOpenId === row.id ? null : row.id)}>
@@ -200,7 +224,7 @@ export default function AccountsManager({
                 </TableRow>
                 {adjustOpenId === row.id ? (
                   <tr>
-                    <td colSpan={8} className="bg-slate-50 px-4 py-3">
+                    <td colSpan={9} className="bg-slate-50 px-4 py-3">
                       <div className="flex flex-wrap items-center gap-2">
                         <Input
                           type="text"

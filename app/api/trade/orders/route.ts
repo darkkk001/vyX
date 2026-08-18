@@ -3,6 +3,15 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
 import { validateSlTp } from "@/lib/trading";
+import {
+  checkTradingHalted,
+  checkSymbolTradingMode,
+  checkLotStep,
+  checkMaxOpenPositions,
+  checkSymbolExposure,
+  checkBrokerExposure,
+  checkMaxDailyLoss,
+} from "@/lib/risk";
 
 // Phase 2 note: there is no live tick feed or matching engine yet (that's
 // Phase 5). Prices are simulated client-side, so the client supplies the
@@ -61,6 +70,24 @@ export async function POST(request: NextRequest) {
       { error: `volume must be between ${brokerSymbol.minLot} and ${brokerSymbol.maxLot}` },
       { status: 400 }
     );
+  }
+
+  // Risk checks -- see lib/risk.ts. Cheap/synchronous first, then the
+  // query-backed ones, all before any order/position is created.
+  const [broker, account] = await Promise.all([
+    prisma.broker.findUniqueOrThrow({ where: { id: session.brokerId } }),
+    prisma.account.findUniqueOrThrow({ where: { id: session.accountId } }),
+  ]);
+  const riskError =
+    checkTradingHalted(broker) ??
+    checkSymbolTradingMode(brokerSymbol.tradingMode, side) ??
+    checkLotStep(volume, brokerSymbol.minLot, brokerSymbol.lotStep) ??
+    (await checkMaxOpenPositions(prisma, session.accountId, broker.maxOpenPositionsPerAccount)) ??
+    (await checkSymbolExposure(prisma, session.accountId, brokerSymbol.symbolId, volume, brokerSymbol.maxExposure)) ??
+    (await checkBrokerExposure(prisma, session.brokerId, volume, broker.totalExposureLimit)) ??
+    (await checkMaxDailyLoss(prisma, session.accountId, account.maxDailyLoss));
+  if (riskError) {
+    return NextResponse.json({ error: riskError }, { status: 400 });
   }
 
   if (!price) {

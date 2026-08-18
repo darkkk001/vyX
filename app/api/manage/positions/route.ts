@@ -4,6 +4,15 @@ import { randomUUID } from "node:crypto";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { getFreshPrice } from "@/lib/live-price";
+import {
+  checkTradingHalted,
+  checkSymbolTradingMode,
+  checkLotStep,
+  checkMaxOpenPositions,
+  checkSymbolExposure,
+  checkBrokerExposure,
+  checkMaxDailyLoss,
+} from "@/lib/risk";
 
 async function requireManager() {
   const session = await getAdminSession();
@@ -68,6 +77,23 @@ export async function POST(request: NextRequest) {
       { error: `volume must be between ${brokerSymbol.minLot} and ${brokerSymbol.maxLot}` },
       { status: 400 }
     );
+  }
+
+  // Risk checks -- see lib/risk.ts. Same checks and order as the
+  // trader-facing route (app/api/trade/orders/route.ts) -- a manual
+  // dealing-desk open must respect the same broker/symbol/account
+  // policies as a trader's own order.
+  const broker = await prisma.broker.findUniqueOrThrow({ where: { id: brokerId } });
+  const riskError =
+    checkTradingHalted(broker) ??
+    checkSymbolTradingMode(brokerSymbol.tradingMode, side) ??
+    checkLotStep(volume, brokerSymbol.minLot, brokerSymbol.lotStep) ??
+    (await checkMaxOpenPositions(prisma, accountId, broker.maxOpenPositionsPerAccount)) ??
+    (await checkSymbolExposure(prisma, accountId, symbolId, volume, brokerSymbol.maxExposure)) ??
+    (await checkBrokerExposure(prisma, brokerId, volume, broker.totalExposureLimit)) ??
+    (await checkMaxDailyLoss(prisma, accountId, account.maxDailyLoss));
+  if (riskError) {
+    return NextResponse.json({ error: riskError }, { status: 400 });
   }
 
   const price = await getFreshPrice(brokerSymbol.symbol.name);

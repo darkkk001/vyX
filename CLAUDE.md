@@ -252,6 +252,27 @@ SQL Editor.
   group, so it can never receive the shell regardless of session state.
   Confirmed live via a fresh screenshot of the real installed
   `manager-tauri` app post-fix.
+  **Risk management — config + real enforcement (2026-08-18).** New
+  `lib/risk.ts` (7 checks: broker trading-halt, symbol BUY_ONLY/
+  SELL_ONLY, lot-step, max-open-positions, symbol max-exposure, broker
+  total-exposure, account max-daily-loss) wired into both live order
+  paths (`app/api/trade/orders`, `app/api/manage/positions`) — real
+  enforcement, not decoration, since neither live path calls the Rust
+  engine (see the architecture status re-check above). New
+  `BROKER_ADMIN`-only `/manage/risk` screen; `tradingMode` added to
+  Symbols, `maxDailyLoss` added to Accounts. New Prisma fields:
+  `Broker.tradingHaltedAt`/`totalExposureLimit`, `BrokerSymbol.
+  tradingMode`, `Account.maxDailyLoss` (migration
+  `20260818060000_risk_management_fields`, hand-applied + recorded into
+  `_prisma_migrations` since `prisma migrate dev` wanted to reset the DB
+  over drift from the Rust engine's own unrelated tables — never run
+  that). All 7 checks live-verified end to end (halt, trading-mode,
+  lot-step, max-positions, symbol/broker exposure, daily-loss, plus a
+  normal-order regression check and a `MANAGER` 403 check), with every
+  seeded test row cleaned up and balances/config restored afterward. See
+  `docs/architecture.md`'s status re-check for the full writeup.
+  Deferred, named: max drawdown, free-margin checks, trading hours,
+  account-level overrides.
 - **Phase 5** (real execution engine / LP FIX feed) — partially started.
   Note: this doc's phase numbering disagrees with `docs/architecture.md`
   §7's own table (which calls Phase 5 "Mobile") — never reconciled,

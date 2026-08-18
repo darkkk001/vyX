@@ -25,7 +25,8 @@ export default async function ManageShellLayout({ children }: { children: React.
       { href: "/manage/funds", label: "Funds" },
       { href: "/manage/kyc", label: "KYC" },
       { href: "/manage/ib", label: "IB" },
-      { href: "/manage/team", label: "Team" }
+      { href: "/manage/team", label: "Team" },
+      { href: "/manage/risk", label: "Risk" }
     );
   }
 
