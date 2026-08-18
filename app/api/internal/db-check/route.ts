@@ -22,5 +22,28 @@ export async function GET() {
        OR (table_name = 'Account' AND column_name = 'maxDailyLoss')
   `;
   const brokerCount = await prisma.broker.count();
-  return NextResponse.json({ database: db.current_database, expectedColumnsFound: columns, brokerCount });
+
+  // Reveals just enough of the actual runtime env var to fingerprint
+  // which database it points at (host + first 12 chars of the username
+  // token), without exposing the password -- Vercel's dashboard masks
+  // Sensitive values entirely, so this is the only way to confirm what
+  // process.env actually resolves to versus what the dashboard shows.
+  function fingerprint(name: string) {
+    const raw = process.env[name];
+    if (!raw) return null;
+    try {
+      const url = new URL(raw);
+      return { host: url.host, userPrefix: url.username.slice(0, 12) };
+    } catch {
+      return "unparseable";
+    }
+  }
+
+  return NextResponse.json({
+    database: db.current_database,
+    expectedColumnsFound: columns,
+    brokerCount,
+    DATABASE_URL: fingerprint("DATABASE_URL"),
+    DIRECT_URL: fingerprint("DIRECT_URL"),
+  });
 }
