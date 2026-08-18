@@ -227,6 +227,31 @@ SQL Editor.
   all three, not just the raw `target/release` binary — see
   `docs/decisions.md`'s ADR-001 addendum for the full root-cause
   writeup.
+  **Manager + Super Admin backoffice UI, styled (2026-08-18).**
+  `app/manage/*` and `app/(super-admin)/*` had real, working backend
+  logic but zero styling anywhere — confirmed live in the installed
+  `manager-tauri` app, which is what surfaced this. Added a small
+  Tailwind-only `components/ui/` primitive layer (Button, Input, Select,
+  Checkbox, Card, Table family, Badge, FormField, Alert, PageHeader — no
+  new dependencies, light admin-dashboard palette, `app/globals.css`
+  untouched) and a shared `components/admin/AdminShell.tsx`
+  (sidebar+content, role-filtered nav) reused by both surfaces. Every
+  page converted is pure styling — no change to any API route, Prisma
+  query, or role-gating logic; re-verified live after each phase
+  (MANAGER vs BROKER_ADMIN vs SUPER_ADMIN sidebar contents, real
+  mutations against local Postgres, server-side 403s still fire).
+  **Found and fixed a real bug in the process**: the original single
+  `layout.tsx` per surface wrapped every child route in `AdminShell`
+  based on session presence alone, so an already-authenticated session
+  hitting `/manage/login` rendered the sidebar and the login form
+  stacked together (caught via an actual screenshot of the installed
+  desktop app, not just curl). Fixed with the idiomatic Next.js pattern:
+  `app/manage/(shell)/*` and `app/(super-admin)/(shell)/*` route groups
+  (invisible in the URL) hold the authenticated pages and the
+  session-gated `AdminShell` wrap; `login/` stays a sibling outside the
+  group, so it can never receive the shell regardless of session state.
+  Confirmed live via a fresh screenshot of the real installed
+  `manager-tauri` app post-fix.
 - **Phase 5** (real execution engine / LP FIX feed) — partially started.
   Note: this doc's phase numbering disagrees with `docs/architecture.md`
   §7's own table (which calls Phase 5 "Mobile") — never reconciled,

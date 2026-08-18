@@ -1,0 +1,236 @@
+"use client";
+
+import { useState } from "react";
+import { useRouter } from "next/navigation";
+import { Card } from "@/components/ui/Card";
+import { Input } from "@/components/ui/Input";
+import { Select } from "@/components/ui/Select";
+import { Button } from "@/components/ui/Button";
+import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
+
+export type IbRelationshipRow = {
+  id: string;
+  ibAccountId: string;
+  ibAccountNumber: string;
+  ibAccountFullName: string;
+  clientAccountId: string;
+  clientAccountNumber: string;
+  clientAccountFullName: string;
+  commissionType: "PER_LOT" | "PERCENTAGE";
+  commissionRate: string;
+  pendingCommission: string;
+  lastPayoutAt: string | null;
+};
+
+export type AccountOption = { id: string; accountNumber: string; fullName: string };
+
+// Create-form + editable table, same shape as every other Manager
+// client component this session (useState per field, fetch+router.refresh
+// on success).
+export default function IbRelationshipsManager({
+  initialRows,
+  ibOptions,
+  clientOptions,
+}: {
+  initialRows: IbRelationshipRow[];
+  ibOptions: AccountOption[];
+  clientOptions: AccountOption[];
+}) {
+  const router = useRouter();
+
+  // --- Create form ---
+  const [ibAccountId, setIbAccountId] = useState(ibOptions[0]?.id ?? "");
+  const [clientAccountId, setClientAccountId] = useState(clientOptions[0]?.id ?? "");
+  const [commissionType, setCommissionType] = useState<"PER_LOT" | "PERCENTAGE">("PER_LOT");
+  const [commissionRate, setCommissionRate] = useState("");
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
+
+  async function createRelationship(e: React.FormEvent) {
+    e.preventDefault();
+    setCreating(true);
+    setCreateError(null);
+    const response = await fetch("/api/manage/ib-relationships", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ibAccountId, clientAccountId, commissionType, commissionRate }),
+    });
+    setCreating(false);
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      setCreateError(body.error ?? "failed to create relationship");
+      return;
+    }
+    setCommissionRate("");
+    router.refresh();
+  }
+
+  // --- Per-row rate/type edit ---
+  const [draftType, setDraftType] = useState<Record<string, "PER_LOT" | "PERCENTAGE">>({});
+  const [draftRate, setDraftRate] = useState<Record<string, string>>({});
+  const [savingId, setSavingId] = useState<string | null>(null);
+  const [savedId, setSavedId] = useState<string | null>(null);
+  const [editErrors, setEditErrors] = useState<Record<string, string>>({});
+
+  async function saveEdit(row: IbRelationshipRow) {
+    setSavingId(row.id);
+    setSavedId(null);
+    setEditErrors((prev) => ({ ...prev, [row.id]: "" }));
+    const response = await fetch(`/api/manage/ib-relationships/${row.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        commissionType: draftType[row.id] ?? row.commissionType,
+        commissionRate: draftRate[row.id] ?? row.commissionRate,
+      }),
+    });
+    setSavingId(null);
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      setEditErrors((prev) => ({ ...prev, [row.id]: body.error ?? "save failed" }));
+      return;
+    }
+    setSavedId(row.id);
+    router.refresh();
+  }
+
+  // --- Pay action ---
+  const [payingId, setPayingId] = useState<string | null>(null);
+  const [payErrors, setPayErrors] = useState<Record<string, string>>({});
+
+  async function pay(row: IbRelationshipRow) {
+    setPayingId(row.id);
+    setPayErrors((prev) => ({ ...prev, [row.id]: "" }));
+    const response = await fetch(`/api/manage/ib-relationships/${row.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "PAY" }),
+    });
+    setPayingId(null);
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      setPayErrors((prev) => ({ ...prev, [row.id]: body.error ?? "payout failed" }));
+      return;
+    }
+    router.refresh();
+  }
+
+  return (
+    <div className="flex flex-col gap-6">
+      <Card title="Add a relationship">
+        <form onSubmit={createRelationship} className="flex flex-wrap items-center gap-2">
+          <Select value={ibAccountId} onChange={(e) => setIbAccountId(e.target.value)} required className="w-56">
+            {ibOptions.map((a) => (
+              <option key={a.id} value={a.id}>
+                IB: {a.accountNumber} — {a.fullName}
+              </option>
+            ))}
+          </Select>
+          <Select value={clientAccountId} onChange={(e) => setClientAccountId(e.target.value)} required className="w-56">
+            {clientOptions.length === 0 ? (
+              <option value="">— no unlinked accounts —</option>
+            ) : (
+              clientOptions.map((a) => (
+                <option key={a.id} value={a.id}>
+                  Client: {a.accountNumber} — {a.fullName}
+                </option>
+              ))
+            )}
+          </Select>
+          <Select value={commissionType} onChange={(e) => setCommissionType(e.target.value as "PER_LOT" | "PERCENTAGE")} className="w-40">
+            <option value="PER_LOT">Per lot ($)</option>
+            <option value="PERCENTAGE">Percentage (%)</option>
+          </Select>
+          <Input
+            type="text"
+            inputMode="decimal"
+            mono
+            value={commissionRate}
+            onChange={(e) => setCommissionRate(e.target.value)}
+            placeholder="Rate"
+            className="w-20"
+            required
+          />
+          <Button type="submit" variant="primary" disabled={creating || !ibAccountId || !clientAccountId}>
+            {creating ? "Adding..." : "Add"}
+          </Button>
+          {createError ? <span className="text-sm text-rose-600">{createError}</span> : null}
+        </form>
+      </Card>
+
+      <Card title="Relationships">
+        <Table>
+          <TableHead>
+            <TableHeaderCell>IB</TableHeaderCell>
+            <TableHeaderCell>Client</TableHeaderCell>
+            <TableHeaderCell>Type</TableHeaderCell>
+            <TableHeaderCell align="right">Rate</TableHeaderCell>
+            <TableHeaderCell align="right">Pending</TableHeaderCell>
+            <TableHeaderCell>Last payout</TableHeaderCell>
+            <TableHeaderCell />
+          </TableHead>
+          <TableBody>
+            {initialRows.length === 0 ? (
+              <TableEmptyState colSpan={7}>No IB relationships.</TableEmptyState>
+            ) : (
+              initialRows.map((row) => (
+                <TableRow key={row.id}>
+                  <TableCell>
+                    {row.ibAccountNumber}
+                    <div className="text-xs text-slate-400">{row.ibAccountFullName}</div>
+                  </TableCell>
+                  <TableCell>
+                    {row.clientAccountNumber}
+                    <div className="text-xs text-slate-400">{row.clientAccountFullName}</div>
+                  </TableCell>
+                  <TableCell>
+                    <Select
+                      value={draftType[row.id] ?? row.commissionType}
+                      onChange={(e) => setDraftType((prev) => ({ ...prev, [row.id]: e.target.value as "PER_LOT" | "PERCENTAGE" }))}
+                      className="w-36"
+                    >
+                      <option value="PER_LOT">Per lot ($)</option>
+                      <option value="PERCENTAGE">Percentage (%)</option>
+                    </Select>
+                  </TableCell>
+                  <TableCell align="right">
+                    <Input
+                      type="text"
+                      inputMode="decimal"
+                      mono
+                      value={draftRate[row.id] ?? row.commissionRate}
+                      onChange={(e) => setDraftRate((prev) => ({ ...prev, [row.id]: e.target.value }))}
+                      className="w-20 text-right"
+                    />
+                  </TableCell>
+                  <TableCell align="right" mono>
+                    {row.pendingCommission}
+                  </TableCell>
+                  <TableCell className="text-xs text-slate-400">{row.lastPayoutAt ?? "never"}</TableCell>
+                  <TableCell className="whitespace-nowrap">
+                    <div className="flex items-center gap-1.5">
+                      <Button size="sm" disabled={savingId === row.id} onClick={() => saveEdit(row)}>
+                        {savingId === row.id ? "Saving..." : "Save"}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        disabled={payingId === row.id || Number(row.pendingCommission) <= 0}
+                        onClick={() => pay(row)}
+                      >
+                        {payingId === row.id ? "Paying..." : "Pay"}
+                      </Button>
+                      {savedId === row.id ? <span className="text-xs text-emerald-600">Saved</span> : null}
+                    </div>
+                    {editErrors[row.id] ? <div className="mt-1 text-xs text-rose-600">{editErrors[row.id]}</div> : null}
+                    {payErrors[row.id] ? <div className="mt-1 text-xs text-rose-600">{payErrors[row.id]}</div> : null}
+                  </TableCell>
+                </TableRow>
+              ))
+            )}
+          </TableBody>
+        </Table>
+      </Card>
+    </div>
+  );
+}

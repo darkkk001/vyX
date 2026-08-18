@@ -3,6 +3,56 @@
 Status: **Phase 0 complete.** §6 resolved — ADR-001 through ADR-003
 accepted, see `decisions.md`. All 12 `/docs` files written (§8).
 
+**2026-08-18 status re-check.** The user re-shared the master
+architecture spec and asked directly whether the Manager app was built
+against it — a fair question given `app/manage/*`'s pages have zero
+visual styling, which reads as "nothing real happened here." Re-verified
+against the actual code (not re-derived from this doc) rather than
+assumed:
+
+- **Confirmed still accurate, independently**: every trading-affecting
+  write in `app/` — on *both* the Client (`app/api/trade/positions/
+  [id]/close`) and Manager (`app/api/manage/positions/[id]/close`)
+  surface, plus balance adjustment and leverage/group changes — still
+  writes directly to Postgres via Prisma, with zero call into
+  `engine/server` or `services/api-gateway`. This is exactly item 22-23's
+  own disclosed gap ("manual/trader-initiated position close... has no
+  HTTP route yet"; "no `app/api/trade/*` route reads `executionEngine`
+  yet"), not a new finding — just reconfirmed from a fresh read rather
+  than trusted secondhand. The Rust Core can place/cancel/modify orders
+  today; nothing in production traffic reaches it yet. Intentional per
+  ADR-003, not an oversight — but genuinely still open, not done.
+- **RBAC gap against the spec's exact role list**: `AdminRole` has 4
+  values (`SUPER_ADMIN`/`BROKER_ADMIN`/`SUPPORT`-defined-but-no-login-
+  route/`MANAGER`) against the spec's 10 (`ADMIN`, `DEALER`,
+  `RISK_MANAGER`, `FINANCE`, `IB_MANAGER`, `KYC_OFFICER`, `AUDITOR`
+  don't exist), and there's no granular permission model — `AdminUser`
+  has no permissions field, every route does a bare role-membership
+  check. Recommend layering permissions onto the existing 4 roles before
+  adding more named roles — real staffing doesn't need 10 people on day
+  one, and permissions (not more role names) is what's actually missing.
+- **What Manager already has that's real, not styling-blocked**: symbol/
+  group config, positions/exposure, manual open/close, accounts,
+  deposit/withdraw approval, KYC review, IB/commission (items 15-21
+  below) — all live-verified against real Postgres with correct
+  ledger/audit rows. The unstyled UI is a separate, disconnected problem
+  from this — the logic underneath is real.
+  **Closed, same day**: styled with a small new `components/ui/`
+  Tailwind primitive layer + a shared `AdminShell` (see `CLAUDE.md`'s
+  own entry for the full writeup, including a real session/route bug
+  found and fixed along the way via `(shell)` route groups). Backend
+  logic untouched throughout.
+- **Scope confirmed/expanded by the user**: complete all three client
+  surfaces (Desktop, WebTrader-in-broker-portal, Mobile — Mobile not
+  started, Flutter, per §4/§7) for traders; Backoffice (Manager/Admin,
+  `app/manage/`) for brokers; and a Super Admin app for BigFish's own
+  white-label broker onboarding (register a broker's server, brand it —
+  `app/(super-admin)/brokers`'s `CreateBrokerForm.tsx` already collects
+  name/subdomain/tier/primary-color/logo-URL, a real start on this, not
+  zero). Desktop apps for all three roles (Client, Manager, Super Admin)
+  exist as Tauri shells already (`desktop-tauri/`, `manager-tauri/`,
+  `admin-tauri/`) — see `decisions.md`'s manager/admin-desktop entries.
+
 ---
 
 ## 1. Current State (what exists today, before this spec)
