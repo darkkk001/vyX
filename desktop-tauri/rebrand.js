@@ -29,10 +29,10 @@ if (!name || !subdomain) {
 }
 
 fs.writeFileSync(
-  path.join(__dirname, "broker.config.json"),
+  path.join(__dirname, "src-tauri", "broker.config.json"),
   JSON.stringify({ brokerName: name, subdomain, rootDomain, mode: "broker" }, null, 2) + "\n"
 );
-console.log(`broker.config.json -> ${name} @ ${subdomain} (root: ${rootDomain})`);
+console.log(`src-tauri/broker.config.json -> ${name} @ ${subdomain} (root: ${rootDomain})`);
 
 if (iconPath) {
   if (!iconPath.toLowerCase().endsWith(".ico")) {

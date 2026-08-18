@@ -214,6 +214,19 @@ SQL Editor.
   auto-update, window-state persistence, navigation lockdown,
   splash/offline screens, a custom frameless title bar, and (for
   `manager-tauri/` only) per-broker rebrand tooling.
+  **Real-install crash fixed (2026-08-18) — affected all three Tauri
+  apps, including the already-shipped `desktop-tauri/` Client app.**
+  `broker.config.json`/`app.config.json` were never declared under
+  `bundle.resources`, so a genuine NSIS install never shipped them and
+  every real installed copy silently panicked on launch (invisible in
+  release builds — no console). Fixed by moving each config file inside
+  `src-tauri/` itself so the resource path never needs `..` (Tauri's
+  bundler rewrites a leading `..` to a literal `_up_` dir rather than
+  resolving it, which is what broke the first fix attempt). Verified via
+  a real `/S` silent install + launching the actual installed exe for
+  all three, not just the raw `target/release` binary — see
+  `docs/decisions.md`'s ADR-001 addendum for the full root-cause
+  writeup.
 - **Phase 5** (real execution engine / LP FIX feed) — partially started.
   Note: this doc's phase numbering disagrees with `docs/architecture.md`
   §7's own table (which calls Phase 5 "Mobile") — never reconciled,

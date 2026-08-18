@@ -34,10 +34,13 @@ fn load_broker_config() -> BrokerConfig {
         .ok()
         .and_then(|exe| exe.parent().map(|p| p.join("broker.config.json")))
         .filter(|p| p.exists())
-        // Dev mode: the exe lives under target/debug, config lives at
-        // the project root next to package.json -- same relative-path
-        // fallback desktop-tauri/'s own loader uses.
-        .unwrap_or_else(|| std::path::PathBuf::from("../broker.config.json"));
+        // Dev mode: `cargo run`/`tauri dev`'s cwd is src-tauri/, where
+        // broker.config.json now lives (moved in from the project root
+        // so the bundler's resources path never needs `..` -- Tauri's
+        // resource bundler rewrites `..` segments to a literal `_up_`
+        // dir rather than escaping the resource root, which silently
+        // broke prod path resolution here).
+        .unwrap_or_else(|| std::path::PathBuf::from("broker.config.json"));
 
     let raw = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("failed to read broker.config.json at {path:?}: {e}"));

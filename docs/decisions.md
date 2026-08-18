@@ -324,6 +324,58 @@ window-state persistence, navigation lockdown, splash/offline screens,
 a custom frameless title bar, and (`manager-tauri/` only) per-broker
 rebrand tooling.
 
+**Real installed-app crash fixed (2026-08-18) — config resource never
+bundled, affected all three Tauri apps including the already-shipped
+Client app.** After installing real NSIS builds of `manager-tauri/` and
+`admin-tauri/` for the first time (rather than only ever running the raw
+`target/release/*.exe` with an explicit working directory, as every
+prior verification this session had done), both apps silently did
+nothing on launch — no window, no error, because release builds set
+`windows_subsystem = "windows"` which hides the console, so a startup
+panic is completely invisible.
+
+Root cause: `load_broker_config()`/`load_app_config()` read
+`broker.config.json`/`app.config.json` from
+`current_exe().parent()` (confirmed correct via reading
+`tauri-utils-2.9.3/src/platform.rs`'s `resource_dir_from()` — on
+Windows `resource_dir()` always equals the exe's own directory), but
+neither `tauri.conf.json` declared the file under `bundle.resources`,
+so the NSIS installer never shipped it — the exe panicked reading a
+file that was never installed. `desktop-tauri/`'s `tauri.conf.json` had
+the identical gap, meaning **every real install of the already-shipped
+Client app had this same latent crash** — it was only ever validated by
+running the unpacked dev binary, never a genuine installed copy.
+
+Fixing this exposed a second, non-obvious Tauri behavior: adding
+`"resources": ["../broker.config.json"]` (the file's actual location,
+one directory above `src-tauri/`) does bundle the file, but Tauri's
+resource bundler cannot let a resource path escape the resource root —
+it rewrites the leading `..` segment to a literal directory named
+`_up_` rather than erroring or flattening it, so the file lands at
+`<installdir>/_up_/broker.config.json`, not
+`<installdir>/broker.config.json` where the Rust loader looks. Confirmed
+empirically: a real `/S` silent install with this naive fix showed
+exactly that `_up_/broker.config.json` layout. The real fix was to move
+each app's config file into `src-tauri/` itself (alongside
+`Cargo.toml`) so the resource path never needs `..` at all —
+`"resources": ["broker.config.json"]` — which lands the file directly
+beside the exe on both Windows resource resolution and NSIS's bundler.
+`desktop-tauri/rebrand.js` was updated to write to the new
+`src-tauri/broker.config.json` location accordingly.
+
+Verified for all three apps via the actual real-world path this bug
+lived in: a genuine `/S` NSIS silent install (not `cargo run`, not the
+raw release exe), followed by launching the exe from its real installed
+location (`%LOCALAPPDATA%\<productName>\<binary>.exe`) and confirming a
+window actually opens. `manager-tauri/` and `admin-tauri/` were
+verified against local-test config pointed at the seeded dev server
+(`acmefx.localhost:3000`/`admin.localhost:3000`, both 200); `desktop-tauri/`
+was verified against real production (`https://acmefx.vyxtrader.com/trade`,
+200) since it's already live — its release build was rebuilt and signed
+with the existing updater key. This is the first time this session any
+of the three apps were tested via a real install rather than a raw
+binary; the gap in testing rigor is what let all three ship broken.
+
 ---
 
 ## ADR-002 — Trading Core data ownership boundary
