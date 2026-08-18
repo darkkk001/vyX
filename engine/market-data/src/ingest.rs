@@ -5,7 +5,7 @@
 //! ../../docs/execution.md's Phase 5 note that the consumer shape doesn't
 //! change when the feed source does.
 
-use crate::{candle_updates_for_tick, db};
+use crate::{cache::TickCache, candle_updates_for_tick, db};
 use chrono::Utc;
 use protocol::Tick;
 use sqlx::PgPool;
@@ -18,13 +18,18 @@ pub enum IngestError {
 
 /// Writes LivePrice + every timeframe's Candle for each tick in one
 /// transaction (matching lib/price-feed.ts's `prisma.$transaction`), then
-/// publishes each tick to NATS after the commit succeeds — same
-/// "publish only after commit" rule as
-/// ../../order-management/src/events.rs, so a subscriber never hears
-/// about a write that could still roll back.
+/// updates the in-memory `TickCache` and publishes each tick to NATS —
+/// both only after the commit succeeds, same "publish only after commit"
+/// rule as ../../order-management/src/events.rs, so neither a NATS
+/// subscriber nor an order-placement cache read can ever observe a write
+/// that could still roll back. The cache update happens here (the true
+/// ingest point) rather than by having the process's own NATS
+/// subscription loop a tick back to itself, which would be an
+/// unnecessary extra hop just to update local state.
 pub async fn ingest_ticks(
     pool: &PgPool,
     nats: &async_nats::Client,
+    cache: &TickCache,
     ticks: &[Tick],
 ) -> Result<(), IngestError> {
     let now = Utc::now();
@@ -40,6 +45,7 @@ pub async fn ingest_ticks(
     tx.commit().await?;
 
     for tick in ticks {
+        cache.set(tick, now);
         publish_tick(nats, tick).await;
     }
 

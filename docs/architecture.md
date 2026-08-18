@@ -996,3 +996,50 @@ here, just the option the spec itself already pointed at.
     gates still don't. All seeded test rows (two admins, one trader
     account, the order/position, the audit row) cleaned up afterward,
     broker's `executionEngine` reset to `LEGACY`.
+
+24. **In-memory tick cache — a real DB round-trip removed from the order-
+    placement critical path.** The user asked to complete the
+    `position`/`ledger` crates again, this time citing the spec's zero-
+    tolerance-for-execution-delay requirement. Re-investigated rather than
+    re-doing item 22's refactor: completing those crates is still a pure
+    reorganization with no runtime effect (a crate boundary costs nothing
+    at runtime), so it still wouldn't serve a latency goal — that
+    conclusion stands. Investigating the *real* per-order path instead
+    found a genuine issue: `place_market_order`/`place_pending_order`
+    each called `market_data::db::get_live_price` — a synchronous
+    Postgres SELECT — on every order, purely to read the current price,
+    even though that same tick was already flowing through the process
+    in memory (`ingest_price_feed` → `ingest_ticks` → NATS
+    `price.tick.*`, already subscribed-to in-process for the margin
+    monitor/pending-order triggers). Exactly the "unnecessary DB round
+    trip on a critical execution path" the master spec's §16 warns
+    against, and exactly what its "RUST MEMORY — current prices" line
+    calls for instead. New `market_data::cache::TickCache`
+    (`RwLock<HashMap<String, (Tick, DateTime<Utc>)>>`, no new dependency)
+    populated in `ingest_ticks` right after commit (same "only after
+    commit" rule the NATS publish already followed); read first by both
+    order-placement functions, falling back to the original Postgres
+    read only on a cache miss (cold start). Confirmed via `grep` this was
+    the only real latency gap in scope — `pending_orders::trigger_order`
+    already receives its tick as a plain argument (tick-driven, no DB
+    call to remove), `swap.rs`'s use is an unrelated daily poll.
+    `engine/loadtest` also updated: it was seeding `"LivePrice"` via raw
+    SQL, which bypassed the real ingest path entirely and would have
+    left the new cache untested — switched it to `POST
+    /internal/price-feed`, the same route a real tick takes. Re-ran the
+    exact `LOADTEST_CONCURRENCY=8 LOADTEST_REQUESTS=80` scenario item 22's
+    predecessor benchmark work established, against this same sandbox's
+    remote dev Postgres for a direct comparison against the last recorded
+    baseline (`testing.md`'s own table, p50 3955ms/1.8 req/s): **p50
+    3955ms → 3093ms, throughput 1.8 → 2.0 req/s, 0 errors both times.**
+    Also live-verified the cache-miss fallback specifically, not just the
+    happy path: ingested a tick, killed and restarted `trading-core-
+    server` (a fresh, empty cache), and placed an order immediately after
+    — filled correctly at the ingested price via the Postgres fallback,
+    confirming a server restart can't strand order placement even before
+    the first tick arrives. All manually-created test rows (4 accounts'
+    worth of orders/positions, `loadtest`'s own 80 self-cleaned) removed
+    afterward. Explicitly scoped to the Rust engine only, confirmed with
+    the user: no broker has cut over yet (`app/api/trade/*` still reads
+    zero `executionEngine` fields, per item 23), so this doesn't change
+    today's live latency — it's cutover-readiness work, not a live fix.

@@ -53,17 +53,35 @@ struct Sample {
     outcome: &'static str, // "FILLED" | "REJECTED" | "ERROR"
 }
 
-async fn upsert_live_price(pool: &PgPool, symbol: &str, bid: Decimal, ask: Decimal) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        r#"INSERT INTO "LivePrice" (symbol, bid, ask, "updatedAt")
-           VALUES ($1, $2, $3, now())
-           ON CONFLICT (symbol) DO UPDATE SET bid = $2, ask = $3, "updatedAt" = now()"#,
-    )
-    .bind(symbol)
-    .bind(bid)
-    .bind(ask)
-    .execute(pool)
-    .await?;
+#[derive(Serialize)]
+struct TickBody {
+    symbol: String,
+    bid: Decimal,
+    ask: Decimal,
+}
+
+// Goes through the real /internal/price-feed ingest route -- the same
+// path a real MT5 EA tick takes -- rather than writing "LivePrice"
+// directly. Matters for this specific benchmark: only the real ingest
+// route populates engine/server's in-memory TickCache that
+// place_market_order now reads from; a raw SQL upsert would silently
+// leave that cache cold and this tool would keep measuring the
+// DB-fallback path even after the cache exists.
+async fn ingest_live_price(
+    client: &reqwest::Client,
+    trading_core_url: &str,
+    price_feed_secret: &str,
+    symbol: &str,
+    bid: Decimal,
+    ask: Decimal,
+) -> Result<(), reqwest::Error> {
+    client
+        .post(format!("{trading_core_url}/internal/price-feed"))
+        .header("x-price-feed-secret", price_feed_secret)
+        .json(&TickBody { symbol: symbol.to_string(), bid, ask })
+        .send()
+        .await?
+        .error_for_status()?;
     Ok(())
 }
 
@@ -80,6 +98,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
     let trading_core_url =
         std::env::var("TRADING_CORE_URL").unwrap_or_else(|_| "http://127.0.0.1:8081".to_string());
+    let price_feed_secret = std::env::var("PRICE_FEED_SECRET").expect("PRICE_FEED_SECRET must be set");
     let concurrency: usize = std::env::var("LOADTEST_CONCURRENCY")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -100,22 +119,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let bid = Decimal::new(2000_00000, 5);
     let ask = Decimal::new(2000_20000, 5);
-    upsert_live_price(&pool, TEST_SYMBOL, bid, ask).await?;
+    let client = reqwest::Client::new();
+    ingest_live_price(&client, &trading_core_url, &price_feed_secret, TEST_SYMBOL, bid, ask).await?;
 
-    // Keeps the tick fresh for the whole run -- get_live_price's 15s
-    // staleness window would otherwise leak "rejected: stale price"
-    // into the results on a longer run, a confound unrelated to what
-    // this benchmark measures.
-    let refresh_pool = pool.clone();
+    // Keeps the tick fresh for the whole run -- both the in-memory
+    // TickCache's and get_live_price's 15s staleness windows would
+    // otherwise leak "rejected: stale price" into the results on a
+    // longer run, a confound unrelated to what this benchmark measures.
+    let refresh_client = client.clone();
+    let refresh_trading_core_url = trading_core_url.clone();
+    let refresh_price_feed_secret = price_feed_secret.clone();
     let refresh_handle = tokio::spawn(async move {
         loop {
             tokio::time::sleep(Duration::from_secs(5)).await;
-            let _ = upsert_live_price(&refresh_pool, TEST_SYMBOL, bid, ask).await;
+            let _ = ingest_live_price(&refresh_client, &refresh_trading_core_url, &refresh_price_feed_secret, TEST_SYMBOL, bid, ask).await;
         }
     });
 
     let account_id = format!("loadtest_{}", Uuid::new_v4());
-    let client = reqwest::Client::new();
     let remaining = std::sync::Arc::new(AtomicI64::new(total_requests));
     let samples = std::sync::Arc::new(Mutex::new(Vec::<Sample>::with_capacity(total_requests as usize)));
 

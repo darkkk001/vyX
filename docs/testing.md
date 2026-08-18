@@ -38,7 +38,20 @@ that condition is checkable, not just aspirational:
 | throughput | 0.5 req/s | **1.8 req/s** |
 | errors | 0/80 | 0/80 |
 
-**~3.5x lower p50 latency, ~3.6x higher throughput**, same 0-error correctness — a larger improvement than the raw round-trip-count reduction alone would suggest (~30-35% fewer round trips), consistent with each request also holding its pool connection for less wall-clock time, which compounds under concurrency (frees a slot for a waiting worker sooner). Numbers still reflect this specific sandbox's remote-DB latency profile (not a production, co-located-Postgres deployment) — the *relative* improvement is the durable finding, not the absolute milliseconds. The bigger, not-yet-attempted lever (deferring the order `INSERT` itself until the final outcome is known, collapsing INSERT+multiple-UPDATEs into one INSERT) remains a possible further optimization, flagged but not built in this pass. |
+**~3.5x lower p50 latency, ~3.6x higher throughput**, same 0-error correctness — a larger improvement than the raw round-trip-count reduction alone would suggest (~30-35% fewer round trips), consistent with each request also holding its pool connection for less wall-clock time, which compounds under concurrency (frees a slot for a waiting worker sooner). Numbers still reflect this specific sandbox's remote-DB latency profile (not a production, co-located-Postgres deployment) — the *relative* improvement is the durable finding, not the absolute milliseconds. The bigger, not-yet-attempted lever (deferring the order `INSERT` itself until the final outcome is known, collapsing INSERT+multiple-UPDATEs into one INSERT) remains a possible further optimization, flagged but not built in this pass.
+
+**In-memory tick cache applied and verified (2026-08-18), a third lever — removing the price-lookup round trip entirely rather than reducing it.** `place_market_order`/`place_pending_order` each called `market_data::db::get_live_price` (a Postgres SELECT) on every order just to read the current price, even though the same tick already flows through the process in memory via NATS ingest. New `market_data::cache::TickCache`, populated at ingest time, read first by both order-placement functions with the original Postgres read kept only as a cold-start fallback — see `architecture.md` item 24 for the full design writeup. `engine/loadtest` itself had to be fixed first: it seeded `"LivePrice"` via raw SQL, bypassing the real ingest path and leaving the new cache permanently cold — switched to `POST /internal/price-feed`, the real ingest route. Re-ran the identical `LOADTEST_CONCURRENCY=8 LOADTEST_REQUESTS=80` scenario against this same sandbox's dev Postgres, directly against the table above's "After" column:
+
+| | Before (round-trip reduction) | After (+ tick cache) |
+|---|---|---|
+| p50 | 3955ms | **3093ms** |
+| p95 | 8083ms | 8165ms |
+| p99 | 8117ms | 8167ms |
+| max | 8141ms | 8169ms |
+| throughput | 1.8 req/s | **2.0 req/s** |
+| errors | 0/80 | 0/80 |
+
+**~22% lower p50, consistent with removing 1 of the remaining ~8-9 round trips** — p95/p99/max are within this sandbox's normal run-to-run noise (its remote Postgres round-trip time isn't perfectly stable), not a regression. Both paths live-verified, not just the happy path: a normal order fills at the cached price with zero DB read in the common case; a `trading-core-server` restart (empty cache) immediately followed by an order placement still fills correctly via the Postgres fallback, confirming a cold start can't strand order placement. Scoped to the Rust engine only — no broker has cut over yet, so this doesn't change today's live latency (see `decisions.md` ADR-003).
 
 ## 3. Integration testing across the Gateway boundary
 

@@ -14,9 +14,18 @@ pub mod pending_orders;
 pub mod pricing;
 pub mod swap;
 
+use chrono::Duration as ChronoDuration;
+use market_data::cache::TickCache;
 use protocol::{Fill, OrderSide, OrderStatus, OrderType, RiskRejection, Tick, TradingEvent};
 use rust_decimal::Decimal;
 use sqlx::PgPool;
+
+// Same 15s staleness window market_data::db::get_live_price's own SQL
+// enforces -- kept as one function so the in-memory cache and the
+// Postgres fallback can never silently drift apart.
+fn tick_freshness() -> ChronoDuration {
+    ChronoDuration::seconds(15)
+}
 
 /// Returns whether `to` is a legal next state from `from`, per the
 /// diagram in ../../docs/architecture.md §5 / ../../docs/trading-engine.md
@@ -128,6 +137,7 @@ pub enum PlaceOrderError {
 pub async fn place_market_order(
     pool: &PgPool,
     nats: &async_nats::Client,
+    cache: &TickCache,
     req: PlaceMarketOrderRequest,
 ) -> Result<PlaceMarketOrderOutcome, PlaceOrderError> {
     let mut tx = pool.begin().await?;
@@ -149,12 +159,23 @@ pub async fn place_market_order(
     .await?;
 
     // Market Data Core's own current view, not a value the caller handed
-    // in — see PlaceMarketOrderRequest's doc comment. Read against `pool`
-    // directly (not `tx`): it's a point-in-time read of a table this
-    // crate doesn't own (ADR-002), not something that needs snapshot
-    // consistency with the order-row insert above.
-    let current_tick = match market_data::db::get_live_price(pool, &req.symbol).await? {
-        Some((bid, ask)) => Tick { symbol: req.symbol.clone(), bid, ask },
+    // in — see PlaceMarketOrderRequest's doc comment. Read the in-memory
+    // TickCache first (no DB round trip on the common, hot path — the
+    // spec's "Rust in-memory state... avoid unnecessary DB round trips"
+    // rule); Postgres is only a fallback for a symbol that hasn't ticked
+    // in-process yet (e.g. right after a server restart). Read against
+    // `pool` directly (not `tx`) in the fallback case: it's a
+    // point-in-time read of a table this crate doesn't own (ADR-002), not
+    // something that needs snapshot consistency with the order-row insert
+    // above.
+    let current_tick = match cache.get_if_fresh(&req.symbol, tick_freshness()) {
+        Some(tick) => Some(tick),
+        None => market_data::db::get_live_price(pool, &req.symbol)
+            .await?
+            .map(|(bid, ask)| Tick { symbol: req.symbol.clone(), bid, ask }),
+    };
+    let current_tick = match current_tick {
+        Some(tick) => tick,
         None => {
             let reason = reject_order(tx, nats, &order_id, format!("no live price for {}", req.symbol)).await?;
             return Ok(PlaceMarketOrderOutcome::Rejected { order_id, reason });
@@ -331,6 +352,7 @@ fn validate_pending_price_side(
 pub async fn place_pending_order(
     pool: &PgPool,
     nats: &async_nats::Client,
+    cache: &TickCache,
     req: PlacePendingOrderRequest,
 ) -> Result<PlacePendingOrderOutcome, PlaceOrderError> {
     let mut tx = pool.begin().await?;
@@ -351,11 +373,17 @@ pub async fn place_pending_order(
     )
     .await?;
 
-    // Same "OMS fetches its own price" rule as place_market_order — used
+    // Same cache-first, DB-fallback rule as place_market_order — used
     // here only to validate the pending price is on the correct side of
     // today's market, not to fill anything yet.
-    let current_tick = match market_data::db::get_live_price(pool, &req.symbol).await? {
-        Some((bid, ask)) => Tick { symbol: req.symbol.clone(), bid, ask },
+    let current_tick = match cache.get_if_fresh(&req.symbol, tick_freshness()) {
+        Some(tick) => Some(tick),
+        None => market_data::db::get_live_price(pool, &req.symbol)
+            .await?
+            .map(|(bid, ask)| Tick { symbol: req.symbol.clone(), bid, ask }),
+    };
+    let current_tick = match current_tick {
+        Some(tick) => tick,
         None => {
             let reason = reject_order(tx, nats, &order_id, format!("no live price for {}", req.symbol)).await?;
             return Ok(PlacePendingOrderOutcome::Rejected { order_id, reason });

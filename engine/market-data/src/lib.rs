@@ -8,6 +8,7 @@
 use chrono::{DateTime, Datelike, TimeZone, Utc};
 use protocol::Tick;
 
+pub mod cache;
 pub mod db;
 pub mod ingest;
 

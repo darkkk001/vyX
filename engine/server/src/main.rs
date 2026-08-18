@@ -15,6 +15,7 @@ use axum::{
     Json, Router,
 };
 use futures_util::StreamExt;
+use market_data::cache::TickCache;
 use order_management::{
     db, events, CancelOrderOutcome, ModifyPositionOutcome, PlaceMarketOrderOutcome,
     PlaceMarketOrderRequest, PlacePendingOrderOutcome, PlacePendingOrderRequest,
@@ -29,6 +30,11 @@ struct AppState {
     pool: PgPool,
     nats: async_nats::Client,
     price_feed_secret: String,
+    // The "RUST MEMORY... current prices" layer — see
+    // market_data::cache::TickCache's own doc comment for why this
+    // exists. Populated by ingest_price_feed, read by
+    // place_market_order/place_pending_order.
+    tick_cache: Arc<TickCache>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -101,7 +107,7 @@ async fn place_market_order(
         leverage: body.leverage,
     };
 
-    let outcome = order_management::place_market_order(&state.pool, &state.nats, req)
+    let outcome = order_management::place_market_order(&state.pool, &state.nats, &state.tick_cache, req)
         .await
         .map_err(|err| {
             tracing::error!(?err, "place_market_order failed");
@@ -161,7 +167,7 @@ async fn place_pending_order(
         tp_price: body.tp_price,
     };
 
-    let outcome = order_management::place_pending_order(&state.pool, &state.nats, req)
+    let outcome = order_management::place_pending_order(&state.pool, &state.nats, &state.tick_cache, req)
         .await
         .map_err(|err| {
             tracing::error!(?err, "place_pending_order failed");
@@ -317,7 +323,7 @@ async fn ingest_price_feed(
     }
 
     let count = ticks.len();
-    market_data::ingest::ingest_ticks(&state.pool, &state.nats, &ticks)
+    market_data::ingest::ingest_ticks(&state.pool, &state.nats, &state.tick_cache, &ticks)
         .await
         .map_err(|err| {
             tracing::error!(?err, "ingest_ticks failed");
@@ -428,7 +434,8 @@ async fn main() {
         .unwrap_or(300);
     order_management::swap::spawn(pool.clone(), std::time::Duration::from_secs(swap_poll_interval_secs));
 
-    let state = Arc::new(AppState { pool, nats, price_feed_secret });
+    let tick_cache = Arc::new(TickCache::new());
+    let state = Arc::new(AppState { pool, nats, price_feed_secret, tick_cache });
 
     let app = Router::new()
         .route("/health", get(health))
