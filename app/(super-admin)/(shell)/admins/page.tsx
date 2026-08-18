@@ -2,7 +2,6 @@ import { redirect } from "next/navigation";
 import { getAdminSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { PageHeader } from "@/components/ui/PageHeader";
-import { Card } from "@/components/ui/Card";
 import { Badge } from "@/components/ui/Badge";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
 import CreateAdminForm from "./CreateAdminForm";
@@ -23,36 +22,34 @@ export default async function AdminsPage() {
 
   return (
     <main className="mx-auto max-w-4xl">
-      <PageHeader title="Admins" />
+      <PageHeader title="Admins" description="Broker-scoped admin accounts across every tenant" />
       <div className="flex flex-col gap-6">
-        <Card>
-          <Table>
-            <TableHead>
-              <TableHeaderCell>Email</TableHeaderCell>
-              <TableHeaderCell>Broker</TableHeaderCell>
-              <TableHeaderCell>Role</TableHeaderCell>
-              <TableHeaderCell>Status</TableHeaderCell>
-            </TableHead>
-            <TableBody>
-              {admins.length === 0 ? (
-                <TableEmptyState colSpan={4}>No admins yet.</TableEmptyState>
-              ) : (
-                admins.map((admin) => (
-                  <TableRow key={admin.id}>
-                    <TableCell>{admin.email}</TableCell>
-                    <TableCell>{admin.broker?.name ?? "—"}</TableCell>
-                    <TableCell>
-                      <Badge tone="info">{admin.role}</Badge>
-                    </TableCell>
-                    <TableCell>
-                      <Badge tone={admin.status === "ACTIVE" ? "success" : "neutral"}>{admin.status}</Badge>
-                    </TableCell>
-                  </TableRow>
-                ))
-              )}
-            </TableBody>
-          </Table>
-        </Card>
+        <Table>
+          <TableHead>
+            <TableHeaderCell>Email</TableHeaderCell>
+            <TableHeaderCell>Broker</TableHeaderCell>
+            <TableHeaderCell>Role</TableHeaderCell>
+            <TableHeaderCell>Status</TableHeaderCell>
+          </TableHead>
+          <TableBody>
+            {admins.length === 0 ? (
+              <TableEmptyState colSpan={4}>No admins yet.</TableEmptyState>
+            ) : (
+              admins.map((admin) => (
+                <TableRow key={admin.id}>
+                  <TableCell primary>{admin.email}</TableCell>
+                  <TableCell>{admin.broker?.name ?? "—"}</TableCell>
+                  <TableCell>
+                    <Badge tone="accent">{admin.role}</Badge>
+                  </TableCell>
+                  <TableCell>
+                    <Badge tone={admin.status === "ACTIVE" ? "success" : "neutral"}>{admin.status}</Badge>
+                  </TableCell>
+                </TableRow>
+              ))
+            )}
+          </TableBody>
+        </Table>
         <CreateAdminForm brokers={brokers} />
       </div>
     </main>

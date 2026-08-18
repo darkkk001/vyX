@@ -119,7 +119,7 @@ export default function GroupsManager({ initialRows }: { initialRows: GroupRow[]
           <Button type="submit" variant="primary" disabled={creating}>
             {creating ? "Creating..." : "Create group"}
           </Button>
-          {createError ? <span className="text-sm text-rose-600">{createError}</span> : null}
+          {createError ? <span className="text-sm text-[var(--sell)]">{createError}</span> : null}
         </form>
       </Card>
 
@@ -180,8 +180,8 @@ export default function GroupsManager({ initialRows }: { initialRows: GroupRow[]
                       <Button size="sm" disabled={savingId === row.id} onClick={() => save(row)}>
                         {savingId === row.id ? "Saving..." : "Save"}
                       </Button>
-                      {savedId === row.id ? <span className="text-xs text-emerald-600">Saved</span> : null}
-                      {errors[row.id] ? <span className="text-xs text-rose-600">{errors[row.id]}</span> : null}
+                      {savedId === row.id ? <span className="text-xs text-[var(--buy)]">Saved</span> : null}
+                      {errors[row.id] ? <span className="text-xs text-[var(--sell)]">{errors[row.id]}</span> : null}
                     </div>
                   </TableCell>
                 </TableRow>

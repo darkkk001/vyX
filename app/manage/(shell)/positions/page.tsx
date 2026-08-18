@@ -80,6 +80,8 @@ export default async function ManagerPositionsPage() {
       openPrice: p.openPrice.toFixed(p.symbol.digits),
       currentPrice: currentPrice ? currentPrice.toFixed(p.symbol.digits) : null,
       floatingPnl: floatingPnl ? floatingPnl.toFixed(2) : null,
+      slPrice: p.slPrice ? p.slPrice.toFixed(p.symbol.digits) : null,
+      tpPrice: p.tpPrice ? p.tpPrice.toFixed(p.symbol.digits) : null,
       openedAt: p.openedAt.toISOString().replace("T", " ").slice(0, 19),
     };
   });

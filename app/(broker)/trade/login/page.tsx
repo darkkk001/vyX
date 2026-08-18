@@ -69,6 +69,8 @@ function TradeLoginForm() {
       >
         <h1 style={{ fontSize: 18, margin: "0 0 8px" }}>VyXTrader Login</h1>
         <input
+          name="account"
+          autoComplete="username"
           placeholder="Account number"
           value={accountNumber}
           onChange={(e) => setAccountNumber(e.target.value)}
@@ -82,7 +84,9 @@ function TradeLoginForm() {
           }}
         />
         <input
+          name="password"
           type="password"
+          autoComplete="current-password"
           placeholder="Password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}

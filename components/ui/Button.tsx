@@ -1,13 +1,15 @@
 import { ButtonHTMLAttributes } from "react";
 
-type Variant = "primary" | "secondary" | "danger" | "ghost";
+type Variant = "primary" | "secondary" | "danger" | "success" | "ghost";
 type Size = "sm" | "md";
 
 const variantClasses: Record<Variant, string> = {
-  primary: "bg-indigo-600 text-white hover:bg-indigo-700 disabled:bg-indigo-300",
-  secondary: "bg-white text-slate-700 border border-slate-300 hover:bg-slate-50 disabled:text-slate-400",
-  danger: "bg-rose-600 text-white hover:bg-rose-700 disabled:bg-rose-300",
-  ghost: "text-slate-600 hover:bg-slate-100 disabled:text-slate-300",
+  primary: "bg-[var(--accent)] text-white hover:brightness-110 disabled:opacity-40",
+  secondary:
+    "bg-[var(--bg-3)] text-[var(--text-1)] border border-[var(--border-strong)] hover:border-[var(--text-3)] disabled:opacity-40",
+  danger: "bg-[var(--sell-bg)] text-[var(--sell)] border border-[var(--sell)]/30 hover:brightness-125 disabled:opacity-40",
+  success: "bg-[var(--buy-bg)] text-[var(--buy)] border border-[var(--buy)]/30 hover:brightness-125 disabled:opacity-40",
+  ghost: "text-[var(--text-2)] hover:bg-[var(--bg-3)] disabled:opacity-40",
 };
 
 const sizeClasses: Record<Size, string> = {

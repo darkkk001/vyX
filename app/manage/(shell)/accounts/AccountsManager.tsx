@@ -1,11 +1,13 @@
 "use client";
 
-import { Fragment, useState } from "react";
+import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
+import { FormField } from "@/components/ui/FormField";
+import { Modal, ModalActions } from "@/components/ui/Modal";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
 
 export type AccountRow = {
@@ -43,13 +45,16 @@ export default function AccountsManager({
   canManageFinance: boolean;
 }) {
   const router = useRouter();
-  const [rows, setRows] = useState<AccountRow[]>(initialRows);
+  const rows = initialRows;
   const [search, setSearch] = useState("");
   const [busyId, setBusyId] = useState<string | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const [adjustOpenId, setAdjustOpenId] = useState<string | null>(null);
+
+  const [adjustTarget, setAdjustTarget] = useState<AccountRow | null>(null);
+  const [adjustType, setAdjustType] = useState<"credit" | "debit">("credit");
   const [adjustAmount, setAdjustAmount] = useState("");
   const [adjustNote, setAdjustNote] = useState("");
+  const [adjustError, setAdjustError] = useState<string | null>(null);
 
   const filtered = rows.filter((r) => {
     const q = search.trim().toLowerCase();
@@ -93,23 +98,43 @@ export default function AccountsManager({
     await patchAccount(row.id, { maxDailyLoss: value.trim() === "" ? null : value.trim() });
   }
 
-  async function submitAdjustment(row: AccountRow) {
-    setBusyId(row.id);
-    setErrors((prev) => ({ ...prev, [row.id]: "" }));
-    const response = await fetch(`/api/manage/accounts/${row.id}/adjust-balance`, {
+  function openAdjustModal(row: AccountRow) {
+    setAdjustTarget(row);
+    setAdjustType("credit");
+    setAdjustAmount("");
+    setAdjustNote("");
+    setAdjustError(null);
+  }
+
+  async function submitAdjustment() {
+    if (!adjustTarget) return;
+    const magnitude = Number(adjustAmount);
+    if (!Number.isFinite(magnitude) || magnitude <= 0) {
+      setAdjustError("Enter a valid amount");
+      return;
+    }
+    if (!adjustNote.trim()) {
+      setAdjustError("Reason is required for the audit trail");
+      return;
+    }
+    // The API contract is unchanged -- one signed amount. The
+    // Credit/Debit select is purely a UI convenience computing the sign.
+    const signedAmount = adjustType === "credit" ? magnitude : -magnitude;
+
+    setBusyId(adjustTarget.id);
+    setAdjustError(null);
+    const response = await fetch(`/api/manage/accounts/${adjustTarget.id}/adjust-balance`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ amount: adjustAmount, note: adjustNote }),
+      body: JSON.stringify({ amount: signedAmount, note: adjustNote }),
     });
     setBusyId(null);
     if (!response.ok) {
       const b = await response.json().catch(() => ({}));
-      setErrors((prev) => ({ ...prev, [row.id]: b.error ?? "adjustment failed" }));
+      setAdjustError(b.error ?? "adjustment failed");
       return;
     }
-    setAdjustOpenId(null);
-    setAdjustAmount("");
-    setAdjustNote("");
+    setAdjustTarget(null);
     router.refresh();
   }
 
@@ -141,122 +166,122 @@ export default function AccountsManager({
             <TableEmptyState colSpan={9}>No accounts match.</TableEmptyState>
           ) : (
             filtered.map((row) => (
-              <Fragment key={row.id}>
-                <TableRow>
-                  <TableCell>
-                    <span className="font-mono">{row.accountNumber}</span>
-                    <div className="text-xs text-slate-400">
-                      {row.fullName} — {row.email}
-                    </div>
-                  </TableCell>
-                  <TableCell>{row.accountType}</TableCell>
-                  <TableCell>
-                    <Select
-                      value={row.groupId ?? ""}
+              <TableRow key={row.id}>
+                <TableCell primary>
+                  <span className="font-mono">{row.accountNumber}</span>
+                  <div className="text-xs font-normal text-[var(--text-3)]">
+                    {row.fullName} — {row.email}
+                  </div>
+                </TableCell>
+                <TableCell>{row.accountType}</TableCell>
+                <TableCell>
+                  <Select
+                    value={row.groupId ?? ""}
+                    disabled={busyId === row.id}
+                    onChange={(e) => changeGroup(row, e.target.value)}
+                    className="w-36"
+                  >
+                    <option value="">— ungrouped —</option>
+                    {groups.map((g) => (
+                      <option key={g.id} value={g.id}>
+                        {g.name}
+                      </option>
+                    ))}
+                  </Select>
+                </TableCell>
+                <TableCell align="right" mono>
+                  {canManageFinance ? (
+                    <Input
+                      type="text"
+                      inputMode="numeric"
+                      mono
+                      defaultValue={row.leverage}
                       disabled={busyId === row.id}
-                      onChange={(e) => changeGroup(row, e.target.value)}
-                      className="w-36"
-                    >
-                      <option value="">— ungrouped —</option>
-                      {groups.map((g) => (
-                        <option key={g.id} value={g.id}>
-                          {g.name}
-                        </option>
-                      ))}
+                      onBlur={(e) => e.target.value !== String(row.leverage) && changeLeverage(row, e.target.value)}
+                      className="w-16 text-right"
+                    />
+                  ) : (
+                    row.leverage
+                  )}
+                </TableCell>
+                <TableCell align="right" mono>
+                  {row.balance}
+                </TableCell>
+                <TableCell align="right" mono>
+                  {row.credit}
+                </TableCell>
+                <TableCell>
+                  {canManageFinance ? (
+                    <Select value={row.status} disabled={busyId === row.id} onChange={(e) => changeStatus(row, e.target.value)} className="w-32">
+                      <option value="ACTIVE">ACTIVE</option>
+                      <option value="SUSPENDED">SUSPENDED</option>
+                      <option value="CLOSED">CLOSED</option>
                     </Select>
-                  </TableCell>
-                  <TableCell align="right" mono>
-                    {canManageFinance ? (
-                      <Input
-                        type="text"
-                        inputMode="numeric"
-                        mono
-                        defaultValue={row.leverage}
-                        disabled={busyId === row.id}
-                        onBlur={(e) => e.target.value !== String(row.leverage) && changeLeverage(row, e.target.value)}
-                        className="w-16 text-right"
-                      />
-                    ) : (
-                      row.leverage
-                    )}
-                  </TableCell>
-                  <TableCell align="right" mono>
-                    {row.balance}
-                  </TableCell>
-                  <TableCell align="right" mono>
-                    {row.credit}
-                  </TableCell>
-                  <TableCell>
-                    {canManageFinance ? (
-                      <Select value={row.status} disabled={busyId === row.id} onChange={(e) => changeStatus(row, e.target.value)} className="w-32">
-                        <option value="ACTIVE">ACTIVE</option>
-                        <option value="SUSPENDED">SUSPENDED</option>
-                        <option value="CLOSED">CLOSED</option>
-                      </Select>
-                    ) : (
-                      <Badge tone={statusTone[row.status]}>{row.status}</Badge>
-                    )}
-                  </TableCell>
-                  <TableCell align="right" mono>
-                    {canManageFinance ? (
-                      <Input
-                        type="text"
-                        inputMode="decimal"
-                        mono
-                        placeholder="no limit"
-                        defaultValue={row.maxDailyLoss ?? ""}
-                        disabled={busyId === row.id}
-                        onBlur={(e) => e.target.value !== (row.maxDailyLoss ?? "") && changeMaxDailyLoss(row, e.target.value)}
-                        className="w-24 text-right"
-                      />
-                    ) : (
-                      row.maxDailyLoss ?? "—"
-                    )}
-                  </TableCell>
-                  <TableCell className="whitespace-nowrap">
-                    {canManageFinance ? (
-                      <Button size="sm" onClick={() => setAdjustOpenId(adjustOpenId === row.id ? null : row.id)}>
-                        Adjust balance
-                      </Button>
-                    ) : null}
-                    {errors[row.id] ? <div className="mt-1 text-xs text-rose-600">{errors[row.id]}</div> : null}
-                  </TableCell>
-                </TableRow>
-                {adjustOpenId === row.id ? (
-                  <tr>
-                    <td colSpan={9} className="bg-slate-50 px-4 py-3">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <Input
-                          type="text"
-                          inputMode="decimal"
-                          mono
-                          placeholder="Amount (+/-)"
-                          value={adjustAmount}
-                          onChange={(e) => setAdjustAmount(e.target.value)}
-                          className="w-28"
-                        />
-                        <Input
-                          type="text"
-                          placeholder="Reason (required)"
-                          value={adjustNote}
-                          onChange={(e) => setAdjustNote(e.target.value)}
-                          className="w-72"
-                        />
-                        <Button size="sm" variant="primary" disabled={busyId === row.id} onClick={() => submitAdjustment(row)}>
-                          {busyId === row.id ? "Submitting..." : "Submit"}
-                        </Button>
-                        <Button size="sm" variant="ghost" onClick={() => setAdjustOpenId(null)}>
-                          Cancel
-                        </Button>
-                      </div>
-                    </td>
-                  </tr>
-                ) : null}
-              </Fragment>
+                  ) : (
+                    <Badge tone={statusTone[row.status]}>{row.status}</Badge>
+                  )}
+                </TableCell>
+                <TableCell align="right" mono>
+                  {canManageFinance ? (
+                    <Input
+                      type="text"
+                      inputMode="decimal"
+                      mono
+                      placeholder="no limit"
+                      defaultValue={row.maxDailyLoss ?? ""}
+                      disabled={busyId === row.id}
+                      onBlur={(e) => e.target.value !== (row.maxDailyLoss ?? "") && changeMaxDailyLoss(row, e.target.value)}
+                      className="w-24 text-right"
+                    />
+                  ) : (
+                    row.maxDailyLoss ?? "—"
+                  )}
+                </TableCell>
+                <TableCell className="whitespace-nowrap">
+                  {canManageFinance ? (
+                    <Button size="sm" onClick={() => openAdjustModal(row)}>
+                      Adjust balance
+                    </Button>
+                  ) : null}
+                  {errors[row.id] ? <div className="mt-1 text-xs text-[var(--sell)]">{errors[row.id]}</div> : null}
+                </TableCell>
+              </TableRow>
             ))
           )}
         </TableBody>
       </Table>
+
+      <Modal open={adjustTarget !== null} onClose={() => setAdjustTarget(null)} title={`Adjust balance — ${adjustTarget?.accountNumber ?? ""}`}>
+        <div className="flex flex-col gap-3">
+          <FormField label="Adjustment type">
+            <Select value={adjustType} onChange={(e) => setAdjustType(e.target.value as "credit" | "debit")}>
+              <option value="credit">Credit (add funds)</option>
+              <option value="debit">Debit (remove funds)</option>
+            </Select>
+          </FormField>
+          <FormField label="Amount (USD)">
+            <Input type="text" inputMode="decimal" mono placeholder="0.00" value={adjustAmount} onChange={(e) => setAdjustAmount(e.target.value)} />
+          </FormField>
+          <FormField label="Reason (required, logged in audit trail)">
+            <textarea
+              rows={2}
+              value={adjustNote}
+              onChange={(e) => setAdjustNote(e.target.value)}
+              placeholder="e.g. Manual correction for failed deposit"
+              className="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-2)] px-3 py-2 text-sm text-[var(--text-1)] placeholder:text-[var(--text-3)] focus:border-[var(--accent)] focus:outline-none"
+            />
+          </FormField>
+          {adjustError ? <p className="text-sm text-[var(--sell)]">{adjustError}</p> : null}
+          <ModalActions>
+            <Button variant="ghost" onClick={() => setAdjustTarget(null)}>
+              Cancel
+            </Button>
+            <Button variant="primary" disabled={busyId === adjustTarget?.id} onClick={submitAdjustment}>
+              {busyId === adjustTarget?.id ? "Applying..." : "Apply adjustment"}
+            </Button>
+          </ModalActions>
+        </div>
+      </Modal>
     </div>
   );
 }

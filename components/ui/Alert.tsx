@@ -3,10 +3,10 @@ import { ReactNode } from "react";
 type Tone = "danger" | "success" | "warning" | "info";
 
 const toneClasses: Record<Tone, string> = {
-  danger: "bg-rose-50 text-rose-700 border-rose-200",
-  success: "bg-emerald-50 text-emerald-700 border-emerald-200",
-  warning: "bg-amber-50 text-amber-700 border-amber-200",
-  info: "bg-indigo-50 text-indigo-700 border-indigo-200",
+  danger: "bg-[var(--sell-bg)] text-[var(--sell)] border-[var(--sell)]/30",
+  success: "bg-[var(--buy-bg)] text-[var(--buy)] border-[var(--buy)]/30",
+  warning: "bg-[var(--warn-bg)] text-[var(--warn)] border-[var(--warn)]/30",
+  info: "bg-[var(--accent-bg)] text-[var(--accent)] border-[var(--accent)]/30",
 };
 
 export function Alert({ tone = "danger", children }: { tone?: Tone; children: ReactNode }) {

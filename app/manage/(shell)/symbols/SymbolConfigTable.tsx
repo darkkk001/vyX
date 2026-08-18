@@ -108,7 +108,7 @@ export default function SymbolConfigTable({ initialRows }: { initialRows: Symbol
           <TableRow key={row.symbolId}>
             <TableCell mono>
               {row.symbolName}
-              <div className="text-xs text-slate-400">{row.category}</div>
+              <div className="text-xs text-[var(--text-3)]">{row.category}</div>
             </TableCell>
             <TableCell>
               <Checkbox checked={row.enabled} onChange={() => toggleEnabled(row.symbolId)} />
@@ -142,9 +142,9 @@ export default function SymbolConfigTable({ initialRows }: { initialRows: Symbol
                 <Button size="sm" disabled={savingId === row.symbolId} onClick={() => save(row)}>
                   {savingId === row.symbolId ? "Saving..." : "Save"}
                 </Button>
-                {savedId === row.symbolId ? <span className="text-xs text-emerald-600">Saved</span> : null}
+                {savedId === row.symbolId ? <span className="text-xs text-[var(--buy)]">Saved</span> : null}
                 {errors[row.symbolId] ? (
-                  <span className="text-xs text-rose-600">{errors[row.symbolId]}</span>
+                  <span className="text-xs text-[var(--sell)]">{errors[row.symbolId]}</span>
                 ) : null}
               </div>
             </TableCell>

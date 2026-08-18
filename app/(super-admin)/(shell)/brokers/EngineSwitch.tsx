@@ -33,14 +33,13 @@ export default function EngineSwitch({ brokerId, initialEngine }: { brokerId: st
 
   return (
     <div>
-      <Select value={engine} disabled={saving} onChange={(e) => save(e.target.value as "LEGACY" | "RUST")} className="w-44">
-        <option value="LEGACY">Legacy (Next.js/Prisma)</option>
+      <Select value={engine} disabled={saving} onChange={(e) => save(e.target.value as "LEGACY" | "RUST")} className="w-40">
+        <option value="LEGACY">Legacy</option>
         <option value="RUST">Rust engine</option>
       </Select>
-      {saving ? <span className="ml-1.5 text-xs text-slate-400">Saving...</span> : null}
-      {saved ? <span className="ml-1.5 text-xs text-emerald-600">Saved</span> : null}
-      {error ? <div className="text-xs text-rose-600">{error}</div> : null}
-      <div className="mt-1 max-w-[220px] text-xs text-slate-400">Not wired to trading yet — config only, see ADR-003.</div>
+      {saving ? <span className="ml-1.5 text-xs text-[var(--text-3)]">Saving...</span> : null}
+      {saved ? <span className="ml-1.5 text-xs text-[var(--buy)]">Saved</span> : null}
+      {error ? <div className="text-xs text-[var(--sell)]">{error}</div> : null}
     </div>
   );
 }

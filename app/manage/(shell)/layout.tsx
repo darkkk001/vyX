@@ -1,6 +1,10 @@
 import { redirect } from "next/navigation";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
-import { AdminShell, type AdminNavItem } from "@/components/admin/AdminShell";
+import { prisma } from "@/lib/prisma";
+import { AdminShell, type AdminNavGroup } from "@/components/admin/AdminShell";
+import { TopbarSearch } from "@/components/admin/TopbarSearch";
+import { LogoutButton } from "@/components/admin/LogoutButton";
+import { initialsFrom } from "@/lib/format";
 
 // Everything under app/manage/(shell)/* requires a signed-in MANAGER/
 // BROKER_ADMIN session -- route group (invisible in the URL) so
@@ -14,24 +18,92 @@ export default async function ManageShellLayout({ children }: { children: React.
     redirect("/manage/login");
   }
 
-  const navItems: AdminNavItem[] = [
-    { href: "/manage/symbols", label: "Symbols" },
-    { href: "/manage/positions", label: "Positions" },
-    { href: "/manage/accounts", label: "Accounts" },
-    { href: "/manage/groups", label: "Groups" },
+  const [broker, admin] = await Promise.all([
+    prisma.broker.findUnique({ where: { id: session!.brokerId! }, select: { name: true, primaryColor: true } }),
+    prisma.adminUser.findUnique({ where: { id: session!.adminId }, select: { email: true } }),
+  ]);
+
+  const isBrokerAdmin = session!.role === "BROKER_ADMIN";
+
+  const navGroups: AdminNavGroup[] = [
+    { label: "Overview", items: [{ href: "/manage/dashboard", label: "Dashboard" }] },
+    {
+      label: "Clients",
+      items: [
+        { href: "/manage/accounts", label: "Clients" },
+        ...(isBrokerAdmin ? [{ href: "/manage/kyc", label: "KYC review" }] : []),
+      ],
+    },
+    ...(isBrokerAdmin
+      ? [
+          {
+            label: "Finance",
+            items: [
+              { href: "/manage/funds", label: "Deposits & withdrawals" },
+              { href: "/manage/ib", label: "IB & affiliates" },
+            ],
+          } satisfies AdminNavGroup,
+        ]
+      : []),
+    {
+      label: "Trading",
+      items: [
+        { href: "/manage/positions", label: "Live trading" },
+        { href: "/manage/symbols", label: "Symbols" },
+        { href: "/manage/groups", label: "Client groups" },
+        ...(isBrokerAdmin ? [{ href: "/manage/risk", label: "Risk rules" }] : []),
+      ],
+    },
+    {
+      label: "Organization",
+      items: [
+        { href: "/manage/reports", label: "Reports" },
+        ...(isBrokerAdmin ? [{ href: "/manage/team", label: "Staff & roles" }] : []),
+        { href: "/manage/audit", label: "Audit log" },
+      ],
+    },
   ];
-  if (session!.role === "BROKER_ADMIN") {
-    navItems.push(
-      { href: "/manage/funds", label: "Funds" },
-      { href: "/manage/kyc", label: "KYC" },
-      { href: "/manage/ib", label: "IB" },
-      { href: "/manage/team", label: "Team" },
-      { href: "/manage/risk", label: "Risk" }
-    );
-  }
 
   return (
-    <AdminShell title="VyXTrader Manager" navItems={navItems} userLabel={session!.role}>
+    <AdminShell
+      title="vyX Backoffice"
+      pageTitle="Manager"
+      navGroups={navGroups}
+      topbarSearch={<TopbarSearch placeholder="Search clients, transactions…" />}
+      topbarRight={
+        <>
+          {broker ? (
+            <div className="flex items-center gap-1.5 rounded-full border border-[var(--border)] bg-[var(--bg-2)] py-1 pl-1 pr-3 text-[11.5px] font-medium text-[var(--text-1)]">
+              <span
+                className="flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold text-[#04140c]"
+                style={{ background: broker.primaryColor ?? "var(--accent)" }}
+              >
+                {initialsFrom(broker.name)}
+              </span>
+              {broker.name}
+            </div>
+          ) : null}
+          <div className="flex items-center gap-2">
+            <div className="flex h-[30px] w-[30px] items-center justify-center rounded-full border border-[var(--border-strong)] bg-[var(--bg-3)] text-[11px] font-semibold text-[var(--text-2)]">
+              {initialsFrom(admin?.email ?? session!.role)}
+            </div>
+            <div className="flex flex-col leading-tight">
+              <span className="text-xs font-semibold text-[var(--text-1)]">{admin?.email ?? session!.role}</span>
+              <span className="text-[10px] text-[var(--text-3)]">
+                {session!.role === "BROKER_ADMIN" ? "Broker Admin" : "Manager"}
+              </span>
+            </div>
+            <LogoutButton loginHref="/manage/login">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-[var(--text-3)] hover:text-[var(--sell)]">
+                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+                <polyline points="16 17 21 12 16 7" />
+                <line x1="21" y1="12" x2="9" y2="12" />
+              </svg>
+            </LogoutButton>
+          </div>
+        </>
+      }
+    >
       {children}
     </AdminShell>
   );

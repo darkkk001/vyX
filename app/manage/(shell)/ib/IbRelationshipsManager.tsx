@@ -6,6 +6,7 @@ import { Card } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 import { Button } from "@/components/ui/Button";
+import { Modal, ModalActions } from "@/components/ui/Modal";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
 
 export type IbRelationshipRow = {
@@ -95,6 +96,7 @@ export default function IbRelationshipsManager({
   }
 
   // --- Pay action ---
+  const [payTarget, setPayTarget] = useState<IbRelationshipRow | null>(null);
   const [payingId, setPayingId] = useState<string | null>(null);
   const [payErrors, setPayErrors] = useState<Record<string, string>>({});
 
@@ -110,8 +112,10 @@ export default function IbRelationshipsManager({
     if (!response.ok) {
       const body = await response.json().catch(() => ({}));
       setPayErrors((prev) => ({ ...prev, [row.id]: body.error ?? "payout failed" }));
+      setPayTarget(null);
       return;
     }
+    setPayTarget(null);
     router.refresh();
   }
 
@@ -154,7 +158,7 @@ export default function IbRelationshipsManager({
           <Button type="submit" variant="primary" disabled={creating || !ibAccountId || !clientAccountId}>
             {creating ? "Adding..." : "Add"}
           </Button>
-          {createError ? <span className="text-sm text-rose-600">{createError}</span> : null}
+          {createError ? <span className="text-sm text-[var(--sell)]">{createError}</span> : null}
         </form>
       </Card>
 
@@ -177,11 +181,11 @@ export default function IbRelationshipsManager({
                 <TableRow key={row.id}>
                   <TableCell>
                     {row.ibAccountNumber}
-                    <div className="text-xs text-slate-400">{row.ibAccountFullName}</div>
+                    <div className="text-xs text-[var(--text-3)]">{row.ibAccountFullName}</div>
                   </TableCell>
                   <TableCell>
                     {row.clientAccountNumber}
-                    <div className="text-xs text-slate-400">{row.clientAccountFullName}</div>
+                    <div className="text-xs text-[var(--text-3)]">{row.clientAccountFullName}</div>
                   </TableCell>
                   <TableCell>
                     <Select
@@ -206,7 +210,7 @@ export default function IbRelationshipsManager({
                   <TableCell align="right" mono>
                     {row.pendingCommission}
                   </TableCell>
-                  <TableCell className="text-xs text-slate-400">{row.lastPayoutAt ?? "never"}</TableCell>
+                  <TableCell className="text-xs text-[var(--text-3)]">{row.lastPayoutAt ?? "never"}</TableCell>
                   <TableCell className="whitespace-nowrap">
                     <div className="flex items-center gap-1.5">
                       <Button size="sm" disabled={savingId === row.id} onClick={() => saveEdit(row)}>
@@ -214,16 +218,16 @@ export default function IbRelationshipsManager({
                       </Button>
                       <Button
                         size="sm"
-                        variant="primary"
+                        variant="success"
                         disabled={payingId === row.id || Number(row.pendingCommission) <= 0}
-                        onClick={() => pay(row)}
+                        onClick={() => setPayTarget(row)}
                       >
-                        {payingId === row.id ? "Paying..." : "Pay"}
+                        Pay
                       </Button>
-                      {savedId === row.id ? <span className="text-xs text-emerald-600">Saved</span> : null}
+                      {savedId === row.id ? <span className="text-xs text-[var(--buy)]">Saved</span> : null}
                     </div>
-                    {editErrors[row.id] ? <div className="mt-1 text-xs text-rose-600">{editErrors[row.id]}</div> : null}
-                    {payErrors[row.id] ? <div className="mt-1 text-xs text-rose-600">{payErrors[row.id]}</div> : null}
+                    {editErrors[row.id] ? <div className="mt-1 text-xs text-[var(--sell)]">{editErrors[row.id]}</div> : null}
+                    {payErrors[row.id] ? <div className="mt-1 text-xs text-[var(--sell)]">{payErrors[row.id]}</div> : null}
                   </TableCell>
                 </TableRow>
               ))
@@ -231,6 +235,28 @@ export default function IbRelationshipsManager({
           </TableBody>
         </Table>
       </Card>
+
+      <Modal open={payTarget !== null} onClose={() => setPayTarget(null)} title="Confirm commission payout">
+        {payTarget ? (
+          <div className="flex flex-col gap-3">
+            <p className="text-sm text-[var(--text-2)]">
+              Pay <span className="font-mono text-[var(--text-1)]">{payTarget.pendingCommission}</span> to{" "}
+              <span className="text-[var(--text-1)]">
+                {payTarget.ibAccountNumber} — {payTarget.ibAccountFullName}
+              </span>
+              ? This moves the amount through the ledger onto the IB&apos;s own account balance and resets pending commission to zero.
+            </p>
+            <ModalActions>
+              <Button variant="ghost" onClick={() => setPayTarget(null)}>
+                Cancel
+              </Button>
+              <Button variant="success" disabled={payingId === payTarget.id} onClick={() => pay(payTarget)}>
+                {payingId === payTarget.id ? "Paying..." : "Confirm payout"}
+              </Button>
+            </ModalActions>
+          </div>
+        ) : null}
+      </Modal>
     </div>
   );
 }

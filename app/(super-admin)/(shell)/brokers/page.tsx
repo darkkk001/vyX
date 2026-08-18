@@ -1,12 +1,10 @@
 import { redirect } from "next/navigation";
 import { getAdminSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { PLAN_PRICING, formatUsd } from "@/lib/billing";
 import { PageHeader } from "@/components/ui/PageHeader";
-import { Card } from "@/components/ui/Card";
-import { Badge } from "@/components/ui/Badge";
-import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
-import CreateBrokerForm from "./CreateBrokerForm";
-import EngineSwitch from "./EngineSwitch";
+import { StatCard, StatGrid } from "@/components/ui/StatCard";
+import BrokersManager, { type BrokerRow } from "./BrokersManager";
 
 export default async function BrokersPage() {
   const session = await getAdminSession();
@@ -14,46 +12,38 @@ export default async function BrokersPage() {
     redirect("/login");
   }
 
-  const brokers = await prisma.broker.findMany({ orderBy: { createdAt: "desc" } });
+  const [brokers, totalEndClients] = await Promise.all([
+    prisma.broker.findMany({ orderBy: { createdAt: "desc" } }),
+    prisma.account.count(),
+  ]);
+
+  const rows: BrokerRow[] = brokers.map((b) => ({
+    id: b.id,
+    name: b.name,
+    subdomain: b.subdomain,
+    customDomain: b.customDomain,
+    tier: b.tier,
+    status: b.status,
+    executionEngine: b.executionEngine,
+    trialEndsAt: b.trialEndsAt ? b.trialEndsAt.toISOString() : null,
+    createdAt: b.createdAt.toISOString().slice(0, 10),
+  }));
+
+  const activeCount = brokers.filter((b) => b.status === "ACTIVE").length;
+  const trialCount = brokers.filter((b) => b.status === "TRIAL").length;
+  const mrrCents = brokers.filter((b) => b.status === "ACTIVE").reduce((sum, b) => sum + PLAN_PRICING[b.tier].monthlyCents, 0);
 
   return (
-    <main className="mx-auto max-w-4xl">
-      <PageHeader title="Brokers" />
-      <div className="flex flex-col gap-6">
-        <Card>
-          <Table>
-            <TableHead>
-              <TableHeaderCell>Name</TableHeaderCell>
-              <TableHeaderCell>Subdomain</TableHeaderCell>
-              <TableHeaderCell>Tier</TableHeaderCell>
-              <TableHeaderCell>Status</TableHeaderCell>
-              <TableHeaderCell>Engine</TableHeaderCell>
-            </TableHead>
-            <TableBody>
-              {brokers.length === 0 ? (
-                <TableEmptyState colSpan={5}>No brokers yet.</TableEmptyState>
-              ) : (
-                brokers.map((broker) => (
-                  <TableRow key={broker.id}>
-                    <TableCell>{broker.name}</TableCell>
-                    <TableCell mono>{broker.subdomain}</TableCell>
-                    <TableCell>
-                      <Badge tone="info">{broker.tier}</Badge>
-                    </TableCell>
-                    <TableCell>
-                      <Badge tone={broker.status === "ACTIVE" ? "success" : "neutral"}>{broker.status}</Badge>
-                    </TableCell>
-                    <TableCell>
-                      <EngineSwitch brokerId={broker.id} initialEngine={broker.executionEngine} />
-                    </TableCell>
-                  </TableRow>
-                ))
-              )}
-            </TableBody>
-          </Table>
-        </Card>
-        <CreateBrokerForm />
-      </div>
+    <main className="mx-auto max-w-[1400px]">
+      <PageHeader title="All brokers" description="Every broker tenant licensed on VyXTrader" />
+      <StatGrid columns={5}>
+        <StatCard label="Total tenants" value={String(brokers.length)} />
+        <StatCard label="Active (paying)" value={String(activeCount)} />
+        <StatCard label="Trial" value={String(trialCount)} valueTone={trialCount > 0 ? "warn" : undefined} />
+        <StatCard label="MRR" value={formatUsd(mrrCents)} />
+        <StatCard label="Total end-clients" value={totalEndClients.toLocaleString("en-US")} />
+      </StatGrid>
+      <BrokersManager initialRows={rows} />
     </main>
   );
 }

@@ -13,11 +13,11 @@ export function FormField({
 }) {
   return (
     <div className="flex flex-col gap-1.5">
-      <label htmlFor={htmlFor} className="text-sm font-medium text-slate-700">
+      <label htmlFor={htmlFor} className="text-[11px] text-[var(--text-3)]">
         {label}
       </label>
       {children}
-      {error ? <p className="text-sm text-rose-600">{error}</p> : null}
+      {error ? <p className="text-sm text-[var(--sell)]">{error}</p> : null}
     </div>
   );
 }

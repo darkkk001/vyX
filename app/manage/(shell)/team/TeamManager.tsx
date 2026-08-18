@@ -93,7 +93,7 @@ export default function TeamManager({ initialRows, currentAdminId }: { initialRo
           <Button type="submit" variant="primary" disabled={creating}>
             {creating ? "Adding..." : "Add"}
           </Button>
-          {createError ? <span className="text-sm text-rose-600">{createError}</span> : null}
+          {createError ? <span className="text-sm text-[var(--sell)]">{createError}</span> : null}
         </form>
       </Card>
 
@@ -116,10 +116,10 @@ export default function TeamManager({ initialRows, currentAdminId }: { initialRo
                   <TableRow key={row.id}>
                     <TableCell>
                       {row.email}
-                      {isSelf ? <span className="text-xs text-slate-400"> (you)</span> : null}
+                      {isSelf ? <span className="text-xs text-[var(--text-3)]"> (you)</span> : null}
                     </TableCell>
                     <TableCell>
-                      <Badge tone="info">{row.role}</Badge>
+                      <Badge tone="accent">{row.role}</Badge>
                     </TableCell>
                     <TableCell>
                       <Select
@@ -133,9 +133,9 @@ export default function TeamManager({ initialRows, currentAdminId }: { initialRo
                         <option value="DISABLED">DISABLED</option>
                       </Select>
                     </TableCell>
-                    <TableCell className="text-xs text-slate-400">{row.lastLoginAt ?? "never"}</TableCell>
+                    <TableCell className="text-xs text-[var(--text-3)]">{row.lastLoginAt ?? "never"}</TableCell>
                     <TableCell>
-                      {errors[row.id] ? <span className="text-xs text-rose-600">{errors[row.id]}</span> : null}
+                      {errors[row.id] ? <span className="text-xs text-[var(--sell)]">{errors[row.id]}</span> : null}
                     </TableCell>
                   </TableRow>
                 );

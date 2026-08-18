@@ -34,8 +34,10 @@ enum BrokerTier {
 }
 
 enum BrokerStatus {
+  TRIAL
   ACTIVE
   SUSPENDED
+  DISABLED
 }
 
 // See ADR-003 (docs/decisions.md) -- the broker-selection mechanism
@@ -177,6 +179,14 @@ model Broker {
   // Branding — resolved at request time, never hardcoded or baked into a build.
   logoUrl      String?
   primaryColor String? // CSS custom property override, e.g. "#1e8a5f"
+
+  // Tenant lifecycle / billing — config-only, not wired to any real
+  // payment processor (see lib/billing.ts's PLAN_PRICING). trialEndsAt is
+  // set when status becomes TRIAL, cleared/ignored otherwise. nextInvoiceAt
+  // is set when a broker moves to ACTIVE (Super Admin's Billing page), null
+  // while TRIAL/SUSPENDED/DISABLED.
+  trialEndsAt   DateTime? @db.Timestamptz(3)
+  nextInvoiceAt DateTime? @db.Timestamptz(3)
 
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)

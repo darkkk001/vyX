@@ -1,0 +1,61 @@
+/* Dark theme tokens shared by the Manager (app/manage) and Super Admin
+   (app/(super-admin)) surfaces -- ported from the vyXTrader Arch & Design
+   mockups (vyx-backoffice.html / vyx-superadmin.html). Scoped by
+   [data-surface] rather than baked into Tailwind's generated @theme, since
+   @theme bakes one value per class and these two surfaces need the same
+   class list to resolve to two different accent colors. Components
+   reference these via Tailwind v4 arbitrary values, e.g. bg-[var(--bg-1)].
+   See app/manage/layout.tsx and app/(super-admin)/layout.tsx for where
+   data-surface is set. app/globals.css's own @theme/: root/body rules are
+   untouched -- they still serve the rest of the app. */
+
+[data-surface] {
+  --bg-0: #07090c;
+  --bg-1: #0b0f14;
+  --bg-2: #0e1319;
+  --bg-3: #131a22;
+  --border: #1e242c;
+  --border-strong: #262e38;
+  --text-1: #edeff2;
+  --text-2: #8b93a1;
+  --text-3: #5a6472;
+  --buy: #16c784;
+  --buy-bg: #0f2a1e;
+  --sell: #ea3943;
+  --sell-bg: #2a0f11;
+  --warn: #f0b90b;
+  --warn-bg: #2e2408;
+
+  color: var(--text-1);
+  background: var(--bg-0);
+  font-family: var(--font-admin-sans), system-ui, sans-serif;
+}
+
+[data-surface="manager"] {
+  --accent: #16c784;
+  --accent-bg: #0f2a1e;
+}
+
+[data-surface="super-admin"] {
+  --accent: #7c6fff;
+  --accent-bg: #211e42;
+}
+
+/* Overrides Tailwind's generated .font-mono utility (mapped to Geist Mono
+   by the root @theme) within these two surfaces only -- a plain attribute
+   selector already beats Tailwind's single-class rule, no !important. */
+[data-surface] .font-mono {
+  font-family: var(--font-admin-mono), ui-monospace, monospace;
+}
+
+[data-surface] ::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+[data-surface] ::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 4px;
+}
+[data-surface] ::-webkit-scrollbar-track {
+  background: transparent;
+}

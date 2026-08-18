@@ -42,6 +42,7 @@ export async function POST(request: NextRequest) {
   const accountId = typeof body?.accountId === "string" ? body.accountId : "";
   const symbolId = typeof body?.symbolId === "string" ? body.symbolId : "";
   const side = body?.side === "SELL" ? "SELL" : body?.side === "BUY" ? "BUY" : null;
+  const note = typeof body?.note === "string" && body.note.trim() ? body.note.trim() : null;
 
   if (!accountId || !symbolId || !side) {
     return NextResponse.json({ error: "accountId, symbolId, and side are required" }, { status: 400 });
@@ -146,6 +147,11 @@ export async function POST(request: NextRequest) {
           side,
           volume: volume.toString(),
           openPrice: fillPrice.toString(),
+          // Optional dealing-desk reason, e.g. "Phone order -- client
+          // unable to access platform" -- no schema field for it, so it
+          // rides along in the AuditLog row rather than the Position/Order
+          // itself, same as every other admin-action reason in this app.
+          ...(note ? { note } : {}),
         },
       },
     });

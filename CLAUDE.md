@@ -287,6 +287,63 @@ SQL Editor.
   filter combinations produced hand-verified correct totals. All seeded
   test data deleted afterward. See `docs/architecture.md`'s status
   re-check for the full writeup.
+  **Manager + Super Admin dark-theme restyle, plus real new pages
+  (2026-08-18).** Full visual restyle of both surfaces against design
+  references (`vyx-backoffice.html`/`vyx-superadmin.html`), replacing the
+  generic light Tailwind admin theme above with the dark palette + grouped
+  sidebar + topbar those mockups define. New `app/admin-theme.css`: CSS
+  custom properties scoped by a `data-surface="manager"|"super-admin"`
+  attribute (not baked into the root `@theme`, since the two surfaces need
+  the same class list to resolve to two different accent colors — green
+  vs. purple) — every `components/ui/*` primitive now reads these via
+  Tailwind v4 arbitrary values. New `components/ui/Modal.tsx` — no
+  modal/dialog primitive existed anywhere before this; every inline
+  expanding-table-row confirmation (balance adjust, KYC reject, funds
+  approve/reject, IB pay, risk halt, manual position open) now uses it,
+  same underlying API contracts. **Real bug caught and fixed during
+  verification**: `Modal` initially portaled into `document.body` via
+  `createPortal` "to always overlay the sidebar" — but `document.body` is
+  outside the `[data-surface]` div the theme tokens are scoped to, so
+  every modal rendered with no background at all (page content bleeding
+  through), caught by an actual Playwright screenshot, not just a curl
+  200. Fixed by dropping the portal entirely — `position:fixed` already
+  overlays everything without needing to escape the DOM tree, since
+  nothing in `AdminShell` creates a containing block that would clip a
+  fixed-position descendant. New real pages, not just restyled ones:
+  Manager Dashboard (`/manage/dashboard`, 5 real stat tiles + an
+  `AuditLog`-backed activity feed), Reports (`/manage/reports`, 4 stat
+  tiles + 3 real CSV exports via new `lib/csv.ts`, no dependency), an
+  Audit log viewer for both surfaces (`/manage/audit` broker-scoped,
+  `/audit` platform-wide) via new `lib/audit-labels.ts`. Also added, after
+  the user pushed back that these are standard Super Admin features, not
+  extras: `BrokerStatus` gained `TRIAL`/`DISABLED` (was `ACTIVE`/
+  `SUSPENDED` only) plus `Broker.trialEndsAt`/`nextInvoiceAt`
+  (migration `20260818110000_broker_lifecycle_billing`, applied via
+  `prisma migrate deploy` — worked cleanly here, unlike the hand-apply
+  workaround earlier migrations needed), new `lib/billing.ts`
+  (`PLAN_PRICING`, config-only, not wired to any payment processor) behind
+  new Trials-pending and Plans & billing pages; a Platform Health page
+  with exactly one real measurement (a timed `SELECT 1` against Postgres)
+  and every other row honestly labeled "Not monitored" rather than
+  fabricating uptime/latency for services with no real health-check
+  source anywhere in this project. New `POST /api/admin/brokers` behavior
+  worth flagging: brokers now default to `status: "TRIAL"` +
+  `trialEndsAt` = 14 days out instead of immediately `ACTIVE` — and can
+  optionally create the first `BROKER_ADMIN` in the same transaction (a
+  "Register broker" modal replacing the old always-visible inline form).
+  New `PATCH /api/manage/positions/[id]` — `Position.slPrice`/`tpPrice`
+  existed in the schema but no route touched them until now; validated
+  against the current market price via the already-existing
+  `lib/trading.ts` `validateSlTp`. Verified live throughout: full
+  `npx tsc --noEmit` and `next build` both clean; every restyled/new page
+  hit via `curl` with real seeded sessions (200s, correct role-gating —
+  `MANAGER` still blocked from Funds/KYC/IB/Team/Risk, cross-broker
+  isolation still holds); the new position open/modify/close and
+  broker-register/status-change paths exercised end-to-end against the
+  real Postgres with real mutations (including the validation-rejection
+  case), all seeded test data and balance changes reverted afterward; and
+  the Playwright screenshot pass above, which is what actually caught the
+  Modal bug.
 - **Phase 5** (real execution engine / LP FIX feed) — partially started.
   Note: this doc's phase numbering disagrees with `docs/architecture.md`
   §7's own table (which calls Phase 5 "Mobile") — never reconciled,

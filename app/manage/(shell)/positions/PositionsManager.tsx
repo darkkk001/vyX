@@ -7,6 +7,8 @@ import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
+import { FormField } from "@/components/ui/FormField";
+import { Modal, ModalActions } from "@/components/ui/Modal";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
 
 export type PositionRow = {
@@ -24,6 +26,8 @@ export type PositionRow = {
   openPrice: string;
   currentPrice: string | null;
   floatingPnl: string | null;
+  slPrice: string | null;
+  tpPrice: string | null;
   openedAt: string;
 };
 
@@ -40,12 +44,12 @@ const NO_GROUP = "__none__";
 const NO_IB = "__none__";
 
 // Exposure monitor: filters, sorting, per-symbol Client Floating P&L, an
-// "open a position" form, and the open positions table with a per-row
-// Close action (full or partial volume). Filtering is entirely
-// client-side (same pattern AccountsManager.tsx's own search box uses)
-// -- the exposure aggregate and the broker-wide total both recompute
-// from whichever subset the filters leave, via useMemo, so they always
-// stay in sync with what's on screen.
+// "open a position" modal, a per-row "modify SL/TP" modal, and the open
+// positions table with a per-row Close action (full or partial volume).
+// Filtering is entirely client-side (same pattern AccountsManager.tsx's
+// own search box uses) -- the exposure aggregate and the broker-wide
+// total both recompute from whichever subset the filters leave, via
+// useMemo, so they always stay in sync with what's on screen.
 export default function PositionsManager({
   positionRows,
   accounts,
@@ -153,22 +157,37 @@ export default function PositionsManager({
     [filteredPositions]
   );
 
-  // --- Open position form ---
+  // --- Open position modal ---
+  const [openModalOpen, setOpenModalOpen] = useState(false);
   const [accountId, setAccountId] = useState(accounts[0]?.id ?? "");
   const [symbolId, setSymbolId] = useState(symbols[0]?.id ?? "");
   const [side, setSide] = useState<"BUY" | "SELL">("BUY");
   const [volume, setVolume] = useState("0.01");
+  const [openReason, setOpenReason] = useState("");
   const [openError, setOpenError] = useState<string | null>(null);
   const [opening, setOpening] = useState(false);
 
-  async function openPosition(e: React.FormEvent) {
-    e.preventDefault();
+  function launchOpenModal() {
+    setAccountId(accounts[0]?.id ?? "");
+    setSymbolId(symbols[0]?.id ?? "");
+    setSide("BUY");
+    setVolume("0.01");
+    setOpenReason("");
+    setOpenError(null);
+    setOpenModalOpen(true);
+  }
+
+  async function openPosition() {
+    if (!openReason.trim()) {
+      setOpenError("Reason is required for the audit trail");
+      return;
+    }
     setOpening(true);
     setOpenError(null);
     const response = await fetch("/api/manage/positions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ accountId, symbolId, side, volume }),
+      body: JSON.stringify({ accountId, symbolId, side, volume, note: openReason.trim() }),
     });
     setOpening(false);
     if (!response.ok) {
@@ -176,6 +195,50 @@ export default function PositionsManager({
       setOpenError(body.error ?? "failed to open position");
       return;
     }
+    setOpenModalOpen(false);
+    router.refresh();
+  }
+
+  // --- Modify SL/TP modal ---
+  const [modifyTarget, setModifyTarget] = useState<PositionRow | null>(null);
+  const [modSl, setModSl] = useState("");
+  const [modTp, setModTp] = useState("");
+  const [modReason, setModReason] = useState("");
+  const [modifyError, setModifyError] = useState<string | null>(null);
+  const [modifying, setModifying] = useState(false);
+
+  function openModifyModal(row: PositionRow) {
+    setModifyTarget(row);
+    setModSl(row.slPrice ?? "");
+    setModTp(row.tpPrice ?? "");
+    setModReason("");
+    setModifyError(null);
+  }
+
+  async function submitModify() {
+    if (!modifyTarget) return;
+    if (!modReason.trim()) {
+      setModifyError("Reason is required for the audit trail");
+      return;
+    }
+    setModifying(true);
+    setModifyError(null);
+    const response = await fetch(`/api/manage/positions/${modifyTarget.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        slPrice: modSl.trim() === "" ? null : modSl.trim(),
+        tpPrice: modTp.trim() === "" ? null : modTp.trim(),
+        reason: modReason.trim(),
+      }),
+    });
+    setModifying(false);
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      setModifyError(body.error ?? "modify failed");
+      return;
+    }
+    setModifyTarget(null);
     router.refresh();
   }
 
@@ -210,7 +273,7 @@ export default function PositionsManager({
       <Card title="Filters">
         <div className="flex flex-wrap items-end gap-3">
           <div className="flex flex-col gap-1.5">
-            <label className="text-xs font-medium text-slate-500">Symbol</label>
+            <label className="text-xs font-medium text-[var(--text-3)]">Symbol</label>
             <Select value={symbolFilter} onChange={(e) => setSymbolFilter(e.target.value)} className="w-32">
               <option value="ALL">All</option>
               {symbols.map((s) => (
@@ -221,7 +284,7 @@ export default function PositionsManager({
             </Select>
           </div>
           <div className="flex flex-col gap-1.5">
-            <label className="text-xs font-medium text-slate-500">Account</label>
+            <label className="text-xs font-medium text-[var(--text-3)]">Account</label>
             <Select value={accountFilter} onChange={(e) => setAccountFilter(e.target.value)} className="w-44">
               <option value="ALL">All</option>
               {accountsWithPositions.map((a) => (
@@ -232,7 +295,7 @@ export default function PositionsManager({
             </Select>
           </div>
           <div className="flex flex-col gap-1.5">
-            <label className="text-xs font-medium text-slate-500">Group</label>
+            <label className="text-xs font-medium text-[var(--text-3)]">Group</label>
             <Select value={groupFilter} onChange={(e) => setGroupFilter(e.target.value)} className="w-36">
               <option value="ALL">All</option>
               <option value={NO_GROUP}>— ungrouped —</option>
@@ -244,7 +307,7 @@ export default function PositionsManager({
             </Select>
           </div>
           <div className="flex flex-col gap-1.5">
-            <label className="text-xs font-medium text-slate-500">IB</label>
+            <label className="text-xs font-medium text-[var(--text-3)]">IB</label>
             <Select value={ibFilter} onChange={(e) => setIbFilter(e.target.value)} className="w-44">
               <option value="ALL">All</option>
               <option value={NO_IB}>— no IB —</option>
@@ -256,7 +319,7 @@ export default function PositionsManager({
             </Select>
           </div>
           <div className="flex flex-col gap-1.5">
-            <label className="text-xs font-medium text-slate-500">Side</label>
+            <label className="text-xs font-medium text-[var(--text-3)]">Side</label>
             <Select value={sideFilter} onChange={(e) => setSideFilter(e.target.value as SideFilter)} className="w-28">
               <option value="ALL">All</option>
               <option value="BUY">Long (BUY)</option>
@@ -264,7 +327,7 @@ export default function PositionsManager({
             </Select>
           </div>
           <div className="flex flex-col gap-1.5">
-            <label className="text-xs font-medium text-slate-500">P&L</label>
+            <label className="text-xs font-medium text-[var(--text-3)]">P&L</label>
             <Select value={plFilter} onChange={(e) => setPlFilter(e.target.value as PlFilter)} className="w-28">
               <option value="ALL">All</option>
               <option value="PROFIT">Profit</option>
@@ -301,7 +364,7 @@ export default function PositionsManager({
         action={
           <div className="flex items-center gap-4">
             <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-medium text-slate-500">Sort by</label>
+              <label className="text-xs font-medium text-[var(--text-3)]">Sort by</label>
               <Select value={sortMode} onChange={(e) => setSortMode(e.target.value as SortMode)} className="w-32">
                 <option value="symbol">Symbol</option>
                 <option value="exposure">Exposure</option>
@@ -309,8 +372,8 @@ export default function PositionsManager({
               </Select>
             </div>
             <div className="text-right">
-              <p className="text-xs text-slate-500">Total floating P&L</p>
-              <p className={`font-mono text-lg font-semibold ${totalFloatingPnl >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
+              <p className="text-xs text-[var(--text-3)]">Total floating P&L</p>
+              <p className={`font-mono text-lg font-semibold ${totalFloatingPnl >= 0 ? "text-[var(--buy)]" : "text-[var(--sell)]"}`}>
                 {totalFloatingPnl.toFixed(2)}
               </p>
             </div>
@@ -344,12 +407,12 @@ export default function PositionsManager({
                   <TableCell
                     align="right"
                     mono
-                    className={e.netExposureNum === 0 ? "" : e.netExposureNum > 0 ? "text-emerald-600" : "text-rose-600"}
+                    className={e.netExposureNum === 0 ? "" : e.netExposureNum > 0 ? "text-[var(--buy)]" : "text-[var(--sell)]"}
                   >
                     {e.netExposureNum > 0 ? "+" : ""}
                     {e.netExposure}
                   </TableCell>
-                  <TableCell align="right" mono className={e.floatingPnl >= 0 ? "text-emerald-600" : "text-rose-600"}>
+                  <TableCell align="right" mono className={e.floatingPnl >= 0 ? "text-[var(--buy)]" : "text-[var(--sell)]"}>
                     {e.floatingPnl.toFixed(2)}
                   </TableCell>
                   <TableCell align="right" mono>
@@ -362,110 +425,173 @@ export default function PositionsManager({
         </Table>
       </Card>
 
-      <Card title="Open a position">
-        <form onSubmit={openPosition} className="flex flex-wrap items-center gap-2">
-          <Select value={accountId} onChange={(e) => setAccountId(e.target.value)} required className="w-56">
-            {accounts.map((a) => (
-              <option key={a.id} value={a.id}>
-                {a.accountNumber} — {a.fullName}
-              </option>
-            ))}
-          </Select>
-          <Select value={symbolId} onChange={(e) => setSymbolId(e.target.value)} required className="w-32">
-            {symbols.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.name}
-              </option>
-            ))}
-          </Select>
-          <Select value={side} onChange={(e) => setSide(e.target.value as "BUY" | "SELL")} className="w-24">
-            <option value="BUY">BUY</option>
-            <option value="SELL">SELL</option>
-          </Select>
-          <Input
-            type="text"
-            inputMode="decimal"
-            mono
-            value={volume}
-            onChange={(e) => setVolume(e.target.value)}
-            placeholder="Volume"
-            className="w-20"
-            required
-          />
-          <Button type="submit" variant="primary" disabled={opening || !accountId || !symbolId}>
-            {opening ? "Opening..." : "Open position"}
-          </Button>
-          {openError ? <span className="text-sm text-rose-600">{openError}</span> : null}
-        </form>
-      </Card>
+      <Table title="Open positions" description="Reflects the filters above" action={<Button variant="primary" onClick={launchOpenModal}>+ New manual position</Button>}>
+        <TableHead>
+          <TableHeaderCell>Account</TableHeaderCell>
+          <TableHeaderCell>Symbol</TableHeaderCell>
+          <TableHeaderCell>Side</TableHeaderCell>
+          <TableHeaderCell align="right">Volume</TableHeaderCell>
+          <TableHeaderCell align="right">Open price</TableHeaderCell>
+          <TableHeaderCell align="right">Current price</TableHeaderCell>
+          <TableHeaderCell align="right">S/L</TableHeaderCell>
+          <TableHeaderCell align="right">T/P</TableHeaderCell>
+          <TableHeaderCell align="right">Floating P&L</TableHeaderCell>
+          <TableHeaderCell>Opened</TableHeaderCell>
+          <TableHeaderCell />
+        </TableHead>
+        <TableBody>
+          {filteredPositions.length === 0 ? (
+            <TableEmptyState colSpan={11}>No open positions match the current filters.</TableEmptyState>
+          ) : (
+            filteredPositions.map((p) => (
+              <TableRow key={p.id}>
+                <TableCell primary>
+                  {p.accountNumber}
+                  <div className="text-xs font-normal text-[var(--text-3)]">{p.accountFullName}</div>
+                </TableCell>
+                <TableCell mono>{p.symbolName}</TableCell>
+                <TableCell>
+                  <Badge tone={p.side === "BUY" ? "success" : "danger"}>{p.side}</Badge>
+                </TableCell>
+                <TableCell align="right" mono>
+                  {p.volume}
+                </TableCell>
+                <TableCell align="right" mono>
+                  {p.openPrice}
+                </TableCell>
+                <TableCell align="right" mono>
+                  {p.currentPrice ?? "—"}
+                </TableCell>
+                <TableCell align="right" mono className="text-[var(--text-3)]">
+                  {p.slPrice ?? "—"}
+                </TableCell>
+                <TableCell align="right" mono className="text-[var(--text-3)]">
+                  {p.tpPrice ?? "—"}
+                </TableCell>
+                <TableCell
+                  align="right"
+                  mono
+                  className={!p.floatingPnl ? "" : Number(p.floatingPnl) >= 0 ? "text-[var(--buy)]" : "text-[var(--sell)]"}
+                >
+                  {p.floatingPnl ?? "—"}
+                </TableCell>
+                <TableCell className="text-xs text-[var(--text-3)]">{p.openedAt}</TableCell>
+                <TableCell className="whitespace-nowrap">
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      title="Modify SL/TP"
+                      onClick={() => openModifyModal(p)}
+                      className="flex h-[26px] w-[26px] items-center justify-center rounded-md border border-[var(--border-strong)] bg-[var(--bg-3)] text-[var(--text-2)] hover:text-[var(--text-1)]"
+                    >
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M12 20h9" />
+                        <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
+                      </svg>
+                    </button>
+                    <Input
+                      type="text"
+                      inputMode="decimal"
+                      placeholder={`up to ${p.volume}`}
+                      value={partialVolume[p.id] ?? ""}
+                      onChange={(e) => setPartialVolume((prev) => ({ ...prev, [p.id]: e.target.value }))}
+                      className="w-20 text-xs"
+                      title="Leave blank to close the full volume"
+                    />
+                    <Button size="sm" variant="danger" disabled={closingId === p.id} onClick={() => closePosition(p)}>
+                      {closingId === p.id ? "Closing..." : "Close"}
+                    </Button>
+                  </div>
+                  {closeErrors[p.id] ? <div className="mt-1 text-xs text-[var(--sell)]">{closeErrors[p.id]}</div> : null}
+                </TableCell>
+              </TableRow>
+            ))
+          )}
+        </TableBody>
+      </Table>
 
-      <Card title="Open positions" description="Reflects the filters above">
-        <Table>
-          <TableHead>
-            <TableHeaderCell>Account</TableHeaderCell>
-            <TableHeaderCell>Symbol</TableHeaderCell>
-            <TableHeaderCell>Side</TableHeaderCell>
-            <TableHeaderCell align="right">Volume</TableHeaderCell>
-            <TableHeaderCell align="right">Open price</TableHeaderCell>
-            <TableHeaderCell align="right">Current price</TableHeaderCell>
-            <TableHeaderCell align="right">Floating P&L</TableHeaderCell>
-            <TableHeaderCell>Opened</TableHeaderCell>
-            <TableHeaderCell />
-          </TableHead>
-          <TableBody>
-            {filteredPositions.length === 0 ? (
-              <TableEmptyState colSpan={9}>No open positions match the current filters.</TableEmptyState>
-            ) : (
-              filteredPositions.map((p) => (
-                <TableRow key={p.id}>
-                  <TableCell>
-                    {p.accountNumber}
-                    <div className="text-xs text-slate-400">{p.accountFullName}</div>
-                  </TableCell>
-                  <TableCell mono>{p.symbolName}</TableCell>
-                  <TableCell>
-                    <Badge tone={p.side === "BUY" ? "success" : "danger"}>{p.side}</Badge>
-                  </TableCell>
-                  <TableCell align="right" mono>
-                    {p.volume}
-                  </TableCell>
-                  <TableCell align="right" mono>
-                    {p.openPrice}
-                  </TableCell>
-                  <TableCell align="right" mono>
-                    {p.currentPrice ?? "—"}
-                  </TableCell>
-                  <TableCell
-                    align="right"
-                    mono
-                    className={!p.floatingPnl ? "" : Number(p.floatingPnl) >= 0 ? "text-emerald-600" : "text-rose-600"}
-                  >
-                    {p.floatingPnl ?? "—"}
-                  </TableCell>
-                  <TableCell className="text-xs text-slate-400">{p.openedAt}</TableCell>
-                  <TableCell className="whitespace-nowrap">
-                    <div className="flex items-center gap-1.5">
-                      <Input
-                        type="text"
-                        inputMode="decimal"
-                        placeholder={`up to ${p.volume}`}
-                        value={partialVolume[p.id] ?? ""}
-                        onChange={(e) => setPartialVolume((prev) => ({ ...prev, [p.id]: e.target.value }))}
-                        className="w-20 text-xs"
-                        title="Leave blank to close the full volume"
-                      />
-                      <Button size="sm" variant="danger" disabled={closingId === p.id} onClick={() => closePosition(p)}>
-                        {closingId === p.id ? "Closing..." : "Close"}
-                      </Button>
-                    </div>
-                    {closeErrors[p.id] ? <div className="mt-1 text-xs text-rose-600">{closeErrors[p.id]}</div> : null}
-                  </TableCell>
-                </TableRow>
-              ))
-            )}
-          </TableBody>
-        </Table>
-      </Card>
+      <Modal open={openModalOpen} onClose={() => setOpenModalOpen(false)} title="New manual position">
+        <div className="flex flex-col gap-3">
+          <FormField label="Client account">
+            <Select value={accountId} onChange={(e) => setAccountId(e.target.value)} required>
+              {accounts.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.accountNumber} — {a.fullName}
+                </option>
+              ))}
+            </Select>
+          </FormField>
+          <FormField label="Symbol">
+            <Select value={symbolId} onChange={(e) => setSymbolId(e.target.value)} required>
+              {symbols.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name}
+                </option>
+              ))}
+            </Select>
+          </FormField>
+          <FormField label="Side">
+            <Select value={side} onChange={(e) => setSide(e.target.value as "BUY" | "SELL")}>
+              <option value="BUY">Buy</option>
+              <option value="SELL">Sell</option>
+            </Select>
+          </FormField>
+          <FormField label="Volume (lots)">
+            <Input type="text" inputMode="decimal" mono value={volume} onChange={(e) => setVolume(e.target.value)} />
+          </FormField>
+          <FormField label="Reason (required, logged in audit trail)">
+            <textarea
+              rows={2}
+              value={openReason}
+              onChange={(e) => setOpenReason(e.target.value)}
+              placeholder="e.g. Phone order — client unable to access platform"
+              className="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-2)] px-3 py-2 text-sm text-[var(--text-1)] placeholder:text-[var(--text-3)] focus:border-[var(--accent)] focus:outline-none"
+            />
+          </FormField>
+          {openError ? <p className="text-sm text-[var(--sell)]">{openError}</p> : null}
+          <ModalActions>
+            <Button variant="ghost" onClick={() => setOpenModalOpen(false)}>
+              Cancel
+            </Button>
+            <Button variant="primary" disabled={opening || !accountId || !symbolId} onClick={openPosition}>
+              {opening ? "Opening..." : "Open position"}
+            </Button>
+          </ModalActions>
+        </div>
+      </Modal>
+
+      <Modal
+        open={modifyTarget !== null}
+        onClose={() => setModifyTarget(null)}
+        title={modifyTarget ? `Modify position — ${modifyTarget.symbolName} — ${modifyTarget.accountNumber}` : ""}
+      >
+        <div className="flex flex-col gap-3">
+          <FormField label="Stop loss">
+            <Input type="text" inputMode="decimal" mono placeholder="—" value={modSl} onChange={(e) => setModSl(e.target.value)} />
+          </FormField>
+          <FormField label="Take profit">
+            <Input type="text" inputMode="decimal" mono placeholder="—" value={modTp} onChange={(e) => setModTp(e.target.value)} />
+          </FormField>
+          <FormField label="Reason (required, logged in audit trail)">
+            <textarea
+              rows={2}
+              value={modReason}
+              onChange={(e) => setModReason(e.target.value)}
+              placeholder="e.g. Client requested SL adjustment via support"
+              className="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-2)] px-3 py-2 text-sm text-[var(--text-1)] placeholder:text-[var(--text-3)] focus:border-[var(--accent)] focus:outline-none"
+            />
+          </FormField>
+          {modifyError ? <p className="text-sm text-[var(--sell)]">{modifyError}</p> : null}
+          <ModalActions>
+            <Button variant="ghost" onClick={() => setModifyTarget(null)}>
+              Cancel
+            </Button>
+            <Button variant="primary" disabled={modifying} onClick={submitModify}>
+              {modifying ? "Saving..." : "Save changes"}
+            </Button>
+          </ModalActions>
+        </div>
+      </Modal>
     </div>
   );
 }

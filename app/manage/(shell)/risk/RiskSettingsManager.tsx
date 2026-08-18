@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { Alert } from "@/components/ui/Alert";
+import { Modal, ModalActions } from "@/components/ui/Modal";
 
 export type RiskSettings = {
   tradingHalted: boolean;
@@ -85,26 +86,15 @@ export default function RiskSettingsManager({ initial }: { initial: RiskSettings
             <Badge tone={tradingHalted ? "danger" : "success"}>
               {tradingHalted ? "HALTED" : "Trading active"}
             </Badge>
-            <p className="mt-2 text-sm text-slate-500">
+            <p className="mt-2 text-sm text-[var(--text-3)]">
               {tradingHalted
                 ? "All new orders and manual position opens are being rejected for this broker."
                 : "New orders are being accepted normally."}
             </p>
           </div>
-          {confirmingHalt ? (
-            <div className="flex items-center gap-2">
-              <Button size="sm" variant="danger" disabled={haltBusy} onClick={toggleHalt}>
-                {haltBusy ? "Working..." : tradingHalted ? "Confirm: resume trading" : "Confirm: halt trading"}
-              </Button>
-              <Button size="sm" variant="ghost" onClick={() => setConfirmingHalt(false)}>
-                Cancel
-              </Button>
-            </div>
-          ) : (
-            <Button size="sm" variant={tradingHalted ? "primary" : "danger"} onClick={() => setConfirmingHalt(true)}>
-              {tradingHalted ? "Resume trading" : "Halt trading"}
-            </Button>
-          )}
+          <Button size="sm" variant={tradingHalted ? "primary" : "danger"} onClick={() => setConfirmingHalt(true)}>
+            {tradingHalted ? "Resume trading" : "Halt trading"}
+          </Button>
         </div>
         {haltError ? (
           <div className="mt-3">
@@ -112,6 +102,24 @@ export default function RiskSettingsManager({ initial }: { initial: RiskSettings
           </div>
         ) : null}
       </Card>
+
+      <Modal open={confirmingHalt} onClose={() => setConfirmingHalt(false)} title={tradingHalted ? "Confirm resume trading" : "Confirm halt trading"}>
+        <div className="flex flex-col gap-3">
+          <p className="text-sm text-[var(--text-2)]">
+            {tradingHalted
+              ? "New orders and manual position opens will be accepted again immediately."
+              : "New orders and manual position opens will be rejected for this broker until resumed. Existing open positions are untouched."}
+          </p>
+          <ModalActions>
+            <Button variant="ghost" onClick={() => setConfirmingHalt(false)}>
+              Cancel
+            </Button>
+            <Button variant="danger" disabled={haltBusy} onClick={toggleHalt}>
+              {haltBusy ? "Working..." : tradingHalted ? "Confirm: resume trading" : "Confirm: halt trading"}
+            </Button>
+          </ModalActions>
+        </div>
+      </Modal>
 
       <Card title="Exposure & position limits">
         <form onSubmit={saveLimits} className="flex flex-col gap-4">
@@ -147,7 +155,7 @@ export default function RiskSettingsManager({ initial }: { initial: RiskSettings
             <Button type="submit" variant="primary" disabled={limitsSaving}>
               {limitsSaving ? "Saving..." : "Save"}
             </Button>
-            {limitsSaved ? <span className="text-sm text-emerald-600">Saved</span> : null}
+            {limitsSaved ? <span className="text-sm text-[var(--buy)]">Saved</span> : null}
           </div>
           {limitsError ? <Alert tone="danger">{limitsError}</Alert> : null}
         </form>
