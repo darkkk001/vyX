@@ -1,6 +1,12 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 
+// Force dynamic -- this route has no cookies()/headers() call, so
+// without this it would be statically evaluated once at build time and
+// frozen in the deployment's static output regardless of which env vars
+// are active at actual request time.
+export const dynamic = "force-dynamic";
+
 // Temporary diagnostic route -- confirms which actual Postgres database
 // this deployment is connected to at runtime, since Vercel masks
 // Sensitive environment variable values and env var changes only take
