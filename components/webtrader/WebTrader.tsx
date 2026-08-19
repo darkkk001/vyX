@@ -645,7 +645,7 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
       const next = prev.map((a) => {
         if (a.triggered) return a;
         const m = market[a.symbol];
-        if (!m) return a;
+        if (!m || !m.live) return a;
         const hit = a.condition === "above" ? m.bid >= a.price : m.bid <= a.price;
         if (hit) {
           changed = true;
@@ -661,7 +661,7 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
     positions.forEach((p) => {
       if (closingIds.current.has(p.id)) return;
       const m = market[p.symbol.name];
-      if (!m) return;
+      if (!m || !m.live) return;
       const price = p.side === "BUY" ? m.bid : m.ask;
       const sl = p.slPrice != null ? parseFloat(p.slPrice) : null;
       const tp = p.tpPrice != null ? parseFloat(p.tpPrice) : null;
@@ -698,7 +698,7 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
     pendingOrders.forEach((o) => {
       if (fillingIds.current.has(o.id)) return;
       const m = market[o.symbol.name];
-      if (!m || !o.requestedPrice) return;
+      if (!m || !m.live || !o.requestedPrice) return;
       const trigger = parseFloat(o.requestedPrice);
       const price = o.side === "BUY" ? m.ask : m.bid;
       let shouldFill = false;
@@ -752,10 +752,11 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
   const ticketSl = parseFloat(slInput);
   const ticketTp = parseFloat(tpInput);
   const ticketHintLines = buildSlTpPreview(activeSymbol, volume, m.bid, ticketSl, ticketTp);
-  const buyDisabled = !isNaN(ticketSl) && ticketSl >= m.bid || (!isNaN(ticketTp) && ticketTp <= m.bid);
-  const sellDisabled = !isNaN(ticketSl) && ticketSl <= m.bid || (!isNaN(ticketTp) && ticketTp >= m.bid);
+  const buyDisabled = !m.live || (!isNaN(ticketSl) && ticketSl >= m.bid) || (!isNaN(ticketTp) && ticketTp <= m.bid);
+  const sellDisabled = !m.live || (!isNaN(ticketSl) && ticketSl <= m.bid) || (!isNaN(ticketTp) && ticketTp >= m.bid);
 
   async function placeOrder(side: "BUY" | "SELL") {
+    if (!m.live) { pushToast("No live feed for this symbol"); return; }
     const sl = slInput === "" ? null : parseFloat(slInput);
     const tp = tpInput === "" ? null : parseFloat(tpInput);
     const refPrice = side === "BUY" ? m.ask : m.bid;
@@ -779,6 +780,7 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
   }
 
   async function placePendingOrder() {
+    if (!m.live) { pushToast("No live feed for this symbol"); return; }
     const price = parseFloat(pendingPrice);
     if (isNaN(price)) { pushToast("Enter a valid entry price"); return; }
     if (!isValidPendingPrice(pendingType, price, m.bid)) { pushToast(pendingPriceRuleText(pendingType)); return; }
@@ -800,6 +802,7 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
 
   async function oneClickTrade(symbolName: string, side: "BUY" | "SELL") {
     const mm = market[symbolName];
+    if (!mm.live) { pushToast("No live feed for this symbol"); return; }
     const ocPrice = side === "BUY" ? mm.ask : mm.bid;
     try {
       await tradeApi.placeOrder({
@@ -818,6 +821,7 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
     const p = positions.find((x) => x.id === id);
     if (!p) return;
     const mm = market[p.symbol.name];
+    if (!mm.live) { pushToast("No live feed for this symbol"); return; }
     const price = p.side === "BUY" ? mm.bid : mm.ask;
     try {
       const res = await tradeApi.closePosition(id, price);
@@ -839,6 +843,7 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
         return;
       }
       const mm = market[p.symbol.name];
+      if (!mm.live) { pushToast("No live feed for this symbol"); return; }
       const price = p.side === "BUY" ? mm.bid : mm.ask;
       try {
         const res = await tradeApi.closePosition(id, price, amount);
@@ -866,6 +871,7 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
     const p = positions.find((x) => x.id === id);
     if (!p) return;
     const mm = market[p.symbol.name];
+    if (!mm.live) { pushToast("No live feed for this symbol"); return; }
     const closePrice = p.side === "BUY" ? mm.bid : mm.ask;
     const newSide = p.side === "BUY" ? "SELL" : "BUY";
     try {
@@ -948,6 +954,7 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
     if (sltpEdit.netSymbol) {
       const symPositions = positions.filter((p) => p.symbol.name === sltpEdit.netSymbol);
       const mm = market[sltpEdit.netSymbol];
+      if (!mm.live) { pushToast("No live feed for this symbol"); return; }
       let updated = 0, skipped = 0;
       for (const p of symPositions) {
         const testSl = sl ?? (p.slPrice ? parseFloat(p.slPrice) : null);
@@ -962,6 +969,7 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
       const p = positions.find((x) => x.id === sltpEdit.posId);
       if (p) {
         const mm = market[p.symbol.name];
+        if (!mm.live) { pushToast("No live feed for this symbol"); return; }
         const error = isValidSlTpForSide(p.side, sl, tp, mm.bid);
         if (error) { pushToast(error); return; }
         try {
@@ -983,6 +991,7 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
     if (!p) return;
     const trimmed = raw.trim();
     const mm = market[p.symbol.name];
+    if (!mm.live) { pushToast("No live feed for this symbol"); return; }
     const value = trimmed === "" ? null : parseFloat(trimmed);
     if (value != null && isNaN(value)) { pushToast("Enter a valid price"); return; }
     const testSl = field === "sl" ? value : p.slPrice ? parseFloat(p.slPrice) : null;
@@ -1007,6 +1016,7 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
   async function submitQuickOrder(side: "BUY" | "SELL") {
     if (!quickOrder) return;
     const mm = market[quickOrder.symbol];
+    if (!mm.live) { pushToast("No live feed for this symbol"); return; }
     const vol = parseFloat(quickOrderVolume) || 0.01;
     const sl = quickOrderSl === "" ? null : parseFloat(quickOrderSl);
     const tp = quickOrderTp === "" ? null : parseFloat(quickOrderTp);
@@ -1025,6 +1035,7 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
 
   // ---------- chart right-click quick pending order ----------
   async function quickPlacePendingAtPrice(type: PendingType, price: number) {
+    if (!m.live) { pushToast("No live feed for this symbol"); return; }
     if (!isValidPendingPrice(type, price, m.bid)) { pushToast(pendingPriceRuleText(type)); return; }
     const side = type.startsWith("buy") ? "BUY" : "SELL";
     const orderType = type.endsWith("limit") ? "LIMIT" : "STOP";
@@ -1382,11 +1393,11 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
                 <div className="sentiment-prices">
                   <button className={`sentiment-price-btn sell${pendingMarketSide === "SELL" ? " selected" : ""}`} disabled={sellDisabled} onClick={() => confirmAndPlace("SELL")}>
                     <span className="sp-label">Sell</span>
-                    <span className="sp-value mono">{fmt(m.bid, m.def.digits)}</span>
+                    <span className="sp-value mono">{m.live ? fmt(m.bid, m.def.digits) : "—"}</span>
                   </button>
                   <button className={`sentiment-price-btn buy${pendingMarketSide === "BUY" ? " selected" : ""}`} disabled={buyDisabled} onClick={() => confirmAndPlace("BUY")}>
                     <span className="sp-label">Buy</span>
-                    <span className="sp-value mono">{fmt(m.ask, m.def.digits)}</span>
+                    <span className="sp-value mono">{m.live ? fmt(m.ask, m.def.digits) : "—"}</span>
                   </button>
                 </div>
               </div>
@@ -1486,11 +1497,17 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
                     </div>
                   </div>
                 ) : null}
-                <div className="chart-price mono" style={{ color: m.bid >= m.prevBid ? "var(--buy)" : "var(--sell)" }}>{fmt(m.bid, m.def.digits)}</div>
-                <div className="chart-change mono" style={{ background: m.bid >= m.dayOpen ? "var(--buy-bg)" : "var(--sell-bg)", color: m.bid >= m.dayOpen ? "var(--buy)" : "var(--sell)" }}>
-                  {(((m.bid - m.dayOpen) / m.dayOpen) * 100 >= 0 ? "+" : "") + (((m.bid - m.dayOpen) / m.dayOpen) * 100).toFixed(2)}%
-                </div>
-                <div className="chart-spread mono">Spread {fmt(m.ask - m.bid, m.def.digits)}</div>
+                {m.live ? (
+                  <>
+                    <div className="chart-price mono" style={{ color: m.bid >= m.prevBid ? "var(--buy)" : "var(--sell)" }}>{fmt(m.bid, m.def.digits)}</div>
+                    <div className="chart-change mono" style={{ background: m.bid >= m.dayOpen ? "var(--buy-bg)" : "var(--sell-bg)", color: m.bid >= m.dayOpen ? "var(--buy)" : "var(--sell)" }}>
+                      {(((m.bid - m.dayOpen) / m.dayOpen) * 100 >= 0 ? "+" : "") + (((m.bid - m.dayOpen) / m.dayOpen) * 100).toFixed(2)}%
+                    </div>
+                    <div className="chart-spread mono">Spread {fmt(m.ask - m.bid, m.def.digits)}</div>
+                  </>
+                ) : (
+                  <div className="chart-price mono" style={{ color: "var(--text-3)", fontSize: 12 }}>No live feed</div>
+                )}
                 <button className="symbol-info-btn" onClick={() => setSymbolInfoOpen(true)} title="Symbol specifications">
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10" /><line x1="12" y1="16" x2="12" y2="12" /><line x1="12" y1="8" x2="12.01" y2="8" /></svg>
                 </button>
@@ -1554,6 +1571,11 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
                     lines={chartLines}
                     onContextMenuPrice={handleChartContextMenuPrice}
                   />
+                  {!m.live ? (
+                    <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.35)", pointerEvents: "none" }}>
+                      <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text-2)" }}>No live feed for {activeSymbol}</span>
+                    </div>
+                  ) : null}
                   {chartContextMenu ? (
                     <div className="wl-context-menu show" style={{ left: chartContextMenu.x, top: chartContextMenu.y }}>
                       <div className="wl-ctx-title">@ {fmt(chartContextMenu.price, m.def.digits)} — {chartContextMenu.price < m.bid ? "below" : "above"} market</div>
@@ -1809,20 +1831,24 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
                   <div key={name} className={`wl-item${name === activeSymbol ? " active" : ""}`} style={{ gridTemplateColumns: wlGridTemplate }} onClick={() => selectSymbol(name)} onDoubleClick={() => openQuickOrder(name)} {...attachDragHandlers(name)}>
                     <span className="wl-drag-handle">⋮⋮</span>
                     <span className="wl-cell wl-symbol">{name}</span>
-                    {columnPrefs.signal ? <span className={`wl-cell wl-signal ${row.bid >= row.dayOpen ? "wl-pos" : "wl-neg"}`}>{row.bid >= row.dayOpen ? "▲" : "▼"}</span> : null}
+                    {columnPrefs.signal ? <span className={`wl-cell wl-signal ${row.live && row.bid >= row.dayOpen ? "wl-pos" : "wl-neg"}`}>{row.live ? (row.bid >= row.dayOpen ? "▲" : "▼") : "—"}</span> : null}
                     <span className="wl-cell wl-price-cell">
-                      <span className={`wl-price mono ${flash}`}>{fmt(row.bid, row.def.digits)}</span>
+                      {row.live ? (
+                        <span className={`wl-price mono ${flash}`}>{fmt(row.bid, row.def.digits)}</span>
+                      ) : (
+                        <span className="wl-price mono" style={{ color: "var(--text-3)", fontSize: 10.5 }}>No feed</span>
+                      )}
                       {oneClick ? (
                         <span className="wl-occ-buttons" style={{ display: "flex" }}>
-                          <button className="wl-occ-btn buy" onClick={(e) => { e.stopPropagation(); oneClickTrade(name, "BUY"); }}>B</button>
-                          <button className="wl-occ-btn sell" onClick={(e) => { e.stopPropagation(); oneClickTrade(name, "SELL"); }}>S</button>
+                          <button className="wl-occ-btn buy" disabled={!row.live} onClick={(e) => { e.stopPropagation(); oneClickTrade(name, "BUY"); }}>B</button>
+                          <button className="wl-occ-btn sell" disabled={!row.live} onClick={(e) => { e.stopPropagation(); oneClickTrade(name, "SELL"); }}>S</button>
                         </span>
                       ) : null}
                     </span>
-                    {columnPrefs.change ? <span className={`wl-cell mono ${changePct >= 0 ? "wl-pos" : "wl-neg"}`}>{(changePct >= 0 ? "+" : "") + changePct.toFixed(2)}%</span> : null}
-                    {columnPrefs.spread ? <span className="wl-cell mono">{fmt(row.ask - row.bid, row.def.digits)}</span> : null}
-                    {columnPrefs.high ? <span className="wl-cell mono">{fmt(row.high, row.def.digits)}</span> : null}
-                    {columnPrefs.low ? <span className="wl-cell mono">{fmt(row.low, row.def.digits)}</span> : null}
+                    {columnPrefs.change ? <span className={`wl-cell mono ${changePct >= 0 ? "wl-pos" : "wl-neg"}`}>{row.live ? (changePct >= 0 ? "+" : "") + changePct.toFixed(2) + "%" : "—"}</span> : null}
+                    {columnPrefs.spread ? <span className="wl-cell mono">{row.live ? fmt(row.ask - row.bid, row.def.digits) : "—"}</span> : null}
+                    {columnPrefs.high ? <span className="wl-cell mono">{row.live ? fmt(row.high, row.def.digits) : "—"}</span> : null}
+                    {columnPrefs.low ? <span className="wl-cell mono">{row.live ? fmt(row.low, row.def.digits) : "—"}</span> : null}
                     <button className={`wl-alert-btn${alerts.some((a) => a.symbol === name) ? " active" : ""}`} onClick={(e) => { e.stopPropagation(); openPriceAlert(name); }} title="Set price alert">
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9" /></svg>
                     </button>
@@ -1872,7 +1898,7 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
           <div className="modal-wrap">
             <button className="modal-close" onClick={() => setQuickOrder(null)}>✕</button>
             <div className="generic-modal-card">
-              <div className="quick-order-header"><span>{quickOrder.symbol}</span><span className="mono">{fmt(market[quickOrder.symbol].bid, market[quickOrder.symbol].def.digits)}</span></div>
+              <div className="quick-order-header"><span>{quickOrder.symbol}</span><span className="mono">{market[quickOrder.symbol].live ? fmt(market[quickOrder.symbol].bid, market[quickOrder.symbol].def.digits) : "No live feed"}</span></div>
               <div className="field-group">
                 <div className="field"><span className="field-label">Volume</span><input className="mono" style={{ width: 70 }} value={quickOrderVolume} onChange={(e) => setQuickOrderVolume(e.target.value)} /></div>
                 <div className="field"><span className="field-label">Risk %</span><input className="mono" style={{ width: 70 }} placeholder="—" value={quickOrderRisk} onChange={(e) => setQuickOrderRisk(e.target.value)} /></div>
@@ -1881,8 +1907,8 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
                 <div className="field"><span className="field-label">Comment</span><input className="mono" style={{ width: 110 }} placeholder="Optional" value={quickOrderComment} onChange={(e) => setQuickOrderComment(e.target.value)} /></div>
               </div>
               <div className="oc-row" style={{ marginBottom: 0 }}>
-                <button className="buysell-btn buy" onClick={() => submitQuickOrder("BUY")}>Buy</button>
-                <button className="buysell-btn sell" onClick={() => submitQuickOrder("SELL")}>Sell</button>
+                <button className="buysell-btn buy" disabled={!market[quickOrder.symbol].live} onClick={() => submitQuickOrder("BUY")}>Buy</button>
+                <button className="buysell-btn sell" disabled={!market[quickOrder.symbol].live} onClick={() => submitQuickOrder("SELL")}>Sell</button>
               </div>
             </div>
           </div>

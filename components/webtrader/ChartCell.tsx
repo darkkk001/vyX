@@ -81,7 +81,11 @@ export default function ChartCell({
             </div>
           </div>
         ) : null}
-        <span className="mono" style={{ fontSize: 11, fontWeight: 600, color: up ? "var(--buy)" : "var(--sell)" }}>{fmt(m.bid, m.def.digits)}</span>
+        {m.live ? (
+          <span className="mono" style={{ fontSize: 11, fontWeight: 600, color: up ? "var(--buy)" : "var(--sell)" }}>{fmt(m.bid, m.def.digits)}</span>
+        ) : (
+          <span className="mono" style={{ fontSize: 10.5, fontWeight: 600, color: "var(--text-3)" }}>No live feed</span>
+        )}
         <div style={{ marginLeft: "auto", display: "flex", gap: 1 }}>
           {CELL_TF_LABELS.map((t) => (
             <span
@@ -94,8 +98,13 @@ export default function ChartCell({
           ))}
         </div>
       </div>
-      <div style={{ flex: 1, minHeight: 0 }}>
+      <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
         <KLineChartPanel candles={m.candles[tf]} digits={m.def.digits} lines={lines} />
+        {!m.live ? (
+          <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.35)", pointerEvents: "none" }}>
+            <span style={{ fontSize: 12, fontWeight: 600, color: "var(--text-2)" }}>No live feed for {symbol}</span>
+          </div>
+        ) : null}
       </div>
     </div>
   );

@@ -98,6 +98,23 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: validationError }, { status: 400 });
   }
 
+  // MARKET orders fill immediately, so the client-supplied price must be
+  // backed by a real, fresh tick — not the client's own random-walk
+  // fallback (see lib/market-simulator.ts's `live` flag, which the client
+  // UI already uses to disable Buy/Sell for a symbol with no feed). This
+  // is a server-side floor for that same rule, since client-side
+  // disabling alone doesn't stop a direct API call. Same 15s staleness
+  // window used everywhere else in this codebase (Rust engine's
+  // TickCache/get_live_price, and WebTrader's own liveTicksRef filter).
+  // PENDING (LIMIT/STOP) orders aren't checked here — they rest until a
+  // real tick triggers a fill via the separate fill endpoint.
+  if (type === "MARKET") {
+    const livePrice = await prisma.livePrice.findUnique({ where: { symbol: symbolName } });
+    if (!livePrice || Date.now() - livePrice.updatedAt.getTime() > 15_000) {
+      return NextResponse.json({ error: "no live feed for this symbol" }, { status: 400 });
+    }
+  }
+
   try {
     if (type === "MARKET") {
       const result = await prisma.$transaction(async (tx) => {

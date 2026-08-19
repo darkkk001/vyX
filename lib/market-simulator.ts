@@ -47,6 +47,10 @@ export type MarketState = {
   // against a fresh bucketStartMs() each tick is what decides "still the
   // same bar" vs "start a new one".
   lastCandleStart: Record<Timeframe, number>;
+  // True only while a real tick for this symbol has arrived (via the MT5
+  // EA bridge / gateway WebSocket) within the last tickMarket() call. No
+  // symbol ever fakes movement while this is false — see tickMarket().
+  live: boolean;
 };
 
 export function spreadFor(def: SymbolDef): number {
@@ -97,6 +101,9 @@ export function createInitialMarket(): Record<string, MarketState> {
     const spread = spreadFor(def);
     market[def.name] = {
       def,
+      // Placeholder only — never rendered while `live` is false (see
+      // ChartCell/WebTrader's "No live feed" state). Exists so order-ticket
+      // math has a number to read before any real tick arrives.
       bid: def.base,
       ask: def.base + spread,
       prevBid: def.base,
@@ -105,33 +112,8 @@ export function createInitialMarket(): Record<string, MarketState> {
       low: def.base,
       candles: TIMEFRAMES.reduce((acc, tf) => { acc[tf] = []; return acc; }, {} as Record<Timeframe, Candle[]>),
       lastCandleStart: TIMEFRAMES.reduce((acc, tf) => { acc[tf] = 0; return acc; }, {} as Record<Timeframe, number>),
+      live: false,
     };
-  }
-  // Seed some initial candle history so charts aren't empty on load. t is a
-  // real (if fake-spaced) Unix ms timestamp, same as live-ticked candles,
-  // since the chart library renders the time axis from it directly.
-  const seedNow = Date.now();
-  for (let i = 0; i < 80; i++) {
-    for (const m of Object.values(market)) {
-      const drift = (Math.random() - 0.5) * m.def.vol;
-      m.bid = Math.max(m.def.vol, m.bid + drift);
-      m.ask = m.bid + spreadFor(m.def);
-      m.high = Math.max(m.high, m.bid);
-      m.low = Math.min(m.low, m.bid);
-      TIMEFRAMES.forEach((tf) => {
-        const candles = m.candles[tf];
-        const last = candles[candles.length - 1];
-        const every = tf === "M1" ? 1 : tf === "M5" ? 3 : 6;
-        const t = seedNow - (79 - i) * tfMillis(tf);
-        if (!last || i % every === 0) {
-          candles.push({ o: m.bid, h: m.bid, l: m.bid, c: m.bid, t });
-        } else {
-          last.h = Math.max(last.h, m.bid);
-          last.l = Math.min(last.l, m.bid);
-          last.c = m.bid;
-        }
-      });
-    }
   }
   return market;
 }
@@ -165,10 +147,12 @@ function applyBidAsk(m: MarketState, bid: number, ask: number) {
 //
 // liveTicks (optional): real bid/ask pulled from a broker's own MT5
 // terminal via the price-feed bridge (see app/api/internal/price-feed).
-// Symbols present there use the real tick instead of the random walk;
-// everything else keeps simulating, so a partial feed (e.g. the EA only
-// covers forex majors) degrades gracefully instead of breaking symbols
-// it doesn't know about.
+// A symbol with no entry here is never faked — it's marked `live: false`
+// and its bid/ask/candles stay frozen at their last real values until a
+// real tick shows up for it again. A trading platform must never present
+// a fabricated price as if it were real, or let anything (auto-close,
+// order placement) act on one — see ChartCell/WebTrader's "No live feed"
+// state and app/api/trade/orders/route.ts's server-side freshness check.
 export function tickMarket(
   market: Record<string, MarketState>,
   liveTicks?: Record<string, { bid: number; ask: number }>
@@ -177,11 +161,10 @@ export function tickMarket(
     const live = liveTicks?.[name];
     if (live) {
       applyBidAsk(m, live.bid, live.ask);
-      continue;
+      m.live = true;
+    } else {
+      m.live = false;
     }
-    const drift = (Math.random() - 0.5) * m.def.vol;
-    const bid = Math.max(m.def.vol, m.bid + drift);
-    applyBidAsk(m, bid, bid + spreadFor(m.def));
   }
   return { ...market };
 }
