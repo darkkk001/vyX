@@ -3,6 +3,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { getFreshPrice } from "@/lib/live-price";
+import { openPositionFromOrder } from "@/lib/dealing";
 import {
   checkTradingHalted,
   checkSymbolTradingMode,
@@ -24,9 +25,13 @@ async function requireManager() {
   return session!;
 }
 
-// Accept (fill, optionally at a dealer-requoted price) or Reject a
-// dealing-queue order -- see app/api/trade/orders/route.ts's
-// dealingModeAt branch and app/api/manage/dealing-queue/route.ts (GET).
+// Accept or Reject a dealing-queue order -- see
+// app/api/trade/orders/route.ts's dealingModeAt branch and
+// app/api/manage/dealing-queue/route.ts (GET). Accepting at exactly the
+// live price fills immediately; accepting at any other price (a
+// deliberate reprice) instead sets the order to REQUOTED and waits for
+// the client's answer via app/api/trade/orders/[id]/requote-response --
+// see this file's ACCEPT branch for the exact rule.
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await requireManager();
   if (!session) {
@@ -48,7 +53,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   if (!order || order.brokerId !== brokerId) {
     return NextResponse.json({ error: "order not found" }, { status: 404 });
   }
-  if (order.type !== "MARKET" || order.status !== "PENDING") {
+  if (order.type !== "MARKET" || (order.status !== "PENDING" && order.status !== "REQUOTED")) {
     return NextResponse.json({ error: "order is not awaiting dealer review" }, { status: 409 });
   }
 
@@ -57,9 +62,10 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     if (!reason) {
       return NextResponse.json({ error: "reason is required for the audit trail" }, { status: 400 });
     }
+    const priorStatus = order.status; // PENDING (reject a fresh order) or REQUOTED (withdraw an unanswered requote)
     const updated = await prisma.$transaction(async (tx) => {
       const result = await tx.order.updateMany({
-        where: { id, status: "PENDING" }, // race guard -- see the note on ACCEPT's transaction below
+        where: { id, status: priorStatus }, // race guard -- see the note on ACCEPT's transaction below
         data: { status: "REJECTED", rejectionReason: reason },
       });
       if (result.count === 0) throw new Error("RACED");
@@ -70,7 +76,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
           action: "DEALING_ORDER_REJECTED",
           entityType: "Order",
           entityId: id,
-          oldValue: { status: "PENDING" },
+          oldValue: { status: priorStatus },
           newValue: { status: "REJECTED", reason },
         },
       });
@@ -82,7 +88,15 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     return NextResponse.json({ id, status: "REJECTED" });
   }
 
-  // ACCEPT
+  // ACCEPT -- only valid on a fresh PENDING order. A REQUOTED order is
+  // already awaiting the *client's* answer; the dealer can only
+  // withdraw it (REJECT above), not accept on the client's behalf.
+  if (order.status === "REQUOTED") {
+    return NextResponse.json(
+      { error: "this order was already requoted -- it can only be withdrawn (Reject) until the client responds" },
+      { status: 409 }
+    );
+  }
   const brokerSymbol = await prisma.brokerSymbol.findFirst({
     where: { brokerId, symbolId: order.symbolId, enabled: true },
     include: { tradingSessions: true },
@@ -112,8 +126,10 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     return NextResponse.json({ error: riskError }, { status: 400 });
   }
 
+  const live = await getFreshPrice(order.symbol.name);
+  const liveRef = live ? (order.side === "BUY" ? live.ask : live.bid) : null;
+
   let fillPrice: Prisma.Decimal;
-  let requoted = false;
   if (body?.price != null) {
     try {
       fillPrice = new Prisma.Decimal(String(body.price));
@@ -123,36 +139,55 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     if (fillPrice.lte(0)) {
       return NextResponse.json({ error: "price must be positive" }, { status: 400 });
     }
-    requoted = order.requestedPrice == null || !fillPrice.equals(order.requestedPrice);
   } else {
-    const live = await getFreshPrice(order.symbol.name);
-    if (!live) {
+    if (!liveRef) {
       return NextResponse.json({ error: `no live price for ${order.symbol.name} -- supply a price to requote manually` }, { status: 409 });
     }
-    fillPrice = order.side === "BUY" ? live.ask : live.bid;
+    fillPrice = liveRef;
+  }
+
+  // A submitted price that matches the live price is ordinary execution
+  // (same as the trader's own MARKET order, no consent needed). Anything
+  // else -- including any manual price when there's no live feed at all
+  // -- is a deliberate reprice the client must agree to before it counts
+  // as a fill. See this route's own module doc comment.
+  const requoted = liveRef == null || !fillPrice.equals(liveRef);
+
+  if (requoted) {
+    const updated = await prisma.$transaction(async (tx) => {
+      const result = await tx.order.updateMany({
+        where: { id, status: "PENDING" },
+        data: { status: "REQUOTED", requotedPrice: fillPrice },
+      });
+      if (result.count === 0) throw new Error("RACED");
+      await tx.auditLog.create({
+        data: {
+          brokerId,
+          actorAdminId: session.adminId,
+          action: "DEALING_ORDER_REQUOTED",
+          entityType: "Order",
+          entityId: id,
+          oldValue: { status: "PENDING", requestedPrice: order.requestedPrice?.toString() ?? null },
+          newValue: { status: "REQUOTED", requotedPrice: fillPrice.toString() },
+        },
+      });
+      return true;
+    }).catch((e) => (e instanceof Error && e.message === "RACED" ? null : Promise.reject(e)));
+    if (!updated) {
+      return NextResponse.json({ error: "order was already actioned" }, { status: 409 });
+    }
+    return NextResponse.json({ id, status: "REQUOTED", requotedPrice: fillPrice.toString() });
   }
 
   try {
     const result = await prisma.$transaction(async (tx) => {
-      const filled = await tx.order.updateMany({
+      const claimed = await tx.order.updateMany({
         where: { id, status: "PENDING" }, // race guard: another dealer/tab acting on the same order concurrently
-        data: { status: "FILLED", filledPrice: fillPrice, filledAt: new Date() },
+        data: { status: "ACCEPTED" },
       });
-      if (filled.count === 0) throw new Error("RACED");
+      if (claimed.count === 0) throw new Error("RACED");
 
-      const position = await tx.position.create({
-        data: {
-          brokerId,
-          accountId: order.accountId,
-          symbolId: order.symbolId,
-          originOrderId: order.id,
-          side: order.side,
-          volume: order.volume,
-          openPrice: fillPrice,
-          slPrice: order.slPrice,
-          tpPrice: order.tpPrice,
-        },
-      });
+      const position = await openPositionFromOrder(tx, order, fillPrice, brokerSymbol.defaultBookType);
 
       await tx.auditLog.create({
         data: {
@@ -162,7 +197,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
           entityType: "Position",
           entityId: position.id,
           oldValue: { status: "PENDING", requestedPrice: order.requestedPrice?.toString() ?? null },
-          newValue: { status: "FILLED", filledPrice: fillPrice.toString(), requoted },
+          newValue: { status: "FILLED", filledPrice: fillPrice.toString() },
         },
       });
 

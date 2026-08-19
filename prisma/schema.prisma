@@ -129,12 +129,20 @@ enum OrderType {
 // PENDING -> ACCEPTED -> FILLED
 //                     \-> REJECTED
 // PENDING -> CANCELLED
+// PENDING -> REQUOTED -> FILLED (client accepts the dealer's price)
+//                     \-> CANCELLED (client rejects, or dealer withdraws)
 enum OrderStatus {
   PENDING
   ACCEPTED
   FILLED
   REJECTED
   CANCELLED
+  REQUOTED
+}
+
+enum BookType {
+  A_BOOK
+  B_BOOK
 }
 
 enum PositionStatus {
@@ -186,6 +194,17 @@ model Broker {
   // trail entry point; who set it lives in the paired AuditLog row).
   // LIMIT/STOP triggered fills are unaffected.
   dealingModeAt DateTime? @db.Timestamptz(3)
+  // Null = fully manual dealing mode (today's behavior). When set,
+  // a dealing-queue order auto-fills at the live price the moment it's
+  // submitted if the requested price is within this % of live --
+  // see app/api/trade/orders/route.ts's dealingModeAt branch.
+  // Percentage rather than pips/absolute so one broker-wide setting
+  // stays meaningful across symbols with very different price scales.
+  smartDealerAcceptPct Decimal? @db.Decimal(6, 3)
+  // Null = no auto-reject. Same submit-time check as
+  // smartDealerAcceptPct -- if the requested price is this far (or
+  // further) from live, the order is auto-REJECTED instead of queued.
+  smartDealerRejectPct Decimal? @db.Decimal(6, 3)
   // Sum of open volume (lots) across every symbol for this broker. Null
   // = no limit -- see lib/risk.ts's checkBrokerExposure.
   totalExposureLimit Decimal? @db.Decimal(18, 2)
@@ -544,6 +563,11 @@ model BrokerSymbol {
   // existing brokers are unaffected until an admin sets one — see
   // docs/risk-engine.md §2.1 step 5.
   maxExposure  Decimal? @db.Decimal(18, 2)
+  // Stamped onto every new Position opened in this symbol -- config/
+  // record-keeping only, no real hedge execution against an LP happens
+  // (that's still blocked on a real LP relationship, same as
+  // LiquidityProvider). See lib/dealing.ts's openPositionFromOrder.
+  defaultBookType BookType @default(B_BOOK)
 
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
@@ -594,6 +618,12 @@ model Order {
   filledPrice     Decimal?    @db.Decimal(18, 5)
   filledAt        DateTime? @db.Timestamptz(3)
   rejectionReason String?
+  // Set when a dealer accepts this order at a price that differs from
+  // the live price at accept time (a deliberate reprice, not ordinary
+  // slippage) -- see app/api/manage/dealing-queue/[id]/route.ts. The
+  // order sits at status REQUOTED until the client responds via
+  // app/api/trade/orders/[id]/requote-response.
+  requotedPrice   Decimal?    @db.Decimal(18, 5)
   idempotencyKey  String // client-supplied, unique per account
 
   createdAt DateTime @default(now()) @db.Timestamptz(3)
@@ -626,6 +656,9 @@ model Position {
   realizedPnl   Decimal?       @db.Decimal(18, 4)
   swap          Decimal        @default(0) @db.Decimal(18, 4)
   commission    Decimal        @default(0) @db.Decimal(18, 4)
+  // Stamped from BrokerSymbol.defaultBookType at fill time -- record-
+  // keeping only, see that field's schema comment.
+  bookType      BookType       @default(B_BOOK)
   closedByAdminId String?
   closedByAdmin AdminUser?     @relation("PositionClosedBy", fields: [closedByAdminId], references: [id])
 

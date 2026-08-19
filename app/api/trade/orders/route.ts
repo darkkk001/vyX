@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
 import { validateSlTp } from "@/lib/trading";
 import { createNotification } from "@/lib/notifications";
+import { openPositionFromOrder } from "@/lib/dealing";
 import {
   checkTradingHalted,
   checkSymbolTradingMode,
@@ -115,8 +116,9 @@ export async function POST(request: NextRequest) {
   // TickCache/get_live_price, and WebTrader's own liveTicksRef filter).
   // PENDING (LIMIT/STOP) orders aren't checked here — they rest until a
   // real tick triggers a fill via the separate fill endpoint.
+  let livePrice: Awaited<ReturnType<typeof prisma.livePrice.findUnique>> = null;
   if (type === "MARKET") {
-    const livePrice = await prisma.livePrice.findUnique({ where: { symbol: symbolName } });
+    livePrice = await prisma.livePrice.findUnique({ where: { symbol: symbolName } });
     if (!livePrice || Date.now() - livePrice.updatedAt.getTime() > 15_000) {
       return NextResponse.json({ error: "no live feed for this symbol" }, { status: 400 });
     }
@@ -143,6 +145,56 @@ export async function POST(request: NextRequest) {
           status: "PENDING",
         },
       });
+
+      // Smart Dealer -- see Broker.smartDealerAcceptPct/RejectPct's
+      // schema comments. Evaluated once, right here, at submission --
+      // there's no cron/poller anywhere in this app to re-evaluate an
+      // order already sitting in the queue.
+      if (livePrice && (broker.smartDealerAcceptPct != null || broker.smartDealerRejectPct != null)) {
+        const liveRef = side === "BUY" ? livePrice.ask : livePrice.bid;
+        const requested = new Prisma.Decimal(price);
+        const diffPct = liveRef.sub(requested).abs().div(requested).mul(100);
+
+        if (broker.smartDealerAcceptPct != null && diffPct.lte(broker.smartDealerAcceptPct)) {
+          const position = await prisma.$transaction(async (tx) => {
+            const pos = await openPositionFromOrder(tx, order, liveRef, brokerSymbol.defaultBookType);
+            await tx.auditLog.create({
+              data: {
+                brokerId: session.brokerId,
+                action: "DEALING_ORDER_AUTO_ACCEPTED",
+                entityType: "Position",
+                entityId: pos.id,
+                oldValue: { status: "PENDING", requestedPrice: price },
+                newValue: { status: "FILLED", filledPrice: liveRef.toString(), diffPct: diffPct.toFixed(4) },
+              },
+            });
+            return pos;
+          });
+          return NextResponse.json({ order: { ...order, status: "FILLED", filledPrice: liveRef }, positionId: position.id }, { status: 201 });
+        }
+
+        if (broker.smartDealerRejectPct != null && diffPct.gte(broker.smartDealerRejectPct)) {
+          const reason = "price moved beyond broker tolerance (auto-rejected)";
+          const rejected = await prisma.$transaction(async (tx) => {
+            const o = await tx.order.update({ where: { id: order.id }, data: { status: "REJECTED", rejectionReason: reason } });
+            await tx.auditLog.create({
+              data: {
+                brokerId: session.brokerId,
+                action: "DEALING_ORDER_AUTO_REJECTED",
+                entityType: "Order",
+                entityId: order.id,
+                oldValue: { status: "PENDING", requestedPrice: price },
+                newValue: { status: "REJECTED", reason, diffPct: diffPct.toFixed(4) },
+              },
+            });
+            return o;
+          });
+          return NextResponse.json({ order: rejected }, { status: 201 });
+        }
+      }
+
+      // Neither Smart Dealer threshold fired (or it's off) -- queue for
+      // a human as before.
       await createNotification(prisma, {
         brokerId: session.brokerId,
         type: "DEALING_ORDER_PENDING",
@@ -184,6 +236,7 @@ export async function POST(request: NextRequest) {
             openPrice: price,
             slPrice,
             tpPrice,
+            bookType: brokerSymbol.defaultBookType,
           },
         });
         return { order, position };
@@ -228,7 +281,7 @@ export async function GET() {
   }
 
   const orders = await prisma.order.findMany({
-    where: { accountId: session.accountId, status: "PENDING" },
+    where: { accountId: session.accountId, status: { in: ["PENDING", "REQUOTED"] } },
     include: { symbol: { select: { name: true, digits: true } } },
     orderBy: { createdAt: "desc" },
   });

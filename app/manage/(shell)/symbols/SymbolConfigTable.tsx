@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/Button";
 import { Modal, ModalActions } from "@/components/ui/Modal";
 
 export type TradingMode = "BOTH" | "BUY_ONLY" | "SELL_ONLY";
+export type BookType = "A_BOOK" | "B_BOOK";
 
 export type SymbolConfigRow = {
   symbolId: string;
@@ -27,6 +28,7 @@ export type SymbolConfigRow = {
   commissionPerLot: string;
   maxExposure: string | null;
   tradingMode: TradingMode;
+  defaultBookType: BookType;
 };
 
 type EditableField = "spreadMarkup" | "minLot" | "maxLot" | "lotStep" | "swapLong" | "swapShort" | "commissionPerLot" | "maxExposure";
@@ -69,6 +71,11 @@ export default function SymbolConfigTable({ initialRows }: { initialRows: Symbol
     setSavedId(null);
   }
 
+  function updateBookType(symbolId: string, defaultBookType: BookType) {
+    setRows((prev) => prev.map((r) => (r.symbolId === symbolId ? { ...r, defaultBookType } : r)));
+    setSavedId(null);
+  }
+
   async function save(row: SymbolConfigRow) {
     setSavingId(row.symbolId);
     setErrors((prev) => ({ ...prev, [row.symbolId]: "" }));
@@ -99,6 +106,7 @@ export default function SymbolConfigTable({ initialRows }: { initialRows: Symbol
         <TableHeaderCell>Symbol</TableHeaderCell>
         <TableHeaderCell>Enabled</TableHeaderCell>
         <TableHeaderCell title="Restrict which side can trade even when enabled">Trading mode</TableHeaderCell>
+        <TableHeaderCell title="Stamped onto every new position in this symbol -- record-keeping only, no real LP hedge happens">Book</TableHeaderCell>
         {NUMERIC_FIELDS.map((f) => (
           <TableHeaderCell key={f.key} title={f.title} className="whitespace-nowrap">
             {f.label}
@@ -125,6 +133,16 @@ export default function SymbolConfigTable({ initialRows }: { initialRows: Symbol
                 <option value="BOTH">Both</option>
                 <option value="BUY_ONLY">Buy only</option>
                 <option value="SELL_ONLY">Sell only</option>
+              </Select>
+            </TableCell>
+            <TableCell>
+              <Select
+                value={row.defaultBookType}
+                onChange={(e) => updateBookType(row.symbolId, e.target.value as BookType)}
+                className="w-24"
+              >
+                <option value="A_BOOK">A-Book</option>
+                <option value="B_BOOK">B-Book</option>
               </Select>
             </TableCell>
             {NUMERIC_FIELDS.map((f) => (

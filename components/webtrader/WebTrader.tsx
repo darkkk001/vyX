@@ -305,6 +305,25 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
   }, [router]);
   const refreshPositions = useCallback(async () => setPositions(await tradeApi.positions().catch(() => [])), []);
   const refreshOrders = useCallback(async () => setPendingOrders(await tradeApi.orders().catch(() => [])), []);
+
+  // A dealer requoted one of this account's orders (see
+  // app/api/manage/dealing-queue/[id]/route.ts) -- respond with accept
+  // (fills at the requoted price) or reject (cancels, no position).
+  const respondToRequote = useCallback(
+    async (order: ApiOrder, accept: boolean) => {
+      try {
+        await tradeApi.requoteResponse(order.id, accept);
+        pushToast(
+          accept ? `${order.symbol.name} requote accepted — position opened` : `${order.symbol.name} requote rejected`,
+          true
+        );
+        await Promise.all([refreshOrders(), refreshPositions(), refreshAccount()]);
+      } catch (err) {
+        pushToast(err instanceof Error ? err.message : "requote response failed");
+      }
+    },
+    [pushToast, refreshOrders, refreshPositions, refreshAccount]
+  );
   const refreshHistory = useCallback(async () => {
     setHistory(await tradeApi.history({ from: histFrom, to: histTo, symbol: histSymbol }).catch(() => []));
   }, [histFrom, histTo, histSymbol]);
@@ -444,11 +463,18 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
         setConnected(false);
         setPingMs(null);
       }
+      // Rides along with the price poll rather than its own interval --
+      // this is the only thing that would otherwise surface a dealer's
+      // requote (order status flips PENDING -> REQUOTED server-side with
+      // nothing pushing that change to the client). refreshOrders()
+      // already swallows its own errors, so this never affects the
+      // connection-status logic above.
+      if (!cancelled) refreshOrders();
     }
     poll();
     const interval = setInterval(poll, 2000);
     return () => { cancelled = true; clearInterval(interval); };
-  }, [appendLog]);
+  }, [appendLog, refreshOrders]);
 
   // Pushed ticks from the API Gateway's price-tick WebSocket
   // (services/api-gateway/src/ws.ts, fed by NATS from the Rust Market
@@ -717,6 +743,29 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [market]);
+
+  // A dealer requoted one of this account's orders -- prompt once per
+  // order (requotedPromptedRef tracks which ids already got a popup, so
+  // the 2s poll folding refreshOrders() in doesn't re-open it every
+  // cycle). The row in the Orders panel below is the fallback if this
+  // popup gets dismissed or missed.
+  const requotedPromptedRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (genericModal) return;
+    const requoted = pendingOrders.find((o) => o.status === "REQUOTED" && !requotedPromptedRef.current.has(o.id));
+    if (!requoted) return;
+    requotedPromptedRef.current.add(requoted.id);
+    setGenericModal({
+      title: "Dealer requoted your order",
+      message: `${requoted.side} ${requoted.volume} ${requoted.symbol.name} — dealer offered ${
+        requoted.requotedPrice ? fmt(parseFloat(requoted.requotedPrice), requoted.symbol.digits) : "a different price"
+      } instead of ${requoted.requestedPrice ? fmt(parseFloat(requoted.requestedPrice), requoted.symbol.digits) : "market"}. Accept the new price?`,
+      showInput: false,
+      okLabel: "Accept new price",
+      onConfirm: (v) => respondToRequote(requoted, v !== null),
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingOrders, genericModal]);
 
   // ---------- order ticket ----------
   const m = market[activeSymbol];
@@ -1749,12 +1798,29 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
                       <div className="simple-left">
                         <span className="pos-symbol">{o.symbol.name}</span>
                         <span className={`pos-side ${o.side === "BUY" ? "buy" : "sell"}`}>{o.type} {o.side} {parseFloat(o.volume).toFixed(2)}</span>
-                        <span className="net-pos-detail mono">@ {o.requestedPrice ? fmt(parseFloat(o.requestedPrice), o.symbol.digits) : "—"}</span>
+                        {o.status === "REQUOTED" ? (
+                          <span className="net-pos-detail mono">
+                            requoted to {o.requotedPrice ? fmt(parseFloat(o.requotedPrice), o.symbol.digits) : "—"}
+                          </span>
+                        ) : (
+                          <span className="net-pos-detail mono">@ {o.requestedPrice ? fmt(parseFloat(o.requestedPrice), o.symbol.digits) : "—"}</span>
+                        )}
                       </div>
                       <div className="simple-right">
-                        <button className="icon-btn" title="Cancel order" onClick={() => tradeApi.cancelOrder(o.id).then(refreshOrders)}>
-                          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
-                        </button>
+                        {o.status === "REQUOTED" ? (
+                          <>
+                            <button className="modal-btn primary" style={{ padding: "4px 10px", fontSize: 12 }} onClick={() => respondToRequote(o, true)}>
+                              Accept
+                            </button>
+                            <button className="modal-btn secondary" style={{ padding: "4px 10px", fontSize: 12 }} onClick={() => respondToRequote(o, false)}>
+                              Reject
+                            </button>
+                          </>
+                        ) : (
+                          <button className="icon-btn" title="Cancel order" onClick={() => tradeApi.cancelOrder(o.id).then(refreshOrders)}>
+                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                          </button>
+                        )}
                       </div>
                     </div>
                   ))}

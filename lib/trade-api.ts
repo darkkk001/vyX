@@ -78,6 +78,7 @@ export type ApiOrder = {
   slPrice: string | null;
   tpPrice: string | null;
   status: string;
+  requotedPrice: string | null;
   symbol: { name: string; digits: number };
 };
 
@@ -128,6 +129,8 @@ export const tradeApi = {
   cancelOrder: (id: string) => call(`/api/trade/orders/${id}`, { method: "DELETE" }),
   fillOrder: (id: string, price: number) =>
     call(`/api/trade/orders/${id}/fill`, { method: "POST", body: JSON.stringify({ price }) }),
+  requoteResponse: (id: string, accept: boolean) =>
+    call(`/api/trade/orders/${id}/requote-response`, { method: "POST", body: JSON.stringify({ accept }) }),
   editPositionSlTp: (
     id: string,
     body: { currentPrice: number; slPrice?: number | null; tpPrice?: number | null }

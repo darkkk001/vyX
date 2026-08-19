@@ -41,6 +41,9 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
   if (!price) {
     return NextResponse.json({ error: `no live price for ${position.symbol.name}` }, { status: 409 });
   }
+  const brokerSymbol = await prisma.brokerSymbol.findFirst({
+    where: { brokerId, symbolId: position.symbolId },
+  });
   const closePrice = position.side === "BUY" ? price.bid : price.ask;
   const newSide = position.side === "BUY" ? "SELL" : "BUY";
   // The new leg opens immediately at the reverse's own fill convention
@@ -106,6 +109,7 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
         side: newSide,
         volume: position.volume,
         openPrice,
+        bookType: brokerSymbol?.defaultBookType ?? "B_BOOK",
       },
     });
 

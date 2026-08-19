@@ -14,6 +14,8 @@ export type RiskSettings = {
   dealingMode: boolean;
   totalExposureLimit: string | null;
   maxOpenPositionsPerAccount: number | null;
+  smartDealerAcceptPct: string | null;
+  smartDealerRejectPct: string | null;
 };
 
 async function patchRisk(body: Record<string, unknown>) {
@@ -41,6 +43,12 @@ export default function RiskSettingsManager({ initial }: { initial: RiskSettings
   const [limitsSaving, setLimitsSaving] = useState(false);
   const [limitsSaved, setLimitsSaved] = useState(false);
   const [limitsError, setLimitsError] = useState<string | null>(null);
+
+  const [smartDealerAcceptPct, setSmartDealerAcceptPct] = useState(initial.smartDealerAcceptPct ?? "");
+  const [smartDealerRejectPct, setSmartDealerRejectPct] = useState(initial.smartDealerRejectPct ?? "");
+  const [smartDealerSaving, setSmartDealerSaving] = useState(false);
+  const [smartDealerSaved, setSmartDealerSaved] = useState(false);
+  const [smartDealerError, setSmartDealerError] = useState<string | null>(null);
 
   async function toggleDealingMode() {
     setDealingBusy(true);
@@ -78,6 +86,27 @@ export default function RiskSettingsManager({ initial }: { initial: RiskSettings
     }
   }
 
+  async function saveSmartDealer(e: React.FormEvent) {
+    e.preventDefault();
+    setSmartDealerSaving(true);
+    setSmartDealerSaved(false);
+    setSmartDealerError(null);
+    try {
+      const result = await patchRisk({
+        smartDealerAcceptPct: smartDealerAcceptPct.trim() === "" ? null : smartDealerAcceptPct.trim(),
+        smartDealerRejectPct: smartDealerRejectPct.trim() === "" ? null : smartDealerRejectPct.trim(),
+      });
+      setSmartDealerAcceptPct(result.smartDealerAcceptPct ?? "");
+      setSmartDealerRejectPct(result.smartDealerRejectPct ?? "");
+      setSmartDealerSaved(true);
+      router.refresh();
+    } catch (e) {
+      setSmartDealerError(e instanceof Error ? e.message : "update failed");
+    } finally {
+      setSmartDealerSaving(false);
+    }
+  }
+
   return (
     <div className="flex flex-col gap-6">
       <Card title="Dealing mode">
@@ -98,6 +127,43 @@ export default function RiskSettingsManager({ initial }: { initial: RiskSettings
           <div className="mt-3">
             <Alert tone="danger">{dealingError}</Alert>
           </div>
+        ) : null}
+
+        {dealingMode ? (
+          <form onSubmit={saveSmartDealer} className="mt-4 flex flex-col gap-3 border-t border-[var(--border)] pt-4">
+            <p className="text-sm text-[var(--text-2)]">
+              Smart Dealer -- auto-decide an order the moment it&apos;s submitted, before it ever reaches a human. Blank = fully manual (today&apos;s behavior).
+            </p>
+            <div className="flex flex-wrap items-end gap-3">
+              <FormField label="Auto-accept within (%)">
+                <Input
+                  type="text"
+                  inputMode="decimal"
+                  mono
+                  placeholder="off"
+                  value={smartDealerAcceptPct}
+                  onChange={(e) => { setSmartDealerAcceptPct(e.target.value); setSmartDealerSaved(false); }}
+                  className="w-28"
+                />
+              </FormField>
+              <FormField label="Auto-reject beyond (%)">
+                <Input
+                  type="text"
+                  inputMode="decimal"
+                  mono
+                  placeholder="off"
+                  value={smartDealerRejectPct}
+                  onChange={(e) => { setSmartDealerRejectPct(e.target.value); setSmartDealerSaved(false); }}
+                  className="w-28"
+                />
+              </FormField>
+              <Button type="submit" size="sm" disabled={smartDealerSaving}>
+                {smartDealerSaving ? "Saving..." : "Save"}
+              </Button>
+              {smartDealerSaved ? <span className="text-xs text-[var(--buy)]">Saved</span> : null}
+            </div>
+            {smartDealerError ? <Alert tone="danger">{smartDealerError}</Alert> : null}
+          </form>
         ) : null}
       </Card>
 

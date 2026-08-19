@@ -49,6 +49,8 @@ export default async function ManagerRiskPage() {
           dealingMode: broker.dealingModeAt != null,
           totalExposureLimit: broker.totalExposureLimit ? broker.totalExposureLimit.toString() : null,
           maxOpenPositionsPerAccount: broker.maxOpenPositionsPerAccount,
+          smartDealerAcceptPct: broker.smartDealerAcceptPct ? broker.smartDealerAcceptPct.toString() : null,
+          smartDealerRejectPct: broker.smartDealerRejectPct ? broker.smartDealerRejectPct.toString() : null,
         }}
       />
     </main>

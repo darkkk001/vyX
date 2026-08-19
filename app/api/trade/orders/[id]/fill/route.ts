@@ -32,6 +32,10 @@ export async function POST(
     return NextResponse.json({ error: `cannot fill an order in status ${order.status}` }, { status: 409 });
   }
 
+  const brokerSymbol = await prisma.brokerSymbol.findFirst({
+    where: { brokerId: order.brokerId, symbolId: order.symbolId },
+  });
+
   const result = await prisma.$transaction(async (tx) => {
     await tx.order.update({ where: { id: order.id }, data: { status: "ACCEPTED" } });
     const filledOrder = await tx.order.update({
@@ -49,6 +53,7 @@ export async function POST(
         openPrice: fillPrice,
         slPrice: order.slPrice,
         tpPrice: order.tpPrice,
+        bookType: brokerSymbol?.defaultBookType ?? "B_BOOK",
       },
     });
     return { order: filledOrder, position };

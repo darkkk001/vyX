@@ -27,6 +27,8 @@ export async function GET() {
     dealingModeAt: broker.dealingModeAt ? broker.dealingModeAt.toISOString() : null,
     totalExposureLimit: broker.totalExposureLimit ? broker.totalExposureLimit.toString() : null,
     maxOpenPositionsPerAccount: broker.maxOpenPositionsPerAccount,
+    smartDealerAcceptPct: broker.smartDealerAcceptPct ? broker.smartDealerAcceptPct.toString() : null,
+    smartDealerRejectPct: broker.smartDealerRejectPct ? broker.smartDealerRejectPct.toString() : null,
   });
 }
 
@@ -49,7 +51,12 @@ export async function PATCH(request: NextRequest) {
   if ("tradingHalted" in body && (await forbidUnlessBrokerAdminOrPermission(session, "EMERGENCY_CONTROLS"))) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
-  const touchesRiskFields = "dealingMode" in body || "totalExposureLimit" in body || "maxOpenPositionsPerAccount" in body;
+  const touchesRiskFields =
+    "dealingMode" in body ||
+    "totalExposureLimit" in body ||
+    "maxOpenPositionsPerAccount" in body ||
+    "smartDealerAcceptPct" in body ||
+    "smartDealerRejectPct" in body;
   if (touchesRiskFields && (await forbidUnlessBrokerAdminOrPermission(session, "RISK_SETTINGS"))) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
@@ -106,6 +113,53 @@ export async function PATCH(request: NextRequest) {
     }
   }
 
+  function parsePct(raw: unknown): Prisma.Decimal | null | undefined {
+    if (raw === null || raw === "") return null;
+    try {
+      const d = new Prisma.Decimal(String(raw));
+      return d.isFinite() && d.gt(0) ? d : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  if ("smartDealerAcceptPct" in body) {
+    const pct = parsePct(body.smartDealerAcceptPct);
+    if (pct === undefined) {
+      return NextResponse.json({ error: "smartDealerAcceptPct must be a positive number or blank" }, { status: 400 });
+    }
+    data.smartDealerAcceptPct = pct;
+    auditNewValue.smartDealerAcceptPct = pct ? pct.toString() : null;
+  }
+
+  if ("smartDealerRejectPct" in body) {
+    const pct = parsePct(body.smartDealerRejectPct);
+    if (pct === undefined) {
+      return NextResponse.json({ error: "smartDealerRejectPct must be a positive number or blank" }, { status: 400 });
+    }
+    data.smartDealerRejectPct = pct;
+    auditNewValue.smartDealerRejectPct = pct ? pct.toString() : null;
+  }
+
+  {
+    // Whichever of the pair isn't in this request keeps its current
+    // (already-saved) value -- fetch it so accept-vs-reject ordering is
+    // validated against the broker's actual resulting state, not just
+    // the two fields this one PATCH happens to touch.
+    const resultingAccept =
+      "smartDealerAcceptPct" in body ? (data.smartDealerAcceptPct as Prisma.Decimal | null) : undefined;
+    const resultingReject =
+      "smartDealerRejectPct" in body ? (data.smartDealerRejectPct as Prisma.Decimal | null) : undefined;
+    if (resultingAccept !== undefined || resultingReject !== undefined) {
+      const current = await prisma.broker.findUniqueOrThrow({ where: { id: brokerId }, select: { smartDealerAcceptPct: true, smartDealerRejectPct: true } });
+      const accept = resultingAccept !== undefined ? resultingAccept : current.smartDealerAcceptPct;
+      const reject = resultingReject !== undefined ? resultingReject : current.smartDealerRejectPct;
+      if (accept != null && reject != null && reject.lt(accept)) {
+        return NextResponse.json({ error: "smartDealerRejectPct must be greater than or equal to smartDealerAcceptPct" }, { status: 400 });
+      }
+    }
+  }
+
   if (Object.keys(data).length === 0) {
     return NextResponse.json({ error: "no fields to update" }, { status: 400 });
   }
@@ -133,5 +187,7 @@ export async function PATCH(request: NextRequest) {
     dealingModeAt: updated.dealingModeAt ? updated.dealingModeAt.toISOString() : null,
     totalExposureLimit: updated.totalExposureLimit ? updated.totalExposureLimit.toString() : null,
     maxOpenPositionsPerAccount: updated.maxOpenPositionsPerAccount,
+    smartDealerAcceptPct: updated.smartDealerAcceptPct ? updated.smartDealerAcceptPct.toString() : null,
+    smartDealerRejectPct: updated.smartDealerRejectPct ? updated.smartDealerRejectPct.toString() : null,
   });
 }

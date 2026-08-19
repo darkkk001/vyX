@@ -136,6 +136,7 @@ export async function POST(request: NextRequest) {
         side,
         volume,
         openPrice: fillPrice,
+        bookType: brokerSymbol.defaultBookType,
       },
     });
 

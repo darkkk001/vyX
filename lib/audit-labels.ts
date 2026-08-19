@@ -40,6 +40,11 @@ const LABELS: Record<string, string> = {
   DEALING_MODE_TOGGLED: "Toggled dealing mode",
   DEALING_ORDER_ACCEPTED: "Accepted dealing order",
   DEALING_ORDER_REJECTED: "Rejected dealing order",
+  DEALING_ORDER_REQUOTED: "Requoted dealing order",
+  DEALING_ORDER_REQUOTE_ACCEPTED: "Client accepted requote",
+  DEALING_ORDER_REQUOTE_REJECTED: "Client rejected requote",
+  DEALING_ORDER_AUTO_ACCEPTED: "Smart Dealer auto-accepted order",
+  DEALING_ORDER_AUTO_REJECTED: "Smart Dealer auto-rejected order",
   INTERNAL_TRANSFER: "Internal transfer",
 };
 

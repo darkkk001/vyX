@@ -23,7 +23,26 @@ export type DealingOrderRow = {
   liveAsk: string | null;
 };
 
-export default function DealingQueueManager({ initialRows }: { initialRows: DealingOrderRow[] }) {
+export type RequotedOrderRow = {
+  id: string;
+  accountNumber: string;
+  accountFullName: string;
+  symbol: string;
+  digits: number;
+  side: "BUY" | "SELL";
+  volume: string;
+  requestedPrice: string | null;
+  requotedPrice: string | null;
+  createdAt: string;
+};
+
+export default function DealingQueueManager({
+  initialRows,
+  requotedRows,
+}: {
+  initialRows: DealingOrderRow[];
+  requotedRows: RequotedOrderRow[];
+}) {
   const router = useRouter();
   const [busyId, setBusyId] = useState<string | null>(null);
 
@@ -31,7 +50,7 @@ export default function DealingQueueManager({ initialRows }: { initialRows: Deal
   const [acceptPrice, setAcceptPrice] = useState("");
   const [acceptError, setAcceptError] = useState<string | null>(null);
 
-  const [rejectTarget, setRejectTarget] = useState<DealingOrderRow | null>(null);
+  const [rejectTarget, setRejectTarget] = useState<DealingOrderRow | RequotedOrderRow | null>(null);
   const [rejectReason, setRejectReason] = useState("");
   const [rejectError, setRejectError] = useState<string | null>(null);
 
@@ -42,7 +61,7 @@ export default function DealingQueueManager({ initialRows }: { initialRows: Deal
     setAcceptError(null);
   }
 
-  function openReject(row: DealingOrderRow) {
+  function openReject(row: DealingOrderRow | RequotedOrderRow) {
     setRejectTarget(row);
     setRejectReason("");
     setRejectError(null);
@@ -144,10 +163,55 @@ export default function DealingQueueManager({ initialRows }: { initialRows: Deal
         </TableBody>
       </Table>
 
+      <div>
+        <h3 className="mb-2 text-sm font-medium text-[var(--text-2)]">Awaiting client confirmation</h3>
+        <Table>
+          <TableHead>
+            <TableHeaderCell>Account</TableHeaderCell>
+            <TableHeaderCell>Symbol</TableHeaderCell>
+            <TableHeaderCell>Side</TableHeaderCell>
+            <TableHeaderCell align="right">Volume</TableHeaderCell>
+            <TableHeaderCell align="right">Requested</TableHeaderCell>
+            <TableHeaderCell align="right">Requoted to</TableHeaderCell>
+            <TableHeaderCell>Requoted at</TableHeaderCell>
+            <TableHeaderCell />
+          </TableHead>
+          <TableBody>
+            {requotedRows.length === 0 ? (
+              <TableEmptyState colSpan={8}>No requotes awaiting a client response.</TableEmptyState>
+            ) : (
+              requotedRows.map((row) => (
+                <TableRow key={row.id}>
+                  <TableCell primary>
+                    <span className="font-mono">{row.accountNumber}</span>
+                    <div className="text-xs font-normal text-[var(--text-3)]">{row.accountFullName}</div>
+                  </TableCell>
+                  <TableCell mono>{row.symbol}</TableCell>
+                  <TableCell>
+                    <Badge tone={row.side === "BUY" ? "success" : "danger"}>{row.side}</Badge>
+                  </TableCell>
+                  <TableCell align="right" mono>{row.volume}</TableCell>
+                  <TableCell align="right" mono>{row.requestedPrice ?? "—"}</TableCell>
+                  <TableCell align="right" mono>{row.requotedPrice ?? "—"}</TableCell>
+                  <TableCell className="text-xs text-[var(--text-3)]">{row.createdAt}</TableCell>
+                  <TableCell className="whitespace-nowrap">
+                    <Button size="sm" variant="danger" disabled={busyId === row.id} onClick={() => openReject(row)}>
+                      Withdraw
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              ))
+            )}
+          </TableBody>
+        </Table>
+      </div>
+
       <Modal open={acceptTarget !== null} onClose={() => setAcceptTarget(null)} title={`Accept order — ${acceptTarget?.accountNumber ?? ""}`}>
         <div className="flex flex-col gap-3">
           <p className="text-sm text-[var(--text-2)]">
-            {acceptTarget ? `${acceptTarget.side} ${acceptTarget.volume} lots of ${acceptTarget.symbol}. Pre-filled with the current live price — change it to requote.` : ""}
+            {acceptTarget
+              ? `${acceptTarget.side} ${acceptTarget.volume} lots of ${acceptTarget.symbol}. Pre-filled with the current live price — accepting at that price fills instantly. Changing it sends a requote to the client, who must accept before it fills.`
+              : ""}
           </p>
           <FormField label="Fill price">
             <Input type="text" inputMode="decimal" mono value={acceptPrice} onChange={(e) => setAcceptPrice(e.target.value)} />
@@ -164,7 +228,11 @@ export default function DealingQueueManager({ initialRows }: { initialRows: Deal
         </div>
       </Modal>
 
-      <Modal open={rejectTarget !== null} onClose={() => setRejectTarget(null)} title={`Reject order — ${rejectTarget?.accountNumber ?? ""}`}>
+      <Modal
+        open={rejectTarget !== null}
+        onClose={() => setRejectTarget(null)}
+        title={`${rejectTarget && "requotedPrice" in rejectTarget ? "Withdraw requote" : "Reject order"} — ${rejectTarget?.accountNumber ?? ""}`}
+      >
         <div className="flex flex-col gap-3">
           <FormField label="Reason (required, logged in audit trail)">
             <Input type="text" value={rejectReason} onChange={(e) => setRejectReason(e.target.value)} placeholder="e.g. Price moved outside tolerance" />
@@ -175,7 +243,7 @@ export default function DealingQueueManager({ initialRows }: { initialRows: Deal
               Cancel
             </Button>
             <Button variant="danger" disabled={busyId === rejectTarget?.id} onClick={submitReject}>
-              {busyId === rejectTarget?.id ? "Rejecting..." : "Reject order"}
+              {busyId === rejectTarget?.id ? "Working..." : rejectTarget && "requotedPrice" in rejectTarget ? "Withdraw requote" : "Reject order"}
             </Button>
           </ModalActions>
         </div>

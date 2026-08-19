@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { Card } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 import { Button } from "@/components/ui/Button";
@@ -23,9 +24,21 @@ export type LiquidityProviderRow = {
   createdAt: string;
 };
 
+export type BookExposureRow = {
+  symbol: string;
+  aBookVolume: string;
+  bBookVolume: string;
+};
+
 const statusTone = { PROSPECTIVE: "neutral", NEGOTIATING: "warning", CONTRACTED: "accent", CONNECTED: "success" } as const;
 
-export default function LiquidityManager({ initialRows }: { initialRows: LiquidityProviderRow[] }) {
+export default function LiquidityManager({
+  initialRows,
+  bookExposure,
+}: {
+  initialRows: LiquidityProviderRow[];
+  bookExposure: BookExposureRow[];
+}) {
   const router = useRouter();
   const [busyId, setBusyId] = useState<string | null>(null);
 
@@ -72,6 +85,34 @@ export default function LiquidityManager({ initialRows }: { initialRows: Liquidi
 
   return (
     <div className="flex flex-col gap-4">
+      <Card title="Current book exposure">
+        <p className="mb-3 text-sm text-[var(--text-3)]">
+          Real open volume per symbol, split by the book each position was stamped into at fill time. Config-only
+          routing decision (Symbols page) -- no real hedge to an LP happens for A-Book yet, since that&apos;s still
+          blocked on an actual LP relationship.
+        </p>
+        <Table>
+          <TableHead>
+            <TableHeaderCell>Symbol</TableHeaderCell>
+            <TableHeaderCell align="right">A-Book volume</TableHeaderCell>
+            <TableHeaderCell align="right">B-Book volume</TableHeaderCell>
+          </TableHead>
+          <TableBody>
+            {bookExposure.length === 0 ? (
+              <TableEmptyState colSpan={3}>No open positions.</TableEmptyState>
+            ) : (
+              bookExposure.map((row) => (
+                <TableRow key={row.symbol}>
+                  <TableCell mono>{row.symbol}</TableCell>
+                  <TableCell align="right" mono>{row.aBookVolume}</TableCell>
+                  <TableCell align="right" mono>{row.bBookVolume}</TableCell>
+                </TableRow>
+              ))
+            )}
+          </TableBody>
+        </Table>
+      </Card>
+
       <div className="flex justify-end">
         <Button onClick={openAdd}>Add liquidity provider</Button>
       </div>

@@ -21,6 +21,7 @@ const DEFAULTS = {
   commissionPerLot: "0",
   maxExposure: null as string | null,
   tradingMode: "BOTH" as const,
+  defaultBookType: "B_BOOK" as const,
 };
 
 export default async function ManagerSymbolsPage() {
@@ -53,6 +54,7 @@ export default async function ManagerSymbolsPage() {
       commissionPerLot: cfg ? cfg.commissionPerLot.toString() : DEFAULTS.commissionPerLot,
       maxExposure: cfg ? (cfg.maxExposure ? cfg.maxExposure.toString() : null) : DEFAULTS.maxExposure,
       tradingMode: cfg ? cfg.tradingMode : DEFAULTS.tradingMode,
+      defaultBookType: cfg ? cfg.defaultBookType : DEFAULTS.defaultBookType,
     };
   });
 

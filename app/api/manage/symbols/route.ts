@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { Prisma, TradingMode } from "@prisma/client";
+import { Prisma, TradingMode, BookType } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 
 const TRADING_MODES: TradingMode[] = ["BOTH", "BUY_ONLY", "SELL_ONLY"];
+const BOOK_TYPES: BookType[] = ["A_BOOK", "B_BOOK"];
 
 // BrokerSymbol's own schema defaults (prisma/schema.prisma) -- mirrored
 // here so a symbol with no configured row yet still displays real,
@@ -23,6 +24,7 @@ const DEFAULTS = {
   commissionPerLot: "0",
   maxExposure: null as string | null,
   tradingMode: "BOTH" as TradingMode,
+  defaultBookType: "B_BOOK" as BookType,
 };
 
 async function requireManager() {
@@ -61,6 +63,7 @@ export async function GET() {
       commissionPerLot: cfg ? cfg.commissionPerLot.toString() : DEFAULTS.commissionPerLot,
       maxExposure: cfg ? (cfg.maxExposure ? cfg.maxExposure.toString() : null) : DEFAULTS.maxExposure,
       tradingMode: cfg ? cfg.tradingMode : DEFAULTS.tradingMode,
+      defaultBookType: cfg ? cfg.defaultBookType : DEFAULTS.defaultBookType,
     };
   });
 
@@ -79,6 +82,7 @@ interface PatchBody {
   commissionPerLot: string;
   maxExposure: string | null;
   tradingMode: TradingMode;
+  defaultBookType: BookType;
 }
 
 // Decimal.js isn't a dependency of this app (only services/api-gateway
@@ -124,6 +128,7 @@ export async function PATCH(request: NextRequest) {
   const maxExposure = maxExposureRaw == null || maxExposureRaw === "" ? null : parseDecimal(maxExposureRaw);
   const enabled = typeof body?.enabled === "boolean" ? body.enabled : null;
   const tradingMode = TRADING_MODES.includes(body?.tradingMode as TradingMode) ? (body!.tradingMode as TradingMode) : null;
+  const defaultBookType = BOOK_TYPES.includes(body?.defaultBookType as BookType) ? (body!.defaultBookType as BookType) : null;
 
   if (
     !spreadMarkup ||
@@ -134,9 +139,10 @@ export async function PATCH(request: NextRequest) {
     !swapShort ||
     !commissionPerLot ||
     enabled === null ||
-    tradingMode === null
+    tradingMode === null ||
+    defaultBookType === null
   ) {
-    return NextResponse.json({ error: "all fields must be valid numbers/booleans/tradingMode" }, { status: 400 });
+    return NextResponse.json({ error: "all fields must be valid numbers/booleans/tradingMode/defaultBookType" }, { status: 400 });
   }
   if (maxExposureRaw != null && maxExposureRaw !== "" && !maxExposure) {
     return NextResponse.json({ error: "maxExposure must be a valid number or empty" }, { status: 400 });
@@ -171,6 +177,7 @@ export async function PATCH(request: NextRequest) {
     commissionPerLot,
     maxExposure,
     tradingMode,
+    defaultBookType,
   };
 
   const updated = await prisma.brokerSymbol.upsert({
@@ -198,6 +205,7 @@ export async function PATCH(request: NextRequest) {
             commissionPerLot: existing.commissionPerLot.toString(),
             maxExposure: existing.maxExposure?.toString() ?? null,
             tradingMode: existing.tradingMode,
+            defaultBookType: existing.defaultBookType,
           }
         : DEFAULTS,
       newValue: {
@@ -211,6 +219,7 @@ export async function PATCH(request: NextRequest) {
         commissionPerLot: updated.commissionPerLot.toString(),
         maxExposure: updated.maxExposure?.toString() ?? null,
         tradingMode: updated.tradingMode,
+        defaultBookType: updated.defaultBookType,
       },
     },
   });
@@ -227,5 +236,6 @@ export async function PATCH(request: NextRequest) {
     commissionPerLot: updated.commissionPerLot.toString(),
     maxExposure: updated.maxExposure?.toString() ?? null,
     tradingMode: updated.tradingMode,
+    defaultBookType: updated.defaultBookType,
   });
 }
