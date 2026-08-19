@@ -18,7 +18,10 @@ export default async function ManagerFundsPage() {
 
   const requests = await prisma.transaction.findMany({
     where: { brokerId, type: { in: ["DEPOSIT", "WITHDRAWAL"] } },
-    include: { account: { select: { accountNumber: true, fullName: true, balance: true } } },
+    include: {
+      account: { select: { accountNumber: true, fullName: true, balance: true } },
+      markedByAdmin: { select: { email: true } },
+    },
     orderBy: [{ status: "asc" }, { createdAt: "desc" }],
     take: 200,
   });
@@ -32,6 +35,8 @@ export default async function ManagerFundsPage() {
     accountNumber: t.account.accountNumber,
     accountFullName: t.account.fullName,
     currentBalance: t.account.balance.toString(),
+    markedByAdminId: t.markedByAdminId,
+    markedByAdminEmail: t.markedByAdmin?.email ?? null,
     createdAt: t.createdAt.toISOString().replace("T", " ").slice(0, 19),
   }));
 
@@ -39,9 +44,9 @@ export default async function ManagerFundsPage() {
     <main className="mx-auto max-w-5xl">
       <PageHeader
         title="Funds"
-        description="Deposit and withdrawal requests submitted by traders. Approving moves real balance; rejecting leaves it untouched."
+        description="Deposit and withdrawal requests submitted by traders. Approving moves real balance; rejecting leaves it untouched. Withdrawals require two different staff members (maker-checker)."
       />
-      <FundsRequestsManager initialRows={rows} />
+      <FundsRequestsManager initialRows={rows} currentAdminId={session!.adminId} />
     </main>
   );
 }

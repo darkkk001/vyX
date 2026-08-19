@@ -28,6 +28,7 @@ export type PositionRow = {
   floatingPnl: string | null;
   slPrice: string | null;
   tpPrice: string | null;
+  isManualOrigin: boolean;
   openedAt: string;
 };
 
@@ -268,6 +269,41 @@ export default function PositionsManager({
     router.refresh();
   }
 
+  // --- Reverse / Void, per row ---
+  const [reversingId, setReversingId] = useState<string | null>(null);
+  const [voidingId, setVoidingId] = useState<string | null>(null);
+  const [reverseVoidErrors, setReverseVoidErrors] = useState<Record<string, string>>({});
+  const [reverseConfirm, setReverseConfirm] = useState<PositionRow | null>(null);
+  const [voidConfirm, setVoidConfirm] = useState<PositionRow | null>(null);
+
+  async function reversePosition(row: PositionRow) {
+    setReversingId(row.id);
+    setReverseVoidErrors((prev) => ({ ...prev, [row.id]: "" }));
+    const response = await fetch(`/api/manage/positions/${row.id}/reverse`, { method: "POST" });
+    setReversingId(null);
+    setReverseConfirm(null);
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      setReverseVoidErrors((prev) => ({ ...prev, [row.id]: body.error ?? "reverse failed" }));
+      return;
+    }
+    router.refresh();
+  }
+
+  async function voidPosition(row: PositionRow) {
+    setVoidingId(row.id);
+    setReverseVoidErrors((prev) => ({ ...prev, [row.id]: "" }));
+    const response = await fetch(`/api/manage/positions/${row.id}/void`, { method: "POST" });
+    setVoidingId(null);
+    setVoidConfirm(null);
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      setReverseVoidErrors((prev) => ({ ...prev, [row.id]: body.error ?? "void failed" }));
+      return;
+    }
+    router.refresh();
+  }
+
   return (
     <div className="flex flex-col gap-6">
       <Card title="Filters">
@@ -501,8 +537,17 @@ export default function PositionsManager({
                     <Button size="sm" variant="danger" disabled={closingId === p.id} onClick={() => closePosition(p)}>
                       {closingId === p.id ? "Closing..." : "Close"}
                     </Button>
+                    <Button size="sm" variant="ghost" disabled={reversingId === p.id} onClick={() => setReverseConfirm(p)} title="Close and immediately open the opposite side at the current price">
+                      Reverse
+                    </Button>
+                    {p.isManualOrigin ? (
+                      <Button size="sm" variant="ghost" disabled={voidingId === p.id} onClick={() => setVoidConfirm(p)} title="Erase this manually-opened position -- no Transaction, not a real trade">
+                        Void
+                      </Button>
+                    ) : null}
                   </div>
                   {closeErrors[p.id] ? <div className="mt-1 text-xs text-[var(--sell)]">{closeErrors[p.id]}</div> : null}
+                  {reverseVoidErrors[p.id] ? <div className="mt-1 text-xs text-[var(--sell)]">{reverseVoidErrors[p.id]}</div> : null}
                 </TableCell>
               </TableRow>
             ))
@@ -591,6 +636,45 @@ export default function PositionsManager({
             </Button>
           </ModalActions>
         </div>
+      </Modal>
+
+      <Modal open={reverseConfirm !== null} onClose={() => setReverseConfirm(null)} title="Confirm reverse position">
+        {reverseConfirm ? (
+          <div className="flex flex-col gap-3">
+            <p className="text-sm text-[var(--text-2)]">
+              Closes {reverseConfirm.accountNumber}&apos;s {reverseConfirm.symbolName} {reverseConfirm.side} at the current live price (realizing
+              its P&amp;L), then immediately opens a new {reverseConfirm.side === "BUY" ? "SELL" : "BUY"} position for the same volume at that
+              price.
+            </p>
+            <ModalActions>
+              <Button variant="ghost" onClick={() => setReverseConfirm(null)}>
+                Cancel
+              </Button>
+              <Button variant="danger" disabled={reversingId === reverseConfirm.id} onClick={() => reversePosition(reverseConfirm)}>
+                {reversingId === reverseConfirm.id ? "Reversing..." : "Confirm reverse"}
+              </Button>
+            </ModalActions>
+          </div>
+        ) : null}
+      </Modal>
+
+      <Modal open={voidConfirm !== null} onClose={() => setVoidConfirm(null)} title="Confirm void position">
+        {voidConfirm ? (
+          <div className="flex flex-col gap-3">
+            <p className="text-sm text-[var(--text-2)]">
+              Erases {voidConfirm.accountNumber}&apos;s manually-opened {voidConfirm.symbolName} {voidConfirm.side} position -- it never moved any
+              balance, so nothing is booked. Use this only to correct a mistaken manual entry, not to close a real trade.
+            </p>
+            <ModalActions>
+              <Button variant="ghost" onClick={() => setVoidConfirm(null)}>
+                Cancel
+              </Button>
+              <Button variant="danger" disabled={voidingId === voidConfirm.id} onClick={() => voidPosition(voidConfirm)}>
+                {voidingId === voidConfirm.id ? "Voiding..." : "Confirm void"}
+              </Button>
+            </ModalActions>
+          </div>
+        ) : null}
       </Modal>
     </div>
   );

@@ -16,18 +16,20 @@ export type FundsRequestRow = {
   accountNumber: string;
   accountFullName: string;
   currentBalance: string;
+  markedByAdminId: string | null;
+  markedByAdminEmail: string | null;
   createdAt: string;
 };
 
 const statusTone = { PENDING: "warning", COMPLETED: "success", REJECTED: "danger" } as const;
 
-export default function FundsRequestsManager({ initialRows }: { initialRows: FundsRequestRow[] }) {
+export default function FundsRequestsManager({ initialRows, currentAdminId }: { initialRows: FundsRequestRow[]; currentAdminId: string }) {
   const router = useRouter();
   const [busyId, setBusyId] = useState<string | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const [confirmTarget, setConfirmTarget] = useState<{ row: FundsRequestRow; action: "APPROVE" | "REJECT" } | null>(null);
+  const [confirmTarget, setConfirmTarget] = useState<{ row: FundsRequestRow; action: "APPROVE" | "REJECT" | "CANCEL_MARK" } | null>(null);
 
-  async function review(row: FundsRequestRow, action: "APPROVE" | "REJECT") {
+  async function review(row: FundsRequestRow, action: "APPROVE" | "REJECT" | "CANCEL_MARK") {
     setBusyId(row.id);
     setErrors((prev) => ({ ...prev, [row.id]: "" }));
     const response = await fetch(`/api/manage/funds-requests/${row.id}`, {
@@ -79,18 +81,41 @@ export default function FundsRequestsManager({ initialRows }: { initialRows: Fun
                 </TableCell>
                 <TableCell>
                   <Badge tone={statusTone[row.status as keyof typeof statusTone] ?? "neutral"}>{row.status}</Badge>
+                  {row.markedByAdminId ? (
+                    <div className="mt-0.5 text-xs text-[var(--warn)]">
+                      Marked by {row.markedByAdminEmail ?? "another staff member"} — needs 2nd approval
+                    </div>
+                  ) : null}
                 </TableCell>
                 <TableCell className="text-xs text-[var(--text-3)]">{row.createdAt}</TableCell>
                 <TableCell className="whitespace-nowrap">
                   {row.status === "PENDING" ? (
-                    <div className="flex items-center gap-1.5">
-                      <Button size="sm" variant="success" disabled={busyId === row.id} onClick={() => setConfirmTarget({ row, action: "APPROVE" })}>
-                        Approve
-                      </Button>
-                      <Button size="sm" variant="danger" disabled={busyId === row.id} onClick={() => setConfirmTarget({ row, action: "REJECT" })}>
-                        Reject
-                      </Button>
-                    </div>
+                    row.markedByAdminId === currentAdminId ? (
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-xs text-[var(--text-3)]">Awaiting another staff member</span>
+                        <Button size="sm" variant="ghost" disabled={busyId === row.id} onClick={() => setConfirmTarget({ row, action: "CANCEL_MARK" })}>
+                          Cancel mark
+                        </Button>
+                      </div>
+                    ) : row.markedByAdminId ? (
+                      <div className="flex items-center gap-1.5">
+                        <Button size="sm" variant="success" disabled={busyId === row.id} onClick={() => setConfirmTarget({ row, action: "APPROVE" })}>
+                          Confirm (2nd approval)
+                        </Button>
+                        <Button size="sm" variant="ghost" disabled={busyId === row.id} onClick={() => setConfirmTarget({ row, action: "REJECT" })}>
+                          Reject
+                        </Button>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-1.5">
+                        <Button size="sm" variant="success" disabled={busyId === row.id} onClick={() => setConfirmTarget({ row, action: "APPROVE" })}>
+                          {row.type === "WITHDRAWAL" ? "Mark for approval" : "Approve"}
+                        </Button>
+                        <Button size="sm" variant="danger" disabled={busyId === row.id} onClick={() => setConfirmTarget({ row, action: "REJECT" })}>
+                          Reject
+                        </Button>
+                      </div>
+                    )
                   ) : null}
                   {errors[row.id] ? <div className="mt-1 text-xs text-[var(--sell)]">{errors[row.id]}</div> : null}
                 </TableCell>
@@ -103,25 +128,43 @@ export default function FundsRequestsManager({ initialRows }: { initialRows: Fun
       <Modal
         open={confirmTarget !== null}
         onClose={() => setConfirmTarget(null)}
-        title={confirmTarget ? `${confirmTarget.action === "APPROVE" ? "Approve" : "Reject"} ${confirmTarget.row.type.toLowerCase()}` : ""}
+        title={
+          confirmTarget
+            ? confirmTarget.action === "APPROVE"
+              ? confirmTarget.row.type === "WITHDRAWAL" && !confirmTarget.row.markedByAdminId
+                ? "Mark withdrawal for approval"
+                : `Approve ${confirmTarget.row.type.toLowerCase()}`
+              : confirmTarget.action === "CANCEL_MARK"
+                ? "Cancel withdrawal mark"
+                : `Reject ${confirmTarget.row.type.toLowerCase()}`
+            : ""
+        }
       >
         {confirmTarget ? (
           <div className="flex flex-col gap-3">
             <p className="text-sm text-[var(--text-2)]">
-              {confirmTarget.action === "APPROVE"
-                ? `This moves ${confirmTarget.row.amount} through the ledger onto ${confirmTarget.row.accountNumber}'s balance.`
-                : `${confirmTarget.row.accountNumber}'s balance is left untouched.`}
+              {confirmTarget.action === "CANCEL_MARK"
+                ? "This request goes back to plain pending — either staff member can mark it again."
+                : confirmTarget.action === "APPROVE"
+                  ? confirmTarget.row.type === "WITHDRAWAL" && !confirmTarget.row.markedByAdminId
+                    ? "This only marks the request -- a different staff member must confirm before any balance moves."
+                    : `This moves ${confirmTarget.row.amount} through the ledger onto ${confirmTarget.row.accountNumber}'s balance.`
+                  : `${confirmTarget.row.accountNumber}'s balance is left untouched.`}
             </p>
             <ModalActions>
               <Button variant="ghost" onClick={() => setConfirmTarget(null)}>
                 Cancel
               </Button>
               <Button
-                variant={confirmTarget.action === "APPROVE" ? "success" : "danger"}
+                variant={confirmTarget.action === "APPROVE" ? "success" : confirmTarget.action === "CANCEL_MARK" ? "ghost" : "danger"}
                 disabled={busyId === confirmTarget.row.id}
                 onClick={() => review(confirmTarget.row, confirmTarget.action)}
               >
-                {busyId === confirmTarget.row.id ? "Working..." : `Confirm ${confirmTarget.action === "APPROVE" ? "approval" : "rejection"}`}
+                {busyId === confirmTarget.row.id
+                  ? "Working..."
+                  : confirmTarget.action === "CANCEL_MARK"
+                    ? "Confirm cancel"
+                    : `Confirm ${confirmTarget.action === "APPROVE" ? "approval" : "rejection"}`}
               </Button>
             </ModalActions>
           </div>

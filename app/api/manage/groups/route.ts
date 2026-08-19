@@ -30,6 +30,9 @@ export async function GET() {
       marginCallLevel: g.marginCallLevel.toString(),
       stopOutLevel: g.stopOutLevel.toString(),
       isDefault: g.isDefault,
+      maxLotSize: g.maxLotSize ? g.maxLotSize.toString() : null,
+      tradingRestriction: g.tradingRestriction,
+      swapFree: g.swapFree,
     }))
   );
 }
@@ -68,6 +71,20 @@ export async function POST(request: NextRequest) {
   }
   const isDefault = body?.isDefault === true;
 
+  let maxLotSize: Prisma.Decimal | null = null;
+  if (body?.maxLotSize != null && body.maxLotSize !== "") {
+    try {
+      maxLotSize = new Prisma.Decimal(String(body.maxLotSize));
+    } catch {
+      return NextResponse.json({ error: "invalid maxLotSize" }, { status: 400 });
+    }
+    if (maxLotSize.lte(0)) {
+      return NextResponse.json({ error: "maxLotSize must be positive when set" }, { status: 400 });
+    }
+  }
+  const tradingRestriction = ["BOTH", "BUY_ONLY", "SELL_ONLY"].includes(body?.tradingRestriction) ? body.tradingRestriction : "BOTH";
+  const swapFree = body?.swapFree === true;
+
   try {
     const group = await prisma.$transaction(async (tx) => {
       // Only one default group per broker -- clear any existing one
@@ -76,7 +93,7 @@ export async function POST(request: NextRequest) {
         await tx.group.updateMany({ where: { brokerId, isDefault: true }, data: { isDefault: false } });
       }
       const created = await tx.group.create({
-        data: { brokerId, name, leverage, marginCallLevel, stopOutLevel, isDefault },
+        data: { brokerId, name, leverage, marginCallLevel, stopOutLevel, isDefault, maxLotSize, tradingRestriction, swapFree },
       });
       await tx.auditLog.create({
         data: {
@@ -91,6 +108,9 @@ export async function POST(request: NextRequest) {
             marginCallLevel: marginCallLevel.toString(),
             stopOutLevel: stopOutLevel.toString(),
             isDefault,
+            maxLotSize: maxLotSize?.toString() ?? null,
+            tradingRestriction,
+            swapFree,
           },
         },
       });
@@ -105,6 +125,9 @@ export async function POST(request: NextRequest) {
         marginCallLevel: group.marginCallLevel.toString(),
         stopOutLevel: group.stopOutLevel.toString(),
         isDefault: group.isDefault,
+        maxLotSize: group.maxLotSize ? group.maxLotSize.toString() : null,
+        tradingRestriction: group.tradingRestriction,
+        swapFree: group.swapFree,
       },
       { status: 201 }
     );

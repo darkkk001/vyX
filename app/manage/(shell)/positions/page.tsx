@@ -43,6 +43,7 @@ export default async function ManagerPositionsPage() {
         },
       },
       symbol: { select: { name: true, digits: true, contractSize: true } },
+      originOrder: { select: { idempotencyKey: true } },
     },
     orderBy: { openedAt: "desc" },
   });
@@ -82,6 +83,7 @@ export default async function ManagerPositionsPage() {
       floatingPnl: floatingPnl ? floatingPnl.toFixed(2) : null,
       slPrice: p.slPrice ? p.slPrice.toFixed(p.symbol.digits) : null,
       tpPrice: p.tpPrice ? p.tpPrice.toFixed(p.symbol.digits) : null,
+      isManualOrigin: p.originOrder.idempotencyKey.startsWith("manual_"),
       openedAt: p.openedAt.toISOString().replace("T", " ").slice(0, 19),
     };
   });

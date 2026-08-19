@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Card } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
+import { Select } from "@/components/ui/Select";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { Button } from "@/components/ui/Button";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
@@ -15,6 +16,9 @@ export type GroupRow = {
   marginCallLevel: string;
   stopOutLevel: string;
   isDefault: boolean;
+  maxLotSize: string;
+  tradingRestriction: "BOTH" | "BUY_ONLY" | "SELL_ONLY";
+  swapFree: boolean;
 };
 
 // Create form + editable list, same fetch/error/submitting-state shape
@@ -28,6 +32,9 @@ export default function GroupsManager({ initialRows }: { initialRows: GroupRow[]
   const [newCallLevel, setNewCallLevel] = useState("100");
   const [newStopOutLevel, setNewStopOutLevel] = useState("50");
   const [newIsDefault, setNewIsDefault] = useState(false);
+  const [newMaxLotSize, setNewMaxLotSize] = useState("");
+  const [newTradingRestriction, setNewTradingRestriction] = useState<"BOTH" | "BUY_ONLY" | "SELL_ONLY">("BOTH");
+  const [newSwapFree, setNewSwapFree] = useState(false);
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
 
@@ -53,6 +60,9 @@ export default function GroupsManager({ initialRows }: { initialRows: GroupRow[]
         marginCallLevel: newCallLevel,
         stopOutLevel: newStopOutLevel,
         isDefault: newIsDefault,
+        maxLotSize: newMaxLotSize,
+        tradingRestriction: newTradingRestriction,
+        swapFree: newSwapFree,
       }),
     });
     setCreating(false);
@@ -62,6 +72,9 @@ export default function GroupsManager({ initialRows }: { initialRows: GroupRow[]
       return;
     }
     setNewName("");
+    setNewMaxLotSize("");
+    setNewTradingRestriction("BOTH");
+    setNewSwapFree(false);
     router.refresh();
   }
 
@@ -115,6 +128,21 @@ export default function GroupsManager({ initialRows }: { initialRows: GroupRow[]
             onChange={(e) => setNewStopOutLevel(e.target.value)}
             className="w-24"
           />
+          <Input
+            type="text"
+            inputMode="decimal"
+            mono
+            placeholder="Max lot (blank = no override)"
+            value={newMaxLotSize}
+            onChange={(e) => setNewMaxLotSize(e.target.value)}
+            className="w-24"
+          />
+          <Select value={newTradingRestriction} onChange={(e) => setNewTradingRestriction(e.target.value as "BOTH" | "BUY_ONLY" | "SELL_ONLY")} className="w-32">
+            <option value="BOTH">Both</option>
+            <option value="BUY_ONLY">Buy only</option>
+            <option value="SELL_ONLY">Sell only</option>
+          </Select>
+          <Checkbox label="Swap-free" checked={newSwapFree} onChange={(e) => setNewSwapFree(e.target.checked)} />
           <Checkbox label="Default" checked={newIsDefault} onChange={(e) => setNewIsDefault(e.target.checked)} />
           <Button type="submit" variant="primary" disabled={creating}>
             {creating ? "Creating..." : "Create group"}
@@ -130,12 +158,15 @@ export default function GroupsManager({ initialRows }: { initialRows: GroupRow[]
             <TableHeaderCell align="right">Leverage</TableHeaderCell>
             <TableHeaderCell align="right">Margin call %</TableHeaderCell>
             <TableHeaderCell align="right">Stop out %</TableHeaderCell>
+            <TableHeaderCell align="right">Max lot</TableHeaderCell>
+            <TableHeaderCell>Restriction</TableHeaderCell>
+            <TableHeaderCell align="center">Swap-free</TableHeaderCell>
             <TableHeaderCell align="center">Default</TableHeaderCell>
             <TableHeaderCell />
           </TableHead>
           <TableBody>
             {rows.length === 0 ? (
-              <TableEmptyState colSpan={6}>No groups yet.</TableEmptyState>
+              <TableEmptyState colSpan={9}>No groups yet.</TableEmptyState>
             ) : (
               rows.map((row) => (
                 <TableRow key={row.id}>
@@ -171,6 +202,31 @@ export default function GroupsManager({ initialRows }: { initialRows: GroupRow[]
                       onChange={(e) => updateRow(row.id, { stopOutLevel: e.target.value })}
                       className="w-20 text-right"
                     />
+                  </TableCell>
+                  <TableCell align="right">
+                    <Input
+                      type="text"
+                      inputMode="decimal"
+                      mono
+                      placeholder="none"
+                      value={row.maxLotSize}
+                      onChange={(e) => updateRow(row.id, { maxLotSize: e.target.value })}
+                      className="w-20 text-right"
+                    />
+                  </TableCell>
+                  <TableCell>
+                    <Select
+                      value={row.tradingRestriction}
+                      onChange={(e) => updateRow(row.id, { tradingRestriction: e.target.value as "BOTH" | "BUY_ONLY" | "SELL_ONLY" })}
+                      className="w-32"
+                    >
+                      <option value="BOTH">Both</option>
+                      <option value="BUY_ONLY">Buy only</option>
+                      <option value="SELL_ONLY">Sell only</option>
+                    </Select>
+                  </TableCell>
+                  <TableCell align="center">
+                    <Checkbox checked={row.swapFree} onChange={(e) => updateRow(row.id, { swapFree: e.target.checked })} />
                   </TableCell>
                   <TableCell align="center">
                     <Checkbox checked={row.isDefault} onChange={(e) => updateRow(row.id, { isDefault: e.target.checked })} />

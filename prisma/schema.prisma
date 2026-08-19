@@ -140,6 +140,10 @@ enum OrderStatus {
 enum PositionStatus {
   OPEN
   CLOSED
+  // Correcting an admin's own erroneous manual entry -- never a real
+  // trade, no Transaction/balance ever moved for it. See
+  // app/api/manage/positions/[id]/void/route.ts.
+  VOIDED
 }
 
 enum CommissionType {
@@ -243,6 +247,7 @@ model AdminUser {
   reviewedKyc    KycRecord[]    @relation("KycReviewedBy")
   createdTxns    Transaction[]  @relation("TransactionCreatedBy")
   reviewedTxns   Transaction[]  @relation("TransactionReviewedBy")
+  markedTxns     Transaction[]  @relation("TransactionMarkedBy")
   auditLogs      AuditLog[]     @relation("AuditLogActor")
   closedPosition Position[]     @relation("PositionClosedBy")
 
@@ -355,6 +360,17 @@ model Group {
   marginCallLevel Decimal @default(100) @db.Decimal(6, 2)
   stopOutLevel    Decimal @default(50) @db.Decimal(6, 2)
   isDefault       Boolean @default(false)
+  // Null = no override, falls through to the existing per-symbol
+  // minLot/maxLot check unchanged -- see lib/risk.ts's checkGroupMaxLot.
+  maxLotSize      Decimal? @db.Decimal(10, 2)
+  // Same enum/semantics as BrokerSymbol.tradingMode -- see
+  // lib/risk.ts's checkGroupTradingRestriction.
+  tradingRestriction TradingMode @default(BOTH)
+  // Config-only -- no live Next.js path charges swap at all yet (that
+  // only exists in the Rust engine's daily rollover job, which nothing
+  // live is cut over to), so there's nothing to skip for a swap-free
+  // group today. Recorded now so it's ready once that changes.
+  swapFree        Boolean @default(false)
 
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
@@ -410,6 +426,14 @@ model Transaction {
   // ADJUSTMENT, both created directly as COMPLETED).
   reviewedByAdminId String?
   reviewedByAdmin AdminUser?        @relation("TransactionReviewedBy", fields: [reviewedByAdminId], references: [id])
+  // Maker-checker for WITHDRAWAL requests only (deposits stay single-
+  // approval) -- see app/api/manage/funds-requests/[id]/route.ts. Set on
+  // the first APPROVE (status stays PENDING); a second APPROVE by a
+  // *different* admin is what actually completes it. Null throughout for
+  // every other Transaction type/flow.
+  markedByAdminId String?
+  markedByAdmin   AdminUser? @relation("TransactionMarkedBy", fields: [markedByAdminId], references: [id])
+  markedAt        DateTime?  @db.Timestamptz(3)
 
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   // First Transaction field to change after creation -- a PENDING

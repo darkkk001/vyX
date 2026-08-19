@@ -26,6 +26,9 @@ export default async function ManagerGroupsPage() {
     marginCallLevel: g.marginCallLevel.toString(),
     stopOutLevel: g.stopOutLevel.toString(),
     isDefault: g.isDefault,
+    maxLotSize: g.maxLotSize ? g.maxLotSize.toString() : "",
+    tradingRestriction: g.tradingRestriction,
+    swapFree: g.swapFree,
   }));
 
   return (

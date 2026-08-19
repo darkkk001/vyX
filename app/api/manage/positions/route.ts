@@ -9,6 +9,8 @@ import {
   checkSymbolTradingMode,
   checkTradingSession,
   checkLotStep,
+  checkGroupMaxLot,
+  checkGroupTradingRestriction,
   checkMaxOpenPositions,
   checkSymbolExposure,
   checkBrokerExposure,
@@ -59,7 +61,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "volume must be positive" }, { status: 400 });
   }
 
-  const account = await prisma.account.findUnique({ where: { id: accountId } });
+  const account = await prisma.account.findUnique({ where: { id: accountId }, include: { group: true } });
   if (!account || account.brokerId !== brokerId) {
     return NextResponse.json({ error: "account not found" }, { status: 404 });
   }
@@ -91,6 +93,8 @@ export async function POST(request: NextRequest) {
     checkSymbolTradingMode(brokerSymbol.tradingMode, side) ??
     checkTradingSession(brokerSymbol.tradingSessions, new Date()) ??
     checkLotStep(volume, brokerSymbol.minLot, brokerSymbol.lotStep) ??
+    (account.group ? checkGroupMaxLot(volume, account.group.maxLotSize) : null) ??
+    (account.group ? checkGroupTradingRestriction(account.group.tradingRestriction, side) : null) ??
     (await checkMaxOpenPositions(prisma, accountId, broker.maxOpenPositionsPerAccount)) ??
     (await checkSymbolExposure(prisma, accountId, symbolId, volume, brokerSymbol.maxExposure)) ??
     (await checkBrokerExposure(prisma, brokerId, volume, broker.totalExposureLimit)) ??

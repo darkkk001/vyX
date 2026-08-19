@@ -5,8 +5,12 @@ import { forbidUnlessBrokerAdminOrPermission } from "@/lib/permissions";
 
 // Approve/reject a PENDING deposit or withdrawal request -- BROKER_ADMIN
 // by default, delegatable via FUNDS_APPROVAL (see lib/permissions.ts).
-// This is the one place a Transaction row is ever updated after creation
-// (see the field's own schema comment) -- resolving a PENDING
+// WITHDRAWAL only: maker-checker -- the first APPROVE just marks it
+// (status stays PENDING, no balance change); a second APPROVE by a
+// *different* admin is what actually completes it. DEPOSIT stays
+// single-approval (mockup's own scope -- only withdrawals move money
+// out). This is the one place a Transaction row is ever updated after
+// creation (see the field's own schema comment) -- resolving a PENDING
 // state-machine row, not editing an executed trade, so it doesn't
 // conflict with CLAUDE.md's never-edit-history rule.
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -29,17 +33,38 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   }
 
   const body = await request.json().catch(() => null);
-  const action = body?.action === "APPROVE" ? "APPROVE" : body?.action === "REJECT" ? "REJECT" : null;
+  const action = body?.action === "APPROVE" ? "APPROVE" : body?.action === "REJECT" ? "REJECT" : body?.action === "CANCEL_MARK" ? "CANCEL_MARK" : null;
   if (!action) {
-    return NextResponse.json({ error: "action must be APPROVE or REJECT" }, { status: 400 });
+    return NextResponse.json({ error: "action must be APPROVE, REJECT, or CANCEL_MARK" }, { status: 400 });
   }
   const note = typeof body?.note === "string" ? body.note.trim().slice(0, 500) : null;
+
+  if (action === "CANCEL_MARK") {
+    if (!existing.markedByAdminId) {
+      return NextResponse.json({ error: "request is not marked" }, { status: 409 });
+    }
+    await prisma.$transaction(async (tx) => {
+      await tx.transaction.update({ where: { id }, data: { markedByAdminId: null, markedAt: null } });
+      await tx.auditLog.create({
+        data: {
+          brokerId,
+          actorAdminId: session!.adminId,
+          action: "FUNDS_REQUEST_MARK_CANCELLED",
+          entityType: "Transaction",
+          entityId: id,
+          oldValue: { markedByAdminId: existing.markedByAdminId },
+          newValue: { markedByAdminId: null },
+        },
+      });
+    });
+    return NextResponse.json({ id, status: existing.status, marked: false });
+  }
 
   if (action === "REJECT") {
     const rejected = await prisma.$transaction(async (tx) => {
       const updated = await tx.transaction.update({
         where: { id },
-        data: { status: "REJECTED", reviewedByAdminId: session!.adminId, note: note ?? existing.note },
+        data: { status: "REJECTED", reviewedByAdminId: session!.adminId, markedByAdminId: null, markedAt: null, note: note ?? existing.note },
       });
       await tx.auditLog.create({
         data: {
@@ -58,6 +83,31 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   }
 
   // APPROVE
+  if (existing.type === "WITHDRAWAL" && !existing.markedByAdminId) {
+    // First approval on a withdrawal -- mark only, no balance change yet.
+    const marked = await prisma.$transaction(async (tx) => {
+      const updated = await tx.transaction.update({
+        where: { id },
+        data: { markedByAdminId: session!.adminId, markedAt: new Date() },
+      });
+      await tx.auditLog.create({
+        data: {
+          brokerId,
+          actorAdminId: session!.adminId,
+          action: "FUNDS_REQUEST_MARKED_FOR_APPROVAL",
+          entityType: "Transaction",
+          entityId: id,
+          newValue: { markedByAdminId: session!.adminId },
+        },
+      });
+      return updated;
+    });
+    return NextResponse.json({ id: marked.id, status: marked.status, marked: true });
+  }
+  if (existing.type === "WITHDRAWAL" && existing.markedByAdminId === session!.adminId) {
+    return NextResponse.json({ error: "a different staff member must confirm this withdrawal" }, { status: 400 });
+  }
+
   try {
     const approved = await prisma.$transaction(async (tx) => {
       // Re-fetch the account's CURRENT balance -- trading activity
@@ -91,7 +141,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
           action: "FUNDS_REQUEST_APPROVED",
           entityType: "Transaction",
           entityId: id,
-          oldValue: { status: "PENDING" },
+          oldValue: { status: "PENDING", markedByAdminId: existing.markedByAdminId },
           newValue: { status: "COMPLETED", balanceBefore: balanceBefore.toString(), balanceAfter: balanceAfter.toString() },
         },
       });

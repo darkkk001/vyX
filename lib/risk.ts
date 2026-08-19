@@ -20,6 +20,26 @@ export function checkSymbolTradingMode(tradingMode: TradingMode, side: OrderSide
   return null;
 }
 
+// Null = no override, falls through to the existing per-symbol
+// minLot/maxLot check unchanged (that one lives inline in each order
+// route, not here). Group.maxLotSize is a per-order cap, not cumulative.
+export function checkGroupMaxLot(volume: Prisma.Decimal, groupMaxLot: Prisma.Decimal | null): string | null {
+  if (groupMaxLot == null) return null;
+  if (volume.gt(groupMaxLot)) {
+    return `volume exceeds this account's group max lot size of ${groupMaxLot}`;
+  }
+  return null;
+}
+
+// Same shape/semantics as checkSymbolTradingMode, applied at the
+// account's group level instead of the symbol level -- both can block
+// independently.
+export function checkGroupTradingRestriction(restriction: TradingMode, side: OrderSide): string | null {
+  if (restriction === "BUY_ONLY" && side !== "BUY") return "this account's group is buy-only right now";
+  if (restriction === "SELL_ONLY" && side !== "SELL") return "this account's group is sell-only right now";
+  return null;
+}
+
 // Volume must be minLot plus a whole number of lotStep increments (not
 // just within the min/max range, which both live order routes already
 // check separately). Decimal math throughout -- never Number/float.
