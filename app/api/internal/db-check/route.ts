@@ -45,5 +45,6 @@ export async function GET() {
     brokerCount,
     DATABASE_URL: fingerprint("DATABASE_URL"),
     DIRECT_URL: fingerprint("DIRECT_URL"),
+    VYX_TEST_MARKER: process.env.VYX_TEST_MARKER ?? null,
   });
 }
