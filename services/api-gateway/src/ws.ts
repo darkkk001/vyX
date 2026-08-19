@@ -23,6 +23,19 @@ import { getTraderSession } from "./auth.js";
 
 const PRICE_STREAM_PATH = "/v1/prices/stream";
 
+// Phase 4 of the tick-pipeline audit -- exported so index.ts's stats
+// route can read it without this module needing its own HTTP route.
+// Counters only (no rolling latency window here, unlike engine/server's
+// FeedStats): this hop doesn't see per-tick timestamps, just connection
+// lifecycle, so "how many times has this reconnected" is the meaningful
+// signal at this layer.
+export const gatewayStats = {
+  wsConnectionsTotal: 0,
+  wsDisconnectionsTotal: 0,
+  ticksForwardedTotal: 0,
+  natsMessagesReceivedTotal: 0,
+};
+
 export async function attachPriceStream(server: Server, natsUrl: string): Promise<void> {
   const nc: NatsConnection = await connect({ servers: natsUrl });
   const sub = nc.subscribe("price.tick.*");
@@ -32,8 +45,15 @@ export async function attachPriceStream(server: Server, natsUrl: string): Promis
 
   wss.on("connection", (ws: WebSocket) => {
     clients.add(ws);
-    ws.on("close", () => clients.delete(ws));
-    ws.on("error", () => clients.delete(ws));
+    gatewayStats.wsConnectionsTotal += 1;
+    ws.on("close", () => {
+      clients.delete(ws);
+      gatewayStats.wsDisconnectionsTotal += 1;
+    });
+    ws.on("error", () => {
+      clients.delete(ws);
+      gatewayStats.wsDisconnectionsTotal += 1;
+    });
   });
 
   server.on("upgrade", (req: IncomingMessage, socket, head) => {
@@ -63,10 +83,12 @@ export async function attachPriceStream(server: Server, natsUrl: string): Promis
   // native WebSocket delivers `event.data` as a string, not a Blob.
   (async () => {
     for await (const msg of sub) {
+      gatewayStats.natsMessagesReceivedTotal += 1;
       const text = Buffer.from(msg.data).toString("utf-8");
       for (const client of clients) {
         if (client.readyState === WebSocket.OPEN) {
           client.send(text);
+          gatewayStats.ticksForwardedTotal += 1;
         }
       }
     }

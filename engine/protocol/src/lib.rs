@@ -51,6 +51,13 @@ pub struct Tick {
     pub symbol: String,
     pub bid: Decimal,
     pub ask: Decimal,
+    // Origin timestamp, ms since epoch, set by the producer at capture
+    // time (mt5-ea/VyXTraderPriceFeed.mq5's OnTimer) -- optional since
+    // not every producer sets it (older EA builds, tests). Used purely
+    // for the market_data::stats latency audit, never for ordering or
+    // business logic.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub t0: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

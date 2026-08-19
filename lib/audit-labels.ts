@@ -45,6 +45,10 @@ const LABELS: Record<string, string> = {
   DEALING_ORDER_REQUOTE_REJECTED: "Client rejected requote",
   DEALING_ORDER_AUTO_ACCEPTED: "Smart Dealer auto-accepted order",
   DEALING_ORDER_AUTO_REJECTED: "Smart Dealer auto-rejected order",
+  GATEWAY_ORDER_PLACED: "Placed order (Gateway)",
+  GATEWAY_PENDING_ORDER_PLACED: "Placed pending order (Gateway)",
+  GATEWAY_ORDER_CANCELLED: "Cancelled order (Gateway)",
+  GATEWAY_POSITION_MODIFIED: "Modified position SL/TP (Gateway)",
   INTERNAL_TRANSFER: "Internal transfer",
 };
 

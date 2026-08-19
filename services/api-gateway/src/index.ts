@@ -8,7 +8,8 @@
 import { createServer } from "node:http";
 import express from "express";
 import ordersRouter from "./routes/orders.js";
-import { attachPriceStream } from "./ws.js";
+import positionsRouter from "./routes/positions.js";
+import { attachPriceStream, gatewayStats } from "./ws.js";
 
 const app = express();
 app.use(express.json());
@@ -17,7 +18,20 @@ app.get("/health", (_req, res) => {
   res.json({ ok: true });
 });
 
+// Phase 4 of the tick-pipeline audit -- same shared-secret convention as
+// engine/server's /internal/feed-stats, read by the Manager Feed Health
+// page (app/manage/(shell)/feed-health).
+app.get("/internal/gateway-stats", (req, res) => {
+  const provided = req.headers["x-internal-secret"];
+  if (provided !== (process.env.INTERNAL_SERVICE_SECRET ?? "")) {
+    res.status(401).json({ error: "unauthorized" });
+    return;
+  }
+  res.json(gatewayStats);
+});
+
 app.use("/v1/orders", ordersRouter);
+app.use("/v1/positions", positionsRouter);
 
 // A plain http.Server (not app.listen's implicit one) so the WebSocket
 // price stream (src/ws.ts) can hook the server's "upgrade" event

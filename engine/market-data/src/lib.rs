@@ -11,6 +11,7 @@ use protocol::Tick;
 pub mod cache;
 pub mod db;
 pub mod ingest;
+pub mod stats;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Timeframe {
@@ -162,7 +163,7 @@ mod tests {
     fn candle_updates_for_tick_covers_every_timeframe() {
         use rust_decimal_macros::dec;
 
-        let tick = Tick { symbol: "EURUSD".into(), bid: dec!(1.10000), ask: dec!(1.10020) };
+        let tick = Tick { symbol: "EURUSD".into(), bid: dec!(1.10000), ask: dec!(1.10020), t0: None };
         let now = Utc.with_ymd_and_hms(2026, 8, 13, 10, 30, 45).unwrap();
         let updates = candle_updates_for_tick(&tick, now);
 
@@ -180,7 +181,7 @@ mod tests {
     fn candle_updates_for_tick_bucket_starts_match_bucket_start_directly() {
         use rust_decimal_macros::dec;
 
-        let tick = Tick { symbol: "EURUSD".into(), bid: dec!(1.10000), ask: dec!(1.10020) };
+        let tick = Tick { symbol: "EURUSD".into(), bid: dec!(1.10000), ask: dec!(1.10020), t0: None };
         let now = Utc.with_ymd_and_hms(2026, 8, 13, 10, 30, 45).unwrap();
         let updates = candle_updates_for_tick(&tick, now);
 

@@ -38,7 +38,12 @@ function decimalString(opts: { positive?: boolean } = {}) {
 const symbol = z.string().min(1, "symbol is required");
 const side = z.enum(["BUY", "SELL"]);
 const volume = decimalString({ positive: true });
-const optionalPrice = decimalString().optional();
+// Accepts a missing key AND an explicit `null` as the same "no value" --
+// engine/server's `Option<Decimal>` fields already deserialize `null` to
+// `None` (plain serde default behavior), so a client explicitly clearing
+// an existing sl_price/tp_price by sending `null` shouldn't be rejected
+// here just because `.optional()` alone only covers "key omitted."
+const optionalPrice = decimalString().nullable().optional();
 
 export const placeMarketOrderSchema = z.object({
   symbol,
@@ -54,6 +59,17 @@ export const placePendingOrderSchema = z.object({
   order_type: z.enum(["LIMIT", "STOP"]),
   volume,
   requested_price: decimalString(),
+  sl_price: optionalPrice,
+  tp_price: optionalPrice,
+});
+
+// current_price is client-supplied here on purpose, same as the existing
+// Next.js path (WebTrader.tsx's editPositionSlTp call) -- it's only used
+// to validate the requested SL/TP against (risk::validate_sl_tp), never
+// as a fill/close price, so there's nothing for a client to gain by
+// lying about it beyond having their own SL/TP request rejected.
+export const modifyPositionSchema = z.object({
+  current_price: decimalString(),
   sl_price: optionalPrice,
   tp_price: optionalPrice,
 });

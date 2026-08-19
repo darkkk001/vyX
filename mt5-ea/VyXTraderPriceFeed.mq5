@@ -155,6 +155,16 @@ void SendDirect(string ticksJson)
 
 void OnTimer()
 {
+   // Origin timestamp for the latency audit (ms since epoch) -- MQL5 has
+   // no direct wall-clock-with-milliseconds call, so this combines
+   // TimeCurrent() (server time, second resolution) with GetTickCount()'s
+   // millisecond-within-the-current-second component. That's an
+   // approximation (GetTickCount is terminal-uptime-based, not
+   // wall-clock), good enough to bound "how much of the total latency is
+   // upstream of this EA" without claiming sub-second wall-clock
+   // precision this platform doesn't expose.
+   long t0 = (long)TimeCurrent() * 1000 + (long)(GetTickCount() % 1000);
+
    string json = "[";
    bool first = true;
    for (int i = 0; i < ArraySize(CanonicalNames); i++)
@@ -164,7 +174,7 @@ void OnTimer()
       double ask = SymbolInfoDouble(BrokerNames[i], SYMBOL_ASK);
       if (bid <= 0 || ask <= 0) continue; // not in Market Watch / wrong name
       if (!first) json += ",";
-      json += StringFormat("{\"symbol\":\"%s\",\"bid\":%.5f,\"ask\":%.5f}", CanonicalNames[i], bid, ask);
+      json += StringFormat("{\"symbol\":\"%s\",\"bid\":%.5f,\"ask\":%.5f,\"t0\":%d}", CanonicalNames[i], bid, ask, t0);
       first = false;
    }
    json += "]";

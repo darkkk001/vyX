@@ -9,13 +9,16 @@
 //! see ../../docs/trading-engine.md's implementation-status note.
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Request, State},
     http::{HeaderMap, StatusCode},
+    middleware::{self, Next},
+    response::Response,
     routing::{get, post},
     Json, Router,
 };
 use futures_util::StreamExt;
 use market_data::cache::TickCache;
+use market_data::stats::{FeedStats, FeedStatsSnapshot};
 use order_management::{
     db, events, CancelOrderOutcome, ModifyPositionOutcome, PlaceMarketOrderOutcome,
     PlaceMarketOrderRequest, PlacePendingOrderOutcome, PlacePendingOrderRequest,
@@ -30,11 +33,65 @@ struct AppState {
     pool: PgPool,
     nats: async_nats::Client,
     price_feed_secret: String,
+    // Distinct from price_feed_secret -- gates the 4 order routes instead
+    // of the MT5 ingest route, checked by require_internal_secret below.
+    // Only services/api-gateway should ever hold this value; per this
+    // server's own module doc, it's designed to be reachable only from
+    // the Gateway, never directly from a browser.
+    internal_service_secret: String,
     // The "RUST MEMORY... current prices" layer — see
     // market_data::cache::TickCache's own doc comment for why this
     // exists. Populated by ingest_price_feed, read by
     // place_market_order/place_pending_order.
     tick_cache: Arc<TickCache>,
+    // Phase 4 latency/health counters -- see market_data::stats's module
+    // doc. Populated by ingest_price_feed, read by the new
+    // /internal/feed-stats route.
+    feed_stats: Arc<FeedStats>,
+}
+
+// Applied via .layer() to every order/position route (main() below) --
+// centralized in one place rather than a per-handler header check (like
+// ingest_price_feed's inline check) specifically so a future new route
+// added to that same sub-router can't forget it. Defense-in-depth, not
+// the primary authorization layer: services/api-gateway is what actually
+// verifies the calling trader's identity and broker ownership before it
+// ever reaches this server (src/auth.ts's requireTraderSession).
+async fn require_internal_secret(
+    State(state): State<Arc<AppState>>,
+    req: Request,
+    next: Next,
+) -> Result<Response, (StatusCode, String)> {
+    let provided = req
+        .headers()
+        .get("x-internal-secret")
+        .and_then(|v| v.to_str().ok());
+    if provided != Some(state.internal_service_secret.as_str()) {
+        return Err((StatusCode::UNAUTHORIZED, "unauthorized".to_string()));
+    }
+    Ok(next.run(req).await)
+}
+
+// Defense-in-depth for place_market_order/place_pending_order: the
+// Gateway already verifies account_id belongs to the calling broker
+// before forwarding (services/api-gateway/src/db.ts's getAccount), but
+// this server shouldn't blindly trust a broker_id/account_id pair it
+// receives -- cancel_order/modify_position_sl_tp already check this
+// themselves (order_management::lib.rs, "order.account_id != account_id"
+// / "position.account_id != account_id"), this closes the same gap for
+// the two routes that don't go through those functions' own ownership
+// check.
+async fn verify_account_belongs_to_broker(
+    pool: &PgPool,
+    account_id: &str,
+    broker_id: &str,
+) -> Result<bool, sqlx::Error> {
+    let row: Option<(String,)> =
+        sqlx::query_as(r#"SELECT "brokerId" FROM "Account" WHERE id = $1"#)
+            .bind(account_id)
+            .fetch_optional(pool)
+            .await?;
+    Ok(row.map(|(broker,)| broker == broker_id).unwrap_or(false))
 }
 
 #[derive(Debug, Deserialize)]
@@ -93,6 +150,16 @@ async fn place_market_order(
     State(state): State<Arc<AppState>>,
     Json(body): Json<PlaceMarketOrderBody>,
 ) -> Result<Json<PlaceMarketOrderResponse>, (StatusCode, String)> {
+    if !verify_account_belongs_to_broker(&state.pool, &body.account_id, &body.broker_id)
+        .await
+        .map_err(|err| {
+            tracing::error!(?err, "verify_account_belongs_to_broker failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
+        })?
+    {
+        return Err((StatusCode::FORBIDDEN, "account does not belong to broker".to_string()));
+    }
+
     let req = PlaceMarketOrderRequest {
         broker_id: body.broker_id,
         account_id: body.account_id,
@@ -155,6 +222,16 @@ async fn place_pending_order(
     State(state): State<Arc<AppState>>,
     Json(body): Json<PlacePendingOrderBody>,
 ) -> Result<Json<PlacePendingOrderResponse>, (StatusCode, String)> {
+    if !verify_account_belongs_to_broker(&state.pool, &body.account_id, &body.broker_id)
+        .await
+        .map_err(|err| {
+            tracing::error!(?err, "verify_account_belongs_to_broker failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
+        })?
+    {
+        return Err((StatusCode::FORBIDDEN, "account does not belong to broker".to_string()));
+    }
+
     let req = PlacePendingOrderRequest {
         broker_id: body.broker_id,
         account_id: body.account_id,
@@ -313,17 +390,19 @@ async fn ingest_price_feed(
         return Err((StatusCode::UNAUTHORIZED, "unauthorized".to_string()));
     }
 
-    let ticks: Vec<Tick> = body
-        .into_vec()
-        .into_iter()
-        .filter(|t| !t.symbol.is_empty())
-        .collect();
+    let all = body.into_vec();
+    let total = all.len();
+    let ticks: Vec<Tick> = all.into_iter().filter(|t| !t.symbol.is_empty()).collect();
+    let dropped = total - ticks.len();
+    if dropped > 0 {
+        state.feed_stats.record_dropped_invalid(dropped as u64);
+    }
     if ticks.is_empty() {
         return Err((StatusCode::BAD_REQUEST, "no valid ticks in body".to_string()));
     }
 
     let count = ticks.len();
-    market_data::ingest::ingest_ticks(&state.pool, &state.nats, &state.tick_cache, &ticks)
+    market_data::ingest::ingest_ticks(&state.pool, &state.nats, &state.tick_cache, &state.feed_stats, &ticks)
         .await
         .map_err(|err| {
             tracing::error!(?err, "ingest_ticks failed");
@@ -331,6 +410,15 @@ async fn ingest_price_feed(
         })?;
 
     Ok(Json(PriceFeedResponse { ok: true, count }))
+}
+
+/// Latency/health snapshot for the tick pipeline — Phase 4 of the audit.
+/// Same x-internal-secret guard as the order routes (this server's
+/// AppState only has one such guard today; a dedicated read-only stats
+/// credential would be a reasonable future split if this ever needs to
+/// be exposed more broadly than "whoever can already place orders").
+async fn feed_stats(State(state): State<Arc<AppState>>) -> Json<FeedStatsSnapshot> {
+    Json(state.feed_stats.snapshot())
 }
 
 /// Subscribes once to the Market Data Core's tick stream
@@ -386,6 +474,8 @@ async fn main() {
     let nats_url = std::env::var("NATS_URL").unwrap_or_else(|_| "nats://127.0.0.1:4222".to_string());
     let port: u16 = std::env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(8081);
     let price_feed_secret = std::env::var("PRICE_FEED_SECRET").expect("PRICE_FEED_SECRET must be set");
+    let internal_service_secret =
+        std::env::var("INTERNAL_SERVICE_SECRET").expect("INTERNAL_SERVICE_SECRET must be set");
     // sqlx's own default (10) was silently the concurrency ceiling for
     // order placement -- see db::connect_pool's doc comment.
     let db_pool_max_connections: u32 = std::env::var("DATABASE_POOL_MAX_CONNECTIONS")
@@ -435,15 +525,33 @@ async fn main() {
     order_management::swap::spawn(pool.clone(), std::time::Duration::from_secs(swap_poll_interval_secs));
 
     let tick_cache = Arc::new(TickCache::new());
-    let state = Arc::new(AppState { pool, nats, price_feed_secret, tick_cache });
+    let feed_stats_registry = Arc::new(FeedStats::new());
+    let state = Arc::new(AppState {
+        pool,
+        nats,
+        price_feed_secret,
+        internal_service_secret,
+        tick_cache,
+        feed_stats: feed_stats_registry,
+    });
 
-    let app = Router::new()
-        .route("/health", get(health))
+    // Order/position/stats routes require x-internal-secret
+    // (require_internal_secret above) -- only services/api-gateway should
+    // ever call these. Kept as its own sub-router + .layer() (applies to
+    // every route already added to it) rather than a per-handler check,
+    // so a future route added here can't forget the guard.
+    let order_routes = Router::new()
         .route("/v1/orders/market", post(place_market_order))
         .route("/v1/orders/pending", post(place_pending_order))
         .route("/v1/orders/{order_id}/cancel", post(cancel_order))
         .route("/v1/positions/{position_id}/modify", post(modify_position))
+        .route("/internal/feed-stats", get(feed_stats))
+        .layer(middleware::from_fn_with_state(state.clone(), require_internal_secret));
+
+    let app = Router::new()
+        .route("/health", get(health))
         .route("/internal/price-feed", post(ingest_price_feed))
+        .merge(order_routes)
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", port))

@@ -56,6 +56,7 @@ mod tests {
             symbol: "EURUSD".into(),
             bid: dec!(1.10000),
             ask: dec!(1.10020),
+            t0: None,
         }
     }
 

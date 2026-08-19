@@ -14,6 +14,7 @@
 
 import { Pool } from "pg";
 import { Decimal } from "decimal.js";
+import { randomUUID } from "node:crypto";
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 
@@ -121,6 +122,29 @@ export async function getOpenPositionsSummary(
 // So the account's true current balance is Account.balance PLUS every
 // ledger entry recorded since — both this Gateway and the Rust monitor
 // compute "effective balance" the same way, from the same two sources.
+// Writes into the same "AuditLog" table every other mutation in this app
+// uses (lib/audit-labels.ts's LABELS map on the Next.js side) -- rather
+// than build a second, Rust-side audit path, the Gateway (which already
+// holds this Postgres connection) writes the row itself after a
+// successful forward to engine/server. `actorAdminId` is always null
+// here (these are trader-initiated actions, not admin ones). `id` is a
+// random UUID rather than Prisma's own cuid() -- this table's `id`
+// column has no format constraint, just uniqueness, and generating a
+// real cuid here would mean pulling in a cuid library for one column.
+export async function writeAuditLog(entry: {
+  brokerId: string;
+  action: string;
+  entityType: string;
+  entityId: string;
+  newValue: Record<string, unknown>;
+}): Promise<void> {
+  await pool.query(
+    `INSERT INTO "AuditLog" (id, "brokerId", "actorAdminId", action, "entityType", "entityId", "newValue", "createdAt")
+     VALUES ($1, $2, NULL, $3, $4, $5, $6, now())`,
+    [randomUUID(), entry.brokerId, entry.action, entry.entityType, entry.entityId, JSON.stringify(entry.newValue)]
+  );
+}
+
 export async function getLedgerSum(accountId: string): Promise<Decimal> {
   const { rows } = await pool.query(
     `SELECT COALESCE(SUM(amount), 0) AS total FROM ledger_entries WHERE account_id = $1`,
