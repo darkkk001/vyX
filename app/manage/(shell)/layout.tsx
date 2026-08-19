@@ -50,9 +50,10 @@ export default async function ManageShellLayout({ children }: { children: React.
       items: [
         { href: "/manage/positions", label: "Live trading" },
         { href: "/manage/dealing", label: "Dealing queue" },
+        { href: "/manage/deals", label: "Deals" },
         { href: "/manage/symbols", label: "Symbols" },
         { href: "/manage/groups", label: "Client groups" },
-        ...(isBrokerAdmin ? [{ href: "/manage/risk", label: "Risk rules" }] : []),
+        ...(isBrokerAdmin ? [{ href: "/manage/risk", label: "Risk rules" }, { href: "/manage/emergency", label: "Emergency controls" }] : []),
       ],
     },
     {

@@ -27,6 +27,18 @@ export default function ReportsView() {
             >
               Client report (CSV)
             </a>
+            <a
+              href="/api/manage/reports/ib"
+              className="inline-flex items-center rounded-lg border border-[var(--border-strong)] bg-[var(--bg-3)] px-3.5 py-2 text-[11.5px] font-medium text-[var(--text-1)] hover:border-[var(--text-3)]"
+            >
+              IB report (CSV)
+            </a>
+            <a
+              href="/api/manage/reports/risk"
+              className="inline-flex items-center rounded-lg border border-[var(--border-strong)] bg-[var(--bg-3)] px-3.5 py-2 text-[11.5px] font-medium text-[var(--text-1)] hover:border-[var(--text-3)]"
+            >
+              Risk report (CSV)
+            </a>
           </td>
         </tr>
       </tbody>

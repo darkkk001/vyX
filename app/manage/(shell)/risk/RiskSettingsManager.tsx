@@ -11,7 +11,6 @@ import { Alert } from "@/components/ui/Alert";
 import { Modal, ModalActions } from "@/components/ui/Modal";
 
 export type RiskSettings = {
-  tradingHalted: boolean;
   dealingMode: boolean;
   totalExposureLimit: string | null;
   maxOpenPositionsPerAccount: number | null;
@@ -30,11 +29,6 @@ async function patchRisk(body: Record<string, unknown>) {
 
 export default function RiskSettingsManager({ initial }: { initial: RiskSettings }) {
   const router = useRouter();
-  const [tradingHalted, setTradingHalted] = useState(initial.tradingHalted);
-  const [confirmingHalt, setConfirmingHalt] = useState(false);
-  const [haltBusy, setHaltBusy] = useState(false);
-  const [haltError, setHaltError] = useState<string | null>(null);
-
   const [dealingMode, setDealingMode] = useState(initial.dealingMode);
   const [confirmingDealing, setConfirmingDealing] = useState(false);
   const [dealingBusy, setDealingBusy] = useState(false);
@@ -47,21 +41,6 @@ export default function RiskSettingsManager({ initial }: { initial: RiskSettings
   const [limitsSaving, setLimitsSaving] = useState(false);
   const [limitsSaved, setLimitsSaved] = useState(false);
   const [limitsError, setLimitsError] = useState<string | null>(null);
-
-  async function toggleHalt() {
-    setHaltBusy(true);
-    setHaltError(null);
-    try {
-      const result = await patchRisk({ tradingHalted: !tradingHalted });
-      setTradingHalted(result.tradingHalted);
-      setConfirmingHalt(false);
-      router.refresh();
-    } catch (e) {
-      setHaltError(e instanceof Error ? e.message : "update failed");
-    } finally {
-      setHaltBusy(false);
-    }
-  }
 
   async function toggleDealingMode() {
     setDealingBusy(true);
@@ -101,47 +80,6 @@ export default function RiskSettingsManager({ initial }: { initial: RiskSettings
 
   return (
     <div className="flex flex-col gap-6">
-      <Card title="Emergency trading halt">
-        <div className="flex items-center justify-between gap-4">
-          <div>
-            <Badge tone={tradingHalted ? "danger" : "success"}>
-              {tradingHalted ? "HALTED" : "Trading active"}
-            </Badge>
-            <p className="mt-2 text-sm text-[var(--text-3)]">
-              {tradingHalted
-                ? "All new orders and manual position opens are being rejected for this broker."
-                : "New orders are being accepted normally."}
-            </p>
-          </div>
-          <Button size="sm" variant={tradingHalted ? "primary" : "danger"} onClick={() => setConfirmingHalt(true)}>
-            {tradingHalted ? "Resume trading" : "Halt trading"}
-          </Button>
-        </div>
-        {haltError ? (
-          <div className="mt-3">
-            <Alert tone="danger">{haltError}</Alert>
-          </div>
-        ) : null}
-      </Card>
-
-      <Modal open={confirmingHalt} onClose={() => setConfirmingHalt(false)} title={tradingHalted ? "Confirm resume trading" : "Confirm halt trading"}>
-        <div className="flex flex-col gap-3">
-          <p className="text-sm text-[var(--text-2)]">
-            {tradingHalted
-              ? "New orders and manual position opens will be accepted again immediately."
-              : "New orders and manual position opens will be rejected for this broker until resumed. Existing open positions are untouched."}
-          </p>
-          <ModalActions>
-            <Button variant="ghost" onClick={() => setConfirmingHalt(false)}>
-              Cancel
-            </Button>
-            <Button variant="danger" disabled={haltBusy} onClick={toggleHalt}>
-              {haltBusy ? "Working..." : tradingHalted ? "Confirm: resume trading" : "Confirm: halt trading"}
-            </Button>
-          </ModalActions>
-        </div>
-      </Modal>
-
       <Card title="Dealing mode">
         <div className="flex items-center justify-between gap-4">
           <div>
