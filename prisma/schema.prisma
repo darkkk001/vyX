@@ -217,6 +217,8 @@ model Broker {
   groups          Group[]
   leads           Lead[]
   notifications   Notification[]
+  liquidityProviders LiquidityProvider[]
+  lpRoutingRules  LpRoutingRule[]
 }
 
 model AdminUser {
@@ -440,6 +442,7 @@ model Symbol {
   brokerSymbols BrokerSymbol[]
   orders        Order[]
   positions     Position[]
+  lpRoutingRules LpRoutingRule[]
 }
 
 /// Latest tick per symbol, pushed by an MT5 EA bridge (see
@@ -677,4 +680,62 @@ model Notification {
 
   @@index([brokerId])
   @@index([brokerId, readAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Liquidity -- pre-integration record-keeping only. No real LP FIX/API
+// connection exists anywhere in this app (blocked on an actual LP
+// relationship -- see docs/architecture.md's Phase 5 status). `status` is
+// always admin-set, never auto-detected, since nothing can actually
+// detect a live connection yet. Deliberately not a credentials vault --
+// no API-key/secret field; that's a real security feature (encryption at
+// rest, access control) out of scope here, and a plain editable text
+// field would be worse than not having it.
+// ─────────────────────────────────────────────────────────────────────────
+
+enum LpStatus {
+  PROSPECTIVE
+  NEGOTIATING
+  CONTRACTED
+  CONNECTED
+}
+
+model LiquidityProvider {
+  id           String   @id @default(cuid())
+  brokerId     String
+  broker       Broker   @relation(fields: [brokerId], references: [id])
+  name         String
+  contactName  String?
+  contactEmail String?
+  contactPhone String?
+  protocol     String? // free text, e.g. "FIX 4.4", "REST API" -- no fixed taxonomy this early
+  status       LpStatus @default(PROSPECTIVE)
+  notes        String?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  routingRules LpRoutingRule[]
+
+  @@index([brokerId])
+}
+
+// Intended routing, not live routing -- no execution path reads this yet
+// (there is no real LP connection to route to). Recorded now so the
+// broker's plan exists before the real integration lands.
+model LpRoutingRule {
+  id                  String            @id @default(cuid())
+  brokerId            String
+  broker              Broker            @relation(fields: [brokerId], references: [id])
+  liquidityProviderId String
+  liquidityProvider   LiquidityProvider @relation(fields: [liquidityProviderId], references: [id])
+  symbolId            String? // null = broker-wide default rule
+  symbol              Symbol?           @relation(fields: [symbolId], references: [id])
+  priority            Int               @default(1) // 1 = primary, 2 = backup, ...
+  notes               String?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  @@index([brokerId])
+  @@index([liquidityProviderId])
 }

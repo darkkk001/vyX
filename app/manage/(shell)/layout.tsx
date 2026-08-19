@@ -67,6 +67,19 @@ export default async function ManageShellLayout({ children }: { children: React.
         ...(isBrokerAdmin ? [{ href: "/manage/risk", label: "Risk rules" }, { href: "/manage/emergency", label: "Emergency controls" }] : []),
       ],
     },
+    ...(isBrokerAdmin
+      ? [
+          {
+            label: "Liquidity",
+            items: [
+              { href: "/manage/liquidity", label: "LPs" },
+              { href: "/manage/liquidity-routing", label: "Routing" },
+              { href: "/manage/liquidity-latency", label: "Latency" },
+              { href: "/manage/liquidity-execution", label: "Execution quality" },
+            ],
+          } satisfies AdminNavGroup,
+        ]
+      : []),
     {
       label: "Organization",
       items: [

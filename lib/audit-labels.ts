@@ -8,6 +8,8 @@ const LABELS: Record<string, string> = {
   ACCOUNT_CREATED: "Created account",
   ADMIN_USER_STATUS_CHANGED: "Changed admin status",
   PERMISSIONS_CHANGED: "Changed delegated permissions",
+  LP_CREATED: "Added liquidity provider",
+  LP_STATUS_CHANGED: "Changed liquidity provider status",
   ACCOUNT_GROUP_CHANGED: "Changed account group",
   LEVERAGE_CHANGE: "Changed leverage",
   ACCOUNT_STATUS_CHANGED: "Changed account status",

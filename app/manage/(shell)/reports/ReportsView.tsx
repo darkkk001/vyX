@@ -39,6 +39,12 @@ export default function ReportsView() {
             >
               Risk report (CSV)
             </a>
+            <a
+              href="/api/manage/reports/lp"
+              className="inline-flex items-center rounded-lg border border-[var(--border-strong)] bg-[var(--bg-3)] px-3.5 py-2 text-[11.5px] font-medium text-[var(--text-1)] hover:border-[var(--text-3)]"
+            >
+              LP report (CSV)
+            </a>
           </td>
         </tr>
       </tbody>
