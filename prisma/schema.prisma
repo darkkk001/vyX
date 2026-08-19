@@ -186,6 +186,11 @@ model Broker {
   // = no limit -- see lib/risk.ts's checkBrokerExposure.
   totalExposureLimit Decimal? @db.Decimal(18, 2)
 
+  // Applied by POST /api/manage/accounts when the admin doesn't specify
+  // currency/leverage explicitly -- System Settings page.
+  defaultAccountCurrency String @default("USD")
+  defaultAccountLeverage Int    @default(100)
+
   // Branding — resolved at request time, never hardcoded or baked into a build.
   logoUrl      String?
   primaryColor String? // CSS custom property override, e.g. "#1e8a5f"
@@ -211,6 +216,7 @@ model Broker {
   auditLogs       AuditLog[]
   groups          Group[]
   leads           Lead[]
+  notifications   Notification[]
 }
 
 model AdminUser {
@@ -644,4 +650,25 @@ model AuditLog {
 
   @@index([brokerId])
   @@index([entityType, entityId])
+}
+
+// In-app only (no email/SMS infra exists anywhere in this app) --
+// broker-scoped, shared read state (any staff member marking one read
+// marks it for the whole team, same "one dealing desk" mental model
+// the rest of Manager already assumes). See lib/notifications.ts.
+model Notification {
+  id         String    @id @default(cuid())
+  brokerId   String
+  broker     Broker    @relation(fields: [brokerId], references: [id])
+  type       String // "NEW_LEAD" | "KYC_SUBMITTED" | "FUNDS_REQUEST" | "DEALING_ORDER_PENDING"
+  title      String
+  body       String
+  entityType String?
+  entityId   String?
+  readAt     DateTime? @db.Timestamptz(3)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  @@index([brokerId])
+  @@index([brokerId, readAt])
 }

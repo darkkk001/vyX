@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { put } from "@vercel/blob";
 import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
+import { createNotification } from "@/lib/notifications";
 
 const ALLOWED_TYPES = new Set(["image/jpeg", "image/png", "application/pdf"]);
 const MAX_SIZE_BYTES = 10 * 1024 * 1024; // 10MB
@@ -115,6 +116,16 @@ export async function POST(request: NextRequest) {
       reviewedByAdminId: null,
       reviewedAt: null,
     },
+  });
+
+  const account = await prisma.account.findUnique({ where: { id: session.accountId }, select: { accountNumber: true, fullName: true } });
+  await createNotification(prisma, {
+    brokerId: session.brokerId,
+    type: "KYC_SUBMITTED",
+    title: "New KYC submission",
+    body: `${account?.fullName ?? session.accountId} (${account?.accountNumber ?? ""}) submitted ${documentType}`,
+    entityType: "KycRecord",
+    entityId: record.id,
   });
 
   return NextResponse.json({ status: record.status, documentType: record.documentType }, { status: 201 });

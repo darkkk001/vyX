@@ -25,6 +25,57 @@ export type IbRelationshipRow = {
 
 export type AccountOption = { id: string; accountNumber: string; fullName: string };
 
+// Multi-level chains are already representable in the data (any account
+// can be an IB for others while also being someone else's client -- see
+// app/manage/(shell)/ib/page.tsx's own comment) -- this just visualizes
+// the existing flat rows as a tree instead of computing anything new.
+// Roots = ibAccountId values that never appear as a clientAccountId.
+// visited guards against a pathological loop (nothing in the schema
+// forbids one, even though normal use never creates it).
+function HierarchyView({ rows }: { rows: IbRelationshipRow[] }) {
+  const byIb = new Map<string, IbRelationshipRow[]>();
+  for (const r of rows) {
+    if (!byIb.has(r.ibAccountId)) byIb.set(r.ibAccountId, []);
+    byIb.get(r.ibAccountId)!.push(r);
+  }
+  const clientIds = new Set(rows.map((r) => r.clientAccountId));
+  const roots = [...byIb.keys()].filter((ibId) => !clientIds.has(ibId));
+
+  function renderNode(ibId: string, label: string, visited: Set<string>, depth: number): React.ReactNode {
+    if (visited.has(ibId)) return null;
+    const next = new Set(visited).add(ibId);
+    const children = byIb.get(ibId) ?? [];
+    return (
+      <div key={ibId} style={{ marginLeft: depth * 20 }} className="mt-1.5">
+        <div className="text-sm font-semibold text-[var(--text-1)]">{label}</div>
+        {children.map((c) => (
+          <div key={c.id} className="mt-1" style={{ marginLeft: 20 }}>
+            <div className="text-sm text-[var(--text-2)]">
+              → {c.clientAccountNumber} — {c.clientAccountFullName}{" "}
+              <span className="text-xs text-[var(--text-3)]">
+                ({c.commissionType === "PER_LOT" ? `$${c.commissionRate}/lot` : `${c.commissionRate}%`}, pending {c.pendingCommission})
+              </span>
+            </div>
+            {byIb.has(c.clientAccountId) ? renderNode(c.clientAccountId, `${c.clientAccountNumber} — ${c.clientAccountFullName} (as IB)`, next, depth + 2) : null}
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  if (roots.length === 0) {
+    return <p className="text-sm text-[var(--text-3)]">No IB relationships.</p>;
+  }
+  return (
+    <div className="flex flex-col gap-3">
+      {roots.map((ibId) => {
+        const first = byIb.get(ibId)![0];
+        return renderNode(ibId, `${first.ibAccountNumber} — ${first.ibAccountFullName}`, new Set(), 0);
+      })}
+    </div>
+  );
+}
+
 // Create-form + editable table, same shape as every other Manager
 // client component this session (useState per field, fetch+router.refresh
 // on success).
@@ -38,6 +89,7 @@ export default function IbRelationshipsManager({
   clientOptions: AccountOption[];
 }) {
   const router = useRouter();
+  const [view, setView] = useState<"flat" | "hierarchy">("flat");
 
   // --- Create form ---
   const [ibAccountId, setIbAccountId] = useState(ibOptions[0]?.id ?? "");
@@ -162,7 +214,24 @@ export default function IbRelationshipsManager({
         </form>
       </Card>
 
-      <Card title="Relationships">
+      <Card
+        title="Relationships"
+        action={
+          <div className="flex gap-1.5">
+            <Button size="sm" variant={view === "flat" ? "primary" : "ghost"} onClick={() => setView("flat")}>
+              Flat list
+            </Button>
+            <Button size="sm" variant={view === "hierarchy" ? "primary" : "ghost"} onClick={() => setView("hierarchy")}>
+              Hierarchy
+            </Button>
+          </div>
+        }
+      >
+        {view === "hierarchy" ? (
+          <div className="p-[18px]">
+            <HierarchyView rows={initialRows} />
+          </div>
+        ) : (
         <Table>
           <TableHead>
             <TableHeaderCell>IB</TableHeaderCell>
@@ -234,6 +303,7 @@ export default function IbRelationshipsManager({
             )}
           </TableBody>
         </Table>
+        )}
       </Card>
 
       <Modal open={payTarget !== null} onClose={() => setPayTarget(null)} title="Confirm commission payout">

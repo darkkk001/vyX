@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
+import { createNotification } from "@/lib/notifications";
 
 // Deposit/withdrawal requests -- see components/webtrader/WebTrader.tsx's
 // funds modal, previously stubbed with a "not yet available" toast.
@@ -85,6 +86,15 @@ export async function POST(request: NextRequest) {
       balanceAfter: account.balance,
       note,
     },
+  });
+
+  await createNotification(prisma, {
+    brokerId: session.brokerId,
+    type: "FUNDS_REQUEST",
+    title: `New ${type.toLowerCase()} request`,
+    body: `${account.accountNumber} requested ${requestedAmount.toString()}${note ? ` — ${note}` : ""}`,
+    entityType: "Transaction",
+    entityId: created.id,
   });
 
   return NextResponse.json(

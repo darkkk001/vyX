@@ -65,6 +65,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
   const brokerId = session!.brokerId!;
+  const broker = await prisma.broker.findUniqueOrThrow({ where: { id: brokerId } });
 
   const body = await request.json().catch(() => null);
   const fullName = typeof body?.fullName === "string" ? body.fullName.trim() : "";
@@ -79,7 +80,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "password must be at least 8 characters" }, { status: 400 });
   }
 
-  const currency = typeof body?.currency === "string" && body.currency.trim() ? body.currency.trim().toUpperCase() : "USD";
+  const currency = typeof body?.currency === "string" && body.currency.trim() ? body.currency.trim().toUpperCase() : broker.defaultAccountCurrency;
   const country = typeof body?.country === "string" && body.country.trim() ? body.country.trim() : null;
   const phone = typeof body?.phone === "string" && body.phone.trim() ? body.phone.trim() : null;
   let dateOfBirth: Date | null = null;
@@ -102,7 +103,7 @@ export async function POST(request: NextRequest) {
 
   // An explicit leverage always wins over a group's copied-down value,
   // same rule as PATCH .../[id]/route.ts.
-  let leverage = group?.leverage ?? 100;
+  let leverage = group?.leverage ?? broker.defaultAccountLeverage;
   if (body?.leverage != null) {
     const n = Number.isFinite(Number(body.leverage)) ? Math.trunc(Number(body.leverage)) : NaN;
     if (!Number.isFinite(n) || n <= 0) {

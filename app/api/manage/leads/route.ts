@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
+import { createNotification } from "@/lib/notifications";
 
 async function requireManager() {
   const session = await getAdminSession();
@@ -60,6 +61,14 @@ export async function POST(request: NextRequest) {
 
   const lead = await prisma.lead.create({
     data: { brokerId: session.brokerId!, fullName, email, phone, country, source, notes },
+  });
+  await createNotification(prisma, {
+    brokerId: session.brokerId!,
+    type: "NEW_LEAD",
+    title: "New lead",
+    body: `${fullName} (${email})${source ? ` via ${source}` : ""}`,
+    entityType: "Lead",
+    entityId: lead.id,
   });
 
   return NextResponse.json({ id: lead.id }, { status: 201 });

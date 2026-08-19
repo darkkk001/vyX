@@ -18,15 +18,22 @@ export default async function ManageShellLayout({ children }: { children: React.
     redirect("/manage/login");
   }
 
-  const [broker, admin] = await Promise.all([
+  const [broker, admin, unreadNotifications] = await Promise.all([
     prisma.broker.findUnique({ where: { id: session!.brokerId! }, select: { name: true, primaryColor: true } }),
     prisma.adminUser.findUnique({ where: { id: session!.adminId }, select: { email: true } }),
+    prisma.notification.count({ where: { brokerId: session!.brokerId!, readAt: null } }),
   ]);
 
   const isBrokerAdmin = session!.role === "BROKER_ADMIN";
 
   const navGroups: AdminNavGroup[] = [
-    { label: "Overview", items: [{ href: "/manage/dashboard", label: "Dashboard" }] },
+    {
+      label: "Overview",
+      items: [
+        { href: "/manage/dashboard", label: "Dashboard" },
+        { href: "/manage/notifications", label: "Notifications", ...(unreadNotifications > 0 ? { badge: unreadNotifications } : {}) },
+      ],
+    },
     {
       label: "Clients",
       items: [
@@ -42,11 +49,12 @@ export default async function ManageShellLayout({ children }: { children: React.
             items: [
               { href: "/manage/funds", label: "Deposits & withdrawals" },
               { href: "/manage/transfers", label: "Internal transfers" },
+              { href: "/manage/wallets", label: "Wallets" },
               { href: "/manage/ib", label: "IB & affiliates" },
             ],
           } satisfies AdminNavGroup,
         ]
-      : []),
+      : [{ label: "Finance", items: [{ href: "/manage/wallets", label: "Wallets" }] } satisfies AdminNavGroup]),
     {
       label: "Trading",
       items: [
@@ -65,6 +73,7 @@ export default async function ManageShellLayout({ children }: { children: React.
         { href: "/manage/reports", label: "Reports" },
         ...(isBrokerAdmin ? [{ href: "/manage/team", label: "Staff & roles" }] : []),
         { href: "/manage/audit", label: "Audit log" },
+        ...(isBrokerAdmin ? [{ href: "/manage/settings", label: "System settings" }] : []),
       ],
     },
   ];

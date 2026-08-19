@@ -3,6 +3,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
 import { validateSlTp } from "@/lib/trading";
+import { createNotification } from "@/lib/notifications";
 import {
   checkTradingHalted,
   checkSymbolTradingMode,
@@ -137,6 +138,14 @@ export async function POST(request: NextRequest) {
           idempotencyKey,
           status: "PENDING",
         },
+      });
+      await createNotification(prisma, {
+        brokerId: session.brokerId,
+        type: "DEALING_ORDER_PENDING",
+        title: "Order awaiting dealer review",
+        body: `${account.accountNumber} — ${side} ${volume.toString()} ${symbolName}`,
+        entityType: "Order",
+        entityId: order.id,
       });
       return NextResponse.json({ order }, { status: 201 });
     }
