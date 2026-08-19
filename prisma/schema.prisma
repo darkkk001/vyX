@@ -254,6 +254,15 @@ model Account {
   groupId       String?
   group         Group?        @relation(fields: [groupId], references: [id])
 
+  // Basic identity/KYC fields -- null for every account that existed
+  // before this feature (there was previously no way to enter any of
+  // this: no self-registration flow, only prisma/seed.ts). Set at
+  // account-creation time via app/api/manage/accounts POST; not
+  // (currently) editable afterward.
+  country     String?
+  phone       String?
+  dateOfBirth DateTime? @db.Date
+
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
 

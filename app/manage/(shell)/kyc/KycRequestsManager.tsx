@@ -16,6 +16,8 @@ export type KycRequestRow = {
   rejectionReason: string | null;
   accountNumber: string;
   accountFullName: string;
+  accountCountry: string | null;
+  accountPhone: string | null;
   createdAt: string;
 };
 
@@ -66,7 +68,11 @@ export default function KycRequestsManager({ initialRows }: { initialRows: KycRe
               <TableRow key={row.id}>
                 <TableCell primary>
                   <span className="font-mono">{row.accountNumber}</span>
-                  <div className="text-xs font-normal text-[var(--text-3)]">{row.accountFullName}</div>
+                  <div className="text-xs font-normal text-[var(--text-3)]">
+                    {row.accountFullName}
+                    {row.accountCountry ? ` — ${row.accountCountry}` : ""}
+                    {row.accountPhone ? ` — ${row.accountPhone}` : ""}
+                  </div>
                 </TableCell>
                 <TableCell>{row.documentType}</TableCell>
                 <TableCell>

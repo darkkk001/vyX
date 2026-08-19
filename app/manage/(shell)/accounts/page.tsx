@@ -14,7 +14,7 @@ export default async function ManagerAccountsPage() {
   const [accounts, groups] = await Promise.all([
     prisma.account.findMany({
       where: { brokerId },
-      include: { group: { select: { id: true, name: true } } },
+      include: { group: { select: { id: true, name: true } }, kycRecord: { select: { status: true } } },
       orderBy: { accountNumber: "asc" },
     }),
     prisma.group.findMany({ where: { brokerId }, select: { id: true, name: true }, orderBy: { name: "asc" } }),
@@ -34,6 +34,8 @@ export default async function ManagerAccountsPage() {
     groupId: a.groupId,
     groupName: a.group?.name ?? null,
     maxDailyLoss: a.maxDailyLoss ? a.maxDailyLoss.toString() : null,
+    country: a.country,
+    kycStatus: a.kycRecord?.status ?? null,
   }));
 
   const groupOptions: GroupOption[] = groups.map((g) => ({ id: g.id, name: g.name }));

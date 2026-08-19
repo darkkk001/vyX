@@ -24,11 +24,14 @@ export type AccountRow = {
   groupId: string | null;
   groupName: string | null;
   maxDailyLoss: string | null;
+  country: string | null;
+  kycStatus: "PENDING" | "APPROVED" | "REJECTED" | null;
 };
 
 export type GroupOption = { id: string; name: string };
 
 const statusTone = { ACTIVE: "success", SUSPENDED: "warning", CLOSED: "neutral" } as const;
+const kycTone = { PENDING: "warning", APPROVED: "success", REJECTED: "danger" } as const;
 
 // Group reassignment is available to both MANAGER and BROKER_ADMIN
 // (matches app/api/manage/accounts/[id]/route.ts's per-field permission
@@ -55,6 +58,47 @@ export default function AccountsManager({
   const [adjustAmount, setAdjustAmount] = useState("");
   const [adjustNote, setAdjustNote] = useState("");
   const [adjustError, setAdjustError] = useState<string | null>(null);
+
+  const emptyNewAccount = {
+    fullName: "", email: "", password: "", accountType: "DEMO" as "DEMO" | "LIVE",
+    currency: "USD", groupId: "", leverage: "100", initialBalance: "0",
+    country: "", phone: "", dateOfBirth: "",
+  };
+  const [addOpen, setAddOpen] = useState(false);
+  const [newAccount, setNewAccount] = useState(emptyNewAccount);
+  const [addBusy, setAddBusy] = useState(false);
+  const [addError, setAddError] = useState<string | null>(null);
+  const [createdAccount, setCreatedAccount] = useState<{ accountNumber: string; password: string } | null>(null);
+
+  function openAddModal() {
+    setNewAccount(emptyNewAccount);
+    setAddError(null);
+    setCreatedAccount(null);
+    setAddOpen(true);
+  }
+
+  async function submitNewAccount() {
+    setAddBusy(true);
+    setAddError(null);
+    const response = await fetch("/api/manage/accounts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...newAccount,
+        groupId: newAccount.groupId || undefined,
+        leverage: newAccount.groupId ? undefined : Number(newAccount.leverage),
+      }),
+    });
+    setAddBusy(false);
+    if (!response.ok) {
+      const b = await response.json().catch(() => ({}));
+      setAddError(b.error ?? "failed to create account");
+      return;
+    }
+    const created = await response.json();
+    setCreatedAccount({ accountNumber: created.accountNumber, password: created.password });
+    router.refresh();
+  }
 
   const filtered = rows.filter((r) => {
     const q = search.trim().toLowerCase();
@@ -140,17 +184,22 @@ export default function AccountsManager({
 
   return (
     <div className="flex flex-col gap-4">
-      <Input
-        type="text"
-        placeholder="Search by account number, name, or email..."
-        value={search}
-        onChange={(e) => setSearch(e.target.value)}
-        className="max-w-sm"
-      />
+      <div className="flex items-center justify-between gap-3">
+        <Input
+          type="text"
+          placeholder="Search by account number, name, or email..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="max-w-sm"
+        />
+        {canManageFinance ? <Button onClick={openAddModal}>Add account</Button> : null}
+      </div>
       <Table>
         <TableHead>
           <TableHeaderCell>Account</TableHeaderCell>
           <TableHeaderCell>Type</TableHeaderCell>
+          <TableHeaderCell>Country</TableHeaderCell>
+          <TableHeaderCell>KYC</TableHeaderCell>
           <TableHeaderCell>Group</TableHeaderCell>
           <TableHeaderCell align="right">Leverage</TableHeaderCell>
           <TableHeaderCell align="right">Balance</TableHeaderCell>
@@ -163,7 +212,7 @@ export default function AccountsManager({
         </TableHead>
         <TableBody>
           {filtered.length === 0 ? (
-            <TableEmptyState colSpan={9}>No accounts match.</TableEmptyState>
+            <TableEmptyState colSpan={11}>No accounts match.</TableEmptyState>
           ) : (
             filtered.map((row) => (
               <TableRow key={row.id}>
@@ -174,6 +223,8 @@ export default function AccountsManager({
                   </div>
                 </TableCell>
                 <TableCell>{row.accountType}</TableCell>
+                <TableCell>{row.country ?? "—"}</TableCell>
+                <TableCell>{row.kycStatus ? <Badge tone={kycTone[row.kycStatus]}>{row.kycStatus}</Badge> : <Badge tone="neutral">NO KYC</Badge>}</TableCell>
                 <TableCell>
                   <Select
                     value={row.groupId ?? ""}
@@ -281,6 +332,94 @@ export default function AccountsManager({
             </Button>
           </ModalActions>
         </div>
+      </Modal>
+
+      <Modal open={addOpen} onClose={() => setAddOpen(false)} title="Add account">
+        {createdAccount ? (
+          <div className="flex flex-col gap-3">
+            <p className="text-sm text-[var(--text-2)]">
+              Account created. This password is shown once — copy it now, it can&apos;t be retrieved again afterward.
+            </p>
+            <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-2)] p-3 font-mono text-sm">
+              <div>Account: {createdAccount.accountNumber}</div>
+              <div>Password: {createdAccount.password}</div>
+            </div>
+            <ModalActions>
+              <Button variant="primary" onClick={() => setAddOpen(false)}>
+                Done
+              </Button>
+            </ModalActions>
+          </div>
+        ) : (
+          <div className="flex flex-col gap-3">
+            <FormField label="Full name">
+              <Input value={newAccount.fullName} onChange={(e) => setNewAccount((p) => ({ ...p, fullName: e.target.value }))} />
+            </FormField>
+            <FormField label="Email">
+              <Input type="email" value={newAccount.email} onChange={(e) => setNewAccount((p) => ({ ...p, email: e.target.value }))} />
+            </FormField>
+            <FormField label="Password (min 8 characters)">
+              <Input type="text" mono value={newAccount.password} onChange={(e) => setNewAccount((p) => ({ ...p, password: e.target.value }))} />
+            </FormField>
+            <div className="flex gap-3">
+              <div className="flex-1">
+                <FormField label="Account type">
+                  <Select value={newAccount.accountType} onChange={(e) => setNewAccount((p) => ({ ...p, accountType: e.target.value as "DEMO" | "LIVE" }))}>
+                    <option value="DEMO">DEMO</option>
+                    <option value="LIVE">LIVE</option>
+                  </Select>
+                </FormField>
+              </div>
+              <div className="flex-1">
+                <FormField label="Currency">
+                  <Input mono value={newAccount.currency} onChange={(e) => setNewAccount((p) => ({ ...p, currency: e.target.value }))} />
+                </FormField>
+              </div>
+            </div>
+            <FormField label="Group (optional)">
+              <Select value={newAccount.groupId} onChange={(e) => setNewAccount((p) => ({ ...p, groupId: e.target.value }))}>
+                <option value="">— ungrouped —</option>
+                {groups.map((g) => (
+                  <option key={g.id} value={g.id}>
+                    {g.name}
+                  </option>
+                ))}
+              </Select>
+            </FormField>
+            {!newAccount.groupId ? (
+              <FormField label="Leverage">
+                <Input type="text" inputMode="numeric" mono value={newAccount.leverage} onChange={(e) => setNewAccount((p) => ({ ...p, leverage: e.target.value }))} />
+              </FormField>
+            ) : null}
+            <FormField label="Initial balance (USD)">
+              <Input type="text" inputMode="decimal" mono value={newAccount.initialBalance} onChange={(e) => setNewAccount((p) => ({ ...p, initialBalance: e.target.value }))} />
+            </FormField>
+            <div className="flex gap-3">
+              <div className="flex-1">
+                <FormField label="Country (optional)">
+                  <Input value={newAccount.country} onChange={(e) => setNewAccount((p) => ({ ...p, country: e.target.value }))} />
+                </FormField>
+              </div>
+              <div className="flex-1">
+                <FormField label="Phone (optional)">
+                  <Input value={newAccount.phone} onChange={(e) => setNewAccount((p) => ({ ...p, phone: e.target.value }))} />
+                </FormField>
+              </div>
+            </div>
+            <FormField label="Date of birth (optional)">
+              <Input type="date" value={newAccount.dateOfBirth} onChange={(e) => setNewAccount((p) => ({ ...p, dateOfBirth: e.target.value }))} />
+            </FormField>
+            {addError ? <p className="text-sm text-[var(--sell)]">{addError}</p> : null}
+            <ModalActions>
+              <Button variant="ghost" onClick={() => setAddOpen(false)}>
+                Cancel
+              </Button>
+              <Button variant="primary" disabled={addBusy} onClick={submitNewAccount}>
+                {addBusy ? "Creating..." : "Create account"}
+              </Button>
+            </ModalActions>
+          </div>
+        )}
       </Modal>
     </div>
   );

@@ -5,6 +5,7 @@
 // future action not listed here, so a missing entry never breaks the page.
 const LABELS: Record<string, string> = {
   ADMIN_USER_CREATED: "Created admin user",
+  ACCOUNT_CREATED: "Created account",
   ADMIN_USER_STATUS_CHANGED: "Changed admin status",
   ACCOUNT_GROUP_CHANGED: "Changed account group",
   LEVERAGE_CHANGE: "Changed leverage",
