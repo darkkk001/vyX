@@ -49,6 +49,7 @@ export default async function ManageShellLayout({ children }: { children: React.
       label: "Trading",
       items: [
         { href: "/manage/positions", label: "Live trading" },
+        { href: "/manage/dealing", label: "Dealing queue" },
         { href: "/manage/symbols", label: "Symbols" },
         { href: "/manage/groups", label: "Client groups" },
         ...(isBrokerAdmin ? [{ href: "/manage/risk", label: "Risk rules" }] : []),

@@ -172,6 +172,14 @@ model Broker {
   // checkTradingHalted. The timestamp is itself the audit trail entry
   // point (when it was set); who set it lives in the paired AuditLog row.
   tradingHaltedAt DateTime? @db.Timestamptz(3)
+  // Non-null = new MARKET orders from traders queue for a dealer
+  // (MANAGER/BROKER_ADMIN) to manually Accept/Reject instead of
+  // auto-filling -- see app/api/trade/orders/route.ts and
+  // app/api/manage/dealing-queue/*. Same on/off-via-timestamp shape as
+  // tradingHaltedAt, for the same reason (the timestamp is the audit
+  // trail entry point; who set it lives in the paired AuditLog row).
+  // LIMIT/STOP triggered fills are unaffected.
+  dealingModeAt DateTime? @db.Timestamptz(3)
   // Sum of open volume (lots) across every symbol for this broker. Null
   // = no limit -- see lib/risk.ts's checkBrokerExposure.
   totalExposureLimit Decimal? @db.Decimal(18, 2)

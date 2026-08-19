@@ -24,6 +24,8 @@ export async function GET() {
   return NextResponse.json({
     tradingHalted: broker.tradingHaltedAt != null,
     tradingHaltedAt: broker.tradingHaltedAt ? broker.tradingHaltedAt.toISOString() : null,
+    dealingMode: broker.dealingModeAt != null,
+    dealingModeAt: broker.dealingModeAt ? broker.dealingModeAt.toISOString() : null,
     totalExposureLimit: broker.totalExposureLimit ? broker.totalExposureLimit.toString() : null,
     maxOpenPositionsPerAccount: broker.maxOpenPositionsPerAccount,
   });
@@ -50,6 +52,14 @@ export async function PATCH(request: NextRequest) {
     }
     data.tradingHaltedAt = body.tradingHalted ? new Date() : null;
     auditNewValue.tradingHalted = body.tradingHalted;
+  }
+
+  if ("dealingMode" in body) {
+    if (typeof body.dealingMode !== "boolean") {
+      return NextResponse.json({ error: "dealingMode must be a boolean" }, { status: 400 });
+    }
+    data.dealingModeAt = body.dealingMode ? new Date() : null;
+    auditNewValue.dealingMode = body.dealingMode;
   }
 
   if ("totalExposureLimit" in body) {
@@ -95,7 +105,8 @@ export async function PATCH(request: NextRequest) {
       data: {
         brokerId,
         actorAdminId: session.adminId,
-        action: "tradingHalted" in body ? "RISK_HALT_TOGGLED" : "RISK_LIMITS_UPDATED",
+        action:
+          "tradingHalted" in body ? "RISK_HALT_TOGGLED" : "dealingMode" in body ? "DEALING_MODE_TOGGLED" : "RISK_LIMITS_UPDATED",
         entityType: "Broker",
         entityId: brokerId,
         newValue: auditNewValue,
@@ -107,6 +118,8 @@ export async function PATCH(request: NextRequest) {
   return NextResponse.json({
     tradingHalted: updated.tradingHaltedAt != null,
     tradingHaltedAt: updated.tradingHaltedAt ? updated.tradingHaltedAt.toISOString() : null,
+    dealingMode: updated.dealingModeAt != null,
+    dealingModeAt: updated.dealingModeAt ? updated.dealingModeAt.toISOString() : null,
     totalExposureLimit: updated.totalExposureLimit ? updated.totalExposureLimit.toString() : null,
     maxOpenPositionsPerAccount: updated.maxOpenPositionsPerAccount,
   });

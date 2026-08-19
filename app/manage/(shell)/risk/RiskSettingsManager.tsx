@@ -12,6 +12,7 @@ import { Modal, ModalActions } from "@/components/ui/Modal";
 
 export type RiskSettings = {
   tradingHalted: boolean;
+  dealingMode: boolean;
   totalExposureLimit: string | null;
   maxOpenPositionsPerAccount: number | null;
 };
@@ -34,6 +35,11 @@ export default function RiskSettingsManager({ initial }: { initial: RiskSettings
   const [haltBusy, setHaltBusy] = useState(false);
   const [haltError, setHaltError] = useState<string | null>(null);
 
+  const [dealingMode, setDealingMode] = useState(initial.dealingMode);
+  const [confirmingDealing, setConfirmingDealing] = useState(false);
+  const [dealingBusy, setDealingBusy] = useState(false);
+  const [dealingError, setDealingError] = useState<string | null>(null);
+
   const [totalExposureLimit, setTotalExposureLimit] = useState(initial.totalExposureLimit ?? "");
   const [maxOpenPositionsPerAccount, setMaxOpenPositionsPerAccount] = useState(
     initial.maxOpenPositionsPerAccount != null ? String(initial.maxOpenPositionsPerAccount) : ""
@@ -54,6 +60,21 @@ export default function RiskSettingsManager({ initial }: { initial: RiskSettings
       setHaltError(e instanceof Error ? e.message : "update failed");
     } finally {
       setHaltBusy(false);
+    }
+  }
+
+  async function toggleDealingMode() {
+    setDealingBusy(true);
+    setDealingError(null);
+    try {
+      const result = await patchRisk({ dealingMode: !dealingMode });
+      setDealingMode(result.dealingMode);
+      setConfirmingDealing(false);
+      router.refresh();
+    } catch (e) {
+      setDealingError(e instanceof Error ? e.message : "update failed");
+    } finally {
+      setDealingBusy(false);
     }
   }
 
@@ -116,6 +137,45 @@ export default function RiskSettingsManager({ initial }: { initial: RiskSettings
             </Button>
             <Button variant="danger" disabled={haltBusy} onClick={toggleHalt}>
               {haltBusy ? "Working..." : tradingHalted ? "Confirm: resume trading" : "Confirm: halt trading"}
+            </Button>
+          </ModalActions>
+        </div>
+      </Modal>
+
+      <Card title="Dealing mode">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <Badge tone={dealingMode ? "accent" : "neutral"}>{dealingMode ? "DEALING MODE ON" : "Instant execution"}</Badge>
+            <p className="mt-2 text-sm text-[var(--text-3)]">
+              {dealingMode
+                ? "New MARKET orders wait for manual Accept/Reject in the Dealing queue instead of filling instantly."
+                : "New MARKET orders fill instantly, as normal. Limit/Stop orders are unaffected either way."}
+            </p>
+          </div>
+          <Button size="sm" variant={dealingMode ? "danger" : "primary"} onClick={() => setConfirmingDealing(true)}>
+            {dealingMode ? "Turn off" : "Turn on"}
+          </Button>
+        </div>
+        {dealingError ? (
+          <div className="mt-3">
+            <Alert tone="danger">{dealingError}</Alert>
+          </div>
+        ) : null}
+      </Card>
+
+      <Modal open={confirmingDealing} onClose={() => setConfirmingDealing(false)} title={dealingMode ? "Confirm turn off dealing mode" : "Confirm turn on dealing mode"}>
+        <div className="flex flex-col gap-3">
+          <p className="text-sm text-[var(--text-2)]">
+            {dealingMode
+              ? "New MARKET orders will fill instantly again immediately."
+              : "New MARKET orders will queue for manual Accept/Reject in the Dealing queue until turned off. Limit/Stop orders are unaffected."}
+          </p>
+          <ModalActions>
+            <Button variant="ghost" onClick={() => setConfirmingDealing(false)}>
+              Cancel
+            </Button>
+            <Button variant={dealingMode ? "danger" : "primary"} disabled={dealingBusy} onClick={toggleDealingMode}>
+              {dealingBusy ? "Working..." : dealingMode ? "Confirm: turn off" : "Confirm: turn on"}
             </Button>
           </ModalActions>
         </div>

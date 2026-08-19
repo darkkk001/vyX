@@ -30,6 +30,9 @@ const LABELS: Record<string, string> = {
   KYC_REJECTION: "Rejected KYC",
   RISK_HALT_TOGGLED: "Toggled trading halt",
   RISK_LIMITS_UPDATED: "Updated risk limits",
+  DEALING_MODE_TOGGLED: "Toggled dealing mode",
+  DEALING_ORDER_ACCEPTED: "Accepted dealing order",
+  DEALING_ORDER_REJECTED: "Rejected dealing order",
 };
 
 export function humanizeAction(action: string): string {

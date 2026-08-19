@@ -120,7 +120,11 @@ export const tradeApi = {
     slPrice?: number | null;
     tpPrice?: number | null;
     idempotencyKey: string;
-  }) => call("/api/trade/orders", { method: "POST", body: JSON.stringify(body) }),
+  }) =>
+    // No `position` key when dealing mode queued the order for manual
+    // dealer review instead of auto-filling -- see
+    // app/api/trade/orders/route.ts's dealingModeAt branch.
+    call<{ order: { id: string }; position?: { id: string } }>("/api/trade/orders", { method: "POST", body: JSON.stringify(body) }),
   cancelOrder: (id: string) => call(`/api/trade/orders/${id}`, { method: "DELETE" }),
   fillOrder: (id: string, price: number) =>
     call(`/api/trade/orders/${id}/fill`, { method: "POST", body: JSON.stringify({ price }) }),

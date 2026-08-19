@@ -25,6 +25,7 @@ export default async function ManagerRiskPage() {
       <RiskSettingsManager
         initial={{
           tradingHalted: broker.tradingHaltedAt != null,
+          dealingMode: broker.dealingModeAt != null,
           totalExposureLimit: broker.totalExposureLimit ? broker.totalExposureLimit.toString() : null,
           maxOpenPositionsPerAccount: broker.maxOpenPositionsPerAccount,
         }}

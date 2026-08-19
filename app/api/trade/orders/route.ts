@@ -116,6 +116,29 @@ export async function POST(request: NextRequest) {
   }
 
   try {
+    if (type === "MARKET" && broker.dealingModeAt) {
+      // Dealing mode on: queue for manual dealer review instead of
+      // auto-filling -- see app/api/manage/dealing-queue/*. No Position
+      // yet; status stays PENDING (distinguishable from a resting
+      // LIMIT/STOP order by `type`, so no new enum value needed).
+      const order = await prisma.order.create({
+        data: {
+          brokerId: session.brokerId,
+          accountId: session.accountId,
+          symbolId: brokerSymbol.symbolId,
+          side,
+          type,
+          volume,
+          requestedPrice: price,
+          slPrice,
+          tpPrice,
+          idempotencyKey,
+          status: "PENDING",
+        },
+      });
+      return NextResponse.json({ order }, { status: 201 });
+    }
+
     if (type === "MARKET") {
       const result = await prisma.$transaction(async (tx) => {
         const order = await tx.order.create({

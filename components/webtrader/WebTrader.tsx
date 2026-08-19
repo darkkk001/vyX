@@ -763,12 +763,17 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
     const error = isValidSlTpForSide(side, sl, tp, refPrice);
     if (error) { pushToast(error); return; }
     try {
-      await tradeApi.placeOrder({
+      const result = await tradeApi.placeOrder({
         symbol: activeSymbol, side, type: "MARKET", volume, price: refPrice,
         slPrice: sl, tpPrice: tp, idempotencyKey: crypto.randomUUID(),
       });
-      pushToast(`${side === "BUY" ? "Bought" : "Sold"} ${volume} lots of ${activeSymbol} @ ${fmt(refPrice, m.def.digits)}`);
-      await Promise.all([refreshPositions(), refreshAccount()]);
+      if (result.position) {
+        pushToast(`${side === "BUY" ? "Bought" : "Sold"} ${volume} lots of ${activeSymbol} @ ${fmt(refPrice, m.def.digits)}`);
+        await Promise.all([refreshPositions(), refreshAccount()]);
+      } else {
+        pushToast(`${activeSymbol} order submitted — awaiting dealer approval`);
+        await refreshOrders();
+      }
     } catch (err) {
       pushToast(err instanceof Error ? err.message : "order failed");
     }
@@ -805,12 +810,17 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
     if (!mm.live) { pushToast("No live feed for this symbol"); return; }
     const ocPrice = side === "BUY" ? mm.ask : mm.bid;
     try {
-      await tradeApi.placeOrder({
+      const result = await tradeApi.placeOrder({
         symbol: symbolName, side, type: "MARKET", volume,
         price: ocPrice, idempotencyKey: crypto.randomUUID(),
       });
-      pushToast(`${side === "BUY" ? "Bought" : "Sold"} ${volume} lots of ${symbolName} @ ${fmt(ocPrice, mm.def.digits)} — one-click`);
-      await Promise.all([refreshPositions(), refreshAccount()]);
+      if (result.position) {
+        pushToast(`${side === "BUY" ? "Bought" : "Sold"} ${volume} lots of ${symbolName} @ ${fmt(ocPrice, mm.def.digits)} — one-click`);
+        await Promise.all([refreshPositions(), refreshAccount()]);
+      } else {
+        pushToast(`${symbolName} order submitted — awaiting dealer approval`);
+        await refreshOrders();
+      }
     } catch (err) {
       pushToast(err instanceof Error ? err.message : "order failed");
     }
@@ -1024,10 +1034,15 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
     const error = isValidSlTpForSide(side, sl, tp, refPrice);
     if (error) { pushToast(error); return; }
     try {
-      await tradeApi.placeOrder({ symbol: quickOrder.symbol, side, type: "MARKET", volume: vol, price: refPrice, slPrice: sl, tpPrice: tp, idempotencyKey: crypto.randomUUID() });
-      pushToast(`${side === "BUY" ? "Bought" : "Sold"} ${vol} lots of ${quickOrder.symbol} @ ${fmt(refPrice, mm.def.digits)}`);
+      const result = await tradeApi.placeOrder({ symbol: quickOrder.symbol, side, type: "MARKET", volume: vol, price: refPrice, slPrice: sl, tpPrice: tp, idempotencyKey: crypto.randomUUID() });
       setQuickOrder(null);
-      await Promise.all([refreshPositions(), refreshAccount()]);
+      if (result.position) {
+        pushToast(`${side === "BUY" ? "Bought" : "Sold"} ${vol} lots of ${quickOrder.symbol} @ ${fmt(refPrice, mm.def.digits)}`);
+        await Promise.all([refreshPositions(), refreshAccount()]);
+      } else {
+        pushToast(`${quickOrder.symbol} order submitted — awaiting dealer approval`);
+        await refreshOrders();
+      }
     } catch (err) {
       pushToast(err instanceof Error ? err.message : "order failed");
     }
