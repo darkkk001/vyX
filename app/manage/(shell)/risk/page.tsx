@@ -1,18 +1,19 @@
 import { redirect } from "next/navigation";
-import { getAdminSession, requireAdminRole } from "@/lib/auth";
+import { getAdminSession } from "@/lib/auth";
+import { forbidUnlessBrokerAdminOrPermission } from "@/lib/permissions";
 import { prisma } from "@/lib/prisma";
 import { computeAccountMarginSnapshots } from "@/lib/margin";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatCard, StatGrid } from "@/components/ui/StatCard";
 import RiskSettingsManager from "./RiskSettingsManager";
 
-// Finance/ops-tier screen -- same BROKER_ADMIN-only carve-out as
-// Funds/KYC/IB/Team, not the broader MANAGER+BROKER_ADMIN gate. See
+// BROKER_ADMIN by default, same finance/ops carve-out as Funds/KYC/IB/
+// Team -- delegatable via RISK_SETTINGS (see lib/permissions.ts). See
 // lib/risk.ts for how these settings are actually enforced on the live
 // trading path (app/api/trade/orders, app/api/manage/positions).
 export default async function ManagerRiskPage() {
   const session = await getAdminSession();
-  if (!requireAdminRole(session, ["BROKER_ADMIN"]) || !session!.brokerId) {
+  if (await forbidUnlessBrokerAdminOrPermission(session, "RISK_SETTINGS")) {
     redirect("/manage/login");
   }
   const brokerId = session!.brokerId!;

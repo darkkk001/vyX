@@ -1,13 +1,15 @@
 import { redirect } from "next/navigation";
-import { getAdminSession, requireAdminRole } from "@/lib/auth";
+import { getAdminSession } from "@/lib/auth";
+import { forbidUnlessBrokerAdminOrPermission } from "@/lib/permissions";
 import { prisma } from "@/lib/prisma";
 import { PageHeader } from "@/components/ui/PageHeader";
 import TransfersManager, { type TransferRow, type AccountOption } from "./TransfersManager";
 
-// BROKER_ADMIN only -- same finance carve-out as Funds/adjust-balance.
+// BROKER_ADMIN by default -- same finance carve-out as Funds/adjust-
+// balance -- delegatable via INTERNAL_TRANSFERS (see lib/permissions.ts).
 export default async function ManagerTransfersPage() {
   const session = await getAdminSession();
-  if (!requireAdminRole(session, ["BROKER_ADMIN"]) || !session!.brokerId) {
+  if (await forbidUnlessBrokerAdminOrPermission(session, "INTERNAL_TRANSFERS")) {
     redirect("/manage/login");
   }
   const brokerId = session!.brokerId!;

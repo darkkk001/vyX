@@ -3,6 +3,7 @@ import bcrypt from "bcryptjs";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
+import { forbidUnlessBrokerAdminOrPermission } from "@/lib/permissions";
 
 async function requireManager() {
   const session = await getAdminSession();
@@ -61,7 +62,7 @@ export async function GET() {
 // no self-registration flow anywhere in the app.
 export async function POST(request: NextRequest) {
   const session = await getAdminSession();
-  if (!requireAdminRole(session, ["BROKER_ADMIN"]) || !session!.brokerId) {
+  if (await forbidUnlessBrokerAdminOrPermission(session, "ACCOUNT_FINANCE")) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
   const brokerId = session!.brokerId!;

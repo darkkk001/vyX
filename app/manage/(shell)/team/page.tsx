@@ -26,6 +26,7 @@ export default async function ManageTeamPage() {
     role: a.role as AdminRow["role"],
     status: a.status,
     lastLoginAt: a.lastLoginAt ? a.lastLoginAt.toISOString().replace("T", " ").slice(0, 19) : null,
+    extraPermissions: a.extraPermissions,
   }));
 
   return (

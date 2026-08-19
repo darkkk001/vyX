@@ -1,16 +1,17 @@
 import { redirect } from "next/navigation";
-import { getAdminSession, requireAdminRole } from "@/lib/auth";
+import { getAdminSession } from "@/lib/auth";
+import { forbidUnlessBrokerAdminOrPermission } from "@/lib/permissions";
 import { prisma } from "@/lib/prisma";
 import { PageHeader } from "@/components/ui/PageHeader";
 import FundsRequestsManager, { type FundsRequestRow } from "./FundsRequestsManager";
 
-// Finance-only screen -- unlike Symbols/Positions/Groups, MANAGER can't
-// reach this at all (redirected below), not just UI-hidden, since
-// approving/rejecting real money movement is squarely the "not
-// KYC/finance" carve-out from AdminRole.MANAGER's own schema comment.
+// Finance screen -- BROKER_ADMIN by default since approving/rejecting
+// real money movement is squarely the "not KYC/finance" carve-out from
+// AdminRole.MANAGER's own schema comment, but delegatable via
+// FUNDS_APPROVAL (see lib/permissions.ts).
 export default async function ManagerFundsPage() {
   const session = await getAdminSession();
-  if (!requireAdminRole(session, ["BROKER_ADMIN"]) || !session!.brokerId) {
+  if (await forbidUnlessBrokerAdminOrPermission(session, "FUNDS_APPROVAL")) {
     redirect("/manage/login");
   }
   const brokerId = session!.brokerId!;

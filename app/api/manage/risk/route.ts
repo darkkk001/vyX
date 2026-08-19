@@ -1,26 +1,25 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { getAdminSession, requireAdminRole } from "@/lib/auth";
+import { getAdminSession } from "@/lib/auth";
+import { forbidUnlessBrokerAdminOrPermission } from "@/lib/permissions";
 
-async function requireBrokerAdmin() {
-  const session = await getAdminSession();
-  if (!requireAdminRole(session, ["BROKER_ADMIN"]) || !session!.brokerId) {
-    return null;
-  }
-  return session!;
-}
-
-// Broker-wide risk policy -- BROKER_ADMIN only, same finance/ops
-// carve-out as Funds/KYC/IB/Team. See lib/risk.ts for how these fields
-// are actually enforced on the live trading path.
+// Broker-wide risk policy -- BROKER_ADMIN by default, same finance/ops
+// carve-out as Funds/KYC/IB/Team, delegatable per field: `tradingHalted`
+// via EMERGENCY_CONTROLS, everything else via RISK_SETTINGS (see
+// lib/permissions.ts). See lib/risk.ts for how these fields are actually
+// enforced on the live trading path.
 export async function GET() {
-  const session = await requireBrokerAdmin();
-  if (!session) {
+  const session = await getAdminSession();
+  const [forbidRisk, forbidEmergency] = await Promise.all([
+    forbidUnlessBrokerAdminOrPermission(session, "RISK_SETTINGS"),
+    forbidUnlessBrokerAdminOrPermission(session, "EMERGENCY_CONTROLS"),
+  ]);
+  if (forbidRisk && forbidEmergency) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
 
-  const broker = await prisma.broker.findUniqueOrThrow({ where: { id: session.brokerId! } });
+  const broker = await prisma.broker.findUniqueOrThrow({ where: { id: session!.brokerId! } });
   return NextResponse.json({
     tradingHalted: broker.tradingHaltedAt != null,
     tradingHaltedAt: broker.tradingHaltedAt ? broker.tradingHaltedAt.toISOString() : null,
@@ -32,15 +31,27 @@ export async function GET() {
 }
 
 export async function PATCH(request: NextRequest) {
-  const session = await requireBrokerAdmin();
-  if (!session) {
+  const session = await getAdminSession();
+  if (!session || !session.brokerId) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
-  const brokerId = session.brokerId!;
+  const brokerId = session.brokerId;
 
   const body = await request.json().catch(() => null);
   if (!body || typeof body !== "object") {
     return NextResponse.json({ error: "invalid body" }, { status: 400 });
+  }
+
+  // Per-field permission check -- a request touching a RISK_SETTINGS
+  // field without that permission (even if it also legitimately touches
+  // an EMERGENCY_CONTROLS field) is rejected outright rather than
+  // silently applying only the allowed half.
+  if ("tradingHalted" in body && (await forbidUnlessBrokerAdminOrPermission(session, "EMERGENCY_CONTROLS"))) {
+    return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  }
+  const touchesRiskFields = "dealingMode" in body || "totalExposureLimit" in body || "maxOpenPositionsPerAccount" in body;
+  if (touchesRiskFields && (await forbidUnlessBrokerAdminOrPermission(session, "RISK_SETTINGS"))) {
+    return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
 
   const data: Prisma.BrokerUpdateInput = {};

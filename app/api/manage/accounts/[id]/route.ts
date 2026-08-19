@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
+import { hasPermission } from "@/lib/permissions";
 
 async function requireManager() {
   const session = await getAdminSession();
@@ -14,7 +15,8 @@ async function requireManager() {
 // Handles two independently-permissioned edits on the same Account row:
 // - groupId (MANAGER or BROKER_ADMIN) -- risk/ops config, same category
 //   the symbols screen already lets MANAGER touch.
-// - leverage/status (BROKER_ADMIN only) -- per AdminRole.MANAGER's own
+// - leverage/status (BROKER_ADMIN by default, delegatable via
+//   ACCOUNT_FINANCE -- lib/permissions.ts) -- per AdminRole.MANAGER's own
 //   schema comment ("narrower than BROKER_ADMIN... not KYC/finance"),
 //   these are finance-adjacent, not dealing-desk config.
 // A request can touch either or both fields; each is checked
@@ -40,9 +42,9 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   if (!hasGroupChange && !hasFinanceChange) {
     return NextResponse.json({ error: "nothing to update" }, { status: 400 });
   }
-  if (hasFinanceChange && session.role !== "BROKER_ADMIN") {
+  if (hasFinanceChange && session.role !== "BROKER_ADMIN" && !(await hasPermission(session, "ACCOUNT_FINANCE"))) {
     return NextResponse.json(
-      { error: "forbidden: leverage/status/maxDailyLoss changes require BROKER_ADMIN" },
+      { error: "forbidden: leverage/status/maxDailyLoss changes require BROKER_ADMIN or ACCOUNT_FINANCE" },
       { status: 403 }
     );
   }

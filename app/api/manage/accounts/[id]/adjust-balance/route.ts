@@ -1,11 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { getAdminSession, requireAdminRole } from "@/lib/auth";
+import { getAdminSession } from "@/lib/auth";
+import { forbidUnlessBrokerAdminOrPermission } from "@/lib/permissions";
 
-// BROKER_ADMIN only -- per AdminRole.MANAGER's own schema comment
+// BROKER_ADMIN by default -- per AdminRole.MANAGER's own schema comment
 // ("not KYC/finance"), a direct balance correction (no underlying trade)
-// is finance, not dealing-desk risk/ops. First real usage of
+// is finance, not dealing-desk risk/ops -- delegatable via
+// ACCOUNT_FINANCE (see lib/permissions.ts). First real usage of
 // TransactionType.ADJUSTMENT and the "BALANCE_ADJUSTMENT" AuditLog
 // action -- both existed as unimplemented placeholders before this.
 // Same $transaction shape as the position-close routes: read balance
@@ -13,7 +15,7 @@ import { getAdminSession, requireAdminRole } from "@/lib/auth";
 // increment), write the Transaction row with balanceBefore/balanceAfter.
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await getAdminSession();
-  if (!requireAdminRole(session, ["BROKER_ADMIN"]) || !session!.brokerId) {
+  if (await forbidUnlessBrokerAdminOrPermission(session, "ACCOUNT_FINANCE")) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
   const brokerId = session!.brokerId!;

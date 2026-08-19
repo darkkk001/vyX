@@ -1,17 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { getAdminSession, requireAdminRole } from "@/lib/auth";
+import { getAdminSession } from "@/lib/auth";
+import { forbidUnlessBrokerAdminOrPermission } from "@/lib/permissions";
 import { computePendingCommission } from "@/lib/commission";
 
-// Two things this route can do to a relationship, both BROKER_ADMIN only:
+// Two things this route can do to a relationship, both BROKER_ADMIN by
+// default, delegatable via IB_PAYOUTS (see lib/permissions.ts):
 // - { commissionType?, commissionRate? } -- edit the rate/type (fixing a
 //   typo, doesn't touch money).
 // - { action: "PAY" } -- pay out the currently-pending commission, moving
 //   real balance through the Transaction ledger. Never both in one call.
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await getAdminSession();
-  if (!requireAdminRole(session, ["BROKER_ADMIN"]) || !session!.brokerId) {
+  if (await forbidUnlessBrokerAdminOrPermission(session, "IB_PAYOUTS")) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
   const brokerId = session!.brokerId!;

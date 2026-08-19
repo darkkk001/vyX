@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
+import { hasPermission } from "@/lib/permissions";
 import { prisma } from "@/lib/prisma";
 import { PageHeader } from "@/components/ui/PageHeader";
 import AccountsManager, { type AccountRow, type GroupOption } from "./AccountsManager";
@@ -10,6 +11,7 @@ export default async function ManagerAccountsPage() {
     redirect("/manage/login");
   }
   const brokerId = session!.brokerId!;
+  const canManageFinance = session!.role === "BROKER_ADMIN" || (await hasPermission(session, "ACCOUNT_FINANCE"));
 
   const [accounts, groups] = await Promise.all([
     prisma.account.findMany({
@@ -45,10 +47,10 @@ export default async function ManagerAccountsPage() {
       <PageHeader
         title="Accounts"
         description={`${rows.length} account${rows.length === 1 ? "" : "s"} for this broker.${
-          session!.role !== "BROKER_ADMIN" ? " Leverage/status/balance changes require a Broker Admin login." : ""
+          !canManageFinance ? " Leverage/status/balance changes require Broker Admin or the Account Finance permission." : ""
         }`}
       />
-      <AccountsManager initialRows={rows} groups={groupOptions} canManageFinance={session!.role === "BROKER_ADMIN"} />
+      <AccountsManager initialRows={rows} groups={groupOptions} canManageFinance={canManageFinance} />
     </main>
   );
 }

@@ -7,6 +7,7 @@ const LABELS: Record<string, string> = {
   ADMIN_USER_CREATED: "Created admin user",
   ACCOUNT_CREATED: "Created account",
   ADMIN_USER_STATUS_CHANGED: "Changed admin status",
+  PERMISSIONS_CHANGED: "Changed delegated permissions",
   ACCOUNT_GROUP_CHANGED: "Changed account group",
   LEVERAGE_CHANGE: "Changed leverage",
   ACCOUNT_STATUS_CHANGED: "Changed account status",

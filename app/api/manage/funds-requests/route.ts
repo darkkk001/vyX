@@ -1,14 +1,16 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getAdminSession, requireAdminRole } from "@/lib/auth";
+import { getAdminSession } from "@/lib/auth";
+import { forbidUnlessBrokerAdminOrPermission } from "@/lib/permissions";
 
-// BROKER_ADMIN only -- same finance carve-out as balance adjustment/
-// leverage edits (AdminRole.MANAGER's own schema comment: "not
-// KYC/finance"). Lists PENDING requests first (what needs action),
+// BROKER_ADMIN by default -- same finance carve-out as balance
+// adjustment/leverage edits (AdminRole.MANAGER's own schema comment: "not
+// KYC/finance") -- delegatable via FUNDS_APPROVAL (see
+// lib/permissions.ts). Lists PENDING requests first (what needs action),
 // then recent resolved ones for context.
 export async function GET() {
   const session = await getAdminSession();
-  if (!requireAdminRole(session, ["BROKER_ADMIN"]) || !session!.brokerId) {
+  if (await forbidUnlessBrokerAdminOrPermission(session, "FUNDS_APPROVAL")) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
   const brokerId = session!.brokerId!;

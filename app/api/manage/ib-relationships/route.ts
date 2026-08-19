@@ -1,15 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { getAdminSession, requireAdminRole } from "@/lib/auth";
+import { getAdminSession } from "@/lib/auth";
+import { forbidUnlessBrokerAdminOrPermission } from "@/lib/permissions";
 import { computePendingCommission } from "@/lib/commission";
 
-// Finance-adjacent (moves real balance on payout) -- BROKER_ADMIN only,
-// same carve-out as Funds/KYC (AdminRole.MANAGER's own schema comment:
-// "not KYC/finance").
+// Finance-adjacent (moves real balance on payout) -- BROKER_ADMIN by
+// default, same carve-out as Funds/KYC (AdminRole.MANAGER's own schema
+// comment: "not KYC/finance") -- delegatable via IB_PAYOUTS (see
+// lib/permissions.ts).
 async function requireBrokerAdmin() {
   const session = await getAdminSession();
-  if (!requireAdminRole(session, ["BROKER_ADMIN"]) || !session!.brokerId) {
+  if (await forbidUnlessBrokerAdminOrPermission(session, "IB_PAYOUTS")) {
     return null;
   }
   return session!;

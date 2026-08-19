@@ -1,15 +1,15 @@
 import { redirect } from "next/navigation";
-import { getAdminSession, requireAdminRole } from "@/lib/auth";
+import { getAdminSession } from "@/lib/auth";
+import { forbidUnlessBrokerAdminOrPermission } from "@/lib/permissions";
 import { prisma } from "@/lib/prisma";
 import { PageHeader } from "@/components/ui/PageHeader";
 import KycRequestsManager, { type KycRequestRow } from "./KycRequestsManager";
 
-// Finance/backoffice-only screen, same as Funds -- MANAGER can't reach
-// this at all (redirected below), not just UI-hidden. See
-// docs/authentication.md's own KYC-approval example for why.
+// BROKER_ADMIN by default, same as Funds -- see docs/authentication.md's
+// own KYC-approval example for why -- delegatable via KYC_REVIEW.
 export default async function ManagerKycPage() {
   const session = await getAdminSession();
-  if (!requireAdminRole(session, ["BROKER_ADMIN"]) || !session!.brokerId) {
+  if (await forbidUnlessBrokerAdminOrPermission(session, "KYC_REVIEW")) {
     redirect("/manage/login");
   }
   const brokerId = session!.brokerId!;

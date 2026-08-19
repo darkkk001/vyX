@@ -8,6 +8,7 @@ import { Select } from "@/components/ui/Select";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
+import { PERMISSIONS, PERMISSION_LABELS, type Permission } from "@/lib/permission-labels";
 
 export type AdminRow = {
   id: string;
@@ -19,6 +20,8 @@ export type AdminRow = {
   role: "BROKER_ADMIN" | "MANAGER" | "SUPPORT";
   status: "ACTIVE" | "DISABLED";
   lastLoginAt: string | null;
+  // Only meaningful for role === "MANAGER" -- see lib/permissions.ts.
+  extraPermissions: string[];
 };
 
 export default function TeamManager({ initialRows, currentAdminId }: { initialRows: AdminRow[]; currentAdminId: string }) {
@@ -72,6 +75,27 @@ export default function TeamManager({ initialRows, currentAdminId }: { initialRo
     router.refresh();
   }
 
+  // --- Delegated permissions, per MANAGER row ---
+  async function togglePermission(row: AdminRow, permission: Permission) {
+    const next = row.extraPermissions.includes(permission)
+      ? row.extraPermissions.filter((p) => p !== permission)
+      : [...row.extraPermissions, permission];
+    setBusyId(row.id);
+    setErrors((prev) => ({ ...prev, [row.id]: "" }));
+    const response = await fetch(`/api/manage/admins/${row.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ extraPermissions: next }),
+    });
+    setBusyId(null);
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      setErrors((prev) => ({ ...prev, [row.id]: body.error ?? "update failed" }));
+      return;
+    }
+    router.refresh();
+  }
+
   return (
     <div className="flex flex-col gap-6">
       <Card title="Add a team member">
@@ -103,12 +127,15 @@ export default function TeamManager({ initialRows, currentAdminId }: { initialRo
             <TableHeaderCell>Email</TableHeaderCell>
             <TableHeaderCell>Role</TableHeaderCell>
             <TableHeaderCell>Status</TableHeaderCell>
+            <TableHeaderCell title="Only applies to Manager-role staff -- Broker Admin already has everything">
+              Delegated permissions
+            </TableHeaderCell>
             <TableHeaderCell>Last login</TableHeaderCell>
             <TableHeaderCell />
           </TableHead>
           <TableBody>
             {initialRows.length === 0 ? (
-              <TableEmptyState colSpan={5}>No team members.</TableEmptyState>
+              <TableEmptyState colSpan={6}>No team members.</TableEmptyState>
             ) : (
               initialRows.map((row) => {
                 const isSelf = row.id === currentAdminId;
@@ -132,6 +159,25 @@ export default function TeamManager({ initialRows, currentAdminId }: { initialRo
                         <option value="ACTIVE">ACTIVE</option>
                         <option value="DISABLED">DISABLED</option>
                       </Select>
+                    </TableCell>
+                    <TableCell>
+                      {row.role === "MANAGER" ? (
+                        <div className="flex flex-col gap-1">
+                          {PERMISSIONS.map((p) => (
+                            <label key={p} className="flex items-center gap-1.5 text-xs text-[var(--text-2)]">
+                              <input
+                                type="checkbox"
+                                checked={row.extraPermissions.includes(p)}
+                                disabled={busyId === row.id}
+                                onChange={() => togglePermission(row, p)}
+                              />
+                              {PERMISSION_LABELS[p]}
+                            </label>
+                          ))}
+                        </div>
+                      ) : (
+                        <span className="text-xs text-[var(--text-3)]">{row.role === "BROKER_ADMIN" ? "has everything" : "n/a"}</span>
+                      )}
                     </TableCell>
                     <TableCell className="text-xs text-[var(--text-3)]">{row.lastLoginAt ?? "never"}</TableCell>
                     <TableCell>

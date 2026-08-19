@@ -1,14 +1,16 @@
 import { redirect } from "next/navigation";
-import { getAdminSession, requireAdminRole } from "@/lib/auth";
+import { getAdminSession } from "@/lib/auth";
+import { forbidUnlessBrokerAdminOrPermission } from "@/lib/permissions";
 import { prisma } from "@/lib/prisma";
 import { PageHeader } from "@/components/ui/PageHeader";
 import EmergencyControls from "./EmergencyControls";
 
-// BROKER_ADMIN only -- same carve-out as Risk (this is the same
-// broker-wide policy surface, just the kill switch half of it).
+// BROKER_ADMIN by default -- same carve-out as Risk (this is the same
+// broker-wide policy surface, just the kill switch half of it) --
+// delegatable via EMERGENCY_CONTROLS (see lib/permissions.ts).
 export default async function ManagerEmergencyPage() {
   const session = await getAdminSession();
-  if (!requireAdminRole(session, ["BROKER_ADMIN"]) || !session!.brokerId) {
+  if (await forbidUnlessBrokerAdminOrPermission(session, "EMERGENCY_CONTROLS")) {
     redirect("/manage/login");
   }
 

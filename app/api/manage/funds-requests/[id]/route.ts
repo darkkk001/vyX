@@ -1,15 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getAdminSession, requireAdminRole } from "@/lib/auth";
+import { getAdminSession } from "@/lib/auth";
+import { forbidUnlessBrokerAdminOrPermission } from "@/lib/permissions";
 
 // Approve/reject a PENDING deposit or withdrawal request -- BROKER_ADMIN
-// only. This is the one place a Transaction row is ever updated after
-// creation (see the field's own schema comment) -- resolving a PENDING
+// by default, delegatable via FUNDS_APPROVAL (see lib/permissions.ts).
+// This is the one place a Transaction row is ever updated after creation
+// (see the field's own schema comment) -- resolving a PENDING
 // state-machine row, not editing an executed trade, so it doesn't
 // conflict with CLAUDE.md's never-edit-history rule.
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await getAdminSession();
-  if (!requireAdminRole(session, ["BROKER_ADMIN"]) || !session!.brokerId) {
+  if (await forbidUnlessBrokerAdminOrPermission(session, "FUNDS_APPROVAL")) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
   const brokerId = session!.brokerId!;

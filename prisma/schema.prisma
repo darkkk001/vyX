@@ -228,6 +228,12 @@ model AdminUser {
   role         AdminRole
   status       AdminStatus @default(ACTIVE)
   lastLoginAt  DateTime? @db.Timestamptz(3)
+  // Extra BROKER_ADMIN-only capabilities delegated to a MANAGER-role
+  // admin -- see lib/permissions.ts's PERMISSIONS list. Meaningless for
+  // BROKER_ADMIN (already has everything implicitly) and SUPPORT (no
+  // login route). Checked fresh from the DB on every request, not baked
+  // into the session JWT -- see lib/permissions.ts's own comment for why.
+  extraPermissions String[] @default([])
 
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)

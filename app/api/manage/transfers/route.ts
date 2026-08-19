@@ -1,18 +1,20 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { getAdminSession, requireAdminRole } from "@/lib/auth";
+import { getAdminSession } from "@/lib/auth";
+import { forbidUnlessBrokerAdminOrPermission } from "@/lib/permissions";
 
 async function requireBrokerAdmin() {
   const session = await getAdminSession();
-  if (!requireAdminRole(session, ["BROKER_ADMIN"]) || !session!.brokerId) {
+  if (await forbidUnlessBrokerAdminOrPermission(session, "INTERNAL_TRANSFERS")) {
     return null;
   }
   return session!;
 }
 
-// BROKER_ADMIN only -- moves real balance between two accounts, same
-// finance carve-out as adjust-balance/add-account.
+// BROKER_ADMIN by default -- moves real balance between two accounts,
+// same finance carve-out as adjust-balance/add-account -- delegatable
+// via INTERNAL_TRANSFERS (see lib/permissions.ts).
 export async function GET() {
   const session = await requireBrokerAdmin();
   if (!session) {

@@ -1,15 +1,17 @@
 import { redirect } from "next/navigation";
-import { getAdminSession, requireAdminRole } from "@/lib/auth";
+import { getAdminSession } from "@/lib/auth";
+import { forbidUnlessBrokerAdminOrPermission } from "@/lib/permissions";
 import { prisma } from "@/lib/prisma";
 import { computePendingCommission } from "@/lib/commission";
 import { PageHeader } from "@/components/ui/PageHeader";
 import IbRelationshipsManager, { type IbRelationshipRow, type AccountOption } from "./IbRelationshipsManager";
 
-// Finance-adjacent screen (payout moves real balance) -- BROKER_ADMIN
-// only, same carve-out as Funds/KYC, not just UI-hidden for MANAGER.
+// Finance-adjacent screen (payout moves real balance) -- BROKER_ADMIN by
+// default, same carve-out as Funds/KYC -- delegatable via IB_PAYOUTS
+// (see lib/permissions.ts).
 export default async function ManageIbPage() {
   const session = await getAdminSession();
-  if (!requireAdminRole(session, ["BROKER_ADMIN"]) || !session!.brokerId) {
+  if (await forbidUnlessBrokerAdminOrPermission(session, "IB_PAYOUTS")) {
     redirect("/manage/login");
   }
   const brokerId = session!.brokerId!;
