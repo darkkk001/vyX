@@ -32,6 +32,29 @@ export function checkLotStep(volume: Prisma.Decimal, minLot: Prisma.Decimal, lot
   return null;
 }
 
+// Zero sessions = always tradable -- same null/empty-means-unlimited
+// convention as every other check here (maxExposure, maxDailyLoss, ...).
+// `now` is injected (not read internally) so this stays a pure function,
+// same testability reason the rest of this file's checks take their
+// inputs as plain values instead of reaching for the DB/clock themselves.
+export function checkTradingSession(
+  sessions: { dayOfWeek: number; openTime: string; closeTime: string }[],
+  now: Date
+): string | null {
+  if (sessions.length === 0) return null;
+  const day = now.getUTCDay();
+  const minutes = now.getUTCHours() * 60 + now.getUTCMinutes();
+  const toMinutes = (hhmm: string) => {
+    const [h, m] = hhmm.split(":").map(Number);
+    return h * 60 + m;
+  };
+  const open = sessions.some((s) => {
+    if (s.dayOfWeek !== day) return false;
+    return minutes >= toMinutes(s.openTime) && minutes < toMinutes(s.closeTime);
+  });
+  return open ? null : "this symbol is outside its trading session hours right now";
+}
+
 // Null maxOpenPositions = no limit -- Broker.maxOpenPositionsPerAccount
 // has existed since migration 20260817000000_exposure_limits but this is
 // its first real read on any live path (previously only engine/risk

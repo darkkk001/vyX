@@ -95,6 +95,8 @@ enum TransactionType {
   COMMISSION
   SWAP
   TRADE_PNL
+  TRANSFER_OUT // internal transfer -- debit side, see app/api/manage/transfers
+  TRANSFER_IN // internal transfer -- credit side
 }
 
 enum TransactionStatus {
@@ -208,6 +210,7 @@ model Broker {
   positions       Position[]
   auditLogs       AuditLog[]
   groups          Group[]
+  leads           Lead[]
 }
 
 model AdminUser {
@@ -282,9 +285,44 @@ model Account {
   ibLinkAsIb     IbRelationship[] @relation("IbAccount")
   ibLinkAsClient IbRelationship?  @relation("ClientAccount")
 
+  convertedFromLead Lead?
+
   @@unique([brokerId, email, accountType])
   @@index([brokerId])
   @@index([groupId])
+}
+
+enum LeadStatus {
+  NEW
+  CONTACTED
+  QUALIFIED
+  CONVERTED
+  LOST
+}
+
+// Prospective client, pre-Account -- CRM's "Leads" list. Conversion
+// (app/manage/(shell)/leads/LeadsManager.tsx) doesn't duplicate account-
+// creation logic: it calls the existing POST /api/manage/accounts
+// directly, then PATCHes this row to CONVERTED with convertedAccountId.
+model Lead {
+  id       String     @id @default(cuid())
+  brokerId String
+  broker   Broker     @relation(fields: [brokerId], references: [id])
+  fullName String
+  email    String
+  phone    String?
+  country  String?
+  source   String? // free text ("Website", "Referral", ...) -- no fixed taxonomy given
+  status   LeadStatus @default(NEW)
+  notes    String?
+
+  convertedAccountId String?  @unique
+  convertedAccount   Account? @relation(fields: [convertedAccountId], references: [id])
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  @@index([brokerId])
 }
 
 // Settings template accounts can be assigned to (per-broker). Deliberately
@@ -471,8 +509,28 @@ model BrokerSymbol {
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
 
+  tradingSessions TradingSession[]
+
   @@unique([brokerId, symbolId])
   @@index([brokerId])
+}
+
+// Allowed trading windows for a symbol. Zero rows for a BrokerSymbol =
+// always tradable (same null/empty-means-unlimited convention as
+// maxExposure/maxDailyLoss elsewhere in this schema) -- adding this
+// model doesn't restrict any existing symbol until an admin explicitly
+// adds session rows. See lib/risk.ts's checkTradingSession.
+model TradingSession {
+  id             String       @id @default(cuid())
+  brokerSymbolId String
+  brokerSymbol   BrokerSymbol @relation(fields: [brokerSymbolId], references: [id])
+  dayOfWeek      Int // 0 = Sunday .. 6 = Saturday (UTC)
+  openTime       String // "HH:MM", UTC
+  closeTime      String // "HH:MM", UTC
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  @@index([brokerSymbolId])
 }
 
 // ─────────────────────────────────────────────────────────────────────────

@@ -39,6 +39,7 @@ export default async function ManagerSymbolsPage() {
     const cfg = symbol.brokerSymbols[0];
     return {
       symbolId: symbol.id,
+      brokerSymbolId: cfg ? cfg.id : null,
       symbolName: symbol.name,
       category: symbol.category,
       digits: symbol.digits,

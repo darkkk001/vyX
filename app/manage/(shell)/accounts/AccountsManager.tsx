@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
@@ -217,7 +218,9 @@ export default function AccountsManager({
             filtered.map((row) => (
               <TableRow key={row.id}>
                 <TableCell primary>
-                  <span className="font-mono">{row.accountNumber}</span>
+                  <Link href={`/manage/accounts/${row.id}`} className="font-mono hover:underline">
+                    {row.accountNumber}
+                  </Link>
                   <div className="text-xs font-normal text-[var(--text-3)]">
                     {row.fullName} — {row.email}
                   </div>

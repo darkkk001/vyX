@@ -1,8 +1,7 @@
 import { redirect } from "next/navigation";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { getFreshPrices } from "@/lib/live-price";
-import { computeRealizedPnl } from "@/lib/trading";
+import { computeAccountMarginSnapshots } from "@/lib/margin";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatCard, StatGrid } from "@/components/ui/StatCard";
 import RiskSettingsManager from "./RiskSettingsManager";
@@ -19,50 +18,13 @@ export default async function ManagerRiskPage() {
   const brokerId = session!.brokerId!;
 
   const broker = await prisma.broker.findUniqueOrThrow({ where: { id: brokerId } });
+  const snapshots = await computeAccountMarginSnapshots(prisma, brokerId);
 
-  const positions = await prisma.position.findMany({
-    where: { brokerId, status: "OPEN" },
-    include: {
-      account: { select: { id: true, balance: true, leverage: true, group: { select: { marginCallLevel: true, stopOutLevel: true } } } },
-      symbol: { select: { name: true, contractSize: true } },
-    },
-  });
-
-  const priceBySymbol = await getFreshPrices([...new Set(positions.map((p) => p.symbol.name))]);
-
-  let totalExposure = 0;
-  let totalFloatingPnl = 0;
-  const byAccount = new Map<string, { balance: number; leverage: number; marginCallLevel: number; stopOutLevel: number; equity: number; usedMargin: number }>();
-
-  for (const p of positions) {
-    totalExposure += p.volume.toNumber();
-    const live = priceBySymbol.get(p.symbol.name);
-    if (!live) continue; // no fresh price -- excluded from P&L/margin, not fabricated
-    const currentPrice = p.side === "BUY" ? live.bid : live.ask;
-    const pnl = computeRealizedPnl({ side: p.side, openPrice: p.openPrice, closePrice: currentPrice, volume: p.volume, contractSize: p.symbol.contractSize }).toNumber();
-    totalFloatingPnl += pnl;
-
-    const acc = byAccount.get(p.account.id) ?? {
-      balance: p.account.balance.toNumber(),
-      leverage: p.account.leverage,
-      marginCallLevel: p.account.group?.marginCallLevel.toNumber() ?? 100,
-      stopOutLevel: p.account.group?.stopOutLevel.toNumber() ?? 50,
-      equity: p.account.balance.toNumber(),
-      usedMargin: 0,
-    };
-    acc.equity += pnl;
-    acc.usedMargin += p.symbol.contractSize.toNumber() * p.volume.toNumber() * live.bid.toNumber() / p.account.leverage;
-    byAccount.set(p.account.id, acc);
-  }
-
-  let atMarginCall = 0;
-  let atStopOut = 0;
-  for (const acc of byAccount.values()) {
-    if (acc.usedMargin <= 0) continue;
-    const marginLevel = (acc.equity / acc.usedMargin) * 100;
-    if (marginLevel < acc.stopOutLevel) atStopOut++;
-    else if (marginLevel < acc.marginCallLevel) atMarginCall++;
-  }
+  const totalExposure = snapshots.reduce((s, a) => s + a.exposure, 0);
+  const totalFloatingPnl = snapshots.reduce((s, a) => s + (a.equity - a.balance), 0);
+  const openPositions = snapshots.reduce((s, a) => s + a.positionCount, 0);
+  const atStopOut = snapshots.filter((a) => a.marginLevel != null && a.marginLevel < a.stopOutLevel).length;
+  const atMarginCall = snapshots.filter((a) => a.marginLevel != null && a.marginLevel >= a.stopOutLevel && a.marginLevel < a.marginCallLevel).length;
 
   return (
     <main className="mx-auto max-w-4xl">
@@ -74,14 +36,11 @@ export default async function ManagerRiskPage() {
         <StatGrid columns={4}>
           <StatCard label="Open exposure" value={`${totalExposure.toLocaleString("en-US")} lots`} />
           <StatCard label="Floating P&L" value={`${totalFloatingPnl >= 0 ? "+" : ""}${totalFloatingPnl.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`} />
-          <StatCard label="Open positions" value={String(positions.length)} />
-          <StatCard
-            label="Accounts at risk"
-            value={`${atMarginCall + atStopOut}`}
-          />
+          <StatCard label="Open positions" value={String(openPositions)} />
+          <StatCard label="Accounts at risk" value={`${atMarginCall + atStopOut}`} />
         </StatGrid>
         <p className="mt-2 text-xs text-[var(--text-3)]">
-          {atStopOut} account{atStopOut === 1 ? "" : "s"} below stop-out, {atMarginCall} below margin call — informational only, not yet enforced automatically (see Group.stopOutLevel).
+          {atStopOut} account{atStopOut === 1 ? "" : "s"} below stop-out, {atMarginCall} below margin call — informational only, not yet enforced automatically (see Group.stopOutLevel). Full list on the Margin page.
         </p>
       </div>
       <RiskSettingsManager

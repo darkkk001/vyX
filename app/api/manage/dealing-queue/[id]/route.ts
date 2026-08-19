@@ -6,6 +6,7 @@ import { getFreshPrice } from "@/lib/live-price";
 import {
   checkTradingHalted,
   checkSymbolTradingMode,
+  checkTradingSession,
   checkLotStep,
   checkMaxOpenPositions,
   checkSymbolExposure,
@@ -82,6 +83,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   // ACCEPT
   const brokerSymbol = await prisma.brokerSymbol.findFirst({
     where: { brokerId, symbolId: order.symbolId, enabled: true },
+    include: { tradingSessions: true },
   });
   if (!brokerSymbol) {
     return NextResponse.json({ error: "symbol no longer available for this broker" }, { status: 400 });
@@ -96,6 +98,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   const riskError =
     checkTradingHalted(broker) ??
     checkSymbolTradingMode(brokerSymbol.tradingMode, order.side) ??
+    checkTradingSession(brokerSymbol.tradingSessions, new Date()) ??
     checkLotStep(order.volume, brokerSymbol.minLot, brokerSymbol.lotStep) ??
     (await checkMaxOpenPositions(prisma, order.accountId, broker.maxOpenPositionsPerAccount)) ??
     (await checkSymbolExposure(prisma, order.accountId, order.symbolId, order.volume, brokerSymbol.maxExposure)) ??

@@ -1,17 +1,19 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell } from "@/components/ui/Table";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { Button } from "@/components/ui/Button";
+import { Modal, ModalActions } from "@/components/ui/Modal";
 
 export type TradingMode = "BOTH" | "BUY_ONLY" | "SELL_ONLY";
 
 export type SymbolConfigRow = {
   symbolId: string;
+  brokerSymbolId: string | null;
   symbolName: string;
   category: string;
   digits: number;
@@ -50,6 +52,7 @@ export default function SymbolConfigTable({ initialRows }: { initialRows: Symbol
   const [savingId, setSavingId] = useState<string | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [savedId, setSavedId] = useState<string | null>(null);
+  const [sessionsFor, setSessionsFor] = useState<SymbolConfigRow | null>(null);
 
   function updateField(symbolId: string, field: EditableField, value: string) {
     setRows((prev) => prev.map((r) => (r.symbolId === symbolId ? { ...r, [field]: value } : r)));
@@ -142,6 +145,15 @@ export default function SymbolConfigTable({ initialRows }: { initialRows: Symbol
                 <Button size="sm" disabled={savingId === row.symbolId} onClick={() => save(row)}>
                   {savingId === row.symbolId ? "Saving..." : "Save"}
                 </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={!row.brokerSymbolId}
+                  title={row.brokerSymbolId ? undefined : "Save this symbol's config first"}
+                  onClick={() => setSessionsFor(row)}
+                >
+                  Sessions
+                </Button>
                 {savedId === row.symbolId ? <span className="text-xs text-[var(--buy)]">Saved</span> : null}
                 {errors[row.symbolId] ? (
                   <span className="text-xs text-[var(--sell)]">{errors[row.symbolId]}</span>
@@ -151,6 +163,105 @@ export default function SymbolConfigTable({ initialRows }: { initialRows: Symbol
           </TableRow>
         ))}
       </TableBody>
+      {sessionsFor ? <SessionsModal row={sessionsFor} onClose={() => setSessionsFor(null)} /> : null}
     </Table>
+  );
+}
+
+type SessionRow = { id: string; dayOfWeek: number; openTime: string; closeTime: string };
+
+const DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+// Trading windows for one symbol -- empty list = always tradable (see
+// lib/risk.ts's checkTradingSession). PUT replaces the whole list, so
+// this fetches fresh on open and saves the full array on every change
+// rather than tracking per-row add/delete against the server.
+function SessionsModal({ row, onClose }: { row: SymbolConfigRow; onClose: () => void }) {
+  const [sessions, setSessions] = useState<SessionRow[] | null>(null);
+  const [newDay, setNewDay] = useState("1");
+  const [newOpen, setNewOpen] = useState("00:00");
+  const [newClose, setNewClose] = useState("23:59");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetch(`/api/manage/symbols/${row.brokerSymbolId}/sessions`)
+      .then((r) => r.json())
+      .then(setSessions)
+      .catch(() => setSessions([]));
+  }, [row.brokerSymbolId]);
+
+  async function persist(next: SessionRow[]) {
+    setSaving(true);
+    setError(null);
+    const response = await fetch(`/api/manage/symbols/${row.brokerSymbolId}/sessions`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessions: next.map((s) => ({ dayOfWeek: s.dayOfWeek, openTime: s.openTime, closeTime: s.closeTime })) }),
+    });
+    setSaving(false);
+    if (!response.ok) {
+      const b = await response.json().catch(() => ({}));
+      setError(b.error ?? "save failed");
+      return;
+    }
+    setSessions(await response.json());
+  }
+
+  function addRow() {
+    if (!sessions) return;
+    persist([...sessions, { id: "", dayOfWeek: Number(newDay), openTime: newOpen, closeTime: newClose }]);
+  }
+
+  function removeRow(id: string) {
+    if (!sessions) return;
+    persist(sessions.filter((s) => s.id !== id));
+  }
+
+  return (
+    <Modal open onClose={onClose} title={`Trading sessions — ${row.symbolName}`}>
+      <div className="flex flex-col gap-3">
+        <p className="text-sm text-[var(--text-3)]">No sessions = always tradable. All times UTC.</p>
+        {sessions === null ? (
+          <p className="text-sm text-[var(--text-3)]">Loading...</p>
+        ) : sessions.length === 0 ? (
+          <p className="text-sm text-[var(--text-3)]">No sessions set — always tradable.</p>
+        ) : (
+          <div className="flex flex-col gap-1.5">
+            {sessions.map((s) => (
+              <div key={s.id} className="flex items-center justify-between rounded-lg border border-[var(--border)] px-3 py-1.5 text-sm">
+                <span className="font-mono">
+                  {DAY_LABELS[s.dayOfWeek]} {s.openTime}–{s.closeTime}
+                </span>
+                <Button size="sm" variant="ghost" disabled={saving} onClick={() => removeRow(s.id)}>
+                  Remove
+                </Button>
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="flex items-end gap-2">
+          <Select value={newDay} onChange={(e) => setNewDay(e.target.value)} className="w-28">
+            {DAY_LABELS.map((label, i) => (
+              <option key={i} value={i}>
+                {label}
+              </option>
+            ))}
+          </Select>
+          <Input type="text" mono value={newOpen} onChange={(e) => setNewOpen(e.target.value)} className="w-20" placeholder="HH:MM" />
+          <span className="text-[var(--text-3)]">–</span>
+          <Input type="text" mono value={newClose} onChange={(e) => setNewClose(e.target.value)} className="w-20" placeholder="HH:MM" />
+          <Button size="sm" disabled={saving || sessions === null} onClick={addRow}>
+            Add
+          </Button>
+        </div>
+        {error ? <p className="text-sm text-[var(--sell)]">{error}</p> : null}
+        <ModalActions>
+          <Button variant="ghost" onClick={onClose}>
+            Close
+          </Button>
+        </ModalActions>
+      </div>
+    </Modal>
   );
 }

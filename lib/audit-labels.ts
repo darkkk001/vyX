@@ -33,6 +33,7 @@ const LABELS: Record<string, string> = {
   DEALING_MODE_TOGGLED: "Toggled dealing mode",
   DEALING_ORDER_ACCEPTED: "Accepted dealing order",
   DEALING_ORDER_REJECTED: "Rejected dealing order",
+  INTERNAL_TRANSFER: "Internal transfer",
 };
 
 export function humanizeAction(action: string): string {

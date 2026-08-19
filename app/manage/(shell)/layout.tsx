@@ -31,6 +31,7 @@ export default async function ManageShellLayout({ children }: { children: React.
       label: "Clients",
       items: [
         { href: "/manage/accounts", label: "Clients" },
+        { href: "/manage/leads", label: "Leads" },
         ...(isBrokerAdmin ? [{ href: "/manage/kyc", label: "KYC review" }] : []),
       ],
     },
@@ -40,6 +41,7 @@ export default async function ManageShellLayout({ children }: { children: React.
             label: "Finance",
             items: [
               { href: "/manage/funds", label: "Deposits & withdrawals" },
+              { href: "/manage/transfers", label: "Internal transfers" },
               { href: "/manage/ib", label: "IB & affiliates" },
             ],
           } satisfies AdminNavGroup,
@@ -53,6 +55,7 @@ export default async function ManageShellLayout({ children }: { children: React.
         { href: "/manage/deals", label: "Deals" },
         { href: "/manage/symbols", label: "Symbols" },
         { href: "/manage/groups", label: "Client groups" },
+        { href: "/manage/margin", label: "Margin monitoring" },
         ...(isBrokerAdmin ? [{ href: "/manage/risk", label: "Risk rules" }, { href: "/manage/emergency", label: "Emergency controls" }] : []),
       ],
     },

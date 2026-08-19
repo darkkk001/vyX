@@ -6,6 +6,7 @@ import { validateSlTp } from "@/lib/trading";
 import {
   checkTradingHalted,
   checkSymbolTradingMode,
+  checkTradingSession,
   checkLotStep,
   checkMaxOpenPositions,
   checkSymbolExposure,
@@ -53,7 +54,7 @@ export async function POST(request: NextRequest) {
 
   const brokerSymbol = await prisma.brokerSymbol.findFirst({
     where: { brokerId: session.brokerId, enabled: true, symbol: { name: symbolName } },
-    include: { symbol: true },
+    include: { symbol: true, tradingSessions: true },
   });
   if (!brokerSymbol) {
     return NextResponse.json({ error: "symbol not available for this broker" }, { status: 400 });
@@ -81,6 +82,7 @@ export async function POST(request: NextRequest) {
   const riskError =
     checkTradingHalted(broker) ??
     checkSymbolTradingMode(brokerSymbol.tradingMode, side) ??
+    checkTradingSession(brokerSymbol.tradingSessions, new Date()) ??
     checkLotStep(volume, brokerSymbol.minLot, brokerSymbol.lotStep) ??
     (await checkMaxOpenPositions(prisma, session.accountId, broker.maxOpenPositionsPerAccount)) ??
     (await checkSymbolExposure(prisma, session.accountId, brokerSymbol.symbolId, volume, brokerSymbol.maxExposure)) ??
