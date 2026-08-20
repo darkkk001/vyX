@@ -402,7 +402,7 @@ async fn ingest_price_feed(
     }
 
     let count = ticks.len();
-    market_data::ingest::ingest_ticks(&state.pool, &state.nats, &state.tick_cache, &state.feed_stats, &ticks)
+    market_data::ingest::ingest_ticks(&state.nats, &state.tick_cache, &state.feed_stats, &ticks)
         .await
         .map_err(|err| {
             tracing::error!(?err, "ingest_ticks failed");
@@ -526,6 +526,32 @@ async fn main() {
 
     let tick_cache = Arc::new(TickCache::new());
     let feed_stats_registry = Arc::new(FeedStats::new());
+
+    // Periodic Postgres flush of the in-memory tick cache -- see
+    // market_data::ingest::spawn_periodic_flush's doc comment for why
+    // this replaced a per-tick write. Defaults picked from this
+    // session's own Prisma Postgres operations-quota incident: 3s for
+    // LivePrice (cheap, only the legacy poll fallback and manage-side
+    // risk reads still need it at all fresh), 15s for Candle (9x the
+    // write cost per symbol, and the chart's live-updating bar is
+    // already built client-side from the tick stream regardless of how
+    // often the persisted row catches up).
+    let live_price_flush_interval_secs: u64 = std::env::var("LIVE_PRICE_FLUSH_INTERVAL_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(3);
+    let candle_flush_interval_secs: u64 = std::env::var("CANDLE_FLUSH_INTERVAL_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(15);
+    market_data::ingest::spawn_periodic_flush(
+        pool.clone(),
+        tick_cache.clone(),
+        std::time::Duration::from_secs(live_price_flush_interval_secs),
+        std::time::Duration::from_secs(candle_flush_interval_secs),
+        feed_stats_registry.clone(),
+    );
+
     let state = Arc::new(AppState {
         pool,
         nats,

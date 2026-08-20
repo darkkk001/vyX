@@ -52,6 +52,19 @@ impl TickCache {
             None
         }
     }
+
+    // Read by the periodic Postgres flush loops (ingest::spawn_periodic_flush)
+    // -- every symbol's latest known tick, regardless of age. Staleness
+    // filtering is a *read-time* concern (get_if_fresh, Next.js's own 15s
+    // window) -- the flush just persists whatever the cache currently
+    // holds, same as it always would have per-tick.
+    pub fn snapshot(&self) -> Vec<Tick> {
+        let guard = match self.inner.read() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        guard.values().map(|(tick, _)| tick.clone()).collect()
+    }
 }
 
 impl Default for TickCache {
