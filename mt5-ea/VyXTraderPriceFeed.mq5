@@ -174,7 +174,12 @@ void OnTimer()
       double ask = SymbolInfoDouble(BrokerNames[i], SYMBOL_ASK);
       if (bid <= 0 || ask <= 0) continue; // not in Market Watch / wrong name
       if (!first) json += ",";
-      json += StringFormat("{\"symbol\":\"%s\",\"bid\":%.5f,\"ask\":%.5f,\"t0\":%d}", CanonicalNames[i], bid, ask, t0);
+      // %I64d, not %d -- t0 is a 64-bit long (ms since epoch); %d is
+      // MQL5's 32-bit specifier and silently truncates it, corrupting
+      // every downstream latency measurement (confirmed live: the VPS
+      // deployment's /internal/feed-stats showed t0 collapsing to a tiny
+      // leftover value once real Exness ticks started flowing).
+      json += StringFormat("{\"symbol\":\"%s\",\"bid\":%.5f,\"ask\":%.5f,\"t0\":%I64d}", CanonicalNames[i], bid, ask, t0);
       first = false;
    }
    json += "]";
