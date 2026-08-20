@@ -30,23 +30,47 @@ export default async function ManagerPositionsPage() {
   }
   const brokerId = session!.brokerId!;
 
-  const positions = await prisma.position.findMany({
-    where: { brokerId, status: "OPEN" },
-    include: {
-      account: {
-        select: {
-          accountNumber: true,
-          fullName: true,
-          groupId: true,
-          group: { select: { name: true } },
-          ibLinkAsClient: { select: { ibAccountId: true } },
+  // 5 independent reads, run in parallel rather than sequentially -- this
+  // page used to pay 6+ full Postgres round trips back-to-back (~150-300ms
+  // each against the Frankfurt-hosted pooled connection, easily 1-2s
+  // total), which is most of what made this specific page feel "stuck"
+  // compared to others. Only `getFreshPrices` has a real dependency (it
+  // needs `positions`' resolved symbol names), so it stays a second stage
+  // after the rest.
+  const [positions, accountRows, brokerSymbolRows, groupRows, ibRelationships] = await Promise.all([
+    prisma.position.findMany({
+      where: { brokerId, status: "OPEN" },
+      include: {
+        account: {
+          select: {
+            accountNumber: true,
+            fullName: true,
+            groupId: true,
+            group: { select: { name: true } },
+            ibLinkAsClient: { select: { ibAccountId: true } },
+          },
         },
+        symbol: { select: { name: true, digits: true, contractSize: true } },
+        originOrder: { select: { idempotencyKey: true } },
       },
-      symbol: { select: { name: true, digits: true, contractSize: true } },
-      originOrder: { select: { idempotencyKey: true } },
-    },
-    orderBy: { openedAt: "desc" },
-  });
+      orderBy: { openedAt: "desc" },
+    }),
+    prisma.account.findMany({
+      where: { brokerId, status: "ACTIVE" },
+      select: { id: true, accountNumber: true, fullName: true },
+      orderBy: { accountNumber: "asc" },
+    }),
+    prisma.brokerSymbol.findMany({
+      where: { brokerId, enabled: true },
+      include: { symbol: { select: { id: true, name: true } } },
+      orderBy: { symbol: { name: "asc" } },
+    }),
+    prisma.group.findMany({ where: { brokerId }, select: { id: true, name: true }, orderBy: { name: "asc" } }),
+    prisma.ibRelationship.findMany({
+      where: { brokerId },
+      select: { ibAccountId: true, ibAccount: { select: { accountNumber: true, fullName: true } } },
+    }),
+  ]);
 
   const symbolNames = [...new Set(positions.map((p) => p.symbol.name))];
   const priceBySymbol = await getFreshPrices(symbolNames);
@@ -88,30 +112,12 @@ export default async function ManagerPositionsPage() {
     };
   });
 
-  const accounts: AccountOption[] = (
-    await prisma.account.findMany({
-      where: { brokerId, status: "ACTIVE" },
-      select: { id: true, accountNumber: true, fullName: true },
-      orderBy: { accountNumber: "asc" },
-    })
-  ).map((a) => ({ id: a.id, accountNumber: a.accountNumber, fullName: a.fullName }));
+  const accounts: AccountOption[] = accountRows.map((a) => ({ id: a.id, accountNumber: a.accountNumber, fullName: a.fullName }));
 
-  const tradableSymbols: SymbolOption[] = (
-    await prisma.brokerSymbol.findMany({
-      where: { brokerId, enabled: true },
-      include: { symbol: { select: { id: true, name: true } } },
-      orderBy: { symbol: { name: "asc" } },
-    })
-  ).map((bs) => ({ id: bs.symbol.id, name: bs.symbol.name }));
+  const tradableSymbols: SymbolOption[] = brokerSymbolRows.map((bs) => ({ id: bs.symbol.id, name: bs.symbol.name }));
 
-  const groups: GroupOption[] = (
-    await prisma.group.findMany({ where: { brokerId }, select: { id: true, name: true }, orderBy: { name: "asc" } })
-  ).map((g) => ({ id: g.id, name: g.name }));
+  const groups: GroupOption[] = groupRows.map((g) => ({ id: g.id, name: g.name }));
 
-  const ibRelationships = await prisma.ibRelationship.findMany({
-    where: { brokerId },
-    select: { ibAccountId: true, ibAccount: { select: { accountNumber: true, fullName: true } } },
-  });
   const ibOptions: IbOption[] = [...new Map(ibRelationships.map((r) => [r.ibAccountId, r])).values()]
     .map((r) => ({ id: r.ibAccountId, accountNumber: r.ibAccount.accountNumber, fullName: r.ibAccount.fullName }))
     .sort((a, b) => a.accountNumber.localeCompare(b.accountNumber));

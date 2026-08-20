@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Card } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
@@ -65,6 +65,19 @@ export default function PositionsManager({
   ibOptions: IbOption[];
 }) {
   const router = useRouter();
+
+  // currentPrice/floatingPnl are computed server-side at render time
+  // (page.tsx) and only ever change when this Server Component re-runs --
+  // previously that only happened after this manager's own mutations
+  // (close/reverse/void/modify), so the whole page (prices included) sat
+  // frozen at whatever it showed on load until someone acted on it or
+  // reloaded. A manager watching floating P&L needs it to track the live
+  // feed, not their own click history -- refresh on the same 5s cadence
+  // LivePrice itself updates on (engine/market-data's periodic flush).
+  useEffect(() => {
+    const interval = setInterval(() => router.refresh(), 5000);
+    return () => clearInterval(interval);
+  }, [router]);
 
   // --- Filters ---
   const [symbolFilter, setSymbolFilter] = useState("ALL");

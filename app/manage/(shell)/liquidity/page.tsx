@@ -14,11 +14,24 @@ export default async function ManagerLiquidityPage() {
   }
   const brokerId = session!.brokerId!;
 
-  const providers = await prisma.liquidityProvider.findMany({
-    where: { brokerId },
-    include: { _count: { select: { routingRules: true } } },
-    orderBy: { createdAt: "desc" },
-  });
+  // Independent of each other (both only need brokerId) -- run together
+  // rather than back-to-back so this page pays one round trip, not two.
+  const [providers, grouped] = await Promise.all([
+    prisma.liquidityProvider.findMany({
+      where: { brokerId },
+      include: { _count: { select: { routingRules: true } } },
+      orderBy: { createdAt: "desc" },
+    }),
+    // Real numbers from real open Position rows -- unlike Liquidity
+    // Latency/Execution-Quality (deliberately "Not monitored"), this is
+    // something the app actually knows: which book each open position was
+    // stamped into at fill time (BrokerSymbol.defaultBookType).
+    prisma.position.groupBy({
+      by: ["symbolId", "bookType"],
+      where: { brokerId, status: "OPEN" },
+      _sum: { volume: true },
+    }),
+  ]);
 
   const rows: LiquidityProviderRow[] = providers.map((p) => ({
     id: p.id,
@@ -32,16 +45,6 @@ export default async function ManagerLiquidityPage() {
     routingRuleCount: p._count.routingRules,
     createdAt: p.createdAt.toISOString().replace("T", " ").slice(0, 19),
   }));
-
-  // Real numbers from real open Position rows -- unlike Liquidity
-  // Latency/Execution-Quality (deliberately "Not monitored"), this is
-  // something the app actually knows: which book each open position was
-  // stamped into at fill time (BrokerSymbol.defaultBookType).
-  const grouped = await prisma.position.groupBy({
-    by: ["symbolId", "bookType"],
-    where: { brokerId, status: "OPEN" },
-    _sum: { volume: true },
-  });
   const symbolIds = [...new Set(grouped.map((g) => g.symbolId))];
   const symbols = await prisma.symbol.findMany({ where: { id: { in: symbolIds } }, select: { id: true, name: true } });
   const nameById = new Map(symbols.map((s) => [s.id, s.name]));
