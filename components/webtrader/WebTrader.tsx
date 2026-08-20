@@ -18,6 +18,7 @@ import DesktopTitleBar from "./DesktopTitleBar";
 import SessionClock from "./SessionClock";
 import NewsPanel from "./NewsPanel";
 import ChartCell from "./ChartCell";
+import SmartTradeManager from "./SmartTradeManager";
 import { computeChartLines } from "@/lib/chart-lines";
 
 declare global {
@@ -101,6 +102,10 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
 
   const [account, setAccount] = useState<AccountInfo | null>(null);
   const [positions, setPositions] = useState<ApiPosition[]>([]);
+  // "Selected" scope for Smart Trade Manager's bulk actions (break-even,
+  // partial close, close) -- otherwise unused outside SmartTradeManager.tsx.
+  const [selectedPositionIds, setSelectedPositionIds] = useState<Set<string>>(new Set());
+  const [stmOpen, setStmOpen] = useState(false);
   const [pendingOrders, setPendingOrders] = useState<ApiOrder[]>([]);
   const [history, setHistory] = useState<ApiPosition[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -1415,6 +1420,9 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
             <button className="rail-item" title="Alerts" onClick={() => setAlertsModalOpen(true)}>
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9" /><path d="M13.73 21a2 2 0 0 1-3.46 0" /></svg>
             </button>
+            <button className="rail-item" title="Smart Trade Manager" onClick={() => setStmOpen(true)}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8Z" /></svg>
+            </button>
             <div className="rail-sep" />
             <button className="rail-item rail-bottom" title="Change password" onClick={() => setChangePasswordOpen(true)}>
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" /></svg>
@@ -1703,6 +1711,14 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
               {activeBottomTab === "positions" ? (
                 <div className="panel-body">
                   <div className="pos-table-header">
+                    <span>
+                      <input
+                        type="checkbox"
+                        title="Select all"
+                        checked={acctPositions.length > 0 && acctPositions.every((p) => selectedPositionIds.has(p.id))}
+                        onChange={(e) => setSelectedPositionIds(e.target.checked ? new Set(acctPositions.map((p) => p.id)) : new Set())}
+                      />
+                    </span>
                     <span>ID</span><span>Symbol</span><span>Type</span><span>Lots</span><span>Price</span><span>Opened</span><span>S/L</span><span>T/P</span><span>Comment</span><span>Swap</span><span>Commission</span><span>Profit</span><span></span>
                   </div>
                   {acctPositions.length === 0 ? (
@@ -1714,6 +1730,19 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
                       const isTpEditing = inlineEditing?.id === p.id && inlineEditing.field === "tp";
                       return (
                         <div className="position-row" key={p.id}>
+                          <span className="pos-cell">
+                            <input
+                              type="checkbox"
+                              checked={selectedPositionIds.has(p.id)}
+                              onChange={(e) =>
+                                setSelectedPositionIds((prev) => {
+                                  const next = new Set(prev);
+                                  if (e.target.checked) next.add(p.id); else next.delete(p.id);
+                                  return next;
+                                })
+                              }
+                            />
+                          </span>
                           <span className="pos-cell mono" style={{ color: "var(--text-3)", fontSize: 11 }}>{p.id.slice(-8)}</span>
                           <span className="pos-cell pos-symbol">{p.symbol.name}</span>
                           <span className="pos-cell"><span className={`pos-side ${p.side.toLowerCase()}`}>{p.side === "BUY" ? "Buy" : "Sell"}</span></span>
@@ -2425,6 +2454,20 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
           </div>
         </div>
       ) : null}
+
+      <SmartTradeManager
+        open={stmOpen}
+        onClose={() => setStmOpen(false)}
+        market={market}
+        positions={positions}
+        positionPnl={positionPnl}
+        activeSymbol={activeSymbol}
+        selectedPositionIds={selectedPositionIds}
+        pushToast={pushToast}
+        refreshPositions={refreshPositions}
+        refreshHistory={refreshHistory}
+        refreshAccount={refreshAccount}
+      />
 
       <div className="toast" style={{ opacity: toasts.length > 0 ? 1 : 0 }}>{toasts[toasts.length - 1]?.message ?? ""}</div>
     </div>
