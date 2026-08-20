@@ -15,6 +15,36 @@ import type { NextRequest } from "next/server";
 
 const SUPER_ADMIN_SUBDOMAIN = "admin";
 
+type BrokerInfo = {
+  id: string;
+  subdomain: string;
+  tier: string;
+  logoUrl: string | null;
+  primaryColor: string | null;
+};
+
+// Module-scope cache, not Next.js's fetch Data Cache (a prior attempt using
+// `next: { revalidate: 60 }` here broke broker resolution in production --
+// Edge Middleware and the Data Cache didn't compose the way that assumed).
+// This is a plain Map on the Edge isolate instead: every request currently
+// pays a full middleware -> resolve-broker -> Prisma -> Postgres round trip
+// before the actual page/API even starts, which is the dominant cost behind
+// the 2-5s per-click slowness in the backoffice app. Broker metadata here
+// (tier/logo/color) changes rarely, so a short fresh window removes that
+// round trip for almost every request without going stale in any way a user
+// would notice.
+//
+// FRESH_MS: served instantly, no fetch at all.
+// STALE_MS: still used as a fallback if a re-fetch fails, instead of
+//   rewriting to /broker-not-found -- this is the same failure mode that hit
+//   production during the Prisma plan-limit outage (every broker's site
+//   404ing at once because the lookup fetch failed). A transient DB/network
+//   blip now degrades to "serving slightly-stale broker info" instead of
+//   "site down."
+const FRESH_MS = 30_000;
+const STALE_MS = 30 * 60_000;
+const brokerCache = new Map<string, { broker: BrokerInfo; fetchedAt: number }>();
+
 export async function middleware(request: NextRequest) {
   const host = request.headers.get("host") ?? "";
   const hostname = host.split(":")[0];
@@ -41,35 +71,44 @@ export async function middleware(request: NextRequest) {
     ? hostname.slice(0, -(rootDomain.length + 1))
     : null;
 
-  const lookupUrl = new URL("/api/internal/resolve-broker", request.url);
-  if (subdomain) {
-    lookupUrl.searchParams.set("subdomain", subdomain);
+  const cacheKey = hostname;
+  const cached = brokerCache.get(cacheKey);
+  const now = Date.now();
+
+  let broker: BrokerInfo;
+
+  if (cached && now - cached.fetchedAt < FRESH_MS) {
+    broker = cached.broker;
   } else {
-    lookupUrl.searchParams.set("customDomain", hostname);
+    const lookupUrl = new URL("/api/internal/resolve-broker", request.url);
+    if (subdomain) {
+      lookupUrl.searchParams.set("subdomain", subdomain);
+    } else {
+      lookupUrl.searchParams.set("customDomain", hostname);
+    }
+
+    try {
+      const resolveResponse = await fetch(lookupUrl, {
+        headers: { "x-internal-request": "middleware" },
+      });
+
+      if (!resolveResponse.ok) {
+        throw new Error(`resolve-broker returned ${resolveResponse.status}`);
+      }
+
+      broker = (await resolveResponse.json()) as BrokerInfo;
+      brokerCache.set(cacheKey, { broker, fetchedAt: now });
+    } catch (err) {
+      // Fall back to a stale-but-recent cache entry rather than taking the
+      // whole broker's site down on a transient DB/network blip -- see the
+      // brokerCache comment above.
+      if (cached && now - cached.fetchedAt < STALE_MS) {
+        broker = cached.broker;
+      } else {
+        return NextResponse.rewrite(new URL("/broker-not-found", request.url));
+      }
+    }
   }
-
-  // Reverted a next:{revalidate:60} attempt here -- broke broker
-  // resolution in production (some routes started 404ing to
-  // /broker-not-found while others kept working, live-observed right
-  // after deploy). Next.js's fetch Data Cache and Edge Middleware
-  // apparently don't compose the way that assumed; needs a real repro
-  // in a preview deployment before trying again, not another direct
-  // shot at production. Uncached, like before this session touched it.
-  const resolveResponse = await fetch(lookupUrl, {
-    headers: { "x-internal-request": "middleware" },
-  });
-
-  if (!resolveResponse.ok) {
-    return NextResponse.rewrite(new URL("/broker-not-found", request.url));
-  }
-
-  const broker = (await resolveResponse.json()) as {
-    id: string;
-    subdomain: string;
-    tier: string;
-    logoUrl: string | null;
-    primaryColor: string | null;
-  };
 
   const requestHeaders = new Headers(request.headers);
   requestHeaders.set("x-broker-id", broker.id);
