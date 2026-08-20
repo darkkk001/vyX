@@ -29,3 +29,32 @@ export async function forbidUnlessBrokerAdminOrPermission(session: AdminSessionP
   return !(await hasPermission(session, permission));
 }
 
+export type PermissionContext = {
+  forbidUnless: (permission: Permission) => boolean; // true = should be rejected
+};
+
+// Several routes (funds-requests, risk, kyc-requests, admins, ...) check
+// more than one permission per request -- e.g. risk/route.ts's PATCH
+// checks EMERGENCY_CONTROLS and RISK_SETTINGS independently depending on
+// which fields the body touches. Calling forbidUnlessBrokerAdminOrPermission
+// per-check meant a fresh Manager account did a separate
+// prisma.adminUser.findUnique for each one, all identical, all in the
+// same request -- a real, measured contributor to the multi-second
+// per-click delay Manager-role admins were seeing. This fetches the
+// account once (still nothing for BROKER_ADMIN, which never needed the
+// query) and answers every subsequent check from that one result.
+export async function getPermissionContext(session: AdminSessionPayload | null): Promise<PermissionContext> {
+  if (!session || !session.brokerId) {
+    return { forbidUnless: () => true };
+  }
+  if (session.role === "BROKER_ADMIN") {
+    return { forbidUnless: () => false };
+  }
+  if (session.role !== "MANAGER") {
+    return { forbidUnless: () => true };
+  }
+  const admin = await prisma.adminUser.findUnique({ where: { id: session.adminId }, select: { status: true, extraPermissions: true } });
+  const granted = new Set(admin && admin.status === "ACTIVE" ? admin.extraPermissions : []);
+  return { forbidUnless: (permission) => !granted.has(permission) };
+}
+

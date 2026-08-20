@@ -48,8 +48,20 @@ export async function middleware(request: NextRequest) {
     lookupUrl.searchParams.set("customDomain", hostname);
   }
 
+  // Cached for 60s (Next.js's fetch Data Cache, per unique lookupUrl --
+  // subdomain/customDomain keys it naturally, no cross-broker leakage).
+  // This fetch ran uncached before -- meaning literally every request in
+  // this app (every page load, every router.refresh(), every /api/manage
+  // or /api/trade call) paid for a full extra round trip (this Edge
+  // function -> this serverless function -> a Postgres query) just to
+  // resolve which broker the Host header belongs to, before the actual
+  // page/route even started. Broker id/subdomain/tier/logo/color change
+  // on the order of "an admin edits branding once in a while," not
+  // per-request, so a 60s staleness window is a safe trade for cutting
+  // that extra hop out of almost every request.
   const resolveResponse = await fetch(lookupUrl, {
     headers: { "x-internal-request": "middleware" },
+    next: { revalidate: 60 },
   });
 
   if (!resolveResponse.ok) {

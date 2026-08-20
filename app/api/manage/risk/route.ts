@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession } from "@/lib/auth";
-import { forbidUnlessBrokerAdminOrPermission } from "@/lib/permissions";
+import { getPermissionContext } from "@/lib/permissions";
 
 // Broker-wide risk policy -- BROKER_ADMIN by default, same finance/ops
 // carve-out as Funds/KYC/IB/Team, delegatable per field: `tradingHalted`
@@ -11,11 +11,8 @@ import { forbidUnlessBrokerAdminOrPermission } from "@/lib/permissions";
 // enforced on the live trading path.
 export async function GET() {
   const session = await getAdminSession();
-  const [forbidRisk, forbidEmergency] = await Promise.all([
-    forbidUnlessBrokerAdminOrPermission(session, "RISK_SETTINGS"),
-    forbidUnlessBrokerAdminOrPermission(session, "EMERGENCY_CONTROLS"),
-  ]);
-  if (forbidRisk && forbidEmergency) {
+  const permissions = await getPermissionContext(session);
+  if (permissions.forbidUnless("RISK_SETTINGS") && permissions.forbidUnless("EMERGENCY_CONTROLS")) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
 
@@ -47,8 +44,12 @@ export async function PATCH(request: NextRequest) {
   // Per-field permission check -- a request touching a RISK_SETTINGS
   // field without that permission (even if it also legitimately touches
   // an EMERGENCY_CONTROLS field) is rejected outright rather than
-  // silently applying only the allowed half.
-  if ("tradingHalted" in body && (await forbidUnlessBrokerAdminOrPermission(session, "EMERGENCY_CONTROLS"))) {
+  // silently applying only the allowed half. One getPermissionContext()
+  // fetch (not two separate forbidUnlessBrokerAdminOrPermission calls) --
+  // a request touching both tradingHalted and a risk field would
+  // otherwise query AdminUser twice for the same Manager account.
+  const permissions = await getPermissionContext(session);
+  if ("tradingHalted" in body && permissions.forbidUnless("EMERGENCY_CONTROLS")) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
   const touchesRiskFields =
@@ -57,7 +58,7 @@ export async function PATCH(request: NextRequest) {
     "maxOpenPositionsPerAccount" in body ||
     "smartDealerAcceptPct" in body ||
     "smartDealerRejectPct" in body;
-  if (touchesRiskFields && (await forbidUnlessBrokerAdminOrPermission(session, "RISK_SETTINGS"))) {
+  if (touchesRiskFields && permissions.forbidUnless("RISK_SETTINGS")) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
 
