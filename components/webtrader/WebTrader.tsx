@@ -466,15 +466,20 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
       // Rides along with the price poll rather than its own interval --
       // this is the only thing that would otherwise surface a dealer's
       // requote (order status flips PENDING -> REQUOTED server-side with
-      // nothing pushing that change to the client). refreshOrders()
-      // already swallows its own errors, so this never affects the
-      // connection-status logic above.
-      if (!cancelled) refreshOrders();
+      // nothing pushing that change to the client) or any position change
+      // that didn't originate from this tab (a manual position from the
+      // backoffice, a dealer fill, an auto-close/stop-out) -- previously
+      // refreshPositions() only ran once on mount and after this tab's own
+      // trade actions, so an externally-created position could sit
+      // invisible for as long as the trader didn't happen to do anything
+      // else. Both already swallow their own errors, so neither affects
+      // the connection-status logic above.
+      if (!cancelled) { refreshOrders(); refreshPositions(); }
     }
     poll();
     const interval = setInterval(poll, 2000);
     return () => { cancelled = true; clearInterval(interval); };
-  }, [appendLog, refreshOrders]);
+  }, [appendLog, refreshOrders, refreshPositions]);
 
   // Pushed ticks from the API Gateway's price-tick WebSocket
   // (services/api-gateway/src/ws.ts, fed by NATS from the Rust Market
