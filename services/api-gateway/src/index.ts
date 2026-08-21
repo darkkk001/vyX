@@ -9,7 +9,7 @@ import { createServer } from "node:http";
 import express from "express";
 import ordersRouter from "./routes/orders.js";
 import positionsRouter from "./routes/positions.js";
-import { attachPriceStream, gatewayStats } from "./ws.js";
+import { attachPriceStream, attachTradingEventStream, gatewayStats } from "./ws.js";
 
 const app = express();
 app.use(express.json());
@@ -43,6 +43,9 @@ const natsUrl = process.env.NATS_URL ?? "nats://127.0.0.1:4222";
 
 attachPriceStream(server, natsUrl).catch((err) => {
   console.error("failed to start price stream (NATS unreachable?)", err);
+});
+attachTradingEventStream(server, natsUrl).catch((err) => {
+  console.error("failed to start trading event stream (NATS unreachable?)", err);
 });
 
 server.listen(port, () => {

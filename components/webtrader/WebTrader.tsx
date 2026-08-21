@@ -563,6 +563,47 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
     };
   }, []);
 
+  // Pushed order/position/account events (docs/webtrader-stm-architecture-
+  // review.md §4.3, sequencing item 4) -- the Gateway
+  // (services/api-gateway/src/ws.ts's attachTradingEventStream) only ever
+  // forwards messages already scoped to this session's account, so every
+  // message received here is relevant; no client-side filtering needed.
+  // A dealer filling/rejecting a dealing-queue order, or a requote landing
+  // on this account, are the cases this actually shaves the up-to-2s poll
+  // delay off of -- this tab's own actions already get their result
+  // synchronously in the HTTP response, so this is a genuine latency win
+  // only for changes another actor made. Doesn't distinguish event `type`
+  // -- refreshing all three is cheap and avoids this effect needing to
+  // track every event shape the backend might ever add. Same silent-
+  // failure/2s-poll-fallback rule as the price-tick socket above.
+  useEffect(() => {
+    let cancelled = false;
+    let socket: WebSocket | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+    function connect() {
+      if (cancelled) return;
+      const base = process.env.NEXT_PUBLIC_GATEWAY_WS_URL ?? "ws://127.0.0.1:8080";
+      socket = new WebSocket(`${base}/v1/trading/stream`);
+      socket.onmessage = () => {
+        refreshOrders();
+        refreshPositions();
+        refreshAccount();
+      };
+      socket.onclose = () => {
+        if (!cancelled) reconnectTimer = setTimeout(connect, 3000);
+      };
+      socket.onerror = () => socket?.close();
+    }
+    connect();
+
+    return () => {
+      cancelled = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      socket?.close();
+    };
+  }, [refreshOrders, refreshPositions, refreshAccount]);
+
   // Seeds real OHLC history (see /api/trade/candles) for a symbol+timeframe,
   // replacing the synthetic seed. A symbol with no feed history yet (empty
   // response) just keeps simulating — no real data to show, nothing to

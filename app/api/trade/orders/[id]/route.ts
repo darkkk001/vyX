@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
+import { publishTradingEvent } from "@/lib/nats";
 
 // Cancel a resting PENDING order. No arbitrary status jumps — only
 // PENDING -> CANCELLED is allowed here.
@@ -26,5 +27,6 @@ export async function DELETE(
     where: { id },
     data: { status: "CANCELLED" },
   });
+  await publishTradingEvent("OrderCancelled", { order_id: id, account_id: session.accountId });
   return NextResponse.json(cancelled);
 }

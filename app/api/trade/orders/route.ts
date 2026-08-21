@@ -5,6 +5,7 @@ import { getAccountSession } from "@/lib/account-auth";
 import { validateSlTp } from "@/lib/trading";
 import { createNotification } from "@/lib/notifications";
 import { openPositionFromOrder } from "@/lib/dealing";
+import { publishTradingEvent } from "@/lib/nats";
 import {
   checkTradingHalted,
   checkSymbolTradingMode,
@@ -170,6 +171,13 @@ export async function POST(request: NextRequest) {
             });
             return pos;
           });
+          await publishTradingEvent("OrderFilled", {
+            order_id: order.id,
+            account_id: session.accountId,
+            price: liveRef.toString(),
+            volume: volume.toString(),
+            remaining_volume: "0",
+          });
           return NextResponse.json({ order: { ...order, status: "FILLED", filledPrice: liveRef }, positionId: position.id }, { status: 201 });
         }
 
@@ -189,6 +197,11 @@ export async function POST(request: NextRequest) {
             });
             return o;
           });
+          await publishTradingEvent("OrderRejected", {
+            order_id: order.id,
+            account_id: session.accountId,
+            reason,
+          });
           return NextResponse.json({ order: rejected }, { status: 201 });
         }
       }
@@ -203,6 +216,7 @@ export async function POST(request: NextRequest) {
         entityType: "Order",
         entityId: order.id,
       });
+      await publishTradingEvent("OrderAccepted", { order_id: order.id, account_id: session.accountId });
       return NextResponse.json({ order }, { status: 201 });
     }
 
@@ -241,6 +255,13 @@ export async function POST(request: NextRequest) {
         });
         return { order, position };
       });
+      await publishTradingEvent("OrderFilled", {
+        order_id: result.order.id,
+        account_id: session.accountId,
+        price: result.order.filledPrice?.toString() ?? price,
+        volume: volume.toString(),
+        remaining_volume: "0",
+      });
       return NextResponse.json(result, { status: 201 });
     }
 
@@ -262,6 +283,7 @@ export async function POST(request: NextRequest) {
         status: "PENDING",
       },
     });
+    await publishTradingEvent("OrderAccepted", { order_id: order.id, account_id: session.accountId });
     return NextResponse.json(order, { status: 201 });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {

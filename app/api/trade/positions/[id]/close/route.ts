@@ -3,6 +3,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
 import { computeRealizedPnl } from "@/lib/trading";
+import { publishTradingEvent } from "@/lib/nats";
 
 // Closing (fully or partially) is the one place a trade changes the
 // account balance. Realized P&L is computed server-side and applied
@@ -107,5 +108,6 @@ export async function POST(
     return { position: updatedPosition, transaction, partial: isPartial };
   });
 
+  await publishTradingEvent("PositionClosed", { position_id: position.id, account_id: session.accountId });
   return NextResponse.json(result);
 }

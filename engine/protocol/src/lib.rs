@@ -63,6 +63,7 @@ pub struct Tick {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Fill {
     pub order_id: String,
+    pub account_id: String,
     pub price: Decimal,
     pub volume: Decimal,
     pub remaining_volume: Decimal,
@@ -71,20 +72,26 @@ pub struct Fill {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RiskRejection {
     pub order_id: String,
+    pub account_id: String,
     pub reason: String,
 }
 
 /// Events published to NATS by the Trading Core; the API Gateway
 /// subscribes and fans these out over WebSocket. See docs/api.md §2.1.
+///
+/// Every variant carries `account_id` (directly or via `Fill`/
+/// `RiskRejection`) so the Gateway can route a message to only the
+/// WebSocket connections for that account without a DB lookup per event
+/// — see services/api-gateway/src/ws.ts's `attachTradingEventStream`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum TradingEvent {
-    OrderAccepted { order_id: String },
+    OrderAccepted { order_id: String, account_id: String },
     OrderRejected(RiskRejection),
     OrderFilled(Fill),
     OrderPartiallyFilled(Fill),
-    OrderCancelled { order_id: String },
-    OrderExpired { order_id: String },
+    OrderCancelled { order_id: String, account_id: String },
+    OrderExpired { order_id: String, account_id: String },
     MarginCall { account_id: String, margin_level: Decimal },
     StopOut { account_id: String, closed_position_ids: Vec<String> },
     /// Position auto-closed because price crossed the trader's own
@@ -93,4 +100,12 @@ pub enum TradingEvent {
     /// trader set. See docs/risk-engine.md §2.2 / order_management::monitor.
     StopLossHit { account_id: String, position_id: String },
     TakeProfitHit { account_id: String, position_id: String },
+    /// Trader- or dealer-initiated close (full or partial) — distinct from
+    /// `StopLossHit`/`TakeProfitHit`/`StopOut`, which are all
+    /// system-initiated. Published by the legacy Next.js close route too
+    /// (docs/webtrader-stm-architecture-review.md §4.3) since the Rust
+    /// engine has no manual-close route yet.
+    PositionClosed { account_id: String, position_id: String },
+    /// SL/TP edited on an open position.
+    PositionModified { account_id: String, position_id: String },
 }

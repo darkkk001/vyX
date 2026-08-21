@@ -25,6 +25,7 @@ pub enum ExecutionStrategy {
 /// order OMS is routing; this function only decides price.
 pub fn execute_market_order(
     order_id: &str,
+    account_id: &str,
     side: OrderSide,
     volume: Decimal,
     current: &Tick,
@@ -38,6 +39,7 @@ pub fn execute_market_order(
             };
             Fill {
                 order_id: order_id.to_string(),
+                account_id: account_id.to_string(),
                 price,
                 volume,
                 remaining_volume: Decimal::ZERO,
@@ -62,14 +64,14 @@ mod tests {
 
     #[test]
     fn buy_fills_at_ask() {
-        let fill = execute_market_order("o1", OrderSide::Buy, dec!(1), &tick(), ExecutionStrategy::Internal);
+        let fill = execute_market_order("o1", "a1", OrderSide::Buy, dec!(1), &tick(), ExecutionStrategy::Internal);
         assert_eq!(fill.price, dec!(1.10020));
         assert_eq!(fill.remaining_volume, Decimal::ZERO);
     }
 
     #[test]
     fn sell_fills_at_bid() {
-        let fill = execute_market_order("o1", OrderSide::Sell, dec!(1), &tick(), ExecutionStrategy::Internal);
+        let fill = execute_market_order("o1", "a1", OrderSide::Sell, dec!(1), &tick(), ExecutionStrategy::Internal);
         assert_eq!(fill.price, dec!(1.10000));
     }
 }

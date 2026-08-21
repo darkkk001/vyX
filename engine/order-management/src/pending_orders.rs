@@ -73,12 +73,12 @@ async fn trigger_order(
     }
 
     let Some(state) = load_account_state(pool, &order.account_id).await? else {
-        reject_order(tx, nats, &order.id, "account not found".to_string()).await?;
+        reject_order(tx, nats, &order.id, &order.account_id,"account not found".to_string()).await?;
         return Ok(());
     };
 
     let Some(contract_size) = db::get_symbol_contract_size(pool, &order.symbol).await? else {
-        reject_order(tx, nats, &order.id, "unknown symbol".to_string()).await?;
+        reject_order(tx, nats, &order.id, &order.account_id,"unknown symbol".to_string()).await?;
         return Ok(());
     };
 
@@ -89,7 +89,7 @@ async fn trigger_order(
     // place_pending_order) and don't need rechecking here.
     let required = risk::required_margin(order.volume, contract_size, tick.bid, state.leverage);
     if let Err(reject_reason) = risk::check_free_margin(calc::equity(&state), calc::used_margin(&state), required) {
-        reject_order(tx, nats, &order.id, reject_reason.to_string()).await?;
+        reject_order(tx, nats, &order.id, &order.account_id,reject_reason.to_string()).await?;
         return Ok(());
     }
 
@@ -102,12 +102,12 @@ async fn trigger_order(
     let open_volume: Decimal = state.positions.iter().filter(|p| p.symbol == order.symbol).map(|p| p.volume).sum();
     let max_exposure = symbol_config.as_ref().and_then(|cfg| cfg.max_exposure);
     if let Err(reject_reason) = risk::check_symbol_exposure(open_volume, order.volume, max_exposure) {
-        reject_order(tx, nats, &order.id, reject_reason.to_string()).await?;
+        reject_order(tx, nats, &order.id, &order.account_id,reject_reason.to_string()).await?;
         return Ok(());
     }
     let max_open_positions = db::get_broker_max_open_positions(pool, &order.broker_id).await?;
     if let Err(reject_reason) = risk::check_max_open_positions(state.positions.len() as i64, max_open_positions) {
-        reject_order(tx, nats, &order.id, reject_reason.to_string()).await?;
+        reject_order(tx, nats, &order.id, &order.account_id,reject_reason.to_string()).await?;
         return Ok(());
     }
 
@@ -119,7 +119,7 @@ async fn trigger_order(
         None => tick.clone(),
     };
 
-    let fill = execution::execute_market_order(&order.id, order.side, order.volume, &quoted_tick, execution::ExecutionStrategy::Internal);
+    let fill = execution::execute_market_order(&order.id, &order.account_id, order.side, order.volume, &quoted_tick, execution::ExecutionStrategy::Internal);
 
     db::set_filled(&mut tx, &order.id, fill.price, fill.volume).await?;
 
@@ -150,6 +150,7 @@ async fn trigger_order(
         nats,
         &TradingEvent::OrderFilled(Fill {
             order_id: order.id.clone(),
+            account_id: order.account_id.clone(),
             price: fill.price,
             volume: fill.volume,
             remaining_volume: fill.remaining_volume,

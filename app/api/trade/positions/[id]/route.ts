@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
 import { validateSlTp } from "@/lib/trading";
+import { publishTradingEvent } from "@/lib/nats";
 
 // Inline SL/TP edit on an open position — side-aware validated against the
 // client-reported current price, same rule as order placement.
@@ -49,5 +50,6 @@ export async function PATCH(
       ...(tpPrice !== undefined ? { tpPrice } : {}),
     },
   });
+  await publishTradingEvent("PositionModified", { position_id: id, account_id: session.accountId });
   return NextResponse.json(updated);
 }

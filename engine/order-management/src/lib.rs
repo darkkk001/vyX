@@ -177,7 +177,7 @@ pub async fn place_market_order(
     let current_tick = match current_tick {
         Some(tick) => tick,
         None => {
-            let reason = reject_order(tx, nats, &order_id, format!("no live price for {}", req.symbol)).await?;
+            let reason = reject_order(tx, nats, &order_id, &req.account_id,format!("no live price for {}", req.symbol)).await?;
             return Ok(PlaceMarketOrderOutcome::Rejected { order_id, reason });
         }
     };
@@ -192,18 +192,18 @@ pub async fn place_market_order(
 
     if let Some(cfg) = &symbol_config {
         if let Err(reject_reason) = risk::check_symbol_enabled(cfg.enabled) {
-            let reason = reject_order(tx, nats, &order_id, reject_reason.to_string()).await?;
+            let reason = reject_order(tx, nats, &order_id, &req.account_id,reject_reason.to_string()).await?;
             return Ok(PlaceMarketOrderOutcome::Rejected { order_id, reason });
         }
         if let Err(reject_reason) = risk::check_lot_size(req.volume, cfg.min_lot, cfg.max_lot, cfg.lot_step) {
-            let reason = reject_order(tx, nats, &order_id, reject_reason.to_string()).await?;
+            let reason = reject_order(tx, nats, &order_id, &req.account_id,reject_reason.to_string()).await?;
             return Ok(PlaceMarketOrderOutcome::Rejected { order_id, reason });
         }
     }
 
     let required = risk::required_margin(req.volume, req.contract_size, current_tick.bid, req.leverage);
     if let Err(reject_reason) = risk::check_free_margin(req.equity, req.used_margin, required) {
-        let reason = reject_order(tx, nats, &order_id, reject_reason.to_string()).await?;
+        let reason = reject_order(tx, nats, &order_id, &req.account_id,reject_reason.to_string()).await?;
         return Ok(PlaceMarketOrderOutcome::Rejected { order_id, reason });
     }
 
@@ -216,11 +216,11 @@ pub async fn place_market_order(
         db::get_exposure_and_max_positions(pool, &req.broker_id, &req.account_id, &req.symbol).await?;
     let max_exposure = symbol_config.as_ref().and_then(|cfg| cfg.max_exposure);
     if let Err(reject_reason) = risk::check_symbol_exposure(exposure.open_volume, req.volume, max_exposure) {
-        let reason = reject_order(tx, nats, &order_id, reject_reason.to_string()).await?;
+        let reason = reject_order(tx, nats, &order_id, &req.account_id,reject_reason.to_string()).await?;
         return Ok(PlaceMarketOrderOutcome::Rejected { order_id, reason });
     }
     if let Err(reject_reason) = risk::check_max_open_positions(exposure.open_position_count, max_open_positions) {
-        let reason = reject_order(tx, nats, &order_id, reject_reason.to_string()).await?;
+        let reason = reject_order(tx, nats, &order_id, &req.account_id,reject_reason.to_string()).await?;
         return Ok(PlaceMarketOrderOutcome::Rejected { order_id, reason });
     }
 
@@ -234,6 +234,7 @@ pub async fn place_market_order(
 
     let fill = execution::execute_market_order(
         &order_id,
+        &req.account_id,
         req.side,
         req.volume,
         &quoted_tick,
@@ -270,6 +271,7 @@ pub async fn place_market_order(
         nats,
         &TradingEvent::OrderFilled(Fill {
             order_id: order_id.clone(),
+            account_id: req.account_id.clone(),
             price: fill.price,
             volume: fill.volume,
             remaining_volume: fill.remaining_volume,
@@ -385,13 +387,13 @@ pub async fn place_pending_order(
     let current_tick = match current_tick {
         Some(tick) => tick,
         None => {
-            let reason = reject_order(tx, nats, &order_id, format!("no live price for {}", req.symbol)).await?;
+            let reason = reject_order(tx, nats, &order_id, &req.account_id,format!("no live price for {}", req.symbol)).await?;
             return Ok(PlacePendingOrderOutcome::Rejected { order_id, reason });
         }
     };
 
     if let Err(reason) = validate_pending_price_side(req.side, req.order_type, req.requested_price, &current_tick) {
-        let reason = reject_order(tx, nats, &order_id, reason).await?;
+        let reason = reject_order(tx, nats, &order_id, &req.account_id,reason).await?;
         return Ok(PlacePendingOrderOutcome::Rejected { order_id, reason });
     }
 
@@ -402,11 +404,11 @@ pub async fn place_pending_order(
     // (pending_orders.rs) since volume never changes after placement.
     if let Some(cfg) = db::get_broker_symbol_config(pool, &req.broker_id, &req.symbol).await? {
         if let Err(reject_reason) = risk::check_symbol_enabled(cfg.enabled) {
-            let reason = reject_order(tx, nats, &order_id, reject_reason.to_string()).await?;
+            let reason = reject_order(tx, nats, &order_id, &req.account_id,reject_reason.to_string()).await?;
             return Ok(PlacePendingOrderOutcome::Rejected { order_id, reason });
         }
         if let Err(reject_reason) = risk::check_lot_size(req.volume, cfg.min_lot, cfg.max_lot, cfg.lot_step) {
-            let reason = reject_order(tx, nats, &order_id, reject_reason.to_string()).await?;
+            let reason = reject_order(tx, nats, &order_id, &req.account_id,reject_reason.to_string()).await?;
             return Ok(PlacePendingOrderOutcome::Rejected { order_id, reason });
         }
     }
@@ -414,7 +416,7 @@ pub async fn place_pending_order(
     db::set_status(&mut tx, &order_id, OrderStatus::Accepted).await?;
     tx.commit().await?;
 
-    publish_best_effort(nats, &TradingEvent::OrderAccepted { order_id: order_id.clone() }).await;
+    publish_best_effort(nats, &TradingEvent::OrderAccepted { order_id: order_id.clone(), account_id: req.account_id.clone() }).await;
 
     Ok(PlacePendingOrderOutcome::Accepted { order_id })
 }
@@ -435,13 +437,18 @@ pub(crate) async fn reject_order(
     mut tx: sqlx::Transaction<'_, sqlx::Postgres>,
     nats: &async_nats::Client,
     order_id: &str,
+    account_id: &str,
     reason: String,
 ) -> Result<String, PlaceOrderError> {
     db::set_rejected(&mut tx, order_id, &reason).await?;
     tx.commit().await?;
     publish_best_effort(
         nats,
-        &TradingEvent::OrderRejected(RiskRejection { order_id: order_id.to_string(), reason: reason.clone() }),
+        &TradingEvent::OrderRejected(RiskRejection {
+            order_id: order_id.to_string(),
+            account_id: account_id.to_string(),
+            reason: reason.clone(),
+        }),
     )
     .await;
     Ok(reason)
@@ -509,7 +516,7 @@ pub async fn cancel_order(
     }
     tx.commit().await?;
 
-    publish_best_effort(nats, &TradingEvent::OrderCancelled { order_id: order_id.to_string() }).await;
+    publish_best_effort(nats, &TradingEvent::OrderCancelled { order_id: order_id.to_string(), account_id: account_id.to_string() }).await;
 
     Ok(CancelOrderOutcome::Cancelled { order_id: order_id.to_string() })
 }
@@ -547,6 +554,7 @@ pub enum ModifyPositionError {
 /// caller already has to make anyway to show the trader a current price.
 pub async fn modify_position_sl_tp(
     pool: &PgPool,
+    nats: &async_nats::Client,
     account_id: &str,
     position_id: &str,
     current_price: Decimal,
@@ -570,6 +578,12 @@ pub async fn modify_position_sl_tp(
     let mut tx = pool.begin().await?;
     db::update_position_sl_tp(&mut tx, position_id, sl_price, tp_price).await?;
     tx.commit().await?;
+
+    publish_best_effort(
+        nats,
+        &TradingEvent::PositionModified { account_id: account_id.to_string(), position_id: position_id.to_string() },
+    )
+    .await;
 
     Ok(ModifyPositionOutcome::Updated { sl_price, tp_price })
 }

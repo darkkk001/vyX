@@ -22,6 +22,7 @@ import { WebSocket, WebSocketServer } from "ws";
 import { getTraderSession } from "./auth.js";
 
 const PRICE_STREAM_PATH = "/v1/prices/stream";
+const TRADING_STREAM_PATH = "/v1/trading/stream";
 
 // Phase 4 of the tick-pipeline audit -- exported so index.ts's stats
 // route can read it without this module needing its own HTTP route.
@@ -34,6 +35,10 @@ export const gatewayStats = {
   wsDisconnectionsTotal: 0,
   ticksForwardedTotal: 0,
   natsMessagesReceivedTotal: 0,
+  tradingWsConnectionsTotal: 0,
+  tradingWsDisconnectionsTotal: 0,
+  tradingEventsForwardedTotal: 0,
+  tradingEventsReceivedTotal: 0,
 };
 
 export async function attachPriceStream(server: Server, natsUrl: string): Promise<void> {
@@ -95,4 +100,98 @@ export async function attachPriceStream(server: Server, natsUrl: string): Promis
   })().catch((err) => {
     console.error("price stream: NATS subscription loop ended", err);
   });
+}
+
+// Order/position/account event fan-out — docs/webtrader-stm-architecture-
+// review.md §4.3 (sequencing item 4). Unlike price ticks (broker-agnostic
+// market data, broadcast to every connected client), these events are
+// account-scoped and sensitive -- a fill/rejection/close belongs to one
+// trader's session, never every connected browser -- so this keeps a
+// Map<accountId, Set<WebSocket>> instead of one flat Set, and only
+// forwards a message to the sockets registered under the account_id that
+// message itself carries (every TradingEvent variant has one -- see
+// protocol::TradingEvent's doc comment). accountId is never taken from
+// anything the client sends; it comes from the same Redis-backed session
+// lookup getTraderSession always uses, so a client can only ever end up
+// registered under its own account.
+//
+// Published from two places today: engine/order-management (once a
+// broker's orders route through the Rust engine -- see
+// events.rs/publish_best_effort) and the legacy Next.js trade routes via
+// lib/nats.ts (the actually-live path today, per ADR-003) -- both publish
+// the identical JSON shape, so this one subscription/fan-out serves
+// either origin without caring which one produced a given event.
+export async function attachTradingEventStream(server: Server, natsUrl: string): Promise<void> {
+  const nc: NatsConnection = await connect({ servers: natsUrl });
+  const subs = [nc.subscribe("order.>"), nc.subscribe("margin.>"), nc.subscribe("position.>")];
+
+  const wss = new WebSocketServer({ noServer: true });
+  const clientsByAccount = new Map<string, Set<WebSocket>>();
+
+  function registerClient(ws: WebSocket, accountId: string) {
+    let set = clientsByAccount.get(accountId);
+    if (!set) {
+      set = new Set();
+      clientsByAccount.set(accountId, set);
+    }
+    set.add(ws);
+    gatewayStats.tradingWsConnectionsTotal += 1;
+
+    function unregister() {
+      set!.delete(ws);
+      if (set!.size === 0) clientsByAccount.delete(accountId);
+      gatewayStats.tradingWsDisconnectionsTotal += 1;
+    }
+    ws.on("close", unregister);
+    ws.on("error", unregister);
+  }
+
+  server.on("upgrade", (req: IncomingMessage, socket, head) => {
+    const { pathname } = new URL(req.url ?? "", "http://internal");
+    if (pathname !== TRADING_STREAM_PATH) return;
+
+    getTraderSession(req.headers.cookie)
+      .then((session) => {
+        if (!session) {
+          socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+          socket.destroy();
+          return;
+        }
+        wss.handleUpgrade(req, socket, head, (ws) => {
+          registerClient(ws, session.accountId);
+        });
+      })
+      .catch((err) => {
+        console.error("trading stream: session lookup failed", err);
+        socket.destroy();
+      });
+  });
+
+  for (const sub of subs) {
+    (async () => {
+      for await (const msg of sub) {
+        gatewayStats.tradingEventsReceivedTotal += 1;
+        const text = Buffer.from(msg.data).toString("utf-8");
+
+        let accountId: string | undefined;
+        try {
+          accountId = JSON.parse(text)?.account_id;
+        } catch {
+          continue; // malformed payload -- nothing to route it to
+        }
+        if (!accountId) continue;
+
+        const clients = clientsByAccount.get(accountId);
+        if (!clients) continue;
+        for (const client of clients) {
+          if (client.readyState === WebSocket.OPEN) {
+            client.send(text);
+            gatewayStats.tradingEventsForwardedTotal += 1;
+          }
+        }
+      }
+    })().catch((err) => {
+      console.error("trading stream: NATS subscription loop ended", err);
+    });
+  }
 }

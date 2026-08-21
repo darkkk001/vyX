@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
+import { publishTradingEvent } from "@/lib/nats";
 
 // Called by the client when its local price simulation reports the
 // resting LIMIT/STOP order's trigger price has been hit. Moves the order
@@ -59,5 +60,12 @@ export async function POST(
     return { order: filledOrder, position };
   });
 
+  await publishTradingEvent("OrderFilled", {
+    order_id: order.id,
+    account_id: order.accountId,
+    price: fillPrice,
+    volume: order.volume.toString(),
+    remaining_volume: "0",
+  });
   return NextResponse.json(result);
 }

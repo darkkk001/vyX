@@ -24,6 +24,8 @@ fn subject_for(event: &TradingEvent) -> &'static str {
         TradingEvent::StopOut { .. } => "margin.stop_out",
         TradingEvent::StopLossHit { .. } => "position.stop_loss_hit",
         TradingEvent::TakeProfitHit { .. } => "position.take_profit_hit",
+        TradingEvent::PositionClosed { .. } => "position.closed",
+        TradingEvent::PositionModified { .. } => "position.modified",
     }
 }
 

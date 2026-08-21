@@ -322,6 +322,7 @@ async fn modify_position(
 ) -> Result<Json<ModifyPositionResponse>, (StatusCode, String)> {
     let outcome = order_management::modify_position_sl_tp(
         &state.pool,
+        &state.nats,
         &body.account_id,
         &position_id,
         body.current_price,
