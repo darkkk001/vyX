@@ -98,6 +98,13 @@ export type ApiKycStatus = {
   createdAt: string;
 } | null;
 
+export type ApiLinkedAccount = {
+  accountNumber: string;
+  accountType: "DEMO" | "LIVE";
+  currency: string;
+  balance: string;
+};
+
 export const tradeApi = {
   me: () => call<AccountInfo>("/api/trade/me"),
   prices: () => call<ApiLivePrice[]>("/api/trade/prices"),
@@ -144,6 +151,7 @@ export const tradeApi = {
   submitFundsRequest: (body: { type: "DEPOSIT" | "WITHDRAWAL"; amount: number; note?: string }) =>
     call<ApiFundsRequest>("/api/trade/funds-requests", { method: "POST", body: JSON.stringify(body) }),
   kycStatus: () => call<ApiKycStatus>("/api/trade/kyc"),
+  linkedAccounts: () => call<ApiLinkedAccount[]>("/api/trade/linked-accounts"),
   submitKyc: (documentType: string, front: File, back: File) => {
     const form = new FormData();
     form.set("documentType", documentType);

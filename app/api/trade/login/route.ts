@@ -2,10 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   authenticateAccount,
   createAccountSession,
+  getAccountSession,
   ACCOUNT_SESSION_COOKIE_NAME,
   accountSessionCookieOptions,
 } from "@/lib/account-auth";
 import { checkRateLimit } from "@/lib/rate-limit";
+import { prisma } from "@/lib/prisma";
 
 // Login is by accountNumber (MT-style numeric login), not email, since one
 // trader can hold both a DEMO and a LIVE Account under the same email —
@@ -29,6 +31,14 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "too many attempts, try again shortly" }, { status: 429 });
   }
 
+  // Read any existing session *before* authenticating the new one -- this is
+  // how we tell a genuine fresh login apart from the Account Selector
+  // (docs/webtrader-stm-architecture-review.md §4.2) using this same route
+  // to switch a trader already signed into one linked account over to
+  // another. Only the latter gets audited; a normal login from the login
+  // page has no prior session to compare against.
+  const previousSession = await getAccountSession();
+
   // Constant-shape response whether the account doesn't exist, belongs to a
   // different broker, is inactive, or the password is wrong — avoid leaking
   // any of it.
@@ -41,6 +51,19 @@ export async function POST(request: NextRequest) {
     accountId: account.id,
     brokerId: account.brokerId,
   });
+
+  if (previousSession && previousSession.accountId !== account.id) {
+    await prisma.auditLog.create({
+      data: {
+        brokerId: account.brokerId,
+        action: "WEBTRADER_ACCOUNT_SWITCH",
+        entityType: "Account",
+        entityId: account.id,
+        oldValue: { accountId: previousSession.accountId },
+        newValue: { accountId: account.id },
+      },
+    });
+  }
 
   const response = NextResponse.json({
     accountId: account.id,

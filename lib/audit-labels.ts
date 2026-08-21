@@ -27,6 +27,7 @@ const LABELS: Record<string, string> = {
   BROKER_SSO_SECRET_GENERATED: "Generated WebTrader SSO secret",
   BROKER_SSO_SECRET_ROTATED: "Rotated WebTrader SSO secret",
   BROKER_SSO_SECRET_REVOKED: "Revoked WebTrader SSO secret",
+  WEBTRADER_ACCOUNT_SWITCH: "Switched WebTrader account",
   BALANCE_ADJUSTMENT: "Adjusted balance",
   MANUAL_POSITION_OPEN: "Opened manual position",
   MANUAL_POSITION_CLOSE: "Closed manual position",

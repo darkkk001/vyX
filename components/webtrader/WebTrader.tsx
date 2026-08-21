@@ -12,7 +12,7 @@ import {
   type Candle,
   type Timeframe,
 } from "@/lib/market-simulator";
-import { tradeApi, type AccountInfo, type ApiPosition, type ApiOrder, type ApiFundsRequest, type ApiKycStatus } from "@/lib/trade-api";
+import { tradeApi, type AccountInfo, type ApiPosition, type ApiOrder, type ApiFundsRequest, type ApiKycStatus, type ApiLinkedAccount } from "@/lib/trade-api";
 import KLineChartPanel, { type KLineChartHandle, type ChartLine } from "./KLineChartPanel";
 import DesktopTitleBar from "./DesktopTitleBar";
 import SessionClock from "./SessionClock";
@@ -173,6 +173,11 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
   const [alertsTab, setAlertsTab] = useState<"active" | "history">("active");
 
   const [accountDropdownOpen, setAccountDropdownOpen] = useState(false);
+  const [linkedAccounts, setLinkedAccounts] = useState<ApiLinkedAccount[] | null>(null);
+  const [switchTarget, setSwitchTarget] = useState<ApiLinkedAccount | null>(null);
+  const [switchPassword, setSwitchPassword] = useState("");
+  const [switchError, setSwitchError] = useState<string | null>(null);
+  const [switching, setSwitching] = useState(false);
   const [symbolDropdownOpen, setSymbolDropdownOpen] = useState(false);
   const [symbolSearch, setSymbolSearch] = useState("");
   const [chartLayout, setChartLayout] = useState<"single" | "grid">("single");
@@ -351,6 +356,35 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
       window.location.href = `https://${root}/launch`;
     } else {
       window.location.href = "/trade/login";
+    }
+  }
+
+  // Account Selector (docs/webtrader-stm-architecture-review.md §4.2):
+  // fetched fresh each time the dropdown opens rather than kept live,
+  // since it's just a switch target list, not something that needs to
+  // track balance changes in real time.
+  useEffect(() => {
+    if (!accountDropdownOpen) return;
+    tradeApi.linkedAccounts().then(setLinkedAccounts).catch(() => setLinkedAccounts([]));
+  }, [accountDropdownOpen]);
+
+  // Switching is a real re-login (matches MT4/5 behavior) — same
+  // POST /api/trade/login the login page itself uses, just pre-filled with
+  // the target account number. On success the session cookie now points at
+  // a different account, so every piece of client state (positions,
+  // orders, watchlist prefs tied to the old account, etc.) needs a full
+  // reload rather than a partial refetch.
+  async function submitAccountSwitch(event: React.FormEvent) {
+    event.preventDefault();
+    if (!switchTarget) return;
+    setSwitching(true);
+    setSwitchError(null);
+    try {
+      await tradeApi.login(switchTarget.accountNumber, switchPassword);
+      window.location.reload();
+    } catch (err) {
+      setSwitching(false);
+      setSwitchError(err instanceof Error ? err.message : "switch failed");
     }
   }
 
@@ -1368,9 +1402,32 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
                     </div>
                     <div className="acc-option-balance mono">{balanceHidden ? "••••••" : account ? money(parseFloat(account.balance)) : ""}</div>
                   </div>
-                  <div className="net-pos-detail" style={{ padding: "8px 10px" }}>
-                    To trade another account, log out and sign in with its account number.
-                  </div>
+                  {linkedAccounts === null ? (
+                    <div className="net-pos-detail" style={{ padding: "8px 10px" }}>Loading linked accounts…</div>
+                  ) : linkedAccounts.length === 0 ? (
+                    <div className="net-pos-detail" style={{ padding: "8px 10px" }}>
+                      No other accounts linked to this email.
+                    </div>
+                  ) : (
+                    <div style={{ borderTop: "1px solid var(--border)" }}>
+                      {linkedAccounts.map((la) => (
+                        <div
+                          key={la.accountNumber}
+                          className="acc-option"
+                          style={{ cursor: "pointer", padding: "8px 10px" }}
+                          onClick={() => { setSwitchTarget(la); setSwitchPassword(""); setSwitchError(null); setAccountDropdownOpen(false); }}
+                        >
+                          <div className="acc-option-top">
+                            <span className="acc-option-num mono">{la.accountNumber}</span>
+                            <span className={`acc-badge ${la.accountType === "LIVE" ? "live" : "demo"}`}>{la.accountType}</span>
+                          </div>
+                          <div className="acc-option-balance mono">
+                            {balanceHidden ? "••••••" : `${money(parseFloat(la.balance))} ${la.currency}`}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                   <div style={{ display: "flex", flexDirection: "column", borderTop: "1px solid var(--border)" }}>
                     <button
                       className="wl-ctx-item"
@@ -2139,6 +2196,35 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
               <div className="modal-actions" style={{ marginTop: 16 }}>
                 <button type="button" className="modal-btn secondary" onClick={() => setChangePasswordOpen(false)}>Cancel</button>
                 <button type="submit" className="modal-btn primary" disabled={cpSubmitting}>{cpSubmitting ? "Saving…" : "Save"}</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      ) : null}
+
+      {/* ---------- Account Selector: switch-account password confirm ---------- */}
+      {switchTarget ? (
+        <div className="modal-overlay show" onClick={(e) => { if (e.target === e.currentTarget) setSwitchTarget(null); }}>
+          <div className="modal-wrap">
+            <button className="modal-close" onClick={() => setSwitchTarget(null)}>✕</button>
+            <form className="generic-modal-card" onSubmit={submitAccountSwitch}>
+              <div className="generic-modal-title">Switch to {switchTarget.accountNumber}</div>
+              <p style={{ fontSize: 12, color: "var(--text-3)", margin: "0 0 10px" }}>
+                Confirm the password for this account — switching replaces your current session.
+              </p>
+              <input
+                className="generic-modal-input mono"
+                type="password"
+                placeholder="Password"
+                autoFocus
+                value={switchPassword}
+                onChange={(e) => setSwitchPassword(e.target.value)}
+                required
+              />
+              {switchError ? <p style={{ color: "var(--sell)", fontSize: 12, margin: "8px 0 0" }}>{switchError}</p> : null}
+              <div className="modal-actions" style={{ marginTop: 16 }}>
+                <button type="button" className="modal-btn secondary" onClick={() => setSwitchTarget(null)}>Cancel</button>
+                <button type="submit" className="modal-btn primary" disabled={switching}>{switching ? "Switching…" : "Switch"}</button>
               </div>
             </form>
           </div>
