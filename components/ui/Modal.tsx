@@ -28,13 +28,27 @@ export function Modal({
 }) {
   const cardRef = useRef<HTMLDivElement>(null);
 
+  // Split from the escape-key effect below on purpose: callers almost
+  // always pass an inline `onClose={() => setX(false)}`, a fresh function
+  // identity every render -- keying this on `open` alone means typing in
+  // a field inside the modal (which re-renders the parent on every
+  // keystroke) never re-runs this effect. It used to also depend on
+  // `onClose`, which re-ran `cardRef.current?.focus()` on every single
+  // keystroke anywhere in the modal, yanking focus off whatever input the
+  // user was actively typing into and onto the modal's own wrapper div --
+  // the bug behind "have to click back into the field after every
+  // character."
+  useEffect(() => {
+    if (!open) return;
+    cardRef.current?.focus();
+  }, [open]);
+
   useEffect(() => {
     if (!open) return;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
     };
     document.addEventListener("keydown", onKeyDown);
-    cardRef.current?.focus();
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [open, onClose]);
 
