@@ -36,6 +36,15 @@ export type AccountInfo = {
   credit: string;
   status: string;
   fullName: string;
+  twoFactorEnabled: boolean;
+};
+
+export type ApiSession = {
+  sessionId: string;
+  userAgent: string | null;
+  ip: string | null;
+  createdAt: string;
+  current: boolean;
 };
 
 export type ApiPosition = {
@@ -166,9 +175,27 @@ export const tradeApi = {
     form.set("back", back);
     return callForm<{ status: string; documentType: string }>("/api/trade/kyc", form);
   },
+  // Response shape distinguishes a completed login (accountId present)
+  // from a 2FA-gated one (requiresTwoFactor + pendingToken, no session
+  // cookie set yet) -- see app/api/trade/login/route.ts.
   login: (accountNumber: string, password: string) =>
-    call("/api/trade/login", { method: "POST", body: JSON.stringify({ accountNumber, password }) }),
+    call<{ accountId: string; accountNumber: string; accountType: string } | { requiresTwoFactor: true; pendingToken: string }>(
+      "/api/trade/login",
+      { method: "POST", body: JSON.stringify({ accountNumber, password }) }
+    ),
+  verifyTwoFactor: (pendingToken: string, code: string) =>
+    call<{ accountId: string; accountNumber: string; accountType: string }>("/api/trade/login/verify-2fa", {
+      method: "POST",
+      body: JSON.stringify({ pendingToken, code }),
+    }),
   logout: () => call("/api/trade/logout", { method: "POST" }),
   changePassword: (currentPassword: string, newPassword: string) =>
     call("/api/trade/change-password", { method: "POST", body: JSON.stringify({ currentPassword, newPassword }) }),
+  setupTwoFactor: () => call<{ secret: string; uri: string; qrCodeDataUri: string }>("/api/trade/two-factor/setup", { method: "POST" }),
+  confirmTwoFactor: (code: string) =>
+    call("/api/trade/two-factor/confirm", { method: "POST", body: JSON.stringify({ code }) }),
+  disableTwoFactor: (password: string) =>
+    call("/api/trade/two-factor/disable", { method: "POST", body: JSON.stringify({ password }) }),
+  sessions: () => call<ApiSession[]>("/api/trade/sessions"),
+  revokeSession: (sessionId: string) => call(`/api/trade/sessions/${sessionId}`, { method: "DELETE" }),
 };

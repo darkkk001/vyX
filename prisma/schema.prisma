@@ -326,6 +326,17 @@ model Account {
   phone       String?
   dateOfBirth DateTime? @db.Date
 
+  // TOTP 2FA (RFC 6238) -- see lib/totp.ts. twoFactorSecret is set as soon
+  // as setup starts (POST /api/trade/two-factor/setup) but
+  // twoFactorEnabled stays false until the trader proves they scanned it
+  // correctly (POST /api/trade/two-factor/confirm) -- this is deliberate:
+  // a half-finished setup (secret generated, never confirmed) must never
+  // gate login, only a confirmed one does. Plaintext base32, not hashed --
+  // same reasoning as Broker.ssoSecret: verification needs the raw secret
+  // to recompute the expected code, not just compare a hash.
+  twoFactorSecret  String?
+  twoFactorEnabled Boolean @default(false)
+
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
 

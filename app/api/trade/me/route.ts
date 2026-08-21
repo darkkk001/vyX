@@ -20,6 +20,7 @@ export async function GET() {
       credit: true,
       status: true,
       fullName: true,
+      twoFactorEnabled: true,
     },
   });
 

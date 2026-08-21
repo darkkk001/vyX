@@ -1,13 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
   authenticateAccount,
-  createAccountSession,
+  completeAccountLogin,
   getAccountSession,
   ACCOUNT_SESSION_COOKIE_NAME,
   accountSessionCookieOptions,
 } from "@/lib/account-auth";
 import { checkRateLimit } from "@/lib/rate-limit";
-import { prisma } from "@/lib/prisma";
+import { issuePending2faChallenge } from "@/lib/totp";
 
 // Login is by accountNumber (MT-style numeric login), not email, since one
 // trader can hold both a DEMO and a LIVE Account under the same email —
@@ -47,23 +47,20 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "invalid credentials" }, { status: 401 });
   }
 
-  const token = await createAccountSession({
-    accountId: account.id,
-    brokerId: account.brokerId,
-  });
-
-  if (previousSession && previousSession.accountId !== account.id) {
-    await prisma.auditLog.create({
-      data: {
-        brokerId: account.brokerId,
-        action: "WEBTRADER_ACCOUNT_SWITCH",
-        entityType: "Account",
-        entityId: account.id,
-        oldValue: { accountId: previousSession.accountId },
-        newValue: { accountId: account.id },
-      },
-    });
+  // Password checked out, but that's only half of login for a 2FA-enabled
+  // account -- no session yet, just a short-lived pending challenge the
+  // client exchanges for one via POST /api/trade/login/verify-2fa once
+  // the trader supplies their code. See lib/totp.ts's
+  // issuePending2faChallenge doc comment for why the SSO handoff route
+  // doesn't have this same branch.
+  if (account.twoFactorEnabled) {
+    const pendingToken = await issuePending2faChallenge({ accountId: account.id, brokerId: account.brokerId });
+    return NextResponse.json({ requiresTwoFactor: true, pendingToken });
   }
+
+  const userAgent = request.headers.get("user-agent");
+  const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? null;
+  const token = await completeAccountLogin(account, previousSession, { userAgent, ip });
 
   const response = NextResponse.json({
     accountId: account.id,

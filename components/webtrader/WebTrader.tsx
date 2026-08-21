@@ -12,7 +12,7 @@ import {
   type Candle,
   type Timeframe,
 } from "@/lib/market-simulator";
-import { tradeApi, type AccountInfo, type ApiPosition, type ApiOrder, type ApiFundsRequest, type ApiKycStatus, type ApiLinkedAccount } from "@/lib/trade-api";
+import { tradeApi, type AccountInfo, type ApiPosition, type ApiOrder, type ApiFundsRequest, type ApiKycStatus, type ApiLinkedAccount, type ApiSession } from "@/lib/trade-api";
 import KLineChartPanel, { type KLineChartHandle, type ChartLine } from "./KLineChartPanel";
 import DesktopTitleBar from "./DesktopTitleBar";
 import SessionClock from "./SessionClock";
@@ -179,6 +179,10 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
   const [switchPassword, setSwitchPassword] = useState("");
   const [switchError, setSwitchError] = useState<string | null>(null);
   const [switching, setSwitching] = useState(false);
+  // Set only if the target account has 2FA enabled -- see
+  // submitAccountSwitch's requiresTwoFactor branch.
+  const [switchPendingToken, setSwitchPendingToken] = useState<string | null>(null);
+  const [switchTwoFactorCode, setSwitchTwoFactorCode] = useState("");
   const [symbolDropdownOpen, setSymbolDropdownOpen] = useState(false);
   const [symbolSearch, setSymbolSearch] = useState("");
   const [chartLayout, setChartLayout] = useState<"single" | "grid">("single");
@@ -256,6 +260,16 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
   const [cpConfirm, setCpConfirm] = useState("");
   const [cpError, setCpError] = useState<string | null>(null);
   const [cpSubmitting, setCpSubmitting] = useState(false);
+
+  // ---------- Security panel: 2FA + active sessions ----------
+  const [securityModalOpen, setSecurityModalOpen] = useState(false);
+  const [tfaSetupData, setTfaSetupData] = useState<{ secret: string; qrCodeDataUri: string } | null>(null);
+  const [tfaConfirmCode, setTfaConfirmCode] = useState("");
+  const [tfaDisablePassword, setTfaDisablePassword] = useState("");
+  const [tfaBusy, setTfaBusy] = useState(false);
+  const [tfaError, setTfaError] = useState<string | null>(null);
+  const [sessions, setSessions] = useState<ApiSession[] | null>(null);
+  const [revokingSessionId, setRevokingSessionId] = useState<string | null>(null);
 
   const [kycModalOpen, setKycModalOpen] = useState(false);
   const [kycStatus, setKycStatus] = useState<ApiKycStatus>(null);
@@ -394,11 +408,30 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
     setSwitching(true);
     setSwitchError(null);
     try {
-      await tradeApi.login(switchTarget.accountNumber, switchPassword);
+      const result = await tradeApi.login(switchTarget.accountNumber, switchPassword);
+      if ("requiresTwoFactor" in result) {
+        setSwitchPendingToken(result.pendingToken);
+        setSwitching(false);
+        return;
+      }
       window.location.reload();
     } catch (err) {
       setSwitching(false);
       setSwitchError(err instanceof Error ? err.message : "switch failed");
+    }
+  }
+
+  async function submitSwitchTwoFactor(event: React.FormEvent) {
+    event.preventDefault();
+    if (!switchPendingToken) return;
+    setSwitching(true);
+    setSwitchError(null);
+    try {
+      await tradeApi.verifyTwoFactor(switchPendingToken, switchTwoFactorCode);
+      window.location.reload();
+    } catch (err) {
+      setSwitching(false);
+      setSwitchError(err instanceof Error ? err.message : "verification failed");
     }
   }
 
@@ -461,6 +494,86 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   useEffect(() => { refreshHistory(); }, [refreshHistory]);
+
+  async function openSecurityModal() {
+    setToolsMenuOpen(false);
+    setSecurityModalOpen(true);
+    setTfaSetupData(null);
+    setTfaConfirmCode("");
+    setTfaDisablePassword("");
+    setTfaError(null);
+    setSessions(null);
+    setSessions(await tradeApi.sessions().catch(() => []));
+  }
+
+  async function startTwoFactorSetup() {
+    setTfaBusy(true);
+    setTfaError(null);
+    try {
+      const { secret, qrCodeDataUri } = await tradeApi.setupTwoFactor();
+      setTfaSetupData({ secret, qrCodeDataUri });
+    } catch (err) {
+      setTfaError(err instanceof Error ? err.message : "failed to start 2FA setup");
+    } finally {
+      setTfaBusy(false);
+    }
+  }
+
+  async function confirmTwoFactorSetup(event: React.FormEvent) {
+    event.preventDefault();
+    setTfaBusy(true);
+    setTfaError(null);
+    try {
+      await tradeApi.confirmTwoFactor(tfaConfirmCode);
+      await refreshAccount();
+      setTfaSetupData(null);
+      setTfaConfirmCode("");
+      pushToast("Two-factor authentication enabled");
+    } catch (err) {
+      setTfaError(err instanceof Error ? err.message : "invalid code");
+    } finally {
+      setTfaBusy(false);
+    }
+  }
+
+  async function disableTwoFactorSubmit(event: React.FormEvent) {
+    event.preventDefault();
+    setTfaBusy(true);
+    setTfaError(null);
+    try {
+      await tradeApi.disableTwoFactor(tfaDisablePassword);
+      await refreshAccount();
+      setTfaDisablePassword("");
+      pushToast("Two-factor authentication disabled");
+    } catch (err) {
+      setTfaError(err instanceof Error ? err.message : "failed to disable 2FA");
+    } finally {
+      setTfaBusy(false);
+    }
+  }
+
+  // Revoking the current session (the same device this panel is open in)
+  // deletes the underlying Redis session immediately -- the cookie itself
+  // is still sitting in the browser but now points at nothing, so the
+  // next request would 401 anyway. Logging out explicitly here (instead
+  // of waiting for that to surface incidentally) gives a clean redirect
+  // rather than a confusing stuck screen.
+  async function revokeSessionRow(s: ApiSession) {
+    setRevokingSessionId(s.sessionId);
+    try {
+      await tradeApi.revokeSession(s.sessionId);
+      if (s.current) {
+        handleLogout();
+        return;
+      }
+      setSessions((prev) => prev?.filter((x) => x.sessionId !== s.sessionId) ?? null);
+      pushToast("Session revoked");
+    } catch (err) {
+      pushToast(err instanceof Error ? err.message : "failed to revoke session");
+    } finally {
+      setRevokingSessionId(null);
+    }
+  }
 
   // A successful account load means this session is valid on this broker's
   // subdomain — remember it (desktop only) so next launch skips the server
@@ -1303,6 +1416,7 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
                 {toolsMenuOpen ? (
                   <div className="account-dropdown show" style={{ top: "100%", left: 0, width: 180 }}>
                     <div className="acc-option" style={{ cursor: "pointer", padding: "8px 10px" }} onClick={() => { setToolsMenuOpen(false); setChangePasswordOpen(true); }}>Change password</div>
+                    <div className="acc-option" style={{ cursor: "pointer", padding: "8px 10px" }} onClick={openSecurityModal}>Security</div>
                     <div className="acc-option" style={{ cursor: "pointer", padding: "8px 10px" }} onClick={() => { setToolsMenuOpen(false); setKycModalOpen(true); refreshKycStatus(); }}>Verify identity</div>
                     <div className="acc-option" style={{ cursor: "pointer", padding: "8px 10px" }} onClick={() => { setToolsMenuOpen(false); setActiveBottomTab("logs"); }}>View logs</div>
                     <div style={{ height: 1, background: "var(--border)", margin: "4px 0" }} />
@@ -1470,7 +1584,7 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
                           key={la.accountNumber}
                           className="acc-option"
                           style={{ cursor: "pointer", padding: "8px 10px" }}
-                          onClick={() => { setSwitchTarget(la); setSwitchPassword(""); setSwitchError(null); setAccountDropdownOpen(false); }}
+                          onClick={() => { setSwitchTarget(la); setSwitchPassword(""); setSwitchError(null); setSwitchPendingToken(null); setSwitchTwoFactorCode(""); setAccountDropdownOpen(false); }}
                         >
                           <div className="acc-option-top">
                             <span className="acc-option-num mono">{la.accountNumber}</span>
@@ -2299,31 +2413,170 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
         </div>
       ) : null}
 
+      {/* ---------- Security: 2FA + active sessions ---------- */}
+      {securityModalOpen ? (
+        <div className="modal-overlay show" onClick={(e) => { if (e.target === e.currentTarget) setSecurityModalOpen(false); }}>
+          <div className="modal-wrap">
+            <button className="modal-close" onClick={() => setSecurityModalOpen(false)}>✕</button>
+            <div className="generic-modal-card" style={{ width: 420 }}>
+              <div className="generic-modal-title">Security</div>
+
+              <div style={{ marginTop: 4, marginBottom: 4, fontSize: 11, color: "var(--text-3)", textTransform: "uppercase" }}>
+                Two-factor authentication
+              </div>
+              {account?.twoFactorEnabled ? (
+                <form onSubmit={disableTwoFactorSubmit}>
+                  <p style={{ fontSize: 12, color: "var(--text-3)", margin: "0 0 8px" }}>
+                    Enabled. Enter your password to turn it off.
+                  </p>
+                  <input
+                    className="generic-modal-input mono"
+                    type="password"
+                    placeholder="Password"
+                    value={tfaDisablePassword}
+                    onChange={(e) => setTfaDisablePassword(e.target.value)}
+                    required
+                    style={{ marginBottom: 8 }}
+                  />
+                  <button type="submit" className="modal-btn secondary" disabled={tfaBusy}>{tfaBusy ? "Working…" : "Disable 2FA"}</button>
+                </form>
+              ) : tfaSetupData ? (
+                <form onSubmit={confirmTwoFactorSetup}>
+                  <p style={{ fontSize: 12, color: "var(--text-3)", margin: "0 0 8px" }}>
+                    Scan this with your authenticator app, or enter the key manually, then confirm with a code.
+                  </p>
+                  <div style={{ display: "flex", justifyContent: "center", margin: "0 0 8px" }}>
+                    <img src={tfaSetupData.qrCodeDataUri} alt="2FA setup QR code" width={160} height={160} style={{ borderRadius: 6 }} />
+                  </div>
+                  <p className="mono" style={{ fontSize: 11, color: "var(--text-3)", wordBreak: "break-all", textAlign: "center", margin: "0 0 10px" }}>
+                    {tfaSetupData.secret}
+                  </p>
+                  <input
+                    className="generic-modal-input mono"
+                    inputMode="numeric"
+                    placeholder="123456"
+                    maxLength={6}
+                    value={tfaConfirmCode}
+                    onChange={(e) => setTfaConfirmCode(e.target.value.replace(/\D/g, ""))}
+                    required
+                    style={{ marginBottom: 8, textAlign: "center", letterSpacing: 4 }}
+                  />
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button type="button" className="modal-btn secondary" onClick={() => setTfaSetupData(null)}>Cancel</button>
+                    <button type="submit" className="modal-btn primary" disabled={tfaBusy || tfaConfirmCode.length !== 6}>
+                      {tfaBusy ? "Confirming…" : "Confirm"}
+                    </button>
+                  </div>
+                </form>
+              ) : (
+                <div>
+                  <p style={{ fontSize: 12, color: "var(--text-3)", margin: "0 0 8px" }}>
+                    Not enabled. Adds a 6-digit code from an authenticator app to sign-in.
+                  </p>
+                  <button type="button" className="modal-btn primary" onClick={startTwoFactorSetup} disabled={tfaBusy}>
+                    {tfaBusy ? "Working…" : "Enable 2FA"}
+                  </button>
+                </div>
+              )}
+              {tfaError ? <p style={{ color: "var(--sell)", fontSize: 12, margin: "8px 0 0" }}>{tfaError}</p> : null}
+
+              <div style={{ marginTop: 20, marginBottom: 4, fontSize: 11, color: "var(--text-3)", textTransform: "uppercase" }}>
+                Active sessions
+              </div>
+              {sessions === null ? (
+                <p style={{ fontSize: 12, color: "var(--text-3)" }}>Loading…</p>
+              ) : sessions.length === 0 ? (
+                <p style={{ fontSize: 12, color: "var(--text-3)" }}>No other active sessions found.</p>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 220, overflowY: "auto" }}>
+                  {sessions.map((s) => (
+                    <div
+                      key={s.sessionId}
+                      style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 10px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg-2, transparent)" }}
+                    >
+                      <div>
+                        <div style={{ fontSize: 12, color: "var(--text-1)" }}>
+                          {s.userAgent ? s.userAgent.slice(0, 48) : "Unknown device"}
+                          {s.current ? <span style={{ color: "var(--buy)", marginLeft: 6, fontSize: 11 }}>(this device)</span> : null}
+                        </div>
+                        <div className="mono" style={{ fontSize: 11, color: "var(--text-3)" }}>
+                          {s.ip ?? "unknown IP"} · {new Date(s.createdAt).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        className="modal-btn secondary"
+                        style={{ padding: "4px 10px", fontSize: 12 }}
+                        disabled={revokingSessionId === s.sessionId}
+                        onClick={() => revokeSessionRow(s)}
+                      >
+                        {revokingSessionId === s.sessionId ? "…" : s.current ? "Log out" : "Revoke"}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div className="modal-actions" style={{ marginTop: 16 }}>
+                <button type="button" className="modal-btn secondary" onClick={() => setSecurityModalOpen(false)}>Close</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {/* ---------- Account Selector: switch-account password confirm ---------- */}
       {switchTarget ? (
         <div className="modal-overlay show" onClick={(e) => { if (e.target === e.currentTarget) setSwitchTarget(null); }}>
           <div className="modal-wrap">
             <button className="modal-close" onClick={() => setSwitchTarget(null)}>✕</button>
-            <form className="generic-modal-card" onSubmit={submitAccountSwitch}>
-              <div className="generic-modal-title">Switch to {switchTarget.accountNumber}</div>
-              <p style={{ fontSize: 12, color: "var(--text-3)", margin: "0 0 10px" }}>
-                Confirm the password for this account — switching replaces your current session.
-              </p>
-              <input
-                className="generic-modal-input mono"
-                type="password"
-                placeholder="Password"
-                autoFocus
-                value={switchPassword}
-                onChange={(e) => setSwitchPassword(e.target.value)}
-                required
-              />
-              {switchError ? <p style={{ color: "var(--sell)", fontSize: 12, margin: "8px 0 0" }}>{switchError}</p> : null}
-              <div className="modal-actions" style={{ marginTop: 16 }}>
-                <button type="button" className="modal-btn secondary" onClick={() => setSwitchTarget(null)}>Cancel</button>
-                <button type="submit" className="modal-btn primary" disabled={switching}>{switching ? "Switching…" : "Switch"}</button>
-              </div>
-            </form>
+            {switchPendingToken ? (
+              <form className="generic-modal-card" onSubmit={submitSwitchTwoFactor}>
+                <div className="generic-modal-title">Two-factor verification</div>
+                <p style={{ fontSize: 12, color: "var(--text-3)", margin: "0 0 10px" }}>
+                  Enter the 6-digit code for {switchTarget.accountNumber}&apos;s authenticator app.
+                </p>
+                <input
+                  className="generic-modal-input mono"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  placeholder="123456"
+                  autoFocus
+                  maxLength={6}
+                  value={switchTwoFactorCode}
+                  onChange={(e) => setSwitchTwoFactorCode(e.target.value.replace(/\D/g, ""))}
+                  required
+                />
+                {switchError ? <p style={{ color: "var(--sell)", fontSize: 12, margin: "8px 0 0" }}>{switchError}</p> : null}
+                <div className="modal-actions" style={{ marginTop: 16 }}>
+                  <button type="button" className="modal-btn secondary" onClick={() => setSwitchTarget(null)}>Cancel</button>
+                  <button type="submit" className="modal-btn primary" disabled={switching || switchTwoFactorCode.length !== 6}>
+                    {switching ? "Verifying…" : "Verify"}
+                  </button>
+                </div>
+              </form>
+            ) : (
+              <form className="generic-modal-card" onSubmit={submitAccountSwitch}>
+                <div className="generic-modal-title">Switch to {switchTarget.accountNumber}</div>
+                <p style={{ fontSize: 12, color: "var(--text-3)", margin: "0 0 10px" }}>
+                  Confirm the password for this account — switching replaces your current session.
+                </p>
+                <input
+                  className="generic-modal-input mono"
+                  type="password"
+                  placeholder="Password"
+                  autoFocus
+                  value={switchPassword}
+                  onChange={(e) => setSwitchPassword(e.target.value)}
+                  required
+                />
+                {switchError ? <p style={{ color: "var(--sell)", fontSize: 12, margin: "8px 0 0" }}>{switchError}</p> : null}
+                <div className="modal-actions" style={{ marginTop: 16 }}>
+                  <button type="button" className="modal-btn secondary" onClick={() => setSwitchTarget(null)}>Cancel</button>
+                  <button type="submit" className="modal-btn primary" disabled={switching}>{switching ? "Switching…" : "Switch"}</button>
+                </div>
+              </form>
+            )}
           </div>
         </div>
       ) : null}

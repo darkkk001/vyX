@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
   authenticateAccount,
-  createAccountSession,
+  completeAccountLogin,
   ACCOUNT_SESSION_COOKIE_NAME,
   accountSessionCookieOptions,
 } from "@/lib/account-auth";
 import { checkRateLimit } from "@/lib/rate-limit";
+import { issuePending2faChallenge } from "@/lib/totp";
 
 // Landing point for the root-domain launcher's (app/launch) single-screen
 // login — a real cross-site <form method="POST"> submit (a top-level
@@ -42,10 +43,19 @@ export async function POST(request: NextRequest) {
     return NextResponse.redirect(`${origin}/trade/login${qs}`, { status: 303 });
   }
 
-  const token = await createAccountSession({
-    accountId: account.id,
-    brokerId: account.brokerId,
-  });
+  // Same 2FA gate as app/api/trade/login, adapted for this route's
+  // redirect (not JSON) shape -- hands off to the login page's own 2FA
+  // step with the pending token in the query string rather than a
+  // response body, then POST /api/trade/login/verify-2fa (used by both
+  // entry points) takes it from there.
+  if (account.twoFactorEnabled) {
+    const pendingToken = await issuePending2faChallenge({ accountId: account.id, brokerId: account.brokerId });
+    return NextResponse.redirect(`${origin}/trade/login?requires2fa=1&pendingToken=${pendingToken}&remember=${remember}`, { status: 303 });
+  }
+
+  const userAgent = request.headers.get("user-agent");
+  const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? null;
+  const token = await completeAccountLogin(account, null, { userAgent, ip });
 
   const response = NextResponse.redirect(`${origin}/trade?remember=${remember}`, { status: 303 });
   response.cookies.set(ACCOUNT_SESSION_COOKIE_NAME, token, accountSessionCookieOptions());
