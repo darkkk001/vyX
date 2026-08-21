@@ -21,6 +21,7 @@ export type BrokerRow = {
   executionEngine: "LEGACY" | "RUST";
   trialEndsAt: string | null;
   createdAt: string;
+  hasSsoSecret: boolean;
 };
 
 type AdminOption = { id: string; email: string; role: string; status: string; brokerId: string | null };
@@ -90,11 +91,21 @@ export default function BrokersManager({ initialRows }: { initialRows: BrokerRow
   const [detailBusy, setDetailBusy] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
 
+  // --- WebTrader SSO secret (Tenant detail modal) ---
+  // Only ever held in state right after generation -- the API never
+  // returns the value again after this response, so once the modal
+  // closes or another action runs, it's gone from the UI too.
+  const [revealedSsoSecret, setRevealedSsoSecret] = useState<string | null>(null);
+  const [ssoBusy, setSsoBusy] = useState(false);
+  const [ssoError, setSsoError] = useState<string | null>(null);
+
   async function openDetail(row: BrokerRow) {
     setDetailTarget(row);
     setDetailAdmins(null);
     setNewAdminEmail("");
     setDetailError(null);
+    setRevealedSsoSecret(null);
+    setSsoError(null);
     const response = await fetch("/api/admin/admins");
     if (response.ok) {
       const all = (await response.json()) as AdminOption[];
@@ -159,6 +170,39 @@ export default function BrokersManager({ initialRows }: { initialRows: BrokerRow
       return;
     }
     setDetailAdmins((prev) => prev?.map((a) => (a.id === admin.id ? { ...a, status: "DISABLED" } : a)) ?? null);
+    router.refresh();
+  }
+
+  async function generateSsoSecret() {
+    if (!detailTarget) return;
+    setSsoBusy(true);
+    setSsoError(null);
+    const response = await fetch(`/api/admin/brokers/${detailTarget.id}/sso-secret`, { method: "POST" });
+    setSsoBusy(false);
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      setSsoError(body.error ?? "failed to generate secret");
+      return;
+    }
+    const { ssoSecret } = (await response.json()) as { ssoSecret: string };
+    setRevealedSsoSecret(ssoSecret);
+    setDetailTarget((prev) => (prev ? { ...prev, hasSsoSecret: true } : prev));
+    router.refresh();
+  }
+
+  async function revokeSsoSecret() {
+    if (!detailTarget) return;
+    setSsoBusy(true);
+    setSsoError(null);
+    const response = await fetch(`/api/admin/brokers/${detailTarget.id}/sso-secret`, { method: "DELETE" });
+    setSsoBusy(false);
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      setSsoError(body.error ?? "failed to revoke secret");
+      return;
+    }
+    setRevealedSsoSecret(null);
+    setDetailTarget((prev) => (prev ? { ...prev, hasSsoSecret: false } : prev));
     router.refresh();
   }
 
@@ -316,6 +360,38 @@ export default function BrokersManager({ initialRows }: { initialRows: BrokerRow
                 </Button>
               </div>
               <p className="mt-1.5 text-[10px] text-[var(--text-3)]">New admins get a temporary password (ChangeMe123!) — same as the Manager team-invite flow.</p>
+            </ModalSection>
+
+            <ModalSection label="WebTrader SSO">
+              <p className="mb-2 text-xs text-[var(--text-3)]">
+                Lets this broker&apos;s own portal hand off already-authenticated traders straight into WebTrader,
+                skipping the login form. Shown once at generation time — store it on the broker&apos;s side immediately.
+              </p>
+              {revealedSsoSecret ? (
+                <div className="mb-2 flex items-center justify-between gap-2 rounded-lg border border-[var(--accent)] bg-[var(--bg-2)] px-3 py-2">
+                  <code className="select-all break-all text-xs text-[var(--text-1)]">{revealedSsoSecret}</code>
+                </div>
+              ) : detailTarget.hasSsoSecret ? (
+                <div className="mb-2 flex items-center gap-2">
+                  <Badge tone="success">Secret set</Badge>
+                  <span className="text-xs text-[var(--text-3)]">Value hidden — rotate to issue a new one.</span>
+                </div>
+              ) : (
+                <div className="mb-2">
+                  <Badge tone="neutral">No secret yet</Badge>
+                </div>
+              )}
+              <div className="flex flex-wrap gap-2">
+                <Button size="sm" variant="primary" disabled={ssoBusy} onClick={generateSsoSecret}>
+                  {ssoBusy ? "Working..." : detailTarget.hasSsoSecret ? "Rotate secret" : "Generate secret"}
+                </Button>
+                {detailTarget.hasSsoSecret ? (
+                  <Button size="sm" variant="danger" disabled={ssoBusy} onClick={revokeSsoSecret}>
+                    Revoke
+                  </Button>
+                ) : null}
+              </div>
+              {ssoError ? <p className="mt-1.5 text-sm text-[var(--sell)]">{ssoError}</p> : null}
             </ModalSection>
 
             <ModalSection label="Tenant lifecycle">

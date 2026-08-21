@@ -226,6 +226,20 @@ model Broker {
   trialEndsAt   DateTime? @db.Timestamptz(3)
   nextInvoiceAt DateTime? @db.Timestamptz(3)
 
+  // Server-to-server credential for the WebTrader SSO handoff (see
+  // lib/sso.ts): the broker's OWN external portal calls
+  // POST /api/trade/sso/token with this secret in an X-Broker-Secret
+  // header to prove it already authenticated the trader, and gets back a
+  // short-lived one-time token to redirect the trader's browser to
+  // /trade/sso with. Null = SSO not set up for this broker yet (the
+  // token-issuance route rejects everything until Super Admin generates
+  // one). Plaintext, not hashed -- same convention as PRICE_FEED_SECRET/
+  // INTERNAL_SERVICE_SECRET (a machine credential, not a user password;
+  // constant-shape comparison isn't attempted anywhere else in this
+  // codebase for this class of secret either). Shown once at generation
+  // time in Super Admin, never displayed again after.
+  ssoSecret String? @unique
+
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
 

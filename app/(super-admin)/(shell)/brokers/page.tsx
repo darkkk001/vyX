@@ -27,6 +27,7 @@ export default async function BrokersPage() {
     executionEngine: b.executionEngine,
     trialEndsAt: b.trialEndsAt ? b.trialEndsAt.toISOString() : null,
     createdAt: b.createdAt.toISOString().slice(0, 10),
+    hasSsoSecret: b.ssoSecret != null,
   }));
 
   const activeCount = brokers.filter((b) => b.status === "ACTIVE").length;
