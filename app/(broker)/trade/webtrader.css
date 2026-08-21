@@ -68,6 +68,12 @@
   color: var(--text-1);
   font-family: 'Inter', system-ui, sans-serif;
   height: 100vh;
+  /* Mobile browsers resize their own chrome (address bar) in and out of
+     the classic 100vh, which used to leave the bottom nav bar
+     partially hidden behind it -- dvh tracks the *actual* visible
+     viewport instead. Older browsers that don't understand `dvh` just
+     ignore this line and keep the 100vh above. */
+  height: 100dvh;
   overflow: hidden;
   -webkit-font-smoothing: antialiased;
   display: flex;
@@ -514,3 +520,83 @@
 .history-summary .neg { color: var(--sell); }
 .history-custom-range { display: flex; align-items: center; gap: 8px; padding: 0 4px 10px; }
 .history-custom-range input { background: var(--bg-3); color: var(--text-1); border: 1px solid var(--border-strong); border-radius: 7px; padding: 6px 10px; font-size: 11.5px; outline: none; }
+
+/* ---------- MOBILE LAYOUT ----------
+   Below 860px (WebTrader.tsx's isMobileView), .main switches from its
+   desktop grid (rail | order-panel | chart | watchlist side by side) to
+   a single section at a time, full width/height, switched by the bottom
+   nav bar (.mobile-nav, only rendered in mobile) instead of the desktop
+   icon rail. Visibility itself is driven from JS (inline style/className
+   toggles on the section already in the DOM — see WebTrader.tsx) rather
+   than duplicated here as attribute selectors, so this block only needs
+   to handle *layout* (stacking, sizing), not per-tab show/hide logic. */
+@media (max-width: 860px) {
+  .main.mobile { display: flex; flex-direction: column; overflow: hidden; }
+  .main.mobile > .rail { display: none; }
+
+  .main.mobile > .order-panel,
+  .main.mobile > .center,
+  .main.mobile > .watchlist {
+    display: none;
+    width: 100%;
+    border-right: none;
+    border-left: none;
+  }
+  .main.mobile > .order-panel.mobile-active { display: block; flex: 1; overflow-y: auto; }
+  .main.mobile > .center.mobile-active { display: flex; flex: 1; min-height: 0; }
+  .main.mobile > .watchlist.mobile-active { display: flex; flex: 1; }
+
+  .main.mobile .bottom-panel.mobile { border-top: none; }
+
+  /* Topbar: every menu (File/Tools/Reports/Quick actions/Help) stays
+     fully reachable, just via a horizontal swipe instead of all fitting
+     at once — cheaper and lower-risk than merging five independent
+     dropdown-open states into one condensed mobile menu, and nothing
+     loses functionality. */
+  .topbar { padding: 0 10px; height: 48px; }
+  .nav { overflow-x: auto; flex-wrap: nowrap; margin-left: 12px; gap: 16px; scrollbar-width: none; }
+  .nav::-webkit-scrollbar { display: none; }
+  .nav .item { white-space: nowrap; }
+  .topbar-right { gap: 10px; }
+  .trader-name { display: none; }
+  .funds-btn-label { display: none; }
+  .funds-btn { padding: 6px 8px; }
+
+  /* Statusbar: same horizontal-swipe-over-redesign tradeoff as the topbar
+     nav above — every stat stays visible, just not all at a fixed width. */
+  .statusbar { grid-template-columns: none; overflow-x: auto; padding: 6px 10px; }
+  .statusbar-left, .statusbar-right { flex-shrink: 0; gap: 18px; }
+  .statusbar-center { display: none; }
+
+  .order-panel { padding: 12px; }
+  .watchlist { padding: 10px 6px; }
+
+  /* The positions/orders table (.pos-table-header/.position-row) keeps
+     its desktop min-width and scrolls horizontally inside .panel-body
+     (already overflow:auto) rather than being redesigned into cards for
+     this pass — the page itself never overflows, only that one table
+     does, same tradeoff fintech apps commonly make for dense tables
+     before a full card-based mobile redesign. */
+}
+
+/* ---------- MOBILE BOTTOM NAV ---------- */
+.mobile-nav {
+  display: flex;
+  border-top: 1px solid var(--border);
+  background: var(--bg-1);
+  flex-shrink: 0;
+}
+.mobile-nav-item {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 7px 4px 8px;
+  background: transparent;
+  border: none;
+  color: var(--text-3);
+  cursor: pointer;
+  font-size: 10px;
+}
+.mobile-nav-item.active { color: var(--accent); }

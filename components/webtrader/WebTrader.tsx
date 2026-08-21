@@ -203,6 +203,24 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
   const [isDesktopApp, setIsDesktopApp] = useState(false);
   useEffect(() => setIsDesktopApp(!!window.vyxDesktop?.isDesktop), []);
 
+  // Mobile layout (docs/webtrader-stm-architecture-review.md §3 item 9):
+  // below this width the side-by-side rail/order-panel/chart/watchlist
+  // grid can't fit, so .main switches to single-column and only one
+  // section shows at a time -- see webtrader.css's ".main.mobile" rules
+  // and the bottom nav bar this state drives, right below the chart area
+  // in the JSX. 860px (not a device-specific breakpoint) is where the
+  // order ticket's two-column lot/SL/TP fields realistically stop being
+  // comfortably tappable side-by-side with anything else visible.
+  const [isMobileView, setIsMobileView] = useState(false);
+  const [mobileTab, setMobileTab] = useState<"chart" | "trade" | "positions" | "watchlist">("chart");
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 860px)");
+    setIsMobileView(mq.matches);
+    const onChange = (e: MediaQueryListEvent) => setIsMobileView(e.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+
   // "default" = the newer palette, "classic" = the original WebTrader
   // colors — same components/markup either way, see the
   // .wt-root[data-theme="default"] override in webtrader.css. Persisted
@@ -1618,7 +1636,7 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
             </div>
             <button className="funds-btn" onClick={() => { setFundsModalOpen(true); refreshFundsHistory(); }}>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="2" y="5" width="20" height="14" rx="2" /><line x1="2" y1="10" x2="22" y2="10" /></svg>
-              Funds
+              <span className="funds-btn-label">Funds</span>
             </button>
             <button className="bell-btn" onClick={() => setAlertsModalOpen(true)} title="Price alerts">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9" /><path d="M13.73 21a2 2 0 0 1-3.46 0" /></svg>
@@ -1628,8 +1646,12 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
           </div>
         </div>
 
-        <div className="main" style={{ gridTemplateColumns: `48px ${orderPanelWidth}px 6px 1fr 6px ${watchlistWidth}px` }}>
-          {/* ---------- ICON RAIL (far left) ---------- */}
+        <div
+          className={`main${isMobileView ? " mobile" : ""}`}
+          style={isMobileView ? undefined : { gridTemplateColumns: `48px ${orderPanelWidth}px 6px 1fr 6px ${watchlistWidth}px` }}
+        >
+          {/* ---------- ICON RAIL (far left, desktop only -- replaced by
+              the bottom nav bar on mobile, rendered after .main below) ---------- */}
           <div className="rail">
             <button className="rail-item active" title="Trade">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 3v18h18" /><path d="M18.7 8.3 13 14l-4-4-5.3 5.3" /></svg>
@@ -1656,7 +1678,7 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
           </div>
 
           {/* ---------- ORDER PANEL (left) ---------- */}
-          <div className="order-panel">
+          <div className={`order-panel${isMobileView ? ` mobile${mobileTab === "trade" ? " mobile-active" : ""}` : ""}`}>
             <div className="section-label" style={{ paddingLeft: 0 }}>Order ticket</div>
 
             <div className="order-type-tabs">
@@ -1765,11 +1787,11 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
             <NewsPanel />
           </div>
 
-          <div className="col-resizer" onMouseDown={startResize("order")} />
+          {isMobileView ? null : <div className="col-resizer" onMouseDown={startResize("order")} />}
 
           {/* ---------- CENTER (chart) ---------- */}
-          <div className="center">
-            <div className="chart-header">
+          <div className={`center${isMobileView ? ` mobile${mobileTab === "chart" || mobileTab === "positions" ? " mobile-active" : ""}` : ""}`}>
+            <div className="chart-header" style={isMobileView && mobileTab !== "chart" ? { display: "none" } : undefined}>
               <div className="chart-title" style={{ position: "relative" }}>
                 <div className="chart-symbol" style={{ cursor: "pointer", display: "flex", alignItems: "center", gap: 4 }} onClick={() => { setSymbolDropdownOpen((v) => !v); setSymbolSearch(""); }}>
                   {activeSymbol}
@@ -1839,7 +1861,7 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
                 </button>
               </div>
             </div>
-            <div className="chart-area">
+            <div className="chart-area" style={isMobileView && mobileTab !== "chart" ? { display: "none" } : undefined}>
               {chartLayout === "single" ? (
                 <>
                   <div className="drawing-toolbar">
@@ -1913,9 +1935,12 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
               )}
             </div>
 
-            <div className="row-resizer" onMouseDown={startResize("bottom")} />
+            {isMobileView ? null : <div className="row-resizer" onMouseDown={startResize("bottom")} />}
 
-            <div className="bottom-panel" style={{ height: bottomPanelHeight }}>
+            <div
+              className={`bottom-panel${isMobileView ? " mobile" : ""}`}
+              style={isMobileView ? { display: mobileTab === "positions" ? "flex" : "none", height: "auto", flex: 1 } : { height: bottomPanelHeight }}
+            >
               <div className="tabs-row">
                 <div className="tabs">
                   <div className={`tab${activeBottomTab === "positions" ? " active" : ""}`} onClick={() => setActiveBottomTab("positions")}>Positions ({acctPositions.length})</div>
@@ -2189,10 +2214,13 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
             </div>
           </div>
 
-          <div className="col-resizer" onMouseDown={startResize("watchlist")} />
+          {isMobileView ? null : <div className="col-resizer" onMouseDown={startResize("watchlist")} />}
 
           {/* ---------- WATCHLIST (right) ---------- */}
-          <div className="watchlist" onContextMenu={(e) => { e.preventDefault(); setWlMenuOpen(true); setWlContextMenu({ x: e.clientX, y: e.clientY }); }}>
+          <div
+            className={`watchlist${isMobileView ? ` mobile${mobileTab === "watchlist" ? " mobile-active" : ""}` : ""}`}
+            onContextMenu={(e) => { e.preventDefault(); setWlMenuOpen(true); setWlContextMenu({ x: e.clientX, y: e.clientY }); }}
+          >
             <div className="section-label">Watchlist</div>
             <input className="wl-search mono" placeholder="Search symbol..." value={watchlistFilter} onChange={(e) => setWatchlistFilter(e.target.value)} />
             <div className="wl-header" style={{ gridTemplateColumns: wlGridTemplate }}>
@@ -2253,6 +2281,29 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
             <div className="wl-hint">Right-click for more columns</div>
           </div>
         </div>
+
+        {/* ---------- MOBILE BOTTOM NAV (replaces the icon rail below
+            the .mobile breakpoint) ---------- */}
+        {isMobileView ? (
+          <div className="mobile-nav">
+            <button className={`mobile-nav-item${mobileTab === "chart" ? " active" : ""}`} onClick={() => setMobileTab("chart")}>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 3v18h18" /><path d="M18.7 8.3 13 14l-4-4-5.3 5.3" /></svg>
+              <span>Chart</span>
+            </button>
+            <button className={`mobile-nav-item${mobileTab === "trade" ? " active" : ""}`} onClick={() => setMobileTab("trade")}>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2v20M2 12h20" /></svg>
+              <span>Trade</span>
+            </button>
+            <button className={`mobile-nav-item${mobileTab === "positions" ? " active" : ""}`} onClick={() => setMobileTab("positions")}>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" /></svg>
+              <span>Positions{acctPositions.length > 0 ? ` (${acctPositions.length})` : ""}</span>
+            </button>
+            <button className={`mobile-nav-item${mobileTab === "watchlist" ? " active" : ""}`} onClick={() => setMobileTab("watchlist")}>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2 3 14h7l-1 8 10-12h-7l1-8Z" /></svg>
+              <span>Watchlist</span>
+            </button>
+          </div>
+        ) : null}
 
         <div className="statusbar">
           <div className="statusbar-left">
