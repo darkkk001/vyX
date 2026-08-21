@@ -296,14 +296,24 @@ export async function POST(request: NextRequest) {
   }
 }
 
-export async function GET() {
+// Default: only PENDING/REQUOTED (what's actually still resting/awaiting
+// a response) -- the "Pending Orders" tab. ?status=all drops that filter
+// for full order-lifecycle visibility (also FILLED/REJECTED/CANCELLED) --
+// the separate "Orders" tab (docs/webtrader-stm-architecture-review.md
+// §4.5). Same query shape either way, no new endpoint needed.
+export async function GET(request: NextRequest) {
   const session = await getAccountSession();
   if (!session) {
     return NextResponse.json({ error: "not authenticated" }, { status: 401 });
   }
 
+  const showAll = new URL(request.url).searchParams.get("status") === "all";
+
   const orders = await prisma.order.findMany({
-    where: { accountId: session.accountId, status: { in: ["PENDING", "REQUOTED"] } },
+    where: {
+      accountId: session.accountId,
+      ...(showAll ? {} : { status: { in: ["PENDING", "REQUOTED"] } }),
+    },
     include: { symbol: { select: { name: true, digits: true } } },
     orderBy: { createdAt: "desc" },
   });

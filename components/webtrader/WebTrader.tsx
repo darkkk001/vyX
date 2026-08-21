@@ -50,7 +50,7 @@ const TF_LABELS: { key: Timeframe; label: string }[] = [
   { key: "Y1", label: "Y" },
 ];
 
-type BottomTab = "positions" | "net" | "orders" | "history" | "analytics" | "logs";
+type BottomTab = "positions" | "net" | "orders" | "allOrders" | "history" | "analytics" | "logs";
 type LogEntry = { id: number; time: string; message: string };
 type OrderMode = "market" | "pending";
 type PendingType = "buy_limit" | "sell_limit" | "buy_stop" | "sell_stop";
@@ -107,6 +107,7 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
   const [selectedPositionIds, setSelectedPositionIds] = useState<Set<string>>(new Set());
   const [stmOpen, setStmOpen] = useState(false);
   const [pendingOrders, setPendingOrders] = useState<ApiOrder[]>([]);
+  const [allOrders, setAllOrders] = useState<ApiOrder[]>([]);
   const [history, setHistory] = useState<ApiPosition[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [comments, setComments] = useState<Record<string, string>>({});
@@ -314,7 +315,20 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
     }
   }, [router]);
   const refreshPositions = useCallback(async () => setPositions(await tradeApi.positions().catch(() => [])), []);
-  const refreshOrders = useCallback(async () => setPendingOrders(await tradeApi.orders().catch(() => [])), []);
+  // Fetches both the Pending Orders view and the full-lifecycle Orders
+  // view (docs/webtrader-stm-architecture-review.md §4.5) together --
+  // every existing call site already treats "refreshOrders" as "an order
+  // mutation just happened," which is exactly the signal both tabs need,
+  // so this piggybacks allOrders onto the same calls rather than needing
+  // its own call site added everywhere refreshOrders() already is.
+  const refreshOrders = useCallback(async () => {
+    const [pending, all] = await Promise.all([
+      tradeApi.orders().catch(() => []),
+      tradeApi.allOrders().catch(() => []),
+    ]);
+    setPendingOrders(pending);
+    setAllOrders(all);
+  }, []);
 
   // A dealer requoted one of this account's orders (see
   // app/api/manage/dealing-queue/[id]/route.ts) -- respond with accept
@@ -1792,7 +1806,8 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
                 <div className="tabs">
                   <div className={`tab${activeBottomTab === "positions" ? " active" : ""}`} onClick={() => setActiveBottomTab("positions")}>Positions ({acctPositions.length})</div>
                   <div className={`tab${activeBottomTab === "net" ? " active" : ""}`} onClick={() => setActiveBottomTab("net")}>Net positions ({netBySymbol.size})</div>
-                  <div className={`tab${activeBottomTab === "orders" ? " active" : ""}`} onClick={() => setActiveBottomTab("orders")}>Orders ({pendingOrders.length})</div>
+                  <div className={`tab${activeBottomTab === "orders" ? " active" : ""}`} onClick={() => setActiveBottomTab("orders")}>Pending Orders ({pendingOrders.length})</div>
+                  <div className={`tab${activeBottomTab === "allOrders" ? " active" : ""}`} onClick={() => setActiveBottomTab("allOrders")}>Orders ({allOrders.length})</div>
                   <div className={`tab${activeBottomTab === "history" ? " active" : ""}`} onClick={() => setActiveBottomTab("history")}>History</div>
                   <div className={`tab${activeBottomTab === "analytics" ? " active" : ""}`} onClick={() => setActiveBottomTab("analytics")}>Analytics</div>
                   <div className={`tab${activeBottomTab === "logs" ? " active" : ""}`} onClick={() => setActiveBottomTab("logs")}>Logs</div>
@@ -1956,6 +1971,47 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
                       </div>
                     </div>
                   ))}
+                </div>
+              ) : null}
+
+              {activeBottomTab === "allOrders" ? (
+                <div className="panel-body">
+                  {allOrders.length === 0 ? (
+                    <div className="empty-state">No orders yet</div>
+                  ) : (
+                    allOrders.map((o) => {
+                      const statusColor =
+                        o.status === "FILLED"
+                          ? "var(--buy)"
+                          : o.status === "REJECTED" || o.status === "CANCELLED"
+                            ? "var(--sell)"
+                            : "var(--text-3)";
+                      const priceLabel =
+                        o.status === "FILLED" && o.filledPrice
+                          ? `filled @ ${fmt(parseFloat(o.filledPrice), o.symbol.digits)}`
+                          : o.requestedPrice
+                            ? `@ ${fmt(parseFloat(o.requestedPrice), o.symbol.digits)}`
+                            : "";
+                      return (
+                        <div className="simple-row" key={o.id}>
+                          <div className="simple-left">
+                            <span className="pos-symbol">{o.symbol.name}</span>
+                            <span className={`pos-side ${o.side === "BUY" ? "buy" : "sell"}`}>
+                              {o.type} {o.side} {parseFloat(o.volume).toFixed(2)}
+                            </span>
+                            <span className="net-pos-detail mono">{priceLabel}</span>
+                            {o.status === "REJECTED" && o.rejectionReason ? (
+                              <span className="net-pos-detail">{o.rejectionReason}</span>
+                            ) : null}
+                            <span className="net-pos-detail">{new Date(o.createdAt).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</span>
+                          </div>
+                          <div className="simple-right">
+                            <span className="mono" style={{ color: statusColor, fontSize: 12 }}>{o.status}</span>
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
                 </div>
               ) : null}
 

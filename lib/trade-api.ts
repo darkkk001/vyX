@@ -78,7 +78,10 @@ export type ApiOrder = {
   slPrice: string | null;
   tpPrice: string | null;
   status: string;
+  filledPrice: string | null;
+  rejectionReason: string | null;
   requotedPrice: string | null;
+  createdAt: string;
   symbol: { name: string; digits: number };
 };
 
@@ -112,6 +115,10 @@ export const tradeApi = {
     call<ApiCandle[]>(`/api/trade/candles?symbol=${encodeURIComponent(symbol)}&tf=${tf}`),
   positions: () => call<ApiPosition[]>("/api/trade/positions"),
   orders: () => call<ApiOrder[]>("/api/trade/orders"),
+  // Full order-lifecycle view (docs/webtrader-stm-architecture-review.md
+  // §4.5) -- includes FILLED/REJECTED/CANCELLED, not just what's
+  // currently pending/requoted, unlike orders() above.
+  allOrders: () => call<ApiOrder[]>("/api/trade/orders?status=all"),
   history: (params: { from?: string; to?: string; symbol?: string }) => {
     const qs = new URLSearchParams();
     if (params.from) qs.set("from", params.from);
