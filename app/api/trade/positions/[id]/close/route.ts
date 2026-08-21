@@ -27,6 +27,11 @@ export async function POST(
   if (!closePrice) {
     return NextResponse.json({ error: "closePrice is required" }, { status: 400 });
   }
+  // Informational only, doesn't change validation/execution -- flags this
+  // close for the STM_BULK_CLOSE audit trail. See
+  // components/webtrader/SmartTradeManager.tsx's runBulk/partialCloseOne/
+  // closeOne and docs/webtrader-stm-architecture-review.md §4.6.
+  const source = body?.source === "stm_bulk" ? "stm_bulk" : null;
 
   const position = await prisma.position.findUnique({
     where: { id },
@@ -108,6 +113,18 @@ export async function POST(
     return { position: updatedPosition, transaction, partial: isPartial };
   });
 
+  if (source === "stm_bulk") {
+    await prisma.auditLog.create({
+      data: {
+        brokerId: session.brokerId,
+        action: "STM_BULK_CLOSE",
+        entityType: "Position",
+        entityId: position.id,
+        oldValue: { volume: position.volume.toString() },
+        newValue: { closeVolume: closeVolume.toString(), partial: isPartial },
+      },
+    });
+  }
   await publishTradingEvent("PositionClosed", { position_id: position.id, account_id: session.accountId });
   return NextResponse.json(result);
 }

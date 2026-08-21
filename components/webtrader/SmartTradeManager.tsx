@@ -187,7 +187,7 @@ export default function SmartTradeManager({
       // same call once, never producing a duplicate order server-side.
       const result = await tradeApi.placeOrder({
         symbol: config.symbol, side, type: config.orderType, volume: config.lot, price: refPrice,
-        slPrice: sl, tpPrice: tp, idempotencyKey: crypto.randomUUID(),
+        slPrice: sl, tpPrice: tp, idempotencyKey: crypto.randomUUID(), source: "hotkey",
       });
       if (result.position) {
         pushToast(`Smart Execution: ${side === "BUY" ? "Bought" : "Sold"} ${config.lot} lots of ${config.symbol} @ ${fmt(refPrice, m.def.digits)}`, true);
@@ -243,7 +243,7 @@ export default function SmartTradeManager({
     const price = p.side === "BUY" ? mm.bid : mm.ask;
     const amount = +(parseFloat(p.volume) * pct).toFixed(2);
     if (amount <= 0 || amount >= parseFloat(p.volume)) throw new Error(`${p.symbol.name}: invalid partial volume`);
-    await tradeApi.closePosition(p.id, price, amount);
+    await tradeApi.closePosition(p.id, price, amount, "stm_bulk");
   }
 
   async function breakEvenOne(p: ApiPosition, offset: number) {
@@ -272,7 +272,7 @@ export default function SmartTradeManager({
     const mm = market[p.symbol.name];
     if (!mm || !mm.live) throw new Error(`${p.symbol.name}: no live feed`);
     const price = p.side === "BUY" ? mm.bid : mm.ask;
-    await tradeApi.closePosition(p.id, price);
+    await tradeApi.closePosition(p.id, price, undefined, "stm_bulk");
   }
   function closeProfitable() {
     const matching = positions.filter((p) => matchesScope(p, closeScope, closeDirection) && positionPnl(p) >= 0);

@@ -87,14 +87,54 @@ function pendingPriceRuleText(type: PendingType) {
   return "Sell stop must be below the current price";
 }
 
+// Layout/watchlist personalization (docs/webtrader-stm-architecture-
+// review.md §3 item 10) -- same "one new localStorage key, same pattern
+// as vyx-theme" the doc describes, covering the pieces that weren't
+// already covered by vyx-stm-config (SmartTradeManager.tsx) or vyx-theme:
+// watchlist symbol order, which watchlist columns are shown, and the
+// three resizable panel dimensions. Read once via a lazy useState
+// initializer (runs before first paint, so there's no flash of the
+// default layout); a stale/corrupt value just falls back to the default
+// below rather than throwing.
+const LAYOUT_STORAGE_KEY = "vyx-webtrader-layout";
+type StoredLayout = {
+  watchlistOrder?: string[];
+  columnPrefs?: { signal: boolean; change: boolean; spread: boolean; high: boolean; low: boolean };
+  orderPanelWidth?: number;
+  watchlistWidth?: number;
+  bottomPanelHeight?: number;
+};
+function loadStoredLayout(): StoredLayout {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = window.localStorage.getItem(LAYOUT_STORAGE_KEY);
+    return raw ? (JSON.parse(raw) as StoredLayout) : {};
+  } catch {
+    return {};
+  }
+}
+
 export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: string; brokerLogoUrl: string }) {
   const router = useRouter();
 
   const [market, setMarket] = useState<Record<string, MarketState>>(() => createInitialMarket());
-  const [watchlistOrder, setWatchlistOrder] = useState<string[]>(SYMBOL_DEFS.map((s) => s.name));
+  const [storedLayout] = useState<StoredLayout>(() => loadStoredLayout());
+  const [watchlistOrder, setWatchlistOrder] = useState<string[]>(() => {
+    const saved = storedLayout.watchlistOrder;
+    // A saved order from before a symbol was added/removed from
+    // SYMBOL_DEFS would silently drop or duplicate rows -- only trust it
+    // when it's exactly the same set of symbols as today's default.
+    const defaultNames = SYMBOL_DEFS.map((s) => s.name);
+    if (saved && saved.length === defaultNames.length && defaultNames.every((n) => saved.includes(n))) {
+      return saved;
+    }
+    return defaultNames;
+  });
   const [dragSymbol, setDragSymbol] = useState<string | null>(null);
   const [watchlistFilter, setWatchlistFilter] = useState("");
-  const [columnPrefs, setColumnPrefs] = useState({ signal: true, change: true, spread: false, high: false, low: false });
+  const [columnPrefs, setColumnPrefs] = useState(
+    storedLayout.columnPrefs ?? { signal: true, change: true, spread: false, high: false, low: false }
+  );
   const [wlMenuOpen, setWlMenuOpen] = useState(false);
 
   const [activeSymbol, setActiveSymbol] = useState("XAUUSD");
@@ -125,9 +165,9 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
   const [balanceHidden, setBalanceHidden] = useState(false);
 
   // ---------- resizable panel layout ----------
-  const [orderPanelWidth, setOrderPanelWidth] = useState(260);
-  const [watchlistWidth, setWatchlistWidth] = useState(210);
-  const [bottomPanelHeight, setBottomPanelHeight] = useState(190);
+  const [orderPanelWidth, setOrderPanelWidth] = useState(storedLayout.orderPanelWidth ?? 260);
+  const [watchlistWidth, setWatchlistWidth] = useState(storedLayout.watchlistWidth ?? 210);
+  const [bottomPanelHeight, setBottomPanelHeight] = useState(storedLayout.bottomPanelHeight ?? 190);
   const resizeStateRef = useRef<{ kind: "order" | "watchlist" | "bottom"; startPos: number; startSize: number } | null>(null);
 
   const startResize = useCallback((kind: "order" | "watchlist" | "bottom") => (e: React.MouseEvent) => {
@@ -161,6 +201,20 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
       window.removeEventListener("mouseup", onUp);
     };
   }, []);
+
+  // Persists everything loadStoredLayout reads back on next visit. Fires
+  // on every resize-drag tick too (not just drag-end) -- three numbers
+  // plus a small array/object is cheap enough that debouncing isn't worth
+  // the added complexity here.
+  useEffect(() => {
+    try {
+      const layout: StoredLayout = { watchlistOrder, columnPrefs, orderPanelWidth, watchlistWidth, bottomPanelHeight };
+      window.localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(layout));
+    } catch {
+      // localStorage unavailable (private mode, quota) -- layout just
+      // won't persist across reloads, nothing else depends on this.
+    }
+  }, [watchlistOrder, columnPrefs, orderPanelWidth, watchlistWidth, bottomPanelHeight]);
 
   const [activeBottomTab, setActiveBottomTab] = useState<BottomTab>("positions");
   const [histFrom, setHistFrom] = useState("");

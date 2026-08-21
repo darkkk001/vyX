@@ -19,6 +19,12 @@ import {
   checkMaxDailyLoss,
 } from "@/lib/risk";
 
+async function logHotkeyOrder(brokerId: string, orderId: string) {
+  await prisma.auditLog.create({
+    data: { brokerId, action: "STM_HOTKEY_ORDER", entityType: "Order", entityId: orderId, oldValue: {}, newValue: {} },
+  });
+}
+
 // Phase 2 note: there is no live tick feed or matching engine yet (that's
 // Phase 5). Prices are simulated client-side, so the client supplies the
 // price it wants to transact at, and MARKET orders fill immediately at
@@ -40,6 +46,13 @@ export async function POST(request: NextRequest) {
   const price = body?.price != null ? String(body.price) : null;
   const slPrice = body?.slPrice != null ? String(body.slPrice) : null;
   const tpPrice = body?.tpPrice != null ? String(body.tpPrice) : null;
+  // Optional, client-asserted, informational only -- doesn't change
+  // validation/risk/execution at all (every branch below runs identically
+  // regardless), just which of this route's several success points also
+  // writes an STM_HOTKEY_ORDER audit row. See
+  // docs/webtrader-stm-architecture-review.md §4.6 and
+  // components/webtrader/SmartTradeManager.tsx's smartExecute.
+  const source = body?.source === "hotkey" ? "hotkey" : null;
 
   if (!symbolName || !side || !type || !idempotencyKey) {
     return NextResponse.json(
@@ -146,6 +159,7 @@ export async function POST(request: NextRequest) {
           status: "PENDING",
         },
       });
+      if (source === "hotkey") await logHotkeyOrder(session.brokerId, order.id);
 
       // Smart Dealer -- see Broker.smartDealerAcceptPct/RejectPct's
       // schema comments. Evaluated once, right here, at submission --
@@ -255,6 +269,7 @@ export async function POST(request: NextRequest) {
         });
         return { order, position };
       });
+      if (source === "hotkey") await logHotkeyOrder(session.brokerId, result.order.id);
       await publishTradingEvent("OrderFilled", {
         order_id: result.order.id,
         account_id: session.accountId,
@@ -283,6 +298,7 @@ export async function POST(request: NextRequest) {
         status: "PENDING",
       },
     });
+    if (source === "hotkey") await logHotkeyOrder(session.brokerId, order.id);
     await publishTradingEvent("OrderAccepted", { order_id: order.id, account_id: session.accountId });
     return NextResponse.json(order, { status: 201 });
   } catch (error) {

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { consumeSsoToken } from "@/lib/sso";
 import { createAccountSession, ACCOUNT_SESSION_COOKIE_NAME, accountSessionCookieOptions } from "@/lib/account-auth";
+import { prisma } from "@/lib/prisma";
 
 // The other half of the WebTrader SSO handoff (see
 // app/api/trade/sso/token/route.ts): a broker's own portal redirects the
@@ -35,7 +36,29 @@ export async function GET(request: NextRequest) {
     return NextResponse.redirect(`${origin}/trade/login?error=sso`, { status: 303 });
   }
 
-  const sessionToken = await createAccountSession({ accountId: payload.accountId, brokerId: payload.brokerId });
+  const userAgent = request.headers.get("user-agent");
+  const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? null;
+  const sessionToken = await createAccountSession(
+    { accountId: payload.accountId, brokerId: payload.brokerId },
+    { userAgent, ip }
+  );
+
+  // docs/webtrader-stm-architecture-review.md §4.6's own audit list names
+  // this action -- distinct from a normal password login (never audited)
+  // because this one skips the credential check entirely on the strength
+  // of the broker's own vouching, worth a durable record of exactly when
+  // that happened and for which account.
+  await prisma.auditLog.create({
+    data: {
+      brokerId: payload.brokerId,
+      action: "WEBTRADER_SSO_LOGIN",
+      entityType: "Account",
+      entityId: payload.accountId,
+      oldValue: {},
+      newValue: {},
+    },
+  });
+
   const response = NextResponse.redirect(`${origin}/trade`, { status: 303 });
   response.cookies.set(ACCOUNT_SESSION_COOKIE_NAME, sessionToken, accountSessionCookieOptions());
   return response;

@@ -144,6 +144,10 @@ export const tradeApi = {
     slPrice?: number | null;
     tpPrice?: number | null;
     idempotencyKey: string;
+    // Informational only (see app/api/trade/orders/route.ts) -- flags
+    // this order for the STM_HOTKEY_ORDER audit trail, doesn't change
+    // validation/execution.
+    source?: "hotkey";
   }) =>
     // No `position` key when dealing mode queued the order for manual
     // dealer review instead of auto-filling -- see
@@ -158,10 +162,13 @@ export const tradeApi = {
     id: string,
     body: { currentPrice: number; slPrice?: number | null; tpPrice?: number | null }
   ) => call(`/api/trade/positions/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
-  closePosition: (id: string, closePrice: number, volume?: number) =>
+  // `source: "stm_bulk"` is informational only (see
+  // app/api/trade/positions/[id]/close/route.ts) -- flags this close for
+  // the STM_BULK_CLOSE audit trail, doesn't change validation/execution.
+  closePosition: (id: string, closePrice: number, volume?: number, source?: "stm_bulk") =>
     call(`/api/trade/positions/${id}/close`, {
       method: "POST",
-      body: JSON.stringify({ closePrice, ...(volume != null ? { volume } : {}) }),
+      body: JSON.stringify({ closePrice, ...(volume != null ? { volume } : {}), ...(source ? { source } : {}) }),
     }),
   fundsHistory: () => call<ApiFundsRequest[]>("/api/trade/funds-requests"),
   submitFundsRequest: (body: { type: "DEPOSIT" | "WITHDRAWAL"; amount: number; note?: string }) =>

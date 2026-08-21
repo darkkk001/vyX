@@ -1,6 +1,6 @@
 # WebTrader + Smart Trade Manager — Architecture Review
 
-**Status: review only, nothing implemented.** Per both specs' explicit instruction, this document inspects the existing codebase and proposes an architecture. No code has been written for anything covered here.
+**Status: fully implemented (2026-08-22).** Every item in §3 and the §6 sequencing plan has shipped, including the three §4.6 audit actions (`WEBTRADER_SSO_LOGIN`, `STM_HOTKEY_ORDER`, `STM_BULK_CLOSE`) that initially went in without their audit-log writes, and watchlist/panel-layout persistence (item 10) alongside the STM-config/theme persistence that shipped with items 1 and 9. This document is kept as-is below for the original proposal/rationale — read it as history, not a live TODO list.
 
 ---
 
