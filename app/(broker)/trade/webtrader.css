@@ -543,10 +543,19 @@
     border-left: none;
   }
   .main.mobile > .order-panel.mobile-active { display: block; flex: 1; overflow-y: auto; }
-  .main.mobile > .center.mobile-active { display: flex; flex: 1; min-height: 0; }
+  .main.mobile > .center.mobile-active { display: flex; flex: 1; min-height: 0; min-width: 0; }
   .main.mobile > .watchlist.mobile-active { display: flex; flex: 1; }
 
-  .main.mobile .bottom-panel.mobile { border-top: none; }
+  /* Flex items default to a content-based min-width (their intrinsic
+     content size, not 0) -- without overriding that here, the positions
+     table's 960px min-width (kept on purpose, see below) bubbles all the
+     way up through this flex chain and widens the whole page instead of
+     staying contained to .panel-body's own horizontal scroll. Confirmed
+     with a real page.evaluate(scrollWidth) check, not just eyeballing a
+     screenshot -- this is exactly the kind of overflow a static
+     screenshot can look fine in while still failing that check. */
+  .main.mobile .bottom-panel.mobile { border-top: none; min-width: 0; }
+  .main.mobile .panel-body { min-width: 0; }
 
   /* Topbar: every menu (File/Tools/Reports/Quick actions/Help) stays
      fully reachable, just via a horizontal swipe instead of all fitting
@@ -573,10 +582,32 @@
 
   /* The positions/orders table (.pos-table-header/.position-row) keeps
      its desktop min-width and scrolls horizontally inside .panel-body
-     (already overflow:auto) rather than being redesigned into cards for
-     this pass — the page itself never overflows, only that one table
-     does, same tradeoff fintech apps commonly make for dense tables
-     before a full card-based mobile redesign. */
+     rather than being redesigned into cards for this pass — the page
+     itself doesn't overflow (see .panel-body's min-width: 0 above), only
+     that one table does, same tradeoff fintech apps commonly make for
+     dense tables before a full card-based mobile redesign. */
+
+  /* Modals: several (the Security panel, share card) have a fixed
+     desktop width wider than a narrow phone -- .modal-close's -14px
+     overhang position (meant to float just outside the card's corner)
+     was landing off-screen entirely on a card that's already been
+     squeezed/centered against the viewport edge, making the modal
+     unclosable except via the overlay backdrop. Cap every modal to the
+     viewport with margin, let its card fill that, and pull the close
+     button back onto the card itself instead of overhanging past it. */
+  .modal-wrap { max-width: calc(100vw - 32px); }
+  .modal-wrap > *:not(.modal-close) { width: 100% !important; max-width: 100%; box-sizing: border-box; }
+  .modal-close { top: 6px; right: 6px; }
+
+  /* Chart header: symbol/price/spread + timeframe buttons + layout
+     toggle competing for one row breaks *words* mid-phrase ("No live
+     feed" splitting across lines) on the narrowest common phone widths
+     (~360px) once nothing more fits -- wrapping the row itself onto a
+     second line, with the individual text pieces kept whole, reads
+     correctly instead. */
+  .chart-header { flex-wrap: wrap; row-gap: 6px; padding: 8px 12px; }
+  .chart-title { flex-wrap: nowrap; }
+  .chart-price, .chart-change, .chart-spread { white-space: nowrap; }
 }
 
 /* ---------- MOBILE BOTTOM NAV ---------- */
