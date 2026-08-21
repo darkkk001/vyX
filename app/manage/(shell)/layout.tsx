@@ -19,7 +19,7 @@ export default async function ManageShellLayout({ children }: { children: React.
   }
 
   const [broker, admin, unreadNotifications] = await Promise.all([
-    prisma.broker.findUnique({ where: { id: session!.brokerId! }, select: { name: true, primaryColor: true } }),
+    prisma.broker.findUnique({ where: { id: session!.brokerId! }, select: { name: true, primaryColor: true, logoUrl: true } }),
     prisma.adminUser.findUnique({ where: { id: session!.adminId }, select: { email: true } }),
     prisma.notification.count({ where: { brokerId: session!.brokerId!, readAt: null } }),
   ]);
@@ -94,7 +94,8 @@ export default async function ManageShellLayout({ children }: { children: React.
 
   return (
     <AdminShell
-      title="vyX Backoffice"
+      title={broker?.name ?? "Backoffice"}
+      logoUrl={broker?.logoUrl}
       pageTitle="Manager"
       navGroups={navGroups}
       topbarSearch={<TopbarSearch placeholder="Search clients, transactions…" />}

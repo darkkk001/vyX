@@ -1,5 +1,6 @@
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
+import { prisma } from "@/lib/prisma";
 
 // Sole handler for "/". middleware.ts only attaches x-broker-* headers on
 // broker subdomains/custom domains — the root domain and admin.<root>
@@ -13,23 +14,16 @@ export default async function RootPage() {
     redirect("/login");
   }
 
-  const brokerSlug = headerList.get("x-broker-slug");
-  const primaryColor = headerList.get("x-broker-primary-color");
   const logoUrl = headerList.get("x-broker-logo-url");
-  const tier = headerList.get("x-broker-tier");
+  const broker = await prisma.broker.findUnique({ where: { id: brokerId }, select: { name: true } });
 
   return (
     <main style={{ padding: "2rem", fontFamily: "sans-serif" }}>
       {logoUrl ? (
         // eslint-disable-next-line @next/next/no-img-element
-        <img src={logoUrl} alt={`${brokerSlug} logo`} style={{ height: 40 }} />
+        <img src={logoUrl} alt={`${broker?.name ?? ""} logo`} style={{ height: 40 }} />
       ) : null}
-      <h1 style={{ color: "var(--brand-primary)" }}>
-        VyXTrader — {brokerSlug}
-      </h1>
-      <p>brokerId: {brokerId}</p>
-      <p>tier: {tier}</p>
-      <p>primaryColor: {primaryColor}</p>
+      <h1 style={{ color: "var(--brand-primary)" }}>{broker?.name ?? "Broker not found"}</h1>
     </main>
   );
 }

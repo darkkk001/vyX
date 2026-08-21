@@ -45,6 +45,7 @@ function NavGroup({ group, pathname }: { group: AdminNavGroup; pathname: string 
 
 export function AdminShell({
   title,
+  logoUrl,
   planeTag,
   navGroups,
   bottomNavGroup,
@@ -54,6 +55,9 @@ export function AdminShell({
   children,
 }: {
   title: string;
+  // A broker's own logo (Manager) -- absent for Super Admin, which has no
+  // broker in context and keeps the static platform mark below.
+  logoUrl?: string | null;
   planeTag?: string;
   navGroups: AdminNavGroup[];
   bottomNavGroup?: AdminNavGroup;
@@ -68,9 +72,14 @@ export function AdminShell({
     <div className="flex min-h-dvh bg-[var(--bg-0)]">
       <aside className="flex w-[230px] shrink-0 flex-col overflow-y-auto border-r border-[var(--border)] bg-[var(--bg-1)] px-2.5 py-4">
         <div className="flex items-center gap-2.5 px-2 pb-1 pt-1.5">
-          <div className="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-[7px] bg-[var(--accent)] text-[13px] font-bold text-[#03150c]">
-            X
-          </div>
+          {logoUrl ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={logoUrl} alt="" className="h-[26px] w-[26px] shrink-0 rounded-[7px] object-cover" />
+          ) : (
+            <div className="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-[7px] bg-[var(--accent)] text-[13px] font-bold text-[#03150c]">
+              X
+            </div>
+          )}
           <p className="text-[13px] font-semibold text-[var(--text-1)]">{title}</p>
         </div>
         {planeTag ? (

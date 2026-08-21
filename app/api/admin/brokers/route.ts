@@ -60,6 +60,7 @@ export async function POST(request: NextRequest) {
   const tier = body?.tier === "WHITE_LABEL" ? "WHITE_LABEL" : "STANDARD";
   const logoUrl = typeof body?.logoUrl === "string" ? body.logoUrl : null;
   const primaryColor = typeof body?.primaryColor === "string" ? body.primaryColor : null;
+  const supportEmail = typeof body?.supportEmail === "string" && body.supportEmail.trim() ? body.supportEmail.trim() : null;
   // Optional: create the first Broker Admin in the same transaction --
   // mirrors app/api/admin/admins POST's own validation, just inline here
   // so "Register broker" can be a single submit instead of two separate
@@ -91,6 +92,7 @@ export async function POST(request: NextRequest) {
           tier,
           logoUrl,
           primaryColor,
+          supportEmail,
           status: "TRIAL",
           trialEndsAt: new Date(Date.now() + TRIAL_PERIOD_MS),
         },

@@ -24,6 +24,7 @@ const LABELS: Record<string, string> = {
   BROKER_STATUS_CHANGED: "Changed broker status",
   SYMBOL_CONFIG_UPDATED: "Updated symbol config",
   BROKER_EXECUTION_ENGINE_CHANGED: "Changed execution engine",
+  BROKER_SUPPORT_EMAIL_CHANGED: "Changed WebTrader support email",
   BROKER_SSO_SECRET_GENERATED: "Generated WebTrader SSO secret",
   BROKER_SSO_SECRET_ROTATED: "Rotated WebTrader SSO secret",
   BROKER_SSO_SECRET_REVOKED: "Revoked WebTrader SSO secret",

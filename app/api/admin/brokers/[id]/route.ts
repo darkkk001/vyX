@@ -24,8 +24,15 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   const body = await request.json().catch(() => null);
   const executionEngine = body?.executionEngine === "LEGACY" || body?.executionEngine === "RUST" ? body.executionEngine : null;
   const status = typeof body?.status === "string" && VALID_STATUSES.has(body.status) ? body.status : null;
-  if (!executionEngine && !status) {
-    return NextResponse.json({ error: "executionEngine or status is required" }, { status: 400 });
+  // Branding -- undefined (key absent) means "leave unchanged"; an empty
+  // string means "clear it" (e.g. revoking a support email), distinct
+  // from not touching the field at all. Explicit `in` checks rather than
+  // `typeof === "string"` so an intentional `null`/"" clear isn't
+  // silently ignored.
+  const hasSupportEmail = "supportEmail" in (body ?? {});
+  const supportEmail = hasSupportEmail ? (typeof body.supportEmail === "string" && body.supportEmail.trim() ? body.supportEmail.trim() : null) : undefined;
+  if (!executionEngine && !status && !hasSupportEmail) {
+    return NextResponse.json({ error: "executionEngine, status, or supportEmail is required" }, { status: 400 });
   }
 
   const existing = await prisma.broker.findUnique({ where: { id } });
@@ -81,11 +88,27 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       });
     }
 
+    if (hasSupportEmail) {
+      const broker = await tx.broker.update({ where: { id }, data: { supportEmail } });
+      await tx.auditLog.create({
+        data: {
+          brokerId: id,
+          actorAdminId: session!.adminId,
+          action: "BROKER_SUPPORT_EMAIL_CHANGED",
+          entityType: "Broker",
+          entityId: id,
+          oldValue: { supportEmail: existing.supportEmail },
+          newValue: { supportEmail: broker.supportEmail },
+        },
+      });
+    }
+
     return tx.broker.findUniqueOrThrow({ where: { id } });
   });
 
   return NextResponse.json({
     id: updated.id,
+    supportEmail: updated.supportEmail,
     executionEngine: updated.executionEngine,
     status: updated.status,
     trialEndsAt: updated.trialEndsAt,

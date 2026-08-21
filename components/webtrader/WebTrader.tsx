@@ -114,7 +114,18 @@ function loadStoredLayout(): StoredLayout {
   }
 }
 
-export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: string; brokerLogoUrl: string }) {
+export default function WebTrader({
+  brokerName,
+  brokerLogoUrl,
+  supportEmail,
+}: {
+  brokerName: string;
+  brokerLogoUrl: string;
+  // Null = broker hasn't set one -- the Help menu hides "Contact support"
+  // entirely rather than leaking the platform's own address (see
+  // Broker.supportEmail's schema comment).
+  supportEmail: string | null;
+}) {
   const router = useRouter();
 
   const [market, setMarket] = useState<Record<string, MarketState>>(() => createInitialMarket());
@@ -380,12 +391,12 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
     appendLog(message);
     if (important && typeof window !== "undefined" && window.vyxDesktop?.isDesktop && "Notification" in window) {
       try {
-        new Notification("VyXTrader", { body: message });
+        new Notification(brokerName, { body: message });
       } catch {
         // ignore — notification permission or platform quirk, toast already shown
       }
     }
-  }, [appendLog]);
+  }, [appendLog, brokerName]);
 
   const askPrompt = useCallback((message: string, defaultValue: string, onSubmit: (value: string) => void) => {
     setGenericModalValue(defaultValue);
@@ -532,7 +543,8 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `vyxtrader-statement${reportFrom ? `-${reportFrom}` : ""}${reportTo ? `-${reportTo}` : ""}.csv`;
+    const brokerSlug = brokerName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "statement";
+    a.download = `${brokerSlug}-statement${reportFrom ? `-${reportFrom}` : ""}${reportTo ? `-${reportTo}` : ""}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   }
@@ -1575,17 +1587,19 @@ export default function WebTrader({ brokerName, brokerLogoUrl }: { brokerName: s
                 <div className="item" onClick={() => setHelpMenuOpen((v) => !v)}>Help</div>
                 {helpMenuOpen ? (
                   <div className="account-dropdown show" style={{ top: "100%", left: 0, width: 190 }}>
+                    {supportEmail ? (
+                      <div
+                        className="acc-option"
+                        style={{ cursor: "pointer", padding: "8px 10px" }}
+                        onClick={() => { setHelpMenuOpen(false); window.open(`mailto:${supportEmail}`, "_blank"); }}
+                      >
+                        Contact support
+                      </div>
+                    ) : null}
                     <div
                       className="acc-option"
                       style={{ cursor: "pointer", padding: "8px 10px" }}
-                      onClick={() => { setHelpMenuOpen(false); window.open("mailto:support@vyxtrader.com", "_blank"); }}
-                    >
-                      Contact support
-                    </div>
-                    <div
-                      className="acc-option"
-                      style={{ cursor: "pointer", padding: "8px 10px" }}
-                      onClick={() => { setHelpMenuOpen(false); pushToast("VyXTrader — B2B white-label trading platform"); }}
+                      onClick={() => { setHelpMenuOpen(false); pushToast(`${brokerName} — online trading platform`); }}
                     >
                       About
                     </div>

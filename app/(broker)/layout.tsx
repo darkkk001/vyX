@@ -1,5 +1,20 @@
 import { headers } from "next/headers";
+import type { Metadata } from "next";
 import type { ReactNode } from "react";
+import { prisma } from "@/lib/prisma";
+
+// Overrides app/layout.tsx's global "VyXTrader" tab title for every
+// broker-facing route -- Next.js's metadata resolution takes the most
+// specific layout/page's `title`, it doesn't merge/append, so this alone
+// is enough to stop every broker's browser tab from all showing the same
+// platform name.
+export async function generateMetadata(): Promise<Metadata> {
+  const headerList = await headers();
+  const brokerId = headerList.get("x-broker-id");
+  if (!brokerId) return {};
+  const broker = await prisma.broker.findUnique({ where: { id: brokerId }, select: { name: true } });
+  return broker ? { title: broker.name } : {};
+}
 
 // Applies to every broker-facing route (WebTrader, broker login, etc).
 // Reads the headers middleware.ts attached and injects branding as CSS

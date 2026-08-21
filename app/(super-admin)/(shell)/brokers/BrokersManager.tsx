@@ -22,6 +22,7 @@ export type BrokerRow = {
   trialEndsAt: string | null;
   createdAt: string;
   hasSsoSecret: boolean;
+  supportEmail: string | null;
 };
 
 type AdminOption = { id: string; email: string; role: string; status: string; brokerId: string | null };
@@ -99,6 +100,11 @@ export default function BrokersManager({ initialRows }: { initialRows: BrokerRow
   const [ssoBusy, setSsoBusy] = useState(false);
   const [ssoError, setSsoError] = useState<string | null>(null);
 
+  // --- WebTrader support email (Tenant detail modal) ---
+  const [supportEmailInput, setSupportEmailInput] = useState("");
+  const [supportEmailBusy, setSupportEmailBusy] = useState(false);
+  const [supportEmailError, setSupportEmailError] = useState<string | null>(null);
+
   async function openDetail(row: BrokerRow) {
     setDetailTarget(row);
     setDetailAdmins(null);
@@ -106,6 +112,8 @@ export default function BrokersManager({ initialRows }: { initialRows: BrokerRow
     setDetailError(null);
     setRevealedSsoSecret(null);
     setSsoError(null);
+    setSupportEmailInput(row.supportEmail ?? "");
+    setSupportEmailError(null);
     const response = await fetch("/api/admin/admins");
     if (response.ok) {
       const all = (await response.json()) as AdminOption[];
@@ -203,6 +211,27 @@ export default function BrokersManager({ initialRows }: { initialRows: BrokerRow
     }
     setRevealedSsoSecret(null);
     setDetailTarget((prev) => (prev ? { ...prev, hasSsoSecret: false } : prev));
+    router.refresh();
+  }
+
+  async function saveSupportEmail() {
+    if (!detailTarget) return;
+    setSupportEmailBusy(true);
+    setSupportEmailError(null);
+    const response = await fetch(`/api/admin/brokers/${detailTarget.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ supportEmail: supportEmailInput.trim() }),
+    });
+    setSupportEmailBusy(false);
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      setSupportEmailError(body.error ?? "failed to save");
+      return;
+    }
+    const { supportEmail } = (await response.json()) as { supportEmail: string | null };
+    setDetailTarget((prev) => (prev ? { ...prev, supportEmail } : prev));
+    setSupportEmailInput(supportEmail ?? "");
     router.refresh();
   }
 
@@ -392,6 +421,26 @@ export default function BrokersManager({ initialRows }: { initialRows: BrokerRow
                 ) : null}
               </div>
               {ssoError ? <p className="mt-1.5 text-sm text-[var(--sell)]">{ssoError}</p> : null}
+            </ModalSection>
+
+            <ModalSection label="WebTrader support email">
+              <p className="mb-2 text-xs text-[var(--text-3)]">
+                Shown in WebTrader&apos;s Help menu for this broker&apos;s traders. Left blank, the &quot;Contact
+                support&quot; item is hidden rather than pointing at ours.
+              </p>
+              <div className="flex gap-2">
+                <Input
+                  type="email"
+                  placeholder="support@broker.com"
+                  value={supportEmailInput}
+                  onChange={(e) => setSupportEmailInput(e.target.value)}
+                  className="flex-1"
+                />
+                <Button size="sm" variant="primary" disabled={supportEmailBusy} onClick={saveSupportEmail}>
+                  {supportEmailBusy ? "Saving..." : "Save"}
+                </Button>
+              </div>
+              {supportEmailError ? <p className="mt-1.5 text-sm text-[var(--sell)]">{supportEmailError}</p> : null}
             </ModalSection>
 
             <ModalSection label="Tenant lifecycle">

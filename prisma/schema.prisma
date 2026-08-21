@@ -217,6 +217,11 @@ model Broker {
   // Branding — resolved at request time, never hardcoded or baked into a build.
   logoUrl      String?
   primaryColor String? // CSS custom property override, e.g. "#1e8a5f"
+  // Shown in WebTrader's Help menu ("Contact support") instead of the
+  // platform's own address -- a white-label promise means a broker's
+  // trader emailing support reaches the broker, not us. Null = hide that
+  // menu item rather than guess/leak an address that isn't theirs.
+  supportEmail String?
 
   // Tenant lifecycle / billing — config-only, not wired to any real
   // payment processor (see lib/billing.ts's PLAN_PRICING). trialEndsAt is
