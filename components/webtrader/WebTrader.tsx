@@ -734,10 +734,21 @@ export default function WebTrader({
       socket = new WebSocket(`${base}/v1/prices/stream`);
       socket.onmessage = (event) => {
         try {
-          const tick = JSON.parse(event.data) as { symbol: string; bid: number; ask: number };
+          // The Gateway relays the Rust engine's raw JSON unchanged --
+          // bid/ask are strings there (Prisma.Decimal serialized), same
+          // as tradeApi.prices()'s rows above, not the number the old
+          // `as` type assertion claimed (a cast, not a runtime coercion
+          // -- it never actually caught this). Every consumer of
+          // liveTicksRef expects a real number, so this crashed the
+          // whole page the moment a live tick actually arrived --
+          // dormant until the WS auth fix made that path work at all.
+          const tick = JSON.parse(event.data) as { symbol: string; bid: string | number; ask: string | number };
+          const bid = Number(tick.bid);
+          const ask = Number(tick.ask);
+          if (!tick.symbol || !Number.isFinite(bid) || !Number.isFinite(ask)) return;
           liveTicksRef.current = {
             ...liveTicksRef.current,
-            [tick.symbol]: { bid: tick.bid, ask: tick.ask },
+            [tick.symbol]: { bid, ask },
           };
         } catch {
           // malformed frame — ignore, next tick will correct the picture
