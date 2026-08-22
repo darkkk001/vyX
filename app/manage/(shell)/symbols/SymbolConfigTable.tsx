@@ -103,50 +103,50 @@ export default function SymbolConfigTable({ initialRows }: { initialRows: Symbol
   return (
     <Table>
       <TableHead>
-        <TableHeaderCell>Symbol</TableHeaderCell>
-        <TableHeaderCell>Enabled</TableHeaderCell>
-        <TableHeaderCell title="Restrict which side can trade even when enabled">Trading mode</TableHeaderCell>
-        <TableHeaderCell title="Stamped onto every new position in this symbol -- record-keeping only, no real LP hedge happens">Book</TableHeaderCell>
+        <TableHeaderCell className="min-w-[130px]">Symbol</TableHeaderCell>
+        <TableHeaderCell className="min-w-[80px]">Enabled</TableHeaderCell>
+        <TableHeaderCell className="min-w-[140px]" title="Restrict which side can trade even when enabled">Trading mode</TableHeaderCell>
+        <TableHeaderCell className="min-w-[110px]" title="Stamped onto every new position in this symbol -- record-keeping only, no real LP hedge happens">Book</TableHeaderCell>
         {NUMERIC_FIELDS.map((f) => (
-          <TableHeaderCell key={f.key} title={f.title} className="whitespace-nowrap">
+          <TableHeaderCell key={f.key} title={f.title} className="whitespace-nowrap" style={{ minWidth: f.width + 24 }}>
             {f.label}
           </TableHeaderCell>
         ))}
-        <TableHeaderCell />
+        <TableHeaderCell className="min-w-[220px]" />
       </TableHead>
       <TableBody>
         {rows.map((row) => (
           <TableRow key={row.symbolId}>
-            <TableCell mono>
+            <TableCell mono className="min-w-[130px]">
               {row.symbolName}
               <div className="text-xs text-[var(--text-3)]">{row.category}</div>
             </TableCell>
-            <TableCell>
+            <TableCell className="min-w-[80px]">
               <Checkbox checked={row.enabled} onChange={() => toggleEnabled(row.symbolId)} />
             </TableCell>
-            <TableCell>
+            <TableCell className="min-w-[140px]">
               <Select
                 value={row.tradingMode}
                 onChange={(e) => updateTradingMode(row.symbolId, e.target.value as TradingMode)}
-                className="w-32"
+                className="w-full"
               >
                 <option value="BOTH">Both</option>
                 <option value="BUY_ONLY">Buy only</option>
                 <option value="SELL_ONLY">Sell only</option>
               </Select>
             </TableCell>
-            <TableCell>
+            <TableCell className="min-w-[110px]">
               <Select
                 value={row.defaultBookType}
                 onChange={(e) => updateBookType(row.symbolId, e.target.value as BookType)}
-                className="w-24"
+                className="w-full"
               >
                 <option value="A_BOOK">A-Book</option>
                 <option value="B_BOOK">B-Book</option>
               </Select>
             </TableCell>
             {NUMERIC_FIELDS.map((f) => (
-              <TableCell key={f.key}>
+              <TableCell key={f.key} style={{ minWidth: f.width + 24 }}>
                 <Input
                   type="text"
                   inputMode="decimal"
@@ -158,7 +158,7 @@ export default function SymbolConfigTable({ initialRows }: { initialRows: Symbol
                 />
               </TableCell>
             ))}
-            <TableCell className="whitespace-nowrap">
+            <TableCell className="min-w-[220px] whitespace-nowrap">
               <div className="flex items-center gap-2">
                 <Button size="sm" disabled={savingId === row.symbolId} onClick={() => save(row)}>
                   {savingId === row.symbolId ? "Saving..." : "Save"}

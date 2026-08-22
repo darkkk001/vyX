@@ -125,14 +125,14 @@ export default function TeamManager({ initialRows, currentAdminId }: { initialRo
       <Card title="Team">
         <Table>
           <TableHead>
-            <TableHeaderCell>Email</TableHeaderCell>
-            <TableHeaderCell>Role</TableHeaderCell>
-            <TableHeaderCell>Status</TableHeaderCell>
-            <TableHeaderCell title="Only applies to Manager-role staff -- Broker Admin already has everything">
+            <TableHeaderCell className="min-w-[200px]">Email</TableHeaderCell>
+            <TableHeaderCell className="min-w-[110px]">Role</TableHeaderCell>
+            <TableHeaderCell className="min-w-[150px]">Status</TableHeaderCell>
+            <TableHeaderCell className="min-w-[200px]" title="Only applies to Manager-role staff -- Broker Admin already has everything">
               Delegated permissions
             </TableHeaderCell>
-            <TableHeaderCell>Last login</TableHeaderCell>
-            <TableHeaderCell />
+            <TableHeaderCell className="min-w-[150px]">Last login</TableHeaderCell>
+            <TableHeaderCell className="min-w-[100px]" />
           </TableHead>
           <TableBody>
             {initialRows.length === 0 ? (
@@ -142,26 +142,26 @@ export default function TeamManager({ initialRows, currentAdminId }: { initialRo
                 const isSelf = row.id === currentAdminId;
                 return (
                   <TableRow key={row.id}>
-                    <TableCell>
+                    <TableCell className="min-w-[200px]">
                       {row.email}
                       {isSelf ? <span className="text-xs text-[var(--text-3)]"> (you)</span> : null}
                     </TableCell>
-                    <TableCell>
+                    <TableCell className="min-w-[110px]">
                       <Badge tone="accent">{row.role}</Badge>
                     </TableCell>
-                    <TableCell>
+                    <TableCell className="min-w-[150px]">
                       <Select
                         value={row.status}
                         disabled={busyId === row.id || isSelf}
                         title={isSelf ? "You cannot change your own status" : undefined}
                         onChange={(e) => changeStatus(row, e.target.value as "ACTIVE" | "DISABLED")}
-                        className="w-32"
+                        className="w-full"
                       >
                         <option value="ACTIVE">ACTIVE</option>
                         <option value="DISABLED">DISABLED</option>
                       </Select>
                     </TableCell>
-                    <TableCell>
+                    <TableCell className="min-w-[200px]">
                       {row.role === "MANAGER" ? (
                         <div className="flex flex-col gap-1">
                           {PERMISSIONS.map((p) => (
@@ -179,8 +179,8 @@ export default function TeamManager({ initialRows, currentAdminId }: { initialRo
                         <span className="text-xs text-[var(--text-3)]">{row.role === "BROKER_ADMIN" ? "has everything" : "n/a"}</span>
                       )}
                     </TableCell>
-                    <TableCell className="text-xs text-[var(--text-3)]">{row.lastLoginAt ?? "never"}</TableCell>
-                    <TableCell>
+                    <TableCell className="min-w-[150px] text-xs text-[var(--text-3)]">{row.lastLoginAt ?? "never"}</TableCell>
+                    <TableCell className="min-w-[100px]">
                       {errors[row.id] ? <span className="text-xs text-[var(--sell)]">{errors[row.id]}</span> : null}
                     </TableCell>
                   </TableRow>

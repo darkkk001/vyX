@@ -37,7 +37,7 @@ export default async function ManageShellLayout({ children }: { children: React.
     {
       label: "Clients",
       items: [
-        { href: "/manage/accounts", label: "Clients" },
+        { href: "/manage/accounts", label: "Users" },
         { href: "/manage/leads", label: "Leads" },
         ...(isBrokerAdmin ? [{ href: "/manage/kyc", label: "KYC review" }] : []),
       ],
@@ -58,7 +58,7 @@ export default async function ManageShellLayout({ children }: { children: React.
     {
       label: "Trading",
       items: [
-        { href: "/manage/positions", label: "Live trading" },
+        { href: "/manage/positions", label: "Trading Accounts" },
         { href: "/manage/dealing", label: "Dealing queue" },
         { href: "/manage/feed-health", label: "Feed health" },
         { href: "/manage/deals", label: "Deals" },

@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { FormField } from "@/components/ui/FormField";
+import { LeverageInput } from "@/components/ui/LeverageInput";
 import { Button } from "@/components/ui/Button";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
 
@@ -113,7 +114,7 @@ export default function GroupsManager({ initialRows }: { initialRows: GroupRow[]
               <Input value={newName} onChange={(e) => setNewName(e.target.value)} required />
             </FormField>
             <FormField label="Leverage">
-              <Input type="text" inputMode="numeric" mono value={newLeverage} onChange={(e) => setNewLeverage(e.target.value)} />
+              <LeverageInput value={newLeverage} onChange={(e) => setNewLeverage(e.target.value)} />
             </FormField>
             <FormField label="Margin call %">
               <Input type="text" inputMode="decimal" mono value={newCallLevel} onChange={(e) => setNewCallLevel(e.target.value)} />
@@ -165,7 +166,7 @@ export default function GroupsManager({ initialRows }: { initialRows: GroupRow[]
         <Table>
           <TableHead>
             <TableHeaderCell className="min-w-[180px]">Name</TableHeaderCell>
-            <TableHeaderCell align="right" className="min-w-[90px]">Leverage</TableHeaderCell>
+            <TableHeaderCell className="min-w-[130px]">Leverage</TableHeaderCell>
             <TableHeaderCell align="right" className="min-w-[110px]">Margin call %</TableHeaderCell>
             <TableHeaderCell align="right" className="min-w-[90px]">Stop out %</TableHeaderCell>
             <TableHeaderCell align="right" className="min-w-[90px]">Max lot</TableHeaderCell>
@@ -183,14 +184,10 @@ export default function GroupsManager({ initialRows }: { initialRows: GroupRow[]
                   <TableCell className="min-w-[180px]">
                     <Input value={row.name} onChange={(e) => updateRow(row.id, { name: e.target.value })} className="w-full" />
                   </TableCell>
-                  <TableCell align="right" className="min-w-[90px]">
-                    <Input
-                      type="text"
-                      inputMode="numeric"
-                      mono
+                  <TableCell className="min-w-[130px]">
+                    <LeverageInput
                       value={row.leverage}
                       onChange={(e) => updateRow(row.id, { leverage: Number(e.target.value) || 0 })}
-                      className="w-full text-right"
                     />
                   </TableCell>
                   <TableCell align="right" className="min-w-[110px]">

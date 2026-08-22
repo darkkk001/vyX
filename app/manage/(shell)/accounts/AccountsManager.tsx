@@ -8,6 +8,7 @@ import { Select } from "@/components/ui/Select";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { FormField } from "@/components/ui/FormField";
+import { LeverageInput } from "@/components/ui/LeverageInput";
 import { Modal, ModalActions } from "@/components/ui/Modal";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
 
@@ -202,19 +203,19 @@ export default function AccountsManager({
       </div>
       <Table>
         <TableHead>
-          <TableHeaderCell>Account</TableHeaderCell>
-          <TableHeaderCell>Type</TableHeaderCell>
-          <TableHeaderCell>Country</TableHeaderCell>
-          <TableHeaderCell>KYC</TableHeaderCell>
-          <TableHeaderCell>Group</TableHeaderCell>
-          <TableHeaderCell align="right">Leverage</TableHeaderCell>
-          <TableHeaderCell align="right">Balance</TableHeaderCell>
-          <TableHeaderCell align="right">Credit</TableHeaderCell>
-          <TableHeaderCell>Status</TableHeaderCell>
-          <TableHeaderCell align="right" title="Reject new orders once today's realized loss reaches this amount">
+          <TableHeaderCell className="min-w-[220px]">Account</TableHeaderCell>
+          <TableHeaderCell className="min-w-[70px]">Type</TableHeaderCell>
+          <TableHeaderCell className="min-w-[90px]">Country</TableHeaderCell>
+          <TableHeaderCell className="min-w-[90px]">KYC</TableHeaderCell>
+          <TableHeaderCell className="min-w-[160px]">Group</TableHeaderCell>
+          <TableHeaderCell className="min-w-[130px]">Leverage</TableHeaderCell>
+          <TableHeaderCell align="right" className="min-w-[100px]">Balance</TableHeaderCell>
+          <TableHeaderCell align="right" className="min-w-[100px]">Credit</TableHeaderCell>
+          <TableHeaderCell className="min-w-[150px]">Status</TableHeaderCell>
+          <TableHeaderCell align="right" className="min-w-[110px]" title="Reject new orders once today's realized loss reaches this amount">
             Max daily loss
           </TableHeaderCell>
-          <TableHeaderCell />
+          <TableHeaderCell className="min-w-[140px]" />
         </TableHead>
         <TableBody>
           {filtered.length === 0 ? (
@@ -222,7 +223,7 @@ export default function AccountsManager({
           ) : (
             filtered.map((row) => (
               <TableRow key={row.id}>
-                <TableCell primary>
+                <TableCell primary className="min-w-[220px]">
                   <Link href={`/manage/accounts/${row.id}`} className="font-mono hover:underline">
                     {row.accountNumber}
                   </Link>
@@ -230,15 +231,15 @@ export default function AccountsManager({
                     {row.fullName} — {row.email}
                   </div>
                 </TableCell>
-                <TableCell>{row.accountType}</TableCell>
-                <TableCell>{row.country ?? "—"}</TableCell>
-                <TableCell>{row.kycStatus ? <Badge tone={kycTone[row.kycStatus]}>{row.kycStatus}</Badge> : <Badge tone="neutral">NO KYC</Badge>}</TableCell>
-                <TableCell>
+                <TableCell className="min-w-[70px]">{row.accountType}</TableCell>
+                <TableCell className="min-w-[90px]">{row.country ?? "—"}</TableCell>
+                <TableCell className="min-w-[90px]">{row.kycStatus ? <Badge tone={kycTone[row.kycStatus]}>{row.kycStatus}</Badge> : <Badge tone="neutral">NO KYC</Badge>}</TableCell>
+                <TableCell className="min-w-[160px]">
                   <Select
                     value={row.groupId ?? ""}
                     disabled={busyId === row.id}
                     onChange={(e) => changeGroup(row, e.target.value)}
-                    className="w-36"
+                    className="w-full"
                   >
                     <option value="">— ungrouped —</option>
                     {groups.map((g) => (
@@ -248,30 +249,26 @@ export default function AccountsManager({
                     ))}
                   </Select>
                 </TableCell>
-                <TableCell align="right" mono>
+                <TableCell className="min-w-[130px]">
                   {canManageFinance ? (
-                    <Input
-                      type="text"
-                      inputMode="numeric"
-                      mono
+                    <LeverageInput
                       defaultValue={row.leverage}
                       disabled={busyId === row.id}
                       onBlur={(e) => e.target.value !== String(row.leverage) && changeLeverage(row, e.target.value)}
-                      className="w-16 text-right"
                     />
                   ) : (
-                    row.leverage
+                    <span className="font-mono">1:{row.leverage}</span>
                   )}
                 </TableCell>
-                <TableCell align="right" mono>
+                <TableCell align="right" mono className="min-w-[100px]">
                   {row.balance}
                 </TableCell>
-                <TableCell align="right" mono>
+                <TableCell align="right" mono className="min-w-[100px]">
                   {row.credit}
                 </TableCell>
-                <TableCell>
+                <TableCell className="min-w-[150px]">
                   {canManageFinance ? (
-                    <Select value={row.status} disabled={busyId === row.id} onChange={(e) => changeStatus(row, e.target.value)} className="w-32">
+                    <Select value={row.status} disabled={busyId === row.id} onChange={(e) => changeStatus(row, e.target.value)} className="w-full">
                       <option value="ACTIVE">ACTIVE</option>
                       <option value="SUSPENDED">SUSPENDED</option>
                       <option value="CLOSED">CLOSED</option>
@@ -280,7 +277,7 @@ export default function AccountsManager({
                     <Badge tone={statusTone[row.status]}>{row.status}</Badge>
                   )}
                 </TableCell>
-                <TableCell align="right" mono>
+                <TableCell align="right" mono className="min-w-[110px]">
                   {canManageFinance ? (
                     <Input
                       type="text"
@@ -290,13 +287,13 @@ export default function AccountsManager({
                       defaultValue={row.maxDailyLoss ?? ""}
                       disabled={busyId === row.id}
                       onBlur={(e) => e.target.value !== (row.maxDailyLoss ?? "") && changeMaxDailyLoss(row, e.target.value)}
-                      className="w-24 text-right"
+                      className="w-full text-right"
                     />
                   ) : (
                     row.maxDailyLoss ?? "—"
                   )}
                 </TableCell>
-                <TableCell className="whitespace-nowrap">
+                <TableCell className="min-w-[140px] whitespace-nowrap">
                   {canManageFinance ? (
                     <Button size="sm" onClick={() => openAdjustModal(row)}>
                       Adjust balance
@@ -396,7 +393,7 @@ export default function AccountsManager({
             </FormField>
             {canManageFinance && !newAccount.groupId ? (
               <FormField label="Leverage">
-                <Input type="text" inputMode="numeric" mono value={newAccount.leverage} onChange={(e) => setNewAccount((p) => ({ ...p, leverage: e.target.value }))} />
+                <LeverageInput value={newAccount.leverage} onChange={(e) => setNewAccount((p) => ({ ...p, leverage: e.target.value }))} />
               </FormField>
             ) : null}
             {canManageFinance ? (

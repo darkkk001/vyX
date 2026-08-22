@@ -124,7 +124,7 @@ export default async function ManagerPositionsPage() {
 
   return (
     <main className="mx-auto max-w-[1400px]">
-      <PageHeader title="Positions & Exposure" description={`${rows.length} open position${rows.length === 1 ? "" : "s"} across this broker.`} />
+      <PageHeader title="Trading Accounts" description={`${rows.length} open position${rows.length === 1 ? "" : "s"} across this broker.`} />
       <PositionsManager
         positionRows={rows}
         accounts={accounts}

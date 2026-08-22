@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Card } from "@/components/ui/Card";
 import { FormField } from "@/components/ui/FormField";
 import { Input } from "@/components/ui/Input";
+import { LeverageInput } from "@/components/ui/LeverageInput";
 import { Button } from "@/components/ui/Button";
 import { Alert } from "@/components/ui/Alert";
 import { Badge } from "@/components/ui/Badge";
@@ -69,7 +70,7 @@ export default function SettingsManager({ broker, initial }: { broker: BrokerInf
             <Input type="text" mono value={currency} onChange={(e) => { setCurrency(e.target.value); setSaved(false); }} className="max-w-xs" />
           </FormField>
           <FormField label="Default leverage">
-            <Input type="text" inputMode="numeric" mono value={leverage} onChange={(e) => { setLeverage(e.target.value); setSaved(false); }} className="max-w-xs" />
+            <LeverageInput value={leverage} onChange={(e) => { setLeverage(e.target.value); setSaved(false); }} className="max-w-xs" />
           </FormField>
           <div className="flex items-center gap-2">
             <Button type="submit" variant="primary" disabled={saving}>
