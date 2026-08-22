@@ -72,8 +72,25 @@ export async function POST(request: NextRequest) {
   if (!requireAdminRole(session, ["MANAGER", "BROKER_ADMIN"]) || !session!.brokerId) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
-  const canSetFinancials = session!.role === "BROKER_ADMIN" || (await hasPermission(session, "ACCOUNT_FINANCE"));
-  const brokerId = session!.brokerId!;
+  try {
+    return await createAccount(request, session!);
+  } catch (error) {
+    // Last-resort safety net -- every validation case above already
+    // returns a specific message, so reaching here means something
+    // genuinely unexpected happened (e.g. a DB-level rejection this
+    // route didn't anticipate). Without this, that error would propagate
+    // uncaught and the client would see an opaque failure with no
+    // `.error` field, showing only AccountsManager.tsx's generic
+    // "failed to create account" fallback -- which is exactly the
+    // confusing symptom this replaces.
+    console.error("POST /api/manage/accounts failed unexpectedly:", error);
+    return NextResponse.json({ error: "unexpected error creating account, please try again" }, { status: 500 });
+  }
+}
+
+async function createAccount(request: NextRequest, session: NonNullable<Awaited<ReturnType<typeof getAdminSession>>>) {
+  const canSetFinancials = session.role === "BROKER_ADMIN" || (await hasPermission(session, "ACCOUNT_FINANCE"));
+  const brokerId = session.brokerId!;
   const broker = await prisma.broker.findUniqueOrThrow({ where: { id: brokerId } });
 
   const body = await request.json().catch(() => null);
@@ -95,8 +112,14 @@ export async function POST(request: NextRequest) {
   let dateOfBirth: Date | null = null;
   if (typeof body?.dateOfBirth === "string" && body.dateOfBirth.trim()) {
     const parsed = new Date(body.dateOfBirth);
-    if (isNaN(parsed.getTime())) {
-      return NextResponse.json({ error: "invalid dateOfBirth" }, { status: 400 });
+    // A native <input type="date"> can't hand back a string new Date()
+    // fails to parse, but it happily accepts a future date or a
+    // 4-digit-year underflow (e.g. year 1) from someone free-typing into
+    // the year segment -- reject those explicitly instead of letting a
+    // nonsense date reach the database, where it either silently saves
+    // or throws an unhandled error the caller never sees a reason for.
+    if (isNaN(parsed.getTime()) || parsed > new Date() || parsed.getUTCFullYear() < 1900) {
+      return NextResponse.json({ error: "date of birth must be a valid date in the past" }, { status: 400 });
     }
     dateOfBirth = parsed;
   }
@@ -138,7 +161,8 @@ export async function POST(request: NextRequest) {
 
   const passwordHash = await bcrypt.hash(password, 10);
 
-  for (let attempt = 0; attempt < 2; attempt++) {
+  const maxAttempts = 5;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
     const accountNumber = await nextAccountNumber();
     try {
       const result = await prisma.$transaction(async (tx) => {
@@ -171,7 +195,7 @@ export async function POST(request: NextRequest) {
               balanceBefore: new Prisma.Decimal(0),
               balanceAfter: initialBalance,
               note: "Initial balance on account creation",
-              createdByAdminId: session!.adminId,
+              createdByAdminId: session.adminId,
             },
           });
         }
@@ -179,7 +203,7 @@ export async function POST(request: NextRequest) {
         await tx.auditLog.create({
           data: {
             brokerId,
-            actorAdminId: session!.adminId,
+            actorAdminId: session.adminId,
             action: "ACCOUNT_CREATED",
             entityType: "Account",
             entityId: account.id,
@@ -201,8 +225,23 @@ export async function POST(request: NextRequest) {
         { status: 201 }
       );
     } catch (error) {
-      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002" && attempt === 0) {
-        continue; // accountNumber race -- retry once with a freshly-read max
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+        // Two distinct unique constraints can fire P2002 here --
+        // accountNumber (a genuine allocation race, worth retrying with a
+        // freshly-read max) vs. the [brokerId, email, accountType]
+        // constraint (a duplicate client, not a race -- retrying would
+        // just fail the same way every time and burn all 5 attempts
+        // before ever telling the caller why).
+        const target = error.meta?.target;
+        const fields = Array.isArray(target) ? target.map(String) : typeof target === "string" ? [target] : [];
+        const isAccountNumberRace = fields.some((f) => f.toLowerCase().includes("accountnumber"));
+        if (isAccountNumberRace && attempt < maxAttempts - 1) {
+          continue;
+        }
+        if (isAccountNumberRace) {
+          return NextResponse.json({ error: "could not allocate an account number, please try again" }, { status: 500 });
+        }
+        return NextResponse.json({ error: "an account with this email already exists for this broker" }, { status: 409 });
       }
       throw error;
     }
