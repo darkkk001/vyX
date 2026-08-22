@@ -1,8 +1,9 @@
 /* Layout-only: colors/spacing/radius come from the [data-surface="manager"]
-   tokens in app/admin-theme.css (already loaded by app/manage/layout.tsx
-   for this page), the same tokens every other Manager screen uses --
-   this file exists only for the two-panel split, the mesh/grid backdrop,
-   and the step-fade animation, none of which have an existing utility. */
+   tokens in app/admin-theme.css (loaded by both app/manage/layout.tsx and
+   app/manage-launch/layout.tsx, the two callers of this shell), the same
+   tokens every other Manager screen uses -- this file exists only for the
+   two-panel split, the mesh/grid backdrop, and the step-fade animation,
+   none of which have an existing utility. */
 
 .shell {
   display: flex;
