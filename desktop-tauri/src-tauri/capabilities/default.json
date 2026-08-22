@@ -4,7 +4,7 @@
   "description": "Lets the main window's own remote content (the broker's deployed WebTrader -- see main.rs) invoke the window-control commands the window.vyxDesktop bridge wraps. Scoped to this app's own domains, same allowed-host principle desktop/main.js's will-navigate handler already enforces for Electron.",
   "windows": ["main"],
   "remote": {
-    "urls": ["https://*.vyxtrader.com/*", "http://*.localhost:3000/*"]
+    "urls": ["https://*.vyxtrader.com/*", "https://vyxtrader.com/*", "http://*.localhost:3000/*", "http://localhost:3000/*"]
   },
   "permissions": [
     "core:default",

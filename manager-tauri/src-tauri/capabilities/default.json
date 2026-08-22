@@ -1,10 +1,10 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main-capability",
-  "description": "Core-shell slice: a decorated (OS-native title bar) window pointed at a broker's own /manage login. No custom commands/bridge yet -- see manager-tauri/package.json for what's deferred.",
+  "description": "Core-shell slice: a decorated (OS-native title bar) window pointed at a broker's own /manage login, or -- in launcher mode, today's committed config -- the root-domain app/manage-launch picker first. window.vyxDesktop exposes only isDesktop/rememberBroker/forgetBroker (custom app commands, not gated by the permissions list below -- that only governs built-in plugin commands).",
   "windows": ["main"],
   "remote": {
-    "urls": ["https://*.vyxtrader.com/*", "http://*.localhost:3000/*"]
+    "urls": ["https://*.vyxtrader.com/*", "https://vyxtrader.com/*", "http://*.localhost:3000/*", "http://localhost:3000/*"]
   },
   "permissions": ["core:default"]
 }

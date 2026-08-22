@@ -21,23 +21,6 @@ import ChartCell from "./ChartCell";
 import SmartTradeManager from "./SmartTradeManager";
 import { computeChartLines } from "@/lib/chart-lines";
 
-declare global {
-  interface Window {
-    // Exposed by the Tauri desktop shell's init script
-    // (desktop-tauri/src-tauri/src/main.rs) only when running inside that
-    // shell — absent in a normal browser tab.
-    vyxDesktop?: {
-      isDesktop: true;
-      minimize: () => void;
-      toggleMaximize: () => void;
-      close: () => void;
-      onMaximizedChange: (cb: (isMaximized: boolean) => void) => () => void;
-      rememberBroker: (hostname: string) => void;
-      forgetBroker: () => void;
-    };
-  }
-}
-
 const TF_LABELS: { key: Timeframe; label: string }[] = [
   { key: "M1", label: "1m" },
   { key: "M5", label: "5m" },
@@ -461,7 +444,7 @@ export default function WebTrader({
       // session cookie clears server-side regardless; proceed to navigate away
     }
     if (window.vyxDesktop?.isDesktop) {
-      window.vyxDesktop.forgetBroker();
+      window.vyxDesktop.forgetBroker?.();
       const parts = window.location.hostname.split(".");
       const root = parts.length > 2 ? parts.slice(1).join(".") : window.location.hostname;
       window.location.href = `https://${root}/launch`;
@@ -668,7 +651,7 @@ export default function WebTrader({
   useEffect(() => {
     const remember = new URLSearchParams(window.location.search).get("remember");
     if (account && window.vyxDesktop?.isDesktop && remember !== "0") {
-      window.vyxDesktop.rememberBroker(window.location.hostname);
+      window.vyxDesktop.rememberBroker?.(window.location.hostname);
     }
   }, [account]);
 
@@ -1490,7 +1473,7 @@ export default function WebTrader({
                   <div className="account-dropdown show" style={{ top: "100%", left: 0, width: 180 }} onClick={() => setFileMenuOpen(false)}>
                     <div className="acc-option" style={{ cursor: "pointer", padding: "8px 10px" }} onClick={handleLogout}>Switch account</div>
                     {isDesktopApp ? (
-                      <div className="acc-option" style={{ cursor: "pointer", padding: "8px 10px" }} onClick={() => window.vyxDesktop?.close()}>Exit</div>
+                      <div className="acc-option" style={{ cursor: "pointer", padding: "8px 10px" }} onClick={() => window.vyxDesktop?.close?.()}>Exit</div>
                     ) : null}
                   </div>
                 ) : null}

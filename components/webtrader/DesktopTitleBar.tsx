@@ -21,7 +21,7 @@ export default function DesktopTitleBar({
   useEffect(() => {
     if (!window.vyxDesktop?.isDesktop) return;
     setIsDesktop(true);
-    return window.vyxDesktop.onMaximizedChange(setMaximized);
+    return window.vyxDesktop.onMaximizedChange?.(setMaximized);
   }, []);
 
   if (!isDesktop) return null;
@@ -49,10 +49,10 @@ export default function DesktopTitleBar({
         // @ts-expect-error -- WebkitAppRegion isn't in the CSSProperties typings
         style={{ WebkitAppRegion: "no-drag", display: "flex", height: "100%" }}
       >
-        <TitleBarButton onClick={() => window.vyxDesktop?.minimize()} label="Minimize">
+        <TitleBarButton onClick={() => window.vyxDesktop?.minimize?.()} label="Minimize">
           <svg width="10" height="10" viewBox="0 0 10 10"><rect x="0" y="4.5" width="10" height="1" fill="currentColor" /></svg>
         </TitleBarButton>
-        <TitleBarButton onClick={() => window.vyxDesktop?.toggleMaximize()} label={maximized ? "Restore" : "Maximize"}>
+        <TitleBarButton onClick={() => window.vyxDesktop?.toggleMaximize?.()} label={maximized ? "Restore" : "Maximize"}>
           {maximized ? (
             <svg width="10" height="10" viewBox="0 0 10 10">
               <rect x="2" y="0" width="8" height="8" fill="none" stroke="currentColor" strokeWidth="1" />
@@ -62,7 +62,7 @@ export default function DesktopTitleBar({
             <svg width="10" height="10" viewBox="0 0 10 10"><rect x="0" y="0" width="10" height="10" fill="none" stroke="currentColor" strokeWidth="1" /></svg>
           )}
         </TitleBarButton>
-        <TitleBarButton onClick={() => window.vyxDesktop?.close()} label="Close" danger>
+        <TitleBarButton onClick={() => window.vyxDesktop?.close?.()} label="Close" danger>
           <svg width="10" height="10" viewBox="0 0 10 10">
             <line x1="0" y1="0" x2="10" y2="10" stroke="currentColor" strokeWidth="1.1" />
             <line x1="10" y1="0" x2="0" y2="10" stroke="currentColor" strokeWidth="1.1" />

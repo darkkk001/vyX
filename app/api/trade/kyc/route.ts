@@ -83,7 +83,12 @@ export async function POST(request: NextRequest) {
   const backError = validateFile(backFile, "Document back");
   if (backError) return NextResponse.json(backError, { status: 400 });
 
-  if (!process.env.BLOB_READ_WRITE_TOKEN) {
+  // Deliberately a separate store/token from BLOB_READ_WRITE_TOKEN (see
+  // app/api/admin/brokers/logo/route.ts) -- a Vercel Blob store's access
+  // mode (public/private) is fixed at creation, so a public logo store
+  // and this route's private KYC documents can't share one token.
+  const kycToken = process.env.PRIVATE_READ_WRITE_TOKEN;
+  if (!kycToken) {
     return NextResponse.json({ error: "document storage is not configured" }, { status: 503 });
   }
 
@@ -91,11 +96,13 @@ export async function POST(request: NextRequest) {
     access: "private",
     addRandomSuffix: true,
     contentType: frontFile!.type,
+    token: kycToken,
   });
   const backBlob = await put(`kyc/${session.accountId}/back`, backFile!, {
     access: "private",
     addRandomSuffix: true,
     contentType: backFile!.type,
+    token: kycToken,
   });
 
   const record = await prisma.kycRecord.upsert({
