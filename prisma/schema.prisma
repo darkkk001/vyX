@@ -420,14 +420,39 @@ model Group {
   // live is cut over to), so there's nothing to skip for a swap-free
   // group today. Recorded now so it's ready once that changes.
   swapFree        Boolean @default(false)
+  // Opt-in symbol allowlist -- false (default) means every enabled
+  // BrokerSymbol is tradable by this group, identical to every group's
+  // behavior before this field existed (zero change for existing
+  // groups/accounts). true restricts trading to only the symbols with a
+  // GroupSymbol row below -- see lib/risk.ts's checkGroupAllowedSymbol.
+  restrictSymbols Boolean @default(false)
 
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
 
   accounts Account[]
+  allowedSymbols GroupSymbol[]
 
   @@unique([brokerId, name])
   @@index([brokerId])
+}
+
+// One row = this symbol is explicitly allowed for this group. Only
+// consulted when Group.restrictSymbols is true -- otherwise every
+// enabled BrokerSymbol is tradable regardless of what's (or isn't)
+// listed here, so a broker can freely toggle restrictSymbols on/off
+// without losing whatever allowlist they'd already built up.
+model GroupSymbol {
+  id       String @id @default(cuid())
+  groupId  String
+  group    Group  @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  symbolId String
+  symbol   Symbol @relation(fields: [symbolId], references: [id])
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  @@unique([groupId, symbolId])
+  @@index([groupId])
 }
 
 model KycRecord {
@@ -516,6 +541,7 @@ model Symbol {
   orders        Order[]
   positions     Position[]
   lpRoutingRules LpRoutingRule[]
+  groupAllowlists GroupSymbol[]
 }
 
 /// Latest tick per symbol, pushed by an MT5 EA bridge (see

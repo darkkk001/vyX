@@ -13,6 +13,7 @@ import {
   checkLotStep,
   checkGroupMaxLot,
   checkGroupTradingRestriction,
+  checkGroupAllowedSymbol,
   checkMaxOpenPositions,
   checkSymbolExposure,
   checkBrokerExposure,
@@ -95,7 +96,10 @@ export async function POST(request: NextRequest) {
   // query-backed ones, all before any order/position is created.
   const [broker, account] = await Promise.all([
     prisma.broker.findUniqueOrThrow({ where: { id: session.brokerId } }),
-    prisma.account.findUniqueOrThrow({ where: { id: session.accountId }, include: { group: true } }),
+    prisma.account.findUniqueOrThrow({
+      where: { id: session.accountId },
+      include: { group: { include: { allowedSymbols: { select: { symbolId: true } } } } },
+    }),
   ]);
   const riskError =
     checkTradingHalted(broker) ??
@@ -104,6 +108,13 @@ export async function POST(request: NextRequest) {
     checkLotStep(volume, brokerSymbol.minLot, brokerSymbol.lotStep) ??
     (account.group ? checkGroupMaxLot(volume, account.group.maxLotSize) : null) ??
     (account.group ? checkGroupTradingRestriction(account.group.tradingRestriction, side) : null) ??
+    (account.group
+      ? checkGroupAllowedSymbol(
+          account.group.restrictSymbols,
+          account.group.allowedSymbols.map((s) => s.symbolId),
+          brokerSymbol.symbolId
+        )
+      : null) ??
     (await checkMaxOpenPositions(prisma, session.accountId, broker.maxOpenPositionsPerAccount)) ??
     (await checkSymbolExposure(prisma, session.accountId, brokerSymbol.symbolId, volume, brokerSymbol.maxExposure)) ??
     (await checkBrokerExposure(prisma, session.brokerId, volume, broker.totalExposureLimit)) ??

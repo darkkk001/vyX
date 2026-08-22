@@ -45,7 +45,7 @@ export default async function ManagerAccountsPage() {
   return (
     <main className="mx-auto max-w-[1400px]">
       <PageHeader
-        title="Users"
+        title="Trading Accounts"
         description={`${rows.length} account${rows.length === 1 ? "" : "s"} for this broker.${
           !canManageFinance
             ? " Leverage/status/balance changes -- including a starting balance on a new account -- require Broker Admin or the Account Finance permission."

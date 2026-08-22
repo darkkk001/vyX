@@ -40,6 +40,23 @@ export function checkGroupTradingRestriction(restriction: TradingMode, side: Ord
   return null;
 }
 
+// Opt-in -- restrictSymbols defaults to false on every group (see
+// Group.restrictSymbols's own schema comment), in which case this never
+// blocks anything, identical to before this check existed. Only once a
+// broker admin explicitly turns it on for a group does that group's
+// GroupSymbol rows become an allowlist instead of being ignored.
+export function checkGroupAllowedSymbol(
+  restrictSymbols: boolean,
+  allowedSymbolIds: string[],
+  symbolId: string
+): string | null {
+  if (!restrictSymbols) return null;
+  if (!allowedSymbolIds.includes(symbolId)) {
+    return "this symbol is not enabled for this account's group";
+  }
+  return null;
+}
+
 // Volume must be minLot plus a whole number of lotStep increments (not
 // just within the min/max range, which both live order routes already
 // check separately). Decimal math throughout -- never Number/float.

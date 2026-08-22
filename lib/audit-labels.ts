@@ -20,6 +20,7 @@ const LABELS: Record<string, string> = {
   ACCOUNT_MAX_DAILY_LOSS_CHANGED: "Changed max daily loss",
   GROUP_CREATED: "Created group",
   GROUP_CONFIG_UPDATED: "Updated group config",
+  GROUP_SYMBOLS_UPDATED: "Updated group symbol allowlist",
   BROKER_CREATED: "Registered broker",
   BROKER_STATUS_CHANGED: "Changed broker status",
   SYMBOL_CONFIG_UPDATED: "Updated symbol config",

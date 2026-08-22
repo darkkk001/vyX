@@ -11,6 +11,7 @@ import {
   checkLotStep,
   checkGroupMaxLot,
   checkGroupTradingRestriction,
+  checkGroupAllowedSymbol,
   checkMaxOpenPositions,
   checkSymbolExposure,
   checkBrokerExposure,
@@ -61,7 +62,10 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "volume must be positive" }, { status: 400 });
   }
 
-  const account = await prisma.account.findUnique({ where: { id: accountId }, include: { group: true } });
+  const account = await prisma.account.findUnique({
+    where: { id: accountId },
+    include: { group: { include: { allowedSymbols: { select: { symbolId: true } } } } },
+  });
   if (!account || account.brokerId !== brokerId) {
     return NextResponse.json({ error: "account not found" }, { status: 404 });
   }
@@ -95,6 +99,13 @@ export async function POST(request: NextRequest) {
     checkLotStep(volume, brokerSymbol.minLot, brokerSymbol.lotStep) ??
     (account.group ? checkGroupMaxLot(volume, account.group.maxLotSize) : null) ??
     (account.group ? checkGroupTradingRestriction(account.group.tradingRestriction, side) : null) ??
+    (account.group
+      ? checkGroupAllowedSymbol(
+          account.group.restrictSymbols,
+          account.group.allowedSymbols.map((s) => s.symbolId),
+          brokerSymbol.symbolId
+        )
+      : null) ??
     (await checkMaxOpenPositions(prisma, accountId, broker.maxOpenPositionsPerAccount)) ??
     (await checkSymbolExposure(prisma, accountId, symbolId, volume, brokerSymbol.maxExposure)) ??
     (await checkBrokerExposure(prisma, brokerId, volume, broker.totalExposureLimit)) ??

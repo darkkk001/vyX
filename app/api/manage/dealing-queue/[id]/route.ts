@@ -11,6 +11,7 @@ import {
   checkLotStep,
   checkGroupMaxLot,
   checkGroupTradingRestriction,
+  checkGroupAllowedSymbol,
   checkMaxOpenPositions,
   checkSymbolExposure,
   checkBrokerExposure,
@@ -48,7 +49,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
   const order = await prisma.order.findUnique({
     where: { id },
-    include: { account: { include: { group: true } }, symbol: true },
+    include: { account: { include: { group: { include: { allowedSymbols: { select: { symbolId: true } } } } } }, symbol: true },
   });
   if (!order || order.brokerId !== brokerId) {
     return NextResponse.json({ error: "order not found" }, { status: 404 });
@@ -118,6 +119,13 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     checkLotStep(order.volume, brokerSymbol.minLot, brokerSymbol.lotStep) ??
     (order.account.group ? checkGroupMaxLot(order.volume, order.account.group.maxLotSize) : null) ??
     (order.account.group ? checkGroupTradingRestriction(order.account.group.tradingRestriction, order.side) : null) ??
+    (order.account.group
+      ? checkGroupAllowedSymbol(
+          order.account.group.restrictSymbols,
+          order.account.group.allowedSymbols.map((s) => s.symbolId),
+          order.symbolId
+        )
+      : null) ??
     (await checkMaxOpenPositions(prisma, order.accountId, broker.maxOpenPositionsPerAccount)) ??
     (await checkSymbolExposure(prisma, order.accountId, order.symbolId, order.volume, brokerSymbol.maxExposure)) ??
     (await checkBrokerExposure(prisma, brokerId, order.volume, broker.totalExposureLimit)) ??

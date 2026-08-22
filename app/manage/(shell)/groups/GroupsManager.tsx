@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Card } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
@@ -9,6 +9,7 @@ import { Checkbox } from "@/components/ui/Checkbox";
 import { FormField } from "@/components/ui/FormField";
 import { LeverageInput } from "@/components/ui/LeverageInput";
 import { Button } from "@/components/ui/Button";
+import { Modal, ModalActions } from "@/components/ui/Modal";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
 
 export type GroupRow = {
@@ -43,6 +44,7 @@ export default function GroupsManager({ initialRows }: { initialRows: GroupRow[]
   const [savingId, setSavingId] = useState<string | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [savedId, setSavedId] = useState<string | null>(null);
+  const [symbolsFor, setSymbolsFor] = useState<GroupRow | null>(null);
 
   function updateRow(id: string, patch: Partial<GroupRow>) {
     setRows((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
@@ -165,15 +167,15 @@ export default function GroupsManager({ initialRows }: { initialRows: GroupRow[]
       <Card title="Groups">
         <Table>
           <TableHead>
-            <TableHeaderCell className="min-w-[180px]">Name</TableHeaderCell>
+            <TableHeaderCell className="min-w-[150px]">Name</TableHeaderCell>
             <TableHeaderCell className="min-w-[130px]">Leverage</TableHeaderCell>
-            <TableHeaderCell align="right" className="min-w-[110px]">Margin call %</TableHeaderCell>
+            <TableHeaderCell align="right" className="min-w-[95px]">Margin call %</TableHeaderCell>
             <TableHeaderCell align="right" className="min-w-[90px]">Stop out %</TableHeaderCell>
             <TableHeaderCell align="right" className="min-w-[90px]">Max lot</TableHeaderCell>
-            <TableHeaderCell className="min-w-[140px]">Restriction</TableHeaderCell>
+            <TableHeaderCell className="min-w-[115px]">Restriction</TableHeaderCell>
             <TableHeaderCell align="center" className="min-w-[90px]">Swap-free</TableHeaderCell>
             <TableHeaderCell align="center" className="min-w-[90px]">Default</TableHeaderCell>
-            <TableHeaderCell className="min-w-[125px]" />
+            <TableHeaderCell className="min-w-[190px]" />
           </TableHead>
           <TableBody>
             {rows.length === 0 ? (
@@ -181,7 +183,7 @@ export default function GroupsManager({ initialRows }: { initialRows: GroupRow[]
             ) : (
               rows.map((row) => (
                 <TableRow key={row.id}>
-                  <TableCell className="min-w-[180px]">
+                  <TableCell className="min-w-[150px]">
                     <Input value={row.name} onChange={(e) => updateRow(row.id, { name: e.target.value })} className="w-full" />
                   </TableCell>
                   <TableCell className="min-w-[130px]">
@@ -190,7 +192,7 @@ export default function GroupsManager({ initialRows }: { initialRows: GroupRow[]
                       onChange={(e) => updateRow(row.id, { leverage: Number(e.target.value) || 0 })}
                     />
                   </TableCell>
-                  <TableCell align="right" className="min-w-[110px]">
+                  <TableCell align="right" className="min-w-[95px]">
                     <Input
                       type="text"
                       inputMode="decimal"
@@ -221,7 +223,7 @@ export default function GroupsManager({ initialRows }: { initialRows: GroupRow[]
                       className="w-full text-right"
                     />
                   </TableCell>
-                  <TableCell className="min-w-[140px]">
+                  <TableCell className="min-w-[115px]">
                     <Select
                       value={row.tradingRestriction}
                       onChange={(e) => updateRow(row.id, { tradingRestriction: e.target.value as "BOTH" | "BUY_ONLY" | "SELL_ONLY" })}
@@ -246,10 +248,13 @@ export default function GroupsManager({ initialRows }: { initialRows: GroupRow[]
                       onChange={(e) => updateRow(row.id, { isDefault: e.target.checked })}
                     />
                   </TableCell>
-                  <TableCell className="min-w-[125px] whitespace-nowrap">
+                  <TableCell className="min-w-[190px] whitespace-nowrap">
                     <div className="flex items-center gap-2">
                       <Button size="sm" disabled={savingId === row.id} onClick={() => save(row)}>
                         {savingId === row.id ? "Saving..." : "Save"}
+                      </Button>
+                      <Button size="sm" variant="ghost" onClick={() => setSymbolsFor(row)}>
+                        Symbols
                       </Button>
                       {savedId === row.id ? <span className="text-xs text-[var(--buy)]">Saved</span> : null}
                       {errors[row.id] ? <span className="text-xs text-[var(--sell)]">{errors[row.id]}</span> : null}
@@ -261,6 +266,100 @@ export default function GroupsManager({ initialRows }: { initialRows: GroupRow[]
           </TableBody>
         </Table>
       </Card>
+
+      {symbolsFor ? <SymbolsModal row={symbolsFor} onClose={() => setSymbolsFor(null)} /> : null}
     </div>
+  );
+}
+
+type SymbolOption = { id: string; name: string; category: string };
+type GroupSymbolsData = { restrictSymbols: boolean; allowedSymbolIds: string[]; availableSymbols: SymbolOption[] };
+
+// Opt-in per-group symbol allowlist -- unchecked (restrictSymbols=false)
+// is the default every group already had before this existed, so
+// nothing changes for a group until an admin deliberately turns this on
+// here. See lib/risk.ts's checkGroupAllowedSymbol for the enforcement
+// side, and app/api/manage/symbols/[id]/sessions/route.ts's Sessions
+// modal (SymbolConfigTable.tsx) for the "replace whole list" precedent
+// this mirrors.
+function SymbolsModal({ row, onClose }: { row: GroupRow; onClose: () => void }) {
+  const [data, setData] = useState<GroupSymbolsData | null>(null);
+  const [restrictSymbols, setRestrictSymbols] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetch(`/api/manage/groups/${row.id}/symbols`)
+      .then((r) => r.json())
+      .then((d: GroupSymbolsData) => {
+        setData(d);
+        setRestrictSymbols(d.restrictSymbols);
+        setSelected(new Set(d.allowedSymbolIds));
+      })
+      .catch(() => setError("failed to load"));
+  }, [row.id]);
+
+  function toggleSymbol(symbolId: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(symbolId)) next.delete(symbolId);
+      else next.add(symbolId);
+      return next;
+    });
+  }
+
+  async function save() {
+    setSaving(true);
+    setError(null);
+    const response = await fetch(`/api/manage/groups/${row.id}/symbols`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ restrictSymbols, symbolIds: Array.from(selected) }),
+    });
+    setSaving(false);
+    if (!response.ok) {
+      const b = await response.json().catch(() => ({}));
+      setError(b.error ?? "save failed");
+      return;
+    }
+    onClose();
+  }
+
+  return (
+    <Modal open onClose={onClose} title={`Symbols — ${row.name}`}>
+      <div className="flex flex-col gap-3">
+        <Checkbox
+          label="Restrict this group to only the symbols checked below"
+          checked={restrictSymbols}
+          onChange={(e) => setRestrictSymbols(e.target.checked)}
+        />
+        <p className="text-xs text-[var(--text-3)]">
+          {restrictSymbols
+            ? "Accounts in this group can only trade the symbols checked below -- an order in any other symbol is rejected."
+            : "Unchecked (default) -- accounts in this group can trade every symbol enabled for this broker, same as before this feature existed."}
+        </p>
+        {data === null ? (
+          <p className="text-sm text-[var(--text-3)]">Loading...</p>
+        ) : data.availableSymbols.length === 0 ? (
+          <p className="text-sm text-[var(--text-3)]">No symbols enabled for this broker yet -- enable some on the Symbols page first.</p>
+        ) : (
+          <div className="grid max-h-80 grid-cols-2 gap-x-3 gap-y-1.5 overflow-y-auto rounded-lg border border-[var(--border)] p-3 sm:grid-cols-3">
+            {data.availableSymbols.map((s) => (
+              <Checkbox key={s.id} label={s.name} checked={selected.has(s.id)} onChange={() => toggleSymbol(s.id)} />
+            ))}
+          </div>
+        )}
+        {error ? <p className="text-sm text-[var(--sell)]">{error}</p> : null}
+        <ModalActions>
+          <Button variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button variant="primary" disabled={saving || data === null} onClick={save}>
+            {saving ? "Saving..." : "Save"}
+          </Button>
+        </ModalActions>
+      </div>
+    </Modal>
   );
 }
