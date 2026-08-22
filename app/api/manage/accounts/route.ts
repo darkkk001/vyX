@@ -220,7 +220,9 @@ async function createAccount(request: NextRequest, session: NonNullable<Awaited<
           id: result.id,
           accountNumber: result.accountNumber,
           email: result.email,
-          password, // shown once -- only the hash is stored, this response is the only chance to see it
+          // No password here -- the caller already has it (they just typed
+          // it into the form); echoing it back in the response just puts a
+          // live credential in the network log/devtools for no benefit.
         },
         { status: 201 }
       );

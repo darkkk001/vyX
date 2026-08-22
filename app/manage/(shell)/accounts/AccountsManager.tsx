@@ -103,7 +103,10 @@ export default function AccountsManager({
       return;
     }
     const created = await response.json();
-    setCreatedAccount({ accountNumber: created.accountNumber, password: created.password });
+    // The API no longer echoes the password back (never sending a live
+    // credential over the network unnecessarily) -- use what was typed
+    // into this form instead, which is exactly the same value.
+    setCreatedAccount({ accountNumber: created.accountNumber, password: newAccount.password });
     router.refresh();
   }
 
