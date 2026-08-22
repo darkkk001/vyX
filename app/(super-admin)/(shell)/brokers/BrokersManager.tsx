@@ -23,6 +23,7 @@ export type BrokerRow = {
   createdAt: string;
   hasSsoSecret: boolean;
   supportEmail: string | null;
+  logoUrl: string | null;
 };
 
 type AdminOption = { id: string; email: string; role: string; status: string; brokerId: string | null };
@@ -44,6 +45,8 @@ export default function BrokersManager({ initialRows }: { initialRows: BrokerRow
   const [adminPassword, setAdminPassword] = useState("");
   const [registerError, setRegisterError] = useState<string | null>(null);
   const [registering, setRegistering] = useState(false);
+  const [logoUploading, setLogoUploading] = useState(false);
+  const [logoUploadError, setLogoUploadError] = useState<string | null>(null);
 
   function launchRegisterModal() {
     setName("");
@@ -55,7 +58,37 @@ export default function BrokersManager({ initialRows }: { initialRows: BrokerRow
     setAdminEmail("");
     setAdminPassword("");
     setRegisterError(null);
+    setLogoUploadError(null);
     setRegisterOpen(true);
+  }
+
+  // Shared by the Register-broker modal and Tenant Detail's Branding
+  // section -- POSTs to a SUPER_ADMIN-only endpoint that stores the file
+  // in Vercel Blob under public access (unlike KYC documents, a broker
+  // logo is meant to be shown to that broker's own end-clients).
+  async function uploadLogoFile(file: File): Promise<string> {
+    const form = new FormData();
+    form.set("file", file);
+    const response = await fetch("/api/admin/brokers/logo", { method: "POST", body: form });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      throw new Error(body.error ?? "upload failed");
+    }
+    const { url } = (await response.json()) as { url: string };
+    return url;
+  }
+
+  async function handleRegisterLogoFile(file: File | undefined) {
+    if (!file) return;
+    setLogoUploading(true);
+    setLogoUploadError(null);
+    try {
+      setLogoUrl(await uploadLogoFile(file));
+    } catch (err) {
+      setLogoUploadError(err instanceof Error ? err.message : "upload failed");
+    } finally {
+      setLogoUploading(false);
+    }
   }
 
   async function submitRegister() {
@@ -105,6 +138,12 @@ export default function BrokersManager({ initialRows }: { initialRows: BrokerRow
   const [supportEmailBusy, setSupportEmailBusy] = useState(false);
   const [supportEmailError, setSupportEmailError] = useState<string | null>(null);
 
+  // --- Branding / logo (Tenant detail modal) ---
+  const [detailLogoUrlInput, setDetailLogoUrlInput] = useState("");
+  const [detailLogoUploading, setDetailLogoUploading] = useState(false);
+  const [detailLogoBusy, setDetailLogoBusy] = useState(false);
+  const [detailLogoError, setDetailLogoError] = useState<string | null>(null);
+
   async function openDetail(row: BrokerRow) {
     setDetailTarget(row);
     setDetailAdmins(null);
@@ -114,6 +153,8 @@ export default function BrokersManager({ initialRows }: { initialRows: BrokerRow
     setSsoError(null);
     setSupportEmailInput(row.supportEmail ?? "");
     setSupportEmailError(null);
+    setDetailLogoUrlInput(row.logoUrl ?? "");
+    setDetailLogoError(null);
     const response = await fetch("/api/admin/admins");
     if (response.ok) {
       const all = (await response.json()) as AdminOption[];
@@ -235,6 +276,42 @@ export default function BrokersManager({ initialRows }: { initialRows: BrokerRow
     router.refresh();
   }
 
+  async function saveDetailLogo(url: string) {
+    if (!detailTarget) return;
+    setDetailLogoBusy(true);
+    setDetailLogoError(null);
+    const response = await fetch(`/api/admin/brokers/${detailTarget.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ logoUrl: url.trim() }),
+    });
+    setDetailLogoBusy(false);
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      setDetailLogoError(body.error ?? "failed to save");
+      return;
+    }
+    const { logoUrl: saved } = (await response.json()) as { logoUrl: string | null };
+    setDetailTarget((prev) => (prev ? { ...prev, logoUrl: saved } : prev));
+    setDetailLogoUrlInput(saved ?? "");
+    router.refresh();
+  }
+
+  async function handleDetailLogoFile(file: File | undefined) {
+    if (!file) return;
+    setDetailLogoUploading(true);
+    setDetailLogoError(null);
+    try {
+      const url = await uploadLogoFile(file);
+      setDetailLogoUrlInput(url);
+      await saveDetailLogo(url);
+    } catch (err) {
+      setDetailLogoError(err instanceof Error ? err.message : "upload failed");
+    } finally {
+      setDetailLogoUploading(false);
+    }
+  }
+
   return (
     <>
       <Table title="Brokers" action={<Button variant="primary" onClick={launchRegisterModal}>+ Register new broker</Button>}>
@@ -301,10 +378,18 @@ export default function BrokersManager({ initialRows }: { initialRows: BrokerRow
               <Input placeholder="acmefx" value={subdomain} onChange={(e) => setSubdomain(e.target.value)} required />
             </FormField>
           </ModalRow2>
+          <p className="mt-1.5 text-[10px] text-[var(--text-3)]">
+            Short lowercase label only (letters, numbers, hyphens) — becomes <span className="mono">{"{subdomain}"}.vyxtrader.com</span>, live
+            immediately.
+          </p>
           <div className="mt-2.5">
             <FormField label="Custom domain (optional)">
               <Input placeholder="trade.acmefx.com" mono value={customDomain} onChange={(e) => setCustomDomain(e.target.value)} />
             </FormField>
+            <p className="mt-1.5 text-[10px] text-[var(--text-3)]">
+              Only fill this in if the broker owns that domain and has already pointed its DNS at us — leave blank for now and add it later
+              from Tenant Detail once that&apos;s set up.
+            </p>
           </div>
         </ModalSection>
 
@@ -319,8 +404,26 @@ export default function BrokersManager({ initialRows }: { initialRows: BrokerRow
                 className="h-9 w-16 rounded border border-[var(--border)] bg-[var(--bg-2)]"
               />
             </FormField>
-            <FormField label="Logo URL (optional)">
-              <Input placeholder="https://..." value={logoUrl} onChange={(e) => setLogoUrl(e.target.value)} />
+            <FormField label="Logo (optional)">
+              <div className="flex items-center gap-2">
+                {logoUrl ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={logoUrl} alt="" className="h-9 w-9 shrink-0 rounded-md border border-[var(--border)] object-cover" />
+                ) : null}
+                <Input placeholder="https://... or upload a file" value={logoUrl} onChange={(e) => setLogoUrl(e.target.value)} className="flex-1" />
+                <label className="shrink-0">
+                  <input
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp,image/svg+xml"
+                    className="hidden"
+                    onChange={(e) => handleRegisterLogoFile(e.target.files?.[0])}
+                  />
+                  <span className="inline-flex h-9 cursor-pointer items-center rounded-lg border border-[var(--border-strong)] bg-[var(--bg-3)] px-3 text-xs font-medium text-[var(--text-1)] hover:bg-[var(--bg-4)]">
+                    {logoUploading ? "Uploading..." : "Upload"}
+                  </span>
+                </label>
+              </div>
+              {logoUploadError ? <p className="mt-1.5 text-xs text-[var(--sell)]">{logoUploadError}</p> : null}
             </FormField>
           </ModalRow2>
         </ModalSection>
@@ -441,6 +544,37 @@ export default function BrokersManager({ initialRows }: { initialRows: BrokerRow
                 </Button>
               </div>
               {supportEmailError ? <p className="mt-1.5 text-sm text-[var(--sell)]">{supportEmailError}</p> : null}
+            </ModalSection>
+
+            <ModalSection label="Branding">
+              <p className="mb-2 text-xs text-[var(--text-3)]">Shown in this broker&apos;s sidebar, login screen, and WebTrader topbar.</p>
+              <div className="flex items-center gap-2">
+                {detailLogoUrlInput ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={detailLogoUrlInput} alt="" className="h-9 w-9 shrink-0 rounded-md border border-[var(--border)] object-cover" />
+                ) : null}
+                <Input
+                  placeholder="https://... or upload a file"
+                  value={detailLogoUrlInput}
+                  onChange={(e) => setDetailLogoUrlInput(e.target.value)}
+                  className="flex-1"
+                />
+                <label className="shrink-0">
+                  <input
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp,image/svg+xml"
+                    className="hidden"
+                    onChange={(e) => handleDetailLogoFile(e.target.files?.[0])}
+                  />
+                  <span className="inline-flex h-9 cursor-pointer items-center rounded-lg border border-[var(--border-strong)] bg-[var(--bg-3)] px-3 text-xs font-medium text-[var(--text-1)] hover:bg-[var(--bg-4)]">
+                    {detailLogoUploading ? "Uploading..." : "Upload"}
+                  </span>
+                </label>
+                <Button size="sm" variant="primary" disabled={detailLogoBusy || detailLogoUploading} onClick={() => saveDetailLogo(detailLogoUrlInput)}>
+                  {detailLogoBusy ? "Saving..." : "Save"}
+                </Button>
+              </div>
+              {detailLogoError ? <p className="mt-1.5 text-sm text-[var(--sell)]">{detailLogoError}</p> : null}
             </ModalSection>
 
             <ModalSection label="Tenant lifecycle">

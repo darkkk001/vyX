@@ -31,8 +31,10 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   // silently ignored.
   const hasSupportEmail = "supportEmail" in (body ?? {});
   const supportEmail = hasSupportEmail ? (typeof body.supportEmail === "string" && body.supportEmail.trim() ? body.supportEmail.trim() : null) : undefined;
-  if (!executionEngine && !status && !hasSupportEmail) {
-    return NextResponse.json({ error: "executionEngine, status, or supportEmail is required" }, { status: 400 });
+  const hasLogoUrl = "logoUrl" in (body ?? {});
+  const logoUrl = hasLogoUrl ? (typeof body.logoUrl === "string" && body.logoUrl.trim() ? body.logoUrl.trim() : null) : undefined;
+  if (!executionEngine && !status && !hasSupportEmail && !hasLogoUrl) {
+    return NextResponse.json({ error: "executionEngine, status, supportEmail, or logoUrl is required" }, { status: 400 });
   }
 
   const existing = await prisma.broker.findUnique({ where: { id } });
@@ -103,12 +105,28 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       });
     }
 
+    if (hasLogoUrl) {
+      const broker = await tx.broker.update({ where: { id }, data: { logoUrl } });
+      await tx.auditLog.create({
+        data: {
+          brokerId: id,
+          actorAdminId: session!.adminId,
+          action: "BROKER_LOGO_CHANGED",
+          entityType: "Broker",
+          entityId: id,
+          oldValue: { logoUrl: existing.logoUrl },
+          newValue: { logoUrl: broker.logoUrl },
+        },
+      });
+    }
+
     return tx.broker.findUniqueOrThrow({ where: { id } });
   });
 
   return NextResponse.json({
     id: updated.id,
     supportEmail: updated.supportEmail,
+    logoUrl: updated.logoUrl,
     executionEngine: updated.executionEngine,
     status: updated.status,
     trialEndsAt: updated.trialEndsAt,
