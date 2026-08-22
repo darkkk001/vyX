@@ -71,6 +71,13 @@ export default function GroupsManager({ initialRows }: { initialRows: GroupRow[]
       setCreateError(body.error ?? "failed to create group");
       return;
     }
+    const created: GroupRow = await response.json();
+    // Server-rendered `rows` was seeded into useState once on mount, so
+    // router.refresh() alone re-fetches the server component but never
+    // flows back into this already-mounted state -- append the row we
+    // just got back directly instead (same "only one default" rule the
+    // API itself applies) rather than depending on a prop update.
+    setRows((prev) => (created.isDefault ? prev.map((r) => ({ ...r, isDefault: false })) : prev).concat(created));
     setNewName("");
     setNewMaxLotSize("");
     setNewTradingRestriction("BOTH");
