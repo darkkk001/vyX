@@ -12,12 +12,16 @@ export type NotificationRow = {
   type: string;
   title: string;
   body: string;
+  brokerName: string;
   entityType: string | null;
   entityId: string | null;
   read: boolean;
   createdAt: string;
 };
 
+// Mirrors app/manage/(shell)/notifications/NotificationsManager.tsx --
+// same reset-password-inline pattern, targeting AdminUser (broker
+// backoffice staff) instead of Account.
 export default function NotificationsManager({ initialRows }: { initialRows: NotificationRow[] }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
@@ -28,7 +32,7 @@ export default function NotificationsManager({ initialRows }: { initialRows: Not
   const unreadCount = initialRows.filter((r) => !r.read).length;
 
   async function markRead(id: string) {
-    await fetch(`/api/manage/notifications/${id}`, {
+    await fetch(`/api/admin/notifications/${id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ read: true }),
@@ -38,7 +42,7 @@ export default function NotificationsManager({ initialRows }: { initialRows: Not
 
   async function markAllRead() {
     setBusy(true);
-    await fetch("/api/manage/notifications", {
+    await fetch("/api/admin/notifications", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ markAllRead: true }),
@@ -57,7 +61,7 @@ export default function NotificationsManager({ initialRows }: { initialRows: Not
     if (!resetTarget?.entityId) return;
     setResetting(true);
     setResetError(null);
-    const response = await fetch(`/api/manage/accounts/${resetTarget.entityId}/reset-password`, { method: "POST" });
+    const response = await fetch(`/api/admin/admins/${resetTarget.entityId}/reset-password`, { method: "POST" });
     setResetting(false);
     if (!response.ok) {
       const body = await response.json().catch(() => ({}));
@@ -80,7 +84,7 @@ export default function NotificationsManager({ initialRows }: { initialRows: Not
       ) : null}
       <div className="flex flex-col gap-2">
         {initialRows.length === 0 ? (
-          <p className="py-8 text-center text-sm text-[var(--text-3)]">No notifications yet.</p>
+          <p className="py-8 text-center text-sm text-[var(--text-3)]">No password-reset requests.</p>
         ) : (
           initialRows.map((row) => (
             <div
@@ -89,14 +93,14 @@ export default function NotificationsManager({ initialRows }: { initialRows: Not
             >
               <div>
                 <div className="flex items-center gap-2">
-                  <Badge tone={row.read ? "neutral" : "accent"}>{row.type.replace(/_/g, " ")}</Badge>
+                  <Badge tone={row.read ? "neutral" : "accent"}>{row.brokerName}</Badge>
                   <span className="text-sm font-semibold text-[var(--text-1)]">{row.title}</span>
                 </div>
                 <p className="mt-1 text-sm text-[var(--text-2)]">{row.body}</p>
                 <p className="mt-1 text-xs text-[var(--text-3)]">{row.createdAt}</p>
               </div>
               <div className="flex shrink-0 items-center gap-2">
-                {row.type === "PASSWORD_RESET_REQUESTED" && row.entityId ? (
+                {row.entityId ? (
                   <Button size="sm" variant="primary" onClick={() => openReset(row)}>
                     Reset password
                   </Button>
@@ -112,12 +116,12 @@ export default function NotificationsManager({ initialRows }: { initialRows: Not
         )}
       </div>
 
-      <Modal open={resetTarget !== null} onClose={() => setResetTarget(null)} title="Reset trader password">
+      <Modal open={resetTarget !== null} onClose={() => setResetTarget(null)} title="Reset backoffice password">
         {resetTarget ? (
           <div className="flex flex-col gap-3">
             {resetResult ? (
               <>
-                <Alert tone="success">Password reset. Share this with the trader now -- it will not be shown again.</Alert>
+                <Alert tone="success">Password reset. Share this with them now -- it will not be shown again.</Alert>
                 <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-2)] px-3 py-2 text-center font-mono text-lg text-[var(--text-1)]">
                   {resetResult.password}
                 </div>
@@ -128,8 +132,8 @@ export default function NotificationsManager({ initialRows }: { initialRows: Not
             ) : (
               <>
                 <p className="text-sm text-[var(--text-2)]">
-                  Generates a new random password for this account and shows it once. The trader will need to be told the
-                  new password directly (phone, secure channel) -- it isn&apos;t emailed automatically.
+                  Generates a new random password for this backoffice account and shows it once. Tell them directly
+                  (phone, secure channel) -- it isn&apos;t emailed automatically.
                 </p>
                 {resetError ? <Alert tone="danger">{resetError}</Alert> : null}
                 <div className="flex justify-end gap-2">

@@ -4,16 +4,17 @@ import { prisma } from "@/lib/prisma";
 import { PageHeader } from "@/components/ui/PageHeader";
 import NotificationsManager, { type NotificationRow } from "./NotificationsManager";
 
-export default async function ManagerNotificationsPage() {
+export default async function SuperAdminNotificationsPage() {
   const session = await getAdminSession();
-  if (!requireAdminRole(session, ["MANAGER", "BROKER_ADMIN"]) || !session!.brokerId) {
-    redirect("/manage/login");
+  if (!requireAdminRole(session, ["SUPER_ADMIN"])) {
+    redirect("/login");
   }
 
   const notifications = await prisma.notification.findMany({
-    where: { brokerId: session!.brokerId! },
+    where: { type: "ADMIN_PASSWORD_RESET_REQUESTED" },
     orderBy: { createdAt: "desc" },
     take: 100,
+    include: { broker: { select: { name: true } } },
   });
 
   const rows: NotificationRow[] = notifications.map((n) => ({
@@ -21,6 +22,7 @@ export default async function ManagerNotificationsPage() {
     type: n.type,
     title: n.title,
     body: n.body,
+    brokerName: n.broker.name,
     entityType: n.entityType,
     entityId: n.entityId,
     read: n.readAt != null,
@@ -29,7 +31,7 @@ export default async function ManagerNotificationsPage() {
 
   return (
     <main className="mx-auto max-w-3xl">
-      <PageHeader title="Notifications" description="System-generated alerts for new leads, KYC submissions, funds requests, and dealing-queue orders." />
+      <PageHeader title="Notifications" description="Backoffice staff password-reset requests, across every broker." />
       <NotificationsManager initialRows={rows} />
     </main>
   );

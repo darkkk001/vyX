@@ -36,6 +36,8 @@ const LABELS: Record<string, string> = {
   WEBTRADER_2FA_DISABLED: "Disabled two-factor authentication",
   SUPER_ADMIN_2FA_ENABLED: "Enabled two-factor authentication",
   SUPER_ADMIN_2FA_DISABLED: "Disabled two-factor authentication",
+  ACCOUNT_PASSWORD_RESET: "Reset trader password",
+  ADMIN_PASSWORD_RESET_BY_SUPER_ADMIN: "Reset backoffice staff password",
   WEBTRADER_SESSION_REVOKED: "Revoked WebTrader session",
   STM_HOTKEY_ORDER: "Placed order via Smart Trade Manager hotkey",
   STM_BULK_CLOSE: "Closed positions via Smart Trade Manager bulk action",

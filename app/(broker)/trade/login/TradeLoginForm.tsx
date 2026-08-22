@@ -99,6 +99,29 @@ function TradeLoginFormInner({ brokerName, supportEmail }: { brokerName: string;
   const [pendingToken, setPendingToken] = useState<string | null>(searchParams.get("pendingToken"));
   const [twoFactorCode, setTwoFactorCode] = useState("");
 
+  // Forgot-password step -- an in-app request instead of a mailto: link
+  // (which does nothing if the device has no email client configured,
+  // and leaves no record the broker can act on). Shows up as a
+  // Notification in the broker's Manager backoffice
+  // (app/manage/(shell)/notifications) with a "Reset password" action.
+  const [forgotOpen, setForgotOpen] = useState(false);
+  const [forgotAccountNumber, setForgotAccountNumber] = useState("");
+  const [forgotNote, setForgotNote] = useState("");
+  const [forgotSubmitting, setForgotSubmitting] = useState(false);
+  const [forgotSent, setForgotSent] = useState(false);
+
+  async function handleForgotPassword(event: React.FormEvent) {
+    event.preventDefault();
+    setForgotSubmitting(true);
+    await fetch("/api/trade/forgot-password", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ accountNumber: forgotAccountNumber.trim(), note: forgotNote.trim() }),
+    }).catch(() => {});
+    setForgotSubmitting(false);
+    setForgotSent(true);
+  }
+
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
     setError(null);
@@ -190,6 +213,75 @@ function TradeLoginFormInner({ brokerName, supportEmail }: { brokerName: string;
               </a>
             </div>
           </form>
+        </div>
+        <div className={styles.statusbar}>
+          <span>{connStatus}</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (forgotOpen) {
+    return (
+      <div className="wt-root" data-theme="default" style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
+        <DesktopTitleBar brokerName={brokerName} server="" connected={false} />
+        <div className={styles.loginArea}>
+          <div className={styles.loginMesh} />
+          {forgotSent ? (
+            <div className={styles.loginCard}>
+              <h1 className={styles.title}>Request sent</h1>
+              <p className={styles.subtitle}>
+                If that account number exists, {brokerName}&apos;s support team has been notified and will reset your
+                password directly.
+              </p>
+              <button
+                type="button"
+                className={styles.btnLogin}
+                onClick={() => {
+                  setForgotOpen(false);
+                  setForgotSent(false);
+                  setForgotAccountNumber("");
+                  setForgotNote("");
+                }}
+              >
+                Back to sign in
+              </button>
+            </div>
+          ) : (
+            <form onSubmit={handleForgotPassword} className={styles.loginCard}>
+              <h1 className={styles.title}>Forgot password</h1>
+              <p className={styles.subtitle}>
+                Enter your account number and {brokerName}&apos;s support team will reset your password for you.
+              </p>
+              <div className={styles.field}>
+                <label className={styles.fieldLabel}>Account number</label>
+                <input
+                  inputMode="numeric"
+                  placeholder="e.g. 50291843"
+                  autoFocus
+                  value={forgotAccountNumber}
+                  onChange={(e) => setForgotAccountNumber(e.target.value.replace(/\D/g, ""))}
+                  required
+                  className={`${styles.input} ${styles.inputMono}`}
+                />
+              </div>
+              <div className={styles.field}>
+                <label className={styles.fieldLabel}>Note (optional)</label>
+                <input
+                  placeholder="Anything that helps support verify it's you"
+                  value={forgotNote}
+                  onChange={(e) => setForgotNote(e.target.value)}
+                  className={styles.input}
+                />
+              </div>
+              <button type="submit" disabled={forgotSubmitting || !forgotAccountNumber.trim()} className={styles.btnLogin}>
+                {forgotSubmitting ? "Sending…" : "Send request"}
+              </button>
+              <div className={styles.loginFooter}>
+                <a onClick={() => setForgotOpen(false)}>Back to sign in</a>
+              </div>
+            </form>
+          )}
         </div>
         <div className={styles.statusbar}>
           <span>{connStatus}</span>
@@ -324,13 +416,18 @@ function TradeLoginFormInner({ brokerName, supportEmail }: { brokerName: string;
 
           <div className={styles.loginFooter}>
             {supportEmail ? (
-              <>
-                <a href={`mailto:${supportEmail}?subject=${encodeURIComponent("New to trading — open a demo account")}`}>
-                  New to trading? Open a demo account
-                </a>
-                <a href={`mailto:${supportEmail}?subject=${encodeURIComponent("Forgot password")}`}>Forgot password?</a>
-              </>
+              <a href={`mailto:${supportEmail}?subject=${encodeURIComponent("New to trading — open a demo account")}`}>
+                New to trading? Open a demo account
+              </a>
             ) : null}
+            <a
+              onClick={() => {
+                setForgotAccountNumber(accountNumber);
+                setForgotOpen(true);
+              }}
+            >
+              Forgot password?
+            </a>
           </div>
         </form>
       </div>

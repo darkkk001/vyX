@@ -14,7 +14,10 @@ export default async function SuperAdminShellLayout({ children }: { children: Re
     redirect("/login");
   }
 
-  const admin = await prisma.adminUser.findUnique({ where: { id: session!.adminId }, select: { email: true } });
+  const [admin, unreadNotifications] = await Promise.all([
+    prisma.adminUser.findUnique({ where: { id: session!.adminId }, select: { email: true } }),
+    prisma.notification.count({ where: { type: "ADMIN_PASSWORD_RESET_REQUESTED", readAt: null } }),
+  ]);
 
   const navGroups: AdminNavGroup[] = [
     {
@@ -31,6 +34,7 @@ export default async function SuperAdminShellLayout({ children }: { children: Re
         { href: "/health", label: "Platform health" },
         { href: "/audit", label: "Audit log" },
         { href: "/security", label: "Security" },
+        { href: "/notifications", label: "Notifications", ...(unreadNotifications > 0 ? { badge: unreadNotifications } : {}) },
       ],
     },
   ];
