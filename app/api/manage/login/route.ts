@@ -16,6 +16,7 @@ export async function POST(request: NextRequest) {
   const body = await request.json().catch(() => null);
   const email = typeof body?.email === "string" ? body.email.trim().toLowerCase() : "";
   const password = typeof body?.password === "string" ? body.password : "";
+  const remember = body?.remember === true;
 
   if (!email || !password) {
     return NextResponse.json({ error: "email and password are required" }, { status: 400 });
@@ -47,11 +48,11 @@ export async function POST(request: NextRequest) {
     return invalid();
   }
 
-  const token = await createSessionToken({ adminId: admin.id, role: admin.role, brokerId: admin.brokerId });
+  const token = await createSessionToken({ adminId: admin.id, role: admin.role, brokerId: admin.brokerId }, remember);
 
   await prisma.adminUser.update({ where: { id: admin.id }, data: { lastLoginAt: new Date() } });
 
   const response = NextResponse.json({ id: admin.id, email: admin.email, role: admin.role, brokerId: admin.brokerId });
-  response.cookies.set(SESSION_COOKIE_NAME, token, sessionCookieOptions());
+  response.cookies.set(SESSION_COOKIE_NAME, token, sessionCookieOptions(remember));
   return response;
 }

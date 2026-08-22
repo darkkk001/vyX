@@ -11,8 +11,14 @@ export default async function ManagerLoginPage() {
   const headerList = await headers();
   const brokerId = headerList.get("x-broker-id");
   const broker = brokerId
-    ? await prisma.broker.findUnique({ where: { id: brokerId }, select: { name: true, logoUrl: true } })
+    ? await prisma.broker.findUnique({ where: { id: brokerId }, select: { name: true, logoUrl: true, supportEmail: true } })
     : null;
 
-  return <ManagerLoginForm brokerName={broker?.name ?? "Backoffice"} logoUrl={broker?.logoUrl ?? null} />;
+  return (
+    <ManagerLoginForm
+      brokerName={broker?.name ?? "Backoffice"}
+      logoUrl={broker?.logoUrl ?? null}
+      supportEmail={broker?.supportEmail ?? null}
+    />
+  );
 }

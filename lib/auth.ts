@@ -5,6 +5,7 @@ import type { AdminRole } from "@prisma/client";
 
 export const SESSION_COOKIE_NAME = "vyx_admin_session";
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 7; // 7 days
+const REMEMBER_TTL_SECONDS = 60 * 60 * 24 * 30; // 30 days -- "Keep me signed in" on /manage/login
 
 export type AdminSessionPayload = {
   adminId: string;
@@ -20,11 +21,12 @@ function secretKey() {
   return new TextEncoder().encode(secret);
 }
 
-export async function createSessionToken(payload: AdminSessionPayload) {
+export async function createSessionToken(payload: AdminSessionPayload, remember = false) {
+  const ttl = remember ? REMEMBER_TTL_SECONDS : SESSION_TTL_SECONDS;
   return new SignJWT({ ...payload })
     .setProtectedHeader({ alg: "HS256" })
     .setIssuedAt()
-    .setExpirationTime(`${SESSION_TTL_SECONDS}s`)
+    .setExpirationTime(`${ttl}s`)
     .sign(secretKey());
 }
 
@@ -75,12 +77,12 @@ export function requireAdminRole(session: AdminSessionPayload | null, roles: Adm
   return session !== null && roles.includes(session.role);
 }
 
-export function sessionCookieOptions() {
+export function sessionCookieOptions(remember = false) {
   return {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
     sameSite: "lax" as const,
     path: "/",
-    maxAge: SESSION_TTL_SECONDS,
+    maxAge: remember ? REMEMBER_TTL_SECONDS : SESSION_TTL_SECONDS,
   };
 }
