@@ -1,0 +1,309 @@
+/* Scoped to this page only (CSS Modules auto-namespace class names, so
+   these never collide with webtrader.css's own unrelated .field and
+   .statusbar rules) -- reads the same bg/buy/accent/border custom
+   properties webtrader.css defines on .wt-root[data-theme] so this
+   screen shares real design tokens with the rest of the app instead of
+   inventing its own palette. See vyx-desktop-login.html, the approved
+   reference this was built against. */
+
+.loginArea {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  overflow: hidden;
+}
+
+.loginMesh {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(circle at 25% 25%, rgba(124, 111, 255, .08), transparent 45%),
+    radial-gradient(circle at 78% 70%, var(--buy-glow), transparent 45%);
+}
+
+.loginCard {
+  width: 360px;
+  position: relative;
+  z-index: 2;
+}
+
+.title {
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  margin: 0 0 4px;
+  color: var(--text-1);
+}
+
+.subtitle {
+  font-size: 12px;
+  color: var(--text-3);
+  margin: 0 0 26px;
+}
+
+.field {
+  margin-bottom: 14px;
+}
+
+.fieldLabel {
+  display: block;
+  font-size: 11px;
+  color: var(--text-2);
+  margin-bottom: 6px;
+  font-weight: 500;
+}
+
+.input {
+  width: 100%;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 12.5px;
+  color: var(--text-1);
+  outline: none;
+  font-family: inherit;
+  transition: border-color .15s var(--ease, ease), box-shadow .15s var(--ease, ease);
+}
+
+.input::placeholder {
+  color: var(--text-3);
+}
+
+.input:hover {
+  border-color: var(--border-strong);
+}
+
+.input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow, rgba(124, 111, 255, .15));
+}
+
+.inputMono {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+}
+
+/* Server selector */
+.serverSelect {
+  position: relative;
+}
+
+.serverTrigger {
+  width: 100%;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  transition: border-color .15s var(--ease, ease);
+}
+
+.serverTrigger:hover {
+  border-color: var(--border-strong);
+}
+
+.serverTriggerOpen {
+  border-color: var(--accent);
+}
+
+.serverTriggerLeft {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.serverDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.serverDotLive {
+  background: var(--buy);
+  box-shadow: 0 0 6px var(--buy-glow);
+}
+
+.serverDotDemo {
+  background: var(--text-3);
+}
+
+.serverName {
+  font-size: 12.5px;
+  color: var(--text-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.serverChevron {
+  color: var(--text-3);
+  flex-shrink: 0;
+}
+
+.serverDropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  background: var(--bg-3);
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  padding: 6px;
+  z-index: 20;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, .5);
+}
+
+.serverSearch {
+  width: 100%;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--text-1);
+  outline: none;
+  margin-bottom: 6px;
+  font-family: inherit;
+}
+
+.serverOption {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 10px;
+  border-radius: 7px;
+  cursor: pointer;
+  font-size: 12.5px;
+  color: var(--text-1);
+  background: none;
+  border: none;
+  width: 100%;
+  text-align: left;
+  font-family: inherit;
+}
+
+.serverOption:hover {
+  background: var(--bg-4);
+}
+
+.serverEmpty {
+  padding: 10px;
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+.rememberRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 18px 0 20px;
+}
+
+.checkbox {
+  width: 16px;
+  height: 16px;
+  border-radius: 5px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-2);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  padding: 0;
+}
+
+.checkboxChecked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.rememberLabel {
+  font-size: 12px;
+  color: var(--text-2);
+  cursor: pointer;
+  user-select: none;
+  background: none;
+  border: none;
+  padding: 0;
+  text-align: left;
+  font-family: inherit;
+}
+
+.btnLogin {
+  width: 100%;
+  background: var(--buy);
+  color: #04140C;
+  border: none;
+  border-radius: 8px;
+  padding: 11px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: filter .15s, transform .1s;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, .15) inset, 0 4px 14px var(--buy-glow);
+}
+
+.btnLogin:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.btnLogin:active:not(:disabled) {
+  transform: scale(.98);
+}
+
+.btnLogin:disabled {
+  opacity: .5;
+  cursor: not-allowed;
+  filter: none;
+}
+
+.formError {
+  background: var(--sell-bg);
+  border: 1px solid rgba(240, 71, 90, .3);
+  color: var(--sell);
+  font-size: 11.5px;
+  padding: 9px 11px;
+  border-radius: 7px;
+  margin-bottom: 14px;
+}
+
+.loginFooter {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 20px;
+  font-size: 11.5px;
+}
+
+.loginFooter a {
+  color: var(--text-3);
+  cursor: pointer;
+  text-decoration: none;
+  font-weight: 500;
+}
+
+.loginFooter a:hover {
+  color: var(--accent);
+}
+
+.statusbar {
+  height: 24px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 14px;
+  background: var(--bg-1);
+  border-top: 1px solid var(--border);
+  font-size: 10.5px;
+  color: var(--text-3);
+}

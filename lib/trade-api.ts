@@ -184,11 +184,17 @@ export const tradeApi = {
   },
   // Response shape distinguishes a completed login (accountId present)
   // from a 2FA-gated one (requiresTwoFactor + pendingToken, no session
-  // cookie set yet) -- see app/api/trade/login/route.ts.
-  login: (accountNumber: string, password: string) =>
+  // cookie set yet) -- see app/api/trade/login/route.ts. `accountType` is
+  // optional and only meaningful from the login page's own Server
+  // selector (DEMO/LIVE) -- when passed, the route rejects a mismatch
+  // (e.g. a Demo account logging in against the Live "server") instead of
+  // silently letting it through. The Account Selector's own call site
+  // (WebTrader.tsx, switching between linked accounts) omits it entirely,
+  // same as before this parameter existed.
+  login: (accountNumber: string, password: string, accountType?: "LIVE" | "DEMO") =>
     call<{ accountId: string; accountNumber: string; accountType: string } | { requiresTwoFactor: true; pendingToken: string }>(
       "/api/trade/login",
-      { method: "POST", body: JSON.stringify({ accountNumber, password }) }
+      { method: "POST", body: JSON.stringify({ accountNumber, password, accountType }) }
     ),
   verifyTwoFactor: (pendingToken: string, code: string) =>
     call<{ accountId: string; accountNumber: string; accountType: string }>("/api/trade/login/verify-2fa", {

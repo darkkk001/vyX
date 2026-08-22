@@ -21,6 +21,11 @@ export async function POST(request: NextRequest) {
   const body = await request.json().catch(() => null);
   const accountNumber = typeof body?.accountNumber === "string" ? body.accountNumber.trim() : "";
   const password = typeof body?.password === "string" ? body.password : "";
+  // Optional -- only the login page's own Server selector (DEMO/LIVE)
+  // sends this; the Account Selector's call site (WebTrader.tsx,
+  // switching between linked accounts) omits it and skips this check
+  // entirely, same as before this parameter existed.
+  const expectedAccountType = body?.accountType === "LIVE" ? "LIVE" : body?.accountType === "DEMO" ? "DEMO" : null;
 
   // 5 attempts/minute per (broker, accountNumber) — throttles credential
   // stuffing against one account without needing to trust a client IP
@@ -45,6 +50,17 @@ export async function POST(request: NextRequest) {
   const account = await authenticateAccount(brokerId, accountNumber, password);
   if (!account) {
     return NextResponse.json({ error: "invalid credentials" }, { status: 401 });
+  }
+
+  // Checked only after a correct password -- the trader has already
+  // proven they own this account, so telling them its real type here
+  // isn't a meaningful information leak the way it would be pre-auth.
+  if (expectedAccountType && account.accountType !== expectedAccountType) {
+    const actual = account.accountType === "LIVE" ? "Live" : "Demo";
+    return NextResponse.json(
+      { error: `this is a ${actual} account -- select the ${actual} server and try again` },
+      { status: 400 }
+    );
   }
 
   // Password checked out, but that's only half of login for a 2FA-enabled

@@ -8,8 +8,8 @@ export default async function TradeLoginPage() {
   const headerList = await headers();
   const brokerId = headerList.get("x-broker-id");
   const broker = brokerId
-    ? await prisma.broker.findUnique({ where: { id: brokerId }, select: { name: true } })
+    ? await prisma.broker.findUnique({ where: { id: brokerId }, select: { name: true, supportEmail: true } })
     : null;
 
-  return <TradeLoginForm brokerName={broker?.name ?? "VyXTrader"} />;
+  return <TradeLoginForm brokerName={broker?.name ?? "VyXTrader"} supportEmail={broker?.supportEmail ?? null} />;
 }
