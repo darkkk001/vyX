@@ -255,11 +255,23 @@ export async function completeAccountLogin(
 }
 
 export function accountSessionCookieOptions() {
+  // Scoped to the whole site (".vyxtrader.com"), not just the issuing
+  // subdomain -- the WS Gateway lives on its own subdomain
+  // (feed.<ROOT_DOMAIN>, see services/api-gateway/src/ws.ts's
+  // getTraderSession(req.headers.cookie) check) and a browser never
+  // sends a cookie to a subdomain the cookie wasn't scoped to. Without
+  // this, every WS handshake 401s and WebTrader.tsx silently falls back
+  // to its 2s HTTP poll forever. No `domain` in local dev (ROOT_DOMAIN
+  // unset/localhost) -- there's only one host there, nothing to share
+  // the cookie with, and "localhost" isn't a valid cookie domain value.
+  const rootDomain = (process.env.ROOT_DOMAIN ?? "localhost:3000").split(":")[0];
+  const domain = rootDomain === "localhost" ? undefined : `.${rootDomain}`;
   return {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
     sameSite: "lax" as const,
     path: "/",
+    domain,
     maxAge: SESSION_TTL_SECONDS,
   };
 }

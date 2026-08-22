@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { ACCOUNT_SESSION_COOKIE_NAME, revokeAccountSession } from "@/lib/account-auth";
+import { ACCOUNT_SESSION_COOKIE_NAME, accountSessionCookieOptions, revokeAccountSession } from "@/lib/account-auth";
 
 export async function POST(request: NextRequest) {
   const token = request.cookies.get(ACCOUNT_SESSION_COOKIE_NAME)?.value;
@@ -13,6 +13,10 @@ export async function POST(request: NextRequest) {
   }
 
   const response = NextResponse.json({ ok: true });
-  response.cookies.delete(ACCOUNT_SESSION_COOKIE_NAME);
+  // Must match the domain the cookie was set with (accountSessionCookieOptions)
+  // -- a delete without it is a no-op against a domain-scoped cookie, since
+  // browsers key cookies by (name, domain, path), not name alone.
+  const { domain, path } = accountSessionCookieOptions();
+  response.cookies.delete({ name: ACCOUNT_SESSION_COOKIE_NAME, domain, path });
   return response;
 }

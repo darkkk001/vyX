@@ -78,11 +78,19 @@ export function requireAdminRole(session: AdminSessionPayload | null, roles: Adm
 }
 
 export function sessionCookieOptions(remember = false) {
+  // Same site-wide cookie scoping as lib/account-auth.ts's
+  // accountSessionCookieOptions -- see that function's comment. The
+  // Manager backoffice's own real-time stream (Phase 2 of the
+  // real-time-sync work) needs this admin session cookie to reach
+  // feed.<ROOT_DOMAIN> the same way the trader session already does.
+  const rootDomain = (process.env.ROOT_DOMAIN ?? "localhost:3000").split(":")[0];
+  const domain = rootDomain === "localhost" ? undefined : `.${rootDomain}`;
   return {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
     sameSite: "lax" as const,
     path: "/",
+    domain,
     maxAge: remember ? REMEMBER_TTL_SECONDS : SESSION_TTL_SECONDS,
   };
 }
