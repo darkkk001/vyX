@@ -1613,7 +1613,6 @@ export default function WebTrader({
                   <rect key={i} x={i * 3.9} y={b.y} width="2.6" height={b.h} rx="0.6" fill={connected ? "var(--buy)" : i === 0 ? "var(--sell)" : "#3a4150"} />
                 ))}
               </svg>
-              {connected ? "Connected" : "Disconnected"}
             </span>
           </span>
           <div className="topbar-right">

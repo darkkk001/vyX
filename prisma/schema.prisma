@@ -279,6 +279,14 @@ model AdminUser {
   // into the session JWT -- see lib/permissions.ts's own comment for why.
   extraPermissions String[] @default([])
 
+  // TOTP 2FA (RFC 6238) -- see lib/totp.ts, same scheme as Account's own
+  // twoFactorSecret/Enabled (webtrader login). Exposed only on the Super
+  // Admin login (app/api/admin/login) and its own settings page -- a
+  // Broker Admin/Manager's backoffice login (app/api/manage/login) is a
+  // separate route that never checks these fields.
+  twoFactorSecret  String?
+  twoFactorEnabled Boolean @default(false)
+
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
 

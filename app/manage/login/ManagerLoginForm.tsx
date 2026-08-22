@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { FormField } from "@/components/ui/FormField";
 import { Input } from "@/components/ui/Input";
+import { PasswordInput } from "@/components/ui/PasswordInput";
 import { Button } from "@/components/ui/Button";
 import { Alert } from "@/components/ui/Alert";
 import { Checkbox } from "@/components/ui/Checkbox";
@@ -12,11 +13,11 @@ import TwoPanelAuthShell, { twoPanelAuthShellStyles as styles } from "@/componen
 export default function ManagerLoginForm({
   brokerName,
   logoUrl,
-  supportEmail,
+  superAdminEmail,
 }: {
   brokerName: string;
   logoUrl: string | null;
-  supportEmail: string | null;
+  superAdminEmail: string | null;
 }) {
   const router = useRouter();
   const [email, setEmail] = useState("");
@@ -102,19 +103,18 @@ export default function ManagerLoginForm({
               <label htmlFor="password" className="text-[11px] text-[var(--text-3)]">
                 Password
               </label>
-              {supportEmail ? (
+              {superAdminEmail ? (
                 <a
-                  href={`mailto:${supportEmail}?subject=${encodeURIComponent("Backoffice password reset")}`}
+                  href={`mailto:${superAdminEmail}?subject=${encodeURIComponent(`Backoffice password reset -- ${brokerName}`)}`}
                   className="text-[11.5px] font-medium text-[var(--accent)] hover:underline"
                 >
                   Forgot password?
                 </a>
               ) : null}
             </div>
-            <Input
+            <PasswordInput
               id="password"
               name="password"
-              type="password"
               autoComplete="current-password"
               placeholder="••••••••••"
               value={password}

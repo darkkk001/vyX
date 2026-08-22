@@ -86,6 +86,33 @@
   font-family: 'JetBrains Mono', ui-monospace, monospace;
 }
 
+.passwordWrap {
+  position: relative;
+}
+
+.passwordWrap .input {
+  padding-right: 38px;
+}
+
+.eyeBtn {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-3);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 4px;
+}
+
+.eyeBtn:hover {
+  color: var(--text-1);
+}
+
 /* Server selector */
 .serverSelect {
   position: relative;

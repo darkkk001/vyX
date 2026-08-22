@@ -81,6 +81,7 @@ function TradeLoginFormInner({ brokerName, supportEmail }: { brokerName: string;
   // password, so it hands off here for the actual credential entry.
   const [accountNumber, setAccountNumber] = useState(searchParams.get("account") ?? "");
   const [password, setPassword] = useState("");
+  const [passwordVisible, setPasswordVisible] = useState(false);
   // Set when bounced back here by /api/trade/login-redirect (the
   // root-domain launcher's single-screen login failing invalid credentials).
   const [error, setError] = useState<string | null>(
@@ -272,15 +273,30 @@ function TradeLoginFormInner({ brokerName, supportEmail }: { brokerName: string;
 
           <div className={styles.field}>
             <label className={styles.fieldLabel}>Password</label>
-            <input
-              name="password"
-              type="password"
-              autoComplete="current-password"
-              placeholder="••••••••••"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className={styles.input}
-            />
+            <div className={styles.passwordWrap}>
+              <input
+                name="password"
+                type={passwordVisible ? "text" : "password"}
+                autoComplete="current-password"
+                placeholder="••••••••••"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className={styles.input}
+              />
+              <button
+                type="button"
+                className={styles.eyeBtn}
+                onClick={() => setPasswordVisible((v) => !v)}
+                title={passwordVisible ? "Hide password" : "Show password"}
+                aria-label={passwordVisible ? "Hide password" : "Show password"}
+              >
+                {passwordVisible ? (
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17.94 17.94A10.94 10.94 0 0 1 12 20c-7 0-11-8-11-8a18.5 18.5 0 0 1 5.06-5.94M9.9 4.24A10.94 10.94 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" /><line x1="1" y1="1" x2="23" y2="23" /></svg>
+                ) : (
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></svg>
+                )}
+              </button>
+            </div>
           </div>
 
           <div className={styles.rememberRow}>

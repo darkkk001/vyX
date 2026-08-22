@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Card } from "@/components/ui/Card";
 import { FormField } from "@/components/ui/FormField";
 import { Input } from "@/components/ui/Input";
+import { PasswordInput } from "@/components/ui/PasswordInput";
 import { Button } from "@/components/ui/Button";
 import { Alert } from "@/components/ui/Alert";
 
@@ -12,6 +13,8 @@ export default function SuperAdminLoginPage() {
   const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [pendingToken, setPendingToken] = useState<string | null>(null);
+  const [code, setCode] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -34,7 +37,87 @@ export default function SuperAdminLoginPage() {
       return;
     }
 
+    const body = await response.json();
+    // Password alone isn't enough once 2FA is turned on (see
+    // app/(super-admin)/(shell)/security) -- swap to the code-entry step
+    // instead of navigating away.
+    if (body.requiresTwoFactor) {
+      setPendingToken(body.pendingToken);
+      return;
+    }
+
     router.push("/brokers");
+  }
+
+  async function handleVerify(event: React.FormEvent) {
+    event.preventDefault();
+    setSubmitting(true);
+    setError(null);
+
+    const response = await fetch("/api/admin/login/verify-2fa", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pendingToken, code }),
+    });
+
+    setSubmitting(false);
+
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      setError(body.error ?? "verification failed");
+      return;
+    }
+
+    router.push("/brokers");
+  }
+
+  if (pendingToken) {
+    return (
+      <main className="flex min-h-dvh items-center justify-center px-4">
+        <Card className="w-full max-w-sm">
+          <div className="mb-6 flex items-center gap-2.5">
+            <div className="flex h-7 w-7 items-center justify-center rounded-[7px] bg-[var(--accent)] text-sm font-bold text-[#0a0714]">
+              X
+            </div>
+            <h1 className="text-lg font-semibold text-[var(--text-1)]">Two-factor verification</h1>
+          </div>
+          <form onSubmit={handleVerify} className="flex flex-col gap-4">
+            <p className="text-sm text-[var(--text-3)]">Enter the 6-digit code from your authenticator app.</p>
+            <FormField label="Code" htmlFor="code">
+              <Input
+                id="code"
+                name="code"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                placeholder="123456"
+                autoFocus
+                maxLength={6}
+                mono
+                value={code}
+                onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))}
+                required
+                className="text-center tracking-[4px] text-lg"
+              />
+            </FormField>
+            {error ? <Alert tone="danger">{error}</Alert> : null}
+            <Button type="submit" variant="primary" loading={submitting} disabled={code.length !== 6} className="w-full">
+              {submitting ? "Verifying..." : "Verify"}
+            </Button>
+            <button
+              type="button"
+              className="text-center text-xs text-[var(--text-3)] hover:text-[var(--text-1)]"
+              onClick={() => {
+                setPendingToken(null);
+                setCode("");
+                setError(null);
+              }}
+            >
+              Back to sign in
+            </button>
+          </form>
+        </Card>
+      </main>
+    );
   }
 
   return (
@@ -60,10 +143,9 @@ export default function SuperAdminLoginPage() {
             />
           </FormField>
           <FormField label="Password" htmlFor="password">
-            <Input
+            <PasswordInput
               id="password"
               name="password"
-              type="password"
               autoComplete="current-password"
               placeholder="••••••••"
               value={password}

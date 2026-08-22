@@ -30,6 +30,7 @@ export default async function SuperAdminShellLayout({ children }: { children: Re
       items: [
         { href: "/health", label: "Platform health" },
         { href: "/audit", label: "Audit log" },
+        { href: "/security", label: "Security" },
       ],
     },
   ];

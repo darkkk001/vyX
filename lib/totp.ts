@@ -139,6 +139,38 @@ export async function deletePending2faChallenge(token: string): Promise<void> {
   await getRedis().del(pendingChallengeKey(token));
 }
 
+const PENDING_ADMIN_CHALLENGE_TTL_SECONDS = 5 * 60;
+function pendingAdminChallengeKey(token: string) {
+  return `pending_admin_2fa:${token}`;
+}
+
+export type PendingAdmin2faPayload = { adminId: string };
+
+// Same gap-bridging pattern as issuePending2faChallenge above, scoped to
+// AdminUser instead of Account -- app/api/admin/login issues one of
+// these instead of a real session once the Super Admin's password
+// checks out, if twoFactorEnabled is set. Separate Redis key namespace
+// so a leaked/guessed trader pending-token can never be replayed here.
+export async function issuePendingAdmin2faChallenge(payload: PendingAdmin2faPayload): Promise<string> {
+  const token = crypto.randomBytes(32).toString("hex");
+  await getRedis().set(pendingAdminChallengeKey(token), JSON.stringify(payload), "EX", PENDING_ADMIN_CHALLENGE_TTL_SECONDS);
+  return token;
+}
+
+export async function peekPendingAdmin2faChallenge(token: string): Promise<PendingAdmin2faPayload | null> {
+  const raw = await getRedis().get(pendingAdminChallengeKey(token));
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as PendingAdmin2faPayload;
+  } catch {
+    return null;
+  }
+}
+
+export async function deletePendingAdmin2faChallenge(token: string): Promise<void> {
+  await getRedis().del(pendingAdminChallengeKey(token));
+}
+
 // otpauth:// URI -- what a QR code encodes. `label` should be unique per
 // credential so an authenticator app can tell multiple accounts apart
 // (accountNumber, not email, since one email can have multiple Accounts
