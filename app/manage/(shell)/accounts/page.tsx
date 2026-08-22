@@ -47,7 +47,9 @@ export default async function ManagerAccountsPage() {
       <PageHeader
         title="Accounts"
         description={`${rows.length} account${rows.length === 1 ? "" : "s"} for this broker.${
-          !canManageFinance ? " Leverage/status/balance changes require Broker Admin or the Account Finance permission." : ""
+          !canManageFinance
+            ? " Leverage/status/balance changes -- including a starting balance on a new account -- require Broker Admin or the Account Finance permission."
+            : ""
         }`}
       />
       <AccountsManager initialRows={rows} groups={groupOptions} canManageFinance={canManageFinance} />

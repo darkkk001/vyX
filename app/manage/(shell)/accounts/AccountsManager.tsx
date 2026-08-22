@@ -38,7 +38,12 @@ const kycTone = { PENDING: "warning", APPROVED: "success", REJECTED: "danger" } 
 // (matches app/api/manage/accounts/[id]/route.ts's per-field permission
 // check); leverage/status/balance-adjustment only render at all when
 // `canManageFinance` (BROKER_ADMIN) -- per AdminRole.MANAGER's own schema
-// comment, these are finance-adjacent, not dealing-desk config.
+// comment, these are finance-adjacent, not dealing-desk config. Adding a
+// new account is NOT gated the same way -- any Manager reaching this page
+// can onboard a client -- but the modal still hides the starting-balance/
+// leverage-override fields for a non-finance Manager, matching
+// app/api/manage/accounts/route.ts POST silently forcing both to their
+// defaults for that same caller.
 export default function AccountsManager({
   initialRows,
   groups,
@@ -193,7 +198,7 @@ export default function AccountsManager({
           onChange={(e) => setSearch(e.target.value)}
           className="max-w-sm"
         />
-        {canManageFinance ? <Button onClick={openAddModal}>Add account</Button> : null}
+        <Button onClick={openAddModal}>Add account</Button>
       </div>
       <Table>
         <TableHead>
@@ -389,14 +394,16 @@ export default function AccountsManager({
                 ))}
               </Select>
             </FormField>
-            {!newAccount.groupId ? (
+            {canManageFinance && !newAccount.groupId ? (
               <FormField label="Leverage">
                 <Input type="text" inputMode="numeric" mono value={newAccount.leverage} onChange={(e) => setNewAccount((p) => ({ ...p, leverage: e.target.value }))} />
               </FormField>
             ) : null}
-            <FormField label="Initial balance (USD)">
-              <Input type="text" inputMode="decimal" mono value={newAccount.initialBalance} onChange={(e) => setNewAccount((p) => ({ ...p, initialBalance: e.target.value }))} />
-            </FormField>
+            {canManageFinance ? (
+              <FormField label="Initial balance (USD)">
+                <Input type="text" inputMode="decimal" mono value={newAccount.initialBalance} onChange={(e) => setNewAccount((p) => ({ ...p, initialBalance: e.target.value }))} />
+              </FormField>
+            ) : null}
             <div className="flex gap-3">
               <div className="flex-1">
                 <FormField label="Country (optional)">

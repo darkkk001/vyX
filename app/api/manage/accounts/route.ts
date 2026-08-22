@@ -3,7 +3,7 @@ import bcrypt from "bcryptjs";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
-import { forbidUnlessBrokerAdminOrPermission } from "@/lib/permissions";
+import { hasPermission } from "@/lib/permissions";
 
 async function requireManager() {
   const session = await getAdminSession();
@@ -55,16 +55,24 @@ export async function GET() {
   );
 }
 
-// BROKER_ADMIN only -- creating a funded account is finance-adjacent,
-// same split PATCH .../[id]/route.ts already applies (MANAGER only
-// touches groupId there). This is also, today, the *only* place a
-// client's country/phone/date of birth can ever be entered -- there is
-// no self-registration flow anywhere in the app.
+// Any MANAGER can onboard a new client -- account creation itself isn't
+// gated behind ACCOUNT_FINANCE (unlike PATCH .../[id]/route.ts's
+// leverage/status/balance edits on an *existing* account, which stay
+// finance-only). But this route can also set a starting balance/custom
+// leverage right here, which would otherwise let a Manager without that
+// permission route around the balance-adjustment gate entirely by just
+// creating a new, pre-funded account -- so a Manager without
+// ACCOUNT_FINANCE gets initialBalance forced to 0 and leverage forced to
+// the group/broker default, silently ignoring anything else the client
+// sent for those two fields specifically. This is also, today, the only
+// place a client's country/phone/date of birth can ever be entered --
+// there is no self-registration flow anywhere in the app.
 export async function POST(request: NextRequest) {
   const session = await getAdminSession();
-  if (await forbidUnlessBrokerAdminOrPermission(session, "ACCOUNT_FINANCE")) {
+  if (!requireAdminRole(session, ["MANAGER", "BROKER_ADMIN"]) || !session!.brokerId) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
+  const canSetFinancials = session!.role === "BROKER_ADMIN" || (await hasPermission(session, "ACCOUNT_FINANCE"));
   const brokerId = session!.brokerId!;
   const broker = await prisma.broker.findUniqueOrThrow({ where: { id: brokerId } });
 
@@ -103,9 +111,10 @@ export async function POST(request: NextRequest) {
   }
 
   // An explicit leverage always wins over a group's copied-down value,
-  // same rule as PATCH .../[id]/route.ts.
+  // same rule as PATCH .../[id]/route.ts -- but only for a caller who
+  // could also change it after the fact via that same route.
   let leverage = group?.leverage ?? broker.defaultAccountLeverage;
-  if (body?.leverage != null) {
+  if (canSetFinancials && body?.leverage != null) {
     const n = Number.isFinite(Number(body.leverage)) ? Math.trunc(Number(body.leverage)) : NaN;
     if (!Number.isFinite(n) || n <= 0) {
       return NextResponse.json({ error: "leverage must be a positive integer" }, { status: 400 });
@@ -114,13 +123,17 @@ export async function POST(request: NextRequest) {
   }
 
   let initialBalance: Prisma.Decimal;
-  try {
-    initialBalance = new Prisma.Decimal(String(body?.initialBalance ?? "0"));
-  } catch {
-    return NextResponse.json({ error: "invalid initialBalance" }, { status: 400 });
-  }
-  if (initialBalance.lt(0)) {
-    return NextResponse.json({ error: "initialBalance must not be negative" }, { status: 400 });
+  if (canSetFinancials) {
+    try {
+      initialBalance = new Prisma.Decimal(String(body?.initialBalance ?? "0"));
+    } catch {
+      return NextResponse.json({ error: "invalid initialBalance" }, { status: 400 });
+    }
+    if (initialBalance.lt(0)) {
+      return NextResponse.json({ error: "initialBalance must not be negative" }, { status: 400 });
+    }
+  } else {
+    initialBalance = new Prisma.Decimal(0);
   }
 
   const passwordHash = await bcrypt.hash(password, 10);
