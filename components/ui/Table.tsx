@@ -1,4 +1,4 @@
-import { ReactNode, TdHTMLAttributes, ThHTMLAttributes } from "react";
+import { HTMLAttributes, ReactNode, TdHTMLAttributes, ThHTMLAttributes } from "react";
 
 // The wrapper doubles as the mockup's ".panel" -- every table-only page
 // (no surrounding Card) gets panel chrome (border/radius/header row) for
@@ -62,8 +62,16 @@ export function TableBody({ children }: { children: ReactNode }) {
   return <tbody>{children}</tbody>;
 }
 
-export function TableRow({ children, className = "" }: { children: ReactNode; className?: string }) {
-  return <tr className={`border-b border-[var(--bg-2)] last:border-0 hover:bg-[var(--bg-2)] ${className}`}>{children}</tr>;
+export function TableRow({
+  children,
+  className = "",
+  ...rest
+}: HTMLAttributes<HTMLTableRowElement> & { children: ReactNode }) {
+  return (
+    <tr className={`border-b border-[var(--bg-2)] last:border-0 hover:bg-[var(--bg-2)] ${className}`} {...rest}>
+      {children}
+    </tr>
+  );
 }
 
 export function TableCell({

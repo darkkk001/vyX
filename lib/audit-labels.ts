@@ -77,3 +77,28 @@ export function humanizeAction(action: string): string {
       .join(" ")
   );
 }
+
+// Where double-clicking an audit log row (app/manage/(shell)/audit) should
+// send a manager -- "take me to that action." Account is the only entity
+// with a real per-id detail page (app/manage/accounts/[id]); everything
+// else routes to its list page, which is still more useful than nowhere.
+// Returns null for an entityType with no known destination -- that row
+// just isn't clickable rather than linking somewhere wrong.
+const ENTITY_LIST_PATHS: Record<string, string> = {
+  AdminUser: "/manage/team",
+  LiquidityProvider: "/manage/liquidity",
+  Broker: "/manage/settings",
+  KycRecord: "/manage/kyc",
+  Order: "/manage/dealing",
+  Position: "/manage/positions",
+  Group: "/manage/groups",
+  Lead: "/manage/leads",
+  IbRelationship: "/manage/ib",
+  BrokerSymbol: "/manage/symbols",
+  Transaction: "/manage/funds",
+};
+
+export function auditEntityHref(entityType: string, entityId: string): string | null {
+  if (entityType === "Account") return `/manage/accounts/${entityId}`;
+  return ENTITY_LIST_PATHS[entityType] ?? null;
+}

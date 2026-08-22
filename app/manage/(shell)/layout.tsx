@@ -101,17 +101,9 @@ export default async function ManageShellLayout({ children }: { children: React.
       topbarSearch={<TopbarSearch placeholder="Search clients, transactions…" />}
       topbarRight={
         <>
-          {broker ? (
-            <div className="flex items-center gap-1.5 rounded-full border border-[var(--border)] bg-[var(--bg-2)] py-1 pl-1 pr-3 text-[11.5px] font-medium text-[var(--text-1)]">
-              <span
-                className="flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold text-[#04140c]"
-                style={{ background: broker.primaryColor ?? "var(--accent)" }}
-              >
-                {initialsFrom(broker.name)}
-              </span>
-              {broker.name}
-            </div>
-          ) : null}
+          {/* No repeated broker name/initials pill here -- the sidebar's
+              own logoUrl/title (above) already shows the broker's
+              branding at top-left; this side is the signed-in admin. */}
           <div className="flex items-center gap-2">
             <div className="flex h-[30px] w-[30px] items-center justify-center rounded-full border border-[var(--border-strong)] bg-[var(--bg-3)] text-[11px] font-semibold text-[var(--text-2)]">
               {initialsFrom(admin?.email ?? session!.role)}
