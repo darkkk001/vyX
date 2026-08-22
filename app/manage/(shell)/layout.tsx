@@ -96,7 +96,7 @@ export default async function ManageShellLayout({ children }: { children: React.
     <AdminShell
       title={broker?.name ?? "Backoffice"}
       logoUrl={broker?.logoUrl}
-      pageTitle="Manager"
+      pageTitle="Backoffice"
       navGroups={navGroups}
       topbarSearch={<TopbarSearch placeholder="Search clients, transactions…" />}
       topbarRight={
