@@ -173,7 +173,7 @@ export default function GroupsManager({ initialRows }: { initialRows: GroupRow[]
             <TableHeaderCell className="min-w-[140px]">Restriction</TableHeaderCell>
             <TableHeaderCell align="center" className="min-w-[90px]">Swap-free</TableHeaderCell>
             <TableHeaderCell align="center" className="min-w-[90px]">Default</TableHeaderCell>
-            <TableHeaderCell className="min-w-[140px]" />
+            <TableHeaderCell className="min-w-[125px]" />
           </TableHead>
           <TableBody>
             {rows.length === 0 ? (
@@ -246,7 +246,7 @@ export default function GroupsManager({ initialRows }: { initialRows: GroupRow[]
                       onChange={(e) => updateRow(row.id, { isDefault: e.target.checked })}
                     />
                   </TableCell>
-                  <TableCell className="min-w-[140px] whitespace-nowrap">
+                  <TableCell className="min-w-[125px] whitespace-nowrap">
                     <div className="flex items-center gap-2">
                       <Button size="sm" disabled={savingId === row.id} onClick={() => save(row)}>
                         {savingId === row.id ? "Saving..." : "Save"}

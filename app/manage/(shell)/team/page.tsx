@@ -30,7 +30,7 @@ export default async function ManageTeamPage() {
   }));
 
   return (
-    <main className="mx-auto max-w-3xl">
+    <main className="mx-auto max-w-[1400px]">
       <PageHeader title="Team" description={`${rows.length} admin${rows.length === 1 ? "" : "s"} for this broker.`} />
       <TeamManager initialRows={rows} currentAdminId={session!.adminId} />
     </main>
