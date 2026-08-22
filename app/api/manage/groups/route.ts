@@ -84,6 +84,7 @@ export async function POST(request: NextRequest) {
   }
   const tradingRestriction = ["BOTH", "BUY_ONLY", "SELL_ONLY"].includes(body?.tradingRestriction) ? body.tradingRestriction : "BOTH";
   const swapFree = body?.swapFree === true;
+  const forceDealingMode = body?.forceDealingMode === true;
 
   try {
     const group = await prisma.$transaction(async (tx) => {
@@ -93,7 +94,7 @@ export async function POST(request: NextRequest) {
         await tx.group.updateMany({ where: { brokerId, isDefault: true }, data: { isDefault: false } });
       }
       const created = await tx.group.create({
-        data: { brokerId, name, leverage, marginCallLevel, stopOutLevel, isDefault, maxLotSize, tradingRestriction, swapFree },
+        data: { brokerId, name, leverage, marginCallLevel, stopOutLevel, isDefault, maxLotSize, tradingRestriction, swapFree, forceDealingMode },
       });
       await tx.auditLog.create({
         data: {
@@ -111,6 +112,7 @@ export async function POST(request: NextRequest) {
             maxLotSize: maxLotSize?.toString() ?? null,
             tradingRestriction,
             swapFree,
+            forceDealingMode,
           },
         },
       });
@@ -128,6 +130,7 @@ export async function POST(request: NextRequest) {
         maxLotSize: group.maxLotSize ? group.maxLotSize.toString() : null,
         tradingRestriction: group.tradingRestriction,
         swapFree: group.swapFree,
+        forceDealingMode: group.forceDealingMode,
       },
       { status: 201 }
     );

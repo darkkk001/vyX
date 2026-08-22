@@ -29,6 +29,7 @@ export default async function ManagerGroupsPage() {
     maxLotSize: g.maxLotSize ? g.maxLotSize.toString() : "",
     tradingRestriction: g.tradingRestriction,
     swapFree: g.swapFree,
+    forceDealingMode: g.forceDealingMode,
   }));
 
   return (

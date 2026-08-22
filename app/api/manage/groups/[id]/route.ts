@@ -62,6 +62,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   }
   const tradingRestriction = ["BOTH", "BUY_ONLY", "SELL_ONLY"].includes(body?.tradingRestriction) ? body.tradingRestriction : "BOTH";
   const swapFree = body?.swapFree === true;
+  const forceDealingMode = body?.forceDealingMode === true;
 
   try {
     const group = await prisma.$transaction(async (tx) => {
@@ -70,7 +71,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       }
       const updated = await tx.group.update({
         where: { id },
-        data: { name, leverage, marginCallLevel, stopOutLevel, isDefault, maxLotSize, tradingRestriction, swapFree },
+        data: { name, leverage, marginCallLevel, stopOutLevel, isDefault, maxLotSize, tradingRestriction, swapFree, forceDealingMode },
       });
       await tx.auditLog.create({
         data: {
@@ -88,6 +89,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
             maxLotSize: existing.maxLotSize?.toString() ?? null,
             tradingRestriction: existing.tradingRestriction,
             swapFree: existing.swapFree,
+            forceDealingMode: existing.forceDealingMode,
           },
           newValue: {
             name,
@@ -98,6 +100,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
             maxLotSize: maxLotSize?.toString() ?? null,
             tradingRestriction,
             swapFree,
+            forceDealingMode,
           },
         },
       });
@@ -114,6 +117,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       maxLotSize: group.maxLotSize ? group.maxLotSize.toString() : null,
       tradingRestriction: group.tradingRestriction,
       swapFree: group.swapFree,
+      forceDealingMode: group.forceDealingMode,
     });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {

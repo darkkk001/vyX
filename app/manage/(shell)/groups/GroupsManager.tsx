@@ -22,6 +22,7 @@ export type GroupRow = {
   maxLotSize: string;
   tradingRestriction: "BOTH" | "BUY_ONLY" | "SELL_ONLY";
   swapFree: boolean;
+  forceDealingMode: boolean;
 };
 
 // Create form + editable list, same fetch/error/submitting-state shape
@@ -38,6 +39,7 @@ export default function GroupsManager({ initialRows }: { initialRows: GroupRow[]
   const [newMaxLotSize, setNewMaxLotSize] = useState("");
   const [newTradingRestriction, setNewTradingRestriction] = useState<"BOTH" | "BUY_ONLY" | "SELL_ONLY">("BOTH");
   const [newSwapFree, setNewSwapFree] = useState(false);
+  const [newForceDealingMode, setNewForceDealingMode] = useState(false);
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
 
@@ -67,6 +69,7 @@ export default function GroupsManager({ initialRows }: { initialRows: GroupRow[]
         maxLotSize: newMaxLotSize,
         tradingRestriction: newTradingRestriction,
         swapFree: newSwapFree,
+        forceDealingMode: newForceDealingMode,
       }),
     });
     setCreating(false);
@@ -86,6 +89,7 @@ export default function GroupsManager({ initialRows }: { initialRows: GroupRow[]
     setNewMaxLotSize("");
     setNewTradingRestriction("BOTH");
     setNewSwapFree(false);
+    setNewForceDealingMode(false);
     router.refresh();
   }
 
@@ -156,6 +160,12 @@ export default function GroupsManager({ initialRows }: { initialRows: GroupRow[]
               checked={newIsDefault}
               onChange={(e) => setNewIsDefault(e.target.checked)}
             />
+            <Checkbox
+              label="Force dealing"
+              title="Route this group's market orders to the dealing queue for manual review, independent of the broker-wide setting"
+              checked={newForceDealingMode}
+              onChange={(e) => setNewForceDealingMode(e.target.checked)}
+            />
             <Button type="submit" variant="primary" disabled={creating}>
               {creating ? "Creating..." : "Create group"}
             </Button>
@@ -169,12 +179,15 @@ export default function GroupsManager({ initialRows }: { initialRows: GroupRow[]
           <TableHead>
             <TableHeaderCell className="min-w-[150px]">Name</TableHeaderCell>
             <TableHeaderCell className="min-w-[130px]">Leverage</TableHeaderCell>
-            <TableHeaderCell align="right" className="min-w-[95px]">Margin call %</TableHeaderCell>
-            <TableHeaderCell align="right" className="min-w-[90px]">Stop out %</TableHeaderCell>
-            <TableHeaderCell align="right" className="min-w-[90px]">Max lot</TableHeaderCell>
+            <TableHeaderCell align="right" className="min-w-[85px]">Margin call %</TableHeaderCell>
+            <TableHeaderCell align="right" className="min-w-[75px]">Stop out %</TableHeaderCell>
+            <TableHeaderCell align="right" className="min-w-[75px]">Max lot</TableHeaderCell>
             <TableHeaderCell className="min-w-[115px]">Restriction</TableHeaderCell>
-            <TableHeaderCell align="center" className="min-w-[90px]">Swap-free</TableHeaderCell>
-            <TableHeaderCell align="center" className="min-w-[90px]">Default</TableHeaderCell>
+            <TableHeaderCell align="center" className="min-w-[65px]">Swap-free</TableHeaderCell>
+            <TableHeaderCell align="center" className="min-w-[65px]">Default</TableHeaderCell>
+            <TableHeaderCell align="center" className="min-w-[80px]" title="Route this group's market orders to the dealing queue for manual review, independent of the broker-wide setting">
+              Dealing
+            </TableHeaderCell>
             <TableHeaderCell className="min-w-[190px]" />
           </TableHead>
           <TableBody>
@@ -192,7 +205,7 @@ export default function GroupsManager({ initialRows }: { initialRows: GroupRow[]
                       onChange={(e) => updateRow(row.id, { leverage: Number(e.target.value) || 0 })}
                     />
                   </TableCell>
-                  <TableCell align="right" className="min-w-[95px]">
+                  <TableCell align="right" className="min-w-[85px]">
                     <Input
                       type="text"
                       inputMode="decimal"
@@ -202,7 +215,7 @@ export default function GroupsManager({ initialRows }: { initialRows: GroupRow[]
                       className="w-full text-right"
                     />
                   </TableCell>
-                  <TableCell align="right" className="min-w-[90px]">
+                  <TableCell align="right" className="min-w-[75px]">
                     <Input
                       type="text"
                       inputMode="decimal"
@@ -212,7 +225,7 @@ export default function GroupsManager({ initialRows }: { initialRows: GroupRow[]
                       className="w-full text-right"
                     />
                   </TableCell>
-                  <TableCell align="right" className="min-w-[90px]">
+                  <TableCell align="right" className="min-w-[75px]">
                     <Input
                       type="text"
                       inputMode="decimal"
@@ -234,18 +247,25 @@ export default function GroupsManager({ initialRows }: { initialRows: GroupRow[]
                       <option value="SELL_ONLY">Sell only</option>
                     </Select>
                   </TableCell>
-                  <TableCell align="center" className="min-w-[90px]">
+                  <TableCell align="center" className="min-w-[65px]">
                     <Checkbox
                       title="No overnight swap/rollover charged on positions held in this group"
                       checked={row.swapFree}
                       onChange={(e) => updateRow(row.id, { swapFree: e.target.checked })}
                     />
                   </TableCell>
-                  <TableCell align="center" className="min-w-[90px]">
+                  <TableCell align="center" className="min-w-[65px]">
                     <Checkbox
                       title="New accounts are placed in this group automatically when no group is chosen at creation"
                       checked={row.isDefault}
                       onChange={(e) => updateRow(row.id, { isDefault: e.target.checked })}
+                    />
+                  </TableCell>
+                  <TableCell align="center" className="min-w-[80px]">
+                    <Checkbox
+                      title="Route this group's market orders to the dealing queue for manual review, independent of the broker-wide setting"
+                      checked={row.forceDealingMode}
+                      onChange={(e) => updateRow(row.id, { forceDealingMode: e.target.checked })}
                     />
                   </TableCell>
                   <TableCell className="min-w-[190px] whitespace-nowrap">

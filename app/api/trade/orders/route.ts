@@ -150,11 +150,14 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    if (type === "MARKET" && broker.dealingModeAt) {
-      // Dealing mode on: queue for manual dealer review instead of
-      // auto-filling -- see app/api/manage/dealing-queue/*. No Position
-      // yet; status stays PENDING (distinguishable from a resting
-      // LIMIT/STOP order by `type`, so no new enum value needed).
+    if (type === "MARKET" && (broker.dealingModeAt || account.group?.forceDealingMode)) {
+      // Dealing mode on -- either broker-wide (Broker.dealingModeAt) or
+      // this account's own group opted in (Group.forceDealingMode, e.g. a
+      // broker wants only a specific group of accounts dealt manually) --
+      // queue for manual dealer review instead of auto-filling. See
+      // app/api/manage/dealing-queue/*. No Position yet; status stays
+      // PENDING (distinguishable from a resting LIMIT/STOP order by
+      // `type`, so no new enum value needed).
       const order = await prisma.order.create({
         data: {
           brokerId: session.brokerId,

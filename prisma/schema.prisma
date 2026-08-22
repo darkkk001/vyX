@@ -426,6 +426,13 @@ model Group {
   // groups/accounts). true restricts trading to only the symbols with a
   // GroupSymbol row below -- see lib/risk.ts's checkGroupAllowedSymbol.
   restrictSymbols Boolean @default(false)
+  // Independent of Broker.dealingModeAt -- either one alone is enough to
+  // route a MARKET order from an account in this group to the dealing
+  // queue instead of auto-filling. false (default) = zero change for
+  // every existing group; this only ever ADDS accounts to dealing
+  // review, never removes them from the broker-wide setting. See
+  // app/api/trade/orders/route.ts's dealing-mode branch.
+  forceDealingMode Boolean @default(false)
 
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
