@@ -178,6 +178,9 @@ export default function PositionsManager({
   const [symbolId, setSymbolId] = useState(symbols[0]?.id ?? "");
   const [side, setSide] = useState<"BUY" | "SELL">("BUY");
   const [volume, setVolume] = useState("0.01");
+  const [openPrice, setOpenPrice] = useState("");
+  const [openSl, setOpenSl] = useState("");
+  const [openTp, setOpenTp] = useState("");
   const [openReason, setOpenReason] = useState("");
   const [openError, setOpenError] = useState<string | null>(null);
   const [opening, setOpening] = useState(false);
@@ -187,6 +190,9 @@ export default function PositionsManager({
     setSymbolId(symbols[0]?.id ?? "");
     setSide("BUY");
     setVolume("0.01");
+    setOpenPrice("");
+    setOpenSl("");
+    setOpenTp("");
     setOpenReason("");
     setOpenError(null);
     setOpenModalOpen(true);
@@ -202,7 +208,16 @@ export default function PositionsManager({
     const response = await fetch("/api/manage/positions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ accountId, symbolId, side, volume, note: openReason.trim() }),
+      body: JSON.stringify({
+        accountId,
+        symbolId,
+        side,
+        volume,
+        price: openPrice.trim() || undefined,
+        slPrice: openSl.trim() || undefined,
+        tpPrice: openTp.trim() || undefined,
+        note: openReason.trim(),
+      }),
     });
     setOpening(false);
     if (!response.ok) {
@@ -592,6 +607,22 @@ export default function PositionsManager({
           </FormField>
           <FormField label="Volume (lots)">
             <Input type="text" inputMode="decimal" mono value={volume} onChange={(e) => setVolume(e.target.value)} />
+          </FormField>
+          <FormField label="Price (blank = current market price)">
+            <Input
+              type="text"
+              inputMode="decimal"
+              mono
+              value={openPrice}
+              onChange={(e) => setOpenPrice(e.target.value)}
+              placeholder="e.g. 2415.30 — leave blank to fill at CMP"
+            />
+          </FormField>
+          <FormField label="Stop loss (optional)">
+            <Input type="text" inputMode="decimal" mono value={openSl} onChange={(e) => setOpenSl(e.target.value)} />
+          </FormField>
+          <FormField label="Take profit (optional)">
+            <Input type="text" inputMode="decimal" mono value={openTp} onChange={(e) => setOpenTp(e.target.value)} />
           </FormField>
           <FormField label="Reason (required, logged in audit trail)">
             <textarea

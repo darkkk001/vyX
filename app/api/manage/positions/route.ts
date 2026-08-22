@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { getFreshPrice } from "@/lib/live-price";
+import { validateSlTp } from "@/lib/trading";
 import {
   checkTradingHalted,
   checkSymbolTradingMode,
@@ -29,12 +30,12 @@ async function requireManager() {
 // Manual position open -- a dealing desk placing a MARKET trade for an
 // account directly (correction, demo setup, favor), not the trader's
 // own order flow (app/api/trade/orders/route.ts). Mirrors that route's
-// lot-size validation and fill shape, but sources the fill price from
-// LivePrice instead of trusting a client-supplied price (confirmed with
-// the user) -- fat-fingering a price here would misprice a real
-// account's position, unlike the trader route's existing "no live price
-// authority yet" simplification which at least only ever affects the
-// trader's own account.
+// lot-size validation and fill shape. `price` is optional: an explicit
+// admin-typed price fills at exactly that value (confirmed with the
+// user -- a dealer correcting a phone order often needs the trade
+// booked at the price actually agreed with the client, not whatever
+// the feed shows right now); omitting it falls back to the live
+// LivePrice tick, same as before this was configurable.
 export async function POST(request: NextRequest) {
   const session = await requireManager();
   if (!session) {
@@ -50,6 +51,36 @@ export async function POST(request: NextRequest) {
 
   if (!accountId || !symbolId || !side) {
     return NextResponse.json({ error: "accountId, symbolId, and side are required" }, { status: 400 });
+  }
+
+  // Optional -- see this route's own doc comment. A blank/missing value
+  // means "use the live tick", same as before this was ever configurable.
+  let explicitPrice: Prisma.Decimal | null = null;
+  if (body?.price != null && String(body.price).trim() !== "") {
+    try {
+      explicitPrice = new Prisma.Decimal(String(body.price));
+    } catch {
+      return NextResponse.json({ error: "invalid price" }, { status: 400 });
+    }
+    if (explicitPrice.lte(0)) {
+      return NextResponse.json({ error: "price must be positive" }, { status: 400 });
+    }
+  }
+  let slPrice: Prisma.Decimal | null = null;
+  if (body?.slPrice != null && String(body.slPrice).trim() !== "") {
+    try {
+      slPrice = new Prisma.Decimal(String(body.slPrice));
+    } catch {
+      return NextResponse.json({ error: "invalid slPrice" }, { status: 400 });
+    }
+  }
+  let tpPrice: Prisma.Decimal | null = null;
+  if (body?.tpPrice != null && String(body.tpPrice).trim() !== "") {
+    try {
+      tpPrice = new Prisma.Decimal(String(body.tpPrice));
+    } catch {
+      return NextResponse.json({ error: "invalid tpPrice" }, { status: 400 });
+    }
   }
 
   let volume: Prisma.Decimal;
@@ -114,13 +145,23 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: riskError }, { status: 400 });
   }
 
-  const price = await getFreshPrice(brokerSymbol.symbol.name);
-  if (!price) {
-    return NextResponse.json({ error: `no live price for ${brokerSymbol.symbol.name}` }, { status: 409 });
+  let fillPrice: Prisma.Decimal;
+  if (explicitPrice) {
+    fillPrice = explicitPrice;
+  } else {
+    const price = await getFreshPrice(brokerSymbol.symbol.name);
+    if (!price) {
+      return NextResponse.json({ error: `no live price for ${brokerSymbol.symbol.name} -- type a price to open anyway` }, { status: 409 });
+    }
+    // BUY fills at ask, SELL fills at bid -- same convention as
+    // engine/execution's execute_market_order.
+    fillPrice = side === "BUY" ? price.ask : price.bid;
   }
-  // BUY fills at ask, SELL fills at bid -- same convention as
-  // engine/execution's execute_market_order.
-  const fillPrice = side === "BUY" ? price.ask : price.bid;
+
+  const slTpError = validateSlTp({ side, referencePrice: fillPrice, slPrice, tpPrice });
+  if (slTpError) {
+    return NextResponse.json({ error: slTpError }, { status: 400 });
+  }
 
   const result = await prisma.$transaction(async (tx) => {
     const order = await tx.order.create({
@@ -132,6 +173,8 @@ export async function POST(request: NextRequest) {
         type: "MARKET",
         volume,
         requestedPrice: fillPrice,
+        slPrice,
+        tpPrice,
         idempotencyKey: `manual_${randomUUID()}`,
         status: "FILLED",
         filledPrice: fillPrice,
@@ -147,6 +190,8 @@ export async function POST(request: NextRequest) {
         side,
         volume,
         openPrice: fillPrice,
+        slPrice,
+        tpPrice,
         bookType: brokerSymbol.defaultBookType,
       },
     });
