@@ -7,8 +7,13 @@ import { FormField } from "@/components/ui/FormField";
 import { Input } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
 import { Alert } from "@/components/ui/Alert";
+import { Badge } from "@/components/ui/Badge";
 
 type BrokerInfo = { name: string; subdomain: string; customDomain: string | null; tier: string; status: string };
+
+// Same mapping as app/(super-admin)/(shell)/brokers/BrokersManager.tsx's
+// own statusTone -- same BrokerStatus enum, same badge language.
+const statusTone = { TRIAL: "warning", ACTIVE: "success", SUSPENDED: "danger", DISABLED: "neutral" } as const;
 type Defaults = { defaultAccountCurrency: string; defaultAccountLeverage: number };
 
 export default function SettingsManager({ broker, initial }: { broker: BrokerInfo; initial: Defaults }) {
@@ -52,7 +57,9 @@ export default function SettingsManager({ broker, initial }: { broker: BrokerInf
           <dt className="text-[var(--text-3)]">Tier</dt>
           <dd className="text-[var(--text-1)]">{broker.tier}</dd>
           <dt className="text-[var(--text-3)]">Status</dt>
-          <dd className="text-[var(--text-1)]">{broker.status}</dd>
+          <dd>
+            <Badge tone={statusTone[broker.status as keyof typeof statusTone] ?? "neutral"}>{broker.status}</Badge>
+          </dd>
         </dl>
       </Card>
 

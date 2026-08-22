@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
+import { Checkbox } from "@/components/ui/Checkbox";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
 import { PERMISSIONS, PERMISSION_LABELS, type Permission } from "@/lib/permission-labels";
 
@@ -164,15 +165,14 @@ export default function TeamManager({ initialRows, currentAdminId }: { initialRo
                       {row.role === "MANAGER" ? (
                         <div className="flex flex-col gap-1">
                           {PERMISSIONS.map((p) => (
-                            <label key={p} className="flex items-center gap-1.5 text-xs text-[var(--text-2)]">
-                              <input
-                                type="checkbox"
-                                checked={row.extraPermissions.includes(p)}
-                                disabled={busyId === row.id}
-                                onChange={() => togglePermission(row, p)}
-                              />
-                              {PERMISSION_LABELS[p]}
-                            </label>
+                            <Checkbox
+                              key={p}
+                              label={PERMISSION_LABELS[p]}
+                              checked={row.extraPermissions.includes(p)}
+                              disabled={busyId === row.id}
+                              onChange={() => togglePermission(row, p)}
+                              className="h-3.5 w-3.5"
+                            />
                           ))}
                         </div>
                       ) : (

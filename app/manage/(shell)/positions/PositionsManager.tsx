@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
+import { IconButton } from "@/components/ui/IconButton";
 import { FormField } from "@/components/ui/FormField";
 import { Modal, ModalActions } from "@/components/ui/Modal";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
@@ -527,17 +528,12 @@ export default function PositionsManager({
                 <TableCell className="text-xs text-[var(--text-3)]">{p.openedAt}</TableCell>
                 <TableCell className="whitespace-nowrap">
                   <div className="flex items-center gap-1.5">
-                    <button
-                      type="button"
-                      title="Modify SL/TP"
-                      onClick={() => openModifyModal(p)}
-                      className="flex h-[26px] w-[26px] items-center justify-center rounded-md border border-[var(--border-strong)] bg-[var(--bg-3)] text-[var(--text-2)] hover:text-[var(--text-1)]"
-                    >
+                    <IconButton title="Modify SL/TP" onClick={() => openModifyModal(p)}>
                       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                         <path d="M12 20h9" />
                         <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
                       </svg>
-                    </button>
+                    </IconButton>
                     <Input
                       type="text"
                       inputMode="decimal"
