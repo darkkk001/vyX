@@ -6,6 +6,7 @@ import { Card } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 import { Checkbox } from "@/components/ui/Checkbox";
+import { FormField } from "@/components/ui/FormField";
 import { Button } from "@/components/ui/Button";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
 
@@ -106,70 +107,72 @@ export default function GroupsManager({ initialRows }: { initialRows: GroupRow[]
   return (
     <div className="flex flex-col gap-6">
       <Card title="Create group">
-        <form onSubmit={createGroup} className="flex flex-wrap items-center gap-2">
-          <Input placeholder="Name" value={newName} onChange={(e) => setNewName(e.target.value)} required className="w-36" />
-          <Input
-            type="text"
-            inputMode="numeric"
-            mono
-            placeholder="Leverage"
-            value={newLeverage}
-            onChange={(e) => setNewLeverage(e.target.value)}
-            className="w-24"
-          />
-          <Input
-            type="text"
-            inputMode="decimal"
-            mono
-            placeholder="Margin call %"
-            value={newCallLevel}
-            onChange={(e) => setNewCallLevel(e.target.value)}
-            className="w-28"
-          />
-          <Input
-            type="text"
-            inputMode="decimal"
-            mono
-            placeholder="Stop out %"
-            value={newStopOutLevel}
-            onChange={(e) => setNewStopOutLevel(e.target.value)}
-            className="w-24"
-          />
-          <Input
-            type="text"
-            inputMode="decimal"
-            mono
-            placeholder="Max lot (blank = no override)"
-            value={newMaxLotSize}
-            onChange={(e) => setNewMaxLotSize(e.target.value)}
-            className="w-24"
-          />
-          <Select value={newTradingRestriction} onChange={(e) => setNewTradingRestriction(e.target.value as "BOTH" | "BUY_ONLY" | "SELL_ONLY")} className="w-32">
-            <option value="BOTH">Both</option>
-            <option value="BUY_ONLY">Buy only</option>
-            <option value="SELL_ONLY">Sell only</option>
-          </Select>
-          <Checkbox label="Swap-free" checked={newSwapFree} onChange={(e) => setNewSwapFree(e.target.checked)} />
-          <Checkbox label="Default" checked={newIsDefault} onChange={(e) => setNewIsDefault(e.target.checked)} />
-          <Button type="submit" variant="primary" disabled={creating}>
-            {creating ? "Creating..." : "Create group"}
-          </Button>
-          {createError ? <span className="text-sm text-[var(--sell)]">{createError}</span> : null}
+        <form onSubmit={createGroup} className="flex flex-col gap-4">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+            <FormField label="Name">
+              <Input value={newName} onChange={(e) => setNewName(e.target.value)} required />
+            </FormField>
+            <FormField label="Leverage">
+              <Input type="text" inputMode="numeric" mono value={newLeverage} onChange={(e) => setNewLeverage(e.target.value)} />
+            </FormField>
+            <FormField label="Margin call %">
+              <Input type="text" inputMode="decimal" mono value={newCallLevel} onChange={(e) => setNewCallLevel(e.target.value)} />
+            </FormField>
+            <FormField label="Stop out %">
+              <Input type="text" inputMode="decimal" mono value={newStopOutLevel} onChange={(e) => setNewStopOutLevel(e.target.value)} />
+            </FormField>
+            <FormField label="Max lot">
+              <Input
+                type="text"
+                inputMode="decimal"
+                mono
+                placeholder="blank = no override"
+                value={newMaxLotSize}
+                onChange={(e) => setNewMaxLotSize(e.target.value)}
+              />
+            </FormField>
+            <FormField label="Trading restriction">
+              <Select value={newTradingRestriction} onChange={(e) => setNewTradingRestriction(e.target.value as "BOTH" | "BUY_ONLY" | "SELL_ONLY")}>
+                <option value="BOTH">Both</option>
+                <option value="BUY_ONLY">Buy only</option>
+                <option value="SELL_ONLY">Sell only</option>
+              </Select>
+            </FormField>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-5">
+            <Checkbox
+              label="Swap-free"
+              title="No overnight swap/rollover charged on positions held in this group"
+              checked={newSwapFree}
+              onChange={(e) => setNewSwapFree(e.target.checked)}
+            />
+            <Checkbox
+              label="Default group"
+              title="New accounts are placed in this group automatically when no group is chosen at creation"
+              checked={newIsDefault}
+              onChange={(e) => setNewIsDefault(e.target.checked)}
+            />
+            <Button type="submit" variant="primary" disabled={creating}>
+              {creating ? "Creating..." : "Create group"}
+            </Button>
+            {createError ? <span className="text-sm text-[var(--sell)]">{createError}</span> : null}
+          </div>
         </form>
       </Card>
 
       <Card title="Groups">
         <Table>
           <TableHead>
-            <TableHeaderCell>Name</TableHeaderCell>
-            <TableHeaderCell align="right">Leverage</TableHeaderCell>
-            <TableHeaderCell align="right">Margin call %</TableHeaderCell>
-            <TableHeaderCell align="right">Stop out %</TableHeaderCell>
-            <TableHeaderCell align="right">Max lot</TableHeaderCell>
-            <TableHeaderCell>Restriction</TableHeaderCell>
-            <TableHeaderCell align="center">Swap-free</TableHeaderCell>
-            <TableHeaderCell align="center">Default</TableHeaderCell>
-            <TableHeaderCell />
+            <TableHeaderCell className="min-w-[180px]">Name</TableHeaderCell>
+            <TableHeaderCell align="right" className="min-w-[90px]">Leverage</TableHeaderCell>
+            <TableHeaderCell align="right" className="min-w-[110px]">Margin call %</TableHeaderCell>
+            <TableHeaderCell align="right" className="min-w-[90px]">Stop out %</TableHeaderCell>
+            <TableHeaderCell align="right" className="min-w-[90px]">Max lot</TableHeaderCell>
+            <TableHeaderCell className="min-w-[140px]">Restriction</TableHeaderCell>
+            <TableHeaderCell align="center" className="min-w-[90px]">Swap-free</TableHeaderCell>
+            <TableHeaderCell align="center" className="min-w-[90px]">Default</TableHeaderCell>
+            <TableHeaderCell className="min-w-[140px]" />
           </TableHead>
           <TableBody>
             {rows.length === 0 ? (
@@ -177,40 +180,40 @@ export default function GroupsManager({ initialRows }: { initialRows: GroupRow[]
             ) : (
               rows.map((row) => (
                 <TableRow key={row.id}>
-                  <TableCell>
-                    <Input value={row.name} onChange={(e) => updateRow(row.id, { name: e.target.value })} className="w-32" />
+                  <TableCell className="min-w-[180px]">
+                    <Input value={row.name} onChange={(e) => updateRow(row.id, { name: e.target.value })} className="w-full" />
                   </TableCell>
-                  <TableCell align="right">
+                  <TableCell align="right" className="min-w-[90px]">
                     <Input
                       type="text"
                       inputMode="numeric"
                       mono
                       value={row.leverage}
                       onChange={(e) => updateRow(row.id, { leverage: Number(e.target.value) || 0 })}
-                      className="w-20 text-right"
+                      className="w-full text-right"
                     />
                   </TableCell>
-                  <TableCell align="right">
+                  <TableCell align="right" className="min-w-[110px]">
                     <Input
                       type="text"
                       inputMode="decimal"
                       mono
                       value={row.marginCallLevel}
                       onChange={(e) => updateRow(row.id, { marginCallLevel: e.target.value })}
-                      className="w-20 text-right"
+                      className="w-full text-right"
                     />
                   </TableCell>
-                  <TableCell align="right">
+                  <TableCell align="right" className="min-w-[90px]">
                     <Input
                       type="text"
                       inputMode="decimal"
                       mono
                       value={row.stopOutLevel}
                       onChange={(e) => updateRow(row.id, { stopOutLevel: e.target.value })}
-                      className="w-20 text-right"
+                      className="w-full text-right"
                     />
                   </TableCell>
-                  <TableCell align="right">
+                  <TableCell align="right" className="min-w-[90px]">
                     <Input
                       type="text"
                       inputMode="decimal"
@@ -218,27 +221,35 @@ export default function GroupsManager({ initialRows }: { initialRows: GroupRow[]
                       placeholder="none"
                       value={row.maxLotSize}
                       onChange={(e) => updateRow(row.id, { maxLotSize: e.target.value })}
-                      className="w-20 text-right"
+                      className="w-full text-right"
                     />
                   </TableCell>
-                  <TableCell>
+                  <TableCell className="min-w-[140px]">
                     <Select
                       value={row.tradingRestriction}
                       onChange={(e) => updateRow(row.id, { tradingRestriction: e.target.value as "BOTH" | "BUY_ONLY" | "SELL_ONLY" })}
-                      className="w-32"
+                      className="w-full"
                     >
                       <option value="BOTH">Both</option>
                       <option value="BUY_ONLY">Buy only</option>
                       <option value="SELL_ONLY">Sell only</option>
                     </Select>
                   </TableCell>
-                  <TableCell align="center">
-                    <Checkbox checked={row.swapFree} onChange={(e) => updateRow(row.id, { swapFree: e.target.checked })} />
+                  <TableCell align="center" className="min-w-[90px]">
+                    <Checkbox
+                      title="No overnight swap/rollover charged on positions held in this group"
+                      checked={row.swapFree}
+                      onChange={(e) => updateRow(row.id, { swapFree: e.target.checked })}
+                    />
                   </TableCell>
-                  <TableCell align="center">
-                    <Checkbox checked={row.isDefault} onChange={(e) => updateRow(row.id, { isDefault: e.target.checked })} />
+                  <TableCell align="center" className="min-w-[90px]">
+                    <Checkbox
+                      title="New accounts are placed in this group automatically when no group is chosen at creation"
+                      checked={row.isDefault}
+                      onChange={(e) => updateRow(row.id, { isDefault: e.target.checked })}
+                    />
                   </TableCell>
-                  <TableCell className="whitespace-nowrap">
+                  <TableCell className="min-w-[140px] whitespace-nowrap">
                     <div className="flex items-center gap-2">
                       <Button size="sm" disabled={savingId === row.id} onClick={() => save(row)}>
                         {savingId === row.id ? "Saving..." : "Save"}
