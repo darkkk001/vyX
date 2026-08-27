@@ -32,11 +32,35 @@ if (!fs.existsSync(bundleDir)) {
   process.exit(1);
 }
 
-const installer = fs.readdirSync(bundleDir).find((f) => f.endsWith("-setup.exe"));
-if (!installer) {
+const tauriConf = JSON.parse(fs.readFileSync(path.join(__dirname, "src-tauri", "tauri.conf.json"), "utf-8"));
+const version = tauriConf.version;
+
+// Matched against tauri.conf.json's current version, not just "*-setup.exe" --
+// a stale installer from a previous version left in the bundle dir (forgot to
+// clean before rebuilding after a version bump) would otherwise silently be
+// picked up by a bare .find(), publishing the wrong build under the new
+// version's manifest. Hit exactly this once while building this feature.
+const candidates = fs.readdirSync(bundleDir).filter((f) => f.endsWith("-setup.exe"));
+if (candidates.length === 0) {
   console.error(`No *-setup.exe found in ${bundleDir} -- run \`npm run build\` first.`);
   process.exit(1);
 }
+const matches = candidates.filter((f) => f.includes(version));
+if (matches.length === 0) {
+  console.error(
+    `Found *-setup.exe file(s) in ${bundleDir} but none match tauri.conf.json's version ` +
+      `"${version}": ${candidates.join(", ")}. Delete stale bundle output and rebuild.`
+  );
+  process.exit(1);
+}
+if (matches.length > 1) {
+  console.error(
+    `More than one *-setup.exe matches version "${version}" in ${bundleDir}: ` +
+      `${matches.join(", ")}. Delete stale bundle output and rebuild.`
+  );
+  process.exit(1);
+}
+const installer = matches[0];
 
 const sigFile = `${installer}.sig`;
 if (!fs.existsSync(path.join(bundleDir, sigFile))) {
@@ -48,8 +72,6 @@ if (!fs.existsSync(path.join(bundleDir, sigFile))) {
   process.exit(1);
 }
 
-const tauriConf = JSON.parse(fs.readFileSync(path.join(__dirname, "src-tauri", "tauri.conf.json"), "utf-8"));
-const version = tauriConf.version;
 const signature = fs.readFileSync(path.join(bundleDir, sigFile), "utf-8").trim();
 
 fs.mkdirSync(destDir, { recursive: true });

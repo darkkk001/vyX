@@ -1,6 +1,6 @@
 {
   "name": "vyxtrader-desktop-tauri",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Tauri desktop shell -- the only desktop app (an earlier Electron app reached parity then was removed). See docs/decisions.md ADR-001.",
   "scripts": {
