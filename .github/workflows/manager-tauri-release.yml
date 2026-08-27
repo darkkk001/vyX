@@ -1,0 +1,89 @@
+name: Manager Tauri Release
+
+# Direct port of desktop-tauri-release.yml for this app -- see that file's
+# header comment for the full rationale. Manual workflow_dispatch trigger
+# only, by the same deliberate choice: a release only happens when someone
+# clicks the button.
+#
+# Requires two repository secrets that only a human can set (Settings >
+# Secrets and variables > Actions): MANAGER_TAURI_SIGNING_PRIVATE_KEY (the
+# full contents of manager-tauri/src-tauri/.updater-keys/vyxtrader-manager.key,
+# which is gitignored and never committed) and
+# MANAGER_TAURI_SIGNING_PRIVATE_KEY_PASSWORD (empty string -- the key has no
+# password, matching how it was generated). See docs/deployment.md.
+on:
+  workflow_dispatch:
+    inputs:
+      notes:
+        description: "Release notes (optional -- publish.js falls back to 'VyXTrader Manager {version}' if left blank)"
+        required: false
+        type: string
+
+concurrency:
+  group: manager-tauri-release
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: manager-tauri/src-tauri
+
+      - name: Verify signing secret is configured
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.MANAGER_TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::error::MANAGER_TAURI_SIGNING_PRIVATE_KEY repository secret is not set. Add it under Settings > Secrets and variables > Actions -- see docs/deployment.md for exact setup steps. Aborting before attempting a build that can't be signed."
+            exit 1
+          fi
+
+      - name: Install manager-tauri dependencies
+        working-directory: manager-tauri
+        run: npm install
+
+      - name: Build signed release
+        working-directory: manager-tauri
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.MANAGER_TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.MANAGER_TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: npx tauri build --bundles nsis
+
+      - name: Generate update manifest
+        working-directory: manager-tauri
+        shell: bash
+        env:
+          RELEASE_NOTES: ${{ inputs.notes }}
+        run: |
+          if [ -n "$RELEASE_NOTES" ]; then
+            node publish.js --notes "$RELEASE_NOTES"
+          else
+            node publish.js
+          fi
+
+      - name: Publish update feed
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add public/manager-tauri-updates
+          if git diff --cached --quiet; then
+            echo "No changes to publish -- public/manager-tauri-updates already up to date."
+          else
+            git commit -m "Publish manager-tauri release"
+            git push
+          fi

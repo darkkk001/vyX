@@ -17,6 +17,13 @@
     "active": true,
     "targets": "all",
     "icon": ["icons/icon.ico"],
+    "createUpdaterArtifacts": true,
     "resources": ["app.config.json"]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEVDODQ5MkFGNDY1MkM1OTAKUldTUXhWSkdyNUtFN0h3NnMwbU93R0RkZFlnYXZJSHFmNlF5MlpEcFk4TjBVSHBTYkhKdnpONFAK",
+      "endpoints": ["https://vyxtrader.com/admin-tauri-updates/latest.json"]
+    }
   }
 }

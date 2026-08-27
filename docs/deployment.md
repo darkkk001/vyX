@@ -99,6 +99,46 @@
   broker installs into their own MT5 terminal, calling back to
   `/api/internal/price-feed/[payload]` on the same Vercel deployment.
 
+- **Manager and Admin desktop apps gained auto-update too (2026-08-27)** —
+  `manager-tauri/` and `admin-tauri/` were "core-shell slice only" builds
+  (per each app's own main.rs header comment and package.json
+  description) with auto-update explicitly deferred, same as tray,
+  notifications, window-state and navigation lockdown. Auto-update is no
+  longer on that list; the rest still is. Exact same mechanism as
+  desktop-tauri above, just two more independent feeds and keypairs — a
+  broker's Manager staff and Super Admin should never trust an update
+  signed by the trader terminal's key or vice versa, so each app has its
+  own Ed25519 keypair, its own `.updater-keys/` (gitignored) directory,
+  its own `public/<app>-updates/` feed, and its own `publish.js` /
+  release workflow:
+  - `manager-tauri/src-tauri/.updater-keys/vyxtrader-manager.key` →
+    `public/manager-tauri-updates/`, `.github/workflows/manager-tauri-release.yml`
+  - `admin-tauri/src-tauri/.updater-keys/vyxtrader-admin.key` →
+    `public/admin-tauri-updates/`, `.github/workflows/admin-tauri-release.yml`
+
+  No native-notification step (that plugin isn't wired into either app
+  yet) — the update still silently downloads and installs on the app's
+  next natural restart, same as desktop-tauri's own UX otherwise.
+
+  **One-time setup required for each**, same reasoning as desktop-tauri's
+  own secrets above (a human action, not achievable from a sandbox):
+  - `MANAGER_TAURI_SIGNING_PRIVATE_KEY` / `MANAGER_TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
+    (empty) for `manager-tauri-release.yml`.
+  - `ADMIN_TAURI_SIGNING_PRIVATE_KEY` / `ADMIN_TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
+    (empty) for `admin-tauri-release.yml`.
+
+  **A real bug found and fixed in the same pass**: the desktop-tauri
+  installer already committed to `public/desktop-tauri-updates/` had a
+  test broker's config baked in (`broker.config.json`: `mode: "broker"`,
+  `subdomain: "acmefx.vyxtrader.com"`, left over from the commit that
+  first fixed resource bundling) instead of the generic
+  `mode: "launcher"` build the public download link is supposed to be —
+  so anyone downloading "the app" landed straight on a demo broker's
+  branding instead of the root-domain server picker (`/launch`). Fixed
+  and republished as part of this pass; `manager-tauri`'s own bundled
+  config was already correctly in launcher mode, and `admin-tauri` has no
+  broker concept to get wrong (fixed `admin.<rootDomain>` subdomain).
+
 ## 2. Target: what gets added, what stays
 
 | Component | Where it runs | Notes |

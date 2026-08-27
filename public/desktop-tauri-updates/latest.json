@@ -1,10 +1,10 @@
 {
   "version": "0.1.0",
-  "notes": "VyXTrader 0.1.0",
-  "pub_date": "2026-08-17T21:00:39.361Z",
+  "notes": "Fix: bundled config now launches the generic multi-broker picker instead of a test ACME build",
+  "pub_date": "2026-08-27T12:46:44.265Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTMmJJTjZKK1lOYm1acGlpN0VHZE1YU053b2ZsVTBGc01iOFRIdVNzakd5a0tjaEhVeXRKQ3hkTng2S0FIQkFTNFN5MW5hYnlRR1Y3K0ZkVmxwV2FRNERVOVA2M2VFL1FvPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg3MDAwNDM4CWZpbGU6VnlYVHJhZGVyXzAuMS4wX3g2NC1zZXR1cC5leGUKbm5DYStYYjE1RCtLM1NieHpCcERjL0pRRnNkYVFxb2lZOFBLNW5WemhCaWhHU1daOHpBbk9PK1N2NmNGaWlsdEQrZVBHU0tSZzhWWU13WGN3YiswQnc9PQo=",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTMmJJTjZKK1lOYm9xTTNXRUxuR3ErOWZ0WENUUURvYVNYM01URHBPbkl4aTAzNEEzajhwQ0pVSVM4RjJxZnR3dW94Zk0zVXBNQzMzYXRGbUxORmNuMnZsUkFVS0pJQUE4PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg3ODM0Nzk4CWZpbGU6VnlYVHJhZGVyXzAuMS4wX3g2NC1zZXR1cC5leGUKYXRYazEveTc1YlVPVzZveEV1ZVJYK1pPOGFtK0xvQVg0eVRQUHliYmp4NVJDZ3E4eDFWWDdiNlU1bUYrRTVrbmVaZVRVS01YQ0tCQjh1MVVMS2ZIQnc9PQo=",
       "url": "https://vyxtrader.com/desktop-tauri-updates/VyXTrader_0.1.0_x64-setup.exe"
     }
   }

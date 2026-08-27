@@ -18,13 +18,19 @@
 // optional specifically so this narrower bridge still type-checks).
 //
 // Still deferred (see package.json): system tray, native notifications,
-// auto-update, window-state persistence, navigation lockdown,
-// splash/offline screens, per-broker rebrand tooling, a custom
-// frameless title bar.
+// window-state persistence, navigation lockdown, splash/offline
+// screens, per-broker rebrand tooling, a custom frameless title bar.
+// Auto-update is no longer on this list -- wired below, direct port of
+// desktop-tauri's check_for_updates minus the native-notification step
+// (that plugin isn't part of this app's deliberately narrower slice
+// yet; the update still silently downloads and installs on next
+// restart, same as Electron's checkForUpdatesAndNotify() without the
+// notify half).
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use serde::Deserialize;
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri_plugin_updater::UpdaterExt;
 
 #[derive(Debug, Deserialize)]
 struct BrokerConfig {
@@ -131,10 +137,23 @@ const VYX_DESKTOP_INIT_SCRIPT: &str = r#"
 })();
 "#;
 
+// Direct port of desktop-tauri's check_for_updates, minus the native-
+// notification call (see this file's top comment). Any failure (no feed
+// reachable, no update available, download/signature-verification
+// failure) is swallowed by the caller -- not fatal, the app already runs.
+#[cfg_attr(debug_assertions, allow(dead_code))]
+async fn check_for_updates(app: tauri::AppHandle) -> tauri_plugin_updater::Result<()> {
+    if let Some(update) = app.updater()?.check().await? {
+        update.download_and_install(|_, _| {}, || {}).await?;
+    }
+    Ok(())
+}
+
 fn main() {
     let config = load_broker_config();
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![remember_broker, forget_broker])
         .setup(move |app| {
             let manage_url = start_url_for(&config, app.handle());
@@ -144,6 +163,17 @@ fn main() {
                 .min_inner_size(1024.0, 640.0)
                 .initialization_script(VYX_DESKTOP_INIT_SCRIPT)
                 .build()?;
+
+            // Same gate as desktop-tauri: only check for updates in a real
+            // release build, never in `tauri dev`/debug builds.
+            #[cfg(not(debug_assertions))]
+            {
+                let update_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let _ = check_for_updates(update_handle).await;
+                });
+            }
+
             Ok(())
         })
         .run(tauri::generate_context!())

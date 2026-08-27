@@ -1,0 +1,11 @@
+{
+  "version": "0.1.0",
+  "notes": "VyXTrader Admin 0.1.0",
+  "pub_date": "2026-08-27T12:55:24.836Z",
+  "platforms": {
+    "windows-x86_64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTUXhWSkdyNUtFN0thbE1Ndmthcld1M3JnYWQ0QXJ2MmZPajZ4amw4SlB6QUd3eUkwZEhNcE44U08zZHEyWkZvL0JTUEI2b1ZaQ3ZJRnRvd0hiZUFWMzczMFJTK0JQOGdzPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg3ODM1MzE3CWZpbGU6VnlYVHJhZGVyIEFkbWluXzAuMS4wX3g2NC1zZXR1cC5leGUKWGlKZnRCek0veFpCVUlGUHpaaDZ1ZTNpaEZCTEFkMWZGTmx3cml0OXZXK0ZaNjhzQVNiQVdIWFdLQzJFMmN4TStpMlBBb0NqZk5RbFUxZnIxT1NzREE9PQo=",
+      "url": "https://vyxtrader.com/admin-tauri-updates/VyXTrader Admin_0.1.0_x64-setup.exe"
+    }
+  }
+}

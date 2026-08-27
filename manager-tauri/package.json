@@ -5,7 +5,8 @@
   "description": "Tauri desktop shell for the Manager app (Broker Admin + Manager roles, app/manage/) -- core-shell slice only. Sibling to desktop-tauri/ (Client/Trading terminal) and admin-tauri/ (Super Admin), deliberately a separate app/module per project decision, not a shared codebase.",
   "scripts": {
     "dev": "tauri dev",
-    "build": "tauri build"
+    "build": "tauri build",
+    "publish": "node publish.js"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2"
