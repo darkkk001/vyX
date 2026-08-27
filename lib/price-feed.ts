@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { evaluateRiskForSymbol } from "@/lib/risk-monitor";
 
 export type Tick = { symbol: string; bid: number; ask: number };
 
@@ -42,5 +43,26 @@ export async function ingestTicks(secret: string | null, ticksRaw: unknown) {
   }
 
   const data = await upstream.json().catch(() => ({}));
+
+  // The legacy trading path has no other automatic SL/TP/stop-out
+  // trigger (see lib/risk-monitor.ts's own module doc) -- this is its
+  // only heartbeat. Only for symbols the Market Data Core actually
+  // accepted (a rejected/malformed tick never updated LivePrice, so
+  // there's nothing new to evaluate against); isolated per symbol so one
+  // bad account never blocks another symbol's check.
+  //
+  // Deliberately awaited, not fire-and-forget: a serverless function's
+  // background work after it returns a response is not guaranteed to run
+  // to completion (Vercel can freeze/recycle the instance the instant the
+  // response is sent) -- silently dropping a stop-out check is a much
+  // worse failure than this route taking a bit longer to respond.
+  if (upstream.ok) {
+    for (const symbol of new Set(valid.map((t) => t.symbol))) {
+      await evaluateRiskForSymbol(symbol).catch((err) =>
+        console.error("price-feed: risk evaluation failed for symbol", symbol, err)
+      );
+    }
+  }
+
   return NextResponse.json(data, { status: upstream.status });
 }

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
-import { computeRealizedPnl } from "@/lib/trading";
+import { closePositionInTx } from "@/lib/position-close";
 import { publishTradingEvent } from "@/lib/nats";
 
 // Closing (fully or partially) is the one place a trade changes the
@@ -60,58 +60,30 @@ export async function POST(
     }
     closeVolume = requested;
   }
-  const isPartial = closeVolume.lt(position.volume);
-
-  const realizedPnl = computeRealizedPnl({
-    side: position.side,
-    openPrice: position.openPrice,
-    closePrice,
-    volume: closeVolume,
-    contractSize: position.symbol.contractSize,
-  });
-
-  const result = await prisma.$transaction(async (tx) => {
-    const account = await tx.account.findUniqueOrThrow({ where: { id: session.accountId } });
-    const balanceBefore = account.balance;
-    const balanceAfter = balanceBefore.add(realizedPnl);
-
-    const updatedPosition = isPartial
-      ? await tx.position.update({
-          where: { id: position.id },
-          data: { volume: position.volume.sub(closeVolume) },
-        })
-      : await tx.position.update({
-          where: { id: position.id },
-          data: {
-            status: "CLOSED",
-            closePrice,
-            realizedPnl,
-            closedAt: new Date(),
-          },
-        });
-
-    await tx.account.update({
-      where: { id: session.accountId },
-      data: { balance: balanceAfter },
-    });
-
-    const transaction = await tx.transaction.create({
-      data: {
-        brokerId: session.brokerId,
+  const outcome = await prisma.$transaction((tx) =>
+    closePositionInTx(tx, {
+      position: {
+        id: position.id,
         accountId: session.accountId,
-        type: "TRADE_PNL",
-        status: "COMPLETED",
-        amount: realizedPnl,
-        balanceBefore,
-        balanceAfter,
-        referenceType: "Position",
-        referenceId: position.id,
-        note: isPartial ? `Partial close: ${closeVolume} lots @ ${closePrice}` : null,
+        brokerId: session.brokerId,
+        side: position.side,
+        openPrice: position.openPrice,
+        volume: position.volume,
+        symbol: { contractSize: position.symbol.contractSize },
       },
-    });
+      closePrice,
+      closeVolume,
+    })
+  );
 
-    return { position: updatedPosition, transaction, partial: isPartial };
-  });
+  if (!outcome.closed) {
+    // Lost a race with a concurrent close (another tab, or the risk
+    // monitor's own SL/TP/stop-out closing the same position at the same
+    // instant) between the read above and the transaction's own guarded
+    // UPDATE. The position is genuinely closed/reduced already, just not
+    // by this call -- report the current state, not a false success.
+    return NextResponse.json({ error: "position was already closed" }, { status: 409 });
+  }
 
   if (source === "stm_bulk") {
     await prisma.auditLog.create({
@@ -121,10 +93,10 @@ export async function POST(
         entityType: "Position",
         entityId: position.id,
         oldValue: { volume: position.volume.toString() },
-        newValue: { closeVolume: closeVolume.toString(), partial: isPartial },
+        newValue: { closeVolume: closeVolume.toString(), partial: outcome.partial },
       },
     });
   }
   await publishTradingEvent("PositionClosed", { position_id: position.id, account_id: session.accountId });
-  return NextResponse.json(result);
+  return NextResponse.json({ position: outcome.position, transaction: outcome.transaction, partial: outcome.partial });
 }
