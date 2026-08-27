@@ -1,11 +1,11 @@
 {
-  "version": "0.1.1",
-  "notes": "Fix: bundled config now launches the generic multi-broker picker instead of a test ACME build",
-  "pub_date": "2026-08-27T13:12:06.391Z",
+  "version": "0.1.2",
+  "notes": "Fix: title bar minimize/maximize/close buttons were silently rejected by Tauri's permission system (missing ACL entries) and did nothing",
+  "pub_date": "2026-08-27T15:44:44.822Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTMmJJTjZKK1lOYm9YZmprdkdZTW1MRGxkVEVHYnJBT00zRTFOL1ZmQ0xvUVkzSHNsTjZlRlZQeDlRUHUrZ04wNk52MU5KNUZSMC96ZlkvQm5NSFlWRnExT2NxUnRIRWdjPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg3ODM2MTM2CWZpbGU6VnlYVHJhZGVyXzAuMS4xX3g2NC1zZXR1cC5leGUKNXdpNHQ3QjVIOHBXZnZTb3ZhM2o5cFA1MFN4aWN0TzBkYVE1ZlBaZUJPRENaWEdUTVRPYllYSDhFVGM0VzdXMGNPVHozN3c2T3M1RCtxVXB2azhYQlE9PQo=",
-      "url": "https://vyxtrader.com/desktop-tauri-updates/VyXTrader_0.1.1_x64-setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTMmJJTjZKK1lOYmlmcDU5OGxoUHJONVU3VERGcjVBUmtIeTF1bkwxQ0dmOE5LZUErbjIzcEE1NisrUGhCUUhhbnJZdWZnK0t4NDh3TmJoNEE0UHJXSEJrRjZJKzgrMndBPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg3ODQ1MjAyCWZpbGU6VnlYVHJhZGVyXzAuMS4yX3g2NC1zZXR1cC5leGUKTE5TMEFBM1BkaS9Wc1hLcDJvbFZiU1FBcDByWGsrZ2ZlZzFzYnFVdiswbWNBdVVZWitIU0kyZmRZckpoYndwSHl0bWZONTE2ZDFCZHdoRWNhTDh0Q0E9PQo=",
+      "url": "https://vyxtrader.com/desktop-tauri-updates/VyXTrader_0.1.2_x64-setup.exe"
     }
   }
 }

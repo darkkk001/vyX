@@ -1,11 +1,11 @@
 {
-  "version": "0.1.0",
-  "notes": "VyXTrader Manager 0.1.0",
-  "pub_date": "2026-08-27T12:49:13.434Z",
+  "version": "0.1.1",
+  "notes": "Fix: remember/forget-broker calls were silently rejected by Tauri's permission system (missing ACL entries)",
+  "pub_date": "2026-08-27T15:51:08.910Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUc2VqVXVBOHpXRDU4Q2FXNERxZ1NXdlNxWWRkVGFMdFl0cE5EcHAxalpVbVZ6V1NwbUFMc0VFUmszT0ZlOHpYZ2JjQTIrSzlJc3VXdis4V0svYkFocU5jUGtuY3VVVWdvPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg3ODM0OTQ3CWZpbGU6VnlYVHJhZGVyIE1hbmFnZXJfMC4xLjBfeDY0LXNldHVwLmV4ZQozZTE4Smg4SFo1ajYxU0V0QnczalFHNnpEQ3ZrbkZLcVhrWkdXMXFhVU9MT0NoQVpuYjNpYTNYYlpwR0JjdmxHRkJXUjdCakRGYTl5ME9NM3dCbzJDQT09Cg==",
-      "url": "https://vyxtrader.com/manager-tauri-updates/VyXTrader Manager_0.1.0_x64-setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUc2VqVXVBOHpXRHdzYWlVMGhTSEV1NkNZODhwOTNKS3VuK3g4T1ZyNGY5ZWtMNnYreFhIbGJXci9zM3RZQXQwYkFScjlFMko1OUxQT2daaWhFMURsb1NrVm1RSmxlS2drPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg3ODQ1NTg3CWZpbGU6VnlYVHJhZGVyIE1hbmFnZXJfMC4xLjFfeDY0LXNldHVwLmV4ZQpTRC9rc1VRcFJGT3NET2lBMHhCc3A1dEhoZW1acjYxZTNEeTlmb01HLzlXTEM3dE5MRXYwdVNobmVLMFZzU1kzMnFhRTFTVzh6Umh5U2h4V2dqcmJBZz09Cg==",
+      "url": "https://vyxtrader.com/manager-tauri-updates/VyXTrader Manager_0.1.1_x64-setup.exe"
     }
   }
 }
