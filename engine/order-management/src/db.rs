@@ -252,28 +252,42 @@ pub struct PositionRow {
     pub status: PositionStatus,
     pub sl_price: Option<Decimal>,
     pub tp_price: Option<Decimal>,
+    pub volume: Decimal,
+    pub open_price: Decimal,
+    pub contract_size: Decimal,
 }
 
-/// Single-position lookup by id, for the modify-SL/TP path's ownership
-/// and status check — narrower than `get_open_positions_with_market`
-/// (no market-price join, not account-scoped), which exists for a
-/// different caller (the margin monitor) with a different shape need.
+/// Single-position lookup by id, for the modify-SL/TP and manual-close
+/// paths' ownership/status checks — narrower than
+/// `get_open_positions_with_market` (account-scoped, no live-price join),
+/// which exists for a different caller (the margin monitor) with a
+/// different shape need. The `Symbol` join (same as
+/// `get_open_positions_with_market`'s) exists only so `close_position`
+/// has `contract_size` for its own P&L calc — `modify_position_sl_tp`
+/// simply ignores the extra fields.
 pub async fn get_position(pool: &PgPool, position_id: &str) -> Result<Option<PositionRow>, sqlx::Error> {
-    let row = sqlx::query_as::<_, (String, String, String, String, Option<Decimal>, Option<Decimal>)>(
-        r#"SELECT id, account_id, side::text, status::text, sl_price, tp_price
-           FROM positions WHERE id = $1"#,
+    #[allow(clippy::type_complexity)]
+    let row = sqlx::query_as::<_, (String, String, String, String, Option<Decimal>, Option<Decimal>, Decimal, Decimal, Decimal)>(
+        r#"SELECT p.id, p.account_id, p.side::text, p.status::text, p.sl_price, p.tp_price,
+                  p.volume, p.open_price, s."contractSize"
+           FROM positions p
+           JOIN "Symbol" s ON s.name = p.symbol
+           WHERE p.id = $1"#,
     )
     .bind(position_id)
     .fetch_optional(pool)
     .await?;
 
-    Ok(row.map(|(id, account_id, side, status, sl_price, tp_price)| PositionRow {
+    Ok(row.map(|(id, account_id, side, status, sl_price, tp_price, volume, open_price, contract_size)| PositionRow {
         id,
         account_id,
         side: side_from_str(&side),
         status: position_status_from_str(&status),
         sl_price,
         tp_price,
+        volume,
+        open_price,
+        contract_size,
     }))
 }
 

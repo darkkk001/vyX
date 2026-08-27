@@ -15,6 +15,7 @@ pub mod pricing;
 pub mod swap;
 
 use chrono::Duration as ChronoDuration;
+use crate::calc::{close_price_for, floating_pnl};
 use market_data::cache::TickCache;
 use protocol::{Fill, OrderSide, OrderStatus, OrderType, RiskRejection, Tick, TradingEvent};
 use rust_decimal::Decimal;
@@ -586,6 +587,78 @@ pub async fn modify_position_sl_tp(
     .await;
 
     Ok(ModifyPositionOutcome::Updated { sl_price, tp_price })
+}
+
+#[derive(Debug)]
+pub enum ClosePositionOutcome {
+    Closed {
+        close_price: Decimal,
+        realized_pnl: Decimal,
+    },
+    NotFound,
+    InvalidStatus {
+        status: db::PositionStatus,
+    },
+    /// Lost a race with an automatic close (stop-out or SL/TP, see
+    /// monitor.rs) that landed between this call reading the position
+    /// and its own `close_position_with_ledger_entry` UPDATE — the
+    /// position is genuinely closed, just not by this call, so nothing
+    /// here to credit or publish again.
+    AlreadyClosed,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ClosePositionError {
+    #[error(transparent)]
+    Db(#[from] sqlx::Error),
+}
+
+/// Manually closes an open position at the current market price — the
+/// trader-initiated counterpart to monitor.rs's automatic force-closes
+/// (stop-out, SL/TP), reusing the same idempotent
+/// `db::close_position_with_ledger_entry` so a manual close racing an
+/// automatic one is a benign no-op rather than a double-close (see that
+/// function's doc comment for why). `bid`/`ask` are caller-supplied (the
+/// Gateway's own Market Data Core read), same convention as
+/// `modify_position_sl_tp`'s `current_price` — this function doesn't gain
+/// its own Market Data Core dependency for a read the caller already has
+/// to make anyway to show the trader a current price.
+pub async fn close_position(
+    pool: &PgPool,
+    nats: &async_nats::Client,
+    account_id: &str,
+    position_id: &str,
+    bid: Decimal,
+    ask: Decimal,
+) -> Result<ClosePositionOutcome, ClosePositionError> {
+    let Some(position) = db::get_position(pool, position_id).await? else {
+        return Ok(ClosePositionOutcome::NotFound);
+    };
+    if position.account_id != account_id {
+        return Ok(ClosePositionOutcome::NotFound);
+    }
+    if position.status != db::PositionStatus::Open {
+        return Ok(ClosePositionOutcome::InvalidStatus { status: position.status });
+    }
+
+    let close_price = close_price_for(position.side, bid, ask);
+    let realized_pnl = floating_pnl(position.side, position.open_price, close_price, position.contract_size, position.volume);
+
+    let mut tx = pool.begin().await?;
+    let closed = db::close_position_with_ledger_entry(&mut tx, position_id, account_id, close_price, realized_pnl).await?;
+    tx.commit().await?;
+
+    let Some(_entry_id) = closed else {
+        return Ok(ClosePositionOutcome::AlreadyClosed);
+    };
+
+    publish_best_effort(
+        nats,
+        &TradingEvent::PositionClosed { account_id: account_id.to_string(), position_id: position_id.to_string() },
+    )
+    .await;
+
+    Ok(ClosePositionOutcome::Closed { close_price, realized_pnl })
 }
 
 #[cfg(test)]

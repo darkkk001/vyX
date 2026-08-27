@@ -5,8 +5,8 @@
 //! second trust boundary).
 //!
 //! MARKET and LIMIT/STOP order placement, order cancel, and position
-//! SL/TP modify are exposed; account/position query routes aren't yet —
-//! see ../../docs/trading-engine.md's implementation-status note.
+//! SL/TP modify/close are exposed; account/position query routes aren't
+//! yet — see ../../docs/trading-engine.md's implementation-status note.
 
 use axum::{
     extract::{Path, Request, State},
@@ -20,8 +20,9 @@ use futures_util::StreamExt;
 use market_data::cache::TickCache;
 use market_data::stats::{FeedStats, FeedStatsSnapshot};
 use order_management::{
-    db, events, CancelOrderOutcome, ModifyPositionOutcome, PlaceMarketOrderOutcome,
-    PlaceMarketOrderRequest, PlacePendingOrderOutcome, PlacePendingOrderRequest,
+    db, events, CancelOrderOutcome, ClosePositionOutcome, ModifyPositionOutcome,
+    PlaceMarketOrderOutcome, PlaceMarketOrderRequest, PlacePendingOrderOutcome,
+    PlacePendingOrderRequest,
 };
 use protocol::{OrderSide, OrderType, Tick};
 use rust_decimal::Decimal;
@@ -348,6 +349,60 @@ async fn modify_position(
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct ClosePositionBody {
+    account_id: String,
+    bid: Decimal,
+    ask: Decimal,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "status", rename_all = "SCREAMING_SNAKE_CASE")]
+enum ClosePositionResponse {
+    Closed { close_price: Decimal, realized_pnl: Decimal },
+}
+
+/// Manually closes an open position — the trader-initiated counterpart to
+/// the margin monitor's automatic force-closes, see
+/// order_management::close_position's doc comment. `bid`/`ask` are the
+/// caller's own current-price read (same convention as `modify_position`'s
+/// `current_price`), since this route doesn't have its own Market Data
+/// Core dependency.
+async fn close_position(
+    State(state): State<Arc<AppState>>,
+    Path(position_id): Path<String>,
+    Json(body): Json<ClosePositionBody>,
+) -> Result<Json<ClosePositionResponse>, (StatusCode, String)> {
+    let outcome = order_management::close_position(
+        &state.pool,
+        &state.nats,
+        &body.account_id,
+        &position_id,
+        body.bid,
+        body.ask,
+    )
+    .await
+    .map_err(|err| {
+        tracing::error!(?err, "close_position failed");
+        (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
+    })?;
+
+    match outcome {
+        ClosePositionOutcome::Closed { close_price, realized_pnl } => {
+            Ok(Json(ClosePositionResponse::Closed { close_price, realized_pnl }))
+        }
+        ClosePositionOutcome::NotFound => Err((StatusCode::NOT_FOUND, "position not found".to_string())),
+        ClosePositionOutcome::InvalidStatus { status } => Err((
+            StatusCode::CONFLICT,
+            format!("position is not open (status: {status:?})"),
+        )),
+        ClosePositionOutcome::AlreadyClosed => Err((
+            StatusCode::CONFLICT,
+            "position was already closed".to_string(),
+        )),
+    }
+}
+
 // Accepts a single tick or an array — same flexibility as today's
 // Next.js handler (lib/price-feed.ts), which the thin forwarder in
 // app/api/internal/price-feed/* preserves on its side of the hop.
@@ -572,6 +627,7 @@ async fn main() {
         .route("/v1/orders/pending", post(place_pending_order))
         .route("/v1/orders/{order_id}/cancel", post(cancel_order))
         .route("/v1/positions/{position_id}/modify", post(modify_position))
+        .route("/v1/positions/{position_id}/close", post(close_position))
         .route("/internal/feed-stats", get(feed_stats))
         .layer(middleware::from_fn_with_state(state.clone(), require_internal_secret));
 
