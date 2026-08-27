@@ -163,6 +163,23 @@ export default function WebTrader({
   const [watchlistWidth, setWatchlistWidth] = useState(storedLayout.watchlistWidth ?? 210);
   const [bottomPanelHeight, setBottomPanelHeight] = useState(storedLayout.bottomPanelHeight ?? 190);
   const resizeStateRef = useRef<{ kind: "order" | "watchlist" | "bottom"; startPos: number; startSize: number } | null>(null);
+  // Bounds the bottom-panel drag against the ACTUAL space available in
+  // .center right now, instead of a flat 500px ceiling that ignores
+  // viewport size -- .chart-area's own CSS min-height: 180px means the
+  // chart never shrinks past that, so a fixed 500px cap on a short
+  // window (or one with the browser's dev tools docked) let the two
+  // together exceed .center's real height and visually overlap. Reported
+  // live: dragging the panel up merged it into the chart.
+  const centerRef = useRef<HTMLDivElement>(null);
+  // .chart-area's own CSS floor -- keep in sync with that rule
+  // (webtrader.css's .chart-area min-height) so the two can never fight
+  // over the same pixels.
+  const CHART_MIN_HEIGHT = 180;
+  const RESIZER_HEIGHT = 6;
+  const maxBottomPanelHeight = useCallback(() => {
+    const available = centerRef.current?.clientHeight ?? 500 + CHART_MIN_HEIGHT + RESIZER_HEIGHT;
+    return Math.max(120, available - CHART_MIN_HEIGHT - RESIZER_HEIGHT);
+  }, []);
 
   const startResize = useCallback((kind: "order" | "watchlist" | "bottom") => (e: React.MouseEvent) => {
     e.preventDefault();
@@ -176,7 +193,7 @@ export default function WebTrader({
       if (!rs) return;
       if (rs.kind === "bottom") {
         const delta = rs.startPos - e.clientY;
-        setBottomPanelHeight(Math.min(500, Math.max(120, rs.startSize + delta)));
+        setBottomPanelHeight(Math.min(500, maxBottomPanelHeight(), Math.max(120, rs.startSize + delta)));
       } else if (rs.kind === "order") {
         const delta = e.clientX - rs.startPos;
         setOrderPanelWidth(Math.min(420, Math.max(200, rs.startSize + delta)));
@@ -194,7 +211,22 @@ export default function WebTrader({
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
-  }, []);
+  }, [maxBottomPanelHeight]);
+
+  // Catches the case the drag handler alone can't: a bottomPanelHeight
+  // restored from a previous, larger window (loadStoredLayout) or a
+  // browser window shrunk (dev tools docked, resized smaller) after the
+  // panel was already sized -- without this, .center's overflow: hidden
+  // just clips/overlaps the two instead of the panel ever getting a
+  // chance to shrink back down.
+  useEffect(() => {
+    function clamp() {
+      setBottomPanelHeight((h) => Math.min(h, maxBottomPanelHeight()));
+    }
+    clamp();
+    window.addEventListener("resize", clamp);
+    return () => window.removeEventListener("resize", clamp);
+  }, [maxBottomPanelHeight]);
 
   // Persists everything loadStoredLayout reads back on next visit. Fires
   // on every resize-drag tick too (not just drag-end) -- three numbers
@@ -1851,7 +1883,7 @@ export default function WebTrader({
           {isMobileView ? null : <div className="col-resizer" onMouseDown={startResize("order")} />}
 
           {/* ---------- CENTER (chart) ---------- */}
-          <div className={`center${isMobileView ? ` mobile${mobileTab === "chart" || mobileTab === "positions" ? " mobile-active" : ""}` : ""}`}>
+          <div ref={centerRef} className={`center${isMobileView ? ` mobile${mobileTab === "chart" || mobileTab === "positions" ? " mobile-active" : ""}` : ""}`}>
             <div className="chart-header" style={isMobileView && mobileTab !== "chart" ? { display: "none" } : undefined}>
               <div className="chart-title" style={{ position: "relative" }}>
                 <div className="chart-symbol" style={{ cursor: "pointer", display: "flex", alignItems: "center", gap: 4 }} onClick={() => { setSymbolDropdownOpen((v) => !v); setSymbolSearch(""); }}>
