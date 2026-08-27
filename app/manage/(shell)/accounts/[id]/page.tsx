@@ -2,7 +2,7 @@ import { redirect, notFound } from "next/navigation";
 import Link from "next/link";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { humanizeAction } from "@/lib/audit-labels";
+import { humanizeAction, excludeSuperAdminActor } from "@/lib/audit-labels";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Badge } from "@/components/ui/Badge";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
@@ -31,7 +31,7 @@ export default async function ClientActivityPage({ params }: { params: Promise<{
   }
 
   const [auditLogs, transactions, orders, positions] = await Promise.all([
-    prisma.auditLog.findMany({ where: { entityId: id, brokerId }, orderBy: { createdAt: "desc" }, take: 50, include: { actorAdmin: { select: { email: true } } } }),
+    prisma.auditLog.findMany({ where: { entityId: id, brokerId, ...excludeSuperAdminActor }, orderBy: { createdAt: "desc" }, take: 50, include: { actorAdmin: { select: { email: true } } } }),
     prisma.transaction.findMany({ where: { accountId: id }, orderBy: { createdAt: "desc" }, take: 50 }),
     prisma.order.findMany({ where: { accountId: id }, orderBy: { createdAt: "desc" }, take: 50, include: { symbol: { select: { name: true } } } }),
     prisma.position.findMany({ where: { accountId: id }, orderBy: { openedAt: "desc" }, take: 50, include: { symbol: { select: { name: true } } } }),

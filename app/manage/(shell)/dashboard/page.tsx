@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { humanizeAction } from "@/lib/audit-labels";
+import { humanizeAction, excludeSuperAdminActor } from "@/lib/audit-labels";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatCard, StatGrid } from "@/components/ui/StatCard";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
@@ -43,7 +43,7 @@ export default async function ManagerDashboardPage() {
       _count: true,
     }),
     prisma.auditLog.findMany({
-      where: { brokerId },
+      where: { brokerId, ...excludeSuperAdminActor },
       orderBy: { createdAt: "desc" },
       take: 15,
       include: { actorAdmin: { select: { email: true } } },

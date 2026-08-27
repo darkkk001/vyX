@@ -1,3 +1,18 @@
+import type { Prisma } from "@prisma/client";
+
+// Broker-scoped audit views (Manager audit log, dashboard recent-activity
+// widget, per-account activity timeline) should only show what that
+// broker's own staff did. SUPER_ADMIN actions taken on a broker's behalf
+// (password resets, SSO secret rotation, broker status/engine/logo
+// changes, ...) carry that broker's brokerId too -- so Super Admin's own
+// cross-tenant audit page can group by tenant -- but they aren't "this
+// broker's staff" activity and shouldn't leak into a broker-scoped view.
+// Spread alongside `brokerId` (and any other filter) in a `where` clause.
+// Keeps system-generated rows, which have no actor at all.
+export const excludeSuperAdminActor: Prisma.AuditLogWhereInput = {
+  OR: [{ actorAdminId: null }, { actorAdmin: { role: { not: "SUPER_ADMIN" } } }],
+};
+
 // Humanized labels for AuditLog.action -- every value currently written
 // anywhere in the app (grepped across app/api/manage and app/api/admin),
 // plus the two this restyle pass adds (POSITION_SLTP_MODIFIED,

@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { humanizeAction, auditEntityHref } from "@/lib/audit-labels";
+import { humanizeAction, auditEntityHref, excludeSuperAdminActor } from "@/lib/audit-labels";
 import { PageHeader } from "@/components/ui/PageHeader";
 import AuditLogTable, { type AuditLogRow } from "./AuditLogTable";
 
@@ -13,7 +13,7 @@ export default async function ManagerAuditPage() {
   const brokerId = session!.brokerId!;
 
   const logs = await prisma.auditLog.findMany({
-    where: { brokerId },
+    where: { brokerId, ...excludeSuperAdminActor },
     orderBy: { createdAt: "desc" },
     take: 100,
     include: { actorAdmin: { select: { email: true } } },
