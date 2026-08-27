@@ -31,7 +31,12 @@ export default function LaunchPage() {
       .then((r) => r.json())
       .then((list: PublicBroker[]) => {
         setBrokers(list);
-        if (list.length > 0) setSubdomain(list[0].subdomain);
+        // Deliberately no default selection -- silently defaulting to
+        // list[0] meant whichever broker sorts first alphabetically (e.g.
+        // "AcmeFX") got a real trader's credentials if they didn't notice
+        // the dropdown and just typed their own broker's account/password,
+        // landing them on the WRONG broker's login page confused about why
+        // it failed. Forces an explicit choice instead.
       })
       .catch(() => setError("Could not load broker list"));
   }, []);
@@ -104,11 +109,16 @@ export default function LaunchPage() {
           ) : brokers.length === 0 ? (
             <option value="">No brokers available</option>
           ) : (
-            brokers.map((b) => (
-              <option key={b.subdomain} value={b.subdomain}>
-                {b.name}
+            <>
+              <option value="" disabled>
+                Select your broker…
               </option>
-            ))
+              {brokers.map((b) => (
+                <option key={b.subdomain} value={b.subdomain}>
+                  {b.name}
+                </option>
+              ))}
+            </>
           )}
         </select>
 
@@ -163,7 +173,7 @@ export default function LaunchPage() {
 
         <button
           type="submit"
-          disabled={!brokers || brokers.length === 0}
+          disabled={!brokers || brokers.length === 0 || !subdomain}
           style={{
             background: "#2f7dfb",
             border: "none",
