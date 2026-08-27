@@ -282,7 +282,16 @@
 .wl-ctx-check { width: 14px; color: var(--brand); font-size: 12px; font-weight: 700; }
 
 /* ---------- CENTER ---------- */
-.center { display: flex; flex-direction: column; border-right: 1px solid var(--border); overflow: hidden; }
+/* min-height: 0 -- .center is a grid item inside .main (display: grid,
+   no explicit row height), whose default min-height is auto, i.e. "at
+   least as tall as my content." Without this override, dragging the
+   bottom-panel resizer taller made .center's own box grow to match
+   (chart-area's 180px floor + the panel + the resizer), instead of
+   .center staying pinned to its actual grid-row height and the chart
+   shrinking inside it -- the two visibly overlapped as a result. Same
+   fix, same reasoning, as this file's min-width: 0 rules for the
+   horizontal analog of this bug (see the mobile section below). */
+.center { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--border); overflow: hidden; }
 .chart-header { display: flex; align-items: center; justify-content: space-between; padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--bg-1); flex-shrink: 0; }
 .chart-title { display: flex; align-items: center; gap: 10px; }
 .chart-symbol { font-size: 14px; font-weight: 600; }
