@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import Link from "next/link";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 import { Button } from "@/components/ui/Button";
@@ -44,7 +43,7 @@ const kycTone = { PENDING: "warning", APPROVED: "success", REJECTED: "danger" } 
 // leverage-override fields for a non-finance Manager, matching
 // app/api/manage/accounts/route.ts POST silently forcing both to their
 // defaults for that same caller.
-export default function AccountsManager() {
+export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (accountId: string) => void } = {}) {
   const [rows, setRows] = useState<AccountRow[] | null>(null);
   const [groups, setGroups] = useState<GroupOption[]>([]);
   const [canManageFinance, setCanManageFinance] = useState(false);
@@ -247,9 +246,13 @@ export default function AccountsManager() {
             filtered.map((row) => (
               <TableRow key={row.id}>
                 <TableCell primary className="min-w-[220px]">
-                  <Link href={`/manage/accounts/${row.id}`} className="font-mono hover:underline">
+                  <button
+                    type="button"
+                    onClick={() => (onOpenAccount ? onOpenAccount(row.id) : (window.location.href = `/manage/accounts/${row.id}`))}
+                    className="font-mono hover:underline"
+                  >
                     {row.accountNumber}
-                  </Link>
+                  </button>
                   <div className="text-xs font-normal text-[var(--text-3)]">
                     {row.fullName} — {row.email}
                   </div>
