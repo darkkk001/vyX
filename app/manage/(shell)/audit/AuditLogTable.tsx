@@ -1,6 +1,6 @@
 "use client";
 
-import { useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
 
 export type AuditLogRow = {
@@ -13,13 +13,33 @@ export type AuditLogRow = {
   createdAtLabel: string;
 };
 
+// Self-fetches from /api/manage/audit on mount -- both the website and a
+// bundled desktop shell (manager-shell/, which has no Server Component
+// of its own to pre-fetch this) render this exact same component now,
+// instead of the website baking rows into server-rendered props.
+//
 // Double-click takes a manager straight to whatever the log entry
 // changed (e.g. double-clicking "Created account" opens that account) --
 // see lib/audit-labels.ts's auditEntityHref for the entityType -> route
 // map. A row with no known destination (href null) just isn't
-// clickable, rather than navigating somewhere wrong.
-export default function AuditLogTable({ rows }: { rows: AuditLogRow[] }) {
-  const router = useRouter();
+// clickable. onOpenEntity defaults to a real page navigation (the
+// website's exact previous behavior via next/navigation's router.push,
+// now a plain hard navigation instead -- same reasoning as
+// LogoutButton.tsx's own default) -- a bundled shell has no such route
+// to navigate to yet and can override this later once it does.
+export default function AuditLogTable({ onOpenEntity }: { onOpenEntity?: (href: string) => void }) {
+  const [rows, setRows] = useState<AuditLogRow[] | null>(null);
+
+  useEffect(() => {
+    fetch("/api/manage/audit")
+      .then((r) => r.json())
+      .then(setRows)
+      .catch(() => setRows([]));
+  }, []);
+
+  if (rows === null) {
+    return <p className="text-sm text-[var(--text-3)]">Loading...</p>;
+  }
 
   return (
     <Table>
@@ -36,7 +56,7 @@ export default function AuditLogTable({ rows }: { rows: AuditLogRow[] }) {
           rows.map((row) => (
             <TableRow
               key={row.id}
-              onDoubleClick={() => row.href && router.push(row.href)}
+              onDoubleClick={() => row.href && (onOpenEntity ? onOpenEntity(row.href) : (window.location.href = row.href))}
               title={row.href ? "Double-click to open" : undefined}
               className={row.href ? "cursor-pointer" : undefined}
             >

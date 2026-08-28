@@ -11,6 +11,8 @@ services/*/.env
 # build:shell` before every `tauri dev`/`tauri build`, same reasoning as
 # node_modules/target/ above.
 desktop-tauri/dist/
+manager-tauri/dist/
+admin-tauri/dist/
 *-tauri/*-shell/dist/
 /.pnp
 .pnp.*

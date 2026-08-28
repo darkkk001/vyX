@@ -1,0 +1,26 @@
+@import "tailwindcss";
+/* @source tells Tailwind v4's automatic content scanner to also look
+   outside this subproject's own directory -- components/admin/** and
+   app/manage/** live at the repo root, two levels up from here, which
+   Tailwind's default scan (rooted at this file's own directory) would
+   never reach on its own. */
+@source "../../../components/**/*.tsx";
+@source "../../../app/manage/**/*.tsx";
+
+/* Relative path, not the "@" alias -- Tailwind/lightningcss resolves
+   @import through plain CSS path resolution, not Vite's JS-side
+   resolve.alias config. */
+@import "../../../app/admin-theme.css";
+
+:root {
+  /* admin-theme.css's [data-surface] rule references
+     var(--font-admin-sans)/var(--font-admin-mono), normally supplied by
+     next/font/google (app/manage/layout.tsx) -- not portable to Vite.
+     Real system-font values instead of leaving these unset entirely
+     (an unset var() in a font-family list invalidates the whole
+     declaration, not a graceful fallback) -- a native desktop app has
+     no reason to web-font-load anyway, matching how MT4/5 itself uses
+     system fonts. */
+  --font-admin-sans: system-ui, sans-serif;
+  --font-admin-mono: ui-monospace, monospace;
+}

@@ -1,64 +1,44 @@
-// VyXTrader Manager desktop shell -- core-shell slice only. Wraps a
-// broker's own /manage login (app/manage/, Broker Admin + Manager
-// roles) in a native window. Deliberately a separate app/project from
-// desktop-tauri/ (Client/Trading terminal) and admin-tauri/ (Super
-// Admin), per explicit project decision -- not a shared codebase, so
-// some scaffolding here intentionally mirrors desktop-tauri/ rather
-// than importing it.
-//
-// Decorated (OS-native title bar), not frameless: app/manage/ has no
-// custom title-bar component today (unlike WebTrader's
-// DesktopTitleBar.tsx), so going frameless would need new web-app UI
-// work first -- explicitly deferred, named in package.json's own
-// description. A decorated window still gets real minimize/maximize/
-// close for free from the OS, no custom Tauri commands needed for that
-// -- window.vyxDesktop below exposes only isDesktop/rememberBroker/
-// forgetBroker, not the window-control methods desktop-tauri's own
-// bridge has (see types/vyx-desktop.d.ts: every field but isDesktop is
-// optional specifically so this narrower bridge still type-checks).
-//
-// Still deferred (see package.json): system tray, native notifications,
-// window-state persistence, navigation lockdown, splash/offline
-// screens, per-broker rebrand tooling, a custom frameless title bar.
-// Auto-update is no longer on this list -- wired below, direct port of
-// desktop-tauri's check_for_updates minus the native-notification step
-// (that plugin isn't part of this app's deliberately narrower slice
-// yet; the update still silently downloads and installs on next
-// restart, same as Electron's checkForUpdatesAndNotify() without the
-// notify half).
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-
-use serde::Deserialize;
+// VyXTrader Manager desktop shell -- see the bundled-UI architecture plan
+// (2026-08) for why this no longer loads a remote URL at all: the main
+// window now shows `manager-shell/`'s built output (bundled at compile
+// time via tauri.conf.json's frontendDist), and every API call that UI
+// makes crosses the network through the api_request/api_request_multipart
+// commands below -- a persistent, cookie-jar-backed reqwest::Client --
+// rather than through the WebView's own fetch(), which cannot carry the
+// broker's httpOnly vyx_admin_session cookie across the local-content /
+// real-host origin boundary. Direct port of desktop-tauri/src-tauri/src/
+// main.rs's own bridge (same technique, proven there first) -- this app
+// still doesn't have desktop-tauri's tray/notifications/window-state/
+// frameless-title-bar polish, an already-flagged-deferred decision
+// unrelated to this bundling work.
+use base64::Engine;
+use serde::{Deserialize, Serialize};
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_updater::UpdaterExt;
+use std::sync::Mutex;
 
 #[derive(Debug, Deserialize)]
 struct BrokerConfig {
     #[serde(rename = "brokerName")]
     broker_name: String,
-    // Only meaningful in "broker" mode -- ignored in "launcher" mode
-    // (today's committed config), same split as desktop-tauri's own
-    // BrokerConfig/start_url_for.
+    // A full host (e.g. "acmefx.vyxtrader.com") -- resolve_api_target()
+    // below turns this into the base URL every api_request call is made
+    // against. Only meaningful in "broker" mode -- launcher-mode bundling
+    // (picking between multiple brokers inside one install) is deferred,
+    // same v1 scope decision as desktop-tauri's own.
     subdomain: String,
-    // Only meaningful in "launcher" mode -- see start_url_for() below.
+    #[allow(dead_code)]
     #[serde(rename = "rootDomain")]
     root_domain: String,
+    #[allow(dead_code)]
     mode: String,
 }
 
-// Direct port of desktop-tauri/src-tauri/src/main.rs's own
-// remembered_broker_path/read_remembered_broker/write_remembered_broker
-// -- kept in its own app_data_dir() rather than shared with that app
-// (separate project, separate install, per this file's own top comment).
+// Direct port of desktop-tauri's own getRememberedBroker()/
+// setRememberedBroker()/clearRememberedBroker().
 fn remembered_broker_path(app: &tauri::AppHandle) -> tauri::Result<std::path::PathBuf> {
     Ok(app.path().app_data_dir()?.join("remembered-broker.json"))
-}
-
-fn read_remembered_broker(app: &tauri::AppHandle) -> Option<String> {
-    let path = remembered_broker_path(app).ok()?;
-    let raw = std::fs::read_to_string(path).ok()?;
-    let value: serde_json::Value = serde_json::from_str(&raw).ok()?;
-    value.get("hostname")?.as_str().map(|s| s.to_string())
 }
 
 fn write_remembered_broker(app: &tauri::AppHandle, hostname: &str) {
@@ -75,33 +55,11 @@ fn clear_remembered_broker(app: &tauri::AppHandle) {
     }
 }
 
-// Direct port of desktop-tauri's start_url_for(), pointed at /manage/login
-// instead of /trade: broker mode always goes straight to that one
-// broker's own backoffice login (unchanged behavior for a future
-// per-broker build); launcher mode -- today's actual committed config --
-// goes to the remembered broker's /manage/login if one exists, else the
-// root domain's /manage-launch picker page (app/manage-launch/page.tsx).
-fn start_url_for(config: &BrokerConfig, app: &tauri::AppHandle) -> String {
-    if config.mode != "launcher" {
-        return format!("https://{}/manage/login", config.subdomain);
-    }
-    match read_remembered_broker(app) {
-        Some(hostname) => format!("https://{hostname}/manage/login"),
-        None => format!("https://{}/manage-launch", config.root_domain),
-    }
-}
-
 fn load_broker_config() -> BrokerConfig {
     let path = std::env::current_exe()
         .ok()
         .and_then(|exe| exe.parent().map(|p| p.join("broker.config.json")))
         .filter(|p| p.exists())
-        // Dev mode: `cargo run`/`tauri dev`'s cwd is src-tauri/, where
-        // broker.config.json now lives (moved in from the project root
-        // so the bundler's resources path never needs `..` -- Tauri's
-        // resource bundler rewrites `..` segments to a literal `_up_`
-        // dir rather than escaping the resource root, which silently
-        // broke prod path resolution here).
         .unwrap_or_else(|| std::path::PathBuf::from("broker.config.json"));
 
     let raw = std::fs::read_to_string(&path)
@@ -121,26 +79,138 @@ fn forget_broker(app: tauri::AppHandle) {
     clear_remembered_broker(&app);
 }
 
-// Injected before every page load, same principle as desktop-tauri's own
-// VYX_DESKTOP_INIT_SCRIPT -- narrower shape (no minimize/toggleMaximize/
-// close/onMaximizedChange) since this window is OS-decorated, not
-// frameless, so the app/manage-launch picker page has something to check
-// (window.vyxDesktop?.isDesktop) and call (rememberBroker/forgetBroker)
-// without needing to know which shell it's running in.
-const VYX_DESKTOP_INIT_SCRIPT: &str = r#"
-(function () {
-  window.vyxDesktop = {
-    isDesktop: true,
-    rememberBroker: function (hostname) { window.__TAURI__.core.invoke("remember_broker", { hostname: hostname }); },
-    forgetBroker: function () { window.__TAURI__.core.invoke("forget_broker"); },
-  };
-})();
-"#;
+// Direct port of desktop-tauri's own resolve_api_target -- see its
+// comment for the full local-dev-vs-production reasoning.
+fn resolve_api_target(config: &BrokerConfig) -> (String, String) {
+    if config.subdomain.contains("localhost") {
+        let port = config.subdomain.rsplit(':').next().and_then(|p| p.parse::<u16>().ok()).unwrap_or(3000);
+        (format!("http://127.0.0.1:{port}"), config.subdomain.clone())
+    } else {
+        (format!("https://{}", config.subdomain), config.subdomain.clone())
+    }
+}
 
-// Direct port of desktop-tauri's check_for_updates, minus the native-
-// notification call (see this file's top comment). Any failure (no feed
-// reachable, no update available, download/signature-verification
-// failure) is swallowed by the caller -- not fatal, the app already runs.
+// lib/auth.ts's SESSION_COOKIE_NAME -- shared by Manager and Super Admin
+// (both /manage/* and /(super-admin)/* sessions use this same cookie),
+// distinct from the Trader terminal's vyx_trade_session.
+const SESSION_COOKIE_NAME: &str = "vyx_admin_session";
+
+struct ApiBridge {
+    client: reqwest::Client,
+    connect_base: String,
+    host_header: String,
+    #[allow(dead_code)]
+    session_cookie: Mutex<Option<String>>,
+}
+
+fn capture_session_cookie(res: &reqwest::Response, bridge: &ApiBridge) {
+    let prefix = format!("{SESSION_COOKIE_NAME}=");
+    for value in res.headers().get_all(reqwest::header::SET_COOKIE) {
+        let Ok(s) = value.to_str() else { continue };
+        if let Some(rest) = s.strip_prefix(&prefix) {
+            let value_only = rest.split(';').next().unwrap_or("");
+            *bridge.session_cookie.lock().unwrap() = Some(format!("{prefix}{value_only}"));
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct ApiResponsePayload {
+    status: u16,
+    body: serde_json::Value,
+    date: Option<String>,
+}
+
+// Direct port of desktop-tauri's own api_request.
+#[tauri::command]
+async fn api_request(
+    bridge: tauri::State<'_, ApiBridge>,
+    path: String,
+    method: String,
+    body: Option<serde_json::Value>,
+) -> Result<ApiResponsePayload, String> {
+    let method = match method.to_uppercase().as_str() {
+        "GET" => reqwest::Method::GET,
+        "POST" => reqwest::Method::POST,
+        "PATCH" => reqwest::Method::PATCH,
+        "PUT" => reqwest::Method::PUT,
+        "DELETE" => reqwest::Method::DELETE,
+        other => return Err(format!("unsupported method: {other}")),
+    };
+    let url = format!("{}{}", bridge.connect_base, path);
+    let mut req = bridge.client.request(method, &url).header("Host", &bridge.host_header);
+    if let Some(b) = &body {
+        req = req.json(b);
+    }
+    let res = req.send().await.map_err(|e| format!("request to {path} failed: {e}"))?;
+    capture_session_cookie(&res, &bridge);
+    let status = res.status().as_u16();
+    let date = res.headers().get(reqwest::header::DATE).and_then(|v| v.to_str().ok()).map(str::to_string);
+    let body = res.json().await.unwrap_or(serde_json::Value::Null);
+    Ok(ApiResponsePayload { status, body, date })
+}
+
+#[derive(Debug, Deserialize)]
+struct MultipartField {
+    name: String,
+    #[serde(default)]
+    value: Option<String>,
+    #[serde(default)]
+    file: Option<MultipartFile>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MultipartFile {
+    filename: String,
+    mime: String,
+    #[serde(rename = "dataBase64")]
+    data_base64: String,
+}
+
+// Direct port of desktop-tauri's own api_request_multipart -- unused by
+// Manager today (no multipart upload in app/api/manage/** yet), kept for
+// parity so the bridge's public shape matches exactly, and so any future
+// Manager file upload (e.g. a KYC document review attachment) gets this
+// for free.
+#[tauri::command]
+async fn api_request_multipart(
+    bridge: tauri::State<'_, ApiBridge>,
+    path: String,
+    fields: Vec<MultipartField>,
+) -> Result<ApiResponsePayload, String> {
+    let mut form = reqwest::multipart::Form::new();
+    for field in fields {
+        if let Some(file) = field.file {
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(&file.data_base64)
+                .map_err(|e| format!("invalid base64 for field {}: {e}", field.name))?;
+            let part = reqwest::multipart::Part::bytes(bytes)
+                .file_name(file.filename)
+                .mime_str(&file.mime)
+                .map_err(|e| e.to_string())?;
+            form = form.part(field.name, part);
+        } else if let Some(value) = field.value {
+            form = form.text(field.name, value);
+        }
+    }
+    let url = format!("{}{}", bridge.connect_base, path);
+    let res = bridge
+        .client
+        .post(&url)
+        .header("Host", &bridge.host_header)
+        .multipart(form)
+        .send()
+        .await
+        .map_err(|e| format!("request to {path} failed: {e}"))?;
+    capture_session_cookie(&res, &bridge);
+    let status = res.status().as_u16();
+    let body = res.json().await.unwrap_or(serde_json::Value::Null);
+    Ok(ApiResponsePayload { status, body, date: None })
+}
+
+// Direct port of desktop-tauri's own check_for_updates, minus the
+// native-notification step (that plugin isn't part of this app's
+// deliberately narrower slice yet -- see this file's own top comment).
 #[cfg_attr(debug_assertions, allow(dead_code))]
 async fn check_for_updates(app: tauri::AppHandle) -> tauri_plugin_updater::Result<()> {
     if let Some(update) = app.updater()?.check().await? {
@@ -149,23 +219,74 @@ async fn check_for_updates(app: tauri::AppHandle) -> tauri_plugin_updater::Resul
     Ok(())
 }
 
+// Same shape as desktop-tauri's own VYX_DESKTOP_INIT_SCRIPT_TEMPLATE,
+// narrower subset (no window-control methods -- this window is
+// OS-decorated, not frameless, so it has no custom title bar needing
+// them; see types/vyx-desktop.d.ts's own comment on why every field but
+// isDesktop is optional).
+const VYX_DESKTOP_INIT_SCRIPT_TEMPLATE: &str = r#"
+(function () {
+  window.vyxDesktop = {
+    isDesktop: true,
+    brokerHost: "__BROKER_HOST__",
+    rememberBroker: function (hostname) { window.__TAURI__.core.invoke("remember_broker", { hostname: hostname }); },
+    forgetBroker: function () { window.__TAURI__.core.invoke("forget_broker"); },
+    apiCall: function (path, method, body) {
+      return window.__TAURI__.core.invoke("api_request", { path: path, method: method, body: body });
+    },
+    apiCallMultipart: function (path, fields) {
+      return window.__TAURI__.core.invoke("api_request_multipart", { path: path, fields: fields });
+    },
+  };
+})();
+"#;
+
 fn main() {
     let config = load_broker_config();
+    let (connect_base, host_header) = resolve_api_target(&config);
+    let init_script = VYX_DESKTOP_INIT_SCRIPT_TEMPLATE.replace("__BROKER_HOST__", &host_header);
+
+    let http_client = reqwest::Client::builder()
+        .cookie_store(true)
+        .build()
+        .expect("failed to build reqwest client");
 
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .invoke_handler(tauri::generate_handler![remember_broker, forget_broker])
+        .plugin(tauri_plugin_opener::init())
+        .manage(ApiBridge { client: http_client, connect_base, host_header, session_cookie: Mutex::new(None) })
+        .invoke_handler(tauri::generate_handler![
+            remember_broker,
+            forget_broker,
+            api_request,
+            api_request_multipart
+        ])
         .setup(move |app| {
-            let manage_url = start_url_for(&config, app.handle());
-            WebviewWindowBuilder::new(app, "main", WebviewUrl::External(manage_url.parse().unwrap()))
-                .title(&config.broker_name)
+            let broker_name = config.broker_name.clone();
+            let nav_app_handle = app.handle().clone();
+            let new_window_app_handle = app.handle().clone();
+            WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+                .title(&broker_name)
                 .inner_size(1440.0, 900.0)
                 .min_inner_size(1024.0, 640.0)
-                .initialization_script(VYX_DESKTOP_INIT_SCRIPT)
+                // Same lockdown as desktop-tauri's own: the window only
+                // ever shows the bundled local shell now, so any
+                // navigation away from it opens in the OS browser instead
+                // of replacing the app's own UI in-place.
+                .on_navigation(move |url| {
+                    if url.scheme() == "tauri" || url.host_str() == Some("tauri.localhost") {
+                        return true;
+                    }
+                    let _ = nav_app_handle.opener().open_url(url.to_string(), None::<&str>);
+                    false
+                })
+                .on_new_window(move |url, _features| {
+                    let _ = new_window_app_handle.opener().open_url(url.to_string(), None::<&str>);
+                    tauri::webview::NewWindowResponse::Deny
+                })
+                .initialization_script(&init_script)
                 .build()?;
 
-            // Same gate as desktop-tauri: only check for updates in a real
-            // release build, never in `tauri dev`/debug builds.
             #[cfg(not(debug_assertions))]
             {
                 let update_handle = app.handle().clone();
