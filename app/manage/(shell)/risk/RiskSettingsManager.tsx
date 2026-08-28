@@ -1,7 +1,6 @@
 "use client";
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
 import { Card } from "@/components/ui/Card";
 import { FormField } from "@/components/ui/FormField";
 import { Input } from "@/components/ui/Input";
@@ -9,6 +8,7 @@ import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { Alert } from "@/components/ui/Alert";
 import { Modal, ModalActions } from "@/components/ui/Modal";
+import { StatCard, StatGrid } from "@/components/ui/StatCard";
 
 export type RiskSettings = {
   dealingMode: boolean;
@@ -17,6 +17,8 @@ export type RiskSettings = {
   smartDealerAcceptPct: string | null;
   smartDealerRejectPct: string | null;
 };
+
+type MarginRow = { positionCount: number; exposure: string; floatingPnl: string; marginLevel: number | null; marginCallLevel: number; stopOutLevel: number };
 
 async function patchRisk(body: Record<string, unknown>) {
   const response = await fetch("/api/manage/risk", {
@@ -29,26 +31,61 @@ async function patchRisk(body: Record<string, unknown>) {
   return data as RiskSettings;
 }
 
-export default function RiskSettingsManager({ initial }: { initial: RiskSettings }) {
-  const router = useRouter();
-  const [dealingMode, setDealingMode] = useState(initial.dealingMode);
+// Self-fetches its own settings from the already-existing /api/manage/risk
+// GET, and derives the stat grid (open exposure/floating P&L/positions/
+// accounts at risk) client-side from /api/manage/margin's own rows --
+// the exact same underlying snapshots the Margin page already fetches,
+// avoiding a duplicate server-side aggregate route entirely -- instead
+// of receiving both as server-rendered props (the stat grid used to be
+// rendered by page.tsx directly, moved in here since it now needs the
+// fetched data too).
+export default function RiskSettingsManager() {
+  const [initial, setInitial] = useState<RiskSettings | null>(null);
+  const [stats, setStats] = useState<{ totalExposure: number; totalFloatingPnl: number; openPositions: number; atStopOut: number; atMarginCall: number } | null>(null);
+
+  const [dealingMode, setDealingMode] = useState(false);
   const [confirmingDealing, setConfirmingDealing] = useState(false);
   const [dealingBusy, setDealingBusy] = useState(false);
   const [dealingError, setDealingError] = useState<string | null>(null);
 
-  const [totalExposureLimit, setTotalExposureLimit] = useState(initial.totalExposureLimit ?? "");
-  const [maxOpenPositionsPerAccount, setMaxOpenPositionsPerAccount] = useState(
-    initial.maxOpenPositionsPerAccount != null ? String(initial.maxOpenPositionsPerAccount) : ""
-  );
+  const [totalExposureLimit, setTotalExposureLimit] = useState("");
+  const [maxOpenPositionsPerAccount, setMaxOpenPositionsPerAccount] = useState("");
   const [limitsSaving, setLimitsSaving] = useState(false);
   const [limitsSaved, setLimitsSaved] = useState(false);
   const [limitsError, setLimitsError] = useState<string | null>(null);
 
-  const [smartDealerAcceptPct, setSmartDealerAcceptPct] = useState(initial.smartDealerAcceptPct ?? "");
-  const [smartDealerRejectPct, setSmartDealerRejectPct] = useState(initial.smartDealerRejectPct ?? "");
+  const [smartDealerAcceptPct, setSmartDealerAcceptPct] = useState("");
+  const [smartDealerRejectPct, setSmartDealerRejectPct] = useState("");
   const [smartDealerSaving, setSmartDealerSaving] = useState(false);
   const [smartDealerSaved, setSmartDealerSaved] = useState(false);
   const [smartDealerError, setSmartDealerError] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetch("/api/manage/risk")
+      .then((r) => r.json())
+      .then((d: RiskSettings) => {
+        setInitial(d);
+        setDealingMode(d.dealingMode);
+        setTotalExposureLimit(d.totalExposureLimit ?? "");
+        setMaxOpenPositionsPerAccount(d.maxOpenPositionsPerAccount != null ? String(d.maxOpenPositionsPerAccount) : "");
+        setSmartDealerAcceptPct(d.smartDealerAcceptPct ?? "");
+        setSmartDealerRejectPct(d.smartDealerRejectPct ?? "");
+      })
+      .catch(() => {});
+
+    fetch("/api/manage/margin")
+      .then((r) => r.json())
+      .then((rows: MarginRow[]) => {
+        setStats({
+          totalExposure: rows.reduce((s, a) => s + Number(a.exposure), 0),
+          totalFloatingPnl: rows.reduce((s, a) => s + Number(a.floatingPnl), 0),
+          openPositions: rows.reduce((s, a) => s + a.positionCount, 0),
+          atStopOut: rows.filter((a) => a.marginLevel != null && a.marginLevel < a.stopOutLevel).length,
+          atMarginCall: rows.filter((a) => a.marginLevel != null && a.marginLevel >= a.stopOutLevel && a.marginLevel < a.marginCallLevel).length,
+        });
+      })
+      .catch(() => {});
+  }, []);
 
   async function toggleDealingMode() {
     setDealingBusy(true);
@@ -57,7 +94,6 @@ export default function RiskSettingsManager({ initial }: { initial: RiskSettings
       const result = await patchRisk({ dealingMode: !dealingMode });
       setDealingMode(result.dealingMode);
       setConfirmingDealing(false);
-      router.refresh();
     } catch (e) {
       setDealingError(e instanceof Error ? e.message : "update failed");
     } finally {
@@ -78,7 +114,6 @@ export default function RiskSettingsManager({ initial }: { initial: RiskSettings
       setTotalExposureLimit(result.totalExposureLimit ?? "");
       setMaxOpenPositionsPerAccount(result.maxOpenPositionsPerAccount != null ? String(result.maxOpenPositionsPerAccount) : "");
       setLimitsSaved(true);
-      router.refresh();
     } catch (e) {
       setLimitsError(e instanceof Error ? e.message : "update failed");
     } finally {
@@ -99,7 +134,6 @@ export default function RiskSettingsManager({ initial }: { initial: RiskSettings
       setSmartDealerAcceptPct(result.smartDealerAcceptPct ?? "");
       setSmartDealerRejectPct(result.smartDealerRejectPct ?? "");
       setSmartDealerSaved(true);
-      router.refresh();
     } catch (e) {
       setSmartDealerError(e instanceof Error ? e.message : "update failed");
     } finally {
@@ -107,8 +141,25 @@ export default function RiskSettingsManager({ initial }: { initial: RiskSettings
     }
   }
 
+  if (initial === null) {
+    return <p className="text-sm text-[var(--text-3)]">Loading...</p>;
+  }
+
   return (
     <div className="flex flex-col gap-6">
+      {stats ? (
+        <div>
+          <StatGrid columns={4}>
+            <StatCard label="Open exposure" value={`${stats.totalExposure.toLocaleString("en-US")} lots`} />
+            <StatCard label="Floating P&L" value={`${stats.totalFloatingPnl >= 0 ? "+" : ""}${stats.totalFloatingPnl.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`} />
+            <StatCard label="Open positions" value={String(stats.openPositions)} />
+            <StatCard label="Accounts at risk" value={`${stats.atMarginCall + stats.atStopOut}`} />
+          </StatGrid>
+          <p className="mt-2 text-xs text-[var(--text-3)]">
+            {stats.atStopOut} account{stats.atStopOut === 1 ? "" : "s"} below stop-out, {stats.atMarginCall} below margin call — informational only, not yet enforced automatically (see Group.stopOutLevel). Full list on the Margin page.
+          </p>
+        </div>
+      ) : null}
       <Card title="Dealing mode">
         <div className="flex items-center justify-between gap-4">
           <div>

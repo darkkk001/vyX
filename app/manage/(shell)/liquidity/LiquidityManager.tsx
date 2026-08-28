@@ -1,7 +1,6 @@
 "use client";
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
 import { Card } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
@@ -32,15 +31,30 @@ export type BookExposureRow = {
 
 const statusTone = { PROSPECTIVE: "neutral", NEGOTIATING: "warning", CONTRACTED: "accent", CONNECTED: "success" } as const;
 
-export default function LiquidityManager({
-  initialRows,
-  bookExposure,
-}: {
-  initialRows: LiquidityProviderRow[];
-  bookExposure: BookExposureRow[];
-}) {
-  const router = useRouter();
+// Self-fetches from the already-existing /api/manage/liquidity-providers
+// GET (roster) and a new /api/manage/liquidity GET (book exposure,
+// wrapping the same aggregate page.tsx used to compute inline) instead
+// of receiving both as server-rendered props -- both the website and a
+// bundled manager-shell desktop app (no Server Component of its own)
+// share this one path now.
+export default function LiquidityManager() {
+  const [rows, setRows] = useState<LiquidityProviderRow[] | null>(null);
+  const [bookExposure, setBookExposure] = useState<BookExposureRow[]>([]);
   const [busyId, setBusyId] = useState<string | null>(null);
+
+  function load() {
+    return Promise.all([
+      fetch("/api/manage/liquidity-providers").then((r) => r.json()),
+      fetch("/api/manage/liquidity").then((r) => r.json()),
+    ]).then(([providers, exposure]: [LiquidityProviderRow[], BookExposureRow[]]) => {
+      setRows(providers.map((p) => ({ ...p, createdAt: p.createdAt.replace("T", " ").slice(0, 19) })));
+      setBookExposure(exposure);
+    });
+  }
+
+  useEffect(() => {
+    load().catch(() => setRows([]));
+  }, []);
 
   const emptyNewLp = { name: "", contactName: "", contactEmail: "", contactPhone: "", protocol: "", notes: "" };
   const [addOpen, setAddOpen] = useState(false);
@@ -69,7 +83,7 @@ export default function LiquidityManager({
       return;
     }
     setAddOpen(false);
-    router.refresh();
+    load().catch(() => {});
   }
 
   async function changeStatus(row: LiquidityProviderRow, status: string) {
@@ -80,7 +94,11 @@ export default function LiquidityManager({
       body: JSON.stringify({ status }),
     });
     setBusyId(null);
-    router.refresh();
+    load().catch(() => {});
+  }
+
+  if (rows === null) {
+    return <p className="text-sm text-[var(--text-3)]">Loading...</p>;
   }
 
   return (
@@ -126,10 +144,10 @@ export default function LiquidityManager({
           <TableHeaderCell>Added</TableHeaderCell>
         </TableHead>
         <TableBody>
-          {initialRows.length === 0 ? (
+          {rows.length === 0 ? (
             <TableEmptyState colSpan={6}>No liquidity providers yet.</TableEmptyState>
           ) : (
-            initialRows.map((row) => (
+            rows.map((row) => (
               <TableRow key={row.id}>
                 <TableCell primary>
                   {row.name}
