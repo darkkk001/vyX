@@ -1,7 +1,6 @@
 "use client";
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
 import { Input } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
@@ -36,15 +35,29 @@ export type RequotedOrderRow = {
   createdAt: string;
 };
 
-export default function DealingQueueManager({
-  initialRows,
-  requotedRows,
-}: {
-  initialRows: DealingOrderRow[];
-  requotedRows: RequotedOrderRow[];
-}) {
-  const router = useRouter();
+// Self-fetches from /api/manage/dealing-queue (extended to also return
+// requotedRows and flat liveBid/liveAsk, matching page.tsx's previous
+// query exactly -- confirmed unused by anything else before this)
+// instead of receiving both as server-rendered props -- both the
+// website and a bundled manager-shell desktop app (no Server Component
+// of its own) share this one path now.
+export default function DealingQueueManager() {
+  const [rows, setRows] = useState<DealingOrderRow[] | null>(null);
+  const [requotedRows, setRequotedRows] = useState<RequotedOrderRow[]>([]);
   const [busyId, setBusyId] = useState<string | null>(null);
+
+  function load() {
+    return fetch("/api/manage/dealing-queue")
+      .then((r) => r.json())
+      .then((d: { rows: DealingOrderRow[]; requotedRows: RequotedOrderRow[] }) => {
+        setRows(d.rows.map((r) => ({ ...r, createdAt: r.createdAt.replace("T", " ").slice(0, 19) })));
+        setRequotedRows(d.requotedRows.map((r) => ({ ...r, createdAt: r.createdAt.replace("T", " ").slice(0, 19) })));
+      });
+  }
+
+  useEffect(() => {
+    load().catch(() => setRows([]));
+  }, []);
 
   const [acceptTarget, setAcceptTarget] = useState<DealingOrderRow | null>(null);
   const [acceptPrice, setAcceptPrice] = useState("");
@@ -88,7 +101,7 @@ export default function DealingQueueManager({
       return;
     }
     setAcceptTarget(null);
-    router.refresh();
+    load().catch(() => {});
   }
 
   async function submitReject() {
@@ -111,11 +124,18 @@ export default function DealingQueueManager({
       return;
     }
     setRejectTarget(null);
-    router.refresh();
+    load().catch(() => {});
+  }
+
+  if (rows === null) {
+    return <p className="text-sm text-[var(--text-3)]">Loading...</p>;
   }
 
   return (
     <div className="flex flex-col gap-4">
+      <p className="text-sm text-[var(--text-3)]">
+        {rows.length} order{rows.length === 1 ? "" : "s"} awaiting manual review, {requotedRows.length} awaiting the client&apos;s answer to a requote. Only populated while dealing mode is on (Risk page).
+      </p>
       <Table>
         <TableHead>
           <TableHeaderCell>Account</TableHeaderCell>
@@ -128,10 +148,10 @@ export default function DealingQueueManager({
           <TableHeaderCell />
         </TableHead>
         <TableBody>
-          {initialRows.length === 0 ? (
+          {rows.length === 0 ? (
             <TableEmptyState colSpan={8}>No orders awaiting review.</TableEmptyState>
           ) : (
-            initialRows.map((row) => (
+            rows.map((row) => (
               <TableRow key={row.id}>
                 <TableCell primary>
                   <span className="font-mono">{row.accountNumber}</span>

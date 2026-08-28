@@ -1,7 +1,6 @@
 "use client";
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 import { Button } from "@/components/ui/Button";
@@ -24,10 +23,27 @@ export type LeadRow = {
 
 const statusTone = { NEW: "info", CONTACTED: "accent", QUALIFIED: "warning", CONVERTED: "success", LOST: "neutral" } as const;
 
-export default function LeadsManager({ initialRows, canConvert }: { initialRows: LeadRow[]; canConvert: boolean }) {
-  const router = useRouter();
-  const rows = initialRows;
+// Self-fetches from the already-existing /api/manage/leads GET, plus
+// /api/manage/shell-info for the requesting admin's own role (canConvert
+// = BROKER_ADMIN) -- instead of receiving both as server-rendered props.
+export default function LeadsManager() {
+  const [rows, setRows] = useState<LeadRow[] | null>(null);
+  const [canConvert, setCanConvert] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
+
+  function load() {
+    return fetch("/api/manage/leads")
+      .then((r) => r.json())
+      .then((d: LeadRow[]) => setRows(d.map((r) => ({ ...r, createdAt: r.createdAt.replace("T", " ").slice(0, 19) }))));
+  }
+
+  useEffect(() => {
+    load().catch(() => setRows([]));
+    fetch("/api/manage/shell-info")
+      .then((r) => r.json())
+      .then((d: { role: string }) => setCanConvert(d.role === "BROKER_ADMIN"))
+      .catch(() => {});
+  }, []);
 
   const emptyNewLead = { fullName: "", email: "", phone: "", country: "", source: "", notes: "" };
   const [addOpen, setAddOpen] = useState(false);
@@ -50,7 +66,7 @@ export default function LeadsManager({ initialRows, canConvert }: { initialRows:
       body: JSON.stringify({ status }),
     });
     setBusyId(null);
-    router.refresh();
+    load().catch(() => {});
   }
 
   function openAdd() {
@@ -74,7 +90,7 @@ export default function LeadsManager({ initialRows, canConvert }: { initialRows:
       return;
     }
     setAddOpen(false);
-    router.refresh();
+    load().catch(() => {});
   }
 
   function openConvert(row: LeadRow) {
@@ -119,12 +135,19 @@ export default function LeadsManager({ initialRows, canConvert }: { initialRows:
     });
     setConvertBusy(false);
     setConvertedCreds({ accountNumber: created.accountNumber, password: created.password });
-    router.refresh();
+    load().catch(() => {});
+  }
+
+  if (rows === null) {
+    return <p className="text-sm text-[var(--text-3)]">Loading...</p>;
   }
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex justify-end">
+      <div className="flex items-center justify-between">
+        <p className="text-sm text-[var(--text-3)]">
+          {rows.length} lead{rows.length === 1 ? "" : "s"} for this broker.
+        </p>
         <Button onClick={openAdd}>Add lead</Button>
       </div>
       <Table>
