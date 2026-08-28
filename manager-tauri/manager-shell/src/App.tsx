@@ -433,31 +433,39 @@ export default function App() {
   }
 
   return (
-    <AdminShell
-      title={shellInfo.brokerName}
-      logoUrl={shellInfo.brokerLogoUrl}
-      pageTitle="Backoffice"
-      navGroups={navGroups}
-      isActive={isActive}
-      renderNavLink={renderNavLink}
-      topbarSearch={<TopbarSearch placeholder="Search clients, transactions…" />}
-      topbarRight={
-        <div className="flex items-center gap-2">
-          <div className="flex flex-col leading-tight">
-            <span className="text-xs font-semibold text-[var(--text-1)]">{shellInfo.adminEmail}</span>
-            <span className="text-[10px] text-[var(--text-3)]">{isBrokerAdmin ? "Broker Admin" : "Manager"}</span>
+    // Mirrors app/manage/layout.tsx's own root div exactly -- admin-theme.css
+    // gates the entire dark theme (backgrounds, text colors, accent) behind
+    // this attribute selector; without it every var(--text-*)/var(--bg-*)
+    // reference here is unset and the whole app falls back to browser
+    // default (white background, black text) once past the hardcoded-dark
+    // login screen.
+    <div data-surface="manager" className="min-h-dvh antialiased">
+      <AdminShell
+        title={shellInfo.brokerName}
+        logoUrl={shellInfo.brokerLogoUrl}
+        pageTitle="Backoffice"
+        navGroups={navGroups}
+        isActive={isActive}
+        renderNavLink={renderNavLink}
+        topbarSearch={<TopbarSearch placeholder="Search clients, transactions…" />}
+        topbarRight={
+          <div className="flex items-center gap-2">
+            <div className="flex flex-col leading-tight">
+              <span className="text-xs font-semibold text-[var(--text-1)]">{shellInfo.adminEmail}</span>
+              <span className="text-[10px] text-[var(--text-3)]">{isBrokerAdmin ? "Broker Admin" : "Manager"}</span>
+            </div>
+            <LogoutButton loginHref="/manage/login" onLoggedOut={() => setLoggedIn(false)}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+                <polyline points="16 17 21 12 16 7" />
+                <line x1="21" y1="12" x2="9" y2="12" />
+              </svg>
+            </LogoutButton>
           </div>
-          <LogoutButton loginHref="/manage/login" onLoggedOut={() => setLoggedIn(false)}>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
-              <polyline points="16 17 21 12 16 7" />
-              <line x1="21" y1="12" x2="9" y2="12" />
-            </svg>
-          </LogoutButton>
-        </div>
-      }
-    >
-      {renderSection()}
-    </AdminShell>
+        }
+      >
+        {renderSection()}
+      </AdminShell>
+    </div>
   );
 }

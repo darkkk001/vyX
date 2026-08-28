@@ -1,7 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useRef, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useEffect, useRef, useState } from "react";
 import { tradeApi } from "@/lib/trade-api";
 import DesktopTitleBar from "@/components/webtrader/DesktopTitleBar";
 import "../webtrader.css";
@@ -11,24 +10,39 @@ type ServerOption = { name: string; type: "LIVE" | "DEMO" };
 
 const REMEMBERED_SERVER_KEY = "vyx-trade-server-type";
 
+// Portable core -- no next/navigation dependency, so a bundled Vite shell
+// (desktop-tauri/webtrader-shell) can render this exact login experience
+// (Live/Demo server picker, 2FA, forgot-password, "save account and
+// connect automatically") instead of duplicating a thinner one by hand,
+// same "extract the router dependency out" pattern as AdminShell.tsx/
+// NextAdminShell.tsx. The website keeps using NextTradeLoginForm.tsx
+// (below-adjacent file), which supplies the searchParams-derived props
+// and the router-based onAuthenticated default; a bundled shell instead
+// passes its own onAuthenticated that flips local state and calls
+// window.vyxDesktop.rememberSession()/forgetSession().
 export default function TradeLoginForm({
   brokerName,
   supportEmail,
+  initialAccountNumber = "",
+  initialError = null,
+  initialPendingToken = null,
+  initialRemember = true,
+  onAuthenticated,
 }: {
   brokerName: string;
   supportEmail: string | null;
+  initialAccountNumber?: string;
+  initialError?: string | null;
+  initialPendingToken?: string | null;
+  initialRemember?: boolean;
+  // Called instead of navigating to /trade after a successful login or
+  // 2FA verification -- `remember` mirrors the "save account and connect
+  // automatically" checkbox so a caller can decide what that means in its
+  // own context (the website encodes it in the /trade?remember=0 query
+  // string; a bundled shell instead persists/clears the native session
+  // file via window.vyxDesktop.rememberSession()/forgetSession()).
+  onAuthenticated: (remember: boolean) => void;
 }) {
-  return (
-    <Suspense fallback={null}>
-      <TradeLoginFormInner brokerName={brokerName} supportEmail={supportEmail} />
-    </Suspense>
-  );
-}
-
-function TradeLoginFormInner({ brokerName, supportEmail }: { brokerName: string; supportEmail: string | null }) {
-  const router = useRouter();
-  const searchParams = useSearchParams();
-
   // Single-broker builds (the only mode any shipped desktop.config.json
   // uses today -- see desktop-tauri/src-tauri/src/main.rs) have exactly
   // one broker, so "server" here means this broker's Live vs. Demo
@@ -79,24 +93,20 @@ function TradeLoginFormInner({ brokerName, supportEmail }: { brokerName: string;
   // Prefilled when arriving from the root-domain server picker (app/launch)
   // — that page only knows which server the trader picked, not their
   // password, so it hands off here for the actual credential entry.
-  const [accountNumber, setAccountNumber] = useState(searchParams.get("account") ?? "");
+  const [accountNumber, setAccountNumber] = useState(initialAccountNumber);
   const [password, setPassword] = useState("");
   const [passwordVisible, setPasswordVisible] = useState(false);
-  // Set when bounced back here by /api/trade/login-redirect (the
-  // root-domain launcher's single-screen login failing invalid credentials).
-  const [error, setError] = useState<string | null>(
-    searchParams.get("error") ? "Invalid account number or password" : null
-  );
+  const [error, setError] = useState<string | null>(initialError);
   const [submitting, setSubmitting] = useState(false);
   const [connStatus, setConnStatus] = useState("Not connected");
-  const [remember, setRemember] = useState(searchParams.get("remember") !== "0");
+  const [remember, setRemember] = useState(initialRemember);
 
   // Two-factor step -- either reached from this form's own submit (the
   // JSON login path), or arriving already here via the login-redirect
   // route's query string (the root-domain launcher's cross-site form-POST
   // path, which can't return JSON) -- both funnel into the same
   // POST /api/trade/login/verify-2fa call below.
-  const [pendingToken, setPendingToken] = useState<string | null>(searchParams.get("pendingToken"));
+  const [pendingToken, setPendingToken] = useState<string | null>(initialPendingToken);
   const [twoFactorCode, setTwoFactorCode] = useState("");
 
   // Forgot-password step -- an in-app request instead of a mailto: link
@@ -145,8 +155,7 @@ function TradeLoginFormInner({ brokerName, supportEmail }: { brokerName: string;
         return;
       }
       setConnStatus(`Connected · ${selectedServer.name}`);
-      router.push(remember ? "/trade" : "/trade?remember=0");
-      router.refresh();
+      onAuthenticated(remember);
     } catch (err) {
       setError(err instanceof Error ? err.message : "login failed");
       setConnStatus("Not connected");
@@ -162,8 +171,7 @@ function TradeLoginFormInner({ brokerName, supportEmail }: { brokerName: string;
     setError(null);
     try {
       await tradeApi.verifyTwoFactor(pendingToken, twoFactorCode);
-      router.push(remember ? "/trade" : "/trade?remember=0");
-      router.refresh();
+      onAuthenticated(remember);
     } catch (err) {
       setError(err instanceof Error ? err.message : "verification failed");
     } finally {

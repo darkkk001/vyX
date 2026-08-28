@@ -1,6 +1,6 @@
 import { headers } from "next/headers";
 import { prisma } from "@/lib/prisma";
-import TradeLoginForm from "./TradeLoginForm";
+import NextTradeLoginForm from "./NextTradeLoginForm";
 
 // Resolved fresh per request (never baked into the build) -- same
 // principle as app/(broker)/layout.tsx's own header-driven branding.
@@ -11,5 +11,5 @@ export default async function TradeLoginPage() {
     ? await prisma.broker.findUnique({ where: { id: brokerId }, select: { name: true, supportEmail: true } })
     : null;
 
-  return <TradeLoginForm brokerName={broker?.name ?? "VyXTrader"} supportEmail={broker?.supportEmail ?? null} />;
+  return <NextTradeLoginForm brokerName={broker?.name ?? "VyXTrader"} supportEmail={broker?.supportEmail ?? null} />;
 }
