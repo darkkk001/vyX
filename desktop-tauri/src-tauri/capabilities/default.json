@@ -19,6 +19,8 @@
     "allow-remember-broker",
     "allow-forget-broker",
     "allow-api-request",
-    "allow-api-request-multipart"
+    "allow-api-request-multipart",
+    "allow-start-live-streams",
+    "allow-stop-live-streams"
   ]
 }

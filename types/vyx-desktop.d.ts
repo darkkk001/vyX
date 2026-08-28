@@ -40,6 +40,17 @@ declare global {
           | { name: string; file: { filename: string; mime: string; dataBase64: string } }
         >
       ) => Promise<{ status: number; body: unknown; date: string | null }>;
+      // Present only in desktop-tauri (Phase 4) -- starts/stops the two
+      // native WS relays (price ticks, trading events) that replace
+      // WebTrader.tsx's own browser WebSocket connections when bundled,
+      // since a browser WebSocket can't carry the session cookie across
+      // the local-content/real-host origin boundary but a raw Rust
+      // handshake can. startLiveStreams should only be called once a
+      // session is known to exist (right after login/on a valid mount).
+      startLiveStreams?: () => Promise<void>;
+      stopLiveStreams?: () => void;
+      onPriceTick?: (cb: (payload: string) => void) => () => void;
+      onTradingEvent?: (cb: (payload: string) => void) => () => void;
     };
   }
 }

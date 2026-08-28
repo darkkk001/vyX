@@ -556,6 +556,7 @@ export default function WebTrader({
       // session cookie clears server-side regardless; proceed to navigate away
     }
     if (window.vyxDesktop?.isDesktop) {
+      window.vyxDesktop.stopLiveStreams?.();
       window.vyxDesktop.forgetBroker?.();
       // A bundled shell's own document isn't served from the broker's real
       // hostname (it's local content, e.g. tauri.localhost) -- brokerHost
@@ -849,6 +850,29 @@ export default function WebTrader({
   // environment that hasn't been cut over to the Gateway yet) — this
   // effect fails silently rather than surfacing its own error state.
   useEffect(() => {
+    // Desktop: a bundled shell's own browser WebSocket can't carry the
+    // session cookie across the local-content/real-host origin boundary
+    // (same reason lib/trade-api.ts's call() can't use fetch() there) --
+    // desktop-tauri's native WS relay (main.rs's run_gateway_stream)
+    // does the actual handshake instead and forwards frames as Tauri
+    // events. startLiveStreams is safe to call even if a session isn't
+    // captured yet (rejects, caught below); the 2s poll above still
+    // covers that gap either way, same as the web fallback.
+    if (typeof window !== "undefined" && window.vyxDesktop?.onPriceTick) {
+      window.vyxDesktop.startLiveStreams?.().catch(() => {});
+      return window.vyxDesktop.onPriceTick((payload) => {
+        try {
+          const tick = JSON.parse(payload) as { symbol: string; bid: string | number; ask: string | number };
+          const bid = Number(tick.bid);
+          const ask = Number(tick.ask);
+          if (!tick.symbol || !Number.isFinite(bid) || !Number.isFinite(ask)) return;
+          liveTicksRef.current = { ...liveTicksRef.current, [tick.symbol]: { bid, ask } };
+        } catch {
+          // malformed frame — ignore, next tick will correct the picture
+        }
+      });
+    }
+
     let cancelled = false;
     let socket: WebSocket | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -907,6 +931,18 @@ export default function WebTrader({
   // track every event shape the backend might ever add. Same silent-
   // failure/2s-poll-fallback rule as the price-tick socket above.
   useEffect(() => {
+    // Desktop: same native-relay reasoning as the price-tick effect
+    // above -- startLiveStreams isn't called again here, it starts both
+    // streams together, so calling it from that effect alone is enough
+    // (both effects always mount together, this component owning both).
+    if (typeof window !== "undefined" && window.vyxDesktop?.onTradingEvent) {
+      return window.vyxDesktop.onTradingEvent(() => {
+        refreshOrders();
+        refreshPositions();
+        refreshAccount();
+      });
+    }
+
     let cancelled = false;
     let socket: WebSocket | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;

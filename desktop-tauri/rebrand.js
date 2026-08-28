@@ -5,7 +5,7 @@
 // (the Electron app's own rebrand tool) — same args, same broker.config.json
 // shape, same behavior; only the icon's destination path differs (Tauri's
 // icons/ dir instead of Electron's build/).
-// Usage: node rebrand.js --name "AcmeFX" --subdomain "acmefx.vyxtrader.com" [--icon path/to/icon.ico] [--root vyxtrader.com]
+// Usage: node rebrand.js --name "AcmeFX" --subdomain "acmefx.vyxtrader.com" [--icon path/to/icon.ico] [--root vyxtrader.com] [--gateway-ws-url wss://feed.acmefx.vyxtrader.com]
 // Then:  npm run build   (produces the branded installer)
 
 const fs = require("fs");
@@ -22,15 +22,24 @@ const iconPath = arg("icon");
 // Assumes a standard two-label root (vyxtrader.com) unless overridden —
 // fine for this platform's actual domain, not a general-purpose PSL parser.
 const rootDomain = arg("root") || subdomain?.split(".").slice(-2).join(".");
+// Optional -- the API Gateway's live WebSocket base for this broker.
+// Left unset if not given: the desktop app then falls back to the same
+// default (and the same 2s-poll degradation) as the website's own
+// unset-NEXT_PUBLIC_GATEWAY_WS_URL fallback -- see main.rs's own comment.
+const gatewayWsUrl = arg("gateway-ws-url");
 
 if (!name || !subdomain) {
-  console.error('Usage: node rebrand.js --name "AcmeFX" --subdomain "acmefx.vyxtrader.com" [--icon path/to/icon.ico] [--root vyxtrader.com]');
+  console.error('Usage: node rebrand.js --name "AcmeFX" --subdomain "acmefx.vyxtrader.com" [--icon path/to/icon.ico] [--root vyxtrader.com] [--gateway-ws-url wss://feed.acmefx.vyxtrader.com]');
   process.exit(1);
 }
 
 fs.writeFileSync(
   path.join(__dirname, "src-tauri", "broker.config.json"),
-  JSON.stringify({ brokerName: name, subdomain, rootDomain, mode: "broker" }, null, 2) + "\n"
+  JSON.stringify(
+    { brokerName: name, subdomain, rootDomain, mode: "broker", ...(gatewayWsUrl ? { gatewayWsUrl } : {}) },
+    null,
+    2
+  ) + "\n"
 );
 console.log(`src-tauri/broker.config.json -> ${name} @ ${subdomain} (root: ${rootDomain})`);
 

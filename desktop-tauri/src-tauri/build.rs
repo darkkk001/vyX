@@ -23,6 +23,8 @@ fn main() {
             "forget_broker",
             "api_request",
             "api_request_multipart",
+            "start_live_streams",
+            "stop_live_streams",
         ]),
     );
     tauri_build::try_build(attributes).expect("failed to run tauri-build");

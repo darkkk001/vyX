@@ -41,6 +41,17 @@ struct BrokerConfig {
     root_domain: String,
     #[allow(dead_code)]
     mode: String,
+    // The API Gateway's WebSocket base (e.g. "wss://feed.acmefx.vyxtrader.com")
+    // -- there is no established production convention for this yet (the
+    // website itself reads it from NEXT_PUBLIC_GATEWAY_WS_URL, a Next.js
+    // build-time env var that isn't confirmed set anywhere), so this is a
+    // new, optional broker.config.json field rather than a derived value.
+    // Unset (the committed dev default) falls back to the same
+    // "ws://127.0.0.1:8080" WebTrader.tsx itself falls back to -- a real
+    // broker's Gateway not being configured here degrades to the 2s HTTP
+    // poll exactly like it does on the website today, not a regression.
+    #[serde(rename = "gatewayWsUrl", default)]
+    gateway_ws_url: Option<String>,
 }
 
 // Direct port of desktop/main.js's getRememberedBroker()/
@@ -158,6 +169,26 @@ fn resolve_api_target(config: &BrokerConfig) -> (String, String) {
     }
 }
 
+// The trader session cookie's name (lib/account-auth.ts's
+// ACCOUNT_SESSION_COOKIE_NAME) -- captured out of every api_request/
+// api_request_multipart response's Set-Cookie headers below (not just
+// login's) into ApiBridge.session_cookie, since it's the one thing a
+// raw Rust WebSocket handshake needs that reqwest's own cookie jar can't
+// hand over: a WS handshake needs an explicit `Cookie` header value, not
+// an opaque jar a browser would apply automatically.
+const SESSION_COOKIE_NAME: &str = "vyx_trade_session";
+
+fn capture_session_cookie(res: &reqwest::Response, bridge: &ApiBridge) {
+    let prefix = format!("{SESSION_COOKIE_NAME}=");
+    for value in res.headers().get_all(reqwest::header::SET_COOKIE) {
+        let Ok(s) = value.to_str() else { continue };
+        if let Some(rest) = s.strip_prefix(&prefix) {
+            let value_only = rest.split(';').next().unwrap_or("");
+            *bridge.session_cookie.lock().unwrap() = Some(format!("{prefix}{value_only}"));
+        }
+    }
+}
+
 // Managed app state: the one persistent, cookie-jar-backed HTTP client
 // every api_request/api_request_multipart call reuses -- a fresh
 // reqwest::Client per call would mean a fresh (empty) cookie jar per
@@ -166,6 +197,16 @@ struct ApiBridge {
     client: reqwest::Client,
     connect_base: String,
     host_header: String,
+    session_cookie: Mutex<Option<String>>,
+    gateway_ws_base: String,
+}
+
+// Tracks the two live-stream tasks start_live_streams spawns, so a
+// second login (account switch) or a logout can cancel the previous
+// pair instead of leaking an ever-growing set of connections.
+struct WsHandles {
+    prices: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
+    trading: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -203,6 +244,7 @@ async fn api_request(
         req = req.json(b);
     }
     let res = req.send().await.map_err(|e| format!("request to {path} failed: {e}"))?;
+    capture_session_cookie(&res, &bridge);
     let status = res.status().as_u16();
     let date = res.headers().get(reqwest::header::DATE).and_then(|v| v.to_str().ok()).map(str::to_string);
     let body = res.json().await.unwrap_or(serde_json::Value::Null);
@@ -263,9 +305,119 @@ async fn api_request_multipart(
         .send()
         .await
         .map_err(|e| format!("request to {path} failed: {e}"))?;
+    capture_session_cookie(&res, &bridge);
     let status = res.status().as_u16();
     let body = res.json().await.unwrap_or(serde_json::Value::Null);
     Ok(ApiResponsePayload { status, body, date: None })
+}
+
+// Reconnect-with-backoff mirror of WebTrader.tsx's own two browser-
+// WebSocket effects (price ticks / trading events), just over a native
+// tokio-tungstenite client instead -- see its own call site
+// (start_live_streams) for why a raw WS handshake, not the WebView's own
+// WebSocket, is what can actually carry the session cookie here.
+async fn run_gateway_stream(
+    app: tauri::AppHandle,
+    gateway_base: String,
+    path: &'static str,
+    cookie: String,
+    event_name: &'static str,
+) {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    loop {
+        let url = format!("{gateway_base}{path}");
+        let request = url
+            .as_str()
+            .into_client_request()
+            .ok()
+            .and_then(|mut req| {
+                reqwest::header::HeaderValue::from_str(&cookie).ok().map(|v| {
+                    req.headers_mut().insert("Cookie", v);
+                    req
+                })
+            });
+        if let Some(request) = request {
+            if let Ok((ws_stream, _)) = tokio_tungstenite::connect_async(request).await {
+                use futures_util::StreamExt;
+                let (_, mut read) = ws_stream.split();
+                while let Some(msg) = read.next().await {
+                    match msg {
+                        Ok(tokio_tungstenite::tungstenite::Message::Text(text)) => {
+                            let _ = app.emit(event_name, text.to_string());
+                        }
+                        Ok(tokio_tungstenite::tungstenite::Message::Close(_)) | Err(_) => break,
+                        _ => {}
+                    }
+                }
+            }
+        }
+        // Same 3s reconnect delay as WebTrader.tsx's own browser-WebSocket
+        // fallback -- this task only ever exits via JoinHandle::abort()
+        // (stop_live_streams / a fresh start_live_streams superseding it),
+        // never on its own, so a dropped connection always retries.
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    }
+}
+
+// Called once the bundled shell knows it's logged in (right after a
+// successful login, or on mount if a session already exists) -- reads
+// the session cookie api_request/api_request_multipart already captured
+// from a real response, then spawns the two live-stream tasks. Safe to
+// call again later (e.g. switching accounts): cancels the previous pair
+// first rather than leaking connections.
+#[tauri::command]
+fn start_live_streams(
+    app: tauri::AppHandle,
+    bridge: tauri::State<'_, ApiBridge>,
+    handles: tauri::State<'_, WsHandles>,
+) -> Result<(), String> {
+    let cookie = bridge
+        .session_cookie
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or_else(|| "not logged in yet -- no session cookie captured".to_string())?;
+
+    if let Some(h) = handles.prices.lock().unwrap().take() {
+        h.abort();
+    }
+    if let Some(h) = handles.trading.lock().unwrap().take() {
+        h.abort();
+    }
+
+    let prices_handle = tauri::async_runtime::spawn(run_gateway_stream(
+        app.clone(),
+        bridge.gateway_ws_base.clone(),
+        "/v1/prices/stream",
+        cookie.clone(),
+        "gateway-price-tick",
+    ));
+    *handles.prices.lock().unwrap() = Some(prices_handle);
+
+    let trading_handle = tauri::async_runtime::spawn(run_gateway_stream(
+        app,
+        bridge.gateway_ws_base.clone(),
+        "/v1/trading/stream",
+        cookie,
+        "gateway-trading-event",
+    ));
+    *handles.trading.lock().unwrap() = Some(trading_handle);
+
+    Ok(())
+}
+
+// Called on logout (WebTrader.tsx's handleLogout) so a stale session's
+// live streams don't keep running -- a fresh start_live_streams call
+// after the next login would also cancel these, but logout shouldn't
+// leave live connections open in the meantime even briefly.
+#[tauri::command]
+fn stop_live_streams(handles: tauri::State<'_, WsHandles>) {
+    if let Some(h) = handles.prices.lock().unwrap().take() {
+        h.abort();
+    }
+    if let Some(h) = handles.trading.lock().unwrap().take() {
+        h.abort();
+    }
 }
 
 // Direct port of desktop/main.js's entire auto-update surface: check,
@@ -336,6 +488,24 @@ const VYX_DESKTOP_INIT_SCRIPT_TEMPLATE: &str = r#"
     apiCallMultipart: function (path, fields) {
       return window.__TAURI__.core.invoke("api_request_multipart", { path: path, fields: fields });
     },
+    startLiveStreams: function () { return window.__TAURI__.core.invoke("start_live_streams"); },
+    stopLiveStreams: function () { window.__TAURI__.core.invoke("stop_live_streams"); },
+    onPriceTick: function (callback) {
+      var unlistenPromise = window.__TAURI__.event.listen("gateway-price-tick", function (event) {
+        callback(event.payload);
+      });
+      return function () {
+        unlistenPromise.then(function (unlisten) { unlisten(); });
+      };
+    },
+    onTradingEvent: function (callback) {
+      var unlistenPromise = window.__TAURI__.event.listen("gateway-trading-event", function (event) {
+        callback(event.payload);
+      });
+      return function () {
+        unlistenPromise.then(function (unlisten) { unlisten(); });
+      };
+    },
   };
 
   var notif = window.__TAURI__.notification;
@@ -351,6 +521,7 @@ fn main() {
     let config = load_broker_config();
     let broker_name = config.broker_name.clone();
     let (connect_base, host_header) = resolve_api_target(&config);
+    let gateway_ws_base = config.gateway_ws_url.clone().unwrap_or_else(|| "ws://127.0.0.1:8080".to_string());
 
     let init_script = VYX_DESKTOP_INIT_SCRIPT_TEMPLATE.replace("__BROKER_HOST__", &host_header);
 
@@ -381,7 +552,14 @@ fn main() {
         // ours built programmatically below, not just ones declared in
         // tauri.conf.json.
         .plugin(tauri_plugin_window_state::Builder::new().build())
-        .manage(ApiBridge { client: http_client, connect_base, host_header })
+        .manage(ApiBridge {
+            client: http_client,
+            connect_base,
+            host_header,
+            session_cookie: Mutex::new(None),
+            gateway_ws_base,
+        })
+        .manage(WsHandles { prices: Mutex::new(None), trading: Mutex::new(None) })
         .invoke_handler(tauri::generate_handler![
             win_minimize,
             win_toggle_maximize,
@@ -389,7 +567,9 @@ fn main() {
             remember_broker,
             forget_broker,
             api_request,
-            api_request_multipart
+            api_request_multipart,
+            start_live_streams,
+            stop_live_streams
         ])
         .setup(move |app| {
             let nav_app_handle = app.handle().clone();
