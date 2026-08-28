@@ -1,7 +1,6 @@
 "use client";
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
 import { Input } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
@@ -23,12 +22,27 @@ export type KycRequestRow = {
 
 const statusTone = { PENDING: "warning", APPROVED: "success", REJECTED: "danger" } as const;
 
-export default function KycRequestsManager({ initialRows }: { initialRows: KycRequestRow[] }) {
-  const router = useRouter();
+// Self-fetches from /api/manage/kyc-requests (extended to also return
+// accountCountry/accountPhone, matching page.tsx's previous query
+// exactly) instead of receiving rows as a server-rendered prop -- both
+// the website and a bundled manager-shell desktop app (no Server
+// Component of its own) share this one path now.
+export default function KycRequestsManager() {
+  const [rows, setRows] = useState<KycRequestRow[] | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [rejectTarget, setRejectTarget] = useState<KycRequestRow | null>(null);
   const [rejectReason, setRejectReason] = useState("");
+
+  function load() {
+    return fetch("/api/manage/kyc-requests")
+      .then((r) => r.json())
+      .then((d: KycRequestRow[]) => setRows(d.map((r) => ({ ...r, createdAt: r.createdAt.replace("T", " ").slice(0, 19) }))));
+  }
+
+  useEffect(() => {
+    load().catch(() => setRows([]));
+  }, []);
 
   async function review(id: string, action: "APPROVE" | "REJECT", rejectionReason?: string) {
     setBusyId(id);
@@ -46,7 +60,11 @@ export default function KycRequestsManager({ initialRows }: { initialRows: KycRe
     }
     setRejectTarget(null);
     setRejectReason("");
-    router.refresh();
+    load().catch(() => {});
+  }
+
+  if (rows === null) {
+    return <p className="text-sm text-[var(--text-3)]">Loading...</p>;
   }
 
   return (
@@ -61,10 +79,10 @@ export default function KycRequestsManager({ initialRows }: { initialRows: KycRe
           <TableHeaderCell />
         </TableHead>
         <TableBody>
-          {initialRows.length === 0 ? (
+          {rows.length === 0 ? (
             <TableEmptyState colSpan={6}>No KYC submissions.</TableEmptyState>
           ) : (
-            initialRows.map((row) => (
+            rows.map((row) => (
               <TableRow key={row.id}>
                 <TableCell primary>
                   <span className="font-mono">{row.accountNumber}</span>

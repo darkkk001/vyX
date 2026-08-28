@@ -17,13 +17,17 @@ export async function GET() {
 
   const requests = await prisma.transaction.findMany({
     where: { brokerId, type: { in: ["DEPOSIT", "WITHDRAWAL"] } },
-    include: { account: { select: { accountNumber: true, fullName: true, balance: true } } },
+    include: {
+      account: { select: { accountNumber: true, fullName: true, balance: true } },
+      markedByAdmin: { select: { email: true } },
+    },
     orderBy: [{ status: "asc" }, { createdAt: "desc" }],
     take: 200,
   });
 
-  return NextResponse.json(
-    requests.map((t) => ({
+  return NextResponse.json({
+    currentAdminId: session!.adminId,
+    rows: requests.map((t) => ({
       id: t.id,
       type: t.type,
       status: t.status,
@@ -33,7 +37,9 @@ export async function GET() {
       accountNumber: t.account.accountNumber,
       accountFullName: t.account.fullName,
       currentBalance: t.account.balance.toString(),
+      markedByAdminId: t.markedByAdminId,
+      markedByAdminEmail: t.markedByAdmin?.email ?? null,
       createdAt: t.createdAt.toISOString(),
-    }))
-  );
+    })),
+  });
 }

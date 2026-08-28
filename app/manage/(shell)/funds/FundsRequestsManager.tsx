@@ -1,7 +1,6 @@
 "use client";
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { Modal, ModalActions } from "@/components/ui/Modal";
@@ -23,11 +22,30 @@ export type FundsRequestRow = {
 
 const statusTone = { PENDING: "warning", COMPLETED: "success", REJECTED: "danger" } as const;
 
-export default function FundsRequestsManager({ initialRows, currentAdminId }: { initialRows: FundsRequestRow[]; currentAdminId: string }) {
-  const router = useRouter();
+// Self-fetches from /api/manage/funds-requests (extended to also return
+// currentAdminId + markedByAdminId/markedByAdminEmail, matching
+// page.tsx's previous query exactly) instead of receiving both as
+// server-rendered props -- both the website and a bundled manager-shell
+// desktop app (no Server Component of its own) share this one path now.
+export default function FundsRequestsManager() {
+  const [rows, setRows] = useState<FundsRequestRow[] | null>(null);
+  const [currentAdminId, setCurrentAdminId] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [confirmTarget, setConfirmTarget] = useState<{ row: FundsRequestRow; action: "APPROVE" | "REJECT" | "CANCEL_MARK" } | null>(null);
+
+  function load() {
+    return fetch("/api/manage/funds-requests")
+      .then((r) => r.json())
+      .then((d: { currentAdminId: string; rows: FundsRequestRow[] }) => {
+        setCurrentAdminId(d.currentAdminId);
+        setRows(d.rows.map((r) => ({ ...r, createdAt: r.createdAt.replace("T", " ").slice(0, 19) })));
+      });
+  }
+
+  useEffect(() => {
+    load().catch(() => setRows([]));
+  }, []);
 
   async function review(row: FundsRequestRow, action: "APPROVE" | "REJECT" | "CANCEL_MARK") {
     setBusyId(row.id);
@@ -45,7 +63,11 @@ export default function FundsRequestsManager({ initialRows, currentAdminId }: { 
       return;
     }
     setConfirmTarget(null);
-    router.refresh();
+    load().catch(() => {});
+  }
+
+  if (rows === null) {
+    return <p className="text-sm text-[var(--text-3)]">Loading...</p>;
   }
 
   return (
@@ -61,10 +83,10 @@ export default function FundsRequestsManager({ initialRows, currentAdminId }: { 
           <TableHeaderCell />
         </TableHead>
         <TableBody>
-          {initialRows.length === 0 ? (
+          {rows.length === 0 ? (
             <TableEmptyState colSpan={7}>No funds requests.</TableEmptyState>
           ) : (
-            initialRows.map((row) => (
+            rows.map((row) => (
               <TableRow key={row.id}>
                 <TableCell primary>
                   <span className="font-mono">{row.accountNumber}</span>

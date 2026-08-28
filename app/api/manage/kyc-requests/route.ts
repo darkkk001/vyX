@@ -15,7 +15,7 @@ export async function GET() {
 
   const records = await prisma.kycRecord.findMany({
     where: { account: { brokerId } },
-    include: { account: { select: { accountNumber: true, fullName: true } } },
+    include: { account: { select: { accountNumber: true, fullName: true, country: true, phone: true } } },
     orderBy: [{ status: "asc" }, { createdAt: "desc" }],
     take: 200,
   });
@@ -28,6 +28,8 @@ export async function GET() {
       rejectionReason: r.rejectionReason,
       accountNumber: r.account.accountNumber,
       accountFullName: r.account.fullName,
+      accountCountry: r.account.country,
+      accountPhone: r.account.phone,
       createdAt: r.createdAt.toISOString(),
     }))
   );
