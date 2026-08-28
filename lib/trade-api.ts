@@ -197,7 +197,15 @@ export type ApiLinkedAccount = {
   balance: string;
 };
 
+export type ApiBrokerBranding = { brokerName: string; brokerLogoUrl: string; supportEmail: string | null };
+
 export const tradeApi = {
+  // Public, no session needed -- see app/api/trade/broker-branding/
+  // route.ts. Only meaningful for a bundled desktop shell, which has no
+  // Server Component of its own to inject this the way the website does;
+  // unused by the website itself (app/(broker)/trade/page.tsx already
+  // gets this server-side).
+  brokerBranding: () => call<ApiBrokerBranding>("/api/trade/broker-branding"),
   me: () => call<AccountInfo>("/api/trade/me"),
   prices: () => call<ApiLivePrice[]>("/api/trade/prices"),
   candles: (symbol: string, tf: ApiCandleTimeframe) =>
