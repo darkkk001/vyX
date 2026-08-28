@@ -33,7 +33,11 @@ export async function GET() {
 
   const accounts = await prisma.account.findMany({
     where: { brokerId: session.brokerId! },
-    include: { group: { select: { id: true, name: true } }, ibLinkAsClient: { select: { id: true } } },
+    include: {
+      group: { select: { id: true, name: true } },
+      ibLinkAsClient: { select: { id: true } },
+      kycRecord: { select: { status: true } },
+    },
     orderBy: { accountNumber: "asc" },
   });
 
@@ -52,6 +56,9 @@ export async function GET() {
       groupId: a.groupId,
       groupName: a.group?.name ?? null,
       hasIbLink: !!a.ibLinkAsClient,
+      maxDailyLoss: a.maxDailyLoss ? a.maxDailyLoss.toString() : null,
+      country: a.country,
+      kycStatus: a.kycRecord?.status ?? null,
     }))
   );
 }

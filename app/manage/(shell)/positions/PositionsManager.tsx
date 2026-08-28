@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
 import { Card } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
@@ -45,40 +44,46 @@ type SortMode = "symbol" | "exposure" | "risk";
 const NO_GROUP = "__none__";
 const NO_IB = "__none__";
 
+type PositionsData = { rows: PositionRow[]; accounts: AccountOption[]; symbols: SymbolOption[]; groups: GroupOption[]; ibOptions: IbOption[] };
+
 // Exposure monitor: filters, sorting, per-symbol Client Floating P&L, an
 // "open a position" modal, a per-row "modify SL/TP" modal, and the open
 // positions table with a per-row Close action (full or partial volume).
 // Filtering is entirely client-side (same pattern AccountsManager.tsx's
 // own search box uses) -- the exposure aggregate and the broker-wide
 // total both recompute from whichever subset the filters leave, via
-// useMemo, so they always stay in sync with what's on screen.
-export default function PositionsManager({
-  positionRows,
-  accounts,
-  symbols,
-  groups,
-  ibOptions,
-}: {
-  positionRows: PositionRow[];
-  accounts: AccountOption[];
-  symbols: SymbolOption[];
-  groups: GroupOption[];
-  ibOptions: IbOption[];
-}) {
-  const router = useRouter();
+// useMemo, so they always stay in sync with what's on screen. Self-fetches
+// everything from the already-existing /api/manage/positions route
+// (extended with a GET returning the same shape page.tsx's Server
+// Component used to compute) instead of receiving it all as
+// server-rendered props.
+export default function PositionsManager() {
+  const [data, setData] = useState<PositionsData | null>(null);
+  const positionRows = data?.rows ?? [];
+  const accounts = data?.accounts ?? [];
+  const symbols = data?.symbols ?? [];
+  const groups = data?.groups ?? [];
+  const ibOptions = data?.ibOptions ?? [];
 
-  // currentPrice/floatingPnl are computed server-side at render time
-  // (page.tsx) and only ever change when this Server Component re-runs --
-  // previously that only happened after this manager's own mutations
-  // (close/reverse/void/modify), so the whole page (prices included) sat
-  // frozen at whatever it showed on load until someone acted on it or
-  // reloaded. A manager watching floating P&L needs it to track the live
-  // feed, not their own click history -- refresh on the same 5s cadence
-  // LivePrice itself updates on (engine/market-data's periodic flush).
+  function reload() {
+    return fetch("/api/manage/positions")
+      .then((r) => r.json())
+      .then(setData);
+  }
+
+  // currentPrice/floatingPnl are computed server-side at request time and
+  // only ever change on a fresh fetch -- previously that only happened
+  // after this manager's own mutations (close/reverse/void/modify) via
+  // router.refresh(), so the whole page (prices included) sat frozen at
+  // whatever it showed on load until someone acted on it or reloaded. A
+  // manager watching floating P&L needs it to track the live feed, not
+  // their own click history -- refresh on the same 5s cadence LivePrice
+  // itself updates on (engine/market-data's periodic flush).
   useEffect(() => {
-    const interval = setInterval(() => router.refresh(), 5000);
+    reload().catch(() => setData({ rows: [], accounts: [], symbols: [], groups: [], ibOptions: [] }));
+    const interval = setInterval(() => reload().catch(() => {}), 5000);
     return () => clearInterval(interval);
-  }, [router]);
+  }, []);
 
   // --- Filters ---
   const [symbolFilter, setSymbolFilter] = useState("ALL");
@@ -226,7 +231,7 @@ export default function PositionsManager({
       return;
     }
     setOpenModalOpen(false);
-    router.refresh();
+    reload().catch(() => {});
   }
 
   // --- Modify SL/TP modal ---
@@ -269,7 +274,7 @@ export default function PositionsManager({
       return;
     }
     setModifyTarget(null);
-    router.refresh();
+    reload().catch(() => {});
   }
 
   // --- Close action, per row ---
@@ -297,7 +302,7 @@ export default function PositionsManager({
       return;
     }
     setCloseConfirm(null);
-    router.refresh();
+    reload().catch(() => {});
   }
 
   // --- Reverse / Void, per row ---
@@ -318,7 +323,7 @@ export default function PositionsManager({
       return;
     }
     setReverseConfirm(null);
-    router.refresh();
+    reload().catch(() => {});
   }
 
   async function voidPosition(row: PositionRow) {
@@ -332,11 +337,18 @@ export default function PositionsManager({
       return;
     }
     setVoidConfirm(null);
-    router.refresh();
+    reload().catch(() => {});
+  }
+
+  if (data === null) {
+    return <p className="text-sm text-[var(--text-3)]">Loading...</p>;
   }
 
   return (
     <div className="flex flex-col gap-6">
+      <p className="text-sm text-[var(--text-3)]">
+        {positionRows.length} open position{positionRows.length === 1 ? "" : "s"} across this broker.
+      </p>
       <Card title="Filters">
         <div className="flex flex-wrap items-end gap-3">
           <div className="flex flex-col gap-1.5">

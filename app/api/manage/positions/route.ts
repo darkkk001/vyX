@@ -3,8 +3,8 @@ import { Prisma } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
-import { getFreshPrice } from "@/lib/live-price";
-import { validateSlTp } from "@/lib/trading";
+import { getFreshPrice, getFreshPrices } from "@/lib/live-price";
+import { computeRealizedPnl, validateSlTp } from "@/lib/trading";
 import {
   checkTradingHalted,
   checkSymbolTradingMode,
@@ -25,6 +25,105 @@ async function requireManager() {
     return null;
   }
   return session!;
+}
+
+// Everything app/manage/(shell)/positions/page.tsx's Server Component
+// used to compute in one request (open positions + the account/symbol/
+// group/IB option lists the exposure monitor's filters need) -- exposed
+// here so PositionsManager.tsx can self-fetch and re-poll it (replacing
+// the page's own 5s router.refresh() interval) instead of receiving it
+// all as server-rendered props. A dedicated route rather than composing
+// several existing ones: the IB option list in particular has to come
+// from an unfiltered read of ibRelationship, not the IB_PAYOUTS-gated
+// /api/manage/ib-relationships GET, since any Manager reaching this page
+// (not just one with IB_PAYOUTS) needs the read-only IB filter dropdown.
+export async function GET() {
+  const session = await requireManager();
+  if (!session) {
+    return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  }
+  const brokerId = session.brokerId!;
+
+  const [positions, accountRows, brokerSymbolRows, groupRows, ibRelationships] = await Promise.all([
+    prisma.position.findMany({
+      where: { brokerId, status: "OPEN" },
+      include: {
+        account: {
+          select: {
+            accountNumber: true,
+            fullName: true,
+            groupId: true,
+            group: { select: { name: true } },
+            ibLinkAsClient: { select: { ibAccountId: true } },
+          },
+        },
+        symbol: { select: { name: true, digits: true, contractSize: true } },
+        originOrder: { select: { idempotencyKey: true } },
+      },
+      orderBy: { openedAt: "desc" },
+    }),
+    prisma.account.findMany({
+      where: { brokerId, status: "ACTIVE" },
+      select: { id: true, accountNumber: true, fullName: true },
+      orderBy: { accountNumber: "asc" },
+    }),
+    prisma.brokerSymbol.findMany({
+      where: { brokerId, enabled: true },
+      include: { symbol: { select: { id: true, name: true } } },
+      orderBy: { symbol: { name: "asc" } },
+    }),
+    prisma.group.findMany({ where: { brokerId }, select: { id: true, name: true }, orderBy: { name: "asc" } }),
+    prisma.ibRelationship.findMany({
+      where: { brokerId },
+      select: { ibAccountId: true, ibAccount: { select: { accountNumber: true, fullName: true } } },
+    }),
+  ]);
+
+  const symbolNames = [...new Set(positions.map((p) => p.symbol.name))];
+  const priceBySymbol = await getFreshPrices(symbolNames);
+
+  const rows = positions.map((p) => {
+    const lp = priceBySymbol.get(p.symbol.name);
+    const currentPrice = lp ? (p.side === "BUY" ? lp.bid : lp.ask) : null;
+    const floatingPnl = currentPrice
+      ? computeRealizedPnl({
+          side: p.side,
+          openPrice: p.openPrice,
+          closePrice: currentPrice,
+          volume: p.volume,
+          contractSize: p.symbol.contractSize,
+        })
+      : null;
+    return {
+      id: p.id,
+      accountId: p.accountId,
+      accountNumber: p.account.accountNumber,
+      accountFullName: p.account.fullName,
+      groupId: p.account.groupId,
+      groupName: p.account.group?.name ?? null,
+      ibAccountId: p.account.ibLinkAsClient?.ibAccountId ?? null,
+      symbolName: p.symbol.name,
+      digits: p.symbol.digits,
+      side: p.side,
+      volume: p.volume.toString(),
+      openPrice: p.openPrice.toFixed(p.symbol.digits),
+      currentPrice: currentPrice ? currentPrice.toFixed(p.symbol.digits) : null,
+      floatingPnl: floatingPnl ? floatingPnl.toFixed(2) : null,
+      slPrice: p.slPrice ? p.slPrice.toFixed(p.symbol.digits) : null,
+      tpPrice: p.tpPrice ? p.tpPrice.toFixed(p.symbol.digits) : null,
+      isManualOrigin: p.originOrder.idempotencyKey.startsWith("manual_"),
+      openedAt: p.openedAt.toISOString().replace("T", " ").slice(0, 19),
+    };
+  });
+
+  const accounts = accountRows.map((a) => ({ id: a.id, accountNumber: a.accountNumber, fullName: a.fullName }));
+  const tradableSymbols = brokerSymbolRows.map((bs) => ({ id: bs.symbol.id, name: bs.symbol.name }));
+  const groups = groupRows.map((g) => ({ id: g.id, name: g.name }));
+  const ibOptions = [...new Map(ibRelationships.map((r) => [r.ibAccountId, r])).values()]
+    .map((r) => ({ id: r.ibAccountId, accountNumber: r.ibAccount.accountNumber, fullName: r.ibAccount.fullName }))
+    .sort((a, b) => a.accountNumber.localeCompare(b.accountNumber));
+
+  return NextResponse.json({ rows, accounts, symbols: tradableSymbols, groups, ibOptions });
 }
 
 // Manual position open -- a dealing desk placing a MARKET trade for an

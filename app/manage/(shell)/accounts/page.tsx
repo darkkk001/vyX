@@ -1,58 +1,18 @@
-import { redirect } from "next/navigation";
-import { getAdminSession, requireAdminRole } from "@/lib/auth";
-import { hasPermission } from "@/lib/permissions";
-import { prisma } from "@/lib/prisma";
 import { PageHeader } from "@/components/ui/PageHeader";
-import AccountsManager, { type AccountRow, type GroupOption } from "./AccountsManager";
+import AccountsManager from "./AccountsManager";
 
-export default async function ManagerAccountsPage() {
-  const session = await getAdminSession();
-  if (!requireAdminRole(session, ["MANAGER", "BROKER_ADMIN"]) || !session!.brokerId) {
-    redirect("/manage/login");
-  }
-  const brokerId = session!.brokerId!;
-  const canManageFinance = session!.role === "BROKER_ADMIN" || (await hasPermission(session, "ACCOUNT_FINANCE"));
-
-  const [accounts, groups] = await Promise.all([
-    prisma.account.findMany({
-      where: { brokerId },
-      include: { group: { select: { id: true, name: true } }, kycRecord: { select: { status: true } } },
-      orderBy: { accountNumber: "asc" },
-    }),
-    prisma.group.findMany({ where: { brokerId }, select: { id: true, name: true }, orderBy: { name: "asc" } }),
-  ]);
-
-  const rows: AccountRow[] = accounts.map((a) => ({
-    id: a.id,
-    accountNumber: a.accountNumber,
-    fullName: a.fullName,
-    email: a.email,
-    accountType: a.accountType,
-    currency: a.currency,
-    leverage: a.leverage,
-    balance: a.balance.toString(),
-    credit: a.credit.toString(),
-    status: a.status,
-    groupId: a.groupId,
-    groupName: a.group?.name ?? null,
-    maxDailyLoss: a.maxDailyLoss ? a.maxDailyLoss.toString() : null,
-    country: a.country,
-    kycStatus: a.kycRecord?.status ?? null,
-  }));
-
-  const groupOptions: GroupOption[] = groups.map((g) => ({ id: g.id, name: g.name }));
-
+// No auth check or Prisma query here anymore -- app/manage/(shell)/
+// layout.tsx's own MANAGER-or-BROKER_ADMIN guard is identical to what
+// this page checked itself. AccountsManager now self-fetches from the
+// already-existing /api/manage/accounts GET (extended with
+// maxDailyLoss/country/kycStatus), /api/manage/groups GET, and
+// /api/manage/shell-info (extended with canManageFinance) instead of
+// receiving all three as server-rendered props.
+export default function ManagerAccountsPage() {
   return (
     <main className="mx-auto max-w-[1400px]">
-      <PageHeader
-        title="Trading Accounts"
-        description={`${rows.length} account${rows.length === 1 ? "" : "s"} for this broker.${
-          !canManageFinance
-            ? " Leverage/status/balance changes -- including a starting balance on a new account -- require Broker Admin or the Account Finance permission."
-            : ""
-        }`}
-      />
-      <AccountsManager initialRows={rows} groups={groupOptions} canManageFinance={canManageFinance} />
+      <PageHeader title="Trading Accounts" />
+      <AccountsManager />
     </main>
   );
 }

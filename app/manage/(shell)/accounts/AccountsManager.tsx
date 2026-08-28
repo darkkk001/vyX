@@ -1,8 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 import { Button } from "@/components/ui/Button";
@@ -45,20 +44,31 @@ const kycTone = { PENDING: "warning", APPROVED: "success", REJECTED: "danger" } 
 // leverage-override fields for a non-finance Manager, matching
 // app/api/manage/accounts/route.ts POST silently forcing both to their
 // defaults for that same caller.
-export default function AccountsManager({
-  initialRows,
-  groups,
-  canManageFinance,
-}: {
-  initialRows: AccountRow[];
-  groups: GroupOption[];
-  canManageFinance: boolean;
-}) {
-  const router = useRouter();
-  const rows = initialRows;
+export default function AccountsManager() {
+  const [rows, setRows] = useState<AccountRow[] | null>(null);
+  const [groups, setGroups] = useState<GroupOption[]>([]);
+  const [canManageFinance, setCanManageFinance] = useState(false);
   const [search, setSearch] = useState("");
   const [busyId, setBusyId] = useState<string | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
+
+  function reloadRows() {
+    return fetch("/api/manage/accounts")
+      .then((r) => r.json())
+      .then(setRows);
+  }
+
+  useEffect(() => {
+    reloadRows().catch(() => setRows([]));
+    fetch("/api/manage/groups")
+      .then((r) => r.json())
+      .then((d: { id: string; name: string }[]) => setGroups(d.map((g) => ({ id: g.id, name: g.name }))))
+      .catch(() => {});
+    fetch("/api/manage/shell-info")
+      .then((r) => r.json())
+      .then((d: { canManageFinance: boolean }) => setCanManageFinance(d.canManageFinance))
+      .catch(() => {});
+  }, []);
 
   const [adjustTarget, setAdjustTarget] = useState<AccountRow | null>(null);
   const [adjustType, setAdjustType] = useState<"credit" | "debit">("credit");
@@ -107,10 +117,10 @@ export default function AccountsManager({
     // credential over the network unnecessarily) -- use what was typed
     // into this form instead, which is exactly the same value.
     setCreatedAccount({ accountNumber: created.accountNumber, password: newAccount.password });
-    router.refresh();
+    reloadRows().catch(() => {});
   }
 
-  const filtered = rows.filter((r) => {
+  const filtered = (rows ?? []).filter((r) => {
     const q = search.trim().toLowerCase();
     if (!q) return true;
     return r.accountNumber.toLowerCase().includes(q) || r.fullName.toLowerCase().includes(q) || r.email.toLowerCase().includes(q);
@@ -130,7 +140,7 @@ export default function AccountsManager({
       setErrors((prev) => ({ ...prev, [id]: b.error ?? "update failed" }));
       return false;
     }
-    router.refresh();
+    reloadRows().catch(() => {});
     return true;
   }
 
@@ -189,11 +199,21 @@ export default function AccountsManager({
       return;
     }
     setAdjustTarget(null);
-    router.refresh();
+    reloadRows().catch(() => {});
+  }
+
+  if (rows === null) {
+    return <p className="text-sm text-[var(--text-3)]">Loading...</p>;
   }
 
   return (
     <div className="flex flex-col gap-4">
+      <p className="text-sm text-[var(--text-3)]">
+        {rows.length} account{rows.length === 1 ? "" : "s"} for this broker.
+        {!canManageFinance
+          ? " Leverage/status/balance changes -- including a starting balance on a new account -- require Broker Admin or the Account Finance permission."
+          : ""}
+      </p>
       <div className="flex items-center justify-between gap-3">
         <Input
           type="text"
