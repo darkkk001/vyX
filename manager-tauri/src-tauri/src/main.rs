@@ -1,3 +1,10 @@
+// Suppresses the console window a Rust binary otherwise gets by default on
+// Windows (the "console" subsystem) -- release builds only, so `cargo run`
+// during dev still shows println!/log output in a terminal. Direct port of
+// desktop-tauri's own main.rs, which already has this; missing here was a
+// real bug (a visible cmd window popped up alongside the app on launch).
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 // VyXTrader Manager desktop shell -- see the bundled-UI architecture plan
 // (2026-08) for why this no longer loads a remote URL at all: the main
 // window now shows `manager-shell/`'s built output (bundled at compile
