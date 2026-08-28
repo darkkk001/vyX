@@ -102,6 +102,16 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
     };
     window.addEventListener("resize", onResize);
 
+    // klinecharts sizes its canvas from the container's box at init time
+    // and otherwise only ever re-measures on a real *window* resize --
+    // dragging WebTrader's own bottom-panel resizer changes this
+    // container's height without the browser window changing size at
+    // all, so the canvas kept its stale (pre-drag) dimensions and visibly
+    // overlapped the panel that grew into its old space. A ResizeObserver
+    // catches every container-size change regardless of cause.
+    const containerObserver = new ResizeObserver(onResize);
+    containerObserver.observe(el);
+
     const onContextMenu = (e: MouseEvent) => {
       if (!onContextMenuPriceRef.current || !chartRef.current || !el) return;
       e.preventDefault();
@@ -121,6 +131,7 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
 
     return () => {
       window.removeEventListener("resize", onResize);
+      containerObserver.disconnect();
       el.removeEventListener("contextmenu", onContextMenu);
       try {
         dispose(el);
