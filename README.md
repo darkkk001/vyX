@@ -1,6 +1,6 @@
 # VyXTrader
 
-B2B white-label broker trading platform (BigFish Technologies LLC). Brokers license this platform, white-label it, and offer it to their retail traders.
+B2B white-label broker trading platform (VyXTechnologies LLC). Brokers license this platform, white-label it, and offer it to their retail traders.
 
 ## Status: Phase 1 (Foundation)
 

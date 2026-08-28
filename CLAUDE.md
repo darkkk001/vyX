@@ -1,6 +1,6 @@
 # VyXTrader
 
-B2B white-label broker trading platform, built for BigFish Technologies LLC.
+B2B white-label broker trading platform, built for VyXTechnologies LLC.
 Brokers sign up, get a subdomain (or custom domain) under `vyxtrader.com`,
 and their traders log in to a WebTrader-style terminal to trade against
 simulated/live prices.

@@ -55,7 +55,7 @@ enum ExecutionEngine {
 }
 
 enum AdminRole {
-  SUPER_ADMIN // BigFish Technologies staff — brokerId is null
+  SUPER_ADMIN // VyXTechnologies staff — brokerId is null
   BROKER_ADMIN // broker-scoped admin, full backoffice access
   SUPPORT // broker-scoped, restricted permissions
   // Manager app (dealing desk) — broker-scoped, narrower than
@@ -296,7 +296,7 @@ model Broker {
 
 model AdminUser {
   id           String      @id @default(cuid())
-  brokerId     String? // null = super admin (BigFish Technologies staff)
+  brokerId     String? // null = super admin (VyXTechnologies staff)
   broker       Broker?     @relation(fields: [brokerId], references: [id])
   email        String      @unique
   passwordHash String

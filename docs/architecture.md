@@ -45,7 +45,7 @@ assumed:
 - **Scope confirmed/expanded by the user**: complete all three client
   surfaces (Desktop, WebTrader-in-broker-portal, Mobile — Mobile not
   started, Flutter, per §4/§7) for traders; Backoffice (Manager/Admin,
-  `app/manage/`) for brokers; and a Super Admin app for BigFish's own
+  `app/manage/`) for brokers; and a Super Admin app for VyXTechnologies' own
   white-label broker onboarding (register a broker's server, brand it —
   `app/(super-admin)/brokers`'s `CreateBrokerForm.tsx` already collects
   name/subdomain/tier/primary-color/logo-URL, a real start on this, not

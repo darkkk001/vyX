@@ -8,7 +8,7 @@ const RESERVED_SUBDOMAINS = new Set(["admin", "www", "api"]);
 const SUBDOMAIN_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 const TRIAL_PERIOD_MS = 14 * 24 * 60 * 60 * 1000;
 
-// Only Super Admins (BigFish Technologies staff, brokerId === null) may
+// Only Super Admins (VyXTechnologies staff, brokerId === null) may
 // list or create brokers. Enforced here, server-side — never trust a
 // frontend check for this.
 async function requireSuperAdmin() {

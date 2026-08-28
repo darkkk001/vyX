@@ -4,8 +4,16 @@
 // root-domain server picker entirely. Direct port of desktop/rebrand.js
 // (the Electron app's own rebrand tool) — same args, same broker.config.json
 // shape, same behavior; only the icon's destination path differs (Tauri's
-// icons/ dir instead of Electron's build/).
-// Usage: node rebrand.js --name "AcmeFX" --subdomain "acmefx.vyxtrader.com" [--icon path/to/icon.ico] [--root vyxtrader.com] [--gateway-ws-url wss://feed.acmefx.vyxtrader.com]
+// icons/ dir instead of Electron's build/). Also patches tauri.conf.json's
+// productName -- the installer file name, Start Menu shortcut, and
+// Windows Add/Remove Programs entry all come from this field, not from
+// broker.config.json, so a broker's traders should never see "VyXTrader"
+// text anywhere in the install experience. IMPORTANT: revert both
+// broker.config.json AND tauri.conf.json (`git checkout -- src-tauri/broker.config.json src-tauri/tauri.conf.json`)
+// after building -- the built installer already has everything baked
+// in, this is only to keep the next local dev/testing session pointed
+// at the generic VyXTrader default instead of a stale broker rebrand.
+// Usage: node rebrand.js --name "AcmeFX" --subdomain "acmefx.vyxtrader.com" [--product-name "AcmeFX Trader"] [--icon path/to/icon.ico] [--root vyxtrader.com] [--gateway-ws-url wss://feed.acmefx.vyxtrader.com]
 // Then:  npm run build   (produces the branded installer)
 
 const fs = require("fs");
@@ -19,6 +27,10 @@ function arg(name) {
 const name = arg("name");
 const subdomain = arg("subdomain");
 const iconPath = arg("icon");
+// Defaults to --name itself -- pass --product-name separately only when
+// the installer/Start-Menu name should differ from the in-app broker
+// name shown on the login screen and window title.
+const productName = arg("product-name") || name;
 // Assumes a standard two-label root (vyxtrader.com) unless overridden —
 // fine for this platform's actual domain, not a general-purpose PSL parser.
 const rootDomain = arg("root") || subdomain?.split(".").slice(-2).join(".");
@@ -29,7 +41,7 @@ const rootDomain = arg("root") || subdomain?.split(".").slice(-2).join(".");
 const gatewayWsUrl = arg("gateway-ws-url");
 
 if (!name || !subdomain) {
-  console.error('Usage: node rebrand.js --name "AcmeFX" --subdomain "acmefx.vyxtrader.com" [--icon path/to/icon.ico] [--root vyxtrader.com] [--gateway-ws-url wss://feed.acmefx.vyxtrader.com]');
+  console.error('Usage: node rebrand.js --name "AcmeFX" --subdomain "acmefx.vyxtrader.com" [--product-name "AcmeFX Trader"] [--icon path/to/icon.ico] [--root vyxtrader.com] [--gateway-ws-url wss://feed.acmefx.vyxtrader.com]');
   process.exit(1);
 }
 
@@ -43,6 +55,12 @@ fs.writeFileSync(
 );
 console.log(`src-tauri/broker.config.json -> ${name} @ ${subdomain} (root: ${rootDomain})`);
 
+const tauriConfPath = path.join(__dirname, "src-tauri", "tauri.conf.json");
+const tauriConf = JSON.parse(fs.readFileSync(tauriConfPath, "utf8"));
+tauriConf.productName = productName;
+fs.writeFileSync(tauriConfPath, JSON.stringify(tauriConf, null, 2) + "\n");
+console.log(`src-tauri/tauri.conf.json -> productName: "${productName}" (installer/Start Menu/Task Manager name)`);
+
 if (iconPath) {
   if (!iconPath.toLowerCase().endsWith(".ico")) {
     console.error("Icon must be a .ico file (Windows exe icons require it) — convert the broker's logo first.");
@@ -55,3 +73,4 @@ if (iconPath) {
 }
 
 console.log("\nNow run: npm run build");
+console.log('After building, revert: git checkout -- src-tauri/broker.config.json src-tauri/tauri.conf.json');
