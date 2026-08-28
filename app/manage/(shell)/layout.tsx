@@ -1,7 +1,8 @@
 import { redirect } from "next/navigation";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { AdminShell, type AdminNavGroup } from "@/components/admin/AdminShell";
+import { NextAdminShell } from "@/components/admin/NextAdminShell";
+import type { AdminNavGroup } from "@/components/admin/AdminShell";
 import { TopbarSearch } from "@/components/admin/TopbarSearch";
 import { LogoutButton } from "@/components/admin/LogoutButton";
 import { initialsFrom } from "@/lib/format";
@@ -93,7 +94,7 @@ export default async function ManageShellLayout({ children }: { children: React.
   ];
 
   return (
-    <AdminShell
+    <NextAdminShell
       title={broker?.name ?? "Backoffice"}
       logoUrl={broker?.logoUrl}
       pageTitle="Backoffice"
@@ -126,6 +127,6 @@ export default async function ManageShellLayout({ children }: { children: React.
       }
     >
       {children}
-    </AdminShell>
+    </NextAdminShell>
   );
 }

@@ -1,7 +1,8 @@
 import { redirect } from "next/navigation";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { AdminShell, type AdminNavGroup } from "@/components/admin/AdminShell";
+import { NextAdminShell } from "@/components/admin/NextAdminShell";
+import type { AdminNavGroup } from "@/components/admin/AdminShell";
 import { LogoutButton } from "@/components/admin/LogoutButton";
 import { initialsFrom } from "@/lib/format";
 
@@ -40,7 +41,7 @@ export default async function SuperAdminShellLayout({ children }: { children: Re
   ];
 
   return (
-    <AdminShell
+    <NextAdminShell
       title="vyX Super Admin"
       planeTag="PLATFORM CONTROL PLANE"
       pageTitle="Super Admin"
@@ -66,6 +67,6 @@ export default async function SuperAdminShellLayout({ children }: { children: Re
       }
     >
       {children}
-    </AdminShell>
+    </NextAdminShell>
   );
 }

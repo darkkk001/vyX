@@ -1,13 +1,44 @@
 "use client";
 
-import Link from "next/link";
-import { usePathname } from "next/navigation";
 import { ReactNode } from "react";
 
 export type AdminNavItem = { href: string; label: string; badge?: number };
 export type AdminNavGroup = { label?: string; items: AdminNavItem[] };
 
-function NavGroup({ group, pathname }: { group: AdminNavGroup; pathname: string | null }) {
+export type AdminShellProps = {
+  title: string;
+  // A broker's own logo (Manager) -- absent for Super Admin, which has no
+  // broker in context and keeps the static platform mark below.
+  logoUrl?: string | null;
+  planeTag?: string;
+  navGroups: AdminNavGroup[];
+  bottomNavGroup?: AdminNavGroup;
+  pageTitle: string;
+  topbarSearch?: ReactNode;
+  topbarRight: ReactNode;
+  children: ReactNode;
+  // Navigation is injected rather than hardcoded to next/navigation's
+  // usePathname()/next/link's <Link> -- this component is shared between
+  // the live website (real multi-page routing across /manage/* and
+  // /(super-admin)/* routes -- see NextAdminShell.tsx for that default
+  // wiring) and bundled desktop shells (manager-shell/, admin-shell/),
+  // which have no real routes at all, just an in-memory "current
+  // section" switch. Neither `next/navigation` nor `next/link` can be
+  // imported here at all -- Vite has no `next` package to resolve them
+  // against, a hard build-time failure, not just a runtime one.
+  isActive: (href: string) => boolean;
+  renderNavLink: (item: AdminNavItem, children: ReactNode, className: string) => ReactNode;
+};
+
+function NavGroup({
+  group,
+  isActive,
+  renderNavLink,
+}: {
+  group: AdminNavGroup;
+  isActive: (href: string) => boolean;
+  renderNavLink: AdminShellProps["renderNavLink"];
+}) {
   return (
     <div className="mb-1">
       {group.label ? (
@@ -16,17 +47,14 @@ function NavGroup({ group, pathname }: { group: AdminNavGroup; pathname: string 
         </p>
       ) : null}
       {group.items.map((item) => {
-        const active = pathname === item.href || pathname?.startsWith(`${item.href}/`);
-        return (
-          <Link
-            key={item.href}
-            href={item.href}
-            className={`relative mb-0.5 flex items-center gap-2.5 rounded-md px-2.5 py-2 text-[12.5px] ${
-              active
-                ? "bg-[var(--bg-3)] text-[var(--text-1)]"
-                : "text-[var(--text-2)] hover:bg-[var(--bg-3)] hover:text-[var(--text-1)]"
-            }`}
-          >
+        const active = isActive(item.href);
+        const className = `relative mb-0.5 flex items-center gap-2.5 rounded-md px-2.5 py-2 text-[12.5px] ${
+          active
+            ? "bg-[var(--bg-3)] text-[var(--text-1)]"
+            : "text-[var(--text-2)] hover:bg-[var(--bg-3)] hover:text-[var(--text-1)]"
+        }`;
+        const content = (
+          <>
             {active ? (
               <span className="absolute -left-2.5 top-1/2 h-4 w-[3px] -translate-y-1/2 rounded-r bg-[var(--accent)]" />
             ) : null}
@@ -36,8 +64,9 @@ function NavGroup({ group, pathname }: { group: AdminNavGroup; pathname: string 
                 {item.badge}
               </span>
             ) : null}
-          </Link>
+          </>
         );
+        return <span key={item.href}>{renderNavLink(item, content, className)}</span>;
       })}
     </div>
   );
@@ -53,21 +82,9 @@ export function AdminShell({
   topbarSearch,
   topbarRight,
   children,
-}: {
-  title: string;
-  // A broker's own logo (Manager) -- absent for Super Admin, which has no
-  // broker in context and keeps the static platform mark below.
-  logoUrl?: string | null;
-  planeTag?: string;
-  navGroups: AdminNavGroup[];
-  bottomNavGroup?: AdminNavGroup;
-  pageTitle: string;
-  topbarSearch?: ReactNode;
-  topbarRight: ReactNode;
-  children: ReactNode;
-}) {
-  const pathname = usePathname();
-
+  isActive,
+  renderNavLink,
+}: AdminShellProps) {
   return (
     <div className="flex min-h-dvh bg-[var(--bg-0)]">
       <aside className="flex w-[230px] shrink-0 flex-col overflow-y-auto border-r border-[var(--border)] bg-[var(--bg-1)] px-2.5 py-4">
@@ -89,12 +106,12 @@ export function AdminShell({
         ) : null}
         <nav className="flex-1">
           {navGroups.map((group, i) => (
-            <NavGroup key={group.label ?? i} group={group} pathname={pathname} />
+            <NavGroup key={group.label ?? i} group={group} isActive={isActive} renderNavLink={renderNavLink} />
           ))}
         </nav>
         {bottomNavGroup ? (
           <div className="mt-auto border-t border-[var(--border)] pt-2">
-            <NavGroup group={bottomNavGroup} pathname={pathname} />
+            <NavGroup group={bottomNavGroup} isActive={isActive} renderNavLink={renderNavLink} />
           </div>
         ) : null}
       </aside>
