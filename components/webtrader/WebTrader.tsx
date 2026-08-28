@@ -151,6 +151,20 @@ export default function WebTrader({
   const [pendingType, setPendingType] = useState<PendingType>("buy_limit");
   const [pendingPrice, setPendingPrice] = useState("");
   const [volume, setVolume] = useState(0.01);
+  // The lot-size field's own text, decoupled from `volume` while the
+  // field is focused -- reported live: value={volume.toFixed(2)}
+  // reformatted the displayed text on every keystroke (React re-render
+  // after each onChange), which meant typing a second digit landed
+  // against an already-snapped-back "0.01" instead of what was just
+  // typed, making manual entry effectively unusable (only +/- worked).
+  // Synced from `volume` only while NOT focused (the effect below), so
+  // the +/- buttons and risk-%-driven auto-volume still update the
+  // display live, but typing is never fought mid-edit.
+  const [volumeInput, setVolumeInput] = useState(volume.toFixed(2));
+  const volumeInputFocusedRef = useRef(false);
+  useEffect(() => {
+    if (!volumeInputFocusedRef.current) setVolumeInput(volume.toFixed(2));
+  }, [volume]);
   const [riskPct, setRiskPct] = useState("");
   const [slInput, setSlInput] = useState("");
   const [tpInput, setTpInput] = useState("");
@@ -349,6 +363,29 @@ export default function WebTrader({
 
   const [wlContextMenu, setWlContextMenu] = useState<{ x: number; y: number } | null>(null);
   const [chartContextMenu, setChartContextMenu] = useState<{ x: number; y: number; price: number } | null>(null);
+  // Reported live: right-clicking the chart to open the buy-stop/limit
+  // menu, then left-clicking elsewhere (or pressing Escape) to dismiss
+  // it, did nothing -- there was no close path at all except clicking one
+  // of the menu's own items. mousedown (not click) so this also correctly
+  // closes-then-reopens at the new spot on a second right-click, rather
+  // than the two competing for the same click.
+  useEffect(() => {
+    if (!chartContextMenu) return;
+    function onMouseDown(e: MouseEvent) {
+      if (!(e.target instanceof HTMLElement) || !e.target.closest(".wl-context-menu")) {
+        setChartContextMenu(null);
+      }
+    }
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") setChartContextMenu(null);
+    }
+    document.addEventListener("mousedown", onMouseDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onMouseDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [chartContextMenu]);
   const chartRef = useRef<KLineChartHandle>(null);
   const [maActive, setMaActive] = useState(false);
 
@@ -1830,7 +1867,19 @@ export default function WebTrader({
                 <span className="field-label">Volume (lots)</span>
                 <div className="lot-stepper">
                   <button className="stepper-btn" onClick={() => setVolume((v) => Math.max(0.01, +(v - 0.01).toFixed(2)))}>−</button>
-                  <input className="mono" style={{ width: 44, textAlign: "center" }} value={volume.toFixed(2)} onChange={(e) => { const v = parseFloat(e.target.value); if (!isNaN(v) && v > 0) setVolume(v); }} />
+                  <input
+                    className="mono"
+                    style={{ width: 44, textAlign: "center" }}
+                    value={volumeInput}
+                    onFocus={(e) => { volumeInputFocusedRef.current = true; e.target.select(); }}
+                    onBlur={() => { volumeInputFocusedRef.current = false; setVolumeInput(volume.toFixed(2)); }}
+                    onChange={(e) => {
+                      setVolumeInput(e.target.value);
+                      const v = parseFloat(e.target.value);
+                      if (!isNaN(v) && v > 0) setVolume(v);
+                    }}
+                    onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+                  />
                   <button className="stepper-btn" onClick={() => setVolume((v) => +(v + 0.01).toFixed(2))}>+</button>
                 </div>
               </div>
@@ -3016,7 +3065,10 @@ export default function WebTrader({
                           borderBottom: "1px solid rgba(255,255,255,0.08)",
                         }}
                       >
-                        <span>{r.type === "DEPOSIT" ? "Deposit" : "Withdrawal"}</span>
+                        <span>
+                          {r.type === "DEPOSIT" ? "Deposit" : r.type === "WITHDRAWAL" ? "Withdrawal" : "Adjustment"}
+                          {r.type === "ADJUSTMENT" && r.note ? <span style={{ color: "var(--text-3)" }}> — {r.note}</span> : null}
+                        </span>
                         <span className="mono">{money(parseFloat(r.amount))}</span>
                         <span
                           style={{

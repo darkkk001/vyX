@@ -15,8 +15,16 @@ export async function GET() {
     return NextResponse.json({ error: "not authenticated" }, { status: 401 });
   }
 
+  // ADJUSTMENT included alongside the trader's own DEPOSIT/WITHDRAWAL
+  // requests -- a staff-initiated balance adjustment (Manager backoffice's
+  // "Adjust Balance" on an account, app/api/manage/accounts/[id]/adjust-
+  // balance) changes this same balance but previously showed up nowhere
+  // in the trader's own UI (not here, since it isn't a DEPOSIT/WITHDRAWAL
+  // type, and not the trade-history tab either, which only lists closed
+  // positions) -- reported live as "my withdrawal isn't showing up
+  // anywhere," even though the balance change itself was correct.
   const requests = await prisma.transaction.findMany({
-    where: { accountId: session.accountId, type: { in: ["DEPOSIT", "WITHDRAWAL"] } },
+    where: { accountId: session.accountId, type: { in: ["DEPOSIT", "WITHDRAWAL", "ADJUSTMENT"] } },
     orderBy: { createdAt: "desc" },
   });
 

@@ -96,7 +96,10 @@ export type ApiOrder = {
 
 export type ApiFundsRequest = {
   id: string;
-  type: "DEPOSIT" | "WITHDRAWAL";
+  // ADJUSTMENT = a staff-initiated balance change (Manager backoffice's
+  // "Adjust Balance"), not something the trader submitted themselves --
+  // included here so it's visible at all (see the route's own comment).
+  type: "DEPOSIT" | "WITHDRAWAL" | "ADJUSTMENT";
   status: "PENDING" | "COMPLETED" | "REJECTED" | "CANCELLED";
   amount: string;
   note: string | null;

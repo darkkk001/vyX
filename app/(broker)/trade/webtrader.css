@@ -382,10 +382,16 @@
 .sltp-sep { color: var(--border-strong); }
 .net-pos-detail { color: var(--text-3); font-size: 11px; }
 
-.simple-row { display: flex; justify-content: space-between; align-items: center; padding: 9px 4px; border-bottom: 1px solid var(--bg-2); font-size: 12.5px; }
+.simple-row { display: flex; justify-content: space-between; align-items: center; padding: 9px 4px; border-bottom: 1px solid var(--bg-2); font-size: 12.5px; flex-wrap: wrap; row-gap: 4px; }
 .simple-row:last-child { border-bottom: none; }
-.simple-left { display: flex; align-items: center; gap: 10px; }
-.simple-right { display: flex; align-items: center; gap: 14px; }
+/* min-width: 0 + flex-wrap -- without them, a flex child's content-based
+   min-width can't shrink below its packed symbol/side/price/time text,
+   so on a narrow panel (small window, or a wide order-panel/watchlist
+   leaving .center little room) this content overflowed straight past
+   .simple-right instead of wrapping, visually overlapping the P&L
+   figure. Reported live as "everything in History looks mixed together." */
+.simple-left { display: flex; align-items: center; gap: 10px; min-width: 0; flex-wrap: wrap; flex: 1 1 auto; }
+.simple-right { display: flex; align-items: center; gap: 14px; flex-shrink: 0; }
 .icon-btn { background: none; border: none; color: var(--text-3); cursor: pointer; padding: 4px; border-radius: 5px; display: flex; align-items: center; transition: color .15s, background .15s; }
 .icon-btn:hover { color: var(--text-1); background: var(--bg-3); }
 .empty-state { color: var(--text-3); font-size: 12px; text-align: center; padding: 30px 0; }
