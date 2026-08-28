@@ -30,9 +30,10 @@ export async function GET() {
       marginCallLevel: g.marginCallLevel.toString(),
       stopOutLevel: g.stopOutLevel.toString(),
       isDefault: g.isDefault,
-      maxLotSize: g.maxLotSize ? g.maxLotSize.toString() : null,
+      maxLotSize: g.maxLotSize ? g.maxLotSize.toString() : "",
       tradingRestriction: g.tradingRestriction,
       swapFree: g.swapFree,
+      forceDealingMode: g.forceDealingMode,
     }))
   );
 }
@@ -127,7 +128,7 @@ export async function POST(request: NextRequest) {
         marginCallLevel: group.marginCallLevel.toString(),
         stopOutLevel: group.stopOutLevel.toString(),
         isDefault: group.isDefault,
-        maxLotSize: group.maxLotSize ? group.maxLotSize.toString() : null,
+        maxLotSize: group.maxLotSize ? group.maxLotSize.toString() : "",
         tradingRestriction: group.tradingRestriction,
         swapFree: group.swapFree,
         forceDealingMode: group.forceDealingMode,

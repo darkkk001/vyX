@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
 import { Card } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
@@ -27,9 +26,17 @@ export type GroupRow = {
 
 // Create form + editable list, same fetch/error/submitting-state shape
 // as SymbolConfigTable.tsx (the symbols screen's own client component).
-export default function GroupsManager({ initialRows }: { initialRows: GroupRow[] }) {
-  const router = useRouter();
-  const [rows, setRows] = useState<GroupRow[]>(initialRows);
+// Self-fetches from the already-existing /api/manage/groups GET instead
+// of receiving initialRows as a server-rendered prop.
+export default function GroupsManager() {
+  const [rows, setRows] = useState<GroupRow[] | null>(null);
+
+  useEffect(() => {
+    fetch("/api/manage/groups")
+      .then((r) => r.json())
+      .then(setRows)
+      .catch(() => setRows([]));
+  }, []);
 
   const [newName, setNewName] = useState("");
   const [newLeverage, setNewLeverage] = useState("100");
@@ -49,7 +56,7 @@ export default function GroupsManager({ initialRows }: { initialRows: GroupRow[]
   const [symbolsFor, setSymbolsFor] = useState<GroupRow | null>(null);
 
   function updateRow(id: string, patch: Partial<GroupRow>) {
-    setRows((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
+    setRows((prev) => prev && prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
     setSavedId(null);
   }
 
@@ -79,18 +86,14 @@ export default function GroupsManager({ initialRows }: { initialRows: GroupRow[]
       return;
     }
     const created: GroupRow = await response.json();
-    // Server-rendered `rows` was seeded into useState once on mount, so
-    // router.refresh() alone re-fetches the server component but never
-    // flows back into this already-mounted state -- append the row we
-    // just got back directly instead (same "only one default" rule the
-    // API itself applies) rather than depending on a prop update.
-    setRows((prev) => (created.isDefault ? prev.map((r) => ({ ...r, isDefault: false })) : prev).concat(created));
+    // Append the row we just got back directly (same "only one default"
+    // rule the API itself applies) instead of re-fetching the whole list.
+    setRows((prev) => (created.isDefault ? (prev ?? []).map((r) => ({ ...r, isDefault: false })) : (prev ?? [])).concat(created));
     setNewName("");
     setNewMaxLotSize("");
     setNewTradingRestriction("BOTH");
     setNewSwapFree(false);
     setNewForceDealingMode(false);
-    router.refresh();
   }
 
   async function save(row: GroupRow) {
@@ -108,7 +111,10 @@ export default function GroupsManager({ initialRows }: { initialRows: GroupRow[]
       return;
     }
     setSavedId(row.id);
-    router.refresh();
+  }
+
+  if (rows === null) {
+    return <p className="text-sm text-[var(--text-3)]">Loading...</p>;
   }
 
   return (

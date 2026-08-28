@@ -1,44 +1,20 @@
-import { redirect } from "next/navigation";
-import { getAdminSession, requireAdminRole } from "@/lib/auth";
-import { prisma } from "@/lib/prisma";
 import { PageHeader } from "@/components/ui/PageHeader";
-import GroupsManager, { type GroupRow } from "./GroupsManager";
+import GroupsManager from "./GroupsManager";
 
-// Settings template accounts can be assigned to -- see the Group model's
-// own schema comment for the (deliberately narrow) scope of what
-// assigning a group actually does today.
-export default async function ManagerGroupsPage() {
-  const session = await getAdminSession();
-  if (!requireAdminRole(session, ["MANAGER", "BROKER_ADMIN"]) || !session!.brokerId) {
-    redirect("/manage/login");
-  }
-  const brokerId = session!.brokerId!;
-
-  const groups = await prisma.group.findMany({
-    where: { brokerId },
-    orderBy: { name: "asc" },
-  });
-
-  const rows: GroupRow[] = groups.map((g) => ({
-    id: g.id,
-    name: g.name,
-    leverage: g.leverage,
-    marginCallLevel: g.marginCallLevel.toString(),
-    stopOutLevel: g.stopOutLevel.toString(),
-    isDefault: g.isDefault,
-    maxLotSize: g.maxLotSize ? g.maxLotSize.toString() : "",
-    tradingRestriction: g.tradingRestriction,
-    swapFree: g.swapFree,
-    forceDealingMode: g.forceDealingMode,
-  }));
-
+// No auth check or Prisma query here anymore -- app/manage/(shell)/
+// layout.tsx's own MANAGER-or-BROKER_ADMIN guard is identical to what
+// this page checked itself. GroupsManager now self-fetches from the
+// already-existing /api/manage/groups GET (fixed to include
+// forceDealingMode, which it was missing, and to return "" instead of
+// null for an unset maxLotSize, matching this page's own prior mapping).
+export default function ManagerGroupsPage() {
   return (
     <main className="mx-auto max-w-[1400px]">
       <PageHeader
         title="Groups"
         description="Settings templates for accounts — assigning an account to a group applies the group's leverage to that account immediately. Margin-call/stop-out levels are stored here but not yet enforced by the trading engine."
       />
-      <GroupsManager initialRows={rows} />
+      <GroupsManager />
     </main>
   );
 }

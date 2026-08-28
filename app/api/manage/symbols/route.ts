@@ -50,6 +50,7 @@ export async function GET() {
     const cfg = symbol.brokerSymbols[0];
     return {
       symbolId: symbol.id,
+      brokerSymbolId: cfg ? cfg.id : null,
       symbolName: symbol.name,
       category: symbol.category,
       digits: symbol.digits,
@@ -226,6 +227,7 @@ export async function PATCH(request: NextRequest) {
 
   return NextResponse.json({
     symbolId: updated.symbolId,
+    brokerSymbolId: updated.id,
     spreadMarkup: updated.spreadMarkup.toString(),
     minLot: updated.minLot.toString(),
     maxLot: updated.maxLot.toString(),

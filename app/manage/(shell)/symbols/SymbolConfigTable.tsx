@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell } from "@/components/ui/Table";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
@@ -48,31 +47,40 @@ const NUMERIC_FIELDS: { key: EditableField; label: string; title: string; width:
 // editable in place, one Save button per row. Mirrors
 // app/(super-admin)/brokers/CreateBrokerForm.tsx's fetch/error/
 // submitting-state shape, just per-row instead of a single form.
-export default function SymbolConfigTable({ initialRows }: { initialRows: SymbolConfigRow[] }) {
-  const router = useRouter();
-  const [rows, setRows] = useState<SymbolConfigRow[]>(initialRows);
+// Self-fetches from the already-existing /api/manage/symbols GET
+// instead of receiving initialRows as a server-rendered prop -- both
+// the website and a bundled manager-shell desktop app share this path.
+export default function SymbolConfigTable() {
+  const [rows, setRows] = useState<SymbolConfigRow[] | null>(null);
   const [savingId, setSavingId] = useState<string | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [savedId, setSavedId] = useState<string | null>(null);
   const [sessionsFor, setSessionsFor] = useState<SymbolConfigRow | null>(null);
 
+  useEffect(() => {
+    fetch("/api/manage/symbols")
+      .then((r) => r.json())
+      .then(setRows)
+      .catch(() => setRows([]));
+  }, []);
+
   function updateField(symbolId: string, field: EditableField, value: string) {
-    setRows((prev) => prev.map((r) => (r.symbolId === symbolId ? { ...r, [field]: value } : r)));
+    setRows((prev) => prev && prev.map((r) => (r.symbolId === symbolId ? { ...r, [field]: value } : r)));
     setSavedId(null);
   }
 
   function toggleEnabled(symbolId: string) {
-    setRows((prev) => prev.map((r) => (r.symbolId === symbolId ? { ...r, enabled: !r.enabled } : r)));
+    setRows((prev) => prev && prev.map((r) => (r.symbolId === symbolId ? { ...r, enabled: !r.enabled } : r)));
     setSavedId(null);
   }
 
   function updateTradingMode(symbolId: string, tradingMode: TradingMode) {
-    setRows((prev) => prev.map((r) => (r.symbolId === symbolId ? { ...r, tradingMode } : r)));
+    setRows((prev) => prev && prev.map((r) => (r.symbolId === symbolId ? { ...r, tradingMode } : r)));
     setSavedId(null);
   }
 
   function updateBookType(symbolId: string, defaultBookType: BookType) {
-    setRows((prev) => prev.map((r) => (r.symbolId === symbolId ? { ...r, defaultBookType } : r)));
+    setRows((prev) => prev && prev.map((r) => (r.symbolId === symbolId ? { ...r, defaultBookType } : r)));
     setSavedId(null);
   }
 
@@ -95,9 +103,12 @@ export default function SymbolConfigTable({ initialRows }: { initialRows: Symbol
     }
 
     const updated = (await response.json()) as SymbolConfigRow;
-    setRows((prev) => prev.map((r) => (r.symbolId === row.symbolId ? { ...r, ...updated } : r)));
+    setRows((prev) => prev && prev.map((r) => (r.symbolId === row.symbolId ? { ...r, ...updated } : r)));
     setSavedId(row.symbolId);
-    router.refresh();
+  }
+
+  if (rows === null) {
+    return <p className="text-sm text-[var(--text-3)]">Loading...</p>;
   }
 
   return (

@@ -1,7 +1,6 @@
 "use client";
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
 import { Card } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
@@ -24,6 +23,8 @@ export type IbRelationshipRow = {
 };
 
 export type AccountOption = { id: string; accountNumber: string; fullName: string };
+
+type AccountLite = { id: string; accountNumber: string; fullName: string; status: string; hasIbLink: boolean };
 
 // Multi-level chains are already representable in the data (any account
 // can be an IB for others while also being someone else's client -- see
@@ -76,28 +77,58 @@ function HierarchyView({ rows }: { rows: IbRelationshipRow[] }) {
   );
 }
 
-// Create-form + editable table, same shape as every other Manager
-// client component this session (useState per field, fetch+router.refresh
-// on success).
-export default function IbRelationshipsManager({
-  initialRows,
-  ibOptions,
-  clientOptions,
-}: {
-  initialRows: IbRelationshipRow[];
-  ibOptions: AccountOption[];
-  clientOptions: AccountOption[];
-}) {
-  const router = useRouter();
+// Create-form + editable table. Self-fetches from the already-existing
+// /api/manage/ib-relationships GET and /api/manage/accounts GET (the
+// latter extended with hasIbLink) instead of receiving both as
+// server-rendered props -- both the website and a bundled manager-shell
+// desktop app share this one path now. router.refresh() calls replaced
+// with a local reload() that re-fetches both.
+export default function IbRelationshipsManager() {
+  const [rows, setRows] = useState<IbRelationshipRow[] | null>(null);
+  const [accounts, setAccounts] = useState<AccountLite[]>([]);
   const [view, setView] = useState<"flat" | "hierarchy">("flat");
 
+  // Any ACTIVE account can be an IB (even one that already has clients of
+  // its own). Only accounts with no existing IB link can be picked as a
+  // new client -- clientAccountId is @unique, so offering an
+  // already-linked account here would just be a guaranteed 409.
+  const ibOptions: AccountOption[] = accounts
+    .filter((a) => a.status === "ACTIVE")
+    .map((a) => ({ id: a.id, accountNumber: a.accountNumber, fullName: a.fullName }));
+  const clientOptions: AccountOption[] = accounts
+    .filter((a) => a.status === "ACTIVE" && !a.hasIbLink)
+    .map((a) => ({ id: a.id, accountNumber: a.accountNumber, fullName: a.fullName }));
+
+  function reload() {
+    return Promise.all([
+      fetch("/api/manage/ib-relationships")
+        .then((r) => r.json())
+        .then((d: (IbRelationshipRow & { lastPayoutAt: string | null })[]) =>
+          setRows(d.map((r) => ({ ...r, lastPayoutAt: r.lastPayoutAt ? r.lastPayoutAt.replace("T", " ").slice(0, 19) : null })))
+        ),
+      fetch("/api/manage/accounts")
+        .then((r) => r.json())
+        .then(setAccounts),
+    ]);
+  }
+
+  useEffect(() => {
+    reload().catch(() => setRows([]));
+  }, []);
+
   // --- Create form ---
-  const [ibAccountId, setIbAccountId] = useState(ibOptions[0]?.id ?? "");
-  const [clientAccountId, setClientAccountId] = useState(clientOptions[0]?.id ?? "");
+  const [ibAccountId, setIbAccountId] = useState("");
+  const [clientAccountId, setClientAccountId] = useState("");
   const [commissionType, setCommissionType] = useState<"PER_LOT" | "PERCENTAGE">("PER_LOT");
   const [commissionRate, setCommissionRate] = useState("");
   const [createError, setCreateError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+
+  useEffect(() => {
+    if (!ibAccountId && ibOptions[0]) setIbAccountId(ibOptions[0].id);
+    if (!clientAccountId && clientOptions[0]) setClientAccountId(clientOptions[0].id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accounts]);
 
   async function createRelationship(e: React.FormEvent) {
     e.preventDefault();
@@ -115,7 +146,8 @@ export default function IbRelationshipsManager({
       return;
     }
     setCommissionRate("");
-    router.refresh();
+    setClientAccountId("");
+    reload().catch(() => {});
   }
 
   // --- Per-row rate/type edit ---
@@ -144,7 +176,7 @@ export default function IbRelationshipsManager({
       return;
     }
     setSavedId(row.id);
-    router.refresh();
+    reload().catch(() => {});
   }
 
   // --- Pay action ---
@@ -168,11 +200,18 @@ export default function IbRelationshipsManager({
       return;
     }
     setPayTarget(null);
-    router.refresh();
+    reload().catch(() => {});
+  }
+
+  if (rows === null) {
+    return <p className="text-sm text-[var(--text-3)]">Loading...</p>;
   }
 
   return (
     <div className="flex flex-col gap-6">
+      <p className="text-sm text-[var(--text-3)]">
+        {rows.length} relationship{rows.length === 1 ? "" : "s"}. Pending commission is calculated from each client&apos;s closed trades since the last payout.
+      </p>
       <Card title="Add a relationship">
         <form onSubmit={createRelationship} className="flex flex-wrap items-center gap-2">
           <Select value={ibAccountId} onChange={(e) => setIbAccountId(e.target.value)} required className="w-56">
@@ -229,7 +268,7 @@ export default function IbRelationshipsManager({
       >
         {view === "hierarchy" ? (
           <div className="p-[18px]">
-            <HierarchyView rows={initialRows} />
+            <HierarchyView rows={rows} />
           </div>
         ) : (
         <Table>
@@ -243,10 +282,10 @@ export default function IbRelationshipsManager({
             <TableHeaderCell />
           </TableHead>
           <TableBody>
-            {initialRows.length === 0 ? (
+            {rows.length === 0 ? (
               <TableEmptyState colSpan={7}>No IB relationships.</TableEmptyState>
             ) : (
-              initialRows.map((row) => (
+              rows.map((row) => (
                 <TableRow key={row.id}>
                   <TableCell>
                     {row.ibAccountNumber}
