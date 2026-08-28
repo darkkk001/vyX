@@ -1,25 +1,25 @@
 import { redirect } from "next/navigation";
 import { getAdminSession } from "@/lib/auth";
 import { forbidUnlessBrokerAdminOrPermission } from "@/lib/permissions";
-import { prisma } from "@/lib/prisma";
 import { PageHeader } from "@/components/ui/PageHeader";
 import EmergencyControls from "./EmergencyControls";
 
 // BROKER_ADMIN by default -- same carve-out as Risk (this is the same
 // broker-wide policy surface, just the kill switch half of it) --
-// delegatable via EMERGENCY_CONTROLS (see lib/permissions.ts).
+// delegatable via EMERGENCY_CONTROLS (see lib/permissions.ts). Kept its
+// own check here -- stricter than app/manage/(shell)/layout.tsx's own
+// MANAGER-or-BROKER_ADMIN guard, same reasoning as the Manager Settings
+// page's own kept check.
 export default async function ManagerEmergencyPage() {
   const session = await getAdminSession();
   if (await forbidUnlessBrokerAdminOrPermission(session, "EMERGENCY_CONTROLS")) {
     redirect("/manage/login");
   }
 
-  const broker = await prisma.broker.findUniqueOrThrow({ where: { id: session!.brokerId! } });
-
   return (
     <main className="mx-auto max-w-2xl">
       <PageHeader title="Emergency controls" description="The broker-wide kill switch. Existing open positions are never touched by this — it only blocks new orders." />
-      <EmergencyControls initialTradingHalted={broker.tradingHaltedAt != null} />
+      <EmergencyControls />
     </main>
   );
 }

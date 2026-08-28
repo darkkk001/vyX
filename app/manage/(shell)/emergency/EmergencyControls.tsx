@@ -1,7 +1,6 @@
 "use client";
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
@@ -24,12 +23,24 @@ async function patchTradingHalted(tradingHalted: boolean): Promise<{ tradingHalt
   return data as { tradingHalted: boolean };
 }
 
-export default function EmergencyControls({ initialTradingHalted }: { initialTradingHalted: boolean }) {
-  const router = useRouter();
-  const [tradingHalted, setTradingHalted] = useState(initialTradingHalted);
+// Self-fetches its initial state from the already-existing
+// /api/manage/risk route (which already returns tradingHalted alongside
+// every other risk field) instead of receiving initialTradingHalted as
+// a server-rendered prop -- both the website and a bundled
+// manager-shell desktop app (no Server Component of its own) share this
+// one path now.
+export default function EmergencyControls() {
+  const [tradingHalted, setTradingHalted] = useState<boolean | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetch("/api/manage/risk")
+      .then((r) => r.json())
+      .then((d: { tradingHalted: boolean }) => setTradingHalted(d.tradingHalted))
+      .catch(() => setError("failed to load"));
+  }, []);
 
   async function toggle() {
     setBusy(true);
@@ -38,12 +49,15 @@ export default function EmergencyControls({ initialTradingHalted }: { initialTra
       const result = await patchTradingHalted(!tradingHalted);
       setTradingHalted(result.tradingHalted);
       setConfirming(false);
-      router.refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : "update failed");
     } finally {
       setBusy(false);
     }
+  }
+
+  if (tradingHalted === null) {
+    return error ? <Alert tone="danger">{error}</Alert> : <p className="text-sm text-[var(--text-3)]">Loading...</p>;
   }
 
   return (

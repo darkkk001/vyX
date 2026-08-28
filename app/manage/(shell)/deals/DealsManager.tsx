@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Input } from "@/components/ui/Input";
 import { Badge } from "@/components/ui/Badge";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
@@ -21,15 +21,34 @@ export type DealRow = {
   closedAt: string;
 };
 
-export default function DealsManager({ initialRows }: { initialRows: DealRow[] }) {
+// Self-fetches from /api/manage/deals instead of receiving rows as a
+// server-rendered prop -- both the website and a bundled manager-shell
+// desktop app (no Server Component of its own) share this one path now.
+export default function DealsManager() {
+  const [rows, setRows] = useState<DealRow[] | null>(null);
   const [search, setSearch] = useState("");
+
+  useEffect(() => {
+    fetch("/api/manage/deals")
+      .then((r) => r.json())
+      .then(setRows)
+      .catch(() => setRows([]));
+  }, []);
+
   const q = search.trim().toLowerCase();
-  const filtered = q
-    ? initialRows.filter((r) => r.accountNumber.toLowerCase().includes(q) || r.accountFullName.toLowerCase().includes(q) || r.symbol.toLowerCase().includes(q))
-    : initialRows;
+  const filtered = (rows ?? []).filter(
+    (r) => !q || r.accountNumber.toLowerCase().includes(q) || r.accountFullName.toLowerCase().includes(q) || r.symbol.toLowerCase().includes(q)
+  );
+
+  if (rows === null) {
+    return <p className="text-sm text-[var(--text-3)]">Loading...</p>;
+  }
 
   return (
     <div className="flex flex-col gap-4">
+      <p className="text-sm text-[var(--text-3)]">
+        {rows.length} closed trade{rows.length === 1 ? "" : "s"} (most recent 500) across this broker.
+      </p>
       <Input
         type="text"
         placeholder="Search by account number, name, or symbol..."
