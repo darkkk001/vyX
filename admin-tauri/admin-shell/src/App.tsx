@@ -1,17 +1,42 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { AdminShell, type AdminNavGroup, type AdminNavItem } from "@/components/admin/AdminShell";
 import { LogoutButton } from "@/components/admin/LogoutButton";
+import { PageHeader } from "@/components/ui/PageHeader";
 import AuditLogTable from "@/app/(super-admin)/(shell)/audit/AuditLogTable";
+import BrokersManager from "@/app/(super-admin)/(shell)/brokers/BrokersManager";
+import TrialsManager from "@/app/(super-admin)/(shell)/trials/TrialsManager";
+import BillingManager from "@/app/(super-admin)/(shell)/billing/BillingManager";
+import HealthManager from "@/app/(super-admin)/(shell)/health/HealthManager";
+import SecurityManager from "@/app/(super-admin)/(shell)/security/SecurityManager";
+import NotificationsManager from "@/app/(super-admin)/(shell)/notifications/NotificationsManager";
+import AdminsManager from "@/app/(super-admin)/(shell)/admins/AdminsManager";
 import { apiCall } from "@/lib/desktop-api";
 import { initialsFrom } from "@/lib/format";
 
 type ShellInfo = { adminEmail: string | null; unreadNotifications: number };
 
+// A page's own <main className="mx-auto max-w-..."><PageHeader .../>
+// wrapper, reproduced here since a bundled shell has no Server Component
+// page.tsx to supply it -- matches each real page.tsx's title/
+// description/max-width exactly.
+function Section({ maxWidth, title, description, children }: { maxWidth: string; title: string; description?: string; children: ReactNode }) {
+  return (
+    <main className={`mx-auto ${maxWidth}`}>
+      <PageHeader title={title} description={description} />
+      {children}
+    </main>
+  );
+}
+
 // The bundled Super Admin desktop terminal's real entry point. Same
 // in-memory "current section" pattern as manager-shell's own App.tsx
 // (AdminShell takes isActive/renderNavLink as props for exactly this
 // reason). No broker branding to fetch -- Super Admin is a fixed,
-// single-tenant platform surface, not broker-scoped.
+// single-tenant platform surface, not broker-scoped. Every section below
+// mounts the exact same self-fetching *Manager.tsx component the
+// website's own page.tsx renders -- see the bundled-UI architecture plan
+// for why that's possible now (every Super Admin page was inverted from
+// server-props/inline-Server-Component to self-fetch).
 export default function App() {
   const [loggedIn, setLoggedIn] = useState(false);
   const [shellInfo, setShellInfo] = useState<ShellInfo | null>(null);
@@ -21,7 +46,7 @@ export default function App() {
   const [code, setCode] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const [section, setSection] = useState("/audit");
+  const [section, setSection] = useState("/brokers");
 
   async function loadShellInfo() {
     const info = await apiCall<ShellInfo>("/api/admin/shell-info");
@@ -155,6 +180,65 @@ export default function App() {
     </button>
   );
 
+  function renderSection(): ReactNode {
+    switch (section) {
+      case "/brokers":
+        return (
+          <Section maxWidth="max-w-[1400px]" title="All brokers" description="Every broker tenant licensed on VyXTrader">
+            <BrokersManager />
+          </Section>
+        );
+      case "/trials":
+        return (
+          <Section maxWidth="max-w-4xl" title="Trials pending" description="Brokers currently on a trial period">
+            <TrialsManager />
+          </Section>
+        );
+      case "/billing":
+        return (
+          <Section maxWidth="max-w-[1200px]" title="Plans & billing" description="Subscription status per broker — billing is separate from the trading ledger">
+            <BillingManager />
+          </Section>
+        );
+      case "/health":
+        return (
+          <Section maxWidth="max-w-4xl" title="Platform health" description="Service status across the platform">
+            <HealthManager />
+          </Section>
+        );
+      case "/audit":
+        return (
+          <Section maxWidth="max-w-[1400px]" title="Audit log" description="Every platform-level and cross-tenant action, fully logged">
+            <AuditLogTable />
+          </Section>
+        );
+      case "/security":
+        return (
+          <Section
+            maxWidth="max-w-[720px]"
+            title="Security"
+            description="This login is the only way in to platform-wide control -- every broker's tenants, billing, and admin accounts. Two-factor authentication is strongly recommended."
+          >
+            <SecurityManager />
+          </Section>
+        );
+      case "/notifications":
+        return (
+          <Section maxWidth="max-w-3xl" title="Notifications" description="Backoffice staff password-reset requests, across every broker.">
+            <NotificationsManager />
+          </Section>
+        );
+      case "/admins":
+        return (
+          <Section maxWidth="max-w-4xl" title="Admins" description="Broker-scoped admin accounts across every tenant">
+            <AdminsManager />
+          </Section>
+        );
+      default:
+        return <p className="text-sm text-[var(--text-3)]">This section isn't available in the desktop app yet.</p>;
+    }
+  }
+
   return (
     <AdminShell
       title="vyX Super Admin"
@@ -183,11 +267,7 @@ export default function App() {
         </div>
       }
     >
-      {section === "/audit" ? (
-        <AuditLogTable />
-      ) : (
-        <p className="text-sm text-[var(--text-3)]">This section isn't available in the desktop app yet.</p>
-      )}
+      {renderSection()}
     </AdminShell>
   );
 }
