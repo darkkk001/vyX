@@ -89,6 +89,56 @@ fn clear_remembered_broker(app: &tauri::AppHandle) {
     }
 }
 
+// "Remember me" -- persists the trader's session cookie (not their
+// password) to disk so relaunching the app skips the login screen as
+// long as the server-side session is still valid, matching the MT4/5
+// convention of not re-prompting for credentials on every launch. Same
+// plaintext-JSON-file pattern as remembered-broker.json above (not an OS
+// keychain -- a real security tradeoff worth knowing, consistent with
+// this codebase's existing risk posture for that file). Only ever
+// written when the trader explicitly checks "Remember me"; a plain
+// logout or an unchecked "Remember me" on a fresh login clears it.
+fn session_file_path(app: &tauri::AppHandle) -> tauri::Result<std::path::PathBuf> {
+    Ok(app.path().app_data_dir()?.join("session.json"))
+}
+
+fn read_saved_session(app: &tauri::AppHandle) -> Option<String> {
+    let path = session_file_path(app).ok()?;
+    let raw = std::fs::read_to_string(path).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    value.get("cookie")?.as_str().map(|s| s.to_string())
+}
+
+fn write_saved_session(app: &tauri::AppHandle, cookie: &str) {
+    let Ok(path) = session_file_path(app) else { return };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(&path, serde_json::json!({ "cookie": cookie }).to_string());
+}
+
+fn clear_saved_session(app: &tauri::AppHandle) {
+    if let Ok(path) = session_file_path(app) {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+// Called from the login form's "Remember me" checkbox handler right
+// after a successful login -- reads whatever session cookie
+// capture_session_cookie already captured from that login response and
+// writes it to disk.
+#[tauri::command]
+fn remember_session(app: tauri::AppHandle, bridge: tauri::State<'_, ApiBridge>) {
+    if let Some(cookie) = bridge.session_cookie.lock().unwrap().clone() {
+        write_saved_session(&app, &cookie);
+    }
+}
+
+#[tauri::command]
+fn forget_session(app: tauri::AppHandle) {
+    clear_saved_session(&app);
+}
+
 fn load_broker_config() -> BrokerConfig {
     let path = std::env::current_exe()
         .ok()
@@ -482,6 +532,8 @@ const VYX_DESKTOP_INIT_SCRIPT_TEMPLATE: &str = r#"
     },
     rememberBroker: function (hostname) { window.__TAURI__.core.invoke("remember_broker", { hostname: hostname }); },
     forgetBroker: function () { window.__TAURI__.core.invoke("forget_broker"); },
+    rememberSession: function () { window.__TAURI__.core.invoke("remember_session"); },
+    forgetSession: function () { window.__TAURI__.core.invoke("forget_session"); },
     apiCall: function (path, method, body) {
       return window.__TAURI__.core.invoke("api_request", { path: path, method: method, body: body });
     },
@@ -525,11 +577,6 @@ fn main() {
 
     let init_script = VYX_DESKTOP_INIT_SCRIPT_TEMPLATE.replace("__BROKER_HOST__", &host_header);
 
-    let http_client = reqwest::Client::builder()
-        .cookie_store(true)
-        .build()
-        .expect("failed to build reqwest client");
-
     // Shared between the tray menu's "Quit" handler and the window's
     // close-request handler below -- mirrors desktop/main.js's module-
     // level `isQuitting` flag exactly: closing the window normally hides
@@ -552,13 +599,6 @@ fn main() {
         // ours built programmatically below, not just ones declared in
         // tauri.conf.json.
         .plugin(tauri_plugin_window_state::Builder::new().build())
-        .manage(ApiBridge {
-            client: http_client,
-            connect_base,
-            host_header,
-            session_cookie: Mutex::new(None),
-            gateway_ws_base,
-        })
         .manage(WsHandles { prices: Mutex::new(None), trading: Mutex::new(None) })
         .invoke_handler(tauri::generate_handler![
             win_minimize,
@@ -566,12 +606,42 @@ fn main() {
             win_close,
             remember_broker,
             forget_broker,
+            remember_session,
+            forget_session,
             api_request,
             api_request_multipart,
             start_live_streams,
             stop_live_streams
         ])
         .setup(move |app| {
+            // Cookie jar built here (not in main(), before the app handle
+            // exists) specifically so a "Remember me" session saved on a
+            // previous launch (see remember_session/session_file_path) can
+            // be pre-seeded into it -- app_data_dir() needs a real
+            // AppHandle, only available once .setup() runs. Falls back to
+            // an empty jar exactly like .cookie_store(true) always did when
+            // no saved session exists (the overwhelmingly common case: a
+            // fresh launch, or "Remember me" never checked).
+            let app_handle = app.handle().clone();
+            let saved_session = read_saved_session(&app_handle);
+            let jar = reqwest::cookie::Jar::default();
+            if let Some(cookie) = &saved_session {
+                if let Ok(url) = connect_base.parse::<reqwest::Url>() {
+                    jar.add_cookie_str(cookie, &url);
+                }
+            }
+            let http_client = reqwest::Client::builder()
+                .cookie_provider(Arc::new(jar))
+                .build()
+                .expect("failed to build reqwest client");
+            app.manage(ApiBridge {
+                client: http_client,
+                connect_base: connect_base.clone(),
+                host_header: host_header.clone(),
+                session_cookie: Mutex::new(saved_session),
+                gateway_ws_base: gateway_ws_base.clone(),
+            });
+
             let nav_app_handle = app.handle().clone();
             let new_window_app_handle = app.handle().clone();
             let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))

@@ -14,8 +14,14 @@ export default function App() {
   const [loggedIn, setLoggedIn] = useState(false);
   const [accountNumber, setAccountNumber] = useState("");
   const [password, setPassword] = useState("");
+  const [rememberMe, setRememberMe] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loggingIn, setLoggingIn] = useState(false);
+  // Only desktop-tauri has a persisted session file to check (see
+  // remember_session/forget_session in main.rs) -- a plain browser tab has
+  // no such thing, so there's nothing to wait on there and the login form
+  // should render immediately, same as before this feature existed.
+  const [checkingSession, setCheckingSession] = useState(() => !!window.vyxDesktop?.rememberSession);
 
   useEffect(() => {
     tradeApi
@@ -24,18 +30,44 @@ export default function App() {
       .catch(() => setBranding({ brokerName: "VyXTrader", brokerLogoUrl: "", supportEmail: null }));
   }, []);
 
+  // If main.rs found a saved session file, it pre-seeds the reqwest cookie
+  // jar with it before this ever runs -- a plain apiCall("/api/trade/me")
+  // either succeeds (cookie still valid server-side) or fails (expired/
+  // revoked), in which case the login form shows as normal.
+  useEffect(() => {
+    if (!window.vyxDesktop?.rememberSession) return;
+    tradeApi
+      .me()
+      .then(() => setLoggedIn(true))
+      .catch(() => {})
+      .finally(() => setCheckingSession(false));
+  }, []);
+
   async function handleLogin(e: FormEvent) {
     e.preventDefault();
     setError(null);
     setLoggingIn(true);
     try {
       await tradeApi.login(accountNumber, password, "DEMO");
+      if (rememberMe) {
+        window.vyxDesktop?.rememberSession?.();
+      } else {
+        window.vyxDesktop?.forgetSession?.();
+      }
       setLoggedIn(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "login failed");
     } finally {
       setLoggingIn(false);
     }
+  }
+
+  if (checkingSession) {
+    return (
+      <div style={{ display: "flex", flexDirection: "column", height: "100vh", background: "#07090C" }}>
+        <DesktopTitleBar brokerName={branding?.brokerName ?? ""} server="" connected={true} />
+      </div>
+    );
   }
 
   if (!loggedIn) {
@@ -81,6 +113,16 @@ export default function App() {
               onChange={(e) => setPassword(e.target.value)}
               style={{ padding: 10, borderRadius: 6, border: "1px solid #1A222C", background: "#0E1319", color: "#e8ecf4" }}
             />
+            {window.vyxDesktop?.rememberSession && (
+              <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "#8B93A1", cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  checked={rememberMe}
+                  onChange={(e) => setRememberMe(e.target.checked)}
+                />
+                Remember me
+              </label>
+            )}
             {error && <div style={{ color: "#EA3943", fontSize: 13 }}>{error}</div>}
             <button
               type="submit"

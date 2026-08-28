@@ -19,6 +19,12 @@ declare global {
       onMaximizedChange?: (cb: (isMaximized: boolean) => void) => () => void;
       rememberBroker?: (hostname: string) => void;
       forgetBroker?: () => void;
+      // "Remember me" -- present only in desktop-tauri. Persists/clears
+      // the trader's current session cookie to/from disk (see main.rs's
+      // remember_session/forget_session) so a future launch can skip the
+      // login screen while the server-side session is still valid.
+      rememberSession?: () => void;
+      forgetSession?: () => void;
       // The real broker hostname (e.g. "acmefx.vyxtrader.com"), set only by
       // a bundled shell whose own document isn't served from that host --
       // see WebTrader.tsx's two window.location.hostname call sites.

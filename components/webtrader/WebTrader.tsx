@@ -558,6 +558,7 @@ export default function WebTrader({
     if (window.vyxDesktop?.isDesktop) {
       window.vyxDesktop.stopLiveStreams?.();
       window.vyxDesktop.forgetBroker?.();
+      window.vyxDesktop.forgetSession?.();
       // A bundled shell's own document isn't served from the broker's real
       // hostname (it's local content, e.g. tauri.localhost) -- brokerHost
       // is what the shell itself was told at startup, and is the only
