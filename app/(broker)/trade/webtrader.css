@@ -362,6 +362,26 @@
 .pos-pnl { font-weight: 600; font-size: 12.5px; }
 .pos-pnl.pos { color: var(--buy); }
 .pos-pnl.neg { color: var(--sell); }
+
+/* History tab -- same column-table pattern as .pos-table-header/
+   .position-row above (reuses .pos-cell/.pos-symbol/.pos-side/.pos-pnl
+   for identical styling), own grid-template since closed trades don't
+   need the S/L/T/P/comment/action columns open positions do. */
+.history-table-header {
+  display: grid;
+  grid-template-columns: 70px 0.8fr 0.6fr 0.5fr 0.7fr 0.7fr 0.9fr 0.9fr 0.55fr 0.7fr 0.7fr;
+  gap: 8px; padding: 8px 4px; font-size: 10px; color: var(--text-3);
+  letter-spacing: .03em; text-transform: uppercase;
+  border-bottom: 1px solid var(--border); min-width: 820px;
+  position: sticky; top: 0; background: var(--bg-1); z-index: 1;
+}
+.history-row {
+  display: grid;
+  grid-template-columns: 70px 0.8fr 0.6fr 0.5fr 0.7fr 0.7fr 0.9fr 0.9fr 0.55fr 0.7fr 0.7fr;
+  gap: 8px; align-items: center; padding: 9px 4px; border-bottom: 1px solid var(--bg-2);
+  font-size: 12.5px; min-width: 820px;
+}
+.history-row:last-child { border-bottom: none; }
 .pos-actions { display: flex; align-items: center; gap: 2px; justify-content: flex-end; }
 
 .sltp-pill {

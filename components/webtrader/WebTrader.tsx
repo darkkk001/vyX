@@ -190,8 +190,18 @@ export default function WebTrader({
   // over the same pixels.
   const CHART_MIN_HEIGHT = 180;
   const RESIZER_HEIGHT = 6;
-  const maxBottomPanelHeight = useCallback(() => {
-    const available = centerRef.current?.clientHeight ?? 500 + CHART_MIN_HEIGHT + RESIZER_HEIGHT;
+  // Below this, treat the measurement as "layout hasn't settled yet" (the
+  // very first effect tick after mount, before the chart/header have
+  // painted) rather than a real constraint -- returning null lets callers
+  // skip clamping instead of shrinking the panel to its 120px floor on
+  // every page load, which is exactly what happened without this guard:
+  // a too-early clientHeight read (0 or near it) made every fresh load
+  // look like "dragging is disabled," since the panel was pinned at its
+  // minimum before the user ever touched the resizer.
+  const PLAUSIBLE_MIN_CENTER_HEIGHT = 300;
+  const maxBottomPanelHeight = useCallback((): number | null => {
+    const available = centerRef.current?.clientHeight;
+    if (available == null || available < PLAUSIBLE_MIN_CENTER_HEIGHT) return null;
     return Math.max(120, available - CHART_MIN_HEIGHT - RESIZER_HEIGHT);
   }, []);
 
@@ -207,7 +217,9 @@ export default function WebTrader({
       if (!rs) return;
       if (rs.kind === "bottom") {
         const delta = rs.startPos - e.clientY;
-        setBottomPanelHeight(Math.min(500, maxBottomPanelHeight(), Math.max(120, rs.startSize + delta)));
+        const requested = Math.max(120, rs.startSize + delta);
+        const max = maxBottomPanelHeight();
+        setBottomPanelHeight(Math.min(500, max ?? requested, requested));
       } else if (rs.kind === "order") {
         const delta = e.clientX - rs.startPos;
         setOrderPanelWidth(Math.min(420, Math.max(200, rs.startSize + delta)));
@@ -235,9 +247,16 @@ export default function WebTrader({
   // chance to shrink back down.
   useEffect(() => {
     function clamp() {
-      setBottomPanelHeight((h) => Math.min(h, maxBottomPanelHeight()));
+      const max = maxBottomPanelHeight();
+      if (max == null) return; // layout not settled yet -- nothing to correct against
+      setBottomPanelHeight((h) => Math.min(h, max));
     }
-    clamp();
+    // Skips the immediate mount-time call on purpose: right after mount,
+    // .center hasn't painted its real content (chart header, market data)
+    // yet, so PLAUSIBLE_MIN_CENTER_HEIGHT's guard would just no-op here
+    // anyway -- a real, already-too-large stored value gets caught by the
+    // very next actual window resize, and by the drag handler's own clamp
+    // the moment the user touches the resizer.
     window.addEventListener("resize", clamp);
     return () => window.removeEventListener("resize", clamp);
   }, [maxBottomPanelHeight]);
@@ -2317,19 +2336,33 @@ export default function WebTrader({
                       <input type="date" className="mono" value={histTo} onChange={(e) => setHistTo(e.target.value)} />
                     </div>
                   ) : null}
-                  {history.length === 0 ? <div className="empty-state">No closed trades yet</div> : history.map((h) => (
-                    <div className="simple-row" key={h.id}>
-                      <div className="simple-left">
-                        <span className="pos-symbol">{h.symbol.name}</span>
-                        <span className={`pos-side ${h.side.toLowerCase()}`}>{h.side} {parseFloat(h.volume).toFixed(2)}</span>
-                        <span className="net-pos-detail mono">{fmt(parseFloat(h.openPrice), h.symbol.digits)} → {h.closePrice ? fmt(parseFloat(h.closePrice), h.symbol.digits) : "—"}</span>
-                        <span className="net-pos-detail">{h.closedAt ? new Date(h.closedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : ""}</span>
+                  {history.length === 0 ? (
+                    <div className="empty-state">No closed trades yet</div>
+                  ) : (
+                    <>
+                      <div className="history-table-header">
+                        <span>ID</span><span>Symbol</span><span>Type</span><span>Lots</span><span>Open</span><span>Close</span><span>Opened</span><span>Closed</span><span>Swap</span><span>Commission</span><span>Profit</span>
                       </div>
-                      <div className="simple-right">
-                        <span className={`pos-pnl mono ${(h.realizedPnl ? parseFloat(h.realizedPnl) : 0) >= 0 ? "pos" : "neg"}`}>{money(h.realizedPnl ? parseFloat(h.realizedPnl) : 0)}</span>
-                      </div>
-                    </div>
-                  ))}
+                      {history.map((h) => {
+                        const pnl = h.realizedPnl ? parseFloat(h.realizedPnl) : 0;
+                        return (
+                          <div className="history-row" key={h.id}>
+                            <span className="pos-cell mono" style={{ color: "var(--text-3)", fontSize: 11 }}>{h.id.slice(-8)}</span>
+                            <span className="pos-cell pos-symbol">{h.symbol.name}</span>
+                            <span className="pos-cell"><span className={`pos-side ${h.side.toLowerCase()}`}>{h.side === "BUY" ? "Buy" : "Sell"}</span></span>
+                            <span className="pos-cell mono">{parseFloat(h.volume).toFixed(2)}</span>
+                            <span className="pos-cell mono">{fmt(parseFloat(h.openPrice), h.symbol.digits)}</span>
+                            <span className="pos-cell mono">{h.closePrice ? fmt(parseFloat(h.closePrice), h.symbol.digits) : "—"}</span>
+                            <span className="pos-cell" style={{ color: "var(--text-3)", fontSize: 11 }}>{new Date(h.openedAt).toLocaleDateString([], { month: "short", day: "numeric" })} {new Date(h.openedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+                            <span className="pos-cell" style={{ color: "var(--text-3)", fontSize: 11 }}>{h.closedAt ? `${new Date(h.closedAt).toLocaleDateString([], { month: "short", day: "numeric" })} ${new Date(h.closedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "—"}</span>
+                            <span className="pos-cell pos-swap mono">{parseFloat(h.swap) >= 0 ? "+" : ""}{parseFloat(h.swap).toFixed(2)}</span>
+                            <span className="pos-cell pos-commission mono">{parseFloat(h.commission).toFixed(2)}</span>
+                            <span className={`pos-cell pos-pnl mono ${pnl >= 0 ? "pos" : "neg"}`}>{pnl >= 0 ? "+" : ""}{pnl.toFixed(2)}</span>
+                          </div>
+                        );
+                      })}
+                    </>
+                  )}
                 </div>
               ) : null}
 
