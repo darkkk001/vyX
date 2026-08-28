@@ -1,7 +1,6 @@
 "use client";
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { Modal } from "@/components/ui/Modal";
@@ -21,15 +20,28 @@ export type NotificationRow = {
 
 // Mirrors app/manage/(shell)/notifications/NotificationsManager.tsx --
 // same reset-password-inline pattern, targeting AdminUser (broker
-// backoffice staff) instead of Account.
-export default function NotificationsManager({ initialRows }: { initialRows: NotificationRow[] }) {
-  const router = useRouter();
+// backoffice staff) instead of Account. Self-fetches from the already-
+// existing /api/admin/notifications GET (returns this exact shape,
+// unmodified) instead of receiving rows as a server-rendered prop.
+export default function NotificationsManager() {
+  const [rows, setRows] = useState<NotificationRow[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [resetTarget, setResetTarget] = useState<NotificationRow | null>(null);
   const [resetResult, setResetResult] = useState<{ password: string } | null>(null);
   const [resetError, setResetError] = useState<string | null>(null);
   const [resetting, setResetting] = useState(false);
-  const unreadCount = initialRows.filter((r) => !r.read).length;
+
+  function load() {
+    return fetch("/api/admin/notifications")
+      .then((r) => r.json())
+      .then((d: NotificationRow[]) => setRows(d.map((n) => ({ ...n, createdAt: n.createdAt.replace("T", " ").slice(0, 19) }))));
+  }
+
+  useEffect(() => {
+    load().catch(() => setRows([]));
+  }, []);
+
+  const unreadCount = (rows ?? []).filter((r) => !r.read).length;
 
   async function markRead(id: string) {
     await fetch(`/api/admin/notifications/${id}`, {
@@ -37,7 +49,7 @@ export default function NotificationsManager({ initialRows }: { initialRows: Not
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ read: true }),
     });
-    router.refresh();
+    load().catch(() => {});
   }
 
   async function markAllRead() {
@@ -48,7 +60,7 @@ export default function NotificationsManager({ initialRows }: { initialRows: Not
       body: JSON.stringify({ markAllRead: true }),
     });
     setBusy(false);
-    router.refresh();
+    load().catch(() => {});
   }
 
   function openReset(row: NotificationRow) {
@@ -73,6 +85,10 @@ export default function NotificationsManager({ initialRows }: { initialRows: Not
     await markRead(resetTarget.id);
   }
 
+  if (rows === null) {
+    return <p className="text-sm text-[var(--text-3)]">Loading...</p>;
+  }
+
   return (
     <div className="flex flex-col gap-4">
       {unreadCount > 0 ? (
@@ -83,10 +99,10 @@ export default function NotificationsManager({ initialRows }: { initialRows: Not
         </div>
       ) : null}
       <div className="flex flex-col gap-2">
-        {initialRows.length === 0 ? (
+        {rows.length === 0 ? (
           <p className="py-8 text-center text-sm text-[var(--text-3)]">No password-reset requests.</p>
         ) : (
-          initialRows.map((row) => (
+          rows.map((row) => (
             <div
               key={row.id}
               className={`flex items-start justify-between gap-3 rounded-lg border px-4 py-3 ${row.read ? "border-[var(--border)] bg-[var(--bg-1)]" : "border-[var(--accent)] bg-[var(--accent-bg)]"}`}
@@ -125,7 +141,7 @@ export default function NotificationsManager({ initialRows }: { initialRows: Not
                 <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-2)] px-3 py-2 text-center font-mono text-lg text-[var(--text-1)]">
                   {resetResult.password}
                 </div>
-                <Button variant="primary" onClick={() => { setResetTarget(null); router.refresh(); }}>
+                <Button variant="primary" onClick={() => { setResetTarget(null); load().catch(() => {}); }}>
                   Done
                 </Button>
               </>
