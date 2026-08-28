@@ -1,7 +1,6 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
 import {
   SYMBOL_DEFS,
   createInitialMarket,
@@ -101,6 +100,7 @@ export default function WebTrader({
   brokerName,
   brokerLogoUrl,
   supportEmail,
+  onSessionExpired,
 }: {
   brokerName: string;
   brokerLogoUrl: string;
@@ -108,8 +108,12 @@ export default function WebTrader({
   // entirely rather than leaking the platform's own address (see
   // Broker.supportEmail's schema comment).
   supportEmail: string | null;
+  // Called when a session refresh (me()) comes back unauthenticated.
+  // Defaults to the website's own behavior (redirect to the Next.js login
+  // route) -- the bundled desktop shell has no such route and passes its
+  // own handler that shows its local login screen instead.
+  onSessionExpired?: () => void;
 }) {
-  const router = useRouter();
 
   const [market, setMarket] = useState<Record<string, MarketState>>(() => createInitialMarket());
   const [storedLayout] = useState<StoredLayout>(() => loadStoredLayout());
@@ -479,9 +483,10 @@ export default function WebTrader({
     try {
       setAccount(await tradeApi.me());
     } catch {
-      router.push("/trade/login");
+      if (onSessionExpired) onSessionExpired();
+      else window.location.href = "/trade/login";
     }
-  }, [router]);
+  }, [onSessionExpired]);
   const refreshPositions = useCallback(async () => setPositions(await tradeApi.positions().catch(() => [])), []);
   // Fetches both the Pending Orders view and the full-lifecycle Orders
   // view (docs/webtrader-stm-architecture-review.md §4.5) together --
@@ -552,8 +557,15 @@ export default function WebTrader({
     }
     if (window.vyxDesktop?.isDesktop) {
       window.vyxDesktop.forgetBroker?.();
-      const parts = window.location.hostname.split(".");
-      const root = parts.length > 2 ? parts.slice(1).join(".") : window.location.hostname;
+      // A bundled shell's own document isn't served from the broker's real
+      // hostname (it's local content, e.g. tauri.localhost) -- brokerHost
+      // is what the shell itself was told at startup, and is the only
+      // correct source once bundled. Falls back to window.location.hostname
+      // for the current, still-fully-remote desktop build, which has no
+      // brokerHost and whose document genuinely is served from the real host.
+      const hostname = window.vyxDesktop.brokerHost ?? window.location.hostname;
+      const parts = hostname.split(".");
+      const root = parts.length > 2 ? parts.slice(1).join(".") : hostname;
       window.location.href = `https://${root}/launch`;
     } else {
       window.location.href = "/trade/login";
@@ -764,7 +776,7 @@ export default function WebTrader({
   useEffect(() => {
     const remember = new URLSearchParams(window.location.search).get("remember");
     if (account && window.vyxDesktop?.isDesktop && remember !== "0") {
-      window.vyxDesktop.rememberBroker?.(window.location.hostname);
+      window.vyxDesktop.rememberBroker?.(window.vyxDesktop.brokerHost ?? window.location.hostname);
     }
   }, [account]);
 

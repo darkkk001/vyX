@@ -19,6 +19,10 @@ declare global {
       onMaximizedChange?: (cb: (isMaximized: boolean) => void) => () => void;
       rememberBroker?: (hostname: string) => void;
       forgetBroker?: () => void;
+      // The real broker hostname (e.g. "acmefx.vyxtrader.com"), set only by
+      // a bundled shell whose own document isn't served from that host --
+      // see WebTrader.tsx's two window.location.hostname call sites.
+      brokerHost?: string;
     };
   }
 }
