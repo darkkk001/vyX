@@ -377,6 +377,13 @@ export default function WebTrader({
   const [quickOrderSl, setQuickOrderSl] = useState("");
   const [quickOrderTp, setQuickOrderTp] = useState("");
   const [quickOrderComment, setQuickOrderComment] = useState("");
+  // "MARKET" keeps the original two-button (Buy/Sell) ticket; any
+  // PendingType instead shows a single directional button + a Price
+  // field, same shape as the chart right-click pending-order flow
+  // (quickPlacePendingAtPrice) -- side is implied by the chosen type,
+  // matching MT4/5's own single order-type dropdown convention.
+  const [quickOrderType, setQuickOrderType] = useState<"MARKET" | PendingType>("MARKET");
+  const [quickOrderPrice, setQuickOrderPrice] = useState("");
 
   const [genericModal, setGenericModal] = useState<null | {
     title: string; message: string; showInput: boolean; defaultValue?: string; okLabel: string;
@@ -384,7 +391,10 @@ export default function WebTrader({
   }>(null);
   const [genericModalValue, setGenericModalValue] = useState("");
 
-  const [wlContextMenu, setWlContextMenu] = useState<{ x: number; y: number } | null>(null);
+  // `symbol` is set only when right-clicking a specific row (vs. empty
+  // watchlist space) -- gates the "Symbol specification" item below,
+  // which needs to know which symbol to show.
+  const [wlContextMenu, setWlContextMenu] = useState<{ x: number; y: number; symbol?: string } | null>(null);
   const [chartContextMenu, setChartContextMenu] = useState<{ x: number; y: number; price: number } | null>(null);
   // Reported live: right-clicking the chart to open the buy-stop/limit
   // menu, then left-clicking elsewhere (or pressing Escape) to dismiss
@@ -1523,6 +1533,7 @@ export default function WebTrader({
     setQuickOrder({ symbol: symbolName });
     setQuickOrderVolume(volume.toFixed(2));
     setQuickOrderRisk(""); setQuickOrderSl(""); setQuickOrderTp(""); setQuickOrderComment("");
+    setQuickOrderType("MARKET"); setQuickOrderPrice("");
   }
   async function submitQuickOrder(side: "BUY" | "SELL") {
     if (!quickOrder) return;
@@ -1544,6 +1555,33 @@ export default function WebTrader({
         pushToast(`${quickOrder.symbol} order submitted — awaiting dealer approval`);
         await refreshOrders();
       }
+    } catch (err) {
+      pushToast(err instanceof Error ? err.message : "order failed");
+    }
+  }
+  // Same ticket, pending-type path (Buy/Sell Limit/Stop) -- side comes
+  // from the chosen type, and price is the trader's own entry rather than
+  // the current bid/ask, same validation as the chart right-click flow
+  // (quickPlacePendingAtPrice).
+  async function submitQuickPendingOrder(type: PendingType) {
+    if (!quickOrder) return;
+    const mm = market[quickOrder.symbol];
+    if (!mm.live) { pushToast("No live feed for this symbol"); return; }
+    const price = parseFloat(quickOrderPrice);
+    if (!Number.isFinite(price) || price <= 0) { pushToast("Enter a valid price"); return; }
+    if (!isValidPendingPrice(type, price, mm.bid)) { pushToast(pendingPriceRuleText(type)); return; }
+    const side = type.startsWith("buy") ? "BUY" : "SELL";
+    const orderType = type.endsWith("limit") ? "LIMIT" : "STOP";
+    const vol = parseFloat(quickOrderVolume) || 0.01;
+    const sl = quickOrderSl === "" ? null : parseFloat(quickOrderSl);
+    const tp = quickOrderTp === "" ? null : parseFloat(quickOrderTp);
+    const error = isValidSlTpForSide(side, sl, tp, price);
+    if (error) { pushToast(error); return; }
+    try {
+      await tradeApi.placeOrder({ symbol: quickOrder.symbol, side, type: orderType, volume: vol, price, slPrice: sl, tpPrice: tp, idempotencyKey: crypto.randomUUID() });
+      setQuickOrder(null);
+      pushToast(`Pending ${type.replace("_", " ")} placed for ${quickOrder.symbol} @ ${fmt(price, mm.def.digits)}`);
+      await refreshOrders();
     } catch (err) {
       pushToast(err instanceof Error ? err.message : "order failed");
     }
@@ -2510,7 +2548,15 @@ export default function WebTrader({
                 const changePct = ((row.bid - row.dayOpen) / row.dayOpen) * 100;
                 const flash = row.bid > row.prevBid ? "up" : row.bid < row.prevBid ? "down" : "";
                 return (
-                  <div key={name} className={`wl-item${name === activeSymbol ? " active" : ""}`} style={{ gridTemplateColumns: wlGridTemplate }} onClick={() => selectSymbol(name)} onDoubleClick={() => openQuickOrder(name)} {...attachDragHandlers(name)}>
+                  <div
+                    key={name}
+                    className={`wl-item${name === activeSymbol ? " active" : ""}`}
+                    style={{ gridTemplateColumns: wlGridTemplate }}
+                    onClick={() => selectSymbol(name)}
+                    onDoubleClick={() => openQuickOrder(name)}
+                    onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setWlMenuOpen(true); setWlContextMenu({ x: e.clientX, y: e.clientY, symbol: name }); }}
+                    {...attachDragHandlers(name)}
+                  >
                     <span className="wl-drag-handle">⋮⋮</span>
                     <span className="wl-cell wl-symbol">{name}</span>
                     {columnPrefs.signal ? <span className={`wl-cell wl-signal ${row.live && row.bid >= row.dayOpen ? "wl-pos" : "wl-neg"}`}>{row.live ? (row.bid >= row.dayOpen ? "▲" : "▼") : "—"}</span> : null}
@@ -2540,7 +2586,24 @@ export default function WebTrader({
             </div>
             {wlMenuOpen && wlContextMenu ? (
               <div className="wl-context-menu show" style={{ left: wlContextMenu.x, top: wlContextMenu.y }} onMouseLeave={() => setWlMenuOpen(false)}>
-                <div className="wl-ctx-title">Show columns</div>
+                {wlContextMenu.symbol ? (
+                  <>
+                    <div
+                      className="wl-ctx-item"
+                      onClick={() => {
+                        selectSymbol(wlContextMenu.symbol!);
+                        setSymbolInfoOpen(true);
+                        setWlMenuOpen(false);
+                      }}
+                    >
+                      <span className="wl-ctx-check" />
+                      <span>Symbol specification — {wlContextMenu.symbol}</span>
+                    </div>
+                    <div className="wl-ctx-title">Show columns</div>
+                  </>
+                ) : (
+                  <div className="wl-ctx-title">Show columns</div>
+                )}
                 {(["signal", "change", "spread", "high", "low"] as const).map((key) => (
                   <div key={key} className="wl-ctx-item" onClick={() => setColumnPrefs((prev) => ({ ...prev, [key]: !prev[key] }))}>
                     <span className="wl-ctx-check">{columnPrefs[key] ? "✓" : ""}</span>
@@ -2605,16 +2668,42 @@ export default function WebTrader({
             <div className="generic-modal-card">
               <div className="quick-order-header"><span>{quickOrder.symbol}</span><span className="mono">{market[quickOrder.symbol].live ? fmt(market[quickOrder.symbol].bid, market[quickOrder.symbol].def.digits) : "No live feed"}</span></div>
               <div className="field-group">
+                <div className="field">
+                  <span className="field-label">Order type</span>
+                  <select className="mono" value={quickOrderType} onChange={(e) => setQuickOrderType(e.target.value as "MARKET" | PendingType)}>
+                    <option value="MARKET">Market</option>
+                    <option value="buy_limit">Buy Limit</option>
+                    <option value="sell_limit">Sell Limit</option>
+                    <option value="buy_stop">Buy Stop</option>
+                    <option value="sell_stop">Sell Stop</option>
+                  </select>
+                </div>
                 <div className="field"><span className="field-label">Volume</span><input className="mono" style={{ width: 70 }} value={quickOrderVolume} onChange={(e) => setQuickOrderVolume(e.target.value)} /></div>
-                <div className="field"><span className="field-label">Risk %</span><input className="mono" style={{ width: 70 }} placeholder="—" value={quickOrderRisk} onChange={(e) => setQuickOrderRisk(e.target.value)} /></div>
+                {quickOrderType === "MARKET" ? (
+                  <div className="field"><span className="field-label">Risk %</span><input className="mono" style={{ width: 70 }} placeholder="—" value={quickOrderRisk} onChange={(e) => setQuickOrderRisk(e.target.value)} /></div>
+                ) : (
+                  <div className="field"><span className="field-label">Price</span><input className="mono" style={{ width: 90 }} placeholder={pendingPriceRuleText(quickOrderType)} value={quickOrderPrice} onChange={(e) => setQuickOrderPrice(e.target.value)} /></div>
+                )}
                 <div className="field"><span className="field-label">Stop loss</span><input className="mono" placeholder="—" value={quickOrderSl} onChange={(e) => setQuickOrderSl(e.target.value)} /></div>
                 <div className="field"><span className="field-label">Take profit</span><input className="mono" placeholder="—" value={quickOrderTp} onChange={(e) => setQuickOrderTp(e.target.value)} /></div>
                 <div className="field"><span className="field-label">Comment</span><input className="mono" style={{ width: 110 }} placeholder="Optional" value={quickOrderComment} onChange={(e) => setQuickOrderComment(e.target.value)} /></div>
               </div>
-              <div className="oc-row" style={{ marginBottom: 0 }}>
-                <button className="buysell-btn buy" disabled={!market[quickOrder.symbol].live} onClick={() => submitQuickOrder("BUY")}>Buy</button>
-                <button className="buysell-btn sell" disabled={!market[quickOrder.symbol].live} onClick={() => submitQuickOrder("SELL")}>Sell</button>
-              </div>
+              {quickOrderType === "MARKET" ? (
+                <div className="oc-row" style={{ marginBottom: 0 }}>
+                  <button className="buysell-btn buy" disabled={!market[quickOrder.symbol].live} onClick={() => submitQuickOrder("BUY")}>Buy</button>
+                  <button className="buysell-btn sell" disabled={!market[quickOrder.symbol].live} onClick={() => submitQuickOrder("SELL")}>Sell</button>
+                </div>
+              ) : (
+                <div className="oc-row" style={{ marginBottom: 0 }}>
+                  <button
+                    className={`buysell-btn ${quickOrderType.startsWith("buy") ? "buy" : "sell"}`}
+                    disabled={!market[quickOrder.symbol].live}
+                    onClick={() => submitQuickPendingOrder(quickOrderType)}
+                  >
+                    Place {quickOrderType.replace("_", " ").replace(/\b\w/g, (c) => c.toUpperCase())}
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         </div>
