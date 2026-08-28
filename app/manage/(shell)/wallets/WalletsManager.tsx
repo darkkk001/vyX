@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Input } from "@/components/ui/Input";
 import { Badge } from "@/components/ui/Badge";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
@@ -17,15 +17,33 @@ export type WalletRow = {
 
 const statusTone = { ACTIVE: "success", SUSPENDED: "warning", CLOSED: "neutral" } as const;
 
-export default function WalletsManager({ initialRows }: { initialRows: WalletRow[] }) {
+// Self-fetches from the already-existing /api/manage/accounts route
+// (which already returns balance/credit alongside every other account
+// field) instead of a dedicated query + server-rendered initialRows
+// prop -- no new route needed, both the website and a bundled
+// manager-shell desktop app share this one path now.
+export default function WalletsManager() {
+  const [rows, setRows] = useState<WalletRow[] | null>(null);
   const [search, setSearch] = useState("");
+
+  useEffect(() => {
+    fetch("/api/manage/accounts")
+      .then((r) => r.json())
+      .then((accounts: WalletRow[]) => setRows(accounts))
+      .catch(() => setRows([]));
+  }, []);
+
   const q = search.trim().toLowerCase();
-  const filtered = q
-    ? initialRows.filter((r) => r.accountNumber.toLowerCase().includes(q) || r.fullName.toLowerCase().includes(q))
-    : initialRows;
+  const filtered = (rows ?? []).filter(
+    (r) => !q || r.accountNumber.toLowerCase().includes(q) || r.fullName.toLowerCase().includes(q)
+  );
 
   const totalBalance = filtered.reduce((s, r) => s + Number(r.balance), 0);
   const totalCredit = filtered.reduce((s, r) => s + Number(r.credit), 0);
+
+  if (rows === null) {
+    return <p className="text-sm text-[var(--text-3)]">Loading...</p>;
+  }
 
   return (
     <div className="flex flex-col gap-4">

@@ -1,3 +1,6 @@
+"use client";
+
+import { useEffect, useState } from "react";
 import { Badge } from "@/components/ui/Badge";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
 
@@ -19,7 +22,23 @@ function statusFor(row: MarginRow): { label: string; tone: "danger" | "warning" 
   return { label: "OK", tone: "success" };
 }
 
-export default function MarginManager({ rows }: { rows: MarginRow[] }) {
+// Self-fetches from /api/manage/margin instead of receiving rows as a
+// server-rendered prop -- both the website and a bundled manager-shell
+// desktop app (no Server Component of its own) share this one path now.
+export default function MarginManager() {
+  const [rows, setRows] = useState<MarginRow[] | null>(null);
+
+  useEffect(() => {
+    fetch("/api/manage/margin")
+      .then((r) => r.json())
+      .then(setRows)
+      .catch(() => setRows([]));
+  }, []);
+
+  if (rows === null) {
+    return <p className="text-sm text-[var(--text-3)]">Loading...</p>;
+  }
+
   return (
     <Table>
       <TableHead>
