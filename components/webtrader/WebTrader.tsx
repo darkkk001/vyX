@@ -12,7 +12,7 @@ import {
   type Candle,
   type Timeframe,
 } from "@/lib/market-simulator";
-import { tradeApi, type AccountInfo, type ApiPosition, type ApiOrder, type ApiFundsRequest, type ApiKycStatus, type ApiLinkedAccount, type ApiSession } from "@/lib/trade-api";
+import { tradeApi, serverNow, type AccountInfo, type ApiPosition, type ApiOrder, type ApiFundsRequest, type ApiKycStatus, type ApiLinkedAccount, type ApiSession } from "@/lib/trade-api";
 import KLineChartPanel, { type KLineChartHandle, type ChartLine } from "./KLineChartPanel";
 import DesktopTitleBar from "./DesktopTitleBar";
 import SessionClock from "./SessionClock";
@@ -727,7 +727,7 @@ export default function WebTrader({
   // ---------- price tick ----------
   const liveTicksRef = useRef<Record<string, { bid: number; ask: number }>>({});
   useEffect(() => {
-    const interval = setInterval(() => setMarket((prev) => tickMarket(prev, liveTicksRef.current)), 1500);
+    const interval = setInterval(() => setMarket((prev) => tickMarket(prev, liveTicksRef.current, serverNow())), 1500);
     return () => clearInterval(interval);
   }, []);
 

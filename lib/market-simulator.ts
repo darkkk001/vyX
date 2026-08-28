@@ -118,7 +118,7 @@ export function createInitialMarket(): Record<string, MarketState> {
   return market;
 }
 
-function applyBidAsk(m: MarketState, bid: number, ask: number) {
+function applyBidAsk(m: MarketState, bid: number, ask: number, now: number) {
   m.prevBid = m.bid;
   m.bid = bid;
   m.ask = ask;
@@ -126,7 +126,7 @@ function applyBidAsk(m: MarketState, bid: number, ask: number) {
   m.low = Math.min(m.low, m.bid);
 
   TIMEFRAMES.forEach((tf) => {
-    const start = bucketStartMs(tf, Date.now());
+    const start = bucketStartMs(tf, now);
     const candles = m.candles[tf];
     if (m.lastCandleStart[tf] !== start) {
       m.lastCandleStart[tf] = start;
@@ -153,14 +153,24 @@ function applyBidAsk(m: MarketState, bid: number, ask: number) {
 // a fabricated price as if it were real, or let anything (auto-close,
 // order placement) act on one — see ChartCell/WebTrader's "No live feed"
 // state and app/api/trade/orders/route.ts's server-side freshness check.
+//
+// `now` (optional, defaults to the trader's own Date.now()): the moment
+// used to decide which candle bucket this tick belongs to. Callers with
+// real ticks should pass a server-clock-corrected value (lib/trade-
+// api.ts's serverNow()) instead of the default -- the trader's own
+// system clock can be skewed by minutes, and bucketing a live candle
+// against the wrong clock misaligns it against the real, server-seeded
+// history the instant the two meet on the chart. Reported live as
+// candles looking "torn."
 export function tickMarket(
   market: Record<string, MarketState>,
-  liveTicks?: Record<string, { bid: number; ask: number }>
+  liveTicks?: Record<string, { bid: number; ask: number }>,
+  now: number = Date.now()
 ): Record<string, MarketState> {
   for (const [name, m] of Object.entries(market)) {
     const live = liveTicks?.[name];
     if (live) {
-      applyBidAsk(m, live.bid, live.ask);
+      applyBidAsk(m, live.bid, live.ask, now);
       m.live = true;
     } else {
       m.live = false;

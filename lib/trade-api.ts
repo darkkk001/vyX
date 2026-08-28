@@ -2,11 +2,32 @@
 // client component. Every call relies on the httpOnly session cookie for
 // auth — no tokens handled in JS.
 
+// The trader's own system clock, used nowhere near auth but relied on by
+// components/webtrader's client-side candle bucketing (lib/market-
+// simulator.ts's applyBidAsk) to decide when a new candle starts. A
+// skewed local clock silently misaligned live candles against the real,
+// server-seeded history the moment the two met -- reported live as
+// candles looking "torn." Every response carries a standard HTTP `Date`
+// header for free; recalibrating from it on every single API call (this
+// app polls every ~2s) keeps the correction current without a dedicated
+// endpoint or a background timer of its own.
+let serverTimeOffsetMs = 0;
+export function serverNow(): number {
+  return Date.now() + serverTimeOffsetMs;
+}
+function recalibrateFromResponse(response: Response) {
+  const header = response.headers.get("date");
+  if (!header) return;
+  const serverMs = Date.parse(header);
+  if (Number.isFinite(serverMs)) serverTimeOffsetMs = serverMs - Date.now();
+}
+
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     ...init,
     headers: { "Content-Type": "application/json", ...init?.headers },
   });
+  recalibrateFromResponse(response);
   const body = await response.json().catch(() => null);
   if (!response.ok) {
     throw new Error(body?.error ?? `request to ${path} failed (${response.status})`);
