@@ -57,6 +57,7 @@ export async function GET() {
       hasSsoSecret: b.ssoSecret != null,
       supportEmail: b.supportEmail,
       logoUrl: b.logoUrl,
+      primaryColor: b.primaryColor,
     })),
     totalEndClients,
   });

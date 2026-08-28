@@ -33,8 +33,14 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   const supportEmail = hasSupportEmail ? (typeof body.supportEmail === "string" && body.supportEmail.trim() ? body.supportEmail.trim() : null) : undefined;
   const hasLogoUrl = "logoUrl" in (body ?? {});
   const logoUrl = hasLogoUrl ? (typeof body.logoUrl === "string" && body.logoUrl.trim() ? body.logoUrl.trim() : null) : undefined;
-  if (!executionEngine && !status && !hasSupportEmail && !hasLogoUrl) {
-    return NextResponse.json({ error: "executionEngine, status, supportEmail, or logoUrl is required" }, { status: 400 });
+  const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
+  const hasPrimaryColor = "primaryColor" in (body ?? {});
+  if (hasPrimaryColor && typeof body.primaryColor === "string" && body.primaryColor.trim() && !HEX_COLOR_RE.test(body.primaryColor.trim())) {
+    return NextResponse.json({ error: "primaryColor must be a 6-digit hex color like #1e8a5f" }, { status: 400 });
+  }
+  const primaryColor = hasPrimaryColor ? (typeof body.primaryColor === "string" && body.primaryColor.trim() ? body.primaryColor.trim() : null) : undefined;
+  if (!executionEngine && !status && !hasSupportEmail && !hasLogoUrl && !hasPrimaryColor) {
+    return NextResponse.json({ error: "executionEngine, status, supportEmail, logoUrl, or primaryColor is required" }, { status: 400 });
   }
 
   const existing = await prisma.broker.findUnique({ where: { id } });
@@ -120,6 +126,21 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       });
     }
 
+    if (hasPrimaryColor) {
+      const broker = await tx.broker.update({ where: { id }, data: { primaryColor } });
+      await tx.auditLog.create({
+        data: {
+          brokerId: id,
+          actorAdminId: session!.adminId,
+          action: "BROKER_PRIMARY_COLOR_CHANGED",
+          entityType: "Broker",
+          entityId: id,
+          oldValue: { primaryColor: existing.primaryColor },
+          newValue: { primaryColor: broker.primaryColor },
+        },
+      });
+    }
+
     return tx.broker.findUniqueOrThrow({ where: { id } });
   });
 
@@ -127,6 +148,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     id: updated.id,
     supportEmail: updated.supportEmail,
     logoUrl: updated.logoUrl,
+    primaryColor: updated.primaryColor,
     executionEngine: updated.executionEngine,
     status: updated.status,
     trialEndsAt: updated.trialEndsAt,

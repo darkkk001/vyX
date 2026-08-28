@@ -25,6 +25,7 @@ export type BrokerRow = {
   hasSsoSecret: boolean;
   supportEmail: string | null;
   logoUrl: string | null;
+  primaryColor: string | null;
 };
 
 type AdminOption = { id: string; email: string; role: string; status: string; brokerId: string | null };
@@ -165,6 +166,11 @@ export default function BrokersManager() {
   const [detailLogoBusy, setDetailLogoBusy] = useState(false);
   const [detailLogoError, setDetailLogoError] = useState<string | null>(null);
 
+  // --- Branding / primary color (Tenant detail modal) ---
+  const [detailPrimaryColorInput, setDetailPrimaryColorInput] = useState("#1e8a5f");
+  const [detailPrimaryColorBusy, setDetailPrimaryColorBusy] = useState(false);
+  const [detailPrimaryColorError, setDetailPrimaryColorError] = useState<string | null>(null);
+
   async function openDetail(row: BrokerRow) {
     setDetailTarget(row);
     setDetailAdmins(null);
@@ -176,6 +182,8 @@ export default function BrokersManager() {
     setSupportEmailError(null);
     setDetailLogoUrlInput(row.logoUrl ?? "");
     setDetailLogoError(null);
+    setDetailPrimaryColorInput(row.primaryColor ?? "#1e8a5f");
+    setDetailPrimaryColorError(null);
     const response = await fetch("/api/admin/admins");
     if (response.ok) {
       const all = (await response.json()) as AdminOption[];
@@ -315,6 +323,27 @@ export default function BrokersManager() {
     const { logoUrl: saved } = (await response.json()) as { logoUrl: string | null };
     setDetailTarget((prev) => (prev ? { ...prev, logoUrl: saved } : prev));
     setDetailLogoUrlInput(saved ?? "");
+    reload().catch(() => {});
+  }
+
+  async function savePrimaryColor() {
+    if (!detailTarget) return;
+    setDetailPrimaryColorBusy(true);
+    setDetailPrimaryColorError(null);
+    const response = await fetch(`/api/admin/brokers/${detailTarget.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ primaryColor: detailPrimaryColorInput }),
+    });
+    setDetailPrimaryColorBusy(false);
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      setDetailPrimaryColorError(body.error ?? "failed to save");
+      return;
+    }
+    const { primaryColor } = (await response.json()) as { primaryColor: string | null };
+    setDetailTarget((prev) => (prev ? { ...prev, primaryColor } : prev));
+    setDetailPrimaryColorInput(primaryColor ?? "#1e8a5f");
     reload().catch(() => {});
   }
 
@@ -612,6 +641,27 @@ export default function BrokersManager() {
                 </Button>
               </div>
               {detailLogoError ? <p className="mt-1.5 text-sm text-[var(--sell)]">{detailLogoError}</p> : null}
+
+              <div className="mt-3 flex items-center gap-2">
+                <input
+                  type="color"
+                  value={detailPrimaryColorInput}
+                  onChange={(e) => setDetailPrimaryColorInput(e.target.value)}
+                  title="Primary brand color"
+                  className="h-9 w-16 shrink-0 rounded border border-[var(--border)] bg-[var(--bg-2)]"
+                />
+                <Input
+                  mono
+                  placeholder="#1e8a5f"
+                  value={detailPrimaryColorInput}
+                  onChange={(e) => setDetailPrimaryColorInput(e.target.value)}
+                  className="w-28"
+                />
+                <Button size="sm" variant="primary" disabled={detailPrimaryColorBusy} onClick={savePrimaryColor}>
+                  {detailPrimaryColorBusy ? "Saving..." : "Save"}
+                </Button>
+              </div>
+              {detailPrimaryColorError ? <p className="mt-1.5 text-sm text-[var(--sell)]">{detailPrimaryColorError}</p> : null}
             </ModalSection>
 
             <ModalSection label="Tenant lifecycle">

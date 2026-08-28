@@ -42,6 +42,7 @@ const LABELS: Record<string, string> = {
   BROKER_EXECUTION_ENGINE_CHANGED: "Changed execution engine",
   BROKER_SUPPORT_EMAIL_CHANGED: "Changed WebTrader support email",
   BROKER_LOGO_CHANGED: "Changed broker logo",
+  BROKER_PRIMARY_COLOR_CHANGED: "Changed broker primary color",
   BROKER_SSO_SECRET_GENERATED: "Generated WebTrader SSO secret",
   BROKER_SSO_SECRET_ROTATED: "Rotated WebTrader SSO secret",
   BROKER_SSO_SECRET_REVOKED: "Revoked WebTrader SSO secret",
