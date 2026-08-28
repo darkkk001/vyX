@@ -1,7 +1,6 @@
 "use client";
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
 import { Select } from "@/components/ui/Select";
 import { Input } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
@@ -20,23 +19,39 @@ export type RoutingRuleRow = {
 export type LpOption = { id: string; name: string };
 export type SymbolOption = { id: string; name: string };
 
-export default function LpRoutingManager({
-  initialRows,
-  lpOptions,
-  symbolOptions,
-}: {
-  initialRows: RoutingRuleRow[];
-  lpOptions: LpOption[];
-  symbolOptions: SymbolOption[];
-}) {
-  const router = useRouter();
-  const [liquidityProviderId, setLiquidityProviderId] = useState(lpOptions[0]?.id ?? "");
+// Self-fetches from the already-existing /api/manage/lp-routing,
+// /api/manage/liquidity-providers, and /api/manage/symbols GET routes
+// instead of receiving all three as server-rendered props -- both the
+// website and a bundled manager-shell desktop app (no Server Component
+// of its own) share this one path now.
+export default function LpRoutingManager() {
+  const [rows, setRows] = useState<RoutingRuleRow[] | null>(null);
+  const [lpOptions, setLpOptions] = useState<LpOption[]>([]);
+  const [symbolOptions, setSymbolOptions] = useState<SymbolOption[]>([]);
+  const [liquidityProviderId, setLiquidityProviderId] = useState("");
   const [symbolId, setSymbolId] = useState(""); // "" = broker-wide default
   const [priority, setPriority] = useState("1");
   const [notes, setNotes] = useState("");
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+
+  async function load() {
+    const [ruleRows, providers, symbols] = await Promise.all([
+      fetch("/api/manage/lp-routing").then((r) => r.json()),
+      fetch("/api/manage/liquidity-providers").then((r) => r.json()),
+      fetch("/api/manage/symbols").then((r) => r.json()),
+    ]);
+    setRows(ruleRows);
+    const lpOpts: LpOption[] = (providers as { id: string; name: string }[]).map((p) => ({ id: p.id, name: p.name }));
+    setLpOptions(lpOpts);
+    setLiquidityProviderId((prev) => prev || lpOpts[0]?.id || "");
+    setSymbolOptions((symbols as { symbolId: string; symbolName: string }[]).map((s) => ({ id: s.symbolId, name: s.symbolName })));
+  }
+
+  useEffect(() => {
+    load().catch(() => setRows([]));
+  }, []);
 
   async function createRule(e: React.FormEvent) {
     e.preventDefault();
@@ -54,14 +69,14 @@ export default function LpRoutingManager({
       return;
     }
     setNotes("");
-    router.refresh();
+    load().catch(() => {});
   }
 
   async function deleteRule(id: string) {
     setDeletingId(id);
     await fetch(`/api/manage/lp-routing/${id}`, { method: "DELETE" });
     setDeletingId(null);
-    router.refresh();
+    load().catch(() => {});
   }
 
   return (
@@ -113,10 +128,12 @@ export default function LpRoutingManager({
           <TableHeaderCell />
         </TableHead>
         <TableBody>
-          {initialRows.length === 0 ? (
+          {rows === null ? (
+            <TableEmptyState colSpan={5}>Loading...</TableEmptyState>
+          ) : rows.length === 0 ? (
             <TableEmptyState colSpan={5}>No routing rules yet.</TableEmptyState>
           ) : (
-            initialRows.map((row) => (
+            rows.map((row) => (
               <TableRow key={row.id}>
                 <TableCell mono>{row.symbolName ?? "Default (all symbols)"}</TableCell>
                 <TableCell align="right" mono>{row.priority}</TableCell>

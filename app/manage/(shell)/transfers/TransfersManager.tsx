@@ -1,7 +1,6 @@
 "use client";
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 import { Button } from "@/components/ui/Button";
@@ -18,10 +17,17 @@ export type TransferRow = {
   createdAt: string;
 };
 
-export type AccountOption = { id: string; accountNumber: string; fullName: string };
+export type AccountOption = { id: string; accountNumber: string; fullName: string; status?: string };
 
-export default function TransfersManager({ initialRows, accounts }: { initialRows: TransferRow[]; accounts: AccountOption[] }) {
-  const router = useRouter();
+// Self-fetches from the already-existing /api/manage/transfers GET
+// (transfer history) and /api/manage/accounts GET (filtered to ACTIVE
+// client-side, matching page.tsx's own previous query) instead of
+// receiving both as server-rendered props -- both the website and a
+// bundled manager-shell desktop app (no Server Component of its own)
+// share this one path now.
+export default function TransfersManager() {
+  const [rows, setRows] = useState<TransferRow[] | null>(null);
+  const [accounts, setAccounts] = useState<AccountOption[]>([]);
   const [fromAccountId, setFromAccountId] = useState("");
   const [toAccountId, setToAccountId] = useState("");
   const [amount, setAmount] = useState("");
@@ -29,6 +35,19 @@ export default function TransfersManager({ initialRows, accounts }: { initialRow
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
+
+  async function load() {
+    const [transfers, accountList] = await Promise.all([
+      fetch("/api/manage/transfers").then((r) => r.json()),
+      fetch("/api/manage/accounts").then((r) => r.json()),
+    ]);
+    setRows(transfers);
+    setAccounts((accountList as AccountOption[]).filter((a) => a.status === "ACTIVE"));
+  }
+
+  useEffect(() => {
+    load().catch(() => setRows([]));
+  }, []);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -49,7 +68,7 @@ export default function TransfersManager({ initialRows, accounts }: { initialRow
     setSuccess(true);
     setAmount("");
     setNote("");
-    router.refresh();
+    load().catch(() => {});
   }
 
   return (
@@ -99,10 +118,12 @@ export default function TransfersManager({ initialRows, accounts }: { initialRow
           <TableHeaderCell>Time</TableHeaderCell>
         </TableHead>
         <TableBody>
-          {initialRows.length === 0 ? (
+          {rows === null ? (
+            <TableEmptyState colSpan={5}>Loading...</TableEmptyState>
+          ) : rows.length === 0 ? (
             <TableEmptyState colSpan={5}>No transfers yet.</TableEmptyState>
           ) : (
-            initialRows.map((row) => (
+            rows.map((row) => (
               <TableRow key={row.id}>
                 <TableCell primary mono>{row.accountNumber}</TableCell>
                 <TableCell>
@@ -110,7 +131,7 @@ export default function TransfersManager({ initialRows, accounts }: { initialRow
                 </TableCell>
                 <TableCell align="right" mono>{row.amount}</TableCell>
                 <TableCell className="text-xs text-[var(--text-3)]">{row.note ?? "—"}</TableCell>
-                <TableCell className="text-xs text-[var(--text-3)]">{row.createdAt}</TableCell>
+                <TableCell className="text-xs text-[var(--text-3)]">{row.createdAt.replace("T", " ").slice(0, 19)}</TableCell>
               </TableRow>
             ))
           )}
