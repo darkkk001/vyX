@@ -522,6 +522,25 @@ export default function WebTrader({
   const refreshFundsHistory = useCallback(async () => setFundsHistory(await tradeApi.fundsHistory().catch(() => [])), []);
   const refreshKycStatus = useCallback(async () => setKycStatus(await tradeApi.kycStatus().catch(() => null)), []);
 
+  // Unifies closed trades with deposits/withdrawals/adjustments into one
+  // chronological feed for the History tab -- same convention MT4/MT5's
+  // own "Account History" tab uses (balance operations interleaved with
+  // trades, not off in a separate screen). Reported live as "deposit/
+  // withdrawal doesn't show in History like every trade does." A funds
+  // row has no symbol/lots/open-close price, so those columns render as
+  // "—"; its amount takes the same Profit column a trade's realizedPnl
+  // does, since both are "how this row changed the balance."
+  type HistoryRow =
+    | { kind: "trade"; date: number; trade: ApiPosition }
+    | { kind: "funds"; date: number; funds: ApiFundsRequest };
+  const historyRows: HistoryRow[] = useMemo(() => {
+    const tradeRows: HistoryRow[] = history.map((h) => ({ kind: "trade", date: new Date(h.closedAt ?? h.openedAt).getTime(), trade: h }));
+    const fundsRows: HistoryRow[] = fundsHistory
+      .filter((f) => f.status === "COMPLETED")
+      .map((f) => ({ kind: "funds", date: new Date(f.createdAt).getTime(), funds: f }));
+    return [...tradeRows, ...fundsRows].sort((a, b) => b.date - a.date);
+  }, [history, fundsHistory]);
+
   // "Switch account" — log out, then either back to the root-domain server
   // picker (desktop, so a different broker can be picked) or this broker's
   // own login page (plain web tab).
@@ -649,6 +668,12 @@ export default function WebTrader({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   useEffect(() => { refreshHistory(); }, [refreshHistory]);
+  // Previously only fetched when the Funds modal opened -- the bottom-
+  // panel History tab now shows deposits/withdrawals/adjustments
+  // alongside closed trades (see historyRows below), so it needs to be
+  // loaded up front like trade history already is, not gated behind a
+  // modal the trader might never open.
+  useEffect(() => { refreshFundsHistory(); }, [refreshFundsHistory]);
 
   async function openSecurityModal() {
     setToolsMenuOpen(false);
@@ -2336,28 +2361,50 @@ export default function WebTrader({
                       <input type="date" className="mono" value={histTo} onChange={(e) => setHistTo(e.target.value)} />
                     </div>
                   ) : null}
-                  {history.length === 0 ? (
-                    <div className="empty-state">No closed trades yet</div>
+                  {historyRows.length === 0 ? (
+                    <div className="empty-state">No history yet</div>
                   ) : (
                     <>
                       <div className="history-table-header">
                         <span>ID</span><span>Symbol</span><span>Type</span><span>Lots</span><span>Open</span><span>Close</span><span>Opened</span><span>Closed</span><span>Swap</span><span>Commission</span><span>Profit</span>
                       </div>
-                      {history.map((h) => {
-                        const pnl = h.realizedPnl ? parseFloat(h.realizedPnl) : 0;
+                      {historyRows.map((row) => {
+                        if (row.kind === "trade") {
+                          const h = row.trade;
+                          const pnl = h.realizedPnl ? parseFloat(h.realizedPnl) : 0;
+                          return (
+                            <div className="history-row" key={h.id}>
+                              <span className="pos-cell mono" style={{ color: "var(--text-3)", fontSize: 11 }}>{h.id.slice(-8)}</span>
+                              <span className="pos-cell pos-symbol">{h.symbol.name}</span>
+                              <span className="pos-cell"><span className={`pos-side ${h.side.toLowerCase()}`}>{h.side === "BUY" ? "Buy" : "Sell"}</span></span>
+                              <span className="pos-cell mono">{parseFloat(h.volume).toFixed(2)}</span>
+                              <span className="pos-cell mono">{fmt(parseFloat(h.openPrice), h.symbol.digits)}</span>
+                              <span className="pos-cell mono">{h.closePrice ? fmt(parseFloat(h.closePrice), h.symbol.digits) : "—"}</span>
+                              <span className="pos-cell" style={{ color: "var(--text-3)", fontSize: 11 }}>{new Date(h.openedAt).toLocaleDateString([], { month: "short", day: "numeric" })} {new Date(h.openedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+                              <span className="pos-cell" style={{ color: "var(--text-3)", fontSize: 11 }}>{h.closedAt ? `${new Date(h.closedAt).toLocaleDateString([], { month: "short", day: "numeric" })} ${new Date(h.closedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "—"}</span>
+                              <span className="pos-cell pos-swap mono">{parseFloat(h.swap) >= 0 ? "+" : ""}{parseFloat(h.swap).toFixed(2)}</span>
+                              <span className="pos-cell pos-commission mono">{parseFloat(h.commission).toFixed(2)}</span>
+                              <span className={`pos-cell pos-pnl mono ${pnl >= 0 ? "pos" : "neg"}`}>{pnl >= 0 ? "+" : ""}{pnl.toFixed(2)}</span>
+                            </div>
+                          );
+                        }
+                        const f = row.funds;
+                        const amount = parseFloat(f.amount);
+                        const label = f.type === "DEPOSIT" ? "Deposit" : f.type === "WITHDRAWAL" ? "Withdrawal" : "Adjustment";
+                        const when = new Date(f.createdAt);
                         return (
-                          <div className="history-row" key={h.id}>
-                            <span className="pos-cell mono" style={{ color: "var(--text-3)", fontSize: 11 }}>{h.id.slice(-8)}</span>
-                            <span className="pos-cell pos-symbol">{h.symbol.name}</span>
-                            <span className="pos-cell"><span className={`pos-side ${h.side.toLowerCase()}`}>{h.side === "BUY" ? "Buy" : "Sell"}</span></span>
-                            <span className="pos-cell mono">{parseFloat(h.volume).toFixed(2)}</span>
-                            <span className="pos-cell mono">{fmt(parseFloat(h.openPrice), h.symbol.digits)}</span>
-                            <span className="pos-cell mono">{h.closePrice ? fmt(parseFloat(h.closePrice), h.symbol.digits) : "—"}</span>
-                            <span className="pos-cell" style={{ color: "var(--text-3)", fontSize: 11 }}>{new Date(h.openedAt).toLocaleDateString([], { month: "short", day: "numeric" })} {new Date(h.openedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
-                            <span className="pos-cell" style={{ color: "var(--text-3)", fontSize: 11 }}>{h.closedAt ? `${new Date(h.closedAt).toLocaleDateString([], { month: "short", day: "numeric" })} ${new Date(h.closedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "—"}</span>
-                            <span className="pos-cell pos-swap mono">{parseFloat(h.swap) >= 0 ? "+" : ""}{parseFloat(h.swap).toFixed(2)}</span>
-                            <span className="pos-cell pos-commission mono">{parseFloat(h.commission).toFixed(2)}</span>
-                            <span className={`pos-cell pos-pnl mono ${pnl >= 0 ? "pos" : "neg"}`}>{pnl >= 0 ? "+" : ""}{pnl.toFixed(2)}</span>
+                          <div className="history-row" key={f.id}>
+                            <span className="pos-cell mono" style={{ color: "var(--text-3)", fontSize: 11 }}>{f.id.slice(-8)}</span>
+                            <span className="pos-cell" style={{ color: "var(--text-3)" }}>—</span>
+                            <span className="pos-cell" title={f.note ?? undefined}>{label}</span>
+                            <span className="pos-cell" style={{ color: "var(--text-3)" }}>—</span>
+                            <span className="pos-cell" style={{ color: "var(--text-3)" }}>—</span>
+                            <span className="pos-cell" style={{ color: "var(--text-3)" }}>—</span>
+                            <span className="pos-cell" style={{ color: "var(--text-3)", fontSize: 11 }}>{when.toLocaleDateString([], { month: "short", day: "numeric" })} {when.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+                            <span className="pos-cell" style={{ color: "var(--text-3)" }}>—</span>
+                            <span className="pos-cell" style={{ color: "var(--text-3)" }}>—</span>
+                            <span className="pos-cell" style={{ color: "var(--text-3)" }}>—</span>
+                            <span className={`pos-cell pos-pnl mono ${amount >= 0 ? "pos" : "neg"}`}>{money(amount)}</span>
                           </div>
                         );
                       })}
