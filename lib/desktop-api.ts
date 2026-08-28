@@ -70,6 +70,25 @@ function arrayBufferToBase64(buf: ArrayBuffer): string {
   return btoa(binary);
 }
 
+type MultipartField = { name: string; value: string } | { name: string; file: { filename: string; mime: string; dataBase64: string } };
+
+// Shared by apiCallForm() and installDesktopFetchShim() below -- both
+// need to turn a browser FormData into the JSON-safe field list
+// window.vyxDesktop.apiCallMultipart expects (a File can't cross the
+// JS<->Rust boundary directly).
+async function formDataToFields(body: FormData): Promise<MultipartField[]> {
+  const fields: MultipartField[] = [];
+  for (const [name, value] of body.entries()) {
+    if (value instanceof File) {
+      const dataBase64 = arrayBufferToBase64(await value.arrayBuffer());
+      fields.push({ name, file: { filename: value.name, mime: value.type || "application/octet-stream", dataBase64 } });
+    } else {
+      fields.push({ name, value: String(value) });
+    }
+  }
+  return fields;
+}
+
 // Same as apiCall(), minus the forced JSON content-type -- a FormData
 // body needs the browser to set its own multipart boundary, which an
 // explicit Content-Type header would override and break. The desktop
@@ -79,18 +98,7 @@ function arrayBufferToBase64(buf: ArrayBuffer): string {
 export async function apiCallForm<T>(path: string, body: FormData): Promise<T> {
   const desktop = typeof window !== "undefined" ? window.vyxDesktop : undefined;
   if (desktop?.apiCallMultipart) {
-    const fields: Array<
-      | { name: string; value: string }
-      | { name: string; file: { filename: string; mime: string; dataBase64: string } }
-    > = [];
-    for (const [name, value] of body.entries()) {
-      if (value instanceof File) {
-        const dataBase64 = arrayBufferToBase64(await value.arrayBuffer());
-        fields.push({ name, file: { filename: value.name, mime: value.type || "application/octet-stream", dataBase64 } });
-      } else {
-        fields.push({ name, value });
-      }
-    }
+    const fields = await formDataToFields(body);
     const { status, body: responseBody } = await desktop.apiCallMultipart(path, fields);
     if (status < 200 || status >= 300) {
       throw new Error((responseBody as { error?: string } | null)?.error ?? `request to ${path} failed (${status})`);
@@ -104,4 +112,48 @@ export async function apiCallForm<T>(path: string, body: FormData): Promise<T> {
     throw new Error(responseBody?.error ?? `request to ${path} failed (${response.status})`);
   }
   return responseBody as T;
+}
+
+// Every Manager/Super Admin *Manager.tsx component (unlike WebTrader.tsx,
+// which was always written against tradeApi/apiCall directly) calls the
+// browser's own global fetch("/api/...") -- there are 100+ call sites
+// across both apps. Rewriting every one of them to call apiCall()/
+// apiCallForm() explicitly would be a huge, error-prone refactor for a
+// purely mechanical transport swap. Instead, this monkey-patches
+// window.fetch itself, once, at each bundled shell's startup (before
+// React ever renders) -- every existing fetch(path, init) call
+// transparently routes through window.vyxDesktop.apiCall/apiCallMultipart
+// when present, and gets back a real Response so .json()/.ok/.status all
+// keep working exactly as written. A no-op in a normal browser tab
+// (window.vyxDesktop is unset there) and for any non-relative URL (an
+// external mailto:/asset link, which this never needs to intercept).
+export function installDesktopFetchShim(): void {
+  if (typeof window === "undefined") return;
+  const desktop = window.vyxDesktop;
+  const apiCallBridge = desktop?.apiCall;
+  if (!apiCallBridge) return;
+
+  const originalFetch = window.fetch.bind(window);
+
+  window.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    if (!url.startsWith("/")) return originalFetch(input, init);
+
+    if (init?.body instanceof FormData) {
+      const apiCallMultipartBridge = desktop?.apiCallMultipart;
+      if (!apiCallMultipartBridge) return originalFetch(input, init);
+      const fields = await formDataToFields(init.body);
+      const { status, body } = await apiCallMultipartBridge(url, fields);
+      return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+    }
+
+    const method = init?.method ?? "GET";
+    const parsedBody = typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
+    const { status, body, date } = await apiCallBridge(url, method, parsedBody);
+    recalibrateFromDateHeader(date);
+    return new Response(JSON.stringify(body), {
+      status,
+      headers: { "Content-Type": "application/json", ...(date ? { Date: date } : {}) },
+    });
+  }) as typeof window.fetch;
 }

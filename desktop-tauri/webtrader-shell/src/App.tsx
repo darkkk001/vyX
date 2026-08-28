@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import WebTrader from "@/components/webtrader/WebTrader";
+import DesktopTitleBar from "@/components/webtrader/DesktopTitleBar";
 import { tradeApi, type ApiBrokerBranding } from "@/lib/trade-api";
 import "@/app/(broker)/trade/webtrader.css";
 
@@ -39,50 +40,57 @@ export default function App() {
 
   if (!loggedIn) {
     return (
-      <div
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          justifyContent: "center",
-          height: "100vh",
-          background: "#07090C",
-          color: "#e8ecf4",
-          fontFamily: "-apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif",
-        }}
-      >
-        {branding?.brokerLogoUrl ? (
-          <img src={branding.brokerLogoUrl} alt={branding.brokerName} style={{ maxHeight: 40, marginBottom: 24 }} />
-        ) : (
-          <div style={{ fontSize: 22, fontWeight: 600, marginBottom: 24 }}>{branding?.brokerName ?? ""}</div>
-        )}
-        <form
-          onSubmit={handleLogin}
-          style={{ width: 280, display: "flex", flexDirection: "column", gap: 12 }}
+      <div style={{ display: "flex", flexDirection: "column", height: "100vh", background: "#07090C" }}>
+        {/* Login screen renders before window.vyxDesktop.onMaximizedChange has
+            anything meaningful to report and before any live feed exists --
+            DesktopTitleBar already no-ops outside a desktop shell, and
+            connected=true here just avoids a misleading "disconnected" signal
+            for a concept (the live price feed) that doesn't apply yet. */}
+        <DesktopTitleBar brokerName={branding?.brokerName ?? ""} server="" connected={true} />
+        <div
+          style={{
+            flex: 1,
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            color: "#e8ecf4",
+            fontFamily: "-apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif",
+          }}
         >
-          <input
-            placeholder="Account number"
-            inputMode="numeric"
-            value={accountNumber}
-            onChange={(e) => setAccountNumber(e.target.value.replace(/\D/g, ""))}
-            style={{ padding: 10, borderRadius: 6, border: "1px solid #1A222C", background: "#0E1319", color: "#e8ecf4" }}
-          />
-          <input
-            placeholder="Password"
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            style={{ padding: 10, borderRadius: 6, border: "1px solid #1A222C", background: "#0E1319", color: "#e8ecf4" }}
-          />
-          {error && <div style={{ color: "#EA3943", fontSize: 13 }}>{error}</div>}
-          <button
-            type="submit"
-            disabled={loggingIn}
-            style={{ padding: 10, borderRadius: 6, border: "none", background: "#16C784", color: "#07090C", fontWeight: 600, cursor: "pointer" }}
+          {branding?.brokerLogoUrl ? (
+            <img src={branding.brokerLogoUrl} alt={branding.brokerName} style={{ maxHeight: 40, marginBottom: 24 }} />
+          ) : (
+            <div style={{ fontSize: 22, fontWeight: 600, marginBottom: 24 }}>{branding?.brokerName ?? ""}</div>
+          )}
+          <form
+            onSubmit={handleLogin}
+            style={{ width: 280, display: "flex", flexDirection: "column", gap: 12 }}
           >
-            {loggingIn ? "Logging in..." : "Log in"}
-          </button>
-        </form>
+            <input
+              placeholder="Account number"
+              inputMode="numeric"
+              value={accountNumber}
+              onChange={(e) => setAccountNumber(e.target.value.replace(/\D/g, ""))}
+              style={{ padding: 10, borderRadius: 6, border: "1px solid #1A222C", background: "#0E1319", color: "#e8ecf4" }}
+            />
+            <input
+              placeholder="Password"
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              style={{ padding: 10, borderRadius: 6, border: "1px solid #1A222C", background: "#0E1319", color: "#e8ecf4" }}
+            />
+            {error && <div style={{ color: "#EA3943", fontSize: 13 }}>{error}</div>}
+            <button
+              type="submit"
+              disabled={loggingIn}
+              style={{ padding: 10, borderRadius: 6, border: "none", background: "#16C784", color: "#07090C", fontWeight: 600, cursor: "pointer" }}
+            >
+              {loggingIn ? "Logging in..." : "Log in"}
+            </button>
+          </form>
+        </div>
       </div>
     );
   }
