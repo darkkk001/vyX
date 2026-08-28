@@ -6,6 +6,20 @@
 
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
+/* html/body reset. On the website this is redundant with app/globals.css's
+   Tailwind preflight -- harmless overlap. In desktop-tauri's webtrader-shell
+   (a bare Vite index.html that never imports globals.css) this is the ONLY
+   reset html/body ever get: without it, the default user-agent body margin
+   and default overflow left a visible pale border + page-level scrollbar
+   around the dark .wt-root UI, which isn't part of the design. */
+html, body, #root {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  overflow: hidden;
+  background: #07090C;
+}
+
 /* "Classic" palette (the original WebTrader look) — default unless
    data-theme="default" is set on .wt-root (see WebTrader.tsx's theme
    state, persisted to localStorage). Every color the UI uses is a
