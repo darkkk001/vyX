@@ -1,7 +1,6 @@
 "use client";
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
 import { Card } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
@@ -25,8 +24,27 @@ export type AdminRow = {
   extraPermissions: string[];
 };
 
-export default function TeamManager({ initialRows, currentAdminId }: { initialRows: AdminRow[]; currentAdminId: string }) {
-  const router = useRouter();
+// Self-fetches from /api/manage/admins (extended to also return
+// extraPermissions + currentAdminId, matching page.tsx's previous query
+// exactly) instead of receiving both as server-rendered props -- both
+// the website and a bundled manager-shell desktop app (no Server
+// Component of its own) share this one path now.
+export default function TeamManager() {
+  const [rows, setRows] = useState<AdminRow[] | null>(null);
+  const [currentAdminId, setCurrentAdminId] = useState<string | null>(null);
+
+  function load() {
+    return fetch("/api/manage/admins")
+      .then((r) => r.json())
+      .then((d: { currentAdminId: string; rows: AdminRow[] }) => {
+        setCurrentAdminId(d.currentAdminId);
+        setRows(d.rows.map((r) => ({ ...r, lastLoginAt: r.lastLoginAt ? r.lastLoginAt.replace("T", " ").slice(0, 19) : null })));
+      });
+  }
+
+  useEffect(() => {
+    load().catch(() => setRows([]));
+  }, []);
 
   // --- Create form ---
   const [email, setEmail] = useState("");
@@ -52,7 +70,7 @@ export default function TeamManager({ initialRows, currentAdminId }: { initialRo
     }
     setEmail("");
     setPassword("");
-    router.refresh();
+    load().catch(() => {});
   }
 
   // --- Status toggle, per row ---
@@ -73,7 +91,7 @@ export default function TeamManager({ initialRows, currentAdminId }: { initialRo
       setErrors((prev) => ({ ...prev, [row.id]: body.error ?? "update failed" }));
       return;
     }
-    router.refresh();
+    load().catch(() => {});
   }
 
   // --- Delegated permissions, per MANAGER row ---
@@ -94,11 +112,18 @@ export default function TeamManager({ initialRows, currentAdminId }: { initialRo
       setErrors((prev) => ({ ...prev, [row.id]: body.error ?? "update failed" }));
       return;
     }
-    router.refresh();
+    load().catch(() => {});
+  }
+
+  if (rows === null) {
+    return <p className="text-sm text-[var(--text-3)]">Loading...</p>;
   }
 
   return (
     <div className="flex flex-col gap-6">
+      <p className="text-sm text-[var(--text-3)]">
+        {rows.length} admin{rows.length === 1 ? "" : "s"} for this broker.
+      </p>
       <Card title="Add a team member">
         <form onSubmit={createAdmin} className="flex flex-wrap items-center gap-2">
           <Input type="email" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} required className="w-48" />
@@ -135,10 +160,10 @@ export default function TeamManager({ initialRows, currentAdminId }: { initialRo
             <TableHeaderCell className="min-w-[100px]" />
           </TableHead>
           <TableBody>
-            {initialRows.length === 0 ? (
+            {rows.length === 0 ? (
               <TableEmptyState colSpan={6}>No team members.</TableEmptyState>
             ) : (
-              initialRows.map((row) => {
+              rows.map((row) => {
                 const isSelf = row.id === currentAdminId;
                 return (
                   <TableRow key={row.id}>

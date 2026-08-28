@@ -24,19 +24,21 @@ export async function GET() {
   const admins = await prisma.adminUser.findMany({
     where: { brokerId: session.brokerId! },
     orderBy: { createdAt: "desc" },
-    select: { id: true, email: true, role: true, status: true, lastLoginAt: true, createdAt: true },
+    select: { id: true, email: true, role: true, status: true, lastLoginAt: true, createdAt: true, extraPermissions: true },
   });
 
-  return NextResponse.json(
-    admins.map((a) => ({
+  return NextResponse.json({
+    currentAdminId: session.adminId,
+    rows: admins.map((a) => ({
       id: a.id,
       email: a.email,
       role: a.role,
       status: a.status,
       lastLoginAt: a.lastLoginAt ? a.lastLoginAt.toISOString() : null,
       createdAt: a.createdAt.toISOString(),
-    }))
-  );
+      extraPermissions: a.extraPermissions,
+    })),
+  });
 }
 
 const CREATABLE_ROLES = new Set(["BROKER_ADMIN", "MANAGER", "SUPPORT"]);
