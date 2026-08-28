@@ -1,27 +1,20 @@
-import { redirect } from "next/navigation";
-import { getAdminSession, requireAdminRole } from "@/lib/auth";
-import { prisma } from "@/lib/prisma";
 import { PageHeader } from "@/components/ui/PageHeader";
 import SecurityManager from "./SecurityManager";
 
-export default async function SuperAdminSecurityPage() {
-  const session = await getAdminSession();
-  if (!requireAdminRole(session, ["SUPER_ADMIN"])) {
-    redirect("/login");
-  }
-
-  const admin = await prisma.adminUser.findUnique({
-    where: { id: session!.adminId },
-    select: { twoFactorEnabled: true },
-  });
-
+// No auth check or Prisma query here anymore -- app/(super-admin)/
+// (shell)/layout.tsx's own SUPER_ADMIN-only guard is identical to what
+// this page checked itself, so it's not redundant to remove (unlike
+// app/manage/(shell)/settings/page.tsx, which kept its own stricter
+// check -- see that commit). SecurityManager now fetches its own state
+// from /api/admin/two-factor/status.
+export default function SuperAdminSecurityPage() {
   return (
     <main className="mx-auto max-w-[720px]">
       <PageHeader
         title="Security"
         description="This login is the only way in to platform-wide control -- every broker's tenants, billing, and admin accounts. Two-factor authentication is strongly recommended."
       />
-      <SecurityManager initialTwoFactorEnabled={admin?.twoFactorEnabled ?? false} />
+      <SecurityManager />
     </main>
   );
 }

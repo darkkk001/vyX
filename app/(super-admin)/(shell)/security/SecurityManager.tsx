@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Card } from "@/components/ui/Card";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
@@ -12,15 +12,27 @@ import { PasswordInput } from "@/components/ui/PasswordInput";
 // Same enable/confirm/disable flow WebTrader.tsx's own Security modal
 // already uses for a trader's 2FA (tradeApi.setupTwoFactor/
 // confirmTwoFactor/disableTwoFactor), scoped to AdminUser via the
-// app/api/admin/two-factor/* routes instead.
-export default function SecurityManager({ initialTwoFactorEnabled }: { initialTwoFactorEnabled: boolean }) {
-  const [enabled, setEnabled] = useState(initialTwoFactorEnabled);
+// app/api/admin/two-factor/* routes instead. Self-fetches its initial
+// enabled/disabled state from a new /api/admin/two-factor/status route
+// instead of receiving it as a server-rendered prop -- both the website
+// and a bundled admin-shell desktop app (no Server Component of its
+// own) share this one path now.
+export default function SecurityManager() {
+  const [enabled, setEnabled] = useState<boolean | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [setupData, setSetupData] = useState<{ secret: string; qrCodeDataUri: string } | null>(null);
   const [confirmCode, setConfirmCode] = useState("");
   const [disablePassword, setDisablePassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetch("/api/admin/two-factor/status")
+      .then((r) => r.json())
+      .then((d: { enabled: boolean }) => setEnabled(d.enabled))
+      .catch(() => setLoadError("failed to load"));
+  }, []);
 
   async function startSetup() {
     setBusy(true);
@@ -76,6 +88,10 @@ export default function SecurityManager({ initialTwoFactorEnabled }: { initialTw
     setEnabled(false);
     setDisablePassword("");
     setNotice("Two-factor authentication is now disabled.");
+  }
+
+  if (enabled === null) {
+    return loadError ? <Alert tone="danger">{loadError}</Alert> : <p className="text-sm text-[var(--text-3)]">Loading...</p>;
   }
 
   return (
