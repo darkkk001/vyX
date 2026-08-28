@@ -1,11 +1,17 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
 import { Select } from "@/components/ui/Select";
 
-export default function EngineSwitch({ brokerId, initialEngine }: { brokerId: string; initialEngine: "LEGACY" | "RUST" }) {
-  const router = useRouter();
+export default function EngineSwitch({
+  brokerId,
+  initialEngine,
+  onSaved,
+}: {
+  brokerId: string;
+  initialEngine: "LEGACY" | "RUST";
+  onSaved?: () => void;
+}) {
   const [engine, setEngine] = useState<"LEGACY" | "RUST">(initialEngine);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -28,7 +34,7 @@ export default function EngineSwitch({ brokerId, initialEngine }: { brokerId: st
       return;
     }
     setSaved(true);
-    router.refresh();
+    onSaved?.();
   }
 
   return (

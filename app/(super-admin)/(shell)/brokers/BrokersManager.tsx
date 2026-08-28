@@ -1,14 +1,15 @@
 "use client";
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 import { FormField } from "@/components/ui/FormField";
+import { StatCard, StatGrid } from "@/components/ui/StatCard";
 import { Modal, ModalSection, ModalRow2, ModalActions } from "@/components/ui/Modal";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
+import { PLAN_PRICING, formatUsd } from "@/lib/billing";
 import EngineSwitch from "./EngineSwitch";
 
 export type BrokerRow = {
@@ -30,8 +31,28 @@ type AdminOption = { id: string; email: string; role: string; status: string; br
 
 const statusTone = { TRIAL: "warning", ACTIVE: "success", SUSPENDED: "danger", DISABLED: "neutral" } as const;
 
-export default function BrokersManager({ initialRows }: { initialRows: BrokerRow[] }) {
-  const router = useRouter();
+// Self-fetches from the already-existing (and previously entirely
+// unused) /api/admin/brokers GET, reshaped to return { rows,
+// totalEndClients }, instead of receiving both as server-rendered props.
+// The stat grid (total/active/trial/MRR) is derived from rows client-side
+// -- same "derive from already-fetched rows" pattern RiskSettingsManager
+// uses against Margin's rows.
+export default function BrokersManager() {
+  const [rows, setRows] = useState<BrokerRow[] | null>(null);
+  const [totalEndClients, setTotalEndClients] = useState(0);
+
+  function reload() {
+    return fetch("/api/admin/brokers")
+      .then((r) => r.json())
+      .then((d: { rows: BrokerRow[]; totalEndClients: number }) => {
+        setRows(d.rows);
+        setTotalEndClients(d.totalEndClients);
+      });
+  }
+
+  useEffect(() => {
+    reload().catch(() => setRows([]));
+  }, []);
 
   // --- Register broker modal ---
   const [registerOpen, setRegisterOpen] = useState(false);
@@ -115,7 +136,7 @@ export default function BrokersManager({ initialRows }: { initialRows: BrokerRow
       return;
     }
     setRegisterOpen(false);
-    router.refresh();
+    reload().catch(() => {});
   }
 
   // --- Tenant detail modal ---
@@ -180,7 +201,7 @@ export default function BrokersManager({ initialRows }: { initialRows: BrokerRow
       return;
     }
     setDetailTarget((prev) => (prev ? { ...prev, status } : prev));
-    router.refresh();
+    reload().catch(() => {});
   }
 
   async function assignAdmin() {
@@ -201,7 +222,7 @@ export default function BrokersManager({ initialRows }: { initialRows: BrokerRow
     const created = await response.json();
     setDetailAdmins((prev) => [...(prev ?? []), { id: created.id, email: created.email, role: created.role, status: "ACTIVE", brokerId: detailTarget.id }]);
     setNewAdminEmail("");
-    router.refresh();
+    reload().catch(() => {});
   }
 
   async function removeAdmin(admin: AdminOption) {
@@ -219,7 +240,7 @@ export default function BrokersManager({ initialRows }: { initialRows: BrokerRow
       return;
     }
     setDetailAdmins((prev) => prev?.map((a) => (a.id === admin.id ? { ...a, status: "DISABLED" } : a)) ?? null);
-    router.refresh();
+    reload().catch(() => {});
   }
 
   async function generateSsoSecret() {
@@ -236,7 +257,7 @@ export default function BrokersManager({ initialRows }: { initialRows: BrokerRow
     const { ssoSecret } = (await response.json()) as { ssoSecret: string };
     setRevealedSsoSecret(ssoSecret);
     setDetailTarget((prev) => (prev ? { ...prev, hasSsoSecret: true } : prev));
-    router.refresh();
+    reload().catch(() => {});
   }
 
   async function revokeSsoSecret() {
@@ -252,7 +273,7 @@ export default function BrokersManager({ initialRows }: { initialRows: BrokerRow
     }
     setRevealedSsoSecret(null);
     setDetailTarget((prev) => (prev ? { ...prev, hasSsoSecret: false } : prev));
-    router.refresh();
+    reload().catch(() => {});
   }
 
   async function saveSupportEmail() {
@@ -273,7 +294,7 @@ export default function BrokersManager({ initialRows }: { initialRows: BrokerRow
     const { supportEmail } = (await response.json()) as { supportEmail: string | null };
     setDetailTarget((prev) => (prev ? { ...prev, supportEmail } : prev));
     setSupportEmailInput(supportEmail ?? "");
-    router.refresh();
+    reload().catch(() => {});
   }
 
   async function saveDetailLogo(url: string) {
@@ -294,7 +315,7 @@ export default function BrokersManager({ initialRows }: { initialRows: BrokerRow
     const { logoUrl: saved } = (await response.json()) as { logoUrl: string | null };
     setDetailTarget((prev) => (prev ? { ...prev, logoUrl: saved } : prev));
     setDetailLogoUrlInput(saved ?? "");
-    router.refresh();
+    reload().catch(() => {});
   }
 
   async function handleDetailLogoFile(file: File | undefined) {
@@ -312,8 +333,24 @@ export default function BrokersManager({ initialRows }: { initialRows: BrokerRow
     }
   }
 
+  if (rows === null) {
+    return <p className="text-sm text-[var(--text-3)]">Loading...</p>;
+  }
+
+  const activeCount = rows.filter((b) => b.status === "ACTIVE").length;
+  const trialCount = rows.filter((b) => b.status === "TRIAL").length;
+  const mrrCents = rows.filter((b) => b.status === "ACTIVE").reduce((sum, b) => sum + PLAN_PRICING[b.tier].monthlyCents, 0);
+
   return (
     <>
+      <StatGrid columns={5}>
+        <StatCard label="Total tenants" value={String(rows.length)} />
+        <StatCard label="Active (paying)" value={String(activeCount)} />
+        <StatCard label="Trial" value={String(trialCount)} valueTone={trialCount > 0 ? "warn" : undefined} />
+        <StatCard label="MRR" value={formatUsd(mrrCents)} />
+        <StatCard label="Total end-clients" value={totalEndClients.toLocaleString("en-US")} />
+      </StatGrid>
+
       <Table title="Brokers" action={<Button variant="primary" onClick={launchRegisterModal}>+ Register new broker</Button>}>
         <TableHead>
           <TableHeaderCell>Broker</TableHeaderCell>
@@ -325,10 +362,10 @@ export default function BrokersManager({ initialRows }: { initialRows: BrokerRow
           <TableHeaderCell />
         </TableHead>
         <TableBody>
-          {initialRows.length === 0 ? (
+          {rows.length === 0 ? (
             <TableEmptyState colSpan={7}>No brokers yet.</TableEmptyState>
           ) : (
-            initialRows.map((broker) => (
+            rows.map((broker) => (
               <TableRow key={broker.id}>
                 <TableCell primary>
                   {broker.name}
@@ -346,7 +383,7 @@ export default function BrokersManager({ initialRows }: { initialRows: BrokerRow
                   <Badge tone={statusTone[broker.status]}>{broker.status}</Badge>
                 </TableCell>
                 <TableCell>
-                  <EngineSwitch brokerId={broker.id} initialEngine={broker.executionEngine} />
+                  <EngineSwitch brokerId={broker.id} initialEngine={broker.executionEngine} onSaved={reload} />
                 </TableCell>
                 <TableCell className="text-xs text-[var(--text-3)]">{broker.createdAt}</TableCell>
                 <TableCell>

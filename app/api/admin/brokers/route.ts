@@ -19,31 +19,47 @@ async function requireSuperAdmin() {
   return session;
 }
 
+// Same query app/(super-admin)/(shell)/brokers/page.tsx's Server
+// Component used to do inline (every broker + the platform-wide
+// end-client count) -- exposed as JSON so BrokersManager.tsx,
+// TrialsManager.tsx, and a new BillingManager.tsx can each self-fetch
+// this one route instead of receiving it as server-rendered props.
+// Confirmed unused before this (nothing called this bare GET), so the
+// shape matches what those three pages actually need rather than this
+// route's own prior narrower shape -- ssoSecret/nextInvoiceAt added,
+// TRIAL filtering and billing-plan math both stay client-side (Trials/
+// Billing each derive their own view from the same full row set,
+// same "reuse + filter client-side" pattern as PositionsManager reusing
+// symbol-config rows).
 export async function GET() {
   const session = await requireSuperAdmin();
   if (!session) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
 
-  const brokers = await prisma.broker.findMany({
-    orderBy: { createdAt: "desc" },
-    select: {
-      id: true,
-      name: true,
-      subdomain: true,
-      customDomain: true,
-      tier: true,
-      status: true,
-      executionEngine: true,
-      logoUrl: true,
-      primaryColor: true,
-      trialEndsAt: true,
-      nextInvoiceAt: true,
-      createdAt: true,
-    },
-  });
+  const [brokers, totalEndClients] = await Promise.all([
+    prisma.broker.findMany({ orderBy: { createdAt: "desc" } }),
+    prisma.account.count(),
+  ]);
 
-  return NextResponse.json(brokers);
+  return NextResponse.json({
+    rows: brokers.map((b) => ({
+      id: b.id,
+      name: b.name,
+      subdomain: b.subdomain,
+      customDomain: b.customDomain,
+      tier: b.tier,
+      status: b.status,
+      executionEngine: b.executionEngine,
+      trialEndsAt: b.trialEndsAt ? b.trialEndsAt.toISOString() : null,
+      nextInvoiceAt: b.nextInvoiceAt ? b.nextInvoiceAt.toISOString() : null,
+      createdAt: b.createdAt.toISOString().slice(0, 10),
+      hasSsoSecret: b.ssoSecret != null,
+      supportEmail: b.supportEmail,
+      logoUrl: b.logoUrl,
+    })),
+    totalEndClients,
+  });
 }
 
 export async function POST(request: NextRequest) {

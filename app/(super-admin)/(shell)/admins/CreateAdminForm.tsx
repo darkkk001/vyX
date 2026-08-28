@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
 import { Card } from "@/components/ui/Card";
 import { FormField } from "@/components/ui/FormField";
 import { Input } from "@/components/ui/Input";
@@ -9,8 +8,7 @@ import { Select } from "@/components/ui/Select";
 import { Button } from "@/components/ui/Button";
 import { Alert } from "@/components/ui/Alert";
 
-export default function CreateAdminForm({ brokers }: { brokers: { id: string; name: string }[] }) {
-  const router = useRouter();
+export default function CreateAdminForm({ brokers, onCreated }: { brokers: { id: string; name: string }[]; onCreated?: () => void }) {
   const [brokerId, setBrokerId] = useState(brokers[0]?.id ?? "");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -39,7 +37,7 @@ export default function CreateAdminForm({ brokers }: { brokers: { id: string; na
 
     setEmail("");
     setPassword("");
-    router.refresh();
+    onCreated?.();
   }
 
   return (
