@@ -1,11 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main-capability",
-  "description": "Lets the main window's own remote content (the broker's deployed WebTrader -- see main.rs) invoke the window-control commands the window.vyxDesktop bridge wraps. Scoped to this app's own domains, same allowed-host principle desktop/main.js's will-navigate handler already enforces for Electron. The custom win_minimize/win_toggle_maximize/win_close/remember_broker/forget_broker/retry_connection commands each need their own allow-* permission (see build.rs's AppManifest) because this window loads remote content -- the core:window:* entries below are the BUILT-IN Tauri window plugin's own commands (unused by this app's bridge) and never covered these.",
+  "description": "Lets the main window's bundled local UI (webtrader-shell/'s built output -- see main.rs and tauri.conf.json's frontendDist) invoke the window-control and api_request/api_request_multipart commands the window.vyxDesktop bridge wraps. No `remote` block anymore -- the window only ever loads local content now (all real network traffic goes through the api_request bridge's own reqwest::Client, not the WebView's), so there is no remote origin left to scope. The core:window:* entries below are the BUILT-IN Tauri window plugin's own commands (unused by this app's bridge) and never covered the custom commands.",
   "windows": ["main"],
-  "remote": {
-    "urls": ["https://*.vyxtrader.com/*", "https://vyxtrader.com/*", "http://*.localhost:3000/*", "http://localhost:3000/*"]
-  },
   "permissions": [
     "core:default",
     "core:window:allow-minimize",
@@ -21,6 +18,7 @@
     "allow-win-close",
     "allow-remember-broker",
     "allow-forget-broker",
-    "allow-retry-connection"
+    "allow-api-request",
+    "allow-api-request-multipart"
   ]
 }

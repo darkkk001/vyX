@@ -21,7 +21,8 @@ fn main() {
             "win_close",
             "remember_broker",
             "forget_broker",
-            "retry_connection",
+            "api_request",
+            "api_request_multipart",
         ]),
     );
     tauri_build::try_build(attributes).expect("failed to run tauri-build");

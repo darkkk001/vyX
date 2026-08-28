@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-api-request-multipart"
+description = "Enables the api_request_multipart command without any pre-configured scope."
+commands.allow = ["api_request_multipart"]
+
+[[permission]]
+identifier = "deny-api-request-multipart"
+description = "Denies the api_request_multipart command without any pre-configured scope."
+commands.deny = ["api_request_multipart"]

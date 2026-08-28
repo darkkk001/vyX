@@ -1,12 +1,18 @@
 // VyXTrader Tauri desktop shell -- see docs/decisions.md ADR-001 for the
-// full feature-by-feature history. Same "no local server or database
-// here, it only points at the already-deployed site" principle as
-// desktop/README.md's Electron app -- this app has no local frontend of
-// its own beyond the splash/offline screens, the main window is built
-// programmatically pointing at the broker's real deployed WebTrader.
+// full feature-by-feature history, and the bundled-UI architecture plan
+// (2026-08) for why this file no longer loads a remote URL at all: the
+// main window now shows `webtrader-shell/`'s built output (bundled at
+// compile time via tauri.conf.json's frontendDist), and every API call
+// that UI makes crosses the network through the api_request/
+// api_request_multipart commands below -- a persistent, cookie-jar-
+// backed reqwest::Client -- rather than through the WebView's own
+// fetch()/WebSocket, which cannot carry the broker's httpOnly session
+// cookie across the local-content / real-host origin boundary. See
+// lib/trade-api.ts's isDesktop branch on the web-app side.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use serde::Deserialize;
+use base64::Engine;
+use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::menu::{CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder};
@@ -21,12 +27,19 @@ use tauri_plugin_updater::UpdaterExt;
 struct BrokerConfig {
     #[serde(rename = "brokerName")]
     broker_name: String,
+    // A full host (e.g. "acmefx.vyxtrader.com" in a real rebranded
+    // build -- see rebrand.js) that resolve_api_target() below turns
+    // into the base URL every api_request call is made against.
     subdomain: String,
-    // Only meaningful in "launcher" mode (root-domain broker picker) --
-    // see start_url_for() below. Unused in "broker" mode, the only mode
-    // any committed broker.config.json actually ships with today.
+    // Only meaningful in "launcher" mode -- unused in "broker" mode, the
+    // only mode any committed broker.config.json ships with today (v1 of
+    // the bundled-UI architecture is broker-mode only; launcher-mode
+    // bundling -- picking between multiple brokers inside one install --
+    // is deferred).
+    #[allow(dead_code)]
     #[serde(rename = "rootDomain")]
     root_domain: String,
+    #[allow(dead_code)]
     mode: String,
 }
 
@@ -34,11 +47,14 @@ struct BrokerConfig {
 // setRememberedBroker()/clearRememberedBroker(), using Tauri's
 // app_data_dir() in place of Electron's app.getPath("userData"). Only
 // meaningful in launcher mode -- a single-broker build always has
-// exactly one broker anyway, so nothing to remember.
+// exactly one broker anyway, so nothing to remember. Kept even though
+// v1 only ships broker-mode builds, so the window.vyxDesktop bridge
+// shape stays identical for a future launcher-mode bundled build.
 fn remembered_broker_path(app: &tauri::AppHandle) -> tauri::Result<std::path::PathBuf> {
     Ok(app.path().app_data_dir()?.join("remembered-broker.json"))
 }
 
+#[allow(dead_code)]
 fn read_remembered_broker(app: &tauri::AppHandle) -> Option<String> {
     let path = remembered_broker_path(app).ok()?;
     let raw = std::fs::read_to_string(path).ok()?;
@@ -59,32 +75,6 @@ fn write_remembered_broker(app: &tauri::AppHandle, hostname: &str) {
 fn clear_remembered_broker(app: &tauri::AppHandle) {
     if let Ok(path) = remembered_broker_path(app) {
         let _ = std::fs::remove_file(path);
-    }
-}
-
-// Direct port of desktop/main.js's startUrlFor(): broker mode always
-// goes straight to that one broker's /trade (today's only real-world
-// mode); launcher mode goes to the remembered broker's /trade if one
-// exists, else the root domain's /launch picker page (app/launch/page.tsx).
-// Direct port of desktop/main.js's `allowedHost`: in launcher mode
-// navigation must be allowed to roam across broker subdomains (that's
-// the whole point of the picker); in broker mode it stays locked to
-// that one broker's own subdomain.
-fn allowed_host_for(config: &BrokerConfig) -> &str {
-    if config.mode == "launcher" {
-        &config.root_domain
-    } else {
-        &config.subdomain
-    }
-}
-
-fn start_url_for(config: &BrokerConfig, app: &tauri::AppHandle) -> String {
-    if config.mode != "launcher" {
-        return format!("https://{}/trade", config.subdomain);
-    }
-    match read_remembered_broker(app) {
-        Some(hostname) => format!("https://{hostname}/trade"),
-        None => format!("https://{}/launch", config.root_domain),
     }
 }
 
@@ -148,51 +138,134 @@ fn forget_broker(app: tauri::AppHandle) {
     clear_remembered_broker(&app);
 }
 
-// Managed app state holding the real broker/launcher URL start_url_for()
-// computed at startup -- retry_connection (below) needs it and has no
-// other way to reach it, since it's otherwise local to main()'s setup
-// closure.
-struct StartUrl(String);
-
-// Tauri's PageLoadEvent only has Started/Finished -- no failure/error
-// variant exists (confirmed against the installed tauri crate source),
-// so unlike Electron's did-fail-load this can't react to a failed
-// navigation after the fact. Instead it checks proactively: a short HEAD
-// request decides whether to navigate to the real app or the local
-// offline page, both at startup and on every Retry click. The real app
-// path (/trade) 307-redirects rather than 200s directly (confirmed via
-// this session's own earlier dev-server testing), so redirects count as
-// reachable too, not just a bare 200.
-async fn is_reachable(url: &str) -> bool {
-    reqwest::Client::new()
-        .head(url)
-        // 15s, not a tight few seconds -- a real deployment is normally
-        // fast, but this also has to tolerate a genuinely slow first
-        // response without false-negativing into the offline page (hit
-        // this exact failure mode while verifying: a local dev server's
-        // cold first-compile took ~12s for a single route, which a
-        // tighter timeout misread as "unreachable").
-        .timeout(std::time::Duration::from_secs(15))
-        .send()
-        .await
-        .map(|res| res.status().is_success() || res.status().is_redirection())
-        .unwrap_or(false)
+// Resolves BrokerConfig.subdomain to (connect_base, host_header):
+//   - real production build: subdomain is a real, TLS-terminated,
+//     DNS-resolvable host ("acmefx.vyxtrader.com") -- both values are
+//     identical, the Host header is a harmless no-op alongside TLS SNI.
+//   - local dev build: subdomain carries a `.localhost` host (this
+//     codebase's existing dev-testing convention, previously used by
+//     is_reachable's own now-removed reachability check) -- `*.localhost`
+//     doesn't actually resolve via DNS on Windows, so connect_base
+//     substitutes 127.0.0.1 for the real TCP connection while
+//     host_header keeps the original value so middleware.ts's Host-
+//     header-based broker resolution still works.
+fn resolve_api_target(config: &BrokerConfig) -> (String, String) {
+    if config.subdomain.contains("localhost") {
+        let port = config.subdomain.rsplit(':').next().and_then(|p| p.parse::<u16>().ok()).unwrap_or(3000);
+        (format!("http://127.0.0.1:{port}"), config.subdomain.clone())
+    } else {
+        (format!("https://{}", config.subdomain), config.subdomain.clone())
+    }
 }
 
-// Invoked by offline.html's Retry button. Re-runs the same reachability
-// check and only navigates away from the offline page if it now
-// succeeds -- if still unreachable, the offline page just stays put
-// (its own button re-enables itself once the invoke's promise settles).
+// Managed app state: the one persistent, cookie-jar-backed HTTP client
+// every api_request/api_request_multipart call reuses -- a fresh
+// reqwest::Client per call would mean a fresh (empty) cookie jar per
+// call, losing the session the moment login's Set-Cookie response ended.
+struct ApiBridge {
+    client: reqwest::Client,
+    connect_base: String,
+    host_header: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ApiResponsePayload {
+    status: u16,
+    body: serde_json::Value,
+    // The HTTP Date response header, forwarded so lib/trade-api.ts's
+    // recalibrateFromResponse (clock-skew correction for candle
+    // bucketing) keeps working unchanged under the desktop transport --
+    // see its own module comment for why this matters.
+    date: Option<String>,
+}
+
+// The desktop-transport twin of lib/trade-api.ts's call(): same
+// method/path/JSON-body/response shape, just over reqwest instead of
+// fetch(). No backend route needs to know or care which one called it.
 #[tauri::command]
-async fn retry_connection(app: tauri::AppHandle) {
-    let start_url = app.state::<StartUrl>().0.clone();
-    if is_reachable(&start_url).await {
-        if let Some(window) = app.get_webview_window("main") {
-            if let Ok(url) = start_url.parse() {
-                let _ = window.navigate(url);
-            }
+async fn api_request(
+    bridge: tauri::State<'_, ApiBridge>,
+    path: String,
+    method: String,
+    body: Option<serde_json::Value>,
+) -> Result<ApiResponsePayload, String> {
+    let method = match method.to_uppercase().as_str() {
+        "GET" => reqwest::Method::GET,
+        "POST" => reqwest::Method::POST,
+        "PATCH" => reqwest::Method::PATCH,
+        "PUT" => reqwest::Method::PUT,
+        "DELETE" => reqwest::Method::DELETE,
+        other => return Err(format!("unsupported method: {other}")),
+    };
+    let url = format!("{}{}", bridge.connect_base, path);
+    let mut req = bridge.client.request(method, &url).header("Host", &bridge.host_header);
+    if let Some(b) = &body {
+        req = req.json(b);
+    }
+    let res = req.send().await.map_err(|e| format!("request to {path} failed: {e}"))?;
+    let status = res.status().as_u16();
+    let date = res.headers().get(reqwest::header::DATE).and_then(|v| v.to_str().ok()).map(str::to_string);
+    let body = res.json().await.unwrap_or(serde_json::Value::Null);
+    Ok(ApiResponsePayload { status, body, date })
+}
+
+#[derive(Debug, Deserialize)]
+struct MultipartField {
+    name: String,
+    #[serde(default)]
+    value: Option<String>,
+    #[serde(default)]
+    file: Option<MultipartFile>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MultipartFile {
+    filename: String,
+    mime: String,
+    #[serde(rename = "dataBase64")]
+    data_base64: String,
+}
+
+// The desktop-transport twin of lib/trade-api.ts's callForm() (used only
+// by KYC document submission today) -- browsers build a multipart body
+// from real File objects directly; the WebView here has no File-object
+// bridge to Rust, so the JS side base64-encodes each file's bytes into a
+// plain JSON array of fields instead, and this reconstructs the same
+// multipart/form-data body reqwest sends, against the same unmodified
+// /api/trade/kyc route.
+#[tauri::command]
+async fn api_request_multipart(
+    bridge: tauri::State<'_, ApiBridge>,
+    path: String,
+    fields: Vec<MultipartField>,
+) -> Result<ApiResponsePayload, String> {
+    let mut form = reqwest::multipart::Form::new();
+    for field in fields {
+        if let Some(file) = field.file {
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(&file.data_base64)
+                .map_err(|e| format!("invalid base64 for field {}: {e}", field.name))?;
+            let part = reqwest::multipart::Part::bytes(bytes)
+                .file_name(file.filename)
+                .mime_str(&file.mime)
+                .map_err(|e| e.to_string())?;
+            form = form.part(field.name, part);
+        } else if let Some(value) = field.value {
+            form = form.text(field.name, value);
         }
     }
+    let url = format!("{}{}", bridge.connect_base, path);
+    let res = bridge
+        .client
+        .post(&url)
+        .header("Host", &bridge.host_header)
+        .multipart(form)
+        .send()
+        .await
+        .map_err(|e| format!("request to {path} failed: {e}"))?;
+    let status = res.status().as_u16();
+    let body = res.json().await.unwrap_or(serde_json::Value::Null);
+    Ok(ApiResponsePayload { status, body, date: None })
 }
 
 // Direct port of desktop/main.js's entire auto-update surface: check,
@@ -205,8 +278,7 @@ async fn retry_connection(app: tauri::AppHandle) {
 // swallowed by the caller -- same as Electron's own
 // `.catch(() => { /* not fatal, app already runs */ })`.
 // Only called from the #[cfg(not(debug_assertions))] block in .setup()
-// below -- unused (by design) in debug builds, same reasoning as the
-// #[allow(dead_code)] on BrokerConfig's root_domain/mode fields above.
+// below -- unused (by design) in debug builds.
 #[cfg_attr(debug_assertions, allow(dead_code))]
 async fn check_for_updates(
     app: tauri::AppHandle,
@@ -224,41 +296,27 @@ async fn check_for_updates(
     Ok(())
 }
 
-// Injected before every page load (including the remote broker page --
-// this app bundles no local frontend JS of its own) so window.vyxDesktop
-// exists with EXACTLY the shape WebTrader.tsx/DesktopTitleBar.tsx already
-// expect -- see their `declare global { interface Window { vyxDesktop?
-// {...} } }`. Matching that shape exactly means zero changes to the web
-// app; it doesn't know or care which desktop shell it's running in, only
-// whether window.vyxDesktop exists. rememberBroker/forgetBroker invoke
-// the remember_broker/forget_broker commands above -- real no-ops in
-// broker mode in practice (nothing reads the file start_url_for()
-// doesn't already ignore), real persistence in launcher mode.
+// Injected before the bundled shell's index.html loads, so
+// window.vyxDesktop exists with EXACTLY the shape WebTrader.tsx/
+// DesktopTitleBar.tsx already expect -- see their `declare global {
+// interface Window { vyxDesktop?  {...} } }`. apiCall/apiCallMultipart
+// are what lib/trade-api.ts's isDesktop branch invokes instead of
+// fetch() -- see api_request/api_request_multipart above for why the
+// WebView's own network stack can't be used instead (can't carry the
+// broker's httpOnly session cookie across the local-content/real-host
+// origin boundary). brokerHost is the one piece of static config the
+// bundled UI needs that used to come from window.location.hostname
+// (meaningless now that the document's own origin is local content) --
+// see WebTrader.tsx's two call sites.
 //
-// Also requests OS notification permission up front -- WebTrader.tsx's
-// pushToast (see `if (important && ... && "Notification" in window) {
-// new Notification("VyXTrader", { body: message }) }`) is written
-// against the standard browser Notification API. WebView2 (Chromium)
-// already implements that API natively, so **no polyfill of
-// window.Notification is needed at all** -- WebTrader's call site works
-// completely unchanged. Confirmed by reading tauri-plugin-notification
-// 2.3.3's actual shipped JS shim (api-iife.js, the exact bundle
-// `withGlobalTauri` injects as window.__TAURI__.notification): its
-// isPermissionGranted/requestPermission/sendNotification all read/call
-// the browser's own `window.Notification` object directly -- the plugin
-// is a thin permission-plumbing layer on top of it, not a replacement.
-// (An earlier version of this script *did* try to replace
-// window.Notification with a wrapper that called into this same plugin
-// API -- since the plugin calls back into window.Notification itself,
-// that was direct infinite recursion, caught by reading the plugin's
-// source before shipping it, not by a runtime crash.) The only real gap
-// versus a normal browser is that a frameless kiosk-style window has no
-// address-bar UI for a permission prompt, so permission is requested
-// proactively here at startup instead of lazily on first toast.
-const VYX_DESKTOP_INIT_SCRIPT: &str = r#"
+// Also requests OS notification permission up front -- see this
+// script's own previous version for the full isPermissionGranted/
+// requestPermission reasoning (unchanged).
+const VYX_DESKTOP_INIT_SCRIPT_TEMPLATE: &str = r#"
 (function () {
   window.vyxDesktop = {
     isDesktop: true,
+    brokerHost: "__BROKER_HOST__",
     minimize: function () { window.__TAURI__.core.invoke("win_minimize"); },
     toggleMaximize: function () { window.__TAURI__.core.invoke("win_toggle_maximize"); },
     close: function () { window.__TAURI__.core.invoke("win_close"); },
@@ -272,6 +330,12 @@ const VYX_DESKTOP_INIT_SCRIPT: &str = r#"
     },
     rememberBroker: function (hostname) { window.__TAURI__.core.invoke("remember_broker", { hostname: hostname }); },
     forgetBroker: function () { window.__TAURI__.core.invoke("forget_broker"); },
+    apiCall: function (path, method, body) {
+      return window.__TAURI__.core.invoke("api_request", { path: path, method: method, body: body });
+    },
+    apiCallMultipart: function (path, fields) {
+      return window.__TAURI__.core.invoke("api_request_multipart", { path: path, fields: fields });
+    },
   };
 
   var notif = window.__TAURI__.notification;
@@ -286,6 +350,14 @@ const VYX_DESKTOP_INIT_SCRIPT: &str = r#"
 fn main() {
     let config = load_broker_config();
     let broker_name = config.broker_name.clone();
+    let (connect_base, host_header) = resolve_api_target(&config);
+
+    let init_script = VYX_DESKTOP_INIT_SCRIPT_TEMPLATE.replace("__BROKER_HOST__", &host_header);
+
+    let http_client = reqwest::Client::builder()
+        .cookie_store(true)
+        .build()
+        .expect("failed to build reqwest client");
 
     // Shared between the tray menu's "Quit" handler and the window's
     // close-request handler below -- mirrors desktop/main.js's module-
@@ -309,32 +381,20 @@ fn main() {
         // ours built programmatically below, not just ones declared in
         // tauri.conf.json.
         .plugin(tauri_plugin_window_state::Builder::new().build())
+        .manage(ApiBridge { client: http_client, connect_base, host_header })
         .invoke_handler(tauri::generate_handler![
             win_minimize,
             win_toggle_maximize,
             win_close,
             remember_broker,
             forget_broker,
-            retry_connection
+            api_request,
+            api_request_multipart
         ])
         .setup(move |app| {
-            // Same hardcoded https:// scheme as desktop/main.js's own
-            // brokerUrl/launchUrl construction -- this app only ever
-            // points at a real deployed broker, never a local dev server.
-            let start_url = start_url_for(&config, app.handle());
-            app.manage(StartUrl(start_url.clone()));
-            // Direct port of desktop/main.js's allowedHost.split(":")[0]
-            // comparison -- config values in this codebase sometimes
-            // carry an explicit port (local dev testing), so the host
-            // check ignores it exactly like the Electron reference does.
-            let allowed_host = allowed_host_for(&config).split(':').next().unwrap_or("").to_string();
             let nav_app_handle = app.handle().clone();
             let new_window_app_handle = app.handle().clone();
-            // Splash first (instant, local) -- swapped to the real
-            // remote URL (or offline.html) below once a reachability
-            // check settles, exactly mirroring desktop/main.js's own
-            // win.loadFile(loadingPath) + delayed win.loadURL(...).
-            let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("splash.html".into()))
+            let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
                 .title(&config.broker_name)
                 .inner_size(1440.0, 900.0)
                 .min_inner_size(1024.0, 640.0)
@@ -342,29 +402,18 @@ fn main() {
                 // WebTrader renders its own title bar (DesktopTitleBar.tsx)
                 // once it detects window.vyxDesktop.isDesktop.
                 .decorations(false)
-                // Direct port of desktop/main.js's will-navigate handler:
-                // in-place navigation outside the broker's own domain (or,
-                // in launcher mode, the root domain) opens in the OS
-                // browser instead of following it inside the app. Local
-                // asset pages (splash/offline) are always allowed --
-                // Tauri's local content is served either from a `tauri://`
-                // scheme or, on Windows/Android, `http://tauri.localhost`
-                // (a fixed hostname, not configurable per-app), mirroring
-                // Electron's own `if (url.startsWith("file://")) return`.
+                // The window now only ever shows the bundled local shell --
+                // any navigation away from it (a support-email mailto:, a
+                // stray external link) should open in the OS browser
+                // instead, never replace the app's own UI in-place. Unlike
+                // the old remote-wrapper version of this file, no host is
+                // "allowed" in-window anymore; only local content is.
                 .on_navigation(move |url| {
                     if url.scheme() == "tauri" || url.host_str() == Some("tauri.localhost") {
                         return true;
                     }
-                    if url.scheme() != "http" && url.scheme() != "https" {
-                        return true;
-                    }
-                    let host = url.host_str().unwrap_or("");
-                    if host == allowed_host || host.ends_with(&format!(".{allowed_host}")) {
-                        true
-                    } else {
-                        let _ = nav_app_handle.opener().open_url(url.to_string(), None::<&str>);
-                        false
-                    }
+                    let _ = nav_app_handle.opener().open_url(url.to_string(), None::<&str>);
+                    false
                 })
                 // Direct port of desktop/main.js's setWindowOpenHandler:
                 // any window.open()/target="_blank" opens in the OS
@@ -373,41 +422,8 @@ fn main() {
                     let _ = new_window_app_handle.opener().open_url(url.to_string(), None::<&str>);
                     tauri::webview::NewWindowResponse::Deny
                 })
-                .initialization_script(VYX_DESKTOP_INIT_SCRIPT)
+                .initialization_script(&init_script)
                 .build()?;
-
-            // Reachability check decides whether to swap the splash
-            // screen to the real broker URL or to offline.html -- see
-            // is_reachable()'s own comment for why this is proactive
-            // instead of reactive like Electron's did-fail-load.
-            // offline.html's URL uses Tauri's local-content origin
-            // directly (confirmed empirically while verifying this --
-            // on_navigation's own log showed the splash page's real,
-            // actual URL as `http://tauri.localhost/splash.html` -- NOT
-            // derived from window.url() right after .build(), which was
-            // separately observed to report a stale "about:blank" for a
-            // window's first several seconds regardless of scheme,
-            // local/external/data:, so it can't be used as a live
-            // signal here). This project only ships a Windows build
-            // (`bundle.targets`/`win`-only, matching the Electron
-            // reference's own `electron-builder --win`), so this fixed
-            // hostname doesn't need to handle other platforms' `tauri://`
-            // convention.
-            {
-                let check_window = window.clone();
-                let target_url = start_url.clone();
-                let offline_url: tauri::Url = "http://tauri.localhost/offline.html".parse()?;
-                tauri::async_runtime::spawn(async move {
-                    let url_to_load = if is_reachable(&target_url).await {
-                        target_url.parse().ok()
-                    } else {
-                        Some(offline_url)
-                    };
-                    if let Some(url) = url_to_load {
-                        let _ = check_window.navigate(url);
-                    }
-                });
-            }
 
             // --- System tray -- direct port of desktop/main.js's
             // createTray()/refreshTrayMenu(), same item order: Show, sep,

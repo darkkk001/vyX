@@ -15,14 +15,33 @@ let serverTimeOffsetMs = 0;
 export function serverNow(): number {
   return Date.now() + serverTimeOffsetMs;
 }
-function recalibrateFromResponse(response: Response) {
-  const header = response.headers.get("date");
+function recalibrateFromDateHeader(header: string | null | undefined) {
   if (!header) return;
   const serverMs = Date.parse(header);
   if (Number.isFinite(serverMs)) serverTimeOffsetMs = serverMs - Date.now();
 }
+function recalibrateFromResponse(response: Response) {
+  recalibrateFromDateHeader(response.headers.get("date"));
+}
 
+// A bundled desktop shell's own fetch()/WebSocket can't carry the
+// broker's httpOnly session cookie across the local-content/real-host
+// origin boundary -- window.vyxDesktop.apiCall (desktop-tauri's Rust
+// api_request command, a persistent cookie-jar-backed reqwest::Client)
+// is the transport instead, when present. Every /api/trade/* route is
+// unchanged either way -- this is a transport swap, not a protocol one.
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
+  const desktop = typeof window !== "undefined" ? window.vyxDesktop : undefined;
+  if (desktop?.apiCall) {
+    const parsedBody = typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
+    const { status, body, date } = await desktop.apiCall(path, init?.method ?? "GET", parsedBody);
+    recalibrateFromDateHeader(date);
+    if (status < 200 || status >= 300) {
+      throw new Error((body as { error?: string } | null)?.error ?? `request to ${path} failed (${status})`);
+    }
+    return body as T;
+  }
+
   const response = await fetch(path, {
     ...init,
     headers: { "Content-Type": "application/json", ...init?.headers },
@@ -35,10 +54,47 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
   return body as T;
 }
 
+// btoa() only accepts a binary string, not raw bytes -- chunked to avoid
+// blowing the call stack on String.fromCharCode(...bytes) for a
+// multi-megabyte KYC document image.
+function arrayBufferToBase64(buf: ArrayBuffer): string {
+  const bytes = new Uint8Array(buf);
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
+}
+
 // Same as call(), minus the forced JSON content-type -- a FormData body
 // needs the browser to set its own multipart boundary, which an
-// explicit Content-Type header would override and break.
+// explicit Content-Type header would override and break. The desktop
+// path can't hand a browser FormData/File object to Rust at all, so it
+// re-encodes each part as a plain JSON-safe field first -- see
+// window.vyxDesktop.apiCallMultipart's own doc comment.
 async function callForm<T>(path: string, body: FormData): Promise<T> {
+  const desktop = typeof window !== "undefined" ? window.vyxDesktop : undefined;
+  if (desktop?.apiCallMultipart) {
+    const fields: Array<
+      | { name: string; value: string }
+      | { name: string; file: { filename: string; mime: string; dataBase64: string } }
+    > = [];
+    for (const [name, value] of body.entries()) {
+      if (value instanceof File) {
+        const dataBase64 = arrayBufferToBase64(await value.arrayBuffer());
+        fields.push({ name, file: { filename: value.name, mime: value.type || "application/octet-stream", dataBase64 } });
+      } else {
+        fields.push({ name, value });
+      }
+    }
+    const { status, body: responseBody } = await desktop.apiCallMultipart(path, fields);
+    if (status < 200 || status >= 300) {
+      throw new Error((responseBody as { error?: string } | null)?.error ?? `request to ${path} failed (${status})`);
+    }
+    return responseBody as T;
+  }
+
   const response = await fetch(path, { method: "POST", body });
   const responseBody = await response.json().catch(() => null);
   if (!response.ok) {

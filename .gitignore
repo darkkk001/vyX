@@ -5,6 +5,13 @@
 node_modules/
 services/*/dist/
 services/*/.env
+# Vite-built desktop shell output -- desktop-tauri/dist/ used to hold
+# hand-authored splash/offline HTML (tracked as source); it's now pure
+# `vite build` output from webtrader-shell/, rebuilt by `npm run
+# build:shell` before every `tauri dev`/`tauri build`, same reasoning as
+# node_modules/target/ above.
+desktop-tauri/dist/
+*-tauri/*-shell/dist/
 /.pnp
 .pnp.*
 .yarn/*

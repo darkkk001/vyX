@@ -4,8 +4,9 @@
   "private": true,
   "description": "Tauri desktop shell -- the only desktop app (an earlier Electron app reached parity then was removed). See docs/decisions.md ADR-001.",
   "scripts": {
-    "dev": "tauri dev",
-    "build": "tauri build",
+    "build:shell": "npm --prefix webtrader-shell run build",
+    "dev": "npm run build:shell && tauri dev",
+    "build": "npm run build:shell && tauri build",
     "publish": "node publish.js"
   },
   "devDependencies": {

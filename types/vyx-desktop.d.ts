@@ -23,6 +23,23 @@ declare global {
       // a bundled shell whose own document isn't served from that host --
       // see WebTrader.tsx's two window.location.hostname call sites.
       brokerHost?: string;
+      // Present only in a bundled shell (desktop-tauri's Rust api_request/
+      // api_request_multipart commands) -- lib/trade-api.ts's call()/
+      // callForm() use these instead of fetch() when set, since the
+      // WebView's own fetch()/FormData can't carry the broker's httpOnly
+      // session cookie across the local-content/real-host origin boundary.
+      apiCall?: (
+        path: string,
+        method: string,
+        body: unknown
+      ) => Promise<{ status: number; body: unknown; date: string | null }>;
+      apiCallMultipart?: (
+        path: string,
+        fields: Array<
+          | { name: string; value: string }
+          | { name: string; file: { filename: string; mime: string; dataBase64: string } }
+        >
+      ) => Promise<{ status: number; body: unknown; date: string | null }>;
     };
   }
 }

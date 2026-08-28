@@ -27,6 +27,13 @@ export default defineConfig({
       "@": path.resolve(__dirname, "../.."),
     },
   },
+  build: {
+    // tauri.conf.json's build.frontendDist is "../dist" relative to
+    // src-tauri/, i.e. desktop-tauri/dist -- building straight there
+    // means `tauri build`/`tauri dev` need no separate copy step.
+    outDir: "../dist",
+    emptyOutDir: true,
+  },
   server: {
     port: 5173,
     proxy: {
