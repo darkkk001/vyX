@@ -1,0 +1,19 @@
+@import "tailwindcss";
+@source "../../../components/**/*.tsx";
+/* Not "app/(super-admin)/**" -- parentheses are extglob special
+   characters in the glob matcher @source uses, and Next.js route-group
+   folder names are always parenthesized, so a literal-path glob here
+   would silently fail to match anything. Scanning the whole app/ tree
+   is broader than strictly needed but correctness-safe -- @source only
+   affects which files get textually scanned for class names, not what
+   ships, so the extra scan is harmless. */
+@source "../../../app/**/*.tsx";
+
+/* Relative path, not the "@" alias -- see manager-shell/src/index.css's
+   own comment for why. */
+@import "../../../app/admin-theme.css";
+
+:root {
+  --font-admin-sans: system-ui, sans-serif;
+  --font-admin-mono: ui-monospace, monospace;
+}

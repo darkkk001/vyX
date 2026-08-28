@@ -4,8 +4,9 @@
   "private": true,
   "description": "Tauri desktop shell for the Super Admin app (app/(super-admin)/) -- core-shell slice only. Sibling to desktop-tauri/ (Client/Trading terminal) and manager-tauri/ (Broker Admin + Manager), deliberately a separate app/module per project decision, not a shared codebase. Not broker-scoped -- Super Admin lives at a fixed admin.<rootDomain> subdomain, no per-broker config needed.",
   "scripts": {
-    "dev": "tauri dev",
-    "build": "tauri build",
+    "build:shell": "npm --prefix admin-shell run build",
+    "dev": "npm run build:shell && tauri dev",
+    "build": "npm run build:shell && tauri build",
     "publish": "node publish.js"
   },
   "devDependencies": {
