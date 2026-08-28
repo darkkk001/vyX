@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { getFreshPrice } from "@/lib/live-price";
 import { openPositionFromOrder } from "@/lib/dealing";
+import { resolveBookType, applySpreadMarkup, resolveSymbolPricing } from "@/lib/group-pricing";
 import {
   checkTradingHalted,
   checkSymbolTradingMode,
@@ -187,6 +188,18 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     return NextResponse.json({ id, status: "REQUOTED", requotedPrice: fillPrice.toString() });
   }
 
+  // See lib/group-pricing.ts's own comments -- markup applied only to
+  // the price actually used to fill (dealer-typed or live), not to the
+  // requoted-vs-live comparison above.
+  const pricing = await resolveSymbolPricing(prisma, {
+    groupId: order.account.groupId,
+    symbolId: order.symbolId,
+    brokerSpreadMarkup: brokerSymbol.spreadMarkup,
+    brokerCommissionPerLot: brokerSymbol.commissionPerLot,
+  });
+  const markedUpFillPrice = applySpreadMarkup({ side: order.side, price: fillPrice, spreadMarkup: pricing.spreadMarkup, digits: order.symbol.digits });
+  const bookType = order.account.group ? resolveBookType(order.account.group.groupType) : brokerSymbol.defaultBookType;
+
   try {
     const result = await prisma.$transaction(async (tx) => {
       const claimed = await tx.order.updateMany({
@@ -195,7 +208,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       });
       if (claimed.count === 0) throw new Error("RACED");
 
-      const position = await openPositionFromOrder(tx, order, fillPrice, brokerSymbol.defaultBookType);
+      const position = await openPositionFromOrder(tx, order, markedUpFillPrice, bookType, pricing.commissionPerLot);
 
       await tx.auditLog.create({
         data: {
@@ -205,13 +218,13 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
           entityType: "Position",
           entityId: position.id,
           oldValue: { status: "PENDING", requestedPrice: order.requestedPrice?.toString() ?? null },
-          newValue: { status: "FILLED", filledPrice: fillPrice.toString() },
+          newValue: { status: "FILLED", filledPrice: markedUpFillPrice.toString() },
         },
       });
 
       return position;
     });
-    return NextResponse.json({ id: order.id, status: "FILLED", positionId: result.id, filledPrice: fillPrice.toString() });
+    return NextResponse.json({ id: order.id, status: "FILLED", positionId: result.id, filledPrice: markedUpFillPrice.toString() });
   } catch (error) {
     if (error instanceof Error && error.message === "RACED") {
       return NextResponse.json({ error: "order was already actioned" }, { status: 409 });

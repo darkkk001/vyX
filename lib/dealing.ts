@@ -1,4 +1,5 @@
 import { Prisma, BookType, OrderSide } from "@prisma/client";
+import { chargeCommission } from "@/lib/group-pricing";
 
 type Tx = Prisma.TransactionClient;
 
@@ -9,7 +10,11 @@ type Tx = Prisma.TransactionClient;
 // requote (app/api/trade/orders/[id]/requote-response/route.ts). Each
 // call site still writes its own AuditLog entry (different action names
 // and actors), matching this codebase's existing convention of
-// route-local audit calls.
+// route-local audit calls. `fillPrice` must already have any spread
+// markup applied by the caller (see lib/group-pricing.ts's
+// applySpreadMarkup) -- this function charges commission but does not
+// touch price. commissionPerLot defaults to 0 (no charge) for callers
+// that haven't resolved group pricing.
 export async function openPositionFromOrder(
   tx: Tx,
   order: {
@@ -23,13 +28,14 @@ export async function openPositionFromOrder(
     tpPrice: Prisma.Decimal | null;
   },
   fillPrice: Prisma.Decimal,
-  bookType: BookType
+  bookType: BookType,
+  commissionPerLot: Prisma.Decimal = new Prisma.Decimal(0)
 ) {
   await tx.order.update({
     where: { id: order.id },
     data: { status: "FILLED", filledPrice: fillPrice, filledAt: new Date() },
   });
-  return tx.position.create({
+  const position = await tx.position.create({
     data: {
       brokerId: order.brokerId,
       accountId: order.accountId,
@@ -43,4 +49,12 @@ export async function openPositionFromOrder(
       bookType,
     },
   });
+  await chargeCommission(tx, {
+    brokerId: order.brokerId,
+    accountId: order.accountId,
+    positionId: position.id,
+    commissionPerLot,
+    volume: order.volume,
+  });
+  return position;
 }

@@ -165,6 +165,37 @@ enum TradingMode {
   SELL_ONLY
 }
 
+// Controls which book a group's accounts' new positions default into,
+// overriding BrokerSymbol.defaultBookType for any account with a group
+// (see lib/dealing.ts's resolveBookType) -- LP = A_BOOK (real LP hedge,
+// once one exists -- see LiquidityProvider's own schema comment),
+// DEALING = B_BOOK (broker's own book, dealt internally), DEMO = B_BOOK
+// too (paper trading, no real market exposure either way -- kept as its
+// own value rather than reusing DEALING so a group's classification
+// stays self-explanatory in the Manager UI, even though it resolves to
+// the same book today). Ungrouped accounts are unaffected -- they keep
+// reading the symbol's own defaultBookType exactly as before this field
+// existed.
+enum GroupType {
+  LP
+  DEALING
+  DEMO
+}
+
+// Classification only -- a broker's own naming for an account-type tier
+// (Standard/Pro/ECN/Zero are the common retail-broker convention). This
+// field does NOT auto-generate or constrain pricing in any way; the
+// actual spread markup/commission/swap values a broker sets per symbol
+// for accounts in a tier live in GroupSymbolConfig below, entered
+// manually per group. See Group.tier's own field comment for the full
+// resolution story.
+enum GroupTier {
+  STANDARD
+  PRO
+  ECN
+  ZERO
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // Tenancy
 // ─────────────────────────────────────────────────────────────────────────
@@ -441,15 +472,56 @@ model Group {
   // review, never removes them from the broker-wide setting. See
   // app/api/trade/orders/route.ts's dealing-mode branch.
   forceDealingMode Boolean @default(false)
+  // See GroupType's own doc comment -- book routing for this group's
+  // accounts. Defaults to DEALING (B_BOOK), the same book every account
+  // already fills into today via BrokerSymbol.defaultBookType's own
+  // default -- zero behavior change for existing groups until a broker
+  // deliberately sets one to LP or DEMO.
+  groupType GroupType @default(DEALING)
+  // See GroupTier's own doc comment -- classification only, doesn't
+  // affect pricing by itself. Defaults to STANDARD, same "config now"
+  // zero-change-for-existing-groups convention as groupType above.
+  tier      GroupTier @default(STANDARD)
 
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
 
   accounts Account[]
   allowedSymbols GroupSymbol[]
+  symbolConfigs  GroupSymbolConfig[]
 
   @@unique([brokerId, name])
   @@index([brokerId])
+}
+
+// Per-group override of one symbol's pricing, entered manually by a
+// broker in the Manager UI (e.g. "my ECN-tier group pays less spread but
+// more commission than my Standard-tier group"). Absence of a row for a
+// (groupId, symbolId) pair means "use BrokerSymbol's broker-wide value
+// instead" -- same "missing config = defaults" convention BrokerSymbol
+// itself already uses against Symbol (see BrokerSymbol's own comment).
+// Resolved at every real order-fill site (see lib/group-pricing.ts's
+// resolveSymbolPricing) -- unlike BrokerSymbol.spreadMarkup/
+// commissionPerLot, which sit unread by the live Next.js trading path
+// (only the not-yet-cut-over Rust engine reads those), this table's
+// values ARE applied to real fills the moment a broker sets them, for
+// any account whose group has a row here.
+model GroupSymbolConfig {
+  id               String  @id @default(cuid())
+  groupId          String
+  group            Group   @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  symbolId         String
+  symbol           Symbol  @relation(fields: [symbolId], references: [id])
+  spreadMarkup     Decimal @default(0) @db.Decimal(10, 4) // pips added on top of raw spread, same convention as BrokerSymbol.spreadMarkup
+  commissionPerLot Decimal @default(0) @db.Decimal(10, 2) // flat fee per lot, charged once when a position opens
+  swapLong         Decimal @default(0) @db.Decimal(10, 4)
+  swapShort        Decimal @default(0) @db.Decimal(10, 4)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  @@unique([groupId, symbolId])
+  @@index([groupId])
 }
 
 // One row = this symbol is explicitly allowed for this group. Only
@@ -557,6 +629,7 @@ model Symbol {
   positions     Position[]
   lpRoutingRules LpRoutingRule[]
   groupAllowlists GroupSymbol[]
+  groupSymbolConfigs GroupSymbolConfig[]
 }
 
 /// Latest tick per symbol, pushed by an MT5 EA bridge (see

@@ -5,6 +5,7 @@ import { getAccountSession } from "@/lib/account-auth";
 import { validateSlTp } from "@/lib/trading";
 import { createNotification } from "@/lib/notifications";
 import { openPositionFromOrder } from "@/lib/dealing";
+import { resolveBookType, applySpreadMarkup, resolveSymbolPricing, chargeCommission } from "@/lib/group-pricing";
 import { publishTradingEvent } from "@/lib/nats";
 import {
   checkTradingHalted,
@@ -185,8 +186,20 @@ export async function POST(request: NextRequest) {
         const diffPct = liveRef.sub(requested).abs().div(requested).mul(100);
 
         if (broker.smartDealerAcceptPct != null && diffPct.lte(broker.smartDealerAcceptPct)) {
+          // diffPct above stays computed against the raw liveRef (how far
+          // the market moved from what the client asked) -- spread markup
+          // is a separate, broker-revenue adjustment applied only to the
+          // actual fill price, not to the accept/reject threshold check.
+          const pricing = await resolveSymbolPricing(prisma, {
+            groupId: account.groupId,
+            symbolId: brokerSymbol.symbolId,
+            brokerSpreadMarkup: brokerSymbol.spreadMarkup,
+            brokerCommissionPerLot: brokerSymbol.commissionPerLot,
+          });
+          const fillPrice = applySpreadMarkup({ side, price: liveRef, spreadMarkup: pricing.spreadMarkup, digits: brokerSymbol.symbol.digits });
+          const bookType = account.group ? resolveBookType(account.group.groupType) : brokerSymbol.defaultBookType;
           const position = await prisma.$transaction(async (tx) => {
-            const pos = await openPositionFromOrder(tx, order, liveRef, brokerSymbol.defaultBookType);
+            const pos = await openPositionFromOrder(tx, order, fillPrice, bookType, pricing.commissionPerLot);
             await tx.auditLog.create({
               data: {
                 brokerId: session.brokerId,
@@ -194,7 +207,7 @@ export async function POST(request: NextRequest) {
                 entityType: "Position",
                 entityId: pos.id,
                 oldValue: { status: "PENDING", requestedPrice: price },
-                newValue: { status: "FILLED", filledPrice: liveRef.toString(), diffPct: diffPct.toFixed(4) },
+                newValue: { status: "FILLED", filledPrice: fillPrice.toString(), diffPct: diffPct.toFixed(4) },
               },
             });
             return pos;
@@ -202,11 +215,11 @@ export async function POST(request: NextRequest) {
           await publishTradingEvent("OrderFilled", {
             order_id: order.id,
             account_id: session.accountId,
-            price: liveRef.toString(),
+            price: fillPrice.toString(),
             volume: volume.toString(),
             remaining_volume: "0",
           });
-          return NextResponse.json({ order: { ...order, status: "FILLED", filledPrice: liveRef }, positionId: position.id }, { status: 201 });
+          return NextResponse.json({ order: { ...order, status: "FILLED", filledPrice: fillPrice }, positionId: position.id }, { status: 201 });
         }
 
         if (broker.smartDealerRejectPct != null && diffPct.gte(broker.smartDealerRejectPct)) {
@@ -249,6 +262,20 @@ export async function POST(request: NextRequest) {
     }
 
     if (type === "MARKET") {
+      // See lib/group-pricing.ts's own comments on why this stays a
+      // post-hoc adjustment to whatever price fills the order (here, the
+      // client's own supplied price -- see this route's module doc
+      // comment on why the server isn't the price authority for this
+      // path yet) rather than something computed inside price quoting.
+      // requestedPrice keeps the client's original, unmarked-up ask.
+      const pricing = await resolveSymbolPricing(prisma, {
+        groupId: account.groupId,
+        symbolId: brokerSymbol.symbolId,
+        brokerSpreadMarkup: brokerSymbol.spreadMarkup,
+        brokerCommissionPerLot: brokerSymbol.commissionPerLot,
+      });
+      const fillPrice = applySpreadMarkup({ side, price, spreadMarkup: pricing.spreadMarkup, digits: brokerSymbol.symbol.digits });
+      const bookType = account.group ? resolveBookType(account.group.groupType) : brokerSymbol.defaultBookType;
       const result = await prisma.$transaction(async (tx) => {
         const order = await tx.order.create({
           data: {
@@ -263,7 +290,7 @@ export async function POST(request: NextRequest) {
             tpPrice,
             idempotencyKey,
             status: "FILLED",
-            filledPrice: price,
+            filledPrice: fillPrice,
             filledAt: new Date(),
           },
         });
@@ -275,12 +302,13 @@ export async function POST(request: NextRequest) {
             originOrderId: order.id,
             side,
             volume,
-            openPrice: price,
+            openPrice: fillPrice,
             slPrice,
             tpPrice,
-            bookType: brokerSymbol.defaultBookType,
+            bookType,
           },
         });
+        await chargeCommission(tx, { brokerId: session.brokerId, accountId: session.accountId, positionId: position.id, commissionPerLot: pricing.commissionPerLot, volume });
         return { order, position };
       });
       if (source === "hotkey") await logHotkeyOrder(session.brokerId, result.order.id);

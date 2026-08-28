@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
 import { openPositionFromOrder } from "@/lib/dealing";
+import { resolveBookType, applySpreadMarkup, resolveSymbolPricing } from "@/lib/group-pricing";
 import {
   checkTradingHalted,
   checkSymbolTradingMode,
@@ -72,7 +73,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
   const brokerSymbol = await prisma.brokerSymbol.findFirst({
     where: { brokerId: order.brokerId, symbolId: order.symbolId, enabled: true },
-    include: { tradingSessions: true },
+    include: { tradingSessions: true, symbol: true },
   });
   if (!brokerSymbol) {
     return NextResponse.json({ error: "symbol no longer available for this broker" }, { status: 400 });
@@ -111,6 +112,18 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     return NextResponse.json({ error: riskError }, { status: 400 });
   }
 
+  // See lib/group-pricing.ts's own comments -- the requoted price was
+  // already the dealer's deliberate reprice; markup applies on top of
+  // that, same as every other fill site.
+  const pricing = await resolveSymbolPricing(prisma, {
+    groupId: account.groupId,
+    symbolId: order.symbolId,
+    brokerSpreadMarkup: brokerSymbol.spreadMarkup,
+    brokerCommissionPerLot: brokerSymbol.commissionPerLot,
+  });
+  const fillPrice = applySpreadMarkup({ side: order.side, price: order.requotedPrice!, spreadMarkup: pricing.spreadMarkup, digits: brokerSymbol.symbol.digits });
+  const bookType = account.group ? resolveBookType(account.group.groupType) : brokerSymbol.defaultBookType;
+
   try {
     const position = await prisma.$transaction(async (tx) => {
       const claimed = await tx.order.updateMany({
@@ -119,7 +132,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       });
       if (claimed.count === 0) throw new Error("RACED");
 
-      const pos = await openPositionFromOrder(tx, order, order.requotedPrice!, brokerSymbol.defaultBookType);
+      const pos = await openPositionFromOrder(tx, order, fillPrice, bookType, pricing.commissionPerLot);
 
       await tx.auditLog.create({
         data: {
@@ -128,12 +141,12 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
           entityType: "Position",
           entityId: pos.id,
           oldValue: { status: "REQUOTED", requotedPrice: order.requotedPrice!.toString() },
-          newValue: { status: "FILLED", filledPrice: order.requotedPrice!.toString() },
+          newValue: { status: "FILLED", filledPrice: fillPrice.toString() },
         },
       });
       return pos;
     });
-    return NextResponse.json({ id: order.id, status: "FILLED", positionId: position.id, filledPrice: order.requotedPrice!.toString() });
+    return NextResponse.json({ id: order.id, status: "FILLED", positionId: position.id, filledPrice: fillPrice.toString() });
   } catch (error) {
     if (error instanceof Error && error.message === "RACED") {
       return NextResponse.json({ error: "order was already actioned" }, { status: 409 });

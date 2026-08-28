@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { getFreshPrice, getFreshPrices } from "@/lib/live-price";
 import { computeRealizedPnl, validateSlTp } from "@/lib/trading";
+import { resolveBookType, applySpreadMarkup, resolveSymbolPricing, chargeCommission } from "@/lib/group-pricing";
 import {
   checkTradingHalted,
   checkSymbolTradingMode,
@@ -257,6 +258,19 @@ export async function POST(request: NextRequest) {
     fillPrice = side === "BUY" ? price.ask : price.bid;
   }
 
+  // See lib/group-pricing.ts's own comments -- a group's
+  // GroupSymbolConfig overrides this symbol's broker-wide pricing, and
+  // spread markup widens a BUY fill (a SELL fills at bid, unaffected).
+  // SL/TP are validated against the actual fill price the position will
+  // open at, markup included.
+  const pricing = await resolveSymbolPricing(prisma, {
+    groupId: account.groupId,
+    symbolId: brokerSymbol.symbolId,
+    brokerSpreadMarkup: brokerSymbol.spreadMarkup,
+    brokerCommissionPerLot: brokerSymbol.commissionPerLot,
+  });
+  fillPrice = applySpreadMarkup({ side, price: fillPrice, spreadMarkup: pricing.spreadMarkup, digits: brokerSymbol.symbol.digits });
+
   const slTpError = validateSlTp({ side, referencePrice: fillPrice, slPrice, tpPrice });
   if (slTpError) {
     return NextResponse.json({ error: slTpError }, { status: 400 });
@@ -291,9 +305,10 @@ export async function POST(request: NextRequest) {
         openPrice: fillPrice,
         slPrice,
         tpPrice,
-        bookType: brokerSymbol.defaultBookType,
+        bookType: account.group ? resolveBookType(account.group.groupType) : brokerSymbol.defaultBookType,
       },
     });
+    await chargeCommission(tx, { brokerId, accountId, positionId: position.id, commissionPerLot: pricing.commissionPerLot, volume });
 
     await tx.auditLog.create({
       data: {

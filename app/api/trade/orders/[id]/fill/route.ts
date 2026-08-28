@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
 import { publishTradingEvent } from "@/lib/nats";
+import { resolveBookType, applySpreadMarkup, resolveSymbolPricing, chargeCommission } from "@/lib/group-pricing";
 
 // Called by the client when its local price simulation reports the
 // resting LIMIT/STOP order's trigger price has been hit. Moves the order
@@ -20,8 +22,8 @@ export async function POST(
   const { id } = await params;
 
   const body = await request.json().catch(() => null);
-  const fillPrice = body?.price != null ? String(body.price) : null;
-  if (!fillPrice) {
+  const requestedFillPrice = body?.price != null ? String(body.price) : null;
+  if (!requestedFillPrice) {
     return NextResponse.json({ error: "price is required" }, { status: 400 });
   }
 
@@ -33,9 +35,28 @@ export async function POST(
     return NextResponse.json({ error: `cannot fill an order in status ${order.status}` }, { status: 409 });
   }
 
-  const brokerSymbol = await prisma.brokerSymbol.findFirst({
-    where: { brokerId: order.brokerId, symbolId: order.symbolId },
+  const [brokerSymbol, account] = await Promise.all([
+    prisma.brokerSymbol.findFirst({
+      where: { brokerId: order.brokerId, symbolId: order.symbolId },
+      include: { symbol: true },
+    }),
+    prisma.account.findUniqueOrThrow({ where: { id: order.accountId }, include: { group: true } }),
+  ]);
+
+  // See lib/group-pricing.ts's own comments -- markup applied to the
+  // client's own trigger-detected price (see this route's module doc
+  // comment on why the server isn't the price authority for this path
+  // yet), not to the reference used to decide the trigger fired.
+  const pricing = await resolveSymbolPricing(prisma, {
+    groupId: account.groupId,
+    symbolId: order.symbolId,
+    brokerSpreadMarkup: brokerSymbol?.spreadMarkup ?? new Prisma.Decimal(0),
+    brokerCommissionPerLot: brokerSymbol?.commissionPerLot ?? new Prisma.Decimal(0),
   });
+  const fillPrice = brokerSymbol
+    ? applySpreadMarkup({ side: order.side, price: requestedFillPrice, spreadMarkup: pricing.spreadMarkup, digits: brokerSymbol.symbol.digits })
+    : new Prisma.Decimal(requestedFillPrice);
+  const bookType = account.group ? resolveBookType(account.group.groupType) : (brokerSymbol?.defaultBookType ?? "B_BOOK");
 
   const result = await prisma.$transaction(async (tx) => {
     await tx.order.update({ where: { id: order.id }, data: { status: "ACCEPTED" } });
@@ -54,16 +75,17 @@ export async function POST(
         openPrice: fillPrice,
         slPrice: order.slPrice,
         tpPrice: order.tpPrice,
-        bookType: brokerSymbol?.defaultBookType ?? "B_BOOK",
+        bookType,
       },
     });
+    await chargeCommission(tx, { brokerId: order.brokerId, accountId: order.accountId, positionId: position.id, commissionPerLot: pricing.commissionPerLot, volume: order.volume });
     return { order: filledOrder, position };
   });
 
   await publishTradingEvent("OrderFilled", {
     order_id: order.id,
     account_id: order.accountId,
-    price: fillPrice,
+    price: fillPrice.toString(),
     volume: order.volume.toString(),
     remaining_volume: "0",
   });

@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { Prisma } from "@prisma/client";
+import { Prisma, GroupType, GroupTier } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
+
+const GROUP_TYPES: GroupType[] = ["LP", "DEALING", "DEMO"];
+const GROUP_TIERS: GroupTier[] = ["STANDARD", "PRO", "ECN", "ZERO"];
 
 async function requireManager() {
   const session = await getAdminSession();
@@ -63,6 +66,8 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   const tradingRestriction = ["BOTH", "BUY_ONLY", "SELL_ONLY"].includes(body?.tradingRestriction) ? body.tradingRestriction : "BOTH";
   const swapFree = body?.swapFree === true;
   const forceDealingMode = body?.forceDealingMode === true;
+  const groupType = GROUP_TYPES.includes(body?.groupType) ? (body.groupType as GroupType) : "DEALING";
+  const tier = GROUP_TIERS.includes(body?.tier) ? (body.tier as GroupTier) : "STANDARD";
 
   try {
     const group = await prisma.$transaction(async (tx) => {
@@ -71,7 +76,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       }
       const updated = await tx.group.update({
         where: { id },
-        data: { name, leverage, marginCallLevel, stopOutLevel, isDefault, maxLotSize, tradingRestriction, swapFree, forceDealingMode },
+        data: { name, leverage, marginCallLevel, stopOutLevel, isDefault, maxLotSize, tradingRestriction, swapFree, forceDealingMode, groupType, tier },
       });
       await tx.auditLog.create({
         data: {
@@ -90,6 +95,8 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
             tradingRestriction: existing.tradingRestriction,
             swapFree: existing.swapFree,
             forceDealingMode: existing.forceDealingMode,
+            groupType: existing.groupType,
+            tier: existing.tier,
           },
           newValue: {
             name,
@@ -101,6 +108,8 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
             tradingRestriction,
             swapFree,
             forceDealingMode,
+            groupType,
+            tier,
           },
         },
       });
@@ -118,6 +127,8 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       tradingRestriction: group.tradingRestriction,
       swapFree: group.swapFree,
       forceDealingMode: group.forceDealingMode,
+      groupType: group.groupType,
+      tier: group.tier,
     });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {

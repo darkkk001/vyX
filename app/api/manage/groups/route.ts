@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { Prisma } from "@prisma/client";
+import { Prisma, GroupType, GroupTier } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
+
+const GROUP_TYPES: GroupType[] = ["LP", "DEALING", "DEMO"];
+const GROUP_TIERS: GroupTier[] = ["STANDARD", "PRO", "ECN", "ZERO"];
 
 async function requireManager() {
   const session = await getAdminSession();
@@ -34,6 +37,8 @@ export async function GET() {
       tradingRestriction: g.tradingRestriction,
       swapFree: g.swapFree,
       forceDealingMode: g.forceDealingMode,
+      groupType: g.groupType,
+      tier: g.tier,
     }))
   );
 }
@@ -86,6 +91,8 @@ export async function POST(request: NextRequest) {
   const tradingRestriction = ["BOTH", "BUY_ONLY", "SELL_ONLY"].includes(body?.tradingRestriction) ? body.tradingRestriction : "BOTH";
   const swapFree = body?.swapFree === true;
   const forceDealingMode = body?.forceDealingMode === true;
+  const groupType = GROUP_TYPES.includes(body?.groupType) ? (body.groupType as GroupType) : "DEALING";
+  const tier = GROUP_TIERS.includes(body?.tier) ? (body.tier as GroupTier) : "STANDARD";
 
   try {
     const group = await prisma.$transaction(async (tx) => {
@@ -95,7 +102,7 @@ export async function POST(request: NextRequest) {
         await tx.group.updateMany({ where: { brokerId, isDefault: true }, data: { isDefault: false } });
       }
       const created = await tx.group.create({
-        data: { brokerId, name, leverage, marginCallLevel, stopOutLevel, isDefault, maxLotSize, tradingRestriction, swapFree, forceDealingMode },
+        data: { brokerId, name, leverage, marginCallLevel, stopOutLevel, isDefault, maxLotSize, tradingRestriction, swapFree, forceDealingMode, groupType, tier },
       });
       await tx.auditLog.create({
         data: {
@@ -114,6 +121,8 @@ export async function POST(request: NextRequest) {
             tradingRestriction,
             swapFree,
             forceDealingMode,
+            groupType,
+            tier,
           },
         },
       });
@@ -132,6 +141,8 @@ export async function POST(request: NextRequest) {
         tradingRestriction: group.tradingRestriction,
         swapFree: group.swapFree,
         forceDealingMode: group.forceDealingMode,
+        groupType: group.groupType,
+        tier: group.tier,
       },
       { status: 201 }
     );
