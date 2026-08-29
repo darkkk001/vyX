@@ -77,6 +77,21 @@ html, body, #root {
 
 .wt-root * { box-sizing: border-box; margin: 0; padding: 0; }
 
+/* Every bare <select> (SmartTradeManager's 4, the Quick Order ticket's
+   order-type picker) had no explicit background/color and fell back to
+   the browser's default white dropdown -- same class of bug as
+   .modal-btn's own missing base styling. One rule here instead of
+   patching each call site, and covers any future bare <select> too. */
+.wt-root select {
+  background: var(--bg-3);
+  color: var(--text-1);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 12.5px;
+  outline: none;
+}
+
 .wt-root {
   background: var(--bg-0);
   color: var(--text-1);

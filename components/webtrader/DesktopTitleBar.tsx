@@ -48,24 +48,27 @@ export default function DesktopTitleBar({
         // @ts-expect-error -- WebkitAppRegion isn't in the CSSProperties typings
         WebkitAppRegion: "drag",
         background:
-          "radial-gradient(circle at 15% -40%, rgba(244, 85, 28, 0.16), transparent 55%), #07090C",
-        padding: "8px 8px 0",
+          "radial-gradient(circle at 15% -120%, rgba(244, 85, 28, 0.16), transparent 55%), #07090C",
         flexShrink: 0,
       }}
     >
+      {/* Flush, full-width, square corners -- this is a frameless window
+          with no OS-level corner rounding, so a floating rounded "pill"
+          bar with side padding looked visibly mismatched against the
+          window's own sharp edges. Glass material (blur/translucency)
+          stays; only the "floating pill" geometry was the problem. */}
       <div
         style={{
           display: "flex",
           alignItems: "center",
           height: 44,
-          padding: "0 8px 0 12px",
+          padding: "0 8px 0 14px",
           gap: 10,
-          borderRadius: 10,
           background: "rgba(19, 26, 34, 0.55)",
           backdropFilter: "blur(14px)",
           WebkitBackdropFilter: "blur(14px)",
-          border: "1px solid rgba(255, 255, 255, 0.07)",
-          boxShadow: "inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 12px 32px -12px rgba(0, 0, 0, 0.5)",
+          borderBottom: "1px solid rgba(255, 255, 255, 0.07)",
+          boxShadow: "inset 0 1px 0 rgba(255, 255, 255, 0.05)",
         }}
       >
         {brokerLogoUrl ? (

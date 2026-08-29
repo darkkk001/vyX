@@ -127,10 +127,19 @@ fn clear_saved_session(app: &tauri::AppHandle) {
 // after a successful login -- reads whatever session cookie
 // capture_session_cookie already captured from that login response and
 // writes it to disk.
+// Returns whether a session cookie actually existed to save -- the
+// checkbox calling this always fires right after a successful login, so
+// bridge.session_cookie should always be populated by then; if this ever
+// returns false, capture_session_cookie silently failed to see a
+// Set-Cookie for some login response shape, which was previously
+// impossible to distinguish from "wrote successfully."
 #[tauri::command]
-fn remember_session(app: tauri::AppHandle, bridge: tauri::State<'_, ApiBridge>) {
+fn remember_session(app: tauri::AppHandle, bridge: tauri::State<'_, ApiBridge>) -> bool {
     if let Some(cookie) = bridge.session_cookie.lock().unwrap().clone() {
         write_saved_session(&app, &cookie);
+        true
+    } else {
+        false
     }
 }
 
@@ -532,7 +541,11 @@ const VYX_DESKTOP_INIT_SCRIPT_TEMPLATE: &str = r#"
     },
     rememberBroker: function (hostname) { window.__TAURI__.core.invoke("remember_broker", { hostname: hostname }); },
     forgetBroker: function () { window.__TAURI__.core.invoke("forget_broker"); },
-    rememberSession: function () { window.__TAURI__.core.invoke("remember_session"); },
+    rememberSession: function () {
+      return window.__TAURI__.core.invoke("remember_session").then(function (saved) {
+        if (!saved) console.error("[vyxDesktop] remember_session: no session cookie was captured to save");
+      });
+    },
     forgetSession: function () { window.__TAURI__.core.invoke("forget_session"); },
     apiCall: function (path, method, body) {
       return window.__TAURI__.core.invoke("api_request", { path: path, method: method, body: body });
