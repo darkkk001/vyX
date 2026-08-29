@@ -1,11 +1,11 @@
 {
-  "version": "0.1.6",
-  "notes": "Smart Trade Manager moved next to the Watchlist; branded installer wizard",
-  "pub_date": "2026-08-29T03:13:44.536Z",
+  "version": "0.1.7",
+  "notes": "Suppressed browser context menu; fixed logout/switch-account redirecting to the website instead of the app's own login screen",
+  "pub_date": "2026-08-29T04:20:41.026Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTMmJJTjZKK1lOYnR1bTFFSTRqN2ZnZzE5dGVkbkJ4bkFwY0xab3BoTXozVWlGekluYkRReWNRYXNRckpMZ1JwNFRobkYwcnVLTlhsNDNZZDErTHgxUU95V05hK0syN2dzPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg3OTczMjE2CWZpbGU6RnV0dXJpeCBHbG9iYWwgVHJhZGVyXzAuMS42X3g2NC1zZXR1cC5leGUKMlplckdRVjFEbmJwMFFTbHBlWktkSmxCQXhUYks4MUJEQnNEMGdFQU5VazBEQjFSdGVQdmlkS0tUTGtSVlFvUERqUERuWHRMcTA4dDEvYnBGQzZjQUE9PQo=",
-      "url": "https://vyxtrader.com/desktop-tauri-updates/Futurix%20Global%20Trader_0.1.6_x64-setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTMmJJTjZKK1lOYm1qU2pNbEJhc0lJVzJ0YTNZM3V1Q0xYVXhNVC9OWEFZckpwei81UTliQ1JQWUUycVZTR1BhdTFmWXQ4Y1dFS0Ywd1plaGxIa2wzMFdNaEJ6MEg3VXc4PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg3OTc3MjMyCWZpbGU6RnV0dXJpeCBHbG9iYWwgVHJhZGVyXzAuMS43X3g2NC1zZXR1cC5leGUKNjhva2l6VWlaS3BkOVVPOTZjcFYvak8wM3ZDWWVaV1VSTjY2R21EaThZejByc2N1dWQ1cXFVTHc3UmxXTDJxNFBtU2MxSnRKQ2c0VGMyS1padUF1Q1E9PQo=",
+      "url": "https://vyxtrader.com/desktop-tauri-updates/Futurix%20Global%20Trader_0.1.7_x64-setup.exe"
     }
   }
 }
