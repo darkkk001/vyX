@@ -152,7 +152,26 @@ if (-not (Test-Path $StartEngine)) {
                 Write-Warn "mono_to_utc_offset_ms/rtt_ms not reported yet -- either the EA hasn't completed its first /internal/time handshake, UseDirectMode is off, or this is running against an older engine build"
             } else {
                 Write-Ok "clock handshake reporting: offset=$($last.mono_to_utc_offset_ms)ms, rtt=$($last.rtt_ms)ms"
-                if ([Math]::Abs($last.mono_to_utc_offset_ms) -gt 5000) { Write-Warn "mono_to_utc_offset_ms ($($last.mono_to_utc_offset_ms)) is unusually large for a VPS-to-VPS handshake -- check for a real clock problem on the MT5 terminal's host" }
+                # This is not clock skew -- as the name now says, it is the
+                # constant that converts the EA's monotonic clock
+                # (GetMicrosecondCount(), counting from when the EA started)
+                # into UTC epoch ms. It is therefore ALWAYS a number near the
+                # current epoch, and comparing its magnitude to a few-second
+                # skew threshold fired on every healthy run. What should
+                # actually hold is: now - offset == the EA's runtime.
+                $nowMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+                $impliedRuntimeMs = $nowMs - [int64]$last.mono_to_utc_offset_ms
+                $maxRuntimeMs = 90L * 24 * 3600 * 1000
+                if ($impliedRuntimeMs -lt 0 -or $impliedRuntimeMs -gt $maxRuntimeMs) {
+                    Write-Warn "mono_to_utc_offset_ms implies an EA runtime of $([math]::Round($impliedRuntimeMs / 3600000.0, 1))h, which is impossible -- suspect a real clock problem on the terminal's host, or an EA/engine mismatch in how this field is computed"
+                } else {
+                    Write-Ok "mono_to_utc_offset_ms is consistent with an EA runtime of $([math]::Round($impliedRuntimeMs / 3600000.0, 1))h (monotonic-to-UTC constant, not clock skew -- near the current epoch is correct)"
+                }
+
+                # rtt_ms is the real health signal for the handshake.
+                if ($null -ne $last.rtt_ms -and $last.rtt_ms -gt 100) {
+                    Write-Warn "rtt_ms ($($last.rtt_ms)) is high for a loopback handshake -- expect single-digit ms; a slow /internal/time round-trip widens the offset error"
+                }
             }
         } else {
             Write-Fail "Fewer than 2 successful samples -- check the errors in the table above (engine down? wrong secret?)"
