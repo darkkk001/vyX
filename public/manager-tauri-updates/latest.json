@@ -1,11 +1,11 @@
 {
-  "version": "0.1.8",
-  "notes": "Fixed a real login screen with forgot-password/keep-signed-in (previous release)",
-  "pub_date": "2026-08-29T05:10:10.580Z",
+  "version": "0.1.9",
+  "notes": "Notification click-through added",
+  "pub_date": "2026-08-29T06:53:03.251Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUc2VqVXVBOHpXRHk1TWpJTlk3aTlJVE96dWdJaGJPVXVwRE5ZNnJDZHU3a2RqdmVSQ1B4U29VWW9FK2wxWmZCbERiU1Nsc2lEdFRGVlpzb0ZzQzBoSXk2Tmx1MGQxa1E0PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg3OTgwMTk4CWZpbGU6RnV0dXJpeCBHbG9iYWwgTWFuYWdlcl8wLjEuOF94NjQtc2V0dXAuZXhlCjQ1d3lZV3RsLzNVdXRkcFBVKzFHY096S0gzeHYyOUdaWlI5NHhqTXZDUGhlY1Y0RVNmRlRxUFBJUFdkR2VtUXl5NjJheW1CNzFJZlZHSmVRNHUwWUJnPT0K",
-      "url": "https://vyxtrader.com/manager-tauri-updates/Futurix%20Global%20Manager_0.1.8_x64-setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUc2VqVXVBOHpXRDlQSGZVOFVqL2VubGVkcGJJS2ZFNG8zUXZzbHk0SDFBOEJULy9kNEo4NDZGNGdiZGRVWmlDYU9xOFVIS1RlUzBVVC8wQldTdDN1ZlU2NS84akJLNHdvPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg3OTg2MzY5CWZpbGU6RnV0dXJpeCBHbG9iYWwgTWFuYWdlcl8wLjEuOV94NjQtc2V0dXAuZXhlCkROelZhM2I1K25ReEFaM3ExaWNJNzdXMy81NjAyK0owOTJaeEJsdEorVzU5Rkp6WHNvdU5FdVQ0UlpMbTQxZ2J0Z2xXTVdwWTNBZXVMVzNWUTNZcENRPT0K",
+      "url": "https://vyxtrader.com/manager-tauri-updates/Futurix%20Global%20Manager_0.1.9_x64-setup.exe"
     }
   }
 }
