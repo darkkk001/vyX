@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
-import { humanizeAction, auditEntityHref, excludeSuperAdminActor } from "@/lib/audit-labels";
+import { humanizeAction, auditEntityHref, excludeSuperAdminActor, summarizeAuditDiff } from "@/lib/audit-labels";
 
 // Same query app/manage/(shell)/audit/page.tsx's Server Component used
 // to do inline -- exposed as JSON so AuditLogTable.tsx can fetch it
@@ -29,6 +29,7 @@ export async function GET() {
       entityType: log.entityType,
       entityId: log.entityId,
       href: auditEntityHref(log.entityType, log.entityId),
+      diffLines: summarizeAuditDiff(log.oldValue, log.newValue),
       createdAtLabel: log.createdAt.toISOString().replace("T", " ").slice(0, 19),
     }))
   );

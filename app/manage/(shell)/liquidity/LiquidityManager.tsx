@@ -179,6 +179,41 @@ export default function LiquidityManager() {
         <Badge tone={statusTone.CONTRACTED}>CONTRACTED</Badge> <Badge tone={statusTone.CONNECTED}>CONNECTED</Badge> — always manually set, not detected.
       </p>
 
+      <Card title="Latency & execution quality">
+        <p className="mb-3 text-sm text-[var(--text-3)]">
+          Used to be two separate pages, each just a table of &quot;Not monitored&quot; badges -- no live LP
+          connection exists yet to measure any of this from (see the roster above), so there was nothing a second
+          or third nav item could show that this one line doesn&apos;t already say. Folded in here; both routes come
+          back with real numbers once a real LP connection exists.
+        </p>
+        <Table>
+          <TableHead>
+            <TableHeaderCell>Liquidity provider</TableHeaderCell>
+            <TableHeaderCell align="right">Latency</TableHeaderCell>
+            <TableHeaderCell align="right">Uptime</TableHeaderCell>
+            <TableHeaderCell align="right">Slippage</TableHeaderCell>
+            <TableHeaderCell align="right">Rejection rate</TableHeaderCell>
+            <TableHeaderCell align="right">Fill rate</TableHeaderCell>
+          </TableHead>
+          <TableBody>
+            {rows.length === 0 ? (
+              <TableEmptyState colSpan={6}>No liquidity providers on record yet.</TableEmptyState>
+            ) : (
+              rows.map((row) => (
+                <TableRow key={row.id}>
+                  <TableCell primary>{row.name}</TableCell>
+                  <TableCell align="right"><Badge tone="neutral">Not monitored</Badge></TableCell>
+                  <TableCell align="right"><Badge tone="neutral">Not monitored</Badge></TableCell>
+                  <TableCell align="right"><Badge tone="neutral">Not monitored</Badge></TableCell>
+                  <TableCell align="right"><Badge tone="neutral">Not monitored</Badge></TableCell>
+                  <TableCell align="right"><Badge tone="neutral">Not monitored</Badge></TableCell>
+                </TableRow>
+              ))
+            )}
+          </TableBody>
+        </Table>
+      </Card>
+
       <Modal open={addOpen} onClose={() => setAddOpen(false)} title="Add liquidity provider">
         <div className="flex flex-col gap-3">
           <FormField label="Name">

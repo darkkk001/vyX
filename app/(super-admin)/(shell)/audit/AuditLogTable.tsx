@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
 
 export type AuditLogRow = {
@@ -8,6 +8,7 @@ export type AuditLogRow = {
   actorEmail: string;
   actionLabel: string;
   brokerName: string | null;
+  diffLines: string[];
   createdAtLabel: string;
 };
 
@@ -19,6 +20,7 @@ export type AuditLogRow = {
 // Manager conversion (app/manage/(shell)/audit/AuditLogTable.tsx).
 export default function AuditLogTable() {
   const [rows, setRows] = useState<AuditLogRow[] | null>(null);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
 
   useEffect(() => {
     fetch("/api/admin/audit")
@@ -44,12 +46,34 @@ export default function AuditLogTable() {
           <TableEmptyState colSpan={4}>No audit entries yet.</TableEmptyState>
         ) : (
           rows.map((row) => (
-            <TableRow key={row.id}>
-              <TableCell primary>{row.actorEmail}</TableCell>
-              <TableCell>{row.actionLabel}</TableCell>
-              <TableCell className="text-[var(--text-3)]">{row.brokerName ?? "—"}</TableCell>
-              <TableCell className="text-xs text-[var(--text-3)]">{row.createdAtLabel}</TableCell>
-            </TableRow>
+            <Fragment key={row.id}>
+              <TableRow
+                onClick={() => row.diffLines.length > 0 && setExpandedId((prev) => (prev === row.id ? null : row.id))}
+                title={row.diffLines.length > 0 ? "Click for details" : undefined}
+                className={row.diffLines.length > 0 ? "cursor-pointer" : undefined}
+              >
+                <TableCell primary>{row.actorEmail}</TableCell>
+                <TableCell>
+                  {row.actionLabel}
+                  {row.diffLines.length > 0 ? (
+                    <span className="ml-1.5 text-[var(--text-3)]">{expandedId === row.id ? "▾" : "▸"}</span>
+                  ) : null}
+                </TableCell>
+                <TableCell className="text-[var(--text-3)]">{row.brokerName ?? "—"}</TableCell>
+                <TableCell className="text-xs text-[var(--text-3)]">{row.createdAtLabel}</TableCell>
+              </TableRow>
+              {expandedId === row.id ? (
+                <TableRow>
+                  <TableCell colSpan={4} className="bg-[var(--bg-2)]">
+                    <ul className="space-y-0.5 py-1 font-mono text-xs text-[var(--text-2)]">
+                      {row.diffLines.map((line, i) => (
+                        <li key={i}>{line}</li>
+                      ))}
+                    </ul>
+                  </TableCell>
+                </TableRow>
+              ) : null}
+            </Fragment>
           ))
         )}
       </TableBody>

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
 
 export type AuditLogRow = {
@@ -10,6 +10,7 @@ export type AuditLogRow = {
   entityType: string;
   entityId: string;
   href: string | null;
+  diffLines: string[];
   createdAtLabel: string;
 };
 
@@ -29,6 +30,7 @@ export type AuditLogRow = {
 // to navigate to yet and can override this later once it does.
 export default function AuditLogTable({ onOpenEntity }: { onOpenEntity?: (href: string) => void }) {
   const [rows, setRows] = useState<AuditLogRow[] | null>(null);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
 
   useEffect(() => {
     fetch("/api/manage/audit")
@@ -54,19 +56,37 @@ export default function AuditLogTable({ onOpenEntity }: { onOpenEntity?: (href: 
           <TableEmptyState colSpan={4}>No audit entries yet.</TableEmptyState>
         ) : (
           rows.map((row) => (
-            <TableRow
-              key={row.id}
-              onDoubleClick={() => row.href && (onOpenEntity ? onOpenEntity(row.href) : (window.location.href = row.href))}
-              title={row.href ? "Double-click to open" : undefined}
-              className={row.href ? "cursor-pointer" : undefined}
-            >
-              <TableCell primary>{row.actorEmail}</TableCell>
-              <TableCell>{row.actionLabel}</TableCell>
-              <TableCell mono className="text-[var(--text-3)]">
-                {row.entityType} · {row.entityId}
-              </TableCell>
-              <TableCell className="text-xs text-[var(--text-3)]">{row.createdAtLabel}</TableCell>
-            </TableRow>
+            <Fragment key={row.id}>
+              <TableRow
+                onClick={() => row.diffLines.length > 0 && setExpandedId((prev) => (prev === row.id ? null : row.id))}
+                onDoubleClick={() => row.href && (onOpenEntity ? onOpenEntity(row.href) : (window.location.href = row.href))}
+                title={row.href ? "Double-click to open" : row.diffLines.length > 0 ? "Click for details" : undefined}
+                className={row.href || row.diffLines.length > 0 ? "cursor-pointer" : undefined}
+              >
+                <TableCell primary>{row.actorEmail}</TableCell>
+                <TableCell>
+                  {row.actionLabel}
+                  {row.diffLines.length > 0 ? (
+                    <span className="ml-1.5 text-[var(--text-3)]">{expandedId === row.id ? "▾" : "▸"}</span>
+                  ) : null}
+                </TableCell>
+                <TableCell mono className="text-[var(--text-3)]">
+                  {row.entityType} · {row.entityId}
+                </TableCell>
+                <TableCell className="text-xs text-[var(--text-3)]">{row.createdAtLabel}</TableCell>
+              </TableRow>
+              {expandedId === row.id ? (
+                <TableRow>
+                  <TableCell colSpan={4} className="bg-[var(--bg-2)]">
+                    <ul className="space-y-0.5 py-1 font-mono text-xs text-[var(--text-2)]">
+                      {row.diffLines.map((line, i) => (
+                        <li key={i}>{line}</li>
+                      ))}
+                    </ul>
+                  </TableCell>
+                </TableRow>
+              ) : null}
+            </Fragment>
           ))
         )}
       </TableBody>

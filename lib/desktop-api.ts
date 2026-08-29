@@ -33,6 +33,22 @@ function recalibrateFromResponse(response: Response) {
   recalibrateFromDateHeader(response.headers.get("date"));
 }
 
+// Carries the HTTP status alongside the message so a caller can tell "the
+// session actually expired" (401) apart from "this one request failed"
+// (a network blip, a 500, a desktop-bridge hiccup) -- callers that used to
+// catch-and-force-logout on *any* thrown error (see WebTrader.tsx's
+// refreshAccount) couldn't make that distinction with a plain Error,
+// which meant a transient failure looked identical to a real session
+// expiry and logged the trader out over nothing.
+export class ApiError extends Error {
+  status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
 export async function apiCall<T>(path: string, init?: RequestInit): Promise<T> {
   const desktop = typeof window !== "undefined" ? window.vyxDesktop : undefined;
   if (desktop?.apiCall) {
@@ -40,7 +56,7 @@ export async function apiCall<T>(path: string, init?: RequestInit): Promise<T> {
     const { status, body, date } = await desktop.apiCall(path, init?.method ?? "GET", parsedBody);
     recalibrateFromDateHeader(date);
     if (status < 200 || status >= 300) {
-      throw new Error((body as { error?: string } | null)?.error ?? `request to ${path} failed (${status})`);
+      throw new ApiError((body as { error?: string } | null)?.error ?? `request to ${path} failed (${status})`, status);
     }
     return body as T;
   }
@@ -52,7 +68,7 @@ export async function apiCall<T>(path: string, init?: RequestInit): Promise<T> {
   recalibrateFromResponse(response);
   const body = await response.json().catch(() => null);
   if (!response.ok) {
-    throw new Error(body?.error ?? `request to ${path} failed (${response.status})`);
+    throw new ApiError(body?.error ?? `request to ${path} failed (${response.status})`, response.status);
   }
   return body as T;
 }

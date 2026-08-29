@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
-import { humanizeAction } from "@/lib/audit-labels";
+import { humanizeAction, summarizeAuditDiff } from "@/lib/audit-labels";
 
 // Same query app/(super-admin)/(shell)/audit/page.tsx's Server Component
 // used to do inline -- exposed as JSON so a new AuditLogTable client
@@ -25,6 +25,7 @@ export async function GET() {
       actorEmail: log.actorAdmin?.email ?? "system",
       actionLabel: humanizeAction(log.action),
       brokerName: log.broker?.name ?? null,
+      diffLines: summarizeAuditDiff(log.oldValue, log.newValue),
       createdAtLabel: log.createdAt.toISOString().replace("T", " ").slice(0, 19),
     }))
   );

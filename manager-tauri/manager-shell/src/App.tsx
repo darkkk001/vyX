@@ -26,8 +26,6 @@ import RiskSettingsManager from "@/app/manage/(shell)/risk/RiskSettingsManager";
 import EmergencyControls from "@/app/manage/(shell)/emergency/EmergencyControls";
 import LiquidityManager from "@/app/manage/(shell)/liquidity/LiquidityManager";
 import LpRoutingManager from "@/app/manage/(shell)/liquidity-routing/LpRoutingManager";
-import LatencyManager from "@/app/manage/(shell)/liquidity-latency/LatencyManager";
-import ExecutionQualityManager from "@/app/manage/(shell)/liquidity-execution/ExecutionQualityManager";
 import ReportsView from "@/app/manage/(shell)/reports/ReportsView";
 import TeamManager from "@/app/manage/(shell)/team/TeamManager";
 import SettingsManager from "@/app/manage/(shell)/settings/SettingsManager";
@@ -156,8 +154,6 @@ export default function App() {
             items: [
               { href: "/manage/liquidity", label: "LPs" },
               { href: "/manage/liquidity-routing", label: "Routing" },
-              { href: "/manage/liquidity-latency", label: "Latency" },
-              { href: "/manage/liquidity-execution", label: "Execution quality" },
             ],
           },
         ]
@@ -342,22 +338,6 @@ export default function App() {
             description="Intended routing, recorded before the real integration exists -- no execution path reads this yet."
           >
             <LpRoutingManager />
-          </Section>
-        ) : null;
-      case "/manage/liquidity-latency":
-        return isBrokerAdmin ? (
-          <Section maxWidth="max-w-3xl" title="LP latency" description="No live LP connection exists yet -- this will show real measurements once one does.">
-            <LatencyManager />
-          </Section>
-        ) : null;
-      case "/manage/liquidity-execution":
-        return isBrokerAdmin ? (
-          <Section
-            maxWidth="max-w-3xl"
-            title="LP execution quality"
-            description="No live LP fills exist yet -- this will show real slippage/rejection/fill-rate stats once they do."
-          >
-            <ExecutionQualityManager />
           </Section>
         ) : null;
       case "/manage/reports":

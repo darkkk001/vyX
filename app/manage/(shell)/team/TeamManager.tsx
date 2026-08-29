@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
+import { Alert } from "@/components/ui/Alert";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
 import { PERMISSIONS, PERMISSION_LABELS, type Permission } from "@/lib/permission-labels";
@@ -125,25 +126,34 @@ export default function TeamManager() {
         {rows.length} admin{rows.length === 1 ? "" : "s"} for this broker.
       </p>
       <Card title="Add a team member">
-        <form onSubmit={createAdmin} className="flex flex-wrap items-center gap-2">
-          <Input type="email" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} required className="w-48" />
-          <Input
-            type="password"
-            placeholder="Initial password (min 8 chars)"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            required
-            className="w-56"
-          />
-          <Select value={role} onChange={(e) => setRole(e.target.value as "BROKER_ADMIN" | "MANAGER" | "SUPPORT")} className="w-40">
-            <option value="BROKER_ADMIN">Broker Admin</option>
-            <option value="MANAGER">Manager</option>
-            <option value="SUPPORT">Support</option>
-          </Select>
-          <Button type="submit" variant="primary" disabled={creating}>
-            {creating ? "Adding..." : "Add"}
-          </Button>
-          {createError ? <span className="text-sm text-[var(--sell)]">{createError}</span> : null}
+        <form onSubmit={createAdmin} className="flex flex-col gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <Input type="email" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} required className="w-48" />
+            <Input
+              type="password"
+              placeholder="Initial password (min 8 chars)"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              required
+              className="w-56"
+            />
+            <Select value={role} onChange={(e) => setRole(e.target.value as "BROKER_ADMIN" | "MANAGER" | "SUPPORT")} className="w-40">
+              <option value="BROKER_ADMIN">Broker Admin</option>
+              <option value="MANAGER">Manager</option>
+              <option value="SUPPORT">Support</option>
+            </Select>
+            <Button type="submit" variant="primary" disabled={creating}>
+              {creating ? "Adding..." : "Add"}
+            </Button>
+            {createError ? <span className="text-sm text-[var(--sell)]">{createError}</span> : null}
+          </div>
+          {role === "SUPPORT" ? (
+            <Alert tone="warning">
+              No backoffice page currently grants the Support role any access — every page requires Manager or
+              Broker Admin. A Support admin can log in but every page will 403. Pick Manager (and delegate only the
+              permissions they need) until Support has real access wired up.
+            </Alert>
+          ) : null}
         </form>
       </Card>
 

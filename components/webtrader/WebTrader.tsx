@@ -11,7 +11,7 @@ import {
   type Candle,
   type Timeframe,
 } from "@/lib/market-simulator";
-import { tradeApi, serverNow, type AccountInfo, type ApiPosition, type ApiOrder, type ApiFundsRequest, type ApiKycStatus, type ApiLinkedAccount, type ApiSession } from "@/lib/trade-api";
+import { tradeApi, serverNow, ApiError, type AccountInfo, type ApiPosition, type ApiOrder, type ApiFundsRequest, type ApiKycStatus, type ApiLinkedAccount, type ApiSession } from "@/lib/trade-api";
 import KLineChartPanel, { type KLineChartHandle, type ChartLine } from "./KLineChartPanel";
 import DesktopTitleBar from "./DesktopTitleBar";
 import SessionClock from "./SessionClock";
@@ -287,6 +287,27 @@ export default function WebTrader({
   const [histTo, setHistTo] = useState("");
   const [histSymbol, setHistSymbol] = useState("");
   const [histPeriod, setHistPeriod] = useState("all");
+  // The preset dropdown (Today/7d/30d/All/Custom) used to only control
+  // whether the manual date inputs showed -- picking "Today" or "Last 7
+  // days" never actually touched histFrom/histTo, so refreshHistory's own
+  // query (below) stayed unfiltered no matter which preset was selected;
+  // only "Custom range" ever did anything. This derives the actual dates
+  // for every non-custom preset so the dropdown does what it says.
+  function selectHistPeriod(period: string) {
+    setHistPeriod(period);
+    if (period === "custom") return;
+    if (period === "all") {
+      setHistFrom("");
+      setHistTo("");
+      return;
+    }
+    const days = period === "today" ? 0 : period === "7d" ? 6 : period === "30d" ? 29 : 0;
+    const today = new Date();
+    const from = new Date(today);
+    from.setDate(from.getDate() - days);
+    setHistFrom(from.toISOString().slice(0, 10));
+    setHistTo(today.toISOString().slice(0, 10));
+  }
 
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [alertHistory, setAlertHistory] = useState<Alert[]>([]);
@@ -495,9 +516,20 @@ export default function WebTrader({
   const refreshAccount = useCallback(async () => {
     try {
       setAccount(await tradeApi.me());
-    } catch {
-      if (onSessionExpired) onSessionExpired();
-      else window.location.href = "/trade/login";
+    } catch (err) {
+      // Only a real 401 means the session actually expired -- this used to
+      // force a logout on *any* failed request (a network blip, a 500, a
+      // desktop-bridge hiccup mid-poll), kicking a trader with an open
+      // position back to the login screen over a transient error that had
+      // nothing to do with their session. Every other error just logs and
+      // leaves the last-known account state on screen; the next poll tries
+      // again.
+      if (err instanceof ApiError && err.status === 401) {
+        if (onSessionExpired) onSessionExpired();
+        else window.location.href = "/trade/login";
+      } else {
+        console.error("refreshAccount failed", err);
+      }
     }
   }, [onSessionExpired]);
   const refreshPositions = useCallback(async () => setPositions(await tradeApi.positions().catch(() => [])), []);
@@ -1226,7 +1258,17 @@ export default function WebTrader({
       } instead of ${requoted.requestedPrice ? fmt(parseFloat(requoted.requestedPrice), requoted.symbol.digits) : "market"}. Accept the new price?`,
       showInput: false,
       okLabel: "Accept new price",
-      onConfirm: (v) => respondToRequote(requoted, v !== null),
+      // v is null for every dismissal path (backdrop click, the X button,
+      // and Cancel -- see the generic modal's own onClick handlers below),
+      // not just an explicit "reject." This used to treat all of those the
+      // same as clicking Cancel-as-reject and silently rejected the order,
+      // contradicting this effect's own comment that the Orders panel row
+      // is the fallback for a dismissed/missed popup -- a fallback that
+      // never got a chance to matter because the order was already
+      // rejected. Only the explicit "Accept new price" button should act;
+      // everything else leaves the order REQUOTED for that row's own
+      // Accept/Reject buttons to handle.
+      onConfirm: (v) => { if (v !== null) respondToRequote(requoted, true); },
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingOrders, genericModal]);
@@ -1610,7 +1652,16 @@ export default function WebTrader({
     askPrompt(`Alert me when ${symbolName} reaches:`, fmt(mm.bid, mm.def.digits), (priceStr) => {
       const price = parseFloat(priceStr);
       if (isNaN(price)) { pushToast("Enter a valid price"); return; }
-      setAlerts((prev) => [...prev, { id: nextId(), symbol: symbolName, condition: "above", price, triggered: false }]);
+      // Always hardcoded "above" regardless of where the target price sat
+      // relative to the market -- an alert for a price already below the
+      // current bid got condition "above" (triggers on bid >= price),
+      // which was already true the instant it was created, firing
+      // immediately instead of waiting for the price to actually drop
+      // there. Infer the direction from where the price is right now,
+      // same "below market" logic the chart's own right-click menu
+      // already uses to label a price (see chartContextMenu below).
+      const condition: Alert["condition"] = price >= mm.bid ? "above" : "below";
+      setAlerts((prev) => [...prev, { id: nextId(), symbol: symbolName, condition, price, triggered: false }]);
       pushToast(`Alert set — ${symbolName} @ ${fmt(price, mm.def.digits)}`);
     });
   }
@@ -2440,7 +2491,7 @@ export default function WebTrader({
               {activeBottomTab === "history" ? (
                 <div className="panel-body">
                   <div className="history-toolbar">
-                    <select className="history-period-select" value={histPeriod} onChange={(e) => setHistPeriod(e.target.value)}>
+                    <select className="history-period-select" value={histPeriod} onChange={(e) => selectHistPeriod(e.target.value)}>
                       <option value="today">Today</option><option value="7d">Last 7 days</option><option value="30d">Last 30 days</option><option value="all">All history</option><option value="custom">Custom range</option>
                     </select>
                     <select className="history-period-select" value={histSymbol} onChange={(e) => setHistSymbol(e.target.value)}>
@@ -2755,7 +2806,9 @@ export default function WebTrader({
             <button className="modal-close" onClick={() => setShareData(null)}>✕</button>
             <div className={`share-card${shareData.pnl < 0 ? " sell-mode" : ""}`}>
               <div className="share-header">
-                <div className="share-logo">vy<span>X</span></div>
+                <div className="share-logo">
+                  {brokerLogoUrl ? <img src={brokerLogoUrl} alt={brokerName} className="share-logo-img" /> : brokerName}
+                </div>
                 <div className="share-symbol-tag">{shareData.symbolLabel}</div>
               </div>
               <div className="share-pnl-block">
@@ -2769,7 +2822,7 @@ export default function WebTrader({
                 <div className="share-stat"><div className="share-stat-label">{shareData.rrTitle}</div><div className="share-stat-value">{shareData.rrLabel}</div></div>
                 <div className="share-stat"><div className="share-stat-label">Leverage</div><div className="share-stat-value">1:{account?.leverage ?? 100}</div></div>
               </div>
-              <div className="share-footer">Trade with vyX</div>
+              <div className="share-footer">Trade with {brokerName}</div>
             </div>
             <div className="modal-actions">
               <button className="modal-btn secondary" onClick={() => pushToast("Image saved to downloads")}>Save image</button>

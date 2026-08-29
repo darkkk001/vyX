@@ -3,8 +3,8 @@
 // auth — no tokens handled in JS. Transport (fetch() vs. a bundled
 // desktop shell's window.vyxDesktop bridge) lives in lib/desktop-api.ts,
 // shared with manager-shell/admin-shell's own API wrappers.
-import { apiCall as call, apiCallForm as callForm, serverNow } from "./desktop-api";
-export { serverNow };
+import { apiCall as call, apiCallForm as callForm, serverNow, ApiError } from "./desktop-api";
+export { serverNow, ApiError };
 
 export type AccountInfo = {
   id: string;

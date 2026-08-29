@@ -121,3 +121,39 @@ export function auditEntityHref(entityType: string, entityId: string): string | 
   if (entityType === "Account") return `/manage/accounts/${entityId}`;
   return ENTITY_LIST_PATHS[entityType] ?? null;
 }
+
+function formatDiffValue(value: unknown): string {
+  if (value === null || value === undefined) return "—";
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
+// The audit log has always recorded AuditLog.oldValue/newValue, but every
+// consumer (Manager and Super Admin's audit pages alike) only ever showed
+// actor/action/target/time -- the actual before/after was captured on
+// every write and then never surfaced anywhere. Computed server-side, not
+// client-side, same "pre-humanize before it crosses the wire" convention
+// as humanizeAction and the dashboard's own activity feed -- both audit
+// routes call this once per row instead of shipping raw JSON for two
+// separate client components to each re-parse the same way.
+export function summarizeAuditDiff(oldValue: Prisma.JsonValue | null, newValue: Prisma.JsonValue | null): string[] {
+  const asPlainObject = (v: Prisma.JsonValue | null): Record<string, unknown> | null =>
+    v != null && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
+
+  const before = asPlainObject(oldValue);
+  const after = asPlainObject(newValue);
+  if (!before && !after) return [];
+  if (!before) return Object.entries(after!).map(([key, value]) => `${key}: ${formatDiffValue(value)}`);
+  if (!after) return Object.entries(before).map(([key, value]) => `${key}: ${formatDiffValue(value)} (removed)`);
+
+  const lines: string[] = [];
+  for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
+    const beforeValue = before[key];
+    const afterValue = after[key];
+    if (JSON.stringify(beforeValue) === JSON.stringify(afterValue)) continue;
+    if (beforeValue === undefined) lines.push(`${key}: ${formatDiffValue(afterValue)}`);
+    else if (afterValue === undefined) lines.push(`${key}: ${formatDiffValue(beforeValue)} (removed)`);
+    else lines.push(`${key}: ${formatDiffValue(beforeValue)} → ${formatDiffValue(afterValue)}`);
+  }
+  return lines;
+}
