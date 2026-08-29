@@ -152,6 +152,7 @@ export default function BrokersManager() {
   // returns the value again after this response, so once the modal
   // closes or another action runs, it's gone from the UI too.
   const [revealedSsoSecret, setRevealedSsoSecret] = useState<string | null>(null);
+  const [revealedAdminPassword, setRevealedAdminPassword] = useState<{ email: string; password: string } | null>(null);
   const [ssoBusy, setSsoBusy] = useState(false);
   const [ssoError, setSsoError] = useState<string | null>(null);
 
@@ -177,6 +178,7 @@ export default function BrokersManager() {
     setNewAdminEmail("");
     setDetailError(null);
     setRevealedSsoSecret(null);
+    setRevealedAdminPassword(null);
     setSsoError(null);
     setSupportEmailInput(row.supportEmail ?? "");
     setSupportEmailError(null);
@@ -216,10 +218,11 @@ export default function BrokersManager() {
     if (!detailTarget || !newAdminEmail.trim()) return;
     setDetailBusy(true);
     setDetailError(null);
+    setRevealedAdminPassword(null);
     const response = await fetch("/api/admin/admins", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ brokerId: detailTarget.id, email: newAdminEmail.trim(), password: "ChangeMe123!", role: "BROKER_ADMIN" }),
+      body: JSON.stringify({ brokerId: detailTarget.id, email: newAdminEmail.trim(), role: "BROKER_ADMIN" }),
     });
     setDetailBusy(false);
     if (!response.ok) {
@@ -229,6 +232,7 @@ export default function BrokersManager() {
     }
     const created = await response.json();
     setDetailAdmins((prev) => [...(prev ?? []), { id: created.id, email: created.email, role: created.role, status: "ACTIVE", brokerId: detailTarget.id }]);
+    setRevealedAdminPassword({ email: created.email, password: created.password });
     setNewAdminEmail("");
     reload().catch(() => {});
   }
@@ -557,7 +561,18 @@ export default function BrokersManager() {
                   Assign
                 </Button>
               </div>
-              <p className="mt-1.5 text-[10px] text-[var(--text-3)]">New admins get a temporary password (ChangeMe123!) — same as the Manager team-invite flow.</p>
+              {revealedAdminPassword ? (
+                <div className="mt-2 flex items-center justify-between gap-2 rounded-lg border border-[var(--accent)] bg-[var(--bg-2)] px-3 py-2">
+                  <div className="min-w-0">
+                    <p className="text-[10px] text-[var(--text-3)]">
+                      One-time password for {revealedAdminPassword.email} — shown once, send it to them now:
+                    </p>
+                    <code className="select-all break-all text-xs text-[var(--text-1)]">{revealedAdminPassword.password}</code>
+                  </div>
+                </div>
+              ) : (
+                <p className="mt-1.5 text-[10px] text-[var(--text-3)]">New admins get a random one-time password, shown here after they&apos;re created.</p>
+              )}
             </ModalSection>
 
             <ModalSection label="WebTrader SSO">

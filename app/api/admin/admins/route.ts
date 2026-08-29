@@ -3,6 +3,7 @@ import bcrypt from "bcryptjs";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession } from "@/lib/auth";
+import { generateTemporaryPassword } from "@/lib/passwords";
 
 // Only Super Admins may list/create AdminUsers across brokers -- this is
 // what actually closes the gap a freshly created broker has: zero admin
@@ -62,15 +63,20 @@ export async function POST(request: NextRequest) {
   const body = await request.json().catch(() => null);
   const brokerId = typeof body?.brokerId === "string" ? body.brokerId : "";
   const email = typeof body?.email === "string" ? body.email.trim().toLowerCase() : "";
-  const password = typeof body?.password === "string" ? body.password : "";
   const role = typeof body?.role === "string" && CREATABLE_ROLES.has(body.role) ? body.role : null;
 
   if (!brokerId || !email || !role) {
     return NextResponse.json({ error: "brokerId, email, and role are required" }, { status: 400 });
   }
-  if (password.length < 8) {
-    return NextResponse.json({ error: "password must be at least 8 characters" }, { status: 400 });
-  }
+
+  // Generated here, not accepted from the caller -- this used to take a
+  // client-supplied password, and BrokersManager.tsx's caller was sending
+  // the literal string "ChangeMe123!" for every single new admin across
+  // every broker. A fixed, publicly-documented default password on the
+  // most privileged account type below Super Admin is a real vulnerability,
+  // not a placeholder. Same one-time-reveal shape as reset-password's own
+  // generateTemporaryPassword() call.
+  const password = generateTemporaryPassword();
 
   const broker = await prisma.broker.findUnique({ where: { id: brokerId } });
   if (!broker) {
@@ -98,7 +104,7 @@ export async function POST(request: NextRequest) {
     });
 
     return NextResponse.json(
-      { id: admin.id, email: admin.email, role: admin.role, brokerId: admin.brokerId },
+      { id: admin.id, email: admin.email, role: admin.role, brokerId: admin.brokerId, password },
       { status: 201 }
     );
   } catch (error) {

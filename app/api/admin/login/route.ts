@@ -7,6 +7,7 @@ import {
   sessionCookieOptions,
 } from "@/lib/auth";
 import { issuePendingAdmin2faChallenge } from "@/lib/totp";
+import { checkRateLimit } from "@/lib/rate-limit";
 
 export async function POST(request: NextRequest) {
   const body = await request.json().catch(() => null);
@@ -15,6 +16,15 @@ export async function POST(request: NextRequest) {
 
   if (!email || !password) {
     return NextResponse.json({ error: "email and password are required" }, { status: 400 });
+  }
+
+  // Every other login route in the app (trade, manage) is rate-limited;
+  // this one -- the platform root, with no per-broker scope to narrow
+  // the key to -- had none, meaning unlimited online brute force against
+  // it. Same 5/min shape as the others.
+  const { allowed } = await checkRateLimit(`admin-login:${email}`, 5, 60);
+  if (!allowed) {
+    return NextResponse.json({ error: "too many attempts, try again shortly" }, { status: 429 });
   }
 
   const admin = await prisma.adminUser.findUnique({ where: { email } });
