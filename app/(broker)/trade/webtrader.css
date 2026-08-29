@@ -173,13 +173,13 @@ html, body, #root {
   border: 1px solid var(--border-strong); color: var(--text-1);
   font-size: 12px; padding: 6px 12px; border-radius: 7px; cursor: pointer;
 }
-.funds-btn:hover { border-color: var(--brand); }
+.funds-btn:hover { border-color: var(--text-3); }
 .bell-btn {
   position: relative; background: var(--bg-3); border: 1px solid var(--border-strong);
   color: var(--text-1); padding: 6px 8px; border-radius: 7px; cursor: pointer;
   display: flex; align-items: center;
 }
-.bell-btn:hover { border-color: var(--brand); }
+.bell-btn:hover { border-color: var(--text-3); }
 .bell-count {
   position: absolute; top: -4px; right: -4px; background: var(--sell); color: #fff;
   font-size: 9px; font-weight: 700; border-radius: 50%; width: 14px; height: 14px;
@@ -190,13 +190,13 @@ html, body, #root {
   flex: 1; padding: 7px; font-size: 12px; border-radius: 7px; cursor: pointer;
   background: var(--bg-3); color: var(--text-3); border: 1px solid var(--border-strong);
 }
-.funds-tab.active { background: var(--brand-dim); color: var(--brand); border-color: var(--brand); }
+.funds-tab.active { background: var(--bg-4); color: var(--text-1); border-color: var(--text-2); }
 .method-row { display: flex; gap: 6px; flex-wrap: wrap; }
 .method-btn {
   font-size: 11px; padding: 6px 10px; border-radius: 6px; cursor: pointer;
   background: var(--bg-3); color: var(--text-2); border: 1px solid var(--border-strong);
 }
-.method-btn.active { border-color: var(--brand); color: var(--brand); }
+.method-btn.active { border-color: var(--text-2); color: var(--text-1); }
 .margin-call-banner {
   display: none; background: var(--sell-bg); color: var(--sell);
   font-size: 12px; padding: 8px 16px; text-align: center; font-weight: 500;
@@ -214,7 +214,7 @@ html, body, #root {
 .metric-value { font-size: 18px; font-weight: 600; }
 .nav { display: flex; gap: 22px; margin-left: 28px; font-size: 13px; color: var(--text-2); }
 .nav .item { cursor: pointer; padding: 4px 0; border-bottom: 2px solid transparent; transition: color .15s; }
-.nav .item.active { color: var(--text-1); border-color: var(--brand); }
+.nav .item.active { color: var(--text-1); border-color: var(--text-1); }
 .nav .item:hover { color: var(--text-1); }
 .topbar-left { display: flex; align-items: center; }
 .topbar-right { display: flex; align-items: center; gap: 18px; }
@@ -255,16 +255,16 @@ html, body, #root {
   transition: background .15s, color .15s;
 }
 .rail-item:hover { background: var(--bg-3); color: var(--text-2); }
-.rail-item.active { background: var(--accent-bg); color: var(--accent); }
+.rail-item.active { background: var(--bg-3); color: var(--text-1); }
 .rail-sep { width: 22px; height: 1px; background: var(--border); margin: 6px 0; }
 .rail-bottom { margin-top: auto; }
 
 /* ---------- MAIN GRID ---------- */
 .main { flex: 1; display: grid; overflow: hidden; }
 .col-resizer { cursor: col-resize; background: transparent; position: relative; }
-.col-resizer:hover, .col-resizer:active { background: var(--brand-dim); }
+.col-resizer:hover, .col-resizer:active { background: var(--bg-4); }
 .row-resizer { cursor: row-resize; height: 6px; flex-shrink: 0; background: transparent; }
-.row-resizer:hover, .row-resizer:active { background: var(--brand-dim); }
+.row-resizer:hover, .row-resizer:active { background: var(--bg-4); }
 
 /* ---------- WATCHLIST ---------- */
 /* border-right, not border-left -- watchlist now sits on the left (next
@@ -296,7 +296,7 @@ html, body, #root {
 .wl-neg { color: var(--sell); }
 .wl-alert-btn { background: none; border: none; color: var(--text-3); cursor: pointer; padding: 2px; display: flex; align-items: center; justify-self: end; }
 .wl-alert-btn:hover { color: var(--text-2); }
-.wl-alert-btn.active { color: var(--brand); }
+.wl-alert-btn.active { color: var(--text-1); }
 .wl-drag-handle { color: var(--text-3); cursor: grab; font-size: 11px; letter-spacing: -1px; user-select: none; }
 .wl-item.dragging { opacity: .4; }
 .wl-signal { font-size: 11px; text-align: center; }
@@ -318,7 +318,7 @@ html, body, #root {
 .wl-ctx-title { font-size: 10px; color: var(--text-3); text-transform: uppercase; letter-spacing: .04em; padding: 5px 8px 6px; }
 .wl-ctx-item { display: flex; align-items: center; gap: 8px; padding: 8px; border-radius: 6px; cursor: pointer; font-size: 12.5px; }
 .wl-ctx-item:hover { background: var(--bg-3); }
-.wl-ctx-check { width: 14px; color: var(--brand); font-size: 12px; font-weight: 700; }
+.wl-ctx-check { width: 14px; color: var(--text-1); font-size: 12px; font-weight: 700; }
 
 /* ---------- CENTER ---------- */
 /* min-height: 0 -- .center is a grid item inside .main (display: grid,
@@ -351,14 +351,14 @@ html, body, #root {
 }
 .draw-tool-btn { width: 28px; height: 28px; border-radius: 6px; background: transparent; border: none; color: var(--text-3); cursor: pointer; display: flex; align-items: center; justify-content: center; }
 .draw-tool-btn:hover { background: var(--bg-3); color: var(--text-1); }
-.draw-tool-btn.active { background: var(--brand-dim); color: var(--brand); }
+.draw-tool-btn.active { background: var(--bg-4); color: var(--text-1); }
 .draw-tool-sep { height: 1px; background: var(--border); margin: 2px 4px; }
 
 .bottom-panel { height: 190px; border-top: 1px solid var(--border); background: var(--bg-1); display: flex; flex-direction: column; flex-shrink: 0; }
 .tabs-row { display: flex; align-items: center; justify-content: space-between; padding: 10px 16px 0; border-bottom: 1px solid var(--border); }
 .tabs { display: flex; gap: 18px; font-size: 12px; color: var(--text-3); }
 .tab { padding-bottom: 9px; cursor: pointer; border-bottom: 2px solid transparent; }
-.tab.active { color: var(--text-1); border-color: var(--brand); }
+.tab.active { color: var(--text-1); border-color: var(--text-1); }
 .bulk-actions { display: flex; gap: 6px; padding-bottom: 8px; }
 .bulk-btn { font-size: 10.5px; padding: 4px 9px; border-radius: 6px; cursor: pointer; background: var(--bg-3); color: var(--text-2); border: 1px solid var(--border-strong); transition: filter .12s, opacity .12s; }
 .bulk-btn:hover { filter: brightness(1.15); }
@@ -435,7 +435,7 @@ html, body, #root {
 @keyframes pulseNear { 0%,100% { box-shadow: 0 0 0 0 rgba(234,57,67,0); } 50% { box-shadow: 0 0 0 3px rgba(234,57,67,.25); } }
 .near-hit.near-tp { animation-name: pulseNearTp; }
 @keyframes pulseNearTp { 0%,100% { box-shadow: 0 0 0 0 rgba(22,199,132,0); } 50% { box-shadow: 0 0 0 3px rgba(22,199,132,.25); } }
-.inline-edit-input { width: 66px; background: var(--bg-2); border: 1px solid var(--brand); border-radius: 5px; color: var(--text-1); font-size: 11px; padding: 3px 6px; outline: none; }
+.inline-edit-input { width: 66px; background: var(--bg-2); border: 1px solid var(--text-2); border-radius: 5px; color: var(--text-1); font-size: 11px; padding: 3px 6px; outline: none; }
 .inline-edit-input.invalid { border-color: var(--sell); background: rgba(234,57,67,0.12); color: var(--sell); }
 .sltp-label { color: var(--text-3); }
 .sltp-sep { color: var(--border-strong); }
@@ -548,7 +548,7 @@ html, body, #root {
 
 .order-type-tabs { display: flex; gap: 6px; margin-bottom: 12px; }
 .ot-tab { flex: 1; padding: 7px; font-size: 12px; border-radius: 7px; cursor: pointer; background: var(--bg-3); color: var(--text-3); border: 1px solid var(--border-strong); }
-.ot-tab.active { background: var(--brand-dim); color: var(--brand); border-color: var(--brand); }
+.ot-tab.active { background: var(--bg-4); color: var(--text-1); border-color: var(--text-2); }
 
 .pending-select { width: 100%; background: var(--bg-3); color: var(--text-1); border: 1px solid var(--border-strong); border-radius: 8px; padding: 9px 10px; font-size: 12.5px; outline: none; }
 
@@ -570,7 +570,6 @@ html, body, #root {
 .share-card.sell-mode { border-color: var(--sell); background: linear-gradient(165deg, var(--sell-bg) 0%, var(--bg-0) 65%); }
 .share-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
 .share-logo { font-size: 15px; font-weight: 600; color: var(--text-1); }
-.share-logo span { color: var(--brand); }
 .share-logo-img { height: 18px; max-width: 120px; object-fit: contain; display: block; }
 .share-symbol-tag { font-size: 10px; color: var(--text-3); }
 .share-pnl-block { text-align: center; margin: 14px 0 18px; }
@@ -743,4 +742,4 @@ html, body, #root {
   cursor: pointer;
   font-size: 10px;
 }
-.mobile-nav-item.active { color: var(--accent); }
+.mobile-nav-item.active { color: var(--text-1); }

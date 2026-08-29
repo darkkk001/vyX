@@ -51,7 +51,7 @@ export default function ChartCell({
       onClick={onFocus}
       style={{
         display: "flex", flexDirection: "column", overflow: "hidden", position: "relative",
-        background: "var(--bg-0)", boxShadow: focused ? "inset 0 0 0 1.5px var(--accent)" : "inset 0 0 0 1px var(--border)",
+        background: "var(--bg-0)", boxShadow: focused ? "inset 0 0 0 1.5px var(--text-1)" : "inset 0 0 0 1px var(--border)",
       }}
     >
       <div style={{ height: 30, flexShrink: 0, display: "flex", alignItems: "center", gap: 8, padding: "0 8px", borderBottom: "1px solid var(--border)", background: "var(--bg-1)", position: "relative" }}>
