@@ -109,6 +109,14 @@ html, body, #root {
   border-bottom: 1px solid var(--border);
   background: var(--bg-1); flex-shrink: 0;
 }
+/* Desktop shell only -- DesktopTitleBar sits directly above this bar with
+   no gap (see App.tsx), so this loses its own top border/shadow and
+   picks up a touch of the same glass tint, reading as one continuous
+   header instead of two visually distinct strips stacked on each other. */
+.topbar-desktop {
+  border-bottom-color: rgba(255, 255, 255, 0.06);
+  background: linear-gradient(180deg, rgba(244, 85, 28, 0.04), var(--bg-1) 60%);
+}
 .topbar-center { justify-self: center; }
 .topbar-right { justify-self: end; }
 .broker-logo {
@@ -433,8 +441,18 @@ html, body, #root {
 /* ---------- ORDER PANEL ---------- */
 .order-panel { padding: 14px; overflow-y: auto; background: var(--bg-1); border-right: 1px solid var(--border); }
 .oc-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px; }
-.buysell-btn { padding: 11px; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; border: none; transition: filter .12s, opacity .12s; }
-.buysell-btn:not(:disabled):hover { filter: brightness(1.08); }
+.buysell-btn {
+  padding: 11px;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  transition: transform .12s ease, filter .12s ease, box-shadow .12s ease;
+}
+.buysell-btn:not(:disabled):hover { transform: translateY(-1px); filter: brightness(1.08); }
+.buysell-btn:not(:disabled):active { transform: translateY(0); }
 .buysell-btn:disabled { opacity: .35; cursor: not-allowed; }
 .buysell-btn.selected { box-shadow: 0 0 0 2px var(--bg-1), 0 0 0 4px currentColor; }
 
@@ -463,8 +481,18 @@ html, body, #root {
 .confirm-market-btn:hover { filter: brightness(1.08); }
 .confirm-market-btn.buy { background: var(--buy); }
 .confirm-market-btn.sell { background: var(--sell); color: #2A0808; }
-.buysell-btn.buy { background: var(--buy); color: #04140C; }
-.buysell-btn.sell { background: var(--sell); color: #2A0808; }
+.buysell-btn.buy {
+  background: linear-gradient(180deg, color-mix(in srgb, var(--buy) 65%, transparent), color-mix(in srgb, var(--buy) 42%, transparent));
+  border: 1px solid color-mix(in srgb, var(--buy) 55%, transparent);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.18), 0 6px 18px -8px var(--buy-glow);
+  color: #eafff5;
+}
+.buysell-btn.sell {
+  background: linear-gradient(180deg, color-mix(in srgb, var(--sell) 65%, transparent), color-mix(in srgb, var(--sell) 42%, transparent));
+  border: 1px solid color-mix(in srgb, var(--sell) 55%, transparent);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.14), 0 6px 18px -8px var(--sell-glow);
+  color: #fff0f0;
+}
 .btn-sub { display: block; font-size: 10px; font-weight: 400; opacity: .75; margin-top: 1px; }
 
 .field-group { background: var(--bg-3); border-radius: 8px; padding: 4px 12px; margin-bottom: 10px; }

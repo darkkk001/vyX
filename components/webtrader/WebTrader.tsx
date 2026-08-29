@@ -1677,7 +1677,7 @@ export default function WebTrader({
           Margin call — your margin level is below 100%. Deposit funds or close positions to avoid stop-out.
         </div>
 
-        <div className="topbar">
+        <div className={`topbar${isDesktopApp ? " topbar-desktop" : ""}`}>
           <div className="topbar-left">
             <div className="nav">
               <div style={{ position: "relative" }}>
@@ -1804,30 +1804,38 @@ export default function WebTrader({
               </div>
             </div>
           </div>
-          <span className="broker-logo topbar-center">
-            <span className="broker-logo-mark">
-              {brokerLogoUrl ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img src={brokerLogoUrl} alt={brokerName} />
-              ) : brokerName.charAt(0).toUpperCase()}
+          {isDesktopApp ? (
+            // DesktopTitleBar (the bar above this one) already shows the
+            // broker's logo/name and a Live/Demo status pill -- showing
+            // this same identity a second time right underneath it was
+            // the literal "two headers both say Futurix Global" complaint.
+            <span className="topbar-center" />
+          ) : (
+            <span className="broker-logo topbar-center">
+              <span className="broker-logo-mark">
+                {brokerLogoUrl ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={brokerLogoUrl} alt={brokerName} />
+                ) : brokerName.charAt(0).toUpperCase()}
+              </span>
+              <span className="broker-logo-text">{brokerName.toUpperCase()}</span>
+              <span
+                title={serverName}
+                style={{
+                  display: "inline-flex", alignItems: "center", gap: 5, marginLeft: 10,
+                  padding: "2px 8px", borderRadius: 4, fontSize: 10.5, fontWeight: 600,
+                  background: connected ? "var(--buy-bg)" : "var(--sell-bg)",
+                  color: connected ? "var(--buy)" : "var(--sell)",
+                }}
+              >
+                <svg width="13" height="10" viewBox="0 0 15 12" style={{ flexShrink: 0 }}>
+                  {[{ h: 4, y: 8 }, { h: 6.5, y: 5.5 }, { h: 9, y: 3 }, { h: 12, y: 0 }].map((b, i) => (
+                    <rect key={i} x={i * 3.9} y={b.y} width="2.6" height={b.h} rx="0.6" fill={connected ? "var(--buy)" : i === 0 ? "var(--sell)" : "#3a4150"} />
+                  ))}
+                </svg>
+              </span>
             </span>
-            <span className="broker-logo-text">{brokerName.toUpperCase()}</span>
-            <span
-              title={serverName}
-              style={{
-                display: "inline-flex", alignItems: "center", gap: 5, marginLeft: 10,
-                padding: "2px 8px", borderRadius: 4, fontSize: 10.5, fontWeight: 600,
-                background: connected ? "var(--buy-bg)" : "var(--sell-bg)",
-                color: connected ? "var(--buy)" : "var(--sell)",
-              }}
-            >
-              <svg width="13" height="10" viewBox="0 0 15 12" style={{ flexShrink: 0 }}>
-                {[{ h: 4, y: 8 }, { h: 6.5, y: 5.5 }, { h: 9, y: 3 }, { h: 12, y: 0 }].map((b, i) => (
-                  <rect key={i} x={i * 3.9} y={b.y} width="2.6" height={b.h} rx="0.6" fill={connected ? "var(--buy)" : i === 0 ? "var(--sell)" : "#3a4150"} />
-                ))}
-              </svg>
-            </span>
-          </span>
+          )}
           <div className="topbar-right">
             <span className="trader-name">{balanceHidden ? "••••••" : account?.fullName ?? ""}</span>
             <button className="eye-toggle-btn" onClick={() => setBalanceHidden((v) => !v)} title={balanceHidden ? "Show balance" : "Hide balance"}>
