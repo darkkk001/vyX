@@ -22,6 +22,15 @@ use std::time::{Duration as StdDuration, Instant};
 // "wrong timestamp entirely," not tightly bounding real latency.
 const T0_MAX_PLAUSIBLE_DELTA_MS: i64 = 60_000;
 
+// A small negative delta is normal, not a bad timestamp. Once the EA's
+// clock-sync handshake is working, its t0 is accurate to about the
+// handshake's RTT, and real loopback latency is 0-1ms -- so the noise
+// straddles zero and roughly half of it lands just below. Rejecting at 0
+// threw away 17% of otherwise-good samples on this box (measured: p50 0ms,
+// p95 1ms, 17.2% counted invalid). -100ms absorbs that jitter while still
+// being far tighter than any real clock error worth flagging.
+const T0_MIN_PLAUSIBLE_DELTA_MS: i64 = -100;
+
 // Contabo audit: Candle/LivePrice upserts were observed taking 4-37s and
 // dropping connections. A flush already runs off the hot path (see this
 // module's own doc comment), but an unbounded await here still means a
@@ -73,7 +82,7 @@ pub async fn ingest_ticks(
         match tick.t0 {
             Some(t0) => {
                 let delta = now_ms - t0;
-                if !(0..=T0_MAX_PLAUSIBLE_DELTA_MS).contains(&delta) {
+                if !(T0_MIN_PLAUSIBLE_DELTA_MS..=T0_MAX_PLAUSIBLE_DELTA_MS).contains(&delta) {
                     stats.record_invalid_t0();
                 } else {
                     stats.record_latency_ms(delta);
