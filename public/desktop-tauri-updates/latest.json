@@ -1,11 +1,11 @@
 {
-  "version": "0.1.8",
-  "notes": "Real broker branding: title bar logo instead of generic X mark, brand color instead of generic green/purple",
-  "pub_date": "2026-08-29T05:07:04.992Z",
+  "version": "0.1.9",
+  "notes": "Consolidated duplicate header branding into one glass header with a Live/Demo status pill; glass-style Buy/Sell buttons",
+  "pub_date": "2026-08-29T05:46:52.457Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTMmJJTjZKK1lOYmdPaU5IbnJGQStuTnFQQ0djYlBDdmFIV2RYMkpQUTJvVENTUm9HcUNzemt0UjN5RENYajFhQng4RS9zbHZlQldWYlBTTHVYbys2S1NNOURCMXpZN3dZPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg3OTgwMDEyCWZpbGU6RnV0dXJpeCBHbG9iYWwgVHJhZGVyXzAuMS44X3g2NC1zZXR1cC5leGUKTzZ4c2g1U2h1elBRL29mZVBtNHZxRnE3SXZtaDlNaVQyVTFmQTUzS0lDUXdKdnZKZzVYcUdzOGxNblZaamlqVnNOUW9WR2k1SkRlVXBiMTkwVGI4Q2c9PQo=",
-      "url": "https://vyxtrader.com/desktop-tauri-updates/Futurix%20Global%20Trader_0.1.8_x64-setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTMmJJTjZKK1lOYmorSktWN3labmtEendEZUlGaHFzeEF5K1pQZEwwdlJEdTY0bHR5MmdTRitaWE14TjFXNE5CLzZtaWVTdXcxWnkzdGg2eFVtWFdRMXE2ZjllKzRGQkFFPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg3OTgyNDAyCWZpbGU6RnV0dXJpeCBHbG9iYWwgVHJhZGVyXzAuMS45X3g2NC1zZXR1cC5leGUKSS9KYUNZSUxYWGxTd0lpdU0wYzkvNVRMSjVUR3NrUmNod1ZCRVNoQ0ltZnJ2UzdtU3oxU3dNWG5XMUNjemR5OHVnUkc4THpTcTlKSStkOEQ4RW9MREE9PQo=",
+      "url": "https://vyxtrader.com/desktop-tauri-updates/Futurix%20Global%20Trader_0.1.9_x64-setup.exe"
     }
   }
 }
