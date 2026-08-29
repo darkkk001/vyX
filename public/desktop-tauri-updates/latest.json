@@ -1,11 +1,11 @@
 {
-  "version": "0.1.9",
-  "notes": "Consolidated duplicate header branding into one glass header with a Live/Demo status pill; glass-style Buy/Sell buttons",
-  "pub_date": "2026-08-29T05:46:52.457Z",
+  "version": "0.1.10",
+  "notes": "Fixed header corner mismatch, white select dropdowns in Smart Trade Manager, remember-session error visibility",
+  "pub_date": "2026-08-29T06:11:05.934Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTMmJJTjZKK1lOYmorSktWN3labmtEendEZUlGaHFzeEF5K1pQZEwwdlJEdTY0bHR5MmdTRitaWE14TjFXNE5CLzZtaWVTdXcxWnkzdGg2eFVtWFdRMXE2ZjllKzRGQkFFPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg3OTgyNDAyCWZpbGU6RnV0dXJpeCBHbG9iYWwgVHJhZGVyXzAuMS45X3g2NC1zZXR1cC5leGUKSS9KYUNZSUxYWGxTd0lpdU0wYzkvNVRMSjVUR3NrUmNod1ZCRVNoQ0ltZnJ2UzdtU3oxU3dNWG5XMUNjemR5OHVnUkc4THpTcTlKSStkOEQ4RW9MREE9PQo=",
-      "url": "https://vyxtrader.com/desktop-tauri-updates/Futurix%20Global%20Trader_0.1.9_x64-setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTMmJJTjZKK1lOYm1aTWdRRDdEbnlONWJWSi9aQUpqQmJXc0I2NXpkWm1nNTlwQ21JYW9JM3Y1enJTZzdRWlJ1SjQ1eG1OemJLWHk3dUY3N2xUTHVVTlBZelA0Mk44cmdBPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg3OTgzODQwCWZpbGU6RnV0dXJpeCBHbG9iYWwgVHJhZGVyXzAuMS4xMF94NjQtc2V0dXAuZXhlCjBZemJRWnZyUG9tR0pSSHNWV0Q5cFc1alZxeFFFdzVjZm0vZC80UXVZZDdxTE0wUklkalRZMklnRlExKzlNSmlsc1dlR1FrdnQ5eTRNZnREeFl6MEFBPT0K",
+      "url": "https://vyxtrader.com/desktop-tauri-updates/Futurix%20Global%20Trader_0.1.10_x64-setup.exe"
     }
   }
 }
