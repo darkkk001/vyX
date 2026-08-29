@@ -1,6 +1,6 @@
 [package]
 name = "vyxtrader-manager-tauri"
-version = "0.1.7"
+version = "0.1.8"
 edition = "2021"
 
 # Not part of the engine/ Cargo workspace, and a deliberately separate
