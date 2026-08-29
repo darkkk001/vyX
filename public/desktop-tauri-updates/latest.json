@@ -1,11 +1,11 @@
 {
-  "version": "0.1.5",
-  "notes": "Fix: login could only sign into DEMO accounts, dead live prices in FuturixGlobal build, order type selection, symbol specification",
-  "pub_date": "2026-08-29T02:22:16.500Z",
+  "version": "0.1.6",
+  "notes": "Smart Trade Manager moved next to the Watchlist; branded installer wizard",
+  "pub_date": "2026-08-29T03:13:44.536Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTMmJJTjZKK1lOYmd2Yk5aclNtY2ZkTjh6aEtKZEZBSGQzZjdTSno4ZERhZVltU0FzWU52VUZBajdaWnlsRjVFMmFjOHRiUWlKYkMxRm5ZRHdOQmF5WUJCaGN5Wks3dmc0PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg3OTcwMDU5CWZpbGU6RnV0dXJpeCBHbG9iYWwgVHJhZGVyXzAuMS41X3g2NC1zZXR1cC5leGUKaG92K0YyWUc0WmhFOTVWNUEvc2krWVdNOC9HbE9sUXQ2bXE3OWNYYzlyeVg4bi9JdFU5b2ZkOFpKOFhmVWtkQUtGbnVyb1pYMEh1UU8xVzM0a09OQnc9PQo=",
-      "url": "https://vyxtrader.com/desktop-tauri-updates/Futurix%20Global%20Trader_0.1.5_x64-setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTMmJJTjZKK1lOYnR1bTFFSTRqN2ZnZzE5dGVkbkJ4bkFwY0xab3BoTXozVWlGekluYkRReWNRYXNRckpMZ1JwNFRobkYwcnVLTlhsNDNZZDErTHgxUU95V05hK0syN2dzPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg3OTczMjE2CWZpbGU6RnV0dXJpeCBHbG9iYWwgVHJhZGVyXzAuMS42X3g2NC1zZXR1cC5leGUKMlplckdRVjFEbmJwMFFTbHBlWktkSmxCQXhUYks4MUJEQnNEMGdFQU5VazBEQjFSdGVQdmlkS0tUTGtSVlFvUERqUERuWHRMcTA4dDEvYnBGQzZjQUE9PQo=",
+      "url": "https://vyxtrader.com/desktop-tauri-updates/Futurix%20Global%20Trader_0.1.6_x64-setup.exe"
     }
   }
 }
