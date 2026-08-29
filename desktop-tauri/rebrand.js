@@ -13,11 +13,12 @@
 // after building -- the built installer already has everything baked
 // in, this is only to keep the next local dev/testing session pointed
 // at the generic VyXTrader default instead of a stale broker rebrand.
-// Usage: node rebrand.js --name "AcmeFX" --subdomain "acmefx.vyxtrader.com" [--product-name "AcmeFX Trader"] [--icon path/to/icon.ico] [--root vyxtrader.com] [--gateway-ws-url wss://feed.acmefx.vyxtrader.com]
+// Usage: node rebrand.js --name "AcmeFX" --subdomain "acmefx.vyxtrader.com" [--product-name "AcmeFX Trader"] [--icon path/to/icon.ico] [--root vyxtrader.com] [--gateway-ws-url wss://feed.acmefx.vyxtrader.com] [--banner-logo path/to/logo.png] [--banner-bg "#07090C"]
 // Then:  npm run build   (produces the branded installer)
 
 const fs = require("fs");
 const path = require("path");
+const { execFileSync } = require("child_process");
 
 function arg(name) {
   const i = process.argv.indexOf(`--${name}`);
@@ -39,9 +40,16 @@ const rootDomain = arg("root") || subdomain?.split(".").slice(-2).join(".");
 // default (and the same 2s-poll degradation) as the website's own
 // unset-NEXT_PUBLIC_GATEWAY_WS_URL fallback -- see main.rs's own comment.
 const gatewayWsUrl = arg("gateway-ws-url");
+// Optional -- a raw logo image (any format sharp reads: PNG/JPEG/etc,
+// NOT the .ico from --icon) to brand the NSIS installer WIZARD itself.
+// Without this, Tauri's stock NSIS template shows zero branding at all
+// (no header/sidebar image) -- the exact "looks like a generic, out of
+// date installer" complaint this flag exists to fix.
+const bannerLogo = arg("banner-logo");
+const bannerBg = arg("banner-bg") || "#07090C";
 
 if (!name || !subdomain) {
-  console.error('Usage: node rebrand.js --name "AcmeFX" --subdomain "acmefx.vyxtrader.com" [--product-name "AcmeFX Trader"] [--icon path/to/icon.ico] [--root vyxtrader.com] [--gateway-ws-url wss://feed.acmefx.vyxtrader.com]');
+  console.error('Usage: node rebrand.js --name "AcmeFX" --subdomain "acmefx.vyxtrader.com" [--product-name "AcmeFX Trader"] [--icon path/to/icon.ico] [--root vyxtrader.com] [--gateway-ws-url wss://feed.acmefx.vyxtrader.com] [--banner-logo path/to/logo.png] [--banner-bg "#07090C"]');
   process.exit(1);
 }
 
@@ -70,6 +78,41 @@ if (iconPath) {
   console.log("src-tauri/icons/icon.ico updated");
 } else {
   console.log("No --icon given, keeping the current src-tauri/icons/icon.ico");
+}
+
+if (bannerLogo) {
+  const iconsDir = path.join(__dirname, "src-tauri", "icons");
+  execFileSync("node", [path.join(__dirname, "generate-nsis-banners.cjs"), bannerLogo, iconsDir, bannerBg], { stdio: "inherit" });
+  // sharp (used above) can't encode BMP -- NSIS's one required format --
+  // so a short PowerShell System.Drawing conversion does PNG -> 24bpp BMP
+  // for each banner in one shot.
+  const psScript = `
+    Add-Type -AssemblyName System.Drawing
+    foreach ($name in @("nsis-header", "nsis-sidebar")) {
+      $src = [System.Drawing.Image]::FromFile("${iconsDir.replace(/\\/g, "\\\\")}\\$name.png")
+      $bmp = New-Object System.Drawing.Bitmap $src.Width, $src.Height, ([System.Drawing.Imaging.PixelFormat]::Format24bppRgb)
+      $g = [System.Drawing.Graphics]::FromImage($bmp)
+      $g.DrawImage($src, 0, 0, $src.Width, $src.Height)
+      $bmp.Save("${iconsDir.replace(/\\/g, "\\\\")}\\$name.bmp", [System.Drawing.Imaging.ImageFormat]::Bmp)
+      $g.Dispose(); $bmp.Dispose(); $src.Dispose()
+    }
+  `;
+  execFileSync("powershell.exe", ["-NoProfile", "-Command", psScript], { stdio: "inherit" });
+  fs.unlinkSync(path.join(iconsDir, "nsis-header.png"));
+  fs.unlinkSync(path.join(iconsDir, "nsis-sidebar.png"));
+
+  const tauriConf2 = JSON.parse(fs.readFileSync(tauriConfPath, "utf8"));
+  tauriConf2.bundle ??= {};
+  tauriConf2.bundle.windows ??= {};
+  tauriConf2.bundle.windows.nsis = {
+    ...tauriConf2.bundle.windows.nsis,
+    headerImage: "icons/nsis-header.bmp",
+    sidebarImage: "icons/nsis-sidebar.bmp",
+  };
+  fs.writeFileSync(tauriConfPath, JSON.stringify(tauriConf2, null, 2) + "\n");
+  console.log("src-tauri/icons/nsis-{header,sidebar}.bmp generated; tauri.conf.json's bundle.windows.nsis wired to them");
+} else {
+  console.log("No --banner-logo given -- installer wizard keeps Tauri's stock (unbranded) look");
 }
 
 console.log("\nNow run: npm run build");

@@ -75,3 +75,10 @@ engine/scripts/.staging/
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Per-broker NSIS installer wizard banners -- rebrand.js generates these
+# fresh from that broker's own logo (generate-nsis-banners.cjs + a
+# PowerShell PNG->BMP conversion) every time it runs; no generic default
+# is tracked the way icon.ico is, so these are pure build output.
+*-tauri/src-tauri/icons/nsis-*.bmp
+*-tauri/src-tauri/icons/nsis-*.png

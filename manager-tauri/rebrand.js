@@ -18,6 +18,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const { execFileSync } = require("child_process");
 
 function arg(name) {
   const i = process.argv.indexOf(`--${name}`);
@@ -34,9 +35,12 @@ const productName = arg("product-name") || name;
 // Assumes a standard two-label root (vyxtrader.com) unless overridden —
 // fine for this platform's actual domain, not a general-purpose PSL parser.
 const rootDomain = arg("root") || subdomain?.split(".").slice(-2).join(".");
+// Optional -- see desktop-tauri/rebrand.js's own comment.
+const bannerLogo = arg("banner-logo");
+const bannerBg = arg("banner-bg") || "#07090C";
 
 if (!name || !subdomain) {
-  console.error('Usage: node rebrand.js --name "AcmeFX Manager" --subdomain "acmefx.vyxtrader.com" [--product-name "AcmeFX Manager"] [--icon path/to/icon.ico] [--root vyxtrader.com]');
+  console.error('Usage: node rebrand.js --name "AcmeFX Manager" --subdomain "acmefx.vyxtrader.com" [--product-name "AcmeFX Manager"] [--icon path/to/icon.ico] [--root vyxtrader.com] [--banner-logo path/to/logo.png] [--banner-bg "#07090C"]');
   process.exit(1);
 }
 
@@ -61,6 +65,38 @@ if (iconPath) {
   console.log("src-tauri/icons/icon.ico updated");
 } else {
   console.log("No --icon given, keeping the current src-tauri/icons/icon.ico");
+}
+
+if (bannerLogo) {
+  const iconsDir = path.join(__dirname, "src-tauri", "icons");
+  execFileSync("node", [path.join(__dirname, "generate-nsis-banners.cjs"), bannerLogo, iconsDir, bannerBg], { stdio: "inherit" });
+  const psScript = `
+    Add-Type -AssemblyName System.Drawing
+    foreach ($name in @("nsis-header", "nsis-sidebar")) {
+      $src = [System.Drawing.Image]::FromFile("${iconsDir.replace(/\\/g, "\\\\")}\\$name.png")
+      $bmp = New-Object System.Drawing.Bitmap $src.Width, $src.Height, ([System.Drawing.Imaging.PixelFormat]::Format24bppRgb)
+      $g = [System.Drawing.Graphics]::FromImage($bmp)
+      $g.DrawImage($src, 0, 0, $src.Width, $src.Height)
+      $bmp.Save("${iconsDir.replace(/\\/g, "\\\\")}\\$name.bmp", [System.Drawing.Imaging.ImageFormat]::Bmp)
+      $g.Dispose(); $bmp.Dispose(); $src.Dispose()
+    }
+  `;
+  execFileSync("powershell.exe", ["-NoProfile", "-Command", psScript], { stdio: "inherit" });
+  fs.unlinkSync(path.join(iconsDir, "nsis-header.png"));
+  fs.unlinkSync(path.join(iconsDir, "nsis-sidebar.png"));
+
+  const tauriConf2 = JSON.parse(fs.readFileSync(tauriConfPath, "utf8"));
+  tauriConf2.bundle ??= {};
+  tauriConf2.bundle.windows ??= {};
+  tauriConf2.bundle.windows.nsis = {
+    ...tauriConf2.bundle.windows.nsis,
+    headerImage: "icons/nsis-header.bmp",
+    sidebarImage: "icons/nsis-sidebar.bmp",
+  };
+  fs.writeFileSync(tauriConfPath, JSON.stringify(tauriConf2, null, 2) + "\n");
+  console.log("src-tauri/icons/nsis-{header,sidebar}.bmp generated; tauri.conf.json's bundle.windows.nsis wired to them");
+} else {
+  console.log("No --banner-logo given -- installer wizard keeps Tauri's stock (unbranded) look");
 }
 
 console.log("\nNow run: npm run build");
