@@ -1,11 +1,11 @@
 {
-  "version": "0.1.7",
-  "notes": "Real branded two-panel login form (forgot password, keep me signed in) replacing the thin placeholder login",
-  "pub_date": "2026-08-29T04:43:48.140Z",
+  "version": "0.1.8",
+  "notes": "Fixed a real login screen with forgot-password/keep-signed-in (previous release)",
+  "pub_date": "2026-08-29T05:10:10.580Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUc2VqVXVBOHpXRDYrQjI1dWpoK3hSc1JUNWRrYUVsVGRXLzRCUXpGQTlmL0JyY0x2cnQyYlR6QVFlc1FCR3BqMG5Fd25CaW1qdEI5Z0pHSGlHallYU2xDdHlTZ0M1NHdBPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg3OTc4NjE4CWZpbGU6RnV0dXJpeCBHbG9iYWwgTWFuYWdlcl8wLjEuN194NjQtc2V0dXAuZXhlCndxV3NjVDFNVVk3aEtVUW1kVEE5NVlONXJOQU4wV0VMc0kyMWlFaDJPaTVJK2VDT1dpRzk4czFHMGRSa3dWMis0VEpxL0FPMHc5SnN6c0J6K0xaS0RBPT0K",
-      "url": "https://vyxtrader.com/manager-tauri-updates/Futurix%20Global%20Manager_0.1.7_x64-setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUc2VqVXVBOHpXRHk1TWpJTlk3aTlJVE96dWdJaGJPVXVwRE5ZNnJDZHU3a2RqdmVSQ1B4U29VWW9FK2wxWmZCbERiU1Nsc2lEdFRGVlpzb0ZzQzBoSXk2Tmx1MGQxa1E0PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg3OTgwMTk4CWZpbGU6RnV0dXJpeCBHbG9iYWwgTWFuYWdlcl8wLjEuOF94NjQtc2V0dXAuZXhlCjQ1d3lZV3RsLzNVdXRkcFBVKzFHY096S0gzeHYyOUdaWlI5NHhqTXZDUGhlY1Y0RVNmRlRxUFBJUFdkR2VtUXl5NjJheW1CNzFJZlZHSmVRNHUwWUJnPT0K",
+      "url": "https://vyxtrader.com/manager-tauri-updates/Futurix%20Global%20Manager_0.1.8_x64-setup.exe"
     }
   }
 }
