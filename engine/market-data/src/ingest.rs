@@ -117,6 +117,15 @@ pub async fn ingest_ticks(
 /// order_management::monitor and order_management::swap already use for
 /// their own periodic jobs — nothing new architecturally, just the same
 /// pattern applied to tick persistence.
+///
+/// Each cycle only flushes symbols the cache's own dirty tracking
+/// (`TickCache::take_dirty_live_prices`/`take_dirty_candles`) says have
+/// received a tick since that flush's own last successful write — not
+/// every symbol currently in the cache. Before this, every open bucket got
+/// rewritten every cycle regardless of whether anything had actually
+/// changed (measured: ~382 billed Postgres operations per row retained,
+/// most of them identical repeats of the last-written value) — dirty
+/// tracking brings this down to roughly the real tick rate.
 pub fn spawn_periodic_flush(
     pool: PgPool,
     cache: Arc<TickCache>,
@@ -132,11 +141,11 @@ pub fn spawn_periodic_flush(
             let mut ticker = tokio::time::interval(live_price_interval);
             loop {
                 ticker.tick().await;
-                let snapshot = cache.snapshot();
-                if snapshot.is_empty() {
+                let dirty = cache.take_dirty_live_prices();
+                if dirty.is_empty() {
                     continue;
                 }
-                flush_live_prices(&pool, &snapshot, &stats).await;
+                flush_live_prices(&pool, &cache, &dirty, &stats).await;
             }
         });
     }
@@ -145,24 +154,28 @@ pub fn spawn_periodic_flush(
         let mut ticker = tokio::time::interval(candle_interval);
         loop {
             ticker.tick().await;
-            let snapshot = cache.snapshot();
-            if snapshot.is_empty() {
+            let dirty = cache.take_dirty_candles();
+            if dirty.is_empty() {
                 continue;
             }
-            flush_candles(&pool, &snapshot, &stats).await;
+            flush_candles(&pool, &cache, &dirty, &stats).await;
         }
     });
 }
 
-// Never returns an error to the caller -- a failed/timed-out flush is
-// counted (stats::FeedStats::record_db_write) and rate-limit-logged
-// (should_log_live_price_failure), then dropped: the next interval tick
-// re-snapshots the cache's current (last-write-wins) state and tries
-// again, so nothing needs retrying here. This is the "on failure
-// increment a counter, drop the batch, never block ingest" behavior from
-// the Contabo audit -- ingest_ticks above never calls this function at
-// all, so a slow/wedged flush can't backpressure the hot path regardless.
-async fn flush_live_prices(pool: &PgPool, ticks: &[Tick], stats: &Arc<FeedStats>) {
+// On failure/timeout, re-marks every symbol in this batch dirty
+// (cache::TickCache::mark_live_price_dirty) before returning -- otherwise
+// take_dirty_live_prices already cleared the flag and an update would be
+// silently lost rather than retried next cycle. Never returns an error to
+// the caller either way -- a failed flush is counted
+// (stats::FeedStats::record_db_write) and rate-limit-logged
+// (should_log_live_price_failure), then dropped: the retry via the
+// re-marked dirty flag is what stands in for "try again" here. This is
+// the "on failure increment a counter, drop the batch, never block
+// ingest" behavior from the Contabo audit -- ingest_ticks above never
+// calls this function at all, so a slow/wedged flush can't backpressure
+// the hot path regardless.
+async fn flush_live_prices(pool: &PgPool, cache: &TickCache, ticks: &[Tick], stats: &Arc<FeedStats>) {
     let started = Instant::now();
     let result = tokio::time::timeout(DB_FLUSH_TIMEOUT, async {
         let mut tx = pool.begin().await?;
@@ -178,12 +191,14 @@ async fn flush_live_prices(pool: &PgPool, ticks: &[Tick], stats: &Arc<FeedStats>
         Ok(Ok(())) => stats.record_db_write(true, lag_ms),
         Ok(Err(err)) => {
             stats.record_db_write(false, lag_ms);
+            re_mark_live_price_dirty(cache, ticks);
             if stats.should_log_live_price_failure() {
                 tracing::warn!(?err, lag_ms, "live-price flush failed (rate-limited to 1 line/30s -- see /internal/feed-stats for the real db_fail count)");
             }
         }
         Err(_) => {
             stats.record_db_write(false, lag_ms);
+            re_mark_live_price_dirty(cache, ticks);
             if stats.should_log_live_price_failure() {
                 tracing::warn!(timeout_ms = DB_FLUSH_TIMEOUT.as_millis() as i64, "live-price flush timed out (rate-limited to 1 line/30s)");
             }
@@ -191,7 +206,14 @@ async fn flush_live_prices(pool: &PgPool, ticks: &[Tick], stats: &Arc<FeedStats>
     }
 }
 
-async fn flush_candles(pool: &PgPool, ticks: &[Tick], stats: &Arc<FeedStats>) {
+fn re_mark_live_price_dirty(cache: &TickCache, ticks: &[Tick]) {
+    let symbols: Vec<String> = ticks.iter().map(|t| t.symbol.clone()).collect();
+    cache.mark_live_price_dirty(&symbols);
+}
+
+// Same claim/retry-on-failure shape as flush_live_prices, via
+// cache::TickCache::mark_candle_dirty.
+async fn flush_candles(pool: &PgPool, cache: &TickCache, ticks: &[Tick], stats: &Arc<FeedStats>) {
     let now = Utc::now();
     let started = Instant::now();
     let result = tokio::time::timeout(DB_FLUSH_TIMEOUT, async {
@@ -211,6 +233,7 @@ async fn flush_candles(pool: &PgPool, ticks: &[Tick], stats: &Arc<FeedStats>) {
         Ok(Err(err)) => {
             stats.record_db_write(false, lag_ms);
             stats.record_candle_write_failure();
+            re_mark_candle_dirty(cache, ticks);
             if stats.should_log_candle_failure() {
                 tracing::warn!(?err, lag_ms, "candle flush failed (rate-limited to 1 line/30s -- see /internal/feed-stats for the real db_fail count)");
             }
@@ -218,11 +241,17 @@ async fn flush_candles(pool: &PgPool, ticks: &[Tick], stats: &Arc<FeedStats>) {
         Err(_) => {
             stats.record_db_write(false, lag_ms);
             stats.record_candle_write_failure();
+            re_mark_candle_dirty(cache, ticks);
             if stats.should_log_candle_failure() {
                 tracing::warn!(timeout_ms = DB_FLUSH_TIMEOUT.as_millis() as i64, "candle flush timed out (rate-limited to 1 line/30s)");
             }
         }
     }
+}
+
+fn re_mark_candle_dirty(cache: &TickCache, ticks: &[Tick]) {
+    let symbols: Vec<String> = ticks.iter().map(|t| t.symbol.clone()).collect();
+    cache.mark_candle_dirty(&symbols);
 }
 
 /// Best-effort — a tick that fails to broadcast over NATS shouldn't block

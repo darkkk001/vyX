@@ -745,8 +745,14 @@ pub async fn claim_position_for_swap(tx: &mut sqlx::PgTransaction<'_>, position_
 /// ISO weekday (Monday=1..Sunday=7) for `CURRENT_DATE`, from Postgres's
 /// own clock — see swap.rs's module doc for why this isn't read from the
 /// Rust process's clock instead.
+///
+/// `EXTRACT(...)` returns Postgres `NUMERIC`, not `double precision` --
+/// sqlx's `f64` decode only accepts a real `FLOAT8` column and throws a
+/// `ColumnDecode` "mismatched types" error against a bare `NUMERIC` result
+/// (hit live during the daily swap rollover job). The explicit `::float8`
+/// cast makes the wire type match what's being decoded into.
 pub async fn get_current_weekday(pool: &PgPool) -> Result<i32, sqlx::Error> {
-    let (dow,): (f64,) = sqlx::query_as("SELECT EXTRACT(ISODOW FROM CURRENT_DATE)").fetch_one(pool).await?;
+    let (dow,): (f64,) = sqlx::query_as("SELECT EXTRACT(ISODOW FROM CURRENT_DATE)::float8").fetch_one(pool).await?;
     Ok(dow as i32)
 }
 
