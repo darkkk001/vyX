@@ -228,10 +228,16 @@ export default function WebTrader({
         const max = maxBottomPanelHeight();
         setBottomPanelHeight(Math.min(500, max ?? requested, requested));
       } else if (rs.kind === "order") {
-        const delta = e.clientX - rs.startPos;
+        // Order ticket now sits on the right (see .main's layout below) --
+        // its resizer is on its LEFT edge, so dragging left is what grows
+        // it now, the mirror of when it sat on the left with the resizer
+        // on its right edge.
+        const delta = rs.startPos - e.clientX;
         setOrderPanelWidth(Math.min(420, Math.max(200, rs.startSize + delta)));
       } else {
-        const delta = rs.startPos - e.clientX;
+        // Watchlist now sits on the left, resizer on its RIGHT edge --
+        // dragging right grows it now.
+        const delta = e.clientX - rs.startPos;
         setWatchlistWidth(Math.min(420, Math.max(160, rs.startSize + delta)));
       }
     }
@@ -1970,7 +1976,7 @@ export default function WebTrader({
 
         <div
           className={`main${isMobileView ? " mobile" : ""}`}
-          style={isMobileView ? undefined : { gridTemplateColumns: `48px ${orderPanelWidth}px 6px 1fr 6px ${watchlistWidth}px` }}
+          style={isMobileView ? undefined : { gridTemplateColumns: `48px ${watchlistWidth}px 6px 1fr 6px ${orderPanelWidth}px` }}
         >
           {/* ---------- ICON RAIL (far left, desktop only -- replaced by
               the bottom nav bar on mobile, rendered after .main below) ---------- */}
@@ -1999,129 +2005,126 @@ export default function WebTrader({
             </button>
           </div>
 
-          {/* ---------- ORDER PANEL (left) ---------- */}
-          <div className={`order-panel${isMobileView ? ` mobile${mobileTab === "trade" ? " mobile-active" : ""}` : ""}`}>
-            <div className="section-label" style={{ paddingLeft: 0 }}>Order ticket</div>
-
-            <div className="order-type-tabs">
-              <button className={`ot-tab${orderMode === "market" ? " active" : ""}`} onClick={() => setOrderMode("market")}>Market</button>
-              <button className={`ot-tab${orderMode === "pending" ? " active" : ""}`} onClick={() => {
-                setOrderMode("pending");
-                setPendingPrice(fmt(m.bid * 0.999, m.def.digits));
-              }}>Pending</button>
+          {/* ---------- WATCHLIST (left) ---------- */}
+          <div
+            className={`watchlist${isMobileView ? ` mobile${mobileTab === "watchlist" ? " mobile-active" : ""}` : ""}`}
+            onContextMenu={(e) => { e.preventDefault(); setWlMenuOpen(true); setWlContextMenu({ x: e.clientX, y: e.clientY }); }}
+          >
+            <div className="section-label">Watchlist</div>
+            <input className="wl-search mono" placeholder="Search symbol..." value={watchlistFilter} onChange={(e) => setWatchlistFilter(e.target.value)} />
+            <div className="wl-header" style={{ gridTemplateColumns: wlGridTemplate }}>
+              <span></span><span>Symbol</span>
+              {columnPrefs.signal ? <span>Signal</span> : null}
+              <span>Price</span>
+              {columnPrefs.change ? <span>Chg%</span> : null}
+              {columnPrefs.spread ? <span>Spread</span> : null}
+              {columnPrefs.high ? <span>Day H</span> : null}
+              {columnPrefs.low ? <span>Day L</span> : null}
+              <span></span>
             </div>
-
-            {orderMode === "pending" ? (
-              <>
-                <div style={{ marginBottom: 10 }}>
-                  <select className="pending-select" value={pendingType} onChange={(e) => setPendingType(e.target.value as PendingType)}>
-                    <option value="buy_limit">Buy limit</option>
-                    <option value="sell_limit">Sell limit</option>
-                    <option value="buy_stop">Buy stop</option>
-                    <option value="sell_stop">Sell stop</option>
-                  </select>
-                </div>
-                <div className="field-group">
-                  <div className="field">
-                    <span className="field-label">Entry price</span>
-                    <input className="mono" value={pendingPrice} onChange={(e) => setPendingPrice(e.target.value)} />
+            <div>
+              {watchlistOrder.filter((name) => name.toLowerCase().includes(watchlistFilter.toLowerCase())).map((name) => {
+                const row = market[name];
+                const changePct = ((row.bid - row.dayOpen) / row.dayOpen) * 100;
+                const flash = row.bid > row.prevBid ? "up" : row.bid < row.prevBid ? "down" : "";
+                return (
+                  <div
+                    key={name}
+                    className={`wl-item${name === activeSymbol ? " active" : ""}`}
+                    style={{ gridTemplateColumns: wlGridTemplate }}
+                    onClick={() => selectSymbol(name)}
+                    onDoubleClick={() => openQuickOrder(name)}
+                    onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setWlMenuOpen(true); setWlContextMenu({ x: e.clientX, y: e.clientY, symbol: name }); }}
+                    {...attachDragHandlers(name)}
+                  >
+                    <span className="wl-drag-handle">⋮⋮</span>
+                    <span className="wl-cell wl-symbol">{name}</span>
+                    {columnPrefs.signal ? <span className={`wl-cell wl-signal ${row.live && row.bid >= row.dayOpen ? "wl-pos" : "wl-neg"}`}>{row.live ? (row.bid >= row.dayOpen ? "▲" : "▼") : "—"}</span> : null}
+                    <span className="wl-cell wl-price-cell">
+                      {row.live ? (
+                        <span className={`wl-price mono ${flash}`}>{fmt(row.bid, row.def.digits)}</span>
+                      ) : (
+                        <span className="wl-price mono" style={{ color: "var(--text-3)", fontSize: 10.5 }}>No feed</span>
+                      )}
+                      {oneClick ? (
+                        <span className="wl-occ-buttons" style={{ display: "flex" }}>
+                          <button className="wl-occ-btn buy" disabled={!row.live} onClick={(e) => { e.stopPropagation(); oneClickTrade(name, "BUY"); }}>B</button>
+                          <button className="wl-occ-btn sell" disabled={!row.live} onClick={(e) => { e.stopPropagation(); oneClickTrade(name, "SELL"); }}>S</button>
+                        </span>
+                      ) : null}
+                    </span>
+                    {columnPrefs.change ? <span className={`wl-cell mono ${changePct >= 0 ? "wl-pos" : "wl-neg"}`}>{row.live ? (changePct >= 0 ? "+" : "") + changePct.toFixed(2) + "%" : "—"}</span> : null}
+                    {columnPrefs.spread ? <span className="wl-cell mono">{row.live ? fmt(row.ask - row.bid, row.def.digits) : "—"}</span> : null}
+                    {columnPrefs.high ? <span className="wl-cell mono">{row.live ? fmt(row.high, row.def.digits) : "—"}</span> : null}
+                    {columnPrefs.low ? <span className="wl-cell mono">{row.live ? fmt(row.low, row.def.digits) : "—"}</span> : null}
+                    <button className={`wl-alert-btn${alerts.some((a) => a.symbol === name) ? " active" : ""}`} onClick={(e) => { e.stopPropagation(); openPriceAlert(name); }} title="Set price alert">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9" /></svg>
+                    </button>
                   </div>
-                </div>
-                {pendingPrice ? (
-                  <div className="margin-note" style={{ color: isValidPendingPrice(pendingType, parseFloat(pendingPrice), m.bid) ? "var(--text-3)" : "var(--sell)" }}>
-                    {isValidPendingPrice(pendingType, parseFloat(pendingPrice), m.bid)
-                      ? `Current price ${fmt(m.bid, m.def.digits)}`
-                      : `${pendingPriceRuleText(pendingType)} (current ${fmt(m.bid, m.def.digits)})`}
+                );
+              })}
+            </div>
+            {wlMenuOpen && wlContextMenu ? (
+              <div className="wl-context-menu show" style={{ left: wlContextMenu.x, top: wlContextMenu.y }} onMouseLeave={() => setWlMenuOpen(false)}>
+                {wlContextMenu.symbol ? (
+                  <>
+                    <div
+                      className="wl-ctx-item"
+                      onClick={() => {
+                        selectSymbol(wlContextMenu.symbol!);
+                        setSymbolInfoOpen(true);
+                        setWlMenuOpen(false);
+                      }}
+                    >
+                      <span className="wl-ctx-check" />
+                      <span>Symbol specification — {wlContextMenu.symbol}</span>
+                    </div>
+                    <div className="wl-ctx-title">Show columns</div>
+                  </>
+                ) : (
+                  <div className="wl-ctx-title">Show columns</div>
+                )}
+                {(["signal", "change", "spread", "high", "low"] as const).map((key) => (
+                  <div key={key} className="wl-ctx-item" onClick={() => setColumnPrefs((prev) => ({ ...prev, [key]: !prev[key] }))}>
+                    <span className="wl-ctx-check">{columnPrefs[key] ? "✓" : ""}</span>
+                    <span style={{ textTransform: "capitalize" }}>{key === "change" ? "Change %" : key === "high" ? "Daily high" : key === "low" ? "Daily low" : key}</span>
                   </div>
-                ) : null}
-              </>
-            ) : (
-              <div className="sentiment-box">
-                <div className="sentiment-prices">
-                  <button className={`sentiment-price-btn sell${pendingMarketSide === "SELL" ? " selected" : ""}`} disabled={sellDisabled} onClick={() => confirmAndPlace("SELL")}>
-                    <span className="sp-label">Sell</span>
-                    <span className="sp-value mono">{m.live ? fmt(m.bid, m.def.digits) : "—"}</span>
-                  </button>
-                  <button className={`sentiment-price-btn buy${pendingMarketSide === "BUY" ? " selected" : ""}`} disabled={buyDisabled} onClick={() => confirmAndPlace("BUY")}>
-                    <span className="sp-label">Buy</span>
-                    <span className="sp-value mono">{m.live ? fmt(m.ask, m.def.digits) : "—"}</span>
-                  </button>
-                </div>
+                ))}
               </div>
-            )}
-
-            {orderMode === "pending" ? (
-              <button className="place-pending-btn" onClick={placePendingOrder}>Place pending order</button>
             ) : null}
+            <div className="wl-hint">Right-click for more columns</div>
 
-            <div className="field-group">
-              <div className="field">
-                <span className="field-label">Volume (lots)</span>
-                <div className="lot-stepper">
-                  <button className="stepper-btn" onClick={() => setVolume((v) => Math.max(0.01, +(v - 0.01).toFixed(2)))}>−</button>
-                  <input
-                    className="mono"
-                    style={{ width: 44, textAlign: "center" }}
-                    value={volumeInput}
-                    onFocus={(e) => { volumeInputFocusedRef.current = true; e.target.select(); }}
-                    onBlur={() => { volumeInputFocusedRef.current = false; setVolumeInput(volume.toFixed(2)); }}
-                    onChange={(e) => {
-                      setVolumeInput(e.target.value);
-                      const v = parseFloat(e.target.value);
-                      if (!isNaN(v) && v > 0) setVolume(v);
-                    }}
-                    onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
-                  />
-                  <button className="stepper-btn" onClick={() => setVolume((v) => +(v + 0.01).toFixed(2))}>+</button>
-                </div>
-              </div>
-              <div className="field">
-                <span className="field-label">Risk %</span>
-                <input className="mono" placeholder="—" value={riskPct} onChange={(e) => { setRiskPct(e.target.value); updateRiskVolume(e.target.value, slInput); }} />
-              </div>
-              <div className="field">
-                <span className="field-label">Stop loss</span>
-                <span className="input-with-clear">
-                  <input className="mono" placeholder="—" value={slInput} onChange={(e) => { setSlInput(e.target.value); if (riskPct) updateRiskVolume(riskPct, e.target.value); }} />
-                  <button className="clear-input-btn" onClick={() => setSlInput("")}>✕</button>
-                </span>
-              </div>
-              <div className="field">
-                <span className="field-label">Take profit</span>
-                <span className="input-with-clear">
-                  <input className="mono" placeholder="—" value={tpInput} onChange={(e) => setTpInput(e.target.value)} />
-                  <button className="clear-input-btn" onClick={() => setTpInput("")}>✕</button>
-                </span>
-              </div>
+            {/* ---------- Smart Trade Manager (embedded below the
+                Watchlist, MT4/5-style, instead of hidden behind the rail
+                icon) -- same rail button now just toggles this section's
+                collapse state. ---------- */}
+            <div
+              className="section-label"
+              style={{ cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 10 }}
+              onClick={() => setStmOpen((v) => !v)}
+            >
+              <span>Smart Trade Manager</span>
+              <span style={{ transform: stmOpen ? "rotate(180deg)" : "none", transition: "transform 0.15s" }}>▾</span>
             </div>
-            {riskPct ? <div className="margin-note">Volume auto-calculated from risk % and stop distance</div> : null}
-
-            <div className="field-group">
-              <div className="field"><span className="field-label">Leverage</span><span className="mono" style={{ fontSize: 12.5 }}>1:{account?.leverage ?? 100}</span></div>
-            </div>
-
-            <div className="margin-note">Margin required <span className="mono">{account ? fmt((volume * m.def.contractSize * m.bid) / account.leverage, 2) : "—"}</span> USD</div>
-            {ticketHintLines.length > 0 ? <div className="sltp-preview" dangerouslySetInnerHTML={{ __html: ticketHintLines.join("<br>") }} /> : null}
-
-            {orderMode === "market" && pendingMarketSide ? (
-              <button className={`confirm-market-btn ${pendingMarketSide === "BUY" ? "buy" : "sell"}`} onClick={() => { placeOrder(pendingMarketSide); setPendingMarketSide(null); }}>
-                Confirm {pendingMarketSide} Market Order
-              </button>
+            {stmOpen ? (
+              <SmartTradeManager
+                embedded
+                open={stmOpen}
+                onClose={() => setStmOpen(false)}
+                market={market}
+                positions={positions}
+                positionPnl={positionPnl}
+                activeSymbol={activeSymbol}
+                selectedPositionIds={selectedPositionIds}
+                pushToast={pushToast}
+                refreshPositions={refreshPositions}
+                refreshHistory={refreshHistory}
+                refreshAccount={refreshAccount}
+              />
             ) : null}
-
-            <div className="occ-toggle-row">
-              <span className="field-label">One-click trading</span>
-              <label className="switch">
-                <input type="checkbox" checked={oneClick} onChange={(e) => { setOneClick(e.target.checked); pushToast(e.target.checked ? "One-click trading enabled" : "One-click trading disabled"); if (e.target.checked) setPendingMarketSide(null); }} />
-                <span className="switch-slider" />
-              </label>
-            </div>
-
-            <SessionClock />
-            <NewsPanel />
           </div>
 
-          {isMobileView ? null : <div className="col-resizer" onMouseDown={startResize("order")} />}
+          {isMobileView ? null : <div className="col-resizer" onMouseDown={startResize("watchlist")} />}
 
           {/* ---------- CENTER (chart) ---------- */}
           <div ref={centerRef} className={`center${isMobileView ? ` mobile${mobileTab === "chart" || mobileTab === "positions" ? " mobile-active" : ""}` : ""}`}>
@@ -2584,125 +2587,128 @@ export default function WebTrader({
             </div>
           </div>
 
-          {isMobileView ? null : <div className="col-resizer" onMouseDown={startResize("watchlist")} />}
+          {isMobileView ? null : <div className="col-resizer" onMouseDown={startResize("order")} />}
 
-          {/* ---------- WATCHLIST (right) ---------- */}
-          <div
-            className={`watchlist${isMobileView ? ` mobile${mobileTab === "watchlist" ? " mobile-active" : ""}` : ""}`}
-            onContextMenu={(e) => { e.preventDefault(); setWlMenuOpen(true); setWlContextMenu({ x: e.clientX, y: e.clientY }); }}
-          >
-            <div className="section-label">Watchlist</div>
-            <input className="wl-search mono" placeholder="Search symbol..." value={watchlistFilter} onChange={(e) => setWatchlistFilter(e.target.value)} />
-            <div className="wl-header" style={{ gridTemplateColumns: wlGridTemplate }}>
-              <span></span><span>Symbol</span>
-              {columnPrefs.signal ? <span>Signal</span> : null}
-              <span>Price</span>
-              {columnPrefs.change ? <span>Chg%</span> : null}
-              {columnPrefs.spread ? <span>Spread</span> : null}
-              {columnPrefs.high ? <span>Day H</span> : null}
-              {columnPrefs.low ? <span>Day L</span> : null}
-              <span></span>
+          {/* ---------- ORDER PANEL (right) ---------- */}
+          <div className={`order-panel${isMobileView ? ` mobile${mobileTab === "trade" ? " mobile-active" : ""}` : ""}`}>
+            <div className="section-label" style={{ paddingLeft: 0 }}>Order ticket</div>
+
+            <div className="order-type-tabs">
+              <button className={`ot-tab${orderMode === "market" ? " active" : ""}`} onClick={() => setOrderMode("market")}>Market</button>
+              <button className={`ot-tab${orderMode === "pending" ? " active" : ""}`} onClick={() => {
+                setOrderMode("pending");
+                setPendingPrice(fmt(m.bid * 0.999, m.def.digits));
+              }}>Pending</button>
             </div>
-            <div>
-              {watchlistOrder.filter((name) => name.toLowerCase().includes(watchlistFilter.toLowerCase())).map((name) => {
-                const row = market[name];
-                const changePct = ((row.bid - row.dayOpen) / row.dayOpen) * 100;
-                const flash = row.bid > row.prevBid ? "up" : row.bid < row.prevBid ? "down" : "";
-                return (
-                  <div
-                    key={name}
-                    className={`wl-item${name === activeSymbol ? " active" : ""}`}
-                    style={{ gridTemplateColumns: wlGridTemplate }}
-                    onClick={() => selectSymbol(name)}
-                    onDoubleClick={() => openQuickOrder(name)}
-                    onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setWlMenuOpen(true); setWlContextMenu({ x: e.clientX, y: e.clientY, symbol: name }); }}
-                    {...attachDragHandlers(name)}
-                  >
-                    <span className="wl-drag-handle">⋮⋮</span>
-                    <span className="wl-cell wl-symbol">{name}</span>
-                    {columnPrefs.signal ? <span className={`wl-cell wl-signal ${row.live && row.bid >= row.dayOpen ? "wl-pos" : "wl-neg"}`}>{row.live ? (row.bid >= row.dayOpen ? "▲" : "▼") : "—"}</span> : null}
-                    <span className="wl-cell wl-price-cell">
-                      {row.live ? (
-                        <span className={`wl-price mono ${flash}`}>{fmt(row.bid, row.def.digits)}</span>
-                      ) : (
-                        <span className="wl-price mono" style={{ color: "var(--text-3)", fontSize: 10.5 }}>No feed</span>
-                      )}
-                      {oneClick ? (
-                        <span className="wl-occ-buttons" style={{ display: "flex" }}>
-                          <button className="wl-occ-btn buy" disabled={!row.live} onClick={(e) => { e.stopPropagation(); oneClickTrade(name, "BUY"); }}>B</button>
-                          <button className="wl-occ-btn sell" disabled={!row.live} onClick={(e) => { e.stopPropagation(); oneClickTrade(name, "SELL"); }}>S</button>
-                        </span>
-                      ) : null}
-                    </span>
-                    {columnPrefs.change ? <span className={`wl-cell mono ${changePct >= 0 ? "wl-pos" : "wl-neg"}`}>{row.live ? (changePct >= 0 ? "+" : "") + changePct.toFixed(2) + "%" : "—"}</span> : null}
-                    {columnPrefs.spread ? <span className="wl-cell mono">{row.live ? fmt(row.ask - row.bid, row.def.digits) : "—"}</span> : null}
-                    {columnPrefs.high ? <span className="wl-cell mono">{row.live ? fmt(row.high, row.def.digits) : "—"}</span> : null}
-                    {columnPrefs.low ? <span className="wl-cell mono">{row.live ? fmt(row.low, row.def.digits) : "—"}</span> : null}
-                    <button className={`wl-alert-btn${alerts.some((a) => a.symbol === name) ? " active" : ""}`} onClick={(e) => { e.stopPropagation(); openPriceAlert(name); }} title="Set price alert">
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9" /></svg>
-                    </button>
+
+            {orderMode === "pending" ? (
+              <>
+                <div style={{ marginBottom: 10 }}>
+                  <select className="pending-select" value={pendingType} onChange={(e) => setPendingType(e.target.value as PendingType)}>
+                    <option value="buy_limit">Buy limit</option>
+                    <option value="sell_limit">Sell limit</option>
+                    <option value="buy_stop">Buy stop</option>
+                    <option value="sell_stop">Sell stop</option>
+                  </select>
+                </div>
+                <div className="field-group">
+                  <div className="field">
+                    <span className="field-label">Entry price</span>
+                    <input className="mono" value={pendingPrice} onChange={(e) => setPendingPrice(e.target.value)} />
                   </div>
-                );
-              })}
-            </div>
-            {wlMenuOpen && wlContextMenu ? (
-              <div className="wl-context-menu show" style={{ left: wlContextMenu.x, top: wlContextMenu.y }} onMouseLeave={() => setWlMenuOpen(false)}>
-                {wlContextMenu.symbol ? (
-                  <>
-                    <div
-                      className="wl-ctx-item"
-                      onClick={() => {
-                        selectSymbol(wlContextMenu.symbol!);
-                        setSymbolInfoOpen(true);
-                        setWlMenuOpen(false);
-                      }}
-                    >
-                      <span className="wl-ctx-check" />
-                      <span>Symbol specification — {wlContextMenu.symbol}</span>
-                    </div>
-                    <div className="wl-ctx-title">Show columns</div>
-                  </>
-                ) : (
-                  <div className="wl-ctx-title">Show columns</div>
-                )}
-                {(["signal", "change", "spread", "high", "low"] as const).map((key) => (
-                  <div key={key} className="wl-ctx-item" onClick={() => setColumnPrefs((prev) => ({ ...prev, [key]: !prev[key] }))}>
-                    <span className="wl-ctx-check">{columnPrefs[key] ? "✓" : ""}</span>
-                    <span style={{ textTransform: "capitalize" }}>{key === "change" ? "Change %" : key === "high" ? "Daily high" : key === "low" ? "Daily low" : key}</span>
+                </div>
+                {pendingPrice ? (
+                  <div className="margin-note" style={{ color: isValidPendingPrice(pendingType, parseFloat(pendingPrice), m.bid) ? "var(--text-3)" : "var(--sell)" }}>
+                    {isValidPendingPrice(pendingType, parseFloat(pendingPrice), m.bid)
+                      ? `Current price ${fmt(m.bid, m.def.digits)}`
+                      : `${pendingPriceRuleText(pendingType)} (current ${fmt(m.bid, m.def.digits)})`}
                   </div>
-                ))}
+                ) : null}
+              </>
+            ) : (
+              <div className="sentiment-box">
+                <div className="sentiment-prices">
+                  <button className={`sentiment-price-btn sell${pendingMarketSide === "SELL" ? " selected" : ""}`} disabled={sellDisabled} onClick={() => confirmAndPlace("SELL")}>
+                    <span className="sp-label">Sell</span>
+                    <span className="sp-value mono">{m.live ? fmt(m.bid, m.def.digits) : "—"}</span>
+                  </button>
+                  <button className={`sentiment-price-btn buy${pendingMarketSide === "BUY" ? " selected" : ""}`} disabled={buyDisabled} onClick={() => confirmAndPlace("BUY")}>
+                    <span className="sp-label">Buy</span>
+                    <span className="sp-value mono">{m.live ? fmt(m.ask, m.def.digits) : "—"}</span>
+                  </button>
+                </div>
               </div>
-            ) : null}
-            <div className="wl-hint">Right-click for more columns</div>
+            )}
 
-            {/* ---------- Smart Trade Manager (embedded below the
-                Watchlist, MT4/5-style, instead of hidden behind the rail
-                icon) -- same rail button now just toggles this section's
-                collapse state. ---------- */}
-            <div
-              className="section-label"
-              style={{ cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 10 }}
-              onClick={() => setStmOpen((v) => !v)}
-            >
-              <span>Smart Trade Manager</span>
-              <span style={{ transform: stmOpen ? "rotate(180deg)" : "none", transition: "transform 0.15s" }}>▾</span>
-            </div>
-            {stmOpen ? (
-              <SmartTradeManager
-                embedded
-                open={stmOpen}
-                onClose={() => setStmOpen(false)}
-                market={market}
-                positions={positions}
-                positionPnl={positionPnl}
-                activeSymbol={activeSymbol}
-                selectedPositionIds={selectedPositionIds}
-                pushToast={pushToast}
-                refreshPositions={refreshPositions}
-                refreshHistory={refreshHistory}
-                refreshAccount={refreshAccount}
-              />
+            {orderMode === "pending" ? (
+              <button className="place-pending-btn" onClick={placePendingOrder}>Place pending order</button>
             ) : null}
+
+            <div className="field-group">
+              <div className="field">
+                <span className="field-label">Volume (lots)</span>
+                <div className="lot-stepper">
+                  <button className="stepper-btn" onClick={() => setVolume((v) => Math.max(0.01, +(v - 0.01).toFixed(2)))}>−</button>
+                  <input
+                    className="mono"
+                    style={{ width: 44, textAlign: "center" }}
+                    value={volumeInput}
+                    onFocus={(e) => { volumeInputFocusedRef.current = true; e.target.select(); }}
+                    onBlur={() => { volumeInputFocusedRef.current = false; setVolumeInput(volume.toFixed(2)); }}
+                    onChange={(e) => {
+                      setVolumeInput(e.target.value);
+                      const v = parseFloat(e.target.value);
+                      if (!isNaN(v) && v > 0) setVolume(v);
+                    }}
+                    onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+                  />
+                  <button className="stepper-btn" onClick={() => setVolume((v) => +(v + 0.01).toFixed(2))}>+</button>
+                </div>
+              </div>
+              <div className="field">
+                <span className="field-label">Risk %</span>
+                <input className="mono" placeholder="—" value={riskPct} onChange={(e) => { setRiskPct(e.target.value); updateRiskVolume(e.target.value, slInput); }} />
+              </div>
+              <div className="field">
+                <span className="field-label">Stop loss</span>
+                <span className="input-with-clear">
+                  <input className="mono" placeholder="—" value={slInput} onChange={(e) => { setSlInput(e.target.value); if (riskPct) updateRiskVolume(riskPct, e.target.value); }} />
+                  <button className="clear-input-btn" onClick={() => setSlInput("")}>✕</button>
+                </span>
+              </div>
+              <div className="field">
+                <span className="field-label">Take profit</span>
+                <span className="input-with-clear">
+                  <input className="mono" placeholder="—" value={tpInput} onChange={(e) => setTpInput(e.target.value)} />
+                  <button className="clear-input-btn" onClick={() => setTpInput("")}>✕</button>
+                </span>
+              </div>
+            </div>
+            {riskPct ? <div className="margin-note">Volume auto-calculated from risk % and stop distance</div> : null}
+
+            <div className="field-group">
+              <div className="field"><span className="field-label">Leverage</span><span className="mono" style={{ fontSize: 12.5 }}>1:{account?.leverage ?? 100}</span></div>
+            </div>
+
+            <div className="margin-note">Margin required <span className="mono">{account ? fmt((volume * m.def.contractSize * m.bid) / account.leverage, 2) : "—"}</span> USD</div>
+            {ticketHintLines.length > 0 ? <div className="sltp-preview" dangerouslySetInnerHTML={{ __html: ticketHintLines.join("<br>") }} /> : null}
+
+            {orderMode === "market" && pendingMarketSide ? (
+              <button className={`confirm-market-btn ${pendingMarketSide === "BUY" ? "buy" : "sell"}`} onClick={() => { placeOrder(pendingMarketSide); setPendingMarketSide(null); }}>
+                Confirm {pendingMarketSide} Market Order
+              </button>
+            ) : null}
+
+            <div className="occ-toggle-row">
+              <span className="field-label">One-click trading</span>
+              <label className="switch">
+                <input type="checkbox" checked={oneClick} onChange={(e) => { setOneClick(e.target.checked); pushToast(e.target.checked ? "One-click trading enabled" : "One-click trading disabled"); if (e.target.checked) setPendingMarketSide(null); }} />
+                <span className="switch-slider" />
+              </label>
+            </div>
+
+            <SessionClock />
+            <NewsPanel />
           </div>
         </div>
 
