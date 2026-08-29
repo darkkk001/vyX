@@ -15,11 +15,12 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "no broker resolved for this domain" }, { status: 400 });
   }
 
-  const broker = await prisma.broker.findUnique({ where: { id: brokerId }, select: { name: true, supportEmail: true } });
+  const broker = await prisma.broker.findUnique({ where: { id: brokerId }, select: { name: true, supportEmail: true, primaryColor: true } });
 
   return NextResponse.json({
     brokerName: broker?.name ?? "VyXTrader",
     brokerLogoUrl: request.headers.get("x-broker-logo-url") ?? "",
     supportEmail: broker?.supportEmail ?? null,
+    primaryColor: broker?.primaryColor ?? null,
   });
 }

@@ -22,6 +22,7 @@ const REMEMBERED_SERVER_KEY = "vyx-trade-server-type";
 // window.vyxDesktop.rememberSession()/forgetSession().
 export default function TradeLoginForm({
   brokerName,
+  brokerLogoUrl,
   supportEmail,
   initialAccountNumber = "",
   initialError = null,
@@ -30,6 +31,7 @@ export default function TradeLoginForm({
   onAuthenticated,
 }: {
   brokerName: string;
+  brokerLogoUrl?: string | null;
   supportEmail: string | null;
   initialAccountNumber?: string;
   initialError?: string | null;
@@ -184,7 +186,7 @@ export default function TradeLoginForm({
   if (pendingToken) {
     return (
       <div className="wt-root" data-theme="default" style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
-        <DesktopTitleBar brokerName={brokerName} server="" connected={false} />
+        <DesktopTitleBar brokerName={brokerName} brokerLogoUrl={brokerLogoUrl} server="" connected={false} />
         <div className={styles.loginArea}>
           <div className={styles.loginMesh} />
           <form onSubmit={handleVerifyTwoFactor} className={styles.loginCard}>
@@ -232,7 +234,7 @@ export default function TradeLoginForm({
   if (forgotOpen) {
     return (
       <div className="wt-root" data-theme="default" style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
-        <DesktopTitleBar brokerName={brokerName} server="" connected={false} />
+        <DesktopTitleBar brokerName={brokerName} brokerLogoUrl={brokerLogoUrl} server="" connected={false} />
         <div className={styles.loginArea}>
           <div className={styles.loginMesh} />
           {forgotSent ? (
@@ -300,7 +302,7 @@ export default function TradeLoginForm({
 
   return (
     <div className="wt-root" data-theme="default" style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
-      <DesktopTitleBar brokerName={brokerName} server="" connected={false} />
+      <DesktopTitleBar brokerName={brokerName} brokerLogoUrl={brokerLogoUrl} server="" connected={false} />
 
       <div className={styles.loginArea}>
         <div className={styles.loginMesh} />

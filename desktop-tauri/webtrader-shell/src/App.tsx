@@ -30,7 +30,7 @@ export default function App() {
     tradeApi
       .brokerBranding()
       .then(setBranding)
-      .catch(() => setBranding({ brokerName: "VyXTrader", brokerLogoUrl: "", supportEmail: null }));
+      .catch(() => setBranding({ brokerName: "VyXTrader", brokerLogoUrl: "", supportEmail: null, primaryColor: null }));
   }, []);
 
   // If main.rs found a saved session file, it pre-seeds the reqwest cookie
@@ -46,37 +46,51 @@ export default function App() {
       .finally(() => setCheckingSession(false));
   }, []);
 
+  // Mirrors app/(broker)/layout.tsx's own inline --brand-primary style,
+  // which every website (broker) page gets for free via that Server
+  // Component layout -- webtrader.css's --accent/--brand both fall back
+  // to var(--brand-primary, #16C784) already, they just never had a real
+  // value to read here since this shell has no equivalent layout wrapper.
+  // Without this, every broker's bundled Trader terminal showed the
+  // same generic green accent regardless of their actual brand color.
+  const brandStyle = { ["--brand-primary" as string]: branding?.primaryColor || "#1e8a5f" };
+
   if (checkingSession) {
     return (
-      <div style={{ display: "flex", flexDirection: "column", height: "100vh", background: "#07090C" }}>
-        <DesktopTitleBar brokerName={branding?.brokerName ?? ""} server="" connected={true} />
+      <div style={{ ...brandStyle, display: "flex", flexDirection: "column", height: "100vh", background: "#07090C" }}>
+        <DesktopTitleBar brokerName={branding?.brokerName ?? ""} brokerLogoUrl={branding?.brokerLogoUrl} server="" connected={true} />
       </div>
     );
   }
 
   if (!loggedIn) {
     return (
-      <TradeLoginForm
-        brokerName={branding?.brokerName ?? "VyXTrader"}
-        supportEmail={branding?.supportEmail ?? null}
-        onAuthenticated={(remember) => {
-          if (remember) {
-            window.vyxDesktop?.rememberSession?.();
-          } else {
-            window.vyxDesktop?.forgetSession?.();
-          }
-          setLoggedIn(true);
-        }}
-      />
+      <div style={brandStyle}>
+        <TradeLoginForm
+          brokerName={branding?.brokerName ?? "VyXTrader"}
+          brokerLogoUrl={branding?.brokerLogoUrl}
+          supportEmail={branding?.supportEmail ?? null}
+          onAuthenticated={(remember) => {
+            if (remember) {
+              window.vyxDesktop?.rememberSession?.();
+            } else {
+              window.vyxDesktop?.forgetSession?.();
+            }
+            setLoggedIn(true);
+          }}
+        />
+      </div>
     );
   }
 
   return (
-    <WebTrader
-      brokerName={branding?.brokerName ?? "VyXTrader"}
-      brokerLogoUrl={branding?.brokerLogoUrl ?? ""}
-      supportEmail={branding?.supportEmail ?? null}
-      onSessionExpired={() => setLoggedIn(false)}
-    />
+    <div style={brandStyle}>
+      <WebTrader
+        brokerName={branding?.brokerName ?? "VyXTrader"}
+        brokerLogoUrl={branding?.brokerLogoUrl ?? ""}
+        supportEmail={branding?.supportEmail ?? null}
+        onSessionExpired={() => setLoggedIn(false)}
+      />
+    </div>
   );
 }

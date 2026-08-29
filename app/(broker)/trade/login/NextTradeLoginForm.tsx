@@ -11,25 +11,36 @@ import TradeLoginForm from "./TradeLoginForm";
 // NextAdminShell.tsx. page.tsx renders this, not TradeLoginForm directly.
 export default function NextTradeLoginForm({
   brokerName,
+  brokerLogoUrl,
   supportEmail,
 }: {
   brokerName: string;
+  brokerLogoUrl?: string | null;
   supportEmail: string | null;
 }) {
   return (
     <Suspense fallback={null}>
-      <NextTradeLoginFormInner brokerName={brokerName} supportEmail={supportEmail} />
+      <NextTradeLoginFormInner brokerName={brokerName} brokerLogoUrl={brokerLogoUrl} supportEmail={supportEmail} />
     </Suspense>
   );
 }
 
-function NextTradeLoginFormInner({ brokerName, supportEmail }: { brokerName: string; supportEmail: string | null }) {
+function NextTradeLoginFormInner({
+  brokerName,
+  brokerLogoUrl,
+  supportEmail,
+}: {
+  brokerName: string;
+  brokerLogoUrl?: string | null;
+  supportEmail: string | null;
+}) {
   const router = useRouter();
   const searchParams = useSearchParams();
 
   return (
     <TradeLoginForm
       brokerName={brokerName}
+      brokerLogoUrl={brokerLogoUrl}
       supportEmail={supportEmail}
       initialAccountNumber={searchParams.get("account") ?? ""}
       initialError={searchParams.get("error") ? "Invalid account number or password" : null}

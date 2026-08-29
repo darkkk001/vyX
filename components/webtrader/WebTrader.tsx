@@ -1671,7 +1671,7 @@ export default function WebTrader({
 
   return (
     <div className="wt-root" data-theme={theme}>
-      <DesktopTitleBar brokerName={brokerName} server={serverName} connected={connected} />
+      <DesktopTitleBar brokerName={brokerName} brokerLogoUrl={brokerLogoUrl} server={serverName} connected={connected} />
       <div id="app">
         <div className={`margin-call-banner${marginCall ? " show" : ""}`}>
           Margin call — your margin level is below 100%. Deposit funds or close positions to avoid stop-out.

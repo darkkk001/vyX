@@ -19,9 +19,14 @@
 .loginMesh {
   position: absolute;
   inset: 0;
+  /* color-mix off --brand-primary directly (not --accent-glow, which is
+     a fixed hex per theme, unrelated to the broker's real color) -- this
+     mesh is the single largest colored area on the login screen, so it
+     was the most visible instance of every broker's login page showing
+     the same generic purple/green regardless of their actual brand. */
   background:
-    radial-gradient(circle at 25% 25%, rgba(124, 111, 255, .08), transparent 45%),
-    radial-gradient(circle at 78% 70%, var(--buy-glow), transparent 45%);
+    radial-gradient(circle at 25% 25%, color-mix(in srgb, var(--brand-primary, #16C784) 12%, transparent), transparent 45%),
+    radial-gradient(circle at 78% 70%, color-mix(in srgb, var(--brand-primary, #16C784) 20%, transparent), transparent 45%);
 }
 
 .loginCard {
@@ -267,7 +272,7 @@
 
 .btnLogin {
   width: 100%;
-  background: var(--buy);
+  background: var(--accent);
   color: #04140C;
   border: none;
   border-radius: 8px;

@@ -8,10 +8,12 @@ import { useEffect, useState } from "react";
 // the OS/browser chrome already provides this.
 export default function DesktopTitleBar({
   brokerName,
+  brokerLogoUrl,
   server,
   connected,
 }: {
   brokerName: string;
+  brokerLogoUrl?: string | null;
   server: string;
   connected: boolean;
 }) {
@@ -31,9 +33,13 @@ export default function DesktopTitleBar({
       // @ts-expect-error -- WebkitAppRegion isn't in the CSSProperties typings
       style={{ WebkitAppRegion: "drag", display: "flex", alignItems: "center", height: 32, background: "#0b0e14", borderBottom: "1px solid #1b2130", flexShrink: 0, padding: "0 10px", gap: 8 }}
     >
-      <span style={{ width: 16, height: 16, borderRadius: 4, background: "#16C784", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 800, color: "#07090C", flexShrink: 0 }}>
-        X
-      </span>
+      {brokerLogoUrl ? (
+        <img src={brokerLogoUrl} alt="" style={{ width: 16, height: 16, borderRadius: 4, objectFit: "cover", flexShrink: 0 }} />
+      ) : (
+        <span style={{ width: 16, height: 16, borderRadius: 4, background: "#16C784", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 800, color: "#07090C", flexShrink: 0 }}>
+          {brokerName.charAt(0).toUpperCase() || "X"}
+        </span>
+      )}
       <span style={{ fontSize: 12, color: "#c7cdda", fontWeight: 500 }}>
         {brokerName}
         {server ? <span style={{ color: "#5A6472" }}> — {server}</span> : null}

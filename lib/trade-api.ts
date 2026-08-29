@@ -100,7 +100,7 @@ export type ApiLinkedAccount = {
   balance: string;
 };
 
-export type ApiBrokerBranding = { brokerName: string; brokerLogoUrl: string; supportEmail: string | null };
+export type ApiBrokerBranding = { brokerName: string; brokerLogoUrl: string; supportEmail: string | null; primaryColor: string | null };
 
 export const tradeApi = {
   // Public, no session needed -- see app/api/trade/broker-branding/

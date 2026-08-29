@@ -78,7 +78,7 @@ export default function App() {
   useEffect(() => {
     apiCall<ApiBrokerBranding>("/api/trade/broker-branding")
       .then(setBranding)
-      .catch(() => setBranding({ brokerName: "VyXTrader", brokerLogoUrl: "", supportEmail: null }));
+      .catch(() => setBranding({ brokerName: "VyXTrader", brokerLogoUrl: "", supportEmail: null, primaryColor: null }));
   }, []);
 
   async function loadShellInfo() {
