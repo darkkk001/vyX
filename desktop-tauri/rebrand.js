@@ -66,8 +66,27 @@ console.log(`src-tauri/broker.config.json -> ${name} @ ${subdomain} (root: ${roo
 const tauriConfPath = path.join(__dirname, "src-tauri", "tauri.conf.json");
 const tauriConf = JSON.parse(fs.readFileSync(tauriConfPath, "utf8"));
 tauriConf.productName = productName;
+
+// Every rebrand used to keep the committed default updater endpoint
+// (the generic launcher-mode build's own feed) -- meaning every broker's
+// white-label installer polled the exact same public/desktop-tauri-updates/
+// latest.json the generic build publishes to. The next generic release
+// would silently push its own unbranded build down onto every rebranded
+// broker's installed app: wrong productName, wrong icon, and (the real
+// damage) broker.config.json's mode flips from "broker" back to
+// "launcher", so the app would boot straight into the root-domain server
+// picker instead of that broker's own login screen. Scoping the endpoint
+// by subdomain slug gives each broker's build its own feed, so a broker's
+// update only ever comes from a publish.js run against that same broker's
+// own rebrand.
+const slug = subdomain.split(".")[0];
+tauriConf.plugins ??= {};
+tauriConf.plugins.updater ??= {};
+tauriConf.plugins.updater.endpoints = [`https://${rootDomain}/desktop-tauri-updates/${slug}/latest.json`];
+
 fs.writeFileSync(tauriConfPath, JSON.stringify(tauriConf, null, 2) + "\n");
 console.log(`src-tauri/tauri.conf.json -> productName: "${productName}" (installer/Start Menu/Task Manager name)`);
+console.log(`src-tauri/tauri.conf.json -> updater endpoint: https://${rootDomain}/desktop-tauri-updates/${slug}/latest.json`);
 
 if (iconPath) {
   if (!iconPath.toLowerCase().endsWith(".ico")) {
@@ -116,4 +135,5 @@ if (bannerLogo) {
 }
 
 console.log("\nNow run: npm run build");
-console.log('After building, revert: git checkout -- src-tauri/broker.config.json src-tauri/tauri.conf.json');
+console.log("Then, if publishing this release: npm run publish -- --notes \"...\" (uses this broker's own slug-scoped feed automatically)");
+console.log('Only after publishing (or if not publishing), revert: git checkout -- src-tauri/broker.config.json src-tauri/tauri.conf.json');

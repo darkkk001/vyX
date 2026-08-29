@@ -53,8 +53,21 @@ console.log(`src-tauri/broker.config.json -> ${name} @ ${subdomain} (root: ${roo
 const tauriConfPath = path.join(__dirname, "src-tauri", "tauri.conf.json");
 const tauriConf = JSON.parse(fs.readFileSync(tauriConfPath, "utf8"));
 tauriConf.productName = productName;
+
+// Same fix as desktop-tauri/rebrand.js's own -- see that file's comment
+// for the full rationale. Every broker's rebranded Manager installer used
+// to share the one generic public/manager-tauri-updates/latest.json feed,
+// so the next generic release would silently debrand every broker's
+// installed backoffice app back to launcher mode. Scoped by subdomain
+// slug instead.
+const slug = subdomain.split(".")[0];
+tauriConf.plugins ??= {};
+tauriConf.plugins.updater ??= {};
+tauriConf.plugins.updater.endpoints = [`https://${rootDomain}/manager-tauri-updates/${slug}/latest.json`];
+
 fs.writeFileSync(tauriConfPath, JSON.stringify(tauriConf, null, 2) + "\n");
 console.log(`src-tauri/tauri.conf.json -> productName: "${productName}" (installer/Start Menu/Task Manager name)`);
+console.log(`src-tauri/tauri.conf.json -> updater endpoint: https://${rootDomain}/manager-tauri-updates/${slug}/latest.json`);
 
 if (iconPath) {
   if (!iconPath.toLowerCase().endsWith(".ico")) {
@@ -100,4 +113,5 @@ if (bannerLogo) {
 }
 
 console.log("\nNow run: npm run build");
-console.log('After building, revert: git checkout -- src-tauri/broker.config.json src-tauri/tauri.conf.json');
+console.log("Then, if publishing this release: npm run publish -- --notes \"...\" (uses this broker's own slug-scoped feed automatically)");
+console.log('Only after publishing (or if not publishing), revert: git checkout -- src-tauri/broker.config.json src-tauri/tauri.conf.json');

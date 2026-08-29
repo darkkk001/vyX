@@ -24,8 +24,35 @@ const fs = require("fs");
 const path = require("path");
 
 const bundleDir = path.join(__dirname, "src-tauri", "target", "release", "bundle", "nsis");
-const destDir = path.join(__dirname, "..", "public", "desktop-tauri-updates");
-const publicBaseUrl = "https://vyxtrader.com/desktop-tauri-updates";
+
+// broker.config.json (written by rebrand.js, reverted after a normal
+// build -- see that file's own comment) is how this script tells a
+// broker-rebranded build apart from the generic launcher-mode one. Only
+// present/mode:"broker" here if publish.js runs *before* rebrand.js's
+// "now revert" step, i.e. right after `npm run build` in the same
+// rebrand session -- publish a broker's release before reverting.
+// Without this, every broker's rebrand shared the one generic feed (see
+// rebrand.js's own comment on the debrand bug that caused); this instead
+// publishes each broker's release to its own slug-scoped path, matching
+// the slug-scoped endpoint rebrand.js now bakes into that broker's build.
+const brokerConfigPath = path.join(__dirname, "src-tauri", "broker.config.json");
+const brokerConfig = fs.existsSync(brokerConfigPath) ? JSON.parse(fs.readFileSync(brokerConfigPath, "utf-8")) : null;
+const isBrokerBuild = brokerConfig?.mode === "broker";
+const slug = isBrokerBuild ? brokerConfig.subdomain.split(".")[0] : null;
+const rootDomain = isBrokerBuild ? brokerConfig.rootDomain : "vyxtrader.com";
+
+const destDir = isBrokerBuild
+  ? path.join(__dirname, "..", "public", "desktop-tauri-updates", slug)
+  : path.join(__dirname, "..", "public", "desktop-tauri-updates");
+const publicBaseUrl = isBrokerBuild
+  ? `https://${rootDomain}/desktop-tauri-updates/${slug}`
+  : `https://${rootDomain}/desktop-tauri-updates`;
+
+console.log(
+  isBrokerBuild
+    ? `Publishing as a broker build: ${brokerConfig.brokerName} (slug "${slug}") -> ${destDir}`
+    : `Publishing as the generic launcher-mode build -> ${destDir}`
+);
 
 if (!fs.existsSync(bundleDir)) {
   console.error(`No ${bundleDir} -- run \`npm run build\` first (a signed release build).`);
@@ -74,12 +101,14 @@ if (!fs.existsSync(path.join(bundleDir, sigFile))) {
 
 const signature = fs.readFileSync(path.join(bundleDir, sigFile), "utf-8").trim();
 
+const destRelative = path.relative(path.join(__dirname, ".."), destDir).replace(/\\/g, "/");
+
 fs.mkdirSync(destDir, { recursive: true });
 fs.copyFileSync(path.join(bundleDir, installer), path.join(destDir, installer));
-console.log(`Copied ${installer} -> public/desktop-tauri-updates/`);
+console.log(`Copied ${installer} -> ${destRelative}/`);
 
 const notesArgIndex = process.argv.indexOf("--notes");
-const notes = notesArgIndex !== -1 ? process.argv[notesArgIndex + 1] : `VyXTrader ${version}`;
+const notes = notesArgIndex !== -1 ? process.argv[notesArgIndex + 1] : `${brokerConfig?.brokerName ?? "VyXTrader"} ${version}`;
 
 const manifest = {
   version,
@@ -99,6 +128,6 @@ const manifest = {
 };
 
 fs.writeFileSync(path.join(destDir, "latest.json"), JSON.stringify(manifest, null, 2));
-console.log("Wrote public/desktop-tauri-updates/latest.json");
+console.log(`Wrote ${destRelative}/latest.json`);
 
-console.log("\nNow commit and push the repo (public/desktop-tauri-updates/) to publish this update to installed apps.");
+console.log(`\nNow commit and push the repo (${destRelative}/) to publish this update to installed apps.`);

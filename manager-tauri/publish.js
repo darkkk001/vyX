@@ -17,8 +17,29 @@ const fs = require("fs");
 const path = require("path");
 
 const bundleDir = path.join(__dirname, "src-tauri", "target", "release", "bundle", "nsis");
-const destDir = path.join(__dirname, "..", "public", "manager-tauri-updates");
-const publicBaseUrl = "https://vyxtrader.com/manager-tauri-updates";
+
+// Same broker-scoping as desktop-tauri/publish.js -- see that file's own
+// comment for the full rationale (every broker's rebranded Manager
+// installer used to share one generic feed, so the next generic release
+// would silently debrand every broker's installed backoffice app).
+const brokerConfigPath = path.join(__dirname, "src-tauri", "broker.config.json");
+const brokerConfig = fs.existsSync(brokerConfigPath) ? JSON.parse(fs.readFileSync(brokerConfigPath, "utf-8")) : null;
+const isBrokerBuild = brokerConfig?.mode === "broker";
+const slug = isBrokerBuild ? brokerConfig.subdomain.split(".")[0] : null;
+const rootDomain = isBrokerBuild ? brokerConfig.rootDomain : "vyxtrader.com";
+
+const destDir = isBrokerBuild
+  ? path.join(__dirname, "..", "public", "manager-tauri-updates", slug)
+  : path.join(__dirname, "..", "public", "manager-tauri-updates");
+const publicBaseUrl = isBrokerBuild
+  ? `https://${rootDomain}/manager-tauri-updates/${slug}`
+  : `https://${rootDomain}/manager-tauri-updates`;
+
+console.log(
+  isBrokerBuild
+    ? `Publishing as a broker build: ${brokerConfig.brokerName} (slug "${slug}") -> ${destDir}`
+    : `Publishing as the generic launcher-mode build -> ${destDir}`
+);
 
 if (!fs.existsSync(bundleDir)) {
   console.error(`No ${bundleDir} -- run \`npm run build\` first (a signed release build).`);
@@ -68,12 +89,14 @@ if (!fs.existsSync(path.join(bundleDir, sigFile))) {
 
 const signature = fs.readFileSync(path.join(bundleDir, sigFile), "utf-8").trim();
 
+const destRelative = path.relative(path.join(__dirname, ".."), destDir).replace(/\\/g, "/");
+
 fs.mkdirSync(destDir, { recursive: true });
 fs.copyFileSync(path.join(bundleDir, installer), path.join(destDir, installer));
-console.log(`Copied ${installer} -> public/manager-tauri-updates/`);
+console.log(`Copied ${installer} -> ${destRelative}/`);
 
 const notesArgIndex = process.argv.indexOf("--notes");
-const notes = notesArgIndex !== -1 ? process.argv[notesArgIndex + 1] : `VyXTrader Manager ${version}`;
+const notes = notesArgIndex !== -1 ? process.argv[notesArgIndex + 1] : `${brokerConfig?.brokerName ?? "VyXTrader Manager"} ${version}`;
 
 const manifest = {
   version,
@@ -89,6 +112,6 @@ const manifest = {
 };
 
 fs.writeFileSync(path.join(destDir, "latest.json"), JSON.stringify(manifest, null, 2));
-console.log("Wrote public/manager-tauri-updates/latest.json");
+console.log(`Wrote ${destRelative}/latest.json`);
 
-console.log("\nNow commit and push the repo (public/manager-tauri-updates/) to publish this update to installed apps.");
+console.log(`\nNow commit and push the repo (${destRelative}/) to publish this update to installed apps.`);

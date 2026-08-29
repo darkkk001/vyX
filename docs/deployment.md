@@ -29,6 +29,27 @@
   bridge on success — same minimal, non-intrusive UX as
   `checkForUpdatesAndNotify()`, no forced restart.
 
+  **Per-broker feeds (fixed 2026-08-29)**: `rebrand.js` (desktop-tauri and
+  manager-tauri both) now bakes a slug-scoped updater endpoint into every
+  broker's rebranded build -- `.../desktop-tauri-updates/<slug>/latest.json`
+  instead of the shared root path, where `<slug>` is the broker's
+  subdomain's first label. `publish.js` (both apps) detects a
+  broker-rebranded build via `broker.config.json` (`mode: "broker"`,
+  written by `rebrand.js`, present until it's reverted post-build) and
+  publishes to that same slug-scoped `public/` path instead of the shared
+  one; the generic launcher-mode build (no `broker.config.json` in broker
+  mode) keeps publishing to the original shared path unchanged, so the
+  existing CI release workflow needs no changes. Before this, every
+  broker's white-label installer polled the exact same shared feed the
+  generic launcher build publishes to -- the next generic release would
+  silently downgrade/debrand every installed broker app back to launcher
+  mode (wrong product name, wrong icon, and `broker.config.json`'s `mode`
+  flipping back to `"launcher"`, sending the app to the root-domain server
+  picker instead of that broker's login screen). Workflow when cutting a
+  broker release: rebrand -> build -> publish (uses that broker's slug
+  automatically) -> revert, in that order -- publishing before reverting
+  is what lets `publish.js` see the still broker-mode `broker.config.json`.
+
   **Signing key**: updates are Ed25519-signed (minisign format) —
   `tauri-plugin-updater` refuses to install anything not signed by the
   key whose public half is baked into `tauri.conf.json`
