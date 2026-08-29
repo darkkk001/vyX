@@ -78,6 +78,7 @@ export type BulkResult = { requested: number; successful: number; failed: number
 export default function SmartTradeManager({
   open,
   onClose,
+  embedded = false,
   market,
   positions,
   positionPnl,
@@ -90,6 +91,12 @@ export default function SmartTradeManager({
 }: {
   open: boolean;
   onClose: () => void;
+  // Renders the panel content directly (no overlay/backdrop/close
+  // button) instead of as a modal -- WebTrader.tsx's Watchlist column
+  // uses this to show it permanently, MT4/5-style, rather than behind a
+  // rail icon. `open` is ignored when true; the confirm-enable dialog
+  // still overlays normally either way.
+  embedded?: boolean;
   market: Record<string, MarketState>;
   positions: ApiPosition[];
   positionPnl: (p: ApiPosition) => number;
@@ -287,13 +294,15 @@ export default function SmartTradeManager({
     runBulk("Close", matching, closeOne);
   }
 
-  if (!open) return null;
+  if (!embedded && !open) return null;
 
-  return (
-    <div className="modal-overlay show" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="modal-wrap">
-        <button className="modal-close" onClick={onClose}>✕</button>
-        <div className="generic-modal-card" style={{ width: 420 }}>
+  // `card` is the actual panel content -- identical whether shown as a
+  // modal (rail-icon click, open/onClose) or embedded permanently below
+  // the Watchlist (embedded=true, WebTrader.tsx's own toggle instead of
+  // onClose). Only the chrome around it (overlay/backdrop/close button)
+  // differs.
+  const card = (
+    <div className="generic-modal-card" style={{ width: embedded ? "100%" : 420 }}>
           <div className="generic-modal-title">Smart Trade Manager</div>
 
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 10 }}>
@@ -415,7 +424,18 @@ export default function SmartTradeManager({
             </div>
           </div>
         </div>
-      </div>
+  );
+
+  return (
+    <>
+      {embedded ? card : (
+        <div className="modal-overlay show" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+          <div className="modal-wrap">
+            <button className="modal-close" onClick={onClose}>✕</button>
+            {card}
+          </div>
+        </div>
+      )}
 
       {confirmEnable ? (
         <div className="modal-overlay show" onClick={(e) => { if (e.target === e.currentTarget) setConfirmEnable(false); }}>
@@ -433,6 +453,6 @@ export default function SmartTradeManager({
           </div>
         </div>
       ) : null}
-    </div>
+    </>
   );
 }

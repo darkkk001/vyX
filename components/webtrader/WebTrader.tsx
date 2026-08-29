@@ -143,7 +143,10 @@ export default function WebTrader({
   // "Selected" scope for Smart Trade Manager's bulk actions (break-even,
   // partial close, close) -- otherwise unused outside SmartTradeManager.tsx.
   const [selectedPositionIds, setSelectedPositionIds] = useState<Set<string>>(new Set());
-  const [stmOpen, setStmOpen] = useState(false);
+  // Now doubles as the embedded Smart Trade Manager panel's expand/
+  // collapse state (below the Watchlist) -- defaults open since it's
+  // meant to be visible there, not hidden behind the rail icon anymore.
+  const [stmOpen, setStmOpen] = useState(true);
   const [pendingOrders, setPendingOrders] = useState<ApiOrder[]>([]);
   const [allOrders, setAllOrders] = useState<ApiOrder[]>([]);
   const [history, setHistory] = useState<ApiPosition[]>([]);
@@ -1929,7 +1932,7 @@ export default function WebTrader({
             <button className="rail-item" title="Alerts" onClick={() => setAlertsModalOpen(true)}>
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9" /><path d="M13.73 21a2 2 0 0 1-3.46 0" /></svg>
             </button>
-            <button className="rail-item" title="Smart Trade Manager" onClick={() => setStmOpen(true)}>
+            <button className={`rail-item${stmOpen ? " active" : ""}`} title="Smart Trade Manager" onClick={() => setStmOpen((v) => !v)}>
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8Z" /></svg>
             </button>
             <div className="rail-sep" />
@@ -2613,6 +2616,35 @@ export default function WebTrader({
               </div>
             ) : null}
             <div className="wl-hint">Right-click for more columns</div>
+
+            {/* ---------- Smart Trade Manager (embedded below the
+                Watchlist, MT4/5-style, instead of hidden behind the rail
+                icon) -- same rail button now just toggles this section's
+                collapse state. ---------- */}
+            <div
+              className="section-label"
+              style={{ cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 10 }}
+              onClick={() => setStmOpen((v) => !v)}
+            >
+              <span>Smart Trade Manager</span>
+              <span style={{ transform: stmOpen ? "rotate(180deg)" : "none", transition: "transform 0.15s" }}>▾</span>
+            </div>
+            {stmOpen ? (
+              <SmartTradeManager
+                embedded
+                open={stmOpen}
+                onClose={() => setStmOpen(false)}
+                market={market}
+                positions={positions}
+                positionPnl={positionPnl}
+                activeSymbol={activeSymbol}
+                selectedPositionIds={selectedPositionIds}
+                pushToast={pushToast}
+                refreshPositions={refreshPositions}
+                refreshHistory={refreshHistory}
+                refreshAccount={refreshAccount}
+              />
+            ) : null}
           </div>
         </div>
 
@@ -3304,20 +3336,6 @@ export default function WebTrader({
           </div>
         </div>
       ) : null}
-
-      <SmartTradeManager
-        open={stmOpen}
-        onClose={() => setStmOpen(false)}
-        market={market}
-        positions={positions}
-        positionPnl={positionPnl}
-        activeSymbol={activeSymbol}
-        selectedPositionIds={selectedPositionIds}
-        pushToast={pushToast}
-        refreshPositions={refreshPositions}
-        refreshHistory={refreshHistory}
-        refreshAccount={refreshAccount}
-      />
 
       <div className="toast" style={{ opacity: toasts.length > 0 ? 1 : 0 }}>{toasts[toasts.length - 1]?.message ?? ""}</div>
     </div>
