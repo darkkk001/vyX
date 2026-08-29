@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
 import { closePositionInTx } from "@/lib/position-close";
 import { publishTradingEvent } from "@/lib/nats";
+import { checkLiveMarketPrice } from "@/lib/risk";
 
 // Closing (fully or partially) is the one place a trade changes the
 // account balance. Realized P&L is computed server-side and applied
@@ -35,13 +36,18 @@ export async function POST(
 
   const position = await prisma.position.findUnique({
     where: { id },
-    include: { symbol: { select: { contractSize: true } } },
+    include: { symbol: { select: { name: true, contractSize: true } } },
   });
   if (!position || position.accountId !== session.accountId) {
     return NextResponse.json({ error: "position not found" }, { status: 404 });
   }
   if (position.status !== "OPEN") {
     return NextResponse.json({ error: "position is not open" }, { status: 409 });
+  }
+
+  const priceError = await checkLiveMarketPrice(prisma, position.symbol.name, closePrice);
+  if (priceError) {
+    return NextResponse.json({ error: priceError }, { status: 400 });
   }
 
   let closeVolume = position.volume;

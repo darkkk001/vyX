@@ -153,6 +153,40 @@ export async function checkBrokerExposure(
   return null;
 }
 
+// POST /api/trade/orders already has its own inline, freshness-only
+// version of this for MARKET-order open (a live tick must exist for the
+// symbol, no check on how close the client's price is to it -- see that
+// route's own module comment on why prices are still client-simulated
+// for now). Position close and pending-order fill had **no check at
+// all** -- the two places that actually realize P&L to the account
+// balance, meaning an authenticated trader could close any position (or
+// fill any resting order) at literally any price via a direct API call,
+// minting arbitrary profit. This is deliberately stricter than the
+// open-side check: not just "a live tick exists" but "the requested
+// price is within a generous band of it" -- generous because prices here
+// are still client-simulated, not a real matching engine, so this is a
+// floor against outright fabrication, not a tight spread match.
+const LIVE_PRICE_MAX_AGE_MS = 15_000;
+const PRICE_DEVIATION_TOLERANCE_PCT = 2;
+
+export async function checkLiveMarketPrice(
+  db: Db,
+  symbolName: string,
+  clientPrice: Prisma.Decimal | string
+): Promise<string | null> {
+  const livePrice = await db.livePrice.findUnique({ where: { symbol: symbolName } });
+  if (!livePrice || Date.now() - livePrice.updatedAt.getTime() > LIVE_PRICE_MAX_AGE_MS) {
+    return "no live feed for this symbol";
+  }
+  const price = new Prisma.Decimal(clientPrice);
+  const mid = livePrice.bid.add(livePrice.ask).div(2);
+  const diffPct = price.sub(mid).abs().div(mid).mul(100);
+  if (diffPct.gt(PRICE_DEVIATION_TOLERANCE_PCT)) {
+    return `price is too far from the current market price for ${symbolName}`;
+  }
+  return null;
+}
+
 // Null maxDailyLoss = no limit. Blocks new orders once today's realized
 // P&L (SUM of TRADE_PNL Transaction rows since local midnight) is
 // already at or below -maxDailyLoss. Existing open positions are

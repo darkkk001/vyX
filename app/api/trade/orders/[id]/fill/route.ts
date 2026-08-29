@@ -17,6 +17,7 @@ import {
   checkSymbolExposure,
   checkBrokerExposure,
   checkMaxDailyLoss,
+  checkLiveMarketPrice,
 } from "@/lib/risk";
 
 // Called by the client when its local price simulation reports the
@@ -74,6 +75,7 @@ export async function POST(
     (brokerSymbol ? checkSymbolTradingMode(brokerSymbol.tradingMode, order.side) : null) ??
     (brokerSymbol ? checkTradingSession(brokerSymbol.tradingSessions, new Date()) : null) ??
     (brokerSymbol ? checkLotStep(order.volume, brokerSymbol.minLot, brokerSymbol.lotStep) : null) ??
+    (brokerSymbol ? await checkLiveMarketPrice(prisma, brokerSymbol.symbol.name, requestedFillPrice) : null) ??
     (account.group ? checkGroupMaxLot(order.volume, account.group.maxLotSize) : null) ??
     (account.group ? checkGroupTradingRestriction(account.group.tradingRestriction, order.side) : null) ??
     (account.group
