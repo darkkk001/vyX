@@ -6,12 +6,20 @@
 //! via `GET /internal/feed-stats` (engine/server/src/main.rs), same
 //! shared-secret guard as the order routes.
 
+use chrono::Utc;
 use serde::Serialize;
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::Mutex;
 
 const WINDOW: usize = 500;
+
+// A DB flush that's timing out on every attempt would otherwise log once
+// per flush interval -- up to 4/s at the 250ms LivePrice cadence, which is
+// exactly the "spam logs" half of the Contabo incident this exists to
+// fix. The failure counters below still record every single failure for
+// /internal/feed-stats; this only throttles what actually prints.
+const LOG_RATE_LIMIT_MS: i64 = 30_000;
 
 pub struct FeedStats {
     latencies_ms: Mutex<VecDeque<i64>>,
@@ -19,7 +27,18 @@ pub struct FeedStats {
     ticks_missing_t0_total: AtomicU64,
     ticks_dropped_invalid_total: AtomicU64,
     nats_publish_failures_total: AtomicU64,
+    nats_publish_success_total: AtomicU64,
     candle_write_failures_total: AtomicU64,
+    // Shared across both flush loops (LivePrice and Candle) -- the
+    // Contabo audit asked for one db_ok/db_fail/db_lag_ms trio, not one
+    // pair per table, so both loops report into the same counters.
+    // candle_write_failures_total above stays too, for the more granular
+    // per-table breakdown that already existed.
+    db_write_success_total: AtomicU64,
+    db_write_failure_total: AtomicU64,
+    last_db_lag_ms: AtomicI64,
+    live_price_failure_last_logged_ms: AtomicI64,
+    candle_failure_last_logged_ms: AtomicI64,
 }
 
 impl FeedStats {
@@ -30,7 +49,13 @@ impl FeedStats {
             ticks_missing_t0_total: AtomicU64::new(0),
             ticks_dropped_invalid_total: AtomicU64::new(0),
             nats_publish_failures_total: AtomicU64::new(0),
+            nats_publish_success_total: AtomicU64::new(0),
             candle_write_failures_total: AtomicU64::new(0),
+            db_write_success_total: AtomicU64::new(0),
+            db_write_failure_total: AtomicU64::new(0),
+            last_db_lag_ms: AtomicI64::new(0),
+            live_price_failure_last_logged_ms: AtomicI64::new(0),
+            candle_failure_last_logged_ms: AtomicI64::new(0),
         }
     }
 
@@ -66,6 +91,47 @@ impl FeedStats {
         self.candle_write_failures_total.fetch_add(1, Ordering::Relaxed);
     }
 
+    pub fn record_nats_publish_success(&self) {
+        self.nats_publish_success_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Called by both flush loops (LivePrice and Candle) after every
+    /// attempt, success or failure -- `lag_ms` is that attempt's own
+    /// duration (including a timed-out attempt, whose lag is the timeout
+    /// itself), so `db_lag_ms` in the snapshot always reflects the most
+    /// recent flush of either kind, whichever finished last.
+    pub fn record_db_write(&self, ok: bool, lag_ms: i64) {
+        if ok {
+            self.db_write_success_total.fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.db_write_failure_total.fetch_add(1, Ordering::Relaxed);
+        }
+        self.last_db_lag_ms.store(lag_ms, Ordering::Relaxed);
+    }
+
+    pub fn should_log_live_price_failure(&self) -> bool {
+        Self::gate(&self.live_price_failure_last_logged_ms)
+    }
+
+    pub fn should_log_candle_failure(&self) -> bool {
+        Self::gate(&self.candle_failure_last_logged_ms)
+    }
+
+    // Not a compare-and-swap loop -- a race where two threads both pass
+    // this check in the same instant means (at most) one extra log line
+    // once every 30s, an acceptable trade for not needing retry logic in
+    // a rate limiter.
+    fn gate(last_logged: &AtomicI64) -> bool {
+        let now = Utc::now().timestamp_millis();
+        let last = last_logged.load(Ordering::Relaxed);
+        if now - last >= LOG_RATE_LIMIT_MS {
+            last_logged.store(now, Ordering::Relaxed);
+            true
+        } else {
+            false
+        }
+    }
+
     pub fn snapshot(&self) -> FeedStatsSnapshot {
         let guard = self.latencies_ms.lock().unwrap_or_else(|e| e.into_inner());
         let mut sorted: Vec<i64> = guard.iter().copied().collect();
@@ -85,11 +151,15 @@ impl FeedStats {
             p95_ms: percentile(0.95),
             p99_ms: percentile(0.99),
             max_ms: sorted.last().copied(),
-            ticks_ingested_total: self.ticks_ingested_total.load(Ordering::Relaxed),
+            ticks_in: self.ticks_ingested_total.load(Ordering::Relaxed),
             ticks_missing_t0_total: self.ticks_missing_t0_total.load(Ordering::Relaxed),
             ticks_dropped_invalid_total: self.ticks_dropped_invalid_total.load(Ordering::Relaxed),
+            nats_out: self.nats_publish_success_total.load(Ordering::Relaxed),
             nats_publish_failures_total: self.nats_publish_failures_total.load(Ordering::Relaxed),
             candle_write_failures_total: self.candle_write_failures_total.load(Ordering::Relaxed),
+            db_ok: self.db_write_success_total.load(Ordering::Relaxed),
+            db_fail: self.db_write_failure_total.load(Ordering::Relaxed),
+            db_lag_ms: self.last_db_lag_ms.load(Ordering::Relaxed),
         }
     }
 }
@@ -108,11 +178,18 @@ pub struct FeedStatsSnapshot {
     pub p95_ms: Option<i64>,
     pub p99_ms: Option<i64>,
     pub max_ms: Option<i64>,
-    pub ticks_ingested_total: u64,
+    // Renamed from ticks_ingested_total to match the Contabo audit's
+    // requested field names exactly (ticks_in/nats_out/db_ok/db_fail/
+    // db_lag_ms) -- same counter, no behavior change.
+    pub ticks_in: u64,
     pub ticks_missing_t0_total: u64,
     pub ticks_dropped_invalid_total: u64,
+    pub nats_out: u64,
     pub nats_publish_failures_total: u64,
     pub candle_write_failures_total: u64,
+    pub db_ok: u64,
+    pub db_fail: u64,
+    pub db_lag_ms: i64,
 }
 
 #[cfg(test)]
@@ -138,7 +215,7 @@ mod tests {
         assert_eq!(snap.sample_count, 5);
         assert_eq!(snap.max_ms, Some(90));
         assert_eq!(snap.current_ms, Some(30)); // last one recorded
-        assert_eq!(snap.ticks_ingested_total, 5);
+        assert_eq!(snap.ticks_in, 5);
     }
 
     #[test]

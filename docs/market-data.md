@@ -188,3 +188,87 @@ for a network quirk specific to that path — see the file's own comment —
 and it's unknown whether the same quirk affects a POST body/header), so
 it should be watched via the EA's `Print()` logging the first time it's
 actually enabled on a live terminal.
+
+**Correction (2026-08-29): the above is stale.** `engine/server`
+(`trading-core-server`) is deployed and running on a Contabo VPS in
+London, with the EA already in direct mode against it — confirmed via a
+live audit (production `LivePrice` rows updating continuously; the
+Next.js proxy path at `/api/internal/price-feed` independently confirmed
+dead/404 in production, meaning direct mode is the *only* thing feeding
+this pipeline right now, not a fallback alongside the proxy).
+`services/api-gateway` is also live on the same box, reachable at
+`wss://feed.vyxtrader.com` behind Caddy, and confirmed to be what the
+production WebTrader bundle actually connects to
+(`NEXT_PUBLIC_GATEWAY_WS_URL`) — the browser's live-tick path is the
+Gateway WebSocket, not the legacy poll. None of this was reflected here
+before; treat this file's own "not yet cut over"/"local/dev only"
+language above as historical, not current.
+
+## 6. Contabo tick-pipeline hardening (2026-08-29)
+
+**Problem found in production**: Candle/LivePrice upserts to the pooled
+Prisma Postgres connection were observed taking 4-37s and dropping
+connections, with unrate-limited failure logging spamming the service's
+log output. `ingest_ticks` itself was already fully decoupled from
+Postgres (§5's "Ingest — done" commit, `ad3c28d`) — the hot path
+(`TickCache` update + NATS publish) never touched the database at all —
+but the periodic flush loops that persist the cache to Postgres had no
+timeout, so a wedged connection could pile up overlapping flush attempts
+indefinitely, and every failure logged unconditionally.
+
+**Fixed**:
+- Both flush loops (`engine/market-data/src/ingest.rs`) now wrap their
+  transaction in a 2s `tokio::time::timeout`. A timeout or a real DB error
+  both count as a failed batch — counted, rate-limited-logged (at most
+  once per 30s per flush kind), and dropped; the next interval tick
+  re-snapshots the cache's current state and tries again. Ingest itself
+  was never on this path and still isn't.
+- Flush cadence tightened: LivePrice every 250ms, Candle every 1s (from
+  3s/15s), now millisecond-based env vars
+  (`LIVE_PRICE_FLUSH_INTERVAL_MS`/`CANDLE_FLUSH_INTERVAL_MS`, breaking
+  rename from the old `*_SECS` vars — Contabo wasn't overriding either).
+- `GET /internal/feed-stats` extended with `ticks_in`, `nats_out`,
+  `db_ok`, `db_fail`, `db_lag_ms` (duration of the most recently completed
+  flush, either kind), and `queue_len` (distinct symbols currently held in
+  the in-memory `TickCache` — there's no literal bounded channel in this
+  design, since the cache's per-symbol coalescing already gives
+  last-write-wins batching for free; this is the honest equivalent of
+  "how much is backed up").
+- `engine/server`'s HTTP listener now binds `BIND_ADDR` (default
+  `127.0.0.1`, was hardcoded `0.0.0.0`) — it was only ever meant to be
+  reached via the Gateway or a local Caddy reverse proxy, not directly
+  from the internet.
+- EA (`mt5-ea/VyXTraderPriceFeed.mq5`): `ApiSecret` no longer ships a real
+  default (was plaintext in a committed file); added `PushOnEveryTick`
+  (default on, 50ms minimum window) so a tick on the chart's own symbol
+  pushes immediately instead of waiting for the next timer firing;
+  `t0`'s sub-second component now comes from `GetMicrosecondCount()`
+  instead of `GetTickCount()`, for finer EA-to-engine latency resolution.
+  **Caveat**: `OnTick()` in MQL5 only fires for the symbol the EA's own
+  chart is showing, not every symbol in `CanonicalNames` — a quiet chart
+  symbol with other symbols still ticking won't push until the next
+  chart-symbol tick or the `OnTimer` fallback (kept running regardless of
+  `PushOnEveryTick`, specifically to bound that gap).
+- WebTrader's legacy poll (`components/webtrader/WebTrader.tsx`) slowed
+  from 2s to 30s now that the Gateway WebSocket is confirmed live in
+  production — it remains a real fallback (still writes ticks, still
+  drives `refreshOrders`/`refreshPositions`), just no longer assumed to be
+  the primary path. Incoming ticks from both live-tick sources (the
+  browser WebSocket and the desktop native relay) are now coalesced to at
+  most 20 updates/s per symbol before touching `liveTicksRef`.
+
+## 7. Planned: Postgres migration (Prisma pooled → Neon, direct connection)
+
+Not yet done — documented here as the next step, not implemented in this
+pass. The engine's `DATABASE_URL` today is the same pooled Prisma Postgres
+connection the Next.js app uses for everything else; §6's timeout/backoff
+hardening bounds the damage a slow pooled connection can do to the tick
+pipeline, but doesn't address the underlying cause (a connection pooler
+adding latency/contention on writes a low-latency writer shouldn't have to
+pay). Plan: point the engine specifically at a **direct (non-pooled)**
+connection to a Neon Postgres instance in the **Frankfurt** region (lowest
+RTT to the Contabo London VPS among Neon's regions), separate from
+whatever pooled connection the Next.js app keeps using for its own reads/
+writes. Same schema, same tables (`LivePrice`/`Candle`) — this is a
+connection-routing change for the engine's writer specifically, not a
+schema migration or a change to what any other consumer reads.

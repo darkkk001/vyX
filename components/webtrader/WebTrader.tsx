@@ -834,17 +834,40 @@ export default function WebTrader({
 
   // ---------- price tick ----------
   const liveTicksRef = useRef<Record<string, { bid: number; ask: number }>>({});
+  // Coalesces both push-tick sources below (the browser WebSocket and the
+  // desktop native relay) to at most 20 updates/s per symbol -- the
+  // Contabo audit's ask, once ticks started arriving in real time (EA
+  // direct mode, sub-second cadence) instead of the old 1s timer, a fast
+  // symbol could push liveTicksRef (and therefore a re-render) far more
+  // often than the 1.5s tickMarket loop above ever consumes, which is
+  // pure wasted work, not a correctness issue -- last-write-wins is still
+  // exactly right (see tickMarket/liveTicksRef's own existing usage).
+  const lastTickAcceptedAtRef = useRef<Record<string, number>>({});
+  const MAX_TICK_HZ_PER_SYMBOL = 20;
+  function acceptCoalescedTick(symbol: string, bid: number, ask: number) {
+    const now = performance.now();
+    const last = lastTickAcceptedAtRef.current[symbol] ?? 0;
+    if (now - last < 1000 / MAX_TICK_HZ_PER_SYMBOL) return;
+    lastTickAcceptedAtRef.current[symbol] = now;
+    liveTicksRef.current = { ...liveTicksRef.current, [symbol]: { bid, ask } };
+  }
   useEffect(() => {
     const interval = setInterval(() => setMarket((prev) => tickMarket(prev, liveTicksRef.current, serverNow())), 1500);
     return () => clearInterval(interval);
   }, []);
 
-  // Polls the MT5 EA bridge feed (see /api/internal/price-feed) so real
-  // ticks blend into the tick loop above without restarting its interval.
-  // Doubles as the connection-status signal (see DesktopTitleBar / topbar
-  // indicator) — a thrown fetch means the server itself is unreachable,
-  // which is distinct from (and rarer than) an individual symbol just
-  // having no live tick from the EA.
+  // Polls /api/trade/prices + LivePrice -- was the primary tick source
+  // before the Gateway WebSocket below existed, at 2s. Now that
+  // NEXT_PUBLIC_GATEWAY_WS_URL is confirmed live in production (Contabo
+  // audit, 2026-08-29), this is a 30s health-check/fallback only: still
+  // writes ticks (so an environment where the socket never connects --
+  // the var unset, or a persistent reconnect failure -- still has *some*
+  // live price, just up to 30s stale instead of 2s), still doubles as the
+  // connection-status signal (DesktopTitleBar / topbar indicator), and
+  // still rides refreshOrders/refreshPositions along (safe to slow down
+  // now that the separate trading-events WebSocket below already covers
+  // the low-latency case this used to be the only thing catching --
+  // dealer fills, requotes, externally-created positions).
   const [connected, setConnected] = useState(true);
   const [pingMs, setPingMs] = useState<number | null>(null);
   useEffect(() => {
@@ -887,7 +910,7 @@ export default function WebTrader({
       if (!cancelled) { refreshOrders(); refreshPositions(); }
     }
     poll();
-    const interval = setInterval(poll, 2000);
+    const interval = setInterval(poll, 30000);
     return () => { cancelled = true; clearInterval(interval); };
   }, [appendLog, refreshOrders, refreshPositions]);
 
@@ -917,7 +940,7 @@ export default function WebTrader({
           const bid = Number(tick.bid);
           const ask = Number(tick.ask);
           if (!tick.symbol || !Number.isFinite(bid) || !Number.isFinite(ask)) return;
-          liveTicksRef.current = { ...liveTicksRef.current, [tick.symbol]: { bid, ask } };
+          acceptCoalescedTick(tick.symbol, bid, ask);
         } catch {
           // malformed frame — ignore, next tick will correct the picture
         }
@@ -946,10 +969,7 @@ export default function WebTrader({
           const bid = Number(tick.bid);
           const ask = Number(tick.ask);
           if (!tick.symbol || !Number.isFinite(bid) || !Number.isFinite(ask)) return;
-          liveTicksRef.current = {
-            ...liveTicksRef.current,
-            [tick.symbol]: { bid, ask },
-          };
+          acceptCoalescedTick(tick.symbol, bid, ask);
         } catch {
           // malformed frame — ignore, next tick will correct the picture
         }

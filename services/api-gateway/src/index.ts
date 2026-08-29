@@ -40,6 +40,13 @@ const server = createServer(app);
 
 const port = Number(process.env.PORT ?? 8080);
 const natsUrl = process.env.NATS_URL ?? "nats://127.0.0.1:4222";
+// Defaults to loopback-only, same reasoning and same Contabo audit
+// (2026-08-29) as engine/server's own BIND_ADDR -- this was only ever
+// meant to be reached via a local Caddy reverse proxy (feed.vyxtrader.com),
+// not directly from the internet. server.listen(port) alone binds all
+// interfaces by default; still overridable (BIND_ADDR=0.0.0.0) for a
+// deployment shape that genuinely needs it.
+const bindAddr = process.env.BIND_ADDR ?? "127.0.0.1";
 
 attachPriceStream(server, natsUrl).catch((err) => {
   console.error("failed to start price stream (NATS unreachable?)", err);
@@ -48,6 +55,6 @@ attachTradingEventStream(server, natsUrl).catch((err) => {
   console.error("failed to start trading event stream (NATS unreachable?)", err);
 });
 
-server.listen(port, () => {
-  console.log(`api-gateway listening on :${port}`);
+server.listen(port, bindAddr, () => {
+  console.log(`api-gateway listening on ${bindAddr}:${port}`);
 });

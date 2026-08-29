@@ -473,8 +473,25 @@ async fn ingest_price_feed(
 /// AppState only has one such guard today; a dedicated read-only stats
 /// credential would be a reasonable future split if this ever needs to
 /// be exposed more broadly than "whoever can already place orders").
-async fn feed_stats(State(state): State<Arc<AppState>>) -> Json<FeedStatsSnapshot> {
-    Json(state.feed_stats.snapshot())
+// FeedStatsSnapshot plus queue_len -- there's no literal bounded channel
+// in this design (see market_data::ingest's own module doc: the
+// TickCache's per-symbol coalescing already gives last-write-wins
+// batching without one), so the honest equivalent of "how much work is
+// backed up" is how many distinct symbols the cache currently holds --
+// exposed here rather than baked into FeedStats itself, since it needs
+// the tick_cache handle FeedStats doesn't carry.
+#[derive(Serialize)]
+struct FeedStatsResponse {
+    #[serde(flatten)]
+    stats: FeedStatsSnapshot,
+    queue_len: usize,
+}
+
+async fn feed_stats(State(state): State<Arc<AppState>>) -> Json<FeedStatsResponse> {
+    Json(FeedStatsResponse {
+        stats: state.feed_stats.snapshot(),
+        queue_len: state.tick_cache.snapshot().len(),
+    })
 }
 
 /// Subscribes once to the Market Data Core's tick stream
@@ -585,26 +602,26 @@ async fn main() {
 
     // Periodic Postgres flush of the in-memory tick cache -- see
     // market_data::ingest::spawn_periodic_flush's doc comment for why
-    // this replaced a per-tick write. Defaults picked from this
-    // session's own Prisma Postgres operations-quota incident: 3s for
-    // LivePrice (cheap, only the legacy poll fallback and manage-side
-    // risk reads still need it at all fresh), 15s for Candle (9x the
-    // write cost per symbol, and the chart's live-updating bar is
-    // already built client-side from the tick stream regardless of how
-    // often the persisted row catches up).
-    let live_price_flush_interval_secs: u64 = std::env::var("LIVE_PRICE_FLUSH_INTERVAL_SECS")
+    // this replaced a per-tick write. Defaults tightened per the Contabo
+    // audit (2026-08-29): 250ms for LivePrice, 1s for Candle -- both now
+    // millisecond-based env vars (renamed from *_SECS, a breaking rename;
+    // Contabo wasn't overriding either, so this is safe to deploy as-is).
+    // Each flush now has its own 2s DB timeout regardless of this
+    // interval (see ingest.rs's DB_FLUSH_TIMEOUT) -- a slow Postgres can
+    // no longer pile up overlapping attempts even at this tighter cadence.
+    let live_price_flush_interval_ms: u64 = std::env::var("LIVE_PRICE_FLUSH_INTERVAL_MS")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(3);
-    let candle_flush_interval_secs: u64 = std::env::var("CANDLE_FLUSH_INTERVAL_SECS")
+        .unwrap_or(250);
+    let candle_flush_interval_ms: u64 = std::env::var("CANDLE_FLUSH_INTERVAL_MS")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(15);
+        .unwrap_or(1_000);
     market_data::ingest::spawn_periodic_flush(
         pool.clone(),
         tick_cache.clone(),
-        std::time::Duration::from_secs(live_price_flush_interval_secs),
-        std::time::Duration::from_secs(candle_flush_interval_secs),
+        std::time::Duration::from_millis(live_price_flush_interval_ms),
+        std::time::Duration::from_millis(candle_flush_interval_ms),
         feed_stats_registry.clone(),
     );
 
@@ -637,9 +654,15 @@ async fn main() {
         .merge(order_routes)
         .with_state(state);
 
-    let listener = tokio::net::TcpListener::bind(("0.0.0.0", port))
+    // Defaults to loopback-only now -- this server was only ever meant to
+    // be reached via the Gateway (this file's own module doc) or, on
+    // Contabo, a local Caddy reverse proxy; 0.0.0.0 exposed it directly
+    // to the internet on whatever host it ran on. Still overridable
+    // (BIND_ADDR=0.0.0.0) for a deployment shape that genuinely needs it.
+    let bind_addr = std::env::var("BIND_ADDR").unwrap_or_else(|_| "127.0.0.1".to_string());
+    let listener = tokio::net::TcpListener::bind((bind_addr.as_str(), port))
         .await
         .expect("failed to bind port");
-    tracing::info!("trading-core-server listening on :{port}");
+    tracing::info!("trading-core-server listening on {bind_addr}:{port}");
     axum::serve(listener, app).await.expect("server error");
 }

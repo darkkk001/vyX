@@ -10,7 +10,16 @@ use chrono::Utc;
 use protocol::Tick;
 use sqlx::PgPool;
 use std::sync::Arc;
-use std::time::Duration as StdDuration;
+use std::time::{Duration as StdDuration, Instant};
+
+// Contabo audit: Candle/LivePrice upserts were observed taking 4-37s and
+// dropping connections. A flush already runs off the hot path (see this
+// module's own doc comment), but an unbounded await here still means a
+// slow Postgres can pile up overlapping flush attempts indefinitely. 2s
+// is generous for a single small batch upsert under normal conditions and
+// short enough that a genuinely wedged connection gets abandoned well
+// before the next tick of the same interval fires.
+const DB_FLUSH_TIMEOUT: StdDuration = StdDuration::from_secs(2);
 
 #[derive(Debug, thiserror::Error)]
 pub enum IngestError {
@@ -49,7 +58,9 @@ pub async fn ingest_ticks(
             Some(t0) => stats.record_latency_ms(now.timestamp_millis() - t0),
             None => stats.record_missing_t0(),
         }
-        if !publish_tick(nats, tick).await {
+        if publish_tick(nats, tick).await {
+            stats.record_nats_publish_success();
+        } else {
             stats.record_nats_publish_failure();
         }
     }
@@ -84,6 +95,7 @@ pub fn spawn_periodic_flush(
     {
         let pool = pool.clone();
         let cache = cache.clone();
+        let stats = stats.clone();
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(live_price_interval);
             loop {
@@ -92,9 +104,7 @@ pub fn spawn_periodic_flush(
                 if snapshot.is_empty() {
                     continue;
                 }
-                if let Err(err) = flush_live_prices(&pool, &snapshot).await {
-                    tracing::warn!(?err, "live-price flush failed");
-                }
+                flush_live_prices(&pool, &snapshot, &stats).await;
             }
         });
     }
@@ -107,31 +117,80 @@ pub fn spawn_periodic_flush(
             if snapshot.is_empty() {
                 continue;
             }
-            if let Err(err) = flush_candles(&pool, &snapshot).await {
-                tracing::warn!(?err, "candle flush failed");
-                stats.record_candle_write_failure();
-            }
+            flush_candles(&pool, &snapshot, &stats).await;
         }
     });
 }
 
-async fn flush_live_prices(pool: &PgPool, ticks: &[Tick]) -> Result<(), sqlx::Error> {
-    let mut tx = pool.begin().await?;
-    for tick in ticks {
-        db::upsert_live_price(&mut tx, &tick.symbol, tick.bid, tick.ask).await?;
-    }
-    tx.commit().await
-}
+// Never returns an error to the caller -- a failed/timed-out flush is
+// counted (stats::FeedStats::record_db_write) and rate-limit-logged
+// (should_log_live_price_failure), then dropped: the next interval tick
+// re-snapshots the cache's current (last-write-wins) state and tries
+// again, so nothing needs retrying here. This is the "on failure
+// increment a counter, drop the batch, never block ingest" behavior from
+// the Contabo audit -- ingest_ticks above never calls this function at
+// all, so a slow/wedged flush can't backpressure the hot path regardless.
+async fn flush_live_prices(pool: &PgPool, ticks: &[Tick], stats: &Arc<FeedStats>) {
+    let started = Instant::now();
+    let result = tokio::time::timeout(DB_FLUSH_TIMEOUT, async {
+        let mut tx = pool.begin().await?;
+        for tick in ticks {
+            db::upsert_live_price(&mut tx, &tick.symbol, tick.bid, tick.ask).await?;
+        }
+        tx.commit().await
+    })
+    .await;
+    let lag_ms = started.elapsed().as_millis() as i64;
 
-async fn flush_candles(pool: &PgPool, ticks: &[Tick]) -> Result<(), sqlx::Error> {
-    let now = Utc::now();
-    let mut tx = pool.begin().await?;
-    for tick in ticks {
-        for update in candle_updates_for_tick(tick, now) {
-            db::upsert_candle(&mut tx, &update).await?;
+    match result {
+        Ok(Ok(())) => stats.record_db_write(true, lag_ms),
+        Ok(Err(err)) => {
+            stats.record_db_write(false, lag_ms);
+            if stats.should_log_live_price_failure() {
+                tracing::warn!(?err, lag_ms, "live-price flush failed (rate-limited to 1 line/30s -- see /internal/feed-stats for the real db_fail count)");
+            }
+        }
+        Err(_) => {
+            stats.record_db_write(false, lag_ms);
+            if stats.should_log_live_price_failure() {
+                tracing::warn!(timeout_ms = DB_FLUSH_TIMEOUT.as_millis() as i64, "live-price flush timed out (rate-limited to 1 line/30s)");
+            }
         }
     }
-    tx.commit().await
+}
+
+async fn flush_candles(pool: &PgPool, ticks: &[Tick], stats: &Arc<FeedStats>) {
+    let now = Utc::now();
+    let started = Instant::now();
+    let result = tokio::time::timeout(DB_FLUSH_TIMEOUT, async {
+        let mut tx = pool.begin().await?;
+        for tick in ticks {
+            for update in candle_updates_for_tick(tick, now) {
+                db::upsert_candle(&mut tx, &update).await?;
+            }
+        }
+        tx.commit().await
+    })
+    .await;
+    let lag_ms = started.elapsed().as_millis() as i64;
+
+    match result {
+        Ok(Ok(())) => stats.record_db_write(true, lag_ms),
+        Ok(Err(err)) => {
+            stats.record_db_write(false, lag_ms);
+            stats.record_candle_write_failure();
+            if stats.should_log_candle_failure() {
+                tracing::warn!(?err, lag_ms, "candle flush failed (rate-limited to 1 line/30s -- see /internal/feed-stats for the real db_fail count)");
+            }
+        }
+        Err(_) => {
+            stats.record_db_write(false, lag_ms);
+            stats.record_candle_write_failure();
+            if stats.should_log_candle_failure() {
+                tracing::warn!(timeout_ms = DB_FLUSH_TIMEOUT.as_millis() as i64, "candle flush timed out (rate-limited to 1 line/30s)");
+            }
+        }
+    }
 }
 
 /// Best-effort — a tick that fails to broadcast over NATS shouldn't block

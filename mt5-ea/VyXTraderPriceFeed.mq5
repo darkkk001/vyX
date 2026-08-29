@@ -7,11 +7,38 @@
 //| LivePrice table this EA feeds.                                    |
 //+------------------------------------------------------------------+
 #property strict
-#property version   "1.10"
+#property version   "1.20"
 
 input string ServerUrl            = "https://www.vyxtrader.com/api/internal/price-feed";
-input string ApiSecret            = "a572bf5ea373c634fb63c0c3b6b21db4b4ad8f0d50056d2a";
+// No default -- this file is committed to a public-ish repo. A real
+// secret used to sit here in plaintext (the same value anyone with repo
+// access could read); type the actual value into this EA's Inputs tab
+// on the terminal instead. Empty means "not configured yet" and OnTick/
+// OnTimer both refuse to push until it's set (see the guard below).
+input string ApiSecret            = "";
+// No longer used to drive OnInit's timer (see EventSetMillisecondTimer
+// below, now keyed off PushMinIntervalMs instead) -- left declared,
+// unused, rather than removed, so an already-configured EA instance's
+// saved Inputs don't shift underneath it on the next recompile.
 input int    PushIntervalSeconds  = 1;
+// Push-on-tick mode (Contabo audit, 2026-08-29): when true, OnTick below
+// pushes immediately on a tick of this chart's own symbol instead of
+// waiting for the timer, capped to at most one push per PushMinIntervalMs
+// so a burst of ticks coalesces into one request. When false, OnTick is a
+// no-op and everything runs off the timer alone.
+//
+// MQL5's OnTick() only fires for the symbol THIS CHART is showing, not
+// every symbol in CanonicalNames below -- on its own, that would mean a
+// quiet chart-symbol with other symbols still moving wouldn't push until
+// the next chart-symbol tick. OnInit now runs the timer at
+// PushMinIntervalMs itself (EventSetMillisecondTimer, not the old 1s
+// EventSetTimer), so every symbol -- chart-driven or not -- is bounded at
+// the same PushMinIntervalMs floor regardless of PushOnEveryTick. OnTick
+// existing on top of that just means the chart's own symbol *can* push
+// slightly sooner than the next timer firing; it no longer carries the
+// "otherwise other symbols go stale" responsibility by itself.
+input bool   PushOnEveryTick      = true;
+input int    PushMinIntervalMs    = 50;
 
 // Direct mode — talks straight to the Rust Trading Core's Market Data
 // Core (engine/server's POST /internal/price-feed), skipping the Next.js
@@ -34,15 +61,32 @@ input string DirectServerUrl      = "";
 string CanonicalNames[] = {"XAUUSD","EURUSD","GBPUSD","BTCUSD","US30","USDJPY","AUDUSD","XAGUSD","ETHUSD","NAS100"};
 string BrokerNames[]    = {"XAUUSD","EURUSD","GBPUSD","BTCUSD","US30","USDJPY","AUDUSD","XAGUSD","ETHUSD","NAS100"};
 
+// GetTickCount() (uint, 32-bit ms uptime) is enough for a same-run
+// debounce window -- it only ever needs to compare against a value set
+// earlier in this same terminal session, never persisted or compared
+// across a restart, so its ~49-day wraparound doesn't matter here.
+uint lastPushMs = 0;
+
 int OnInit()
 {
-   EventSetTimer(PushIntervalSeconds);
+   // Millisecond timer, not EventSetTimer's 1s-resolution one -- keyed
+   // off the same PushMinIntervalMs OnTick's own debounce uses, so every
+   // symbol (not just this chart's own) is bounded at that floor
+   // regardless of PushOnEveryTick. See that input's own comment.
+   EventSetMillisecondTimer(PushMinIntervalMs);
    return(INIT_SUCCEEDED);
 }
 
 void OnDeinit(const int reason)
 {
    EventKillTimer();
+}
+
+void OnTick()
+{
+   if (!PushOnEveryTick) return;
+   if (GetTickCount() - lastPushMs < (uint)PushMinIntervalMs) return;
+   BuildAndSend();
 }
 
 string Base64UrlEncode(string src)
@@ -153,17 +197,31 @@ void SendDirect(string ticksJson)
    }
 }
 
-void OnTimer()
+// Shared by OnTick and OnTimer -- both push the exact same multi-symbol
+// snapshot (current SymbolInfoDouble for every configured symbol), never
+// a single symbol's delta, so there's nothing OnTick-specific to build
+// differently from what OnTimer always sent.
+void BuildAndSend()
 {
-   // Origin timestamp for the latency audit (ms since epoch) -- MQL5 has
-   // no direct wall-clock-with-milliseconds call, so this combines
-   // TimeCurrent() (server time, second resolution) with GetTickCount()'s
-   // millisecond-within-the-current-second component. That's an
-   // approximation (GetTickCount is terminal-uptime-based, not
-   // wall-clock), good enough to bound "how much of the total latency is
-   // upstream of this EA" without claiming sub-second wall-clock
-   // precision this platform doesn't expose.
-   long t0 = (long)TimeCurrent() * 1000 + (long)(GetTickCount() % 1000);
+   if (StringLen(ApiSecret) == 0)
+   {
+      Print("VyXTraderPriceFeed: ApiSecret is empty -- set it in this EA's Inputs tab before it will push anything");
+      return;
+   }
+
+   // Origin timestamp for the latency audit (ms since epoch). MQL5 has no
+   // direct wall-clock-with-milliseconds call, so this combines
+   // TimeCurrent() (server time, second resolution) with
+   // GetMicrosecondCount()'s sub-second component (microsecond
+   // resolution, converted to ms) -- an upgrade from the previous
+   // GetTickCount()%1000 (millisecond resolution) per the Contabo audit's
+   // ask for higher precision on the EA-side timestamp. Still an
+   // approximation (GetMicrosecondCount is terminal-uptime-based, not
+   // wall-clock, same caveat GetTickCount always had) -- good enough to
+   // bound "how much of the total latency is upstream of this EA"
+   // without claiming sub-second wall-clock precision this platform
+   // doesn't expose.
+   long t0 = (long)TimeCurrent() * 1000 + (long)((GetMicrosecondCount() / 1000) % 1000);
 
    string json = "[";
    bool first = true;
@@ -185,6 +243,8 @@ void OnTimer()
    json += "]";
    if (first) return; // nothing resolved, don't push an empty array
 
+   lastPushMs = GetTickCount();
+
    if (UseDirectMode)
    {
       if (StringLen(DirectServerUrl) == 0)
@@ -198,5 +258,10 @@ void OnTimer()
    {
       SendViaProxy(json);
    }
+}
+
+void OnTimer()
+{
+   BuildAndSend();
 }
 //+------------------------------------------------------------------+
