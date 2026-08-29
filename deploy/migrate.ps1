@@ -6,16 +6,30 @@
     NOT do.
 
 .DESCRIPTION
-    Requires $env:SOURCE_DATABASE_URL (the current DIRECT Prisma
-    connection string, NOT the prisma+postgres:// Accelerate URL) and
-    $env:TARGET_DATABASE_URL (Neon's direct connection string) to already
-    be set in the calling shell -- this script never accepts either as a
-    parameter, so they can't land in shell history or a transcript via a
-    command-line argument.
+    Needs SOURCE_DATABASE_URL (the current DIRECT Prisma connection
+    string, NOT the prisma+postgres:// Accelerate URL) and
+    TARGET_DATABASE_URL (Neon's direct connection string). Neither is
+    ever a script parameter -- that would land them in shell history or a
+    transcript via a command-line argument. Instead, in priority order:
+      1. Already-set $env:SOURCE_DATABASE_URL / $env:TARGET_DATABASE_URL
+         in the calling shell, if present -- wins over -EnvFile so a
+         one-off override doesn't require editing the file.
+      2. Otherwise, read from -EnvFile (default: .env at the repo root,
+         i.e. next to this script's own deploy/ folder) -- add
+         SOURCE_DATABASE_URL=... and TARGET_DATABASE_URL=... lines there.
+         .env is already gitignored (.gitignore's .env* pattern, confirmed
+         via `git check-ignore`) and already untracked, so this is a safe
+         place for both -- never commit them anywhere else.
 
     Does NOT touch DATABASE_URL anywhere (Vercel, Contabo start-*.cmd) --
     that's docs/db-migration.md §6, a separate, deliberate action after
     this script's verification passes.
+
+.PARAMETER EnvFile
+    Path to a .env-style file to read SOURCE_DATABASE_URL/
+    TARGET_DATABASE_URL from when they aren't already set as environment
+    variables. Defaults to the repo's own .env (one level up from this
+    script's deploy/ folder).
 
 .PARAMETER DryRun
     Performs no writes to TARGET at all. Instead: dumps SOURCE's schema
@@ -33,6 +47,7 @@
 [CmdletBinding()]
 param(
     [string]$BackupFile = "vyxtrader.backup",
+    [string]$EnvFile = (Join-Path $PSScriptRoot "..\.env"),
     [switch]$DryRun,
     [switch]$SkipVerify
 )
@@ -44,8 +59,33 @@ function Write-Ok($msg)         { Write-Host "[OK] $msg" -ForegroundColor Green 
 function Write-Warn($msg)       { Write-Host "[WARN] $msg" -ForegroundColor Yellow }
 function Write-Fail($msg)       { Write-Host "[FAIL] $msg" -ForegroundColor Red }
 
-if (-not $env:SOURCE_DATABASE_URL) { Write-Fail "`$env:SOURCE_DATABASE_URL is not set -- see docs/db-migration.md section 0"; exit 1 }
-if (-not $env:TARGET_DATABASE_URL) { Write-Fail "`$env:TARGET_DATABASE_URL is not set -- see docs/db-migration.md section 0"; exit 1 }
+# Reads one KEY=value line out of a .env-style file -- never logs the
+# value itself. Strips a surrounding "..."/'...' pair if present (dotenv
+# files commonly quote values containing special characters).
+function Get-DotEnvValue {
+    param([string]$Path, [string]$Key)
+    if (-not (Test-Path $Path)) { return $null }
+    $pattern = "^\s*$([regex]::Escape($Key))\s*="
+    $line = Get-Content -Path $Path | Where-Object { $_ -match $pattern } | Select-Object -First 1
+    if (-not $line) { return $null }
+    $value = ($line -replace $pattern, "").Trim()
+    if ($value.Length -ge 2 -and (($value[0] -eq '"' -and $value[-1] -eq '"') -or ($value[0] -eq "'" -and $value[-1] -eq "'"))) {
+        $value = $value.Substring(1, $value.Length - 2)
+    }
+    return $value
+}
+
+if (-not $env:SOURCE_DATABASE_URL) {
+    $fromFile = Get-DotEnvValue -Path $EnvFile -Key "SOURCE_DATABASE_URL"
+    if ($fromFile) { $env:SOURCE_DATABASE_URL = $fromFile; Write-Ok "Loaded SOURCE_DATABASE_URL from $EnvFile" }
+}
+if (-not $env:TARGET_DATABASE_URL) {
+    $fromFile = Get-DotEnvValue -Path $EnvFile -Key "TARGET_DATABASE_URL"
+    if ($fromFile) { $env:TARGET_DATABASE_URL = $fromFile; Write-Ok "Loaded TARGET_DATABASE_URL from $EnvFile" }
+}
+
+if (-not $env:SOURCE_DATABASE_URL) { Write-Fail "SOURCE_DATABASE_URL not found -- set `$env:SOURCE_DATABASE_URL or add it to $EnvFile (see docs/db-migration.md section 0)"; exit 1 }
+if (-not $env:TARGET_DATABASE_URL) { Write-Fail "TARGET_DATABASE_URL not found -- set `$env:TARGET_DATABASE_URL or add it to $EnvFile (see docs/db-migration.md section 0)"; exit 1 }
 
 # Never echoes either URL in full -- only scheme+host, for a "did I set
 # the right one" sanity check without printing credentials.

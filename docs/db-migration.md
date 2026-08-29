@@ -24,10 +24,18 @@ needed for the Rust side.
   the migration (matching or newer major version than both source and
   target Postgres — check with `pg_dump --version`).
 - **Never paste either connection string into chat, a commit, or a log
-  file.** Set them as environment variables in your own shell for the
-  duration of the migration and unset them when done. This doc and
-  `deploy/migrate.ps1` only ever reference them as
-  `$env:SOURCE_DATABASE_URL` / `$env:TARGET_DATABASE_URL` —  never a
+  file.** Two ways to give them to `deploy/migrate.ps1`, in priority
+  order (an already-set shell variable wins over the file, so a one-off
+  override never requires editing anything):
+  1. `$env:SOURCE_DATABASE_URL` / `$env:TARGET_DATABASE_URL` set in your
+     own shell for the duration of the migration, unset when done.
+  2. `SOURCE_DATABASE_URL=...` / `TARGET_DATABASE_URL=...` lines added to
+     the repo's own `.env` (the same file `DATABASE_URL`/`DIRECT_URL`
+     already live in) — confirmed gitignored (`.gitignore`'s `.env*`
+     pattern) and never tracked, so this is a safe, persistent place for
+     both rather than re-typing them into a shell every session.
+  Either way, this doc and `deploy/migrate.ps1` only ever reference them
+  as `$env:SOURCE_DATABASE_URL` / `$env:TARGET_DATABASE_URL` — never a
   literal value.
 - `SOURCE_DATABASE_URL` must be the **direct** (non-Accelerate) Prisma
   connection string — the `.env` var named `DIRECT_URL`, not
