@@ -35,13 +35,33 @@ export async function POST(
     return NextResponse.json({ error: `cannot fill an order in status ${order.status}` }, { status: 409 });
   }
 
-  const [brokerSymbol, account] = await Promise.all([
+  const [brokerSymbol, account, broker] = await Promise.all([
     prisma.brokerSymbol.findFirst({
       where: { brokerId: order.brokerId, symbolId: order.symbolId },
       include: { symbol: true },
     }),
     prisma.account.findUniqueOrThrow({ where: { id: order.accountId }, include: { group: true } }),
+    prisma.broker.findUniqueOrThrow({ where: { id: order.brokerId } }),
   ]);
+
+  // Same dealing-mode gate as POST /api/trade/orders' own MARKET-order
+  // branch -- a resting LIMIT/STOP order under dealing mode must NOT
+  // auto-fill just because its trigger price was hit. Reclassifying to
+  // type MARKET (status stays PENDING, requestedPrice becomes the
+  // trigger-detected price) is deliberate: it makes this order
+  // indistinguishable from a fresh dealing-queue market order, so the
+  // existing GET /api/manage/dealing-queue query (type: "MARKET") and
+  // the existing PATCH accept/reject route both pick it up with zero
+  // changes to either. The client's own pending-order-trigger effect
+  // already handles "no position yet" the same way a plain market order
+  // under dealing mode does -- nothing to change there either.
+  if (broker.dealingModeAt || account.group?.forceDealingMode || account.group?.groupType === "DEALING") {
+    const queued = await prisma.order.update({
+      where: { id: order.id },
+      data: { type: "MARKET", requestedPrice: requestedFillPrice },
+    });
+    return NextResponse.json({ order: queued, position: null });
+  }
 
   // See lib/group-pricing.ts's own comments -- markup applied to the
   // client's own trigger-detected price (see this route's module doc
