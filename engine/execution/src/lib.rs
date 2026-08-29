@@ -59,6 +59,8 @@ mod tests {
             bid: dec!(1.10000),
             ask: dec!(1.10020),
             t0: None,
+            clock_offset_ms: None,
+            rtt_ms: None,
         }
     }
 

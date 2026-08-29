@@ -82,12 +82,15 @@ if (-not (Test-Path $StartEngine)) {
                     ea_to_engine_ms_last = $stats.ea_to_engine_ms_last
                     ea_to_engine_ms_p50  = $stats.ea_to_engine_ms_p50
                     ea_to_engine_ms_p95  = $stats.ea_to_engine_ms_p95
+                    clock_offset_ms      = $stats.clock_offset_ms
+                    rtt_ms               = $stats.rtt_ms
                 })
                 $lastPerSymbol = $stats.per_symbol
             } catch {
                 $samples.Add([PSCustomObject]@{
                     t = (Get-Date).ToString("HH:mm:ss"); ticks_in = "ERROR"; t0_invalid = $_.Exception.Message
                     nats_out = $null; ea_to_engine_ms_last = $null; ea_to_engine_ms_p50 = $null; ea_to_engine_ms_p95 = $null
+                    clock_offset_ms = $null; rtt_ms = $null
                 })
             }
             $remaining = $DurationSec - ((Get-Date) - $pollStart).TotalSeconds
@@ -102,7 +105,7 @@ if (-not (Test-Path $StartEngine)) {
             $last  = $good | Select-Object -Last 1
 
             if ($last.t0_invalid -gt $first.t0_invalid) {
-                Write-Fail "t0_invalid grew during this window ($($first.t0_invalid) -> $($last.t0_invalid)) -- TimeGMT() fix may not be live. Check the Experts log below for which EA version actually loaded."
+                Write-Fail "t0_invalid grew during this window ($($first.t0_invalid) -> $($last.t0_invalid)) -- the clock-sync handshake may not be live (check clock_offset_ms below) or UseDirectMode/DirectServerUrl got reset on re-attach. Check the Experts log below for which EA version actually loaded."
             } else {
                 Write-Ok "t0_invalid flat ($($last.t0_invalid)) -- no bad timestamps"
             }
@@ -115,6 +118,13 @@ if (-not (Test-Path $StartEngine)) {
                 Write-Fail "ea_to_engine_ms_p50/p95 ($p50 / $p95) is outside a plausible localhost range (expected single-digit to ~20ms) -- looks like a clock/timezone issue, not real latency"
             } else {
                 Write-Ok "ea_to_engine_ms_p50/p95 ($p50 / $p95) looks like real localhost latency"
+            }
+
+            if ($null -eq $last.clock_offset_ms) {
+                Write-Warn "clock_offset_ms/rtt_ms not reported yet -- either the EA hasn't completed its first /internal/time handshake, UseDirectMode is off, or this is running against an older engine build"
+            } else {
+                Write-Ok "clock handshake reporting: offset=$($last.clock_offset_ms)ms, rtt=$($last.rtt_ms)ms"
+                if ([Math]::Abs($last.clock_offset_ms) -gt 5000) { Write-Warn "clock_offset_ms ($($last.clock_offset_ms)) is unusually large for a VPS-to-VPS handshake -- check for a real clock problem on the MT5 terminal's host" }
             }
         } else {
             Write-Fail "Fewer than 2 successful samples -- check the errors in the table above (engine down? wrong secret?)"

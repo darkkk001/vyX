@@ -67,6 +67,9 @@ pub async fn ingest_ticks(
     for tick in ticks {
         cache.set(tick, now);
         symbol_activity.record(&tick.symbol, now_ms);
+        if let (Some(offset_ms), Some(rtt_ms)) = (tick.clock_offset_ms, tick.rtt_ms) {
+            stats.record_clock_info(offset_ms, rtt_ms);
+        }
         match tick.t0 {
             Some(t0) => {
                 let delta = now_ms - t0;

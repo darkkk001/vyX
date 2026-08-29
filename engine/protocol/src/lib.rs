@@ -58,6 +58,17 @@ pub struct Tick {
     // business logic.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub t0: Option<i64>,
+    // EA's own clock-vs-engine-UTC offset and the round-trip time it was
+    // measured with (GET /internal/time handshake, see the EA's
+    // SyncClockOffset) -- sent on every tick in a batch (the EA only
+    // re-measures every 60s and reuses the same value meanwhile) purely
+    // so market_data::stats can surface the handshake quality in
+    // /internal/feed-stats. Not used to adjust t0 itself -- the EA has
+    // already applied its own offset before t0 is computed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clock_offset_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rtt_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

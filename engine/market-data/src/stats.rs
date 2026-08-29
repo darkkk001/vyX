@@ -9,7 +9,7 @@
 use chrono::Utc;
 use serde::Serialize;
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::Mutex;
 
 const WINDOW: usize = 500;
@@ -49,6 +49,17 @@ pub struct FeedStats {
     last_db_lag_ms: AtomicI64,
     live_price_failure_last_logged_ms: AtomicI64,
     candle_failure_last_logged_ms: AtomicI64,
+    // Most recently reported EA clock-sync handshake (GET /internal/time,
+    // see engine/server's server_time handler and the EA's
+    // SyncClockOffset) -- the EA re-measures every 60s and sends the same
+    // value on every tick meanwhile, so this is just "last value seen",
+    // not a rolling average. has_clock_info distinguishes "never
+    // reported" (proxy-mode EA, or direct-mode before its first sync)
+    // from a real, possibly-zero offset -- AtomicI64 alone can't tell
+    // those apart.
+    has_clock_info: AtomicBool,
+    last_clock_offset_ms: AtomicI64,
+    last_rtt_ms: AtomicI64,
 }
 
 impl FeedStats {
@@ -67,6 +78,9 @@ impl FeedStats {
             last_db_lag_ms: AtomicI64::new(0),
             live_price_failure_last_logged_ms: AtomicI64::new(0),
             candle_failure_last_logged_ms: AtomicI64::new(0),
+            has_clock_info: AtomicBool::new(false),
+            last_clock_offset_ms: AtomicI64::new(0),
+            last_rtt_ms: AtomicI64::new(0),
         }
     }
 
@@ -112,6 +126,12 @@ impl FeedStats {
 
     pub fn record_nats_publish_success(&self) {
         self.nats_publish_success_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_clock_info(&self, offset_ms: i64, rtt_ms: i64) {
+        self.last_clock_offset_ms.store(offset_ms, Ordering::Relaxed);
+        self.last_rtt_ms.store(rtt_ms, Ordering::Relaxed);
+        self.has_clock_info.store(true, Ordering::Relaxed);
     }
 
     /// Called by both flush loops (LivePrice and Candle) after every
@@ -180,6 +200,14 @@ impl FeedStats {
             db_ok: self.db_write_success_total.load(Ordering::Relaxed),
             db_fail: self.db_write_failure_total.load(Ordering::Relaxed),
             db_lag_ms: self.last_db_lag_ms.load(Ordering::Relaxed),
+            clock_offset_ms: self
+                .has_clock_info
+                .load(Ordering::Relaxed)
+                .then(|| self.last_clock_offset_ms.load(Ordering::Relaxed)),
+            rtt_ms: self
+                .has_clock_info
+                .load(Ordering::Relaxed)
+                .then(|| self.last_rtt_ms.load(Ordering::Relaxed)),
         }
     }
 }
@@ -213,6 +241,11 @@ pub struct FeedStatsSnapshot {
     pub db_ok: u64,
     pub db_fail: u64,
     pub db_lag_ms: i64,
+    // From the EA's clock-sync handshake (GET /internal/time) -- None
+    // until at least one tick has reported it (proxy-mode EAs never will,
+    // direct-mode EAs report it after their first successful sync).
+    pub clock_offset_ms: Option<i64>,
+    pub rtt_ms: Option<i64>,
 }
 
 #[cfg(test)]
@@ -226,6 +259,23 @@ mod tests {
         assert_eq!(snap.sample_count, 0);
         assert_eq!(snap.ea_to_engine_ms_p50, None);
         assert_eq!(snap.max_ms, None);
+    }
+
+    #[test]
+    fn clock_info_is_none_until_reported_then_reflects_the_last_value() {
+        let stats = FeedStats::new();
+        assert_eq!(stats.snapshot().clock_offset_ms, None);
+        assert_eq!(stats.snapshot().rtt_ms, None);
+
+        stats.record_clock_info(12, 8);
+        let snap = stats.snapshot();
+        assert_eq!(snap.clock_offset_ms, Some(12));
+        assert_eq!(snap.rtt_ms, Some(8));
+
+        stats.record_clock_info(-3, 15);
+        let snap2 = stats.snapshot();
+        assert_eq!(snap2.clock_offset_ms, Some(-3));
+        assert_eq!(snap2.rtt_ms, Some(15));
     }
 
     #[test]

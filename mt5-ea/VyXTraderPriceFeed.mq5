@@ -7,7 +7,7 @@
 //| LivePrice table this EA feeds.                                    |
 //+------------------------------------------------------------------+
 #property strict
-#property version   "1.21"
+#property version   "1.30"
 
 input string ServerUrl            = "https://www.vyxtrader.com/api/internal/price-feed";
 // No default -- this file is committed to a public-ish repo. A real
@@ -52,6 +52,11 @@ input int    PushMinIntervalMs    = 50;
 // both transports, per market-data.md §1).
 input bool   UseDirectMode        = false;
 input string DirectServerUrl      = "";
+// Clock-sync handshake (Contabo audit follow-up, replaces the old
+// TimeGMT()/GetTickCount() t0 filler entirely): only meaningful in direct
+// mode, since GET /internal/time lives on the Rust engine itself, not the
+// Next.js proxy. See SyncClockOffset below.
+input int    ClockSyncIntervalSec = 60;
 
 // Where the list of symbols to push comes from (second Contabo-audit
 // follow-up). MARKET_WATCH auto-discovers whatever's selected in this
@@ -87,8 +92,43 @@ input int    MaxSymbolsWarning = 150;
 // across a restart, so its ~49-day wraparound doesn't matter here.
 uint lastPushMs = 0;
 
+// Change-detection state (Contabo audit follow-up: Contabo was seeing
+// ~208 ticks_in/s because every push resent every symbol's current price
+// regardless of whether it had actually moved since the last push). One
+// slot per symbol, looked up by name (not position) so a MARKET_WATCH
+// refresh reordering/adding/removing symbols can't misalign this against
+// stale data the way parallel arrays indexed by ActiveBrokerSymbols'
+// position would. TrackedTimeMsc[i] == 0 means "never sent" (a real
+// bid/ask/time_msc is never exactly zero), used to force-send a symbol's
+// first observation regardless of the heartbeat timer.
+string TrackedSymbols[];
+double TrackedBid[];
+double TrackedAsk[];
+long   TrackedTimeMsc[];
+int    TrackedCount = 0;
+
+// A full snapshot (every active symbol, regardless of change) goes out
+// every HEARTBEAT_INTERVAL_MS so the engine can tell "this symbol hasn't
+// moved" apart from "this symbol stopped reporting entirely" -- change-
+// only pushing otherwise has no way to signal the latter.
+const int HEARTBEAT_INTERVAL_MS = 5000;
+uint lastHeartbeatMs = 0;
+
+// Clock-sync handshake state -- see SyncClockOffset. ClockOffsetMs stays
+// 0 (uncorrected) until the first successful sync; t0 computed from that
+// uncorrected offset is a small uptime-based number wildly outside a
+// plausible UTC-epoch range, which the engine's own t0_invalid clamp
+// (engine/market-data/src/ingest.rs) correctly flags as garbage rather
+// than a real (if imprecise) latency reading -- a deliberately safer
+// failure mode than the old TimeGMT() filler's "always produces some
+// plausible-looking number even when wrong."
+long ClockOffsetMs = 0;
+long LastRttMs = 0;
+bool HasClockSync = false;
+uint lastClockSyncMs = 0;
+
 // Refreshed by RefreshActiveSymbols() -- the actual broker-native symbol
-// names read via SymbolInfoDouble each push, regardless of SymbolSource.
+// names read via SymbolInfoTick each push, regardless of SymbolSource.
 string ActiveBrokerSymbols[];
 uint lastSymbolRefreshMs = 0;
 const int SYMBOL_REFRESH_INTERVAL_MS = 30000;
@@ -158,10 +198,110 @@ void RefreshActiveSymbols()
    lastSymbolRefreshMs = GetTickCount();
 }
 
+// Finds (or creates, growing the tracking arrays 32 at a time) the
+// change-detection slot for a symbol. Linear scan -- fine at this scale
+// (tens to low hundreds of symbols, refreshed at most every 30s).
+int GetOrCreateTrackedIndex(string symbol)
+{
+   for (int i = 0; i < TrackedCount; i++)
+      if (TrackedSymbols[i] == symbol) return i;
+
+   int idx = TrackedCount;
+   if (idx >= ArraySize(TrackedSymbols))
+   {
+      int newSize = ArraySize(TrackedSymbols) + 32;
+      ArrayResize(TrackedSymbols, newSize);
+      ArrayResize(TrackedBid, newSize);
+      ArrayResize(TrackedAsk, newSize);
+      ArrayResize(TrackedTimeMsc, newSize);
+   }
+   TrackedSymbols[idx]  = symbol;
+   TrackedBid[idx]      = 0;
+   TrackedAsk[idx]      = 0;
+   TrackedTimeMsc[idx]  = 0;
+   TrackedCount++;
+   return idx;
+}
+
+// Pulls a JSON integer field's value out of a tiny, known-shape response
+// body ({"server_utc_ms":1234567890123}) by hand -- MQL5 has no built-in
+// JSON parser and pulling in a library for one field isn't worth it.
+// Returns 0 if the key isn't found or has no digits following it.
+long ExtractJsonLong(string json, string key)
+{
+   string needle = "\"" + key + "\":";
+   int pos = StringFind(json, needle);
+   if (pos < 0) return 0;
+   int start = pos + StringLen(needle);
+   int len = StringLen(json);
+   int end = start;
+   while (end < len)
+   {
+      ushort c = StringGetCharacter(json, end);
+      if ((c < '0' || c > '9') && c != '-') break;
+      end++;
+   }
+   if (end <= start) return 0;
+   return StringToInteger(StringSubstr(json, start, end - start));
+}
+
+// NTP-style handshake against the Rust engine's own clock -- only
+// reachable in direct mode (GET /internal/time exists on engine/server,
+// not the Next.js proxy). Brackets the HTTP call with GetMicrosecondCount()
+// (this terminal's own monotonic clock) to derive round-trip time and
+// this engine's UTC offset from this terminal's local clock, replacing
+// the old TimeGMT()/GetTickCount() approximation entirely -- that only
+// ever fixed the whole-second component and a broker-local-vs-UTC
+// mismatch; this corrects against the engine's actual clock instead of
+// assuming this terminal's clock (even in UTC) agrees with it.
+void SyncClockOffset()
+{
+   if (!UseDirectMode || StringLen(DirectServerUrl) == 0)
+   {
+      lastClockSyncMs = GetTickCount(); // don't retry every cycle in proxy mode
+      return;
+   }
+
+   string url = DirectServerUrl + "/internal/time";
+   uchar noData[];
+   uchar result[];
+   string resultHeaders;
+
+   long monoBeforeUs = GetMicrosecondCount();
+   ResetLastError();
+   int res = WebRequest("GET", url, "", 5000, noData, result, resultHeaders);
+   long monoAfterUs = GetMicrosecondCount();
+   lastClockSyncMs = GetTickCount();
+
+   if (res != 200)
+   {
+      int err = GetLastError();
+      if (res == -1 && err == 4060)
+         Print("VyXTraderPriceFeed: clock sync failed -- add ", DirectServerUrl, " under Tools > Options > Expert Advisors > Allow WebRequest for listed URL");
+      else
+         Print("VyXTraderPriceFeed: clock sync failed, WebRequest returned ", res, res == -1 ? StringFormat(" (error %d)", err) : "");
+      return;
+   }
+
+   long serverUtcMs = ExtractJsonLong(CharArrayToString(result), "server_utc_ms");
+   if (serverUtcMs <= 0)
+   {
+      Print("VyXTraderPriceFeed: clock sync response missing a valid server_utc_ms: ", CharArrayToString(result));
+      return;
+   }
+
+   long monoBeforeMs = monoBeforeUs / 1000;
+   long rttMs = (monoAfterUs - monoBeforeUs) / 1000;
+   ClockOffsetMs = serverUtcMs - (monoBeforeMs + rttMs / 2);
+   LastRttMs = rttMs;
+   HasClockSync = true;
+}
+
 int OnInit()
 {
    ParseSymbolMap();
    RefreshActiveSymbols();
+   SyncClockOffset();
    // Millisecond timer, not EventSetTimer's 1s-resolution one -- keyed
    // off the same PushMinIntervalMs OnTick's own debounce uses, so every
    // symbol (not just this chart's own) is bounded at that floor
@@ -290,10 +430,12 @@ void SendDirect(string ticksJson)
    }
 }
 
-// Shared by OnTick and OnTimer -- both push the exact same multi-symbol
-// snapshot (current SymbolInfoDouble for every configured symbol), never
-// a single symbol's delta, so there's nothing OnTick-specific to build
-// differently from what OnTimer always sent.
+// Shared by OnTick and OnTimer. Unlike before, this does NOT always push
+// every configured symbol -- only ones whose (bid, ask, time_msc) changed
+// since the last push, plus a full snapshot every HEARTBEAT_INTERVAL_MS
+// (Contabo audit follow-up: resending every symbol's unchanged price on
+// every 50ms cycle was producing ~208 ticks_in/s against a real market
+// tick rate of ~20-40/s).
 void BuildAndSend()
 {
    if (StringLen(ApiSecret) == 0)
@@ -302,23 +444,21 @@ void BuildAndSend()
       return;
    }
 
-   // Origin timestamp for the latency audit -- MUST be UTC epoch ms, since
-   // the engine computes latency as (its own UTC now) - t0. A real, live
-   // bug: this used to use TimeCurrent() (the TRADE SERVER's local time,
-   // not UTC -- Pepperstone runs UTC+3) instead of TimeGMT() (actual
-   // UTC/GMT). That constant +3h offset alone produced a steady
-   // -10,800,000ms p50 on Contabo once real Pepperstone ticks started
-   // flowing -- not a latency measurement, a timezone bug wearing a
-   // latency measurement's clothes. GetMicrosecondCount() was also wrong
-   // for the sub-second component (a monotonic counter since terminal
-   // start, uncorrelated with true wall-clock sub-second position) --
-   // reverted to GetTickCount()%1000, which has the exact same
-   // uncorrelated-with-wall-clock caveat but at least doesn't compound
-   // it with a second, unrelated bug. Sub-second precision here is
-   // genuinely only approximate either way; the engine now treats
-   // anything outside a plausible latency range as garbage (t0_invalid)
-   // rather than trusting it, which is the real fix for that half of it.
-   long t0 = (long)TimeGMT() * 1000 + (long)(GetTickCount() % 1000);
+   if (GetTickCount() - lastClockSyncMs >= (uint)(ClockSyncIntervalSec * 1000))
+      SyncClockOffset();
+
+   // Origin timestamp for the latency audit -- MUST be UTC epoch ms.
+   // Replaces the old TimeGMT()/GetTickCount() approximation entirely:
+   // that only corrected this terminal's own clock to UTC (and even then,
+   // only to whole-second resolution), which still assumed this
+   // terminal's UTC clock agrees with the engine's. This instead measures
+   // this terminal's actual offset from the ENGINE's own clock via
+   // SyncClockOffset's handshake, with real sub-second precision from
+   // GetMicrosecondCount(). Before the first successful sync (or in proxy
+   // mode, where the handshake never runs), ClockOffsetMs stays 0 and t0
+   // is just a small uptime-based number -- the engine's t0_invalid clamp
+   // correctly rejects that as implausible rather than trusting it.
+   long t0 = GetMicrosecondCount() / 1000 + ClockOffsetMs;
 
    // Re-discovers Market Watch's current selection every 30s (LIST mode
    // just re-parses the same static SymbolList -- harmless, kept
@@ -326,27 +466,49 @@ void BuildAndSend()
    if (GetTickCount() - lastSymbolRefreshMs >= (uint)SYMBOL_REFRESH_INTERVAL_MS)
       RefreshActiveSymbols();
 
+   bool forceFullSnapshot = (GetTickCount() - lastHeartbeatMs >= (uint)HEARTBEAT_INTERVAL_MS);
+
    string json = "[";
    bool first = true;
    for (int i = 0; i < ArraySize(ActiveBrokerSymbols); i++)
    {
       string brokerSymbol = ActiveBrokerSymbols[i];
       if (StringLen(brokerSymbol) == 0) continue;
-      double bid = SymbolInfoDouble(brokerSymbol, SYMBOL_BID);
-      double ask = SymbolInfoDouble(brokerSymbol, SYMBOL_ASK);
-      if (bid <= 0 || ask <= 0) continue; // not in Market Watch / wrong name
+
+      MqlTick tick;
+      if (!SymbolInfoTick(brokerSymbol, tick)) continue; // not in Market Watch / wrong name
+      if (tick.bid <= 0 || tick.ask <= 0) continue;
+
+      int idx = GetOrCreateTrackedIndex(brokerSymbol);
+      bool isNew = (TrackedTimeMsc[idx] == 0); // a real time_msc is never exactly 0
+      bool changed = (tick.bid != TrackedBid[idx] || tick.ask != TrackedAsk[idx] || tick.time_msc != TrackedTimeMsc[idx]);
+      if (!isNew && !changed && !forceFullSnapshot) continue; // nothing new to report this cycle
+
+      TrackedBid[idx]     = tick.bid;
+      TrackedAsk[idx]     = tick.ask;
+      TrackedTimeMsc[idx] = tick.time_msc;
+
       if (!first) json += ",";
       // %I64d, not %d -- t0 is a 64-bit long (ms since epoch); %d is
       // MQL5's 32-bit specifier and silently truncates it, corrupting
       // every downstream latency measurement (confirmed live: the VPS
       // deployment's /internal/feed-stats showed t0 collapsing to a tiny
       // leftover value once real Exness ticks started flowing).
-      json += StringFormat("{\"symbol\":\"%s\",\"bid\":%.5f,\"ask\":%.5f,\"t0\":%I64d}", CanonicalFor(brokerSymbol), bid, ask, t0);
+      json += StringFormat("{\"symbol\":\"%s\",\"bid\":%.5f,\"ask\":%.5f,\"t0\":%I64d", CanonicalFor(brokerSymbol), tick.bid, tick.ask, t0);
+      // clock_offset_ms/rtt_ms are omitted entirely (not sent as 0) until
+      // the first real handshake succeeds -- matches protocol::Tick's
+      // Option<i64> fields on the Rust side, which skip serializing when
+      // absent; sending a fake 0 here would misreport an unmeasured
+      // offset as a measured one in /internal/feed-stats.
+      if (HasClockSync)
+         json += StringFormat(",\"clock_offset_ms\":%I64d,\"rtt_ms\":%I64d", ClockOffsetMs, LastRttMs);
+      json += "}";
       first = false;
    }
    json += "]";
-   if (first) return; // nothing resolved, don't push an empty array
+   if (first) return; // nothing changed and no heartbeat due -- nothing to push
 
+   if (forceFullSnapshot) lastHeartbeatMs = GetTickCount();
    lastPushMs = GetTickCount();
 
    if (UseDirectMode)

@@ -154,6 +154,21 @@ async fn health() -> &'static str {
     "ok"
 }
 
+// EA clock-sync handshake target (2nd Contabo-audit follow-up on the tick
+// pipeline) -- unauthenticated, same as /health, since it exposes nothing
+// but the current time and needs to be cheap to call every 60s. The EA
+// brackets this call with its own monotonic clock (before/after) to
+// derive round-trip time and this engine's UTC offset from its own local
+// clock; see mt5-ea/VyXTraderPriceFeed.mq5's SyncClockOffset.
+#[derive(Serialize)]
+struct ServerTimeResponse {
+    server_utc_ms: i64,
+}
+
+async fn server_time() -> Json<ServerTimeResponse> {
+    Json(ServerTimeResponse { server_utc_ms: Utc::now().timestamp_millis() })
+}
+
 async fn place_market_order(
     State(state): State<Arc<AppState>>,
     Json(body): Json<PlaceMarketOrderBody>,
@@ -696,6 +711,7 @@ async fn main() {
 
     let app = Router::new()
         .route("/health", get(health))
+        .route("/internal/time", get(server_time))
         .route("/internal/price-feed", post(ingest_price_feed))
         .merge(order_routes)
         .with_state(state);

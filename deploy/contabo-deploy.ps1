@@ -419,6 +419,8 @@ if (-not $secretMatch) {
                 ea_to_engine_ms_last = $stats.ea_to_engine_ms_last
                 ea_to_engine_ms_p50  = $stats.ea_to_engine_ms_p50
                 ea_to_engine_ms_p95  = $stats.ea_to_engine_ms_p95
+                clock_offset_ms      = $stats.clock_offset_ms
+                rtt_ms               = $stats.rtt_ms
             })
             $lastPerSymbol = $stats.per_symbol
         } catch {
@@ -426,6 +428,7 @@ if (-not $secretMatch) {
                 t = (Get-Date).ToString("HH:mm:ss"); ticks_in = "ERROR"; t0_invalid = $_.Exception.Message
                 nats_out = $null; queue_len = $null; db_ok = $null; db_fail = $null; db_lag_ms = $null
                 ea_to_engine_ms_last = $null; ea_to_engine_ms_p50 = $null; ea_to_engine_ms_p95 = $null
+                clock_offset_ms = $null; rtt_ms = $null
             })
         }
         $remaining = $PollDurationSec - ((Get-Date) - $pollStart).TotalSeconds
