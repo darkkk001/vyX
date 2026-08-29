@@ -7,7 +7,7 @@
 //| LivePrice table this EA feeds.                                    |
 //+------------------------------------------------------------------+
 #property strict
-#property version   "1.30"
+#property version   "1.31"
 
 input string ServerUrl            = "https://www.vyxtrader.com/api/internal/price-feed";
 // No default -- this file is committed to a public-ish repo. A real
@@ -267,10 +267,13 @@ void SyncClockOffset()
    uchar result[];
    string resultHeaders;
 
-   long monoBeforeUs = GetMicrosecondCount();
+   // GetMicrosecondCount() returns ulong; explicit (long) casts here and
+   // at every other call site avoid an implicit narrowing conversion the
+   // compiler otherwise warns on.
+   long monoBeforeUs = (long)GetMicrosecondCount();
    ResetLastError();
    int res = WebRequest("GET", url, "", 5000, noData, result, resultHeaders);
-   long monoAfterUs = GetMicrosecondCount();
+   long monoAfterUs = (long)GetMicrosecondCount();
    lastClockSyncMs = GetTickCount();
 
    if (res != 200)
@@ -458,7 +461,7 @@ void BuildAndSend()
    // mode, where the handshake never runs), ClockOffsetMs stays 0 and t0
    // is just a small uptime-based number -- the engine's t0_invalid clamp
    // correctly rejects that as implausible rather than trusting it.
-   long t0 = GetMicrosecondCount() / 1000 + ClockOffsetMs;
+   long t0 = (long)GetMicrosecondCount() / 1000 + ClockOffsetMs;
 
    // Re-discovers Market Watch's current selection every 30s (LIST mode
    // just re-parses the same static SymbolList -- harmless, kept

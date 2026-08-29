@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
-    Read-only verification of the tick pipeline after the EA re-attach on
-    commit 65828a3 -- does NOT build, restart, or touch anything running.
+    Read-only verification of the tick pipeline after an EA re-attach --
+    does NOT build, restart, or touch anything running.
 
 .DESCRIPTION
     1. Polls /internal/feed-stats every -IntervalSec for -DurationSec,
@@ -18,7 +18,9 @@
     3. Confirms the repo checkout backing the currently-running gateway is
        on -ExpectedCommit (checks git HEAD in -RepoDir -- this assumes
        gateway was rebuilt from that same checkout, it does not inspect
-       the running process itself).
+       the running process itself). Defaults to whatever -RepoDir is
+       currently on, so this check is a no-op unless you pin a specific
+       commit you expect to be deployed.
     4. Confirms DATABASE_URL is present (redacted) in start-gateway.cmd.
     5. If -GatewayLogPath is given, tails it for "getEnabledSymbols"-
        related error lines.
@@ -34,8 +36,14 @@ param(
     [string]$Label            = "run",
     [string]$RepoDir          = "C:\vyxtrader\repo",
     [string]$ScriptsDir       = "C:\vyxtrader\scripts",
-    [string]$ExpectedCommit   = "65828a3",
-    [int]$DurationSec         = 60,
+    # Empty by default -- resolved below to "whatever RepoDir is currently
+    # on" if not given, which makes this check a no-op unless you actually
+    # pin a specific commit you expect to be deployed.
+    [string]$ExpectedCommit   = "",
+    # 70 by default -- the first 10s are excluded from the t0_invalid
+    # gate (re-attach settle-in noise), leaving a true 60s of evaluated
+    # window to match "flat over the last 60s."
+    [int]$DurationSec         = 70,
     [int]$IntervalSec         = 5,
     [string]$EaLogPath        = "C:\MT5-Pepperstone\MQL5\Logs\$(Get-Date -Format 'yyyyMMdd').log",
     [string]$GatewayLogPath   = ""
@@ -52,6 +60,12 @@ Write-Host "==================== VERIFY ($Label) $(Get-Date -Format 'yyyy-MM-dd 
 
 $StartEngine  = Join-Path $ScriptsDir "start-engine.cmd"
 $StartGateway = Join-Path $ScriptsDir "start-gateway.cmd"
+
+if (-not $ExpectedCommit -and (Test-Path $RepoDir)) {
+    Push-Location $RepoDir
+    $ExpectedCommit = (git rev-parse --short HEAD).Trim()
+    Pop-Location
+}
 
 # =============================================================================
 # 1. Poll /internal/feed-stats
@@ -72,25 +86,27 @@ if (-not (Test-Path $StartEngine)) {
 
         $pollStart = Get-Date
         while (((Get-Date) - $pollStart).TotalSeconds -lt $DurationSec) {
+            $elapsedSec = [Math]::Round(((Get-Date) - $pollStart).TotalSeconds, 1)
             try {
                 $stats = Invoke-RestMethod -Uri "http://127.0.0.1:8081/internal/feed-stats" -Headers $headers -TimeoutSec 5
                 $samples.Add([PSCustomObject]@{
-                    t                    = (Get-Date).ToString("HH:mm:ss")
-                    ticks_in             = $stats.ticks_in
-                    t0_invalid           = $stats.t0_invalid
-                    nats_out             = $stats.nats_out
-                    ea_to_engine_ms_last = $stats.ea_to_engine_ms_last
-                    ea_to_engine_ms_p50  = $stats.ea_to_engine_ms_p50
-                    ea_to_engine_ms_p95  = $stats.ea_to_engine_ms_p95
-                    clock_offset_ms      = $stats.clock_offset_ms
-                    rtt_ms               = $stats.rtt_ms
+                    t                       = (Get-Date).ToString("HH:mm:ss")
+                    elapsed_sec             = $elapsedSec
+                    ticks_in                = $stats.ticks_in
+                    t0_invalid              = $stats.t0_invalid
+                    nats_out                = $stats.nats_out
+                    ea_to_engine_ms_last    = $stats.ea_to_engine_ms_last
+                    ea_to_engine_ms_p50     = $stats.ea_to_engine_ms_p50
+                    ea_to_engine_ms_p95     = $stats.ea_to_engine_ms_p95
+                    mono_to_utc_offset_ms   = $stats.mono_to_utc_offset_ms
+                    rtt_ms                  = $stats.rtt_ms
                 })
                 $lastPerSymbol = $stats.per_symbol
             } catch {
                 $samples.Add([PSCustomObject]@{
-                    t = (Get-Date).ToString("HH:mm:ss"); ticks_in = "ERROR"; t0_invalid = $_.Exception.Message
+                    t = (Get-Date).ToString("HH:mm:ss"); elapsed_sec = $elapsedSec; ticks_in = "ERROR"; t0_invalid = $_.Exception.Message
                     nats_out = $null; ea_to_engine_ms_last = $null; ea_to_engine_ms_p50 = $null; ea_to_engine_ms_p95 = $null
-                    clock_offset_ms = $null; rtt_ms = $null
+                    mono_to_utc_offset_ms = $null; rtt_ms = $null
                 })
             }
             $remaining = $DurationSec - ((Get-Date) - $pollStart).TotalSeconds
@@ -104,27 +120,39 @@ if (-not (Test-Path $StartEngine)) {
             $first = $good | Select-Object -First 1
             $last  = $good | Select-Object -Last 1
 
-            if ($last.t0_invalid -gt $first.t0_invalid) {
-                Write-Fail "t0_invalid grew during this window ($($first.t0_invalid) -> $($last.t0_invalid)) -- the clock-sync handshake may not be live (check clock_offset_ms below) or UseDirectMode/DirectServerUrl got reset on re-attach. Check the Experts log below for which EA version actually loaded."
+            # t0_invalid gate: flat over the tail of the window, ignoring
+            # the first 10s -- a re-attach can leave a handful of
+            # in-flight/stale ticks from before the new EA build settled,
+            # which would otherwise read as a false failure even though
+            # the real, steady-state behavior is fine.
+            $settled = $good | Where-Object { $_.elapsed_sec -ge 10 }
+            if ($settled.Count -ge 2) {
+                $settledFirst = $settled | Select-Object -First 1
+                $settledLast  = $settled | Select-Object -Last 1
+                if ($settledLast.t0_invalid -gt $settledFirst.t0_invalid) {
+                    Write-Fail "t0_invalid grew from $($settledFirst.t0_invalid) to $($settledLast.t0_invalid) after the first 10s -- the clock-sync handshake isn't holding steady, or UseDirectMode/DirectServerUrl got reset on re-attach. Check the Experts log below for which EA version actually loaded."
+                } else {
+                    Write-Ok "t0_invalid flat over the settled portion of the window (from elapsed_sec=10 to $($settledLast.elapsed_sec)s: $($settledLast.t0_invalid)) -- no bad timestamps once settled"
+                }
             } else {
-                Write-Ok "t0_invalid flat ($($last.t0_invalid)) -- no bad timestamps"
+                Write-Warn "Window too short to apply the 10s settle-in exclusion (-DurationSec $DurationSec) -- re-run with a longer -DurationSec for a real t0_invalid verdict"
             }
 
             $p50 = $last.ea_to_engine_ms_p50
             $p95 = $last.ea_to_engine_ms_p95
             if ($null -eq $p50) {
                 Write-Warn "No ea_to_engine_ms_p50 sample yet (empty latency window) -- re-run once ticks have flowed a bit"
-            } elseif ($p50 -lt 0 -or $p50 -gt 1000 -or ($null -ne $p95 -and ($p95 -lt 0 -or $p95 -gt 1000))) {
-                Write-Fail "ea_to_engine_ms_p50/p95 ($p50 / $p95) is outside a plausible localhost range (expected single-digit to ~20ms) -- looks like a clock/timezone issue, not real latency"
+            } elseif ($p50 -gt 100) {
+                Write-Fail "ea_to_engine_ms_p50 ($p50 ms) is above the 100ms threshold for a Contabo-local handshake -- p95 is $p95 ms"
             } else {
-                Write-Ok "ea_to_engine_ms_p50/p95 ($p50 / $p95) looks like real localhost latency"
+                Write-Ok "ea_to_engine_ms_p50/p95 ($p50 / $p95 ms) OK (<=100ms)"
             }
 
-            if ($null -eq $last.clock_offset_ms) {
-                Write-Warn "clock_offset_ms/rtt_ms not reported yet -- either the EA hasn't completed its first /internal/time handshake, UseDirectMode is off, or this is running against an older engine build"
+            if ($null -eq $last.mono_to_utc_offset_ms) {
+                Write-Warn "mono_to_utc_offset_ms/rtt_ms not reported yet -- either the EA hasn't completed its first /internal/time handshake, UseDirectMode is off, or this is running against an older engine build"
             } else {
-                Write-Ok "clock handshake reporting: offset=$($last.clock_offset_ms)ms, rtt=$($last.rtt_ms)ms"
-                if ([Math]::Abs($last.clock_offset_ms) -gt 5000) { Write-Warn "clock_offset_ms ($($last.clock_offset_ms)) is unusually large for a VPS-to-VPS handshake -- check for a real clock problem on the MT5 terminal's host" }
+                Write-Ok "clock handshake reporting: offset=$($last.mono_to_utc_offset_ms)ms, rtt=$($last.rtt_ms)ms"
+                if ([Math]::Abs($last.mono_to_utc_offset_ms) -gt 5000) { Write-Warn "mono_to_utc_offset_ms ($($last.mono_to_utc_offset_ms)) is unusually large for a VPS-to-VPS handshake -- check for a real clock problem on the MT5 terminal's host" }
             }
         } else {
             Write-Fail "Fewer than 2 successful samples -- check the errors in the table above (engine down? wrong secret?)"

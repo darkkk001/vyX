@@ -34,6 +34,15 @@ simulated/live prices.
   trade API route (`lib/account-auth.ts`). Never trust a frontend-only check.
 - Order placement is idempotent via `Order.idempotencyKey` (unique per
   `accountId`).
+- Never print a secret value (DB connection strings, `PRICE_FEED_SECRET`,
+  `INTERNAL_SERVICE_SECRET`, API keys, etc.) to a terminal, log, or chat
+  transcript — always redact before displaying, and verify the redaction
+  actually matched the string's real shape before trusting it (a
+  single-pattern redaction that assumes one URL/secret format can pass a
+  differently-shaped one through untouched). If a real secret is ever
+  printed, treat it as compromised and rotate it immediately — don't
+  assume the exposure is harmless because it was "only" in a terminal or
+  a session transcript.
 
 ## Architecture
 

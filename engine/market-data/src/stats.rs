@@ -58,7 +58,11 @@ pub struct FeedStats {
     // from a real, possibly-zero offset -- AtomicI64 alone can't tell
     // those apart.
     has_clock_info: AtomicBool,
-    last_clock_offset_ms: AtomicI64,
+    // Renamed from last_clock_offset_ms -- "mono_to_utc" names what the
+    // number actually converts (this terminal's monotonic clock reading
+    // into a UTC epoch estimate), which "clock_offset_ms" alone left
+    // ambiguous (offset of what, from what?).
+    last_mono_to_utc_offset_ms: AtomicI64,
     last_rtt_ms: AtomicI64,
 }
 
@@ -79,7 +83,7 @@ impl FeedStats {
             live_price_failure_last_logged_ms: AtomicI64::new(0),
             candle_failure_last_logged_ms: AtomicI64::new(0),
             has_clock_info: AtomicBool::new(false),
-            last_clock_offset_ms: AtomicI64::new(0),
+            last_mono_to_utc_offset_ms: AtomicI64::new(0),
             last_rtt_ms: AtomicI64::new(0),
         }
     }
@@ -129,7 +133,7 @@ impl FeedStats {
     }
 
     pub fn record_clock_info(&self, offset_ms: i64, rtt_ms: i64) {
-        self.last_clock_offset_ms.store(offset_ms, Ordering::Relaxed);
+        self.last_mono_to_utc_offset_ms.store(offset_ms, Ordering::Relaxed);
         self.last_rtt_ms.store(rtt_ms, Ordering::Relaxed);
         self.has_clock_info.store(true, Ordering::Relaxed);
     }
@@ -200,10 +204,10 @@ impl FeedStats {
             db_ok: self.db_write_success_total.load(Ordering::Relaxed),
             db_fail: self.db_write_failure_total.load(Ordering::Relaxed),
             db_lag_ms: self.last_db_lag_ms.load(Ordering::Relaxed),
-            clock_offset_ms: self
+            mono_to_utc_offset_ms: self
                 .has_clock_info
                 .load(Ordering::Relaxed)
-                .then(|| self.last_clock_offset_ms.load(Ordering::Relaxed)),
+                .then(|| self.last_mono_to_utc_offset_ms.load(Ordering::Relaxed)),
             rtt_ms: self
                 .has_clock_info
                 .load(Ordering::Relaxed)
@@ -244,7 +248,8 @@ pub struct FeedStatsSnapshot {
     // From the EA's clock-sync handshake (GET /internal/time) -- None
     // until at least one tick has reported it (proxy-mode EAs never will,
     // direct-mode EAs report it after their first successful sync).
-    pub clock_offset_ms: Option<i64>,
+    // Renamed from clock_offset_ms for clarity on what it converts.
+    pub mono_to_utc_offset_ms: Option<i64>,
     pub rtt_ms: Option<i64>,
 }
 
@@ -264,17 +269,17 @@ mod tests {
     #[test]
     fn clock_info_is_none_until_reported_then_reflects_the_last_value() {
         let stats = FeedStats::new();
-        assert_eq!(stats.snapshot().clock_offset_ms, None);
+        assert_eq!(stats.snapshot().mono_to_utc_offset_ms, None);
         assert_eq!(stats.snapshot().rtt_ms, None);
 
         stats.record_clock_info(12, 8);
         let snap = stats.snapshot();
-        assert_eq!(snap.clock_offset_ms, Some(12));
+        assert_eq!(snap.mono_to_utc_offset_ms, Some(12));
         assert_eq!(snap.rtt_ms, Some(8));
 
         stats.record_clock_info(-3, 15);
         let snap2 = stats.snapshot();
-        assert_eq!(snap2.clock_offset_ms, Some(-3));
+        assert_eq!(snap2.mono_to_utc_offset_ms, Some(-3));
         assert_eq!(snap2.rtt_ms, Some(15));
     }
 
