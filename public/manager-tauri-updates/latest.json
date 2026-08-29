@@ -1,11 +1,11 @@
 {
-  "version": "0.1.5",
-  "notes": "Suppressed browser context menu; branded installer wizard",
-  "pub_date": "2026-08-29T04:23:03.140Z",
+  "version": "0.1.6",
+  "notes": "Distinct white/orange app icon so Manager is visually different from Trader",
+  "pub_date": "2026-08-29T04:29:21.817Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUc2VqVXVBOHpXRC9hNWxkUjdzV2loaU5YWXR4VDhtYzgxcENPbXNtd2Q1MXhKOTkxVzEyd2FCT3hyUld3cTBkWW9zVEVFRzQwdldNSmIySm1TUDJNaDhOQ2oySHh2aWc4PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg3OTc3Mzc1CWZpbGU6RnV0dXJpeCBHbG9iYWwgTWFuYWdlcl8wLjEuNV94NjQtc2V0dXAuZXhlCnBwaVUvRkg4bTF2MjFSMm80a09jVTdOa0Eyc3FVa3JaRFR4bm1ScXB4bWhOQTFmR3N2c3hoaDcxc2NwQjd5N2cyVVdIaFpQeS9wSko1am95Y3U0K0N3PT0K",
-      "url": "https://vyxtrader.com/manager-tauri-updates/Futurix%20Global%20Manager_0.1.5_x64-setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUc2VqVXVBOHpXRDVyV0x0K3gyNXArSjE2bkpsTTZuWS9kZFNUU2E4Tys1Rm9zSGIxZSt3UkpjQWRPcEJ0NEM1Si9acURiNzhMVHZ4eUdxdC9PUGcvR3JicE1zRllvTFFrPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg3OTc3NzUyCWZpbGU6RnV0dXJpeCBHbG9iYWwgTWFuYWdlcl8wLjEuNl94NjQtc2V0dXAuZXhlClRYcW1yMGlsTzdsRCtlU2toSVNFSXFxZkFJTEg5djJZZ0xXaE40N05VQmhpYXlIeW84ZjQrQnJjYmJ5czl3U3F6ZUZGS2MzcUVjN1g1Uzl6cTJnOEJ3PT0K",
+      "url": "https://vyxtrader.com/manager-tauri-updates/Futurix%20Global%20Manager_0.1.6_x64-setup.exe"
     }
   }
 }
