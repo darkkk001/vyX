@@ -55,8 +55,14 @@ export default function DealingQueueManager() {
       });
   }
 
+  // Used to only fetch once on mount -- a new order landing in the queue,
+  // or a client responding to a requote, never showed up until the
+  // manager manually reloaded the page. Same 5s poll PositionsManager.tsx
+  // already uses for its own live-exposure view.
   useEffect(() => {
     load().catch(() => setRows([]));
+    const interval = setInterval(() => load().catch(() => {}), 5000);
+    return () => clearInterval(interval);
   }, []);
 
   const [acceptTarget, setAcceptTarget] = useState<DealingOrderRow | null>(null);
