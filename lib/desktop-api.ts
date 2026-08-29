@@ -157,3 +157,23 @@ export function installDesktopFetchShim(): void {
     });
   }) as typeof window.fetch;
 }
+
+// Every bundled shell's WebView still shows the browser's own default
+// right-click menu ("Inspect", "Reload", "Back"/"Forward") on anything
+// that doesn't already handle contextmenu itself -- harmless
+// functionally (Tauri release builds compile devtools out entirely), but
+// it's the single biggest visual tell that this is a WebView rather than
+// a "real" native app, undermining trust in what's otherwise a fully
+// bundled terminal. A capturing document-level listener that always
+// calls preventDefault() suppresses it everywhere; WebTrader's own
+// custom menus (Watchlist right-click, chart right-click) already call
+// preventDefault() on their own event first, so they're unaffected --
+// this only ever removes the native fallback, never a menu the app
+// deliberately shows. Website-safe to call unconditionally (no-ops
+// outside a desktop shell) but only ever imported by shell main.tsx
+// files, since a real developer debugging the live site still needs
+// their browser's own context menu.
+export function installDesktopContextMenuGuard(): void {
+  if (typeof window === "undefined" || !window.vyxDesktop?.isDesktop) return;
+  document.addEventListener("contextmenu", (e) => e.preventDefault());
+}

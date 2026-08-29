@@ -1,5 +1,5 @@
 import { createRoot } from "react-dom/client";
-import { installDesktopFetchShim } from "@/lib/desktop-api";
+import { installDesktopFetchShim, installDesktopContextMenuGuard } from "@/lib/desktop-api";
 import "./index.css";
 import App from "./App";
 
@@ -7,5 +7,6 @@ import App from "./App";
 // -- see installDesktopFetchShim's own doc comment for why this has to
 // run before React renders anything that might fetch on mount.
 installDesktopFetchShim();
+installDesktopContextMenuGuard();
 
 createRoot(document.getElementById("root")!).render(<App />);

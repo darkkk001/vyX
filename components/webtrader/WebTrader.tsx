@@ -559,29 +559,28 @@ export default function WebTrader({
     return [...tradeRows, ...fundsRows].sort((a, b) => b.date - a.date);
   }, [history, fundsHistory]);
 
-  // "Switch account" — log out, then either back to the root-domain server
-  // picker (desktop, so a different broker can be picked) or this broker's
-  // own login page (plain web tab).
+  // "Switch account"/"Logout" — log out, then show the login screen again.
+  // Desktop (bundled shell): the document is local content with no
+  // meaningful URL of its own to navigate to -- onSessionExpired flips
+  // App.tsx's loggedIn state back to false, which re-renders the
+  // already-embedded TradeLoginForm in place. This used to navigate to
+  // the real website's root-domain server picker (https://.../launch), a
+  // leftover from when the desktop app was still a remote WebView
+  // wrapper rather than a bundled shell -- that took the trader out of
+  // the app entirely and into a real browser-facing website page inside
+  // the WebView, which is what "Switch account redirects to the website"
+  // was actually seeing.
   async function handleLogout() {
     try {
       await tradeApi.logout();
     } catch {
-      // session cookie clears server-side regardless; proceed to navigate away
+      // session cookie clears server-side regardless; proceed either way
     }
     if (window.vyxDesktop?.isDesktop) {
       window.vyxDesktop.stopLiveStreams?.();
       window.vyxDesktop.forgetBroker?.();
       window.vyxDesktop.forgetSession?.();
-      // A bundled shell's own document isn't served from the broker's real
-      // hostname (it's local content, e.g. tauri.localhost) -- brokerHost
-      // is what the shell itself was told at startup, and is the only
-      // correct source once bundled. Falls back to window.location.hostname
-      // for the current, still-fully-remote desktop build, which has no
-      // brokerHost and whose document genuinely is served from the real host.
-      const hostname = window.vyxDesktop.brokerHost ?? window.location.hostname;
-      const parts = hostname.split(".");
-      const root = parts.length > 2 ? parts.slice(1).join(".") : hostname;
-      window.location.href = `https://${root}/launch`;
+      onSessionExpired?.();
     } else {
       window.location.href = "/trade/login";
     }

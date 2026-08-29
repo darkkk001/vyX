@@ -1,5 +1,5 @@
 import { createRoot } from "react-dom/client";
-import { installDesktopFetchShim } from "@/lib/desktop-api";
+import { installDesktopFetchShim, installDesktopContextMenuGuard } from "@/lib/desktop-api";
 import "./index.css";
 import App from "./App";
 
@@ -8,6 +8,7 @@ import App from "./App";
 // why this has to run before React renders anything that might fetch on
 // mount.
 installDesktopFetchShim();
+installDesktopContextMenuGuard();
 
 // data-surface="super-admin" pulls in admin-theme.css's purple accent
 // tokens (--accent/--accent-bg) that AdminShell's topbar avatar
