@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
 import { createSessionToken, SESSION_COOKIE_NAME, sessionCookieOptions } from "@/lib/auth";
+import { checkRateLimit } from "@/lib/rate-limit";
 
 // Manager's own login route, not app/api/admin/login/route.ts — that one
 // has no broker-match check (fine for Super Admin, which always runs on
@@ -23,6 +24,15 @@ export async function POST(request: NextRequest) {
   }
 
   const requestBrokerId = request.headers.get("x-broker-id");
+
+  // Same throttle as the trade-login route (5/min per broker+identifier) --
+  // the people who can adjust balances and approve withdrawals had a
+  // less-protected login than the traders themselves, with no rate limit
+  // on it at all before this.
+  const { allowed } = await checkRateLimit(`manage-login:${requestBrokerId ?? "none"}:${email}`, 5, 60);
+  if (!allowed) {
+    return NextResponse.json({ error: "too many attempts, try again shortly" }, { status: 429 });
+  }
 
   const admin = await prisma.adminUser.findUnique({ where: { email } });
 

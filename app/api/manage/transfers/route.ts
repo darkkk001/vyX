@@ -82,6 +82,15 @@ export async function POST(request: NextRequest) {
   if (fromAccount.status !== "ACTIVE" || toAccount.status !== "ACTIVE") {
     return NextResponse.json({ error: "both accounts must be active" }, { status: 400 });
   }
+  if (fromAccount.accountType !== toAccount.accountType) {
+    return NextResponse.json({ error: "cannot transfer between a Demo and a Live account" }, { status: 400 });
+  }
+  if (fromAccount.currency !== toAccount.currency) {
+    return NextResponse.json(
+      { error: `currency mismatch: ${fromAccount.currency} account cannot transfer directly to a ${toAccount.currency} account` },
+      { status: 400 }
+    );
+  }
 
   const result = await prisma.$transaction(async (tx) => {
     const fresh = await tx.account.findUniqueOrThrow({ where: { id: fromAccountId } });

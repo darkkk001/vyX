@@ -156,7 +156,7 @@ export default function RiskSettingsManager() {
             <StatCard label="Accounts at risk" value={`${stats.atMarginCall + stats.atStopOut}`} />
           </StatGrid>
           <p className="mt-2 text-xs text-[var(--text-3)]">
-            {stats.atStopOut} account{stats.atStopOut === 1 ? "" : "s"} below stop-out, {stats.atMarginCall} below margin call — informational only, not yet enforced automatically (see Group.stopOutLevel). Full list on the Margin page.
+            {stats.atStopOut} account{stats.atStopOut === 1 ? "" : "s"} below stop-out, {stats.atMarginCall} below margin call — stop-out is enforced automatically (see lib/risk-monitor.ts); this count is a live snapshot, not a manual queue. Full list on the Margin page.
           </p>
         </div>
       ) : null}
@@ -167,7 +167,7 @@ export default function RiskSettingsManager() {
             <p className="mt-2 text-sm text-[var(--text-3)]">
               {dealingMode
                 ? "New MARKET orders wait for manual Accept/Reject in the Dealing queue instead of filling instantly."
-                : "New MARKET orders fill instantly, as normal. Limit/Stop orders are unaffected either way."}
+                : "New MARKET orders fill instantly, as normal. Limit/Stop orders also fill instantly once triggered."}
             </p>
           </div>
           <Button size="sm" variant={dealingMode ? "danger" : "primary"} onClick={() => setConfirmingDealing(true)}>
@@ -223,7 +223,7 @@ export default function RiskSettingsManager() {
           <p className="text-sm text-[var(--text-2)]">
             {dealingMode
               ? "New MARKET orders will fill instantly again immediately."
-              : "New MARKET orders will queue for manual Accept/Reject in the Dealing queue until turned off. Limit/Stop orders are unaffected."}
+              : "New MARKET orders will queue for manual Accept/Reject in the Dealing queue until turned off. Limit/Stop orders queue the same way once their trigger price is hit."}
           </p>
           <ModalActions>
             <Button variant="ghost" onClick={() => setConfirmingDealing(false)}>

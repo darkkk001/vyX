@@ -3,7 +3,21 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
 import { publishTradingEvent } from "@/lib/nats";
+import { createNotification } from "@/lib/notifications";
 import { resolveBookType, applySpreadMarkup, resolveSymbolPricing, chargeCommission } from "@/lib/group-pricing";
+import {
+  checkTradingHalted,
+  checkSymbolTradingMode,
+  checkTradingSession,
+  checkLotStep,
+  checkGroupMaxLot,
+  checkGroupTradingRestriction,
+  checkGroupAllowedSymbol,
+  checkMaxOpenPositions,
+  checkSymbolExposure,
+  checkBrokerExposure,
+  checkMaxDailyLoss,
+} from "@/lib/risk";
 
 // Called by the client when its local price simulation reports the
 // resting LIMIT/STOP order's trigger price has been hit. Moves the order
@@ -38,11 +52,44 @@ export async function POST(
   const [brokerSymbol, account, broker] = await Promise.all([
     prisma.brokerSymbol.findFirst({
       where: { brokerId: order.brokerId, symbolId: order.symbolId },
-      include: { symbol: true },
+      include: { symbol: true, tradingSessions: true },
     }),
-    prisma.account.findUniqueOrThrow({ where: { id: order.accountId }, include: { group: true } }),
+    prisma.account.findUniqueOrThrow({
+      where: { id: order.accountId },
+      include: { group: { include: { allowedSymbols: { select: { symbolId: true } } } } },
+    }),
     prisma.broker.findUniqueOrThrow({ where: { id: order.brokerId } }),
   ]);
+
+  // Same risk battery POST /api/trade/orders and the dealing-queue Accept
+  // route both run before opening a position -- this fill path (a
+  // pending order's trigger firing, possibly days after submission) was
+  // the one place none of this ran at all: a resting order could fill
+  // straight through an exposure limit or a broker-wide trading halt
+  // declared after it was placed. checkTradingHalted first since it's
+  // the one that matters most for something that can trigger while
+  // nobody's watching.
+  const riskError =
+    checkTradingHalted(broker) ??
+    (brokerSymbol ? checkSymbolTradingMode(brokerSymbol.tradingMode, order.side) : null) ??
+    (brokerSymbol ? checkTradingSession(brokerSymbol.tradingSessions, new Date()) : null) ??
+    (brokerSymbol ? checkLotStep(order.volume, brokerSymbol.minLot, brokerSymbol.lotStep) : null) ??
+    (account.group ? checkGroupMaxLot(order.volume, account.group.maxLotSize) : null) ??
+    (account.group ? checkGroupTradingRestriction(account.group.tradingRestriction, order.side) : null) ??
+    (account.group
+      ? checkGroupAllowedSymbol(
+          account.group.restrictSymbols,
+          account.group.allowedSymbols.map((s) => s.symbolId),
+          order.symbolId
+        )
+      : null) ??
+    (await checkMaxOpenPositions(prisma, order.accountId, broker.maxOpenPositionsPerAccount)) ??
+    (await checkSymbolExposure(prisma, order.accountId, order.symbolId, order.volume, brokerSymbol?.maxExposure ?? null)) ??
+    (await checkBrokerExposure(prisma, order.brokerId, order.volume, broker.totalExposureLimit)) ??
+    (await checkMaxDailyLoss(prisma, order.accountId, account.maxDailyLoss));
+  if (riskError) {
+    return NextResponse.json({ error: riskError }, { status: 400 });
+  }
 
   // Same dealing-mode gate as POST /api/trade/orders' own MARKET-order
   // branch -- a resting LIMIT/STOP order under dealing mode must NOT
@@ -56,9 +103,41 @@ export async function POST(
   // already handles "no position yet" the same way a plain market order
   // under dealing mode does -- nothing to change there either.
   if (broker.dealingModeAt || account.group?.forceDealingMode || account.group?.groupType === "DEALING") {
-    const queued = await prisma.order.update({
-      where: { id: order.id },
-      data: { type: "MARKET", requestedPrice: requestedFillPrice },
+    const originalType = order.type;
+    const originalRequestedPrice = order.requestedPrice?.toString() ?? null;
+    const queued = await prisma.$transaction(async (tx) => {
+      const updated = await tx.order.update({
+        where: { id: order.id },
+        data: { type: "MARKET", requestedPrice: requestedFillPrice },
+      });
+      // The order's own original type/price get overwritten above (kept
+      // out of a new column deliberately -- see this branch's own doc
+      // comment on why reclassifying in place, not adding new schema, was
+      // the choice) -- this audit row is the only place that history
+      // survives. Previously nothing recorded this ever happened at all.
+      await tx.auditLog.create({
+        data: {
+          brokerId: order.brokerId,
+          action: "PENDING_ORDER_QUEUED_FOR_DEALING",
+          entityType: "Order",
+          entityId: order.id,
+          oldValue: { type: originalType, requestedPrice: originalRequestedPrice, status: "PENDING" },
+          newValue: { type: "MARKET", requestedPrice: requestedFillPrice, status: "PENDING" },
+        },
+      });
+      return updated;
+    });
+    // Same notification a fresh dealing-queue market order gets
+    // (app/api/trade/orders/route.ts) -- previously a triggered pending
+    // order queued completely silently, with no badge/alert telling a
+    // dealer it was waiting.
+    await createNotification(prisma, {
+      brokerId: order.brokerId,
+      type: "DEALING_ORDER_PENDING",
+      title: "Order awaiting dealer review",
+      body: `${account.accountNumber} — ${order.side} ${order.volume.toString()} ${brokerSymbol?.symbol.name ?? ""} (triggered pending order)`,
+      entityType: "Order",
+      entityId: order.id,
     });
     return NextResponse.json({ order: queued, position: null });
   }
