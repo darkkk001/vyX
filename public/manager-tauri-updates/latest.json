@@ -1,11 +1,11 @@
 {
-  "version": "0.1.4",
-  "notes": "Fix: white background (missing dark theme), console window popup on launch, fetch bridge crashing components",
-  "pub_date": "2026-08-29T02:23:44.120Z",
+  "version": "0.1.5",
+  "notes": "Suppressed browser context menu; branded installer wizard",
+  "pub_date": "2026-08-29T04:23:03.140Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUc2VqVXVBOHpXRDhSaXdnMUVpazBsTWZ5ejJyOWZLU2VjRXc5YTBnZzhOS1J2ZUEvMlgzNFFjYlNkeURPSEFlNVRuNG5FVG9GS1JPR0RKNUhqN3YwamhEbEtSeGFYdndnPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg3OTcwMjE3CWZpbGU6RnV0dXJpeCBHbG9iYWwgTWFuYWdlcl8wLjEuNF94NjQtc2V0dXAuZXhlCjFPZmYrRjYwdDNNVU8wUDI5NllRdXM5RDVwNk1xRkpBV1lYdmg3bStpUDN5MnpxekZyV3hNZ2tQZHVaYWtwcWpkN2YydFhRYTk1dWsxWXBFckNoN0RRPT0K",
-      "url": "https://vyxtrader.com/manager-tauri-updates/Futurix%20Global%20Manager_0.1.4_x64-setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUc2VqVXVBOHpXRC9hNWxkUjdzV2loaU5YWXR4VDhtYzgxcENPbXNtd2Q1MXhKOTkxVzEyd2FCT3hyUld3cTBkWW9zVEVFRzQwdldNSmIySm1TUDJNaDhOQ2oySHh2aWc4PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg3OTc3Mzc1CWZpbGU6RnV0dXJpeCBHbG9iYWwgTWFuYWdlcl8wLjEuNV94NjQtc2V0dXAuZXhlCnBwaVUvRkg4bTF2MjFSMm80a09jVTdOa0Eyc3FVa3JaRFR4bm1ScXB4bWhOQTFmR3N2c3hoaDcxc2NwQjd5N2cyVVdIaFpQeS9wSko1am95Y3U0K0N3PT0K",
+      "url": "https://vyxtrader.com/manager-tauri-updates/Futurix%20Global%20Manager_0.1.5_x64-setup.exe"
     }
   }
 }
