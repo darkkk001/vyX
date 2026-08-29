@@ -169,12 +169,16 @@ export async function checkBrokerExposure(
 const LIVE_PRICE_MAX_AGE_MS = 15_000;
 const PRICE_DEVIATION_TOLERANCE_PCT = 2;
 
-export async function checkLiveMarketPrice(
-  db: Db,
+// Split so POST /api/trade/orders -- which already fetches LivePrice
+// itself for the Smart Dealer diffPct calc a few lines later -- can reuse
+// that one query instead of a second round-trip. checkLiveMarketPrice
+// below is the fetch-it-yourself convenience wrapper for the two callers
+// that don't already have a LivePrice row in hand (close, fill).
+export function evaluateLiveMarketPrice(
+  livePrice: { bid: Prisma.Decimal; ask: Prisma.Decimal; updatedAt: Date } | null,
   symbolName: string,
   clientPrice: Prisma.Decimal | string
-): Promise<string | null> {
-  const livePrice = await db.livePrice.findUnique({ where: { symbol: symbolName } });
+): string | null {
   if (!livePrice || Date.now() - livePrice.updatedAt.getTime() > LIVE_PRICE_MAX_AGE_MS) {
     return "no live feed for this symbol";
   }
@@ -185,6 +189,15 @@ export async function checkLiveMarketPrice(
     return `price is too far from the current market price for ${symbolName}`;
   }
   return null;
+}
+
+export async function checkLiveMarketPrice(
+  db: Db,
+  symbolName: string,
+  clientPrice: Prisma.Decimal | string
+): Promise<string | null> {
+  const livePrice = await db.livePrice.findUnique({ where: { symbol: symbolName } });
+  return evaluateLiveMarketPrice(livePrice, symbolName, clientPrice);
 }
 
 // Null maxDailyLoss = no limit. Blocks new orders once today's realized

@@ -19,6 +19,7 @@ import {
   checkSymbolExposure,
   checkBrokerExposure,
   checkMaxDailyLoss,
+  evaluateLiveMarketPrice,
 } from "@/lib/risk";
 
 async function logHotkeyOrder(brokerId: string, orderId: string) {
@@ -136,17 +137,21 @@ export async function POST(request: NextRequest) {
   // backed by a real, fresh tick — not the client's own random-walk
   // fallback (see lib/market-simulator.ts's `live` flag, which the client
   // UI already uses to disable Buy/Sell for a symbol with no feed). This
-  // is a server-side floor for that same rule, since client-side
-  // disabling alone doesn't stop a direct API call. Same 15s staleness
-  // window used everywhere else in this codebase (Rust engine's
-  // TickCache/get_live_price, and WebTrader's own liveTicksRef filter).
-  // PENDING (LIMIT/STOP) orders aren't checked here — they rest until a
-  // real tick triggers a fill via the separate fill endpoint.
+  // used to only check that *a* tick existed, not that this price was
+  // anywhere near it — meaning a fresh tick for the symbol was enough
+  // cover to open at literally any price, then close near the real price
+  // later (see lib/risk.ts's checkLiveMarketPrice, added after that close
+  // half of the same exploit was fixed) to mint the difference as profit.
+  // evaluateLiveMarketPrice now floors both halves the same way. PENDING
+  // (LIMIT/STOP) orders aren't checked here — they rest until a real tick
+  // triggers a fill via the separate fill endpoint, which runs this same
+  // check itself.
   let livePrice: Awaited<ReturnType<typeof prisma.livePrice.findUnique>> = null;
   if (type === "MARKET") {
     livePrice = await prisma.livePrice.findUnique({ where: { symbol: symbolName } });
-    if (!livePrice || Date.now() - livePrice.updatedAt.getTime() > 15_000) {
-      return NextResponse.json({ error: "no live feed for this symbol" }, { status: 400 });
+    const priceError = evaluateLiveMarketPrice(livePrice, symbolName, price);
+    if (priceError) {
+      return NextResponse.json({ error: priceError }, { status: 400 });
     }
   }
 
