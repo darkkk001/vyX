@@ -151,11 +151,21 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    if (type === "MARKET" && (broker.dealingModeAt || account.group?.forceDealingMode)) {
-      // Dealing mode on -- either broker-wide (Broker.dealingModeAt) or
-      // this account's own group opted in (Group.forceDealingMode, e.g. a
-      // broker wants only a specific group of accounts dealt manually) --
-      // queue for manual dealer review instead of auto-filling. See
+    if (
+      type === "MARKET" &&
+      (broker.dealingModeAt || account.group?.forceDealingMode || account.group?.groupType === "DEALING")
+    ) {
+      // Dealing mode on -- broker-wide (Broker.dealingModeAt), this
+      // account's own group opted in via the standalone toggle
+      // (Group.forceDealingMode, e.g. a broker wants only a specific
+      // group of accounts dealt manually regardless of book type), OR
+      // the group's GroupType itself is DEALING (book-routing
+      // classification -- a Dealing-book group's whole point is manual
+      // review before a fill, so its orders must reach the queue even
+      // if nobody separately flipped forceDealingMode on it too; without
+      // this, a broker picking "Dealing" as the group's type got a group
+      // that was functionally identical to a Demo/ungrouped one). Queue
+      // for manual dealer review instead of auto-filling. See
       // app/api/manage/dealing-queue/*. No Position yet; status stays
       // PENDING (distinguishable from a resting LIMIT/STOP order by
       // `type`, so no new enum value needed).
