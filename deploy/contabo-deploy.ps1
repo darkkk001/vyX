@@ -84,7 +84,14 @@ function Write-Fail($msg)       { Write-Host "[FAIL] $msg" -ForegroundColor Red 
 # into a log) doesn't leak secrets.
 function Get-RedactedLines([string[]]$lines) {
     $lines | ForEach-Object {
-        if ($_ -match '^(?<prefix>\s*set\s+\S*SECRET\S*=)(?<val>.+)$') {
+        # Match on the VARIABLE NAME, not the value: anything whose name
+        # carries SECRET / URL / KEY / TOKEN / PASSWORD. The old pattern
+        # only caught *SECRET*, so DATABASE_URL and REDIS_URL -- which
+        # carry credentials inline -- were printed in full under a header
+        # that claimed "secrets redacted". Deliberately over-broad: it also
+        # redacts harmless ones like NATS_URL/TRADING_CORE_URL, which is
+        # the right trade when the output gets pasted into chats and logs.
+        if ($_ -match '^(?<prefix>\s*set\s+[^=]*(SECRET|URL|KEY|TOKEN|PASSWORD)[^=]*=)(?<val>.+)$') {
             "$($Matches.prefix)***REDACTED***"
         } else {
             $_
