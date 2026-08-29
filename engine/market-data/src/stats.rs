@@ -26,6 +26,16 @@ pub struct FeedStats {
     ticks_ingested_total: AtomicU64,
     ticks_missing_t0_total: AtomicU64,
     ticks_dropped_invalid_total: AtomicU64,
+    // t0 is meant to be UTC epoch ms (see protocol::Tick's doc comment) --
+    // a delta outside [0, 60_000]ms against this engine's own UTC clock
+    // means either the EA sent a broker-local timestamp instead of UTC
+    // (confirmed live: Pepperstone's UTC+3 offset alone produced a
+    // constant -10,800,000ms p50 before the EA-side fix) or genuine clock
+    // skew large enough to be more noise than signal. Counted here and
+    // excluded from the latency window entirely, rather than recorded as
+    // a real (garbage) sample -- a single bad delta would otherwise
+    // dominate p50/p95 for the next WINDOW ticks.
+    t0_invalid_total: AtomicU64,
     nats_publish_failures_total: AtomicU64,
     nats_publish_success_total: AtomicU64,
     candle_write_failures_total: AtomicU64,
@@ -48,6 +58,7 @@ impl FeedStats {
             ticks_ingested_total: AtomicU64::new(0),
             ticks_missing_t0_total: AtomicU64::new(0),
             ticks_dropped_invalid_total: AtomicU64::new(0),
+            t0_invalid_total: AtomicU64::new(0),
             nats_publish_failures_total: AtomicU64::new(0),
             nats_publish_success_total: AtomicU64::new(0),
             candle_write_failures_total: AtomicU64::new(0),
@@ -76,6 +87,14 @@ impl FeedStats {
 
     pub fn record_missing_t0(&self) {
         self.ticks_missing_t0_total.fetch_add(1, Ordering::Relaxed);
+        self.ticks_ingested_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// The tick still counts toward ticks_in (it was really ingested,
+    /// just with an unusable timestamp) -- only the latency window and
+    /// its percentiles exclude it.
+    pub fn record_invalid_t0(&self) {
+        self.t0_invalid_total.fetch_add(1, Ordering::Relaxed);
         self.ticks_ingested_total.fetch_add(1, Ordering::Relaxed);
     }
 
@@ -146,14 +165,15 @@ impl FeedStats {
 
         FeedStatsSnapshot {
             sample_count: sorted.len(),
-            current_ms: guard.back().copied(),
-            p50_ms: percentile(0.50),
-            p95_ms: percentile(0.95),
+            ea_to_engine_ms_last: guard.back().copied(),
+            ea_to_engine_ms_p50: percentile(0.50),
+            ea_to_engine_ms_p95: percentile(0.95),
             p99_ms: percentile(0.99),
             max_ms: sorted.last().copied(),
             ticks_in: self.ticks_ingested_total.load(Ordering::Relaxed),
             ticks_missing_t0_total: self.ticks_missing_t0_total.load(Ordering::Relaxed),
             ticks_dropped_invalid_total: self.ticks_dropped_invalid_total.load(Ordering::Relaxed),
+            t0_invalid: self.t0_invalid_total.load(Ordering::Relaxed),
             nats_out: self.nats_publish_success_total.load(Ordering::Relaxed),
             nats_publish_failures_total: self.nats_publish_failures_total.load(Ordering::Relaxed),
             candle_write_failures_total: self.candle_write_failures_total.load(Ordering::Relaxed),
@@ -173,9 +193,11 @@ impl Default for FeedStats {
 #[derive(Debug, Serialize)]
 pub struct FeedStatsSnapshot {
     pub sample_count: usize,
-    pub current_ms: Option<i64>,
-    pub p50_ms: Option<i64>,
-    pub p95_ms: Option<i64>,
+    // Renamed from current_ms/p50_ms/p95_ms -- p99_ms/max_ms keep their
+    // names, only the {last,p50,p95} headline trio moved to this scheme.
+    pub ea_to_engine_ms_last: Option<i64>,
+    pub ea_to_engine_ms_p50: Option<i64>,
+    pub ea_to_engine_ms_p95: Option<i64>,
     pub p99_ms: Option<i64>,
     pub max_ms: Option<i64>,
     // Renamed from ticks_ingested_total to match the Contabo audit's
@@ -184,6 +206,7 @@ pub struct FeedStatsSnapshot {
     pub ticks_in: u64,
     pub ticks_missing_t0_total: u64,
     pub ticks_dropped_invalid_total: u64,
+    pub t0_invalid: u64,
     pub nats_out: u64,
     pub nats_publish_failures_total: u64,
     pub candle_write_failures_total: u64,
@@ -201,7 +224,7 @@ mod tests {
         let stats = FeedStats::new();
         let snap = stats.snapshot();
         assert_eq!(snap.sample_count, 0);
-        assert_eq!(snap.p50_ms, None);
+        assert_eq!(snap.ea_to_engine_ms_p50, None);
         assert_eq!(snap.max_ms, None);
     }
 
@@ -214,8 +237,21 @@ mod tests {
         let snap = stats.snapshot();
         assert_eq!(snap.sample_count, 5);
         assert_eq!(snap.max_ms, Some(90));
-        assert_eq!(snap.current_ms, Some(30)); // last one recorded
+        assert_eq!(snap.ea_to_engine_ms_last, Some(30)); // last one recorded
         assert_eq!(snap.ticks_in, 5);
+    }
+
+    #[test]
+    fn invalid_t0_is_excluded_from_the_latency_window_but_still_counts_as_ingested() {
+        let stats = FeedStats::new();
+        stats.record_latency_ms(50);
+        stats.record_invalid_t0();
+        stats.record_invalid_t0();
+        let snap = stats.snapshot();
+        assert_eq!(snap.sample_count, 1); // only the one real latency sample
+        assert_eq!(snap.ea_to_engine_ms_last, Some(50));
+        assert_eq!(snap.t0_invalid, 2);
+        assert_eq!(snap.ticks_in, 3); // 1 real + 2 invalid-t0, all "ingested"
     }
 
     #[test]

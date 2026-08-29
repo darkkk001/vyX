@@ -5,12 +5,22 @@
 //! ../../docs/execution.md's Phase 5 note that the consumer shape doesn't
 //! change when the feed source does.
 
-use crate::{cache::TickCache, candle_updates_for_tick, db, stats::FeedStats};
+use crate::{cache::TickCache, candle_updates_for_tick, db, stats::FeedStats, symbol_activity::SymbolActivity};
 use chrono::Utc;
 use protocol::Tick;
 use sqlx::PgPool;
 use std::sync::Arc;
 use std::time::{Duration as StdDuration, Instant};
+
+// t0 is meant to be UTC epoch ms (protocol::Tick's own doc comment). A
+// delta against this engine's own UTC clock outside this range means the
+// EA sent something other than a real UTC timestamp (a broker-local
+// clock, most likely -- see mt5-ea/VyXTraderPriceFeed.mq5's own comment
+// on TimeGMT() vs TimeCurrent()) or genuine clock skew large enough to be
+// noise, not signal. 60s is generous -- real EA-to-engine latency is
+// milliseconds to low seconds at worst; this floor is about catching
+// "wrong timestamp entirely," not tightly bounding real latency.
+const T0_MAX_PLAUSIBLE_DELTA_MS: i64 = 60_000;
 
 // Contabo audit: Candle/LivePrice upserts were observed taking 4-37s and
 // dropping connections. A flush already runs off the hot path (see this
@@ -48,14 +58,24 @@ pub async fn ingest_ticks(
     nats: &async_nats::Client,
     cache: &TickCache,
     stats: &Arc<FeedStats>,
+    symbol_activity: &SymbolActivity,
     ticks: &[Tick],
 ) -> Result<(), IngestError> {
     let now = Utc::now();
+    let now_ms = now.timestamp_millis();
 
     for tick in ticks {
         cache.set(tick, now);
+        symbol_activity.record(&tick.symbol, now_ms);
         match tick.t0 {
-            Some(t0) => stats.record_latency_ms(now.timestamp_millis() - t0),
+            Some(t0) => {
+                let delta = now_ms - t0;
+                if !(0..=T0_MAX_PLAUSIBLE_DELTA_MS).contains(&delta) {
+                    stats.record_invalid_t0();
+                } else {
+                    stats.record_latency_ms(delta);
+                }
+            }
             None => stats.record_missing_t0(),
         }
         if publish_tick(nats, tick).await {

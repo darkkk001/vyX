@@ -7,7 +7,7 @@
 //| LivePrice table this EA feeds.                                    |
 //+------------------------------------------------------------------+
 #property strict
-#property version   "1.20"
+#property version   "1.21"
 
 input string ServerUrl            = "https://www.vyxtrader.com/api/internal/price-feed";
 // No default -- this file is committed to a public-ish repo. A real
@@ -28,7 +28,7 @@ input int    PushIntervalSeconds  = 1;
 // no-op and everything runs off the timer alone.
 //
 // MQL5's OnTick() only fires for the symbol THIS CHART is showing, not
-// every symbol in CanonicalNames below -- on its own, that would mean a
+// every symbol in ActiveBrokerSymbols below -- on its own, that would mean a
 // quiet chart-symbol with other symbols still moving wouldn't push until
 // the next chart-symbol tick. OnInit now runs the timer at
 // PushMinIntervalMs itself (EventSetMillisecondTimer, not the old 1s
@@ -53,13 +53,33 @@ input int    PushMinIntervalMs    = 50;
 input bool   UseDirectMode        = false;
 input string DirectServerUrl      = "";
 
-// Map VyXTrader's canonical symbol name -> this broker's actual MT5 symbol
-// name. Edit the right-hand column if your account suffixes symbols
-// (e.g. "EURUSDm", "XAUUSDm") or names indices differently
-// (e.g. "US30Cash", "NAS100Cash") — check your Market Watch for the exact
-// spelling. Leave a row's right side blank ("") to skip that symbol.
-string CanonicalNames[] = {"XAUUSD","EURUSD","GBPUSD","BTCUSD","US30","USDJPY","AUDUSD","XAGUSD","ETHUSD","NAS100"};
-string BrokerNames[]    = {"XAUUSD","EURUSD","GBPUSD","BTCUSD","US30","USDJPY","AUDUSD","XAGUSD","ETHUSD","NAS100"};
+// Where the list of symbols to push comes from (second Contabo-audit
+// follow-up). MARKET_WATCH auto-discovers whatever's selected in this
+// terminal's Market Watch, refreshed on init and every 30s -- no source
+// file edit needed to add/remove a symbol, just change what's selected in
+// Market Watch. LIST is the old hardcoded-array behavior, now a single
+// comma-separated input instead of two parallel arrays.
+enum ENUM_SYMBOL_SOURCE
+{
+   SYMBOL_SOURCE_MARKET_WATCH,
+   SYMBOL_SOURCE_LIST
+};
+input ENUM_SYMBOL_SOURCE SymbolSource = SYMBOL_SOURCE_MARKET_WATCH;
+// LIST mode only -- broker-native symbol names exactly as they appear in
+// Market Watch (e.g. "EURUSDm", "XAUUSDm" if this account suffixes
+// symbols), comma-separated. Ignored in MARKET_WATCH mode.
+input string SymbolList = "XAUUSD,EURUSD,GBPUSD,BTCUSD,US30,USDJPY,AUDUSD,XAGUSD,ETHUSD,NAS100";
+// Optional, either mode -- renames a broker-native symbol name to a
+// canonical one before it's sent, e.g. "US30.a=US30,NAS100.a=NAS100".
+// A broker symbol not listed here is sent under its own name unchanged --
+// the engine/gateway accept any symbol now (see main.rs/ws.ts), so a
+// canonical rename is a cosmetic convenience, not a requirement.
+input string SymbolMap = "";
+// MARKET_WATCH mode only -- a broker with an unusually large Market Watch
+// selected would otherwise silently push a very large payload every
+// PushMinIntervalMs; this only warns (Experts log), it does not truncate
+// the symbol list.
+input int    MaxSymbolsWarning = 150;
 
 // GetTickCount() (uint, 32-bit ms uptime) is enough for a same-run
 // debounce window -- it only ever needs to compare against a value set
@@ -67,8 +87,81 @@ string BrokerNames[]    = {"XAUUSD","EURUSD","GBPUSD","BTCUSD","US30","USDJPY","
 // across a restart, so its ~49-day wraparound doesn't matter here.
 uint lastPushMs = 0;
 
+// Refreshed by RefreshActiveSymbols() -- the actual broker-native symbol
+// names read via SymbolInfoDouble each push, regardless of SymbolSource.
+string ActiveBrokerSymbols[];
+uint lastSymbolRefreshMs = 0;
+const int SYMBOL_REFRESH_INTERVAL_MS = 30000;
+
+// Parsed once from SymbolMap in OnInit -- BrokerSymbol -> CanonicalName
+// pairs. Linear-scan lookup (CanonicalFor below) is fine at this scale
+// (tens, not thousands, of mapped symbols).
+string MapFromSymbols[];
+string MapToSymbols[];
+int MapCount = 0;
+
+// Splits a comma-separated string into `out`, trimming surrounding
+// whitespace from each piece (a human hand-editing an Inputs field is
+// likely to leave stray spaces after commas). Returns the element count.
+int SplitCsv(string csv, string &out[])
+{
+   if (StringLen(csv) == 0) { ArrayResize(out, 0); return 0; }
+   int count = StringSplit(csv, ',', out);
+   for (int i = 0; i < count; i++)
+   {
+      StringTrimLeft(out[i]);
+      StringTrimRight(out[i]);
+   }
+   return count;
+}
+
+void ParseSymbolMap()
+{
+   string pairs[];
+   int n = SplitCsv(SymbolMap, pairs);
+   ArrayResize(MapFromSymbols, n);
+   ArrayResize(MapToSymbols, n);
+   MapCount = 0;
+   for (int i = 0; i < n; i++)
+   {
+      if (StringLen(pairs[i]) == 0) continue;
+      int eq = StringFind(pairs[i], "=");
+      if (eq < 0) continue;
+      MapFromSymbols[MapCount] = StringSubstr(pairs[i], 0, eq);
+      MapToSymbols[MapCount]   = StringSubstr(pairs[i], eq + 1);
+      MapCount++;
+   }
+}
+
+string CanonicalFor(string brokerSymbol)
+{
+   for (int i = 0; i < MapCount; i++)
+      if (MapFromSymbols[i] == brokerSymbol) return MapToSymbols[i];
+   return brokerSymbol; // no mapping entry -- send under its own name
+}
+
+void RefreshActiveSymbols()
+{
+   if (SymbolSource == SYMBOL_SOURCE_LIST)
+   {
+      SplitCsv(SymbolList, ActiveBrokerSymbols);
+   }
+   else // SYMBOL_SOURCE_MARKET_WATCH
+   {
+      int total = SymbolsTotal(true); // true = only symbols selected in Market Watch
+      ArrayResize(ActiveBrokerSymbols, total);
+      for (int i = 0; i < total; i++) ActiveBrokerSymbols[i] = SymbolName(i, true);
+      if (total > MaxSymbolsWarning)
+         Print("VyXTraderPriceFeed: WARNING -- ", total, " symbols selected in Market Watch (warning threshold ",
+               MaxSymbolsWarning, "). All are still being pushed; trim Market Watch if this is unintentional.");
+   }
+   lastSymbolRefreshMs = GetTickCount();
+}
+
 int OnInit()
 {
+   ParseSymbolMap();
+   RefreshActiveSymbols();
    // Millisecond timer, not EventSetTimer's 1s-resolution one -- keyed
    // off the same PushMinIntervalMs OnTick's own debounce uses, so every
    // symbol (not just this chart's own) is bounded at that floor
@@ -209,27 +302,38 @@ void BuildAndSend()
       return;
    }
 
-   // Origin timestamp for the latency audit (ms since epoch). MQL5 has no
-   // direct wall-clock-with-milliseconds call, so this combines
-   // TimeCurrent() (server time, second resolution) with
-   // GetMicrosecondCount()'s sub-second component (microsecond
-   // resolution, converted to ms) -- an upgrade from the previous
-   // GetTickCount()%1000 (millisecond resolution) per the Contabo audit's
-   // ask for higher precision on the EA-side timestamp. Still an
-   // approximation (GetMicrosecondCount is terminal-uptime-based, not
-   // wall-clock, same caveat GetTickCount always had) -- good enough to
-   // bound "how much of the total latency is upstream of this EA"
-   // without claiming sub-second wall-clock precision this platform
-   // doesn't expose.
-   long t0 = (long)TimeCurrent() * 1000 + (long)((GetMicrosecondCount() / 1000) % 1000);
+   // Origin timestamp for the latency audit -- MUST be UTC epoch ms, since
+   // the engine computes latency as (its own UTC now) - t0. A real, live
+   // bug: this used to use TimeCurrent() (the TRADE SERVER's local time,
+   // not UTC -- Pepperstone runs UTC+3) instead of TimeGMT() (actual
+   // UTC/GMT). That constant +3h offset alone produced a steady
+   // -10,800,000ms p50 on Contabo once real Pepperstone ticks started
+   // flowing -- not a latency measurement, a timezone bug wearing a
+   // latency measurement's clothes. GetMicrosecondCount() was also wrong
+   // for the sub-second component (a monotonic counter since terminal
+   // start, uncorrelated with true wall-clock sub-second position) --
+   // reverted to GetTickCount()%1000, which has the exact same
+   // uncorrelated-with-wall-clock caveat but at least doesn't compound
+   // it with a second, unrelated bug. Sub-second precision here is
+   // genuinely only approximate either way; the engine now treats
+   // anything outside a plausible latency range as garbage (t0_invalid)
+   // rather than trusting it, which is the real fix for that half of it.
+   long t0 = (long)TimeGMT() * 1000 + (long)(GetTickCount() % 1000);
+
+   // Re-discovers Market Watch's current selection every 30s (LIST mode
+   // just re-parses the same static SymbolList -- harmless, kept
+   // unconditional rather than mode-branching the refresh timing too).
+   if (GetTickCount() - lastSymbolRefreshMs >= (uint)SYMBOL_REFRESH_INTERVAL_MS)
+      RefreshActiveSymbols();
 
    string json = "[";
    bool first = true;
-   for (int i = 0; i < ArraySize(CanonicalNames); i++)
+   for (int i = 0; i < ArraySize(ActiveBrokerSymbols); i++)
    {
-      if (StringLen(BrokerNames[i]) == 0) continue;
-      double bid = SymbolInfoDouble(BrokerNames[i], SYMBOL_BID);
-      double ask = SymbolInfoDouble(BrokerNames[i], SYMBOL_ASK);
+      string brokerSymbol = ActiveBrokerSymbols[i];
+      if (StringLen(brokerSymbol) == 0) continue;
+      double bid = SymbolInfoDouble(brokerSymbol, SYMBOL_BID);
+      double ask = SymbolInfoDouble(brokerSymbol, SYMBOL_ASK);
       if (bid <= 0 || ask <= 0) continue; // not in Market Watch / wrong name
       if (!first) json += ",";
       // %I64d, not %d -- t0 is a 64-bit long (ms since epoch); %d is
@@ -237,7 +341,7 @@ void BuildAndSend()
       // every downstream latency measurement (confirmed live: the VPS
       // deployment's /internal/feed-stats showed t0 collapsing to a tiny
       // leftover value once real Exness ticks started flowing).
-      json += StringFormat("{\"symbol\":\"%s\",\"bid\":%.5f,\"ask\":%.5f,\"t0\":%I64d}", CanonicalNames[i], bid, ask, t0);
+      json += StringFormat("{\"symbol\":\"%s\",\"bid\":%.5f,\"ask\":%.5f,\"t0\":%I64d}", CanonicalFor(brokerSymbol), bid, ask, t0);
       first = false;
    }
    json += "]";

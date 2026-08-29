@@ -16,9 +16,11 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use chrono::Utc;
 use futures_util::StreamExt;
 use market_data::cache::TickCache;
 use market_data::stats::{FeedStats, FeedStatsSnapshot};
+use market_data::symbol_activity::SymbolActivity;
 use order_management::{
     db, events, CancelOrderOutcome, ClosePositionOutcome, ModifyPositionOutcome,
     PlaceMarketOrderOutcome, PlaceMarketOrderRequest, PlacePendingOrderOutcome,
@@ -49,6 +51,11 @@ struct AppState {
     // doc. Populated by ingest_price_feed, read by the new
     // /internal/feed-stats route.
     feed_stats: Arc<FeedStats>,
+    // Per-symbol rolling tick-rate window, feeding /internal/feed-stats's
+    // per_symbol[].ticks_60s -- see market_data::symbol_activity's module
+    // doc for why this is separate from both tick_cache (latest tick
+    // only) and feed_stats (aggregate, not per-symbol).
+    symbol_activity: Arc<SymbolActivity>,
 }
 
 // Applied via .layer() to every order/position route (main() below) --
@@ -458,12 +465,18 @@ async fn ingest_price_feed(
     }
 
     let count = ticks.len();
-    market_data::ingest::ingest_ticks(&state.nats, &state.tick_cache, &state.feed_stats, &ticks)
-        .await
-        .map_err(|err| {
-            tracing::error!(?err, "ingest_ticks failed");
-            (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
-        })?;
+    market_data::ingest::ingest_ticks(
+        &state.nats,
+        &state.tick_cache,
+        &state.feed_stats,
+        &state.symbol_activity,
+        &ticks,
+    )
+    .await
+    .map_err(|err| {
+        tracing::error!(?err, "ingest_ticks failed");
+        (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
+    })?;
 
     Ok(Json(PriceFeedResponse { ok: true, count }))
 }
@@ -485,12 +498,43 @@ struct FeedStatsResponse {
     #[serde(flatten)]
     stats: FeedStatsSnapshot,
     queue_len: usize,
+    per_symbol: Vec<PerSymbolStat>,
+}
+
+// Second follow-up on the Contabo audit: per-symbol freshness (was
+// previously not obtainable from this endpoint at all -- there was no
+// way to confirm e.g. BTCUSD/ETHUSD specifically were live). Built from
+// tick_cache (latest bid/ask + age) and symbol_activity (60s tick rate)
+// together, since neither alone has both pieces.
+#[derive(Serialize)]
+struct PerSymbolStat {
+    symbol: String,
+    ticks_60s: u64,
+    last_tick_age_ms: i64,
+    bid: Decimal,
+    ask: Decimal,
 }
 
 async fn feed_stats(State(state): State<Arc<AppState>>) -> Json<FeedStatsResponse> {
+    let now = Utc::now();
+    let now_ms = now.timestamp_millis();
+    let per_symbol = state
+        .tick_cache
+        .snapshot_with_age(now)
+        .into_iter()
+        .map(|(tick, age_ms)| PerSymbolStat {
+            ticks_60s: state.symbol_activity.count_last_60s(&tick.symbol, now_ms),
+            symbol: tick.symbol,
+            last_tick_age_ms: age_ms,
+            bid: tick.bid,
+            ask: tick.ask,
+        })
+        .collect();
+
     Json(FeedStatsResponse {
         stats: state.feed_stats.snapshot(),
         queue_len: state.tick_cache.snapshot().len(),
+        per_symbol,
     })
 }
 
@@ -599,6 +643,7 @@ async fn main() {
 
     let tick_cache = Arc::new(TickCache::new());
     let feed_stats_registry = Arc::new(FeedStats::new());
+    let symbol_activity_registry = Arc::new(SymbolActivity::new());
 
     // Periodic Postgres flush of the in-memory tick cache -- see
     // market_data::ingest::spawn_periodic_flush's doc comment for why
@@ -632,6 +677,7 @@ async fn main() {
         internal_service_secret,
         tick_cache,
         feed_stats: feed_stats_registry,
+        symbol_activity: symbol_activity_registry,
     });
 
     // Order/position/stats routes require x-internal-secret

@@ -12,6 +12,7 @@ pub mod cache;
 pub mod db;
 pub mod ingest;
 pub mod stats;
+pub mod symbol_activity;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Timeframe {

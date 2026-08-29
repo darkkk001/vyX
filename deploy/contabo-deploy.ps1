@@ -403,24 +403,29 @@ if (-not $secretMatch) {
     $logSamplePollStart = Get-Date
 
     $pollStart = Get-Date
+    $lastPerSymbol = $null
     while (((Get-Date) - $pollStart).TotalSeconds -lt $PollDurationSec) {
         try {
             $stats = Invoke-RestMethod -Uri "http://127.0.0.1:8081/internal/feed-stats" -Headers $headers -TimeoutSec 5
             $samples.Add([PSCustomObject]@{
-                t          = (Get-Date).ToString("HH:mm:ss")
-                ticks_in   = $stats.ticks_in
-                nats_out   = $stats.nats_out
-                queue_len  = $stats.queue_len
-                db_ok      = $stats.db_ok
-                db_fail    = $stats.db_fail
-                db_lag_ms  = $stats.db_lag_ms
-                current_ms = $stats.current_ms
-                p50_ms     = $stats.p50_ms
+                t                  = (Get-Date).ToString("HH:mm:ss")
+                ticks_in           = $stats.ticks_in
+                t0_invalid         = $stats.t0_invalid
+                nats_out           = $stats.nats_out
+                queue_len          = $stats.queue_len
+                db_ok              = $stats.db_ok
+                db_fail            = $stats.db_fail
+                db_lag_ms          = $stats.db_lag_ms
+                ea_to_engine_ms_last = $stats.ea_to_engine_ms_last
+                ea_to_engine_ms_p50  = $stats.ea_to_engine_ms_p50
+                ea_to_engine_ms_p95  = $stats.ea_to_engine_ms_p95
             })
+            $lastPerSymbol = $stats.per_symbol
         } catch {
             $samples.Add([PSCustomObject]@{
-                t = (Get-Date).ToString("HH:mm:ss"); ticks_in = "ERROR"; nats_out = $_.Exception.Message
-                queue_len = $null; db_ok = $null; db_fail = $null; db_lag_ms = $null; current_ms = $null; p50_ms = $null
+                t = (Get-Date).ToString("HH:mm:ss"); ticks_in = "ERROR"; t0_invalid = $_.Exception.Message
+                nats_out = $null; queue_len = $null; db_ok = $null; db_fail = $null; db_lag_ms = $null
+                ea_to_engine_ms_last = $null; ea_to_engine_ms_p50 = $null; ea_to_engine_ms_p95 = $null
             })
         }
         $remaining = $PollDurationSec - ((Get-Date) - $pollStart).TotalSeconds
@@ -446,6 +451,8 @@ if (-not $secretMatch) {
         Write-Host "db_ok:    $($first.db_ok) -> $($last.db_ok)  (delta $dbOkDelta)"
         Write-Host "db_fail (cumulative): $($last.db_fail)"
         Write-Host "db_lag_ms (last sample): $($last.db_lag_ms)"
+        Write-Host "t0_invalid (cumulative): $($last.t0_invalid)  -- non-zero and climbing means the EA's timestamp is still wrong (should be ~0 after the TimeGMT() fix)"
+        Write-Host "ea_to_engine_ms last/p50/p95 (last sample): $($last.ea_to_engine_ms_last) / $($last.ea_to_engine_ms_p50) / $($last.ea_to_engine_ms_p95)  -- should be small positive numbers, not near +/-10,800,000"
         Write-Host "queue_len (last sample): $($last.queue_len)  -- compare by eye against how many symbols should be live"
 
         if ($ticksDelta -le 0) { Write-Warn "ticks_in did not climb over the poll window -- feed may not be flowing" }
@@ -455,11 +462,29 @@ if (-not $secretMatch) {
         else { Write-Ok "nats_out is tracking ticks_in exactly over this window" }
 
         if ($last.db_fail -gt $first.db_fail) { Write-Warn "db_fail increased during the poll window ($($first.db_fail) -> $($last.db_fail))" }
+
+        if ($last.t0_invalid -gt $first.t0_invalid) { Write-Warn "t0_invalid increased during the poll window ($($first.t0_invalid) -> $($last.t0_invalid)) -- check the EA's TimeGMT() fix actually deployed" }
+        if ($null -ne $last.ea_to_engine_ms_p50 -and [Math]::Abs($last.ea_to_engine_ms_p50) -gt 60000) { Write-Warn "ea_to_engine_ms_p50 ($($last.ea_to_engine_ms_p50)) looks like a timezone/clock bug, not real latency" }
     } else {
         Write-Fail "Fewer than 2 successful samples -- could not compute deltas. Check the errors printed in the table above."
     }
 
-    Write-Warn "This endpoint has no per-symbol breakdown (no last-tick age per symbol, no literal ea_to_engine_ms field) -- current_ms/p50_ms above are the closest existing equivalent (EA-send-to-engine-receive latency, aggregate across all symbols, not per-symbol). Confirming BTCUSD/ETHUSD specifically -- or any single symbol's freshness -- isn't possible from this endpoint as it exists today. Check LivePrice directly (e.g. a psql query) for that, or treat a per-symbol breakdown as a follow-up addition to /internal/feed-stats."
+    if ($lastPerSymbol -and $lastPerSymbol.Count -gt 0) {
+        Write-Host "`n--- per_symbol (from the last successful sample) ---"
+        $lastPerSymbol | Sort-Object symbol | Format-Table symbol, ticks_60s, last_tick_age_ms, bid, ask -AutoSize | Out-String | Write-Host
+
+        $stale = $lastPerSymbol | Where-Object { $_.last_tick_age_ms -gt 15000 }
+        if ($stale) { Write-Warn "Symbols with last_tick_age_ms > 15000 (stale): $(($stale | ForEach-Object { $_.symbol }) -join ', ')" }
+        else { Write-Ok "All reported symbols are fresh (last_tick_age_ms <= 15000)" }
+
+        foreach ($weekendSymbol in @("BTCUSD", "ETHUSD")) {
+            $row = $lastPerSymbol | Where-Object { $_.symbol -eq $weekendSymbol }
+            if ($row) { Write-Ok "$weekendSymbol is live -- last_tick_age_ms=$($row.last_tick_age_ms), ticks_60s=$($row.ticks_60s)" }
+            else { Write-Warn "$weekendSymbol not present in per_symbol -- not being pushed by the EA right now" }
+        }
+    } else {
+        Write-Warn "per_symbol was empty or missing on the last successful sample -- check the engine build actually includes this follow-up's changes"
+    }
 
     if ($EngineLogPath -and $logCountAtStart -ne $null -and $logCountBeforeRestart -ne $null -and $logCountPollStart -ne $null -and $logCountPollEnd -ne $null) {
         $beforeMinutes = ($logSampleBeforeRestart - $logSampleAtStart).TotalMinutes

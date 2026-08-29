@@ -145,6 +145,26 @@ export async function writeAuditLog(entry: {
   );
 }
 
+// Second Contabo-audit follow-up: the price stream used to broadcast
+// every tick to every connected client regardless of broker -- the EA
+// side no longer enforces a fixed symbol list either (MARKET_WATCH mode
+// can push anything selected in a terminal's Market Watch), so nothing
+// upstream of the Gateway narrows this anymore. This is what a tenant's
+// "enabled symbol list" actually means: BrokerSymbol.enabled, the same
+// table/flag every REST route already checks (app/api/trade/orders,
+// group pricing, etc.) -- not a new concept, just the first place it's
+// read outside the Next.js app. src/ws.ts caches this per broker for 30s
+// (see WsSymbolFilterCacheEntry there) rather than querying on every tick.
+export async function getEnabledSymbolNames(brokerId: string): Promise<string[]> {
+  const { rows } = await pool.query(
+    `SELECT s.name FROM "BrokerSymbol" bs
+     JOIN "Symbol" s ON s.id = bs."symbolId"
+     WHERE bs."brokerId" = $1 AND bs.enabled = true`,
+    [brokerId]
+  );
+  return rows.map((r) => r.name as string);
+}
+
 export async function getLedgerSum(accountId: string): Promise<Decimal> {
   const { rows } = await pool.query(
     `SELECT COALESCE(SUM(amount), 0) AS total FROM ledger_entries WHERE account_id = $1`,

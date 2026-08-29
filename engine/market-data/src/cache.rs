@@ -65,6 +65,22 @@ impl TickCache {
         };
         guard.values().map(|(tick, _)| tick.clone()).collect()
     }
+
+    // Read by GET /internal/feed-stats's per_symbol breakdown -- same
+    // snapshot as above, plus each tick's age in ms as of `now` (passed
+    // in, not read internally, for the same testability reason every
+    // other timestamp comparison in this module takes `now`/`max_age` as
+    // a parameter instead of calling Utc::now() itself).
+    pub fn snapshot_with_age(&self, now: DateTime<Utc>) -> Vec<(Tick, i64)> {
+        let guard = match self.inner.read() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        guard
+            .values()
+            .map(|(tick, at)| (tick.clone(), (now - *at).num_milliseconds()))
+            .collect()
+    }
 }
 
 impl Default for TickCache {

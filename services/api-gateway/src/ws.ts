@@ -20,9 +20,36 @@ import type { IncomingMessage, Server } from "http";
 import { connect, type NatsConnection } from "nats";
 import { WebSocket, WebSocketServer } from "ws";
 import { getTraderSession } from "./auth.js";
+import { getEnabledSymbolNames } from "./db.js";
 
 const PRICE_STREAM_PATH = "/v1/prices/stream";
 const TRADING_STREAM_PATH = "/v1/trading/stream";
+
+// Per-broker enabled-symbol cache, 30s TTL -- "hot-reload on cfg change"
+// in practice means a Manager toggling a symbol's enabled flag is picked
+// up within at most 30s, not instantly; there's no push channel from the
+// Next.js app's own symbol-config mutation to this process (no NATS
+// event, no LISTEN/NOTIFY) to do better than that without adding one, and
+// a symbol enable/disable isn't latency-sensitive the way a price tick
+// is. Re-fetched lazily per broker (on first connection or cache expiry),
+// not pre-warmed for every broker up front.
+interface SymbolFilterCacheEntry {
+  symbols: Set<string>;
+  fetchedAt: number;
+}
+const SYMBOL_FILTER_TTL_MS = 30_000;
+const symbolFilterCache = new Map<string, SymbolFilterCacheEntry>();
+
+async function getEnabledSymbolsCached(brokerId: string): Promise<Set<string>> {
+  const cached = symbolFilterCache.get(brokerId);
+  if (cached && Date.now() - cached.fetchedAt < SYMBOL_FILTER_TTL_MS) {
+    return cached.symbols;
+  }
+  const names = await getEnabledSymbolNames(brokerId);
+  const symbols = new Set(names);
+  symbolFilterCache.set(brokerId, { symbols, fetchedAt: Date.now() });
+  return symbols;
+}
 
 // Phase 4 of the tick-pipeline audit -- exported so index.ts's stats
 // route can read it without this module needing its own HTTP route.
@@ -46,10 +73,14 @@ export async function attachPriceStream(server: Server, natsUrl: string): Promis
   const sub = nc.subscribe("price.tick.*");
 
   const wss = new WebSocketServer({ noServer: true });
-  const clients = new Set<WebSocket>();
+  // ws -> that connection's own broker id, so a forwarded tick can be
+  // checked against that specific broker's enabled-symbol set (see
+  // getEnabledSymbolsCached above) -- was a bare Set<WebSocket> before
+  // the per-tenant filtering this map exists for.
+  const clients = new Map<WebSocket, string>();
 
-  wss.on("connection", (ws: WebSocket) => {
-    clients.add(ws);
+  function registerClient(ws: WebSocket, brokerId: string) {
+    clients.set(ws, brokerId);
     gatewayStats.wsConnectionsTotal += 1;
     ws.on("close", () => {
       clients.delete(ws);
@@ -59,7 +90,7 @@ export async function attachPriceStream(server: Server, natsUrl: string): Promis
       clients.delete(ws);
       gatewayStats.wsDisconnectionsTotal += 1;
     });
-  });
+  }
 
   server.on("upgrade", (req: IncomingMessage, socket, head) => {
     const { pathname } = new URL(req.url ?? "", "http://internal");
@@ -73,7 +104,7 @@ export async function attachPriceStream(server: Server, natsUrl: string): Promis
           return;
         }
         wss.handleUpgrade(req, socket, head, (ws) => {
-          wss.emit("connection", ws, req);
+          registerClient(ws, session.brokerId);
         });
       })
       .catch((err) => {
@@ -86,15 +117,31 @@ export async function attachPriceStream(server: Server, natsUrl: string): Promis
   // (protocol::Tick — {symbol, bid, ask}) — decoded to a string and sent
   // as a WS text frame (not the raw bytes as binary) so the browser's
   // native WebSocket delivers `event.data` as a string, not a Blob.
+  //
+  // Per-tenant filtering (second Contabo-audit follow-up): the engine no
+  // longer enforces a fixed symbol list (a MARKET_WATCH-mode EA can push
+  // anything selected in a terminal), so this is now the only place a
+  // broker's traders are kept to that broker's own enabled symbols --
+  // every tick is parsed for its `symbol` once, then checked per client
+  // against that client's own broker's cached enabled-symbol set.
   (async () => {
     for await (const msg of sub) {
       gatewayStats.natsMessagesReceivedTotal += 1;
       const text = Buffer.from(msg.data).toString("utf-8");
-      for (const client of clients) {
-        if (client.readyState === WebSocket.OPEN) {
-          client.send(text);
-          gatewayStats.ticksForwardedTotal += 1;
-        }
+      let symbol: string | undefined;
+      try {
+        symbol = JSON.parse(text)?.symbol;
+      } catch {
+        continue; // malformed tick -- nothing to filter or forward
+      }
+      if (!symbol) continue;
+
+      for (const [client, brokerId] of clients) {
+        if (client.readyState !== WebSocket.OPEN) continue;
+        const enabled = await getEnabledSymbolsCached(brokerId);
+        if (!enabled.has(symbol)) continue;
+        client.send(text);
+        gatewayStats.ticksForwardedTotal += 1;
       }
     }
   })().catch((err) => {
