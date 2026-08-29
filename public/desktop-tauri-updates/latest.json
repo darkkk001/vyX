@@ -1,11 +1,11 @@
 {
-  "version": "0.1.2",
-  "notes": "Fix: title bar minimize/maximize/close buttons were silently rejected by Tauri's permission system (missing ACL entries) and did nothing",
-  "pub_date": "2026-08-27T15:44:44.822Z",
+  "version": "0.1.5",
+  "notes": "Fix: login could only sign into DEMO accounts, dead live prices in FuturixGlobal build, order type selection, symbol specification",
+  "pub_date": "2026-08-29T02:22:16.500Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTMmJJTjZKK1lOYmlmcDU5OGxoUHJONVU3VERGcjVBUmtIeTF1bkwxQ0dmOE5LZUErbjIzcEE1NisrUGhCUUhhbnJZdWZnK0t4NDh3TmJoNEE0UHJXSEJrRjZJKzgrMndBPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg3ODQ1MjAyCWZpbGU6VnlYVHJhZGVyXzAuMS4yX3g2NC1zZXR1cC5leGUKTE5TMEFBM1BkaS9Wc1hLcDJvbFZiU1FBcDByWGsrZ2ZlZzFzYnFVdiswbWNBdVVZWitIU0kyZmRZckpoYndwSHl0bWZONTE2ZDFCZHdoRWNhTDh0Q0E9PQo=",
-      "url": "https://vyxtrader.com/desktop-tauri-updates/VyXTrader_0.1.2_x64-setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTMmJJTjZKK1lOYmd2Yk5aclNtY2ZkTjh6aEtKZEZBSGQzZjdTSno4ZERhZVltU0FzWU52VUZBajdaWnlsRjVFMmFjOHRiUWlKYkMxRm5ZRHdOQmF5WUJCaGN5Wks3dmc0PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg3OTcwMDU5CWZpbGU6RnV0dXJpeCBHbG9iYWwgVHJhZGVyXzAuMS41X3g2NC1zZXR1cC5leGUKaG92K0YyWUc0WmhFOTVWNUEvc2krWVdNOC9HbE9sUXQ2bXE3OWNYYzlyeVg4bi9JdFU5b2ZkOFpKOFhmVWtkQUtGbnVyb1pYMEh1UU8xVzM0a09OQnc9PQo=",
+      "url": "https://vyxtrader.com/desktop-tauri-updates/Futurix%20Global%20Trader_0.1.5_x64-setup.exe"
     }
   }
 }

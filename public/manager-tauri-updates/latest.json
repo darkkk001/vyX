@@ -1,11 +1,11 @@
 {
-  "version": "0.1.1",
-  "notes": "Fix: remember/forget-broker calls were silently rejected by Tauri's permission system (missing ACL entries)",
-  "pub_date": "2026-08-27T15:51:08.910Z",
+  "version": "0.1.4",
+  "notes": "Fix: white background (missing dark theme), console window popup on launch, fetch bridge crashing components",
+  "pub_date": "2026-08-29T02:23:44.120Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUc2VqVXVBOHpXRHdzYWlVMGhTSEV1NkNZODhwOTNKS3VuK3g4T1ZyNGY5ZWtMNnYreFhIbGJXci9zM3RZQXQwYkFScjlFMko1OUxQT2daaWhFMURsb1NrVm1RSmxlS2drPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg3ODQ1NTg3CWZpbGU6VnlYVHJhZGVyIE1hbmFnZXJfMC4xLjFfeDY0LXNldHVwLmV4ZQpTRC9rc1VRcFJGT3NET2lBMHhCc3A1dEhoZW1acjYxZTNEeTlmb01HLzlXTEM3dE5MRXYwdVNobmVLMFZzU1kzMnFhRTFTVzh6Umh5U2h4V2dqcmJBZz09Cg==",
-      "url": "https://vyxtrader.com/manager-tauri-updates/VyXTrader Manager_0.1.1_x64-setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUc2VqVXVBOHpXRDhSaXdnMUVpazBsTWZ5ejJyOWZLU2VjRXc5YTBnZzhOS1J2ZUEvMlgzNFFjYlNkeURPSEFlNVRuNG5FVG9GS1JPR0RKNUhqN3YwamhEbEtSeGFYdndnPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg3OTcwMjE3CWZpbGU6RnV0dXJpeCBHbG9iYWwgTWFuYWdlcl8wLjEuNF94NjQtc2V0dXAuZXhlCjFPZmYrRjYwdDNNVU8wUDI5NllRdXM5RDVwNk1xRkpBV1lYdmg3bStpUDN5MnpxekZyV3hNZ2tQZHVaYWtwcWpkN2YydFhRYTk1dWsxWXBFckNoN0RRPT0K",
+      "url": "https://vyxtrader.com/manager-tauri-updates/Futurix%20Global%20Manager_0.1.4_x64-setup.exe"
     }
   }
 }

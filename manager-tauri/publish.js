@@ -82,7 +82,8 @@ const manifest = {
   platforms: {
     "windows-x86_64": {
       signature,
-      url: `${publicBaseUrl}/${installer}`,
+      // encodeURIComponent -- see desktop-tauri/publish.js's own comment.
+      url: `${publicBaseUrl}/${encodeURIComponent(installer)}`,
     },
   },
 };

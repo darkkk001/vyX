@@ -88,7 +88,12 @@ const manifest = {
   platforms: {
     "windows-x86_64": {
       signature,
-      url: `${publicBaseUrl}/${installer}`,
+      // encodeURIComponent, not a raw filename -- a per-broker rebrand's
+      // productName routinely contains spaces (e.g. "Futurix Global
+      // Trader_0.1.5_x64-setup.exe"), and a literal space in a URL is
+      // invalid; the updater plugin's HTTP client has no browser-style
+      // leniency to paper over it.
+      url: `${publicBaseUrl}/${encodeURIComponent(installer)}`,
     },
   },
 };
