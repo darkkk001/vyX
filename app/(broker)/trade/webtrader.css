@@ -330,7 +330,15 @@ html, body, #root {
    shrinking inside it -- the two visibly overlapped as a result. Same
    fix, same reasoning, as this file's min-width: 0 rules for the
    horizontal analog of this bug (see the mobile section below). */
-.center { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--border); overflow: hidden; }
+/* min-width: 0 -- same CSS Grid default-min-width fix as .order-panel/
+   .watchlist above. .center was the one column left without it: its own
+   bottom-panel tables carry a deliberate desktop min-width (see that
+   panel's own comment) that's wider than a narrowed window/column, so
+   without this the whole grid row refused to shrink to fit and the
+   excess spilled past .main's own overflow: hidden -- reported live as
+   the order ticket's Buy/Sell buttons pushed outside the app window
+   entirely once the window (or this column) got narrow enough. */
+.center { display: flex; flex-direction: column; min-height: 0; min-width: 0; border-right: 1px solid var(--border); overflow: hidden; }
 .chart-header { display: flex; align-items: center; justify-content: space-between; padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--bg-1); flex-shrink: 0; }
 .chart-title { display: flex; align-items: center; gap: 10px; }
 .chart-symbol { font-size: 14px; font-weight: 600; }

@@ -403,13 +403,21 @@ export default function SmartTradeManager({
             </div>
           </div>
 
+          {/* flexWrap: wrap on all three rows below -- this card used to
+              only ever render at a fixed 420px (the non-embedded modal
+              width); embedded mode can now be as narrow as 160px (the
+              Watchlist column's own resize floor), and none of these rows
+              have any give at that width. Without wrapping, the row just
+              overflowed the card and (since nothing between here and
+              .watchlist had min-width: 0 to actually clip it) rendered
+              past the Watchlist column and over the chart. */}
           <div style={{ marginBottom: 10 }}>
-            <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 6 }}>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center", marginBottom: 6 }}>
               <span style={{ fontSize: 11, color: "var(--text-3)", width: 90 }}>Break-even</span>
               <input className="mono" style={{ width: 70 }} type="number" step="any" value={beOffset} onChange={(e) => setBeOffset(e.target.value)} title="Offset from entry price" />
               <button className="modal-btn" disabled={busy} onClick={breakEven}>Apply</button>
             </div>
-            <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 6 }}>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center", marginBottom: 6 }}>
               <span style={{ fontSize: 11, color: "var(--text-3)", width: 90 }}>Partial close</span>
               <button className="modal-btn" disabled={busy} onClick={() => partialClosePct(0.25)}>25%</button>
               <button className="modal-btn" disabled={busy} onClick={() => partialClosePct(0.5)}>50%</button>
@@ -417,10 +425,10 @@ export default function SmartTradeManager({
               <input className="mono" style={{ width: 50 }} type="number" min="1" max="99" value={customPct} onChange={(e) => setCustomPct(e.target.value)} />
               <button className="modal-btn" disabled={busy} onClick={partialCloseCustom}>%</button>
             </div>
-            <div style={{ display: "flex", gap: 6 }}>
-              <button className="modal-btn" disabled={busy} onClick={closeProfitable} style={{ flex: 1 }}>Close profitable</button>
-              <button className="modal-btn" disabled={busy} onClick={closeLosing} style={{ flex: 1 }}>Close losing</button>
-              <button className="modal-btn" disabled={busy} onClick={closeAll} style={{ flex: 1 }}>Close all</button>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              <button className="modal-btn" disabled={busy} onClick={closeProfitable} style={{ flex: 1, minWidth: 90 }}>Close profitable</button>
+              <button className="modal-btn" disabled={busy} onClick={closeLosing} style={{ flex: 1, minWidth: 80 }}>Close losing</button>
+              <button className="modal-btn" disabled={busy} onClick={closeAll} style={{ flex: 1, minWidth: 70 }}>Close all</button>
             </div>
           </div>
         </div>
