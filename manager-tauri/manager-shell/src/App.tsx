@@ -1,4 +1,5 @@
-import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
+import ManagerLoginForm from "@/app/manage/login/ManagerLoginForm";
 import { AdminShell, type AdminNavGroup, type AdminNavItem } from "@/components/admin/AdminShell";
 import { LogoutButton } from "@/components/admin/LogoutButton";
 import { TopbarSearch } from "@/components/admin/TopbarSearch";
@@ -67,10 +68,6 @@ export default function App() {
   const [branding, setBranding] = useState<ApiBrokerBranding | null>(null);
   const [loggedIn, setLoggedIn] = useState(false);
   const [shellInfo, setShellInfo] = useState<ShellInfo | null>(null);
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [loggingIn, setLoggingIn] = useState(false);
   const [section, setSection] = useState("/manage/dashboard");
   // Accounts drill-in: clicking an account number on /manage/accounts
   // used to navigate to /manage/accounts/{id} (a real dynamic route) --
@@ -89,53 +86,17 @@ export default function App() {
     setShellInfo(info);
   }
 
-  async function handleLogin(e: FormEvent) {
-    e.preventDefault();
-    setError(null);
-    setLoggingIn(true);
-    try {
-      await apiCall("/api/manage/login", { method: "POST", body: JSON.stringify({ email, password }) });
-      await loadShellInfo();
-      setLoggedIn(true);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "login failed");
-    } finally {
-      setLoggingIn(false);
-    }
-  }
-
   if (!loggedIn || !shellInfo) {
     return (
-      <div className="flex h-screen flex-col items-center justify-center bg-[#07090C] text-[#e8ecf4]">
-        {branding?.brokerLogoUrl ? (
-          <img src={branding.brokerLogoUrl} alt={branding.brokerName} className="mb-6 max-h-10" />
-        ) : (
-          <div className="mb-6 text-lg font-semibold">{branding?.brokerName ?? ""}</div>
-        )}
-        <form onSubmit={handleLogin} className="flex w-72 flex-col gap-3">
-          <input
-            placeholder="Email address"
-            type="email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            className="rounded-md border border-[#1A222C] bg-[#0E1319] px-3 py-2.5 text-[#e8ecf4] outline-none"
-          />
-          <input
-            placeholder="Password"
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            className="rounded-md border border-[#1A222C] bg-[#0E1319] px-3 py-2.5 text-[#e8ecf4] outline-none"
-          />
-          {error ? <div className="text-sm text-[#EA3943]">{error}</div> : null}
-          <button
-            type="submit"
-            disabled={loggingIn}
-            className="rounded-md bg-[#16C784] px-3 py-2.5 font-semibold text-[#07090C]"
-          >
-            {loggingIn ? "Signing in..." : "Sign in"}
-          </button>
-        </form>
+      <div data-surface="manager" className="min-h-dvh antialiased">
+        <ManagerLoginForm
+          brokerName={branding?.brokerName ?? "Backoffice"}
+          logoUrl={branding?.brokerLogoUrl ?? null}
+          onAuthenticated={async () => {
+            await loadShellInfo();
+            setLoggedIn(true);
+          }}
+        />
       </div>
     );
   }

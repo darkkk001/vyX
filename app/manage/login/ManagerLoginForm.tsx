@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
 import { FormField } from "@/components/ui/FormField";
 import { Input } from "@/components/ui/Input";
 import { PasswordInput } from "@/components/ui/PasswordInput";
@@ -12,14 +11,22 @@ import TwoPanelAuthShell, { twoPanelAuthShellStyles as styles } from "@/componen
 
 type View = "signin" | "forgot" | "forgotSent" | "success";
 
+// Portable core -- no next/navigation dependency, same "extract the
+// router dependency out" split as TradeLoginForm.tsx/NextTradeLoginForm.tsx
+// (see that pair's own comments). The website keeps using
+// NextManagerLoginForm.tsx, which supplies the router-based
+// onAuthenticated default; manager-shell (the bundled Manager terminal)
+// instead passes a callback that just flips local state, since the
+// document has no real URL of its own to navigate to.
 export default function ManagerLoginForm({
   brokerName,
   logoUrl,
+  onAuthenticated,
 }: {
   brokerName: string;
   logoUrl: string | null;
+  onAuthenticated: () => void;
 }) {
-  const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [remember, setRemember] = useState(false);
@@ -66,7 +73,7 @@ export default function ManagerLoginForm({
     // Brief real confirmation before the redirect, not a fake delay --
     // matches how the credential check itself already took a moment.
     setView("success");
-    setTimeout(() => router.push("/manage/dashboard"), 500);
+    setTimeout(onAuthenticated, 500);
   }
 
   async function handleForgotPassword(event: React.FormEvent) {

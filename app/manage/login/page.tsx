@@ -1,6 +1,6 @@
 import { headers } from "next/headers";
 import { prisma } from "@/lib/prisma";
-import ManagerLoginForm from "./ManagerLoginForm";
+import NextManagerLoginForm from "./NextManagerLoginForm";
 
 // Resolved fresh per request (never baked into the build) so a broker's
 // branding update takes effect immediately -- same principle as
@@ -14,5 +14,5 @@ export default async function ManagerLoginPage() {
     ? await prisma.broker.findUnique({ where: { id: brokerId }, select: { name: true, logoUrl: true } })
     : null;
 
-  return <ManagerLoginForm brokerName={broker?.name ?? "Backoffice"} logoUrl={broker?.logoUrl ?? null} />;
+  return <NextManagerLoginForm brokerName={broker?.name ?? "Backoffice"} logoUrl={broker?.logoUrl ?? null} />;
 }
