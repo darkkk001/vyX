@@ -17,11 +17,36 @@ export type NotificationRow = {
   createdAt: string;
 };
 
+// Which Manager section a notification's type should jump to -- every
+// type except PASSWORD_RESET_REQUESTED (handled inline below with its
+// own dedicated action) previously had no click-through at all, so
+// clicking e.g. a "new order awaiting confirmation" notification did
+// nothing beyond what "Mark read" already did. Keys must match the
+// exact `type` string each createNotification() call site uses (see
+// app/api/trade/{orders,kyc,funds-requests}/route.ts,
+// app/api/manage/leads/route.ts).
+const SECTION_FOR_TYPE: Record<string, string> = {
+  DEALING_ORDER_PENDING: "/manage/dealing",
+  KYC_SUBMITTED: "/manage/kyc",
+  NEW_LEAD: "/manage/leads",
+  FUNDS_REQUEST: "/manage/funds",
+};
+
 // Self-fetches from the already-existing /api/manage/notifications GET
 // (returns this exact shape, unmodified) instead of receiving rows as a
 // server-rendered prop -- both the website and a bundled manager-shell
 // desktop app (no Server Component of its own) share this one path now.
-export default function NotificationsManager() {
+export default function NotificationsManager({
+  onNavigateToSection = (section) => {
+    window.location.href = section;
+  },
+}: {
+  // Same "callback with a hard-nav default" pattern as AccountsManager's
+  // onOpenAccount/LogoutButton's onLoggedOut -- the website's hard nav
+  // is a full page load (fine, notifications aren't clicked often); a
+  // bundled shell passes its own section-switch instead.
+  onNavigateToSection?: (section: string) => void;
+} = {}) {
   const [rows, setRows] = useState<NotificationRow[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [resetTarget, setResetTarget] = useState<NotificationRow | null>(null);
@@ -117,6 +142,17 @@ export default function NotificationsManager() {
                 {row.type === "PASSWORD_RESET_REQUESTED" && row.entityId ? (
                   <Button size="sm" variant="primary" onClick={() => openReset(row)}>
                     Reset password
+                  </Button>
+                ) : SECTION_FOR_TYPE[row.type] ? (
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    onClick={() => {
+                      if (!row.read) markRead(row.id).catch(() => {});
+                      onNavigateToSection(SECTION_FOR_TYPE[row.type]);
+                    }}
+                  >
+                    View
                   </Button>
                 ) : null}
                 {!row.read ? (
