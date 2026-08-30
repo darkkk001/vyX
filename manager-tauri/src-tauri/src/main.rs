@@ -25,6 +25,35 @@ use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_updater::UpdaterExt;
 use std::sync::Mutex;
 
+// fix/realtime-sync -- see desktop-tauri/src-tauri/src/main.rs's
+// identical function for the full explanation (WebView2's default
+// context menu/accelerator keys/DevTools, reached via Tauri's
+// with_webview escape hatch since WebviewWindowBuilder doesn't expose
+// wry's own with_default_context_menus/with_browser_accelerator_keys).
+#[cfg(target_os = "windows")]
+fn lock_down_webview(webview: tauri::webview::PlatformWebview) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings3;
+    use windows::core::Interface;
+
+    let controller = webview.controller();
+    let Ok(core_webview) = (unsafe { controller.CoreWebView2() }) else {
+        return;
+    };
+    let Ok(settings) = (unsafe { core_webview.Settings() }) else {
+        return;
+    };
+    unsafe {
+        let _ = settings.SetAreDefaultContextMenusEnabled(false);
+        let _ = settings.SetAreDevToolsEnabled(false);
+        if let Ok(settings3) = settings.cast::<ICoreWebView2Settings3>() {
+            let _ = settings3.SetAreBrowserAcceleratorKeysEnabled(false);
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn lock_down_webview(_webview: tauri::webview::PlatformWebview) {}
+
 #[derive(Debug, Deserialize)]
 struct BrokerConfig {
     #[serde(rename = "brokerName")]
@@ -272,7 +301,7 @@ fn main() {
             let broker_name = config.broker_name.clone();
             let nav_app_handle = app.handle().clone();
             let new_window_app_handle = app.handle().clone();
-            WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+            let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
                 .title(&broker_name)
                 .inner_size(1440.0, 900.0)
                 .min_inner_size(1024.0, 640.0)
@@ -293,6 +322,7 @@ fn main() {
                 })
                 .initialization_script(&init_script)
                 .build()?;
+            window.with_webview(lock_down_webview)?;
 
             #[cfg(not(debug_assertions))]
             {

@@ -23,6 +23,57 @@ use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_updater::UpdaterExt;
 
+// fix/realtime-sync -- WebView2 (the native OS component Tauri uses to
+// render this window on Windows) keeps its own default browser-like
+// behaviors -- a right-click context menu with "Inspect Element", and
+// F5/Ctrl+R/F12 accelerator keys that reload/open DevTools -- unless
+// explicitly turned off. Left on, a packaged native app can still look
+// and behave like a browser tab (reported live: right-click showed
+// Inspect Element, F5 still reloaded the whole app despite WebTrader.tsx's
+// own F5 keydown handler -- accelerator keys are handled by WebView2
+// itself, upstream of the page's own JS, so no amount of page-level
+// preventDefault() can reach them).
+//
+// wry (the webview library underneath Tauri) exposes
+// with_default_context_menus/with_browser_accelerator_keys, but only as
+// WebViewBuilder options at construction time -- Tauri's own
+// WebviewWindowBuilder doesn't forward them. This instead reaches the
+// live ICoreWebView2Controller directly through Tauri's documented
+// with_webview escape hatch, after the window already exists, the same
+// way wry's own internals apply these settings
+// (wry-0.55.1/src/webview2/mod.rs's set_webview_settings).
+//
+// On Windows, PlatformWebview::controller() already returns a properly
+// typed, owned ICoreWebView2Controller (Tauri clones its own reference --
+// see tauri-2.11.5/src/webview/mod.rs), not a raw pointer -- no unsafe
+// pointer-casting needed, just the two COM calls to get to Settings.
+#[cfg(target_os = "windows")]
+fn lock_down_webview(webview: tauri::webview::PlatformWebview) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings3;
+    use windows::core::Interface;
+
+    let controller = webview.controller();
+    let Ok(core_webview) = (unsafe { controller.CoreWebView2() }) else {
+        return;
+    };
+    let Ok(settings) = (unsafe { core_webview.Settings() }) else {
+        return;
+    };
+    unsafe {
+        let _ = settings.SetAreDefaultContextMenusEnabled(false);
+        let _ = settings.SetAreDevToolsEnabled(false);
+        if let Ok(settings3) = settings.cast::<ICoreWebView2Settings3>() {
+            let _ = settings3.SetAreBrowserAcceleratorKeysEnabled(false);
+        }
+    }
+}
+
+// No other platform target is built for this app today (Windows-only
+// installers), so this is a documented no-op rather than unreachable code
+// if that ever changes.
+#[cfg(not(target_os = "windows"))]
+fn lock_down_webview(_webview: tauri::webview::PlatformWebview) {}
+
 #[derive(Debug, Deserialize)]
 struct BrokerConfig {
     #[serde(rename = "brokerName")]
@@ -687,6 +738,7 @@ fn main() {
                 })
                 .initialization_script(&init_script)
                 .build()?;
+            window.with_webview(lock_down_webview)?;
 
             // --- System tray -- direct port of desktop/main.js's
             // createTray()/refreshTrayMenu(), same item order: Show, sep,

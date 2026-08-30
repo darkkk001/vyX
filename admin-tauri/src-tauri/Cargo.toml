@@ -24,3 +24,10 @@ reqwest = { version = "0.13", features = ["cookies", "json", "multipart"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.22"
+
+# fix/realtime-sync -- see desktop-tauri/src-tauri/Cargo.toml's identical
+# comment. Disables WebView2's default browser-like behavior via main.rs's
+# lock_down_webview.
+[target.'cfg(windows)'.dependencies]
+webview2-com = "0.38"
+windows = "0.61"

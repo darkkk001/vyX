@@ -30,3 +30,14 @@ base64 = "0.22"
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
 futures-util = "0.3"
 tokio = { version = "1", features = ["time"] }
+
+# fix/realtime-sync -- disables WebView2's default browser-like behavior
+# (context menu, F5/Ctrl+R/F12 accelerator keys, DevTools) via the native
+# COM controller Tauri's with_webview escape hatch exposes; see main.rs's
+# lock_down_webview. Windows-only: no macOS/Linux build target exists for
+# these apps today, and webview2-com itself only builds on Windows.
+# Versions match what wry already resolves transitively (cargo tree -p
+# webview2-com / -p windows), so this doesn't pull in a second copy.
+[target.'cfg(windows)'.dependencies]
+webview2-com = "0.38"
+windows = "0.61"
