@@ -5,17 +5,38 @@ import { Badge } from "@/components/ui/Badge";
 import { StatCard, StatGrid } from "@/components/ui/StatCard";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell } from "@/components/ui/Table";
 
+// Field names match engine/server's FeedStatsResponse (see
+// app/api/manage/feed-health/route.ts's identical comment) -- this copy
+// had drifted from the fix/realtime-sync rename until now.
 type FeedStatsSnapshot = {
-  current_ms: number | null;
-  p50_ms: number | null;
-  p95_ms: number | null;
+  sample_count: number;
+  ea_to_engine_ms_last: number | null;
+  ea_to_engine_ms_p50: number | null;
+  ea_to_engine_ms_p95: number | null;
   p99_ms: number | null;
   max_ms: number | null;
-  ticks_ingested_total: number;
+  ticks_in: number;
   ticks_missing_t0_total: number;
   ticks_dropped_invalid_total: number;
+  t0_invalid: number;
+  nats_out: number;
   nats_publish_failures_total: number;
   candle_write_failures_total: number;
+  db_ok: number;
+  db_fail: number;
+  db_lag_ms: number;
+  mono_to_utc_offset_ms: number | null;
+  rtt_ms: number | null;
+  queue_len: number;
+  per_symbol: PerSymbolStat[];
+};
+
+type PerSymbolStat = {
+  symbol: string;
+  ticks_60s: number;
+  last_tick_age_ms: number;
+  bid: string;
+  ask: string;
 };
 
 type GatewayStats = {
@@ -59,9 +80,9 @@ export default function FeedHealthManager() {
         </div>
         {feedStats ? (
           <StatGrid columns={4}>
-            <StatCard label="Current latency" value={ms(feedStats.current_ms)} />
-            <StatCard label="p50" value={ms(feedStats.p50_ms)} />
-            <StatCard label="p95" value={ms(feedStats.p95_ms)} />
+            <StatCard label="Current latency" value={ms(feedStats.ea_to_engine_ms_last)} />
+            <StatCard label="p50" value={ms(feedStats.ea_to_engine_ms_p50)} />
+            <StatCard label="p95" value={ms(feedStats.ea_to_engine_ms_p95)} />
             <StatCard label="p99 / max" value={`${ms(feedStats.p99_ms)} / ${ms(feedStats.max_ms)}`} />
           </StatGrid>
         ) : (
@@ -77,7 +98,7 @@ export default function FeedHealthManager() {
         <TableBody>
           <TableRow>
             <TableCell primary>Ticks ingested (rolling)</TableCell>
-            <TableCell align="right" mono>{feedStats ? feedStats.ticks_ingested_total : <Badge tone="neutral">Not monitored</Badge>}</TableCell>
+            <TableCell align="right" mono>{feedStats ? feedStats.ticks_in : <Badge tone="neutral">Not monitored</Badge>}</TableCell>
           </TableRow>
           <TableRow>
             <TableCell primary>Ticks missing origin timestamp</TableCell>
@@ -88,15 +109,61 @@ export default function FeedHealthManager() {
             <TableCell align="right" mono>{feedStats ? feedStats.ticks_dropped_invalid_total : <Badge tone="neutral">Not monitored</Badge>}</TableCell>
           </TableRow>
           <TableRow>
-            <TableCell primary>NATS publish failures</TableCell>
-            <TableCell align="right" mono>{feedStats ? feedStats.nats_publish_failures_total : <Badge tone="neutral">Not monitored</Badge>}</TableCell>
+            <TableCell primary>t0 invalid (excluded from latency window)</TableCell>
+            <TableCell align="right" mono>{feedStats ? feedStats.t0_invalid : <Badge tone="neutral">Not monitored</Badge>}</TableCell>
+          </TableRow>
+          <TableRow>
+            <TableCell primary>NATS published / failures</TableCell>
+            <TableCell align="right" mono>{feedStats ? `${feedStats.nats_out} / ${feedStats.nats_publish_failures_total}` : <Badge tone="neutral">Not monitored</Badge>}</TableCell>
           </TableRow>
           <TableRow>
             <TableCell primary>Candle write failures (background)</TableCell>
             <TableCell align="right" mono>{feedStats ? feedStats.candle_write_failures_total : <Badge tone="neutral">Not monitored</Badge>}</TableCell>
           </TableRow>
+          <TableRow>
+            <TableCell primary>DB writes ok / failed (lag)</TableCell>
+            <TableCell align="right" mono>{feedStats ? `${feedStats.db_ok} / ${feedStats.db_fail} (${feedStats.db_lag_ms}ms)` : <Badge tone="neutral">Not monitored</Badge>}</TableCell>
+          </TableRow>
+          <TableRow>
+            <TableCell primary>Clock sync (offset / RTT)</TableCell>
+            <TableCell align="right" mono>
+              {feedStats
+                ? feedStats.mono_to_utc_offset_ms == null
+                  ? "no handshake yet"
+                  : `${feedStats.mono_to_utc_offset_ms}ms / ${feedStats.rtt_ms}ms`
+                : <Badge tone="neutral">Not monitored</Badge>}
+            </TableCell>
+          </TableRow>
+          <TableRow>
+            <TableCell primary>Symbols tracked (queue length)</TableCell>
+            <TableCell align="right" mono>{feedStats ? feedStats.queue_len : <Badge tone="neutral">Not monitored</Badge>}</TableCell>
+          </TableRow>
         </TableBody>
       </Table>
+
+      {feedStats && feedStats.per_symbol.length > 0 ? (
+        <div className="mt-6">
+          <h2 className="mb-2 text-sm font-medium text-[var(--text-2)]">Per-symbol freshness (last 60s)</h2>
+          <Table>
+            <TableHead>
+              <TableHeaderCell>Symbol</TableHeaderCell>
+              <TableHeaderCell align="right">Ticks (60s)</TableHeaderCell>
+              <TableHeaderCell align="right">Last tick age</TableHeaderCell>
+              <TableHeaderCell align="right">Bid / Ask</TableHeaderCell>
+            </TableHead>
+            <TableBody>
+              {feedStats.per_symbol.map((s) => (
+                <TableRow key={s.symbol}>
+                  <TableCell primary mono>{s.symbol}</TableCell>
+                  <TableCell align="right" mono>{s.ticks_60s}</TableCell>
+                  <TableCell align="right" mono>{ms(s.last_tick_age_ms)}</TableCell>
+                  <TableCell align="right" mono>{s.bid} / {s.ask}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+      ) : null}
 
       <div className="mb-2 mt-6 flex items-center gap-2">
         <h2 className="text-sm font-medium text-[var(--text-2)]">WebSocket gateway (services/api-gateway)</h2>

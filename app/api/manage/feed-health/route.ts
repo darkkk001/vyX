@@ -1,18 +1,46 @@
 import { NextResponse } from "next/server";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 
+// Field names match engine/server's FeedStatsResponse exactly (the
+// #[serde(flatten)] FeedStatsSnapshot plus queue_len/per_symbol) --
+// engine/market-data/src/stats.rs renamed current_ms/p50_ms/p95_ms to
+// ea_to_engine_ms_{last,p50,p95}, ticks_ingested_total to ticks_in, and
+// added t0_invalid/nats_out/db_ok/db_fail/db_lag_ms/
+// mono_to_utc_offset_ms/rtt_ms during fix/realtime-sync -- this type
+// (and FeedHealthManager.tsx's own copy) had drifted from that rename
+// until now, silently rendering 4 fields blank.
 type FeedStatsSnapshot = {
   sample_count: number;
-  current_ms: number | null;
-  p50_ms: number | null;
-  p95_ms: number | null;
+  ea_to_engine_ms_last: number | null;
+  ea_to_engine_ms_p50: number | null;
+  ea_to_engine_ms_p95: number | null;
   p99_ms: number | null;
   max_ms: number | null;
-  ticks_ingested_total: number;
+  ticks_in: number;
   ticks_missing_t0_total: number;
   ticks_dropped_invalid_total: number;
+  t0_invalid: number;
+  nats_out: number;
   nats_publish_failures_total: number;
   candle_write_failures_total: number;
+  db_ok: number;
+  db_fail: number;
+  db_lag_ms: number;
+  mono_to_utc_offset_ms: number | null;
+  rtt_ms: number | null;
+};
+
+type PerSymbolStat = {
+  symbol: string;
+  ticks_60s: number;
+  last_tick_age_ms: number;
+  bid: string;
+  ask: string;
+};
+
+type FeedStatsResponse = FeedStatsSnapshot & {
+  queue_len: number;
+  per_symbol: PerSymbolStat[];
 };
 
 type GatewayStats = {
@@ -55,7 +83,7 @@ export async function GET() {
   }
 
   const [feedStats, gatewayStats] = await Promise.all([
-    fetchStats<FeedStatsSnapshot>(`${TRADING_CORE_URL}/internal/feed-stats`),
+    fetchStats<FeedStatsResponse>(`${TRADING_CORE_URL}/internal/feed-stats`),
     fetchStats<GatewayStats>(`${GATEWAY_URL}/internal/gateway-stats`),
   ]);
 
