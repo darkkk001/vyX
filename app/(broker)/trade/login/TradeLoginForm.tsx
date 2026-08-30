@@ -150,7 +150,7 @@ export default function TradeLoginForm({
     setSubmitting(true);
     setConnStatus(`Connecting to ${selectedServer.name}…`);
     try {
-      const result = await tradeApi.login(accountNumber.trim(), password, selectedServer.type);
+      const result = await tradeApi.login(accountNumber.trim(), password, selectedServer.type, remember);
       if ("requiresTwoFactor" in result) {
         setPendingToken(result.pendingToken);
         setConnStatus("Not connected");
@@ -172,7 +172,7 @@ export default function TradeLoginForm({
     setSubmitting(true);
     setError(null);
     try {
-      await tradeApi.verifyTwoFactor(pendingToken, twoFactorCode);
+      await tradeApi.verifyTwoFactor(pendingToken, twoFactorCode, remember);
       onAuthenticated(remember);
     } catch (err) {
       setError(err instanceof Error ? err.message : "verification failed");

@@ -26,6 +26,11 @@ export async function POST(request: NextRequest) {
   // switching between linked accounts) omits it and skips this check
   // entirely, same as before this parameter existed.
   const expectedAccountType = body?.accountType === "LIVE" ? "LIVE" : body?.accountType === "DEMO" ? "DEMO" : null;
+  // fix/realtime-sync §7 -- "Keep me signed in" checkbox (TradeLoginForm.tsx).
+  // Defaults true so a caller that never sends it (the Account Selector's
+  // own use of this same route, WebTrader.tsx switching linked accounts)
+  // keeps today's always-persistent behavior.
+  const remember = body?.remember !== false;
 
   // 5 attempts/minute per (broker, accountNumber) — throttles credential
   // stuffing against one account without needing to trust a client IP
@@ -76,13 +81,13 @@ export async function POST(request: NextRequest) {
 
   const userAgent = request.headers.get("user-agent");
   const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? null;
-  const token = await completeAccountLogin(account, previousSession, { userAgent, ip });
+  const token = await completeAccountLogin(account, previousSession, { userAgent, ip }, remember);
 
   const response = NextResponse.json({
     accountId: account.id,
     accountNumber: account.accountNumber,
     accountType: account.accountType,
   });
-  response.cookies.set(ACCOUNT_SESSION_COOKIE_NAME, token, accountSessionCookieOptions());
+  response.cookies.set(ACCOUNT_SESSION_COOKIE_NAME, token, accountSessionCookieOptions(remember));
   return response;
 }

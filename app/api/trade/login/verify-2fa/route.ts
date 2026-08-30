@@ -21,6 +21,12 @@ export async function POST(request: NextRequest) {
   if (!pendingToken || !code) {
     return NextResponse.json({ error: "pendingToken and code are required" }, { status: 400 });
   }
+  // fix/realtime-sync §7 -- see app/api/trade/login/route.ts's identical
+  // comment. The client resends the checkbox's value here rather than
+  // this route reading it from the pending challenge, since the pending
+  // challenge only ever stored accountId/brokerId (see lib/totp.ts) and
+  // has no reason to also carry a UI preference through its own TTL.
+  const remember = body?.remember !== false;
 
   // Throttles guessing the 6-digit code within the challenge's 5-minute
   // TTL -- keyed by the pending token itself (unique per login attempt),
@@ -56,13 +62,13 @@ export async function POST(request: NextRequest) {
 
   const userAgent = request.headers.get("user-agent");
   const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? null;
-  const token = await completeAccountLogin(account, previousSession, { userAgent, ip });
+  const token = await completeAccountLogin(account, previousSession, { userAgent, ip }, remember);
 
   const response = NextResponse.json({
     accountId: account.id,
     accountNumber: account.accountNumber,
     accountType: account.accountType,
   });
-  response.cookies.set(ACCOUNT_SESSION_COOKIE_NAME, token, accountSessionCookieOptions());
+  response.cookies.set(ACCOUNT_SESSION_COOKIE_NAME, token, accountSessionCookieOptions(remember));
   return response;
 }

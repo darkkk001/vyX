@@ -1116,6 +1116,36 @@ export default function WebTrader({
     };
   }, [refreshOrders, refreshPositions, refreshAccount]);
 
+  // fix/realtime-sync §7 -- F5/Ctrl+R (Cmd+R on Mac) refetches this tab's
+  // own data instead of a full page reload, which used to throw away
+  // every bit of client-side state (chart drawings, grid layout, the
+  // in-memory `market` simulator/tick history, watchlist scroll
+  // position...) for a page that's otherwise designed to run
+  // indefinitely without ever reloading. The two price/trading
+  // WebSockets aren't force-reconnected here -- both already carry their
+  // own reconnect-with-backoff (see those effects above) and are either
+  // already alive (nothing to do) or already reconnecting on their own
+  // schedule; this only needs to be the "give me fresh data now" a
+  // trader pressing F5 actually wants.
+  //
+  // Real limitation, not something JS can work around: this only catches
+  // the keyboard shortcut. A literal click on the browser's own reload
+  // button/toolbar icon can't be intercepted by any web page's script --
+  // that one action genuinely still does a full reload.
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      const isRefreshShortcut = e.key === "F5" || ((e.ctrlKey || e.metaKey) && (e.key === "r" || e.key === "R"));
+      if (!isRefreshShortcut) return;
+      e.preventDefault();
+      refreshOrders();
+      refreshPositions();
+      refreshAccount();
+      pushToast("Refreshed");
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [refreshOrders, refreshPositions, refreshAccount, pushToast]);
+
   // Seeds real OHLC history (see /api/trade/candles) for a symbol+timeframe,
   // replacing the synthetic seed. A symbol with no feed history yet (empty
   // response) just keeps simulating — no real data to show, nothing to

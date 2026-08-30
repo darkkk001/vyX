@@ -182,15 +182,20 @@ export const tradeApi = {
   // silently letting it through. The Account Selector's own call site
   // (WebTrader.tsx, switching between linked accounts) omits it entirely,
   // same as before this parameter existed.
-  login: (accountNumber: string, password: string, accountType?: "LIVE" | "DEMO") =>
+  // `remember` (fix/realtime-sync §7) actually controls the session
+  // cookie's persistence now -- see lib/account-auth.ts's
+  // accountSessionCookieOptions. Defaults true (matches this form's own
+  // initialRemember default) so an existing call site that never passes
+  // it keeps today's always-persistent behavior.
+  login: (accountNumber: string, password: string, accountType?: "LIVE" | "DEMO", remember: boolean = true) =>
     call<{ accountId: string; accountNumber: string; accountType: string } | { requiresTwoFactor: true; pendingToken: string }>(
       "/api/trade/login",
-      { method: "POST", body: JSON.stringify({ accountNumber, password, accountType }) }
+      { method: "POST", body: JSON.stringify({ accountNumber, password, accountType, remember }) }
     ),
-  verifyTwoFactor: (pendingToken: string, code: string) =>
+  verifyTwoFactor: (pendingToken: string, code: string, remember: boolean = true) =>
     call<{ accountId: string; accountNumber: string; accountType: string }>("/api/trade/login/verify-2fa", {
       method: "POST",
-      body: JSON.stringify({ pendingToken, code }),
+      body: JSON.stringify({ pendingToken, code, remember }),
     }),
   logout: () => call("/api/trade/logout", { method: "POST" }),
   changePassword: (currentPassword: string, newPassword: string) =>

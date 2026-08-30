@@ -6,7 +6,13 @@ import { prisma } from "@/lib/prisma";
 import { getRedis } from "@/lib/redis";
 
 export const ACCOUNT_SESSION_COOKIE_NAME = "vyx_trade_session";
-const SESSION_TTL_SECONDS = 60 * 60 * 24 * 7; // 7 days
+const SESSION_TTL_SECONDS = 60 * 60 * 24 * 7; // 7 days -- Redis TTL backstop, both remembered and not (see createAccountSession's own comment on why this differs from the cookie's own maxAge)
+// fix/realtime-sync §7 -- "Keep me signed in" (TradeLoginForm.tsx's
+// `remember` checkbox) was previously purely cosmetic: every session got
+// the exact same persistent 7-day cookie regardless of it, so unchecking
+// it never actually did anything and there was no genuine "closing the
+// browser logs out" behavior to test against. 30 days when checked.
+const REMEMBER_TTL_SECONDS = 60 * 60 * 24 * 30; // 30 days
 
 export type AccountSessionPayload = {
   accountId: string;
@@ -62,17 +68,23 @@ function sessionIndexKey(accountId: string) {
 
 export async function createAccountSession(
   payload: Omit<AccountSessionPayload, "sessionId">,
-  meta?: { userAgent: string | null; ip: string | null }
+  meta?: { userAgent: string | null; ip: string | null },
+  remember: boolean = true
 ): Promise<string> {
   const token = crypto.randomBytes(32).toString("hex");
   const sessionId = crypto.randomBytes(16).toString("hex");
   const redis = getRedis();
+  // Must be at least as long as accountSessionCookieOptions' own maxAge
+  // for the same `remember` value -- otherwise a still-valid persistent
+  // cookie could outlive its own Redis-backed session data and start
+  // failing auth well before the cookie itself expires.
+  const ttlSeconds = remember ? REMEMBER_TTL_SECONDS : SESSION_TTL_SECONDS;
 
   await redis.set(
     sessionKey(token),
     JSON.stringify({ ...payload, sessionId } satisfies AccountSessionPayload),
     "EX",
-    SESSION_TTL_SECONDS
+    ttlSeconds
   );
 
   // Metadata is best-effort/display-only (see the routes that read it) --
@@ -82,8 +94,8 @@ export async function createAccountSession(
   if (meta) {
     const metadata: SessionMetadata = { userAgent: meta.userAgent, ip: meta.ip, createdAt: new Date().toISOString() };
     await Promise.all([
-      redis.set(sessionIdKey(sessionId), token, "EX", SESSION_TTL_SECONDS),
-      redis.set(sessionMetaKey(sessionId), JSON.stringify(metadata), "EX", SESSION_TTL_SECONDS),
+      redis.set(sessionIdKey(sessionId), token, "EX", ttlSeconds),
+      redis.set(sessionMetaKey(sessionId), JSON.stringify(metadata), "EX", ttlSeconds),
       redis.sadd(sessionIndexKey(payload.accountId), sessionId),
     ]);
   }
@@ -234,9 +246,10 @@ export async function authenticateAccount(
 export async function completeAccountLogin(
   account: { id: string; brokerId: string },
   previousSession: AccountSessionPayload | null,
-  meta: { userAgent: string | null; ip: string | null }
+  meta: { userAgent: string | null; ip: string | null },
+  remember: boolean = true
 ): Promise<string> {
-  const token = await createAccountSession({ accountId: account.id, brokerId: account.brokerId }, meta);
+  const token = await createAccountSession({ accountId: account.id, brokerId: account.brokerId }, meta, remember);
 
   if (previousSession && previousSession.accountId !== account.id) {
     await prisma.auditLog.create({
@@ -254,7 +267,15 @@ export async function completeAccountLogin(
   return token;
 }
 
-export function accountSessionCookieOptions() {
+// fix/realtime-sync §7 -- `remember` (default true, matching every
+// existing call site's previous always-persistent behavior until each is
+// deliberately updated to pass the login form's real checkbox value)
+// decides whether this is a real persistent cookie or a session cookie.
+// Omitting `maxAge` entirely (not maxAge: 0, which most browsers treat as
+// "delete immediately") is what makes a cookie session-only -- the
+// browser keeps it only until it closes, which is the actual mechanism
+// behind "closing the browser logs out" when the box isn't checked.
+export function accountSessionCookieOptions(remember: boolean = true) {
   // Scoped to the whole site (".vyxtrader.com"), not just the issuing
   // subdomain -- the WS Gateway lives on its own subdomain
   // (feed.<ROOT_DOMAIN>, see services/api-gateway/src/ws.ts's
@@ -272,6 +293,6 @@ export function accountSessionCookieOptions() {
     sameSite: "lax" as const,
     path: "/",
     domain,
-    maxAge: SESSION_TTL_SECONDS,
+    ...(remember ? { maxAge: REMEMBER_TTL_SECONDS } : {}),
   };
 }
