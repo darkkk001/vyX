@@ -16,11 +16,13 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use chrono::Utc;
+use chrono::{TimeZone, Utc};
 use futures_util::StreamExt;
 use market_data::cache::TickCache;
+use market_data::gap_fill::GapFillTracker;
 use market_data::stats::{FeedStats, FeedStatsSnapshot};
 use market_data::symbol_activity::SymbolActivity;
+use market_data::{timeframe_from_str, CandleUpdate};
 use order_management::{
     db, events, CancelOrderOutcome, ClosePositionOutcome, ModifyPositionOutcome,
     PlaceMarketOrderOutcome, PlaceMarketOrderRequest, PlacePendingOrderOutcome,
@@ -56,6 +58,15 @@ struct AppState {
     // doc for why this is separate from both tick_cache (latest tick
     // only) and feed_stats (aggregate, not per-symbol).
     symbol_activity: Arc<SymbolActivity>,
+    // fix/realtime-sync §4 -- last-known-bucket tracker shared between the
+    // live tick path's own gap-filling (market_data::ingest::flush_candles)
+    // and the new /internal/history backfill route below, so a backfilled
+    // historical bar also updates what the live path considers "the last
+    // real bucket" for that symbol+timeframe -- otherwise a fresh EA
+    // backfill landing right before the engine's next live tick could
+    // still see a false gap relative to bars the live path never wrote
+    // itself.
+    gap_fill: Arc<GapFillTracker>,
 }
 
 // Applied via .layer() to every order/position route (main() below) --
@@ -496,6 +507,103 @@ async fn ingest_price_feed(
     Ok(Json(PriceFeedResponse { ok: true, count }))
 }
 
+#[derive(Debug, Deserialize)]
+struct HistoryBar {
+    bucket_start_ms: i64,
+    open: Decimal,
+    high: Decimal,
+    low: Decimal,
+    close: Decimal,
+}
+
+#[derive(Debug, Deserialize)]
+struct HistoryBody {
+    symbol: String,
+    timeframe: String,
+    bars: Vec<HistoryBar>,
+}
+
+#[derive(Debug, Serialize)]
+struct HistoryResponse {
+    ok: bool,
+    upserted: usize,
+    skipped_unrecognized_timeframe: bool,
+}
+
+/// fix/realtime-sync §4 -- the EA's periodic CopyRates backfill
+/// (mt5-ea/VyXTraderPriceFeed.mq5, on init and every 15 minutes) posts
+/// its last ~500 real bars per symbol+timeframe here. Same auth as
+/// ingest_price_feed (this is the same MT5-EA-to-engine trust boundary,
+/// just a second endpoint on it, not a new one).
+///
+/// Bars are sorted oldest-first before writing regardless of the order
+/// they arrived in -- gap_fill::GapFillTracker's "last known bucket"
+/// bookkeeping only makes sense walked forward in time; an EA that
+/// happened to send CopyRates' natural newest-first order would
+/// otherwise make every real historical bar look like a "gap" relative
+/// to the one already recorded ahead of it.
+async fn ingest_history(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<HistoryBody>,
+) -> Result<Json<HistoryResponse>, (StatusCode, String)> {
+    let provided = headers.get("x-price-feed-secret").and_then(|v| v.to_str().ok());
+    if provided != Some(state.price_feed_secret.as_str()) {
+        return Err((StatusCode::UNAUTHORIZED, "unauthorized".to_string()));
+    }
+
+    let Some(timeframe) = timeframe_from_str(&body.timeframe) else {
+        // Not an error -- see timeframe_from_str's own doc comment on
+        // "M15" specifically. The EA should stop asking for a timeframe
+        // this engine never acknowledges, but one unrecognized value in
+        // a broker's symbol list shouldn't fail every other bar in the
+        // same request.
+        return Ok(Json(HistoryResponse { ok: true, upserted: 0, skipped_unrecognized_timeframe: true }));
+    };
+
+    let mut bars = body.bars;
+    bars.sort_by_key(|b| b.bucket_start_ms);
+
+    let mut upserted = 0usize;
+    let mut tx = state.pool.begin().await.map_err(|err| {
+        tracing::error!(?err, "ingest_history: failed to open transaction");
+        (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
+    })?;
+
+    for bar in &bars {
+        let Some(bucket_start) = Utc.timestamp_millis_opt(bar.bucket_start_ms).single() else {
+            continue; // malformed timestamp -- skip just this bar
+        };
+        let update = CandleUpdate {
+            symbol: body.symbol.clone(),
+            timeframe,
+            bucket_start,
+            open: bar.open,
+            high: bar.high,
+            low: bar.low,
+            close: bar.close,
+        };
+        for fill in state.gap_fill.fill_gaps_and_record(&update) {
+            market_data::db::upsert_candle(&mut tx, &fill).await.map_err(|err| {
+                tracing::error!(?err, "ingest_history: gap-fill upsert failed");
+                (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
+            })?;
+        }
+        market_data::db::upsert_candle_authoritative(&mut tx, &update).await.map_err(|err| {
+            tracing::error!(?err, symbol = %body.symbol, "ingest_history: authoritative upsert failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
+        })?;
+        upserted += 1;
+    }
+
+    tx.commit().await.map_err(|err| {
+        tracing::error!(?err, "ingest_history: commit failed");
+        (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
+    })?;
+
+    Ok(Json(HistoryResponse { ok: true, upserted, skipped_unrecognized_timeframe: false }))
+}
+
 /// Latency/health snapshot for the tick pipeline — Phase 4 of the audit.
 /// Same x-internal-secret guard as the order routes (this server's
 /// AppState only has one such guard today; a dedicated read-only stats
@@ -677,12 +785,14 @@ async fn main() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(1_000);
+    let gap_fill_tracker = Arc::new(GapFillTracker::new());
     market_data::ingest::spawn_periodic_flush(
         pool.clone(),
         tick_cache.clone(),
         std::time::Duration::from_millis(live_price_flush_interval_ms),
         std::time::Duration::from_millis(candle_flush_interval_ms),
         feed_stats_registry.clone(),
+        gap_fill_tracker.clone(),
     );
 
     let state = Arc::new(AppState {
@@ -693,6 +803,7 @@ async fn main() {
         tick_cache,
         feed_stats: feed_stats_registry,
         symbol_activity: symbol_activity_registry,
+        gap_fill: gap_fill_tracker,
     });
 
     // Order/position/stats routes require x-internal-secret
@@ -713,6 +824,7 @@ async fn main() {
         .route("/health", get(health))
         .route("/internal/time", get(server_time))
         .route("/internal/price-feed", post(ingest_price_feed))
+        .route("/internal/history", post(ingest_history))
         .merge(order_routes)
         .with_state(state);
 

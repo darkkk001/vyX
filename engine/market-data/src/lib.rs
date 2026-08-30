@@ -10,6 +10,7 @@ use protocol::Tick;
 
 pub mod cache;
 pub mod db;
+pub mod gap_fill;
 pub mod ingest;
 pub mod stats;
 pub mod symbol_activity;
@@ -39,9 +40,36 @@ pub const TIMEFRAMES: [Timeframe; 9] = [
     Timeframe::Y1,
 ];
 
+/// fix/realtime-sync §4's EA backfill (mt5-ea/VyXTraderPriceFeed.mq5)
+/// sends a plain string per timeframe -- the inverse of db.rs's own
+/// timeframe_to_str. Note the brief that drove this feature mentions
+/// "M15" among the EA's backfill timeframes, but this engine (and the
+/// Postgres CandleTimeframe enum it's generated from) has never had an
+/// M15 variant -- only M1/M5/M30. Treated as an unrecognized string here
+/// (None, silently skipped by the ingest route) rather than silently
+/// adding a tenth timeframe end-to-end (client TIMEFRAMES array, this
+/// enum, and a Prisma migration) as a side effect of a bug-fix PR.
+pub fn timeframe_from_str(s: &str) -> Option<Timeframe> {
+    match s {
+        "M1" => Some(Timeframe::M1),
+        "M5" => Some(Timeframe::M5),
+        "M30" => Some(Timeframe::M30),
+        "H1" => Some(Timeframe::H1),
+        "H4" => Some(Timeframe::H4),
+        "D1" => Some(Timeframe::D1),
+        "W1" => Some(Timeframe::W1),
+        "MN1" | "Mn1" => Some(Timeframe::Mn1),
+        "Y1" => Some(Timeframe::Y1),
+        _ => None,
+    }
+}
+
 /// Fixed-millisecond spacing for M1..D1. W1/Mn1/Y1 need real calendar math
 /// (see `bucket_start`) — ported 1:1 from lib/price-feed.ts's FIXED_MS.
-fn fixed_ms(tf: Timeframe) -> Option<i64> {
+/// `pub(crate)` for gap_fill.rs's own use -- gaps are only worth
+/// synthesizing for fixed-duration timeframes (see that module's doc
+/// comment).
+pub(crate) fn fixed_ms(tf: Timeframe) -> Option<i64> {
     match tf {
         Timeframe::M1 => Some(60_000),
         Timeframe::M5 => Some(300_000),

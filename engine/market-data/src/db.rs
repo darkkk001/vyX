@@ -81,6 +81,53 @@ pub async fn upsert_candle(
     Ok(())
 }
 
+/// fix/realtime-sync §4 -- the EA's periodic CopyRates backfill
+/// (mt5-ea/VyXTraderPriceFeed.mq5) hands over a broker's own true OHLC
+/// for a bucket, not a single incremental tick -- unlike upsert_candle
+/// above (correct for tick-by-tick aggregation: GREATEST/LEAST widen
+/// high/low as more ticks land in an still-open bucket, and `open` is
+/// fixed at the bucket's first tick), a backfilled bar must REPLACE
+/// whatever's there wholesale. Using upsert_candle's merge semantics
+/// here would be wrong in both directions: GREATEST/LEAST could leave a
+/// stale, too-wide high/low from a previous bad aggregate instead of the
+/// broker's real one, and `open` would never correct itself at all.
+///
+/// In practice this rarely overwrites live-aggregated data at all: the
+/// tick path only ever writes to the CURRENTLY open bucket for a given
+/// timeframe (candle_updates_for_tick always buckets against "now"), so
+/// once a bucket closes the tick path never touches it again -- the
+/// backfill's authority mostly just means "whichever source got there
+/// last for a given historical bucket wins," which for real historical
+/// buckets is always the backfill (broker bars beat our aggregates, per
+/// this fix's own name for the rule).
+pub async fn upsert_candle_authoritative(
+    tx: &mut sqlx::PgTransaction<'_>,
+    update: &CandleUpdate,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"
+        INSERT INTO "Candle" (symbol, timeframe, "bucketStart", open, high, low, close, "updatedAt")
+        VALUES ($1, $2::"CandleTimeframe", $3, $4, $5, $6, $7, now())
+        ON CONFLICT (symbol, timeframe, "bucketStart") DO UPDATE SET
+            open = EXCLUDED.open,
+            high = EXCLUDED.high,
+            low = EXCLUDED.low,
+            close = EXCLUDED.close,
+            "updatedAt" = now()
+        "#,
+    )
+    .bind(&update.symbol)
+    .bind(timeframe_to_str(update.timeframe))
+    .bind(update.bucket_start)
+    .bind(update.open)
+    .bind(update.high)
+    .bind(update.low)
+    .bind(update.close)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
 /// Synchronous current bid/ask read — the path `docs/market-data.md` §2's
 /// diagram calls out for the Execution module. Not wired into Execution
 /// yet (separate slice); added now since the query is a one-liner against

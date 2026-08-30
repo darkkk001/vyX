@@ -5,7 +5,7 @@
 //! ../../docs/execution.md's Phase 5 note that the consumer shape doesn't
 //! change when the feed source does.
 
-use crate::{cache::TickCache, candle_updates_for_tick, db, stats::FeedStats, symbol_activity::SymbolActivity};
+use crate::{cache::TickCache, candle_updates_for_tick, db, gap_fill::GapFillTracker, stats::FeedStats, symbol_activity::SymbolActivity};
 use chrono::Utc;
 use protocol::Tick;
 use sqlx::PgPool;
@@ -132,6 +132,7 @@ pub fn spawn_periodic_flush(
     live_price_interval: StdDuration,
     candle_interval: StdDuration,
     stats: Arc<FeedStats>,
+    gap_fill: Arc<GapFillTracker>,
 ) {
     {
         let pool = pool.clone();
@@ -158,7 +159,7 @@ pub fn spawn_periodic_flush(
             if dirty.is_empty() {
                 continue;
             }
-            flush_candles(&pool, &cache, &dirty, &stats).await;
+            flush_candles(&pool, &cache, &dirty, &stats, &gap_fill).await;
         }
     });
 }
@@ -213,13 +214,24 @@ fn re_mark_live_price_dirty(cache: &TickCache, ticks: &[Tick]) {
 
 // Same claim/retry-on-failure shape as flush_live_prices, via
 // cache::TickCache::mark_candle_dirty.
-async fn flush_candles(pool: &PgPool, cache: &TickCache, ticks: &[Tick], stats: &Arc<FeedStats>) {
+async fn flush_candles(pool: &PgPool, cache: &TickCache, ticks: &[Tick], stats: &Arc<FeedStats>, gap_fill: &GapFillTracker) {
     let now = Utc::now();
     let started = Instant::now();
     let result = tokio::time::timeout(DB_FLUSH_TIMEOUT, async {
         let mut tx = pool.begin().await?;
         for tick in ticks {
             for update in candle_updates_for_tick(tick, now) {
+                // fix/realtime-sync §4 -- flat-fills every bucket skipped
+                // since the last one actually written for this
+                // symbol+timeframe (a quiet period, or the engine having
+                // been down), so the chart's categorical time axis never
+                // shows a gap for anything other than a real market
+                // close. Written before `update` itself, oldest-first, so
+                // a concurrent reader never sees `update`'s bucket land
+                // before an earlier "missing" one it logically follows.
+                for fill in gap_fill.fill_gaps_and_record(&update) {
+                    db::upsert_candle(&mut tx, &fill).await?;
+                }
                 db::upsert_candle(&mut tx, &update).await?;
             }
         }

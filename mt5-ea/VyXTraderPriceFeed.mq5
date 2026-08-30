@@ -7,7 +7,7 @@
 //| LivePrice table this EA feeds.                                    |
 //+------------------------------------------------------------------+
 #property strict
-#property version   "1.31"
+#property version   "1.32"
 
 input string ServerUrl            = "https://www.vyxtrader.com/api/internal/price-feed";
 // No default -- this file is committed to a public-ish repo. A real
@@ -57,6 +57,19 @@ input string DirectServerUrl      = "";
 // mode, since GET /internal/time lives on the Rust engine itself, not the
 // Next.js proxy. See SyncClockOffset below.
 input int    ClockSyncIntervalSec = 60;
+
+// History backfill (fix/realtime-sync §4) -- repairs gaps/holes in the
+// engine's Candle history (a quiet period with no ticks, or any bucket
+// lost to a past write failure) with this terminal's own real OHLC bars,
+// which the engine treats as authoritative over its own tick-aggregated
+// ones (POST /internal/history -- see engine/server/src/main.rs's
+// ingest_history and db.rs's upsert_candle_authoritative). Direct-mode
+// only, same reasoning as SyncClockOffset: this route lives on
+// engine/server itself, not the Next.js proxy. Runs once on init and
+// every HistoryBackfillIntervalSec after that (see OnTimer) -- NOT tied
+// to PushMinIntervalMs the way tick pushes are, since a bar backfill is
+// maintenance, not a live-latency-sensitive push.
+input int    HistoryBackfillIntervalSec = 900;
 
 // Where the list of symbols to push comes from (second Contabo-audit
 // follow-up). MARKET_WATCH auto-discovers whatever's selected in this
@@ -126,6 +139,25 @@ long ClockOffsetMs = 0;
 long LastRttMs = 0;
 bool HasClockSync = false;
 uint lastClockSyncMs = 0;
+
+// History backfill state. lastHistoryBackfillMs == 0 means "never run
+// yet" -- OnInit's own call handles the "on init" half of the schedule,
+// this is only for the "every HistoryBackfillIntervalSec" half.
+uint lastHistoryBackfillMs = 0;
+
+// Only the engine's actual configured fixed-duration timeframes
+// (engine/market-data/src/lib.rs's TIMEFRAMES / fixed_ms) -- W1/Mn1/Y1
+// are calendar-based and excluded from gap-filling there too, so
+// backfilling them isn't worth the extra CopyRates/WebRequest calls.
+// NOTE: the spec this feature was built from also listed "M15", but no
+// M15 timeframe has ever existed in this engine or its Postgres
+// CandleTimeframe enum (only M1/M5/M30) -- sending it would just get
+// silently skipped by ingest_history's own timeframe_from_str (see that
+// function's doc comment), so it's left out here rather than sent for
+// nothing.
+ENUM_TIMEFRAMES HistoryBackfillPeriods[] = { PERIOD_M1, PERIOD_M5, PERIOD_M30, PERIOD_H1, PERIOD_H4, PERIOD_D1 };
+string HistoryBackfillPeriodNames[]     = { "M1",      "M5",      "M30",      "H1",      "H4",      "D1"     };
+const int HISTORY_BACKFILL_BAR_COUNT = 500;
 
 // Refreshed by RefreshActiveSymbols() -- the actual broker-native symbol
 // names read via SymbolInfoTick each push, regardless of SymbolSource.
@@ -305,6 +337,7 @@ int OnInit()
    ParseSymbolMap();
    RefreshActiveSymbols();
    SyncClockOffset();
+   SendHistoryBackfill(); // fix/realtime-sync §4 -- "on init" half of the schedule
    // Millisecond timer, not EventSetTimer's 1s-resolution one -- keyed
    // off the same PushMinIntervalMs OnTick's own debounce uses, so every
    // symbol (not just this chart's own) is bounded at that floor
@@ -433,6 +466,85 @@ void SendDirect(string ticksJson)
    }
 }
 
+// POST one symbol+timeframe's last HISTORY_BACKFILL_BAR_COUNT bars to
+// engine/server's /internal/history (fix/realtime-sync §4). Same auth
+// header convention as SendDirect. Blocking, like every WebRequest call
+// in this file -- MQL5 has no async HTTP -- so a full backfill cycle
+// (every configured symbol x every HistoryBackfillPeriods entry) pauses
+// this EA's own tick pushes for however long that many sequential
+// requests take. Only runs every HistoryBackfillIntervalSec (15 min by
+// default), not every tick, so this is a periodic brief pause, not a
+// standing latency cost -- a real, known tradeoff of a single-threaded
+// EA with no async HTTP, not something this fix works around.
+void SendHistoryBars(string canonicalSymbol, string brokerSymbol, ENUM_TIMEFRAMES period, string timeframeName)
+{
+   MqlRates rates[];
+   ArraySetAsSeries(rates, true);
+   int copied = CopyRates(brokerSymbol, period, 0, HISTORY_BACKFILL_BAR_COUNT, rates);
+   if (copied <= 0) return; // no history available yet for this symbol/period -- nothing to send
+
+   string bars = "[";
+   for (int i = 0; i < copied; i++)
+   {
+      if (i > 0) bars += ",";
+      long bucketStartMs = (long)rates[i].time * 1000;
+      bars += StringFormat(
+         "{\"bucket_start_ms\":%I64d,\"open\":%.5f,\"high\":%.5f,\"low\":%.5f,\"close\":%.5f}",
+         bucketStartMs, rates[i].open, rates[i].high, rates[i].low, rates[i].close
+      );
+   }
+   bars += "]";
+
+   string json = "{\"symbol\":\"" + canonicalSymbol + "\",\"timeframe\":\"" + timeframeName + "\",\"bars\":" + bars + "}";
+   string url = DirectServerUrl + "/internal/history";
+   string headers = "Content-Type: application/json\r\nx-price-feed-secret: " + ApiSecret + "\r\n";
+
+   uchar body[];
+   StringToCharArray(json, body, 0, StringLen(json), CP_UTF8);
+   ArrayResize(body, StringLen(json)); // trim StringToCharArray's trailing null, same as SendDirect
+
+   uchar result[];
+   string resultHeaders;
+   ResetLastError();
+   int res = WebRequest("POST", url, headers, 5000, body, result, resultHeaders);
+   if (res == -1)
+   {
+      int err = GetLastError();
+      if (err == 4060)
+         Print("VyXTraderPriceFeed (history backfill): add ", DirectServerUrl, " under Tools > Options > Expert Advisors > Allow WebRequest for listed URL");
+      else
+         Print("VyXTraderPriceFeed (history backfill): WebRequest failed for ", canonicalSymbol, " ", timeframeName, ", error ", err);
+   }
+   else if (res != 200)
+   {
+      Print("VyXTraderPriceFeed (history backfill): server responded ", res, " for ", canonicalSymbol, " ", timeframeName, " — ", CharArrayToString(result));
+   }
+}
+
+// Iterates every active symbol x every configured timeframe. See this
+// function's own input/state doc comments for scheduling and the
+// direct-mode-only gate.
+void SendHistoryBackfill()
+{
+   if (!UseDirectMode || StringLen(DirectServerUrl) == 0)
+   {
+      lastHistoryBackfillMs = GetTickCount(); // don't retry every cycle in proxy mode, same as SyncClockOffset
+      return;
+   }
+   if (StringLen(ApiSecret) == 0) return; // BuildAndSend already warns about this; avoid a duplicate log line here
+
+   for (int i = 0; i < ArraySize(ActiveBrokerSymbols); i++)
+   {
+      string brokerSymbol = ActiveBrokerSymbols[i];
+      if (StringLen(brokerSymbol) == 0) continue;
+      string canonicalSymbol = CanonicalFor(brokerSymbol);
+      for (int p = 0; p < ArraySize(HistoryBackfillPeriods); p++)
+         SendHistoryBars(canonicalSymbol, brokerSymbol, HistoryBackfillPeriods[p], HistoryBackfillPeriodNames[p]);
+   }
+
+   lastHistoryBackfillMs = GetTickCount();
+}
+
 // Shared by OnTick and OnTimer. Unlike before, this does NOT always push
 // every configured symbol -- only ones whose (bid, ask, time_msc) changed
 // since the last push, plus a full snapshot every HEARTBEAT_INTERVAL_MS
@@ -532,5 +644,11 @@ void BuildAndSend()
 void OnTimer()
 {
    BuildAndSend();
+   // fix/realtime-sync §4 -- "every 15 min" half of the backfill schedule.
+   // Checked on the same timer as tick pushes rather than a second MQL5
+   // timer (an EA only gets one via EventSetTimer/EventSetMillisecondTimer),
+   // same pattern BuildAndSend already uses for ClockSyncIntervalSec.
+   if (GetTickCount() - lastHistoryBackfillMs >= (uint)(HistoryBackfillIntervalSec * 1000))
+      SendHistoryBackfill();
 }
 //+------------------------------------------------------------------+
