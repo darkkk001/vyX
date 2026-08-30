@@ -42,10 +42,17 @@ function recalibrateFromResponse(response: Response) {
 // expiry and logged the trader out over nothing.
 export class ApiError extends Error {
   status: number;
-  constructor(message: string, status: number) {
+  // Full parsed error body, not just its `error` string -- some routes
+  // (e.g. lib/margin.ts's checkAccountPreTradeMargin, on INSUFFICIENT_MARGIN)
+  // return extra fields a caller needs to show a real message instead of
+  // just the bare code. Most rejects don't set this; callers that care
+  // narrow on err.message first (see WebTrader.tsx's handleOrderError).
+  body: unknown;
+  constructor(message: string, status: number, body?: unknown) {
     super(message);
     this.name = "ApiError";
     this.status = status;
+    this.body = body;
   }
 }
 
@@ -56,7 +63,7 @@ export async function apiCall<T>(path: string, init?: RequestInit): Promise<T> {
     const { status, body, date } = await desktop.apiCall(path, init?.method ?? "GET", parsedBody);
     recalibrateFromDateHeader(date);
     if (status < 200 || status >= 300) {
-      throw new ApiError((body as { error?: string } | null)?.error ?? `request to ${path} failed (${status})`, status);
+      throw new ApiError((body as { error?: string } | null)?.error ?? `request to ${path} failed (${status})`, status, body);
     }
     return body as T;
   }
@@ -68,7 +75,7 @@ export async function apiCall<T>(path: string, init?: RequestInit): Promise<T> {
   recalibrateFromResponse(response);
   const body = await response.json().catch(() => null);
   if (!response.ok) {
-    throw new ApiError(body?.error ?? `request to ${path} failed (${response.status})`, response.status);
+    throw new ApiError(body?.error ?? `request to ${path} failed (${response.status})`, response.status, body);
   }
   return body as T;
 }

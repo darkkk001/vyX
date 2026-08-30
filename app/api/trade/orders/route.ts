@@ -6,6 +6,7 @@ import { validateSlTp } from "@/lib/trading";
 import { createNotification } from "@/lib/notifications";
 import { openPositionFromOrder } from "@/lib/dealing";
 import { resolveBookType, applySpreadMarkup, resolveSymbolPricing, chargeCommission } from "@/lib/group-pricing";
+import { checkAccountPreTradeMargin } from "@/lib/margin";
 import { publishTradingEvent } from "@/lib/nats";
 import {
   checkTradingHalted,
@@ -222,29 +223,46 @@ export async function POST(request: NextRequest) {
           });
           const fillPrice = applySpreadMarkup({ side, price: liveRef, spreadMarkup: pricing.spreadMarkup, digits: brokerSymbol.symbol.digits });
           const bookType = account.group ? resolveBookType(account.group.groupType) : brokerSymbol.defaultBookType;
-          const position = await prisma.$transaction(async (tx) => {
-            const pos = await openPositionFromOrder(tx, order, fillPrice, bookType, pricing.commissionPerLot);
-            await tx.auditLog.create({
-              data: {
-                brokerId: session.brokerId,
-                action: "DEALING_ORDER_AUTO_ACCEPTED",
-                entityType: "Position",
-                entityId: pos.id,
-                oldValue: { status: "PENDING", requestedPrice: price },
-                newValue: { status: "FILLED", filledPrice: fillPrice.toString(), diffPct: diffPct.toFixed(4) },
-              },
+          // Phase 0 money-risk patch (docs/ROADMAP.md item 2) -- an
+          // auto-accept that would open a position the account can't
+          // actually margin doesn't get to skip the gate just because
+          // it's automated. Insufficient margin here doesn't reject the
+          // order outright -- it falls through to the ordinary human
+          // dealer queue below, same as a diffPct that simply didn't
+          // clear the accept threshold.
+          const marginError = await checkAccountPreTradeMargin(prisma, {
+            accountId: session.accountId,
+            leverage: account.leverage,
+            marginCallLevel: account.group?.marginCallLevel ?? new Prisma.Decimal(100),
+            newOrderContractSize: brokerSymbol.symbol.contractSize,
+            newOrderVolume: volume,
+            newOrderFillPrice: fillPrice,
+          });
+          if (!marginError) {
+            const position = await prisma.$transaction(async (tx) => {
+              const pos = await openPositionFromOrder(tx, order, fillPrice, bookType, pricing.commissionPerLot);
+              await tx.auditLog.create({
+                data: {
+                  brokerId: session.brokerId,
+                  action: "DEALING_ORDER_AUTO_ACCEPTED",
+                  entityType: "Position",
+                  entityId: pos.id,
+                  oldValue: { status: "PENDING", requestedPrice: price },
+                  newValue: { status: "FILLED", filledPrice: fillPrice.toString(), diffPct: diffPct.toFixed(4) },
+                },
+              });
+              return pos;
             });
-            return pos;
-          });
-          await publishTradingEvent("OrderFilled", {
-            order_id: order.id,
-            account_id: session.accountId,
-            broker_id: session.brokerId,
-            price: fillPrice.toString(),
-            volume: volume.toString(),
-            remaining_volume: "0",
-          });
-          return NextResponse.json({ order: { ...order, status: "FILLED", filledPrice: fillPrice }, positionId: position.id }, { status: 201 });
+            await publishTradingEvent("OrderFilled", {
+              order_id: order.id,
+              account_id: session.accountId,
+              broker_id: session.brokerId,
+              price: fillPrice.toString(),
+              volume: volume.toString(),
+              remaining_volume: "0",
+            });
+            return NextResponse.json({ order: { ...order, status: "FILLED", filledPrice: fillPrice }, positionId: position.id }, { status: 201 });
+          }
         }
 
         if (broker.smartDealerRejectPct != null && diffPct.gte(broker.smartDealerRejectPct)) {
@@ -335,6 +353,25 @@ export async function POST(request: NextRequest) {
       });
       if (slippageError) {
         return NextResponse.json({ error: slippageError }, { status: 400 });
+      }
+      // Phase 0 money-risk patch (docs/ROADMAP.md item 2) -- pre-trade
+      // margin gate, same rule engine/risk/src/lib.rs's check_free_margin
+      // already enforces on the Rust path (lib/margin.ts's
+      // checkPreTradeMargin/lib/margin.test.ts). Rejects before any
+      // Order/Position row is written -- unlike the smart-dealer branch
+      // above, there's no "fall through to a human" option here, so an
+      // insufficient-margin order is rejected outright with the actual
+      // numbers so WebTrader can show a real message.
+      const marginError = await checkAccountPreTradeMargin(prisma, {
+        accountId: session.accountId,
+        leverage: account.leverage,
+        marginCallLevel: account.group?.marginCallLevel ?? new Prisma.Decimal(100),
+        newOrderContractSize: brokerSymbol.symbol.contractSize,
+        newOrderVolume: volume,
+        newOrderFillPrice: fillPrice,
+      });
+      if (marginError) {
+        return NextResponse.json(marginError, { status: 400 });
       }
       const bookType = account.group ? resolveBookType(account.group.groupType) : brokerSymbol.defaultBookType;
       const result = await prisma.$transaction(async (tx) => {

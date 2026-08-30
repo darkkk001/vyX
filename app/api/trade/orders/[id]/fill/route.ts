@@ -5,6 +5,7 @@ import { getAccountSession } from "@/lib/account-auth";
 import { publishTradingEvent } from "@/lib/nats";
 import { createNotification } from "@/lib/notifications";
 import { resolveBookType, applySpreadMarkup, resolveSymbolPricing, chargeCommission } from "@/lib/group-pricing";
+import { checkAccountPreTradeMargin } from "@/lib/margin";
 import {
   checkTradingHalted,
   checkSymbolTradingMode,
@@ -181,6 +182,22 @@ export async function POST(
     });
     if (slippageError) {
       return NextResponse.json({ error: slippageError }, { status: 400 });
+    }
+    // Phase 0 money-risk patch (docs/ROADMAP.md item 2) -- same gate as
+    // POST /api/trade/orders' immediate-fill branch. A resting LIMIT/STOP
+    // order can sit for days; the account's margin picture at trigger
+    // time can be very different from when it was placed, and nothing
+    // checked that before.
+    const marginError = await checkAccountPreTradeMargin(prisma, {
+      accountId: order.accountId,
+      leverage: account.leverage,
+      marginCallLevel: account.group?.marginCallLevel ?? new Prisma.Decimal(100),
+      newOrderContractSize: brokerSymbol.symbol.contractSize,
+      newOrderVolume: order.volume,
+      newOrderFillPrice: fillPrice,
+    });
+    if (marginError) {
+      return NextResponse.json(marginError, { status: 400 });
     }
   }
   const bookType = account.group ? resolveBookType(account.group.groupType) : (brokerSymbol?.defaultBookType ?? "B_BOOK");

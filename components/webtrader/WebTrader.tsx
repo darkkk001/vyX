@@ -576,6 +576,15 @@ export default function WebTrader({
       pushToast(reason, false, retry);
       return;
     }
+    if (err instanceof ApiError && err.message === "INSUFFICIENT_MARGIN") {
+      const info = err.body as { required?: string; available?: string } | null;
+      pushToast(
+        info?.required && info?.available
+          ? `Insufficient margin — required $${info.required}, available $${info.available}`
+          : "Insufficient margin — order not placed"
+      );
+      return;
+    }
     pushToast(err instanceof Error ? err.message : "order failed");
   }, [pushToast]);
 

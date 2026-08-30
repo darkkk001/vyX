@@ -16,6 +16,7 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": path.resolve(rootDir, "."),
+      "server-only": path.resolve(rootDir, "vitest.server-only-shim.ts"),
     },
   },
 });
