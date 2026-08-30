@@ -1,7 +1,7 @@
 "use client";
 
 import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
-import { init, dispose } from "klinecharts";
+import { init, dispose, ActionType } from "klinecharts";
 import type { Candle } from "@/lib/market-simulator";
 
 export type ChartLine = {
@@ -40,6 +40,13 @@ type Props = {
   digits: number;
   lines: ChartLine[];
   onContextMenuPrice?: (price: number, clientX: number, clientY: number) => void;
+  // fix/realtime-sync §6 -- WebTrader.tsx closes its chart context menu on
+  // this (a pan/zoom moving the chart underneath an open menu positioned
+  // at a now-stale coordinate is worse than just closing it). A wheel-
+  // zoom has no pointerdown at all, so the generic outside-click dismiss
+  // every other menu in this file uses can't catch it -- this hooks
+  // klinecharts' own action system directly instead.
+  onPanOrZoom?: () => void;
 };
 
 // Thin React wrapper around klinecharts (free, open-source — no license
@@ -54,7 +61,7 @@ type Props = {
 // mismatch against strict types would fail the whole build rather than
 // just this one feature at runtime.
 const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartPanel(
-  { candles, latestBar, digits, lines, onContextMenuPrice },
+  { candles, latestBar, digits, lines, onContextMenuPrice, onPanOrZoom },
   ref
 ) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -65,6 +72,8 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
   const userOverlayIdsRef = useRef<string[]>([]);
   const onContextMenuPriceRef = useRef(onContextMenuPrice);
   onContextMenuPriceRef.current = onContextMenuPrice;
+  const onPanOrZoomRef = useRef(onPanOrZoom);
+  onPanOrZoomRef.current = onPanOrZoom;
 
   useEffect(() => {
     const el = containerRef.current;
@@ -140,10 +149,24 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
     };
     el.addEventListener("contextmenu", onContextMenu);
 
+    const onChartAction = () => onPanOrZoomRef.current?.();
+    try {
+      chart?.subscribeAction?.(ActionType.OnZoom, onChartAction);
+      chart?.subscribeAction?.(ActionType.OnScroll, onChartAction);
+    } catch {
+      // ignore -- context menu just won't auto-close on pan/zoom this session
+    }
+
     return () => {
       window.removeEventListener("resize", onResize);
       containerObserver.disconnect();
       el.removeEventListener("contextmenu", onContextMenu);
+      try {
+        chart?.unsubscribeAction?.(ActionType.OnZoom, onChartAction);
+        chart?.unsubscribeAction?.(ActionType.OnScroll, onChartAction);
+      } catch {
+        // ignore
+      }
       try {
         dispose(el);
       } catch {

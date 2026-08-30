@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import {
   SYMBOL_DEFS,
   createInitialMarket,
@@ -99,6 +99,41 @@ function loadStoredLayout(): StoredLayout {
   }
 }
 
+// fix/realtime-sync §6 -- every dropdown/context menu in this file used
+// to only ever close via its own explicit "close" click (an option, a
+// second click on the trigger); clicking anywhere else on the page, or
+// pressing Escape, or the window losing focus, left it sitting open
+// indefinitely. `containerRef` scopes "outside" to whatever DOM node
+// wraps both the trigger and the menu itself, so clicking the trigger
+// again (already toggling `active` off through its own onClick) doesn't
+// double-fire a close through this listener too. Route-change dismissal
+// (mentioned in the originating spec) doesn't apply to this component --
+// WebTrader IS the route for as long as any of these menus could be
+// open; there's no client-side navigation away from /trade that would
+// leave one dangling.
+function useDismiss(active: boolean, onClose: () => void, containerRef: RefObject<HTMLElement | null>) {
+  useEffect(() => {
+    if (!active) return;
+    function handlePointerDown(e: PointerEvent) {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) onClose();
+    }
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+    }
+    // capture: true so this still sees the click even if some inner
+    // handler further down calls stopPropagation (the watchlist's own
+    // context-menu trigger already does, for its right-click).
+    document.addEventListener("pointerdown", handlePointerDown, true);
+    document.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("blur", onClose);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown, true);
+      document.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("blur", onClose);
+    };
+  }, [active, onClose, containerRef]);
+}
+
 export default function WebTrader({
   brokerName,
   brokerLogoUrl,
@@ -137,6 +172,8 @@ export default function WebTrader({
     storedLayout.columnPrefs ?? { signal: true, change: true, spread: false, high: false, low: false }
   );
   const [wlMenuOpen, setWlMenuOpen] = useState(false);
+  const wlContextMenuRef = useRef<HTMLDivElement | null>(null);
+  useDismiss(wlMenuOpen, () => setWlMenuOpen(false), wlContextMenuRef);
 
   const [activeSymbol, setActiveSymbol] = useState("XAUUSD");
   const [currentTf, setCurrentTf] = useState<Timeframe>("H1");
@@ -183,8 +220,14 @@ export default function WebTrader({
   const [balanceHidden, setBalanceHidden] = useState(false);
 
   // ---------- resizable panel layout ----------
-  const [orderPanelWidth, setOrderPanelWidth] = useState(storedLayout.orderPanelWidth ?? 260);
-  const [watchlistWidth, setWatchlistWidth] = useState(storedLayout.watchlistWidth ?? 210);
+  // fix/realtime-sync §5's bounds (order panel 260-420, watchlist
+  // 220-420) are clamped again here, not just in onMove's drag handler
+  // below -- a layout saved to localStorage before this fix (old bounds
+  // were 200-420 / 160-420) could otherwise load a narrower-than-allowed
+  // panel that only got corrected the next time the user happened to
+  // drag it.
+  const [orderPanelWidth, setOrderPanelWidth] = useState(() => Math.min(420, Math.max(260, storedLayout.orderPanelWidth ?? 260)));
+  const [watchlistWidth, setWatchlistWidth] = useState(() => Math.min(420, Math.max(220, storedLayout.watchlistWidth ?? 220)));
   const [bottomPanelHeight, setBottomPanelHeight] = useState(storedLayout.bottomPanelHeight ?? 190);
   const resizeStateRef = useRef<{ kind: "order" | "watchlist" | "bottom"; startPos: number; startSize: number } | null>(null);
   // Bounds the bottom-panel drag against the ACTUAL space available in
@@ -236,12 +279,18 @@ export default function WebTrader({
         // it now, the mirror of when it sat on the left with the resizer
         // on its right edge.
         const delta = rs.startPos - e.clientX;
-        setOrderPanelWidth(Math.min(420, Math.max(200, rs.startSize + delta)));
+        // fix/realtime-sync §5's explicit bounds (260-420, was 200-420) --
+        // .center's own min-width: 0 already keeps the chart column from
+        // ever overlapping regardless of these numbers (that's a CSS Grid
+        // property, not a JS clamp concern), but a panel too narrow to
+        // read is still a real usability floor worth raising to match.
+        setOrderPanelWidth(Math.min(420, Math.max(260, rs.startSize + delta)));
       } else {
         // Watchlist now sits on the left, resizer on its RIGHT edge --
         // dragging right grows it now.
         const delta = e.clientX - rs.startPos;
-        setWatchlistWidth(Math.min(420, Math.max(160, rs.startSize + delta)));
+        // fix/realtime-sync §5's explicit bounds (220-420, was 160-420).
+        setWatchlistWidth(Math.min(420, Math.max(220, rs.startSize + delta)));
       }
     }
     function onUp() {
@@ -324,6 +373,8 @@ export default function WebTrader({
   const [alertsTab, setAlertsTab] = useState<"active" | "history">("active");
 
   const [accountDropdownOpen, setAccountDropdownOpen] = useState(false);
+  const accountSwitcherRef = useRef<HTMLDivElement | null>(null);
+  useDismiss(accountDropdownOpen, () => setAccountDropdownOpen(false), accountSwitcherRef);
   const [linkedAccounts, setLinkedAccounts] = useState<ApiLinkedAccount[] | null>(null);
   const [switchTarget, setSwitchTarget] = useState<ApiLinkedAccount | null>(null);
   const [switchPassword, setSwitchPassword] = useState("");
@@ -334,6 +385,8 @@ export default function WebTrader({
   const [switchPendingToken, setSwitchPendingToken] = useState<string | null>(null);
   const [switchTwoFactorCode, setSwitchTwoFactorCode] = useState("");
   const [symbolDropdownOpen, setSymbolDropdownOpen] = useState(false);
+  const symbolDropdownRef = useRef<HTMLDivElement | null>(null);
+  useDismiss(symbolDropdownOpen, () => setSymbolDropdownOpen(false), symbolDropdownRef);
   const [symbolSearch, setSymbolSearch] = useState("");
   const [chartLayout, setChartLayout] = useState<"single" | "grid">("single");
   const [gridCells, setGridCells] = useState<{ symbol: string; tf: Timeframe }[]>([
@@ -342,10 +395,15 @@ export default function WebTrader({
     { symbol: "BTCUSD", tf: "H1" },
     { symbol: "GBPUSD", tf: "H1" },
   ]);
-  const [fileMenuOpen, setFileMenuOpen] = useState(false);
-  const [toolsMenuOpen, setToolsMenuOpen] = useState(false);
-  const [helpMenuOpen, setHelpMenuOpen] = useState(false);
-  const [actionsMenuOpen, setActionsMenuOpen] = useState(false);
+  // fix/realtime-sync §6 -- one shared slot instead of 4 independent
+  // booleans, so opening any one of these always closes whichever other
+  // one was open (previously only File<->Tools did this, pairwise, by
+  // each one's onClick manually clearing the other -- Actions/Help never
+  // closed File or Tools, or each other).
+  type TopMenuId = "file" | "tools" | "actions" | "help";
+  const [topMenuOpen, setTopMenuOpen] = useState<TopMenuId | null>(null);
+  const topMenuContainerRef = useRef<HTMLDivElement | null>(null);
+  useDismiss(topMenuOpen !== null, () => setTopMenuOpen(null), topMenuContainerRef);
   const [actionsSearch, setActionsSearch] = useState("");
   // Read once client-side (useEffect, not render) — window.vyxDesktop
   // doesn't exist during SSR, and JSX reading it directly there would
@@ -429,29 +487,15 @@ export default function WebTrader({
   // which needs to know which symbol to show.
   const [wlContextMenu, setWlContextMenu] = useState<{ x: number; y: number; symbol?: string } | null>(null);
   const [chartContextMenu, setChartContextMenu] = useState<{ x: number; y: number; price: number } | null>(null);
-  // Reported live: right-clicking the chart to open the buy-stop/limit
-  // menu, then left-clicking elsewhere (or pressing Escape) to dismiss
-  // it, did nothing -- there was no close path at all except clicking one
-  // of the menu's own items. mousedown (not click) so this also correctly
-  // closes-then-reopens at the new spot on a second right-click, rather
-  // than the two competing for the same click.
-  useEffect(() => {
-    if (!chartContextMenu) return;
-    function onMouseDown(e: MouseEvent) {
-      if (!(e.target instanceof HTMLElement) || !e.target.closest(".wl-context-menu")) {
-        setChartContextMenu(null);
-      }
-    }
-    function onKeyDown(e: KeyboardEvent) {
-      if (e.key === "Escape") setChartContextMenu(null);
-    }
-    document.addEventListener("mousedown", onMouseDown);
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("mousedown", onMouseDown);
-      document.removeEventListener("keydown", onKeyDown);
-    };
-  }, [chartContextMenu]);
+  // fix/realtime-sync §6 -- consolidated onto the same useDismiss every
+  // other menu in this file now uses (was its own bespoke mousedown/
+  // Escape effect, added for the same originally-reported "right-click
+  // the chart, nothing dismisses it" bug -- see this file's useDismiss
+  // for why a ref beats the old `.closest(".wl-context-menu")` check:
+  // this also now gets window-blur dismissal for free, and pan/zoom via
+  // KLineChartPanel's onPanOrZoom prop above).
+  const chartContextMenuRef = useRef<HTMLDivElement | null>(null);
+  useDismiss(chartContextMenu !== null, () => setChartContextMenu(null), chartContextMenuRef);
   const chartRef = useRef<KLineChartHandle>(null);
   const [maActive, setMaActive] = useState(false);
 
@@ -743,7 +787,7 @@ export default function WebTrader({
   useEffect(() => { refreshFundsHistory(); }, [refreshFundsHistory]);
 
   async function openSecurityModal() {
-    setToolsMenuOpen(false);
+    setTopMenuOpen(null);
     setSecurityModalOpen(true);
     setTfaSetupData(null);
     setTfaConfirmCode("");
@@ -1812,11 +1856,11 @@ export default function WebTrader({
 
         <div className={`topbar${isDesktopApp ? " topbar-desktop" : ""}`}>
           <div className="topbar-left">
-            <div className="nav">
+            <div className="nav" ref={topMenuContainerRef}>
               <div style={{ position: "relative" }}>
-                <div className="item" onClick={() => { setFileMenuOpen((v) => !v); setToolsMenuOpen(false); }}>File</div>
-                {fileMenuOpen ? (
-                  <div className="account-dropdown show" style={{ top: "100%", left: 0, width: 180 }} onClick={() => setFileMenuOpen(false)}>
+                <div className="item" onClick={() => setTopMenuOpen((id) => (id === "file" ? null : "file"))}>File</div>
+                {topMenuOpen === "file" ? (
+                  <div className="account-dropdown show" style={{ top: "100%", left: 0, width: 180 }} onClick={() => setTopMenuOpen(null)}>
                     <div className="acc-option" style={{ cursor: "pointer", padding: "8px 10px" }} onClick={handleLogout}>Switch account</div>
                     {isDesktopApp ? (
                       <div className="acc-option" style={{ cursor: "pointer", padding: "8px 10px" }} onClick={() => window.vyxDesktop?.close?.()}>Exit</div>
@@ -1825,13 +1869,13 @@ export default function WebTrader({
                 ) : null}
               </div>
               <div style={{ position: "relative" }}>
-                <div className="item" onClick={() => { setToolsMenuOpen((v) => !v); setFileMenuOpen(false); }}>Tools</div>
-                {toolsMenuOpen ? (
+                <div className="item" onClick={() => setTopMenuOpen((id) => (id === "tools" ? null : "tools"))}>Tools</div>
+                {topMenuOpen === "tools" ? (
                   <div className="account-dropdown show" style={{ top: "100%", left: 0, width: 180 }}>
-                    <div className="acc-option" style={{ cursor: "pointer", padding: "8px 10px" }} onClick={() => { setToolsMenuOpen(false); setChangePasswordOpen(true); }}>Change password</div>
+                    <div className="acc-option" style={{ cursor: "pointer", padding: "8px 10px" }} onClick={() => { setTopMenuOpen(null); setChangePasswordOpen(true); }}>Change password</div>
                     <div className="acc-option" style={{ cursor: "pointer", padding: "8px 10px" }} onClick={openSecurityModal}>Security</div>
-                    <div className="acc-option" style={{ cursor: "pointer", padding: "8px 10px" }} onClick={() => { setToolsMenuOpen(false); setKycModalOpen(true); refreshKycStatus(); }}>Verify identity</div>
-                    <div className="acc-option" style={{ cursor: "pointer", padding: "8px 10px" }} onClick={() => { setToolsMenuOpen(false); setActiveBottomTab("logs"); }}>View logs</div>
+                    <div className="acc-option" style={{ cursor: "pointer", padding: "8px 10px" }} onClick={() => { setTopMenuOpen(null); setKycModalOpen(true); refreshKycStatus(); }}>Verify identity</div>
+                    <div className="acc-option" style={{ cursor: "pointer", padding: "8px 10px" }} onClick={() => { setTopMenuOpen(null); setActiveBottomTab("logs"); }}>View logs</div>
                     <div style={{ height: 1, background: "var(--border)", margin: "4px 0" }} />
                     <div style={{ padding: "4px 10px 2px", fontSize: 10, color: "var(--text-3)", textTransform: "uppercase" }}>Theme</div>
                     <div className="acc-option" style={{ cursor: "pointer", padding: "8px 10px", display: "flex", justifyContent: "space-between" }} onClick={() => changeTheme("default")}>
@@ -1845,8 +1889,8 @@ export default function WebTrader({
               </div>
               <div className="item" onClick={() => { setReportsOpen(true); setReportRows(null); }}>Reports</div>
               <div style={{ position: "relative" }}>
-                <div className="item" onClick={() => { setActionsMenuOpen((v) => !v); setActionsSearch(""); }}>Quick actions ▾</div>
-                {actionsMenuOpen ? (
+                <div className="item" onClick={() => { setTopMenuOpen((id) => (id === "actions" ? null : "actions")); setActionsSearch(""); }}>Quick actions ▾</div>
+                {topMenuOpen === "actions" ? (
                   <div className="account-dropdown show" style={{ top: "100%", left: 0, width: 240 }}>
                     <input
                       className="wl-search mono"
@@ -1863,7 +1907,7 @@ export default function WebTrader({
                             key={s.name}
                             className="acc-option"
                             style={{ cursor: "pointer", padding: "7px 10px" }}
-                            onClick={() => { selectSymbol(s.name); setActionsMenuOpen(false); }}
+                            onClick={() => { selectSymbol(s.name); setTopMenuOpen(null); }}
                           >
                             <span className="mono">{s.name}</span>
                           </div>
@@ -1874,21 +1918,21 @@ export default function WebTrader({
                         <div
                           className="acc-option"
                           style={{ cursor: "pointer", padding: "8px 10px", color: acctPositions.some((p) => positionPnl(p) >= 0) ? "var(--buy)" : "var(--text-3)" }}
-                          onClick={() => { closeManyBy((p) => positionPnl(p) >= 0, "Closed profitable"); setActionsMenuOpen(false); }}
+                          onClick={() => { closeManyBy((p) => positionPnl(p) >= 0, "Closed profitable"); setTopMenuOpen(null); }}
                         >
                           Close profitable positions
                         </div>
                         <div
                           className="acc-option"
                           style={{ cursor: "pointer", padding: "8px 10px", color: acctPositions.some((p) => positionPnl(p) < 0) ? "var(--sell)" : "var(--text-3)" }}
-                          onClick={() => { closeManyBy((p) => positionPnl(p) < 0, "Closed losing"); setActionsMenuOpen(false); }}
+                          onClick={() => { closeManyBy((p) => positionPnl(p) < 0, "Closed losing"); setTopMenuOpen(null); }}
                         >
                           Close losing positions
                         </div>
                         <div
                           className="acc-option"
                           style={{ cursor: "pointer", padding: "8px 10px" }}
-                          onClick={() => { closeManyBy(() => true, "Closed all"); setActionsMenuOpen(false); }}
+                          onClick={() => { closeManyBy(() => true, "Closed all"); setTopMenuOpen(null); }}
                         >
                           Close all positions
                         </div>
@@ -1896,14 +1940,14 @@ export default function WebTrader({
                         <div
                           className="acc-option"
                           style={{ cursor: "pointer", padding: "8px 10px" }}
-                          onClick={() => { setOneClick((v) => !v); pushToast(!oneClick ? "One-click trading enabled" : "One-click trading disabled"); setActionsMenuOpen(false); }}
+                          onClick={() => { setOneClick((v) => !v); pushToast(!oneClick ? "One-click trading enabled" : "One-click trading disabled"); setTopMenuOpen(null); }}
                         >
                           Toggle one-click trading
                         </div>
                         <div
                           className="acc-option"
                           style={{ cursor: "pointer", padding: "8px 10px" }}
-                          onClick={() => { setActiveBottomTab("logs"); setActionsMenuOpen(false); }}
+                          onClick={() => { setActiveBottomTab("logs"); setTopMenuOpen(null); }}
                         >
                           View logs
                         </div>
@@ -1913,14 +1957,14 @@ export default function WebTrader({
                 ) : null}
               </div>
               <div style={{ position: "relative" }}>
-                <div className="item" onClick={() => setHelpMenuOpen((v) => !v)}>Help</div>
-                {helpMenuOpen ? (
+                <div className="item" onClick={() => setTopMenuOpen((id) => (id === "help" ? null : "help"))}>Help</div>
+                {topMenuOpen === "help" ? (
                   <div className="account-dropdown show" style={{ top: "100%", left: 0, width: 190 }}>
                     {supportEmail ? (
                       <div
                         className="acc-option"
                         style={{ cursor: "pointer", padding: "8px 10px" }}
-                        onClick={() => { setHelpMenuOpen(false); window.open(`mailto:${supportEmail}`, "_blank"); }}
+                        onClick={() => { setTopMenuOpen(null); window.open(`mailto:${supportEmail}`, "_blank"); }}
                       >
                         Contact support
                       </div>
@@ -1928,7 +1972,7 @@ export default function WebTrader({
                     <div
                       className="acc-option"
                       style={{ cursor: "pointer", padding: "8px 10px" }}
-                      onClick={() => { setHelpMenuOpen(false); pushToast(`${brokerName} — online trading platform`); }}
+                      onClick={() => { setTopMenuOpen(null); pushToast(`${brokerName} — online trading platform`); }}
                     >
                       About
                     </div>
@@ -1978,7 +2022,7 @@ export default function WebTrader({
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></svg>
               )}
             </button>
-            <div className="account-switcher">
+            <div className="account-switcher" ref={accountSwitcherRef}>
               <div className={`mode-toggle${account?.accountType === "LIVE" ? " live" : ""}`} onClick={() => setAccountDropdownOpen((v) => !v)}>
                 <span className="mono mode-toggle-acc-num">{account?.accountNumber ?? "..."}</span>
                 <span className="mode-toggle-label">{account?.accountType ?? ""}</span>
@@ -2141,7 +2185,7 @@ export default function WebTrader({
               })}
             </div>
             {wlMenuOpen && wlContextMenu ? (
-              <div className="wl-context-menu show" style={{ left: wlContextMenu.x, top: wlContextMenu.y }} onMouseLeave={() => setWlMenuOpen(false)}>
+              <div className="wl-context-menu show" ref={wlContextMenuRef} style={{ left: wlContextMenu.x, top: wlContextMenu.y }}>
                 {wlContextMenu.symbol ? (
                   <>
                     <div
@@ -2205,7 +2249,7 @@ export default function WebTrader({
           {/* ---------- CENTER (chart) ---------- */}
           <div ref={centerRef} className={`center${isMobileView ? ` mobile${mobileTab === "chart" || mobileTab === "positions" ? " mobile-active" : ""}` : ""}`}>
             <div className="chart-header" style={isMobileView && mobileTab !== "chart" ? { display: "none" } : undefined}>
-              <div className="chart-title" style={{ position: "relative" }}>
+              <div className="chart-title" ref={symbolDropdownRef} style={{ position: "relative" }}>
                 <div className="chart-symbol" style={{ cursor: "pointer", display: "flex", alignItems: "center", gap: 4 }} onClick={() => { setSymbolDropdownOpen((v) => !v); setSymbolSearch(""); }}>
                   {activeSymbol}
                   <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 9l6 6 6-6" /></svg>
@@ -2321,6 +2365,7 @@ export default function WebTrader({
                     digits={m.def.digits}
                     lines={chartLines}
                     onContextMenuPrice={handleChartContextMenuPrice}
+                    onPanOrZoom={() => setChartContextMenu(null)}
                   />
                   {activeFeedStatus === "connecting" ? (
                     // No dark overlay, no error-toned text -- fix/
@@ -2335,7 +2380,7 @@ export default function WebTrader({
                     </div>
                   ) : null}
                   {chartContextMenu ? (
-                    <div className="wl-context-menu show" style={{ left: chartContextMenu.x, top: chartContextMenu.y }}>
+                    <div className="wl-context-menu show" ref={chartContextMenuRef} style={{ left: chartContextMenu.x, top: chartContextMenu.y }}>
                       <div className="wl-ctx-title">@ {fmt(chartContextMenu.price, m.def.digits)} — {chartContextMenu.price < m.bid ? "below" : "above"} market</div>
                       {(chartContextMenu.price < m.bid
                         ? [{ type: "buy_limit" as PendingType, label: "Buy limit here" }, { type: "sell_stop" as PendingType, label: "Sell stop here" }]
