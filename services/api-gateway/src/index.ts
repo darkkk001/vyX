@@ -9,7 +9,7 @@ import { createServer } from "node:http";
 import express from "express";
 import ordersRouter from "./routes/orders.js";
 import positionsRouter from "./routes/positions.js";
-import { attachPriceStream, attachTradingEventStream, attachAdminEventStream, gatewayStats } from "./ws.js";
+import { attachPriceStream, attachTradingEventStream, attachAdminEventStream, gatewayStats, orderAckStats } from "./ws.js";
 
 const app = express();
 app.use(express.json());
@@ -27,7 +27,7 @@ app.get("/internal/gateway-stats", (req, res) => {
     res.status(401).json({ error: "unauthorized" });
     return;
   }
-  res.json(gatewayStats);
+  res.json({ ...gatewayStats, ...orderAckStats() });
 });
 
 app.use("/v1/orders", ordersRouter);

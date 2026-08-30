@@ -44,7 +44,18 @@ type GatewayStats = {
   wsDisconnectionsTotal: number;
   ticksForwardedTotal: number;
   natsMessagesReceivedTotal: number;
+  // Phase 0 money-risk patch item 3 (docs/ROADMAP.md) -- the Rust/gateway
+  // path's own order-ack window (services/api-gateway/src/ws.ts).
+  order_ack_ms_p50: number | null;
+  order_ack_ms_p95: number | null;
+  order_ack_sample_count: number;
 };
+
+// Legacy Next.js/Vercel path's own order-ack window -- see
+// app/api/manage/order-latency/route.ts and lib/order-latency.ts's own
+// comment on why this one is Redis-backed instead of an in-process array
+// like the Rust/gateway path above.
+type OrderAckStats = { p50: number | null; p95: number | null; sampleCount: number };
 
 function ms(value: number | null): string {
   return value == null ? "—" : `${value}ms`;
@@ -57,12 +68,17 @@ function ms(value: number | null): string {
 // can't be sent from the client).
 export default function FeedHealthManager() {
   const [data, setData] = useState<{ feedStats: FeedStatsSnapshot | null; gatewayStats: GatewayStats | null } | null>(null);
+  const [orderAck, setOrderAck] = useState<OrderAckStats | null>(null);
 
   useEffect(() => {
     fetch("/api/manage/feed-health")
       .then((r) => r.json())
       .then(setData)
       .catch(() => setData({ feedStats: null, gatewayStats: null }));
+    fetch("/api/manage/order-latency")
+      .then((r) => r.json())
+      .then(setOrderAck)
+      .catch(() => setOrderAck(null));
   }, []);
 
   if (data === null) {
@@ -73,6 +89,16 @@ export default function FeedHealthManager() {
 
   return (
     <>
+      <div className="mb-6">
+        <h2 className="mb-2 text-sm font-medium text-[var(--text-2)]">Order ack</h2>
+        <StatGrid columns={4}>
+          <StatCard label="Legacy p50 (Vercel)" value={ms(orderAck?.p50 ?? null)} />
+          <StatCard label="Legacy p95 (Vercel)" value={ms(orderAck?.p95 ?? null)} />
+          <StatCard label="Rust p50 (gateway)" value={ms(gatewayStats?.order_ack_ms_p50 ?? null)} />
+          <StatCard label="Rust p95 (gateway)" value={ms(gatewayStats?.order_ack_ms_p95 ?? null)} />
+        </StatGrid>
+      </div>
+
       <div className="mb-6">
         <div className="mb-2 flex items-center gap-2">
           <h2 className="text-sm font-medium text-[var(--text-2)]">Rust ingest (engine/server)</h2>

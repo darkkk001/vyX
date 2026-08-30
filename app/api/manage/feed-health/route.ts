@@ -48,6 +48,13 @@ type GatewayStats = {
   wsDisconnectionsTotal: number;
   ticksForwardedTotal: number;
   natsMessagesReceivedTotal: number;
+  // Phase 0 money-risk patch item 3 (docs/ROADMAP.md) -- the Rust/gateway
+  // path's own order-ack window (services/api-gateway/src/ws.ts's
+  // orderAckStats), merged into this same response since it was already
+  // the one place this route proxies gateway-stats from.
+  order_ack_ms_p50: number | null;
+  order_ack_ms_p95: number | null;
+  order_ack_sample_count: number;
 };
 
 const TRADING_CORE_URL = process.env.TRADING_CORE_URL ?? "http://127.0.0.1:8081";

@@ -23,6 +23,7 @@ import { requireTraderSession } from "../auth.js";
 import { rateLimitOrders } from "../rate-limit.js";
 import { getAccount, getLedgerSum, getOpenPositionsSummary, getSymbolContractSize, writeAuditLog } from "../db.js";
 import { parseUpstreamJson } from "../http.js";
+import { recordOrderAckLatency } from "../ws.js";
 import { placeMarketOrderSchema, placePendingOrderSchema, validateBody } from "../validation.js";
 import type { z } from "zod";
 
@@ -86,11 +87,18 @@ router.post(
       leverage: account.leverage,
     };
 
+    // Phase 0 money-risk patch item 3 (docs/ROADMAP.md) -- this Gateway's
+    // own definition of "order ack": the round trip to the Rust engine
+    // and back, everything above (Postgres reads for margin/exposure)
+    // deliberately excluded since that's this Gateway's own overhead, not
+    // the execution path being measured. See ws.ts's orderAckStats.
+    const upstreamStartedAt = Date.now();
     const upstream = await fetch(`${TRADING_CORE_URL}/v1/orders/market`, {
       method: "POST",
       headers: tradingCoreHeaders(),
       body: JSON.stringify(payload),
     });
+    recordOrderAckLatency(Date.now() - upstreamStartedAt);
 
     const data = await parseUpstreamJson(upstream);
     if (upstream.ok) {

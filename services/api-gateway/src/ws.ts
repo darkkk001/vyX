@@ -74,6 +74,36 @@ export const gatewayStats = {
   adminEventsReceivedTotal: 0,
 };
 
+// Phase 0 money-risk patch item 3 (docs/ROADMAP.md) -- "we will never
+// again ship an order path we can't measure." This process (unlike the
+// Vercel-hosted legacy path, see lib/order-latency.ts's own comment on
+// why that one needs Redis instead) is a single long-running host, so a
+// plain capped array works -- same windowed-percentile shape as
+// engine/market-data/src/stats.rs's FeedStats, sized the same (500).
+// Records src/routes/orders.ts's own gateway-to-Rust-engine round trip
+// for POST /market -- this Gateway's own definition of "order ack".
+const ORDER_ACK_WINDOW = 500;
+const orderAckLatenciesMs: number[] = [];
+
+export function recordOrderAckLatency(ms: number): void {
+  orderAckLatenciesMs.push(ms);
+  if (orderAckLatenciesMs.length > ORDER_ACK_WINDOW) orderAckLatenciesMs.shift();
+}
+
+function percentile(sorted: number[], p: number): number | null {
+  if (sorted.length === 0) return null;
+  return sorted[Math.round((sorted.length - 1) * p)];
+}
+
+export function orderAckStats(): { order_ack_ms_p50: number | null; order_ack_ms_p95: number | null; order_ack_sample_count: number } {
+  const sorted = [...orderAckLatenciesMs].sort((a, b) => a - b);
+  return {
+    order_ack_ms_p50: percentile(sorted, 0.5),
+    order_ack_ms_p95: percentile(sorted, 0.95),
+    order_ack_sample_count: sorted.length,
+  };
+}
+
 export async function attachPriceStream(server: Server, natsUrl: string): Promise<void> {
   const nc: NatsConnection = await connect({ servers: natsUrl });
   const sub = nc.subscribe("price.tick.*");

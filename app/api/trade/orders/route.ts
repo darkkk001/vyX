@@ -7,6 +7,7 @@ import { createNotification } from "@/lib/notifications";
 import { openPositionFromOrder } from "@/lib/dealing";
 import { resolveBookType, applySpreadMarkup, resolveSymbolPricing, chargeCommission } from "@/lib/group-pricing";
 import { checkAccountPreTradeMargin } from "@/lib/margin";
+import { recordOrderAckLatency } from "@/lib/order-latency";
 import { publishTradingEvent } from "@/lib/nats";
 import {
   checkTradingHalted,
@@ -42,7 +43,28 @@ async function logHotkeyOrder(brokerId: string, orderId: string) {
 // STOP orders still rest client-side until triggered, but their fill
 // (app/api/trade/orders/[id]/fill/route.ts) applies this same
 // server-price-authority rule, not the client's trigger-detected price.
+//
+// Phase 0 money-risk patch item 3 (docs/ROADMAP.md) -- this thin wrapper
+// times the whole request end to end and records it as this broker's
+// order-ack latency (lib/order-latency.ts) whenever handlePlaceOrder
+// actually placed/filled/rejected an order (every such branch already
+// returns 201; validation failures below it, e.g. bad volume, don't --
+// those aren't a real "order ack", so they're deliberately excluded from
+// the window). Separate from handlePlaceOrder itself so none of that
+// function's many early-return branches needed touching individually.
 export async function POST(request: NextRequest) {
+  const startedAt = Date.now();
+  const response = await handlePlaceOrder(request);
+  if (response.status === 201) {
+    const session = await getAccountSession();
+    if (session) {
+      void recordOrderAckLatency(session.brokerId, Date.now() - startedAt).catch(() => {});
+    }
+  }
+  return response;
+}
+
+async function handlePlaceOrder(request: NextRequest) {
   const session = await getAccountSession();
   if (!session) {
     return NextResponse.json({ error: "not authenticated" }, { status: 401 });
