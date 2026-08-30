@@ -3,6 +3,12 @@
 # dependencies
 /node_modules
 node_modules/
+
+# MetaEditor's compiled output for mt5-ea/*.mq5 -- a build artifact of the
+# source .mq5 file, not something to track (and, per this project's own
+# security convention, ApiSecret is never baked into the .mq5 anyway, so
+# there's nothing sensitive in it either way -- just noise).
+mt5-ea/*.ex5
 services/*/dist/
 services/*/.env
 # Vite-built desktop shell output -- desktop-tauri/dist/ used to hold

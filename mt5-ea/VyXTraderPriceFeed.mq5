@@ -7,7 +7,7 @@
 //| LivePrice table this EA feeds.                                    |
 //+------------------------------------------------------------------+
 #property strict
-#property version   "1.34"
+#property version   "1.35"
 
 input string ServerUrl            = "https://www.vyxtrader.com/api/internal/price-feed";
 // No default -- this file is committed to a public-ish repo. A real
@@ -65,11 +65,24 @@ input int    ClockSyncIntervalSec = 60;
 // ones (POST /internal/history -- see engine/server/src/main.rs's
 // ingest_history and db.rs's upsert_candle_authoritative). Direct-mode
 // only, same reasoning as SyncClockOffset: this route lives on
-// engine/server itself, not the Next.js proxy. Runs once on init and
-// every HistoryBackfillIntervalSec after that (see OnTimer) -- NOT tied
-// to PushMinIntervalMs the way tick pushes are, since a bar backfill is
-// maintenance, not a live-latency-sensitive push.
+// engine/server itself, not the Next.js proxy.
+//
+// v1.35 splits this into two shapes (see StartDeepBackfill/
+// RunShallowHistoryBackfill below): a one-time, STAGED deep pass (the
+// full HistoryBackfillBarCounts[] per timeframe, ~30 days each) the first
+// time this EA ever runs on this terminal, then flat, unstaged
+// HISTORY_BACKFILL_SHALLOW_BAR_COUNT-bar steady-state cycles every
+// HistoryBackfillIntervalSec after that -- outage repair only, since the
+// live tick feed already keeps recent history current on its own.
 input int    HistoryBackfillIntervalSec = 900;
+// Manual escape hatch: forces the full staged deep pass to run again on
+// the next reinit (any Properties change reinitializes a running EA in
+// MT5, not just a literal remove-and-reattach) even though it already
+// completed once. MQL5 can't reset an input from code, so remember to
+// flip this back to false afterward -- left true, every future reinit
+// (including an unrelated properties tweak, or a terminal restart) forces
+// another ~6-minutes-of-requests deep pass, not just the one you meant.
+input bool   ForceDeepBackfill    = false;
 
 // Where the list of symbols to push comes from (second Contabo-audit
 // follow-up). MARKET_WATCH auto-discovers whatever's selected in this
@@ -140,9 +153,13 @@ long LastRttMs = 0;
 bool HasClockSync = false;
 uint lastClockSyncMs = 0;
 
-// History backfill state. lastHistoryBackfillMs == 0 means "never run
-// yet" -- OnInit's own call handles the "on init" half of the schedule,
-// this is only for the "every HistoryBackfillIntervalSec" half.
+// Steady-state shallow-backfill state. lastHistoryBackfillMs == 0 means
+// "never run yet" -- OnInit's own call (StartDeepBackfill or
+// RunShallowHistoryBackfill, see v1.35's OnInit) handles the "on init"
+// half of the schedule; this is only for the "every
+// HistoryBackfillIntervalSec" half, reset by both RunShallowHistoryBackfill
+// and FinishDeepBackfill so the interval always counts from whichever
+// backfill (deep or shallow) most recently finished.
 uint lastHistoryBackfillMs = 0;
 
 // Only the engine's actual configured fixed-duration timeframes
@@ -176,7 +193,17 @@ string HistoryBackfillPeriodNames[]     = { "M1",      "M5",      "M30",      "H
 // blow both the payload size and HISTORY_WEBREQUEST_TIMEOUT_MS below.
 // Index-aligned with HistoryBackfillPeriods/HistoryBackfillPeriodNames
 // above -- keep all three arrays in the same order.
+//
+// v1.35: only the STAGED deep pass (StartDeepBackfill/StepDeepBackfill)
+// uses these counts now. Steady-state cycles use the much smaller flat
+// HISTORY_BACKFILL_SHALLOW_BAR_COUNT below instead (see
+// RunShallowHistoryBackfill) -- these deep counts are worth their ~37s-
+// per-symbol cost exactly once, not every 15 minutes forever.
 int HistoryBackfillBarCounts[]          = { 1500,      1500,      1500,      750,       200,       200      };
+// Steady-state-only (see above) -- outage repair, not a full refill: the
+// live tick feed already keeps recent history current, this just catches
+// whatever gap happened while this EA/terminal wasn't running.
+const int HISTORY_BACKFILL_SHALLOW_BAR_COUNT = 200;
 // Split from the tick-push timeout below on purpose -- a history backfill
 // runs on the same OnTimer callback as tick pushes (MQL5 has one thread
 // per EA, no async WebRequest), so whatever this is set to is how long a
@@ -187,6 +214,29 @@ const int HISTORY_WEBREQUEST_TIMEOUT_MS = 30000;
 // Ticks are latency-sensitive and small; keep this short so a genuinely
 // unreachable server fails fast instead of stalling the push loop.
 const int TICK_WEBREQUEST_TIMEOUT_MS = 5000;
+
+// v1.35 staged deep pass -- see StartDeepBackfill/StepDeepBackfill/
+// FinishDeepBackfill. Walks the ActiveBrokerSymbols x HistoryBackfillPeriods
+// grid as one flat cursor (symIdx = step / tfCount, tfIdx = step % tfCount)
+// so it's a single number to persist and advance, not two nested ones.
+// GlobalVariable (terminal-wide, survives EA reinit and, if the terminal
+// shuts down cleanly, a restart too) remembers whether the deep pass has
+// ever completed, so a plain reattach doesn't redo it -- ForceDeepBackfill
+// above is the override.
+const string DEEP_BACKFILL_DONE_GVAR = "VyXTraderPriceFeed_DeepBackfillDone";
+// Floor between one staged step and the next -- long enough that OnTick's
+// own tick-driven pushes (and the next OnTimer's plain BuildAndSend) get a
+// real gap to run in when a step finishes fast (H4/D1, ~1.3s measured).
+// A slow step (M1/M5/M30, ~9-10s measured) already exceeds this on its
+// own, so the next step fires as soon as that step's request returns --
+// this floor only ever adds idle time for the fast steps, never stacks on
+// top of a slow one.
+const int DEEP_BACKFILL_STAGE_SPACING_MS = 2000;
+bool DeepBackfillActive     = false;
+int  DeepBackfillStep       = 0;
+int  DeepBackfillTotalSteps = 0;
+uint DeepBackfillStartMs    = 0;
+uint lastDeepBackfillStepMs = 0;
 
 // Refreshed by RefreshActiveSymbols() -- the actual broker-native symbol
 // names read via SymbolInfoTick each push, regardless of SymbolSource.
@@ -366,7 +416,18 @@ int OnInit()
    ParseSymbolMap();
    RefreshActiveSymbols();
    SyncClockOffset();
-   SendHistoryBackfill(); // fix/realtime-sync §4 -- "on init" half of the schedule
+
+   // v1.35 -- the staged deep pass runs at most once per terminal (see
+   // DEEP_BACKFILL_DONE_GVAR's own comment), unless ForceDeepBackfill
+   // overrides that. A plain reinit that isn't a deep pass still gets an
+   // immediate shallow outage-repair pass, same as every version before
+   // this one always did.
+   bool deepAlreadyDone = GlobalVariableCheck(DEEP_BACKFILL_DONE_GVAR) && GlobalVariableGet(DEEP_BACKFILL_DONE_GVAR) > 0;
+   if (ForceDeepBackfill || !deepAlreadyDone)
+      StartDeepBackfill();
+   else
+      RunShallowHistoryBackfill();
+
    // Millisecond timer, not EventSetTimer's 1s-resolution one -- keyed
    // off the same PushMinIntervalMs OnTick's own debounce uses, so every
    // symbol (not just this chart's own) is bounded at that floor
@@ -495,17 +556,18 @@ void SendDirect(string ticksJson)
    }
 }
 
-// POST one symbol+timeframe's last barCount bars (HistoryBackfillBarCounts
-// above, per timeframe) to
-// engine/server's /internal/history (fix/realtime-sync §4). Same auth
-// header convention as SendDirect. Blocking, like every WebRequest call
-// in this file -- MQL5 has no async HTTP -- so a full backfill cycle
-// (every configured symbol x every HistoryBackfillPeriods entry) pauses
-// this EA's own tick pushes for however long that many sequential
-// requests take. Only runs every HistoryBackfillIntervalSec (15 min by
-// default), not every tick, so this is a periodic brief pause, not a
-// standing latency cost -- a real, known tradeoff of a single-threaded
-// EA with no async HTTP, not something this fix works around.
+// POST one symbol+timeframe's last barCount bars to engine/server's
+// /internal/history (fix/realtime-sync §4). Same auth header convention
+// as SendDirect. Blocking, like every WebRequest call in this file --
+// MQL5 has no async HTTP -- so every call here pauses this EA's own tick
+// pushes for however long this one request takes (measured ~1.3-10s
+// depending on barCount, see the WebRequest call below). Callers control
+// how many of these happen back to back: RunShallowHistoryBackfill loops
+// every symbol x timeframe unstaged (cheap at
+// HISTORY_BACKFILL_SHALLOW_BAR_COUNT), while StepDeepBackfill (v1.35)
+// calls this at most once per DEEP_BACKFILL_STAGE_SPACING_MS specifically
+// so the deep pass's much larger HistoryBackfillBarCounts never compound
+// into one long freeze.
 void SendHistoryBars(string canonicalSymbol, string brokerSymbol, ENUM_TIMEFRAMES period, string timeframeName, int barCount)
 {
    MqlRates rates[];
@@ -568,10 +630,81 @@ void SendHistoryBars(string canonicalSymbol, string brokerSymbol, ENUM_TIMEFRAME
    }
 }
 
-// Iterates every active symbol x every configured timeframe. See this
-// function's own input/state doc comments for scheduling and the
-// direct-mode-only gate.
-void SendHistoryBackfill()
+// Kicks off the staged deep pass (OnInit only, when it hasn't completed
+// before or ForceDeepBackfill overrides that) -- just resets the cursor
+// and marks it active; OnTimer's own check drives it one step at a time
+// via StepDeepBackfill, never all at once.
+void StartDeepBackfill()
+{
+   if (!UseDirectMode || StringLen(DirectServerUrl) == 0 || StringLen(ApiSecret) == 0)
+   {
+      lastHistoryBackfillMs = GetTickCount(); // proxy mode / not configured -- same early-out convention as before
+      return;
+   }
+
+   DeepBackfillTotalSteps = ArraySize(ActiveBrokerSymbols) * ArraySize(HistoryBackfillPeriods);
+   if (DeepBackfillTotalSteps <= 0)
+   {
+      lastHistoryBackfillMs = GetTickCount();
+      return;
+   }
+
+   DeepBackfillStep = 0;
+   DeepBackfillStartMs = GetTickCount();
+   lastDeepBackfillStepMs = 0; // fire the first step on the very next OnTimer, no initial 2s wait
+   DeepBackfillActive = true;
+}
+
+void FinishDeepBackfill()
+{
+   DeepBackfillActive = false;
+   lastHistoryBackfillMs = GetTickCount(); // steady-state interval starts counting from now, not from before the deep pass
+   double elapsedSec = (GetTickCount() - DeepBackfillStartMs) / 1000.0;
+   Print("VyXTraderPriceFeed (history backfill): deep pass complete in ", DoubleToString(elapsedSec, 1), "s");
+   GlobalVariableSet(DEEP_BACKFILL_DONE_GVAR, 1);
+}
+
+// One symbol x timeframe request per call, called from OnTimer at most
+// once every DEEP_BACKFILL_STAGE_SPACING_MS -- see that constant's own
+// comment. The longest continuous freeze the deep pass can cause is a
+// single SendHistoryBars call (measured ~1.3-10s), never the whole grid
+// back to back the way a flat loop would.
+void StepDeepBackfill()
+{
+   int tfCount = ArraySize(HistoryBackfillPeriods);
+   int symCount = ArraySize(ActiveBrokerSymbols);
+   int symIdx = DeepBackfillStep / tfCount;
+   int tfIdx  = DeepBackfillStep % tfCount;
+
+   // ActiveBrokerSymbols can shrink mid-pass (RefreshActiveSymbols runs
+   // every 30s off BuildAndSend) -- finish cleanly rather than an
+   // out-of-range array access if it does.
+   if (symIdx >= symCount)
+   {
+      FinishDeepBackfill();
+      return;
+   }
+
+   string brokerSymbol = ActiveBrokerSymbols[symIdx];
+   if (StringLen(brokerSymbol) > 0)
+   {
+      string canonicalSymbol = CanonicalFor(brokerSymbol);
+      SendHistoryBars(canonicalSymbol, brokerSymbol, HistoryBackfillPeriods[tfIdx], HistoryBackfillPeriodNames[tfIdx], HistoryBackfillBarCounts[tfIdx]);
+   }
+
+   lastDeepBackfillStepMs = GetTickCount();
+   DeepBackfillStep++;
+   if (DeepBackfillStep >= DeepBackfillTotalSteps)
+      FinishDeepBackfill();
+}
+
+// Unstaged, flat HISTORY_BACKFILL_SHALLOW_BAR_COUNT across every active
+// symbol x every configured timeframe -- outage repair only (see that
+// constant's own comment). Cheap enough (H4/D1-sized requests, ~1.3s
+// each measured) not to need staging: runs immediately on a plain,
+// non-deep init and every HistoryBackfillIntervalSec after that (see
+// OnTimer), same direct-mode-only gate the deep pass uses.
+void RunShallowHistoryBackfill()
 {
    if (!UseDirectMode || StringLen(DirectServerUrl) == 0)
    {
@@ -586,7 +719,7 @@ void SendHistoryBackfill()
       if (StringLen(brokerSymbol) == 0) continue;
       string canonicalSymbol = CanonicalFor(brokerSymbol);
       for (int p = 0; p < ArraySize(HistoryBackfillPeriods); p++)
-         SendHistoryBars(canonicalSymbol, brokerSymbol, HistoryBackfillPeriods[p], HistoryBackfillPeriodNames[p], HistoryBackfillBarCounts[p]);
+         SendHistoryBars(canonicalSymbol, brokerSymbol, HistoryBackfillPeriods[p], HistoryBackfillPeriodNames[p], HISTORY_BACKFILL_SHALLOW_BAR_COUNT);
    }
 
    lastHistoryBackfillMs = GetTickCount();
@@ -691,11 +824,24 @@ void BuildAndSend()
 void OnTimer()
 {
    BuildAndSend();
+
+   // v1.35 -- while the staged deep pass is in flight, it owns this
+   // timer's backfill slot entirely (one step at a time, see
+   // StepDeepBackfill's own comment); the steady-state interval check
+   // below doesn't run again until FinishDeepBackfill resets
+   // lastHistoryBackfillMs.
+   if (DeepBackfillActive)
+   {
+      if (GetTickCount() - lastDeepBackfillStepMs >= (uint)DEEP_BACKFILL_STAGE_SPACING_MS)
+         StepDeepBackfill();
+      return;
+   }
+
    // fix/realtime-sync §4 -- "every 15 min" half of the backfill schedule.
    // Checked on the same timer as tick pushes rather than a second MQL5
    // timer (an EA only gets one via EventSetTimer/EventSetMillisecondTimer),
    // same pattern BuildAndSend already uses for ClockSyncIntervalSec.
    if (GetTickCount() - lastHistoryBackfillMs >= (uint)(HistoryBackfillIntervalSec * 1000))
-      SendHistoryBackfill();
+      RunShallowHistoryBackfill();
 }
 //+------------------------------------------------------------------+
