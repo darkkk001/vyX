@@ -26,6 +26,17 @@ export type KLineChartHandle = {
 
 type Props = {
   candles: Candle[];
+  // fix/realtime-sync §3 -- the single source of truth for "what does the
+  // currently-forming bar look like right now": lib/market-simulator.ts's
+  // applyBidAsk replaces (not mutates) candles[candles.length - 1] on
+  // every real tick specifically so this prop's reference changes exactly
+  // when there's a genuinely new bar to push, independent of whether
+  // `candles` itself (the full-history array, keyed for the reset effect
+  // below) changed reference. Optional only for a caller with no live
+  // data at all (shouldn't happen in practice, but avoids a required prop
+  // silently becoming `undefined` at every call site if one is ever
+  // added without it).
+  latestBar?: Candle;
   digits: number;
   lines: ChartLine[];
   onContextMenuPrice?: (price: number, clientX: number, clientY: number) => void;
@@ -43,7 +54,7 @@ type Props = {
 // mismatch against strict types would fail the whole build rather than
 // just this one feature at runtime.
 const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartPanel(
-  { candles, digits, lines, onContextMenuPrice },
+  { candles, latestBar, digits, lines, onContextMenuPrice },
   ref
 ) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -161,6 +172,29 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
       // ignore — next data update will retry
     }
   }, [candles]);
+
+  // fix/realtime-sync §3 -- incremental last-bar update on every real
+  // tick, independent of the full applyNewData reset above (which only
+  // ever re-fires on a genuine history reload: symbol/timeframe switch,
+  // or seedRealCandles's real-history seed -- both of those hand this
+  // component a brand new `candles` array; a live tick mutating the
+  // existing one's last element does not, by design, so it needs its own
+  // trigger). klinecharts' updateData replaces the bar matching this
+  // timestamp if one exists, or appends a new one -- exactly the
+  // semantics lightweight-charts' series.update() has, just this
+  // library's own name for it. Effects run in declaration order on the
+  // same commit, so a symbol/timeframe switch always gets the full reset
+  // above applied before this potentially-stale-symbol's latestBar could
+  // race ahead of it.
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart || !latestBar) return;
+    try {
+      chart.updateData({ timestamp: latestBar.t, open: latestBar.o, high: latestBar.h, low: latestBar.l, close: latestBar.c, volume: 0 });
+    } catch {
+      // ignore — next tick will retry
+    }
+  }, [latestBar]);
 
   useEffect(() => {
     const chart = chartRef.current;

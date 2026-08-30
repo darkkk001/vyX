@@ -101,7 +101,12 @@ export default function ChartCell({
         </div>
       </div>
       <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
-        <KLineChartPanel candles={m.candles[tf]} digits={m.def.digits} lines={lines} />
+        <KLineChartPanel
+          candles={m.candles[tf]}
+          latestBar={m.candles[tf][m.candles[tf].length - 1]}
+          digits={m.def.digits}
+          lines={lines}
+        />
         {feedStatus === "connecting" ? (
           <div style={{ position: "absolute", top: 6, left: 6, fontSize: 10, color: "var(--text-3)", pointerEvents: "none" }}>Connecting…</div>
         ) : feedStatus === "no-feed" ? (

@@ -6,6 +6,7 @@ import {
   createInitialMarket,
   tickMarket,
   feedStatusFor,
+  bucketStartMs,
   fmt,
   money,
   type MarketState,
@@ -1081,6 +1082,34 @@ export default function WebTrader({
       const rows = await tradeApi.candles(symbol, tf);
       if (rows.length === 0) return;
       const lastBucket = new Date(rows[rows.length - 1].bucketStart).getTime();
+      const seededCandles: Candle[] = rows.map((r) => ({
+        o: parseFloat(r.open),
+        h: parseFloat(r.high),
+        l: parseFloat(r.low),
+        c: parseFloat(r.close),
+        t: new Date(r.bucketStart).getTime(),
+      }));
+      // fix/realtime-sync §3's "on timeframe switch: fetch history, then
+      // immediately apply the latest tick to the last bucket" -- the
+      // server's own candle flush (engine/market-data) runs on its own
+      // periodic cadence, so its last row can be up to that interval
+      // stale relative to whatever tick has already landed in
+      // liveTicksRef since it was written. Only reconciles when the
+      // server's last row IS the currently-open bucket for `tf` (a fully
+      // closed historical bucket has nothing live to apply) and a real
+      // tick actually exists for this symbol right now.
+      const live = liveTicksRef.current[symbol];
+      const nowForBucket = serverNow();
+      if (live && lastBucket === bucketStartMs(tf, nowForBucket)) {
+        const last = seededCandles[seededCandles.length - 1];
+        seededCandles[seededCandles.length - 1] = {
+          o: last.o,
+          h: Math.max(last.h, live.bid),
+          l: Math.min(last.l, live.bid),
+          c: live.bid,
+          t: last.t,
+        };
+      }
       setMarket((prev) => {
         const ms = prev[symbol];
         if (!ms) return prev;
@@ -1088,16 +1117,7 @@ export default function WebTrader({
           ...prev,
           [symbol]: {
             ...ms,
-            candles: {
-              ...ms.candles,
-              [tf]: rows.map((r) => ({
-                o: parseFloat(r.open),
-                h: parseFloat(r.high),
-                l: parseFloat(r.low),
-                c: parseFloat(r.close),
-                t: new Date(r.bucketStart).getTime(),
-              })),
-            },
+            candles: { ...ms.candles, [tf]: seededCandles },
             lastCandleStart: { ...ms.lastCandleStart, [tf]: lastBucket },
           },
         };
@@ -2297,6 +2317,7 @@ export default function WebTrader({
                   <KLineChartPanel
                     ref={chartRef}
                     candles={candles}
+                    latestBar={candles[candles.length - 1]}
                     digits={m.def.digits}
                     lines={chartLines}
                     onContextMenuPrice={handleChartContextMenuPrice}

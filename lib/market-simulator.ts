@@ -116,7 +116,13 @@ export function tfMillis(tf: Timeframe): number {
   return 365 * 86_400_000; // Y1
 }
 
-function bucketStartMs(tf: Timeframe, now: number): number {
+// Exported for WebTrader.tsx's seedRealCandles (fix/realtime-sync §3) --
+// after loading real history on a timeframe switch, it needs to know
+// whether the server's last row IS the currently-open bucket (in which
+// case the live tick that's already arrived since that row was written
+// should immediately overwrite it) or a fully-closed historical one
+// (nothing to reconcile).
+export function bucketStartMs(tf: Timeframe, now: number): number {
   const fixed = FIXED_MS[tf];
   if (fixed) return Math.floor(now / fixed) * fixed;
 
@@ -168,10 +174,17 @@ function applyBidAsk(m: MarketState, bid: number, ask: number, now: number) {
       candles.push({ o: m.bid, h: m.bid, l: m.bid, c: m.bid, t: start });
       if (candles.length > 300) candles.shift(); // matches the chart's max zoom-out (chartZoom cap)
     } else if (candles.length) {
+      // Replaces the last element with a new object instead of mutating
+      // its fields in place (fix/realtime-sync §3) -- KLineChartPanel's
+      // incremental-update effect depends on this exact object's
+      // reference to know a new tick landed; an in-place mutation left
+      // that reference unchanged forever, so the chart's own last candle
+      // never moved on a live tick at all, only on a full history reload
+      // (a timeframe switch) that happened to pick up whatever the
+      // (correctly up-to-date underneath) data already was -- see
+      // KLineChartPanel.tsx's own comment on `latestBar`.
       const c = candles[candles.length - 1];
-      c.h = Math.max(c.h, m.bid);
-      c.l = Math.min(c.l, m.bid);
-      c.c = m.bid;
+      candles[candles.length - 1] = { o: c.o, h: Math.max(c.h, m.bid), l: Math.min(c.l, m.bid), c: m.bid, t: c.t };
     }
   });
 }
