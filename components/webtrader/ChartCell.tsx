@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { SYMBOL_DEFS, fmt, type MarketState, type Timeframe } from "@/lib/market-simulator";
+import { SYMBOL_DEFS, fmt, type MarketState, type Timeframe, type FeedStatus } from "@/lib/market-simulator";
 import { computeChartLines } from "@/lib/chart-lines";
 import type { ApiPosition, ApiOrder } from "@/lib/trade-api";
 import KLineChartPanel from "./KLineChartPanel";
@@ -25,6 +25,7 @@ export default function ChartCell({
   symbol,
   tf,
   m,
+  feedStatus,
   positions,
   pendingOrders,
   focused,
@@ -35,6 +36,7 @@ export default function ChartCell({
   symbol: string;
   tf: Timeframe;
   m: MarketState;
+  feedStatus: FeedStatus;
   positions: ApiPosition[];
   pendingOrders: ApiOrder[];
   focused: boolean;
@@ -81,10 +83,10 @@ export default function ChartCell({
             </div>
           </div>
         ) : null}
-        {m.live ? (
-          <span className="mono" style={{ fontSize: 11, fontWeight: 600, color: up ? "var(--buy)" : "var(--sell)" }}>{fmt(m.bid, m.def.digits)}</span>
+        {feedStatus === "live" || feedStatus === "stale" ? (
+          <span className="mono" style={{ fontSize: 11, fontWeight: 600, color: feedStatus === "stale" ? "var(--text-3)" : up ? "var(--buy)" : "var(--sell)" }}>{fmt(m.bid, m.def.digits)}</span>
         ) : (
-          <span className="mono" style={{ fontSize: 10.5, fontWeight: 600, color: "var(--text-3)" }}>No live feed</span>
+          <span className="mono" style={{ fontSize: 10.5, fontWeight: 600, color: "var(--text-3)" }}>{feedStatus === "connecting" ? "Connecting…" : "No live feed"}</span>
         )}
         <div style={{ marginLeft: "auto", display: "flex", gap: 1 }}>
           {CELL_TF_LABELS.map((t) => (
@@ -100,7 +102,9 @@ export default function ChartCell({
       </div>
       <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
         <KLineChartPanel candles={m.candles[tf]} digits={m.def.digits} lines={lines} />
-        {!m.live ? (
+        {feedStatus === "connecting" ? (
+          <div style={{ position: "absolute", top: 6, left: 6, fontSize: 10, color: "var(--text-3)", pointerEvents: "none" }}>Connecting…</div>
+        ) : feedStatus === "no-feed" ? (
           <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.35)", pointerEvents: "none" }}>
             <span style={{ fontSize: 12, fontWeight: 600, color: "var(--text-2)" }}>No live feed for {symbol}</span>
           </div>

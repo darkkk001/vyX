@@ -5,11 +5,13 @@ import {
   SYMBOL_DEFS,
   createInitialMarket,
   tickMarket,
+  feedStatusFor,
   fmt,
   money,
   type MarketState,
   type Candle,
   type Timeframe,
+  type FeedStatus,
 } from "@/lib/market-simulator";
 import { tradeApi, serverNow, ApiError, type AccountInfo, type ApiPosition, type ApiOrder, type ApiFundsRequest, type ApiKycStatus, type ApiLinkedAccount, type ApiSession } from "@/lib/trade-api";
 import KLineChartPanel, { type KLineChartHandle, type ChartLine } from "./KLineChartPanel";
@@ -833,7 +835,12 @@ export default function WebTrader({
   }, [account]);
 
   // ---------- price tick ----------
-  const liveTicksRef = useRef<Record<string, { bid: number; ask: number }>>({});
+  // fix/realtime-sync §2 -- bounds feedStatusFor's "connecting" state to a
+  // real window instead of the mount timestamp drifting with re-renders;
+  // serverNow() (not Date.now()) so the 30s grace window and every
+  // lastTickAt comparison it's measured against share one clock.
+  const sessionStartedAtRef = useRef(serverNow());
+  const liveTicksRef = useRef<Record<string, { bid: number; ask: number; at: number }>>({});
   // Coalesces both push-tick sources below (the browser WebSocket and the
   // desktop native relay) to at most 20 updates/s per symbol -- the
   // Contabo audit's ask, once ticks started arriving in real time (EA
@@ -849,10 +856,18 @@ export default function WebTrader({
     const last = lastTickAcceptedAtRef.current[symbol] ?? 0;
     if (now - last < 1000 / MAX_TICK_HZ_PER_SYMBOL) return;
     lastTickAcceptedAtRef.current[symbol] = now;
-    liveTicksRef.current = { ...liveTicksRef.current, [symbol]: { bid, ask } };
+    liveTicksRef.current = { ...liveTicksRef.current, [symbol]: { bid, ask, at: serverNow() } };
   }
   useEffect(() => {
-    const interval = setInterval(() => setMarket((prev) => tickMarket(prev, liveTicksRef.current, serverNow())), 1500);
+    // Fires once immediately (not just on the first 1500ms interval tick)
+    // -- fix/realtime-sync §2: the mount-to-first-tickMarket-call gap used
+    // to be a guaranteed >=1.5s window where every symbol read `live:
+    // false` no matter how fast the snapshot poll/WS actually connected,
+    // since nothing had run tickMarket yet to pick up what they'd already
+    // written into liveTicksRef.
+    const tick = () => setMarket((prev) => tickMarket(prev, liveTicksRef.current, serverNow()));
+    tick();
+    const interval = setInterval(tick, 1500);
     return () => clearInterval(interval);
   }, []);
 
@@ -879,15 +894,30 @@ export default function WebTrader({
         const rows = await tradeApi.prices();
         if (cancelled) return;
         setPingMs(Math.round(performance.now() - startedAt));
-        const next: Record<string, { bid: number; ask: number }> = {};
+        const next: Record<string, { bid: number; ask: number; at: number }> = {};
         const now = Date.now();
         for (const row of rows) {
           // Ignore stale rows (EA/terminal offline) so the chart falls back
           // to simulation instead of freezing on the last real tick.
-          if (now - new Date(row.updatedAt).getTime() > 15000) continue;
-          next[row.symbol] = { bid: parseFloat(row.bid), ask: parseFloat(row.ask) };
+          const updatedAtMs = new Date(row.updatedAt).getTime();
+          if (now - updatedAtMs > 15000) continue;
+          // `at` is the row's own updatedAt, not "now this poll happened to
+          // resolve" -- feedStatusFor's staleness clock should reflect how
+          // fresh the price actually is, not this request's own latency.
+          next[row.symbol] = { bid: parseFloat(row.bid), ask: parseFloat(row.ask), at: updatedAtMs };
         }
-        liveTicksRef.current = next;
+        // Merges onto whatever the WS/desktop relay has already written
+        // (fix/realtime-sync §2) instead of replacing wholesale -- this
+        // poll runs every 30s now (a fallback, not the primary source, per
+        // this effect's own doc comment below), so blindly overwriting
+        // would occasionally stomp a fresher push-tick with an up-to-30s-
+        // stale REST snapshot for the same symbol.
+        for (const [symbol, tick] of Object.entries(next)) {
+          const existing = liveTicksRef.current[symbol];
+          if (!existing || tick.at >= existing.at) {
+            liveTicksRef.current = { ...liveTicksRef.current, [symbol]: tick };
+          }
+        }
         if (!wasConnected) { appendLog("Connection restored"); wasConnected = true; }
         setConnected(true);
       } catch {
@@ -1301,6 +1331,12 @@ export default function WebTrader({
 
   // ---------- order ticket ----------
   const m = market[activeSymbol];
+  // fix/realtime-sync §2 -- recomputed every render, which happens at
+  // least every 1500ms regardless of tick content (tickMarket's own
+  // setMarket call above always returns a new object), so a status
+  // transition (connecting -> live -> stale -> no-feed) is reflected
+  // within that same worst-case window even with zero new ticks.
+  const activeFeedStatus: FeedStatus = feedStatusFor(m.lastTickAt, serverNow(), sessionStartedAtRef.current);
 
   function updateRiskVolume(riskPctValue: string, slValue: string) {
     const rp = parseFloat(riskPctValue);
@@ -2179,16 +2215,28 @@ export default function WebTrader({
                     </div>
                   </div>
                 ) : null}
-                {m.live ? (
+                {activeFeedStatus === "live" || activeFeedStatus === "stale" ? (
                   <>
-                    <div className="chart-price mono" style={{ color: m.bid >= m.prevBid ? "var(--buy)" : "var(--sell)" }}>{fmt(m.bid, m.def.digits)}</div>
+                    <div
+                      className="chart-price mono"
+                      style={{ color: activeFeedStatus === "stale" ? "var(--text-3)" : m.bid >= m.prevBid ? "var(--buy)" : "var(--sell)" }}
+                    >
+                      {fmt(m.bid, m.def.digits)}
+                    </div>
                     <div className="chart-change mono" style={{ background: m.bid >= m.dayOpen ? "var(--buy-bg)" : "var(--sell-bg)", color: m.bid >= m.dayOpen ? "var(--buy)" : "var(--sell)" }}>
                       {(((m.bid - m.dayOpen) / m.dayOpen) * 100 >= 0 ? "+" : "") + (((m.bid - m.dayOpen) / m.dayOpen) * 100).toFixed(2)}%
                     </div>
                     <div className="chart-spread mono">Spread {fmt(m.ask - m.bid, m.def.digits)}</div>
+                    {activeFeedStatus === "stale" ? <div className="chart-spread mono">Stale</div> : null}
                   </>
                 ) : (
-                  <div className="chart-price mono" style={{ color: "var(--text-3)", fontSize: 12 }}>No live feed</div>
+                  // "connecting" (fix/realtime-sync §2's "no red text" rule
+                  // -- neutral wording/color, never styled as an error) vs
+                  // "no-feed" (the genuine dead-feed case, same wording as
+                  // before).
+                  <div className="chart-price mono" style={{ color: "var(--text-3)", fontSize: 12 }}>
+                    {activeFeedStatus === "connecting" ? "Connecting…" : "No live feed"}
+                  </div>
                 )}
                 <button className="symbol-info-btn" onClick={() => setSymbolInfoOpen(true)} title="Symbol specifications">
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10" /><line x1="12" y1="16" x2="12" y2="12" /><line x1="12" y1="8" x2="12.01" y2="8" /></svg>
@@ -2253,7 +2301,14 @@ export default function WebTrader({
                     lines={chartLines}
                     onContextMenuPrice={handleChartContextMenuPrice}
                   />
-                  {!m.live ? (
+                  {activeFeedStatus === "connecting" ? (
+                    // No dark overlay, no error-toned text -- fix/
+                    // realtime-sync §2's explicit "never show an error in
+                    // the first 5s" rule. The chart itself already renders
+                    // (seeded history + the placeholder base price), just
+                    // with a quiet corner note instead of a hard block.
+                    <div style={{ position: "absolute", top: 8, left: 8, fontSize: 11, color: "var(--text-3)", pointerEvents: "none" }}>Connecting…</div>
+                  ) : activeFeedStatus === "no-feed" ? (
                     <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.35)", pointerEvents: "none" }}>
                       <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text-2)" }}>No live feed for {activeSymbol}</span>
                     </div>
@@ -2280,6 +2335,7 @@ export default function WebTrader({
                       symbol={cell.symbol}
                       tf={cell.tf}
                       m={market[cell.symbol]}
+                      feedStatus={feedStatusFor(market[cell.symbol].lastTickAt, serverNow(), sessionStartedAtRef.current)}
                       positions={positions}
                       pendingOrders={pendingOrders}
                       focused={cell.symbol === activeSymbol && cell.tf === currentTf}

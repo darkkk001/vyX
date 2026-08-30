@@ -47,11 +47,45 @@ export type MarketState = {
   // against a fresh bucketStartMs() each tick is what decides "still the
   // same bar" vs "start a new one".
   lastCandleStart: Record<Timeframe, number>;
-  // True only while a real tick for this symbol has arrived (via the MT5
-  // EA bridge / gateway WebSocket) within the last tickMarket() call. No
-  // symbol ever fakes movement while this is false — see tickMarket().
+  // True only while the most recent real tick for this symbol (via the
+  // MT5 EA bridge / gateway WebSocket) is within LIVE_MAX_AGE_MS of "now"
+  // -- see tickMarket(). No symbol ever fakes movement while this is
+  // false. Before fix/realtime-sync §2, this never expired once true (a
+  // symbol's entry in liveTicksRef is sticky/accumulating and nothing
+  // ever re-checked its age), so a feed that silently died left the UI
+  // showing a frozen price as if it were still live, indefinitely.
   live: boolean;
+  // Epoch ms of the last real tick ever applied to this symbol this
+  // session, 0 if none yet. Distinct from `live` (a same-session/serverNow
+  // clock reference `feedStatusFor` needs to distinguish "just went
+  // stale" from "long dead" and "never connected" -- `live` alone
+  // collapses all of those to the same false).
+  lastTickAt: number;
 };
+
+// Matches the "no-feed after 30s" threshold in feedStatusFor below --
+// this is the point past which a symbol's last known price is old enough
+// that showing it as live would be presenting a fabricated-looking price
+// as real (see this file's own long-standing rule on that).
+const LIVE_MAX_AGE_MS = 30_000;
+
+export type FeedStatus = "connecting" | "live" | "stale" | "no-feed";
+
+// fix/realtime-sync §2's 4-state UI model, replacing the old binary
+// live/dead the chart used to render straight off `MarketState.live`.
+// `sessionStartedAt` bounds "connecting" to a real window (otherwise a
+// symbol that never gets a tick would spin forever) and is what makes
+// "never show an error in the first 5s" possible: a fresh mount with zero
+// ticks yet reads as "connecting", not "no-feed", for up to 30s.
+export function feedStatusFor(lastTickAt: number, now: number, sessionStartedAt: number): FeedStatus {
+  if (lastTickAt) {
+    const age = now - lastTickAt;
+    if (age <= 5000) return "live";
+    if (age <= LIVE_MAX_AGE_MS) return "stale";
+    return "no-feed";
+  }
+  return now - sessionStartedAt <= LIVE_MAX_AGE_MS ? "connecting" : "no-feed";
+}
 
 export function spreadFor(def: SymbolDef): number {
   return def.digits >= 3 ? def.vol * 0.6 : def.base * 0.00006;
@@ -113,6 +147,7 @@ export function createInitialMarket(): Record<string, MarketState> {
       candles: TIMEFRAMES.reduce((acc, tf) => { acc[tf] = []; return acc; }, {} as Record<Timeframe, Candle[]>),
       lastCandleStart: TIMEFRAMES.reduce((acc, tf) => { acc[tf] = 0; return acc; }, {} as Record<Timeframe, number>),
       live: false,
+      lastTickAt: 0,
     };
   }
   return market;
@@ -164,13 +199,21 @@ function applyBidAsk(m: MarketState, bid: number, ask: number, now: number) {
 // candles looking "torn."
 export function tickMarket(
   market: Record<string, MarketState>,
-  liveTicks?: Record<string, { bid: number; ask: number }>,
+  liveTicks?: Record<string, { bid: number; ask: number; at: number }>,
   now: number = Date.now()
 ): Record<string, MarketState> {
   for (const [name, m] of Object.entries(market)) {
-    const live = liveTicks?.[name];
-    if (live) {
-      applyBidAsk(m, live.bid, live.ask, now);
+    const tick = liveTicks?.[name];
+    if (tick && now - tick.at <= LIVE_MAX_AGE_MS) {
+      // Only re-applies bid/ask when this is actually a fresher tick than
+      // what's already reflected -- otherwise a stale-but-not-yet-expired
+      // entry would keep re-pushing the same identical candle update
+      // every 1.5s tickMarket cycle, same wasted-write concern
+      // engine/market-data's own dirty-tracking fix addressed server-side.
+      if (tick.at !== m.lastTickAt) {
+        applyBidAsk(m, tick.bid, tick.ask, now);
+        m.lastTickAt = tick.at;
+      }
       m.live = true;
     } else {
       m.live = false;
