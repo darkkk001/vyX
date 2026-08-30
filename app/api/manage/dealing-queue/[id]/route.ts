@@ -5,6 +5,7 @@ import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { getFreshPrice } from "@/lib/live-price";
 import { openPositionFromOrder } from "@/lib/dealing";
 import { resolveBookType, applySpreadMarkup, resolveSymbolPricing } from "@/lib/group-pricing";
+import { publishTradingEvent } from "@/lib/nats";
 import {
   checkTradingHalted,
   checkSymbolTradingMode,
@@ -87,6 +88,11 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     if (!updated) {
       return NextResponse.json({ error: "order was already actioned" }, { status: 409 });
     }
+    // Trader's own WebTrader (account_id) and every other backoffice tab
+    // watching this broker (broker_id) both need this -- neither
+    // previously learned about a dealing-queue reject until their next
+    // poll/refresh.
+    await publishTradingEvent("OrderRejected", { order_id: id, account_id: order.accountId, broker_id: brokerId, reason });
     return NextResponse.json({ id, status: "REJECTED" });
   }
 
@@ -185,6 +191,12 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     if (!updated) {
       return NextResponse.json({ error: "order was already actioned" }, { status: 409 });
     }
+    await publishTradingEvent("OrderRequoted", {
+      order_id: id,
+      account_id: order.accountId,
+      broker_id: brokerId,
+      requoted_price: fillPrice.toString(),
+    });
     return NextResponse.json({ id, status: "REQUOTED", requotedPrice: fillPrice.toString() });
   }
 
@@ -223,6 +235,19 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       });
 
       return position;
+    });
+    // See this route's own new import comment -- the trader's own
+    // WebTrader is listening on account_id already (components/webtrader/
+    // WebTrader.tsx's /v1/trading/stream effect); broker_id is what makes
+    // this also reach every other backoffice tab
+    // (services/api-gateway/src/ws.ts's attachAdminEventStream).
+    await publishTradingEvent("OrderFilled", {
+      order_id: order.id,
+      account_id: order.accountId,
+      broker_id: brokerId,
+      price: markedUpFillPrice.toString(),
+      volume: order.volume.toString(),
+      remaining_volume: "0",
     });
     return NextResponse.json({ id: order.id, status: "FILLED", positionId: result.id, filledPrice: markedUpFillPrice.toString() });
   } catch (error) {

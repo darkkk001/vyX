@@ -10,6 +10,7 @@ import { ActionMenu } from "@/components/ui/ActionMenu";
 import { FormField } from "@/components/ui/FormField";
 import { Modal, ModalActions } from "@/components/ui/Modal";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
+import { useAdminEventStream, ADMIN_STREAM_RECONNECTED, type AdminEvent } from "@/lib/admin-realtime";
 
 export type PositionRow = {
   id: string;
@@ -79,11 +80,36 @@ export default function PositionsManager() {
   // manager watching floating P&L needs it to track the live feed, not
   // their own click history -- refresh on the same 5s cadence LivePrice
   // itself updates on (engine/market-data's periodic flush).
+  //
+  // This 5s poll is deliberately KEPT alongside the event stream below
+  // (fix/realtime-sync §8 generally wants polling gone in favor of the
+  // event stream) -- it's the wrong tool for order/position mutations
+  // (a fill/close now shows up on the next order.*/position.* event, not
+  // up to 5s late), but it's still the only thing driving floatingPnl's
+  // continuous tracking of price movement between mutations, which isn't
+  // an order/position event at all (that's the price-tick stream, a
+  // separate subscription this page doesn't otherwise need). Removing it
+  // would make P&L go stale between fills -- a real regression, not a
+  // simplification.
   useEffect(() => {
     reload().catch(() => setData({ rows: [], accounts: [], symbols: [], groups: [], ibOptions: [] }));
     const interval = setInterval(() => reload().catch(() => {}), 5000);
     return () => clearInterval(interval);
   }, []);
+
+  // Instant reaction to a fill/close/modify from anywhere (another
+  // dealer's action, the trader's own, or an auto-liquidation) instead of
+  // waiting for the next 5s tick above.
+  useAdminEventStream((event: AdminEvent) => {
+    if (
+      event.type === ADMIN_STREAM_RECONNECTED ||
+      event.type === "OrderFilled" ||
+      event.type === "PositionClosed" ||
+      event.type === "PositionModified"
+    ) {
+      reload().catch(() => {});
+    }
+  });
 
   // --- Filters ---
   const [symbolFilter, setSymbolFilter] = useState("ALL");

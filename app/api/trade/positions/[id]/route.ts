@@ -50,6 +50,6 @@ export async function PATCH(
       ...(tpPrice !== undefined ? { tpPrice } : {}),
     },
   });
-  await publishTradingEvent("PositionModified", { position_id: id, account_id: session.accountId });
+  await publishTradingEvent("PositionModified", { position_id: id, account_id: session.accountId, broker_id: session.brokerId });
   return NextResponse.json(updated);
 }

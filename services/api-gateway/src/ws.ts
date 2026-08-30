@@ -20,10 +20,12 @@ import type { IncomingMessage, Server } from "http";
 import { connect, type NatsConnection } from "nats";
 import { WebSocket, WebSocketServer } from "ws";
 import { getTraderSession } from "./auth.js";
+import { getAdminSession } from "./admin-auth.js";
 import { getEnabledSymbolNames } from "./db.js";
 
 const PRICE_STREAM_PATH = "/v1/prices/stream";
 const TRADING_STREAM_PATH = "/v1/trading/stream";
+const ADMIN_EVENTS_STREAM_PATH = "/v1/events/stream";
 
 // Per-broker enabled-symbol cache, 30s TTL -- "hot-reload on cfg change"
 // in practice means a Manager toggling a symbol's enabled flag is picked
@@ -66,6 +68,10 @@ export const gatewayStats = {
   tradingWsDisconnectionsTotal: 0,
   tradingEventsForwardedTotal: 0,
   tradingEventsReceivedTotal: 0,
+  adminWsConnectionsTotal: 0,
+  adminWsDisconnectionsTotal: 0,
+  adminEventsForwardedTotal: 0,
+  adminEventsReceivedTotal: 0,
 };
 
 export async function attachPriceStream(server: Server, natsUrl: string): Promise<void> {
@@ -239,6 +245,97 @@ export async function attachTradingEventStream(server: Server, natsUrl: string):
       }
     })().catch((err) => {
       console.error("trading stream: NATS subscription loop ended", err);
+    });
+  }
+}
+
+// Backoffice real-time sync (fix/realtime-sync §1) -- the Manager/Broker-
+// Admin equivalent of attachTradingEventStream above. Backoffice pages
+// (app/manage/(shell)/dealing, /positions, ...) previously only loaded
+// data once via a Server Component or a manual poll and never learned
+// about a change another dealer/tab (or the trader themselves) made until
+// a manual refresh -- see lib/nats.ts's publishTradingEvent, now called
+// from every order/position mutation site with a broker_id field added
+// specifically for this stream to filter on.
+//
+// Scoped to one broker per connection (unlike the trader stream's
+// account_id scoping, or the price stream's per-broker symbol-allowlist
+// filtering) since every consumer today (Dealing Queue, Positions) is a
+// Manager/Broker Admin page -- Super Admin's own cross-tenant pages
+// (Brokers, Health, ...) aren't part of this fix and are refused a
+// connection (a null brokerId session) rather than silently getting every
+// broker's events or none.
+export async function attachAdminEventStream(server: Server, natsUrl: string): Promise<void> {
+  const nc: NatsConnection = await connect({ servers: natsUrl });
+  const subs = [nc.subscribe("order.>"), nc.subscribe("position.>"), nc.subscribe("dealing.>"), nc.subscribe("account.>")];
+
+  const wss = new WebSocketServer({ noServer: true });
+  // ws -> that connection's own admin's brokerId, same per-tenant
+  // filtering shape as attachPriceStream's clients map.
+  const clientsByBroker = new Map<WebSocket, string>();
+
+  function registerClient(ws: WebSocket, brokerId: string) {
+    clientsByBroker.set(ws, brokerId);
+    gatewayStats.adminWsConnectionsTotal += 1;
+    function unregister() {
+      clientsByBroker.delete(ws);
+      gatewayStats.adminWsDisconnectionsTotal += 1;
+    }
+    ws.on("close", unregister);
+    ws.on("error", unregister);
+  }
+
+  server.on("upgrade", (req: IncomingMessage, socket, head) => {
+    const { pathname } = new URL(req.url ?? "", "http://internal");
+    if (pathname !== ADMIN_EVENTS_STREAM_PATH) return;
+
+    getAdminSession(req.headers.cookie)
+      .then((session) => {
+        if (!session) {
+          socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+          socket.destroy();
+          return;
+        }
+        if (!session.brokerId) {
+          // Super Admin (brokerId: null) -- out of scope, see this
+          // function's own doc comment.
+          socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
+          socket.destroy();
+          return;
+        }
+        wss.handleUpgrade(req, socket, head, (ws) => {
+          registerClient(ws, session.brokerId!);
+        });
+      })
+      .catch((err) => {
+        console.error("admin event stream: session lookup failed", err);
+        socket.destroy();
+      });
+  });
+
+  for (const sub of subs) {
+    (async () => {
+      for await (const msg of sub) {
+        gatewayStats.adminEventsReceivedTotal += 1;
+        const text = Buffer.from(msg.data).toString("utf-8");
+
+        let brokerId: string | undefined;
+        try {
+          brokerId = JSON.parse(text)?.broker_id;
+        } catch {
+          continue; // malformed payload -- nothing to route it to
+        }
+        if (!brokerId) continue; // no broker_id -- can't be scoped, never forwarded here
+
+        for (const [client, clientBrokerId] of clientsByBroker) {
+          if (clientBrokerId !== brokerId) continue;
+          if (client.readyState !== WebSocket.OPEN) continue;
+          client.send(text);
+          gatewayStats.adminEventsForwardedTotal += 1;
+        }
+      }
+    })().catch((err) => {
+      console.error("admin event stream: NATS subscription loop ended", err);
     });
   }
 }

@@ -32,26 +32,34 @@ function getConnection(): Promise<NatsConnection> {
 
 // Subject convention matches engine/order-management/src/events.rs's
 // subject_for exactly -- both producers feed the same Gateway
-// subscription (order.>, margin.>, position.>).
+// subscription (order.>, margin.>, position.>). DealingQueued has no
+// Rust-side analog yet -- the legacy Next.js dealing-queue path
+// (app/api/manage/dealing-queue/[id]/route.ts) is the only producer, but
+// it's still under the order.> wildcard the trading-event stream already
+// subscribes to, so no gateway subscription change was needed for it.
 const SUBJECTS: Record<string, string> = {
   OrderAccepted: "order.accepted",
   OrderRejected: "order.rejected",
   OrderFilled: "order.filled",
   OrderCancelled: "order.cancelled",
+  OrderRequoted: "order.requoted",
+  DealingQueued: "dealing.queued",
   PositionClosed: "position.closed",
   PositionModified: "position.modified",
 };
 
 export type TradingEventType = keyof typeof SUBJECTS;
 
-// Best-effort, fire-and-forget -- same rule as Rust's publish_best_effort:
-// the mutation itself already committed to Postgres by the time this is
-// called, so a NATS publish failure only means a connected client's UI
-// stays stale until its next 2s poll, never that trading data is wrong.
-// Logged, never thrown, on that basis.
+// broker_id is required (not just conventional) since services/api-
+// gateway's admin event stream (attachAdminEventStream) filters every
+// message by this field to scope it to one broker's backoffice --
+// unlike the trader stream (account_id-keyed), which every event here
+// already carried. A publish call missing it would silently vanish from
+// every backoffice tab watching that broker, so it's enforced in the
+// type rather than left to each call site to remember.
 export async function publishTradingEvent(
   type: TradingEventType,
-  payload: Record<string, unknown>
+  payload: Record<string, unknown> & { broker_id: string }
 ): Promise<void> {
   try {
     const nc = await getConnection();

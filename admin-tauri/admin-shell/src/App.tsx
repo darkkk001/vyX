@@ -12,6 +12,7 @@ import NotificationsManager from "@/app/(super-admin)/(shell)/notifications/Noti
 import AdminsManager from "@/app/(super-admin)/(shell)/admins/AdminsManager";
 import { apiCall } from "@/lib/desktop-api";
 import { initialsFrom } from "@/lib/format";
+import { AdminRealtimeProvider } from "@/lib/admin-realtime";
 
 type ShellInfo = { adminEmail: string | null; unreadNotifications: number };
 
@@ -243,6 +244,7 @@ export default function App() {
     // Same fix as manager-shell's App.tsx -- see its own comment. Mirrors
     // app/(super-admin)/layout.tsx's root data-surface="super-admin" div.
     <div data-surface="super-admin" className="min-h-dvh antialiased">
+     <AdminRealtimeProvider>
       <AdminShell
         title="vyX Super Admin"
         planeTag="PLATFORM CONTROL PLANE"
@@ -272,6 +274,7 @@ export default function App() {
       >
         {renderSection()}
       </AdminShell>
+     </AdminRealtimeProvider>
     </div>
   );
 }

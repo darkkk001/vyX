@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/Badge";
 import { FormField } from "@/components/ui/FormField";
 import { Modal, ModalActions } from "@/components/ui/Modal";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
+import { useAdminEventStream, ADMIN_STREAM_RECONNECTED, type AdminEvent } from "@/lib/admin-realtime";
 
 export type DealingOrderRow = {
   id: string;
@@ -55,15 +56,85 @@ export default function DealingQueueManager() {
       });
   }
 
-  // Used to only fetch once on mount -- a new order landing in the queue,
-  // or a client responding to a requote, never showed up until the
-  // manager manually reloaded the page. Same 5s poll PositionsManager.tsx
-  // already uses for its own live-exposure view.
+  // Initial paint only -- live updates come from the event stream below
+  // (fix/realtime-sync §1), not a poll. This used to be a 5s
+  // setInterval; a new order landing in the queue, or a client responding
+  // to a requote, could take up to 5s to appear and doubled as this
+  // page's only way to notice a stale/dropped connection.
   useEffect(() => {
     load().catch(() => setRows([]));
-    const interval = setInterval(() => load().catch(() => {}), 5000);
-    return () => clearInterval(interval);
   }, []);
+
+  // DealingQueued is applied straight to `rows` (no refetch) so a new
+  // order appears well under the 200ms this fix's acceptance test
+  // requires -- see app/api/trade/orders/route.ts's publish call for
+  // exactly which fields this depends on. OrderFilled/OrderRejected
+  // remove a row wherever it currently lives (rows or requotedRows,
+  // covering both a fresh accept/reject and a requote's resolution).
+  // OrderRequoted moves a row from rows to requotedRows in place.
+  // OrderCancelled only ever matters here as a requote the client
+  // withdrew/declined -- a no-op if the id isn't in requotedRows (e.g. an
+  // unrelated resting LIMIT/STOP order the trader cancelled directly).
+  useAdminEventStream((event: AdminEvent) => {
+    if (event.type === ADMIN_STREAM_RECONNECTED) {
+      load().catch(() => {});
+      return;
+    }
+
+    if (event.type === "DealingQueued") {
+      const row: DealingOrderRow = {
+        id: String(event.order_id),
+        accountNumber: String(event.account_number),
+        accountFullName: String(event.account_full_name),
+        symbol: String(event.symbol),
+        digits: Number(event.digits),
+        side: event.side as "BUY" | "SELL",
+        volume: String(event.volume),
+        requestedPrice: event.requested_price == null ? null : String(event.requested_price),
+        createdAt: String(event.created_at).replace("T", " ").slice(0, 19),
+        liveBid: event.live_bid == null ? null : String(event.live_bid),
+        liveAsk: event.live_ask == null ? null : String(event.live_ask),
+      };
+      setRows((prev) => (prev ? [row, ...prev] : [row]));
+      return;
+    }
+
+    if (event.type === "OrderFilled" || event.type === "OrderRejected") {
+      const orderId = String(event.order_id);
+      setRows((prev) => prev?.filter((r) => r.id !== orderId) ?? prev);
+      setRequotedRows((prev) => prev.filter((r) => r.id !== orderId));
+      return;
+    }
+
+    if (event.type === "OrderRequoted") {
+      const orderId = String(event.order_id);
+      setRows((prev) => {
+        if (!prev) return prev;
+        const found = prev.find((r) => r.id === orderId);
+        if (!found) return prev;
+        const requoted: RequotedOrderRow = {
+          id: found.id,
+          accountNumber: found.accountNumber,
+          accountFullName: found.accountFullName,
+          symbol: found.symbol,
+          digits: found.digits,
+          side: found.side,
+          volume: found.volume,
+          requestedPrice: found.requestedPrice,
+          requotedPrice: event.requoted_price == null ? null : String(event.requoted_price),
+          createdAt: found.createdAt,
+        };
+        setRequotedRows((prevRequoted) => [requoted, ...prevRequoted]);
+        return prev.filter((r) => r.id !== orderId);
+      });
+      return;
+    }
+
+    if (event.type === "OrderCancelled") {
+      const orderId = String(event.order_id);
+      setRequotedRows((prev) => prev.filter((r) => r.id !== orderId));
+    }
+  });
 
   const [acceptTarget, setAcceptTarget] = useState<DealingOrderRow | null>(null);
   const [acceptPrice, setAcceptPrice] = useState("");
@@ -86,6 +157,13 @@ export default function DealingQueueManager() {
     setRejectError(null);
   }
 
+  // Optimistic: the row disappears the instant this dealer clicks
+  // Accept/Reject rather than waiting for the PATCH to resolve (fix/
+  // realtime-sync §8's "every action is optimistic + reconciled by its
+  // ack event" rule) -- the eventual OrderFilled/OrderRejected/
+  // OrderRequoted event (this same action, echoed back over the event
+  // stream) then finds nothing left to remove, a harmless no-op. On
+  // failure, the row is spliced back to where it was.
   async function submitAccept() {
     if (!acceptTarget) return;
     const price = Number(acceptPrice);
@@ -93,9 +171,13 @@ export default function DealingQueueManager() {
       setAcceptError("Enter a valid price");
       return;
     }
-    setBusyId(acceptTarget.id);
+    const target = acceptTarget;
+    setBusyId(target.id);
     setAcceptError(null);
-    const response = await fetch(`/api/manage/dealing-queue/${acceptTarget.id}`, {
+    setRows((prev) => prev?.filter((r) => r.id !== target.id) ?? prev);
+    setAcceptTarget(null);
+
+    const response = await fetch(`/api/manage/dealing-queue/${target.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "ACCEPT", price }),
@@ -103,11 +185,10 @@ export default function DealingQueueManager() {
     setBusyId(null);
     if (!response.ok) {
       const b = await response.json().catch(() => ({}));
+      setRows((prev) => (prev ? [target, ...prev] : [target]));
+      setAcceptTarget(target);
       setAcceptError(b.error ?? "accept failed");
-      return;
     }
-    setAcceptTarget(null);
-    load().catch(() => {});
   }
 
   async function submitReject() {
@@ -116,9 +197,18 @@ export default function DealingQueueManager() {
       setRejectError("Reason is required");
       return;
     }
-    setBusyId(rejectTarget.id);
+    const target = rejectTarget;
+    const wasRequote = "requotedPrice" in target;
+    setBusyId(target.id);
     setRejectError(null);
-    const response = await fetch(`/api/manage/dealing-queue/${rejectTarget.id}`, {
+    if (wasRequote) {
+      setRequotedRows((prev) => prev.filter((r) => r.id !== target.id));
+    } else {
+      setRows((prev) => prev?.filter((r) => r.id !== target.id) ?? prev);
+    }
+    setRejectTarget(null);
+
+    const response = await fetch(`/api/manage/dealing-queue/${target.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "REJECT", reason: rejectReason.trim() }),
@@ -126,11 +216,14 @@ export default function DealingQueueManager() {
     setBusyId(null);
     if (!response.ok) {
       const b = await response.json().catch(() => ({}));
+      if (wasRequote) {
+        setRequotedRows((prev) => [target as RequotedOrderRow, ...prev]);
+      } else {
+        setRows((prev) => (prev ? [target as DealingOrderRow, ...prev] : [target as DealingOrderRow]));
+      }
+      setRejectTarget(target);
       setRejectError(b.error ?? "reject failed");
-      return;
     }
-    setRejectTarget(null);
-    load().catch(() => {});
   }
 
   if (rows === null) {

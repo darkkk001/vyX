@@ -27,6 +27,6 @@ export async function DELETE(
     where: { id },
     data: { status: "CANCELLED" },
   });
-  await publishTradingEvent("OrderCancelled", { order_id: id, account_id: session.accountId });
+  await publishTradingEvent("OrderCancelled", { order_id: id, account_id: session.accountId, broker_id: session.brokerId });
   return NextResponse.json(cancelled);
 }

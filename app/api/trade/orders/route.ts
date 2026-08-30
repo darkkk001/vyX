@@ -230,6 +230,7 @@ export async function POST(request: NextRequest) {
           await publishTradingEvent("OrderFilled", {
             order_id: order.id,
             account_id: session.accountId,
+            broker_id: session.brokerId,
             price: fillPrice.toString(),
             volume: volume.toString(),
             remaining_volume: "0",
@@ -256,6 +257,7 @@ export async function POST(request: NextRequest) {
           await publishTradingEvent("OrderRejected", {
             order_id: order.id,
             account_id: session.accountId,
+            broker_id: session.brokerId,
             reason,
           });
           return NextResponse.json({ order: rejected }, { status: 201 });
@@ -272,7 +274,33 @@ export async function POST(request: NextRequest) {
         entityType: "Order",
         entityId: order.id,
       });
-      await publishTradingEvent("OrderAccepted", { order_id: order.id, account_id: session.accountId });
+      await publishTradingEvent("OrderAccepted", { order_id: order.id, account_id: session.accountId, broker_id: session.brokerId });
+      // Backoffice-facing signal, distinct from OrderAccepted (which the
+      // trader's own WebTrader listens for) -- carries the row shape
+      // app/manage/(shell)/dealing/DealingQueueManager.tsx needs so a new
+      // queue entry can be applied straight to that component's local
+      // rows state instead of waiting for a refetch (see
+      // services/api-gateway/src/ws.ts's attachAdminEventStream).
+      await publishTradingEvent("DealingQueued", {
+        order_id: order.id,
+        broker_id: session.brokerId,
+        account_id: session.accountId,
+        account_number: account.accountNumber,
+        account_full_name: account.fullName,
+        symbol: symbolName,
+        digits: brokerSymbol.symbol.digits,
+        side,
+        volume: volume.toString(),
+        requested_price: price,
+        created_at: order.createdAt.toISOString(),
+        // Same livePrice this function already fetched above to validate
+        // the order itself -- included so the backoffice can render a
+        // usable row (Accept's price field is pre-filled from this)
+        // straight from the event, without a second round trip just to
+        // learn the live price.
+        live_bid: livePrice?.bid.toString() ?? null,
+        live_ask: livePrice?.ask.toString() ?? null,
+      });
       return NextResponse.json({ order }, { status: 201 });
     }
 
@@ -330,6 +358,7 @@ export async function POST(request: NextRequest) {
       await publishTradingEvent("OrderFilled", {
         order_id: result.order.id,
         account_id: session.accountId,
+        broker_id: session.brokerId,
         price: result.order.filledPrice?.toString() ?? price,
         volume: volume.toString(),
         remaining_volume: "0",
@@ -356,7 +385,7 @@ export async function POST(request: NextRequest) {
       },
     });
     if (source === "hotkey") await logHotkeyOrder(session.brokerId, order.id);
-    await publishTradingEvent("OrderAccepted", { order_id: order.id, account_id: session.accountId });
+    await publishTradingEvent("OrderAccepted", { order_id: order.id, account_id: session.accountId, broker_id: session.brokerId });
     return NextResponse.json(order, { status: 201 });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {

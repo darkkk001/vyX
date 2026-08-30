@@ -103,6 +103,6 @@ export async function POST(
       },
     });
   }
-  await publishTradingEvent("PositionClosed", { position_id: position.id, account_id: session.accountId });
+  await publishTradingEvent("PositionClosed", { position_id: position.id, account_id: session.accountId, broker_id: session.brokerId });
   return NextResponse.json({ position: outcome.position, transaction: outcome.transaction, partial: outcome.partial });
 }

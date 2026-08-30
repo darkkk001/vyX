@@ -9,6 +9,11 @@ import path from "path";
 // subdomain -- middleware.ts's SUPER_ADMIN_SUBDOMAIN -- not a broker.
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  define: {
+    // See manager-tauri/manager-shell/vite.config.ts's identical entry --
+    // lib/admin-realtime.tsx needs the same process.env shim.
+    "process.env.NEXT_PUBLIC_GATEWAY_WS_URL": "undefined",
+  },
   resolve: {
     alias: {
       // admin-tauri/admin-shell -> repo root is two levels up.

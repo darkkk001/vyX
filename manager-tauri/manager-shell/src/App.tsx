@@ -31,6 +31,7 @@ import TeamManager from "@/app/manage/(shell)/team/TeamManager";
 import SettingsManager from "@/app/manage/(shell)/settings/SettingsManager";
 import { apiCall } from "@/lib/desktop-api";
 import type { ApiBrokerBranding } from "@/lib/trade-api";
+import { AdminRealtimeProvider } from "@/lib/admin-realtime";
 
 type ShellInfo = {
   brokerName: string;
@@ -381,6 +382,7 @@ export default function App() {
     // default (white background, black text) once past the hardcoded-dark
     // login screen.
     <div data-surface="manager" className="min-h-dvh antialiased">
+     <AdminRealtimeProvider>
       <AdminShell
         title={shellInfo.brokerName}
         logoUrl={shellInfo.brokerLogoUrl}
@@ -407,6 +409,7 @@ export default function App() {
       >
         {renderSection()}
       </AdminShell>
+     </AdminRealtimeProvider>
     </div>
   );
 }

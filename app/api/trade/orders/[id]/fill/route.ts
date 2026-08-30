@@ -186,6 +186,7 @@ export async function POST(
   await publishTradingEvent("OrderFilled", {
     order_id: order.id,
     account_id: order.accountId,
+    broker_id: order.brokerId,
     price: fillPrice.toString(),
     volume: order.volume.toString(),
     remaining_volume: "0",

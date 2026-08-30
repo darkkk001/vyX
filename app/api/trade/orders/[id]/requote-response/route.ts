@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
 import { openPositionFromOrder } from "@/lib/dealing";
 import { resolveBookType, applySpreadMarkup, resolveSymbolPricing } from "@/lib/group-pricing";
+import { publishTradingEvent } from "@/lib/nats";
 import {
   checkTradingHalted,
   checkSymbolTradingMode,
@@ -68,6 +69,11 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (!updated) {
       return NextResponse.json({ error: "order was already actioned" }, { status: 409 });
     }
+    // Backoffice's "Awaiting client confirmation" list -- see
+    // app/manage/(shell)/dealing/DealingQueueManager.tsx -- otherwise has
+    // no way to learn the client withdrew/rejected a requote until its
+    // next refetch.
+    await publishTradingEvent("OrderCancelled", { order_id: id, account_id: session.accountId, broker_id: order.brokerId });
     return NextResponse.json({ id, status: "CANCELLED" });
   }
 
@@ -145,6 +151,14 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         },
       });
       return pos;
+    });
+    await publishTradingEvent("OrderFilled", {
+      order_id: order.id,
+      account_id: session.accountId,
+      broker_id: order.brokerId,
+      price: fillPrice.toString(),
+      volume: order.volume.toString(),
+      remaining_volume: "0",
     });
     return NextResponse.json({ id: order.id, status: "FILLED", positionId: position.id, filledPrice: fillPrice.toString() });
   } catch (error) {

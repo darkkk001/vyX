@@ -1,6 +1,7 @@
 "use client";
 
 import { ReactNode } from "react";
+import { useAdminConnectionStatus } from "@/lib/admin-realtime";
 
 export type AdminNavItem = { href: string; label: string; badge?: number };
 export type AdminNavGroup = { label?: string; items: AdminNavItem[] };
@@ -85,6 +86,7 @@ export function AdminShell({
   isActive,
   renderNavLink,
 }: AdminShellProps) {
+  const connectionStatus = useAdminConnectionStatus();
   return (
     <div className="flex min-h-dvh bg-[var(--bg-0)]">
       <aside className="flex w-[230px] shrink-0 flex-col overflow-y-auto border-r border-[var(--border)] bg-[var(--bg-1)] px-2.5 py-4">
@@ -118,6 +120,15 @@ export function AdminShell({
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="flex h-14 shrink-0 items-center gap-4 border-b border-[var(--border)] bg-[var(--bg-1)] px-5">
           <p className="text-[15px] font-semibold text-[var(--text-1)]">{pageTitle}</p>
+          {connectionStatus !== "live" ? (
+            // fix/realtime-sync §1's "backoffice shows 'reconnecting'"
+            // acceptance test -- only rendered while actually disconnected,
+            // never a permanent fixture once the stream is live.
+            <span className="flex items-center gap-1.5 rounded-full bg-[var(--bg-3)] px-2.5 py-1 text-[10.5px] font-medium text-[var(--text-3)]">
+              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--sell)]" />
+              {connectionStatus === "connecting" ? "Connecting…" : "Reconnecting…"}
+            </span>
+          ) : null}
           {topbarSearch}
           <div className="ml-auto flex items-center gap-3.5">{topbarRight}</div>
         </header>

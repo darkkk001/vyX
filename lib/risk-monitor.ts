@@ -123,7 +123,7 @@ export async function evaluateAccountRisk(accountId: string): Promise<RiskMonito
     );
     if (outcome.closed) {
       slTpClosed.push(p.id);
-      await publishTradingEvent("PositionClosed", { position_id: p.id, account_id: accountId, reason });
+      await publishTradingEvent("PositionClosed", { position_id: p.id, account_id: accountId, broker_id: p.brokerId, reason });
     }
   }
 
@@ -180,7 +180,7 @@ export async function evaluateAccountRisk(accountId: string): Promise<RiskMonito
     );
     stopOutClosed.push(worst.position.id);
     if (outcome.closed) {
-      await publishTradingEvent("PositionClosed", { position_id: worst.position.id, account_id: accountId, reason: "stop_out" });
+      await publishTradingEvent("PositionClosed", { position_id: worst.position.id, account_id: accountId, broker_id: worst.position.brokerId, reason: "stop_out" });
     }
     // If outcome.closed is false, a concurrent evaluation (or the trader)
     // already closed this exact position first -- it's dropped from

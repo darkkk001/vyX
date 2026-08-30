@@ -9,7 +9,7 @@ import { createServer } from "node:http";
 import express from "express";
 import ordersRouter from "./routes/orders.js";
 import positionsRouter from "./routes/positions.js";
-import { attachPriceStream, attachTradingEventStream, gatewayStats } from "./ws.js";
+import { attachPriceStream, attachTradingEventStream, attachAdminEventStream, gatewayStats } from "./ws.js";
 
 const app = express();
 app.use(express.json());
@@ -53,6 +53,15 @@ attachPriceStream(server, natsUrl).catch((err) => {
 });
 attachTradingEventStream(server, natsUrl).catch((err) => {
   console.error("failed to start trading event stream (NATS unreachable?)", err);
+});
+// fix/realtime-sync §1 -- new env var this process now needs:
+// ADMIN_SESSION_SECRET, the exact same value Vercel/Next.js signs
+// vyx_admin_session with (lib/auth.ts). Not required to start the
+// gateway itself (only checked lazily on the first admin-stream
+// connection attempt, same as REDIS_URL's own getRedis()), but every
+// backoffice event-stream connection 401s until it's set.
+attachAdminEventStream(server, natsUrl).catch((err) => {
+  console.error("failed to start admin event stream (NATS unreachable?)", err);
 });
 
 server.listen(port, bindAddr, () => {
