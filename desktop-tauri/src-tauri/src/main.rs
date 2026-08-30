@@ -13,7 +13,6 @@
 
 use base64::Engine;
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::menu::{CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder};
 use tauri::tray::{TrayIconBuilder, TrayIconEvent};
@@ -641,13 +640,6 @@ fn main() {
 
     let init_script = VYX_DESKTOP_INIT_SCRIPT_TEMPLATE.replace("__BROKER_HOST__", &host_header);
 
-    // Shared between the tray menu's "Quit" handler and the window's
-    // close-request handler below -- mirrors desktop/main.js's module-
-    // level `isQuitting` flag exactly: closing the window normally hides
-    // it instead (so background price alerts / SL-TP notifications keep
-    // working), only the tray's own Quit item actually exits.
-    let is_quitting = Arc::new(AtomicBool::new(false));
-
     tauri::Builder::default()
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
@@ -759,7 +751,6 @@ fn main() {
                 .build()?;
 
             let tray_window = window.clone();
-            let tray_is_quitting = is_quitting.clone();
             let _tray = TrayIconBuilder::new()
                 .icon(app.default_window_icon().cloned().expect("bundle.icon must be set in tauri.conf.json"))
                 .tooltip(&broker_name)
@@ -775,7 +766,6 @@ fn main() {
                         let _ = if enabled { autostart.disable() } else { autostart.enable() };
                     }
                     "quit" => {
-                        tray_is_quitting.store(true, Ordering::SeqCst);
                         app_handle.exit(0);
                     }
                     _ => {}
@@ -792,25 +782,25 @@ fn main() {
                 })
                 .build(app)?;
 
-            // Single combined event handler -- Tauri's on_window_event only
-            // keeps the most recently registered closure per window, so
-            // both behaviors below (maximize tracking + close-to-tray) have
-            // to live in one registration, not two separate calls.
+            // Mirrors desktop/main.js's win.on("maximize"/"unmaximize", ...)
+            // -> win:maximized-changed push. Tauri 2 has no single portable
+            // "maximized changed" event, so this diffs is_maximized() across
+            // Resized events and only emits when it actually flips.
             //
-            // 1) Mirrors desktop/main.js's win.on("maximize"/"unmaximize",
-            //    ...) -> win:maximized-changed push. Tauri 2 has no single
-            //    portable "maximized changed" event, so this diffs
-            //    is_maximized() across Resized events and only emits when
-            //    it actually flips.
-            // 2) Closing the window minimizes to tray instead of quitting --
-            //    matches win.on("close", ...) exactly (see its own comment:
-            //    "so background price alerts / SL-TP notifications keep
-            //    working"). Only the tray's Quit item (or OS shutdown)
-            //    actually exits.
+            // CloseRequested is deliberately left unhandled (falls through
+            // to Tauri's own default: the window closes and the app exits
+            // normally) -- this used to prevent_close()+hide() instead
+            // (close-to-tray, so background price alerts/SL-TP notifications
+            // kept running after the window "closed"), which the user
+            // explicitly asked removed: clicking the window's own X should
+            // fully quit, not silently keep the process alive in the tray.
+            // The tray icon/Quit item are unaffected -- Show still re-opens
+            // the window while it's running, Quit still calls
+            // app_handle.exit(0) directly.
             let last_maximized = Mutex::new(window.is_maximized().unwrap_or(false));
             let event_window = window.clone();
-            window.on_window_event(move |event| match event {
-                WindowEvent::Resized(_) => {
+            window.on_window_event(move |event| {
+                if let WindowEvent::Resized(_) = event {
                     if let Ok(is_max) = event_window.is_maximized() {
                         let mut last = last_maximized.lock().unwrap();
                         if *last != is_max {
@@ -819,13 +809,6 @@ fn main() {
                         }
                     }
                 }
-                WindowEvent::CloseRequested { api, .. } => {
-                    if !is_quitting.load(Ordering::SeqCst) {
-                        api.prevent_close();
-                        let _ = event_window.hide();
-                    }
-                }
-                _ => {}
             });
 
             // Same gate as Electron's `if (app.isPackaged)` -- only check
