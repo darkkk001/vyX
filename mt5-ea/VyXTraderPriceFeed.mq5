@@ -7,7 +7,7 @@
 //| LivePrice table this EA feeds.                                    |
 //+------------------------------------------------------------------+
 #property strict
-#property version   "1.32"
+#property version   "1.33"
 
 input string ServerUrl            = "https://www.vyxtrader.com/api/internal/price-feed";
 // No default -- this file is committed to a public-ish repo. A real
@@ -157,7 +157,24 @@ uint lastHistoryBackfillMs = 0;
 // nothing.
 ENUM_TIMEFRAMES HistoryBackfillPeriods[] = { PERIOD_M1, PERIOD_M5, PERIOD_M30, PERIOD_H1, PERIOD_H4, PERIOD_D1 };
 string HistoryBackfillPeriodNames[]     = { "M1",      "M5",      "M30",      "H1",      "H4",      "D1"     };
-const int HISTORY_BACKFILL_BAR_COUNT = 500;
+// Was 500 -- Contabo found 27% of history requests failing with MT5 error
+// 1003 (WebRequest timeout): a 500-bar upsert took 3-6s against the old
+// 5000ms HISTORY_WEBREQUEST_TIMEOUT_MS below, and Neon's per-row round
+// trip (engine/server's ingest_history upserts one row at a time inside a
+// single transaction, not one batched multi-row statement -- see that
+// function's own comment) doesn't leave much margin. 200 bars is still
+// more than enough to repair any real gap this backfill exists for.
+const int HISTORY_BACKFILL_BAR_COUNT = 200;
+// Split from the tick-push timeout below on purpose -- a history backfill
+// runs on the same OnTimer callback as tick pushes (MQL5 has one thread
+// per EA, no async WebRequest), so whatever this is set to is how long a
+// slow/hanging history request can freeze this EA's live tick pushes for.
+// 30s is a deliberate trade (a rare, bounded freeze beats a 27%-of-requests
+// failure rate) -- do not reuse this constant for SendViaProxy/SendDirect.
+const int HISTORY_WEBREQUEST_TIMEOUT_MS = 30000;
+// Ticks are latency-sensitive and small; keep this short so a genuinely
+// unreachable server fails fast instead of stalling the push loop.
+const int TICK_WEBREQUEST_TIMEOUT_MS = 5000;
 
 // Refreshed by RefreshActiveSymbols() -- the actual broker-native symbol
 // names read via SymbolInfoTick each push, regardless of SymbolSource.
@@ -412,7 +429,7 @@ void SendViaProxy(string ticksJson)
    string resultHeaders;
 
    ResetLastError();
-   int res = WebRequest("GET", url, "", 5000, noData, result, resultHeaders);
+   int res = WebRequest("GET", url, "", TICK_WEBREQUEST_TIMEOUT_MS, noData, result, resultHeaders);
    if (res == -1)
    {
       int err = GetLastError();
@@ -451,7 +468,7 @@ void SendDirect(string ticksJson)
    string resultHeaders;
 
    ResetLastError();
-   int res = WebRequest("POST", url, headers, 5000, body, result, resultHeaders);
+   int res = WebRequest("POST", url, headers, TICK_WEBREQUEST_TIMEOUT_MS, body, result, resultHeaders);
    if (res == -1)
    {
       int err = GetLastError();
@@ -506,7 +523,7 @@ void SendHistoryBars(string canonicalSymbol, string brokerSymbol, ENUM_TIMEFRAME
    uchar result[];
    string resultHeaders;
    ResetLastError();
-   int res = WebRequest("POST", url, headers, 5000, body, result, resultHeaders);
+   int res = WebRequest("POST", url, headers, HISTORY_WEBREQUEST_TIMEOUT_MS, body, result, resultHeaders);
    if (res == -1)
    {
       int err = GetLastError();

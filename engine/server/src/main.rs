@@ -564,9 +564,25 @@ async fn ingest_history(
     let mut bars = body.bars;
     bars.sort_by_key(|b| b.bucket_start_ms);
 
+    // Already one DB transaction for the whole batch (opened once here,
+    // committed once below) -- NOT one transaction per bar. The 3-6s a
+    // 500-bar request used to take against the EA's old 5000ms timeout
+    // (see mt5-ea/VyXTraderPriceFeed.mq5's HISTORY_BACKFILL_BAR_COUNT
+    // comment) was per-row round-trip latency to Neon within this one
+    // transaction, not per-transaction overhead -- a single batched
+    // multi-row upsert statement would cut that further but is a separate,
+    // bigger change than this fix's scope (EA bar count 500->200 + a
+    // matching 30s timeout on that one request type already brings this
+    // well within budget).
+    //
+    // Every failure path below is `?`-propagated, so at most one of these
+    // four log lines fires per request (the handler returns on the first
+    // failure, it never keeps going to log a second) -- warn, not error,
+    // since a failed batch is retried automatically next backfill cycle
+    // (HistoryBackfillIntervalSec) rather than needing a page.
     let mut upserted = 0usize;
     let mut tx = state.pool.begin().await.map_err(|err| {
-        tracing::error!(?err, "ingest_history: failed to open transaction");
+        tracing::warn!(?err, "ingest_history: failed to open transaction");
         (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
     })?;
 
@@ -585,19 +601,19 @@ async fn ingest_history(
         };
         for fill in state.gap_fill.fill_gaps_and_record(&update) {
             market_data::db::upsert_candle(&mut tx, &fill).await.map_err(|err| {
-                tracing::error!(?err, "ingest_history: gap-fill upsert failed");
+                tracing::warn!(?err, "ingest_history: gap-fill upsert failed");
                 (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
             })?;
         }
         market_data::db::upsert_candle_authoritative(&mut tx, &update).await.map_err(|err| {
-            tracing::error!(?err, symbol = %body.symbol, "ingest_history: authoritative upsert failed");
+            tracing::warn!(?err, symbol = %body.symbol, "ingest_history: authoritative upsert failed");
             (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
         })?;
         upserted += 1;
     }
 
     tx.commit().await.map_err(|err| {
-        tracing::error!(?err, "ingest_history: commit failed");
+        tracing::warn!(?err, "ingest_history: commit failed");
         (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
     })?;
 

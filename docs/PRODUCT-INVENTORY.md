@@ -364,7 +364,7 @@ the trader-side classification.
 
 | Integration | Real or stub | Evidence |
 |---|---|---|
-| MT5 EA price feed | **Real**, single-broker-terminal source | `mt5-ea/VyXTraderPriceFeed.mq5` (v1.32) — pushes live bid/ask via `WebRequest` to a Next.js proxy or directly to the Rust engine. Own header comment: "Temporary bridge — Phase 5 replaces this with a real LP feed." One broker's own MT5 account, not an aggregated multi-LP feed. |
+| MT5 EA price feed | **Real**, single-broker-terminal source | `mt5-ea/VyXTraderPriceFeed.mq5` (v1.33) — pushes live bid/ask via `WebRequest` to a Next.js proxy or directly to the Rust engine. Own header comment: "Temporary bridge — Phase 5 replaces this with a real LP feed." One broker's own MT5 account, not an aggregated multi-LP feed. |
 | PSP / payment processor | **None** | Zero matches for stripe/paypal/braintree/adyen/checkout.com anywhere. Deposits/withdrawals are request-and-manual-approval only. |
 | Email / SMS | **None** | Zero real matches for sendgrid/twilio/nodemailer/mailgun. Forgot-password and dealer-review requests create in-app Notifications only — nothing is ever emailed or texted. |
 | KYC provider | **None** — manual only | Zero matches for onfido/jumio/sumsub/veriff/persona. Document upload to Vercel Blob, human admin review only. |
