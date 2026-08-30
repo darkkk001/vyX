@@ -7,7 +7,7 @@
 //| LivePrice table this EA feeds.                                    |
 //+------------------------------------------------------------------+
 #property strict
-#property version   "1.33"
+#property version   "1.34"
 
 input string ServerUrl            = "https://www.vyxtrader.com/api/internal/price-feed";
 // No default -- this file is committed to a public-ish repo. A real
@@ -157,14 +157,26 @@ uint lastHistoryBackfillMs = 0;
 // nothing.
 ENUM_TIMEFRAMES HistoryBackfillPeriods[] = { PERIOD_M1, PERIOD_M5, PERIOD_M30, PERIOD_H1, PERIOD_H4, PERIOD_D1 };
 string HistoryBackfillPeriodNames[]     = { "M1",      "M5",      "M30",      "H1",      "H4",      "D1"     };
-// Was 500 -- Contabo found 27% of history requests failing with MT5 error
-// 1003 (WebRequest timeout): a 500-bar upsert took 3-6s against the old
-// 5000ms HISTORY_WEBREQUEST_TIMEOUT_MS below, and Neon's per-row round
-// trip (engine/server's ingest_history upserts one row at a time inside a
-// single transaction, not one batched multi-row statement -- see that
-// function's own comment) doesn't leave much margin. 200 bars is still
-// more than enough to repair any real gap this backfill exists for.
-const int HISTORY_BACKFILL_BAR_COUNT = 200;
+// Per timeframe, not one number for all of them (v1.34). A single count
+// means the window this backfill can actually repair scales with the
+// timeframe: at the previous flat 200, M30 reached only 4.2 days back, so
+// a 30-day gap check on XAUUSD M30 still reported 446 missing buckets on
+// Contabo while H1/H4/D1 all read zero. These target ~30 days each,
+// capped where the payload/time budget says stop:
+//
+//   M1  1500 -> ~1 day     (30d would be 43,200 bars -- far past budget)
+//   M5  1500 -> ~5 days    (30d would be 8,640)
+//   M30 1500 -> ~31 days   full window
+//   H1   750 -> ~31 days   full window
+//   H4   200 -> ~33 days   full window already
+//   D1   200 -> 200 days   full window already
+//
+// M1/M5 stay deliberately short of 30 days: they are the timeframes a
+// live feed refills fastest anyway, and 43,200 bars in one request would
+// blow both the payload size and HISTORY_WEBREQUEST_TIMEOUT_MS below.
+// Index-aligned with HistoryBackfillPeriods/HistoryBackfillPeriodNames
+// above -- keep all three arrays in the same order.
+int HistoryBackfillBarCounts[]          = { 1500,      1500,      1500,      750,       200,       200      };
 // Split from the tick-push timeout below on purpose -- a history backfill
 // runs on the same OnTimer callback as tick pushes (MQL5 has one thread
 // per EA, no async WebRequest), so whatever this is set to is how long a
@@ -483,7 +495,8 @@ void SendDirect(string ticksJson)
    }
 }
 
-// POST one symbol+timeframe's last HISTORY_BACKFILL_BAR_COUNT bars to
+// POST one symbol+timeframe's last barCount bars (HistoryBackfillBarCounts
+// above, per timeframe) to
 // engine/server's /internal/history (fix/realtime-sync §4). Same auth
 // header convention as SendDirect. Blocking, like every WebRequest call
 // in this file -- MQL5 has no async HTTP -- so a full backfill cycle
@@ -493,11 +506,11 @@ void SendDirect(string ticksJson)
 // default), not every tick, so this is a periodic brief pause, not a
 // standing latency cost -- a real, known tradeoff of a single-threaded
 // EA with no async HTTP, not something this fix works around.
-void SendHistoryBars(string canonicalSymbol, string brokerSymbol, ENUM_TIMEFRAMES period, string timeframeName)
+void SendHistoryBars(string canonicalSymbol, string brokerSymbol, ENUM_TIMEFRAMES period, string timeframeName, int barCount)
 {
    MqlRates rates[];
    ArraySetAsSeries(rates, true);
-   int copied = CopyRates(brokerSymbol, period, 0, HISTORY_BACKFILL_BAR_COUNT, rates);
+   int copied = CopyRates(brokerSymbol, period, 0, barCount, rates);
    if (copied <= 0) return; // no history available yet for this symbol/period -- nothing to send
 
    string bars = "[";
@@ -523,18 +536,35 @@ void SendHistoryBars(string canonicalSymbol, string brokerSymbol, ENUM_TIMEFRAME
    uchar result[];
    string resultHeaders;
    ResetLastError();
+   // Bracketed with GetMicrosecondCount() so the Experts log carries the
+   // real per-request duration. The bar counts above were sized off a
+   // measurement taken on Contabo (~3-6s per 500 bars against Neon), which
+   // puts a 1500-bar request at a projected ~9-18s -- inside the 30s
+   // timeout, but with little enough margin that this needs to be
+   // observable rather than assumed. If these lines start reading near
+   // 30s, cut the counts before the timeouts come back.
+   long beforeUs = (long)GetMicrosecondCount();
    int res = WebRequest("POST", url, headers, HISTORY_WEBREQUEST_TIMEOUT_MS, body, result, resultHeaders);
+   long elapsedMs = ((long)GetMicrosecondCount() - beforeUs) / 1000;
    if (res == -1)
    {
       int err = GetLastError();
       if (err == 4060)
          Print("VyXTraderPriceFeed (history backfill): add ", DirectServerUrl, " under Tools > Options > Expert Advisors > Allow WebRequest for listed URL");
       else
-         Print("VyXTraderPriceFeed (history backfill): WebRequest failed for ", canonicalSymbol, " ", timeframeName, ", error ", err);
+         Print("VyXTraderPriceFeed (history backfill): WebRequest failed for ", canonicalSymbol, " ", timeframeName, " after ", elapsedMs, "ms, error ", err);
    }
    else if (res != 200)
    {
-      Print("VyXTraderPriceFeed (history backfill): server responded ", res, " for ", canonicalSymbol, " ", timeframeName, " — ", CharArrayToString(result));
+      Print("VyXTraderPriceFeed (history backfill): server responded ", res, " for ", canonicalSymbol, " ", timeframeName, " after ", elapsedMs, "ms — ", CharArrayToString(result));
+   }
+   else
+   {
+      // Logged on success too, unlike every other call in this file: these
+      // durations are the only evidence that the per-timeframe counts
+      // above are still inside budget, and a backfill cycle is 60 lines
+      // every 15 minutes, not per-tick spam.
+      Print("VyXTraderPriceFeed (history backfill): ", canonicalSymbol, " ", timeframeName, " ", copied, " bars in ", elapsedMs, "ms");
    }
 }
 
@@ -556,7 +586,7 @@ void SendHistoryBackfill()
       if (StringLen(brokerSymbol) == 0) continue;
       string canonicalSymbol = CanonicalFor(brokerSymbol);
       for (int p = 0; p < ArraySize(HistoryBackfillPeriods); p++)
-         SendHistoryBars(canonicalSymbol, brokerSymbol, HistoryBackfillPeriods[p], HistoryBackfillPeriodNames[p]);
+         SendHistoryBars(canonicalSymbol, brokerSymbol, HistoryBackfillPeriods[p], HistoryBackfillPeriodNames[p], HistoryBackfillBarCounts[p]);
    }
 
    lastHistoryBackfillMs = GetTickCount();
