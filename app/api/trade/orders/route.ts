@@ -20,6 +20,8 @@ import {
   checkBrokerExposure,
   checkMaxDailyLoss,
   evaluateLiveMarketPrice,
+  checkPriceFreshness,
+  checkSlippage,
 } from "@/lib/risk";
 
 async function logHotkeyOrder(brokerId: string, orderId: string) {
@@ -28,13 +30,17 @@ async function logHotkeyOrder(brokerId: string, orderId: string) {
   });
 }
 
-// Phase 2 note: there is no live tick feed or matching engine yet (that's
-// Phase 5). Prices are simulated client-side, so the client supplies the
-// price it wants to transact at, and MARKET orders fill immediately at
-// that price. This is a deliberate, temporary simplification — real order
-// matching against a broker-fed price stream replaces this wholesale in
-// Phase 5, at which point the server (not the client) becomes the price
-// authority.
+// Phase 0 money-risk patch (docs/ROADMAP.md): the server is now the
+// execution-price authority for MARKET orders. `price` in the request
+// body is no longer what a MARKET order fills at -- it's the price the
+// client saw when it clicked Buy/Sell, used only as a maxSlippage
+// tolerance anchor (lib/risk.ts's checkSlippage) and as the SL/TP
+// validation reference. The actual fill price is always this route's own
+// fresh LivePrice read (checkPriceFreshness gates staleness at 3s) plus
+// group markup, same as the dealing-mode branch below already did. LIMIT
+// STOP orders still rest client-side until triggered, but their fill
+// (app/api/trade/orders/[id]/fill/route.ts) applies this same
+// server-price-authority rule, not the client's trigger-detected price.
 export async function POST(request: NextRequest) {
   const session = await getAccountSession();
   if (!session) {
@@ -49,6 +55,9 @@ export async function POST(request: NextRequest) {
   const price = body?.price != null ? String(body.price) : null;
   const slPrice = body?.slPrice != null ? String(body.slPrice) : null;
   const tpPrice = body?.tpPrice != null ? String(body.tpPrice) : null;
+  // Optional -- see lib/risk.ts's checkSlippage. WebTrader doesn't send
+  // this today, so every order falls back to the default tolerance.
+  const maxSlippagePips = body?.maxSlippagePips != null ? String(body.maxSlippagePips) : null;
   // Optional, client-asserted, informational only -- doesn't change
   // validation/risk/execution at all (every branch below runs identically
   // regardless), just which of this route's several success points also
@@ -149,7 +158,7 @@ export async function POST(request: NextRequest) {
   let livePrice: Awaited<ReturnType<typeof prisma.livePrice.findUnique>> = null;
   if (type === "MARKET") {
     livePrice = await prisma.livePrice.findUnique({ where: { symbol: symbolName } });
-    const priceError = evaluateLiveMarketPrice(livePrice, symbolName, price);
+    const priceError = evaluateLiveMarketPrice(livePrice, symbolName, price) ?? checkPriceFreshness(livePrice);
     if (priceError) {
       return NextResponse.json({ error: priceError }, { status: 400 });
     }
@@ -305,19 +314,28 @@ export async function POST(request: NextRequest) {
     }
 
     if (type === "MARKET") {
-      // See lib/group-pricing.ts's own comments on why this stays a
-      // post-hoc adjustment to whatever price fills the order (here, the
-      // client's own supplied price -- see this route's module doc
-      // comment on why the server isn't the price authority for this
-      // path yet) rather than something computed inside price quoting.
-      // requestedPrice keeps the client's original, unmarked-up ask.
+      // Server-price-authority fill (Phase 0, see this route's module
+      // comment) -- base is this route's own fresh LivePrice read
+      // (already validated for staleness above), not the client's
+      // submitted `price`. requestedPrice keeps the client's original
+      // reference so the audit trail still shows what the client expected.
       const pricing = await resolveSymbolPricing(prisma, {
         groupId: account.groupId,
         symbolId: brokerSymbol.symbolId,
         brokerSpreadMarkup: brokerSymbol.spreadMarkup,
         brokerCommissionPerLot: brokerSymbol.commissionPerLot,
       });
-      const fillPrice = applySpreadMarkup({ side, price, spreadMarkup: pricing.spreadMarkup, digits: brokerSymbol.symbol.digits });
+      const serverRef = side === "BUY" ? livePrice!.ask : livePrice!.bid;
+      const fillPrice = applySpreadMarkup({ side, price: serverRef, spreadMarkup: pricing.spreadMarkup, digits: brokerSymbol.symbol.digits });
+      const slippageError = checkSlippage({
+        clientReferencePrice: price,
+        serverFillPrice: fillPrice,
+        maxSlippagePips,
+        digits: brokerSymbol.symbol.digits,
+      });
+      if (slippageError) {
+        return NextResponse.json({ error: slippageError }, { status: 400 });
+      }
       const bookType = account.group ? resolveBookType(account.group.groupType) : brokerSymbol.defaultBookType;
       const result = await prisma.$transaction(async (tx) => {
         const order = await tx.order.create({

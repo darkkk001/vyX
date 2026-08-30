@@ -17,7 +17,9 @@ import {
   checkSymbolExposure,
   checkBrokerExposure,
   checkMaxDailyLoss,
-  checkLiveMarketPrice,
+  evaluateLiveMarketPrice,
+  checkPriceFreshness,
+  checkSlippage,
 } from "@/lib/risk";
 
 // Called by the client when its local price simulation reports the
@@ -62,6 +64,16 @@ export async function POST(
     prisma.broker.findUniqueOrThrow({ where: { id: order.brokerId } }),
   ]);
 
+  // Fetched once, reused both by the risk battery below (the coarse
+  // sanity check) and, further down, as the actual server-side fill-price
+  // basis (Phase 0 money-risk patch, docs/ROADMAP.md) -- previously this
+  // route filled pending-order triggers at the client's own
+  // trigger-detected price, same exploit class POST /api/trade/orders had
+  // for MARKET orders.
+  const livePrice = brokerSymbol
+    ? await prisma.livePrice.findUnique({ where: { symbol: brokerSymbol.symbol.name } })
+    : null;
+
   // Same risk battery POST /api/trade/orders and the dealing-queue Accept
   // route both run before opening a position -- this fill path (a
   // pending order's trigger firing, possibly days after submission) was
@@ -75,7 +87,8 @@ export async function POST(
     (brokerSymbol ? checkSymbolTradingMode(brokerSymbol.tradingMode, order.side) : null) ??
     (brokerSymbol ? checkTradingSession(brokerSymbol.tradingSessions, new Date()) : null) ??
     (brokerSymbol ? checkLotStep(order.volume, brokerSymbol.minLot, brokerSymbol.lotStep) : null) ??
-    (brokerSymbol ? await checkLiveMarketPrice(prisma, brokerSymbol.symbol.name, requestedFillPrice) : null) ??
+    (brokerSymbol ? evaluateLiveMarketPrice(livePrice, brokerSymbol.symbol.name, requestedFillPrice) : null) ??
+    (brokerSymbol ? checkPriceFreshness(livePrice) : null) ??
     (account.group ? checkGroupMaxLot(order.volume, account.group.maxLotSize) : null) ??
     (account.group ? checkGroupTradingRestriction(account.group.tradingRestriction, order.side) : null) ??
     (account.group
@@ -144,19 +157,32 @@ export async function POST(
     return NextResponse.json({ order: queued, position: null });
   }
 
-  // See lib/group-pricing.ts's own comments -- markup applied to the
-  // client's own trigger-detected price (see this route's module doc
-  // comment on why the server isn't the price authority for this path
-  // yet), not to the reference used to decide the trigger fired.
+  // Phase 0 money-risk patch (docs/ROADMAP.md) -- server-price-authority
+  // fill, same rule as POST /api/trade/orders. requestedFillPrice (the
+  // client's trigger-detected price) is now only the slippage-tolerance
+  // anchor, not the fill basis; livePrice was already validated fresh
+  // above by checkPriceFreshness.
   const pricing = await resolveSymbolPricing(prisma, {
     groupId: account.groupId,
     symbolId: order.symbolId,
     brokerSpreadMarkup: brokerSymbol?.spreadMarkup ?? new Prisma.Decimal(0),
     brokerCommissionPerLot: brokerSymbol?.commissionPerLot ?? new Prisma.Decimal(0),
   });
+  const serverRef = brokerSymbol && livePrice ? (order.side === "BUY" ? livePrice.ask : livePrice.bid) : new Prisma.Decimal(requestedFillPrice);
   const fillPrice = brokerSymbol
-    ? applySpreadMarkup({ side: order.side, price: requestedFillPrice, spreadMarkup: pricing.spreadMarkup, digits: brokerSymbol.symbol.digits })
-    : new Prisma.Decimal(requestedFillPrice);
+    ? applySpreadMarkup({ side: order.side, price: serverRef, spreadMarkup: pricing.spreadMarkup, digits: brokerSymbol.symbol.digits })
+    : serverRef;
+  if (brokerSymbol) {
+    const slippageError = checkSlippage({
+      clientReferencePrice: requestedFillPrice,
+      serverFillPrice: fillPrice,
+      maxSlippagePips: null,
+      digits: brokerSymbol.symbol.digits,
+    });
+    if (slippageError) {
+      return NextResponse.json({ error: slippageError }, { status: 400 });
+    }
+  }
   const bookType = account.group ? resolveBookType(account.group.groupType) : (brokerSymbol?.defaultBookType ?? "B_BOOK");
 
   const result = await prisma.$transaction(async (tx) => {

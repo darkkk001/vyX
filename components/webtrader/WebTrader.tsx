@@ -39,7 +39,7 @@ type BottomTab = "positions" | "net" | "orders" | "allOrders" | "history" | "ana
 type LogEntry = { id: number; time: string; message: string };
 type OrderMode = "market" | "pending";
 type PendingType = "buy_limit" | "sell_limit" | "buy_stop" | "sell_stop";
-type Toast = { id: number; message: string };
+type Toast = { id: number; message: string; retry?: () => void };
 type Alert = { id: number; symbol: string; condition: "above" | "below"; price: number; triggered: boolean; time?: string };
 
 let idCounter = 1;
@@ -546,10 +546,12 @@ export default function WebTrader({
   // a trader wouldn't otherwise see while the window isn't focused (alerts,
   // SL/TP hits). Plain user-triggered actions (clicking Buy, closing a
   // position) skip that: the trader is already looking at the screen.
-  const pushToast = useCallback((message: string, important = false) => {
+  const pushToast = useCallback((message: string, important = false, retry?: () => void) => {
     const id = nextId();
-    setToasts((prev) => [...prev, { id, message }]);
-    setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 2200);
+    setToasts((prev) => [...prev, { id, message, retry }]);
+    // Retry toasts stay up long enough to actually click -- the plain
+    // confirmation toasts don't need it.
+    setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), retry ? 6000 : 2200);
     appendLog(message);
     if (important && typeof window !== "undefined" && window.vyxDesktop?.isDesktop && "Notification" in window) {
       try {
@@ -559,6 +561,23 @@ export default function WebTrader({
       }
     }
   }, [appendLog, brokerName]);
+
+  // Phase 0 money-risk patch (docs/ROADMAP.md) -- the server now rejects
+  // a MARKET order whose fill price moved past the client's tolerance, or
+  // whose feed went stale between click and processing, instead of
+  // silently filling at whatever the client asked (see lib/risk.ts's
+  // checkPriceFreshness/checkSlippage). Both are routine, expected
+  // rejections under a fast-moving market, not errors -- worth a
+  // one-click retry against the now-current price rather than making the
+  // trader re-open the ticket and re-enter everything.
+  const handleOrderError = useCallback((err: unknown, retry?: () => void) => {
+    if (err instanceof ApiError && (err.message === "PRICE_STALE" || err.message === "SLIPPAGE_EXCEEDED")) {
+      const reason = err.message === "PRICE_STALE" ? "Feed went stale — order not placed" : "Price moved — order not placed";
+      pushToast(reason, false, retry);
+      return;
+    }
+    pushToast(err instanceof Error ? err.message : "order failed");
+  }, [pushToast]);
 
   const askPrompt = useCallback((message: string, defaultValue: string, onSubmit: (value: string) => void) => {
     setGenericModalValue(defaultValue);
@@ -1486,7 +1505,7 @@ export default function WebTrader({
         await refreshOrders();
       }
     } catch (err) {
-      pushToast(err instanceof Error ? err.message : "order failed");
+      handleOrderError(err, () => placeOrder(side));
     }
   }
 
@@ -1533,7 +1552,7 @@ export default function WebTrader({
         await refreshOrders();
       }
     } catch (err) {
-      pushToast(err instanceof Error ? err.message : "order failed");
+      handleOrderError(err, () => oneClickTrade(symbolName, side));
     }
   }
 
@@ -1756,7 +1775,7 @@ export default function WebTrader({
         await refreshOrders();
       }
     } catch (err) {
-      pushToast(err instanceof Error ? err.message : "order failed");
+      handleOrderError(err, () => submitQuickOrder(side));
     }
   }
   // Same ticket, pending-type path (Buy/Sell Limit/Stop) -- side comes
@@ -3575,7 +3594,21 @@ export default function WebTrader({
         </div>
       ) : null}
 
-      <div className="toast" style={{ opacity: toasts.length > 0 ? 1 : 0 }}>{toasts[toasts.length - 1]?.message ?? ""}</div>
+      <div className={`toast${toasts[toasts.length - 1]?.retry ? " has-retry" : ""}`} style={{ opacity: toasts.length > 0 ? 1 : 0 }}>
+        {toasts[toasts.length - 1]?.message ?? ""}
+        {toasts[toasts.length - 1]?.retry ? (
+          <button
+            className="toast-retry-btn"
+            onClick={() => {
+              const t = toasts[toasts.length - 1];
+              t?.retry?.();
+              setToasts((prev) => prev.filter((x) => x.id !== t?.id));
+            }}
+          >
+            Retry
+          </button>
+        ) : null}
+      </div>
     </div>
   );
 }

@@ -134,6 +134,9 @@ export const tradeApi = {
     price: number;
     slPrice?: number | null;
     tpPrice?: number | null;
+    // Optional -- see lib/risk.ts's checkSlippage. Omitted by every
+    // current caller, which falls back to the server's default tolerance.
+    maxSlippagePips?: number;
     idempotencyKey: string;
     // Informational only (see app/api/trade/orders/route.ts) -- flags
     // this order for the STM_HOTKEY_ORDER audit trail, doesn't change

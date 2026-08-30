@@ -1,5 +1,6 @@
 import { Prisma, PrismaClient, TradingMode } from "@prisma/client";
 import type { OrderSide } from "@/lib/trading";
+import { pipSize } from "@/lib/group-pricing";
 
 type Db = PrismaClient | Prisma.TransactionClient;
 
@@ -198,6 +199,51 @@ export async function checkLiveMarketPrice(
 ): Promise<string | null> {
   const livePrice = await db.livePrice.findUnique({ where: { symbol: symbolName } });
   return evaluateLiveMarketPrice(livePrice, symbolName, clientPrice);
+}
+
+// Phase 0 money-risk patch (docs/ROADMAP.md) -- the server, not the
+// client, is now the execution-price authority for MARKET fills (see
+// app/api/trade/orders/route.ts and .../orders/[id]/fill/route.ts's
+// rewritten module comments). This is a tighter, purpose-built gate than
+// evaluateLiveMarketPrice's own 15s/2% sanity check above: 3s is how
+// fresh a tick must be to be trusted as *the* fill price, not just
+// evidence that a feed exists at all. Returns the bare machine-readable
+// code (not a sentence) so the client can branch on it -- see
+// components/webtrader/WebTrader.tsx's placeOrder, which shows a
+// price-moved retry toast specifically for this code.
+const FILL_PRICE_MAX_AGE_MS = 3_000;
+
+export function checkPriceFreshness(livePrice: { updatedAt: Date } | null): string | null {
+  if (!livePrice || Date.now() - livePrice.updatedAt.getTime() > FILL_PRICE_MAX_AGE_MS) {
+    return "PRICE_STALE";
+  }
+  return null;
+}
+
+// The client's submitted price is no longer an executable price (see
+// above) -- it's the price the client saw when it clicked Buy/Sell/set a
+// pending-order trigger, now used only as a tolerance anchor: how far the
+// server's own fill price is allowed to have moved from what the client
+// expected before the order gets rejected instead of silently filled at a
+// worse price. maxSlippagePips is client-supplied (WebTrader doesn't send
+// one today, so this always falls back to the default) so a future UI
+// can let a trader tighten or loosen it per order.
+const DEFAULT_MAX_SLIPPAGE_PIPS = new Prisma.Decimal(5);
+
+export function checkSlippage(params: {
+  clientReferencePrice: Prisma.Decimal | string;
+  serverFillPrice: Prisma.Decimal;
+  maxSlippagePips: Prisma.Decimal | number | string | null | undefined;
+  digits: number;
+}): string | null {
+  const maxPips =
+    params.maxSlippagePips != null ? new Prisma.Decimal(params.maxSlippagePips) : DEFAULT_MAX_SLIPPAGE_PIPS;
+  const tolerance = maxPips.mul(pipSize(params.digits));
+  const deviation = params.serverFillPrice.sub(new Prisma.Decimal(params.clientReferencePrice)).abs();
+  if (deviation.gt(tolerance)) {
+    return "SLIPPAGE_EXCEEDED";
+  }
+  return null;
 }
 
 // Null maxDailyLoss = no limit. Blocks new orders once today's realized
