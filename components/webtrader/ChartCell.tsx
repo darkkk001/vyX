@@ -104,6 +104,8 @@ export default function ChartCell({
         <KLineChartPanel
           candles={m.candles[tf]}
           latestBar={m.candles[tf][m.candles[tf].length - 1]}
+          symbol={symbol}
+          timeframe={tf}
           digits={m.def.digits}
           lines={lines}
         />
