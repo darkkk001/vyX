@@ -11,11 +11,23 @@ export type ChartLine = {
   dashed?: boolean;
 };
 
+// chart-polish round -- "trendLine" and "rectangle" were never real
+// klinecharts overlay names in the installed version (9.8.12) -- checked
+// against its actual registry (node_modules/klinecharts/dist/index.esm.js,
+// no type export lists these; the real names only exist in the bundled
+// JS). createOverlay silently returned null for both, every time, with no
+// error anywhere -- confirmed live via a temporary diagnostic log before
+// this fix, exactly the "don't merge on unit tests alone" class of bug:
+// nothing here is unit-testable (klinecharts itself isn't under test),
+// only a real browser click ever exercises this path. The real registered
+// names are "segment" (a plain two-point line, the closest built-in match
+// to a "trend line" -- klinecharts has no overlay named exactly that) and
+// "rect".
 export type DrawingOverlayName =
-  | "trendLine"
+  | "segment"
   | "horizontalStraightLine"
   | "fibonacciLine"
-  | "rectangle"
+  | "rect"
   | "simpleAnnotation";
 
 export type KLineChartHandle = {
@@ -23,6 +35,15 @@ export type KLineChartHandle = {
   removeAllDrawings: () => void;
   toggleMA: () => boolean;
 };
+
+// chart-polish round -- the slice of klinecharts' real Overlay/OverlayEvent
+// shape (node_modules/klinecharts/dist/index.d.ts) this file actually
+// reads. The chart instance itself stays `any` (see the component's own
+// doc comment on why), but these two shapes are narrow and stable enough
+// to type properly instead of reaching for `any` at every overlay
+// callback site.
+type OverlaySnapshot = { name: string; points: unknown; styles: unknown; lock?: boolean };
+type OverlayLifecycleEvent = { overlay: { id: string } };
 
 type Props = {
   candles: Candle[];
@@ -37,16 +58,12 @@ type Props = {
   // silently becoming `undefined` at every call site if one is ever
   // added without it).
   latestBar?: Candle;
-  // hotfix/terminal-live-bugs round 2 -- "the dashed price line must be
-  // driven by the tick, not the bar." klinecharts' own priceMark.last
-  // (disabled below) can only ever draw from its internal kline data
-  // model's last close, which is one hop removed from the raw tick (it
-  // goes through candles[]/latestBar first) -- this prop bypasses that
-  // entirely so the line always reflects MarketState.bid directly, the
-  // exact same value the header price and watchlist row read, with no
-  // intermediate bar-update step that could lag or silently not fire.
-  currentPrice?: number;
-  currentPriceRising?: boolean;
+  // chart-polish round -- storage key scoping for user-drawn overlays
+  // (see the persistence effect below). Not used for anything else; the
+  // dev-only broker-time drift assertion still infers its own period from
+  // history rather than taking timeframe as a prop, unrelated to this.
+  symbol: string;
+  timeframe: string;
   digits: number;
   lines: ChartLine[];
   onContextMenuPrice?: (price: number, clientX: number, clientY: number) => void;
@@ -71,7 +88,7 @@ type Props = {
 // mismatch against strict types would fail the whole build rather than
 // just this one feature at runtime.
 const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartPanel(
-  { candles, latestBar, currentPrice, currentPriceRising, digits, lines, onContextMenuPrice, onPanOrZoom },
+  { candles, latestBar, symbol, timeframe, digits, lines, onContextMenuPrice, onPanOrZoom },
   ref
 ) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -84,10 +101,99 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
   onContextMenuPriceRef.current = onContextMenuPrice;
   const onPanOrZoomRef = useRef(onPanOrZoom);
   onPanOrZoomRef.current = onPanOrZoom;
+  // Always read the *current* symbol/timeframe from inside overlay
+  // callbacks set up once at createOverlay time -- a callback closes over
+  // whatever symbol/timeframe were in scope when the overlay was drawn,
+  // which goes stale the moment the trader switches symbol or timeframe.
+  const symbolRef = useRef(symbol);
+  symbolRef.current = symbol;
+  const timeframeRef = useRef(timeframe);
+  timeframeRef.current = timeframe;
+  // The single overlay currently mid-draw (set on the first click of a
+  // multi-point tool, cleared on the last click) -- Escape cancels this
+  // one specifically, never a finished, already-selectable drawing.
+  const drawingOverlayIdRef = useRef<string | null>(null);
+  // The user-drawn overlay currently selected (klinecharts shows its
+  // handles) -- Delete/Backspace removes this one. Never a system line
+  // (SL/TP/order/last-price): all of those are created with lock: true,
+  // which klinecharts itself already excludes from selection entirely.
+  const selectedOverlayIdRef = useRef<string | null>(null);
+
+  // chart-polish round -- drawings persist per symbol+timeframe in
+  // localStorage. Phase 5 moves this server-side (a trader's drawings
+  // should follow them across devices/sessions); this is deliberately
+  // client-only for now, same scoping precedent as watchlist
+  // order/column prefs elsewhere in WebTrader.tsx.
+  function storageKey() {
+    return `vyx-chart-drawings:${symbolRef.current}:${timeframeRef.current}`;
+  }
+
+  function persistDrawings() {
+    const chart = chartRef.current;
+    if (!chart) return;
+    try {
+      const saved = userOverlayIdsRef.current
+        .map((id) => chart.getOverlayById?.(id) as OverlaySnapshot | null | undefined)
+        .filter((o): o is OverlaySnapshot => Boolean(o))
+        .map((o) => ({ name: o.name, points: o.points, styles: o.styles, lock: o.lock }));
+      window.localStorage.setItem(storageKey(), JSON.stringify(saved));
+    } catch {
+      // private browsing / quota / no localStorage -- drawings just won't
+      // survive a reload this session, not worth surfacing as an error
+    }
+  }
+
+  // Shared by every path that creates a user-drawn overlay (the toolbar's
+  // addOverlay and this component's own persisted-drawing restore below)
+  // so both stay selectable, Escape/Delete-able, and kept in sync with
+  // localStorage the same way regardless of how they were created. Every
+  // callback returns false -- "observed, don't suppress klinecharts' own
+  // default handling" -- these only ever track state and persist, never
+  // change what a click/drag/keypress does.
+  function overlayLifecycleCallbacks() {
+    return {
+      onDrawStart: (event: OverlayLifecycleEvent) => {
+        drawingOverlayIdRef.current = event.overlay.id;
+        return false;
+      },
+      onDrawEnd: () => {
+        drawingOverlayIdRef.current = null;
+        persistDrawings();
+        return false;
+      },
+      onSelected: (event: OverlayLifecycleEvent) => {
+        selectedOverlayIdRef.current = event.overlay.id;
+        return false;
+      },
+      onDeselected: () => {
+        selectedOverlayIdRef.current = null;
+        return false;
+      },
+      onRemoved: (event: OverlayLifecycleEvent) => {
+        const id = event.overlay.id;
+        userOverlayIdsRef.current = userOverlayIdsRef.current.filter((existing) => existing !== id);
+        if (selectedOverlayIdRef.current === id) selectedOverlayIdRef.current = null;
+        if (drawingOverlayIdRef.current === id) drawingOverlayIdRef.current = null;
+        persistDrawings();
+        return false;
+      },
+      onPressedMoveEnd: () => {
+        persistDrawings(); // repositioning an existing drawing also needs re-saving
+        return false;
+      },
+    };
+  }
 
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
+    // Same mono stack as the rest of the terminal's .mono class
+    // (app/(broker)/trade/webtrader.css) -- axis ticks, the crosshair's
+    // price/time labels, and the last-price badge all read as numbers, so
+    // they get the same tabular font as every other number in the app
+    // instead of the browser's default sans-serif.
+    const MONO_FONT = "'JetBrains Mono', ui-monospace, monospace";
+    const AXIS_TEXT_COLOR = "#5A6472"; // --text-3
     const chart = init(el, {
       // Cast: klinecharts' style option types are deep partials of its own
       // internal theme shape, not worth pinning exactly here — a mismatch
@@ -107,21 +213,44 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
             noChangeWickColor: "#5A6472",
           },
           priceMark: {
-            // hotfix/terminal-live-bugs round 2 -- disabled in favor of the
-            // currentPrice-driven overlay below. This built-in line can
-            // only ever track the kline data model's own last close, which
-            // is exactly the "driven by the bar, not the tick" behavior
-            // that was reported stale relative to the header.
-            last: { show: false, upColor: "#16C784", downColor: "#EA3943" },
-            high: { color: "#5A6472" },
-            low: { color: "#5A6472" },
+            // chart-polish round -- re-enabled now that the tick->bar sync
+            // bug (hotfix/terminal-live-bugs, hotfix/history-broker-time)
+            // is fixed and browser-verified: applyBidAsk sets latestBar.c
+            // to MarketState.bid on every tick, so this bar-driven line is
+            // now provably the same value as the live tick, with the
+            // added benefit (missing from the round-2 custom overlay this
+            // replaces) of the axis price badge every other trading chart
+            // has -- klinecharts only draws that badge as part of this
+            // built-in feature, not as a separate overlay.
+            last: {
+              show: true,
+              upColor: "#16C784",
+              downColor: "#EA3943",
+              noChangeColor: "#5A6472",
+              line: { show: true, style: "dashed", size: 1, dashedValue: [4, 4] },
+              text: { show: true, color: "#0B0F14", size: 11, family: MONO_FONT, weight: 600, paddingLeft: 4, paddingRight: 4, paddingTop: 2, paddingBottom: 2, borderRadius: 2 },
+            },
+            high: { color: AXIS_TEXT_COLOR, textFamily: MONO_FONT, textSize: 11 },
+            low: { color: AXIS_TEXT_COLOR, textFamily: MONO_FONT, textSize: 11 },
           },
         },
-        xAxis: { axisLine: { color: "rgba(255,255,255,0.08)" }, tickText: { color: "#5A6472" } },
-        yAxis: { axisLine: { color: "rgba(255,255,255,0.08)" }, tickText: { color: "#5A6472" } },
+        xAxis: {
+          axisLine: { color: "rgba(255,255,255,0.08)" },
+          tickText: { color: AXIS_TEXT_COLOR, family: MONO_FONT, size: 11, marginStart: 4, marginEnd: 4 },
+        },
+        yAxis: {
+          axisLine: { color: "rgba(255,255,255,0.08)" },
+          tickText: { color: AXIS_TEXT_COLOR, family: MONO_FONT, size: 11, marginStart: 4, marginEnd: 6 },
+        },
         crosshair: {
-          horizontal: { line: { color: "#5A6472" } },
-          vertical: { line: { color: "#5A6472" } },
+          horizontal: {
+            line: { color: AXIS_TEXT_COLOR },
+            text: { show: true, color: "#0B0F14", backgroundColor: AXIS_TEXT_COLOR, family: MONO_FONT, size: 11, paddingLeft: 4, paddingRight: 4, paddingTop: 2, paddingBottom: 2, borderRadius: 2 },
+          },
+          vertical: {
+            line: { color: AXIS_TEXT_COLOR },
+            text: { show: true, color: "#0B0F14", backgroundColor: AXIS_TEXT_COLOR, family: MONO_FONT, size: 11, paddingLeft: 4, paddingRight: 4, paddingTop: 2, paddingBottom: 2, borderRadius: 2 },
+          },
         },
       },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -164,6 +293,28 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
     };
     el.addEventListener("contextmenu", onContextMenu);
 
+    // chart-polish round -- persistence's real trigger. onDrawEnd (the
+    // overlay lifecycle callback that looks like the obvious place to
+    // persist "a drawing just finished") turned out unreliable in a real
+    // browser: after an Escape-cancelled draw removes a still-in-progress
+    // overlay via removeOverlay, the *next* overlay's own onDrawEnd
+    // sometimes never fires at all, even though the shape completes
+    // correctly on screen -- confirmed by instrumenting every overlay
+    // callback and reproducing it live, not from reading klinecharts'
+    // source alone. A plain click listener on the chart's own container
+    // sidesteps that entirely: it doesn't care which (if any) overlay
+    // callback fired, so every click -- placing a point, finishing a
+    // shape, selecting one, clicking empty space -- eventually saves
+    // whatever the chart's real overlay state is a moment later. Slightly
+    // redundant with the overlay callbacks' own persistDrawings() calls,
+    // which is fine -- persistDrawings() is idempotent.
+    let persistAfterClickTimer: ReturnType<typeof setTimeout> | null = null;
+    const onClickPersist = () => {
+      if (persistAfterClickTimer) clearTimeout(persistAfterClickTimer);
+      persistAfterClickTimer = setTimeout(persistDrawings, 150);
+    };
+    el.addEventListener("click", onClickPersist);
+
     const onChartAction = () => onPanOrZoomRef.current?.();
     try {
       chart?.subscribeAction?.(ActionType.OnZoom, onChartAction);
@@ -172,10 +323,46 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
       // ignore -- context menu just won't auto-close on pan/zoom this session
     }
 
+    // chart-polish round -- Escape cancels an overlay still being drawn
+    // (klinecharts has no built-in key handling of its own -- confirmed
+    // against its source, this is entirely this component's own
+    // responsibility); Delete/Backspace removes the currently-selected
+    // one. Skipped entirely if focus is in a real text input elsewhere on
+    // the page -- Backspace while typing must never be hijacked into
+    // deleting a chart drawing just because one happens to be selected.
+    const onKeyDown = (e: KeyboardEvent) => {
+      const chart = chartRef.current;
+      if (!chart) return;
+      if (e.key === "Escape" && drawingOverlayIdRef.current) {
+        try {
+          chart.removeOverlay?.(drawingOverlayIdRef.current);
+        } catch {
+          // ignore
+        }
+        drawingOverlayIdRef.current = null;
+        return;
+      }
+      if (e.key === "Delete" || e.key === "Backspace") {
+        const target = e.target as HTMLElement | null;
+        if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) return;
+        if (!selectedOverlayIdRef.current) return;
+        try {
+          chart.removeOverlay?.(selectedOverlayIdRef.current);
+        } catch {
+          // ignore
+        }
+        selectedOverlayIdRef.current = null;
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+
     return () => {
       window.removeEventListener("resize", onResize);
+      window.removeEventListener("keydown", onKeyDown);
       containerObserver.disconnect();
       el.removeEventListener("contextmenu", onContextMenu);
+      el.removeEventListener("click", onClickPersist);
+      if (persistAfterClickTimer) clearTimeout(persistAfterClickTimer);
       try {
         chart?.unsubscribeAction?.(ActionType.OnZoom, onChartAction);
         chart?.unsubscribeAction?.(ActionType.OnScroll, onChartAction);
@@ -198,6 +385,40 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
       // ignore
     }
   }, [digits]);
+
+  // chart-polish round -- swaps in the drawings persisted for this
+  // symbol+timeframe (localStorage, see storageKey/persistDrawings
+  // above) and clears whatever the previous symbol+timeframe had drawn.
+  // Also the effect that runs once on mount to restore a page reload's
+  // own prior session, since userOverlayIdsRef starts empty either way.
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart) return;
+    try {
+      userOverlayIdsRef.current.forEach((id) => chart.removeOverlay?.(id));
+    } catch {
+      // ignore
+    }
+    userOverlayIdsRef.current = [];
+    selectedOverlayIdRef.current = null;
+    drawingOverlayIdRef.current = null;
+
+    try {
+      const raw = window.localStorage.getItem(storageKey());
+      if (!raw) return;
+      const saved = JSON.parse(raw) as Array<{ name: string; points: unknown; styles: unknown; lock?: boolean }>;
+      const ids: string[] = [];
+      for (const drawing of saved) {
+        const id = chart.createOverlay?.({ ...drawing, ...overlayLifecycleCallbacks() });
+        if (typeof id === "string") ids.push(id);
+      }
+      userOverlayIdsRef.current = ids;
+    } catch {
+      // malformed/unavailable storage -- start with no drawings for this
+      // symbol+timeframe rather than crash the chart over it
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [symbol, timeframe]);
 
   useEffect(() => {
     const chart = chartRef.current;
@@ -267,36 +488,6 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
     }
   }, [latestBar, candles]);
 
-  // hotfix/terminal-live-bugs round 2 -- the dashed "current price" line,
-  // decoupled entirely from the bar/latestBar/candles machinery above. It
-  // only ever reads currentPrice (MarketState.bid, passed straight
-  // through from WebTrader.tsx) -- if a future bug reintroduces any lag
-  // between a live tick and the bar update path, this line still shows
-  // the true current price, because it was never wired through that path
-  // to begin with.
-  const currentPriceLineIdRef = useRef<string | null>(null);
-  useEffect(() => {
-    const chart = chartRef.current;
-    if (!chart || currentPrice == null) return;
-    try {
-      if (currentPriceLineIdRef.current) {
-        chart.removeOverlay?.(currentPriceLineIdRef.current);
-        currentPriceLineIdRef.current = null;
-      }
-      const id = "current-price-line";
-      const created = chart.createOverlay?.({
-        name: "horizontalStraightLine",
-        id,
-        lock: true,
-        points: [{ value: currentPrice }],
-        styles: { line: { color: currentPriceRising === false ? "#EA3943" : "#16C784", style: "dashed", size: 1 } },
-      });
-      if (created) currentPriceLineIdRef.current = id;
-    } catch {
-      // ignore -- next tick will retry
-    }
-  }, [currentPrice, currentPriceRising]);
-
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart) return;
@@ -325,7 +516,18 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
     () => ({
       addOverlay(name) {
         try {
-          const id = chartRef.current?.createOverlay?.(name);
+          // chart-polish round -- passing an OverlayCreate object (not
+          // just the bare name string the old call site used) is what
+          // wires the new overlay into selection/Escape/Delete/
+          // persistence the same way a restored-from-storage one already
+          // is. klinecharts' own default for every multi-point tool this
+          // toolbar exposes (segment, horizontalStraightLine, rect,
+          // fibonacciLine) is already click-then-click-again, not drag --
+          // confirmed against klinecharts' own totalStep/currentStep
+          // overlay model (no host-side "drag mode" to disable), and
+          // separately by drawing each one in a real browser (see the
+          // chart-polish PR screenshots).
+          const id = chartRef.current?.createOverlay?.({ name, ...overlayLifecycleCallbacks() });
           if (typeof id === "string") userOverlayIdsRef.current.push(id);
         } catch {
           // ignore
@@ -338,6 +540,9 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
           // ignore
         }
         userOverlayIdsRef.current = [];
+        selectedOverlayIdRef.current = null;
+        drawingOverlayIdRef.current = null;
+        persistDrawings();
       },
       toggleMA() {
         const chart = chartRef.current;
@@ -355,7 +560,12 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
         return maOnRef.current;
       },
     }),
-    []
+    // overlayLifecycleCallbacks/persistDrawings close over refs only
+    // (chartRef, userOverlayIdsRef, etc.), never state or props, so a
+    // fresh function identity every render doesn't make them stale --
+    // listed here only to satisfy exhaustive-deps, not because this
+    // handle actually needs to change identity when they do.
+    [overlayLifecycleCallbacks, persistDrawings]
   );
 
   return <div ref={containerRef} style={{ width: "100%", height: "100%" }} />;

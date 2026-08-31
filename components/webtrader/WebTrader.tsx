@@ -2492,7 +2492,7 @@ export default function WebTrader({
               {chartLayout === "single" ? (
                 <>
                   <div className="drawing-toolbar">
-                    <button className="draw-tool-btn" onClick={() => chartRef.current?.addOverlay("trendLine")} title="Trend line">
+                    <button className="draw-tool-btn" onClick={() => chartRef.current?.addOverlay("segment")} title="Trend line">
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="4" y1="20" x2="20" y2="4" /></svg>
                     </button>
                     <button className="draw-tool-btn" onClick={() => chartRef.current?.addOverlay("horizontalStraightLine")} title="Horizontal line">
@@ -2501,7 +2501,7 @@ export default function WebTrader({
                     <button className="draw-tool-btn" onClick={() => chartRef.current?.addOverlay("fibonacciLine")} title="Fibonacci retracement">
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="3" y1="6" x2="21" y2="6" /><line x1="3" y1="12" x2="21" y2="12" /><line x1="3" y1="18" x2="21" y2="18" /></svg>
                     </button>
-                    <button className="draw-tool-btn" onClick={() => chartRef.current?.addOverlay("rectangle")} title="Rectangle">
+                    <button className="draw-tool-btn" onClick={() => chartRef.current?.addOverlay("rect")} title="Rectangle">
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="5" width="18" height="14" rx="1" /></svg>
                     </button>
                     <button className="draw-tool-btn" onClick={() => chartRef.current?.addOverlay("simpleAnnotation")} title="Text">
@@ -2520,34 +2520,13 @@ export default function WebTrader({
                     ref={chartRef}
                     candles={candles}
                     latestBar={candles[candles.length - 1]}
-                    currentPrice={m.live ? m.bid : undefined}
-                    currentPriceRising={m.bid >= m.prevBid}
+                    symbol={activeSymbol}
+                    timeframe={currentTf}
                     digits={m.def.digits}
                     lines={chartLines}
                     onContextMenuPrice={handleChartContextMenuPrice}
                     onPanOrZoom={() => setChartContextMenu(null)}
                   />
-                  {process.env.NODE_ENV !== "production" ? (
-                    // hotfix/terminal-live-bugs round 2 -- dev-only overlay
-                    // to visually confirm the tick->last-bar sync live in a
-                    // browser, since this can't be asserted from a unit
-                    // test alone. Never rendered in a production build
-                    // (this whole branch is dead-code-eliminated by
-                    // Next.js's production bundler).
-                    <div
-                      style={{
-                        position: "absolute", bottom: 8, left: 8, zIndex: 5, pointerEvents: "none",
-                        background: "rgba(0,0,0,0.65)", color: "#fff", fontSize: 11, fontFamily: "monospace",
-                        padding: "4px 8px", borderRadius: 4, lineHeight: 1.5,
-                      }}
-                    >
-                      <div>tick.bid: {fmt(m.bid, m.def.digits)}</div>
-                      <div>bar.close ({currentTf}): {candles.length ? fmt(candles[candles.length - 1].c, m.def.digits) : "—"}</div>
-                      <div style={{ color: candles.length && candles[candles.length - 1].c !== m.bid ? "#EA3943" : "#16C784" }}>
-                        Δ: {candles.length ? fmt(m.bid - candles[candles.length - 1].c, m.def.digits) : "—"}
-                      </div>
-                    </div>
-                  ) : null}
                   {activeFeedStatus === "connecting" ? (
                     // No dark overlay, no error-toned text -- fix/
                     // realtime-sync §2's explicit "never show an error in
