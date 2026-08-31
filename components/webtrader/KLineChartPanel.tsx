@@ -3,6 +3,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 import { init, dispose, ActionType } from "klinecharts";
 import type { Candle } from "@/lib/market-simulator";
+import { isTickDebug } from "@/lib/tick-debug";
 
 export type ChartLine = {
   id: string;
@@ -82,6 +83,11 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
   const userOverlayIdsRef = useRef<string[]>([]);
   const onContextMenuPriceRef = useRef(onContextMenuPrice);
   onContextMenuPriceRef.current = onContextMenuPrice;
+  // TEMP DIAGNOSTIC -- round 4 investigation, remove before merge.
+  if (isTickDebug()) {
+    // eslint-disable-next-line no-console
+    console.log("[DIAG render]", { latestBarT: latestBar?.t, latestBarC: latestBar?.c, currentPrice, candlesLen: candles.length });
+  }
   const onPanOrZoomRef = useRef(onPanOrZoom);
   onPanOrZoomRef.current = onPanOrZoom;
 
@@ -206,6 +212,18 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
       chart.applyNewData(
         candles.map((c) => ({ timestamp: c.t, open: c.o, high: c.h, low: c.l, close: c.c, volume: 0 }))
       );
+      // TEMP DIAGNOSTIC -- round 4 investigation, remove before merge.
+      if (isTickDebug()) {
+        const list = chart.getDataList?.();
+        // eslint-disable-next-line no-console
+        console.log("[DIAG applyNewData]", {
+          sentCount: candles.length,
+          sentLastT: candles[candles.length - 1]?.t,
+          sentLastC: candles[candles.length - 1]?.c,
+          chartLastT: list?.[list.length - 1]?.timestamp,
+          chartLastC: list?.[list.length - 1]?.close,
+        });
+      }
     } catch {
       // ignore — next data update will retry
     }
@@ -229,7 +247,23 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
     if (!chart || !latestBar) return;
     try {
       chart.updateData({ timestamp: latestBar.t, open: latestBar.o, high: latestBar.h, low: latestBar.l, close: latestBar.c, volume: 0 });
-    } catch {
+      // TEMP DIAGNOSTIC -- round 4 investigation, remove before merge.
+      if (isTickDebug()) {
+        const list = chart.getDataList?.();
+        // eslint-disable-next-line no-console
+        console.log("[DIAG updateData]", {
+          sentT: latestBar.t,
+          sentC: latestBar.c,
+          chartLastT: list?.[list.length - 1]?.timestamp,
+          chartLastC: list?.[list.length - 1]?.close,
+          accepted: list?.[list.length - 1]?.close === latestBar.c,
+        });
+      }
+    } catch (err) {
+      if (isTickDebug()) {
+        // eslint-disable-next-line no-console
+        console.log("[DIAG updateData THREW]", err);
+      }
       // ignore — next tick will retry
     }
   }, [latestBar]);
@@ -242,12 +276,14 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
   // the true current price, because it was never wired through that path
   // to begin with.
   const currentPriceLineIdRef = useRef<string | null>(null);
+  const currentPriceCallCountRef = useRef(0);
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart || currentPrice == null) return;
     try {
+      let removeResult: unknown;
       if (currentPriceLineIdRef.current) {
-        chart.removeOverlay?.(currentPriceLineIdRef.current);
+        removeResult = chart.removeOverlay?.(currentPriceLineIdRef.current);
         currentPriceLineIdRef.current = null;
       }
       const id = "current-price-line";
@@ -259,7 +295,29 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
         styles: { line: { color: currentPriceRising === false ? "#EA3943" : "#16C784", style: "dashed", size: 1 } },
       });
       if (created) currentPriceLineIdRef.current = id;
-    } catch {
+      // TEMP DIAGNOSTIC -- round 4 investigation, remove before merge.
+      // Checking for an overlay-leak theory: if removeOverlay ever fails
+      // silently while createOverlay keeps succeeding with the same fixed
+      // id, klinecharts could be accumulating orphaned overlays over a
+      // long session, progressively degrading render performance --
+      // "gap grows over time" without ever hard-freezing the underlying
+      // data. Logs every call plus a running count of create/remove
+      // mismatches.
+      currentPriceCallCountRef.current += 1;
+      if (isTickDebug() && (currentPriceCallCountRef.current % 20 === 0 || !created)) {
+        // eslint-disable-next-line no-console
+        console.log("[DIAG currentPriceLine]", {
+          callCount: currentPriceCallCountRef.current,
+          removeResult,
+          created,
+          overlayCountOnPane: chart.getOverlays?.({ paneId: "candle_pane" })?.length,
+        });
+      }
+    } catch (err) {
+      if (isTickDebug()) {
+        // eslint-disable-next-line no-console
+        console.log("[DIAG currentPriceLine THREW]", err);
+      }
       // ignore -- next tick will retry
     }
   }, [currentPrice, currentPriceRising]);
