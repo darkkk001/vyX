@@ -564,27 +564,32 @@ async fn ingest_history(
     let mut bars = body.bars;
     bars.sort_by_key(|b| b.bucket_start_ms);
 
-    // Already one DB transaction for the whole batch (opened once here,
-    // committed once below) -- NOT one transaction per bar. The 3-6s a
-    // 500-bar request used to take against the EA's old 5000ms timeout
-    // (see mt5-ea/VyXTraderPriceFeed.mq5's HISTORY_BACKFILL_BAR_COUNT
-    // comment) was per-row round-trip latency to Neon within this one
-    // transaction, not per-transaction overhead -- a single batched
-    // multi-row upsert statement would cut that further but is a separate,
-    // bigger change than this fix's scope (EA bar count 500->200 + a
-    // matching 30s timeout on that one request type already brings this
-    // well within budget).
+    // One DB transaction for the whole batch (opened once here, committed
+    // once below), AND (as of this fix) two round trips inside it -- one
+    // batched multi-row upsert for every gap-fill this request produces,
+    // one for every real bar -- not one round trip per bar. The 500-bar
+    // (later 200, see mt5-ea/VyXTraderPriceFeed.mq5's
+    // HISTORY_BACKFILL_BAR_COUNT history) request that used to take 3-6s
+    // was this exact per-row round-trip cost; Contabo re-measured it at
+    // 17-25s for 1500 sequential rows under real market-open load once the
+    // EA's deep-pass counts went up (v1.34), which is what actually
+    // motivated doing this instead of just tuning bar counts/timeouts
+    // again. Every failure path below is still `?`-propagated, so at most
+    // one warn! fires per request (the handler returns on the first
+    // failure) -- unchanged from before this fix.
     //
-    // Every failure path below is `?`-propagated, so at most one of these
-    // four log lines fires per request (the handler returns on the first
-    // failure, it never keeps going to log a second) -- warn, not error,
-    // since a failed batch is retried automatically next backfill cycle
-    // (HistoryBackfillIntervalSec) rather than needing a page.
-    let mut upserted = 0usize;
-    let mut tx = state.pool.begin().await.map_err(|err| {
-        tracing::warn!(?err, "ingest_history: failed to open transaction");
-        (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
-    })?;
+    // No de-duplication of (symbol, timeframe, bucketStart) keys before
+    // the batched upserts below, unlike a generic bulk-upsert helper might
+    // need: Postgres errors if one INSERT ... ON CONFLICT statement would
+    // affect the same conflict target twice, but that can't happen here.
+    // `bars` is sorted oldest-first and CopyRates (the EA's own source)
+    // never returns two bars for the same bucket, so every authoritative
+    // bar's key is already unique; gap_fill::GapFillTracker only ever
+    // fills buckets strictly between the previous real bar and the
+    // current one, so no fill can collide with another fill or a real bar
+    // either.
+    let mut gap_fills: Vec<CandleUpdate> = Vec::new();
+    let mut authoritative: Vec<CandleUpdate> = Vec::with_capacity(bars.len());
 
     for bar in &bars {
         let Some(bucket_start) = Utc.timestamp_millis_opt(bar.bucket_start_ms).single() else {
@@ -599,18 +604,23 @@ async fn ingest_history(
             low: bar.low,
             close: bar.close,
         };
-        for fill in state.gap_fill.fill_gaps_and_record(&update) {
-            market_data::db::upsert_candle(&mut tx, &fill).await.map_err(|err| {
-                tracing::warn!(?err, "ingest_history: gap-fill upsert failed");
-                (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
-            })?;
-        }
-        market_data::db::upsert_candle_authoritative(&mut tx, &update).await.map_err(|err| {
-            tracing::warn!(?err, symbol = %body.symbol, "ingest_history: authoritative upsert failed");
-            (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
-        })?;
-        upserted += 1;
+        gap_fills.extend(state.gap_fill.fill_gaps_and_record(&update));
+        authoritative.push(update);
     }
+    let upserted = authoritative.len();
+
+    let mut tx = state.pool.begin().await.map_err(|err| {
+        tracing::warn!(?err, "ingest_history: failed to open transaction");
+        (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
+    })?;
+    market_data::db::upsert_candles_batch(&mut tx, &gap_fills).await.map_err(|err| {
+        tracing::warn!(?err, symbol = %body.symbol, "ingest_history: gap-fill batch upsert failed");
+        (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
+    })?;
+    market_data::db::upsert_candles_authoritative_batch(&mut tx, &authoritative).await.map_err(|err| {
+        tracing::warn!(?err, symbol = %body.symbol, "ingest_history: authoritative batch upsert failed");
+        (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
+    })?;
 
     tx.commit().await.map_err(|err| {
         tracing::warn!(?err, "ingest_history: commit failed");

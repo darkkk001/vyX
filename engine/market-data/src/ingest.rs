@@ -180,9 +180,12 @@ async fn flush_live_prices(pool: &PgPool, cache: &TickCache, ticks: &[Tick], sta
     let started = Instant::now();
     let result = tokio::time::timeout(DB_FLUSH_TIMEOUT, async {
         let mut tx = pool.begin().await?;
-        for tick in ticks {
-            db::upsert_live_price(&mut tx, &tick.symbol, tick.bid, tick.ask).await?;
-        }
+        // One batched round trip for the whole flush, not one per symbol
+        // -- see db::upsert_live_prices_batch's own comment.
+        let symbols: Vec<String> = ticks.iter().map(|t| t.symbol.clone()).collect();
+        let bids: Vec<_> = ticks.iter().map(|t| t.bid).collect();
+        let asks: Vec<_> = ticks.iter().map(|t| t.ask).collect();
+        db::upsert_live_prices_batch(&mut tx, &symbols, &bids, &asks).await?;
         tx.commit().await
     })
     .await;
@@ -218,7 +221,15 @@ async fn flush_candles(pool: &PgPool, cache: &TickCache, ticks: &[Tick], stats: 
     let now = Utc::now();
     let started = Instant::now();
     let result = tokio::time::timeout(DB_FLUSH_TIMEOUT, async {
-        let mut tx = pool.begin().await?;
+        // One batched round trip for the whole flush instead of one per
+        // (tick x timeframe x gap-fill) -- see db::upsert_candles_batch's
+        // own comment. Gap-fills and real updates share the same merge
+        // (GREATEST/LEAST) semantics, so they collect into one Vec and go
+        // in a single UNNEST insert; order within the batch doesn't
+        // matter the way it did as sequential single-row writes (a gap
+        // fill and the update whose gap it closes never touch the same
+        // bucket, so there's no same-batch ordering to preserve).
+        let mut all_updates = Vec::new();
         for tick in ticks {
             for update in candle_updates_for_tick(tick, now) {
                 // fix/realtime-sync §4 -- flat-fills every bucket skipped
@@ -226,15 +237,13 @@ async fn flush_candles(pool: &PgPool, cache: &TickCache, ticks: &[Tick], stats: 
                 // symbol+timeframe (a quiet period, or the engine having
                 // been down), so the chart's categorical time axis never
                 // shows a gap for anything other than a real market
-                // close. Written before `update` itself, oldest-first, so
-                // a concurrent reader never sees `update`'s bucket land
-                // before an earlier "missing" one it logically follows.
-                for fill in gap_fill.fill_gaps_and_record(&update) {
-                    db::upsert_candle(&mut tx, &fill).await?;
-                }
-                db::upsert_candle(&mut tx, &update).await?;
+                // close.
+                all_updates.extend(gap_fill.fill_gaps_and_record(&update));
+                all_updates.push(update);
             }
         }
+        let mut tx = pool.begin().await?;
+        db::upsert_candles_batch(&mut tx, &all_updates).await?;
         tx.commit().await
     })
     .await;

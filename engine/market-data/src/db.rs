@@ -30,41 +30,73 @@ fn timeframe_to_str(tf: Timeframe) -> &'static str {
     }
 }
 
-pub async fn upsert_live_price(
+/// One round trip for the whole batch via `INSERT ... SELECT FROM
+/// UNNEST(...)`, not one query per symbol -- see this module's own doc
+/// comment and upsert_candles_batch's, below, for why (Contabo measured
+/// 1500 sequential single-row upserts taking 17-25s under market-open
+/// load, well past ingest_history's 30s WebRequest timeout). Parallel
+/// slices, not `&[Tick]` (this crate doesn't otherwise depend on
+/// `protocol::Tick`, and keeping that decoupling means a future caller
+/// with its own symbol/bid/ask source doesn't need to manufacture a Tick
+/// just to call this). No-ops on an empty batch rather than issuing a
+/// pointless round trip.
+pub async fn upsert_live_prices_batch(
     tx: &mut sqlx::PgTransaction<'_>,
-    symbol: &str,
-    bid: Decimal,
-    ask: Decimal,
+    symbols: &[String],
+    bids: &[Decimal],
+    asks: &[Decimal],
 ) -> Result<(), sqlx::Error> {
+    if symbols.is_empty() {
+        return Ok(());
+    }
     sqlx::query(
         r#"
         INSERT INTO "LivePrice" (symbol, bid, ask, "updatedAt")
-        VALUES ($1, $2, $3, now())
+        SELECT symbol, bid, ask, now()
+        FROM UNNEST($1::text[], $2::numeric[], $3::numeric[]) AS t(symbol, bid, ask)
         ON CONFLICT (symbol) DO UPDATE SET
             bid = EXCLUDED.bid,
             ask = EXCLUDED.ask,
             "updatedAt" = now()
         "#,
     )
-    .bind(symbol)
-    .bind(bid)
-    .bind(ask)
+    .bind(symbols)
+    .bind(bids)
+    .bind(asks)
     .execute(&mut **tx)
     .await?;
     Ok(())
 }
 
-/// Ported 1:1 from lib/price-feed.ts's `candleUpserts` SQL — `open` is
-/// only set on insert (never touched by the `DO UPDATE`), `high`/`low`
-/// widen via GREATEST/LEAST, `close` always takes the latest tick.
-pub async fn upsert_candle(
+/// Batched port of the tick-aggregation upsert (ported 1:1 from
+/// lib/price-feed.ts's `candleUpserts` SQL, now via `UNNEST` instead of
+/// one row at a time -- same reasoning as upsert_live_prices_batch above).
+/// `open` is only set on insert (never touched by the `DO UPDATE`),
+/// `high`/`low` widen via GREATEST/LEAST, `close` always takes the latest
+/// tick. Every current producer of `CandleUpdate` destined for this
+/// function (candle_updates_for_tick, gap_fill::fill_gaps_and_record) sets
+/// open == high == low == close already -- a single point-in-time
+/// observation, not a bar -- so this binds `open` for all three of
+/// high/low/close, matching the single-row version's own binding exactly
+/// rather than trusting fields nothing currently varies.
+pub async fn upsert_candles_batch(
     tx: &mut sqlx::PgTransaction<'_>,
-    update: &CandleUpdate,
+    updates: &[CandleUpdate],
 ) -> Result<(), sqlx::Error> {
+    if updates.is_empty() {
+        return Ok(());
+    }
+    let symbols: Vec<&str> = updates.iter().map(|u| u.symbol.as_str()).collect();
+    let timeframes: Vec<&str> = updates.iter().map(|u| timeframe_to_str(u.timeframe)).collect();
+    let bucket_starts: Vec<chrono::DateTime<chrono::Utc>> = updates.iter().map(|u| u.bucket_start).collect();
+    let prices: Vec<Decimal> = updates.iter().map(|u| u.open).collect();
+
     sqlx::query(
         r#"
         INSERT INTO "Candle" (symbol, timeframe, "bucketStart", open, high, low, close, "updatedAt")
-        VALUES ($1, $2::"CandleTimeframe", $3, $4, $4, $4, $4, now())
+        SELECT symbol, timeframe::"CandleTimeframe", bucket_start, price, price, price, price, now()
+        FROM UNNEST($1::text[], $2::text[], $3::timestamptz[], $4::numeric[])
+            AS t(symbol, timeframe, bucket_start, price)
         ON CONFLICT (symbol, timeframe, "bucketStart") DO UPDATE SET
             high = GREATEST("Candle".high, EXCLUDED.high),
             low = LEAST("Candle".low, EXCLUDED.low),
@@ -72,10 +104,10 @@ pub async fn upsert_candle(
             "updatedAt" = now()
         "#,
     )
-    .bind(&update.symbol)
-    .bind(timeframe_to_str(update.timeframe))
-    .bind(update.bucket_start)
-    .bind(update.open)
+    .bind(&symbols)
+    .bind(&timeframes)
+    .bind(&bucket_starts)
+    .bind(&prices)
     .execute(&mut **tx)
     .await?;
     Ok(())
@@ -83,14 +115,21 @@ pub async fn upsert_candle(
 
 /// fix/realtime-sync §4 -- the EA's periodic CopyRates backfill
 /// (mt5-ea/VyXTraderPriceFeed.mq5) hands over a broker's own true OHLC
-/// for a bucket, not a single incremental tick -- unlike upsert_candle
-/// above (correct for tick-by-tick aggregation: GREATEST/LEAST widen
-/// high/low as more ticks land in an still-open bucket, and `open` is
-/// fixed at the bucket's first tick), a backfilled bar must REPLACE
-/// whatever's there wholesale. Using upsert_candle's merge semantics
+/// for a bucket, not a single incremental tick -- unlike
+/// upsert_candles_batch above (correct for tick-by-tick aggregation:
+/// GREATEST/LEAST widen high/low as more ticks land in a still-open
+/// bucket, and `open` is fixed at the bucket's first tick), a backfilled
+/// bar must REPLACE whatever's there wholesale. Using the merge semantics
 /// here would be wrong in both directions: GREATEST/LEAST could leave a
 /// stale, too-wide high/low from a previous bad aggregate instead of the
 /// broker's real one, and `open` would never correct itself at all.
+///
+/// Batched the same way and for the same reason as the two functions
+/// above -- this is the specific query the Contabo measurement (1500
+/// sequential rows, 17-25s) was taken against: `ingest_history` used to
+/// call the single-row version of this once per bar inside one
+/// transaction, meaning the transaction was one but the round trips
+/// weren't. One call here now covers an entire request's bars.
 ///
 /// In practice this rarely overwrites live-aggregated data at all: the
 /// tick path only ever writes to the CURRENTLY open bucket for a given
@@ -100,14 +139,27 @@ pub async fn upsert_candle(
 /// last for a given historical bucket wins," which for real historical
 /// buckets is always the backfill (broker bars beat our aggregates, per
 /// this fix's own name for the rule).
-pub async fn upsert_candle_authoritative(
+pub async fn upsert_candles_authoritative_batch(
     tx: &mut sqlx::PgTransaction<'_>,
-    update: &CandleUpdate,
+    updates: &[CandleUpdate],
 ) -> Result<(), sqlx::Error> {
+    if updates.is_empty() {
+        return Ok(());
+    }
+    let symbols: Vec<&str> = updates.iter().map(|u| u.symbol.as_str()).collect();
+    let timeframes: Vec<&str> = updates.iter().map(|u| timeframe_to_str(u.timeframe)).collect();
+    let bucket_starts: Vec<chrono::DateTime<chrono::Utc>> = updates.iter().map(|u| u.bucket_start).collect();
+    let opens: Vec<Decimal> = updates.iter().map(|u| u.open).collect();
+    let highs: Vec<Decimal> = updates.iter().map(|u| u.high).collect();
+    let lows: Vec<Decimal> = updates.iter().map(|u| u.low).collect();
+    let closes: Vec<Decimal> = updates.iter().map(|u| u.close).collect();
+
     sqlx::query(
         r#"
         INSERT INTO "Candle" (symbol, timeframe, "bucketStart", open, high, low, close, "updatedAt")
-        VALUES ($1, $2::"CandleTimeframe", $3, $4, $5, $6, $7, now())
+        SELECT symbol, timeframe::"CandleTimeframe", bucket_start, open, high, low, close, now()
+        FROM UNNEST($1::text[], $2::text[], $3::timestamptz[], $4::numeric[], $5::numeric[], $6::numeric[], $7::numeric[])
+            AS t(symbol, timeframe, bucket_start, open, high, low, close)
         ON CONFLICT (symbol, timeframe, "bucketStart") DO UPDATE SET
             open = EXCLUDED.open,
             high = EXCLUDED.high,
@@ -116,13 +168,13 @@ pub async fn upsert_candle_authoritative(
             "updatedAt" = now()
         "#,
     )
-    .bind(&update.symbol)
-    .bind(timeframe_to_str(update.timeframe))
-    .bind(update.bucket_start)
-    .bind(update.open)
-    .bind(update.high)
-    .bind(update.low)
-    .bind(update.close)
+    .bind(&symbols)
+    .bind(&timeframes)
+    .bind(&bucket_starts)
+    .bind(&opens)
+    .bind(&highs)
+    .bind(&lows)
+    .bind(&closes)
     .execute(&mut **tx)
     .await?;
     Ok(())
@@ -172,5 +224,101 @@ mod tests {
         // The Rust variant is `Mn1`; the Postgres enum value is `MN1`.
         assert_eq!(timeframe_to_str(Timeframe::Mn1), "MN1");
         assert_eq!(timeframe_to_str(Timeframe::Y1), "Y1");
+    }
+
+    // Counts real Postgres round trips, not lines of Rust source -- sqlx
+    // emits a `target: "sqlx::query"` tracing event for every query it
+    // actually sends (sqlx-core's logger.rs), so installing a minimal
+    // Subscriber that counts those events around one call is a genuine
+    // assertion that the batched functions above issue one round trip
+    // regardless of row count, not a per-row loop wearing a UNNEST
+    // disguise. Needs a real DATABASE_URL -- this workspace otherwise has
+    // no live-DB test infrastructure (see this module's own doc comment
+    // on why every query here is runtime-checked, not the query! macro),
+    // so this test skips itself (prints and returns, doesn't fail) rather
+    // than requiring one in every environment `cargo test` runs in.
+    struct QueryCounter(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+    impl tracing::Subscriber for QueryCounter {
+        fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+        fn event(&self, event: &tracing::Event<'_>) {
+            if event.metadata().target() == "sqlx::query" {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        fn enter(&self, _span: &tracing::span::Id) {}
+        fn exit(&self, _span: &tracing::span::Id) {}
+    }
+
+    // Runs the given future with QueryCounter installed as the default
+    // subscriber for its duration, returning how many "sqlx::query"
+    // events fired. `current_thread` on the test itself (below) matters
+    // here: `tracing::subscriber::set_default` is thread-local, so this
+    // only sees every query the future issues if nothing hops to a
+    // different OS thread mid-`await`.
+    async fn count_sqlx_queries<F: std::future::Future>(fut: F) -> (usize, F::Output) {
+        let counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let guard = tracing::subscriber::set_default(QueryCounter(counter.clone()));
+        let output = fut.await;
+        drop(guard);
+        (counter.load(std::sync::atomic::Ordering::SeqCst), output)
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn batched_upserts_are_exactly_one_query_each_regardless_of_row_count() {
+        let Ok(database_url) = std::env::var("DATABASE_URL") else {
+            eprintln!("skipping: DATABASE_URL not set -- this test needs a real Postgres to count real round trips against");
+            return;
+        };
+        let Ok(pool) = PgPool::connect(&database_url).await else {
+            eprintln!("skipping: could not connect to DATABASE_URL");
+            return;
+        };
+        let Ok(mut tx) = pool.begin().await else {
+            eprintln!("skipping: could not open a transaction");
+            return;
+        };
+
+        // 50 rows each -- large enough that a regression back to a
+        // per-row loop would be unmistakable (50 queries, not 1). Never
+        // actually persisted: the whole transaction is rolled back below
+        // regardless of outcome, and the symbol names are obviously fake
+        // even if that somehow didn't happen.
+        let base = chrono::Utc::now();
+        let candle_updates: Vec<CandleUpdate> = (0..50i64)
+            .map(|i| CandleUpdate {
+                symbol: "TESTBATCH_QUERYCOUNT".to_string(),
+                timeframe: Timeframe::M1,
+                bucket_start: base + chrono::Duration::minutes(i),
+                open: Decimal::ONE,
+                high: Decimal::ONE,
+                low: Decimal::ONE,
+                close: Decimal::ONE,
+            })
+            .collect();
+
+        let (n, result) = count_sqlx_queries(upsert_candles_batch(&mut tx, &candle_updates)).await;
+        result.expect("upsert_candles_batch should succeed");
+        assert_eq!(n, 1, "upsert_candles_batch must issue exactly one query for 50 rows, got {n}");
+
+        let (n, result) = count_sqlx_queries(upsert_candles_authoritative_batch(&mut tx, &candle_updates)).await;
+        result.expect("upsert_candles_authoritative_batch should succeed");
+        assert_eq!(n, 1, "upsert_candles_authoritative_batch must issue exactly one query for 50 rows, got {n}");
+
+        let symbols: Vec<String> = (0..50).map(|i| format!("TESTBATCH_QUERYCOUNT_{i}")).collect();
+        let bids = vec![Decimal::ONE; 50];
+        let asks = vec![Decimal::TWO; 50];
+        let (n, result) = count_sqlx_queries(upsert_live_prices_batch(&mut tx, &symbols, &bids, &asks)).await;
+        result.expect("upsert_live_prices_batch should succeed");
+        assert_eq!(n, 1, "upsert_live_prices_batch must issue exactly one query for 50 rows, got {n}");
+
+        let _ = tx.rollback().await; // never actually persist this test's rows
     }
 }
