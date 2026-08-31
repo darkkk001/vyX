@@ -115,6 +115,12 @@ export async function middleware(request: NextRequest) {
   requestHeaders.set("x-broker-slug", broker.subdomain);
   requestHeaders.set("x-broker-tier", broker.tier);
   requestHeaders.set("x-broker-logo-url", broker.logoUrl ?? "");
+  // Phase 1 trust pack -- app/manage/(shell)/layout.tsx needs to know the
+  // current path server-side (to exempt /manage/security itself from its
+  // own requireAdmin2fa redirect, or it would loop) and the App Router
+  // gives a Server Component no built-in way to read that; middleware is
+  // the one place that already has request.nextUrl.pathname for free.
+  requestHeaders.set("x-pathname", request.nextUrl.pathname);
   requestHeaders.set("x-broker-primary-color", broker.primaryColor ?? "");
 
   return NextResponse.next({ request: { headers: requestHeaders } });

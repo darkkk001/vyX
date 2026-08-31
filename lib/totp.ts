@@ -1,6 +1,8 @@
 import "server-only";
 import crypto from "node:crypto";
+import bcrypt from "bcryptjs";
 import { getRedis } from "@/lib/redis";
+import { prisma } from "@/lib/prisma";
 
 // TOTP (RFC 6238, on top of RFC 4226's HOTP) implemented directly on
 // Node's built-in crypto rather than pulling in a library -- the
@@ -169,6 +171,70 @@ export async function peekPendingAdmin2faChallenge(token: string): Promise<Pendi
 
 export async function deletePendingAdmin2faChallenge(token: string): Promise<void> {
   await getRedis().del(pendingAdminChallengeKey(token));
+}
+
+// Phase 1 trust pack -- backup codes, a feature neither trader nor Super
+// Admin 2FA had before this (see AdminBackupCode's own schema comment).
+// 8 chars from an alphabet that drops visually-ambiguous characters
+// (0/O, 1/I/L) -- these get hand-typed from a printed/saved list, unlike
+// a TOTP code that's always freshly displayed on a phone screen.
+const BACKUP_CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+const BACKUP_CODE_LENGTH = 8;
+const BACKUP_CODE_COUNT = 6;
+const BACKUP_CODE_BCRYPT_ROUNDS = 10; // same cost as every password hash in this app (bcryptjs default)
+
+function randomBackupCode(): string {
+  let code = "";
+  for (let i = 0; i < BACKUP_CODE_LENGTH; i++) {
+    code += BACKUP_CODE_ALPHABET[crypto.randomInt(BACKUP_CODE_ALPHABET.length)];
+  }
+  // XXXX-XXXX -- purely cosmetic (easier to read/type in two groups),
+  // stripped again before hashing/verifying so formatting never affects
+  // matching.
+  return `${code.slice(0, 4)}-${code.slice(4)}`;
+}
+
+export function generateBackupCodes(count = BACKUP_CODE_COUNT): string[] {
+  return Array.from({ length: count }, randomBackupCode);
+}
+
+function normalizeBackupCode(code: string): string {
+  return code.trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
+export async function hashBackupCode(code: string): Promise<string> {
+  return bcrypt.hash(normalizeBackupCode(code), BACKUP_CODE_BCRYPT_ROUNDS);
+}
+
+export async function verifyBackupCode(code: string, hash: string): Promise<boolean> {
+  return bcrypt.compare(normalizeBackupCode(code), hash);
+}
+
+// Shared second-step verification for every admin login (Super Admin's
+// app/api/admin/login/verify-2fa, Manager/Broker Admin/Support's
+// app/api/manage/login/verify-2fa) -- tries the 6-digit TOTP code first,
+// then an unused backup code, consuming (marking usedAt) whichever
+// backup code matched. Both fields are optional on the input since a
+// client sends exactly one depending on which the admin chose to enter.
+export async function verifyAdminTwoFactorCode(
+  admin: { id: string; twoFactorSecret: string | null },
+  input: { code?: string; backupCode?: string }
+): Promise<boolean> {
+  if (input.code && admin.twoFactorSecret && verifyTotp(admin.twoFactorSecret, input.code)) {
+    return true;
+  }
+  if (input.backupCode) {
+    const unused = await prisma.adminBackupCode.findMany({
+      where: { adminId: admin.id, usedAt: null },
+    });
+    for (const candidate of unused) {
+      if (await verifyBackupCode(input.backupCode, candidate.codeHash)) {
+        await prisma.adminBackupCode.update({ where: { id: candidate.id }, data: { usedAt: new Date() } });
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 // otpauth:// URI -- what a QR code encodes. `label` should be unique per

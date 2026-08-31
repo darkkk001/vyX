@@ -5,6 +5,7 @@ import { LogoutButton } from "@/components/admin/LogoutButton";
 import { TopbarSearch } from "@/components/admin/TopbarSearch";
 import { PageHeader } from "@/components/ui/PageHeader";
 import AuditLogTable from "@/app/manage/(shell)/audit/AuditLogTable";
+import SecurityManager from "@/components/admin/SecurityManager";
 import DashboardManager from "@/app/manage/(shell)/dashboard/DashboardManager";
 import NotificationsManager from "@/app/manage/(shell)/notifications/NotificationsManager";
 import AccountsManager from "@/app/manage/(shell)/accounts/AccountsManager";
@@ -165,6 +166,7 @@ export default function App() {
         { href: "/manage/reports", label: "Reports" },
         ...(isBrokerAdmin ? [{ href: "/manage/team", label: "Staff & roles" }] : []),
         { href: "/manage/audit", label: "Audit log" },
+        { href: "/manage/security", label: "Security" },
         ...(isBrokerAdmin ? [{ href: "/manage/settings", label: "System settings" }] : []),
       ],
     },
@@ -361,6 +363,12 @@ export default function App() {
             description="Every sensitive action taken by broker staff, fully logged. Double-click a row to open what it changed."
           >
             <AuditLogTable />
+          </Section>
+        );
+      case "/manage/security":
+        return (
+          <Section maxWidth="max-w-[720px]" title="Security" description="Two-factor authentication for your own backoffice login.">
+            <SecurityManager />
           </Section>
         );
       case "/manage/settings":

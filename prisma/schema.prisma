@@ -209,6 +209,12 @@ model Broker {
   status       BrokerStatus @default(ACTIVE)
   // See ExecutionEngine's own doc comment -- currently decorative.
   executionEngine ExecutionEngine @default(LEGACY)
+  // Phase 1 trust pack -- when true, any AdminUser for this broker
+  // (MANAGER/BROKER_ADMIN/SUPPORT) without twoFactorEnabled is forced
+  // through 2FA setup on next login before reaching the manage shell
+  // (see app/manage/(shell)/layout.tsx's own check). Does not affect
+  // Super Admin (brokerId null -- this field is meaningless there).
+  requireAdmin2fa Boolean @default(false)
   // Max open positions an account may hold at once, across all symbols.
   // Null = no limit — see docs/risk-engine.md §2.1 step 5.
   maxOpenPositionsPerAccount Int?
@@ -327,8 +333,30 @@ model AdminUser {
   markedTxns     Transaction[]  @relation("TransactionMarkedBy")
   auditLogs      AuditLog[]     @relation("AuditLogActor")
   closedPosition Position[]     @relation("PositionClosedBy")
+  backupCodes    AdminBackupCode[]
 
   @@index([brokerId])
+}
+
+// 2FA backup codes (Phase 1 trust pack) -- issued 6 at a time the moment
+// an AdminUser's 2FA is actually confirmed (app/api/admin/two-factor/
+// confirm), shown once in that response, never retrievable again.
+// codeHash is bcrypt, same as AdminUser.passwordHash -- these are
+// high-entropy generated codes, not user-chosen secrets, but hashing
+// them the same way as every other credential in this schema means one
+// less thing to reason about differently. usedAt null = still valid;
+// each code is consumed (usedAt set) the moment it's used to complete a
+// login, never deleted, so "was this code already used" survives a
+// re-generation cycle's own delete-then-recreate.
+model AdminBackupCode {
+  id          String    @id @default(cuid())
+  adminId     String
+  adminUser   AdminUser @relation(fields: [adminId], references: [id], onDelete: Cascade)
+  codeHash    String
+  usedAt      DateTime? @db.Timestamptz(3)
+  createdAt   DateTime  @default(now()) @db.Timestamptz(3)
+
+  @@index([adminId])
 }
 
 // ─────────────────────────────────────────────────────────────────────────

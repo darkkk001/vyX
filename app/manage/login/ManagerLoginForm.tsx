@@ -9,7 +9,7 @@ import { Alert } from "@/components/ui/Alert";
 import { Checkbox } from "@/components/ui/Checkbox";
 import TwoPanelAuthShell, { twoPanelAuthShellStyles as styles } from "@/components/admin/TwoPanelAuthShell";
 
-type View = "signin" | "forgot" | "forgotSent" | "success";
+type View = "signin" | "twoFactor" | "forgot" | "forgotSent" | "success";
 
 // Portable core -- no next/navigation dependency, same "extract the
 // router dependency out" split as TradeLoginForm.tsx/NextTradeLoginForm.tsx
@@ -42,6 +42,16 @@ export default function ManagerLoginForm({
   const [forgotNote, setForgotNote] = useState("");
   const [forgotSubmitting, setForgotSubmitting] = useState(false);
 
+  // Two-factor step -- mirrors TradeLoginForm.tsx's own pendingToken
+  // handoff (see that component's comment) for the trader login, ported
+  // here for Manager/Broker Admin/Support (Phase 1 trust pack). useBackupCode
+  // toggles which field the single input below actually submits -- POST
+  // /api/manage/login/verify-2fa accepts either `code` or `backupCode`,
+  // never both at once.
+  const [pendingToken, setPendingToken] = useState<string | null>(null);
+  const [twoFactorCode, setTwoFactorCode] = useState("");
+  const [useBackupCode, setUseBackupCode] = useState(false);
+
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
     if (!email.trim() || !password) {
@@ -70,8 +80,43 @@ export default function ManagerLoginForm({
       return;
     }
 
+    const body = await response.json();
+    if (body.requiresTwoFactor) {
+      setPendingToken(body.pendingToken);
+      setView("twoFactor");
+      return;
+    }
+
     // Brief real confirmation before the redirect, not a fake delay --
     // matches how the credential check itself already took a moment.
+    setView("success");
+    setTimeout(onAuthenticated, 500);
+  }
+
+  async function handleVerifyTwoFactor(event: React.FormEvent) {
+    event.preventDefault();
+    if (!pendingToken) return;
+    setSubmitting(true);
+    setError(null);
+
+    const response = await fetch("/api/manage/login/verify-2fa", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        pendingToken,
+        remember,
+        ...(useBackupCode ? { backupCode: twoFactorCode } : { code: twoFactorCode }),
+      }),
+    });
+
+    setSubmitting(false);
+
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      setError(body.error ?? "verification failed");
+      return;
+    }
+
     setView("success");
     setTimeout(onAuthenticated, 500);
   }
@@ -100,6 +145,54 @@ export default function ManagerLoginForm({
           <h1 className="text-[20px] font-bold tracking-tight text-[var(--text-1)]">You&apos;re in</h1>
           <p className="mt-1.5 text-[12.5px] text-[var(--text-3)]">Redirecting you to the dashboard…</p>
         </div>
+      ) : view === "twoFactor" ? (
+        <form onSubmit={handleVerifyTwoFactor} className={styles.step}>
+          <h1 className="text-[20px] font-bold tracking-tight text-[var(--text-1)]">Two-factor verification</h1>
+          <p className="mb-7 mt-1.5 text-[12.5px] leading-[1.5] text-[var(--text-3)]">
+            {useBackupCode ? "Enter one of your saved backup codes." : "Enter the 6-digit code from your authenticator app."}
+          </p>
+          {error ? (
+            <div className="mb-4">
+              <Alert tone="danger">{error}</Alert>
+            </div>
+          ) : null}
+          <div className="mb-6">
+            <FormField label={useBackupCode ? "Backup code" : "6-digit code"}>
+              <Input
+                inputMode={useBackupCode ? "text" : "numeric"}
+                autoComplete="one-time-code"
+                placeholder={useBackupCode ? "XXXX-XXXX" : "123456"}
+                maxLength={useBackupCode ? 9 : 6}
+                mono
+                autoFocus
+                value={twoFactorCode}
+                onChange={(e) => setTwoFactorCode(useBackupCode ? e.target.value.toUpperCase() : e.target.value.replace(/\D/g, ""))}
+                required
+                className="text-center tracking-[4px]"
+              />
+            </FormField>
+          </div>
+          <Button
+            type="submit"
+            variant="primary"
+            loading={submitting}
+            disabled={useBackupCode ? twoFactorCode.length < 8 : twoFactorCode.length !== 6}
+            className="w-full"
+          >
+            {submitting ? "Verifying..." : "Verify"}
+          </Button>
+          <button
+            type="button"
+            className="mt-3 w-full text-center text-[11.5px] font-medium text-[var(--accent)] hover:underline"
+            onClick={() => {
+              setUseBackupCode((v) => !v);
+              setTwoFactorCode("");
+              setError(null);
+            }}
+          >
+            {useBackupCode ? "Use authenticator code instead" : "Use a backup code instead"}
+          </button>
+        </form>
       ) : view === "forgotSent" ? (
         <div className={styles.step}>
           <div className={styles.successIcon}>

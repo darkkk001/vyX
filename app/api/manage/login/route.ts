@@ -3,6 +3,7 @@ import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
 import { createSessionToken, SESSION_COOKIE_NAME, sessionCookieOptions } from "@/lib/auth";
 import { checkRateLimit } from "@/lib/rate-limit";
+import { issuePendingAdmin2faChallenge } from "@/lib/totp";
 
 // Manager's own login route, not app/api/admin/login/route.ts — that one
 // has no broker-match check (fine for Super Admin, which always runs on
@@ -46,7 +47,12 @@ export async function POST(request: NextRequest) {
   if (!admin || admin.status !== "ACTIVE") {
     return invalid();
   }
-  if (admin.role !== "MANAGER" && admin.role !== "BROKER_ADMIN") {
+  // Phase 1 trust pack -- SUPPORT added. It previously had no login route
+  // at all (see AdminUser.twoFactorEnabled's old schema comment, "SUPPORT
+  // (no login route)") despite existing as an assignable role in the
+  // admins CRUD -- 2FA being asked for on a role that could never log in
+  // wouldn't mean anything.
+  if (admin.role !== "MANAGER" && admin.role !== "BROKER_ADMIN" && admin.role !== "SUPPORT") {
     return invalid();
   }
   if (!requestBrokerId || admin.brokerId !== requestBrokerId) {
@@ -56,6 +62,17 @@ export async function POST(request: NextRequest) {
   const passwordMatches = await bcrypt.compare(password, admin.passwordHash);
   if (!passwordMatches) {
     return invalid();
+  }
+
+  // Password alone isn't enough once 2FA is turned on -- issue a
+  // short-lived pending challenge instead of a real session; POST
+  // /api/manage/login/verify-2fa is the only thing that can turn it into
+  // one. Mirrors app/api/admin/login's identical gate for Super Admin
+  // (issuePendingAdmin2faChallenge is keyed by adminId alone, already
+  // generic across every admin role -- see its own comment).
+  if (admin.twoFactorEnabled) {
+    const pendingToken = await issuePendingAdmin2faChallenge({ adminId: admin.id });
+    return NextResponse.json({ requiresTwoFactor: true, pendingToken });
   }
 
   const token = await createSessionToken({ adminId: admin.id, role: admin.role, brokerId: admin.brokerId }, remember);
