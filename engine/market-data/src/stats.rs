@@ -64,6 +64,18 @@ pub struct FeedStats {
     // ambiguous (offset of what, from what?).
     last_mono_to_utc_offset_ms: AtomicI64,
     last_rtt_ms: AtomicI64,
+    // hotfix/terminal-live-bugs round 3 -- async-nats already logs
+    // "event: slow consumers for subscription {sid}" via its own
+    // unconditional tracing::info! on every Event::SlowConsumer (see
+    // async-nats' connect() event loop), which is how 213,482 of these
+    // showed up in engine.log with nothing on our side ever having wired
+    // up an event_callback. That's log noise, not a metric -- this
+    // counter is fed from a real event_callback (order_management::
+    // events::connect) so a slow-consumer streak up in feed-stats
+    // *before* it starts silently dropping ticks (a full per-subscription
+    // channel drops the message, it never queues), not just after someone
+    // greps the log.
+    nats_slow_consumer_total: AtomicU64,
 }
 
 impl FeedStats {
@@ -85,6 +97,7 @@ impl FeedStats {
             has_clock_info: AtomicBool::new(false),
             last_mono_to_utc_offset_ms: AtomicI64::new(0),
             last_rtt_ms: AtomicI64::new(0),
+            nats_slow_consumer_total: AtomicU64::new(0),
         }
     }
 
@@ -130,6 +143,10 @@ impl FeedStats {
 
     pub fn record_nats_publish_success(&self) {
         self.nats_publish_success_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_nats_slow_consumer(&self) {
+        self.nats_slow_consumer_total.fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn record_clock_info(&self, offset_ms: i64, rtt_ms: i64) {
@@ -212,6 +229,7 @@ impl FeedStats {
                 .has_clock_info
                 .load(Ordering::Relaxed)
                 .then(|| self.last_rtt_ms.load(Ordering::Relaxed)),
+            nats_slow_consumer_total: self.nats_slow_consumer_total.load(Ordering::Relaxed),
         }
     }
 }
@@ -251,6 +269,7 @@ pub struct FeedStatsSnapshot {
     // Renamed from clock_offset_ms for clarity on what it converts.
     pub mono_to_utc_offset_ms: Option<i64>,
     pub rtt_ms: Option<i64>,
+    pub nats_slow_consumer_total: u64,
 }
 
 #[cfg(test)]
@@ -307,6 +326,15 @@ mod tests {
         assert_eq!(snap.ea_to_engine_ms_last, Some(50));
         assert_eq!(snap.t0_invalid, 2);
         assert_eq!(snap.ticks_in, 3); // 1 real + 2 invalid-t0, all "ingested"
+    }
+
+    #[test]
+    fn nats_slow_consumer_starts_at_zero_and_accumulates() {
+        let stats = FeedStats::new();
+        assert_eq!(stats.snapshot().nats_slow_consumer_total, 0);
+        stats.record_nats_slow_consumer();
+        stats.record_nats_slow_consumer();
+        assert_eq!(stats.snapshot().nats_slow_consumer_total, 2);
     }
 
     #[test]

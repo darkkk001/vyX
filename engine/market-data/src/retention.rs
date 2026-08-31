@@ -108,6 +108,20 @@ pub fn spawn_candle_retention(pool: PgPool) {
     let m1_retention_days = retention_days_from_env("CANDLE_M1_RETENTION_DAYS", 30);
     let m5_retention_days = retention_days_from_env("CANDLE_M5_RETENTION_DAYS", 180);
 
+    // hotfix/terminal-live-bugs round 3 -- this only ever logged on
+    // completion (run_retention_pass's own info! at the end of each pass),
+    // which is up to 24h after boot for the first run and gives no way to
+    // confirm from the log alone that this task is actually scheduled with
+    // the config you think it has (e.g. after an env var change) without
+    // waiting for it to fire.
+    let first_run_at = Utc::now() + ChronoDuration::from_std(duration_until_next_run(Utc::now(), 0, 10)).unwrap_or_default();
+    tracing::info!(
+        m1_retention_days,
+        m5_retention_days,
+        next_run_at = %first_run_at.to_rfc3339(),
+        "candle retention scheduled"
+    );
+
     tokio::spawn(async move {
         loop {
             let sleep_for = duration_until_next_run(Utc::now(), 0, 10);
