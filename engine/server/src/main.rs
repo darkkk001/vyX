@@ -520,7 +520,44 @@ struct HistoryBar {
 struct HistoryBody {
     symbol: String,
     timeframe: String,
+    // The broker-server-to-UTC offset the EA used when converting
+    // MqlRates.time (hotfix/history-broker-time). Optional so an older EA
+    // build still parses instead of 400-ing -- but its absence is itself
+    // the signal that the sender predates the conversion, which
+    // assert_bars_look_like_utc reports.
+    #[serde(default)]
+    server_offset_sec: Option<i64>,
     bars: Vec<HistoryBar>,
+}
+
+/// Bars are supposed to arrive as UTC epoch ms. An EA that hasn't been
+/// updated sends the trade server's local time instead, which on
+/// Pepperstone (UTC+3) put 3,915 rows into the future on Contabo and
+/// froze the chart's last candle -- the live tick path buckets in real
+/// UTC, so klinecharts' updateData saw a timestamp hours behind the last
+/// history bar and discarded it.
+///
+/// Checked here rather than trusted because the EA is deployed by hand on
+/// a terminal nobody watches: the failure is silent, self-consistent, and
+/// only visible three hours later on a chart. A bar meaningfully in the
+/// future is the one unambiguous tell.
+fn assert_bars_look_like_utc(symbol: &str, timeframe: &str, offset_sec: Option<i64>, bars: &[HistoryBar]) {
+    const FUTURE_TOLERANCE_MS: i64 = 60 * 60 * 1000;
+
+    let Some(newest) = bars.iter().map(|b| b.bucket_start_ms).max() else {
+        return;
+    };
+    let ahead_ms = newest - Utc::now().timestamp_millis();
+    if ahead_ms > FUTURE_TOLERANCE_MS {
+        tracing::warn!(
+            symbol,
+            timeframe,
+            hours_ahead = ahead_ms as f64 / 3_600_000.0,
+            server_offset_sec = offset_sec.unwrap_or(0),
+            sender_sent_offset = offset_sec.is_some(),
+            "history bars are in the future -- the sender is almost certainly still writing broker-server time, not UTC. Stored as-is; fix the EA (>= v1.36) and re-run scripts/fix-broker-time-candles.ts"
+        );
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -563,6 +600,7 @@ async fn ingest_history(
 
     let mut bars = body.bars;
     bars.sort_by_key(|b| b.bucket_start_ms);
+    assert_bars_look_like_utc(&body.symbol, &body.timeframe, body.server_offset_sec, &bars);
 
     // One DB transaction for the whole batch (opened once here, committed
     // once below), AND (as of this fix) two round trips inside it -- one

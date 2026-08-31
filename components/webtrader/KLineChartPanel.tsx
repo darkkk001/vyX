@@ -227,12 +227,45 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart || !latestBar) return;
+
+    // hotfix/history-broker-time -- the failure this guards against was
+    // invisible from inside the chart: history bars arrived in BROKER
+    // server time (UTC+3) while latestBar's bucket was computed in real
+    // UTC, so updateData below was handed a timestamp ~3h behind the last
+    // history bar. klinecharts matches on timestamp, found nothing at or
+    // after it, and silently did nothing -- the last candle just stopped
+    // moving until a timeframe switch refetched history. No error, no
+    // throw, nothing in the console; both sides were individually
+    // self-consistent, which is why the unit tests passed too.
+    //
+    // Dev-only and loud: in production this must never spam a user's
+    // console, but in development a mismatch bigger than one bar means
+    // the two time sources have diverged again and the chart is lying.
+    // The period is derived from the history itself (gap between the last
+    // two bars) rather than taken as a prop -- this component isn't told
+    // its timeframe, and inferring it here keeps the check self-contained
+    // instead of threading a new prop through every call site for a
+    // dev-only assertion.
+    if (process.env.NODE_ENV !== "production" && candles.length >= 2) {
+      const lastHistory = candles[candles.length - 1].t;
+      const periodMs = lastHistory - candles[candles.length - 2].t;
+      const drift = Math.abs(latestBar.t - lastHistory);
+      if (periodMs > 0 && drift > periodMs) {
+        console.error(
+          `[chart] history/tick timestamp drift: last history bar ${new Date(lastHistory).toISOString()}, ` +
+            `tick bucket ${new Date(latestBar.t).toISOString()}, drift ${(drift / 3_600_000).toFixed(2)}h ` +
+            `(more than one ${periodMs / 60_000}m period). The last candle will appear frozen. ` +
+            `Most likely history is stored in broker time rather than UTC -- see scripts/fix-broker-time-candles.ts.`
+        );
+      }
+    }
+
     try {
       chart.updateData({ timestamp: latestBar.t, open: latestBar.o, high: latestBar.h, low: latestBar.l, close: latestBar.c, volume: 0 });
     } catch {
       // ignore — next tick will retry
     }
-  }, [latestBar]);
+  }, [latestBar, candles]);
 
   // hotfix/terminal-live-bugs round 2 -- the dashed "current price" line,
   // decoupled entirely from the bar/latestBar/candles machinery above. It

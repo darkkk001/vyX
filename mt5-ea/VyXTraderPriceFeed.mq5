@@ -7,7 +7,7 @@
 //| LivePrice table this EA feeds.                                    |
 //+------------------------------------------------------------------+
 #property strict
-#property version   "1.35"
+#property version   "1.36"
 
 input string ServerUrl            = "https://www.vyxtrader.com/api/internal/price-feed";
 // No default -- this file is committed to a public-ish repo. A real
@@ -152,6 +152,34 @@ long ClockOffsetMs = 0;
 long LastRttMs = 0;
 bool HasClockSync = false;
 uint lastClockSyncMs = 0;
+
+// Broker-server-time to UTC offset, in seconds (Pepperstone: +10800, i.e.
+// UTC+3). CopyRates fills MqlRates.time with the TRADE SERVER's local
+// time, not UTC -- so a bar sent straight from it lands in the engine's
+// Candle table shifted by this much. That was live on Contabo: the newest
+// stored bucketStart read 2026-08-31 13:53Z while UTC was 11:04Z, 2.81h
+// ahead, and 3,915 rows sat in the future.
+//
+// The damage was on the chart, not just in the table. History bars came
+// back at broker time while the live tick path computed its bucket in
+// real UTC, so klinecharts' updateData was handed a timestamp ~3h older
+// than the last history bar and dropped it -- the last candle simply
+// stopped moving until a timeframe switch refetched history. Both halves
+// were internally consistent, which is exactly why unit tests never
+// caught it.
+//
+// Recomputed on every clock sync, not just at init: brokers shift this by
+// an hour at DST boundaries, and a long-running terminal would otherwise
+// keep writing bars an hour out from the moment that happened.
+long BrokerOffsetSec = 0;
+
+void RefreshBrokerOffset()
+{
+   // TimeTradeServer() is the broker's clock, TimeGMT() the terminal
+   // host's idea of UTC. Both are datetime (seconds); their difference is
+   // the offset to subtract from every CopyRates timestamp.
+   BrokerOffsetSec = (long)TimeTradeServer() - (long)TimeGMT();
+}
 
 // Steady-state shallow-backfill state. lastHistoryBackfillMs == 0 means
 // "never run yet" -- OnInit's own call (StartDeepBackfill or
@@ -409,11 +437,20 @@ void SyncClockOffset()
    ClockOffsetMs = serverUtcMs - (monoBeforeMs + rttMs / 2);
    LastRttMs = rttMs;
    HasClockSync = true;
+
+   // Same cadence as the clock sync itself so a DST shift on the broker's
+   // side is picked up within ClockSyncIntervalSec instead of at the next
+   // terminal restart.
+   RefreshBrokerOffset();
 }
 
 int OnInit()
 {
    ParseSymbolMap();
+   // Before SyncClockOffset so a first backfill can't fire with a zero
+   // offset if the handshake is slow or fails; SyncClockOffset refreshes
+   // it again on every successful sync.
+   RefreshBrokerOffset();
    RefreshActiveSymbols();
    SyncClockOffset();
 
@@ -579,7 +616,12 @@ void SendHistoryBars(string canonicalSymbol, string brokerSymbol, ENUM_TIMEFRAME
    for (int i = 0; i < copied; i++)
    {
       if (i > 0) bars += ",";
-      long bucketStartMs = (long)rates[i].time * 1000;
+      // -BrokerOffsetSec converts the trade server's local bar time to
+      // UTC, which is what Candle.bucketStart is defined as everywhere
+      // else in this system (the live tick path, the gap-fill tracker,
+      // candle-gaps.ts's market-hours math). Sending it unconverted is
+      // the bug this whole hotfix exists for -- see BrokerOffsetSec.
+      long bucketStartMs = ((long)rates[i].time - BrokerOffsetSec) * 1000;
       bars += StringFormat(
          "{\"bucket_start_ms\":%I64d,\"open\":%.5f,\"high\":%.5f,\"low\":%.5f,\"close\":%.5f}",
          bucketStartMs, rates[i].open, rates[i].high, rates[i].low, rates[i].close
@@ -587,7 +629,16 @@ void SendHistoryBars(string canonicalSymbol, string brokerSymbol, ENUM_TIMEFRAME
    }
    bars += "]";
 
-   string json = "{\"symbol\":\"" + canonicalSymbol + "\",\"timeframe\":\"" + timeframeName + "\",\"bars\":" + bars + "}";
+   // server_offset_sec travels with the payload so the engine can assert
+   // the conversion actually happened rather than trusting it: a bar
+   // batch whose newest bucket still sits ~offset seconds in the future
+   // means an EA that didn't convert (an old build, most likely), and the
+   // engine can say so loudly instead of silently storing broker time
+   // again. Sent as the offset the EA USED, not as an instruction -- the
+   // engine never applies it, it only checks the arithmetic.
+   string json = "{\"symbol\":\"" + canonicalSymbol + "\",\"timeframe\":\"" + timeframeName
+      + "\",\"server_offset_sec\":" + IntegerToString(BrokerOffsetSec)
+      + ",\"bars\":" + bars + "}";
    string url = DirectServerUrl + "/internal/history";
    string headers = "Content-Type: application/json\r\nx-price-feed-secret: " + ApiSecret + "\r\n";
 
