@@ -128,6 +128,66 @@ impl GapFillTracker {
         guard.insert(key, LastBucket { start: update.bucket_start, close: update.close });
         fills
     }
+
+    /// hotfix/terminal-live-bugs round 5 -- "flat-fill written promptly,
+    /// not lazily." fill_gaps_and_record above only ever runs when a real
+    /// tick arrives, so a genuinely quiet symbol (or one whose tick rate
+    /// is slower than a bucket period) could sit with an incomplete
+    /// series for however long until the next real tick happens to land
+    /// -- a client fetching history in that window sees the hole. Called
+    /// on its own timer (see ingest::spawn_periodic_flush's sweep loop),
+    /// not from the tick path, so it needs its own read of "now" rather
+    /// than a tick's own bucket.
+    ///
+    /// Deliberately does NOT claim the bucket containing `now` itself --
+    /// that one is still open and a real tick landing in it a moment
+    /// later must still be the one to own it, not a synthetic sweep
+    /// value. Only fully-closed buckets strictly before `now`'s own
+    /// bucket are ever filled or recorded as the new "last known" point,
+    /// so a subsequent real tick's own fill_gaps_and_record call sees a
+    /// consistent, non-overlapping continuation.
+    pub fn sweep_stale_buckets(&self, now: DateTime<Utc>) -> Vec<CandleUpdate> {
+        let mut fills = Vec::new();
+        let mut guard = match self.last.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+
+        for ((symbol, timeframe), last) in guard.iter_mut() {
+            let Some(step_ms) = fixed_ms(*timeframe) else {
+                continue;
+            };
+            let now_bucket = crate::bucket_start(*timeframe, now);
+            let step = Duration::milliseconds(step_ms);
+            let mut cursor = last.start + step;
+            let carry_close = last.close;
+            let mut count = 0usize;
+            let mut advanced_to = last.start;
+
+            while cursor < now_bucket && count < MAX_GAP_FILLS_PER_TICK {
+                if is_continuously_traded(symbol) || !market_closed(cursor) {
+                    fills.push(CandleUpdate {
+                        symbol: symbol.clone(),
+                        timeframe: *timeframe,
+                        bucket_start: cursor,
+                        open: carry_close,
+                        high: carry_close,
+                        low: carry_close,
+                        close: carry_close,
+                    });
+                }
+                advanced_to = cursor;
+                cursor += step;
+                count += 1;
+            }
+
+            if advanced_to > last.start {
+                last.start = advanced_to; // close stays carry_close -- nothing real happened
+            }
+        }
+
+        fills
+    }
 }
 
 impl Default for GapFillTracker {
@@ -273,5 +333,79 @@ mod tests {
         tracker.fill_gaps_and_record(&update("EURUSD", Timeframe::M1, t0, dec!(1.1)));
         let fills = tracker.fill_gaps_and_record(&update("EURUSD", Timeframe::M1, far_future, dec!(1.2)));
         assert!(fills.len() <= MAX_GAP_FILLS_PER_TICK);
+    }
+
+    // round 5 -- "flat-fill written promptly, not lazily": these cover
+    // sweep_stale_buckets, the timer-driven counterpart to
+    // fill_gaps_and_record that doesn't wait for the next real tick.
+
+    #[test]
+    fn sweep_fills_every_closed_bucket_strictly_before_now_but_leaves_the_current_one_open() {
+        let tracker = GapFillTracker::new();
+        let t0 = Utc.with_ymd_and_hms(2026, 8, 12, 10, 0, 0).unwrap(); // Wednesday
+        tracker.fill_gaps_and_record(&update("EURUSD", Timeframe::M1, t0, dec!(1.1000)));
+
+        // 3.5 minutes later: buckets 10:01 and 10:02 are fully closed and
+        // fillable; 10:03 (the bucket containing `now`) must NOT be
+        // claimed -- a real tick landing in it moments later still owns it.
+        let now = t0 + Duration::seconds(210);
+        let fills = tracker.sweep_stale_buckets(now);
+
+        assert_eq!(fills.len(), 2);
+        assert_eq!(fills[0].bucket_start, t0 + Duration::minutes(1));
+        assert_eq!(fills[1].bucket_start, t0 + Duration::minutes(2));
+        for f in &fills {
+            assert_eq!(f.close, dec!(1.1000));
+        }
+    }
+
+    #[test]
+    fn a_real_tick_landing_in_the_bucket_the_sweep_left_open_is_not_treated_as_a_gap() {
+        let tracker = GapFillTracker::new();
+        let t0 = Utc.with_ymd_and_hms(2026, 8, 12, 10, 0, 0).unwrap();
+        tracker.fill_gaps_and_record(&update("EURUSD", Timeframe::M1, t0, dec!(1.1000)));
+
+        let now = t0 + Duration::seconds(150); // mid-way through the 10:02 bucket
+        let sweep_fills = tracker.sweep_stale_buckets(now);
+        assert_eq!(sweep_fills.len(), 1); // just 10:01
+        assert_eq!(sweep_fills[0].bucket_start, t0 + Duration::minutes(1));
+
+        // A real tick lands later within that same still-open 10:02 bucket
+        // -- candle_updates_for_tick always hands fill_gaps_and_record an
+        // already-floored bucket_start (10:02:00), never the raw tick
+        // timestamp (10:02:50), so the test must too.
+        let real_tick_bucket = t0 + Duration::minutes(2);
+        let real_fills = tracker.fill_gaps_and_record(&update("EURUSD", Timeframe::M1, real_tick_bucket, dec!(1.1050)));
+        assert!(real_fills.is_empty(), "the sweep already advanced past 10:01 -- the real tick's own bucket (10:02) is not a gap");
+    }
+
+    #[test]
+    fn sweep_produces_nothing_when_no_bucket_has_fully_closed_since_the_last_real_tick() {
+        let tracker = GapFillTracker::new();
+        let t0 = Utc.with_ymd_and_hms(2026, 8, 12, 10, 0, 0).unwrap();
+        tracker.fill_gaps_and_record(&update("EURUSD", Timeframe::M1, t0, dec!(1.1)));
+        let now = t0 + Duration::seconds(30); // still inside the same M1 bucket
+        assert!(tracker.sweep_stale_buckets(now).is_empty());
+    }
+
+    #[test]
+    fn sweep_never_fabricates_a_bar_during_a_real_weekend_close() {
+        let tracker = GapFillTracker::new();
+        let fri = Utc.with_ymd_and_hms(2026, 8, 14, 20, 58, 0).unwrap(); // Friday, just before close
+        tracker.fill_gaps_and_record(&update("EURUSD", Timeframe::H1, fri, dec!(1.1)));
+        let mon = Utc.with_ymd_and_hms(2026, 8, 17, 1, 0, 0).unwrap();
+        let fills = tracker.sweep_stale_buckets(mon);
+        for f in &fills {
+            assert!(!market_closed(f.bucket_start), "sweep produced a fill during market close: {:?}", f.bucket_start);
+        }
+    }
+
+    #[test]
+    fn sweep_ignores_pairs_it_has_never_seen_a_real_tick_for() {
+        let tracker = GapFillTracker::new();
+        // Nothing recorded at all -- sweeping must not panic or fabricate
+        // history for a symbol/timeframe with no baseline.
+        let fills = tracker.sweep_stale_buckets(Utc::now());
+        assert!(fills.is_empty());
     }
 }

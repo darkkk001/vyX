@@ -151,15 +151,83 @@ pub fn spawn_periodic_flush(
         });
     }
 
+    {
+        let pool = pool.clone();
+        let stats = stats.clone();
+        let gap_fill = gap_fill.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(candle_interval);
+            loop {
+                ticker.tick().await;
+                let dirty = cache.take_dirty_candles();
+                if dirty.is_empty() {
+                    continue;
+                }
+                flush_candles(&pool, &cache, &dirty, &stats, &gap_fill).await;
+            }
+        });
+    }
+
+    spawn_gap_sweep(pool, stats, gap_fill);
+}
+
+// hotfix/terminal-live-bugs round 5 -- "flat-fill written promptly, not
+// lazily." flush_candles above only ever gap-fills the buckets skipped
+// since the last real tick, and only runs at all when some symbol is
+// actually dirty -- a symbol with no ticks for a while (or slower than
+// GAP_SWEEP_INTERVAL) just sits with a hole until its next real tick
+// happens to land, however far off that is. This is the same
+// GapFillTracker, on its own timer, closing that hole on a schedule
+// instead of waiting on the tick stream. 10s: frequent enough that even
+// M1 (the smallest fixed timeframe) never sits more than one sweep cycle
+// behind a bucket boundary, without adding meaningful write volume (the
+// sweep only ever produces rows when a bucket has actually gone stale,
+// which is the exception, not the steady state).
+const GAP_SWEEP_INTERVAL: StdDuration = StdDuration::from_secs(10);
+
+fn spawn_gap_sweep(pool: PgPool, stats: Arc<FeedStats>, gap_fill: Arc<GapFillTracker>) {
     tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(candle_interval);
+        let mut ticker = tokio::time::interval(GAP_SWEEP_INTERVAL);
         loop {
             ticker.tick().await;
-            let dirty = cache.take_dirty_candles();
-            if dirty.is_empty() {
+            let fills = gap_fill.sweep_stale_buckets(Utc::now());
+            if fills.is_empty() {
                 continue;
             }
-            flush_candles(&pool, &cache, &dirty, &stats, &gap_fill).await;
+            let started = Instant::now();
+            let result = tokio::time::timeout(DB_FLUSH_TIMEOUT, async {
+                let mut tx = pool.begin().await?;
+                db::upsert_candles_batch(&mut tx, &fills).await?;
+                tx.commit().await
+            })
+            .await;
+            let lag_ms = started.elapsed().as_millis() as i64;
+            match result {
+                Ok(Ok(())) => stats.record_db_write(true, lag_ms),
+                Ok(Err(err)) => {
+                    stats.record_db_write(false, lag_ms);
+                    stats.record_candle_write_failure();
+                    // Not re-queued like flush_candles' own failure path --
+                    // GapFillTracker already advanced past these buckets
+                    // (sweep_stale_buckets' own doc comment), so a dropped
+                    // write here just means these specific rows stay
+                    // missing until the next sweep produces DIFFERENT
+                    // (later) buckets; it can't retry the exact same ones
+                    // without also re-deriving them from tracker state this
+                    // module doesn't expose. Logged same as every other
+                    // flush failure, rate-limited the same way.
+                    if stats.should_log_candle_failure() {
+                        tracing::warn!(?err, lag_ms, fills = fills.len(), "gap-sweep flush failed (rate-limited to 1 line/30s)");
+                    }
+                }
+                Err(_) => {
+                    stats.record_db_write(false, lag_ms);
+                    stats.record_candle_write_failure();
+                    if stats.should_log_candle_failure() {
+                        tracing::warn!(timeout_ms = DB_FLUSH_TIMEOUT.as_millis() as i64, fills = fills.len(), "gap-sweep flush timed out (rate-limited to 1 line/30s)");
+                    }
+                }
+            }
         }
     });
 }
