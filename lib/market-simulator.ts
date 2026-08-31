@@ -172,6 +172,15 @@ function applyBidAsk(m: MarketState, bid: number, ask: number, now: number) {
     if (m.lastCandleStart[tf] !== start) {
       m.lastCandleStart[tf] = start;
       candles.push({ o: m.bid, h: m.bid, l: m.bid, c: m.bid, t: start });
+      // hotfix/terminal-live-bugs #1 -- dayOpen was seeded once at
+      // createInitialMarket() to def.base (a hardcoded launch-time
+      // constant, e.g. XAUUSD's 2352.40) and never touched again, so
+      // months later against a real live price of ~4442 the header's
+      // %chg read +88.85% -- comparing today's price against a number
+      // that was never "today's open" at all. A new D1 bucket starting
+      // IS today's open, by definition, for every broker/session in this
+      // app's UTC-midnight bucketing (bucketStartMs), so resync here.
+      if (tf === "D1") m.dayOpen = m.bid;
       if (candles.length > 300) candles.shift(); // matches the chart's max zoom-out (chartZoom cap)
     } else if (candles.length) {
       // Replaces the last element with a new object instead of mutating
