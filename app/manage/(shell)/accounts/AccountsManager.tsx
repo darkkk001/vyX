@@ -26,6 +26,7 @@ export type AccountRow = {
   maxDailyLoss: string | null;
   country: string | null;
   kycStatus: "PENDING" | "APPROVED" | "REJECTED" | null;
+  mirror: { direction: "REVERSE" | "SAME"; multiplier: string } | null;
 };
 
 export type GroupOption = { id: string; name: string };
@@ -256,6 +257,11 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
                   <div className="text-xs font-normal text-[var(--text-3)]">
                     {row.fullName} — {row.email}
                   </div>
+                  {row.mirror ? (
+                    <Badge tone="accent">
+                      Mirrored: {row.mirror.direction === "REVERSE" ? "Reverse" : "Same"} ×{row.mirror.multiplier}
+                    </Badge>
+                  ) : null}
                 </TableCell>
                 <TableCell className="min-w-[70px]">{row.accountType}</TableCell>
                 <TableCell className="min-w-[90px]">{row.country ?? "—"}</TableCell>

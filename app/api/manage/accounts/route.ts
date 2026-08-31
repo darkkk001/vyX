@@ -31,35 +31,50 @@ export async function GET() {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
 
-  const accounts = await prisma.account.findMany({
-    where: { brokerId: session.brokerId! },
-    include: {
-      group: { select: { id: true, name: true } },
-      ibLinkAsClient: { select: { id: true } },
-      kycRecord: { select: { status: true } },
-    },
-    orderBy: { accountNumber: "asc" },
-  });
+  const [accounts, mirrorRules] = await Promise.all([
+    prisma.account.findMany({
+      where: { brokerId: session.brokerId! },
+      include: {
+        group: { select: { id: true, name: true } },
+        ibLinkAsClient: { select: { id: true } },
+        kycRecord: { select: { status: true } },
+      },
+      orderBy: { accountNumber: "asc" },
+    }),
+    // Client page's "Mirrored: Reverse x1" badge
+    // (docs/briefs/VYX-MIRROR-V0-BRIEF.md) -- only enabled, un-killed rules
+    // count as "this account is currently being mirrored."
+    prisma.mirrorRule.findMany({
+      where: { brokerId: session.brokerId!, enabled: true, killedAt: null },
+      select: { sourceType: true, sourceId: true, direction: true, multiplier: true },
+    }),
+  ]);
+  const mirrorByAccountId = new Map(mirrorRules.filter((r) => r.sourceType === "ACCOUNT").map((r) => [r.sourceId, r]));
+  const mirrorByGroupId = new Map(mirrorRules.filter((r) => r.sourceType === "GROUP").map((r) => [r.sourceId, r]));
 
   return NextResponse.json(
-    accounts.map((a) => ({
-      id: a.id,
-      accountNumber: a.accountNumber,
-      fullName: a.fullName,
-      email: a.email,
-      accountType: a.accountType,
-      currency: a.currency,
-      leverage: a.leverage,
-      balance: a.balance.toString(),
-      credit: a.credit.toString(),
-      status: a.status,
-      groupId: a.groupId,
-      groupName: a.group?.name ?? null,
-      hasIbLink: !!a.ibLinkAsClient,
-      maxDailyLoss: a.maxDailyLoss ? a.maxDailyLoss.toString() : null,
-      country: a.country,
-      kycStatus: a.kycRecord?.status ?? null,
-    }))
+    accounts.map((a) => {
+      const mirror = mirrorByAccountId.get(a.id) ?? (a.groupId ? mirrorByGroupId.get(a.groupId) : undefined);
+      return {
+        id: a.id,
+        accountNumber: a.accountNumber,
+        fullName: a.fullName,
+        email: a.email,
+        accountType: a.accountType,
+        currency: a.currency,
+        leverage: a.leverage,
+        balance: a.balance.toString(),
+        credit: a.credit.toString(),
+        status: a.status,
+        groupId: a.groupId,
+        groupName: a.group?.name ?? null,
+        hasIbLink: !!a.ibLinkAsClient,
+        maxDailyLoss: a.maxDailyLoss ? a.maxDailyLoss.toString() : null,
+        country: a.country,
+        kycStatus: a.kycRecord?.status ?? null,
+        mirror: mirror ? { direction: mirror.direction, multiplier: mirror.multiplier.toString() } : null,
+      };
+    })
   );
 }
 

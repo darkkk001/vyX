@@ -9,6 +9,7 @@ import { resolveBookType, applySpreadMarkup, resolveSymbolPricing, chargeCommiss
 import { checkAccountPreTradeMargin } from "@/lib/margin";
 import { recordOrderAckLatency } from "@/lib/order-latency";
 import { publishTradingEvent } from "@/lib/nats";
+import * as mirror from "@/lib/mirror";
 import {
   checkTradingHalted,
   checkSymbolTradingMode,
@@ -431,6 +432,21 @@ async function handlePlaceOrder(request: NextRequest) {
         await chargeCommission(tx, { brokerId: session.brokerId, accountId: session.accountId, positionId: position.id, commissionPerLot: pricing.commissionPerLot, volume });
         return { order, position };
       });
+      // docs/briefs/VYX-MIRROR-V0-BRIEF.md -- called after this route's own
+      // transaction has committed, never inside it: a mirror failure
+      // (margin, market closed, kill switch) must never roll back or
+      // block the client's own fill. lib/mirror.ts's onFill never throws,
+      // but the extra catch here is a deliberate second guarantee for a
+      // money-moving hook on the highest-volume order path in the app.
+      await mirror.onFill(prisma, {
+        id: result.position.id,
+        brokerId: session.brokerId,
+        accountId: session.accountId,
+        symbolId: brokerSymbol.symbolId,
+        symbolName: brokerSymbol.symbol.name,
+        side,
+        volume,
+      }).catch((err) => console.error("mirror.onFill failed", err));
       if (source === "hotkey") await logHotkeyOrder(session.brokerId, result.order.id);
       await publishTradingEvent("OrderFilled", {
         order_id: result.order.id,

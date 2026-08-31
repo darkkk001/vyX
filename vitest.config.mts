@@ -12,6 +12,11 @@ export default defineConfig({
     environment: "node",
     include: ["**/*.test.ts"],
     exclude: ["node_modules/**", "services/**", "engine/**", "desktop-tauri/**", "manager-tauri/**", "admin-tauri/**"],
+    // Default 5s is tight for lib/mirror.test.ts's live-DB-gated tests
+    // (each opens a real transaction against a remote Postgres instance) --
+    // every other test in this suite is pure/synchronous and finishes in
+    // milliseconds regardless, so raising this doesn't slow those down.
+    testTimeout: 20000,
   },
   resolve: {
     alias: {

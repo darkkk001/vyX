@@ -16,7 +16,7 @@ import TransfersManager from "@/app/manage/(shell)/transfers/TransfersManager";
 import WalletsManager from "@/app/manage/(shell)/wallets/WalletsManager";
 import IbRelationshipsManager from "@/app/manage/(shell)/ib/IbRelationshipsManager";
 import PositionsManager from "@/app/manage/(shell)/positions/PositionsManager";
-import DealingQueueManager from "@/app/manage/(shell)/dealing/DealingQueueManager";
+import DealingTabs from "@/app/manage/(shell)/dealing/DealingTabs";
 import FeedHealthManager from "@/app/manage/(shell)/feed-health/FeedHealthManager";
 import DealsManager from "@/app/manage/(shell)/deals/DealsManager";
 import SymbolConfigTable from "@/app/manage/(shell)/symbols/SymbolConfigTable";
@@ -255,8 +255,8 @@ export default function App() {
         );
       case "/manage/dealing":
         return (
-          <Section maxWidth="max-w-[1400px]" title="Dealing queue">
-            <DealingQueueManager />
+          <Section maxWidth="max-w-[1400px]" title="Dealing">
+            <DealingTabs />
           </Section>
         );
       case "/manage/feed-health":
