@@ -25,13 +25,41 @@ use std::sync::Mutex;
 // ingest.rs's own module doc) with no broker context to read that config
 // against anyway. A gap here means "the real market was shut," not
 // "this particular broker chose not to allow trading."
+//
+// hotfix/terminal-live-bugs round 2 -- production still had flat bars
+// across a real Sat/Sun close (08-29 -> 08-30), so whatever built this
+// exclusion never actually reached the Contabo binary (see the round-2
+// deploy notes: this needs a real `cargo build --release -p server` +
+// service restart, not just a git pull). While fixing that, tightened the
+// Friday boundary from hour>=22 to hour>=21 per the explicit ask: real FX
+// close is NY 17:00, which is 21:00 UTC in winter (EST) and 22:00 UTC in
+// summer (EDT) -- this picks the earlier, DST-safe bound rather than
+// tracking the actual DST transition date, so at most it skips
+// flat-filling one real trading hour (Fri 21:00-22:00 UTC) during EDT
+// months, never the reverse (never flat-fills real market-closed time).
+// A correct fix needs either a DST-aware clock or the real per-symbol
+// TradingSession config this module's own comment above already says it
+// deliberately doesn't have access to.
 fn market_closed(t: DateTime<Utc>) -> bool {
     match t.weekday() {
         Weekday::Sat => true,
-        Weekday::Fri => t.hour() >= 22,
+        Weekday::Fri => t.hour() >= 21,
         Weekday::Sun => t.hour() < 22,
         _ => false,
     }
+}
+
+// hotfix/terminal-live-bugs round 2 -- market_closed() above is a FX/
+// metals weekend rule; applying it unconditionally to every symbol was
+// itself wrong for the handful of crypto pairs this platform lists
+// (SYMBOL_DEFS in lib/market-simulator.ts), which trade continuously and
+// have no weekend close at all. This crate has no live per-symbol
+// category/session lookup (see the module doc above), so this is a static
+// allowlist matching that same client-side list -- keep it in sync if a
+// new crypto symbol is ever added. A real fix is the same TradingSession-
+// config lookup noted above, scoped per symbol instead of a hardcoded list.
+fn is_continuously_traded(symbol: &str) -> bool {
+    matches!(symbol, "BTCUSD" | "ETHUSD")
 }
 
 // Caps how many flat-fill bars a single tick can generate -- protects
@@ -81,7 +109,7 @@ impl GapFillTracker {
             let carry_close = prev.close;
             let mut count = 0usize;
             while cursor < update.bucket_start && count < MAX_GAP_FILLS_PER_TICK {
-                if !market_closed(cursor) {
+                if is_continuously_traded(&update.symbol) || !market_closed(cursor) {
                     fills.push(CandleUpdate {
                         symbol: update.symbol.clone(),
                         timeframe: update.timeframe,
@@ -159,7 +187,7 @@ mod tests {
     fn the_weekend_is_never_flat_filled() {
         let tracker = GapFillTracker::new();
         // Friday 21:00 UTC -> Monday 01:00 UTC, H1 timeframe: real market
-        // close is Friday 22:00 through Sunday 21:00 inclusive (excluded
+        // close is Friday 21:00 through Sunday 21:00 inclusive (excluded
         // below); the market is genuinely open again Sunday 22:00 UTC, so
         // Sun 22:00 / Sun 23:00 / Mon 00:00 are real fills, not weekend.
         let fri = Utc.with_ymd_and_hms(2026, 8, 14, 21, 0, 0).unwrap(); // Friday
@@ -179,6 +207,41 @@ mod tests {
                 Utc.with_ymd_and_hms(2026, 8, 17, 0, 0, 0).unwrap(),
             ]
         );
+    }
+
+    #[test]
+    fn friday_2100_to_2200_utc_is_now_treated_as_closed_too() {
+        // hotfix/terminal-live-bugs round 2 -- the boundary moved from
+        // hour>=22 to hour>=21 (DST-safe: real EST close is 21:00 UTC).
+        // Anchor the tracker's last-known bucket at Fri 20:00 so the very
+        // next hour, Fri 21:00, is the first one this test can actually
+        // observe being excluded (the anchor bucket itself is never
+        // checked against market_closed).
+        let tracker = GapFillTracker::new();
+        let fri_2000 = Utc.with_ymd_and_hms(2026, 8, 14, 20, 0, 0).unwrap();
+        let fri_2200 = Utc.with_ymd_and_hms(2026, 8, 14, 22, 0, 0).unwrap();
+        tracker.fill_gaps_and_record(&update("EURUSD", Timeframe::H1, fri_2000, dec!(1.1)));
+        let fills = tracker.fill_gaps_and_record(&update("EURUSD", Timeframe::H1, fri_2200, dec!(1.1)));
+        assert!(fills.is_empty(), "Fri 21:00 UTC should be excluded as closed, got: {:?}", fills);
+    }
+
+    #[test]
+    fn crypto_symbols_are_never_weekend_excluded() {
+        // BTCUSD/ETHUSD trade continuously -- applying the FX/metals
+        // weekend rule to them would flat-fill right past a real gap in
+        // their own history instead of leaving it as a genuine hole, the
+        // opposite of what this module exists to prevent.
+        let tracker = GapFillTracker::new();
+        let fri = Utc.with_ymd_and_hms(2026, 8, 14, 21, 0, 0).unwrap();
+        let mon = Utc.with_ymd_and_hms(2026, 8, 17, 1, 0, 0).unwrap();
+        tracker.fill_gaps_and_record(&update("BTCUSD", Timeframe::H1, fri, dec!(62000)));
+        let fills = tracker.fill_gaps_and_record(&update("BTCUSD", Timeframe::H1, mon, dec!(63000)));
+
+        // Every hour strictly between fri and mon gets filled -- none
+        // excluded for being "weekend," unlike EURUSD's equivalent test.
+        let expected_count = ((mon - fri).num_hours() - 1) as usize;
+        assert_eq!(fills.len(), expected_count);
+        assert!(fills.iter().any(|f| f.bucket_start.weekday() == Weekday::Sat));
     }
 
     #[test]

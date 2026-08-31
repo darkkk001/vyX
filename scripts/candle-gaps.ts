@@ -6,10 +6,11 @@
 // found (or a usage/connection error).
 //
 // "Market-hour" mirrors engine/market-data/src/gap_fill.rs's own
-// market_closed() exactly (Friday 22:00 UTC through Sunday 22:00 UTC is
-// a real close, not a gap) -- this script and the engine must agree on
-// what counts as "missing" or every real weekend would print as 168
-// false positives on an H1 run.
+// market_closed() exactly (Friday 21:00 UTC through Sunday 22:00 UTC is
+// a real close, not a gap -- round-2 hotfix moved this from 22:00 to
+// 21:00, the DST-safe bound) -- this script and the engine must agree on
+// what counts as "missing" or every real weekend would print as false
+// positives on an H1 run.
 import { PrismaClient, CandleTimeframe } from "@prisma/client";
 
 const FIXED_MS: Record<string, number> = {
@@ -25,7 +26,7 @@ function marketClosed(t: Date): boolean {
   const day = t.getUTCDay(); // 0 = Sunday .. 6 = Saturday
   const hour = t.getUTCHours();
   if (day === 6) return true; // Saturday, all day
-  if (day === 5) return hour >= 22; // Friday from 22:00 UTC
+  if (day === 5) return hour >= 21; // Friday from 21:00 UTC
   if (day === 0) return hour < 22; // Sunday before 22:00 UTC
   return false;
 }
