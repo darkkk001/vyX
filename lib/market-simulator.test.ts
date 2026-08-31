@@ -221,3 +221,94 @@ describe("tickMarket -- last-candle sync (bug #2: chart lagging the live tick)",
     }
   );
 });
+
+describe("tickMarket -- local gap-fill (round 5: patchy M1, missing bars mid-session)", () => {
+  const TF: Timeframe = "M1";
+
+  it("does not gap-fill the very first tick this symbol has ever seen (lastCandleStart is still the 0 sentinel)", () => {
+    const market = createInitialMarket();
+    const now = Date.UTC(2026, 7, 31, 12, 0, 0); // Monday
+    const ticked = tickMarket(market, { XAUUSD: { bid: 4400, ask: 4400.3, at: now } }, now);
+    expect(ticked.XAUUSD.candles[TF]).toHaveLength(1); // just the one real bar, no fabricated history before it
+  });
+
+  it("flat-fills every skipped minute between the last known bucket and the new tick's bucket", () => {
+    let market = createInitialMarket();
+    const t0 = Date.UTC(2026, 7, 31, 12, 0, 0); // Monday
+    market = tickMarket(market, { XAUUSD: { bid: 4400, ask: 4400.3, at: t0 } }, t0);
+
+    // Simulates the exact seam this fix targets: a history fetch (or a
+    // throttled tab) leaves lastCandleStart[tf] several minutes behind the
+    // next real tick's own bucket.
+    const t4 = t0 + 4 * 60_000; // 4 minutes later -- 3 minutes skipped
+    market = tickMarket(market, { XAUUSD: { bid: 4410, ask: 4410.3, at: t4 } }, t4);
+
+    const bars = market.XAUUSD.candles[TF];
+    expect(bars).toHaveLength(5); // t0's real bar + 3 flat-filled + t4's real bar
+    expect(bars.map((b) => b.t)).toEqual([t0, t0 + 60_000, t0 + 120_000, t0 + 180_000, t4]);
+    // Every flat-filled bar carries the last known close forward flat --
+    // same shape as engine/market-data/src/gap_fill.rs's own fills.
+    for (const bar of bars.slice(1, 4)) {
+      expect(bar.o).toBe(4400);
+      expect(bar.h).toBe(4400);
+      expect(bar.l).toBe(4400);
+      expect(bar.c).toBe(4400);
+    }
+    expect(bars[4].c).toBe(4410); // the real tick's own bar, untouched
+  });
+
+  it("never fabricates a bar during a real weekend close for a non-continuously-traded symbol", () => {
+    let market = createInitialMarket();
+    // Friday 20:58 UTC -> Monday 00:02 UTC, well past the FX/metals
+    // weekend close on both ends.
+    const fri = Date.UTC(2026, 7, 28, 20, 58, 0);
+    market = tickMarket(market, { XAUUSD: { bid: 4400, ask: 4400.3, at: fri } }, fri);
+    const mon = Date.UTC(2026, 7, 31, 0, 2, 0);
+    market = tickMarket(market, { XAUUSD: { bid: 4410, ask: 4410.3, at: mon } }, mon);
+
+    const bars = market.XAUUSD.candles[TF];
+    // Only Fri 20:58, Fri 20:59, Fri 21:00 (still <21:00 isn't reached --
+    // 20:58 -> 20:59 is the only fillable minute before the 21:00 close)
+    // and the real Monday bar should exist; nothing across the weekend.
+    for (const bar of bars) {
+      const d = new Date(bar.t);
+      const day = d.getUTCDay();
+      const hour = d.getUTCHours();
+      const isWeekendClosed = day === 6 || (day === 5 && hour >= 21) || (day === 0 && hour < 22);
+      expect(isWeekendClosed).toBe(false);
+    }
+  });
+
+  it("does fabricate bars across the weekend for a continuously-traded (CRYPTO) symbol", () => {
+    let market = createInitialMarket();
+    const fri = Date.UTC(2026, 7, 28, 23, 58, 0);
+    market = tickMarket(market, { BTCUSD: { bid: 60000, ask: 60010, at: fri } }, fri);
+    const sat = Date.UTC(2026, 7, 29, 0, 2, 0); // 4 minutes later, deep into Saturday
+    market = tickMarket(market, { BTCUSD: { bid: 60100, ask: 60110, at: sat } }, sat);
+
+    const bars = market.BTCUSD.candles[TF];
+    const saturdayBars = bars.filter((b) => new Date(b.t).getUTCDay() === 6);
+    expect(saturdayBars.length).toBeGreaterThan(0); // crypto keeps ticking through the weekend, so gap-fill must too
+  });
+
+  it("caps the number of local gap-fill bars for a pathological gap instead of fabricating thousands", () => {
+    let market = createInitialMarket();
+    const t0 = Date.UTC(2026, 7, 31, 0, 0, 0); // Monday midnight
+    market = tickMarket(market, { XAUUSD: { bid: 4400, ask: 4400.3, at: t0 } }, t0);
+    const farFuture = t0 + 10 * 86_400_000; // 10 days later (a tab asleep for over a week)
+    market = tickMarket(market, { XAUUSD: { bid: 4410, ask: 4410.3, at: farFuture } }, farFuture);
+
+    // Bounded, not the ~9,360 minutes that would otherwise separate these
+    // two ticks (10 days of M1 buckets).
+    expect(market.XAUUSD.candles[TF].length).toBeLessThan(200);
+  });
+
+  it("still respects the 300-bar cap after a multi-bar local gap-fill push", () => {
+    let market = createInitialMarket();
+    const t0 = Date.UTC(2026, 7, 31, 0, 0, 0);
+    market = tickMarket(market, { XAUUSD: { bid: 4400, ask: 4400.3, at: t0 } }, t0);
+    const later = t0 + 250 * 60_000; // 250 skipped minutes, well within the local gap-fill cap
+    market = tickMarket(market, { XAUUSD: { bid: 4410, ask: 4410.3, at: later } }, later);
+    expect(market.XAUUSD.candles[TF].length).toBeLessThanOrEqual(300);
+  });
+});

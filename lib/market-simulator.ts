@@ -171,6 +171,33 @@ export function createInitialMarket(): Record<string, MarketState> {
   return market;
 }
 
+// hotfix/terminal-live-bugs round 5 -- mirrors engine/market-data/src/
+// gap_fill.rs's market_closed() exactly (Sat all day, Fri >=21:00 UTC,
+// Sun <22:00 UTC -- the DST-safe boundary from that fix). Needed here so
+// the client's own local gap-fill (below) never paints a weekend bar the
+// server would never persist -- that would show correctly over the
+// weekend, then visibly disappear/renumber the instant the next history
+// refetch (a timeframe switch, or a fresh page load) replaces it with the
+// server's real (gap-free-over-weekends) data.
+function isMarketClosed(t: number): boolean {
+  const d = new Date(t);
+  const day = d.getUTCDay(); // 0 = Sunday .. 6 = Saturday
+  const hour = d.getUTCHours();
+  if (day === 6) return true;
+  if (day === 5) return hour >= 21;
+  if (day === 0) return hour < 22;
+  return false;
+}
+
+// Caps how many bars a single tick's local gap-fill can synthesize --
+// same reasoning as gap_fill.rs's own MAX_GAP_FILLS_PER_TICK: protects
+// against a pathological gap (a backgrounded/throttled tab resuming after
+// a long sleep) turning one tick into thousands of client-side inserts.
+// Smaller than the server's cap (500) since this only ever needs to cover
+// the seam between a history fetch and the first live tick, or a single
+// tab's own throttled-background gap -- not a multi-day catch-up.
+const MAX_LOCAL_GAP_FILLS_PER_TICK = 120;
+
 function applyBidAsk(m: MarketState, bid: number, ask: number, now: number) {
   m.prevBid = m.bid;
   m.bid = bid;
@@ -182,6 +209,30 @@ function applyBidAsk(m: MarketState, bid: number, ask: number, now: number) {
     const start = bucketStartMs(tf, now);
     const candles = m.candles[tf];
     if (m.lastCandleStart[tf] !== start) {
+      // hotfix/terminal-live-bugs round 5 -- "client appends live bars but
+      // never backfills the small gap between history fetch and first
+      // live tick" (and the same gap re-forming any time the live path
+      // itself misses a bucket, e.g. a backgrounded tab). Before this,
+      // jumping straight from lastCandleStart[tf] to `start` silently
+      // skipped every bucket in between whenever more than one bucket
+      // boundary had passed -- the exact same class of hole gap_fill.rs
+      // already prevents server-side, just missing on this side of the
+      // seam. `lastCandleStart[tf] !== 0` guards the very first bucket
+      // this symbol ever sees (0 is createInitialMarket's sentinel, not a
+      // real previous bucket -- nothing to fill before it).
+      const stepMs = FIXED_MS[tf];
+      if (stepMs && m.lastCandleStart[tf] !== 0 && candles.length > 0) {
+        const carryClose = candles[candles.length - 1].c;
+        let cursor = m.lastCandleStart[tf] + stepMs;
+        let count = 0;
+        while (cursor < start && count < MAX_LOCAL_GAP_FILLS_PER_TICK) {
+          if (m.def.category === "CRYPTO" || !isMarketClosed(cursor)) {
+            candles.push({ o: carryClose, h: carryClose, l: carryClose, c: carryClose, t: cursor });
+          }
+          cursor += stepMs;
+          count += 1;
+        }
+      }
       m.lastCandleStart[tf] = start;
       candles.push({ o: m.bid, h: m.bid, l: m.bid, c: m.bid, t: start });
       // hotfix/terminal-live-bugs #1 -- dayOpen was seeded once at
@@ -198,7 +249,10 @@ function applyBidAsk(m: MarketState, bid: number, ask: number, now: number) {
       // API on mount/symbol-switch (resolveDayOpenFromD1 below) instead of
       // waiting on this.
       if (tf === "D1") { m.dayOpen = m.bid; m.dayOpenKnown = true; }
-      if (candles.length > 300) candles.shift(); // matches the chart's max zoom-out (chartZoom cap)
+      // A `while`, not `if` -- the local gap-fill above can push several
+      // bars in one call, not just the one real tick's bar the old single
+      // shift() assumed.
+      while (candles.length > 300) candles.shift(); // matches the chart's max zoom-out (chartZoom cap)
     } else if (candles.length) {
       // Replaces the last element with a new object instead of mutating
       // its fields in place (fix/realtime-sync §3) -- KLineChartPanel's
