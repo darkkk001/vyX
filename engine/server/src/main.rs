@@ -704,6 +704,23 @@ async fn feed_stats(State(state): State<Arc<AppState>>) -> Json<FeedStatsRespons
 /// Run concurrently via `tokio::join!` per tick (both are independent
 /// reads/writes against the same pool, safe to overlap) rather than one
 /// waiting on the other.
+///
+/// hotfix/terminal-live-bugs round 3 -- both consumers used to be
+/// `.await`ed inline (via `tokio::join!`) before this loop pulled the next
+/// message off `sub`, which meant the NATS subscription's own receive
+/// buffer only drained as fast as a full margin-monitor pass + pending-
+/// order DB round trip could complete. Production logged 213,482 "slow
+/// consumers for subscription 1" events on the previous build (a burst of
+/// ticks at 50/s outrunning that combined processing time) -- and per
+/// async-nats' own delivery loop, a slow consumer doesn't queue past its
+/// buffer, it silently *drops* the tick (see `record_nats_slow_consumer`'s
+/// doc comment). `tokio::spawn`ing each consumer per tick instead lets
+/// this loop keep calling `sub.next()` at the rate ticks actually arrive,
+/// decoupled from how long either consumer takes -- both are already
+/// documented as safe under overlapping/concurrent execution
+/// (`run_once_guarded`'s try_lock coalescing, `check_symbol_for_triggers`'s
+/// atomic per-order claim), so spawning them is not a new correctness
+/// risk, only a throughput one this already tolerated by design.
 async fn spawn_tick_driven_triggers(
     pool: PgPool,
     nats: async_nats::Client,
@@ -722,10 +739,15 @@ async fn spawn_tick_driven_triggers(
                 }
             };
             tracing::debug!(symbol = %tick.symbol, "tick-driven triggers: tick received");
-            tokio::join!(
-                order_management::monitor::run_once_guarded(&pool, &nats, thresholds, &guard),
-                order_management::pending_orders::check_symbol_for_triggers(&pool, &nats, &tick),
-            );
+
+            let (pool1, nats1, guard1) = (pool.clone(), nats.clone(), guard.clone());
+            tokio::spawn(async move {
+                order_management::monitor::run_once_guarded(&pool1, &nats1, thresholds, &guard1).await;
+            });
+            let (pool2, nats2) = (pool.clone(), nats.clone());
+            tokio::spawn(async move {
+                order_management::pending_orders::check_symbol_for_triggers(&pool2, &nats2, &tick).await;
+            });
         }
         tracing::warn!("tick-driven triggers: price.tick.* subscription ended");
     });
@@ -752,7 +774,13 @@ async fn main() {
     let pool = db::connect_pool(&database_url, db_pool_max_connections)
         .await
         .expect("failed to connect to Postgres");
-    let nats = events::connect(&nats_url).await.expect("failed to connect to NATS");
+    // Created here (moved ahead of the other feed_stats_registry uses
+    // below) so events::connect can wire its slow-consumer event_callback
+    // into the same counters /internal/feed-stats already reads.
+    let feed_stats_registry = Arc::new(FeedStats::new());
+    let nats = events::connect(&nats_url, feed_stats_registry.clone())
+        .await
+        .expect("failed to connect to NATS");
 
     // Margin monitor — see order_management::monitor's module doc. Two
     // trigger sources sharing one guard so they never run concurrently:
@@ -791,7 +819,6 @@ async fn main() {
     order_management::swap::spawn(pool.clone(), std::time::Duration::from_secs(swap_poll_interval_secs));
 
     let tick_cache = Arc::new(TickCache::new());
-    let feed_stats_registry = Arc::new(FeedStats::new());
     let symbol_activity_registry = Arc::new(SymbolActivity::new());
 
     // Periodic Postgres flush of the in-memory tick cache -- see
