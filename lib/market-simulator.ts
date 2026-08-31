@@ -40,6 +40,17 @@ export type MarketState = {
   ask: number;
   prevBid: number;
   dayOpen: number;
+  // hotfix/terminal-live-bugs #1 follow-up -- `dayOpen` itself always
+  // holds *a* number (createInitialMarket seeds it to def.base so early
+  // margin/ticket math has something to read), but that seed is never a
+  // real day's open. This flag is the actual "is dayOpen trustworthy right
+  // now" signal every %chg render must check -- true once either a live
+  // D1 bucket rollover has synced it (applyBidAsk) or WebTrader.tsx has
+  // seeded it from the real D1 history API on mount/symbol-switch
+  // (resolveDayOpenFromD1). Loading mid-day with no D1 history yet (a
+  // brand-new symbol, or the history endpoint failing) leaves this false
+  // -- %chg must show "—", never compute against the seed.
+  dayOpenKnown: boolean;
   high: number;
   low: number;
   candles: Record<Timeframe, Candle[]>;
@@ -148,6 +159,7 @@ export function createInitialMarket(): Record<string, MarketState> {
       ask: def.base + spread,
       prevBid: def.base,
       dayOpen: def.base,
+      dayOpenKnown: false,
       high: def.base,
       low: def.base,
       candles: TIMEFRAMES.reduce((acc, tf) => { acc[tf] = []; return acc; }, {} as Record<Timeframe, Candle[]>),
@@ -172,6 +184,20 @@ function applyBidAsk(m: MarketState, bid: number, ask: number, now: number) {
     if (m.lastCandleStart[tf] !== start) {
       m.lastCandleStart[tf] = start;
       candles.push({ o: m.bid, h: m.bid, l: m.bid, c: m.bid, t: start });
+      // hotfix/terminal-live-bugs #1 -- dayOpen was seeded once at
+      // createInitialMarket() to def.base (a hardcoded launch-time
+      // constant, e.g. XAUUSD's 2352.40) and never touched again, so
+      // months later against a real live price of ~4442 the header's
+      // %chg read +88.85% -- comparing today's price against a number
+      // that was never "today's open" at all. A new D1 bucket starting
+      // IS today's open, by definition, for every broker/session in this
+      // app's UTC-midnight bucketing (bucketStartMs), so resync here.
+      // Still only fires at the *next* rollover though -- a page loaded
+      // mid-day sees this constant until UTC midnight, which is why
+      // WebTrader.tsx separately seeds dayOpen from the real D1 history
+      // API on mount/symbol-switch (resolveDayOpenFromD1 below) instead of
+      // waiting on this.
+      if (tf === "D1") { m.dayOpen = m.bid; m.dayOpenKnown = true; }
       if (candles.length > 300) candles.shift(); // matches the chart's max zoom-out (chartZoom cap)
     } else if (candles.length) {
       // Replaces the last element with a new object instead of mutating
@@ -233,6 +259,26 @@ export function tickMarket(
     }
   }
   return { ...market };
+}
+
+// hotfix/terminal-live-bugs #1 follow-up -- resolves "today's D1 open"
+// from the real candle history the /api/trade/candles?tf=D1 route returns
+// (the engine now backfills real D1 bars from broker history), for
+// WebTrader.tsx to seed MarketState.dayOpen with on mount/symbol-switch,
+// instead of waiting for a live D1 bucket rollover (applyBidAsk above) to
+// fix a page that was loaded mid-day. Only trusts a row whose own bucket
+// IS the currently-open D1 bucket -- a closed prior day's bar is not
+// "today's open," it's yesterday's, so that case returns null (unknown)
+// rather than a wrong-but-plausible-looking number.
+export function resolveDayOpenFromD1(
+  rows: { bucketStart: string | number | Date; open: string | number }[],
+  now: number
+): number | null {
+  const todayStart = bucketStartMs("D1", now);
+  const todayRow = rows.find((r) => new Date(r.bucketStart).getTime() === todayStart);
+  if (!todayRow) return null;
+  const open = typeof todayRow.open === "number" ? todayRow.open : parseFloat(todayRow.open);
+  return Number.isFinite(open) ? open : null;
 }
 
 export function fmt(value: number, digits: number): string {

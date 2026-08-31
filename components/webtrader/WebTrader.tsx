@@ -7,6 +7,7 @@ import {
   tickMarket,
   feedStatusFor,
   bucketStartMs,
+  resolveDayOpenFromD1,
   fmt,
   money,
   type MarketState,
@@ -919,9 +920,7 @@ export default function WebTrader({
   // Contabo audit's ask, once ticks started arriving in real time (EA
   // direct mode, sub-second cadence) instead of the old 1s timer, a fast
   // symbol could push liveTicksRef (and therefore a re-render) far more
-  // often than the 1.5s tickMarket loop above ever consumes, which is
-  // pure wasted work, not a correctness issue -- last-write-wins is still
-  // exactly right (see tickMarket/liveTicksRef's own existing usage).
+  // often than is useful for a human-readable chart.
   const lastTickAcceptedAtRef = useRef<Record<string, number>>({});
   const MAX_TICK_HZ_PER_SYMBOL = 20;
   function acceptCoalescedTick(symbol: string, bid: number, ask: number) {
@@ -929,15 +928,29 @@ export default function WebTrader({
     const last = lastTickAcceptedAtRef.current[symbol] ?? 0;
     if (now - last < 1000 / MAX_TICK_HZ_PER_SYMBOL) return;
     lastTickAcceptedAtRef.current[symbol] = now;
-    liveTicksRef.current = { ...liveTicksRef.current, [symbol]: { bid, ask, at: serverNow() } };
+    const at = serverNow();
+    liveTicksRef.current = { ...liveTicksRef.current, [symbol]: { bid, ask, at } };
+    // hotfix/terminal-live-bugs #2 -- this used to only write liveTicksRef
+    // and wait for the 1500ms interval below to notice it, which meant a
+    // push tick (browser WS or desktop native relay) took up to 1.5s to
+    // ever reach React state -- so the header price, the chart's last
+    // candle, and the dashed last-price line all sat on a stale value for
+    // up to 1.5s at a time, wide enough on fast-moving gold to look like a
+    // multi-dollar gap. Applying it here means the chart's last-candle
+    // effect (KLineChartPanel's `[latestBar]` useEffect -- see its own
+    // comment) fires on every coalesced tick, exactly as designed, not
+    // once per interval tick.
+    setMarket((prev) => tickMarket(prev, liveTicksRef.current, at));
   }
   useEffect(() => {
-    // Fires once immediately (not just on the first 1500ms interval tick)
-    // -- fix/realtime-sync §2: the mount-to-first-tickMarket-call gap used
-    // to be a guaranteed >=1.5s window where every symbol read `live:
-    // false` no matter how fast the snapshot poll/WS actually connected,
-    // since nothing had run tickMarket yet to pick up what they'd already
-    // written into liveTicksRef.
+    // Backstop only now (fix/realtime-sync §2 originally made this the
+    // sole consumer of liveTicksRef; acceptCoalescedTick above now applies
+    // push ticks immediately) -- still needed for symbols whose only tick
+    // source is the 30s REST poll (no push feed reaching them), and to
+    // keep re-evaluating `live`/staleness even when no tick has landed
+    // for a symbol recently (tickMarket flips `live` false once a tick
+    // ages past LIVE_MAX_AGE_MS, which needs to happen on a clock, not
+    // just on receipt of a new tick).
     const tick = () => setMarket((prev) => tickMarket(prev, liveTicksRef.current, serverNow()));
     tick();
     const interval = setInterval(tick, 1500);
@@ -957,16 +970,24 @@ export default function WebTrader({
   // the low-latency case this used to be the only thing catching --
   // dealer fills, requotes, externally-created positions).
   const [connected, setConnected] = useState(true);
+  // hotfix/terminal-live-bugs #3 -- this used to be timed off this same
+  // REST poll (performance.now() around the tradeApi.prices() call below)
+  // and labeled "Ping" in the status bar, which measured an HTTP
+  // round-trip through Vercel's edge/function stack to this DB, not
+  // network latency to the Contabo gateway -- that's why it read 429ms
+  // instead of the ~120-150ms a real Karachi-to-Contabo RTT should be.
+  // Real value now comes from an app-level ping/pong on the price-tick
+  // WebSocket itself (see the effect below and services/api-gateway/src/
+  // ws.ts's registerClient) -- null/"—" whenever that socket isn't open,
+  // same "never show a wrong number" rule as dayOpen's fix above.
   const [pingMs, setPingMs] = useState<number | null>(null);
   useEffect(() => {
     let cancelled = false;
     let wasConnected = true;
     async function poll() {
-      const startedAt = performance.now();
       try {
         const rows = await tradeApi.prices();
         if (cancelled) return;
-        setPingMs(Math.round(performance.now() - startedAt));
         const next: Record<string, { bid: number; ask: number; at: number }> = {};
         const now = Date.now();
         for (const row of rows) {
@@ -997,7 +1018,6 @@ export default function WebTrader({
         // feed unreachable — keep simulating, nothing to surface to the trader
         if (wasConnected) { appendLog("Connection lost"); wasConnected = false; }
         setConnected(false);
-        setPingMs(null);
       }
       // Rides along with the price poll rather than its own interval --
       // this is the only thing that would otherwise surface a dealer's
@@ -1053,13 +1073,31 @@ export default function WebTrader({
     let cancelled = false;
     let socket: WebSocket | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let pingInterval: ReturnType<typeof setInterval> | null = null;
 
     function connect() {
       if (cancelled) return;
       const base = process.env.NEXT_PUBLIC_GATEWAY_WS_URL ?? "ws://127.0.0.1:8080";
       socket = new WebSocket(`${base}/v1/prices/stream`);
+      socket.onopen = () => {
+        // hotfix/terminal-live-bugs #3 -- app-level ping/pong over this
+        // same connection, echoed by services/api-gateway/src/ws.ts's
+        // registerClient. The browser's native WebSocket API never
+        // exposes protocol-level ping/pong frames to JS (those are
+        // handled invisibly below the API), so a real RTT to the gateway
+        // has to be a plain message the two sides agree on, not something
+        // the platform gives you for free.
+        const sendPing = () => { try { socket?.send(JSON.stringify({ type: "ping", t: performance.now() })); } catch { /* socket not open */ } };
+        sendPing();
+        pingInterval = setInterval(sendPing, 5000);
+      };
       socket.onmessage = (event) => {
         try {
+          const parsed = JSON.parse(event.data);
+          if (parsed?.type === "pong") {
+            setPingMs(Math.round(performance.now() - parsed.t));
+            return;
+          }
           // The Gateway relays the Rust engine's raw JSON unchanged --
           // bid/ask are strings there (Prisma.Decimal serialized), same
           // as tradeApi.prices()'s rows above, not the number the old
@@ -1068,7 +1106,7 @@ export default function WebTrader({
           // liveTicksRef expects a real number, so this crashed the
           // whole page the moment a live tick actually arrived --
           // dormant until the WS auth fix made that path work at all.
-          const tick = JSON.parse(event.data) as { symbol: string; bid: string | number; ask: string | number };
+          const tick = parsed as { symbol: string; bid: string | number; ask: string | number };
           const bid = Number(tick.bid);
           const ask = Number(tick.ask);
           if (!tick.symbol || !Number.isFinite(bid) || !Number.isFinite(ask)) return;
@@ -1078,6 +1116,8 @@ export default function WebTrader({
         }
       };
       socket.onclose = () => {
+        if (pingInterval) { clearInterval(pingInterval); pingInterval = null; }
+        setPingMs(null);
         if (!cancelled) reconnectTimer = setTimeout(connect, 3000);
       };
       socket.onerror = () => socket?.close();
@@ -1087,6 +1127,7 @@ export default function WebTrader({
     return () => {
       cancelled = true;
       if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (pingInterval) clearInterval(pingInterval);
       socket?.close();
     };
   }, []);
@@ -1234,6 +1275,40 @@ export default function WebTrader({
     (async () => { if (!cancelled) await seedRealCandles(activeSymbol, currentTf); })();
     return () => { cancelled = true; };
   }, [activeSymbol, currentTf, seedRealCandles]);
+
+  // hotfix/terminal-live-bugs #1 follow-up -- applyBidAsk's D1-rollover
+  // resync (lib/market-simulator.ts) only fixes dayOpen at the *next* UTC
+  // midnight; a page loaded mid-day (the actual reported case, 07:52 UTC)
+  // still compared a live price against createInitialMarket()'s launch-time
+  // seed until then. This fetches D1 history independently of whatever
+  // timeframe the chart itself is showing (a trader on M1 still needs
+  // today's D1 open) and seeds dayOpen from the real bucket -- resolved via
+  // resolveDayOpenFromD1, which only trusts a row that IS today's open
+  // bucket. Deliberately never downgrades an already-known dayOpen (e.g.
+  // one a live D1 rollover already set correctly this session) back to
+  // unknown just because this fetch found nothing -- only ever upgrades
+  // unknown -> known.
+  const seedDayOpen = useCallback(async (symbol: string) => {
+    try {
+      const rows = await tradeApi.candles(symbol, "D1");
+      const resolved = resolveDayOpenFromD1(rows, serverNow());
+      if (resolved === null) return; // no D1 bar for today yet -- leave as-is (unknown stays "—", known stays known)
+      setMarket((prev) => {
+        const ms = prev[symbol];
+        if (!ms) return prev;
+        return { ...prev, [symbol]: { ...ms, dayOpen: resolved, dayOpenKnown: true } };
+      });
+    } catch {
+      // history endpoint unreachable -- leave dayOpenKnown as-is, never
+      // fabricate a number to show
+    }
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => { if (!cancelled) await seedDayOpen(activeSymbol); })();
+    return () => { cancelled = true; };
+  }, [activeSymbol, seedDayOpen]);
 
   // Multi-chart grid: each cell seeds its own symbol+timeframe the same way
   // the focused chart does above, independently.
@@ -2203,7 +2278,7 @@ export default function WebTrader({
             <div>
               {watchlistOrder.filter((name) => name.toLowerCase().includes(watchlistFilter.toLowerCase())).map((name) => {
                 const row = market[name];
-                const changePct = ((row.bid - row.dayOpen) / row.dayOpen) * 100;
+                const changePct = row.dayOpenKnown ? ((row.bid - row.dayOpen) / row.dayOpen) * 100 : null;
                 const flash = row.bid > row.prevBid ? "up" : row.bid < row.prevBid ? "down" : "";
                 return (
                   <div
@@ -2217,7 +2292,7 @@ export default function WebTrader({
                   >
                     <span className="wl-drag-handle">⋮⋮</span>
                     <span className="wl-cell wl-symbol">{name}</span>
-                    {columnPrefs.signal ? <span className={`wl-cell wl-signal ${row.live && row.bid >= row.dayOpen ? "wl-pos" : "wl-neg"}`}>{row.live ? (row.bid >= row.dayOpen ? "▲" : "▼") : "—"}</span> : null}
+                    {columnPrefs.signal ? <span className={`wl-cell wl-signal ${row.live && row.dayOpenKnown && row.bid >= row.dayOpen ? "wl-pos" : "wl-neg"}`}>{row.live && row.dayOpenKnown ? (row.bid >= row.dayOpen ? "▲" : "▼") : "—"}</span> : null}
                     <span className="wl-cell wl-price-cell">
                       {row.live ? (
                         <span className={`wl-price mono ${flash}`}>{fmt(row.bid, row.def.digits)}</span>
@@ -2231,7 +2306,7 @@ export default function WebTrader({
                         </span>
                       ) : null}
                     </span>
-                    {columnPrefs.change ? <span className={`wl-cell mono ${changePct >= 0 ? "wl-pos" : "wl-neg"}`}>{row.live ? (changePct >= 0 ? "+" : "") + changePct.toFixed(2) + "%" : "—"}</span> : null}
+                    {columnPrefs.change ? <span className={`wl-cell mono ${changePct !== null && changePct >= 0 ? "wl-pos" : "wl-neg"}`}>{row.live && changePct !== null ? (changePct >= 0 ? "+" : "") + changePct.toFixed(2) + "%" : "—"}</span> : null}
                     {columnPrefs.spread ? <span className="wl-cell mono">{row.live ? fmt(row.ask - row.bid, row.def.digits) : "—"}</span> : null}
                     {columnPrefs.high ? <span className="wl-cell mono">{row.live ? fmt(row.high, row.def.digits) : "—"}</span> : null}
                     {columnPrefs.low ? <span className="wl-cell mono">{row.live ? fmt(row.low, row.def.digits) : "—"}</span> : null}
@@ -2345,9 +2420,16 @@ export default function WebTrader({
                     >
                       {fmt(m.bid, m.def.digits)}
                     </div>
-                    <div className="chart-change mono" style={{ background: m.bid >= m.dayOpen ? "var(--buy-bg)" : "var(--sell-bg)", color: m.bid >= m.dayOpen ? "var(--buy)" : "var(--sell)" }}>
-                      {(((m.bid - m.dayOpen) / m.dayOpen) * 100 >= 0 ? "+" : "") + (((m.bid - m.dayOpen) / m.dayOpen) * 100).toFixed(2)}%
-                    </div>
+                    {m.dayOpenKnown ? (
+                      <div className="chart-change mono" style={{ background: m.bid >= m.dayOpen ? "var(--buy-bg)" : "var(--sell-bg)", color: m.bid >= m.dayOpen ? "var(--buy)" : "var(--sell)" }}>
+                        {(((m.bid - m.dayOpen) / m.dayOpen) * 100 >= 0 ? "+" : "") + (((m.bid - m.dayOpen) / m.dayOpen) * 100).toFixed(2)}%
+                      </div>
+                    ) : (
+                      // hotfix/terminal-live-bugs #1 -- no trustworthy D1
+                      // open yet (mid-day mount, D1 history unavailable) --
+                      // "—", never a number computed against the launch seed.
+                      <div className="chart-change mono" style={{ color: "var(--text-3)" }}>—</div>
+                    )}
                     <div className="chart-spread mono">Spread {fmt(m.ask - m.bid, m.def.digits)}</div>
                     {activeFeedStatus === "stale" ? <div className="chart-spread mono">Stale</div> : null}
                   </>

@@ -118,6 +118,22 @@ export async function attachPriceStream(server: Server, natsUrl: string): Promis
   function registerClient(ws: WebSocket, brokerId: string) {
     clients.set(ws, brokerId);
     gatewayStats.wsConnectionsTotal += 1;
+    // hotfix/terminal-live-bugs #3 -- app-level ping/pong so the client can
+    // measure real RTT to this gateway over the connection it already has
+    // for ticks, instead of timing an unrelated HTTP request to Vercel
+    // (which was being mislabeled "Ping" and included the Vercel function's
+    // own cold-start/DB-roundtrip time, not network latency). The browser's
+    // native WebSocket API never surfaces protocol-level ping/pong frames
+    // to JS, so this has to be a plain echoed application message instead.
+    ws.on("message", (data) => {
+      try {
+        const parsed = JSON.parse(data.toString());
+        if (parsed?.type === "ping") ws.send(JSON.stringify({ type: "pong", t: parsed.t }));
+      } catch {
+        // not a ping frame -- this socket never expects anything else from
+        // the client, so just ignore it
+      }
+    });
     ws.on("close", () => {
       clients.delete(ws);
       gatewayStats.wsDisconnectionsTotal += 1;
