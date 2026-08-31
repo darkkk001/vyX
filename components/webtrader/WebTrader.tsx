@@ -1288,6 +1288,16 @@ export default function WebTrader({
   // one a live D1 rollover already set correctly this session) back to
   // unknown just because this fetch found nothing -- only ever upgrades
   // unknown -> known.
+  //
+  // round-2 hotfix -- this MUST also write lastCandleStart.D1 (see
+  // resolveDayOpenFromD1's own comment). The first version only patched
+  // dayOpen/dayOpenKnown, so applyBidAsk's D1-rollover check
+  // (lastCandleStart.D1, still 0 from createInitialMarket -- nothing else
+  // ever sets it unless D1 happens to be the chart's own active
+  // timeframe) treated the very next live tick as "a new D1 bucket just
+  // started" and immediately re-stamped dayOpen to that tick's own bid --
+  // which is exactly how production kept showing "+0.00%" moments after
+  // this ran.
   const seedDayOpen = useCallback(async (symbol: string) => {
     try {
       const rows = await tradeApi.candles(symbol, "D1");
@@ -1296,7 +1306,15 @@ export default function WebTrader({
       setMarket((prev) => {
         const ms = prev[symbol];
         if (!ms) return prev;
-        return { ...prev, [symbol]: { ...ms, dayOpen: resolved, dayOpenKnown: true } };
+        return {
+          ...prev,
+          [symbol]: {
+            ...ms,
+            dayOpen: resolved.open,
+            dayOpenKnown: true,
+            lastCandleStart: { ...ms.lastCandleStart, D1: resolved.bucketStart },
+          },
+        };
       });
     } catch {
       // history endpoint unreachable -- leave dayOpenKnown as-is, never
@@ -2502,11 +2520,34 @@ export default function WebTrader({
                     ref={chartRef}
                     candles={candles}
                     latestBar={candles[candles.length - 1]}
+                    currentPrice={m.live ? m.bid : undefined}
+                    currentPriceRising={m.bid >= m.prevBid}
                     digits={m.def.digits}
                     lines={chartLines}
                     onContextMenuPrice={handleChartContextMenuPrice}
                     onPanOrZoom={() => setChartContextMenu(null)}
                   />
+                  {process.env.NODE_ENV !== "production" ? (
+                    // hotfix/terminal-live-bugs round 2 -- dev-only overlay
+                    // to visually confirm the tick->last-bar sync live in a
+                    // browser, since this can't be asserted from a unit
+                    // test alone. Never rendered in a production build
+                    // (this whole branch is dead-code-eliminated by
+                    // Next.js's production bundler).
+                    <div
+                      style={{
+                        position: "absolute", bottom: 8, left: 8, zIndex: 5, pointerEvents: "none",
+                        background: "rgba(0,0,0,0.65)", color: "#fff", fontSize: 11, fontFamily: "monospace",
+                        padding: "4px 8px", borderRadius: 4, lineHeight: 1.5,
+                      }}
+                    >
+                      <div>tick.bid: {fmt(m.bid, m.def.digits)}</div>
+                      <div>bar.close ({currentTf}): {candles.length ? fmt(candles[candles.length - 1].c, m.def.digits) : "—"}</div>
+                      <div style={{ color: candles.length && candles[candles.length - 1].c !== m.bid ? "#EA3943" : "#16C784" }}>
+                        Δ: {candles.length ? fmt(m.bid - candles[candles.length - 1].c, m.def.digits) : "—"}
+                      </div>
+                    </div>
+                  ) : null}
                   {activeFeedStatus === "connecting" ? (
                     // No dark overlay, no error-toned text -- fix/
                     // realtime-sync §2's explicit "never show an error in

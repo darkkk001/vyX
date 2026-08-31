@@ -71,7 +71,7 @@ describe("resolveDayOpenFromD1 (bug #1 follow-up: mid-day mount still showed the
       { bucketStart: new Date(todayBucket - 86_400_000).toISOString(), open: "4400.00" }, // yesterday
       { bucketStart: new Date(todayBucket).toISOString(), open: "4430.10" }, // today
     ];
-    expect(resolveDayOpenFromD1(rows, now)).toBe(4430.10);
+    expect(resolveDayOpenFromD1(rows, now)).toEqual({ open: 4430.10, bucketStart: todayBucket });
   });
 
   it("returns null (unknown, show \"—\") when no row matches today's bucket -- never falls back to a stale historical open", () => {
@@ -86,6 +86,67 @@ describe("resolveDayOpenFromD1 (bug #1 follow-up: mid-day mount still showed the
   it("returns null rather than NaN on a malformed open value", () => {
     const rows = [{ bucketStart: new Date(todayBucket).toISOString(), open: "not-a-number" }];
     expect(resolveDayOpenFromD1(rows, now)).toBeNull();
+  });
+});
+
+describe("seedDayOpen contract -- does not get clobbered by the next live tick (production still showed +0.00% after the first fix)", () => {
+  // Reproduces the exact production symptom step-by-step: a mocked D1
+  // open (4430.10) that is deliberately far from the "current" tick's bid
+  // (4439.48) -- if a caller patches only dayOpen/dayOpenKnown without
+  // also writing lastCandleStart.D1 from resolveDayOpenFromD1's returned
+  // bucketStart, this test fails the same way production did: the very
+  // next tick's applyBidAsk treats lastCandleStart.D1's leftover 0 as "a
+  // new D1 bucket just started" and stamps dayOpen back to that tick's own
+  // bid, producing "+0.00%" (dayOpen === bid) instead of the real ~0.21%.
+  it("keeps the resolved D1 open intact across the next live tick once lastCandleStart.D1 is synced from resolveDayOpenFromD1's bucketStart", () => {
+    const now = Date.UTC(2026, 7, 31, 9, 24, 0);
+    const todayBucket = bucketStartMs("D1", now);
+    const rows = [{ bucketStart: new Date(todayBucket).toISOString(), open: "4430.10" }];
+    const resolved = resolveDayOpenFromD1(rows, now);
+    expect(resolved).not.toBeNull();
+
+    let market = createInitialMarket();
+    // What WebTrader.tsx's seedDayOpen does: patch dayOpen/dayOpenKnown
+    // AND lastCandleStart.D1 in one update.
+    market = {
+      ...market,
+      XAUUSD: {
+        ...market.XAUUSD,
+        dayOpen: resolved!.open,
+        dayOpenKnown: true,
+        lastCandleStart: { ...market.XAUUSD.lastCandleStart, D1: resolved!.bucketStart },
+      },
+    };
+
+    // A live tick lands moments later, at a materially different price --
+    // the mocked D1 open (4430.10) is deliberately far from this tick's
+    // bid (4439.48), so any clobbering would be obvious.
+    const tickAt = now + 500;
+    market = tickMarket(market, { XAUUSD: { bid: 4439.48, ask: 4439.78, at: tickAt } }, tickAt);
+
+    expect(market.XAUUSD.dayOpen).toBe(4430.10); // unchanged -- NOT the tick's bid
+    expect(market.XAUUSD.bid).toBe(4439.48);
+    const changePct = ((market.XAUUSD.bid - market.XAUUSD.dayOpen) / market.XAUUSD.dayOpen) * 100;
+    expect(changePct).toBeCloseTo(0.2116, 3);
+    expect(changePct).not.toBe(0);
+  });
+
+  it("regression: WITHOUT syncing lastCandleStart.D1, the next tick clobbers dayOpen to its own bid (the exact +0.00% production bug)", () => {
+    // Same setup as above, but deliberately reproducing the broken
+    // (round-1) behavior -- patching dayOpen/dayOpenKnown only, leaving
+    // lastCandleStart.D1 at its createInitialMarket() default of 0 -- to
+    // prove this test suite would have caught it.
+    const now = Date.UTC(2026, 7, 31, 9, 24, 0);
+    let market = createInitialMarket();
+    market = { ...market, XAUUSD: { ...market.XAUUSD, dayOpen: 4430.10, dayOpenKnown: true } };
+
+    const tickAt = now + 500;
+    market = tickMarket(market, { XAUUSD: { bid: 4439.48, ask: 4439.78, at: tickAt } }, tickAt);
+
+    // This is the bug: dayOpen got silently reset to the tick's own bid.
+    expect(market.XAUUSD.dayOpen).toBe(4439.48);
+    const changePct = ((market.XAUUSD.bid - market.XAUUSD.dayOpen) / market.XAUUSD.dayOpen) * 100;
+    expect(changePct).toBe(0);
   });
 });
 
@@ -134,4 +195,29 @@ describe("tickMarket -- last-candle sync (bug #2: chart lagging the live tick)",
     expect(bar.t).toBe(bucketStartMs("M1", now));
     expect(bar.t % 60_000).toBe(0);
   });
+
+  // round-2 hotfix -- production report was specifically "H1, last candle
+  // not tracking ticks" (header 4439.48 vs bar close 4435). applyBidAsk's
+  // TIMEFRAMES.forEach applies the identical logic to every timeframe --
+  // this is the same contract as the M1 tests above, parameterized over
+  // every fixed-duration timeframe this app charts, so a future change
+  // that special-cases one timeframe and silently breaks another gets
+  // caught here instead of in production again.
+  it.each(["M1", "M5", "M30", "H1", "H4", "D1"] as const)(
+    "keeps %s's last bar in sync with the live tick (same reference-change + close-match contract as M1)",
+    (tf) => {
+      let market = createInitialMarket();
+      const t0 = Date.UTC(2026, 7, 31, 9, 0, 0);
+      market = tickMarket(market, { XAUUSD: { bid: 4435.0, ask: 4435.3, at: t0 } }, t0);
+      const firstBar = market.XAUUSD.candles[tf][market.XAUUSD.candles[tf].length - 1];
+
+      const t1 = t0 + 1000; // well within every one of these bucket sizes
+      market = tickMarket(market, { XAUUSD: { bid: 4439.48, ask: 4439.78, at: t1 } }, t1);
+      const secondBar = market.XAUUSD.candles[tf][market.XAUUSD.candles[tf].length - 1];
+
+      expect(secondBar).not.toBe(firstBar);
+      expect(secondBar.c).toBe(4439.48);
+      expect(secondBar.c).toBe(market.XAUUSD.bid); // never a gap between header bid and this bar's close
+    }
+  );
 });

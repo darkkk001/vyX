@@ -37,6 +37,16 @@ type Props = {
   // silently becoming `undefined` at every call site if one is ever
   // added without it).
   latestBar?: Candle;
+  // hotfix/terminal-live-bugs round 2 -- "the dashed price line must be
+  // driven by the tick, not the bar." klinecharts' own priceMark.last
+  // (disabled below) can only ever draw from its internal kline data
+  // model's last close, which is one hop removed from the raw tick (it
+  // goes through candles[]/latestBar first) -- this prop bypasses that
+  // entirely so the line always reflects MarketState.bid directly, the
+  // exact same value the header price and watchlist row read, with no
+  // intermediate bar-update step that could lag or silently not fire.
+  currentPrice?: number;
+  currentPriceRising?: boolean;
   digits: number;
   lines: ChartLine[];
   onContextMenuPrice?: (price: number, clientX: number, clientY: number) => void;
@@ -61,7 +71,7 @@ type Props = {
 // mismatch against strict types would fail the whole build rather than
 // just this one feature at runtime.
 const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartPanel(
-  { candles, latestBar, digits, lines, onContextMenuPrice, onPanOrZoom },
+  { candles, latestBar, currentPrice, currentPriceRising, digits, lines, onContextMenuPrice, onPanOrZoom },
   ref
 ) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -97,7 +107,12 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
             noChangeWickColor: "#5A6472",
           },
           priceMark: {
-            last: { show: true, upColor: "#16C784", downColor: "#EA3943" },
+            // hotfix/terminal-live-bugs round 2 -- disabled in favor of the
+            // currentPrice-driven overlay below. This built-in line can
+            // only ever track the kline data model's own last close, which
+            // is exactly the "driven by the bar, not the tick" behavior
+            // that was reported stale relative to the header.
+            last: { show: false, upColor: "#16C784", downColor: "#EA3943" },
             high: { color: "#5A6472" },
             low: { color: "#5A6472" },
           },
@@ -218,6 +233,36 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
       // ignore — next tick will retry
     }
   }, [latestBar]);
+
+  // hotfix/terminal-live-bugs round 2 -- the dashed "current price" line,
+  // decoupled entirely from the bar/latestBar/candles machinery above. It
+  // only ever reads currentPrice (MarketState.bid, passed straight
+  // through from WebTrader.tsx) -- if a future bug reintroduces any lag
+  // between a live tick and the bar update path, this line still shows
+  // the true current price, because it was never wired through that path
+  // to begin with.
+  const currentPriceLineIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart || currentPrice == null) return;
+    try {
+      if (currentPriceLineIdRef.current) {
+        chart.removeOverlay?.(currentPriceLineIdRef.current);
+        currentPriceLineIdRef.current = null;
+      }
+      const id = "current-price-line";
+      const created = chart.createOverlay?.({
+        name: "horizontalStraightLine",
+        id,
+        lock: true,
+        points: [{ value: currentPrice }],
+        styles: { line: { color: currentPriceRising === false ? "#EA3943" : "#16C784", style: "dashed", size: 1 } },
+      });
+      if (created) currentPriceLineIdRef.current = id;
+    } catch {
+      // ignore -- next tick will retry
+    }
+  }, [currentPrice, currentPriceRising]);
 
   useEffect(() => {
     const chart = chartRef.current;

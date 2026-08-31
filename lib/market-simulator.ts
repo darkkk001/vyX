@@ -270,15 +270,27 @@ export function tickMarket(
 // IS the currently-open D1 bucket -- a closed prior day's bar is not
 // "today's open," it's yesterday's, so that case returns null (unknown)
 // rather than a wrong-but-plausible-looking number.
+//
+// Returns bucketStart alongside open (round-2 hotfix): the caller MUST
+// also write this into MarketState.lastCandleStart.D1, not just dayOpen.
+// Without it, lastCandleStart.D1 stays at createInitialMarket()'s 0
+// forever (seedRealCandles only ever touches the *active chart*
+// timeframe's lastCandleStart, never D1's, unless D1 happens to be the
+// one being charted) -- so the very next live tick's applyBidAsk sees
+// `0 !== today's real D1 bucket start`, treats it as a brand-new D1
+// bucket having *just* started, and stamps dayOpen back to that tick's
+// own bid. That's exactly how production kept showing "+0.00%": this
+// function's correctly-resolved dayOpen was overwritten by the first tick
+// to arrive after it, milliseconds later.
 export function resolveDayOpenFromD1(
   rows: { bucketStart: string | number | Date; open: string | number }[],
   now: number
-): number | null {
+): { open: number; bucketStart: number } | null {
   const todayStart = bucketStartMs("D1", now);
   const todayRow = rows.find((r) => new Date(r.bucketStart).getTime() === todayStart);
   if (!todayRow) return null;
   const open = typeof todayRow.open === "number" ? todayRow.open : parseFloat(todayRow.open);
-  return Number.isFinite(open) ? open : null;
+  return Number.isFinite(open) ? { open, bucketStart: todayStart } : null;
 }
 
 export function fmt(value: number, digits: number): string {
