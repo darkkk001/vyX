@@ -68,3 +68,34 @@ export async function publishTradingEvent(
     console.warn("failed to publish trading event to NATS", type, err);
   }
 }
+
+// Phase 1 trust pack §3 -- hot-reloads engine/server's in-memory
+// AlertCache (engine/market-data/src/alerts.rs) the moment
+// app/api/trade/alerts creates or cancels a PriceAlert, so a trader's new
+// alert is checked against the very next tick instead of waiting for the
+// engine's own restart-only boot load. Per-broker subject
+// (`cfg.alerts.{brokerId}`, not a shared `cfg.alerts.*` topic every
+// engine process would need to filter itself) even though today there's
+// only one engine process subscribing to the wildcard -- keeps this
+// symmetric with every other broker-scoped publish in this file rather
+// than being the one exception.
+export type AlertConfigMessage =
+  | {
+      action: "create";
+      id: string;
+      account_id: string;
+      broker_id: string;
+      symbol: string;
+      condition: "ABOVE" | "BELOW" | "CROSSES";
+      price: string;
+    }
+  | { action: "cancel"; id: string; broker_id: string };
+
+export async function publishAlertConfig(message: AlertConfigMessage): Promise<void> {
+  try {
+    const nc = await getConnection();
+    nc.publish(`cfg.alerts.${message.broker_id}`, sc.encode(JSON.stringify(message)));
+  } catch (err) {
+    console.warn("failed to publish alert config to NATS", message.action, err);
+  }
+}

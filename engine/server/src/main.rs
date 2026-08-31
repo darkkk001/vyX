@@ -67,6 +67,12 @@ struct AppState {
     // still see a false gap relative to bars the live path never wrote
     // itself.
     gap_fill: Arc<GapFillTracker>,
+    // Phase 1 trust pack §3 -- see market_data::alerts's own module doc.
+    // Populated at boot (load_active_price_alerts) and kept current by a
+    // NATS subscription to cfg.alerts.* (spawned in main(), not read from
+    // this struct -- it only needs the cache handle, not the rest of
+    // AppState). Checked in-memory on every tick by ingest_price_feed.
+    alert_cache: Arc<market_data::alerts::AlertCache>,
 }
 
 // Applied via .layer() to every order/position route (main() below) --
@@ -491,11 +497,12 @@ async fn ingest_price_feed(
     }
 
     let count = ticks.len();
-    market_data::ingest::ingest_ticks(
+    let triggered = market_data::ingest::ingest_ticks(
         &state.nats,
         &state.tick_cache,
         &state.feed_stats,
         &state.symbol_activity,
+        &state.alert_cache,
         &ticks,
     )
     .await
@@ -503,6 +510,42 @@ async fn ingest_price_feed(
         tracing::error!(?err, "ingest_ticks failed");
         (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
     })?;
+
+    // Phase 1 trust pack §3 -- rare by nature (only fires when a tick
+    // actually crosses someone's threshold), so a synchronous DB write +
+    // NATS publish per trigger here doesn't reintroduce the per-tick
+    // Postgres cost the Contabo audit removed from this same handler's
+    // hot path (see ingest_ticks's own doc comment) -- this only runs at
+    // all for the exceptional tick, never the common one.
+    for fired in triggered {
+        let result: Result<(), sqlx::Error> = async {
+            let mut tx = state.pool.begin().await?;
+            market_data::db::mark_price_alert_triggered(&mut tx, &fired.alert, fired.triggered_price).await?;
+            tx.commit().await
+        }
+        .await;
+
+        if let Err(err) = result {
+            tracing::warn!(?err, alert_id = %fired.alert.id, "failed to persist triggered price alert");
+            continue; // don't publish a trigger that failed to persist
+        }
+
+        let payload = serde_json::json!({
+            "type": "AlertTriggered",
+            "alert_id": fired.alert.id,
+            "account_id": fired.alert.account_id,
+            "broker_id": fired.alert.broker_id,
+            "symbol": fired.alert.symbol,
+            "condition": market_data::alerts::condition_to_str(fired.alert.condition),
+            "price": fired.alert.price.to_string(),
+            "triggered_price": fired.triggered_price.to_string(),
+        });
+        if let Ok(bytes) = serde_json::to_vec(&payload) {
+            if let Err(err) = state.nats.publish("alert.triggered", bytes.into()).await {
+                tracing::warn!(?err, alert_id = %fired.alert.id, "failed to publish alert.triggered");
+            }
+        }
+    }
 
     Ok(Json(PriceFeedResponse { ok: true, count }))
 }
@@ -732,6 +775,76 @@ async fn spawn_tick_driven_triggers(
     Ok(())
 }
 
+/// Phase 1 trust pack §3 -- keeps AlertCache current between boot-time
+/// loads: app/api/trade/alerts publishes here on every create/cancel so a
+/// new alert is checked against the very next tick, not just after a
+/// restart. Wildcard subject (every broker) -- the cache itself isn't
+/// partitioned by broker (see AppState's own comment), so there's nothing
+/// to gain from one subscription per broker. Malformed/unrecognized
+/// fields are logged and skipped, never fatal to the subscription itself
+/// -- one bad message must not silently stop every future alert from
+/// hot-reloading.
+async fn spawn_alert_hot_reload(
+    alert_cache: Arc<market_data::alerts::AlertCache>,
+    nats: async_nats::Client,
+) -> Result<(), async_nats::SubscribeError> {
+    let mut sub = nats.subscribe("cfg.alerts.*").await?;
+    tracing::info!("alert hot-reload: subscribed to cfg.alerts.*");
+    tokio::spawn(async move {
+        while let Some(msg) = sub.next().await {
+            let payload: serde_json::Value = match serde_json::from_slice(&msg.payload) {
+                Ok(v) => v,
+                Err(err) => {
+                    tracing::warn!(?err, subject = %msg.subject, "alert hot-reload: malformed payload");
+                    continue;
+                }
+            };
+            match payload.get("action").and_then(|v| v.as_str()) {
+                Some("create") => {
+                    let id = payload.get("id").and_then(|v| v.as_str());
+                    let account_id = payload.get("account_id").and_then(|v| v.as_str());
+                    let broker_id = payload.get("broker_id").and_then(|v| v.as_str());
+                    let symbol = payload.get("symbol").and_then(|v| v.as_str());
+                    let condition_str = payload.get("condition").and_then(|v| v.as_str());
+                    let price_str = payload.get("price").and_then(|v| v.as_str());
+                    let (Some(id), Some(account_id), Some(broker_id), Some(symbol), Some(condition_str), Some(price_str)) =
+                        (id, account_id, broker_id, symbol, condition_str, price_str)
+                    else {
+                        tracing::warn!("alert hot-reload: create payload missing a required field");
+                        continue;
+                    };
+                    let Some(condition) = market_data::alerts::condition_from_str(condition_str) else {
+                        tracing::warn!(condition_str, "alert hot-reload: unrecognized condition");
+                        continue;
+                    };
+                    let Ok(price) = price_str.parse::<rust_decimal::Decimal>() else {
+                        tracing::warn!(price_str, "alert hot-reload: unparseable price");
+                        continue;
+                    };
+                    alert_cache.add(market_data::alerts::PriceAlert {
+                        id: id.to_string(),
+                        account_id: account_id.to_string(),
+                        broker_id: broker_id.to_string(),
+                        symbol: symbol.to_string(),
+                        condition,
+                        price,
+                    });
+                }
+                Some("cancel") => {
+                    if let Some(id) = payload.get("id").and_then(|v| v.as_str()) {
+                        alert_cache.remove(id);
+                    } else {
+                        tracing::warn!("alert hot-reload: cancel payload missing id");
+                    }
+                }
+                other => tracing::warn!(?other, "alert hot-reload: unrecognized action"),
+            }
+        }
+        tracing::warn!("alert hot-reload: cfg.alerts.* subscription ended");
+    });
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt::init();
@@ -828,6 +941,23 @@ async fn main() {
     // reads (defaults 30/180).
     market_data::retention::spawn_candle_retention(pool.clone());
 
+    // Phase 1 trust pack §3 -- see market_data::alerts's own module doc.
+    // Loaded once here (every currently ACTIVE alert), then kept current
+    // by spawn_alert_hot_reload's own NATS subscription.
+    let alert_cache = Arc::new(market_data::alerts::AlertCache::new());
+    match market_data::db::load_active_price_alerts(&pool).await {
+        Ok(alerts) => {
+            tracing::info!(count = alerts.len(), "loaded active price alerts");
+            alert_cache.load(alerts);
+        }
+        Err(err) => {
+            tracing::error!(?err, "failed to load active price alerts at boot -- starting with an empty alert book");
+        }
+    }
+    spawn_alert_hot_reload(alert_cache.clone(), nats.clone())
+        .await
+        .expect("failed to subscribe alert hot-reload to cfg.alerts.*");
+
     let state = Arc::new(AppState {
         pool,
         nats,
@@ -837,6 +967,7 @@ async fn main() {
         feed_stats: feed_stats_registry,
         symbol_activity: symbol_activity_registry,
         gap_fill: gap_fill_tracker,
+        alert_cache,
     });
 
     // Order/position/stats routes require x-internal-secret

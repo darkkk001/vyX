@@ -102,6 +102,20 @@ export type ApiLinkedAccount = {
 
 export type ApiBrokerBranding = { brokerName: string; brokerLogoUrl: string; supportEmail: string | null; primaryColor: string | null };
 
+// Phase 1 trust pack §3 -- real, server-evaluated price alerts (see
+// PriceAlert's own schema comment). Replaces the old client-side-only
+// mock entirely.
+export type ApiAlert = {
+  id: string;
+  symbol: string;
+  condition: "ABOVE" | "BELOW" | "CROSSES";
+  price: string;
+  status: "ACTIVE" | "TRIGGERED" | "EXPIRED" | "CANCELLED";
+  triggeredAt: string | null;
+  triggeredPrice: string | null;
+  createdAt: string;
+};
+
 export const tradeApi = {
   // Public, no session needed -- see app/api/trade/broker-branding/
   // route.ts. Only meaningful for a bundled desktop shell, which has no
@@ -164,6 +178,13 @@ export const tradeApi = {
       method: "POST",
       body: JSON.stringify({ closePrice, ...(volume != null ? { volume } : {}), ...(source ? { source } : {}) }),
     }),
+  // Default (active only) / ?status=all (history, incl. triggered/
+  // cancelled) -- same convention as orders()/allOrders().
+  alerts: () => call<ApiAlert[]>("/api/trade/alerts"),
+  allAlerts: () => call<ApiAlert[]>("/api/trade/alerts?status=all"),
+  createAlert: (body: { symbol: string; condition: "ABOVE" | "BELOW" | "CROSSES"; price: number; expiresAt?: string }) =>
+    call<ApiAlert>("/api/trade/alerts", { method: "POST", body: JSON.stringify(body) }),
+  cancelAlert: (id: string) => call(`/api/trade/alerts/${id}`, { method: "DELETE" }),
   fundsHistory: () => call<ApiFundsRequest[]>("/api/trade/funds-requests"),
   submitFundsRequest: (body: { type: "DEPOSIT" | "WITHDRAWAL"; amount: number; note?: string }) =>
     call<ApiFundsRequest>("/api/trade/funds-requests", { method: "POST", body: JSON.stringify(body) }),

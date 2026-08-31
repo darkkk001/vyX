@@ -14,6 +14,13 @@ thiserror.workspace = true
 tracing.workspace = true
 chrono.workspace = true
 serde_json.workspace = true
+# Phase 1 trust pack §3 -- generates the id for a new Notification row
+# (Prisma-managed, `id String @id @default(cuid())`) the first time this
+# engine writes one directly. Postgres has no format constraint on that
+# column (cuid() is Prisma Client's own default-value generator, not a
+# DB-level one) -- a plain UUID v4 string is a valid id, same convention
+# order-management's own db.rs already uses for its ledger_entries table.
+uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 rust_decimal_macros = "1"

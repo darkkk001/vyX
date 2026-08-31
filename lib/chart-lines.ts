@@ -1,15 +1,27 @@
-import type { ApiPosition, ApiOrder } from "@/lib/trade-api";
+import type { ApiPosition, ApiOrder, ApiAlert } from "@/lib/trade-api";
 import type { ChartLine } from "@/components/webtrader/KLineChartPanel";
+
+// Phase 1 trust pack §3 -- a distinct color from every position/order
+// line (green/red buy/sell) so an alert level reads as "watching", not
+// "an open trade".
+const ALERT_LINE_COLOR = "#F0B90B";
 
 // Shared by the focused/single chart and each multi-chart grid cell — same
 // position/SL/TP + pending-order price lines, just scoped to whichever
-// symbol is asking.
+// symbol is asking. `alerts` defaults to [] so every existing call site
+// (both before this parameter existed) keeps compiling unchanged.
 export function computeChartLines(
   symbol: string,
   positions: ApiPosition[],
-  pendingOrders: ApiOrder[]
+  pendingOrders: ApiOrder[],
+  alerts: ApiAlert[] = []
 ): ChartLine[] {
   const lines: ChartLine[] = [];
+  alerts
+    .filter((a) => a.symbol === symbol && a.status === "ACTIVE")
+    .forEach((a) => {
+      lines.push({ id: `alert-${a.id}`, price: parseFloat(a.price), color: ALERT_LINE_COLOR, dashed: true });
+    });
   positions
     .filter((p) => p.symbol.name === symbol)
     .forEach((p) => {

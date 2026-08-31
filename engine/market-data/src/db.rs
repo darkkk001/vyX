@@ -9,6 +9,7 @@
 //! ../../order-management/src/db.rs: no guaranteed live DB connection at
 //! build time in every environment this crate builds in.
 
+use crate::alerts::{condition_from_str, AlertCondition, PriceAlert};
 use crate::{CandleUpdate, Timeframe};
 use rust_decimal::Decimal;
 use sqlx::PgPool;
@@ -206,6 +207,75 @@ pub async fn get_live_price(
     .fetch_optional(pool)
     .await?;
     Ok(row)
+}
+
+/// Boot-time (and post-hot-reload-gap resync) load for
+/// alerts::AlertCache::load -- every currently ACTIVE alert, across
+/// every broker (the cache itself doesn't filter by broker; nothing
+/// downstream of a trigger needs to before it does, since the trigger
+/// record already carries broker_id/account_id for whoever consumes it
+/// next). `condition::text` casts the Postgres enum to a plain string
+/// this crate's own AlertCondition (not the DB's type) decodes from --
+/// unrecognized values are dropped rather than erroring the whole load,
+/// though none should ever exist (the enum only has these three values).
+pub async fn load_active_price_alerts(pool: &PgPool) -> Result<Vec<PriceAlert>, sqlx::Error> {
+    let rows: Vec<(String, String, String, String, String, Decimal)> = sqlx::query_as(
+        r#"SELECT id, "accountId", "brokerId", symbol, condition::text, price FROM "PriceAlert" WHERE status = 'ACTIVE'"#,
+    )
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .filter_map(|(id, account_id, broker_id, symbol, condition_str, price)| {
+            condition_from_str(&condition_str).map(|condition| PriceAlert { id, account_id, broker_id, symbol, condition, price })
+        })
+        .collect())
+}
+
+/// Persists an alerts::AlertCache trigger decision -- marks the
+/// PriceAlert row TRIGGERED (terminal, matches the in-memory cache
+/// already having removed it, see AlertCache::check_tick's own comment)
+/// and writes the first-ever trader-facing Notification row (see that
+/// model's own schema comment) in the same transaction, so a crash
+/// between the two can never leave one without the other. `id` uses a
+/// plain UUID v4, not Prisma's own cuid() -- see this crate's Cargo.toml
+/// comment on why that's a valid id for a Prisma-managed table anyway.
+pub async fn mark_price_alert_triggered(
+    tx: &mut sqlx::PgTransaction<'_>,
+    alert: &PriceAlert,
+    triggered_price: Decimal,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(r#"UPDATE "PriceAlert" SET status = 'TRIGGERED', "triggeredAt" = now(), "triggeredPrice" = $2 WHERE id = $1"#)
+        .bind(&alert.id)
+        .bind(triggered_price)
+        .execute(&mut **tx)
+        .await?;
+
+    let condition_word = match alert.condition {
+        AlertCondition::Above => "reached",
+        AlertCondition::Below => "dropped to",
+        AlertCondition::Crosses => "crossed",
+    };
+    let title = format!("Price alert triggered -- {}", alert.symbol);
+    let body = format!("{} {} {}", alert.symbol, condition_word, triggered_price);
+
+    sqlx::query(
+        r#"
+        INSERT INTO "Notification" (id, "brokerId", "accountId", type, title, body, "entityType", "entityId")
+        VALUES ($1, $2, $3, 'PRICE_ALERT_TRIGGERED', $4, $5, 'PriceAlert', $6)
+        "#,
+    )
+    .bind(uuid::Uuid::new_v4().to_string())
+    .bind(&alert.broker_id)
+    .bind(&alert.account_id)
+    .bind(&title)
+    .bind(&body)
+    .bind(&alert.id)
+    .execute(&mut **tx)
+    .await?;
+
+    Ok(())
 }
 
 #[cfg(test)]

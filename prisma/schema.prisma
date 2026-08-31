@@ -298,6 +298,7 @@ model Broker {
   notifications   Notification[]
   liquidityProviders LiquidityProvider[]
   lpRoutingRules  LpRoutingRule[]
+  priceAlerts     PriceAlert[]
 }
 
 model AdminUser {
@@ -421,10 +422,57 @@ model Account {
   ibLinkAsClient IbRelationship?  @relation("ClientAccount")
 
   convertedFromLead Lead?
+  priceAlerts       PriceAlert[]
+  notifications     Notification[]
 
   @@unique([brokerId, email, accountType])
   @@index([brokerId])
   @@index([groupId])
+}
+
+enum AlertCondition {
+  ABOVE
+  BELOW
+  CROSSES
+}
+
+enum AlertStatus {
+  ACTIVE
+  TRIGGERED
+  EXPIRED
+  CANCELLED
+}
+
+// Phase 1 trust pack §3 -- replaces WebTrader.tsx's old client-side mock
+// (an in-memory array that reset on every page reload, never actually
+// evaluated by anything but the browser tab that set it) with a real,
+// server-evaluated alert: the Rust engine (engine/market-data/src/
+// alerts.rs) holds every ACTIVE alert in memory per symbol, hot-reloaded
+// via NATS (cfg.alerts.{brokerId}) whenever one is created/cancelled
+// (POST/DELETE /api/trade/alerts), and checks it against every real tick
+// -- the same process that already sees every tick, not the client's own
+// local price feed. ABOVE/BELOW/CROSSES semantics live in that module's
+// own evaluate_alert (gap-through safe: a tick that jumps clean over the
+// target without ever equaling it still triggers, since every check is
+// an inequality/sign-change comparison, never exact equality).
+model PriceAlert {
+  id             String         @id @default(cuid())
+  accountId      String
+  account        Account        @relation(fields: [accountId], references: [id])
+  brokerId       String
+  broker         Broker         @relation(fields: [brokerId], references: [id])
+  symbol         String
+  condition      AlertCondition
+  price          Decimal        @db.Decimal(18, 5)
+  expiresAt      DateTime?      @db.Timestamptz(3)
+  status         AlertStatus    @default(ACTIVE)
+  triggeredAt    DateTime?      @db.Timestamptz(3)
+  triggeredPrice Decimal?       @db.Decimal(18, 5)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  @@index([brokerId, symbol, status])
+  @@index([accountId])
 }
 
 enum LeadStatus {
@@ -908,7 +956,18 @@ model Notification {
   id         String    @id @default(cuid())
   brokerId   String
   broker     Broker    @relation(fields: [brokerId], references: [id])
-  type       String // "NEW_LEAD" | "KYC_SUBMITTED" | "FUNDS_REQUEST" | "DEALING_ORDER_PENDING"
+  // Phase 1 trust pack §3 -- null for every existing row/type (all
+  // backoffice-staff-facing: "NEW_LEAD" | "KYC_SUBMITTED" |
+  // "FUNDS_REQUEST" | "DEALING_ORDER_PENDING"). Set only for
+  // "PRICE_ALERT_TRIGGERED", the first trader-facing notification type --
+  // written directly by the Rust engine (engine/market-data/src/alerts.rs)
+  // at the same moment it marks the PriceAlert row TRIGGERED, not by this
+  // Next.js app. No trader-facing UI reads this yet (WebTrader shows the
+  // trigger as a toast + the PriceAlert's own triggeredAt/triggeredPrice
+  // serve as history); this is queued for Phase 2's stated email step.
+  accountId  String?
+  account    Account?  @relation(fields: [accountId], references: [id])
+  type       String // "NEW_LEAD" | "KYC_SUBMITTED" | "FUNDS_REQUEST" | "DEALING_ORDER_PENDING" | "PRICE_ALERT_TRIGGERED"
   title      String
   body       String
   entityType String?
@@ -919,6 +978,7 @@ model Notification {
 
   @@index([brokerId])
   @@index([brokerId, readAt])
+  @@index([accountId])
 }
 
 // ─────────────────────────────────────────────────────────────────────────
