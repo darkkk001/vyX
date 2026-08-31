@@ -16,7 +16,6 @@ import {
   type FeedStatus,
 } from "@/lib/market-simulator";
 import { tradeApi, serverNow, ApiError, type AccountInfo, type ApiPosition, type ApiOrder, type ApiFundsRequest, type ApiKycStatus, type ApiLinkedAccount, type ApiSession } from "@/lib/trade-api";
-import { isTickDebug } from "@/lib/tick-debug";
 import KLineChartPanel, { type KLineChartHandle, type ChartLine } from "./KLineChartPanel";
 import DesktopTitleBar from "./DesktopTitleBar";
 import SessionClock from "./SessionClock";
@@ -931,11 +930,6 @@ export default function WebTrader({
     lastTickAcceptedAtRef.current[symbol] = now;
     const at = serverNow();
     liveTicksRef.current = { ...liveTicksRef.current, [symbol]: { bid, ask, at } };
-    // TEMP DIAGNOSTIC -- round 4 investigation, remove before merge.
-    if (isTickDebug() && symbol === activeSymbol) {
-      // eslint-disable-next-line no-console
-      console.log("[DIAG acceptCoalescedTick]", { symbol, bid, at, bucketM1: bucketStartMs("M1", at) });
-    }
     // hotfix/terminal-live-bugs #2 -- this used to only write liveTicksRef
     // and wait for the 1500ms interval below to notice it, which meant a
     // push tick (browser WS or desktop native relay) took up to 1.5s to
@@ -1085,15 +1079,7 @@ export default function WebTrader({
       if (cancelled) return;
       const base = process.env.NEXT_PUBLIC_GATEWAY_WS_URL ?? "ws://127.0.0.1:8080";
       socket = new WebSocket(`${base}/v1/prices/stream`);
-      if (isTickDebug()) {
-        // eslint-disable-next-line no-console
-        console.log("[DIAG ws connecting]", `${base}/v1/prices/stream`);
-      }
       socket.onopen = () => {
-        if (isTickDebug()) {
-          // eslint-disable-next-line no-console
-          console.log("[DIAG ws open]");
-        }
         // hotfix/terminal-live-bugs #3 -- app-level ping/pong over this
         // same connection, echoed by services/api-gateway/src/ws.ts's
         // registerClient. The browser's native WebSocket API never
@@ -1106,10 +1092,6 @@ export default function WebTrader({
         pingInterval = setInterval(sendPing, 5000);
       };
       socket.onmessage = (event) => {
-        if (isTickDebug()) {
-          // eslint-disable-next-line no-console
-          console.log("[DIAG ws message]", typeof event.data === "string" ? event.data.slice(0, 200) : event.data);
-        }
         try {
           const parsed = JSON.parse(event.data);
           if (parsed?.type === "pong") {
@@ -1133,22 +1115,12 @@ export default function WebTrader({
           // malformed frame — ignore, next tick will correct the picture
         }
       };
-      socket.onclose = (event) => {
-        if (isTickDebug()) {
-          // eslint-disable-next-line no-console
-          console.log("[DIAG ws close]", { code: event.code, reason: event.reason, wasClean: event.wasClean });
-        }
+      socket.onclose = () => {
         if (pingInterval) { clearInterval(pingInterval); pingInterval = null; }
         setPingMs(null);
         if (!cancelled) reconnectTimer = setTimeout(connect, 3000);
       };
-      socket.onerror = (event) => {
-        if (isTickDebug()) {
-          // eslint-disable-next-line no-console
-          console.log("[DIAG ws error]", event);
-        }
-        socket?.close();
-      };
+      socket.onerror = () => socket?.close();
     }
     connect();
 
