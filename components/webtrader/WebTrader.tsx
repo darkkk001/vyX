@@ -7,6 +7,7 @@ import {
   tickMarket,
   feedStatusFor,
   bucketStartMs,
+  resolveDayOpenFromD1,
   fmt,
   money,
   type MarketState,
@@ -1275,6 +1276,40 @@ export default function WebTrader({
     return () => { cancelled = true; };
   }, [activeSymbol, currentTf, seedRealCandles]);
 
+  // hotfix/terminal-live-bugs #1 follow-up -- applyBidAsk's D1-rollover
+  // resync (lib/market-simulator.ts) only fixes dayOpen at the *next* UTC
+  // midnight; a page loaded mid-day (the actual reported case, 07:52 UTC)
+  // still compared a live price against createInitialMarket()'s launch-time
+  // seed until then. This fetches D1 history independently of whatever
+  // timeframe the chart itself is showing (a trader on M1 still needs
+  // today's D1 open) and seeds dayOpen from the real bucket -- resolved via
+  // resolveDayOpenFromD1, which only trusts a row that IS today's open
+  // bucket. Deliberately never downgrades an already-known dayOpen (e.g.
+  // one a live D1 rollover already set correctly this session) back to
+  // unknown just because this fetch found nothing -- only ever upgrades
+  // unknown -> known.
+  const seedDayOpen = useCallback(async (symbol: string) => {
+    try {
+      const rows = await tradeApi.candles(symbol, "D1");
+      const resolved = resolveDayOpenFromD1(rows, serverNow());
+      if (resolved === null) return; // no D1 bar for today yet -- leave as-is (unknown stays "—", known stays known)
+      setMarket((prev) => {
+        const ms = prev[symbol];
+        if (!ms) return prev;
+        return { ...prev, [symbol]: { ...ms, dayOpen: resolved, dayOpenKnown: true } };
+      });
+    } catch {
+      // history endpoint unreachable -- leave dayOpenKnown as-is, never
+      // fabricate a number to show
+    }
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => { if (!cancelled) await seedDayOpen(activeSymbol); })();
+    return () => { cancelled = true; };
+  }, [activeSymbol, seedDayOpen]);
+
   // Multi-chart grid: each cell seeds its own symbol+timeframe the same way
   // the focused chart does above, independently.
   useEffect(() => {
@@ -2243,7 +2278,7 @@ export default function WebTrader({
             <div>
               {watchlistOrder.filter((name) => name.toLowerCase().includes(watchlistFilter.toLowerCase())).map((name) => {
                 const row = market[name];
-                const changePct = ((row.bid - row.dayOpen) / row.dayOpen) * 100;
+                const changePct = row.dayOpenKnown ? ((row.bid - row.dayOpen) / row.dayOpen) * 100 : null;
                 const flash = row.bid > row.prevBid ? "up" : row.bid < row.prevBid ? "down" : "";
                 return (
                   <div
@@ -2257,7 +2292,7 @@ export default function WebTrader({
                   >
                     <span className="wl-drag-handle">⋮⋮</span>
                     <span className="wl-cell wl-symbol">{name}</span>
-                    {columnPrefs.signal ? <span className={`wl-cell wl-signal ${row.live && row.bid >= row.dayOpen ? "wl-pos" : "wl-neg"}`}>{row.live ? (row.bid >= row.dayOpen ? "▲" : "▼") : "—"}</span> : null}
+                    {columnPrefs.signal ? <span className={`wl-cell wl-signal ${row.live && row.dayOpenKnown && row.bid >= row.dayOpen ? "wl-pos" : "wl-neg"}`}>{row.live && row.dayOpenKnown ? (row.bid >= row.dayOpen ? "▲" : "▼") : "—"}</span> : null}
                     <span className="wl-cell wl-price-cell">
                       {row.live ? (
                         <span className={`wl-price mono ${flash}`}>{fmt(row.bid, row.def.digits)}</span>
@@ -2271,7 +2306,7 @@ export default function WebTrader({
                         </span>
                       ) : null}
                     </span>
-                    {columnPrefs.change ? <span className={`wl-cell mono ${changePct >= 0 ? "wl-pos" : "wl-neg"}`}>{row.live ? (changePct >= 0 ? "+" : "") + changePct.toFixed(2) + "%" : "—"}</span> : null}
+                    {columnPrefs.change ? <span className={`wl-cell mono ${changePct !== null && changePct >= 0 ? "wl-pos" : "wl-neg"}`}>{row.live && changePct !== null ? (changePct >= 0 ? "+" : "") + changePct.toFixed(2) + "%" : "—"}</span> : null}
                     {columnPrefs.spread ? <span className="wl-cell mono">{row.live ? fmt(row.ask - row.bid, row.def.digits) : "—"}</span> : null}
                     {columnPrefs.high ? <span className="wl-cell mono">{row.live ? fmt(row.high, row.def.digits) : "—"}</span> : null}
                     {columnPrefs.low ? <span className="wl-cell mono">{row.live ? fmt(row.low, row.def.digits) : "—"}</span> : null}
@@ -2385,9 +2420,16 @@ export default function WebTrader({
                     >
                       {fmt(m.bid, m.def.digits)}
                     </div>
-                    <div className="chart-change mono" style={{ background: m.bid >= m.dayOpen ? "var(--buy-bg)" : "var(--sell-bg)", color: m.bid >= m.dayOpen ? "var(--buy)" : "var(--sell)" }}>
-                      {(((m.bid - m.dayOpen) / m.dayOpen) * 100 >= 0 ? "+" : "") + (((m.bid - m.dayOpen) / m.dayOpen) * 100).toFixed(2)}%
-                    </div>
+                    {m.dayOpenKnown ? (
+                      <div className="chart-change mono" style={{ background: m.bid >= m.dayOpen ? "var(--buy-bg)" : "var(--sell-bg)", color: m.bid >= m.dayOpen ? "var(--buy)" : "var(--sell)" }}>
+                        {(((m.bid - m.dayOpen) / m.dayOpen) * 100 >= 0 ? "+" : "") + (((m.bid - m.dayOpen) / m.dayOpen) * 100).toFixed(2)}%
+                      </div>
+                    ) : (
+                      // hotfix/terminal-live-bugs #1 -- no trustworthy D1
+                      // open yet (mid-day mount, D1 history unavailable) --
+                      // "—", never a number computed against the launch seed.
+                      <div className="chart-change mono" style={{ color: "var(--text-3)" }}>—</div>
+                    )}
                     <div className="chart-spread mono">Spread {fmt(m.ask - m.bid, m.def.digits)}</div>
                     {activeFeedStatus === "stale" ? <div className="chart-spread mono">Stale</div> : null}
                   </>

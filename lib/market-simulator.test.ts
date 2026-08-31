@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createInitialMarket, tickMarket, bucketStartMs, type Timeframe } from "@/lib/market-simulator";
+import { createInitialMarket, tickMarket, bucketStartMs, resolveDayOpenFromD1, type Timeframe } from "@/lib/market-simulator";
 
 // hotfix/terminal-live-bugs -- production showed XAUUSD's daily %chg as
 // +88.85% (comparing a live ~4442 price against dayOpen, which was never
@@ -46,6 +46,46 @@ describe("tickMarket -- dayOpen (bug #1: impossible %chg)", () => {
     // against a stale seed from a different order of magnitude.
     const changePct = ((market.XAUUSD.bid - market.XAUUSD.dayOpen) / market.XAUUSD.dayOpen) * 100;
     expect(changePct).toBeCloseTo(0.4545, 3);
+  });
+
+  it("marks dayOpen unknown at boot, and known only once a real tick's D1 rollover has synced it", () => {
+    const market = createInitialMarket();
+    expect(market.XAUUSD.dayOpenKnown).toBe(false);
+
+    const now = Date.UTC(2026, 7, 31, 8, 0, 0);
+    const ticked = tickMarket(market, { XAUUSD: { bid: 4442.58, ask: 4442.88, at: now } }, now);
+    expect(ticked.XAUUSD.dayOpenKnown).toBe(true);
+  });
+});
+
+describe("resolveDayOpenFromD1 (bug #1 follow-up: mid-day mount still showed the impossible %chg)", () => {
+  // The rollover fix above only takes effect at the *next* UTC midnight --
+  // a trader loading the terminal mid-day (the actual reported case, 07:52
+  // UTC) needs dayOpen resolved from real D1 history immediately, or
+  // shown as "—", never left on the launch-time seed.
+  const now = Date.UTC(2026, 7, 31, 7, 52, 0);
+  const todayBucket = bucketStartMs("D1", now);
+
+  it("resolves today's open from the D1 row whose own bucket is the currently-open day", () => {
+    const rows = [
+      { bucketStart: new Date(todayBucket - 86_400_000).toISOString(), open: "4400.00" }, // yesterday
+      { bucketStart: new Date(todayBucket).toISOString(), open: "4430.10" }, // today
+    ];
+    expect(resolveDayOpenFromD1(rows, now)).toBe(4430.10);
+  });
+
+  it("returns null (unknown, show \"—\") when no row matches today's bucket -- never falls back to a stale historical open", () => {
+    const rows = [{ bucketStart: new Date(todayBucket - 86_400_000).toISOString(), open: "4400.00" }]; // only yesterday exists
+    expect(resolveDayOpenFromD1(rows, now)).toBeNull();
+  });
+
+  it("returns null on an empty history response (brand-new symbol, or the history endpoint unreachable)", () => {
+    expect(resolveDayOpenFromD1([], now)).toBeNull();
+  });
+
+  it("returns null rather than NaN on a malformed open value", () => {
+    const rows = [{ bucketStart: new Date(todayBucket).toISOString(), open: "not-a-number" }];
+    expect(resolveDayOpenFromD1(rows, now)).toBeNull();
   });
 });
 
