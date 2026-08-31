@@ -235,7 +235,14 @@ Write-StepHeader "4. start-gateway.cmd DATABASE_URL"
 if (-not (Test-Path $StartGateway)) {
     Write-Fail "$StartGateway not found"
 } else {
-    $dbUrlLine = Get-Content $StartGateway | Select-String '^\s*set\s+DATABASE_URL\s*='
+    # Accepts both `set DATABASE_URL=...` and `set "DATABASE_URL=..."`. The
+# quoted form is required, not cosmetic: Neon's connection strings carry
+# &channel_binding=require, and cmd treats a bare & as a command
+# separator -- unquoted, DATABASE_URL silently truncates at the & and cmd
+# tries to run the remainder ("'channel_binding' is not recognized as an
+# internal or external command", seen on Contabo). Matching only the
+# unquoted form reported a live, correctly-configured gateway as broken.
+$dbUrlLine = Get-Content $StartGateway | Select-String '^\s*set\s+"?DATABASE_URL\s*='
     if ($dbUrlLine) {
         Write-Ok "DATABASE_URL is set in $StartGateway (value redacted): set DATABASE_URL=***REDACTED***"
     } else {
