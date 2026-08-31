@@ -55,6 +55,7 @@ const LABELS: Record<string, string> = {
   // Super Admin, so the action name shouldn't claim otherwise.
   ADMIN_2FA_ENABLED: "Enabled two-factor authentication",
   ADMIN_2FA_DISABLED: "Disabled two-factor authentication",
+  ADMIN_SESSION_REVOKED: "Revoked a backoffice session",
   ACCOUNT_PASSWORD_RESET: "Reset trader password",
   ADMIN_PASSWORD_RESET_BY_SUPER_ADMIN: "Reset backoffice staff password",
   WEBTRADER_SESSION_REVOKED: "Revoked WebTrader session",

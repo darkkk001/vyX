@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getAdminSession } from "@/lib/auth";
+import { getAdminSession, revokeAllAdminSessions } from "@/lib/auth";
 
 async function requireSuperAdmin() {
   const session = await getAdminSession();
@@ -46,6 +46,12 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     });
     return admin;
   });
+
+  // Phase 1 trust pack §2 -- see app/api/manage/admins/[id]/route.ts's
+  // identical hook for why this runs after the transaction commits.
+  if (status === "DISABLED") {
+    await revokeAllAdminSessions(id);
+  }
 
   return NextResponse.json({ id: updated.id, status: updated.status });
 }

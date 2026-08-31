@@ -20,7 +20,7 @@ import type { IncomingMessage, Server } from "http";
 import { connect, type NatsConnection } from "nats";
 import { WebSocket, WebSocketServer } from "ws";
 import { getTraderSession } from "./auth.js";
-import { getAdminSession } from "./admin-auth.js";
+import { getAdminSession, readAdminSessionToken, isAdminSessionValid } from "./admin-auth.js";
 import { getEnabledSymbolNames } from "./db.js";
 
 const PRICE_STREAM_PATH = "/v1/prices/stream";
@@ -300,12 +300,32 @@ export async function attachAdminEventStream(server: Server, natsUrl: string): P
   const subs = [nc.subscribe("order.>"), nc.subscribe("position.>"), nc.subscribe("dealing.>"), nc.subscribe("account.>")];
 
   const wss = new WebSocketServer({ noServer: true });
-  // ws -> that connection's own admin's brokerId, same per-tenant
-  // filtering shape as attachPriceStream's clients map.
-  const clientsByBroker = new Map<WebSocket, string>();
+  // ws -> that connection's own admin's brokerId + session token, same
+  // per-tenant filtering shape as attachPriceStream's clients map. The
+  // token is kept (not just brokerId) so the revalidation loop below can
+  // re-check this exact session still exists in Redis -- Phase 1 trust
+  // pack §2: "disable admin -> gateway WS closes within 5s".
+  const clientsByBroker = new Map<WebSocket, { brokerId: string; token: string }>();
+  // A WS upgrade only authenticates once, at connect time -- without this,
+  // an admin disabled/demoted (or explicitly "signed out everywhere") mid-
+  // session would keep receiving events on an already-open connection
+  // until they closed the tab themselves, same gap the Redis-backed
+  // session itself already closed for a fresh request. 5s matches the
+  // brief's own acceptance test, short enough to feel immediate without
+  // hammering Redis with an EXISTS per connection every tick.
+  const ADMIN_SESSION_REVALIDATE_MS = 5_000;
+  setInterval(() => {
+    for (const [ws, info] of clientsByBroker) {
+      isAdminSessionValid(info.token)
+        .then((valid) => {
+          if (!valid) ws.close(4001, "session revoked");
+        })
+        .catch((err) => console.error("admin event stream: revalidation failed", err));
+    }
+  }, ADMIN_SESSION_REVALIDATE_MS);
 
-  function registerClient(ws: WebSocket, brokerId: string) {
-    clientsByBroker.set(ws, brokerId);
+  function registerClient(ws: WebSocket, brokerId: string, token: string) {
+    clientsByBroker.set(ws, { brokerId, token });
     gatewayStats.adminWsConnectionsTotal += 1;
     function unregister() {
       clientsByBroker.delete(ws);
@@ -319,9 +339,10 @@ export async function attachAdminEventStream(server: Server, natsUrl: string): P
     const { pathname } = new URL(req.url ?? "", "http://internal");
     if (pathname !== ADMIN_EVENTS_STREAM_PATH) return;
 
+    const token = readAdminSessionToken(req.headers.cookie);
     getAdminSession(req.headers.cookie)
       .then((session) => {
-        if (!session) {
+        if (!session || !token) {
           socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
           socket.destroy();
           return;
@@ -334,7 +355,7 @@ export async function attachAdminEventStream(server: Server, natsUrl: string): P
           return;
         }
         wss.handleUpgrade(req, socket, head, (ws) => {
-          registerClient(ws, session.brokerId!);
+          registerClient(ws, session.brokerId!, token);
         });
       })
       .catch((err) => {
@@ -357,8 +378,8 @@ export async function attachAdminEventStream(server: Server, natsUrl: string): P
         }
         if (!brokerId) continue; // no broker_id -- can't be scoped, never forwarded here
 
-        for (const [client, clientBrokerId] of clientsByBroker) {
-          if (clientBrokerId !== brokerId) continue;
+        for (const [client, info] of clientsByBroker) {
+          if (info.brokerId !== brokerId) continue;
           if (client.readyState !== WebSocket.OPEN) continue;
           client.send(text);
           gatewayStats.adminEventsForwardedTotal += 1;

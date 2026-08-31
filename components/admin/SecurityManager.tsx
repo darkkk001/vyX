@@ -27,6 +27,8 @@ import { PasswordInput } from "@/components/ui/PasswordInput";
 // setup flow below is identical either way (nothing here can dismiss the
 // requirement except actually completing setup -- the layout's own
 // redirect keeps re-triggering on every other page until then).
+type AdminSessionRow = { sessionId: string; userAgent: string | null; ip: string | null; createdAt: string; current: boolean };
+
 export default function SecurityManager({ forceSetup = false }: { forceSetup?: boolean }) {
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [unusedBackupCodes, setUnusedBackupCodes] = useState<number>(0);
@@ -39,6 +41,13 @@ export default function SecurityManager({ forceSetup = false }: { forceSetup?: b
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
+  // Phase 1 trust pack §2 -- session list/revoke, same shape WebTrader.tsx's
+  // own Security modal already has for traders (tradeApi's
+  // listSessions/revokeSession), scoped to AdminUser via app/api/admin/
+  // sessions/* instead.
+  const [sessions, setSessions] = useState<AdminSessionRow[] | null>(null);
+  const [revokingSessionId, setRevokingSessionId] = useState<string | null>(null);
+
   function refreshStatus() {
     fetch("/api/admin/two-factor/status")
       .then((r) => r.json())
@@ -49,7 +58,33 @@ export default function SecurityManager({ forceSetup = false }: { forceSetup?: b
       .catch(() => setLoadError("failed to load"));
   }
 
+  function refreshSessions() {
+    fetch("/api/admin/sessions")
+      .then((r) => r.json())
+      .then((rows: AdminSessionRow[]) => setSessions(rows))
+      .catch(() => setSessions([]));
+  }
+
   useEffect(refreshStatus, []);
+  useEffect(refreshSessions, []);
+
+  async function revokeSessionRow(sessionId: string) {
+    setRevokingSessionId(sessionId);
+    await fetch(`/api/admin/sessions/${sessionId}`, { method: "DELETE" }).catch(() => {});
+    setRevokingSessionId(null);
+    refreshSessions();
+  }
+
+  async function signOutEverywhereElse() {
+    if (!sessions) return;
+    setBusy(true);
+    await Promise.all(
+      sessions.filter((s) => !s.current).map((s) => fetch(`/api/admin/sessions/${s.sessionId}`, { method: "DELETE" }))
+    ).catch(() => {});
+    setBusy(false);
+    setNotice("Signed out of every other session.");
+    refreshSessions();
+  }
 
   async function startSetup() {
     setBusy(true);
@@ -141,6 +176,7 @@ export default function SecurityManager({ forceSetup = false }: { forceSetup?: b
   }
 
   return (
+    <>
     <Card
       title="Two-factor authentication"
       description="Adds a 6-digit code from an authenticator app on top of your password."
@@ -222,5 +258,47 @@ export default function SecurityManager({ forceSetup = false }: { forceSetup?: b
         </div>
       )}
     </Card>
+    <Card
+      title="Active sessions"
+      description="Every device currently signed into this backoffice login."
+      action={
+        sessions && sessions.filter((s) => !s.current).length > 0 ? (
+          <Button type="button" variant="secondary" loading={busy} onClick={signOutEverywhereElse}>
+            Sign out everywhere else
+          </Button>
+        ) : undefined
+      }
+    >
+      {sessions === null ? (
+        <p className="text-sm text-[var(--text-3)]">Loading...</p>
+      ) : sessions.length === 0 ? (
+        <p className="text-sm text-[var(--text-3)]">No active sessions found.</p>
+      ) : (
+        <div className="flex max-h-[280px] flex-col gap-2 overflow-y-auto">
+          {sessions.map((s) => (
+            <div key={s.sessionId} className="flex items-center justify-between rounded-md border border-[var(--border-strong)] px-3 py-2">
+              <div>
+                <div className="text-xs text-[var(--text-1)]">
+                  {s.userAgent ? s.userAgent.slice(0, 48) : "Unknown device"}
+                  {s.current ? <span className="ml-1.5 text-[var(--buy)]">(this device)</span> : null}
+                </div>
+                <div className="font-mono text-[11px] text-[var(--text-3)]">
+                  {s.ip ?? "unknown IP"} · {new Date(s.createdAt).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                </div>
+              </div>
+              <Button
+                type="button"
+                variant="secondary"
+                disabled={revokingSessionId === s.sessionId}
+                onClick={() => revokeSessionRow(s.sessionId)}
+              >
+                {revokingSessionId === s.sessionId ? "…" : s.current ? "Log out" : "Revoke"}
+              </Button>
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
+    </>
   );
 }

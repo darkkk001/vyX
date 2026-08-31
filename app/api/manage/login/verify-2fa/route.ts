@@ -56,7 +56,13 @@ export async function POST(request: NextRequest) {
 
   await deletePendingAdmin2faChallenge(pendingToken);
 
-  const token = await createSessionToken({ adminId: admin.id, role: admin.role, brokerId: admin.brokerId }, remember);
+  const userAgent = request.headers.get("user-agent");
+  const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? null;
+  const token = await createSessionToken(
+    { adminId: admin.id, role: admin.role, brokerId: admin.brokerId },
+    remember,
+    { userAgent, ip }
+  );
   await prisma.adminUser.update({ where: { id: admin.id }, data: { lastLoginAt: new Date() } });
 
   const response = NextResponse.json({ id: admin.id, email: admin.email, role: admin.role, brokerId: admin.brokerId });

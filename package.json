@@ -15,7 +15,6 @@
     "@vercel/blob": "^2.8.0",
     "bcryptjs": "^3.0.3",
     "ioredis": "^6.0.0",
-    "jose": "^6.2.8",
     "klinecharts": "^9.8.10",
     "nats": "^2.29.3",
     "next": "15.5.23",

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getAdminSession, requireAdminRole } from "@/lib/auth";
+import { getAdminSession, requireAdminRole, revokeAllAdminSessions } from "@/lib/auth";
 import { PERMISSIONS } from "@/lib/permissions";
 
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -86,6 +86,17 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     }
     return admin;
   });
+
+  // Phase 1 trust pack §2 -- disabling an admin used to only stop future
+  // logins; an already-open session (this app's own cookie, or an open
+  // services/api-gateway admin WebSocket) kept working until its token's
+  // own TTL expired. Runs after the transaction commits, not inside it --
+  // Redis isn't part of that transaction's atomicity anyway, and this
+  // being a beat slower than the DB write is harmless (nothing re-reads
+  // status from Redis).
+  if (status === "DISABLED") {
+    await revokeAllAdminSessions(id);
+  }
 
   return NextResponse.json({ id: updated.id, status: updated.status, extraPermissions: updated.extraPermissions });
 }
