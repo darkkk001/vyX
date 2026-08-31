@@ -821,6 +821,13 @@ async fn main() {
         gap_fill_tracker.clone(),
     );
 
+    // Nightly Candle retention -- Contabo DB hygiene audit (M1 was 68% of
+    // all Candle rows). See market_data::retention's own module doc for
+    // why this runs in bounded batches rather than one DELETE, and for
+    // the CANDLE_M1_RETENTION_DAYS/CANDLE_M5_RETENTION_DAYS env vars this
+    // reads (defaults 30/180).
+    market_data::retention::spawn_candle_retention(pool.clone());
+
     let state = Arc::new(AppState {
         pool,
         nats,

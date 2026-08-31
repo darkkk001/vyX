@@ -1,0 +1,36 @@
+-- Candle_symbol_timeframe_bucketStart_idx duplicated Candle_pkey exactly
+-- (same columns, same order: symbol, timeframe, "bucketStart") -- every
+-- Candle write was maintaining two identical btree indexes instead of
+-- one. Candle_pkey stays: it's the unique index
+-- market_data::db's ON CONFLICT (symbol, timeframe, "bucketStart") relies
+-- on for every upsert, and Postgres already uses a unique index for plain
+-- lookups/range scans just as well as a non-unique one -- nothing was
+-- gained by the second index existing.
+--
+-- Plain DROP INDEX, not CONCURRENTLY: `prisma migrate deploy` runs this
+-- file inside one transaction, and CONCURRENTLY cannot run inside a
+-- transaction block (Postgres error 25001 -- it would just fail here, not
+-- silently degrade). Dropping an index is a catalog-only operation with
+-- no table rewrite, so the ACCESS EXCLUSIVE lock this briefly takes is on
+-- the order of milliseconds -- safe to run against live Neon without a
+-- maintenance window.
+DROP INDEX IF EXISTS "Candle_symbol_timeframe_bucketStart_idx";
+
+-- New supporting index for the nightly M1/M5 retention job (engine's
+-- retention::spawn_candle_retention) -- its DELETE filters by
+-- (timeframe, "bucketStart") without symbol, which Candle_pkey can't
+-- serve as an index scan since it leads with symbol.
+--
+-- NOT CONCURRENTLY, same transaction-block constraint as above -- but
+-- unlike DROP INDEX, CREATE INDEX on an existing table has to scan and
+-- sort every existing row, so the lock this takes (blocks writes to
+-- Candle, not reads) is proportional to the table's current size, not
+-- milliseconds. If Candle is large enough on this Neon instance for that
+-- to matter, run this one migration during a quiet window, or apply this
+-- specific index manually beforehand via `CREATE INDEX CONCURRENTLY
+-- "Candle_timeframe_bucketStart_idx" ON "Candle" (timeframe, "bucketStart");`
+-- against Neon directly and then `prisma migrate resolve --applied
+-- 20260831060000_drop_redundant_candle_index` so `migrate deploy` sees
+-- this migration as already satisfied instead of trying to create the
+-- index again.
+CREATE INDEX IF NOT EXISTS "Candle_timeframe_bucketStart_idx" ON "Candle" (timeframe, "bucketStart");

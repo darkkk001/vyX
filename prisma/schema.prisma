@@ -672,7 +672,17 @@ model Candle {
   updatedAt   DateTime        @updatedAt @db.Timestamptz(3)
 
   @@id([symbol, timeframe, bucketStart])
-  @@index([symbol, timeframe, bucketStart])
+  // The old @@index([symbol, timeframe, bucketStart]) here duplicated
+  // this @@id's own index exactly (same columns, same order) -- every
+  // write maintained two identical btree indexes for nothing, since
+  // Postgres already uses a unique index for plain lookups/range scans
+  // just as well as a non-unique one. Dropped in migration
+  // 20260831060000_drop_redundant_candle_index. This one instead backs
+  // the nightly retention job's own WHERE clause (engine's
+  // retention::spawn_candle_retention -- filters by timeframe +
+  // bucketStart without symbol, which @@id can't serve as an index scan
+  // since it leads with symbol).
+  @@index([timeframe, bucketStart])
 }
 
 // Per-broker override: spread markup, swap, lot limits, enable/disable.
