@@ -294,19 +294,34 @@ html, body, #root {
 .wl-price.down { color: var(--sell); }
 .wl-pos { color: var(--buy); }
 .wl-neg { color: var(--sell); }
-.wl-alert-btn { background: none; border: none; color: var(--text-3); cursor: pointer; padding: 2px; display: flex; align-items: center; justify-self: end; }
+/* Hover-only: hidden until the row is hovered (or the alert is already
+   set, so an existing alert stays visible as a status indicator without
+   needing to hover to find it) -- not a permanent column, per the
+   watchlist-cleanup request. */
+.wl-alert-btn { background: none; border: none; color: var(--text-3); cursor: pointer; padding: 2px; display: flex; align-items: center; justify-self: end; opacity: 0; transition: opacity .12s; }
+.wl-item:hover .wl-alert-btn, .wl-alert-btn.active { opacity: 1; }
 .wl-alert-btn:hover { color: var(--text-2); }
 .wl-alert-btn.active { color: var(--text-1); }
 .wl-drag-handle { color: var(--text-3); cursor: grab; font-size: 11px; letter-spacing: -1px; user-select: none; }
 .wl-item.dragging { opacity: .4; }
-.wl-signal { font-size: 11px; text-align: center; }
-.wl-signal.wl-pos { color: var(--buy); }
-.wl-signal.wl-neg { color: var(--sell); }
 .wl-occ-buttons { display: none; gap: 3px; }
 .wl-occ-btn { width: 18px; height: 18px; border-radius: 4px; border: none; cursor: pointer; font-size: 10px; font-weight: 700; line-height: 1; }
 .wl-occ-btn.buy { background: var(--buy); color: #04140C; }
 .wl-occ-btn.sell { background: var(--sell); color: #2A0808; }
 .wl-hint { font-size: 10px; color: var(--text-3); text-align: center; padding: 10px 8px 4px; margin-top: auto; }
+.wl-add-symbol-row {
+  display: flex; align-items: center; gap: 6px; padding: 8px 8px; margin-top: 2px;
+  border-radius: 8px; cursor: pointer; font-size: 12px; color: var(--text-3);
+  border: 1px dashed var(--border-strong); transition: background .12s, color .12s;
+}
+.wl-add-symbol-row:hover { background: var(--bg-3); color: var(--text-1); }
+.wl-add-symbol-icon { font-weight: 700; font-size: 13px; line-height: 1; }
+.wl-add-inline-btn {
+  background: none; border: 1px solid var(--border-strong); border-radius: 4px;
+  color: var(--text-2); cursor: pointer; width: 18px; height: 18px; line-height: 1;
+  font-size: 12px; font-weight: 700; display: flex; align-items: center; justify-content: center;
+}
+.wl-add-inline-btn:hover { background: var(--bg-3); color: var(--text-1); }
 
 .wl-context-menu {
   position: fixed; display: none; background: var(--bg-2);

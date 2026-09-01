@@ -4,6 +4,7 @@
 // desktop shell's window.vyxDesktop bridge) lives in lib/desktop-api.ts,
 // shared with manager-shell/admin-shell's own API wrappers.
 import { apiCall as call, apiCallForm as callForm, serverNow, ApiError } from "./desktop-api";
+import type { SymbolCategory } from "./market-simulator";
 export { serverNow, ApiError };
 
 export type AccountInfo = {
@@ -101,6 +102,8 @@ export type ApiLinkedAccount = {
 };
 
 export type ApiBrokerBranding = { brokerName: string; brokerLogoUrl: string; supportEmail: string | null; primaryColor: string | null };
+
+export type ApiWatchlistSymbol = { id: string; name: string; category: SymbolCategory; digits: number; contractSize: string };
 
 export const tradeApi = {
   // Public, no session needed -- see app/api/trade/broker-branding/
@@ -219,4 +222,17 @@ export const tradeApi = {
     call("/api/trade/two-factor/disable", { method: "POST", body: JSON.stringify({ password }) }),
   sessions: () => call<ApiSession[]>("/api/trade/sessions"),
   revokeSession: (sessionId: string) => call(`/api/trade/sessions/${sessionId}`, { method: "DELETE" }),
+  // The broker's full enabled-symbol universe (app/api/trade/symbols) --
+  // replaces lib/market-simulator.ts's old hardcoded SYMBOL_DEFS as the
+  // source of "what symbols exist." The watchlist itself
+  // (app/api/trade/watchlist) is a separate, ordered SUBSET of this.
+  symbols: () => call<{ symbols: ApiWatchlistSymbol[] }>("/api/trade/symbols"),
+  watchlist: () => call<{ symbols: ApiWatchlistSymbol[] }>("/api/trade/watchlist"),
+  addToWatchlist: (symbolId: string) =>
+    call<{ symbols: ApiWatchlistSymbol[] }>("/api/trade/watchlist", { method: "POST", body: JSON.stringify({ symbolId }) }),
+  hideFromWatchlist: (symbolId: string) => call(`/api/trade/watchlist/${symbolId}`, { method: "DELETE" }),
+  resetWatchlist: () => call<{ symbols: ApiWatchlistSymbol[] }>("/api/trade/watchlist", { method: "DELETE" }),
+  // Takes symbol NAMES, not ids -- see the route's own comment on why.
+  reorderWatchlist: (symbolNames: string[]) =>
+    call("/api/trade/watchlist/reorder", { method: "PUT", body: JSON.stringify({ symbolNames }) }),
 };

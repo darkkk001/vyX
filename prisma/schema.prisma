@@ -416,6 +416,8 @@ model Account {
   // sourceId there is unrelated/polymorphic, not a real FK).
   mirrorRuleTargets MirrorRule[] @relation("MirrorRuleTarget")
 
+  watchlistItems WatchlistItem[]
+
   @@unique([brokerId, email, accountType])
   @@index([brokerId])
   @@index([groupId])
@@ -666,6 +668,28 @@ model Symbol {
   lpRoutingRules LpRoutingRule[]
   groupAllowlists GroupSymbol[]
   groupSymbolConfigs GroupSymbolConfig[]
+  watchlistItems WatchlistItem[]
+}
+
+// Per-account watchlist, server-side (not localStorage) so web and desktop
+// stay in sync -- see the terminal's own watchlist feature. A row's mere
+// existence means "visible in this account's watchlist"; hiding a symbol
+// deletes its row rather than flagging it, and "reset to default" is just
+// "delete every row for this account" (the next GET reseeds the default
+// set, same as a brand new account) -- no separate hidden/visible flag to
+// keep in sync. `position` is a plain sort index, rewritten wholesale on
+// every reorder (small N, no need for a fractional-index scheme).
+model WatchlistItem {
+  id        String   @id @default(cuid())
+  accountId String
+  account   Account  @relation(fields: [accountId], references: [id])
+  symbolId  String
+  symbol    Symbol   @relation(fields: [symbolId], references: [id])
+  position  Int
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  @@unique([accountId, symbolId])
+  @@index([accountId])
 }
 
 /// Latest tick per symbol, pushed by an MT5 EA bridge (see

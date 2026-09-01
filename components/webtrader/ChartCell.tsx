@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { SYMBOL_DEFS, fmt, type MarketState, type Timeframe, type FeedStatus } from "@/lib/market-simulator";
+import { fmt, type MarketState, type Timeframe, type FeedStatus, type SymbolDef } from "@/lib/market-simulator";
 import { computeChartLines } from "@/lib/chart-lines";
 import type { ApiPosition, ApiOrder } from "@/lib/trade-api";
 import KLineChartPanel from "./KLineChartPanel";
@@ -22,6 +22,7 @@ const CELL_TF_LABELS: { key: Timeframe; label: string }[] = [
 // to whatever's now focused (there's still only one "symbol you're trading"
 // at a time, same as before — the grid only changes what's on screen).
 export default function ChartCell({
+  symbols,
   symbol,
   tf,
   m,
@@ -33,6 +34,11 @@ export default function ChartCell({
   onSymbolChange,
   onTfChange,
 }: {
+  // The broker's real enabled-symbol universe (WebTrader's own allSymbols
+  // state) -- this cell's own symbol-switcher dropdown used to read the
+  // hardcoded SYMBOL_DEFS bootstrap directly, capping it at 10 regardless
+  // of what WebTrader's own picker showed.
+  symbols: SymbolDef[];
   symbol: string;
   tf: Timeframe;
   m: MarketState;
@@ -70,7 +76,7 @@ export default function ChartCell({
             onClick={(e) => e.stopPropagation()}
           >
             <div style={{ maxHeight: 220, overflowY: "auto" }}>
-              {SYMBOL_DEFS.map((s) => (
+              {symbols.map((s) => (
                 <div
                   key={s.name}
                   className={`acc-option${s.name === symbol ? " active" : ""}`}
