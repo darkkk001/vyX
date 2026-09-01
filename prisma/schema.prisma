@@ -182,6 +182,20 @@ enum GroupType {
   DEMO
 }
 
+// Forward-compatible subset of the Auto Dealing design in
+// REALTIME-SYNC-AND-DEALING-BRIEF §9 -- enum names kept consistent with it
+// deliberately. Group.dealingMode overrides whether this group's MARKET
+// orders reach the manual dealing queue, independent of GroupType's own
+// book-routing classification -- see Group.dealingMode's own field
+// comment for why those two needed to be decoupled (a group can be
+// correctly B-book/DEALING-classified for accounting while still needing
+// instant fills, e.g. a reverse-mirror master feeding strategy).
+enum GroupDealingMode {
+  INHERIT
+  AUTO
+  MANUAL
+}
+
 // Classification only -- a broker's own naming for an account-type tier
 // (Standard/Pro/ECN/Zero are the common retail-broker convention). This
 // field does NOT auto-generate or constrain pricing in any way; the
@@ -486,6 +500,20 @@ model Group {
   // default -- zero behavior change for existing groups until a broker
   // deliberately sets one to LP or DEMO.
   groupType GroupType @default(DEALING)
+  // Overrides whether this group's MARKET orders reach the manual dealing
+  // queue -- independent of groupType, forceDealingMode, and
+  // Broker.dealingModeAt, all three of which stay meaningful for every
+  // group that doesn't set this. INHERIT (default) = zero behavior
+  // change, the existing three-way check decides exactly as before. AUTO
+  // = always auto-fill for this group (still subject to the margin gate
+  // and server price -- never a raw bypass of trade validity), regardless
+  // of any broker/group-level manual-review setting -- for a group whose
+  // whole strategy depends on instant fills (e.g. a reverse-mirror
+  // source group) but is still correctly groupType=DEALING for book
+  // accounting. MANUAL = always queue for this group, even if nothing
+  // else would have. See app/api/trade/orders/route.ts's routing check
+  // and docs/mirror.md.
+  dealingMode GroupDealingMode @default(INHERIT)
   // See GroupTier's own doc comment -- classification only, doesn't
   // affect pricing by itself. Defaults to STANDARD, same "config now"
   // zero-change-for-existing-groups convention as groupType above.

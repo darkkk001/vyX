@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { Prisma, GroupType, GroupTier } from "@prisma/client";
+import { Prisma, GroupType, GroupTier, GroupDealingMode } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 
 const GROUP_TYPES: GroupType[] = ["LP", "DEALING", "DEMO"];
 const GROUP_TIERS: GroupTier[] = ["STANDARD", "PRO", "ECN", "ZERO"];
+const GROUP_DEALING_MODES: GroupDealingMode[] = ["INHERIT", "AUTO", "MANUAL"];
 
 async function requireManager() {
   const session = await getAdminSession();
@@ -38,6 +39,7 @@ export async function GET() {
       swapFree: g.swapFree,
       forceDealingMode: g.forceDealingMode,
       groupType: g.groupType,
+      dealingMode: g.dealingMode,
       tier: g.tier,
     }))
   );
@@ -92,6 +94,7 @@ export async function POST(request: NextRequest) {
   const swapFree = body?.swapFree === true;
   const forceDealingMode = body?.forceDealingMode === true;
   const groupType = GROUP_TYPES.includes(body?.groupType) ? (body.groupType as GroupType) : "DEALING";
+  const dealingMode = GROUP_DEALING_MODES.includes(body?.dealingMode) ? (body.dealingMode as GroupDealingMode) : "INHERIT";
   const tier = GROUP_TIERS.includes(body?.tier) ? (body.tier as GroupTier) : "STANDARD";
 
   try {
@@ -102,7 +105,7 @@ export async function POST(request: NextRequest) {
         await tx.group.updateMany({ where: { brokerId, isDefault: true }, data: { isDefault: false } });
       }
       const created = await tx.group.create({
-        data: { brokerId, name, leverage, marginCallLevel, stopOutLevel, isDefault, maxLotSize, tradingRestriction, swapFree, forceDealingMode, groupType, tier },
+        data: { brokerId, name, leverage, marginCallLevel, stopOutLevel, isDefault, maxLotSize, tradingRestriction, swapFree, forceDealingMode, groupType, dealingMode, tier },
       });
       await tx.auditLog.create({
         data: {
@@ -122,6 +125,7 @@ export async function POST(request: NextRequest) {
             swapFree,
             forceDealingMode,
             groupType,
+            dealingMode,
             tier,
           },
         },
@@ -142,6 +146,7 @@ export async function POST(request: NextRequest) {
         swapFree: group.swapFree,
         forceDealingMode: group.forceDealingMode,
         groupType: group.groupType,
+        dealingMode: group.dealingMode,
         tier: group.tier,
       },
       { status: 201 }
