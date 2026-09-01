@@ -8,8 +8,11 @@ export async function GET() {
   if (!session) {
     return NextResponse.json({ error: "not authenticated" }, { status: 401 });
   }
-  const symbols = await getOrSeedWatchlist(session.accountId, session.brokerId);
-  return NextResponse.json({ symbols });
+  const [symbols, account] = await Promise.all([
+    getOrSeedWatchlist(session.accountId, session.brokerId),
+    prisma.account.findUnique({ where: { id: session.accountId }, select: { watchlistCollapsedCategories: true } }),
+  ]);
+  return NextResponse.json({ symbols, collapsedCategories: account?.watchlistCollapsedCategories ?? [] });
 }
 
 // Add a symbol to the watchlist -- appended at the end. Idempotent: an

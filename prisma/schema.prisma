@@ -406,6 +406,14 @@ model Account {
   // own defaults (see lib/chart-settings.ts's DEFAULT_CHART_SETTINGS).
   chartSettings Json?
 
+  // Which watchlist category headers (Forex/Metals/.../Crypto) are
+  // collapsed right now -- server-side like the watchlist's own row order
+  // (not localStorage), so web and desktop stay in sync. Empty array
+  // (the default) means every category renders expanded; a category with
+  // no symbols currently in the watchlist just never renders a header at
+  // all, collapsed or not, so a stale entry here is harmless.
+  watchlistCollapsedCategories SymbolCategory[] @default([])
+
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
 
