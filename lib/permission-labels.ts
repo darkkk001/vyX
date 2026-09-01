@@ -16,6 +16,7 @@ export const PERMISSIONS = [
   "FUNDS_APPROVAL",
   "IB_PAYOUTS",
   "ACCOUNT_FINANCE",
+  "MIRROR_MANAGE",
 ] as const;
 export type Permission = (typeof PERMISSIONS)[number];
 
@@ -27,4 +28,5 @@ export const PERMISSION_LABELS: Record<Permission, string> = {
   FUNDS_APPROVAL: "Funds approval",
   IB_PAYOUTS: "IB payouts",
   ACCOUNT_FINANCE: "Account finance (add/adjust/leverage/status)",
+  MIRROR_MANAGE: "Reverse mirror rules (create/edit/kill switch)",
 };

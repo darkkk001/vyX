@@ -5,6 +5,7 @@ import { getAccountSession } from "@/lib/account-auth";
 import { closePositionInTx } from "@/lib/position-close";
 import { publishTradingEvent } from "@/lib/nats";
 import { checkLiveMarketPrice } from "@/lib/risk";
+import * as mirror from "@/lib/mirror";
 
 // Closing (fully or partially) is the one place a trade changes the
 // account balance. Realized P&L is computed server-side and applied
@@ -103,6 +104,19 @@ export async function POST(
       },
     });
   }
+  // docs/briefs/VYX-MIRROR-V0-BRIEF.md -- after this route's own
+  // transaction has committed, never inside it (same reasoning as the
+  // fill-path hook in app/api/trade/orders/route.ts). `position.volume`
+  // here is still this route's own top-of-function read, from before
+  // closePositionInTx reduced/closed the row -- exactly the "source
+  // volume before this close" onClose needs to compute a proportional
+  // close on the mirrored side.
+  await mirror.onClose(prisma, {
+    positionId: position.id,
+    brokerId: session.brokerId,
+    closedLots: closeVolume,
+    sourceVolumeBeforeClose: position.volume,
+  }).catch((err) => console.error("mirror.onClose failed", err));
   await publishTradingEvent("PositionClosed", { position_id: position.id, account_id: session.accountId, broker_id: session.brokerId });
   return NextResponse.json({ position: outcome.position, transaction: outcome.transaction, partial: outcome.partial });
 }

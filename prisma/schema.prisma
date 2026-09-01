@@ -292,6 +292,7 @@ model Broker {
   notifications   Notification[]
   liquidityProviders LiquidityProvider[]
   lpRoutingRules  LpRoutingRule[]
+  mirrorRules     MirrorRule[]
 }
 
 model AdminUser {
@@ -327,6 +328,7 @@ model AdminUser {
   markedTxns     Transaction[]  @relation("TransactionMarkedBy")
   auditLogs      AuditLog[]     @relation("AuditLogActor")
   closedPosition Position[]     @relation("PositionClosedBy")
+  createdMirrorRules MirrorRule[]
 
   @@index([brokerId])
 }
@@ -393,6 +395,12 @@ model Account {
   ibLinkAsClient IbRelationship?  @relation("ClientAccount")
 
   convertedFromLead Lead?
+
+  // The account is the *target* (master) of a mirror rule -- see
+  // MirrorRule's own doc comment. Named to be unambiguous from a future
+  // "this account is a mirror *source*" relation (out of scope for v0,
+  // sourceId there is unrelated/polymorphic, not a real FK).
+  mirrorRuleTargets MirrorRule[] @relation("MirrorRuleTarget")
 
   @@unique([brokerId, email, accountType])
   @@index([brokerId])
@@ -821,6 +829,106 @@ model Position {
 
   @@index([brokerId])
   @@index([accountId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Reverse mirror (docs/briefs/VYX-MIRROR-V0-BRIEF.md) — v0 hooks the
+// legacy order-fill/position-close paths directly (lib/mirror.ts's
+// onFill/onClose). This schema is the permanent shape: Phase 3 only
+// rewires the hook to engine fill-events, so nothing here should need to
+// change when that happens — see docs/mirror.md.
+// ─────────────────────────────────────────────────────────────────────────
+
+enum MirrorSource {
+  GROUP
+  ACCOUNT
+}
+
+enum MirrorDirection {
+  REVERSE
+  SAME
+}
+
+// One rule = "mirror trades from this group/account onto this target
+// account." sourceId is intentionally NOT a foreign key -- it points at
+// either Group.id or Account.id depending on sourceType, the same
+// "polymorphic reference, resolved by the app layer" shape AuditLog.
+// entityId/Notification.entityId already use in this schema, rather than
+// two nullable FK columns with a check constraint. targetAccountId IS a
+// real FK (there's exactly one target, always an Account) with RESTRICT,
+// matching every other required Account reference in this schema (Account
+// rows are never hard-deleted).
+model MirrorRule {
+  id       String @id @default(cuid())
+  brokerId String
+  broker   Broker @relation(fields: [brokerId], references: [id])
+
+  sourceType MirrorSource
+  sourceId   String // Group.id or Account.id, per sourceType -- see above
+
+  targetAccountId String
+  targetAccount   Account @relation("MirrorRuleTarget", fields: [targetAccountId], references: [id])
+
+  direction  MirrorDirection @default(REVERSE)
+  multiplier Decimal         @default(1) @db.Decimal(10, 4) // lot scale, e.g. 0.5 = half size
+  // CSV of Symbol.name, e.g. "XAUUSD,EURUSD" -- null = every symbol the
+  // source trades is mirrored. Free-text CSV (not a join table) matches
+  // this schema's existing BrokerSymbol.symbolMap-style free-text
+  // conventions for a v0-scoped allowlist; a join table is the natural
+  // upgrade if per-symbol config (not just inclusion) is ever needed.
+  symbolFilter String?
+
+  // Both null = no cap (v0 default -- a broker must opt into limits
+  // deliberately, same "null = unlimited" convention as Group.maxLotSize/
+  // Broker.totalExposureLimit elsewhere in this schema).
+  maxOpenLots  Decimal? @db.Decimal(10, 2) // sum of this rule's own open target-side lots
+  maxDailyLoss Decimal? @db.Decimal(18, 2) // target account's realized-today + floating P/L
+
+  enabled Boolean @default(true)
+  // Set the instant a cap breaches (lib/mirror.ts's checkKillSwitch) --
+  // the timestamp IS the audit trail entry point, same shape as
+  // Broker.tradingHaltedAt/dealingModeAt. enabled is also flipped false at
+  // the same time so every other read site only ever needs to check
+  // `enabled`, not `enabled && !killedAt`.
+  killedAt DateTime?
+
+  // Count-only, not a log -- the real detail lives in AuditLog rows
+  // (action: "MIRROR_FAILED", entityType: "MirrorRule"). Surfaced in the
+  // rules table so a broker admin sees "3 failures" without opening the
+  // audit log, and can decide whether a rule needs attention.
+  failureCount Int @default(0)
+
+  createdById String
+  createdBy   AdminUser @relation(fields: [createdById], references: [id])
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  links MirrorLink[]
+
+  @@index([brokerId])
+  @@index([sourceType, sourceId])
+  @@index([targetAccountId])
+}
+
+// Audit trail AND the live source-position -> target-position map lib/
+// mirror.ts's onClose needs to find what to close. sourcePositionId is
+// unique -- one source position mirrors to at most one target position,
+// which is also what makes onFill idempotent (a retried/duplicate onFill
+// call for the same source position hits this unique constraint instead
+// of opening a second mirror).
+model MirrorLink {
+  id     String     @id @default(cuid())
+  ruleId String
+  rule   MirrorRule @relation(fields: [ruleId], references: [id])
+
+  sourcePositionId String   @unique
+  targetPositionId String   @unique
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  @@index([ruleId])
 }
 
 // ─────────────────────────────────────────────────────────────────────────

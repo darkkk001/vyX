@@ -84,6 +84,12 @@ const LABELS: Record<string, string> = {
   GATEWAY_ORDER_CANCELLED: "Cancelled order (Gateway)",
   GATEWAY_POSITION_MODIFIED: "Modified position SL/TP (Gateway)",
   INTERNAL_TRANSFER: "Internal transfer",
+  MIRROR_RULE_CREATED: "Created mirror rule",
+  MIRROR_RULE_UPDATED: "Updated mirror rule",
+  MIRROR_FILLED: "Mirrored fill",
+  MIRROR_CLOSED: "Mirrored close",
+  MIRROR_FAILED: "Mirror order failed",
+  MIRROR_KILL_SWITCH: "Mirror rule kill switch triggered",
 };
 
 export function humanizeAction(action: string): string {
