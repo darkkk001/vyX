@@ -30,6 +30,11 @@ export async function GET() {
       category: bs.symbol.category,
       digits: bs.symbol.digits,
       contractSize: bs.symbol.contractSize.toString(),
+      // Chart interaction pack -- client-side preview only for the
+      // draggable SL/TP/pending-entry lines' live red-flash-on-violation;
+      // the server's own check (lib/trading.ts's validateSlTp /
+      // validatePendingPriceDistance) is what's actually authoritative.
+      stopLevel: bs.stopLevel,
     })),
   });
 }

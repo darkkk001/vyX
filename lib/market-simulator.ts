@@ -24,6 +24,11 @@ export type SymbolDef = {
   base: number;
   vol: number;
   contractSize: number;
+  // Chart interaction pack -- MT4/5-style minimum SL/TP/pending-entry
+  // distance, in points, from the current price. 0 (every SYMBOL_DEFS
+  // bootstrap entry, and any pre-migration broker) means unrestricted.
+  // Client-side preview only -- see BrokerSymbol.stopLevel's own comment.
+  stopLevel: number;
 };
 
 // Bootstrap/fallback set only -- used to seed the very first render before
@@ -35,16 +40,16 @@ export type SymbolDef = {
 // everywhere, not a fallback). WebTrader.tsx replaces this with the
 // server's real list as soon as it arrives.
 export const SYMBOL_DEFS: SymbolDef[] = [
-  { name: "XAUUSD", category: "METALS", digits: 2, base: 2352.40, vol: 0.35, contractSize: 100 },
-  { name: "EURUSD", category: "FOREX", digits: 5, base: 1.0850, vol: 0.00006, contractSize: 100000 },
-  { name: "GBPUSD", category: "FOREX", digits: 5, base: 1.2680, vol: 0.00007, contractSize: 100000 },
-  { name: "BTCUSD", category: "CRYPTO", digits: 1, base: 62150.0, vol: 25, contractSize: 1 },
-  { name: "US30", category: "INDICES", digits: 1, base: 38950.0, vol: 4.5, contractSize: 1 },
-  { name: "USDJPY", category: "FOREX", digits: 3, base: 156.20, vol: 0.008, contractSize: 100000 },
-  { name: "AUDUSD", category: "FOREX", digits: 5, base: 0.6520, vol: 0.00005, contractSize: 100000 },
-  { name: "XAGUSD", category: "METALS", digits: 3, base: 27.80, vol: 0.02, contractSize: 5000 },
-  { name: "ETHUSD", category: "CRYPTO", digits: 2, base: 3420.00, vol: 3.2, contractSize: 1 },
-  { name: "NAS100", category: "INDICES", digits: 1, base: 18240.0, vol: 5.5, contractSize: 1 },
+  { name: "XAUUSD", category: "METALS", digits: 2, base: 2352.40, vol: 0.35, contractSize: 100, stopLevel: 0 },
+  { name: "EURUSD", category: "FOREX", digits: 5, base: 1.0850, vol: 0.00006, contractSize: 100000, stopLevel: 0 },
+  { name: "GBPUSD", category: "FOREX", digits: 5, base: 1.2680, vol: 0.00007, contractSize: 100000, stopLevel: 0 },
+  { name: "BTCUSD", category: "CRYPTO", digits: 1, base: 62150.0, vol: 25, contractSize: 1, stopLevel: 0 },
+  { name: "US30", category: "INDICES", digits: 1, base: 38950.0, vol: 4.5, contractSize: 1, stopLevel: 0 },
+  { name: "USDJPY", category: "FOREX", digits: 3, base: 156.20, vol: 0.008, contractSize: 100000, stopLevel: 0 },
+  { name: "AUDUSD", category: "FOREX", digits: 5, base: 0.6520, vol: 0.00005, contractSize: 100000, stopLevel: 0 },
+  { name: "XAGUSD", category: "METALS", digits: 3, base: 27.80, vol: 0.02, contractSize: 5000, stopLevel: 0 },
+  { name: "ETHUSD", category: "CRYPTO", digits: 2, base: 3420.00, vol: 3.2, contractSize: 1, stopLevel: 0 },
+  { name: "NAS100", category: "INDICES", digits: 1, base: 18240.0, vol: 5.5, contractSize: 1, stopLevel: 0 },
 ];
 
 // `base`/`vol` are only ever read as a placeholder bid/ask BEFORE a real
@@ -73,7 +78,7 @@ const PLACEHOLDER_HINTS: Record<string, { base: number; vol: number }> = Object.
 // (app/api/trade/symbols's response shape) into a SymbolDef -- the only
 // place base/vol placeholders get invented for a symbol this app doesn't
 // already have hand-picked numbers for.
-export function buildSymbolDef(row: { id: string; name: string; category: SymbolCategory; digits: number; contractSize: string | number }): SymbolDef {
+export function buildSymbolDef(row: { id: string; name: string; category: SymbolCategory; digits: number; contractSize: string | number; stopLevel?: number }): SymbolDef {
   const hint = PLACEHOLDER_HINTS[row.name];
   const contractSize = typeof row.contractSize === "string" ? parseFloat(row.contractSize) : row.contractSize;
   return {
@@ -84,6 +89,7 @@ export function buildSymbolDef(row: { id: string; name: string; category: Symbol
     contractSize: Number.isFinite(contractSize) ? contractSize : 100000,
     base: hint?.base ?? 1,
     vol: hint?.vol ?? (row.digits >= 3 ? 0.01 : 0.0001),
+    stopLevel: row.stopLevel ?? 0,
   };
 }
 

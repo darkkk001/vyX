@@ -19,13 +19,20 @@ import {
 } from "@/lib/market-simulator";
 import { tradeApi, serverNow, ApiError, type AccountInfo, type ApiPosition, type ApiOrder, type ApiFundsRequest, type ApiKycStatus, type ApiLinkedAccount, type ApiSession } from "@/lib/trade-api";
 import AddSymbolDialog from "./AddSymbolDialog";
-import KLineChartPanel, { type KLineChartHandle, type ChartLine } from "./KLineChartPanel";
+import ChartSettingsDialog from "./ChartSettingsDialog";
+import KLineChartPanel, {
+  type KLineChartHandle,
+  type ChartLine,
+  type PositionLineData,
+  type EditablePriceLineData,
+} from "./KLineChartPanel";
 import DesktopTitleBar from "./DesktopTitleBar";
 import SessionClock from "./SessionClock";
 import NewsPanel from "./NewsPanel";
 import ChartCell from "./ChartCell";
 import SmartTradeManager from "./SmartTradeManager";
-import { computeChartLines } from "@/lib/chart-lines";
+import { computeOrderReferenceLines } from "@/lib/chart-lines";
+import { DEFAULT_CHART_SETTINGS, type ChartSettings } from "@/lib/chart-settings";
 
 const TF_LABELS: { key: Timeframe; label: string }[] = [
   { key: "M1", label: "1m" },
@@ -505,6 +512,11 @@ export default function WebTrader({
   useDismiss(chartContextMenu !== null, () => setChartContextMenu(null), chartContextMenuRef);
   const chartRef = useRef<KLineChartHandle>(null);
   const [maActive, setMaActive] = useState(false);
+  // Chart interaction pack -- persisted server-side (lib/chart-settings.ts),
+  // same shape as watchlist prefs. Starts at the client default so the
+  // chart never renders unstyled before the GET resolves.
+  const [chartSettings, setChartSettings] = useState<ChartSettings>(DEFAULT_CHART_SETTINGS);
+  const [chartSettingsOpen, setChartSettingsOpen] = useState(false);
 
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
   const [cpCurrent, setCpCurrent] = useState("");
@@ -599,6 +611,7 @@ export default function WebTrader({
     setGenericModalValue(defaultValue);
     setGenericModal({ title: "Enter value", message, showInput: true, defaultValue, okLabel: "Save", onConfirm: (v) => { if (v !== null) onSubmit(v); } });
   }, []);
+
 
   // ---------- data loading ----------
   const refreshAccount = useCallback(async () => {
@@ -833,7 +846,13 @@ export default function WebTrader({
   useEffect(() => {
     (async () => {
       try {
-        await Promise.all([refreshAccount(), refreshPositions(), refreshOrders(), refreshSymbolsAndWatchlist()]);
+        await Promise.all([
+          refreshAccount(),
+          refreshPositions(),
+          refreshOrders(),
+          refreshSymbolsAndWatchlist(),
+          tradeApi.chartSettings().then((res) => setChartSettings(res.settings)).catch(() => {}),
+        ]);
       } catch (err) {
         setLoadError(err instanceof Error ? err.message : "failed to load account data");
       }
@@ -1874,25 +1893,85 @@ export default function WebTrader({
 
   // ---------- inline SL/TP edit ----------
   const [inlineEditing, setInlineEditing] = useState<{ id: string; field: "sl" | "tp"; value: string } | null>(null);
-  async function commitInlineEdit(id: string, field: "sl" | "tp", raw: string) {
+  // Returns whether the edit actually succeeded -- the table's own
+  // onBlur call sites (below) don't need it and just fire-and-forget, but
+  // the chart's drag-to-edit flow (onDragEditableLine) needs to know
+  // whether to snap the dragged line back to its pre-drag price.
+  async function commitInlineEdit(id: string, field: "sl" | "tp", raw: string): Promise<boolean> {
     const p = positions.find((x) => x.id === id);
-    if (!p) return;
+    if (!p) return false;
     const trimmed = raw.trim();
     const mm = market[p.symbol.name];
-    if (!mm.live) { pushToast("No live feed for this symbol"); return; }
+    if (!mm.live) { pushToast("No live feed for this symbol"); return false; }
     const value = trimmed === "" ? null : parseFloat(trimmed);
-    if (value != null && isNaN(value)) { pushToast("Enter a valid price"); return; }
+    if (value != null && isNaN(value)) { pushToast("Enter a valid price"); return false; }
     const testSl = field === "sl" ? value : p.slPrice ? parseFloat(p.slPrice) : null;
     const testTp = field === "tp" ? value : p.tpPrice ? parseFloat(p.tpPrice) : null;
     const error = isValidSlTpForSide(p.side, testSl, testTp, mm.bid);
-    if (error) { pushToast(error); return; }
+    if (error) { pushToast(error); return false; }
     try {
       await tradeApi.editPositionSlTp(id, { currentPrice: mm.bid, ...(field === "sl" ? { slPrice: value } : { tpPrice: value }) });
       pushToast(`${p.symbol.name} ${field.toUpperCase()} updated`);
       await refreshPositions();
+      return true;
     } catch (err) {
       pushToast(err instanceof Error ? err.message : "failed to update");
+      return false;
     }
+  }
+
+  // Pending order's own entry price, dragged on the chart -- see
+  // KLineChartPanel's "pending" kind. No table row for this exists to
+  // reuse (unlike SL/TP's commitInlineEdit above), so this is standalone.
+  async function commitOrderPriceEdit(id: string, newPrice: number): Promise<boolean> {
+    const o = pendingOrders.find((x) => x.id === id);
+    if (!o) return false;
+    const mm = market[o.symbol.name];
+    if (!mm.live) { pushToast("No live feed for this symbol"); return false; }
+    try {
+      await tradeApi.editOrderPrice(id, { currentPrice: mm.bid, requestedPrice: newPrice });
+      pushToast(`${o.symbol.name} order price updated`);
+      await refreshOrders();
+      return true;
+    } catch (err) {
+      pushToast(err instanceof Error ? err.message : "failed to update");
+      return false;
+    }
+  }
+
+  // chart interaction pack -- drag-commit for every draggable chart line
+  // (position SL/TP, including the drag-to-create "ghost" case, and a
+  // pending order's own entry price). Instant when one-click trading is
+  // on, otherwise a confirm dialog first -- exactly the spec's "drag →
+  // confirm dialog (or instant if one-click trading is ON)". Resolves
+  // true/false so KLineChartPanel knows whether to keep the dragged
+  // position or snap the line back.
+  function onDragEditableLine(line: EditablePriceLineData, newPrice: number): Promise<boolean> {
+    const commit = (): Promise<boolean> =>
+      line.entityType === "order"
+        ? commitOrderPriceEdit(line.entityId, newPrice)
+        : commitInlineEdit(line.entityId, line.kind as "sl" | "tp", String(newPrice));
+
+    if (oneClick) return commit();
+
+    return new Promise((resolve) => {
+      const kindLabel = line.kind === "pending" ? "entry price" : line.kind.toUpperCase();
+      // Not askConfirm: that helper only ever calls onYes, silently doing
+      // nothing (never resolving this promise) on Cancel/X/backdrop --
+      // every dismissal path there passes v === null to onConfirm, which
+      // this needs to turn into an explicit resolve(false) so the chart
+      // line snaps back instead of hanging in its dragged position forever.
+      setGenericModal({
+        title: "Confirm price change",
+        message: `Move ${kindLabel} to ${newPrice.toFixed(line.digits)}?`,
+        showInput: false,
+        okLabel: "Confirm",
+        onConfirm: (v) => {
+          if (v !== null) commit().then(resolve);
+          else resolve(false);
+        },
+      });
+    });
   }
 
   // ---------- quick order (double-click watchlist) ----------
@@ -1928,8 +2007,9 @@ export default function WebTrader({
   }
   // Same ticket, pending-type path (Buy/Sell Limit/Stop) -- side comes
   // from the chosen type, and price is the trader's own entry rather than
-  // the current bid/ask, same validation as the chart right-click flow
-  // (quickPlacePendingAtPrice).
+  // the current bid/ask. The chart's own right-click "Buy/Sell at this
+  // price" (openQuickOrderAtPrice below) pre-fills this same ticket rather
+  // than submitting directly, so it shares this validation too.
   async function submitQuickPendingOrder(type: PendingType) {
     if (!quickOrder) return;
     const mm = market[quickOrder.symbol];
@@ -1954,25 +2034,35 @@ export default function WebTrader({
     }
   }
 
-  // ---------- chart right-click quick pending order ----------
-  async function quickPlacePendingAtPrice(type: PendingType, price: number) {
-    if (!m.live) { pushToast("No live feed for this symbol"); return; }
-    if (!isValidPendingPrice(type, price, m.bid)) { pushToast(pendingPriceRuleText(type)); return; }
-    const side = type.startsWith("buy") ? "BUY" : "SELL";
-    const orderType = type.endsWith("limit") ? "LIMIT" : "STOP";
-    try {
-      await tradeApi.placeOrder({ symbol: activeSymbol, side, type: orderType, volume, price, idempotencyKey: crypto.randomUUID() });
-      pushToast(`Pending ${type.replace("_", " ")} placed for ${activeSymbol} @ ${fmt(price, m.def.digits)}`);
-      await refreshOrders();
-    } catch (err) {
-      pushToast(err instanceof Error ? err.message : "order failed");
-    }
+  // chart interaction pack -- right-click "Buy/Sell at this price": opens
+  // the real order ticket pre-filled as a LIMIT/STOP at the clicked price
+  // instead of instant-submitting (the old behavior this menu item
+  // replaces). A deliberate behavior change from the pre-chart-interaction-
+  // pack menu
+  // (which only ever instant-placed) -- the spec calls for a review step.
+  // Side is fixed by which menu item was clicked; type (LIMIT vs STOP) is
+  // inferred from which side of the market the clicked price fell on,
+  // same "below/above market" classification the menu's own title text
+  // already uses.
+  function openQuickOrderAtPrice(symbolName: string, side: "BUY" | "SELL", price: number) {
+    const mm = market[symbolName];
+    const type: PendingType =
+      side === "BUY" ? (price <= mm.bid ? "buy_limit" : "buy_stop") : price > mm.bid ? "sell_limit" : "sell_stop";
+    setQuickOrder({ symbol: symbolName });
+    setQuickOrderVolume(volume.toFixed(2));
+    setQuickOrderRisk(""); setQuickOrderSl(""); setQuickOrderTp(""); setQuickOrderComment("");
+    setQuickOrderType(type);
+    setQuickOrderPrice(fmt(price, mm.def.digits));
   }
 
   // ---------- alerts ----------
-  function openPriceAlert(symbolName: string) {
+  // `presetPrice` -- chart interaction pack's "Add alert at this price"
+  // pre-fills the prompt with the clicked price instead of the current
+  // bid; every other call site (the watchlist bell, the positions panel's
+  // "+ New alert") keeps defaulting to the live bid exactly as before.
+  function openPriceAlert(symbolName: string, presetPrice?: number) {
     const mm = market[symbolName];
-    askPrompt(`Alert me when ${symbolName} reaches:`, fmt(mm.bid, mm.def.digits), (priceStr) => {
+    askPrompt(`Alert me when ${symbolName} reaches:`, fmt(presetPrice ?? mm.bid, mm.def.digits), (priceStr) => {
       const price = parseFloat(priceStr);
       if (isNaN(price)) { pushToast("Enter a valid price"); return; }
       // Always hardcoded "above" regardless of where the target price sat
@@ -2064,9 +2154,104 @@ export default function WebTrader({
   const candles: Candle[] = m.candles[currentTf];
 
   const chartLines: ChartLine[] = useMemo(
-    () => computeChartLines(activeSymbol, positions, pendingOrders),
-    [positions, pendingOrders, activeSymbol]
+    () => computeOrderReferenceLines(activeSymbol, pendingOrders),
+    [pendingOrders, activeSymbol]
   );
+
+  // chart interaction pack -- restyled position lines. Depends on `market`
+  // (not just positions/activeSymbol) so the tag's live P/L text keeps up
+  // with every tick, not just position open/close events.
+  const positionLines: PositionLineData[] = useMemo(
+    () =>
+      positions
+        .filter((p) => p.symbol.name === activeSymbol)
+        .map((p) => {
+          const pnl = positionPnl(p);
+          const color = p.side === "BUY" ? "#16C784" : "#EA3943";
+          const label = `${p.side === "BUY" ? "B" : "S"} ${parseFloat(p.volume).toFixed(2)} @ ${fmt(parseFloat(p.openPrice), m.def.digits)}  P/L ${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}`;
+          return { id: `pos-${p.id}`, positionId: p.id, price: parseFloat(p.openPrice), color, label };
+        }),
+    [positions, activeSymbol, m.def.digits, positionPnl]
+  );
+
+  // chart interaction pack -- draggable SL/TP (real or drag-to-create
+  // "ghost") + pending-order entry lines for the active symbol.
+  // `minDistance`/`referencePrice` are in real PRICE units (not points) so
+  // KLineChartPanel's generic overlay code never needs to know about
+  // points/digits conversion -- that conversion happens once, here.
+  const editableLines: EditablePriceLineData[] = useMemo(() => {
+    const out: EditablePriceLineData[] = [];
+    positions
+      .filter((p) => p.symbol.name === activeSymbol)
+      .forEach((p) => {
+        const mm = market[p.symbol.name];
+        const point = Math.pow(10, -mm.def.digits);
+        const minDistance = mm.def.stopLevel > 0 ? mm.def.stopLevel * point : 0;
+        const vol = parseFloat(p.volume);
+        const openPrice = parseFloat(p.openPrice);
+        // A ghost (unset) SL/TP starting exactly AT the open price would
+        // sit pixel-for-pixel on top of the position's own line (nothing
+        // to visually grab separately) and would already violate
+        // minDistance before the trader's even touched it. Offset it to a
+        // valid, distinctly-visible starting point instead -- comfortably
+        // past whatever stopLevel requires, or a flat 100-point fallback
+        // when the symbol has none.
+        const ghostOffset = Math.max(minDistance * 2, 100 * point);
+        const makeFormatLabel = (prefix: string) => (price: number) => {
+          const pnl = pnlAtPrice(p.symbol.name, p.side, openPrice, vol, price);
+          return `${prefix} ${fmt(price, mm.def.digits)}  ${pnl >= 0 ? "+" : "-"}$${Math.abs(pnl).toFixed(2)}`;
+        };
+        const slPrice = p.slPrice ? parseFloat(p.slPrice) : null;
+        const slGhostPrice = p.side === "BUY" ? openPrice - ghostOffset : openPrice + ghostOffset;
+        out.push({
+          id: `editsl-${p.id}`,
+          entityId: p.id,
+          entityType: "position",
+          kind: "sl",
+          price: slPrice ?? slGhostPrice,
+          color: "#EA3943",
+          digits: mm.def.digits,
+          minDistance,
+          referencePrice: mm.bid,
+          ghost: slPrice == null,
+          formatLabel: makeFormatLabel("SL"),
+        });
+        const tpPrice = p.tpPrice ? parseFloat(p.tpPrice) : null;
+        const tpGhostPrice = p.side === "BUY" ? openPrice + ghostOffset : openPrice - ghostOffset;
+        out.push({
+          id: `edittp-${p.id}`,
+          entityId: p.id,
+          entityType: "position",
+          kind: "tp",
+          price: tpPrice ?? tpGhostPrice,
+          color: "#16C784",
+          digits: mm.def.digits,
+          minDistance,
+          referencePrice: mm.bid,
+          ghost: tpPrice == null,
+          formatLabel: makeFormatLabel("TP"),
+        });
+      });
+    pendingOrders
+      .filter((o) => o.symbol.name === activeSymbol && o.requestedPrice)
+      .forEach((o) => {
+        const mm = market[o.symbol.name];
+        const minDistance = mm.def.stopLevel > 0 ? mm.def.stopLevel * Math.pow(10, -mm.def.digits) : 0;
+        out.push({
+          id: `editentry-${o.id}`,
+          entityId: o.id,
+          entityType: "order",
+          kind: "pending",
+          price: parseFloat(o.requestedPrice as string),
+          color: o.side === "BUY" ? "#16C784" : "#EA3943",
+          digits: mm.def.digits,
+          minDistance,
+          referencePrice: mm.bid,
+          formatLabel: (price) => `${o.side} ${o.type} ${fmt(price, mm.def.digits)}`,
+        });
+      });
+    return out;
+  }, [positions, pendingOrders, activeSymbol, market, pnlAtPrice]);
 
   function handleChartContextMenuPrice(price: number, clientX: number, clientY: number) {
     setChartContextMenu({ x: clientX, y: clientY, price });
@@ -2074,6 +2259,24 @@ export default function WebTrader({
 
   function toggleMaIndicator() {
     setMaActive(chartRef.current?.toggleMA() ?? false);
+  }
+
+  async function copyPriceToClipboard(price: number) {
+    try {
+      await navigator.clipboard.writeText(fmt(price, m.def.digits));
+      pushToast(`Copied ${fmt(price, m.def.digits)}`);
+    } catch {
+      pushToast("Couldn't copy to clipboard");
+    }
+  }
+
+  async function saveChartSettingsHandler(next: ChartSettings) {
+    setChartSettings(next); // optimistic -- a low-risk, purely cosmetic mutation
+    try {
+      await tradeApi.saveChartSettings(next);
+    } catch (err) {
+      pushToast(err instanceof Error ? err.message : "failed to save chart settings");
+    }
   }
 
   if (loadError) {
@@ -2664,6 +2867,11 @@ export default function WebTrader({
                     timeframe={currentTf}
                     digits={m.def.digits}
                     lines={chartLines}
+                    positionLines={positionLines}
+                    editableLines={editableLines}
+                    onClosePositionLine={closePositionFull}
+                    onDragEditableLine={onDragEditableLine}
+                    settings={chartSettings}
                     onContextMenuPrice={handleChartContextMenuPrice}
                     onPanOrZoom={() => setChartContextMenu(null)}
                   />
@@ -2682,15 +2890,32 @@ export default function WebTrader({
                   {chartContextMenu ? (
                     <div className="wl-context-menu show" ref={chartContextMenuRef} style={{ left: chartContextMenu.x, top: chartContextMenu.y }}>
                       <div className="wl-ctx-title">@ {fmt(chartContextMenu.price, m.def.digits)} — {chartContextMenu.price < m.bid ? "below" : "above"} market</div>
-                      {(chartContextMenu.price < m.bid
-                        ? [{ type: "buy_limit" as PendingType, label: "Buy limit here" }, { type: "sell_stop" as PendingType, label: "Sell stop here" }]
-                        : [{ type: "sell_limit" as PendingType, label: "Sell limit here" }, { type: "buy_stop" as PendingType, label: "Buy stop here" }]
-                      ).map((it) => (
-                        <div key={it.type} className="wl-ctx-item" onClick={() => { quickPlacePendingAtPrice(it.type, chartContextMenu.price); setChartContextMenu(null); }}>
-                          <span>{it.label}</span>
-                        </div>
-                      ))}
+                      <div className="wl-ctx-item" onClick={() => { chartRef.current?.resetView(); setChartContextMenu(null); }}>
+                        <span>Reset view</span>
+                      </div>
+                      <div className="wl-ctx-item" onClick={() => { setChartSettingsOpen(true); setChartContextMenu(null); }}>
+                        <span>Chart settings…</span>
+                      </div>
+                      <div className="wl-ctx-item" onClick={() => { openQuickOrderAtPrice(activeSymbol, "BUY", chartContextMenu.price); setChartContextMenu(null); }}>
+                        <span>Buy at this price</span>
+                      </div>
+                      <div className="wl-ctx-item" onClick={() => { openQuickOrderAtPrice(activeSymbol, "SELL", chartContextMenu.price); setChartContextMenu(null); }}>
+                        <span>Sell at this price</span>
+                      </div>
+                      <div className="wl-ctx-item" onClick={() => { openPriceAlert(activeSymbol, chartContextMenu.price); setChartContextMenu(null); }}>
+                        <span>Add alert at this price</span>
+                      </div>
+                      <div className="wl-ctx-item" onClick={() => { copyPriceToClipboard(chartContextMenu.price); setChartContextMenu(null); }}>
+                        <span>Copy price</span>
+                      </div>
                     </div>
+                  ) : null}
+                  {chartSettingsOpen ? (
+                    <ChartSettingsDialog
+                      settings={chartSettings}
+                      onSave={saveChartSettingsHandler}
+                      onClose={() => setChartSettingsOpen(false)}
+                    />
                   ) : null}
                 </>
               ) : (

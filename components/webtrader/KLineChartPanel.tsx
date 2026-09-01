@@ -1,14 +1,56 @@
 "use client";
 
 import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
-import { init, dispose, ActionType } from "klinecharts";
+import { init, dispose, ActionType, registerOverlay } from "klinecharts";
 import type { Candle } from "@/lib/market-simulator";
+import type { ChartSettings } from "@/lib/chart-settings";
 
 export type ChartLine = {
   id: string;
   price: number;
   color: string;
   dashed?: boolean;
+};
+
+// chart interaction pack -- restyled position line: a thin solid line in
+// the side's color with a compact left tag ("B 0.01 @ 4,377.66  P/L
+// +0.42") and an "x" to close, per the spec. `label` is precomputed by
+// the caller (WebTrader.tsx, via positionPnl/fmt) since only it knows the
+// volume/entry/live-P/L formatting -- this component stays domain-agnostic,
+// same division of labor as `lines`/ChartLine above.
+export type PositionLineData = {
+  id: string;
+  positionId: string;
+  price: number;
+  color: string;
+  label: string;
+};
+
+// chart interaction pack -- draggable SL/TP (position) or entry price
+// (pending order) line, MT5-style. `formatLabel` is called with the LIVE
+// dragged price on every redraw (not just on drop) so the label's
+// dollar-P/L-if-hit / delta updates in real time while dragging -- it's a
+// closure so WebTrader.tsx's own volume/side/contractSize math stays out
+// of this file. `ghost` marks an unset SL/TP's "drag to set" affordance
+// (spec: "allow drag-to-create: grab the position line's SL/TP handles
+// when none set") -- same overlay/drag mechanics, just starts at the
+// position's own open price and reads as muted until the first commit.
+export type EditablePriceLineData = {
+  id: string;
+  entityId: string;
+  entityType: "position" | "order";
+  kind: "sl" | "tp" | "pending";
+  price: number;
+  color: string;
+  digits: number;
+  // Minimum distance (price units, not points) from referencePrice this
+  // line's price must keep -- 0 means unrestricted. Client-side only: a
+  // live drag preview (red flash), never authoritative -- the server's own
+  // stopLevel check (lib/trading.ts) is what actually enforces it.
+  minDistance: number;
+  referencePrice: number;
+  ghost?: boolean;
+  formatLabel: (price: number) => string;
 };
 
 // chart-polish round -- "trendLine" and "rectangle" were never real
@@ -34,7 +76,121 @@ export type KLineChartHandle = {
   addOverlay: (name: DrawingOverlayName) => void;
   removeAllDrawings: () => void;
   toggleMA: () => boolean;
+  // chart interaction pack -- right-click menu's "Reset view": re-fits the
+  // visible bar range and resets zoom. scrollToRealTime alone leaves
+  // whatever zoom level the trader was at; setBarSpace back to
+  // klinecharts' own default (confirmed via its source --
+  // DEFAULT_BAR_SPACE = 8, not exported as a named constant in the public
+  // API) is what actually makes this feel like a real "reset," not just a
+  // re-center.
+  resetView: () => void;
 };
+
+// Two custom overlay TYPES (klinecharts' registerOverlay -- module scope,
+// once per module load, same convention as every other klinecharts extension
+// point this file uses) for the chart interaction pack. Per-instance
+// behavior (onClick/onPressedMoveEnd/extendData/points/lock) is supplied at
+// createOverlay() call time below, exactly like this file's existing
+// overlayLifecycleCallbacks() pattern for user-drawn shapes -- the
+// registered template only owns what every instance of the type draws.
+const CHART_MONO_FONT = "'JetBrains Mono', ui-monospace, monospace";
+const TAG_TEXT_STYLE = {
+  color: "#0B0F14",
+  size: 11,
+  family: CHART_MONO_FONT,
+  weight: 600,
+  paddingLeft: 6,
+  paddingRight: 6,
+  paddingTop: 3,
+  paddingBottom: 3,
+  borderRadius: 2,
+} as const;
+
+registerOverlay({
+  name: "vyxPositionLine",
+  totalStep: 1,
+  needDefaultPointFigure: false,
+  needDefaultXAxisFigure: false,
+  needDefaultYAxisFigure: true,
+  createPointFigures: ({ overlay, coordinates, bounding }) => {
+    const y = coordinates[0].y;
+    const { color, label } = overlay.extendData as { color: string; label: string };
+    // No canvas text-measurement API is available inside createPointFigures
+    // (confirmed against OverlayCreateFiguresCallbackParams -- it has no
+    // ctx), so the close "x" figure's x-offset is an estimate from
+    // character count rather than the tag's real rendered width. JetBrains
+    // Mono @ 11px averages ~6.6px/char; off by a couple pixels at worst,
+    // which is fine for a hit-target that also has its own padding.
+    const tagWidth = label.length * 6.6 + TAG_TEXT_STYLE.paddingLeft + TAG_TEXT_STYLE.paddingRight;
+    return [
+      {
+        type: "line",
+        ignoreEvent: true,
+        attrs: { coordinates: [{ x: 0, y }, { x: bounding.width, y }] },
+        styles: { style: "solid", size: 1, color },
+      },
+      {
+        key: "tag",
+        type: "text",
+        ignoreEvent: true,
+        attrs: { x: 4, y, text: label, align: "left", baseline: "middle" },
+        styles: { ...TAG_TEXT_STYLE, backgroundColor: color },
+      },
+      {
+        key: "close",
+        type: "text",
+        attrs: { x: 4 + tagWidth + 4, y, text: "✕", align: "left", baseline: "middle" },
+        styles: { ...TAG_TEXT_STYLE, color: "#C7CDD6", backgroundColor: "rgba(255,255,255,0.12)" },
+      },
+    ];
+  },
+});
+
+registerOverlay({
+  name: "vyxEditablePriceLine",
+  totalStep: 1,
+  // No default point-figure handle (that only draws a small circle AT the
+  // point's own coordinate -- confirmed via klinecharts' source,
+  // OverlayView.prototype.drawDefaultFigures -- meaning the trader would
+  // have to click that one exact pixel to grab it). Instead the 'line'
+  // figure below is left interactive (no ignoreEvent) so the WHOLE
+  // full-width line is the drag handle -- checkCoordinateOnLine hit-tests
+  // with a real pixel tolerance along the entire segment, and a drag on a
+  // non-point figure resolves to eventPressedOtherMove, which moves this
+  // overlay's one point by the drag's value delta. That's what makes "grab
+  // anywhere on the dashed line," not just one hotspot, actually work.
+  needDefaultPointFigure: false,
+  needDefaultXAxisFigure: false,
+  needDefaultYAxisFigure: true,
+  createPointFigures: ({ overlay, coordinates, bounding }) => {
+    const y = coordinates[0].y;
+    const value = overlay.points[0]?.value;
+    const { color, minDistance, referencePrice, ghost, formatLabel } = overlay.extendData as {
+      color: string;
+      minDistance: number;
+      referencePrice: number;
+      ghost?: boolean;
+      formatLabel: (price: number) => string;
+    };
+    const violates = typeof value === "number" && minDistance > 0 && Math.abs(value - referencePrice) < minDistance;
+    const lineColor = violates ? "#EA3943" : color;
+    const text = typeof value === "number" ? formatLabel(value) : "";
+    return [
+      {
+        type: "line",
+        attrs: { coordinates: [{ x: 0, y }, { x: bounding.width, y }] },
+        styles: { style: "dashed", dashedValue: [4, 4], size: 1, color: lineColor },
+      },
+      {
+        key: "label",
+        type: "text",
+        ignoreEvent: true,
+        attrs: { x: 4, y, text, align: "left", baseline: "middle" },
+        styles: { ...TAG_TEXT_STYLE, backgroundColor: ghost ? "#5A6472" : lineColor },
+      },
+    ];
+  },
+});
 
 // chart-polish round -- the slice of klinecharts' real Overlay/OverlayEvent
 // shape (node_modules/klinecharts/dist/index.d.ts) this file actually
@@ -74,6 +230,24 @@ type Props = {
   // every other menu in this file uses can't catch it -- this hooks
   // klinecharts' own action system directly instead.
   onPanOrZoom?: () => void;
+  // chart interaction pack -- restyled position lines (tag + close button)
+  // and draggable SL/TP/pending-entry lines. Both optional so a caller with
+  // no interactivity to offer (ChartCell.tsx's multi-chart grid, which
+  // keeps using the plain `lines` prop above for everything) doesn't need
+  // to pass empty arrays everywhere.
+  positionLines?: PositionLineData[];
+  editableLines?: EditablePriceLineData[];
+  onClosePositionLine?: (positionId: string) => void;
+  // Resolves true to keep the drag's new price (the line stays there until
+  // the caller's own state refresh reconciles it against the server), or
+  // false to snap back to the price it had when this line was last
+  // (re)created -- see the effect below for why "last recreated" and not
+  // "before this specific drag" is the right revert target.
+  onDragEditableLine?: (line: EditablePriceLineData, newPrice: number) => Promise<boolean>;
+  // Chart interaction pack §2 -- applied via chart.setStyles/.setTimezone.
+  // Undefined means "caller hasn't loaded settings yet," not "use no
+  // settings" -- the effect below just skips applying anything that render.
+  settings?: ChartSettings;
 };
 
 // Thin React wrapper around klinecharts (free, open-source — no license
@@ -88,7 +262,21 @@ type Props = {
 // mismatch against strict types would fail the whole build rather than
 // just this one feature at runtime.
 const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartPanel(
-  { candles, latestBar, symbol, timeframe, digits, lines, onContextMenuPrice, onPanOrZoom },
+  {
+    candles,
+    latestBar,
+    symbol,
+    timeframe,
+    digits,
+    lines,
+    onContextMenuPrice,
+    onPanOrZoom,
+    positionLines,
+    editableLines,
+    onClosePositionLine,
+    onDragEditableLine,
+    settings,
+  },
   ref
 ) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -96,11 +284,17 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
   const chartRef = useRef<any>(null);
   const maOnRef = useRef(false);
   const lineIdsRef = useRef<string[]>([]);
+  const positionLineIdsRef = useRef<string[]>([]);
+  const editableLineIdsRef = useRef<string[]>([]);
   const userOverlayIdsRef = useRef<string[]>([]);
   const onContextMenuPriceRef = useRef(onContextMenuPrice);
   onContextMenuPriceRef.current = onContextMenuPrice;
   const onPanOrZoomRef = useRef(onPanOrZoom);
   onPanOrZoomRef.current = onPanOrZoom;
+  const onClosePositionLineRef = useRef(onClosePositionLine);
+  onClosePositionLineRef.current = onClosePositionLine;
+  const onDragEditableLineRef = useRef(onDragEditableLine);
+  onDragEditableLineRef.current = onDragEditableLine;
   // Always read the *current* symbol/timeframe from inside overlay
   // callbacks set up once at createOverlay time -- a callback closes over
   // whatever symbol/timeframe were in scope when the overlay was drawn,
@@ -523,6 +717,139 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
     }
   }, [lines]);
 
+  // chart interaction pack -- restyled position lines. Recreated wholesale
+  // on every positionLines change (same "remove all, recreate" shape as the
+  // `lines` effect above) rather than diffed -- WebTrader.tsx already
+  // recomputes this array on every position/market change including live
+  // ticks, so a diffing pass here would just move the cost, not remove it.
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart) return;
+    try {
+      positionLineIdsRef.current.forEach((id) => chart.removeOverlay?.(id));
+      const ids: string[] = [];
+      (positionLines ?? []).forEach((pl) => {
+        const created = chart.createOverlay?.({
+          name: "vyxPositionLine",
+          id: pl.id,
+          lock: true,
+          points: [{ value: pl.price }],
+          extendData: { color: pl.color, label: pl.label },
+          onClick: (event: { figureKey?: string }) => {
+            if (event.figureKey === "close") onClosePositionLineRef.current?.(pl.positionId);
+            return true;
+          },
+        });
+        if (created) ids.push(pl.id);
+      });
+      positionLineIdsRef.current = ids;
+    } catch {
+      // ignore
+    }
+  }, [positionLines]);
+
+  // chart interaction pack -- draggable SL/TP (position) and entry-price
+  // (pending order) lines. `originalPrice` is captured per-overlay at
+  // creation time (this effect's own closure), which is exactly the price
+  // to snap back to on a rejected/cancelled drag: it's the last value this
+  // line was told is correct by the server (via WebTrader.tsx's own
+  // positions/orders state), independent of how many times the trader has
+  // dragged it since without yet committing.
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart) return;
+    try {
+      editableLineIdsRef.current.forEach((id) => chart.removeOverlay?.(id));
+      const ids: string[] = [];
+      (editableLines ?? []).forEach((el) => {
+        const originalPrice = el.price;
+        const created = chart.createOverlay?.({
+          name: "vyxEditablePriceLine",
+          id: el.id,
+          lock: false,
+          points: [{ value: el.price }],
+          extendData: {
+            color: el.color,
+            minDistance: el.minDistance,
+            referencePrice: el.referencePrice,
+            ghost: el.ghost,
+            formatLabel: el.formatLabel,
+          },
+          onPressedMoveEnd: (event: { overlay: { points: Array<{ value?: number }> } }) => {
+            const newValue = event.overlay.points?.[0]?.value;
+            if (typeof newValue !== "number") return false;
+            const rounded = Number(newValue.toFixed(el.digits));
+            if (rounded === Number(originalPrice.toFixed(el.digits))) return false; // negligible/no-op drag
+            const handler = onDragEditableLineRef.current;
+            if (!handler) {
+              // No handler wired -- this line shouldn't have been
+              // draggable at all; snap back immediately rather than leave
+              // a visually-moved-but-never-saved line on screen.
+              try {
+                chartRef.current?.overrideOverlay?.({ id: el.id, points: [{ value: originalPrice }] });
+              } catch {
+                // ignore
+              }
+              return false;
+            }
+            handler(el, rounded).then((accepted) => {
+              if (!accepted) {
+                try {
+                  chartRef.current?.overrideOverlay?.({ id: el.id, points: [{ value: originalPrice }] });
+                } catch {
+                  // ignore
+                }
+              }
+            });
+            return false;
+          },
+        });
+        if (created) ids.push(el.id);
+      });
+      editableLineIdsRef.current = ids;
+    } catch {
+      // ignore
+    }
+  }, [editableLines]);
+
+  // Chart interaction pack §2 -- chart settings applied live via
+  // setStyles/setTimezone. Vertical gridlines stay permanently off
+  // regardless of the setting (see the init() call's own styles) -- that
+  // was already a deliberate design choice before this dialog existed,
+  // and "grid visibility" only ever meant the horizontal ones on this
+  // chart. There's no chart-level "background" style in klinecharts at all
+  // (confirmed against its Styles type) -- the settings dialog's "grid"
+  // toggle is the real, honest scope of that spec bullet.
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart || !settings) return;
+    try {
+      chart.setStyles({
+        grid: { horizontal: { show: settings.showGrid } },
+        candle: {
+          bar: {
+            upColor: settings.candleUpColor,
+            downColor: settings.candleDownColor,
+            noChangeColor: settings.candleDownColor,
+            upBorderColor: settings.candleUpBorderColor,
+            downBorderColor: settings.candleDownBorderColor,
+            noChangeBorderColor: settings.candleDownBorderColor,
+            upWickColor: settings.candleUpWickColor,
+            downWickColor: settings.candleDownWickColor,
+            noChangeWickColor: settings.candleDownWickColor,
+          },
+          priceMark: {
+            last: { show: settings.showLastPriceLine, upColor: settings.candleUpColor, downColor: settings.candleDownColor },
+          },
+          tooltip: { showRule: settings.showOhlcBar ? "always" : "none" },
+        },
+      });
+      chart.setTimezone?.(settings.timezone);
+    } catch {
+      // ignore
+    }
+  }, [settings]);
+
   useImperativeHandle(
     ref,
     () => ({
@@ -570,6 +897,16 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
           // ignore
         }
         return maOnRef.current;
+      },
+      resetView() {
+        const chart = chartRef.current;
+        if (!chart) return;
+        try {
+          chart.setBarSpace?.(8); // klinecharts' own DEFAULT_BAR_SPACE
+          chart.scrollToRealTime?.();
+        } catch {
+          // ignore
+        }
       },
     }),
     // overlayLifecycleCallbacks/persistDrawings close over refs only
