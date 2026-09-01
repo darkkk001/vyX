@@ -233,7 +233,11 @@ export const tradeApi = {
   // source of "what symbols exist." The watchlist itself
   // (app/api/trade/watchlist) is a separate, ordered SUBSET of this.
   symbols: () => call<{ symbols: ApiWatchlistSymbol[] }>("/api/trade/symbols"),
-  watchlist: () => call<{ symbols: ApiWatchlistSymbol[] }>("/api/trade/watchlist"),
+  // collapsedCategories -- which category headers (Forex/Metals/...) are
+  // collapsed, server-persisted like the row order itself. Only the GET
+  // returns it (add/hide/reset don't touch collapse state); see
+  // saveWatchlistCollapsed below for writing it.
+  watchlist: () => call<{ symbols: ApiWatchlistSymbol[]; collapsedCategories: SymbolCategory[] }>("/api/trade/watchlist"),
   addToWatchlist: (symbolId: string) =>
     call<{ symbols: ApiWatchlistSymbol[] }>("/api/trade/watchlist", { method: "POST", body: JSON.stringify({ symbolId }) }),
   hideFromWatchlist: (symbolId: string) => call(`/api/trade/watchlist/${symbolId}`, { method: "DELETE" }),
@@ -241,6 +245,8 @@ export const tradeApi = {
   // Takes symbol NAMES, not ids -- see the route's own comment on why.
   reorderWatchlist: (symbolNames: string[]) =>
     call("/api/trade/watchlist/reorder", { method: "PUT", body: JSON.stringify({ symbolNames }) }),
+  saveWatchlistCollapsed: (categories: SymbolCategory[]) =>
+    call<{ collapsedCategories: SymbolCategory[] }>("/api/trade/watchlist/collapsed", { method: "PUT", body: JSON.stringify({ categories }) }),
   chartSettings: () => call<{ settings: ChartSettings }>("/api/trade/chart-settings"),
   saveChartSettings: (settings: ChartSettings) =>
     call<{ settings: ChartSettings }>("/api/trade/chart-settings", { method: "PUT", body: JSON.stringify(settings) }),
