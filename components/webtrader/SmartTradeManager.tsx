@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { SYMBOL_DEFS, fmt, type MarketState } from "@/lib/market-simulator";
+import { SYMBOL_DEFS, fmt, type MarketState, type SymbolDef } from "@/lib/market-simulator";
 import { tradeApi, type ApiPosition } from "@/lib/trade-api";
 import {
   registerHotkeys,
@@ -79,6 +79,7 @@ export default function SmartTradeManager({
   open,
   onClose,
   embedded = false,
+  symbols,
   market,
   positions,
   positionPnl,
@@ -97,6 +98,10 @@ export default function SmartTradeManager({
   // rail icon. `open` is ignored when true; the confirm-enable dialog
   // still overlays normally either way.
   embedded?: boolean;
+  // WebTrader's own real, broker-enabled symbol universe (allSymbols) --
+  // this panel's own symbol dropdown used to read the hardcoded
+  // SYMBOL_DEFS bootstrap directly, capping it at 10.
+  symbols: SymbolDef[];
   market: Record<string, MarketState>;
   positions: ApiPosition[];
   positionPnl: (p: ApiPosition) => number;
@@ -309,7 +314,7 @@ export default function SmartTradeManager({
             <div>
               <label style={{ fontSize: 11, color: "var(--text-3)", display: "block", marginBottom: 3 }}>Symbol</label>
               <select className="mono" style={{ width: "100%" }} value={config.symbol} onChange={(e) => setConfig((c) => ({ ...c, symbol: e.target.value }))}>
-                {SYMBOL_DEFS.map((s) => <option key={s.name} value={s.name}>{s.name}</option>)}
+                {symbols.map((s) => <option key={s.name} value={s.name}>{s.name}</option>)}
               </select>
             </div>
             <div>

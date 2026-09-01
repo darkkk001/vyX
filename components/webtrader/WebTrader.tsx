@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import {
   SYMBOL_DEFS,
+  buildSymbolDef,
   createInitialMarket,
   tickMarket,
   feedStatusFor,
@@ -14,8 +15,10 @@ import {
   type Candle,
   type Timeframe,
   type FeedStatus,
+  type SymbolDef,
 } from "@/lib/market-simulator";
 import { tradeApi, serverNow, ApiError, type AccountInfo, type ApiPosition, type ApiOrder, type ApiFundsRequest, type ApiKycStatus, type ApiLinkedAccount, type ApiSession } from "@/lib/trade-api";
+import AddSymbolDialog from "./AddSymbolDialog";
 import KLineChartPanel, { type KLineChartHandle, type ChartLine } from "./KLineChartPanel";
 import DesktopTitleBar from "./DesktopTitleBar";
 import SessionClock from "./SessionClock";
@@ -84,8 +87,11 @@ function pendingPriceRuleText(type: PendingType) {
 // below rather than throwing.
 const LAYOUT_STORAGE_KEY = "vyx-webtrader-layout";
 type StoredLayout = {
-  watchlistOrder?: string[];
-  columnPrefs?: { signal: boolean; change: boolean; spread: boolean; high: boolean; low: boolean };
+  // watchlistOrder deliberately NOT here anymore -- server-side now (see
+  // app/api/trade/watchlist), not localStorage, so web and desktop stay
+  // in sync. A pre-existing localStorage entry with this key is simply
+  // never read again; harmless, doesn't need a migration.
+  columnPrefs?: { change: boolean; spread: boolean; high: boolean; low: boolean };
   orderPanelWidth?: number;
   watchlistWidth?: number;
   bottomPanelHeight?: number;
@@ -154,23 +160,23 @@ export default function WebTrader({
   onSessionExpired?: () => void;
 }) {
 
-  const [market, setMarket] = useState<Record<string, MarketState>>(() => createInitialMarket());
+  // Bootstrap only (the old hardcoded 10) -- replaced by the real
+  // broker-enabled symbol list the moment it loads (see the mount effect
+  // calling refreshSymbolsAndWatchlist below). Never left as the final
+  // state for a real session; exists purely so market[activeSymbol] and
+  // allSymbols are never empty/undefined on first paint.
+  const [allSymbols, setAllSymbols] = useState<SymbolDef[]>(SYMBOL_DEFS);
+  const [market, setMarket] = useState<Record<string, MarketState>>(() => createInitialMarket(SYMBOL_DEFS));
   const [storedLayout] = useState<StoredLayout>(() => loadStoredLayout());
-  const [watchlistOrder, setWatchlistOrder] = useState<string[]>(() => {
-    const saved = storedLayout.watchlistOrder;
-    // A saved order from before a symbol was added/removed from
-    // SYMBOL_DEFS would silently drop or duplicate rows -- only trust it
-    // when it's exactly the same set of symbols as today's default.
-    const defaultNames = SYMBOL_DEFS.map((s) => s.name);
-    if (saved && saved.length === defaultNames.length && defaultNames.every((n) => saved.includes(n))) {
-      return saved;
-    }
-    return defaultNames;
-  });
+  // Same bootstrap-then-replace shape as allSymbols above -- the real
+  // per-account order comes from the server (app/api/trade/watchlist),
+  // never localStorage (so web and desktop stay in sync).
+  const [watchlistOrder, setWatchlistOrder] = useState<string[]>(() => SYMBOL_DEFS.map((s) => s.name));
   const [dragSymbol, setDragSymbol] = useState<string | null>(null);
   const [watchlistFilter, setWatchlistFilter] = useState("");
+  const [addSymbolOpen, setAddSymbolOpen] = useState(false);
   const [columnPrefs, setColumnPrefs] = useState(
-    storedLayout.columnPrefs ?? { signal: true, change: true, spread: false, high: false, low: false }
+    storedLayout.columnPrefs ?? { change: true, spread: false, high: false, low: false }
   );
   const [wlMenuOpen, setWlMenuOpen] = useState(false);
   const wlContextMenuRef = useRef<HTMLDivElement | null>(null);
@@ -333,13 +339,13 @@ export default function WebTrader({
   // the added complexity here.
   useEffect(() => {
     try {
-      const layout: StoredLayout = { watchlistOrder, columnPrefs, orderPanelWidth, watchlistWidth, bottomPanelHeight };
+      const layout: StoredLayout = { columnPrefs, orderPanelWidth, watchlistWidth, bottomPanelHeight };
       window.localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(layout));
     } catch {
       // localStorage unavailable (private mode, quota) -- layout just
       // won't persist across reloads, nothing else depends on this.
     }
-  }, [watchlistOrder, columnPrefs, orderPanelWidth, watchlistWidth, bottomPanelHeight]);
+  }, [columnPrefs, orderPanelWidth, watchlistWidth, bottomPanelHeight]);
 
   const [activeBottomTab, setActiveBottomTab] = useState<BottomTab>("positions");
   const [histFrom, setHistFrom] = useState("");
@@ -615,6 +621,33 @@ export default function WebTrader({
     }
   }, [onSessionExpired]);
   const refreshPositions = useCallback(async () => setPositions(await tradeApi.positions().catch(() => [])), []);
+  // Real fix for the "30 enabled, only 10 shown" bug: replaces the
+  // SYMBOL_DEFS bootstrap with the broker's actual enabled-symbol
+  // universe and this account's real (server-persisted) watchlist order.
+  // Runs once on mount alongside the other initial data loads; also
+  // re-callable after an add/hide/reset so every mutation reflects the
+  // server's own resulting list rather than a locally-guessed one.
+  const refreshSymbolsAndWatchlist = useCallback(async () => {
+    try {
+      const [symbolsRes, watchlistRes] = await Promise.all([tradeApi.symbols(), tradeApi.watchlist()]);
+      const defs = symbolsRes.symbols.map(buildSymbolDef);
+      setAllSymbols(defs.length > 0 ? defs : SYMBOL_DEFS);
+      setMarket((prev) => {
+        const fresh = createInitialMarket(defs.length > 0 ? defs : SYMBOL_DEFS);
+        // Carry over any live state already captured under the bootstrap
+        // set (a tick may have arrived in the brief window before this
+        // fetch resolved) rather than discarding it outright.
+        for (const name of Object.keys(fresh)) {
+          if (prev[name]?.live) fresh[name] = prev[name];
+        }
+        return fresh;
+      });
+      setWatchlistOrder(watchlistRes.symbols.map((s) => s.name));
+      setActiveSymbol((current) => (defs.some((d) => d.name === current) ? current : (watchlistRes.symbols[0]?.name ?? defs[0]?.name ?? current)));
+    } catch (err) {
+      console.error("refreshSymbolsAndWatchlist failed", err);
+    }
+  }, []);
   // Fetches both the Pending Orders view and the full-lifecycle Orders
   // view (docs/webtrader-stm-architecture-review.md §4.5) together --
   // every existing call site already treats "refreshOrders" as "an order
@@ -800,7 +833,7 @@ export default function WebTrader({
   useEffect(() => {
     (async () => {
       try {
-        await Promise.all([refreshAccount(), refreshPositions(), refreshOrders()]);
+        await Promise.all([refreshAccount(), refreshPositions(), refreshOrders(), refreshSymbolsAndWatchlist()]);
       } catch (err) {
         setLoadError(err instanceof Error ? err.message : "failed to load account data");
       }
@@ -1377,7 +1410,6 @@ export default function WebTrader({
 
   const wlGridTemplate = useMemo(() => {
     const widths = ["1fr"]; // symbol
-    if (columnPrefs.signal) widths.push("0.4fr");
     widths.push("0.95fr"); // price
     if (columnPrefs.change) widths.push("0.75fr");
     if (columnPrefs.spread) widths.push("0.7fr");
@@ -1957,6 +1989,46 @@ export default function WebTrader({
     });
   }
 
+  // ---------- watchlist add/hide/reset (server-persisted) ----------
+  function symbolIdFor(name: string): string | null {
+    return allSymbols.find((s) => s.name === name)?.id ?? null;
+  }
+  async function addSymbolToWatchlist(name: string) {
+    const symbolId = symbolIdFor(name);
+    if (!symbolId) return;
+    if (watchlistOrder.includes(name)) {
+      pushToast(`${name} is already on your watchlist`);
+      return;
+    }
+    try {
+      const result = await tradeApi.addToWatchlist(symbolId);
+      setWatchlistOrder(result.symbols.map((s) => s.name));
+      pushToast(`${name} added to watchlist`);
+    } catch (err) {
+      pushToast(err instanceof Error ? err.message : "failed to add symbol");
+    }
+  }
+  async function hideSymbolFromWatchlist(name: string) {
+    const symbolId = symbolIdFor(name);
+    if (!symbolId) return;
+    setWatchlistOrder((prev) => prev.filter((n) => n !== name)); // optimistic -- this is a simple, low-risk mutation
+    try {
+      await tradeApi.hideFromWatchlist(symbolId);
+    } catch (err) {
+      pushToast(err instanceof Error ? err.message : "failed to hide symbol");
+      refreshSymbolsAndWatchlist(); // reconcile with the server on failure
+    }
+  }
+  async function resetWatchlistToDefault() {
+    try {
+      const result = await tradeApi.resetWatchlist();
+      setWatchlistOrder(result.symbols.map((s) => s.name));
+      pushToast("Watchlist reset to default");
+    } catch (err) {
+      pushToast(err instanceof Error ? err.message : "failed to reset watchlist");
+    }
+  }
+
   // ---------- watchlist drag reorder ----------
   function attachDragHandlers(name: string) {
     return {
@@ -1964,16 +2036,26 @@ export default function WebTrader({
       onDragStart: () => setDragSymbol(name),
       onDragEnd: () => setDragSymbol(null),
       onDragOver: (e: React.DragEvent) => e.preventDefault(),
-      onDrop: () => {
+      onDrop: (e: React.DragEvent) => {
+        e.preventDefault();
         if (!dragSymbol || dragSymbol === name) return;
-        setWatchlistOrder((prev) => {
-          const next = [...prev];
-          const from = next.indexOf(dragSymbol);
-          const to = next.indexOf(name);
-          next.splice(from, 1);
-          next.splice(to, 0, dragSymbol);
-          return next;
-        });
+        // Reads watchlistOrder from this render's own closure (onDrop
+        // fires from a single discrete user gesture, not a rapid-fire
+        // sequence, so there's no risk of it being stale) rather than
+        // the functional-update form -- a side effect (the API call)
+        // living INSIDE a setState updater is exactly the impure-
+        // updater pattern React 18 Strict Mode double-invokes to catch,
+        // which was firing this same reorder request twice per drag.
+        const next = [...watchlistOrder];
+        const from = next.indexOf(dragSymbol);
+        const to = next.indexOf(name);
+        next.splice(from, 1);
+        next.splice(to, 0, dragSymbol);
+        setWatchlistOrder(next);
+        // Server-persisted (not localStorage) -- fire-and-forget; a
+        // failed reorder just means the next reload shows the
+        // previous server-side order, not a broken watchlist.
+        tradeApi.reorderWatchlist(next).catch((err) => console.error("reorderWatchlist failed", err));
       },
     };
   }
@@ -2067,7 +2149,7 @@ export default function WebTrader({
                     />
                     {actionsSearch ? (
                       <div style={{ maxHeight: 160, overflowY: "auto" }}>
-                        {SYMBOL_DEFS.filter((s) => s.name.toLowerCase().includes(actionsSearch.toLowerCase())).map((s) => (
+                        {allSymbols.filter((s) => s.name.toLowerCase().includes(actionsSearch.toLowerCase())).map((s) => (
                           <div
                             key={s.name}
                             className="acc-option"
@@ -2299,7 +2381,6 @@ export default function WebTrader({
             <input className="wl-search mono" placeholder="Search symbol..." value={watchlistFilter} onChange={(e) => setWatchlistFilter(e.target.value)} />
             <div className="wl-header" style={{ gridTemplateColumns: wlGridTemplate }}>
               <span></span><span>Symbol</span>
-              {columnPrefs.signal ? <span>Signal</span> : null}
               <span>Price</span>
               {columnPrefs.change ? <span>Chg%</span> : null}
               {columnPrefs.spread ? <span>Spread</span> : null}
@@ -2310,6 +2391,7 @@ export default function WebTrader({
             <div>
               {watchlistOrder.filter((name) => name.toLowerCase().includes(watchlistFilter.toLowerCase())).map((name) => {
                 const row = market[name];
+                if (!row) return null; // between an add/hide and the next server round trip -- skip rather than crash
                 const changePct = row.dayOpenKnown ? ((row.bid - row.dayOpen) / row.dayOpen) * 100 : null;
                 const flash = row.bid > row.prevBid ? "up" : row.bid < row.prevBid ? "down" : "";
                 return (
@@ -2324,7 +2406,6 @@ export default function WebTrader({
                   >
                     <span className="wl-drag-handle">⋮⋮</span>
                     <span className="wl-cell wl-symbol">{name}</span>
-                    {columnPrefs.signal ? <span className={`wl-cell wl-signal ${row.live && row.dayOpenKnown && row.bid >= row.dayOpen ? "wl-pos" : "wl-neg"}`}>{row.live && row.dayOpenKnown ? (row.bid >= row.dayOpen ? "▲" : "▼") : "—"}</span> : null}
                     <span className="wl-cell wl-price-cell">
                       {row.live ? (
                         <span className={`wl-price mono ${flash}`}>{fmt(row.bid, row.def.digits)}</span>
@@ -2348,6 +2429,10 @@ export default function WebTrader({
                   </div>
                 );
               })}
+              <div className="wl-add-symbol-row" onClick={() => setAddSymbolOpen(true)}>
+                <span className="wl-add-symbol-icon">+</span>
+                <span>Add symbol</span>
+              </div>
             </div>
             {wlMenuOpen && wlContextMenu ? (
               <div className="wl-context-menu show" ref={wlContextMenuRef} style={{ left: wlContextMenu.x, top: wlContextMenu.y }}>
@@ -2364,12 +2449,32 @@ export default function WebTrader({
                       <span className="wl-ctx-check" />
                       <span>Symbol specification — {wlContextMenu.symbol}</span>
                     </div>
-                    <div className="wl-ctx-title">Show columns</div>
+                    <div
+                      className="wl-ctx-item"
+                      onClick={() => {
+                        hideSymbolFromWatchlist(wlContextMenu.symbol!);
+                        setWlMenuOpen(false);
+                      }}
+                    >
+                      <span className="wl-ctx-check" />
+                      <span>Hide symbol</span>
+                    </div>
+                    <div style={{ height: 1, background: "var(--border)", margin: "4px 0" }} />
                   </>
-                ) : (
-                  <div className="wl-ctx-title">Show columns</div>
-                )}
-                {(["signal", "change", "spread", "high", "low"] as const).map((key) => (
+                ) : null}
+                <div
+                  className="wl-ctx-item"
+                  onClick={() => {
+                    resetWatchlistToDefault();
+                    setWlMenuOpen(false);
+                  }}
+                >
+                  <span className="wl-ctx-check" />
+                  <span>Reset to default</span>
+                </div>
+                <div style={{ height: 1, background: "var(--border)", margin: "4px 0" }} />
+                <div className="wl-ctx-title">Show columns</div>
+                {(["change", "spread", "high", "low"] as const).map((key) => (
                   <div key={key} className="wl-ctx-item" onClick={() => setColumnPrefs((prev) => ({ ...prev, [key]: !prev[key] }))}>
                     <span className="wl-ctx-check">{columnPrefs[key] ? "✓" : ""}</span>
                     <span style={{ textTransform: "capitalize" }}>{key === "change" ? "Change %" : key === "high" ? "Daily high" : key === "low" ? "Daily low" : key}</span>
@@ -2378,6 +2483,15 @@ export default function WebTrader({
               </div>
             ) : null}
             <div className="wl-hint">Right-click for more columns</div>
+            {addSymbolOpen ? (
+              <AddSymbolDialog
+                allSymbols={allSymbols}
+                market={market}
+                watchlistNames={watchlistOrder}
+                onAdd={addSymbolToWatchlist}
+                onClose={() => setAddSymbolOpen(false)}
+              />
+            ) : null}
 
             {/* ---------- Smart Trade Manager (embedded below the
                 Watchlist, MT4/5-style, instead of hidden behind the rail
@@ -2396,6 +2510,7 @@ export default function WebTrader({
                 embedded
                 open={stmOpen}
                 onClose={() => setStmOpen(false)}
+                symbols={allSymbols}
                 market={market}
                 positions={positions}
                 positionPnl={positionPnl}
@@ -2430,15 +2545,26 @@ export default function WebTrader({
                       style={{ margin: 6, width: "calc(100% - 12px)" }}
                     />
                     <div style={{ maxHeight: 260, overflowY: "auto" }}>
-                      {SYMBOL_DEFS.filter((s) => s.name.toLowerCase().includes(symbolSearch.toLowerCase())).map((s) => (
+                      {allSymbols.filter((s) => s.name.toLowerCase().includes(symbolSearch.toLowerCase())).map((s) => (
                         <div
                           key={s.name}
                           className={`acc-option${s.name === activeSymbol ? " active" : ""}`}
-                          style={{ cursor: "pointer", padding: "7px 10px" }}
+                          style={{ cursor: "pointer", padding: "7px 10px", display: "flex", alignItems: "center", justifyContent: "space-between" }}
                           onClick={() => { selectSymbol(s.name); setSymbolDropdownOpen(false); }}
                         >
-                          <span className="mono">{s.name}</span>
-                          <span className="net-pos-detail" style={{ marginLeft: 8 }}>{s.category}</span>
+                          <span>
+                            <span className="mono">{s.name}</span>
+                            <span className="net-pos-detail" style={{ marginLeft: 8 }}>{s.category}</span>
+                          </span>
+                          {!watchlistOrder.includes(s.name) ? (
+                            <button
+                              className="wl-add-inline-btn"
+                              title="Add to watchlist"
+                              onClick={(e) => { e.stopPropagation(); addSymbolToWatchlist(s.name); }}
+                            >
+                              +
+                            </button>
+                          ) : null}
                         </div>
                       ))}
                     </div>
@@ -2572,6 +2698,7 @@ export default function WebTrader({
                   {gridCells.map((cell, i) => (
                     <ChartCell
                       key={i}
+                      symbols={allSymbols}
                       symbol={cell.symbol}
                       tf={cell.tf}
                       m={market[cell.symbol]}
@@ -2815,7 +2942,7 @@ export default function WebTrader({
                     </select>
                     <select className="history-period-select" value={histSymbol} onChange={(e) => setHistSymbol(e.target.value)}>
                       <option value="">All symbols</option>
-                      {SYMBOL_DEFS.map((s) => <option key={s.name} value={s.name}>{s.name}</option>)}
+                      {allSymbols.map((s) => <option key={s.name} value={s.name}>{s.name}</option>)}
                     </select>
                     <div className="history-summary">
                       {history.length > 0 ? <>{history.length} trades · Total <span className={history.reduce((s, h) => s + (h.realizedPnl ? parseFloat(h.realizedPnl) : 0), 0) >= 0 ? "pos" : "neg"}>{money(history.reduce((s, h) => s + (h.realizedPnl ? parseFloat(h.realizedPnl) : 0), 0))}</span></> : null}

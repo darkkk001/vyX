@@ -5,9 +5,19 @@
 // deliberately the only thing components depend on, so swapping the
 // source later doesn't touch the UI.
 
-export type SymbolCategory = "FOREX" | "METALS" | "CRYPTO" | "INDICES";
+// Widened to match prisma/schema.prisma's SymbolCategory enum exactly
+// (COMMODITIES/STOCKS added) -- this used to be a narrower, hand-picked
+// 4-value type matching only the old hardcoded SYMBOL_DEFS below; now
+// that the real symbol universe comes from the broker's own enabled
+// BrokerSymbol set (app/api/trade/symbols), it can carry any DB category.
+export type SymbolCategory = "FOREX" | "METALS" | "CRYPTO" | "INDICES" | "COMMODITIES" | "STOCKS";
 
 export type SymbolDef = {
+  // Undefined for a bootstrap-only SYMBOL_DEFS entry (never persisted
+  // anywhere); always present once built from the server's real symbol
+  // list via buildSymbolDef -- the id the watchlist add/hide API needs,
+  // since the DB doesn't key WatchlistItem off the symbol's name.
+  id?: string;
   name: string;
   category: SymbolCategory;
   digits: number;
@@ -16,6 +26,14 @@ export type SymbolDef = {
   contractSize: number;
 };
 
+// Bootstrap/fallback set only -- used to seed the very first render before
+// the real broker-enabled symbol list (app/api/trade/symbols) has loaded,
+// so `market[activeSymbol]` is never undefined on first paint. NOT the
+// terminal's real symbol universe anymore: that was the actual bug this
+// fix addresses (a 30-enabled-symbol broker only ever showing these same
+// 10, because this array WAS unconditionally treated as the universe
+// everywhere, not a fallback). WebTrader.tsx replaces this with the
+// server's real list as soon as it arrives.
 export const SYMBOL_DEFS: SymbolDef[] = [
   { name: "XAUUSD", category: "METALS", digits: 2, base: 2352.40, vol: 0.35, contractSize: 100 },
   { name: "EURUSD", category: "FOREX", digits: 5, base: 1.0850, vol: 0.00006, contractSize: 100000 },
@@ -28,6 +46,46 @@ export const SYMBOL_DEFS: SymbolDef[] = [
   { name: "ETHUSD", category: "CRYPTO", digits: 2, base: 3420.00, vol: 3.2, contractSize: 1 },
   { name: "NAS100", category: "INDICES", digits: 1, base: 18240.0, vol: 5.5, contractSize: 1 },
 ];
+
+// `base`/`vol` are only ever read as a placeholder bid/ask BEFORE a real
+// live tick arrives (MarketState.live stays false until then, and nothing
+// renders bid/ask while it's false -- see MarketState's own doc comment)
+// -- their exact values don't affect anything a trader can see or act on.
+// Reuses the old hand-picked SYMBOL_DEFS numbers for symbols this app
+// already knew about (a nicer-looking placeholder, purely cosmetic), and
+// a small generic guess for every symbol it doesn't.
+const PLACEHOLDER_HINTS: Record<string, { base: number; vol: number }> = Object.fromEntries(
+  [
+    { name: "XAUUSD", base: 2352.4, vol: 0.35 },
+    { name: "EURUSD", base: 1.085, vol: 0.00006 },
+    { name: "GBPUSD", base: 1.268, vol: 0.00007 },
+    { name: "BTCUSD", base: 62150.0, vol: 25 },
+    { name: "US30", base: 38950.0, vol: 4.5 },
+    { name: "USDJPY", base: 156.2, vol: 0.008 },
+    { name: "AUDUSD", base: 0.652, vol: 0.00005 },
+    { name: "XAGUSD", base: 27.8, vol: 0.02 },
+    { name: "ETHUSD", base: 3420.0, vol: 3.2 },
+    { name: "NAS100", base: 18240.0, vol: 5.5 },
+  ].map((h) => [h.name, { base: h.base, vol: h.vol }])
+);
+
+// Converts one row of the server's real enabled-symbol list
+// (app/api/trade/symbols's response shape) into a SymbolDef -- the only
+// place base/vol placeholders get invented for a symbol this app doesn't
+// already have hand-picked numbers for.
+export function buildSymbolDef(row: { id: string; name: string; category: SymbolCategory; digits: number; contractSize: string | number }): SymbolDef {
+  const hint = PLACEHOLDER_HINTS[row.name];
+  const contractSize = typeof row.contractSize === "string" ? parseFloat(row.contractSize) : row.contractSize;
+  return {
+    id: row.id,
+    name: row.name,
+    category: row.category,
+    digits: row.digits,
+    contractSize: Number.isFinite(contractSize) ? contractSize : 100000,
+    base: hint?.base ?? 1,
+    vol: hint?.vol ?? (row.digits >= 3 ? 0.01 : 0.0001),
+  };
+}
 
 export type Timeframe = "M1" | "M5" | "M30" | "H1" | "H4" | "D1" | "W1" | "MN1" | "Y1";
 export const TIMEFRAMES: Timeframe[] = ["M1", "M5", "M30", "H1", "H4", "D1", "W1", "MN1", "Y1"];
@@ -146,9 +204,13 @@ export function bucketStartMs(tf: Timeframe, now: number): number {
   return Date.UTC(d.getUTCFullYear(), 0, 1); // Y1
 }
 
-export function createInitialMarket(): Record<string, MarketState> {
+// `defs` defaults to the bootstrap SYMBOL_DEFS only for safety (a caller
+// that forgets to pass the real, server-fetched list still gets a
+// non-empty market rather than a crash) -- WebTrader.tsx always passes
+// the real broker-enabled list once it's loaded.
+export function createInitialMarket(defs: SymbolDef[] = SYMBOL_DEFS): Record<string, MarketState> {
   const market: Record<string, MarketState> = {};
-  for (const def of SYMBOL_DEFS) {
+  for (const def of defs) {
     const spread = spreadFor(def);
     market[def.name] = {
       def,
