@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import {
   SYMBOL_DEFS,
+  SYMBOL_CATEGORY_ORDER,
+  SYMBOL_CATEGORY_LABELS,
   buildSymbolDef,
   createInitialMarket,
   tickMarket,
@@ -16,6 +18,7 @@ import {
   type Timeframe,
   type FeedStatus,
   type SymbolDef,
+  type SymbolCategory,
 } from "@/lib/market-simulator";
 import { tradeApi, serverNow, ApiError, type AccountInfo, type ApiPosition, type ApiOrder, type ApiFundsRequest, type ApiKycStatus, type ApiLinkedAccount, type ApiSession } from "@/lib/trade-api";
 import AddSymbolDialog from "./AddSymbolDialog";
@@ -595,6 +598,10 @@ export default function WebTrader({
       pushToast(reason, false, retry);
       return;
     }
+    if (err instanceof ApiError && err.message === "MARKET_CLOSED") {
+      pushToast("Market closed — opens Sun 22:00 UTC");
+      return;
+    }
     if (err instanceof ApiError && err.message === "INSUFFICIENT_MARGIN") {
       const info = err.body as { required?: string; available?: string } | null;
       pushToast(
@@ -1033,6 +1040,12 @@ export default function WebTrader({
   // ws.ts's registerClient) -- null/"—" whenever that socket isn't open,
   // same "never show a wrong number" rule as dayOpen's fix above.
   const [pingMs, setPingMs] = useState<number | null>(null);
+  // Session-enforcement pack -- per-symbol "is its trading session closed
+  // right now" from the same prices poll, so the order ticket can disable
+  // Buy/Sell proactively instead of only ever finding out from a rejected
+  // order. Server-authoritative (checkTradingSession, lib/risk.ts) -- this
+  // is a display hint, not a second copy of the rule.
+  const [marketClosedBySymbol, setMarketClosedBySymbol] = useState<Record<string, boolean>>({});
   useEffect(() => {
     let cancelled = false;
     let wasConnected = true;
@@ -1042,7 +1055,9 @@ export default function WebTrader({
         if (cancelled) return;
         const next: Record<string, { bid: number; ask: number; at: number }> = {};
         const now = Date.now();
+        const closedNext: Record<string, boolean> = {};
         for (const row of rows) {
+          closedNext[row.symbol] = row.marketClosed;
           // Ignore stale rows (EA/terminal offline) so the chart falls back
           // to simulation instead of freezing on the last real tick.
           const updatedAtMs = new Date(row.updatedAt).getTime();
@@ -1052,6 +1067,7 @@ export default function WebTrader({
           // fresh the price actually is, not this request's own latency.
           next[row.symbol] = { bid: parseFloat(row.bid), ask: parseFloat(row.ask), at: updatedAtMs };
         }
+        setMarketClosedBySymbol(closedNext);
         // Merges onto whatever the WS/desktop relay has already written
         // (fix/realtime-sync §2) instead of replacing wholesale -- this
         // poll runs every 30s now (a fallback, not the primary source, per
@@ -1635,8 +1651,13 @@ export default function WebTrader({
   const ticketSl = parseFloat(slInput);
   const ticketTp = parseFloat(tpInput);
   const ticketHintLines = buildSlTpPreview(activeSymbol, volume, m.bid, ticketSl, ticketTp);
-  const buyDisabled = !m.live || (!isNaN(ticketSl) && ticketSl >= m.bid) || (!isNaN(ticketTp) && ticketTp <= m.bid);
-  const sellDisabled = !m.live || (!isNaN(ticketSl) && ticketSl <= m.bid) || (!isNaN(ticketTp) && ticketTp >= m.bid);
+  // Session-enforcement pack -- server-authoritative (marketClosedBySymbol
+  // comes straight from checkTradingSession via the prices poll); this is
+  // a proactive UI hint, not a second copy of the rule the server would
+  // reject against anyway if this were ever wrong/stale.
+  const activeSymbolMarketClosed = marketClosedBySymbol[activeSymbol] ?? false;
+  const buyDisabled = !m.live || activeSymbolMarketClosed || (!isNaN(ticketSl) && ticketSl >= m.bid) || (!isNaN(ticketTp) && ticketTp <= m.bid);
+  const sellDisabled = !m.live || activeSymbolMarketClosed || (!isNaN(ticketSl) && ticketSl <= m.bid) || (!isNaN(ticketTp) && ticketTp >= m.bid);
 
   async function placeOrder(side: "BUY" | "SELL") {
     if (!m.live) { pushToast("No live feed for this symbol"); return; }
@@ -1684,7 +1705,7 @@ export default function WebTrader({
       pushToast(`Pending ${pendingType.replace("_", " ")} placed for ${activeSymbol}`);
       await refreshOrders();
     } catch (err) {
-      pushToast(err instanceof Error ? err.message : "order failed");
+      handleOrderError(err);
     }
   }
 
@@ -2030,7 +2051,7 @@ export default function WebTrader({
       pushToast(`Pending ${type.replace("_", " ")} placed for ${quickOrder.symbol} @ ${fmt(price, mm.def.digits)}`);
       await refreshOrders();
     } catch (err) {
-      pushToast(err instanceof Error ? err.message : "order failed");
+      handleOrderError(err);
     }
   }
 
@@ -2120,6 +2141,15 @@ export default function WebTrader({
   }
 
   // ---------- watchlist drag reorder ----------
+  // Watchlist category grouping -- Symbol.category, via allSymbols (the
+  // broker's real symbol universe, already fetched for the "+ Add symbol"
+  // dialog). Undefined only in the brief window between an add/hide and
+  // the next server round trip, same tolerance the row-render below
+  // already has for a missing `market[name]`.
+  function categoryOf(name: string): SymbolCategory | undefined {
+    return allSymbols.find((s) => s.name === name)?.category;
+  }
+
   function attachDragHandlers(name: string) {
     return {
       draggable: true,
@@ -2129,6 +2159,11 @@ export default function WebTrader({
       onDrop: (e: React.DragEvent) => {
         e.preventDefault();
         if (!dragSymbol || dragSymbol === name) return;
+        // Reorder stays within a category -- rows are grouped by
+        // Symbol.category, which a drag can't change, so a drop onto a
+        // different category's row is a no-op rather than silently
+        // reshuffling the symbol into a group it doesn't belong to.
+        if (categoryOf(dragSymbol) !== categoryOf(name)) return;
         // Reads watchlistOrder from this render's own closure (onDrop
         // fires from a single discrete user gesture, not a rapid-fire
         // sequence, so there's no risk of it being stale) rather than
@@ -2149,6 +2184,36 @@ export default function WebTrader({
       },
     };
   }
+
+  // Grouped purely for RENDERING -- watchlistOrder itself (the real,
+  // server-persisted data driving selection/search/drag) stays a flat
+  // name array, untouched. Headers are a display-only concern layered on
+  // top here, never inserted into any data structure a keyboard-nav or
+  // selection feature would index into, so they can't accidentally be
+  // counted as a "row." Within each category, order is whatever
+  // watchlistOrder already has (our seeded/persisted order) -- a stable
+  // partition by category, not a re-sort.
+  type WatchlistRenderRow = { kind: "header"; category: SymbolCategory } | { kind: "symbol"; name: string };
+  const watchlistRenderRows: WatchlistRenderRow[] = useMemo(() => {
+    const filtered = watchlistOrder.filter((name) => name.toLowerCase().includes(watchlistFilter.toLowerCase()));
+    const byCategory = new Map<SymbolCategory, string[]>();
+    for (const name of filtered) {
+      const category = categoryOf(name);
+      if (!category) continue;
+      const list = byCategory.get(category) ?? [];
+      list.push(name);
+      byCategory.set(category, list);
+    }
+    const rows: WatchlistRenderRow[] = [];
+    for (const category of SYMBOL_CATEGORY_ORDER) {
+      const names = byCategory.get(category);
+      if (!names || names.length === 0) continue;
+      rows.push({ kind: "header", category });
+      for (const name of names) rows.push({ kind: "symbol", name });
+    }
+    return rows;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [watchlistOrder, watchlistFilter, allSymbols]);
 
   // ---------- chart ----------
   const candles: Candle[] = m.candles[currentTf];
@@ -2592,7 +2657,15 @@ export default function WebTrader({
               <span></span>
             </div>
             <div>
-              {watchlistOrder.filter((name) => name.toLowerCase().includes(watchlistFilter.toLowerCase())).map((name) => {
+              {watchlistRenderRows.map((wlRow) => {
+                if (wlRow.kind === "header") {
+                  return (
+                    <div key={`hdr-${wlRow.category}`} className="wl-category-header">
+                      {SYMBOL_CATEGORY_LABELS[wlRow.category]}
+                    </div>
+                  );
+                }
+                const name = wlRow.name;
                 const row = market[name];
                 if (!row) return null; // between an add/hide and the next server round trip -- skip rather than crash
                 const changePct = row.dayOpenKnown ? ((row.bid - row.dayOpen) / row.dayOpen) * 100 : null;
@@ -3295,6 +3368,9 @@ export default function WebTrader({
               </>
             ) : (
               <div className="sentiment-box">
+                {activeSymbolMarketClosed ? (
+                  <div className="margin-note" style={{ textAlign: "center", padding: "10px 0" }}>Market closed — opens Sun 22:00 UTC</div>
+                ) : null}
                 <div className="sentiment-prices">
                   <button className={`sentiment-price-btn sell${pendingMarketSide === "SELL" ? " selected" : ""}`} disabled={sellDisabled} onClick={() => confirmAndPlace("SELL")}>
                     <span className="sp-label">Sell</span>

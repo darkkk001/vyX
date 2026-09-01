@@ -2,6 +2,7 @@ import "server-only";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getFreshPrices } from "@/lib/live-price";
+import { checkTradingSession } from "@/lib/risk";
 import { computeRealizedPnl } from "@/lib/trading";
 import { closePositionInTx } from "@/lib/position-close";
 import { publishTradingEvent } from "@/lib/nats";
@@ -49,9 +50,32 @@ async function loadOpenPositionsWithMarket(accountId: string): Promise<OpenPosit
   });
   if (positions.length === 0) return [];
 
-  const prices = await getFreshPrices([...new Set(positions.map((p) => p.symbol.name))]);
+  const symbolNames = [...new Set(positions.map((p) => p.symbol.name))];
+  // Every position for one account shares that account's own brokerId
+  // (a position can only ever be opened under its own account's broker).
+  const [prices, brokerSymbols] = await Promise.all([
+    getFreshPrices(symbolNames),
+    prisma.brokerSymbol.findMany({
+      where: { brokerId: positions[0].brokerId, symbol: { name: { in: symbolNames } } },
+      include: { symbol: { select: { name: true } }, tradingSessions: true },
+    }),
+  ]);
+  // Trading-session gate reused verbatim from the order-placement path
+  // (checkTradingSession -- see its own comment on why "zero configured
+  // rows" now means the default FX weekend close, not "always tradable")
+  // -- automatic SL/TP/stop-out must not fire off a frozen weekend price
+  // any more than a new order should be allowed to submit against one. A
+  // closed-session symbol is treated exactly like "no live price," the
+  // same tolerant path getFreshPrices' own staleness gate already uses.
+  const now = new Date();
+  const closedSymbols = new Set(
+    brokerSymbols
+      .filter((bs) => checkTradingSession(bs.tradingSessions, now, bs.symbol.name) != null)
+      .map((bs) => bs.symbol.name)
+  );
+
   return positions.map((p) => {
-    const live = prices.get(p.symbol.name);
+    const live = closedSymbols.has(p.symbol.name) ? undefined : prices.get(p.symbol.name);
     return {
       id: p.id,
       brokerId: p.brokerId,

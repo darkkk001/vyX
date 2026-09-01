@@ -70,16 +70,69 @@ export function checkLotStep(volume: Prisma.Decimal, minLot: Prisma.Decimal, lot
   return null;
 }
 
-// Zero sessions = always tradable -- same null/empty-means-unlimited
-// convention as every other check here (maxExposure, maxDailyLoss, ...).
-// `now` is injected (not read internally) so this stays a pure function,
-// same testability reason the rest of this file's checks take their
-// inputs as plain values instead of reaching for the DB/clock themselves.
+// The two symbols this platform lists that trade continuously (see
+// lib/market-simulator.ts's SYMBOL_DEFS) -- same static allowlist
+// engine/market-data/src/gap_fill.rs's own is_continuously_traded()
+// keeps, for the same reason stated there: no live per-symbol
+// category/session lookup exists in that crate, so it's a hardcoded list
+// kept in sync by hand. Here in the legacy TS path a real lookup DOES
+// exist (BrokerSymbol.symbol.category), so this only needs to be the
+// crypto-detection rule for symbols that reach checkTradingSession
+// without that context already resolved -- kept name-based to match the
+// Rust side exactly, one rule expressed twice, not two different rules.
+function isContinuouslyTraded(symbolName: string): boolean {
+  return symbolName === "BTCUSD" || symbolName === "ETHUSD";
+}
+
+// The standard global FX/metals weekend close every major venue observes,
+// used as the DEFAULT session when a BrokerSymbol has no admin-configured
+// TradingSession rows -- see that model's own schema comment ("zero rows
+// = always tradable") and this incident: because literally no broker had
+// ever configured session rows for any symbol, checkTradingSession below
+// was a no-op for the entire platform, and a MARKET order filled XAUUSD
+// on a Saturday. "Zero rows = always tradable" was the wrong default for
+// a symbol nobody has actively opted OUT of a real market close for.
+//
+// Mirrors engine/market-data/src/gap_fill.rs's market_closed() exactly --
+// same DST-safe Friday 21:00 UTC cutoff (that file's own comment explains
+// why 21:00 not 22:00: NY close is 21:00 UTC in winter/EST, 22:00 in
+// summer/EDT, and 21:00 is the earlier, always-safe bound). Not literally
+// shared code -- Rust and this Next.js app don't share a build -- but
+// this is the ONE rule both are meant to implement; keep them in sync by
+// hand if this ever changes.
+export function isDefaultFxSessionClosed(now: Date): boolean {
+  const day = now.getUTCDay(); // 0 = Sunday .. 6 = Saturday
+  const hour = now.getUTCHours();
+  if (day === 6) return true; // Saturday: closed all day
+  if (day === 5 && hour >= 21) return true; // Friday >= 21:00 UTC
+  if (day === 0 && hour < 22) return true; // Sunday < 22:00 UTC
+  return false;
+}
+
+// `sessions` (admin-configured TradingSession rows) take priority when
+// present -- an explicit configuration always wins over the default.
+// Zero configured rows now falls through to isDefaultFxSessionClosed
+// instead of "always tradable" (see that function's own comment for why).
+// symbolName is required, not optional, specifically so a caller can't
+// forget it and silently get the old always-open behavior back.
+//
+// Returns the bare machine-readable code "MARKET_CLOSED" (same
+// convention as checkPriceFreshness's PRICE_STALE below) rather than a
+// sentence -- the client renders its own friendly copy for this specific
+// code (see WebTrader.tsx's handleOrderError); every other caller of this
+// function (backoffice dealing-queue/positions/mirror routes) is
+// staff-facing, where the bare code is precise enough to act on as-is.
 export function checkTradingSession(
   sessions: { dayOfWeek: number; openTime: string; closeTime: string }[],
-  now: Date
+  now: Date,
+  symbolName: string
 ): string | null {
-  if (sessions.length === 0) return null;
+  if (isContinuouslyTraded(symbolName)) return null;
+
+  if (sessions.length === 0) {
+    return isDefaultFxSessionClosed(now) ? "MARKET_CLOSED" : null;
+  }
+
   const day = now.getUTCDay();
   const minutes = now.getUTCHours() * 60 + now.getUTCMinutes();
   const toMinutes = (hhmm: string) => {
@@ -90,7 +143,7 @@ export function checkTradingSession(
     if (s.dayOfWeek !== day) return false;
     return minutes >= toMinutes(s.openTime) && minutes < toMinutes(s.closeTime);
   });
-  return open ? null : "this symbol is outside its trading session hours right now";
+  return open ? null : "MARKET_CLOSED";
 }
 
 // Null maxOpenPositions = no limit -- Broker.maxOpenPositionsPerAccount

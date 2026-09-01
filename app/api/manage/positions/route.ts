@@ -236,7 +236,7 @@ export async function POST(request: NextRequest) {
   const riskError =
     checkTradingHalted(broker) ??
     checkSymbolTradingMode(brokerSymbol.tradingMode, side) ??
-    checkTradingSession(brokerSymbol.tradingSessions, new Date()) ??
+    checkTradingSession(brokerSymbol.tradingSessions, new Date(), brokerSymbol.symbol.name) ??
     checkLotStep(volume, brokerSymbol.minLot, brokerSymbol.lotStep) ??
     (account.group ? checkGroupMaxLot(volume, account.group.maxLotSize) : null) ??
     (account.group ? checkGroupTradingRestriction(account.group.tradingRestriction, side) : null) ??
