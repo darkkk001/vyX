@@ -12,19 +12,62 @@ caps on the target account.
 
 ## Where it hooks in (v0)
 
-`lib/mirror.ts` exports `onFill(db, source)` and `onClose(db, closeEvent)`.
-Both are called from the two places a trade currently changes state on the
-legacy Next.js order path:
+`lib/mirror.ts` exports `onFill(db, source)` (plus the `onFillPosition(db,
+position, symbolName)` convenience wrapper most call sites use) and
+`onClose(db, closeEvent)`. A first pass only wired two of these; a real
+dealer-accept fill going unmirrored with zero trace (no `MirrorLink`, no
+`MIRROR_FAILED`) showed that every place a Position is opened or closed on
+the legacy Next.js path needs the hook, not just the two most obvious ones.
+Current call sites, all after their own transaction commits, all
+`.catch()`-wrapped:
 
-- `app/api/trade/orders/route.ts` — after a MARKET order's own fill
-  transaction commits, `onFill` runs against the position just opened.
-- `app/api/trade/positions/[id]/close/route.ts` — after a close (full or
-  partial) commits, `onClose` runs against the volume just closed.
+**Fill (`onFill`/`onFillPosition`)**
+- `app/api/trade/orders/route.ts` — the direct MARKET fill branch, *and*
+  the separate Smart Dealer auto-accept branch (a different code path in
+  the same file that returns before ever reaching the first one).
+- `app/api/manage/dealing-queue/[id]/route.ts` — a human dealer's ACCEPT.
+- `app/api/trade/orders/[id]/requote-response/route.ts` — a client
+  accepting a dealer's requoted price.
+- `app/api/trade/orders/[id]/fill/route.ts` — a resting LIMIT/STOP order's
+  trigger firing.
+- `app/api/manage/positions/route.ts` — a dealing desk's manual open
+  ("execute for client").
+- `app/api/manage/positions/[id]/reverse/route.ts` — the new leg an admin
+  reverse opens.
 
-Both calls happen **after** the client's own transaction has committed, in
-their own separate transaction, wrapped in `.catch()` at the call site. A
-mirror failure (margin, market closed, kill switch) can never roll back or
-delay the client's own trade — the brief's own explicit requirement.
+**Close (`onClose`)**
+- `app/api/trade/positions/[id]/close/route.ts` — the trader's own close
+  (full or partial). "Close all" is client-side N calls to this same
+  route, so it's covered for free.
+- `lib/risk-monitor.ts` — both the SL/TP pass and the stop-out pass.
+- `app/api/manage/positions/[id]/close/route.ts` — a dealer-initiated
+  close.
+- `app/api/manage/positions/[id]/reverse/route.ts` — the closed leg of an
+  admin reverse (called before the new leg's `onFill`, matching real
+  event order).
+- `app/api/manage/positions/[id]/void/route.ts` — not in the original
+  brief, but a real corollary: voiding a manually-opened position that had
+  already been mirrored must close that mirror too, or it sits open
+  forever against a source that no longer exists.
+
+A mirror failure (margin, market closed, kill switch) can never roll back
+or delay-block the client's own trade — the brief's own explicit
+requirement. `onFill` is also `await`ed (not fire-and-forget) at every
+site, so it does add bounded latency to the response (a handful of
+Postgres round trips, no external calls) even though it can never fail the
+trade itself.
+
+If a matching rule exists but is currently disabled (manually, or by its
+own kill switch), `onFill` logs a `MIRROR_SKIPPED_RULE_DISABLED` audit row
+instead of doing nothing silently — "no `MirrorLink` and no `MIRROR_FAILED`
+row" used to be ambiguous between "nothing matched" and "something matched
+but didn't fire."
+
+`lib/mirror.test.ts`'s "wiring audit" describe block statically greps every
+file above for its expected hook call and fails if one goes missing — the
+cheapest real regression guard against this exact class of bug recurring,
+short of a full HTTP-level test harness (which this repo doesn't have for
+any route today).
 
 Matching, rounding, caps, and the DB writes themselves reuse the same
 primitives every other fill/close path in this app uses —

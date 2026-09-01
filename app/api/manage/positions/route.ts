@@ -19,6 +19,7 @@ import {
   checkBrokerExposure,
   checkMaxDailyLoss,
 } from "@/lib/risk";
+import * as mirror from "@/lib/mirror";
 
 async function requireManager() {
   const session = await getAdminSession();
@@ -335,6 +336,12 @@ export async function POST(request: NextRequest) {
 
     return { order, position };
   });
+
+  // docs/briefs/VYX-MIRROR-V0-BRIEF.md -- mirror hook gap fix: a manual
+  // dealing-desk open ("execute for client") is a real fill on the
+  // account, same as any trader-initiated one -- if the account is in a
+  // mirrored group, it must mirror too.
+  await mirror.onFillPosition(prisma, result.position, brokerSymbol.symbol.name).catch((err) => console.error("mirror.onFill failed", err));
 
   return NextResponse.json({
     positionId: result.position.id,

@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { getFreshPrice } from "@/lib/live-price";
 import { computeRealizedPnl } from "@/lib/trading";
+import * as mirror from "@/lib/mirror";
 
 async function requireManager() {
   const session = await getAdminSession();
@@ -146,6 +147,17 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     return { position: updatedPosition, transaction, partial: isPartial };
   });
+
+  // docs/briefs/VYX-MIRROR-V0-BRIEF.md -- mirror hook gap fix: a
+  // dealer-initiated close is a real close, same as the trader's own
+  // self-close route. `position.volume` here is still this route's own
+  // top-of-function read, from before the transaction closed/reduced it.
+  await mirror.onClose(prisma, {
+    positionId: position.id,
+    brokerId,
+    closedLots: closeVolume,
+    sourceVolumeBeforeClose: position.volume,
+  }).catch((err) => console.error("mirror.onClose failed", err));
 
   return NextResponse.json({
     positionId: result.position.id,

@@ -4,6 +4,7 @@ import { getAccountSession } from "@/lib/account-auth";
 import { openPositionFromOrder } from "@/lib/dealing";
 import { resolveBookType, applySpreadMarkup, resolveSymbolPricing } from "@/lib/group-pricing";
 import { publishTradingEvent } from "@/lib/nats";
+import * as mirror from "@/lib/mirror";
 import {
   checkTradingHalted,
   checkSymbolTradingMode,
@@ -152,6 +153,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       });
       return pos;
     });
+    // docs/briefs/VYX-MIRROR-V0-BRIEF.md -- mirror hook gap fix: accepting
+    // a requote is a real fill, same as any other fill path.
+    await mirror.onFillPosition(prisma, position, brokerSymbol.symbol.name).catch((err) => console.error("mirror.onFill failed", err));
     await publishTradingEvent("OrderFilled", {
       order_id: order.id,
       account_id: session.accountId,

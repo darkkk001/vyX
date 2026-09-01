@@ -6,6 +6,7 @@ import { getFreshPrice } from "@/lib/live-price";
 import { openPositionFromOrder } from "@/lib/dealing";
 import { resolveBookType, applySpreadMarkup, resolveSymbolPricing } from "@/lib/group-pricing";
 import { publishTradingEvent } from "@/lib/nats";
+import * as mirror from "@/lib/mirror";
 import {
   checkTradingHalted,
   checkSymbolTradingMode,
@@ -236,6 +237,10 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
       return position;
     });
+    // docs/briefs/VYX-MIRROR-V0-BRIEF.md -- mirror hook gap fix: a dealer
+    // ACCEPT is a real fill, the same as any other fill path, but this
+    // route never called mirror.onFill at all until now.
+    await mirror.onFillPosition(prisma, result, order.symbol.name).catch((err) => console.error("mirror.onFill failed", err));
     // See this route's own new import comment -- the trader's own
     // WebTrader is listening on account_id already (components/webtrader/
     // WebTrader.tsx's /v1/trading/stream effect); broker_id is what makes

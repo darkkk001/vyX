@@ -5,6 +5,7 @@ import { getFreshPrices } from "@/lib/live-price";
 import { computeRealizedPnl } from "@/lib/trading";
 import { closePositionInTx } from "@/lib/position-close";
 import { publishTradingEvent } from "@/lib/nats";
+import * as mirror from "@/lib/mirror";
 
 // The legacy Next.js trading path (the one actually carrying every
 // broker's live traffic today, per docs/decisions.md ADR-003) has never
@@ -123,6 +124,10 @@ export async function evaluateAccountRisk(accountId: string): Promise<RiskMonito
     );
     if (outcome.closed) {
       slTpClosed.push(p.id);
+      // docs/briefs/VYX-MIRROR-V0-BRIEF.md -- mirror hook gap fix: an
+      // automatic SL/TP close is a real close, same as a trader's own
+      // manual one -- this whole module never called it at all before.
+      await mirror.onClose(prisma, { positionId: p.id, brokerId: p.brokerId, closedLots: p.volume, sourceVolumeBeforeClose: p.volume }).catch((err) => console.error("mirror.onClose failed", err));
       await publishTradingEvent("PositionClosed", { position_id: p.id, account_id: accountId, broker_id: p.brokerId, reason });
     }
   }
@@ -180,6 +185,9 @@ export async function evaluateAccountRisk(accountId: string): Promise<RiskMonito
     );
     stopOutClosed.push(worst.position.id);
     if (outcome.closed) {
+      // docs/briefs/VYX-MIRROR-V0-BRIEF.md -- mirror hook gap fix: an
+      // automatic stop-out close is a real close, same as SL/TP above.
+      await mirror.onClose(prisma, { positionId: worst.position.id, brokerId: worst.position.brokerId, closedLots: worst.position.volume, sourceVolumeBeforeClose: worst.position.volume }).catch((err) => console.error("mirror.onClose failed", err));
       await publishTradingEvent("PositionClosed", { position_id: worst.position.id, account_id: accountId, broker_id: worst.position.brokerId, reason: "stop_out" });
     }
     // If outcome.closed is false, a concurrent evaluation (or the trader)

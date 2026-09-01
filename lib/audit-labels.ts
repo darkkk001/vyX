@@ -89,6 +89,7 @@ const LABELS: Record<string, string> = {
   MIRROR_FILLED: "Mirrored fill",
   MIRROR_CLOSED: "Mirrored close",
   MIRROR_FAILED: "Mirror order failed",
+  MIRROR_SKIPPED_RULE_DISABLED: "Mirror skipped -- rule disabled",
   MIRROR_KILL_SWITCH: "Mirror rule kill switch triggered",
 };
 

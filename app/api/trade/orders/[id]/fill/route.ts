@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
 import { publishTradingEvent } from "@/lib/nats";
 import { createNotification } from "@/lib/notifications";
+import * as mirror from "@/lib/mirror";
 import { resolveBookType, applySpreadMarkup, resolveSymbolPricing, chargeCommission } from "@/lib/group-pricing";
 import { checkAccountPreTradeMargin } from "@/lib/margin";
 import {
@@ -45,7 +46,7 @@ export async function POST(
     return NextResponse.json({ error: "price is required" }, { status: 400 });
   }
 
-  const order = await prisma.order.findUnique({ where: { id } });
+  const order = await prisma.order.findUnique({ where: { id }, include: { symbol: { select: { name: true } } } });
   if (!order || order.accountId !== session.accountId) {
     return NextResponse.json({ error: "order not found" }, { status: 404 });
   }
@@ -226,6 +227,10 @@ export async function POST(
     return { order: filledOrder, position };
   });
 
+  // docs/briefs/VYX-MIRROR-V0-BRIEF.md -- mirror hook gap fix: a pending
+  // LIMIT/STOP order's trigger firing is a real fill, same as any other
+  // fill path.
+  await mirror.onFillPosition(prisma, result.position, order.symbol.name).catch((err) => console.error("mirror.onFill failed", err));
   await publishTradingEvent("OrderFilled", {
     order_id: order.id,
     account_id: order.accountId,
