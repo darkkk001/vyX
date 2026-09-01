@@ -44,6 +44,7 @@ export type MirrorSourcePosition = {
   symbolName: string;
   side: OrderSide;
   volume: Prisma.Decimal;
+  openPrice: Prisma.Decimal; // the source's own real fill price -- see MirrorFillPriceMode
 };
 
 export type MirrorSourceClose = {
@@ -51,6 +52,12 @@ export type MirrorSourceClose = {
   brokerId: string;
   closedLots: Prisma.Decimal; // volume just closed on the source (full or partial)
   sourceVolumeBeforeClose: Prisma.Decimal; // source position's volume immediately before this close
+  // The source's own real close price -- see MirrorFillPriceMode. Optional
+  // because one call site (app/api/manage/positions/[id]/void/route.ts)
+  // has no real close price at all (a void is never a real trade); a
+  // SOURCE_PRICE rule falls back to live-price MARKET behavior for that
+  // one case, same as before this field existed.
+  closePrice?: Prisma.Decimal | null;
 };
 
 const oppositeSide = (side: OrderSide): OrderSide => (side === "BUY" ? "SELL" : "BUY");
@@ -227,7 +234,7 @@ export async function onFill(db: Db, source: MirrorSourcePosition): Promise<void
 // function's existence is meant to make less likely going forward).
 export async function onFillPosition(
   db: Db,
-  position: { id: string; brokerId: string; accountId: string; symbolId: string; side: OrderSide; volume: Prisma.Decimal },
+  position: { id: string; brokerId: string; accountId: string; symbolId: string; side: OrderSide; volume: Prisma.Decimal; openPrice: Prisma.Decimal },
   symbolName: string
 ): Promise<void> {
   await onFill(db, {
@@ -238,6 +245,7 @@ export async function onFillPosition(
     symbolName,
     side: position.side,
     volume: position.volume,
+    openPrice: position.openPrice,
   });
 }
 
@@ -302,20 +310,30 @@ async function mirrorFillForRule(db: Db, rule: MirrorRule, source: MirrorSourceP
       return;
     }
 
-    const livePrice = await db.livePrice.findUnique({ where: { symbol: source.symbolName } });
-    if (!livePrice) {
-      await recordMirrorFailure(db, rule, "no live price for symbol (market closed?)");
-      return;
-    }
-
     const pricing = await resolveSymbolPricing(db, {
       groupId: targetAccount.groupId,
       symbolId: source.symbolId,
       brokerSpreadMarkup: brokerSymbol.spreadMarkup,
       brokerCommissionPerLot: brokerSymbol.commissionPerLot,
     });
-    const serverRef = mirrorSide === "BUY" ? livePrice.ask : livePrice.bid;
-    const fillPrice = applySpreadMarkup({ side: mirrorSide, price: serverRef, spreadMarkup: pricing.spreadMarkup, digits: brokerSymbol.symbol.digits });
+
+    // See MirrorFillPriceMode's own doc comment. SOURCE_PRICE copies the
+    // source's own real fill price exactly -- no live-price lookup at
+    // all, no spread markup -- correct for an internal ledger target
+    // where the client's own trade already crossed the spread once.
+    // MARKET keeps the original live-bid/ask + markup behavior.
+    let fillPrice: Prisma.Decimal;
+    if (rule.fillPriceMode === "SOURCE_PRICE") {
+      fillPrice = source.openPrice;
+    } else {
+      const livePrice = await db.livePrice.findUnique({ where: { symbol: source.symbolName } });
+      if (!livePrice) {
+        await recordMirrorFailure(db, rule, "no live price for symbol (market closed?)");
+        return;
+      }
+      const serverRef = mirrorSide === "BUY" ? livePrice.ask : livePrice.bid;
+      fillPrice = applySpreadMarkup({ side: mirrorSide, price: serverRef, spreadMarkup: pricing.spreadMarkup, digits: brokerSymbol.symbol.digits });
+    }
 
     // checkAccountPreTradeMargin takes the real PrismaClient (it runs its
     // own reads outside any transaction, same as every existing caller) --
@@ -375,8 +393,8 @@ async function mirrorFillForRule(db: Db, rule: MirrorRule, source: MirrorSourceP
           action: "MIRROR_FILLED",
           entityType: "Position",
           entityId: position.id,
-          oldValue: { sourcePositionId: source.id, sourceSide: source.side, sourceVolume: source.volume.toString() },
-          newValue: { mirrorSide, volume: volume.toString(), fillPrice: fillPrice.toString(), ruleId: rule.id },
+          oldValue: { sourcePositionId: source.id, sourceSide: source.side, sourceVolume: source.volume.toString(), sourceOpenPrice: source.openPrice.toString() },
+          newValue: { mirrorSide, volume: volume.toString(), fillPrice: fillPrice.toString(), fillPriceMode: rule.fillPriceMode, ruleId: rule.id },
         },
       });
     });
@@ -412,12 +430,25 @@ export async function onClose(db: Db, closeEvent: MirrorSourceClose): Promise<vo
 
     const closeVolume = computeProportionalCloseVolume(closeEvent.closedLots, closeEvent.sourceVolumeBeforeClose, targetPosition.volume);
 
-    const livePrice = await db.livePrice.findUnique({ where: { symbol: targetPosition.symbol.name } });
-    if (!livePrice) {
-      await recordMirrorFailure(db, rule, "no live price to close mirrored position (market closed?)");
-      return;
+    // See MirrorFillPriceMode's own doc comment. SOURCE_PRICE copies the
+    // source's own real close price EXACTLY, unadjusted for the target's
+    // (reversed) side -- that's what makes the target's own P/L come out
+    // to exactly the negative of the source's: identical open price,
+    // identical close price, opposite side, same volume. A void has no
+    // real close price at all (closeEvent.closePrice is null there) --
+    // falls back to live-price MARKET behavior for that one case, the
+    // only behavior available before this field existed.
+    let closePrice: Prisma.Decimal;
+    if (rule.fillPriceMode === "SOURCE_PRICE" && closeEvent.closePrice != null) {
+      closePrice = closeEvent.closePrice;
+    } else {
+      const livePrice = await db.livePrice.findUnique({ where: { symbol: targetPosition.symbol.name } });
+      if (!livePrice) {
+        await recordMirrorFailure(db, rule, "no live price to close mirrored position (market closed?)");
+        return;
+      }
+      closePrice = targetPosition.side === "BUY" ? livePrice.bid : livePrice.ask;
     }
-    const closePrice = targetPosition.side === "BUY" ? livePrice.bid : livePrice.ask;
 
     await withTx(db, (tx) =>
       closePositionInTx(tx, {
@@ -432,7 +463,7 @@ export async function onClose(db: Db, closeEvent: MirrorSourceClose): Promise<vo
         },
         closePrice,
         closeVolume,
-        note: `Mirror close (rule ${rule.id}, source position ${closeEvent.positionId})`,
+        note: `Mirror close (rule ${rule.id}, source position ${closeEvent.positionId}, mode ${rule.fillPriceMode})`,
       })
     );
 
@@ -442,8 +473,8 @@ export async function onClose(db: Db, closeEvent: MirrorSourceClose): Promise<vo
         action: "MIRROR_CLOSED",
         entityType: "Position",
         entityId: targetPosition.id,
-        oldValue: { sourcePositionId: closeEvent.positionId, sourceClosedLots: closeEvent.closedLots.toString() },
-        newValue: { targetClosedLots: closeVolume.toString() },
+        oldValue: { sourcePositionId: closeEvent.positionId, sourceClosedLots: closeEvent.closedLots.toString(), sourceClosePrice: closeEvent.closePrice?.toString() ?? null },
+        newValue: { targetClosedLots: closeVolume.toString(), closePrice: closePrice.toString(), fillPriceMode: rule.fillPriceMode },
       },
     });
   } catch (err) {

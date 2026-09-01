@@ -1,10 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import { Prisma } from "@prisma/client";
+import { Prisma, MirrorFillPriceMode } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession } from "@/lib/auth";
 import { forbidUnlessBrokerAdminOrPermission } from "@/lib/permissions";
 import { getFreshPrices } from "@/lib/live-price";
 import { computeRealizedPnl } from "@/lib/trading";
+
+const FILL_PRICE_MODES: MirrorFillPriceMode[] = ["SOURCE_PRICE", "MARKET"];
 
 async function requireMirrorManage() {
   const session = await getAdminSession();
@@ -104,6 +106,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       targetAccountLabel: targetAccount ? `${targetAccount.accountNumber} — ${targetAccount.fullName}` : "(deleted account)",
       direction: rule.direction,
       multiplier: rule.multiplier.toString(),
+      fillPriceMode: rule.fillPriceMode,
       symbolFilter: rule.symbolFilter,
       maxOpenLots: rule.maxOpenLots ? rule.maxOpenLots.toString() : null,
       maxDailyLoss: rule.maxDailyLoss ? rule.maxDailyLoss.toString() : null,
@@ -166,6 +169,15 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     data.multiplier = multiplier;
     oldValue.multiplier = existing.multiplier.toString();
     newValue.multiplier = multiplier.toString();
+  }
+  if (typeof body.fillPriceMode === "string") {
+    if (!FILL_PRICE_MODES.includes(body.fillPriceMode as MirrorFillPriceMode)) {
+      return NextResponse.json({ error: "invalid fillPriceMode" }, { status: 400 });
+    }
+    const fillPriceMode = body.fillPriceMode as MirrorFillPriceMode;
+    data.fillPriceMode = fillPriceMode;
+    oldValue.fillPriceMode = existing.fillPriceMode;
+    newValue.fillPriceMode = fillPriceMode;
   }
   if ("symbolFilter" in body) {
     const raw = typeof body.symbolFilter === "string" ? body.symbolFilter.trim() : "";

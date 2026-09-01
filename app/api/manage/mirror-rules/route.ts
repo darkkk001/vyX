@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { Prisma } from "@prisma/client";
+import { Prisma, MirrorFillPriceMode } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession } from "@/lib/auth";
 import { forbidUnlessBrokerAdminOrPermission } from "@/lib/permissions";
+
+const FILL_PRICE_MODES: MirrorFillPriceMode[] = ["SOURCE_PRICE", "MARKET"];
 
 // docs/briefs/VYX-MIRROR-V0-BRIEF.md -- "RBAC: dealing.manage roles only."
 // MIRROR_MANAGE is a delegatable permission (lib/permission-labels.ts),
@@ -26,6 +28,7 @@ async function serializeRule(rule: {
   targetAccountId: string;
   direction: string;
   multiplier: Prisma.Decimal;
+  fillPriceMode: string;
   symbolFilter: string | null;
   maxOpenLots: Prisma.Decimal | null;
   maxDailyLoss: Prisma.Decimal | null;
@@ -53,6 +56,7 @@ async function serializeRule(rule: {
     targetAccountLabel: target ? `${target.accountNumber} — ${target.fullName}` : "(deleted account)",
     direction: rule.direction,
     multiplier: rule.multiplier.toString(),
+    fillPriceMode: rule.fillPriceMode,
     symbolFilter: rule.symbolFilter,
     maxOpenLots: rule.maxOpenLots ? rule.maxOpenLots.toString() : null,
     maxDailyLoss: rule.maxDailyLoss ? rule.maxDailyLoss.toString() : null,
@@ -107,6 +111,7 @@ export async function POST(request: NextRequest) {
   const sourceId = typeof body?.sourceId === "string" ? body.sourceId.trim() : "";
   const targetAccountId = typeof body?.targetAccountId === "string" ? body.targetAccountId.trim() : "";
   const direction = body?.direction === "SAME" ? "SAME" : "REVERSE";
+  const fillPriceMode = FILL_PRICE_MODES.includes(body?.fillPriceMode) ? (body.fillPriceMode as MirrorFillPriceMode) : "SOURCE_PRICE";
   if (!sourceType || !sourceId || !targetAccountId) {
     return NextResponse.json({ error: "sourceType, sourceId, and targetAccountId are required" }, { status: 400 });
   }
@@ -160,6 +165,7 @@ export async function POST(request: NextRequest) {
         sourceId,
         targetAccountId,
         direction,
+        fillPriceMode,
         multiplier,
         symbolFilter,
         maxOpenLots: maxOpenLots ?? null,
@@ -175,7 +181,7 @@ export async function POST(request: NextRequest) {
         entityType: "MirrorRule",
         entityId: created.id,
         oldValue: {},
-        newValue: { sourceType, sourceId, targetAccountId, direction, multiplier: multiplier.toString() },
+        newValue: { sourceType, sourceId, targetAccountId, direction, fillPriceMode, multiplier: multiplier.toString() },
       },
     });
     return created;
