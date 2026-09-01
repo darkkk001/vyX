@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Input } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
@@ -8,6 +8,7 @@ import { FormField } from "@/components/ui/FormField";
 import { Modal, ModalActions } from "@/components/ui/Modal";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
 import { useAdminEventStream, ADMIN_STREAM_RECONNECTED, type AdminEvent } from "@/lib/admin-realtime";
+import { useLiveTicks } from "@/lib/price-stream";
 
 export type DealingOrderRow = {
   id: string;
@@ -46,6 +47,14 @@ export default function DealingQueueManager() {
   const [rows, setRows] = useState<DealingOrderRow[] | null>(null);
   const [requotedRows, setRequotedRows] = useState<RequotedOrderRow[]>([]);
   const [busyId, setBusyId] = useState<string | null>(null);
+  // Live price next to the requested price, actually live -- the GET's
+  // own liveBid/liveAsk is just a load-time snapshot, which is exactly
+  // what made the old design's "does the accept price match live"
+  // comparison so brittle (see app/api/manage/dealing-queue/[id]/route.ts's
+  // own module comment). A dealer deciding Accept vs. Requote needs to
+  // see the real live price at the moment they decide, not whenever this
+  // page happened to last load.
+  const liveTicks = useLiveTicks();
 
   function load() {
     return fetch("/api/manage/dealing-queue")
@@ -137,18 +146,29 @@ export default function DealingQueueManager() {
   });
 
   const [acceptTarget, setAcceptTarget] = useState<DealingOrderRow | null>(null);
-  const [acceptPrice, setAcceptPrice] = useState("");
   const [acceptError, setAcceptError] = useState<string | null>(null);
+
+  const [requoteTarget, setRequoteTarget] = useState<DealingOrderRow | null>(null);
+  const [requotePrice, setRequotePrice] = useState("");
+  const [requoteError, setRequoteError] = useState<string | null>(null);
 
   const [rejectTarget, setRejectTarget] = useState<DealingOrderRow | RequotedOrderRow | null>(null);
   const [rejectReason, setRejectReason] = useState("");
   const [rejectError, setRejectError] = useState<string | null>(null);
 
   function openAccept(row: DealingOrderRow) {
-    const live = row.side === "BUY" ? row.liveAsk : row.liveBid;
     setAcceptTarget(row);
-    setAcceptPrice(live ?? row.requestedPrice ?? "");
     setAcceptError(null);
+  }
+
+  // "Requote @ market" -- one click pre-fills the current live price
+  // (falling back to the requested price if the feed is down), still
+  // fully editable before submitting.
+  function openRequote(row: DealingOrderRow) {
+    const live = row.side === "BUY" ? row.liveAsk : row.liveBid;
+    setRequoteTarget(row);
+    setRequotePrice(live ?? row.requestedPrice ?? "");
+    setRequoteError(null);
   }
 
   function openReject(row: DealingOrderRow | RequotedOrderRow) {
@@ -158,29 +178,26 @@ export default function DealingQueueManager() {
   }
 
   // Optimistic: the row disappears the instant this dealer clicks
-  // Accept/Reject rather than waiting for the PATCH to resolve (fix/
-  // realtime-sync §8's "every action is optimistic + reconciled by its
-  // ack event" rule) -- the eventual OrderFilled/OrderRejected/
+  // Accept/Requote/Reject rather than waiting for the PATCH to resolve
+  // (fix/realtime-sync §8's "every action is optimistic + reconciled by
+  // its ack event" rule) -- the eventual OrderFilled/OrderRejected/
   // OrderRequoted event (this same action, echoed back over the event
   // stream) then finds nothing left to remove, a harmless no-op. On
   // failure, the row is spliced back to where it was.
   async function submitAccept() {
     if (!acceptTarget) return;
-    const price = Number(acceptPrice);
-    if (!Number.isFinite(price) || price <= 0) {
-      setAcceptError("Enter a valid price");
-      return;
-    }
     const target = acceptTarget;
     setBusyId(target.id);
     setAcceptError(null);
     setRows((prev) => prev?.filter((r) => r.id !== target.id) ?? prev);
     setAcceptTarget(null);
 
+    // No price in the body -- fills at exactly the client's own
+    // requestedPrice, see the route's own module comment for why.
     const response = await fetch(`/api/manage/dealing-queue/${target.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "ACCEPT", price }),
+      body: JSON.stringify({ action: "ACCEPT" }),
     });
     setBusyId(null);
     if (!response.ok) {
@@ -188,6 +205,33 @@ export default function DealingQueueManager() {
       setRows((prev) => (prev ? [target, ...prev] : [target]));
       setAcceptTarget(target);
       setAcceptError(b.error ?? "accept failed");
+    }
+  }
+
+  async function submitRequote() {
+    if (!requoteTarget) return;
+    const price = Number(requotePrice);
+    if (!Number.isFinite(price) || price <= 0) {
+      setRequoteError("Enter a valid price");
+      return;
+    }
+    const target = requoteTarget;
+    setBusyId(target.id);
+    setRequoteError(null);
+    setRows((prev) => prev?.filter((r) => r.id !== target.id) ?? prev);
+    setRequoteTarget(null);
+
+    const response = await fetch(`/api/manage/dealing-queue/${target.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "REQUOTE", price }),
+    });
+    setBusyId(null);
+    if (!response.ok) {
+      const b = await response.json().catch(() => ({}));
+      setRows((prev) => (prev ? [target, ...prev] : [target]));
+      setRequoteTarget(target);
+      setRequoteError(b.error ?? "requote failed");
     }
   }
 
@@ -226,14 +270,26 @@ export default function DealingQueueManager() {
     }
   }
 
-  if (rows === null) {
+  // Overlay live ticks on top of each row's own load-time liveBid/liveAsk
+  // snapshot -- falls back to that snapshot for a symbol with no tick yet
+  // (feed just connected, or this session never got one), never blanks.
+  const displayRows = useMemo(() => {
+    if (!rows) return rows;
+    return rows.map((row) => {
+      const tick = liveTicks[row.symbol];
+      if (!tick) return row;
+      return { ...row, liveBid: tick.bid.toFixed(row.digits), liveAsk: tick.ask.toFixed(row.digits) };
+    });
+  }, [rows, liveTicks]);
+
+  if (displayRows === null) {
     return <p className="text-sm text-[var(--text-3)]">Loading...</p>;
   }
 
   return (
     <div className="flex flex-col gap-4">
       <p className="text-sm text-[var(--text-3)]">
-        {rows.length} order{rows.length === 1 ? "" : "s"} awaiting manual review, {requotedRows.length} awaiting the client&apos;s answer to a requote. Only populated while dealing mode is on (Risk page).
+        {displayRows.length} order{displayRows.length === 1 ? "" : "s"} awaiting manual review, {requotedRows.length} awaiting the client&apos;s answer to a requote. Only populated while dealing mode is on (Risk page).
       </p>
       <Table>
         <TableHead>
@@ -242,15 +298,15 @@ export default function DealingQueueManager() {
           <TableHeaderCell>Side</TableHeaderCell>
           <TableHeaderCell align="right">Volume</TableHeaderCell>
           <TableHeaderCell align="right">Requested</TableHeaderCell>
-          <TableHeaderCell align="right">Live</TableHeaderCell>
+          <TableHeaderCell align="right" title="Refreshes continuously from the live price feed">Live</TableHeaderCell>
           <TableHeaderCell>Submitted</TableHeaderCell>
           <TableHeaderCell />
         </TableHead>
         <TableBody>
-          {rows.length === 0 ? (
+          {displayRows.length === 0 ? (
             <TableEmptyState colSpan={8}>No orders awaiting review.</TableEmptyState>
           ) : (
-            rows.map((row) => (
+            displayRows.map((row) => (
               <TableRow key={row.id}>
                 <TableCell primary>
                   <span className="font-mono">{row.accountNumber}</span>
@@ -270,6 +326,9 @@ export default function DealingQueueManager() {
                   <div className="flex items-center gap-1.5">
                     <Button size="sm" variant="success" disabled={busyId === row.id} onClick={() => openAccept(row)}>
                       Accept
+                    </Button>
+                    <Button size="sm" variant="secondary" disabled={busyId === row.id} onClick={() => openRequote(row)}>
+                      Requote
                     </Button>
                     <Button size="sm" variant="danger" disabled={busyId === row.id} onClick={() => openReject(row)}>
                       Reject
@@ -329,12 +388,9 @@ export default function DealingQueueManager() {
         <div className="flex flex-col gap-3">
           <p className="text-sm text-[var(--text-2)]">
             {acceptTarget
-              ? `${acceptTarget.side} ${acceptTarget.volume} lots of ${acceptTarget.symbol}. Pre-filled with the current live price — accepting at that price fills instantly. Changing it sends a requote to the client, who must accept before it fills.`
+              ? `${acceptTarget.side} ${acceptTarget.volume} lots of ${acceptTarget.symbol} at the client's own requested price, ${acceptTarget.requestedPrice ?? "—"} — exactly, no live-price check. Use Requote instead to offer a different price.`
               : ""}
           </p>
-          <FormField label="Fill price">
-            <Input type="text" inputMode="decimal" mono value={acceptPrice} onChange={(e) => setAcceptPrice(e.target.value)} />
-          </FormField>
           {acceptError ? <p className="text-sm text-[var(--sell)]">{acceptError}</p> : null}
           <ModalActions>
             <Button variant="ghost" onClick={() => setAcceptTarget(null)}>
@@ -342,6 +398,28 @@ export default function DealingQueueManager() {
             </Button>
             <Button variant="primary" disabled={busyId === acceptTarget?.id} onClick={submitAccept}>
               {busyId === acceptTarget?.id ? "Filling..." : "Accept & fill"}
+            </Button>
+          </ModalActions>
+        </div>
+      </Modal>
+
+      <Modal open={requoteTarget !== null} onClose={() => setRequoteTarget(null)} title={`Requote order — ${requoteTarget?.accountNumber ?? ""}`}>
+        <div className="flex flex-col gap-3">
+          <p className="text-sm text-[var(--text-2)]">
+            {requoteTarget
+              ? `${requoteTarget.side} ${requoteTarget.volume} lots of ${requoteTarget.symbol}. Requested ${requoteTarget.requestedPrice ?? "—"}. Pre-filled with the current live price — edit if needed. The client must accept before it fills.`
+              : ""}
+          </p>
+          <FormField label="Requote price">
+            <Input type="text" inputMode="decimal" mono value={requotePrice} onChange={(e) => setRequotePrice(e.target.value)} />
+          </FormField>
+          {requoteError ? <p className="text-sm text-[var(--sell)]">{requoteError}</p> : null}
+          <ModalActions>
+            <Button variant="ghost" onClick={() => setRequoteTarget(null)}>
+              Cancel
+            </Button>
+            <Button variant="secondary" disabled={busyId === requoteTarget?.id} onClick={submitRequote}>
+              {busyId === requoteTarget?.id ? "Sending..." : "Send requote"}
             </Button>
           </ModalActions>
         </div>
