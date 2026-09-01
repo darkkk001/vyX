@@ -61,6 +61,7 @@ mod tests {
             t0: None,
             clock_offset_ms: None,
             rtt_ms: None,
+            tick_ms: None,
         }
     }
 

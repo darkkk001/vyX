@@ -182,7 +182,7 @@ mod tests {
     }
 
     fn tick(bid: rust_decimal::Decimal, ask: rust_decimal::Decimal) -> Tick {
-        Tick { symbol: "EURUSD".into(), bid, ask, t0: None, clock_offset_ms: None, rtt_ms: None }
+        Tick { symbol: "EURUSD".into(), bid, ask, t0: None, clock_offset_ms: None, rtt_ms: None, tick_ms: None }
     }
 
     #[test]

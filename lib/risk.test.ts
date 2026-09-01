@@ -19,13 +19,22 @@ describe("checkPriceFreshness", () => {
   });
 
   it("rejects a tick older than 3s as PRICE_STALE", () => {
-    const livePrice = { updatedAt: new Date(Date.now() - 5_000) };
+    const livePrice = { tickAt: new Date(Date.now() - 5_000) };
     expect(checkPriceFreshness(livePrice)).toBe("PRICE_STALE");
   });
 
   it("accepts a tick within the 3s window", () => {
-    const livePrice = { updatedAt: new Date(Date.now() - 500) };
+    const livePrice = { tickAt: new Date(Date.now() - 500) };
     expect(checkPriceFreshness(livePrice)).toBeNull();
+  });
+
+  // The exact incident this closes: updatedAt would have looked "fresh"
+  // forever (bumped on every heartbeat write), but tickAt -- the real
+  // last-tick time -- correctly stays old when the underlying price is
+  // frozen (a real market close, or a mid-week feed outage).
+  it("rejects a frozen price whose row was JUST rewritten (updatedAt fresh) but whose real tick is old", () => {
+    const livePrice = { tickAt: new Date(Date.now() - 10 * 60 * 1000) }; // real tick 10 minutes old
+    expect(checkPriceFreshness(livePrice)).toBe("PRICE_STALE");
   });
 });
 
@@ -126,7 +135,7 @@ describe("checkSlippage", () => {
 
 describe("evaluateLiveMarketPrice (existing coarse sanity check, still runs alongside the new gates)", () => {
   it("still rejects a client price fabricated far from the live mid", () => {
-    const livePrice = { bid: new Prisma.Decimal("2400.00"), ask: new Prisma.Decimal("2400.20"), updatedAt: new Date() };
+    const livePrice = { bid: new Prisma.Decimal("2400.00"), ask: new Prisma.Decimal("2400.20"), tickAt: new Date() };
     const result = evaluateLiveMarketPrice(livePrice, "XAUUSD", "1.00");
     expect(result).not.toBeNull();
   });

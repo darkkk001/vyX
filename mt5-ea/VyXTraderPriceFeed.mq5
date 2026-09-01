@@ -7,7 +7,7 @@
 //| LivePrice table this EA feeds.                                    |
 //+------------------------------------------------------------------+
 #property strict
-#property version   "1.36"
+#property version   "1.37"
 
 input string ServerUrl            = "https://www.vyxtrader.com/api/internal/price-feed";
 // No default -- this file is committed to a public-ish repo. A real
@@ -834,13 +834,28 @@ void BuildAndSend()
       TrackedAsk[idx]     = tick.ask;
       TrackedTimeMsc[idx] = tick.time_msc;
 
+      // v1.37 staleness fix -- tick_ms is the REAL last-tick time (unlike
+      // t0 above, which is this send's own wall-clock time and gets
+      // recomputed fresh on every heartbeat resend regardless of whether
+      // the underlying price actually moved). tick.time_msc is the trade
+      // SERVER's own clock (same as MqlRates.time, the reason
+      // BrokerOffsetSec exists at all -- see that variable's own comment),
+      // so it needs the identical correction applied to convert it to
+      // real UTC ms before the engine can compare it against its own
+      // clock. On a heartbeat resend of an unchanged price this is
+      // unchanged from the last real send (TrackedTimeMsc[idx] just got
+      // reassigned its own current value above, a no-op when nothing
+      // moved) -- exactly what lets a frozen weekend/outage price be told
+      // apart from a live one server-side (LivePrice.tickAt).
+      long tickMs = tick.time_msc - (BrokerOffsetSec * 1000);
+
       if (!first) json += ",";
       // %I64d, not %d -- t0 is a 64-bit long (ms since epoch); %d is
       // MQL5's 32-bit specifier and silently truncates it, corrupting
       // every downstream latency measurement (confirmed live: the VPS
       // deployment's /internal/feed-stats showed t0 collapsing to a tiny
       // leftover value once real Exness ticks started flowing).
-      json += StringFormat("{\"symbol\":\"%s\",\"bid\":%.5f,\"ask\":%.5f,\"t0\":%I64d", CanonicalFor(brokerSymbol), tick.bid, tick.ask, t0);
+      json += StringFormat("{\"symbol\":\"%s\",\"bid\":%.5f,\"ask\":%.5f,\"t0\":%I64d,\"tick_ms\":%I64d", CanonicalFor(brokerSymbol), tick.bid, tick.ask, t0, tickMs);
       // clock_offset_ms/rtt_ms are omitted entirely (not sent as 0) until
       // the first real handshake succeeds -- matches protocol::Tick's
       // Option<i64> fields on the Rust side, which skip serializing when

@@ -710,7 +710,27 @@ model LivePrice {
   symbol    String   @id // matches Symbol.name, e.g. "EURUSD"
   bid       Decimal  @db.Decimal(18, 5)
   ask       Decimal  @db.Decimal(18, 5)
+  // Row-write time -- bumped on every flush regardless of whether bid/ask
+  // actually changed (the sole writer, engine/market-data's
+  // upsert_live_prices_batch, always sets this to now()). Ordinary
+  // bookkeeping only now -- NOT the staleness signal (see tickAt below).
+  // Kept for whatever still wants "when was this row last touched"
+  // (nothing does today, but no reason to remove a harmless column).
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
+  // The REAL last-tick time -- the MT5 EA's own SymbolInfoTick time_msc
+  // (corrected to UTC), carried through unchanged on a heartbeat resend
+  // of an unchanged price. This is what actually stops advancing when the
+  // underlying market genuinely goes quiet (a real market close, or a
+  // mid-week feed outage), unlike updatedAt above -- see
+  // lib/risk.ts's checkPriceFreshness, which reads this column, not
+  // updatedAt, for exactly that reason (a real incident: a MARKET order
+  // filled XAUUSD on a Saturday because updatedAt alone couldn't tell a
+  // frozen weekend price apart from a live one being heartbeat-resent).
+  // Defaults to now() only so the migration's ADD COLUMN has something to
+  // backfill existing rows with -- every real write from that point on
+  // sets it explicitly (see engine/market-data/src/ingest.rs's
+  // resolve_tick_time).
+  tickAt DateTime @default(now()) @db.Timestamptz(3)
 }
 
 enum CandleTimeframe {
