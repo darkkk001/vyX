@@ -88,7 +88,7 @@ export async function POST(
   const riskError =
     checkTradingHalted(broker) ??
     (brokerSymbol ? checkSymbolTradingMode(brokerSymbol.tradingMode, order.side) : null) ??
-    (brokerSymbol ? checkTradingSession(brokerSymbol.tradingSessions, new Date()) : null) ??
+    (brokerSymbol ? checkTradingSession(brokerSymbol.tradingSessions, new Date(), brokerSymbol.symbol.name) : null) ??
     (brokerSymbol ? checkLotStep(order.volume, brokerSymbol.minLot, brokerSymbol.lotStep) : null) ??
     (brokerSymbol ? evaluateLiveMarketPrice(livePrice, brokerSymbol.symbol.name, requestedFillPrice) : null) ??
     (brokerSymbol ? checkPriceFreshness(livePrice) : null) ??

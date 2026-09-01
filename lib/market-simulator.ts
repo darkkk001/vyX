@@ -12,6 +12,23 @@
 // BrokerSymbol set (app/api/trade/symbols), it can carry any DB category.
 export type SymbolCategory = "FOREX" | "METALS" | "CRYPTO" | "INDICES" | "COMMODITIES" | "STOCKS";
 
+// Single source of truth for "what order do symbol categories render in,
+// and what do we call them" -- shared by the watchlist's own category
+// grouping (WebTrader.tsx) and the "+ Add symbol" dialog
+// (AddSymbolDialog.tsx), which used to keep its own separate, slightly
+// different-ordered copy of this. COMMODITIES reads as "Energy" (oil/gas
+// is what a trading platform's "Energy" bucket conventionally means; no
+// symbols in that category yet today, but the label is ready for it).
+export const SYMBOL_CATEGORY_ORDER: SymbolCategory[] = ["FOREX", "METALS", "INDICES", "COMMODITIES", "CRYPTO", "STOCKS"];
+export const SYMBOL_CATEGORY_LABELS: Record<SymbolCategory, string> = {
+  FOREX: "Forex",
+  METALS: "Metals",
+  INDICES: "Indices",
+  COMMODITIES: "Energy",
+  CRYPTO: "Crypto",
+  STOCKS: "Stocks",
+};
+
 export type SymbolDef = {
   // Undefined for a bootstrap-only SYMBOL_DEFS entry (never persisted
   // anywhere); always present once built from the server's real symbol

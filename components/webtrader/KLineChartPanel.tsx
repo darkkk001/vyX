@@ -427,6 +427,17 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
             high: { color: AXIS_TEXT_COLOR, textFamily: MONO_FONT, textSize: 11 },
             low: { color: AXIS_TEXT_COLOR, textFamily: MONO_FONT, textSize: 11 },
           },
+          // chart-polish round -- the OHLCV info bar at the top-left of the
+          // chart (candle.tooltip's built-in legend) had no font styling of
+          // its own anywhere in this file, so it rendered in klinecharts'
+          // own default font instead of the app's mono stack every other
+          // number on this chart uses (axis ticks, the crosshair, the
+          // last-price badge, all just above). JetBrains Mono is already a
+          // fixed-width face, which is what gives digit columns the same
+          // tabular-nums alignment a CSS font-variant-numeric would --
+          // there's no canvas-text equivalent of that CSS property to set
+          // separately.
+          tooltip: { text: { color: AXIS_TEXT_COLOR, size: 11, family: MONO_FONT, weight: "normal" } },
         },
         xAxis: {
           axisLine: { color: "rgba(255,255,255,0.08)" },

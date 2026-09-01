@@ -299,7 +299,7 @@ async function mirrorFillForRule(db: Db, rule: MirrorRule, source: MirrorSourceP
 
     const tradabilityError =
       checkSymbolTradingMode(brokerSymbol.tradingMode, mirrorSide) ??
-      checkTradingSession(brokerSymbol.tradingSessions, new Date());
+      checkTradingSession(brokerSymbol.tradingSessions, new Date(), brokerSymbol.symbol.name);
     if (tradabilityError) {
       await recordMirrorFailure(db, rule, tradabilityError);
       return;

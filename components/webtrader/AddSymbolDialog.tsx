@@ -1,23 +1,14 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { fmt, type MarketState, type SymbolCategory, type SymbolDef } from "@/lib/market-simulator";
-
-// Friendly, short group labels for the dialog -- COMMODITIES reads as
-// "Energy" here (oil/gas is what a trading platform's "Energy" bucket
-// conventionally means; this app has no symbols in that category yet
-// today, but the label is ready for when it does) rather than the DB
-// enum's own more generic name. Order matches how a trader expects to
-// scan a symbol list: majors/precious metals first, speculative last.
-const CATEGORY_LABELS: Record<SymbolCategory, string> = {
-  FOREX: "FX",
-  METALS: "Metals",
-  INDICES: "Indices",
-  CRYPTO: "Crypto",
-  COMMODITIES: "Energy",
-  STOCKS: "Stocks",
-};
-const CATEGORY_ORDER: SymbolCategory[] = ["FOREX", "METALS", "INDICES", "CRYPTO", "COMMODITIES", "STOCKS"];
+import {
+  fmt,
+  SYMBOL_CATEGORY_LABELS as CATEGORY_LABELS,
+  SYMBOL_CATEGORY_ORDER as CATEGORY_ORDER,
+  type MarketState,
+  type SymbolCategory,
+  type SymbolDef,
+} from "@/lib/market-simulator";
 
 export default function AddSymbolDialog({
   allSymbols,

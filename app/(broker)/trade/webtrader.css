@@ -283,6 +283,13 @@ html, body, #root {
   letter-spacing: .03em; text-transform: uppercase;
   border-bottom: 1px solid var(--border); margin-bottom: 2px;
 }
+/* Watchlist category grouping -- not collapsible for now, purely a
+   scan-aid; never a real row (no click/drag/keyboard-nav target). */
+.wl-category-header {
+  padding: 8px 8px 3px; font-size: 9.5px; color: var(--text-3);
+  letter-spacing: .05em; text-transform: uppercase; font-weight: 600;
+}
+.wl-category-header:first-child { padding-top: 2px; }
 .wl-item { display: grid; align-items: center; gap: 6px; padding: 8px 8px; border-radius: 8px; cursor: pointer; font-size: 12px; margin-bottom: 1px; transition: background .12s; }
 .wl-item:hover { background: var(--bg-3); }
 .wl-item.active { background: var(--bg-3); }

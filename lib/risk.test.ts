@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { Prisma } from "@prisma/client";
-import { checkPriceFreshness, checkSlippage, evaluateLiveMarketPrice } from "@/lib/risk";
+import { checkPriceFreshness, checkSlippage, checkTradingSession, evaluateLiveMarketPrice, isDefaultFxSessionClosed } from "@/lib/risk";
 
 // Phase 0 money-risk patch (docs/ROADMAP.md item 1) -- the exploit this
 // closes: a client could submit any price for a MARKET order and it
@@ -26,6 +26,56 @@ describe("checkPriceFreshness", () => {
   it("accepts a tick within the 3s window", () => {
     const livePrice = { updatedAt: new Date(Date.now() - 500) };
     expect(checkPriceFreshness(livePrice)).toBeNull();
+  });
+});
+
+// Session-enforcement pack -- the incident this closes: a MARKET order
+// filled XAUUSD while the real market was closed, because "zero
+// configured TradingSession rows" meant "always tradable" (see
+// checkTradingSession's own comment). Dates below are exact UTC instants
+// matching the user's own test list, constructed with Date.UTC so they're
+// not sensitive to the machine's local timezone running the suite.
+describe("isDefaultFxSessionClosed", () => {
+  it("is closed Friday 22:30 UTC", () => {
+    expect(isDefaultFxSessionClosed(new Date(Date.UTC(2026, 8, 4, 22, 30)))).toBe(true); // Fri
+  });
+  it("is closed Saturday, any time", () => {
+    expect(isDefaultFxSessionClosed(new Date(Date.UTC(2026, 8, 5, 12, 0)))).toBe(true); // Sat
+  });
+  it("is closed Sunday 21:59 UTC", () => {
+    expect(isDefaultFxSessionClosed(new Date(Date.UTC(2026, 8, 6, 21, 59)))).toBe(true); // Sun
+  });
+  it("is open Sunday 22:01 UTC", () => {
+    expect(isDefaultFxSessionClosed(new Date(Date.UTC(2026, 8, 6, 22, 1)))).toBe(false); // Sun
+  });
+  it("is open on a plain weekday", () => {
+    expect(isDefaultFxSessionClosed(new Date(Date.UTC(2026, 8, 2, 12, 0)))).toBe(false); // Wed
+  });
+});
+
+describe("checkTradingSession", () => {
+  it("rejects a MARKET-style check at Fri 22:30 UTC with no configured sessions (the actual incident)", () => {
+    expect(checkTradingSession([], new Date(Date.UTC(2026, 8, 4, 22, 30)), "XAUUSD")).toBe("MARKET_CLOSED");
+  });
+  it("rejects at Sun 21:59 UTC", () => {
+    expect(checkTradingSession([], new Date(Date.UTC(2026, 8, 6, 21, 59)), "XAUUSD")).toBe("MARKET_CLOSED");
+  });
+  it("accepts at Sun 22:01 UTC", () => {
+    expect(checkTradingSession([], new Date(Date.UTC(2026, 8, 6, 22, 1)), "XAUUSD")).toBeNull();
+  });
+  it("accepts BTCUSD at any time, including deep in the weekend closure", () => {
+    expect(checkTradingSession([], new Date(Date.UTC(2026, 8, 5, 12, 0)), "BTCUSD")).toBeNull();
+  });
+  it("accepts ETHUSD at any time too", () => {
+    expect(checkTradingSession([], new Date(Date.UTC(2026, 8, 5, 12, 0)), "ETHUSD")).toBeNull();
+  });
+  it("an explicit configured session overrides the default -- open outside the default window if the row says so", () => {
+    const sessions = [{ dayOfWeek: 6, openTime: "00:00", closeTime: "23:59" }]; // Saturday, all day
+    expect(checkTradingSession(sessions, new Date(Date.UTC(2026, 8, 5, 12, 0)), "XAUUSD")).toBeNull();
+  });
+  it("an explicit configured session still rejects outside its own window", () => {
+    const sessions = [{ dayOfWeek: 3, openTime: "09:00", closeTime: "17:00" }]; // Wednesday only
+    expect(checkTradingSession(sessions, new Date(Date.UTC(2026, 8, 2, 20, 0)), "XAUUSD")).toBe("MARKET_CLOSED");
   });
 });
 

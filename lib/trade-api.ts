@@ -46,7 +46,7 @@ export type ApiPosition = {
   symbol: { name: string; digits: number; contractSize?: string };
 };
 
-export type ApiLivePrice = { symbol: string; bid: string; ask: string; updatedAt: string };
+export type ApiLivePrice = { symbol: string; bid: string; ask: string; updatedAt: string; marketClosed: boolean };
 
 export type ApiCandleTimeframe = "M1" | "M5" | "M30" | "H1" | "H4" | "D1" | "W1" | "MN1" | "Y1";
 
