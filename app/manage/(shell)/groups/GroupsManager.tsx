@@ -23,6 +23,7 @@ export type GroupRow = {
   swapFree: boolean;
   forceDealingMode: boolean;
   groupType: "LP" | "DEALING" | "DEMO";
+  dealingMode: "INHERIT" | "AUTO" | "MANUAL";
   tier: "STANDARD" | "PRO" | "ECN" | "ZERO";
 };
 
@@ -50,6 +51,7 @@ export default function GroupsManager() {
   const [newSwapFree, setNewSwapFree] = useState(false);
   const [newForceDealingMode, setNewForceDealingMode] = useState(false);
   const [newGroupType, setNewGroupType] = useState<GroupRow["groupType"]>("DEALING");
+  const [newDealingMode, setNewDealingMode] = useState<GroupRow["dealingMode"]>("INHERIT");
   const [newTier, setNewTier] = useState<GroupRow["tier"]>("STANDARD");
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
@@ -83,6 +85,7 @@ export default function GroupsManager() {
         swapFree: newSwapFree,
         forceDealingMode: newForceDealingMode,
         groupType: newGroupType,
+        dealingMode: newDealingMode,
         tier: newTier,
       }),
     });
@@ -102,6 +105,7 @@ export default function GroupsManager() {
     setNewSwapFree(false);
     setNewForceDealingMode(false);
     setNewGroupType("DEALING");
+    setNewDealingMode("INHERIT");
     setNewTier("STANDARD");
   }
 
@@ -175,7 +179,23 @@ export default function GroupsManager() {
                 <option value="ZERO">Zero</option>
               </Select>
             </FormField>
+            <FormField label="Dealing override">
+              <Select
+                value={newDealingMode}
+                onChange={(e) => setNewDealingMode(e.target.value as GroupRow["dealingMode"])}
+                title="Overrides whether this group's orders reach the manual dealing queue, independent of Type/Force dealing/the broker-wide setting"
+              >
+                <option value="INHERIT">Inherit (default)</option>
+                <option value="AUTO">Auto-fill always</option>
+                <option value="MANUAL">Queue always</option>
+              </Select>
+            </FormField>
           </div>
+          <p className="text-xs text-[var(--text-3)]">
+            Dealing override: Inherit changes nothing (Type/Force dealing/broker setting still decide). Auto-fill always bypasses the dealing
+            queue for this group no matter what else is set (still subject to margin + live price). Queue always forces manual review even if
+            nothing else would have.
+          </p>
 
           <div className="flex flex-wrap items-center gap-5">
             <Checkbox
@@ -220,11 +240,17 @@ export default function GroupsManager() {
             <TableHeaderCell align="center" className="min-w-[80px]" title="Route this group's market orders to the dealing queue for manual review, independent of the broker-wide setting">
               Dealing
             </TableHeaderCell>
+            <TableHeaderCell
+              className="min-w-[140px]"
+              title="Overrides whether this group's orders reach the manual dealing queue, independent of Type/Force dealing/the broker-wide setting"
+            >
+              Dealing override
+            </TableHeaderCell>
             <TableHeaderCell className="min-w-[190px]" />
           </TableHead>
           <TableBody>
             {rows.length === 0 ? (
-              <TableEmptyState colSpan={11}>No groups yet.</TableEmptyState>
+              <TableEmptyState colSpan={12}>No groups yet.</TableEmptyState>
             ) : (
               rows.map((row) => (
                 <TableRow key={row.id}>
@@ -318,6 +344,18 @@ export default function GroupsManager() {
                       checked={row.forceDealingMode}
                       onChange={(e) => updateRow(row.id, { forceDealingMode: e.target.checked })}
                     />
+                  </TableCell>
+                  <TableCell className="min-w-[140px]">
+                    <Select
+                      value={row.dealingMode}
+                      onChange={(e) => updateRow(row.id, { dealingMode: e.target.value as GroupRow["dealingMode"] })}
+                      className="w-full"
+                      title="Overrides whether this group's orders reach the manual dealing queue, independent of Type/Force dealing/the broker-wide setting"
+                    >
+                      <option value="INHERIT">Inherit</option>
+                      <option value="AUTO">Auto-fill always</option>
+                      <option value="MANUAL">Queue always</option>
+                    </Select>
                   </TableCell>
                   <TableCell className="min-w-[190px] whitespace-nowrap">
                     <div className="flex items-center gap-2">

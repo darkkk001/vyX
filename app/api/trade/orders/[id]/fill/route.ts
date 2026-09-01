@@ -5,6 +5,7 @@ import { getAccountSession } from "@/lib/account-auth";
 import { publishTradingEvent } from "@/lib/nats";
 import { createNotification } from "@/lib/notifications";
 import * as mirror from "@/lib/mirror";
+import { resolveWantsDealingQueue } from "@/lib/dealing-routing";
 import { resolveBookType, applySpreadMarkup, resolveSymbolPricing, chargeCommission } from "@/lib/group-pricing";
 import { checkAccountPreTradeMargin } from "@/lib/margin";
 import {
@@ -109,17 +110,26 @@ export async function POST(
   }
 
   // Same dealing-mode gate as POST /api/trade/orders' own MARKET-order
-  // branch -- a resting LIMIT/STOP order under dealing mode must NOT
-  // auto-fill just because its trigger price was hit. Reclassifying to
-  // type MARKET (status stays PENDING, requestedPrice becomes the
-  // trigger-detected price) is deliberate: it makes this order
-  // indistinguishable from a fresh dealing-queue market order, so the
-  // existing GET /api/manage/dealing-queue query (type: "MARKET") and
-  // the existing PATCH accept/reject route both pick it up with zero
-  // changes to either. The client's own pending-order-trigger effect
-  // already handles "no position yet" the same way a plain market order
-  // under dealing mode does -- nothing to change there either.
-  if (broker.dealingModeAt || account.group?.forceDealingMode || account.group?.groupType === "DEALING") {
+  // branch, including Group.dealingMode's override (see that route's own
+  // comment) -- a resting LIMIT/STOP order under dealing mode must NOT
+  // auto-fill just because its trigger price was hit, unless this
+  // group is explicitly AUTO; and a MANUAL group must queue even if
+  // nothing else would have. Reclassifying to type MARKET (status stays
+  // PENDING, requestedPrice becomes the trigger-detected price) is
+  // deliberate: it makes this order indistinguishable from a fresh
+  // dealing-queue market order, so the existing GET
+  // /api/manage/dealing-queue query (type: "MARKET") and the existing
+  // PATCH accept/reject route both pick it up with zero changes to
+  // either. The client's own pending-order-trigger effect already
+  // handles "no position yet" the same way a plain market order under
+  // dealing mode does -- nothing to change there either.
+  const wantsQueue = resolveWantsDealingQueue({
+    groupDealingMode: account.group?.dealingMode ?? "INHERIT",
+    brokerDealingModeOn: !!broker.dealingModeAt,
+    groupForceDealingMode: !!account.group?.forceDealingMode,
+    groupTypeIsDealing: account.group?.groupType === "DEALING",
+  });
+  if (wantsQueue) {
     const originalType = order.type;
     const originalRequestedPrice = order.requestedPrice?.toString() ?? null;
     const queued = await prisma.$transaction(async (tx) => {

@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { Prisma, GroupType, GroupTier } from "@prisma/client";
+import { Prisma, GroupType, GroupTier, GroupDealingMode } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 
 const GROUP_TYPES: GroupType[] = ["LP", "DEALING", "DEMO"];
 const GROUP_TIERS: GroupTier[] = ["STANDARD", "PRO", "ECN", "ZERO"];
+const GROUP_DEALING_MODES: GroupDealingMode[] = ["INHERIT", "AUTO", "MANUAL"];
 
 async function requireManager() {
   const session = await getAdminSession();
@@ -67,6 +68,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   const swapFree = body?.swapFree === true;
   const forceDealingMode = body?.forceDealingMode === true;
   const groupType = GROUP_TYPES.includes(body?.groupType) ? (body.groupType as GroupType) : "DEALING";
+  const dealingMode = GROUP_DEALING_MODES.includes(body?.dealingMode) ? (body.dealingMode as GroupDealingMode) : "INHERIT";
   const tier = GROUP_TIERS.includes(body?.tier) ? (body.tier as GroupTier) : "STANDARD";
 
   try {
@@ -76,7 +78,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       }
       const updated = await tx.group.update({
         where: { id },
-        data: { name, leverage, marginCallLevel, stopOutLevel, isDefault, maxLotSize, tradingRestriction, swapFree, forceDealingMode, groupType, tier },
+        data: { name, leverage, marginCallLevel, stopOutLevel, isDefault, maxLotSize, tradingRestriction, swapFree, forceDealingMode, groupType, dealingMode, tier },
       });
       await tx.auditLog.create({
         data: {
@@ -96,6 +98,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
             swapFree: existing.swapFree,
             forceDealingMode: existing.forceDealingMode,
             groupType: existing.groupType,
+            dealingMode: existing.dealingMode,
             tier: existing.tier,
           },
           newValue: {
@@ -109,6 +112,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
             swapFree,
             forceDealingMode,
             groupType,
+            dealingMode,
             tier,
           },
         },
@@ -128,6 +132,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       swapFree: group.swapFree,
       forceDealingMode: group.forceDealingMode,
       groupType: group.groupType,
+      dealingMode: group.dealingMode,
       tier: group.tier,
     });
   } catch (error) {

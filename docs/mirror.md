@@ -87,6 +87,28 @@ exact same `onFill`/`onClose` functions with the same `MirrorSourcePosition`/
 `MirrorSourceClose` shapes. Nothing inside `lib/mirror.ts` needs to change
 for that cutover.
 
+## Prerequisite: the source group must actually auto-fill
+
+A mirror strategy depends on the source's own fill happening instantly --
+if the source order sits in the manual dealing queue, nothing has been
+mirrored yet by the time a dealer eventually accepts it. Three existing
+settings can route a group's orders to the queue: `Broker.dealingModeAt`
+(Manager → Risk → "Dealing mode"), `Group.forceDealingMode` (Manager →
+Client Groups → "Dealing" checkbox), and `Group.groupType === "DEALING"`
+(Manager → Client Groups → "Type" dropdown -- **DEALING is every new
+group's default**, so a freshly-created source group is queued by default
+unless this is addressed).
+
+`Group.dealingMode` (`INHERIT` default / `AUTO` / `MANUAL`, Manager →
+Client Groups → "Dealing override" column, see
+`lib/dealing-routing.ts`'s `resolveWantsDealingQueue`) exists specifically
+to break the coupling between "correctly classified as DEALING for book
+accounting" and "requires manual review" -- set a mirror source group's
+override to `AUTO` to guarantee instant fills regardless of the other
+three settings, without having to misclassify its book type as `LP` just
+to dodge the queue. AUTO still goes through the ordinary margin gate and
+fills at the real server price -- it only skips the manual-review step.
+
 ## Known v0 limitations (by design, not oversight)
 
 - LP destination, chained/follower copiers, per-trade SL/TP mirroring, and
