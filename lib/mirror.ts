@@ -198,18 +198,68 @@ export async function onFill(db: Db, source: MirrorSourcePosition): Promise<void
   const sourceMatches: Prisma.MirrorRuleWhereInput[] = [{ sourceType: "ACCOUNT", sourceId: source.accountId }];
   if (account?.groupId) sourceMatches.push({ sourceType: "GROUP", sourceId: account.groupId });
 
+  // Every rule whose source matches, enabled or not -- a disabled/killed
+  // rule still needs to be seen here so a genuine match against it can be
+  // logged (MIRROR_SKIPPED_RULE_DISABLED) instead of vanishing silently.
+  // Without this, "no MirrorLink and no MIRROR_FAILED row" was ambiguous:
+  // did nothing match, or did a real rule just not fire?
   const rules = await db.mirrorRule.findMany({
-    where: { brokerId: source.brokerId, enabled: true, OR: sourceMatches },
+    where: { brokerId: source.brokerId, OR: sourceMatches },
   });
 
   for (const rule of rules) {
+    if (!matchesSymbolFilter(rule.symbolFilter, source.symbolName)) continue;
+    if (!rule.enabled) {
+      await recordSkippedDisabledRule(db, rule, source).catch(() => {
+        // even the skip-log write failed (DB down?) -- nothing left to do
+        // that wouldn't risk affecting the client's own trade
+      });
+      continue;
+    }
     await mirrorFillForRule(db, rule, source);
   }
 }
 
-async function mirrorFillForRule(db: Db, rule: MirrorRule, source: MirrorSourcePosition): Promise<void> {
-  if (!matchesSymbolFilter(rule.symbolFilter, source.symbolName)) return;
+// Convenience for every fill call site: they already hold the just-opened
+// Position row (openPositionFromOrder's return value, or their own fresh
+// tx.position.create) -- this avoids re-typing all six MirrorSourcePosition
+// fields by hand at each of them (the exact class of mistake/omission this
+// function's existence is meant to make less likely going forward).
+export async function onFillPosition(
+  db: Db,
+  position: { id: string; brokerId: string; accountId: string; symbolId: string; side: OrderSide; volume: Prisma.Decimal },
+  symbolName: string
+): Promise<void> {
+  await onFill(db, {
+    id: position.id,
+    brokerId: position.brokerId,
+    accountId: position.accountId,
+    symbolId: position.symbolId,
+    symbolName,
+    side: position.side,
+    volume: position.volume,
+  });
+}
 
+async function recordSkippedDisabledRule(db: Db, rule: MirrorRule, source: MirrorSourcePosition): Promise<void> {
+  await db.auditLog.create({
+    data: {
+      brokerId: rule.brokerId,
+      action: "MIRROR_SKIPPED_RULE_DISABLED",
+      entityType: "MirrorRule",
+      entityId: rule.id,
+      oldValue: {},
+      newValue: {
+        sourcePositionId: source.id,
+        sourceSide: source.side,
+        sourceVolume: source.volume.toString(),
+        reason: rule.killedAt ? "rule killed by kill-switch" : "rule manually disabled",
+      },
+    },
+  });
+}
+
+async function mirrorFillForRule(db: Db, rule: MirrorRule, source: MirrorSourcePosition): Promise<void> {
   try {
     const killCheck = await checkKillSwitch(db, rule);
     if (killCheck.killed) {

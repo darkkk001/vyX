@@ -1,11 +1,63 @@
 import "dotenv/config";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { matchesSymbolFilter, roundMirrorVolume, computeProportionalCloseVolume, onFill, onClose, type MirrorSourcePosition } from "@/lib/mirror";
 
 const D = (v: string | number) => new Prisma.Decimal(v);
+
+// ---------------------------------------------------------------------------
+// Wiring audit -- static, no DB, always runs. This repo has no HTTP/route-
+// level test harness (no route handler anywhere is under test -- confirmed
+// by grep before writing this file), so a real "does hitting this endpoint
+// actually mirror the fill" test would mean building session-mocking
+// infrastructure from scratch, well beyond this fix's scope. What IS cheap
+// and genuinely worth having: a regression guard that fails loudly the
+// moment someone edits one of these files and drops the mirror call --
+// exactly the silent-gap class of bug this whole fix responds to (a real
+// dealer-accept fill went unmirrored with zero trace). Every entry below is
+// a fill or close call site enumerated by reading each file directly.
+// ---------------------------------------------------------------------------
+
+const REPO_ROOT = path.resolve(import.meta.dirname, "..");
+
+function readRepoFile(relativePath: string): string {
+  return readFileSync(path.join(REPO_ROOT, relativePath), "utf8");
+}
+
+const FILL_HOOK_SITES: { file: string; occurrences: number; description: string }[] = [
+  { file: "app/api/trade/orders/route.ts", occurrences: 2, description: "direct MARKET fill + Smart Dealer auto-accept" },
+  { file: "app/api/manage/dealing-queue/[id]/route.ts", occurrences: 1, description: "dealer ACCEPT" },
+  { file: "app/api/trade/orders/[id]/requote-response/route.ts", occurrences: 1, description: "client accepts a requote" },
+  { file: "app/api/trade/orders/[id]/fill/route.ts", occurrences: 1, description: "pending LIMIT/STOP trigger fill" },
+  { file: "app/api/manage/positions/route.ts", occurrences: 1, description: "admin manual open (execute for client)" },
+  { file: "app/api/manage/positions/[id]/reverse/route.ts", occurrences: 1, description: "admin reverse -- new leg" },
+];
+
+const CLOSE_HOOK_SITES: { file: string; occurrences: number; description: string }[] = [
+  { file: "app/api/trade/positions/[id]/close/route.ts", occurrences: 1, description: "client self-close" },
+  { file: "lib/risk-monitor.ts", occurrences: 2, description: "SL/TP trigger + stop-out close" },
+  { file: "app/api/manage/positions/[id]/close/route.ts", occurrences: 1, description: "dealer-initiated close" },
+  { file: "app/api/manage/positions/[id]/reverse/route.ts", occurrences: 1, description: "admin reverse -- closed leg" },
+  { file: "app/api/manage/positions/[id]/void/route.ts", occurrences: 1, description: "void of a manually-opened, mirrored position" },
+];
+
+describe("mirror hook wiring audit (every fill/close call site, static)", () => {
+  it.each(FILL_HOOK_SITES)("$file calls mirror.onFill*/onFillPosition for: $description", ({ file, occurrences }) => {
+    const content = readRepoFile(file);
+    const matches = content.match(/mirror\.onFill(Position)?\(/g) ?? [];
+    expect(matches.length).toBeGreaterThanOrEqual(occurrences);
+  });
+
+  it.each(CLOSE_HOOK_SITES)("$file calls mirror.onClose for: $description", ({ file, occurrences }) => {
+    const content = readRepoFile(file);
+    const matches = content.match(/mirror\.onClose\(/g) ?? [];
+    expect(matches.length).toBeGreaterThanOrEqual(occurrences);
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Pure functions -- no DB, always run. Same convention as lib/risk.test.ts /
@@ -209,7 +261,14 @@ async function createFixture(
 async function createRule(
   tx: Prisma.TransactionClient,
   fx: Fixture,
-  overrides?: Partial<{ symbolFilter: string | null; maxOpenLots: string | null; maxDailyLoss: string | null; multiplier: string }>
+  overrides?: Partial<{
+    symbolFilter: string | null;
+    maxOpenLots: string | null;
+    maxDailyLoss: string | null;
+    multiplier: string;
+    enabled: boolean;
+    killedAt: Date | null;
+  }>
 ) {
   return tx.mirrorRule.create({
     data: {
@@ -222,6 +281,8 @@ async function createRule(
       symbolFilter: overrides?.symbolFilter ?? null,
       maxOpenLots: overrides?.maxOpenLots != null ? D(overrides.maxOpenLots) : null,
       maxDailyLoss: overrides?.maxDailyLoss != null ? D(overrides.maxDailyLoss) : null,
+      enabled: overrides?.enabled ?? true,
+      killedAt: overrides?.killedAt ?? null,
       createdById: fx.adminId,
     },
   });
@@ -418,6 +479,53 @@ describe("lib/mirror.ts onFill (live DB, rolled back)", () => {
 
       const failureAudit = await tx.auditLog.findFirst({ where: { entityId: rule.id, action: "MIRROR_FAILED" } });
       expect(failureAudit).not.toBeNull();
+    });
+  });
+
+  it("logs MIRROR_SKIPPED_RULE_DISABLED and mirrors nothing when a matching rule is manually disabled", async () => {
+    if (!dbReachable) return;
+    await withRollback(async (tx) => {
+      const fx = await createFixture(tx);
+      const rule = await createRule(tx, fx, { enabled: false });
+      const source = sourcePosition(fx);
+
+      await onFill(tx, source);
+
+      const link = await tx.mirrorLink.findUnique({ where: { sourcePositionId: source.id } });
+      expect(link).toBeNull();
+
+      const skipAudit = await tx.auditLog.findFirst({ where: { entityId: rule.id, action: "MIRROR_SKIPPED_RULE_DISABLED" } });
+      expect(skipAudit).not.toBeNull();
+      expect((skipAudit!.newValue as { reason?: string } | null)?.reason).toBe("rule manually disabled");
+    });
+  });
+
+  it("logs MIRROR_SKIPPED_RULE_DISABLED with a kill-switch reason when a matching rule was killed", async () => {
+    if (!dbReachable) return;
+    await withRollback(async (tx) => {
+      const fx = await createFixture(tx);
+      const rule = await createRule(tx, fx, { enabled: false, killedAt: new Date() });
+      const source = sourcePosition(fx);
+
+      await onFill(tx, source);
+
+      const skipAudit = await tx.auditLog.findFirst({ where: { entityId: rule.id, action: "MIRROR_SKIPPED_RULE_DISABLED" } });
+      expect(skipAudit).not.toBeNull();
+      expect((skipAudit!.newValue as { reason?: string } | null)?.reason).toBe("rule killed by kill-switch");
+    });
+  });
+
+  it("does not log MIRROR_SKIPPED_RULE_DISABLED for a disabled rule whose symbolFilter wouldn't have matched anyway", async () => {
+    if (!dbReachable) return;
+    await withRollback(async (tx) => {
+      const fx = await createFixture(tx);
+      const rule = await createRule(tx, fx, { enabled: false, symbolFilter: "SOMEOTHERSYMBOL" });
+      const source = sourcePosition(fx);
+
+      await onFill(tx, source);
+
+      const skipAudit = await tx.auditLog.findFirst({ where: { entityId: rule.id, action: "MIRROR_SKIPPED_RULE_DISABLED" } });
+      expect(skipAudit).toBeNull();
     });
   });
 });

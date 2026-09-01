@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
+import * as mirror from "@/lib/mirror";
 
 async function requireManager() {
   const session = await getAdminSession();
@@ -62,6 +63,13 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
     });
     return updated;
   });
+
+  // Not in the brief's own hook list, but a real corollary of wiring
+  // app/api/manage/positions/route.ts's manual-open: if that position was
+  // mirrored (its account was in a mirrored group/account) before being
+  // voided, the mirrored target must not sit open forever with a source
+  // that no longer exists. onClose is a no-op if it was never mirrored.
+  await mirror.onClose(prisma, { positionId: id, brokerId, closedLots: position.volume, sourceVolumeBeforeClose: position.volume }).catch((err) => console.error("mirror.onClose failed", err));
 
   return NextResponse.json({ id: voided.id, status: voided.status });
 }

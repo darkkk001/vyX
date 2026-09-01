@@ -276,6 +276,12 @@ async function handlePlaceOrder(request: NextRequest) {
               });
               return pos;
             });
+            // docs/briefs/VYX-MIRROR-V0-BRIEF.md -- Smart Dealer auto-accept
+            // is a real fill, same as the direct MARKET-fill branch below,
+            // but returns early before ever reaching that branch's own
+            // hook -- this was the exact "mirror hook gap" this call was
+            // missing.
+            await mirror.onFillPosition(prisma, position, brokerSymbol.symbol.name).catch((err) => console.error("mirror.onFill failed", err));
             await publishTradingEvent("OrderFilled", {
               order_id: order.id,
               account_id: session.accountId,
@@ -438,15 +444,7 @@ async function handlePlaceOrder(request: NextRequest) {
       // block the client's own fill. lib/mirror.ts's onFill never throws,
       // but the extra catch here is a deliberate second guarantee for a
       // money-moving hook on the highest-volume order path in the app.
-      await mirror.onFill(prisma, {
-        id: result.position.id,
-        brokerId: session.brokerId,
-        accountId: session.accountId,
-        symbolId: brokerSymbol.symbolId,
-        symbolName: brokerSymbol.symbol.name,
-        side,
-        volume,
-      }).catch((err) => console.error("mirror.onFill failed", err));
+      await mirror.onFillPosition(prisma, result.position, brokerSymbol.symbol.name).catch((err) => console.error("mirror.onFill failed", err));
       if (source === "hotkey") await logHotkeyOrder(session.brokerId, result.order.id);
       await publishTradingEvent("OrderFilled", {
         order_id: result.order.id,

@@ -4,6 +4,7 @@ import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { getFreshPrice } from "@/lib/live-price";
 import { computeRealizedPnl } from "@/lib/trading";
 import { randomUUID } from "node:crypto";
+import * as mirror from "@/lib/mirror";
 
 async function requireManager() {
   const session = await getAdminSession();
@@ -136,6 +137,19 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
 
     return { closedPosition, newPosition };
   });
+
+  // docs/briefs/VYX-MIRROR-V0-BRIEF.md -- mirror hook gap fix: a reverse
+  // is two real trade events in one admin action -- the original position
+  // closing, and a brand-new one opening on the other side -- both need
+  // their own hook, in that order (close first, matching the order these
+  // two events actually happened in).
+  await mirror.onClose(prisma, {
+    positionId: position.id,
+    brokerId,
+    closedLots: position.volume,
+    sourceVolumeBeforeClose: position.volume,
+  }).catch((err) => console.error("mirror.onClose failed", err));
+  await mirror.onFillPosition(prisma, result.newPosition, position.symbol.name).catch((err) => console.error("mirror.onFill failed", err));
 
   return NextResponse.json({
     closedPositionId: result.closedPosition.id,
