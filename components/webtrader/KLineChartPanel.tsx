@@ -380,7 +380,19 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
 
   useEffect(() => {
     try {
-      chartRef.current?.setPriceVolumePrecision?.({ price: digits, volume: 0 });
+      // setPriceVolumePrecision(pricePrecision, volumePrecision) takes two
+      // POSITIONAL numbers, not an options object -- confirmed against
+      // klinecharts' own source (node_modules/klinecharts/dist/
+      // index.esm.js's ChartImp.prototype.setPriceVolumePrecision). The
+      // previous `{ price: digits, volume: 0 }` call passed an object as
+      // `pricePrecision`; every consumer of that value (the Y-axis ticks,
+      // the crosshair's price label, and the last-price badge -- all three
+      // read chartStore.getPrecision().price and format via
+      // value.toFixed(precision)) silently coerced that object to NaN,
+      // and Number.prototype.toFixed(NaN) rounds to 0 decimals -- exactly
+      // why every symbol's price showed as a bare integer regardless of
+      // its real digits.
+      chartRef.current?.setPriceVolumePrecision?.(digits, 0);
     } catch {
       // ignore
     }
