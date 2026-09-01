@@ -397,6 +397,15 @@ model Account {
   twoFactorSecret  String?
   twoFactorEnabled Boolean @default(false)
 
+  // Chart appearance/behavior prefs (candle colors, grid/last-price-line/
+  // session-high-low/OHLC-bar visibility, timezone) -- server-side like
+  // the watchlist, not localStorage, so web and desktop stay in sync. A
+  // single JSON blob rather than a table: this is one fixed-shape
+  // settings OBJECT per account, not a list of rows like WatchlistItem.
+  // Null = trader has never saved custom settings yet, client applies its
+  // own defaults (see lib/chart-settings.ts's DEFAULT_CHART_SETTINGS).
+  chartSettings Json?
+
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
 
@@ -782,6 +791,15 @@ model BrokerSymbol {
   // (that's still blocked on a real LP relationship, same as
   // LiquidityProvider). See lib/dealing.ts's openPositionFromOrder.
   defaultBookType BookType @default(B_BOOK)
+  // Minimum distance, in POINTS (the symbol's own smallest price
+  // increment -- 10^-digits), an SL/TP or a pending order's own entry
+  // price must sit away from the current market price -- the standard
+  // MT4/5 "stop level" concept, which this schema never had before the
+  // chart's own draggable SL/TP feature needed something to validate a
+  // drag against. 0 = no restriction (every existing symbol's behavior
+  // is unchanged until a broker admin sets a real value). See
+  // lib/trading.ts's validateSlTp.
+  stopLevel Int @default(0)
 
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)

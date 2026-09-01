@@ -29,6 +29,12 @@ const SUBJECTS: Record<string, string> = {
   OrderFilled: "order.filled",
   OrderCancelled: "order.cancelled",
   OrderRequoted: "order.requoted",
+  // A pending LIMIT/STOP order's own entry price (and/or SL/TP) edited in
+  // place -- the chart's draggable entry-price line. Under the already-
+  // subscribed order.> wildcard on both event streams, so no gateway
+  // subscription change was needed (same reasoning as PositionsClosed's
+  // own comment below).
+  OrderModified: "order.modified",
   DealingQueued: "dealing.queued",
   PositionClosed: "position.closed",
   PositionModified: "position.modified",

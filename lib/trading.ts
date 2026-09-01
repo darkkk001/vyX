@@ -5,23 +5,62 @@ export type OrderSide = "BUY" | "SELL";
 // Mirrors the client-side validation in vyx-webtrader.html — re-checked
 // here because "authorization/validation must be enforced server-side,
 // never trust a frontend check alone."
+//
+// `digits`/`stopLevel` are optional so every pre-existing caller (which
+// only ever checked side-correctness) keeps compiling and behaving exactly
+// as before. When both are passed, this also enforces the MT4/5 "stop
+// level": an SL/TP can't sit closer than `stopLevel` POINTS (the symbol's
+// own smallest price increment, 10^-digits) from the reference price --
+// needed by the chart's draggable SL/TP feature so a drag can't produce a
+// price the server would reject anyway. stopLevel <= 0 means unrestricted.
 export function validateSlTp(params: {
   side: OrderSide;
   referencePrice: Prisma.Decimal | number | string;
   slPrice?: Prisma.Decimal | number | string | null;
   tpPrice?: Prisma.Decimal | number | string | null;
+  digits?: number;
+  stopLevel?: number;
 }): string | null {
   const ref = new Prisma.Decimal(params.referencePrice);
+  const minDistance =
+    params.stopLevel && params.stopLevel > 0 && params.digits != null
+      ? new Prisma.Decimal(10).pow(-params.digits).mul(params.stopLevel)
+      : null;
 
   if (params.slPrice != null) {
     const sl = new Prisma.Decimal(params.slPrice);
     if (params.side === "BUY" && sl.gte(ref)) return "SL must be below the reference price for a BUY";
     if (params.side === "SELL" && sl.lte(ref)) return "SL must be above the reference price for a SELL";
+    if (minDistance && ref.sub(sl).abs().lt(minDistance)) return `SL must be at least ${minDistance} away from the current price`;
   }
   if (params.tpPrice != null) {
     const tp = new Prisma.Decimal(params.tpPrice);
     if (params.side === "BUY" && tp.lte(ref)) return "TP must be above the reference price for a BUY";
     if (params.side === "SELL" && tp.gte(ref)) return "TP must be below the reference price for a SELL";
+    if (minDistance && tp.sub(ref).abs().lt(minDistance)) return `TP must be at least ${minDistance} away from the current price`;
+  }
+  return null;
+}
+
+// Same "distance from a reference price" rule as above, applied to a
+// pending order's own entry price against the CURRENT market price (not
+// the order's requested price) -- the MT4/5 rule for placing/editing a
+// LIMIT/STOP: it must sit at least stopLevel points away from where the
+// market actually is right now, on the correct side for its type.
+export function validatePendingPriceDistance(params: {
+  type: "LIMIT" | "STOP";
+  side: OrderSide;
+  entryPrice: Prisma.Decimal | number | string;
+  marketPrice: Prisma.Decimal | number | string;
+  digits: number;
+  stopLevel: number;
+}): string | null {
+  if (!params.stopLevel || params.stopLevel <= 0) return null;
+  const entry = new Prisma.Decimal(params.entryPrice);
+  const market = new Prisma.Decimal(params.marketPrice);
+  const minDistance = new Prisma.Decimal(10).pow(-params.digits).mul(params.stopLevel);
+  if (entry.sub(market).abs().lt(minDistance)) {
+    return `Price must be at least ${minDistance} away from the current market price`;
   }
   return null;
 }

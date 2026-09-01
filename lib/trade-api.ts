@@ -5,6 +5,7 @@
 // shared with manager-shell/admin-shell's own API wrappers.
 import { apiCall as call, apiCallForm as callForm, serverNow, ApiError } from "./desktop-api";
 import type { SymbolCategory } from "./market-simulator";
+import type { ChartSettings } from "./chart-settings";
 export { serverNow, ApiError };
 
 export type AccountInfo = {
@@ -103,7 +104,7 @@ export type ApiLinkedAccount = {
 
 export type ApiBrokerBranding = { brokerName: string; brokerLogoUrl: string; supportEmail: string | null; primaryColor: string | null };
 
-export type ApiWatchlistSymbol = { id: string; name: string; category: SymbolCategory; digits: number; contractSize: string };
+export type ApiWatchlistSymbol = { id: string; name: string; category: SymbolCategory; digits: number; contractSize: string; stopLevel?: number };
 
 export const tradeApi = {
   // Public, no session needed -- see app/api/trade/broker-branding/
@@ -151,6 +152,11 @@ export const tradeApi = {
     // app/api/trade/orders/route.ts's dealingModeAt branch.
     call<{ order: { id: string }; position?: { id: string } }>("/api/trade/orders", { method: "POST", body: JSON.stringify(body) }),
   cancelOrder: (id: string) => call(`/api/trade/orders/${id}`, { method: "DELETE" }),
+  // Draggable entry-price line for a resting LIMIT/STOP order (chart
+  // interaction pack). `currentPrice` is the client's own live price, same
+  // reference-price pattern editPositionSlTp already uses below.
+  editOrderPrice: (id: string, body: { currentPrice: number; requestedPrice: number }) =>
+    call<ApiOrder>(`/api/trade/orders/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   fillOrder: (id: string, price: number) =>
     call(`/api/trade/orders/${id}/fill`, { method: "POST", body: JSON.stringify({ price }) }),
   requoteResponse: (id: string, accept: boolean) =>
@@ -235,4 +241,7 @@ export const tradeApi = {
   // Takes symbol NAMES, not ids -- see the route's own comment on why.
   reorderWatchlist: (symbolNames: string[]) =>
     call("/api/trade/watchlist/reorder", { method: "PUT", body: JSON.stringify({ symbolNames }) }),
+  chartSettings: () => call<{ settings: ChartSettings }>("/api/trade/chart-settings"),
+  saveChartSettings: (settings: ChartSettings) =>
+    call<{ settings: ChartSettings }>("/api/trade/chart-settings", { method: "PUT", body: JSON.stringify(settings) }),
 };

@@ -33,11 +33,18 @@ export async function PATCH(
     return NextResponse.json({ error: "position is not open" }, { status: 409 });
   }
 
+  const brokerSymbol = await prisma.brokerSymbol.findUnique({
+    where: { brokerId_symbolId: { brokerId: position.brokerId, symbolId: position.symbolId } },
+    include: { symbol: { select: { digits: true } } },
+  });
+
   const validationError = validateSlTp({
     side: position.side,
     referencePrice: currentPrice,
     slPrice: slPrice === undefined ? position.slPrice : slPrice,
     tpPrice: tpPrice === undefined ? position.tpPrice : tpPrice,
+    digits: brokerSymbol?.symbol.digits,
+    stopLevel: brokerSymbol?.stopLevel,
   });
   if (validationError) {
     return NextResponse.json({ error: validationError }, { status: 400 });
