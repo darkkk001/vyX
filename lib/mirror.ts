@@ -8,6 +8,7 @@ import { getFreshPrices } from "@/lib/live-price";
 import { computeRealizedPnl } from "@/lib/trading";
 import { closePositionInTx } from "@/lib/position-close";
 import { createNotification } from "@/lib/notifications";
+import { publishTradingEvent } from "@/lib/nats";
 
 // docs/briefs/VYX-MIRROR-V0-BRIEF.md -- v0 hooks the legacy order-fill and
 // position-close paths directly (see the two call sites: app/api/trade/
@@ -356,7 +357,7 @@ async function mirrorFillForRule(db: Db, rule: MirrorRule, source: MirrorSourceP
 
     const bookType = targetAccount.group ? resolveBookType(targetAccount.group.groupType) : brokerSymbol.defaultBookType;
 
-    await withTx(db, async (tx) => {
+    const created = await withTx(db, async (tx) => {
       const order = await tx.order.create({
         data: {
           brokerId: rule.brokerId,
@@ -397,7 +398,25 @@ async function mirrorFillForRule(db: Db, rule: MirrorRule, source: MirrorSourceP
           newValue: { mirrorSide, volume: volume.toString(), fillPrice: fillPrice.toString(), fillPriceMode: rule.fillPriceMode, ruleId: rule.id },
         },
       });
+      return { orderId: order.id };
     });
+
+    // Realtime-sync fix's own convention (services/api-gateway/src/ws.ts's
+    // attachAdminEventStream/attachTradingEventStream) -- this was the one
+    // remaining position-mutating path in the app that never published a
+    // live event at all, so anything subscribed to the target account's
+    // own fills (the backoffice, or an external same-direction copier
+    // watching this account) never learned about a mirrored fill except
+    // via a periodic REST poll. After commit, never inside it -- same rule
+    // as every other publish site in this app.
+    await publishTradingEvent("OrderFilled", {
+      order_id: created.orderId,
+      account_id: rule.targetAccountId,
+      broker_id: rule.brokerId,
+      price: fillPrice.toString(),
+      volume: volume.toString(),
+      remaining_volume: "0",
+    }).catch((err) => console.error("mirror onFill: publishTradingEvent failed", err));
   } catch (err) {
     if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
       return; // already mirrored -- idempotent retry, not a real failure
@@ -477,6 +496,14 @@ export async function onClose(db: Db, closeEvent: MirrorSourceClose): Promise<vo
         newValue: { targetClosedLots: closeVolume.toString(), closePrice: closePrice.toString(), fillPriceMode: rule.fillPriceMode },
       },
     });
+
+    // Same realtime-sync gap as onFill's own publish above -- a mirrored
+    // close never published a live event either, before now.
+    await publishTradingEvent("PositionClosed", {
+      position_id: targetPosition.id,
+      account_id: targetPosition.accountId,
+      broker_id: targetPosition.brokerId,
+    }).catch((err) => console.error("mirror onClose: publishTradingEvent failed", err));
   } catch (err) {
     await recordMirrorFailure(db, rule, err instanceof Error ? err.message : "unknown error").catch(() => {});
   }

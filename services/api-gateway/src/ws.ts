@@ -352,8 +352,34 @@ export async function attachAdminEventStream(server: Server, natsUrl: string): P
   }
 
   server.on("upgrade", (req: IncomingMessage, socket, head) => {
-    const { pathname } = new URL(req.url ?? "", "http://internal");
-    if (pathname !== ADMIN_EVENTS_STREAM_PATH) return;
+    const url = new URL(req.url ?? "", "http://internal");
+    if (url.pathname !== ADMIN_EVENTS_STREAM_PATH) return;
+
+    // Headless-service auth path (vyx-mt5-copier and similar) -- a browser
+    // WebSocket can only ride cookies, but a server-side client (Node,
+    // Python's `websockets`) can set arbitrary headers same as any HTTP
+    // request, so this reuses the exact shared-secret convention already
+    // established for /internal/events and /internal/gateway-stats
+    // (index.ts) rather than provisioning a real admin login + session
+    // cookie-jar for a bot. brokerId comes from the query string (there's
+    // no session to read it from); only checked against the secret, never
+    // trusted from the cookie path below, so a caller can never widen its
+    // own access by also sending a stale/mismatched cookie.
+    const internalSecretHeader = req.headers["x-internal-secret"];
+    const providedSecret = Array.isArray(internalSecretHeader) ? internalSecretHeader[0] : internalSecretHeader;
+    const expectedSecret = process.env.INTERNAL_SERVICE_SECRET ?? "";
+    if (expectedSecret && providedSecret === expectedSecret) {
+      const brokerId = url.searchParams.get("brokerId");
+      if (!brokerId) {
+        socket.write("HTTP/1.1 400 Bad Request\r\n\r\n");
+        socket.destroy();
+        return;
+      }
+      wss.handleUpgrade(req, socket, head, (ws) => {
+        registerClient(ws, brokerId);
+      });
+      return;
+    }
 
     getAdminSession(req.headers.cookie)
       .then((session) => {
