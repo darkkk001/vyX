@@ -60,6 +60,7 @@ const LABELS: Record<string, string> = {
   BALANCE_ADJUSTMENT: "Adjusted balance",
   MANUAL_POSITION_OPEN: "Opened manual position",
   MANUAL_POSITION_CLOSE: "Closed manual position",
+  MANUAL_POSITION_BULK_CLOSE: "Bulk-closed positions for account",
   POSITION_SLTP_MODIFIED: "Modified position SL/TP",
   IB_RELATIONSHIP_CREATED: "Created IB relationship",
   IB_COMMISSION_PAID: "Paid IB commission",
