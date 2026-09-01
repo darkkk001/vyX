@@ -6,6 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { matchesSymbolFilter, roundMirrorVolume, computeProportionalCloseVolume, onFill, onClose, type MirrorSourcePosition } from "@/lib/mirror";
+import { computeRealizedPnl } from "@/lib/trading";
 
 const D = (v: string | number) => new Prisma.Decimal(v);
 
@@ -142,17 +143,17 @@ let dbReachable = false;
 beforeAll(async () => {
   try {
     // Not just a bare connectivity check -- this repo's dev DATABASE_URL is
-    // reachable well before the reverse-mirror migration has actually been
-    // applied to it (deliberately held back per the brief's "stop before
-    // deploying for my review of the migration + hook diff"). Probing the
-    // MirrorRule table specifically means these tests skip cleanly pre-
-    // migration and start running for real the moment it's applied, rather
-    // than red-failing every run in between.
-    await prisma.$queryRaw`SELECT 1 FROM "MirrorRule" LIMIT 1`;
+    // reachable well before a given mirror migration has actually been
+    // applied to it (deliberately held back for review before each
+    // deploy). Probing MirrorRule.fillPriceMode specifically (not just the
+    // table) means these tests skip cleanly pre-migration and start
+    // running for real the moment it's applied, rather than red-failing
+    // every run in between.
+    await prisma.$queryRaw`SELECT "fillPriceMode" FROM "MirrorRule" LIMIT 1`;
     dbReachable = true;
   } catch {
     dbReachable = false;
-    console.warn("lib/mirror.test.ts: DB unreachable or MirrorRule/MirrorLink migration not yet applied -- skipping integration tests");
+    console.warn("lib/mirror.test.ts: DB unreachable or a mirror migration not yet applied -- skipping integration tests");
   }
 });
 
@@ -268,6 +269,7 @@ async function createRule(
     multiplier: string;
     enabled: boolean;
     killedAt: Date | null;
+    fillPriceMode: "SOURCE_PRICE" | "MARKET";
   }>
 ) {
   return tx.mirrorRule.create({
@@ -283,6 +285,11 @@ async function createRule(
       maxDailyLoss: overrides?.maxDailyLoss != null ? D(overrides.maxDailyLoss) : null,
       enabled: overrides?.enabled ?? true,
       killedAt: overrides?.killedAt ?? null,
+      // Explicit even though the schema column itself defaults to
+      // SOURCE_PRICE too -- every existing test that cares about MARKET's
+      // live-bid/ask behavior opts in explicitly below, so a future
+      // schema-default change can't silently flip what these tests mean.
+      fillPriceMode: overrides?.fillPriceMode ?? "SOURCE_PRICE",
       createdById: fx.adminId,
     },
   });
@@ -333,6 +340,7 @@ function sourcePosition(fx: Fixture, overrides?: Partial<MirrorSourcePosition>):
     symbolName: fx.symbolName,
     side: "BUY",
     volume: D(1),
+    openPrice: D("1.10020"), // matches createFixture's own default ask -- a real BUY naturally fills there
     ...overrides,
   };
 }
@@ -343,11 +351,11 @@ function sourcePosition(fx: Fixture, overrides?: Partial<MirrorSourcePosition>):
 // test below guards itself with `if (!dbReachable) return;` instead, which
 // runs after beforeAll and skips real work safely without ever failing.
 describe("lib/mirror.ts onFill (live DB, rolled back)", () => {
-  it("mirrors a fill in a source group as a REVERSED fill on the target at server price", async () => {
+  it("MARKET mode: mirrors a fill in a source group as a REVERSED fill on the target at live server price", async () => {
     if (!dbReachable) return;
     await withRollback(async (tx) => {
       const fx = await createFixture(tx);
-      const rule = await createRule(tx, fx);
+      const rule = await createRule(tx, fx, { fillPriceMode: "MARKET" });
       const source = sourcePosition(fx, { side: "BUY", volume: D(1) });
 
       await onFill(tx, source);
@@ -460,13 +468,15 @@ describe("lib/mirror.ts onFill (live DB, rolled back)", () => {
     });
   });
 
-  it("a mirror-side rejection never throws out to the caller, and never affects the client's own fill", async () => {
+  it("MARKET mode: a mirror-side rejection never throws out to the caller, and never affects the client's own fill", async () => {
     if (!dbReachable) return;
     await withRollback(async (tx) => {
       // No LivePrice row for this fixture's symbol -- forces the "no live
-      // price for symbol" rejection branch inside mirrorFillForRule.
+      // price for symbol" rejection branch inside mirrorFillForRule. Only
+      // reachable in MARKET mode -- SOURCE_PRICE never looks at LivePrice
+      // at all (see the dedicated test for that below).
       const fx = await createFixture(tx, { symbolPrice: null });
-      const rule = await createRule(tx, fx);
+      const rule = await createRule(tx, fx, { fillPriceMode: "MARKET" });
       const source = sourcePosition(fx);
 
       await expect(onFill(tx, source)).resolves.toBeUndefined(); // never throws
@@ -526,6 +536,83 @@ describe("lib/mirror.ts onFill (live DB, rolled back)", () => {
 
       const skipAudit = await tx.auditLog.findFirst({ where: { entityId: rule.id, action: "MIRROR_SKIPPED_RULE_DISABLED" } });
       expect(skipAudit).toBeNull();
+    });
+  });
+
+  it("SOURCE_PRICE (default): fills the mirror at exactly the source's own openPrice, no live price needed at all", async () => {
+    if (!dbReachable) return;
+    await withRollback(async (tx) => {
+      // No LivePrice row for this fixture's symbol at all -- proves
+      // SOURCE_PRICE genuinely never reads it, unlike MARKET mode (see
+      // that mode's own "no live price" rejection test above).
+      const fx = await createFixture(tx, { symbolPrice: null });
+      await createRule(tx, fx); // default fillPriceMode: SOURCE_PRICE
+      const sourceOpenPrice = D("97.531");
+      const source = sourcePosition(fx, { side: "BUY", openPrice: sourceOpenPrice });
+
+      await onFill(tx, source);
+
+      const link = await tx.mirrorLink.findUniqueOrThrow({ where: { sourcePositionId: source.id } });
+      const targetPosition = await tx.position.findUniqueOrThrow({ where: { id: link.targetPositionId } });
+      expect(targetPosition.side).toBe("SELL"); // REVERSE of the source's BUY
+      // Exactly the source's own price -- no live bid/ask, no spread markup.
+      expect(targetPosition.openPrice.toString()).toBe(sourceOpenPrice.toString());
+
+      const audit = await tx.auditLog.findFirst({ where: { entityId: targetPosition.id, action: "MIRROR_FILLED" } });
+      expect((audit!.newValue as { fillPriceMode?: string })?.fillPriceMode).toBe("SOURCE_PRICE");
+    });
+  });
+
+  it("round trip: under SOURCE_PRICE (default), the master's realized P/L is exactly the negative of the client's own P/L", async () => {
+    if (!dbReachable) return;
+    await withRollback(async (tx) => {
+      const fx = await createFixture(tx); // has a real LivePrice row too -- irrelevant under SOURCE_PRICE, proving the price mode (not feed availability) drives this
+      await createRule(tx, fx); // default fillPriceMode: SOURCE_PRICE
+      const sourceOpenPrice = D("100.00");
+      const sourceClosePrice = D("105.00"); // a real market move between open and close
+      // Small enough that the required margin (contractSize * volume *
+      // price / leverage) stays well inside the target account's fixture
+      // balance -- contractSize defaults to 100000 (Symbol's own schema
+      // default), leverage to 100, so 0.1 lots @ ~100 is ~$10,000 margin
+      // against a $100,000 balance.
+      const volume = D("0.1");
+      const source = sourcePosition(fx, { side: "BUY", volume, openPrice: sourceOpenPrice });
+
+      await onFill(tx, source);
+      const link = await tx.mirrorLink.findUniqueOrThrow({ where: { sourcePositionId: source.id } });
+      const targetAfterOpen = await tx.position.findUniqueOrThrow({ where: { id: link.targetPositionId } });
+      expect(targetAfterOpen.openPrice.toString()).toBe(sourceOpenPrice.toString());
+
+      await onClose(tx, {
+        positionId: source.id,
+        brokerId: fx.brokerId,
+        closedLots: volume,
+        sourceVolumeBeforeClose: volume,
+        closePrice: sourceClosePrice,
+      });
+
+      const targetAfterClose = await tx.position.findUniqueOrThrow({ where: { id: link.targetPositionId } });
+      expect(targetAfterClose.status).toBe("CLOSED");
+      // Exactly the source's own close price -- unadjusted for the
+      // target's reversed side, which is precisely what makes the P/L
+      // negation below exact rather than approximate.
+      expect(targetAfterClose.closePrice?.toString()).toBe(sourceClosePrice.toString());
+
+      const symbol = await tx.symbol.findUniqueOrThrow({ where: { id: fx.symbolId } });
+      const clientPnl = computeRealizedPnl({
+        side: "BUY",
+        openPrice: sourceOpenPrice,
+        closePrice: sourceClosePrice,
+        volume,
+        contractSize: symbol.contractSize,
+      });
+      const masterPnl = targetAfterClose.realizedPnl!;
+      expect(masterPnl.toString()).toBe(clientPnl.neg().toString());
+      expect(masterPnl.gt(0)).toBe(false); // sanity: client was profitable (BUY, price rose), so master must be negative
+      expect(clientPnl.gt(0)).toBe(true);
+
+      const closeAudit = await tx.auditLog.findFirst({ where: { entityId: targetAfterClose.id, action: "MIRROR_CLOSED" } });
+      expect((closeAudit!.newValue as { fillPriceMode?: string })?.fillPriceMode).toBe("SOURCE_PRICE");
     });
   });
 });

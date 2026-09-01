@@ -17,6 +17,7 @@ type RuleRow = {
   targetAccountLabel: string;
   direction: "REVERSE" | "SAME";
   multiplier: string;
+  fillPriceMode: "SOURCE_PRICE" | "MARKET";
   symbolFilter: string | null;
   maxOpenLots: string | null;
   maxDailyLoss: string | null;
@@ -53,6 +54,7 @@ const emptyForm = {
   targetAccountId: "",
   direction: "REVERSE" as "REVERSE" | "SAME",
   multiplier: "1",
+  fillPriceMode: "SOURCE_PRICE" as "SOURCE_PRICE" | "MARKET",
   symbolFilter: "",
   maxOpenLots: "",
   maxDailyLoss: "",
@@ -123,6 +125,7 @@ export default function MirrorRulesManager() {
           targetAccountId: form.targetAccountId,
           direction: form.direction,
           multiplier: form.multiplier,
+          fillPriceMode: form.fillPriceMode,
           symbolFilter: form.symbolFilter,
           maxOpenLots: form.maxOpenLots,
           maxDailyLoss: form.maxDailyLoss,
@@ -153,6 +156,7 @@ export default function MirrorRulesManager() {
           <TableHeaderCell>Source</TableHeaderCell>
           <TableHeaderCell>Target</TableHeaderCell>
           <TableHeaderCell>Direction</TableHeaderCell>
+          <TableHeaderCell>Fill price</TableHeaderCell>
           <TableHeaderCell align="right">Multiplier</TableHeaderCell>
           <TableHeaderCell>Caps</TableHeaderCell>
           <TableHeaderCell>Status</TableHeaderCell>
@@ -162,9 +166,9 @@ export default function MirrorRulesManager() {
         </TableHead>
         <TableBody>
           {rows === null ? (
-            <TableEmptyState colSpan={9}>Loading…</TableEmptyState>
+            <TableEmptyState colSpan={10}>Loading…</TableEmptyState>
           ) : rows.length === 0 ? (
-            <TableEmptyState colSpan={9}>No mirror rules yet.</TableEmptyState>
+            <TableEmptyState colSpan={10}>No mirror rules yet.</TableEmptyState>
           ) : (
             rows.map((r) => (
               <TableRow key={r.id} className="cursor-pointer" onClick={() => setDetailId(r.id)}>
@@ -175,6 +179,11 @@ export default function MirrorRulesManager() {
                 <TableCell>{r.targetAccountLabel}</TableCell>
                 <TableCell>
                   <Badge tone={r.direction === "REVERSE" ? "accent" : "info"}>{r.direction === "REVERSE" ? "Reverse" : "Same"}</Badge>
+                </TableCell>
+                <TableCell>
+                  <Badge tone={r.fillPriceMode === "SOURCE_PRICE" ? "success" : "neutral"}>
+                    {r.fillPriceMode === "SOURCE_PRICE" ? "Source price" : "Market"}
+                  </Badge>
                 </TableCell>
                 <TableCell align="right" mono>×{r.multiplier}</TableCell>
                 <TableCell mono className="text-xs">
@@ -246,6 +255,16 @@ export default function MirrorRulesManager() {
               <option value="SAME">Same side</option>
             </select>
           </FormField>
+          <FormField label="Fill price mode">
+            <select
+              className="w-full rounded-lg border border-[var(--border-strong)] bg-[var(--bg-3)] px-3 py-2 text-sm text-[var(--text-1)]"
+              value={form.fillPriceMode}
+              onChange={(e) => setForm((f) => ({ ...f, fillPriceMode: e.target.value as "SOURCE_PRICE" | "MARKET" }))}
+            >
+              <option value="SOURCE_PRICE">Source price (recommended)</option>
+              <option value="MARKET">Market (live bid/ask)</option>
+            </select>
+          </FormField>
           <FormField label="Multiplier (lot scale)">
             <Input value={form.multiplier} onChange={(e) => setForm((f) => ({ ...f, multiplier: e.target.value }))} placeholder="1" />
           </FormField>
@@ -259,6 +278,11 @@ export default function MirrorRulesManager() {
             <Input value={form.maxDailyLoss} onChange={(e) => setForm((f) => ({ ...f, maxDailyLoss: e.target.value }))} placeholder="1000" />
           </FormField>
         </div>
+        <p className="mt-3 text-xs text-[var(--text-3)]">
+          {form.fillPriceMode === "SOURCE_PRICE"
+            ? "Source price: the mirror opens/closes at exactly the client's own fill price — correct when the target is the broker's own ledger account, since the spread is already earned from the client."
+            : "Market: the mirror opens/closes at the live bid/ask, same as a real client fill — use this only for a target that behaves like an external account."}
+        </p>
         {targetAccount?.hasKyc ? (
           <p className="mt-3 rounded-lg bg-[var(--warn-bg)] px-3 py-2 text-xs text-[var(--warn)]">
             This target account has a KYC record on file — it looks like a real client account. A dedicated master
@@ -306,6 +330,14 @@ function MirrorRuleDetail({ id, onClose }: { id: string; onClose: () => void }) 
             <div>
               <div className="text-[10.5px] uppercase tracking-wide text-[var(--text-3)]">Target</div>
               <div className="text-[var(--text-1)]">{data.rule.targetAccountLabel}</div>
+            </div>
+            <div>
+              <div className="text-[10.5px] uppercase tracking-wide text-[var(--text-3)]">Fill price mode</div>
+              <div className="text-[var(--text-1)]">
+                <Badge tone={data.rule.fillPriceMode === "SOURCE_PRICE" ? "success" : "neutral"}>
+                  {data.rule.fillPriceMode === "SOURCE_PRICE" ? "Source price" : "Market"}
+                </Badge>
+              </div>
             </div>
             <div>
               <div className="text-[10.5px] uppercase tracking-wide text-[var(--text-3)]">Net strategy P/L</div>

@@ -877,6 +877,25 @@ enum MirrorDirection {
   SAME
 }
 
+// The mirrored fill/close price basis. SOURCE_PRICE (default) copies the
+// source position's own fill/close price exactly, no live-price lookup
+// and no spread markup applied on the mirror's own leg -- correct for
+// today's only real target shape, an internal broker ledger account: the
+// client's own trade already crossed the spread once (client BUY @ ask,
+// e.g. 4377.78), so a mirrored SELL that ALSO fills at live bid (say
+// 4377.66) charges that same spread a second time, on both open and
+// close, purely as an artifact of using live bid/ask for a leg that was
+// never a real, separate market execution. MARKET keeps the original
+// (pre-fix) behavior -- fills at live bid/ask with the normal spread
+// markup applied, same as any other fill in this app -- reserved for a
+// future external-style target (a real hedge account at an actual LP)
+// where the mirror leg genuinely is a separate market execution and
+// should be priced as one.
+enum MirrorFillPriceMode {
+  SOURCE_PRICE
+  MARKET
+}
+
 // One rule = "mirror trades from this group/account onto this target
 // account." sourceId is intentionally NOT a foreign key -- it points at
 // either Group.id or Account.id depending on sourceType, the same
@@ -899,6 +918,11 @@ model MirrorRule {
 
   direction  MirrorDirection @default(REVERSE)
   multiplier Decimal         @default(1) @db.Decimal(10, 4) // lot scale, e.g. 0.5 = half size
+  // See MirrorFillPriceMode's own doc comment. Defaults to SOURCE_PRICE --
+  // every rule created before this field existed is backfilled to it too
+  // (the column default), which is the *correct* retroactive behavior for
+  // an internal ledger target, not just a safe migration default.
+  fillPriceMode MirrorFillPriceMode @default(SOURCE_PRICE)
   // CSV of Symbol.name, e.g. "XAUUSD,EURUSD" -- null = every symbol the
   // source trades is mirrored. Free-text CSV (not a join table) matches
   // this schema's existing BrokerSymbol.symbolMap-style free-text
