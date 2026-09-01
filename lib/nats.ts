@@ -32,6 +32,12 @@ const SUBJECTS: Record<string, string> = {
   DealingQueued: "dealing.queued",
   PositionClosed: "position.closed",
   PositionModified: "position.modified",
+  // One event for a whole bulk close (lib/bulk-close.ts) instead of N
+  // PositionClosed events -- still under the position.> wildcard both
+  // event streams already subscribe to, so no gateway subscription
+  // change was needed for it (same reasoning as DealingQueued's own
+  // comment above).
+  PositionsClosed: "position.closed_bulk",
 };
 
 export type TradingEventType = keyof typeof SUBJECTS;

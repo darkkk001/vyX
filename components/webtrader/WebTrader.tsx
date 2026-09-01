@@ -1775,15 +1775,29 @@ export default function WebTrader({
     });
   }
 
+  // One request, one server-side transaction, one price snapshot per
+  // symbol (lib/bulk-close.ts) -- this used to be `for (const p of
+  // toClose) await closePositionFull(p.id)`, N sequential round trips
+  // that took 15-20s for 30 positions, each closing at a slightly
+  // different tick as the feed moved between calls.
   async function closeManyBySymbol(symbolName: string) {
-    const toClose = positions.filter((p) => p.symbol.name === symbolName);
-    for (const p of toClose) await closePositionFull(p.id);
+    try {
+      const result = await tradeApi.closeBulk("SYMBOL", symbolName);
+      pushToast(`Closed all in ${symbolName} — ${result.successful} position${result.successful === 1 ? "" : "s"} closed${result.failed ? `, ${result.failed} failed` : ""}`, result.failed === 0);
+      await Promise.all([refreshPositions(), refreshHistory(), refreshAccount()]);
+    } catch (err) {
+      pushToast(err instanceof Error ? err.message : "failed to close positions");
+    }
   }
-  async function closeManyBy(predicate: (p: ApiPosition) => boolean, label: string) {
-    const toClose = positions.filter(predicate);
-    if (toClose.length === 0) return;
-    for (const p of toClose) await closePositionFull(p.id);
-    pushToast(`${label} — ${toClose.length} position${toClose.length > 1 ? "s" : ""} closed`);
+  async function closeManyBy(scope: "ALL" | "PROFIT" | "LOSS", label: string) {
+    try {
+      const result = await tradeApi.closeBulk(scope);
+      if (result.requested === 0) return;
+      pushToast(`${label} — Requested: ${result.requested}, Successful: ${result.successful}, Failed: ${result.failed}`, result.failed === 0);
+      await Promise.all([refreshPositions(), refreshHistory(), refreshAccount()]);
+    } catch (err) {
+      pushToast(err instanceof Error ? err.message : "failed to close positions");
+    }
   }
 
   function openSltpEditForNet(symbolName: string) {
@@ -2069,21 +2083,21 @@ export default function WebTrader({
                         <div
                           className="acc-option"
                           style={{ cursor: "pointer", padding: "8px 10px", color: acctPositions.some((p) => positionPnl(p) >= 0) ? "var(--buy)" : "var(--text-3)" }}
-                          onClick={() => { closeManyBy((p) => positionPnl(p) >= 0, "Closed profitable"); setTopMenuOpen(null); }}
+                          onClick={() => { closeManyBy("PROFIT", "Closed profitable"); setTopMenuOpen(null); }}
                         >
                           Close profitable positions
                         </div>
                         <div
                           className="acc-option"
                           style={{ cursor: "pointer", padding: "8px 10px", color: acctPositions.some((p) => positionPnl(p) < 0) ? "var(--sell)" : "var(--text-3)" }}
-                          onClick={() => { closeManyBy((p) => positionPnl(p) < 0, "Closed losing"); setTopMenuOpen(null); }}
+                          onClick={() => { closeManyBy("LOSS", "Closed losing"); setTopMenuOpen(null); }}
                         >
                           Close losing positions
                         </div>
                         <div
                           className="acc-option"
                           style={{ cursor: "pointer", padding: "8px 10px" }}
-                          onClick={() => { closeManyBy(() => true, "Closed all"); setTopMenuOpen(null); }}
+                          onClick={() => { closeManyBy("ALL", "Closed all"); setTopMenuOpen(null); }}
                         >
                           Close all positions
                         </div>
@@ -2592,9 +2606,9 @@ export default function WebTrader({
                 </div>
                 {activeBottomTab === "positions" ? (
                   <div className="bulk-actions">
-                    <button className="bulk-btn profit" disabled={!acctPositions.some((p) => positionPnl(p) >= 0)} onClick={() => closeManyBy((p) => positionPnl(p) >= 0, "Closed profitable")}>Close profit</button>
-                    <button className="bulk-btn loss" disabled={!acctPositions.some((p) => positionPnl(p) < 0)} onClick={() => closeManyBy((p) => positionPnl(p) < 0, "Closed losing")}>Close loss</button>
-                    <button className="bulk-btn all" disabled={acctPositions.length === 0} onClick={() => closeManyBy(() => true, "Closed all")}>Close all</button>
+                    <button className="bulk-btn profit" disabled={!acctPositions.some((p) => positionPnl(p) >= 0)} onClick={() => closeManyBy("PROFIT", "Closed profitable")}>Close profit</button>
+                    <button className="bulk-btn loss" disabled={!acctPositions.some((p) => positionPnl(p) < 0)} onClick={() => closeManyBy("LOSS", "Closed losing")}>Close loss</button>
+                    <button className="bulk-btn all" disabled={acctPositions.length === 0} onClick={() => closeManyBy("ALL", "Closed all")}>Close all</button>
                   </div>
                 ) : null}
               </div>

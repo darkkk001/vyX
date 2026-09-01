@@ -94,6 +94,7 @@ export default function PositionsManager() {
       event.type === ADMIN_STREAM_RECONNECTED ||
       event.type === "OrderFilled" ||
       event.type === "PositionClosed" ||
+      event.type === "PositionsClosed" ||
       event.type === "PositionModified"
     ) {
       reload().catch(() => {});
@@ -395,6 +396,35 @@ export default function PositionsManager() {
     reload().catch(() => {});
   }
 
+  // --- Bulk close, one account at a time -- only enabled once the
+  // Account filter above picks one specific account (closing "all
+  // accounts currently in view" is not what this button does). Shares
+  // lib/bulk-close.ts's one-transaction, one-price-snapshot-per-symbol
+  // core with the trader terminal's own Close all/profitable/losing.
+  const [bulkCloseConfirm, setBulkCloseConfirm] = useState(false);
+  const [bulkClosing, setBulkClosing] = useState(false);
+  const [bulkCloseError, setBulkCloseError] = useState<string | null>(null);
+  const bulkCloseAccount = accountFilter !== "ALL" ? accounts.find((a) => a.id === accountFilter) : null;
+
+  async function submitBulkClose() {
+    if (!bulkCloseAccount) return;
+    setBulkClosing(true);
+    setBulkCloseError(null);
+    const response = await fetch("/api/manage/positions/close-bulk", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ accountId: bulkCloseAccount.id, scope: "ALL" }),
+    });
+    setBulkClosing(false);
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      setBulkCloseError(body.error ?? "close failed");
+      return;
+    }
+    setBulkCloseConfirm(false);
+    reload().catch(() => {});
+  }
+
   if (data === null) {
     return <p className="text-sm text-[var(--text-3)]">Loading...</p>;
   }
@@ -569,7 +599,20 @@ export default function PositionsManager() {
         </Table>
       </Card>
 
-      <Table title="Open positions" description="Reflects the filters above" action={<Button variant="primary" onClick={launchOpenModal}>+ New manual position</Button>}>
+      <Table
+        title="Open positions"
+        description="Reflects the filters above"
+        action={
+          <div className="flex items-center gap-2">
+            {bulkCloseAccount ? (
+              <Button variant="danger" onClick={() => setBulkCloseConfirm(true)}>
+                Close all for {bulkCloseAccount.accountNumber}
+              </Button>
+            ) : null}
+            <Button variant="primary" onClick={launchOpenModal}>+ New manual position</Button>
+          </div>
+        }
+      >
         <TableHead>
           <TableHeaderCell>Account</TableHeaderCell>
           <TableHeaderCell>Symbol</TableHeaderCell>
@@ -746,6 +789,26 @@ export default function PositionsManager() {
             </Button>
           </ModalActions>
         </div>
+      </Modal>
+
+      <Modal open={bulkCloseConfirm} onClose={() => setBulkCloseConfirm(false)} title="Confirm bulk close">
+        {bulkCloseAccount ? (
+          <div className="flex flex-col gap-3">
+            <p className="text-sm text-[var(--text-2)]">
+              Closes every open position for {bulkCloseAccount.accountNumber} ({bulkCloseAccount.fullName}) in one
+              transaction, at one live-price snapshot per symbol. This cannot be undone.
+            </p>
+            {bulkCloseError ? <div className="text-xs text-[var(--sell)]">{bulkCloseError}</div> : null}
+            <ModalActions>
+              <Button variant="ghost" onClick={() => setBulkCloseConfirm(false)}>
+                Cancel
+              </Button>
+              <Button variant="danger" disabled={bulkClosing} onClick={submitBulkClose}>
+                {bulkClosing ? "Closing..." : "Close all"}
+              </Button>
+            </ModalActions>
+          </div>
+        ) : null}
       </Modal>
 
       <Modal open={closeConfirm !== null} onClose={() => setCloseConfirm(null)} title="Confirm close position">

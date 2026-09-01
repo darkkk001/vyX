@@ -164,6 +164,15 @@ export const tradeApi = {
       method: "POST",
       body: JSON.stringify({ closePrice, ...(volume != null ? { volume } : {}), ...(source ? { source } : {}) }),
     }),
+  // One request, one server-side transaction, one price snapshot per
+  // symbol -- see lib/bulk-close.ts. Replaces WebTrader.tsx's old
+  // closeManyBy/closeManyBySymbol, which fired one closePosition() call
+  // per position sequentially.
+  closeBulk: (scope: "ALL" | "PROFIT" | "LOSS" | "SYMBOL", symbol?: string) =>
+    call<{ requested: number; successful: number; failed: number; results: { positionId: string; closed: boolean; closePrice: string | null; realizedPnl: string | null; error: string | null }[] }>(
+      "/api/trade/positions/close-bulk",
+      { method: "POST", body: JSON.stringify({ scope, ...(symbol ? { symbol } : {}) }) }
+    ),
   fundsHistory: () => call<ApiFundsRequest[]>("/api/trade/funds-requests"),
   submitFundsRequest: (body: { type: "DEPOSIT" | "WITHDRAWAL"; amount: number; note?: string }) =>
     call<ApiFundsRequest>("/api/trade/funds-requests", { method: "POST", body: JSON.stringify(body) }),
