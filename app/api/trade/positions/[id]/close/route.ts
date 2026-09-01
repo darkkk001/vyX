@@ -116,6 +116,7 @@ export async function POST(
     brokerId: session.brokerId,
     closedLots: closeVolume,
     sourceVolumeBeforeClose: position.volume,
+    closePrice: new Prisma.Decimal(closePrice),
   }).catch((err) => console.error("mirror.onClose failed", err));
   await publishTradingEvent("PositionClosed", { position_id: position.id, account_id: session.accountId, broker_id: session.brokerId });
   return NextResponse.json({ position: outcome.position, transaction: outcome.transaction, partial: outcome.partial });
