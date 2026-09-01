@@ -72,6 +72,11 @@ export const gatewayStats = {
   adminWsDisconnectionsTotal: 0,
   adminEventsForwardedTotal: 0,
   adminEventsReceivedTotal: 0,
+  // POST /internal/events (index.ts) -- the Vercel-to-gateway relay
+  // publish, distinct from adminEventsReceivedTotal above (which counts
+  // messages the admin-stream subscriber consumes FROM NATS, not
+  // messages handed to this process TO publish).
+  internalEventsPublishedTotal: 0,
 };
 
 // Phase 0 money-risk patch item 3 (docs/ROADMAP.md) -- "we will never
@@ -150,13 +155,28 @@ export async function attachPriceStream(server: Server, natsUrl: string): Promis
 
     getTraderSession(req.headers.cookie)
       .then((session) => {
-        if (!session) {
-          socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
-          socket.destroy();
+        if (session) {
+          wss.handleUpgrade(req, socket, head, (ws) => {
+            registerClient(ws, session.brokerId);
+          });
           return;
         }
-        wss.handleUpgrade(req, socket, head, (ws) => {
-          registerClient(ws, session.brokerId);
+        // Manager/Broker-Admin backoffice (PositionsManager.tsx's live
+        // exposure P/L) has no trader session cookie at all -- fall back
+        // to an admin session before rejecting. Still broker-agnostic
+        // public market data either way (this function's own module
+        // comment), just a second valid way to prove "this is a logged-in
+        // session," same reasoning attachAdminEventStream already applies
+        // to its own stream.
+        return getAdminSession(req.headers.cookie).then((adminSession) => {
+          if (!adminSession || !adminSession.brokerId) {
+            socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+            socket.destroy();
+            return;
+          }
+          wss.handleUpgrade(req, socket, head, (ws) => {
+            registerClient(ws, adminSession.brokerId!);
+          });
         });
       })
       .catch((err) => {

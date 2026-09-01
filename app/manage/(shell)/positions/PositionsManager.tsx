@@ -11,6 +11,7 @@ import { FormField } from "@/components/ui/FormField";
 import { Modal, ModalActions } from "@/components/ui/Modal";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
 import { useAdminEventStream, ADMIN_STREAM_RECONNECTED, type AdminEvent } from "@/lib/admin-realtime";
+import { useLiveTicks } from "@/lib/price-stream";
 
 export type PositionRow = {
   id: string;
@@ -22,6 +23,7 @@ export type PositionRow = {
   ibAccountId: string | null;
   symbolName: string;
   digits: number;
+  contractSize: string;
   side: "BUY" | "SELL";
   volume: string;
   openPrice: string;
@@ -60,7 +62,7 @@ type PositionsData = { rows: PositionRow[]; accounts: AccountOption[]; symbols: 
 // server-rendered props.
 export default function PositionsManager() {
   const [data, setData] = useState<PositionsData | null>(null);
-  const positionRows = data?.rows ?? [];
+  const rawRows = data?.rows ?? [];
   const accounts = data?.accounts ?? [];
   const symbols = data?.symbols ?? [];
   const groups = data?.groups ?? [];
@@ -72,34 +74,21 @@ export default function PositionsManager() {
       .then(setData);
   }
 
-  // currentPrice/floatingPnl are computed server-side at request time and
-  // only ever change on a fresh fetch -- previously that only happened
-  // after this manager's own mutations (close/reverse/void/modify) via
-  // router.refresh(), so the whole page (prices included) sat frozen at
-  // whatever it showed on load until someone acted on it or reloaded. A
-  // manager watching floating P&L needs it to track the live feed, not
-  // their own click history -- refresh on the same 5s cadence LivePrice
-  // itself updates on (engine/market-data's periodic flush).
-  //
-  // This 5s poll is deliberately KEPT alongside the event stream below
-  // (fix/realtime-sync §8 generally wants polling gone in favor of the
-  // event stream) -- it's the wrong tool for order/position mutations
-  // (a fill/close now shows up on the next order.*/position.* event, not
-  // up to 5s late), but it's still the only thing driving floatingPnl's
-  // continuous tracking of price movement between mutations, which isn't
-  // an order/position event at all (that's the price-tick stream, a
-  // separate subscription this page doesn't otherwise need). Removing it
-  // would make P&L go stale between fills -- a real regression, not a
-  // simplification.
+  // Realtime-sync fix -- this used to be a 5s poll-everything interval
+  // specifically to keep currentPrice/floatingPnl (computed server-side
+  // per request) tracking the live feed between mutations. Replaced by
+  // useLiveTicks below: positions load once, then floating P/L is
+  // recomputed client-side on every coalesced price tick, the same math
+  // (and the same 20Hz/symbol coalescing) as WebTrader.tsx's own
+  // positionPnl. The row LIST itself (opens/closes/modifies) still needs
+  // a real refetch -- that's the admin-event-stream reaction below, now
+  // the only thing that reloads this page's own data.
   useEffect(() => {
     reload().catch(() => setData({ rows: [], accounts: [], symbols: [], groups: [], ibOptions: [] }));
-    const interval = setInterval(() => reload().catch(() => {}), 5000);
-    return () => clearInterval(interval);
   }, []);
 
   // Instant reaction to a fill/close/modify from anywhere (another
-  // dealer's action, the trader's own, or an auto-liquidation) instead of
-  // waiting for the next 5s tick above.
+  // dealer's action, the trader's own, or an auto-liquidation).
   useAdminEventStream((event: AdminEvent) => {
     if (
       event.type === ADMIN_STREAM_RECONNECTED ||
@@ -110,6 +99,46 @@ export default function PositionsManager() {
       reload().catch(() => {});
     }
   });
+
+  // Recomputes currentPrice/floatingPnl per position on every coalesced
+  // tick -- same close-price convention and P/L formula as WebTrader.tsx's
+  // own positionPnl (BUY closes at bid, SELL at ask; diff * contractSize *
+  // volume), not a Decimal-precision recompute, since this is a live
+  // display value, not a source of truth for anything booked to the
+  // ledger. A symbol with no tick yet (feed just connected, or this
+  // session never got one) keeps showing the server's own value from the
+  // last /api/manage/positions fetch -- never blanks out.
+  const liveTicks = useLiveTicks();
+  const positionRows = useMemo(() => {
+    return rawRows.map((p) => {
+      const tick = liveTicks[p.symbolName];
+      if (!tick) return p;
+      const closePrice = p.side === "BUY" ? tick.bid : tick.ask;
+      const openPrice = Number(p.openPrice);
+      const diff = p.side === "BUY" ? closePrice - openPrice : openPrice - closePrice;
+      const floatingPnl = diff * Number(p.contractSize) * Number(p.volume);
+      return { ...p, currentPrice: closePrice.toFixed(p.digits), floatingPnl: floatingPnl.toFixed(2) };
+    });
+  }, [rawRows, liveTicks]);
+
+  // "As of <time>" + live indicator -- ticks the display once a second so
+  // the indicator can actually notice the feed going stale, independent
+  // of whether a new tick (which would re-render anyway) has arrived.
+  const [nowTick, setNowTick] = useState(() => Date.now());
+  useEffect(() => {
+    const interval = setInterval(() => setNowTick(Date.now()), 1000);
+    return () => clearInterval(interval);
+  }, []);
+  const symbolsHeld = useMemo(() => new Set(rawRows.map((p) => p.symbolName)), [rawRows]);
+  const mostRecentTickAt = useMemo(() => {
+    let latest = 0;
+    for (const symbol of symbolsHeld) {
+      const at = liveTicks[symbol]?.at ?? 0;
+      if (at > latest) latest = at;
+    }
+    return latest;
+  }, [liveTicks, symbolsHeld]);
+  const priceFeedIsLive = mostRecentTickAt > 0 && nowTick - mostRecentTickAt < 10_000;
 
   // --- Filters ---
   const [symbolFilter, setSymbolFilter] = useState("ALL");
@@ -372,9 +401,19 @@ export default function PositionsManager() {
 
   return (
     <div className="flex flex-col gap-6">
-      <p className="text-sm text-[var(--text-3)]">
-        {positionRows.length} open position{positionRows.length === 1 ? "" : "s"} across this broker.
-      </p>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-sm text-[var(--text-3)]">
+          {positionRows.length} open position{positionRows.length === 1 ? "" : "s"} across this broker.
+        </p>
+        <div className="flex items-center gap-1.5 text-xs text-[var(--text-3)]" title="Floating P/L and current price update live from the price-tick feed; the position list itself updates on fill/close/modify events">
+          <span className={`inline-block h-2 w-2 rounded-full ${priceFeedIsLive ? "bg-[var(--buy)]" : "bg-[var(--text-3)]"}`} />
+          {priceFeedIsLive
+            ? `Live prices — as of ${new Date(mostRecentTickAt).toLocaleTimeString()}`
+            : mostRecentTickAt > 0
+              ? `Price feed stale — last tick ${new Date(mostRecentTickAt).toLocaleTimeString()}`
+              : "Price feed connecting…"}
+        </div>
+      </div>
       <Card title="Filters">
         <div className="flex flex-wrap items-end gap-3">
           <div className="flex flex-col gap-1.5">
