@@ -5,6 +5,7 @@ import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { getFreshPrice } from "@/lib/live-price";
 import { computeRealizedPnl } from "@/lib/trading";
 import * as mirror from "@/lib/mirror";
+import { publishTradingEvent } from "@/lib/nats";
 
 async function requireManager() {
   const session = await getAdminSession();
@@ -158,6 +159,11 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     closedLots: closeVolume,
     sourceVolumeBeforeClose: position.volume,
   }).catch((err) => console.error("mirror.onClose failed", err));
+  // Realtime-sync gap fix -- this route never published a live event at
+  // all before, on top of lib/nats.ts's own (separately fixed) transport
+  // bug. Without it, a dealer-initiated close never appeared on the
+  // backoffice Positions/Exposure views until a manual refresh.
+  await publishTradingEvent("PositionClosed", { position_id: position.id, account_id: position.accountId, broker_id: brokerId });
 
   return NextResponse.json({
     positionId: result.position.id,

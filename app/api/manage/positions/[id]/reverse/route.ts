@@ -5,6 +5,7 @@ import { getFreshPrice } from "@/lib/live-price";
 import { computeRealizedPnl } from "@/lib/trading";
 import { randomUUID } from "node:crypto";
 import * as mirror from "@/lib/mirror";
+import { publishTradingEvent } from "@/lib/nats";
 
 async function requireManager() {
   const session = await getAdminSession();
@@ -150,6 +151,19 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
     sourceVolumeBeforeClose: position.volume,
   }).catch((err) => console.error("mirror.onClose failed", err));
   await mirror.onFillPosition(prisma, result.newPosition, position.symbol.name).catch((err) => console.error("mirror.onFill failed", err));
+  // Realtime-sync gap fix -- this route never published a live event at
+  // all before, on top of lib/nats.ts's own (separately fixed) transport
+  // bug. Same order as the mirror hooks above: the close first, then the
+  // new leg's fill.
+  await publishTradingEvent("PositionClosed", { position_id: position.id, account_id: position.accountId, broker_id: brokerId });
+  await publishTradingEvent("OrderFilled", {
+    order_id: result.newPosition.originOrderId,
+    account_id: position.accountId,
+    broker_id: brokerId,
+    price: openPrice.toString(),
+    volume: position.volume.toString(),
+    remaining_volume: "0",
+  });
 
   return NextResponse.json({
     closedPositionId: result.closedPosition.id,

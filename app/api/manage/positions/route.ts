@@ -6,6 +6,7 @@ import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { getFreshPrice, getFreshPrices } from "@/lib/live-price";
 import { computeRealizedPnl, validateSlTp } from "@/lib/trading";
 import { resolveBookType, applySpreadMarkup, resolveSymbolPricing, chargeCommission } from "@/lib/group-pricing";
+import { publishTradingEvent } from "@/lib/nats";
 import {
   checkTradingHalted,
   checkSymbolTradingMode,
@@ -106,6 +107,14 @@ export async function GET() {
       ibAccountId: p.account.ibLinkAsClient?.ibAccountId ?? null,
       symbolName: p.symbol.name,
       digits: p.symbol.digits,
+      // Realtime-sync fix -- PositionsManager.tsx now recomputes
+      // currentPrice/floatingPnl itself on every live price-stream tick
+      // (same math as WebTrader.tsx's own positionPnl), so it needs the
+      // one input it didn't have before: contractSize. This route's own
+      // computation below is still the value shown before the first tick
+      // arrives (and the only one that matters if the stream never
+      // connects at all).
+      contractSize: p.symbol.contractSize.toString(),
       side: p.side,
       volume: p.volume.toString(),
       openPrice: p.openPrice.toFixed(p.symbol.digits),
@@ -342,6 +351,18 @@ export async function POST(request: NextRequest) {
   // account, same as any trader-initiated one -- if the account is in a
   // mirrored group, it must mirror too.
   await mirror.onFillPosition(prisma, result.position, brokerSymbol.symbol.name).catch((err) => console.error("mirror.onFill failed", err));
+  // Realtime-sync gap fix -- this route never published a live event at
+  // all before, on top of lib/nats.ts's own (separately fixed) transport
+  // bug. Without it, a manual dealing-desk open never appeared on the
+  // backoffice Positions/Exposure views until a manual refresh.
+  await publishTradingEvent("OrderFilled", {
+    order_id: result.order.id,
+    account_id: accountId,
+    broker_id: brokerId,
+    price: fillPrice.toString(),
+    volume: volume.toString(),
+    remaining_volume: "0",
+  });
 
   return NextResponse.json({
     positionId: result.position.id,
