@@ -85,6 +85,7 @@ export async function closeBulkForAccount(
   if (matching.length === 0) return [];
 
   const results: BulkClosePositionResult[] = [];
+  const closePriceByPositionId = new Map<string, Prisma.Decimal>();
 
   await withTx(db, async (tx) => {
     for (const p of matching) {
@@ -94,6 +95,7 @@ export async function closeBulkForAccount(
         continue;
       }
       const closePrice = closePriceFor(p.side, live.bid, live.ask);
+      closePriceByPositionId.set(p.id, closePrice);
       const outcome = await closePositionInTx(tx, {
         position: {
           id: p.id,
@@ -133,7 +135,13 @@ export async function closeBulkForAccount(
   for (const r of closedResults) {
     const source = matching.find((p) => p.id === r.positionId)!;
     await mirror
-      .onClose(db, { positionId: source.id, brokerId, closedLots: source.volume, sourceVolumeBeforeClose: source.volume })
+      .onClose(db, {
+        positionId: source.id,
+        brokerId,
+        closedLots: source.volume,
+        sourceVolumeBeforeClose: source.volume,
+        closePrice: closePriceByPositionId.get(source.id),
+      })
       .catch((err) => console.error("mirror.onClose failed", err));
   }
 

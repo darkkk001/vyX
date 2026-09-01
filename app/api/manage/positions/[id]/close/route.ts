@@ -158,6 +158,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     brokerId,
     closedLots: closeVolume,
     sourceVolumeBeforeClose: position.volume,
+    closePrice,
   }).catch((err) => console.error("mirror.onClose failed", err));
   // Realtime-sync gap fix -- this route never published a live event at
   // all before, on top of lib/nats.ts's own (separately fixed) transport

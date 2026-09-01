@@ -149,6 +149,7 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
     brokerId,
     closedLots: position.volume,
     sourceVolumeBeforeClose: position.volume,
+    closePrice,
   }).catch((err) => console.error("mirror.onClose failed", err));
   await mirror.onFillPosition(prisma, result.newPosition, position.symbol.name).catch((err) => console.error("mirror.onFill failed", err));
   // Realtime-sync gap fix -- this route never published a live event at
