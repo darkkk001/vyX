@@ -86,6 +86,7 @@ export default async function ManageShellLayout({ children }: { children: React.
         { href: "/manage/reports", label: "Reports" },
         ...(isBrokerAdmin ? [{ href: "/manage/team", label: "Staff & roles" }] : []),
         { href: "/manage/audit", label: "Audit log" },
+        { href: "/manage/security", label: "Security" },
         ...(isBrokerAdmin ? [{ href: "/manage/settings", label: "System settings" }] : []),
       ],
     },

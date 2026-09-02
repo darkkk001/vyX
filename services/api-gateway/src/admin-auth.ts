@@ -1,13 +1,15 @@
-// Verifies the same JWT lib/auth.ts (Next.js) signs for the backoffice's
-// vyx_admin_session cookie -- unlike the trader session (Redis-backed,
-// see src/auth.ts), the admin session was never migrated off JWT, so
-// there's no session store to query here: this just needs the same
-// signing secret and the same jose verify call lib/auth.ts's own
-// verifySessionToken makes. ADMIN_SESSION_SECRET must be the exact same
-// value in this process's env as in Vercel/Next.js's -- a mismatch fails
-// closed (every admin socket gets 401), not open.
+// Verifies the same Redis-backed opaque session lib/auth.ts (Next.js) now
+// issues (docs/authentication.md §2 -- admin sessions migrated off JWT
+// the same way trader sessions already were, see src/auth.ts's own
+// comment for the original reasoning). Same cookie name, same Redis key
+// convention (`admin_session:{token}`), same JSON payload shape. This
+// replaced JWT verification: a JWT stayed valid until its own expiry no
+// matter what the server did, which meant "log out" or "revoke a device"
+// here was only ever cosmetic. Reading the session from Redis means
+// either takes effect immediately, everywhere that checks it -- including
+// this Gateway.
 
-import { jwtVerify } from "jose";
+import { Redis } from "ioredis";
 
 const SESSION_COOKIE_NAME = "vyx_admin_session";
 
@@ -17,14 +19,18 @@ export type AdminSessionPayload = {
   brokerId: string | null;
 };
 
-let secretKeyBytes: Uint8Array | null = null;
-function secretKey(): Uint8Array {
-  if (!secretKeyBytes) {
-    const secret = process.env.ADMIN_SESSION_SECRET;
-    if (!secret) throw new Error("ADMIN_SESSION_SECRET is not set");
-    secretKeyBytes = new TextEncoder().encode(secret);
+let redis: Redis | null = null;
+function getRedis(): Redis {
+  if (!redis) {
+    const url = process.env.REDIS_URL;
+    if (!url) throw new Error("REDIS_URL is not set");
+    redis = new Redis(url);
   }
-  return secretKeyBytes;
+  return redis;
+}
+
+function sessionKey(token: string) {
+  return `admin_session:${token}`;
 }
 
 function readCookie(cookieHeader: string | undefined, name: string): string | null {
@@ -47,9 +53,12 @@ function readCookie(cookieHeader: string | undefined, name: string): string | nu
 export async function getAdminSession(cookieHeader: string | undefined): Promise<AdminSessionPayload | null> {
   const token = readCookie(cookieHeader, SESSION_COOKIE_NAME);
   if (!token) return null;
+
+  const raw = await getRedis().get(sessionKey(token));
+  if (!raw) return null;
+
   try {
-    const { payload } = await jwtVerify(token, secretKey());
-    return payload as unknown as AdminSessionPayload;
+    return JSON.parse(raw) as AdminSessionPayload;
   } catch {
     return null;
   }

@@ -220,7 +220,7 @@ export default function App() {
             title="Security"
             description="This login is the only way in to platform-wide control -- every broker's tenants, billing, and admin accounts. Two-factor authentication is strongly recommended."
           >
-            <SecurityManager />
+            <SecurityManager onLoggedOut={() => setLoggedIn(false)} />
           </Section>
         );
       case "/notifications":
@@ -236,7 +236,7 @@ export default function App() {
           </Section>
         );
       default:
-        return <p className="text-sm text-[var(--text-3)]">This section isn't available in the desktop app yet.</p>;
+        return <p className="text-sm text-[var(--text-3)]">This section isn&apos;t available in the desktop app yet.</p>;
     }
   }
 

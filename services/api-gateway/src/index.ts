@@ -103,12 +103,13 @@ attachPriceStream(server, natsUrl).catch((err) => {
 attachTradingEventStream(server, natsUrl).catch((err) => {
   console.error("failed to start trading event stream (NATS unreachable?)", err);
 });
-// fix/realtime-sync §1 -- new env var this process now needs:
-// ADMIN_SESSION_SECRET, the exact same value Vercel/Next.js signs
-// vyx_admin_session with (lib/auth.ts). Not required to start the
-// gateway itself (only checked lazily on the first admin-stream
-// connection attempt, same as REDIS_URL's own getRedis()), but every
-// backoffice event-stream connection 401s until it's set.
+// Admin sessions are now Redis-backed opaque tokens (docs/authentication.md
+// §2), same as trader sessions -- this process needs the same REDIS_URL
+// the price/trading streams above already require, not a separate signing
+// secret. Not required to start the gateway itself (only checked lazily
+// on the first admin-stream connection attempt, same as src/auth.ts's own
+// getRedis()), but every backoffice event-stream connection 401s until
+// it's set.
 attachAdminEventStream(server, natsUrl).catch((err) => {
   console.error("failed to start admin event stream (NATS unreachable?)", err);
 });

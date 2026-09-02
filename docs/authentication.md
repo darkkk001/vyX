@@ -56,9 +56,25 @@ tokens, not self-contained JWTs:
   packages, same constraint noted in `api.md`/`database.md` for Prisma),
   but same convention, so a session revoked anywhere is invalid
   everywhere immediately.
-- Admin sessions (`lib/auth.ts`) are **unchanged** — still JWT-based. Only
-  trader sessions were in scope for this; admin-session hardening would
-  be separate work, not silently bundled in here.
+- **Admin sessions (`lib/auth.ts`) are now Redis-backed too** (Phase 1
+  §2) — the identical migration, same shape: `admin_session:{token}` in
+  Redis instead of a JWT, `admin_session_id:{sessionId}`/
+  `admin_session_meta:{sessionId}`/`admin_sessions_index:{adminId}` for
+  the device list, `sessionCookieOptions`/cookie name/TTLs (7 days,
+  30 with Manager's "remember" checkbox) all unchanged. Covers both
+  Super Admin and Manager/Broker Admin/Support — one shared `AdminUser`
+  session system, so one migration covers all of it, not per-role work.
+  `app/api/admin/logout` now actually revokes (previously cookie-clear
+  only, same original gap as trader logout had). New
+  `GET /api/admin/sessions` / `DELETE /api/admin/sessions/[id]` (not
+  role-gated — self-service, any admin manages only their own sessions)
+  back a shared `AdminSessionsCard` component wired into both Super
+  Admin's and Manager's own Security pages.
+  `services/api-gateway/src/admin-auth.ts` reads the same Redis key
+  directly, same no-shared-code-but-same-convention relationship
+  `src/auth.ts` already has with the trader session — `ADMIN_SESSION_SECRET`
+  is no longer read anywhere; that env var can be removed once confirmed
+  unused elsewhere.
 - **Redis is never authoritative** — a Redis outage means sessions can't
   be validated (users get logged out / can't log in), not that trading
   data becomes wrong or unavailable. Matches spec §16 and the ADRs'
