@@ -64,7 +64,11 @@ const TF_LABELS: { key: Timeframe; label: string }[] = [
 ];
 
 type BottomTab = "positions" | "net" | "orders" | "allOrders" | "history" | "analytics" | "logs";
-type LogEntry = { id: number; time: string; message: string };
+// id is string for a persisted server-side entry (its AuditLog cuid, see
+// the mount effect below) or number for an ephemeral session-local one
+// (nextId(), from appendLog) -- both render identically, only the source
+// differs.
+type LogEntry = { id: number | string; time: string; message: string };
 type OrderMode = "market" | "pending";
 type PendingType = "buy_limit" | "sell_limit" | "buy_stop" | "sell_stop";
 type Toast = { id: number; message: string; retry?: () => void };
@@ -667,6 +671,28 @@ export default function WebTrader({
     // the whole point of a trade log.
     const time = [now.getHours(), now.getMinutes(), now.getSeconds()].map((n) => n.toString().padStart(2, "0")).join(":");
     setLogs((prev) => [{ id: nextId(), time, message }, ...prev].slice(0, 200));
+  }, []);
+
+  // Broker feedback items 14+15 -- before this, the Logs tab only ever
+  // showed ephemeral, session-local messages (appendLog above) that reset
+  // on every reload. This seeds it once at mount with this account's real
+  // persisted order-lifecycle history (app/api/trade/audit) -- real
+  // prices, not just "Order placed" -- so it survives a reload the same
+  // way the backoffice audit page's own history does. Appended after
+  // whatever's already accumulated client-side rather than replacing it,
+  // since a slow-to-resolve fetch shouldn't be able to wipe out logs the
+  // trader already saw this session.
+  useEffect(() => {
+    tradeApi
+      .auditLog()
+      .then((rows) => {
+        setLogs((prev) => {
+          const seen = new Set(prev.map((p) => p.id));
+          const fresh = rows.filter((r) => !seen.has(r.id));
+          return [...prev, ...fresh].slice(0, 200);
+        });
+      })
+      .catch(() => {});
   }, []);
 
   const equityHistoryRef = useRef<number[]>([]);

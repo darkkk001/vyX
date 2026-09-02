@@ -195,6 +195,9 @@ export const tradeApi = {
     call<ApiOrder>(`/api/trade/orders/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   fillOrder: (id: string, price: number) =>
     call(`/api/trade/orders/${id}/fill`, { method: "POST", body: JSON.stringify({ price }) }),
+  // Broker feedback items 14+15 -- persisted order-lifecycle history for
+  // this account's own Logs tab (see app/api/trade/audit/route.ts).
+  auditLog: () => call<{ id: string; time: string; message: string }[]>("/api/trade/audit"),
   requoteResponse: (id: string, accept: boolean) =>
     call(`/api/trade/orders/${id}/requote-response`, { method: "POST", body: JSON.stringify({ accept }) }),
   editPositionSlTp: (

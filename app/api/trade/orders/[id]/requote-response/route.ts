@@ -5,6 +5,7 @@ import { openPositionFromOrder } from "@/lib/dealing";
 import { resolveBookType, applySpreadMarkup, resolveSymbolPricing } from "@/lib/group-pricing";
 import { publishTradingEvent } from "@/lib/nats";
 import * as mirror from "@/lib/mirror";
+import { orderAuditFields } from "@/lib/order-audit";
 import {
   checkTradingHalted,
   checkSymbolTradingMode,
@@ -38,7 +39,10 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     return NextResponse.json({ error: "accept must be a boolean" }, { status: 400 });
   }
 
-  const order = await prisma.order.findUnique({ where: { id } });
+  const order = await prisma.order.findUnique({
+    where: { id },
+    include: { symbol: { select: { name: true } }, account: { select: { accountNumber: true } } },
+  });
   if (!order || order.accountId !== session.accountId) {
     return NextResponse.json({ error: "order not found" }, { status: 404 });
   }
@@ -60,8 +64,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
             action: "DEALING_ORDER_REQUOTE_REJECTED",
             entityType: "Order",
             entityId: order.id,
-            oldValue: { status: "REQUOTED", requotedPrice: order.requotedPrice!.toString() },
-            newValue: { status: "CANCELLED" },
+            oldValue: { ...orderAuditFields(order, order.symbol.name, order.account.accountNumber), status: "REQUOTED", requotedPrice: order.requotedPrice!.toString() },
+            newValue: { status: "CANCELLED", cancelledBy: "CLIENT" },
           },
         });
         return true;
@@ -147,7 +151,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
           action: "DEALING_ORDER_REQUOTE_ACCEPTED",
           entityType: "Position",
           entityId: pos.id,
-          oldValue: { status: "REQUOTED", requotedPrice: order.requotedPrice!.toString() },
+          oldValue: { ...orderAuditFields(order, order.symbol.name, order.account.accountNumber), status: "REQUOTED", requotedPrice: order.requotedPrice!.toString() },
           newValue: { status: "FILLED", filledPrice: fillPrice.toString() },
         },
       });

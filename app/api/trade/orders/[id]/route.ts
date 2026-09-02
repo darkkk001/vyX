@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
 import { publishTradingEvent } from "@/lib/nats";
 import { validatePendingPriceDistance, validateSlTp } from "@/lib/trading";
+import { orderAuditFields } from "@/lib/order-audit";
 
 // Edit a resting PENDING order's own entry price and/or its SL/TP -- the
 // chart's draggable entry-price line (LIMIT/STOP only) and, since broker
@@ -40,7 +41,10 @@ export async function PATCH(
     return NextResponse.json({ error: "currentPrice is required when moving the entry price" }, { status: 400 });
   }
 
-  const order = await prisma.order.findUnique({ where: { id } });
+  const order = await prisma.order.findUnique({
+    where: { id },
+    include: { symbol: { select: { name: true } }, account: { select: { accountNumber: true } } },
+  });
   if (!order || order.accountId !== session.accountId) {
     return NextResponse.json({ error: "order not found" }, { status: 404 });
   }
@@ -93,7 +97,41 @@ export async function PATCH(
   if (slPrice !== undefined) data.slPrice = slPrice;
   if (tpPrice !== undefined) data.tpPrice = tpPrice;
 
-  const updated = await prisma.order.update({ where: { id }, data });
+  // Broker feedback items 14+15 -- this route had no audit trail at all
+  // before: only whichever of entry/SL/TP actually changed goes into
+  // old/new (not the fields left untouched), so a dispute over "the
+  // client's SL was moved" shows exactly the before/after value, not a
+  // full unrelated snapshot.
+  const oldFields: Record<string, unknown> = {};
+  const newFields: Record<string, unknown> = {};
+  if (requestedPrice !== undefined) {
+    oldFields.requestedPrice = order.requestedPrice?.toString() ?? null;
+    newFields.requestedPrice = requestedPrice;
+  }
+  if (slPrice !== undefined) {
+    oldFields.slPrice = order.slPrice?.toString() ?? null;
+    newFields.slPrice = slPrice;
+  }
+  if (tpPrice !== undefined) {
+    oldFields.tpPrice = order.tpPrice?.toString() ?? null;
+    newFields.tpPrice = tpPrice;
+  }
+  const auditBase = orderAuditFields(order, order.symbol.name, order.account.accountNumber);
+
+  const updated = await prisma.$transaction(async (tx) => {
+    const result = await tx.order.update({ where: { id }, data });
+    await tx.auditLog.create({
+      data: {
+        brokerId: order.brokerId,
+        action: "ORDER_MODIFIED",
+        entityType: "Order",
+        entityId: id,
+        oldValue: { ...auditBase, ...oldFields },
+        newValue: { ...auditBase, ...newFields },
+      },
+    });
+    return result;
+  });
   await publishTradingEvent("OrderModified", { order_id: id, account_id: session.accountId, broker_id: session.brokerId });
   return NextResponse.json(updated);
 }
@@ -110,7 +148,10 @@ export async function DELETE(
   }
   const { id } = await params;
 
-  const order = await prisma.order.findUnique({ where: { id } });
+  const order = await prisma.order.findUnique({
+    where: { id },
+    include: { symbol: { select: { name: true } }, account: { select: { accountNumber: true } } },
+  });
   if (!order || order.accountId !== session.accountId) {
     return NextResponse.json({ error: "order not found" }, { status: 404 });
   }
@@ -130,14 +171,21 @@ export async function DELETE(
   // here on purpose -- this is the trader's own action, not staff's; the
   // same AuditLog row shape backoffice-initiated cancellations would use
   // just carries an actorAdminId instead.
+  //
+  // Broker feedback items 14+15 -- "cancel time + who" was the specific
+  // ask; cancelledAt is stamped explicitly (rather than relying on the
+  // row's own createdAt) so it survives even if this AuditLog write ever
+  // gets delayed relative to the actual cancellation, and cancelledBy
+  // makes "the client cancelled it, not a dealer" answerable without
+  // having to know that a null actorAdminId means that.
   await prisma.auditLog.create({
     data: {
       brokerId: order.brokerId,
       action: order.type === "MARKET" ? "TRADER_CANCELLED_DEALING_ORDER" : "TRADER_CANCELLED_PENDING_ORDER",
       entityType: "Order",
       entityId: id,
-      oldValue: { status: order.status },
-      newValue: { status: "CANCELLED" },
+      oldValue: { ...orderAuditFields(order, order.symbol.name, order.account.accountNumber), status: order.status },
+      newValue: { status: "CANCELLED", cancelledBy: "CLIENT", cancelledAt: new Date().toISOString() },
     },
   });
   await publishTradingEvent("OrderCancelled", { order_id: id, account_id: session.accountId, broker_id: session.brokerId });

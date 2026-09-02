@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { getFreshPrice } from "@/lib/live-price";
 import { openPositionFromOrder } from "@/lib/dealing";
+import { orderAuditFields } from "@/lib/order-audit";
 import { resolveBookType, applySpreadMarkup, resolveSymbolPricing } from "@/lib/group-pricing";
 import { publishTradingEvent } from "@/lib/nats";
 import * as mirror from "@/lib/mirror";
@@ -96,11 +97,11 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
           action: "DEALING_ORDER_REJECTED",
           entityType: "Order",
           entityId: id,
-          oldValue: { status: priorStatus },
+          oldValue: { ...orderAuditFields(order, order.symbol.name, order.account.accountNumber), status: priorStatus, requestedPrice: order.requestedPrice?.toString() ?? null },
           newValue: {
             status: "REJECTED",
             reason,
-            requestedPrice: order.requestedPrice?.toString() ?? null,
+            cancelledBy: "DEALER",
             liveAtClick: liveRefAtClick?.toString() ?? null,
           },
         },
@@ -151,7 +152,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
           action: "DEALING_ORDER_REQUOTED",
           entityType: "Order",
           entityId: id,
-          oldValue: { status: "PENDING", requestedPrice: order.requestedPrice?.toString() ?? null },
+          oldValue: { ...orderAuditFields(order, order.symbol.name, order.account.accountNumber), status: "PENDING", requestedPrice: order.requestedPrice?.toString() ?? null },
           newValue: { status: "REQUOTED", requotedPrice: requotedPrice.toString(), liveAtClick: liveRefAtClick?.toString() ?? null },
         },
       });
@@ -246,7 +247,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
           action: "DEALING_ORDER_ACCEPTED",
           entityType: "Position",
           entityId: position.id,
-          oldValue: { status: "PENDING", requestedPrice: order.requestedPrice?.toString() ?? null },
+          oldValue: { ...orderAuditFields(order, order.symbol.name, order.account.accountNumber), status: "PENDING", requestedPrice: order.requestedPrice?.toString() ?? null },
           newValue: { status: "FILLED", filledPrice: markedUpFillPrice.toString(), liveAtClick: liveRefAtClick?.toString() ?? null },
         },
       });

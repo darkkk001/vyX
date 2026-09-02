@@ -11,6 +11,7 @@ import { recordOrderAckLatency } from "@/lib/order-latency";
 import { publishTradingEvent } from "@/lib/nats";
 import * as mirror from "@/lib/mirror";
 import { resolveWantsDealingQueue } from "@/lib/dealing-routing";
+import { orderAuditFields } from "@/lib/order-audit";
 import {
   checkTradingHalted,
   checkSymbolTradingMode,
@@ -236,6 +237,28 @@ async function handlePlaceOrder(request: NextRequest) {
           status: "PENDING",
         },
       });
+      // Broker feedback items 14+15 -- placement itself is a lifecycle
+      // event a dispute needs, independent of whatever the smart dealer
+      // (or a human) decides next: this is the row that answers "what did
+      // the client actually submit" (limit/stop price, SL, TP) before any
+      // accept/reject/requote can change it.
+      await prisma.auditLog.create({
+        data: {
+          brokerId: session.brokerId,
+          action: "ORDER_PLACED",
+          entityType: "Order",
+          entityId: order.id,
+          oldValue: {},
+          newValue: {
+            ...orderAuditFields(order, symbolName, account.accountNumber),
+            requestedPrice: price,
+            slPrice,
+            tpPrice,
+            status: "PENDING",
+            queuedForDealing: true,
+          },
+        },
+      });
       if (source === "hotkey") await logHotkeyOrder(session.brokerId, order.id);
 
       // Smart Dealer -- see Broker.smartDealerAcceptPct/RejectPct's
@@ -284,7 +307,7 @@ async function handlePlaceOrder(request: NextRequest) {
                   action: "DEALING_ORDER_AUTO_ACCEPTED",
                   entityType: "Position",
                   entityId: pos.id,
-                  oldValue: { status: "PENDING", requestedPrice: price },
+                  oldValue: { ...orderAuditFields(order, symbolName, account.accountNumber), status: "PENDING", requestedPrice: price },
                   newValue: { status: "FILLED", filledPrice: fillPrice.toString(), diffPct: diffPct.toFixed(4) },
                 },
               });
@@ -324,7 +347,7 @@ async function handlePlaceOrder(request: NextRequest) {
                 action: "DEALING_ORDER_AUTO_REJECTED",
                 entityType: "Order",
                 entityId: order.id,
-                oldValue: { status: "PENDING", requestedPrice: price },
+                oldValue: { ...orderAuditFields(order, symbolName, account.accountNumber), status: "PENDING", requestedPrice: price },
                 newValue: { status: "REJECTED", reason, diffPct: diffPct.toFixed(4) },
               },
             });
@@ -456,6 +479,20 @@ async function handlePlaceOrder(request: NextRequest) {
           },
         });
         await chargeCommission(tx, { brokerId: session.brokerId, accountId: session.accountId, positionId: position.id, commissionPerLot: pricing.commissionPerLot, volume });
+        // Broker feedback items 14+15 -- the highest-volume fill path in
+        // the app (immediate MARKET fill, no dealing queue involved) had
+        // no audit row at all; "requested vs filled" is exactly what a
+        // dispute over slippage/price needs.
+        await tx.auditLog.create({
+          data: {
+            brokerId: session.brokerId,
+            action: "ORDER_FILLED",
+            entityType: "Position",
+            entityId: position.id,
+            oldValue: { ...orderAuditFields(order, symbolName, account.accountNumber), requestedPrice: price, slPrice, tpPrice, status: "PENDING" },
+            newValue: { status: "FILLED", filledPrice: fillPrice.toString() },
+          },
+        });
         return { order, position };
       });
       // docs/briefs/VYX-MIRROR-V0-BRIEF.md -- called after this route's own
@@ -493,6 +530,26 @@ async function handlePlaceOrder(request: NextRequest) {
         tpPrice,
         idempotencyKey,
         status: "PENDING",
+      },
+    });
+    // Broker feedback items 14+15 -- a resting LIMIT/STOP order (the
+    // common "pending order" case) had no placement audit row at all;
+    // this is what lets a broker later answer "what limit/SL/TP did the
+    // client actually set" without needing the order to still exist.
+    await prisma.auditLog.create({
+      data: {
+        brokerId: session.brokerId,
+        action: "ORDER_PLACED",
+        entityType: "Order",
+        entityId: order.id,
+        oldValue: {},
+        newValue: {
+          ...orderAuditFields(order, symbolName, account.accountNumber),
+          requestedPrice: price,
+          slPrice,
+          tpPrice,
+          status: "PENDING",
+        },
       },
     });
     if (source === "hotkey") await logHotkeyOrder(session.brokerId, order.id);

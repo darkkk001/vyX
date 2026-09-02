@@ -236,3 +236,56 @@ describe("PATCH /api/manage/dealing-queue/[id] -- ACCEPT/REQUOTE/REJECT (live DB
     expect(json.error).toMatch(/already requoted/i);
   });
 });
+
+// Broker feedback items 14+15 -- every dealer decision on a queued order
+// must be identifiable from its own AuditLog row alone (order number,
+// symbol, side, lots), not just "Position filled" with no context. See
+// lib/order-audit.ts's orderAuditFields.
+describe("PATCH /api/manage/dealing-queue/[id] -- audit payload completeness (live DB)", () => {
+  it("ACCEPT's audit row carries order number, symbol, side, and lots", async () => {
+    if (!dbReachable) return;
+    const fx = await createFixture();
+    const order = await createPendingOrder(fx, { requestedPrice: "97.50", side: "BUY" });
+
+    const { json } = await patch(fx, order.id, { action: "ACCEPT" });
+
+    const audit = await prisma.auditLog.findFirstOrThrow({ where: { action: "DEALING_ORDER_ACCEPTED", entityId: json.positionId } });
+    const before = audit.oldValue as Record<string, unknown>;
+    expect(before.orderNumber).toBe(order.id);
+    expect(before.accountNumber).toBeTruthy();
+    expect(before.symbol).toBe(fx.symbolName);
+    expect(before.side).toBe("BUY");
+    expect(before.lots).toBe("1");
+  });
+
+  it("REJECT's audit row carries order identity plus who cancelled it", async () => {
+    if (!dbReachable) return;
+    const fx = await createFixture();
+    const order = await createPendingOrder(fx, { side: "SELL" });
+
+    await patch(fx, order.id, { action: "REJECT", reason: "Test rejection" });
+
+    const audit = await prisma.auditLog.findFirstOrThrow({ where: { action: "DEALING_ORDER_REJECTED", entityId: order.id } });
+    const before = audit.oldValue as Record<string, unknown>;
+    const after = audit.newValue as Record<string, unknown>;
+    expect(before.orderNumber).toBe(order.id);
+    expect(before.side).toBe("SELL");
+    expect(before.lots).toBe("1");
+    expect(after.cancelledBy).toBe("DEALER");
+    expect(after.reason).toBe("Test rejection");
+  });
+
+  it("REQUOTE's audit row carries order identity", async () => {
+    if (!dbReachable) return;
+    const fx = await createFixture();
+    const order = await createPendingOrder(fx);
+
+    await patch(fx, order.id, { action: "REQUOTE", price: "100.05" });
+
+    const audit = await prisma.auditLog.findFirstOrThrow({ where: { action: "DEALING_ORDER_REQUOTED", entityId: order.id } });
+    const before = audit.oldValue as Record<string, unknown>;
+    expect(before.orderNumber).toBe(order.id);
+    expect(before.symbol).toBe(fx.symbolName);
+    expect(before.lots).toBe("1");
+  });
+});

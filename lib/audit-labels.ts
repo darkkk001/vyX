@@ -59,6 +59,15 @@ const LABELS: Record<string, string> = {
   ADMIN_PASSWORD_RESET_BY_SUPER_ADMIN: "Reset backoffice staff password",
   WEBTRADER_SESSION_REVOKED: "Revoked WebTrader session",
   STM_HOTKEY_ORDER: "Placed order via Smart Trade Manager hotkey",
+  // Broker feedback items 14+15 -- order-lifecycle events that previously
+  // wrote no AuditLog row at all (plain placement, entry/SL/TP edits, the
+  // common trigger->fill path) now do; these are their labels.
+  ORDER_PLACED: "Placed order",
+  ORDER_MODIFIED: "Modified order",
+  ORDER_FILLED: "Filled order",
+  ORDER_TRIGGERED_AND_FILLED: "Pending order triggered and filled",
+  TRADER_CANCELLED_DEALING_ORDER: "Client cancelled order (awaiting dealer)",
+  TRADER_CANCELLED_PENDING_ORDER: "Client cancelled pending order",
   STM_BULK_CLOSE: "Closed positions via Smart Trade Manager bulk action",
   BALANCE_ADJUSTMENT: "Adjusted balance",
   MANUAL_POSITION_OPEN: "Opened manual position",
@@ -139,6 +148,50 @@ function formatDiffValue(value: unknown): string {
   return String(value);
 }
 
+// Broker feedback items 14+15 -- order/position lifecycle AuditLog rows
+// (see lib/order-audit.ts's orderAuditFields) carry these same identity
+// fields in every event, on purpose, so any single row is self-contained.
+// That's exactly what makes them wrong to run through the change-diff
+// below: they're identical between oldValue/newValue by design (an
+// order's symbol doesn't change), so the diff's own dedup would silently
+// drop them, and where only one side carries them (e.g. a fill's oldValue
+// snapshot) they'd wrongly render as "(removed)". Surfaced instead as
+// their own dedicated column via extractOrderIdentity.
+const ORDER_IDENTITY_FIELDS = new Set(["orderNumber", "accountNumber", "symbol", "side", "type", "lots"]);
+
+export type OrderAuditIdentity = {
+  orderNumber: string;
+  accountNumber: string | null;
+  symbol: string | null;
+  side: string | null;
+  lots: string | null;
+};
+
+// Reads whichever of oldValue/newValue actually carries the order's
+// identity fields (placement only ever has newValue; a cancellation has
+// both) -- returns null for any AuditLog row that isn't an order/position
+// lifecycle event at all (nothing in this app writes an `orderNumber` key
+// for anything else).
+export function extractOrderIdentity(oldValue: Prisma.JsonValue | null, newValue: Prisma.JsonValue | null): OrderAuditIdentity | null {
+  const asPlainObject = (v: Prisma.JsonValue | null): Record<string, unknown> | null =>
+    v != null && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
+  const before = asPlainObject(oldValue) ?? {};
+  const after = asPlainObject(newValue) ?? {};
+  const orderNumber = after.orderNumber ?? before.orderNumber;
+  if (typeof orderNumber !== "string") return null;
+  const pick = (key: string): string | null => {
+    const v = after[key] ?? before[key];
+    return typeof v === "string" ? v : null;
+  };
+  return {
+    orderNumber,
+    accountNumber: pick("accountNumber"),
+    symbol: pick("symbol"),
+    side: pick("side"),
+    lots: pick("lots"),
+  };
+}
+
 // The audit log has always recorded AuditLog.oldValue/newValue, but every
 // consumer (Manager and Super Admin's audit pages alike) only ever showed
 // actor/action/target/time -- the actual before/after was captured on
@@ -159,6 +212,7 @@ export function summarizeAuditDiff(oldValue: Prisma.JsonValue | null, newValue: 
 
   const lines: string[] = [];
   for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
+    if (ORDER_IDENTITY_FIELDS.has(key)) continue;
     const beforeValue = before[key];
     const afterValue = after[key];
     if (JSON.stringify(beforeValue) === JSON.stringify(afterValue)) continue;

@@ -8,6 +8,7 @@ import * as mirror from "@/lib/mirror";
 import { resolveWantsDealingQueue } from "@/lib/dealing-routing";
 import { resolveBookType, applySpreadMarkup, resolveSymbolPricing, chargeCommission } from "@/lib/group-pricing";
 import { checkAccountPreTradeMargin } from "@/lib/margin";
+import { orderAuditFields } from "@/lib/order-audit";
 import {
   checkTradingHalted,
   checkSymbolTradingMode,
@@ -148,8 +149,13 @@ export async function POST(
           action: "PENDING_ORDER_QUEUED_FOR_DEALING",
           entityType: "Order",
           entityId: order.id,
-          oldValue: { type: originalType, requestedPrice: originalRequestedPrice, status: "PENDING" },
-          newValue: { type: "MARKET", requestedPrice: requestedFillPrice, status: "PENDING" },
+          oldValue: {
+            ...orderAuditFields(order, order.symbol.name, account.accountNumber),
+            type: originalType,
+            requestedPrice: originalRequestedPrice,
+            status: "PENDING",
+          },
+          newValue: { triggerPrice: requestedFillPrice, type: "MARKET", requestedPrice: requestedFillPrice, status: "PENDING" },
         },
       });
       return updated;
@@ -234,6 +240,28 @@ export async function POST(
       },
     });
     await chargeCommission(tx, { brokerId: order.brokerId, accountId: order.accountId, positionId: position.id, commissionPerLot: pricing.commissionPerLot, volume: order.volume });
+    // Broker feedback items 14+15 -- the common "resting LIMIT/STOP order
+    // triggers and fills immediately" path (no dealing queue involved)
+    // had no audit row at all. requestedPrice is the client's original
+    // limit/stop price, triggerPrice is what the trigger actually fired
+    // at, filledPrice is what it actually filled at -- three genuinely
+    // different numbers a slippage/requote dispute needs kept distinct.
+    await tx.auditLog.create({
+      data: {
+        brokerId: order.brokerId,
+        action: "ORDER_TRIGGERED_AND_FILLED",
+        entityType: "Position",
+        entityId: position.id,
+        oldValue: {
+          ...orderAuditFields(order, order.symbol.name, account.accountNumber),
+          requestedPrice: order.requestedPrice?.toString() ?? null,
+          slPrice: order.slPrice?.toString() ?? null,
+          tpPrice: order.tpPrice?.toString() ?? null,
+          status: "PENDING",
+        },
+        newValue: { triggerPrice: requestedFillPrice, filledPrice: fillPrice.toString(), status: "FILLED" },
+      },
+    });
     return { order: filledOrder, position };
   });
 
