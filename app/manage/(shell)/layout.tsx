@@ -106,6 +106,7 @@ export default async function ManageShellLayout({ children }: { children: React.
         { href: "/manage/symbols", label: "Symbols" },
         { href: "/manage/groups", label: "Client groups" },
         { href: "/manage/margin", label: "Margin monitoring" },
+        { href: "/manage/risk-radar", label: "Risk Radar" },
         ...(isBrokerAdmin ? [{ href: "/manage/risk", label: "Risk rules" }, { href: "/manage/emergency", label: "Emergency controls" }] : []),
       ],
     },

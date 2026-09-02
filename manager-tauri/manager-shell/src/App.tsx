@@ -23,6 +23,7 @@ import DealsManager from "@/app/manage/(shell)/deals/DealsManager";
 import SymbolConfigTable from "@/app/manage/(shell)/symbols/SymbolConfigTable";
 import GroupsManager from "@/app/manage/(shell)/groups/GroupsManager";
 import MarginManager from "@/app/manage/(shell)/margin/MarginManager";
+import RiskRadarManager from "@/app/manage/(shell)/risk-radar/RiskRadarManager";
 import RiskSettingsManager from "@/app/manage/(shell)/risk/RiskSettingsManager";
 import EmergencyControls from "@/app/manage/(shell)/emergency/EmergencyControls";
 import LiquidityManager from "@/app/manage/(shell)/liquidity/LiquidityManager";
@@ -146,6 +147,7 @@ export default function App() {
         { href: "/manage/symbols", label: "Symbols" },
         { href: "/manage/groups", label: "Client groups" },
         { href: "/manage/margin", label: "Margin monitoring" },
+        { href: "/manage/risk-radar", label: "Risk Radar" },
         ...(isBrokerAdmin ? [{ href: "/manage/risk", label: "Risk rules" }, { href: "/manage/emergency", label: "Emergency controls" }] : []),
       ],
     },
@@ -305,6 +307,16 @@ export default function App() {
             description="Every account with an open position, sorted most-at-risk first. Informational only — not yet enforced automatically."
           >
             <MarginManager />
+          </Section>
+        );
+      case "/manage/risk-radar":
+        return (
+          <Section
+            maxWidth="max-w-[1200px]"
+            title="Risk Radar"
+            description="Trading-behavior heuristics over the last 30 days -- not rule violations, a starting point for review."
+          >
+            <RiskRadarManager onOpenAccount={(id) => { setOpenAccountId(id); setSection("/manage/accounts"); }} />
           </Section>
         );
       case "/manage/risk":
