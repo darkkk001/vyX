@@ -281,7 +281,7 @@ export async function POST(request: NextRequest) {
   });
   fillPrice = applySpreadMarkup({ side, price: fillPrice, spreadMarkup: pricing.spreadMarkup, digits: brokerSymbol.symbol.digits });
 
-  const slTpError = validateSlTp({ side, referencePrice: fillPrice, slPrice, tpPrice });
+  const slTpError = validateSlTp({ side, referencePrice: fillPrice, slPrice, tpPrice, digits: brokerSymbol.symbol.digits, stopLevel: brokerSymbol.stopLevel });
   if (slTpError) {
     return NextResponse.json({ error: slTpError }, { status: 400 });
   }

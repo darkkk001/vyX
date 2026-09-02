@@ -2280,6 +2280,23 @@ export default function WebTrader({
     }
   }
 
+  // Broker feedback item 13 -- a pending order's own SL/TP, dragged the
+  // same way a position's is. No currentPrice needed: the server
+  // validates against the order's own entry price, not a live tick.
+  async function commitOrderSlTpEdit(id: string, kind: "sl" | "tp", newPrice: number): Promise<boolean> {
+    const o = pendingOrders.find((x) => x.id === id);
+    if (!o) return false;
+    try {
+      await tradeApi.editOrderSlTp(id, kind === "sl" ? { slPrice: newPrice } : { tpPrice: newPrice });
+      pushToast(`${o.symbol.name} order ${kind.toUpperCase()} updated`);
+      await refreshOrders();
+      return true;
+    } catch (err) {
+      pushToast(err instanceof Error ? err.message : "failed to update");
+      return false;
+    }
+  }
+
   // chart interaction pack -- drag-commit for every draggable chart line
   // (position SL/TP, including the drag-to-create "ghost" case, and a
   // pending order's own entry price). Instant when one-click trading is
@@ -2290,7 +2307,9 @@ export default function WebTrader({
   function onDragEditableLine(line: EditablePriceLineData, newPrice: number): Promise<boolean> {
     const commit = (): Promise<boolean> =>
       line.entityType === "order"
-        ? commitOrderPriceEdit(line.entityId, newPrice)
+        ? line.kind === "pending"
+          ? commitOrderPriceEdit(line.entityId, newPrice)
+          : commitOrderSlTpEdit(line.entityId, line.kind as "sl" | "tp", newPrice)
         : commitInlineEdit(line.entityId, line.kind as "sl" | "tp", String(newPrice));
 
     if (oneClick) return commit();
@@ -2672,17 +2691,56 @@ export default function WebTrader({
       .forEach((o) => {
         const mm = market[o.symbol.name];
         const minDistance = mm.def.stopLevel > 0 ? mm.def.stopLevel * Math.pow(10, -mm.def.digits) : 0;
+        const entryPrice = parseFloat(o.requestedPrice as string);
         out.push({
           id: `editentry-${o.id}`,
           entityId: o.id,
           entityType: "order",
           kind: "pending",
-          price: parseFloat(o.requestedPrice as string),
+          price: entryPrice,
           color: o.side === "BUY" ? "#16C784" : "#EA3943",
           digits: mm.def.digits,
           minDistance,
           referencePrice: mm.bid,
           formatLabel: (price) => `${o.side} ${o.type} ${fmt(price, mm.def.digits)}`,
+        });
+
+        // Broker feedback item 13 -- a pending order's own SL/TP,
+        // draggable pre-trigger the same way a position's is. Validated
+        // (both server-side and this ghost-line's own minDistance) against
+        // the order's ENTRY price, not the current tick (mm.bid) -- an
+        // order resting far from the market on purpose must judge its
+        // stop level from where it will actually fill.
+        const ghostOffset = Math.max(minDistance * 2, 100 * Math.pow(10, -mm.def.digits));
+        const slPrice = o.slPrice ? parseFloat(o.slPrice) : null;
+        const slGhostPrice = o.side === "BUY" ? entryPrice - ghostOffset : entryPrice + ghostOffset;
+        out.push({
+          id: `editordersl-${o.id}`,
+          entityId: o.id,
+          entityType: "order",
+          kind: "sl",
+          price: slPrice ?? slGhostPrice,
+          color: "#EA3943",
+          digits: mm.def.digits,
+          minDistance,
+          referencePrice: entryPrice,
+          ghost: slPrice == null,
+          formatLabel: (price) => `SL (pending) ${fmt(price, mm.def.digits)}`,
+        });
+        const tpPrice = o.tpPrice ? parseFloat(o.tpPrice) : null;
+        const tpGhostPrice = o.side === "BUY" ? entryPrice + ghostOffset : entryPrice - ghostOffset;
+        out.push({
+          id: `editordertp-${o.id}`,
+          entityId: o.id,
+          entityType: "order",
+          kind: "tp",
+          price: tpPrice ?? tpGhostPrice,
+          color: "#16C784",
+          digits: mm.def.digits,
+          minDistance,
+          referencePrice: entryPrice,
+          ghost: tpPrice == null,
+          formatLabel: (price) => `TP (pending) ${fmt(price, mm.def.digits)}`,
         });
       });
     return out;

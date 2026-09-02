@@ -1,17 +1,22 @@
 import { NextRequest, NextResponse } from "next/server";
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
 import { publishTradingEvent } from "@/lib/nats";
-import { validatePendingPriceDistance } from "@/lib/trading";
+import { validatePendingPriceDistance, validateSlTp } from "@/lib/trading";
 
-// Edit a resting PENDING order's own entry price (and/or its SL/TP) --
-// the chart's draggable entry-price line for LIMIT/STOP orders, same
-// shape as PATCH /api/trade/positions/[id] but for an order that hasn't
-// filled yet. `currentPrice` is the client's own live price, same
-// client-reported-reference-price pattern used everywhere else in this
-// file (order creation never validated a LIMIT/STOP's side against the
-// market either -- see the comment on the POST handler -- so this only
-// adds the new stopLevel minimum-distance check, nothing stricter).
+// Edit a resting PENDING order's own entry price and/or its SL/TP -- the
+// chart's draggable entry-price line (LIMIT/STOP only) and, since broker
+// feedback item 13, its SL/TP lines too (any PENDING order, including a
+// dealing-queued MARKET order still awaiting dealer review -- it hasn't
+// filled yet either). Same shape as PATCH /api/trade/positions/[id] but
+// for an order that hasn't filled yet -- the one real difference is the
+// reference price: a position validates SL/TP against the *current*
+// market, an order validates against its *own entry price* (the
+// requested/limit/stop price, not a live tick) -- that's the whole
+// "stopLevel relative to the entry price" rule item 13 asked for, and
+// it's what makes this correct for an order sitting miles from the
+// current market on purpose.
 export async function PATCH(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -25,12 +30,14 @@ export async function PATCH(
   const body = await request.json().catch(() => null);
   const currentPrice = body?.currentPrice != null ? String(body.currentPrice) : null;
   const requestedPrice = body?.requestedPrice != null ? String(body.requestedPrice) : undefined;
+  const slPrice = body?.slPrice !== undefined ? (body.slPrice == null ? null : String(body.slPrice)) : undefined;
+  const tpPrice = body?.tpPrice !== undefined ? (body.tpPrice == null ? null : String(body.tpPrice)) : undefined;
 
-  if (!currentPrice) {
-    return NextResponse.json({ error: "currentPrice is required" }, { status: 400 });
+  if (requestedPrice === undefined && slPrice === undefined && tpPrice === undefined) {
+    return NextResponse.json({ error: "at least one of requestedPrice, slPrice, or tpPrice is required" }, { status: 400 });
   }
-  if (requestedPrice === undefined) {
-    return NextResponse.json({ error: "requestedPrice is required" }, { status: 400 });
+  if (requestedPrice !== undefined && !currentPrice) {
+    return NextResponse.json({ error: "currentPrice is required when moving the entry price" }, { status: 400 });
   }
 
   const order = await prisma.order.findUnique({ where: { id } });
@@ -40,7 +47,7 @@ export async function PATCH(
   if (order.status !== "PENDING") {
     return NextResponse.json({ error: `cannot edit an order in status ${order.status}` }, { status: 409 });
   }
-  if (order.type === "MARKET") {
+  if (requestedPrice !== undefined && order.type === "MARKET") {
     return NextResponse.json({ error: "MARKET orders have no entry price to edit" }, { status: 400 });
   }
 
@@ -49,22 +56,44 @@ export async function PATCH(
     include: { symbol: { select: { digits: true } } },
   });
 
-  const validationError = validatePendingPriceDistance({
-    type: order.type,
-    side: order.side,
-    entryPrice: requestedPrice,
-    marketPrice: currentPrice,
-    digits: brokerSymbol?.symbol.digits ?? 5,
-    stopLevel: brokerSymbol?.stopLevel ?? 0,
-  });
-  if (validationError) {
-    return NextResponse.json({ error: validationError }, { status: 400 });
+  if (requestedPrice !== undefined) {
+    const validationError = validatePendingPriceDistance({
+      type: order.type as "LIMIT" | "STOP",
+      side: order.side,
+      entryPrice: requestedPrice,
+      marketPrice: currentPrice!,
+      digits: brokerSymbol?.symbol.digits ?? 5,
+      stopLevel: brokerSymbol?.stopLevel ?? 0,
+    });
+    if (validationError) {
+      return NextResponse.json({ error: validationError }, { status: 400 });
+    }
   }
 
-  const updated = await prisma.order.update({
-    where: { id },
-    data: { requestedPrice },
-  });
+  // Always the order's own entry price, whether it's the one just
+  // validated above or the existing one -- an order's SL/TP is never
+  // judged against a live tick, only against where it will actually fill.
+  const effectiveEntryPrice = requestedPrice ?? order.requestedPrice;
+  if ((slPrice !== undefined || tpPrice !== undefined) && effectiveEntryPrice) {
+    const slTpError = validateSlTp({
+      side: order.side,
+      referencePrice: effectiveEntryPrice,
+      slPrice: slPrice === undefined ? order.slPrice : slPrice,
+      tpPrice: tpPrice === undefined ? order.tpPrice : tpPrice,
+      digits: brokerSymbol?.symbol.digits,
+      stopLevel: brokerSymbol?.stopLevel,
+    });
+    if (slTpError) {
+      return NextResponse.json({ error: slTpError }, { status: 400 });
+    }
+  }
+
+  const data: Prisma.OrderUpdateInput = {};
+  if (requestedPrice !== undefined) data.requestedPrice = requestedPrice;
+  if (slPrice !== undefined) data.slPrice = slPrice;
+  if (tpPrice !== undefined) data.tpPrice = tpPrice;
+
+  const updated = await prisma.order.update({ where: { id }, data });
   await publishTradingEvent("OrderModified", { order_id: id, account_id: session.accountId, broker_id: session.brokerId });
   return NextResponse.json(updated);
 }

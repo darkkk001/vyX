@@ -162,7 +162,14 @@ async function handlePlaceOrder(request: NextRequest) {
   if (!price) {
     return NextResponse.json({ error: "price is required" }, { status: 400 });
   }
-  const validationError = validateSlTp({ side, referencePrice: price, slPrice, tpPrice });
+  // Broker feedback (item 13) -- digits/stopLevel were never passed here,
+  // so the minimum-distance-from-reference-price check inside validateSlTp
+  // was silently a no-op for every order ever placed (MARKET or PENDING):
+  // it only runs when both are non-null, and referencePrice is already
+  // the ENTRY price for a PENDING order (the client-supplied `price`,
+  // not a current tick), so this is genuinely "stopLevel relative to
+  // entry" once wired -- exactly what was missing, not a new rule.
+  const validationError = validateSlTp({ side, referencePrice: price, slPrice, tpPrice, digits: brokerSymbol.symbol.digits, stopLevel: brokerSymbol.stopLevel });
   if (validationError) {
     return NextResponse.json({ error: validationError }, { status: 400 });
   }

@@ -182,8 +182,16 @@ export const tradeApi = {
   cancelOrder: (id: string) => call(`/api/trade/orders/${id}`, { method: "DELETE" }),
   // Draggable entry-price line for a resting LIMIT/STOP order (chart
   // interaction pack). `currentPrice` is the client's own live price, same
-  // reference-price pattern editPositionSlTp already uses below.
+  // reference-price pattern editPositionSlTp already uses below --
+  // required only when requestedPrice is actually being moved (server
+  // validates the new entry against it); not needed for an SL/TP-only
+  // edit, which validates against the order's own entry price instead.
   editOrderPrice: (id: string, body: { currentPrice: number; requestedPrice: number }) =>
+    call<ApiOrder>(`/api/trade/orders/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  // Broker feedback item 13 -- a pending order's own SL/TP, draggable on
+  // the chart the same way a position's is, validated server-side
+  // against the order's entry price (not a live tick).
+  editOrderSlTp: (id: string, body: { slPrice?: number | null; tpPrice?: number | null }) =>
     call<ApiOrder>(`/api/trade/orders/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   fillOrder: (id: string, price: number) =>
     call(`/api/trade/orders/${id}/fill`, { method: "POST", body: JSON.stringify({ price }) }),
