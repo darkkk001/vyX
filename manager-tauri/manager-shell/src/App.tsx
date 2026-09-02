@@ -5,6 +5,7 @@ import { LogoutButton } from "@/components/admin/LogoutButton";
 import { TopbarSearch } from "@/components/admin/TopbarSearch";
 import { PageHeader } from "@/components/ui/PageHeader";
 import AuditLogTable from "@/app/manage/(shell)/audit/AuditLogTable";
+import SecurityManager from "@/components/admin/SecurityManager";
 import DashboardManager from "@/app/manage/(shell)/dashboard/DashboardManager";
 import NotificationsManager from "@/app/manage/(shell)/notifications/NotificationsManager";
 import AccountsManager from "@/app/manage/(shell)/accounts/AccountsManager";
@@ -29,7 +30,6 @@ import LpRoutingManager from "@/app/manage/(shell)/liquidity-routing/LpRoutingMa
 import ReportsView from "@/app/manage/(shell)/reports/ReportsView";
 import TeamManager from "@/app/manage/(shell)/team/TeamManager";
 import SettingsManager from "@/app/manage/(shell)/settings/SettingsManager";
-import ManagerSecurityManager from "@/app/manage/(shell)/security/ManagerSecurityManager";
 import { apiCall } from "@/lib/desktop-api";
 import type { ApiBrokerBranding } from "@/lib/trade-api";
 import { AdminRealtimeProvider } from "@/lib/admin-realtime";
@@ -367,8 +367,8 @@ export default function App() {
         );
       case "/manage/security":
         return (
-          <Section maxWidth="max-w-[720px]" title="Security" description="Devices currently signed in to your admin account.">
-            <ManagerSecurityManager onLoggedOut={() => setLoggedIn(false)} />
+          <Section maxWidth="max-w-[720px]" title="Security" description="Two-factor authentication and devices signed in to your admin account.">
+            <SecurityManager loginHref="/manage/login" onLoggedOut={() => setLoggedIn(false)} />
           </Section>
         );
       case "/manage/settings":

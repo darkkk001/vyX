@@ -1,5 +1,5 @@
 import { PageHeader } from "@/components/ui/PageHeader";
-import SecurityManager from "./SecurityManager";
+import SecurityManager from "@/components/admin/SecurityManager";
 
 // No auth check or Prisma query here anymore -- app/(super-admin)/
 // (shell)/layout.tsx's own SUPER_ADMIN-only guard is identical to what

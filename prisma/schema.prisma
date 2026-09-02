@@ -223,6 +223,12 @@ model Broker {
   status       BrokerStatus @default(ACTIVE)
   // See ExecutionEngine's own doc comment -- currently decorative.
   executionEngine ExecutionEngine @default(LEGACY)
+  // Phase 1 trust pack -- when true, any AdminUser for this broker
+  // (MANAGER/BROKER_ADMIN/SUPPORT) without twoFactorEnabled is forced
+  // through 2FA setup on next login before reaching the manage shell
+  // (see app/manage/(shell)/layout.tsx's own check). Does not affect
+  // Super Admin (brokerId null -- this field is meaningless there).
+  requireAdmin2fa Boolean @default(false)
   // Max open positions an account may hold at once, across all symbols.
   // Null = no limit — see docs/risk-engine.md §2.1 step 5.
   maxOpenPositionsPerAccount Int?
@@ -321,15 +327,19 @@ model AdminUser {
   // Extra BROKER_ADMIN-only capabilities delegated to a MANAGER-role
   // admin -- see lib/permissions.ts's PERMISSIONS list. Meaningless for
   // BROKER_ADMIN (already has everything implicitly) and SUPPORT (no
-  // login route). Checked fresh from the DB on every request, not baked
-  // into the session JWT -- see lib/permissions.ts's own comment for why.
+  // permissions model of its own yet -- Phase 1 trust pack gave it a
+  // login route, but it still has nowhere in the shell to use extra
+  // permissions). Checked fresh from the DB on every request, not baked
+  // into the session token -- see lib/permissions.ts's own comment for why.
   extraPermissions String[] @default([])
 
   // TOTP 2FA (RFC 6238) -- see lib/totp.ts, same scheme as Account's own
-  // twoFactorSecret/Enabled (webtrader login). Exposed only on the Super
-  // Admin login (app/api/admin/login) and its own settings page -- a
-  // Broker Admin/Manager's backoffice login (app/api/manage/login) is a
-  // separate route that never checks these fields.
+  // twoFactorSecret/Enabled (webtrader login). Phase 1 trust pack widened
+  // this from Super-Admin-only to every admin role: both
+  // app/api/admin/login and app/api/manage/login (Manager/Broker Admin/
+  // Support) check these fields now, via the shared
+  // app/api/admin/two-factor/* routes and lib/totp.ts's
+  // verifyAdminTwoFactorCode.
   twoFactorSecret  String?
   twoFactorEnabled Boolean @default(false)
 
@@ -343,8 +353,30 @@ model AdminUser {
   auditLogs      AuditLog[]     @relation("AuditLogActor")
   closedPosition Position[]     @relation("PositionClosedBy")
   createdMirrorRules MirrorRule[]
+  backupCodes    AdminBackupCode[]
 
   @@index([brokerId])
+}
+
+// 2FA backup codes (Phase 1 trust pack) -- issued 6 at a time the moment
+// an AdminUser's 2FA is actually confirmed (app/api/admin/two-factor/
+// confirm), shown once in that response, never retrievable again.
+// codeHash is bcrypt, same as AdminUser.passwordHash -- these are
+// high-entropy generated codes, not user-chosen secrets, but hashing
+// them the same way as every other credential in this schema means one
+// less thing to reason about differently. usedAt null = still valid;
+// each code is consumed (usedAt set) the moment it's used to complete a
+// login, never deleted, so "was this code already used" survives a
+// re-generation cycle's own delete-then-recreate.
+model AdminBackupCode {
+  id          String    @id @default(cuid())
+  adminId     String
+  adminUser   AdminUser @relation(fields: [adminId], references: [id], onDelete: Cascade)
+  codeHash    String
+  usedAt      DateTime? @db.Timestamptz(3)
+  createdAt   DateTime  @default(now()) @db.Timestamptz(3)
+
+  @@index([adminId])
 }
 
 // ─────────────────────────────────────────────────────────────────────────

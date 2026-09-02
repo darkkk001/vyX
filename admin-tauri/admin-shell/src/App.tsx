@@ -7,7 +7,7 @@ import BrokersManager from "@/app/(super-admin)/(shell)/brokers/BrokersManager";
 import TrialsManager from "@/app/(super-admin)/(shell)/trials/TrialsManager";
 import BillingManager from "@/app/(super-admin)/(shell)/billing/BillingManager";
 import HealthManager from "@/app/(super-admin)/(shell)/health/HealthManager";
-import SecurityManager from "@/app/(super-admin)/(shell)/security/SecurityManager";
+import SecurityManager from "@/components/admin/SecurityManager";
 import NotificationsManager from "@/app/(super-admin)/(shell)/notifications/NotificationsManager";
 import AdminsManager from "@/app/(super-admin)/(shell)/admins/AdminsManager";
 import { apiCall } from "@/lib/desktop-api";
