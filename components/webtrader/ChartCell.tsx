@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { fmt, type MarketState, type Timeframe, type FeedStatus, type SymbolDef } from "@/lib/market-simulator";
-import { computeAllChartLines } from "@/lib/chart-lines";
+import { computeChartLines } from "@/lib/chart-lines";
 import type { ApiPosition, ApiOrder } from "@/lib/trade-api";
 import KLineChartPanel from "./KLineChartPanel";
 
@@ -52,7 +52,7 @@ export default function ChartCell({
 }) {
   const [symbolPickerOpen, setSymbolPickerOpen] = useState(false);
   const up = m.bid >= m.prevBid;
-  const lines = computeAllChartLines(symbol, positions, pendingOrders);
+  const lines = computeChartLines(symbol, positions, pendingOrders);
 
   return (
     <div

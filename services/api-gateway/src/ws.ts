@@ -242,7 +242,11 @@ export async function attachPriceStream(server: Server, natsUrl: string): Promis
 // either origin without caring which one produced a given event.
 export async function attachTradingEventStream(server: Server, natsUrl: string): Promise<void> {
   const nc: NatsConnection = await connect({ servers: natsUrl });
-  const subs = [nc.subscribe("order.>"), nc.subscribe("margin.>"), nc.subscribe("position.>")];
+  // "alert.>" added Phase 1 trust pack §3 -- engine/server publishes
+  // alert.triggered with the same account_id field every other subject
+  // here already carries, so the forwarding loop below needs no change
+  // at all, just this one more subscription.
+  const subs = [nc.subscribe("order.>"), nc.subscribe("margin.>"), nc.subscribe("position.>"), nc.subscribe("alert.>")];
 
   const wss = new WebSocketServer({ noServer: true });
   const clientsByAccount = new Map<string, Set<WebSocket>>();
