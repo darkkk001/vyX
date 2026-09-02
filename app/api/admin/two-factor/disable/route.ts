@@ -5,12 +5,13 @@ import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { checkRateLimit } from "@/lib/rate-limit";
 
 // Mirrors app/api/trade/two-factor/disable -- requires re-entering the
-// current password, same as disabling 2FA anywhere else, so a Super
-// Admin who stepped away from an already-unlocked session can't have
-// this turned off by whoever's now at the keyboard.
+// current password, same as disabling 2FA anywhere else, so an admin who
+// stepped away from an already-unlocked session can't have this turned
+// off by whoever's now at the keyboard. Phase 1 trust pack: widened from
+// SUPER_ADMIN-only, see .../setup's own comment.
 export async function POST(request: NextRequest) {
   const session = await getAdminSession();
-  if (!requireAdminRole(session, ["SUPER_ADMIN"])) {
+  if (!requireAdminRole(session, ["SUPER_ADMIN", "MANAGER", "BROKER_ADMIN", "SUPPORT"])) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
 
@@ -37,11 +38,12 @@ export async function POST(request: NextRequest) {
 
   await prisma.$transaction([
     prisma.adminUser.update({ where: { id: admin.id }, data: { twoFactorSecret: null, twoFactorEnabled: false } }),
+    prisma.adminBackupCode.deleteMany({ where: { adminId: admin.id } }),
     prisma.auditLog.create({
       data: {
         brokerId: admin.brokerId,
         actorAdminId: admin.id,
-        action: "SUPER_ADMIN_2FA_DISABLED",
+        action: "ADMIN_2FA_DISABLED",
         entityType: "AdminUser",
         entityId: admin.id,
         oldValue: {},

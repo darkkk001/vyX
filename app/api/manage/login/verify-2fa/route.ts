@@ -4,22 +4,29 @@ import { createSessionToken, SESSION_COOKIE_NAME, sessionCookieOptions } from "@
 import { checkRateLimit } from "@/lib/rate-limit";
 import { peekPendingAdmin2faChallenge, deletePendingAdmin2faChallenge, verifyAdminTwoFactorCode } from "@/lib/totp";
 
-// The second step for a 2FA-enabled Super Admin, once app/api/admin/login's
-// password check returned { requiresTwoFactor: true, pendingToken }.
-// Mirrors app/api/trade/login/verify-2fa's identical shape. Phase 1
-// trust pack: accepts either a TOTP `code` or a single-use `backupCode`
-// now (see lib/totp.ts's verifyAdminTwoFactorCode) -- same fallback
-// app/api/manage/login/verify-2fa offers Manager/Broker Admin/Support.
+// The second step for a 2FA-enabled Manager/Broker Admin/Support, once
+// POST /api/manage/login's password check returned
+// { requiresTwoFactor: true, pendingToken }. Mirrors
+// app/api/admin/login/verify-2fa's shape (issuePendingAdmin2faChallenge/
+// peekPendingAdmin2faChallenge are already generic across every admin
+// role, see lib/totp.ts's own comment) plus the same broker-match check
+// POST /api/manage/login itself does -- a stolen pendingToken is already
+// scoped to one specific adminId, but re-checking x-broker-id here is the
+// same defense-in-depth this app already applies at the password step,
+// not weakened just because 2FA is in the mix. Accepts either a TOTP
+// `code` or a single-use `backupCode` (see lib/totp.ts's
+// verifyAdminTwoFactorCode).
 export async function POST(request: NextRequest) {
   const body = await request.json().catch(() => null);
   const pendingToken = typeof body?.pendingToken === "string" ? body.pendingToken : "";
   const code = typeof body?.code === "string" ? body.code : undefined;
   const backupCode = typeof body?.backupCode === "string" ? body.backupCode : undefined;
+  const remember = body?.remember === true;
   if (!pendingToken || (!code && !backupCode)) {
     return NextResponse.json({ error: "pendingToken and code (or backupCode) are required" }, { status: 400 });
   }
 
-  const { allowed } = await checkRateLimit(`admin-verify-2fa:${pendingToken}`, 10, 300);
+  const { allowed } = await checkRateLimit(`manage-verify-2fa:${pendingToken}`, 10, 300);
   if (!allowed) {
     return NextResponse.json({ error: "too many attempts, try again shortly" }, { status: 429 });
   }
@@ -30,7 +37,15 @@ export async function POST(request: NextRequest) {
   }
 
   const admin = await prisma.adminUser.findUnique({ where: { id: pending.adminId } });
-  if (!admin || admin.status !== "ACTIVE" || !admin.twoFactorEnabled || !admin.twoFactorSecret) {
+  const requestBrokerId = request.headers.get("x-broker-id");
+  if (
+    !admin ||
+    admin.status !== "ACTIVE" ||
+    !admin.twoFactorEnabled ||
+    (admin.role !== "MANAGER" && admin.role !== "BROKER_ADMIN" && admin.role !== "SUPPORT") ||
+    !requestBrokerId ||
+    admin.brokerId !== requestBrokerId
+  ) {
     await deletePendingAdmin2faChallenge(pendingToken);
     return NextResponse.json({ error: "login expired, please sign in again" }, { status: 401 });
   }
@@ -41,22 +56,10 @@ export async function POST(request: NextRequest) {
 
   await deletePendingAdmin2faChallenge(pendingToken);
 
-  const userAgent = request.headers.get("user-agent");
-  const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? null;
-  const token = await createSessionToken(
-    { adminId: admin.id, role: admin.role, brokerId: admin.brokerId },
-    false,
-    { userAgent, ip }
-  );
-
+  const token = await createSessionToken({ adminId: admin.id, role: admin.role, brokerId: admin.brokerId }, remember);
   await prisma.adminUser.update({ where: { id: admin.id }, data: { lastLoginAt: new Date() } });
 
-  const response = NextResponse.json({
-    id: admin.id,
-    email: admin.email,
-    role: admin.role,
-    brokerId: admin.brokerId,
-  });
-  response.cookies.set(SESSION_COOKIE_NAME, token, sessionCookieOptions());
+  const response = NextResponse.json({ id: admin.id, email: admin.email, role: admin.role, brokerId: admin.brokerId });
+  response.cookies.set(SESSION_COOKIE_NAME, token, sessionCookieOptions(remember));
   return response;
 }

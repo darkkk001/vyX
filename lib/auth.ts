@@ -216,6 +216,20 @@ export function requireAdminRole(session: AdminSessionPayload | null, roles: Adm
   return session !== null && roles.includes(session.role);
 }
 
+// Phase 1 trust pack -- Broker.requireAdmin2fa's enforcement, extracted
+// out of app/manage/(shell)/layout.tsx as a pure function so it's
+// testable without a Server Component/session/DB round trip. A null
+// broker or admin (a lookup that failed, or a brokerless Super Admin --
+// this policy is meaningless there, see Broker.requireAdmin2fa's own
+// schema comment) never forces anything.
+export function shouldForceAdminTwoFactorSetup(
+  broker: { requireAdmin2fa: boolean } | null,
+  admin: { twoFactorEnabled: boolean } | null
+): boolean {
+  if (!broker || !admin) return false;
+  return broker.requireAdmin2fa && !admin.twoFactorEnabled;
+}
+
 export function sessionCookieOptions(remember: boolean = false) {
   // Same site-wide cookie scoping as lib/account-auth.ts's
   // accountSessionCookieOptions -- see that function's comment. The
