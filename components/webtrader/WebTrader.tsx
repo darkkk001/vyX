@@ -37,6 +37,18 @@ import SmartTradeManager from "./SmartTradeManager";
 import { computeOrderReferenceLines } from "@/lib/chart-lines";
 import { DEFAULT_CHART_SETTINGS, type ChartSettings } from "@/lib/chart-settings";
 
+// Watchlist SPREAD column -- MT4/5's own "points" convention: a symbol's
+// point size is 10^-digits (its own smallest tradable price increment,
+// the same value klinecharts' priceMark/tooltip formatting already keys
+// off of), so a spread of 0.17 on a 2-digit symbol (XAUUSD) is 17 points,
+// and 0.00002 on a 5-digit symbol (EURUSD) is 2 points -- a much more
+// readable "how wide is this market" number than the raw price-unit
+// difference, and the standard unit every MT4/5 trader already thinks in.
+function spreadPoints(ask: number, bid: number, digits: number): string {
+  const points = (ask - bid) * Math.pow(10, digits);
+  return points.toFixed(1).replace(/\.0$/, "");
+}
+
 const TF_LABELS: { key: Timeframe; label: string }[] = [
   { key: "M1", label: "1m" },
   { key: "M5", label: "5m" },
@@ -182,6 +194,19 @@ export default function WebTrader({
   // per-account order comes from the server (app/api/trade/watchlist),
   // never localStorage (so web and desktop stay in sync).
   const [watchlistOrder, setWatchlistOrder] = useState<string[]>(() => SYMBOL_DEFS.map((s) => s.name));
+  // Watchlist category-header collapse state -- server-persisted (see
+  // refreshSymbolsAndWatchlist below), default expanded (empty set) until
+  // the real value loads.
+  const [collapsedCategories, setCollapsedCategories] = useState<Set<SymbolCategory>>(new Set());
+  // Guards against refreshSymbolsAndWatchlist's own re-fetch (it's also
+  // called for post-mutation reconciliation, e.g. hideSymbolFromWatchlist's
+  // failure path) clobbering a collapse toggle the trader just made -- a
+  // real race found via testing: a slow initial load resolving AFTER a
+  // user's first click silently reverted it, making the click look like it
+  // "didn't work." Collapse state loads from the server exactly once (the
+  // first successful resolution, whichever call that happens to be); every
+  // toggle after that is authoritative locally and persisted separately.
+  const collapsedCategoriesLoadedRef = useRef(false);
   const [dragSymbol, setDragSymbol] = useState<string | null>(null);
   const [watchlistFilter, setWatchlistFilter] = useState("");
   const [addSymbolOpen, setAddSymbolOpen] = useState(false);
@@ -663,6 +688,10 @@ export default function WebTrader({
         return fresh;
       });
       setWatchlistOrder(watchlistRes.symbols.map((s) => s.name));
+      if (!collapsedCategoriesLoadedRef.current) {
+        setCollapsedCategories(new Set(watchlistRes.collapsedCategories));
+        collapsedCategoriesLoadedRef.current = true;
+      }
       setActiveSymbol((current) => (defs.some((d) => d.name === current) ? current : (watchlistRes.symbols[0]?.name ?? defs[0]?.name ?? current)));
     } catch (err) {
       console.error("refreshSymbolsAndWatchlist failed", err);
@@ -2213,11 +2242,47 @@ export default function WebTrader({
       const names = byCategory.get(category);
       if (!names || names.length === 0) continue;
       rows.push({ kind: "header", category });
+      if (collapsedCategories.has(category)) continue; // header renders, its rows don't
       for (const name of names) rows.push({ kind: "symbol", name });
     }
     return rows;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [watchlistOrder, watchlistFilter, allSymbols]);
+  }, [watchlistOrder, watchlistFilter, allSymbols, collapsedCategories]);
+
+  // Every category actually present in the watchlist right now, in
+  // display order -- what "Collapse all"/"Expand all" and the toggle-
+  // label decision below operate over (a category with zero symbols in
+  // it has no header at all, so it's irrelevant to either).
+  const presentWatchlistCategories = useMemo(() => {
+    const set = new Set<SymbolCategory>();
+    for (const name of watchlistOrder) {
+      const c = categoryOf(name);
+      if (c) set.add(c);
+    }
+    return SYMBOL_CATEGORY_ORDER.filter((c) => set.has(c));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [watchlistOrder, allSymbols]);
+
+  function persistCollapsedCategories(next: Set<SymbolCategory>) {
+    setCollapsedCategories(next);
+    tradeApi.saveWatchlistCollapsed([...next]).catch((err) => console.error("saveWatchlistCollapsed failed", err));
+  }
+
+  function toggleCategoryCollapsed(category: SymbolCategory) {
+    const next = new Set(collapsedCategories);
+    if (next.has(category)) next.delete(category);
+    else next.add(category);
+    persistCollapsedCategories(next);
+  }
+
+  // One toggle item, not two -- "Collapse all" while anything's expanded
+  // (clicking collapses every present category), flipping to "Expand all"
+  // only once every present category is already collapsed.
+  const allWatchlistCategoriesCollapsed =
+    presentWatchlistCategories.length > 0 && presentWatchlistCategories.every((c) => collapsedCategories.has(c));
+  function toggleAllWatchlistCategories() {
+    persistCollapsedCategories(allWatchlistCategoriesCollapsed ? new Set() : new Set(presentWatchlistCategories));
+  }
 
   // ---------- chart ----------
   const candles: Candle[] = m.candles[currentTf];
@@ -2663,8 +2728,23 @@ export default function WebTrader({
             <div>
               {watchlistRenderRows.map((wlRow) => {
                 if (wlRow.kind === "header") {
+                  const collapsed = collapsedCategories.has(wlRow.category);
                   return (
-                    <div key={`hdr-${wlRow.category}`} className="wl-category-header">
+                    <div
+                      key={`hdr-${wlRow.category}`}
+                      className="wl-category-header"
+                      role="button"
+                      tabIndex={0}
+                      aria-expanded={!collapsed}
+                      onClick={() => toggleCategoryCollapsed(wlRow.category)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          toggleCategoryCollapsed(wlRow.category);
+                        }
+                      }}
+                    >
+                      <span className={`wl-category-chevron${collapsed ? " collapsed" : ""}`}>›</span>
                       {SYMBOL_CATEGORY_LABELS[wlRow.category]}
                     </div>
                   );
@@ -2700,7 +2780,7 @@ export default function WebTrader({
                       ) : null}
                     </span>
                     {columnPrefs.change ? <span className={`wl-cell mono ${changePct !== null && changePct >= 0 ? "wl-pos" : "wl-neg"}`}>{row.live && changePct !== null ? (changePct >= 0 ? "+" : "") + changePct.toFixed(2) + "%" : "—"}</span> : null}
-                    {columnPrefs.spread ? <span className="wl-cell mono">{row.live ? fmt(row.ask - row.bid, row.def.digits) : "—"}</span> : null}
+                    {columnPrefs.spread ? <span className="wl-cell mono" style={{ textAlign: "right" }}>{row.live ? spreadPoints(row.ask, row.bid, row.def.digits) : "—"}</span> : null}
                     {columnPrefs.high ? <span className="wl-cell mono">{row.live ? fmt(row.high, row.def.digits) : "—"}</span> : null}
                     {columnPrefs.low ? <span className="wl-cell mono">{row.live ? fmt(row.low, row.def.digits) : "—"}</span> : null}
                     <button className={`wl-alert-btn${alerts.some((a) => a.symbol === name) ? " active" : ""}`} onClick={(e) => { e.stopPropagation(); openPriceAlert(name); }} title="Set price alert">
@@ -2751,6 +2831,16 @@ export default function WebTrader({
                 >
                   <span className="wl-ctx-check" />
                   <span>Reset to default</span>
+                </div>
+                <div
+                  className="wl-ctx-item"
+                  onClick={() => {
+                    toggleAllWatchlistCategories();
+                    setWlMenuOpen(false);
+                  }}
+                >
+                  <span className="wl-ctx-check" />
+                  <span>{allWatchlistCategoriesCollapsed ? "Expand all" : "Collapse all"}</span>
                 </div>
                 <div style={{ height: 1, background: "var(--border)", margin: "4px 0" }} />
                 <div className="wl-ctx-title">Show columns</div>

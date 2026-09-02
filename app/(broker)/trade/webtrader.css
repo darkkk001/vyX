@@ -283,12 +283,22 @@ html, body, #root {
   letter-spacing: .03em; text-transform: uppercase;
   border-bottom: 1px solid var(--border); margin-bottom: 2px;
 }
-/* Watchlist category grouping -- not collapsible for now, purely a
-   scan-aid; never a real row (no click/drag/keyboard-nav target). */
+/* Watchlist category grouping -- collapsible (chevron + click/Enter/
+   Space), collapsed state server-persisted. Never a real symbol row (no
+   drag, not counted by watchlistOrder itself). */
 .wl-category-header {
+  display: flex; align-items: center; gap: 4px;
   padding: 8px 8px 3px; font-size: 9.5px; color: var(--text-3);
   letter-spacing: .05em; text-transform: uppercase; font-weight: 600;
+  cursor: pointer; user-select: none; border-radius: 4px;
 }
+.wl-category-header:hover { color: var(--text-2); }
+.wl-category-header:focus-visible { outline: 1px solid var(--text-3); outline-offset: -1px; }
+.wl-category-chevron {
+  display: inline-block; font-size: 11px; line-height: 1;
+  transform: rotate(90deg); transition: transform .12s;
+}
+.wl-category-chevron.collapsed { transform: rotate(0deg); }
 .wl-category-header:first-child { padding-top: 2px; }
 .wl-item { display: grid; align-items: center; gap: 6px; padding: 8px 8px; border-radius: 8px; cursor: pointer; font-size: 12px; margin-bottom: 1px; transition: background .12s; }
 .wl-item:hover { background: var(--bg-3); }
