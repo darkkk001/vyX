@@ -35,6 +35,14 @@ export async function GET() {
       // the server's own check (lib/trading.ts's validateSlTp /
       // validatePendingPriceDistance) is what's actually authoritative.
       stopLevel: bs.stopLevel,
+      // Partial-close dialog's own lots/% validation -- same "client
+      // preview, server stays authoritative" convention as stopLevel
+      // above (lib/risk.ts's checkLotStep is what actually gates a real
+      // order; this just lets the dialog reject an invalid amount before
+      // a round trip instead of after).
+      minLot: bs.minLot.toString(),
+      maxLot: bs.maxLot.toString(),
+      lotStep: bs.lotStep.toString(),
     })),
   });
 }

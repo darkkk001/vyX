@@ -46,6 +46,15 @@ export type SymbolDef = {
   // bootstrap entry, and any pre-migration broker) means unrestricted.
   // Client-side preview only -- see BrokerSymbol.stopLevel's own comment.
   stopLevel: number;
+  // Partial-close dialog's own lots/% validation preview -- same "client
+  // preview, server stays authoritative" convention as stopLevel above
+  // (app/api/trade/positions/[id]/close's own checkLotStep call is what
+  // actually gates a real close). Defaults match BrokerSymbol's own
+  // schema defaults, so a bootstrap SYMBOL_DEFS entry or a broker that
+  // hasn't touched these settings behaves exactly as before this existed.
+  minLot: number;
+  maxLot: number;
+  lotStep: number;
 };
 
 // Bootstrap/fallback set only -- used to seed the very first render before
@@ -56,17 +65,18 @@ export type SymbolDef = {
 // 10, because this array WAS unconditionally treated as the universe
 // everywhere, not a fallback). WebTrader.tsx replaces this with the
 // server's real list as soon as it arrives.
+const DEFAULT_LOT_LIMITS = { minLot: 0.01, maxLot: 100, lotStep: 0.01 };
 export const SYMBOL_DEFS: SymbolDef[] = [
-  { name: "XAUUSD", category: "METALS", digits: 2, base: 2352.40, vol: 0.35, contractSize: 100, stopLevel: 0 },
-  { name: "EURUSD", category: "FOREX", digits: 5, base: 1.0850, vol: 0.00006, contractSize: 100000, stopLevel: 0 },
-  { name: "GBPUSD", category: "FOREX", digits: 5, base: 1.2680, vol: 0.00007, contractSize: 100000, stopLevel: 0 },
-  { name: "BTCUSD", category: "CRYPTO", digits: 1, base: 62150.0, vol: 25, contractSize: 1, stopLevel: 0 },
-  { name: "US30", category: "INDICES", digits: 1, base: 38950.0, vol: 4.5, contractSize: 1, stopLevel: 0 },
-  { name: "USDJPY", category: "FOREX", digits: 3, base: 156.20, vol: 0.008, contractSize: 100000, stopLevel: 0 },
-  { name: "AUDUSD", category: "FOREX", digits: 5, base: 0.6520, vol: 0.00005, contractSize: 100000, stopLevel: 0 },
-  { name: "XAGUSD", category: "METALS", digits: 3, base: 27.80, vol: 0.02, contractSize: 5000, stopLevel: 0 },
-  { name: "ETHUSD", category: "CRYPTO", digits: 2, base: 3420.00, vol: 3.2, contractSize: 1, stopLevel: 0 },
-  { name: "NAS100", category: "INDICES", digits: 1, base: 18240.0, vol: 5.5, contractSize: 1, stopLevel: 0 },
+  { name: "XAUUSD", category: "METALS", digits: 2, base: 2352.40, vol: 0.35, contractSize: 100, stopLevel: 0, ...DEFAULT_LOT_LIMITS },
+  { name: "EURUSD", category: "FOREX", digits: 5, base: 1.0850, vol: 0.00006, contractSize: 100000, stopLevel: 0, ...DEFAULT_LOT_LIMITS },
+  { name: "GBPUSD", category: "FOREX", digits: 5, base: 1.2680, vol: 0.00007, contractSize: 100000, stopLevel: 0, ...DEFAULT_LOT_LIMITS },
+  { name: "BTCUSD", category: "CRYPTO", digits: 1, base: 62150.0, vol: 25, contractSize: 1, stopLevel: 0, ...DEFAULT_LOT_LIMITS },
+  { name: "US30", category: "INDICES", digits: 1, base: 38950.0, vol: 4.5, contractSize: 1, stopLevel: 0, ...DEFAULT_LOT_LIMITS },
+  { name: "USDJPY", category: "FOREX", digits: 3, base: 156.20, vol: 0.008, contractSize: 100000, stopLevel: 0, ...DEFAULT_LOT_LIMITS },
+  { name: "AUDUSD", category: "FOREX", digits: 5, base: 0.6520, vol: 0.00005, contractSize: 100000, stopLevel: 0, ...DEFAULT_LOT_LIMITS },
+  { name: "XAGUSD", category: "METALS", digits: 3, base: 27.80, vol: 0.02, contractSize: 5000, stopLevel: 0, ...DEFAULT_LOT_LIMITS },
+  { name: "ETHUSD", category: "CRYPTO", digits: 2, base: 3420.00, vol: 3.2, contractSize: 1, stopLevel: 0, ...DEFAULT_LOT_LIMITS },
+  { name: "NAS100", category: "INDICES", digits: 1, base: 18240.0, vol: 5.5, contractSize: 1, stopLevel: 0, ...DEFAULT_LOT_LIMITS },
 ];
 
 // `base`/`vol` are only ever read as a placeholder bid/ask BEFORE a real
@@ -95,9 +105,23 @@ const PLACEHOLDER_HINTS: Record<string, { base: number; vol: number }> = Object.
 // (app/api/trade/symbols's response shape) into a SymbolDef -- the only
 // place base/vol placeholders get invented for a symbol this app doesn't
 // already have hand-picked numbers for.
-export function buildSymbolDef(row: { id: string; name: string; category: SymbolCategory; digits: number; contractSize: string | number; stopLevel?: number }): SymbolDef {
+export function buildSymbolDef(row: {
+  id: string;
+  name: string;
+  category: SymbolCategory;
+  digits: number;
+  contractSize: string | number;
+  stopLevel?: number;
+  minLot?: string | number;
+  maxLot?: string | number;
+  lotStep?: string | number;
+}): SymbolDef {
   const hint = PLACEHOLDER_HINTS[row.name];
   const contractSize = typeof row.contractSize === "string" ? parseFloat(row.contractSize) : row.contractSize;
+  const toNum = (v: string | number | undefined, fallback: number) => {
+    const n = typeof v === "string" ? parseFloat(v) : v;
+    return n != null && Number.isFinite(n) ? n : fallback;
+  };
   return {
     id: row.id,
     name: row.name,
@@ -107,6 +131,9 @@ export function buildSymbolDef(row: { id: string; name: string; category: Symbol
     base: hint?.base ?? 1,
     vol: hint?.vol ?? (row.digits >= 3 ? 0.01 : 0.0001),
     stopLevel: row.stopLevel ?? 0,
+    minLot: toNum(row.minLot, 0.01),
+    maxLot: toNum(row.maxLot, 100),
+    lotStep: toNum(row.lotStep, 0.01),
   };
 }
 

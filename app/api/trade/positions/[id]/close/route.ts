@@ -4,7 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
 import { closePositionInTx } from "@/lib/position-close";
 import { publishTradingEvent } from "@/lib/nats";
-import { checkLiveMarketPrice } from "@/lib/risk";
+import { checkLiveMarketPrice, checkLotStep } from "@/lib/risk";
 import * as mirror from "@/lib/mirror";
 
 // Closing (fully or partially) is the one place a trade changes the
@@ -37,7 +37,7 @@ export async function POST(
 
   const position = await prisma.position.findUnique({
     where: { id },
-    include: { symbol: { select: { name: true, contractSize: true } } },
+    include: { symbol: { select: { id: true, name: true, contractSize: true } } },
   });
   if (!position || position.accountId !== session.accountId) {
     return NextResponse.json({ error: "position not found" }, { status: 404 });
@@ -64,6 +64,32 @@ export async function POST(
         { error: `volume must be between 0 and ${position.volume}` },
         { status: 400 }
       );
+    }
+    // Partial close (item 9 of the terminal live-findings pack) -- a
+    // partial amount that isn't itself a tradeable lot size (or that
+    // leaves a dangling remainder that isn't) was previously accepted
+    // outright; nothing here ever checked it, unlike order creation's
+    // own checkLotStep gate. A full close (requested === position.volume)
+    // skips this -- there's no remainder to be invalid, and a position
+    // opened before minLot/lotStep were configured (or before they
+    // changed) must always still be fully closeable.
+    if (!requested.equals(position.volume)) {
+      const brokerSymbol = await prisma.brokerSymbol.findUnique({
+        where: { brokerId_symbolId: { brokerId: session.brokerId, symbolId: position.symbol.id } },
+      });
+      if (brokerSymbol) {
+        const stepError = checkLotStep(requested, brokerSymbol.minLot, brokerSymbol.lotStep);
+        if (stepError) {
+          return NextResponse.json({ error: `partial close amount ${stepError}` }, { status: 400 });
+        }
+        const remaining = position.volume.sub(requested);
+        if (remaining.gt(0) && remaining.lt(brokerSymbol.minLot)) {
+          return NextResponse.json(
+            { error: `closing this amount would leave ${remaining} lots open, below this symbol's minimum of ${brokerSymbol.minLot} -- close the full position instead` },
+            { status: 400 }
+          );
+        }
+      }
     }
     closeVolume = requested;
   }

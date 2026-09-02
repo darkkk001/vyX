@@ -108,7 +108,17 @@ export type ApiLinkedAccount = {
 
 export type ApiBrokerBranding = { brokerName: string; brokerLogoUrl: string; supportEmail: string | null; primaryColor: string | null };
 
-export type ApiWatchlistSymbol = { id: string; name: string; category: SymbolCategory; digits: number; contractSize: string; stopLevel?: number };
+export type ApiWatchlistSymbol = {
+  id: string;
+  name: string;
+  category: SymbolCategory;
+  digits: number;
+  contractSize: string;
+  stopLevel?: number;
+  minLot?: string;
+  maxLot?: string;
+  lotStep?: string;
+};
 
 // Phase 1 trust pack §3 -- real, server-evaluated price alerts (see
 // PriceAlert's own schema comment). Replaces the old client-side-only
@@ -199,6 +209,12 @@ export const tradeApi = {
     call<{ requested: number; successful: number; failed: number; results: { positionId: string; closed: boolean; closePrice: string | null; realizedPnl: string | null; error: string | null }[] }>(
       "/api/trade/positions/close-bulk",
       { method: "POST", body: JSON.stringify({ scope, ...(symbol ? { symbol } : {}) }) }
+    ),
+  // MT5-style "Close By" -- see lib/close-by.ts for the full reasoning.
+  closeBy: (positionId: string, againstPositionId: string) =>
+    call<{ ok: true; closeVolume: string; closePrice: string; positionAId: string; positionBId: string; realizedPnlA: string; realizedPnlB: string }>(
+      "/api/trade/positions/close-by",
+      { method: "POST", body: JSON.stringify({ positionId, againstPositionId }) }
     ),
   // Default (active only) / ?status=all (history, incl. triggered/
   // cancelled) -- same convention as orders()/allOrders().

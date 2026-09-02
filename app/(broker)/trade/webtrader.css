@@ -347,6 +347,7 @@ html, body, #root {
   box-shadow: 0 12px 28px rgba(0,0,0,.5);
 }
 .wl-context-menu.show { display: block; }
+.close-menu-trigger { display: inline-flex; align-items: center; gap: 1px; }
 .wl-ctx-title { font-size: 10px; color: var(--text-3); text-transform: uppercase; letter-spacing: .04em; padding: 5px 8px 6px; }
 .wl-ctx-item { display: flex; align-items: center; gap: 8px; padding: 8px; border-radius: 6px; cursor: pointer; font-size: 12.5px; }
 .wl-ctx-item:hover { background: var(--bg-3); }

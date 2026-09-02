@@ -1979,27 +1979,115 @@ export default function WebTrader({
     }
   }
 
+  // ---------- close menu (item 9: Close / Partial close / Close by) ----------
+  // Fixed-position + click-coordinate, same convention as this file's
+  // other context menus (wlContextMenu/chartContextMenu) -- NOT anchored
+  // via position: relative/absolute under the trigger button, which
+  // .panel-body's own overflow: auto (the positions table scrolls) would
+  // clip the instant the dropdown tried to paint past this row's cell
+  // bounds. position: fixed escapes that entirely.
+  const [closeMenuState, setCloseMenuState] = useState<{ id: string; x: number; y: number; openUpward: boolean } | null>(null);
+  const closeMenuOpenId = closeMenuState?.id ?? null;
+  const closeMenuRef = useRef<HTMLDivElement>(null);
+  useDismiss(closeMenuState !== null, () => setCloseMenuState(null), closeMenuRef);
+
+  const [partialCloseTarget, setPartialCloseTarget] = useState<string | null>(null);
+  const [partialCloseMode, setPartialCloseMode] = useState<"lots" | "percent">("lots");
+  const [partialCloseValue, setPartialCloseValue] = useState("50");
+  const [partialCloseError, setPartialCloseError] = useState<string | null>(null);
+  const [partialCloseBusy, setPartialCloseBusy] = useState(false);
+
   function openPartialClose(id: string) {
+    setCloseMenuState(null);
+    setPartialCloseTarget(id);
+    setPartialCloseMode("lots");
     const p = positions.find((x) => x.id === id);
-    if (!p) return;
-    askPrompt(`Close how many lots out of ${parseFloat(p.volume).toFixed(2)}?`, (parseFloat(p.volume) / 2).toFixed(2), async (amountStr) => {
-      const amount = parseFloat(amountStr);
-      if (isNaN(amount) || amount <= 0 || amount >= parseFloat(p.volume)) {
-        pushToast("Enter a value less than the full position size");
-        return;
-      }
-      const mm = market[p.symbol.name];
-      if (!mm.live) { pushToast("No live feed for this symbol"); return; }
-      const price = p.side === "BUY" ? mm.bid : mm.ask;
-      try {
-        const res = await tradeApi.closePosition(id, price, amount);
-        const pnl = parseFloat((res as { transaction: { amount: string } }).transaction.amount);
-        pushToast(`Closed ${amount} lots of ${p.symbol.name} — ${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)} USD`);
-        await Promise.all([refreshPositions(), refreshHistory(), refreshAccount()]);
-      } catch (err) {
-        pushToast(err instanceof Error ? err.message : "failed to partially close");
-      }
-    });
+    setPartialCloseValue(p ? (parseFloat(p.volume) / 2).toFixed(2) : "");
+    setPartialCloseError(null);
+  }
+
+  // Same lots/min/step math as app/api/trade/positions/[id]/close's own
+  // checkLotStep call -- a client preview so the dialog can reject an
+  // invalid amount before a round trip, not a replacement for that
+  // server-side gate (see lib/market-simulator.ts's SymbolDef.minLot/
+  // maxLot/lotStep doc comment on this "client preview, server
+  // authoritative" convention).
+  function validatePartialCloseAmount(amount: number, position: ApiPosition): string | null {
+    const fullVolume = parseFloat(position.volume);
+    if (!Number.isFinite(amount) || amount <= 0) return "enter a positive amount";
+    if (amount >= fullVolume) return "enter a value less than the full position size (use Close for the full amount)";
+    const def = allSymbols.find((s) => s.name === position.symbol.name);
+    const minLot = def?.minLot ?? 0.01;
+    const lotStep = def?.lotStep ?? 0.01;
+    const EPS = 1e-8;
+    if (amount < minLot - EPS) return `amount must be at least ${minLot} lots`;
+    const steps = (amount - minLot) / lotStep;
+    if (Math.abs(steps - Math.round(steps)) > 1e-6) return `amount must be ${minLot} plus a multiple of ${lotStep} lots`;
+    const remaining = fullVolume - amount;
+    if (remaining > EPS && remaining < minLot - EPS) {
+      return `closing this amount would leave ${remaining.toFixed(2)} lots open, below this symbol's minimum of ${minLot} -- close the full position instead`;
+    }
+    return null;
+  }
+
+  async function submitPartialClose() {
+    const id = partialCloseTarget;
+    if (!id) return;
+    const p = positions.find((x) => x.id === id);
+    if (!p) { setPartialCloseTarget(null); return; }
+    const fullVolume = parseFloat(p.volume);
+    const raw = parseFloat(partialCloseValue);
+    const amount = partialCloseMode === "percent" ? +((raw / 100) * fullVolume).toFixed(2) : +raw.toFixed(2);
+    const validationError = validatePartialCloseAmount(amount, p);
+    if (validationError) { setPartialCloseError(validationError); return; }
+    const mm = market[p.symbol.name];
+    if (!mm.live) { setPartialCloseError("No live feed for this symbol"); return; }
+    const price = p.side === "BUY" ? mm.bid : mm.ask;
+    setPartialCloseBusy(true);
+    setPartialCloseError(null);
+    try {
+      const res = await tradeApi.closePosition(id, price, amount);
+      const pnl = parseFloat((res as { transaction: { amount: string } }).transaction.amount);
+      pushToast(`Closed ${amount} lots of ${p.symbol.name} — ${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)} USD`);
+      setPartialCloseTarget(null);
+      await Promise.all([refreshPositions(), refreshHistory(), refreshAccount()]);
+    } catch (err) {
+      setPartialCloseError(err instanceof Error ? err.message : "failed to partially close");
+    } finally {
+      setPartialCloseBusy(false);
+    }
+  }
+
+  // MT5-style "Close by" -- only offered when this account actually holds
+  // an opposite-side position in the same symbol (a hedge) to net against.
+  function closeByCandidates(p: ApiPosition): ApiPosition[] {
+    return positions.filter((other) => other.id !== p.id && other.symbol.name === p.symbol.name && other.side !== p.side);
+  }
+
+  const [closeByTarget, setCloseByTarget] = useState<string | null>(null);
+  const [closeByBusy, setCloseByBusy] = useState(false);
+  const [closeByError, setCloseByError] = useState<string | null>(null);
+
+  function openCloseByPicker(id: string) {
+    setCloseMenuState(null);
+    setCloseByTarget(id);
+    setCloseByError(null);
+  }
+
+  async function submitCloseBy(positionId: string, againstPositionId: string) {
+    setCloseByBusy(true);
+    setCloseByError(null);
+    try {
+      const res = await tradeApi.closeBy(positionId, againstPositionId);
+      const totalPnl = parseFloat(res.realizedPnlA) + parseFloat(res.realizedPnlB);
+      pushToast(`Closed by: ${res.closeVolume} lots netted @ ${res.closePrice} — ${totalPnl >= 0 ? "+" : ""}${totalPnl.toFixed(2)} USD`, true);
+      setCloseByTarget(null);
+      await Promise.all([refreshPositions(), refreshHistory(), refreshAccount()]);
+    } catch (err) {
+      setCloseByError(err instanceof Error ? err.message : "failed to close by");
+    } finally {
+      setCloseByBusy(false);
+    }
   }
 
   function openTrailingStop(id: string) {
@@ -3417,9 +3505,6 @@ export default function WebTrader({
                           <span className="pos-cell pos-commission mono">{parseFloat(p.commission).toFixed(2)}</span>
                           <span className={`pos-cell pos-pnl mono ${pnl >= 0 ? "pos" : "neg"}`}>{pnl >= 0 ? "+" : ""}{pnl.toFixed(2)}</span>
                           <span className="pos-cell pos-actions">
-                            <button className="icon-btn" title="Partial close" onClick={() => openPartialClose(p.id)}>
-                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2" /><line x1="12" y1="8" x2="12" y2="16" /><line x1="8" y1="12" x2="16" y2="12" /></svg>
-                            </button>
                             <button className="icon-btn" title="Trailing stop" onClick={() => openTrailingStop(p.id)}>
                               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 12h4l3 8 4-16 3 8h4" /></svg>
                             </button>
@@ -3429,8 +3514,30 @@ export default function WebTrader({
                             <button className="icon-btn" title="Share" onClick={() => openShareForPosition(p.id)}>
                               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="18" cy="5" r="3" /><circle cx="6" cy="12" r="3" /><circle cx="18" cy="19" r="3" /><line x1="8.6" y1="13.5" x2="15.4" y2="17.5" /><line x1="15.4" y1="6.5" x2="8.6" y2="10.5" /></svg>
                             </button>
-                            <button className="icon-btn" title="Close" onClick={() => closePositionFull(p.id)}>
+                            <button
+                              className="icon-btn close-menu-trigger"
+                              title="Close"
+                              onClick={(e) => {
+                                if (closeMenuOpenId === p.id) { setCloseMenuState(null); return; }
+                                const rect = e.currentTarget.getBoundingClientRect();
+                                // The positions panel sits low on the page (chart/ticket
+                                // stack above it) -- a row near the bottom of a tall list
+                                // would push this 3-item menu past the viewport's own
+                                // bottom edge if always anchored below the button. Flip to
+                                // opening upward (anchored via `bottom`, not `top`, so it
+                                // doesn't need to know its own exact rendered height) once
+                                // there isn't reasonably room underneath.
+                                const openUpward = window.innerHeight - rect.bottom < 160;
+                                setCloseMenuState({
+                                  id: p.id,
+                                  x: rect.right,
+                                  y: openUpward ? window.innerHeight - rect.top + 4 : rect.bottom + 4,
+                                  openUpward,
+                                });
+                              }}
+                            >
                               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                              <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" style={{ marginLeft: 1 }}><polyline points="6 9 12 15 18 9" /></svg>
                             </button>
                           </span>
                         </div>
@@ -3439,6 +3546,33 @@ export default function WebTrader({
                   )}
                 </div>
               ) : null}
+
+              {closeMenuState ? (() => {
+                const p = positions.find((x) => x.id === closeMenuState.id);
+                if (!p) return null;
+                return (
+                  <div
+                    className="wl-context-menu show"
+                    ref={closeMenuRef}
+                    style={{
+                      left: Math.max(8, closeMenuState.x - 160),
+                      ...(closeMenuState.openUpward ? { bottom: closeMenuState.y } : { top: closeMenuState.y }),
+                    }}
+                  >
+                    <div className="wl-ctx-item" onClick={() => { setCloseMenuState(null); closePositionFull(p.id); }}>
+                      <span>Close</span>
+                    </div>
+                    <div className="wl-ctx-item" onClick={() => openPartialClose(p.id)}>
+                      <span>Partial close…</span>
+                    </div>
+                    {closeByCandidates(p).length > 0 ? (
+                      <div className="wl-ctx-item" onClick={() => openCloseByPicker(p.id)}>
+                        <span>Close by…</span>
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })() : null}
 
               {activeBottomTab === "net" ? (
                 <div className="panel-body">
@@ -4404,15 +4538,121 @@ export default function WebTrader({
               <div className="quick-order-header"><span>{activeSymbol}</span></div>
               <div className="si-row"><span>Contract size</span><span className="mono">{m.def.contractSize}</span></div>
               <div className="si-row"><span>Digits</span><span className="mono">{m.def.digits}</span></div>
-              <div className="si-row"><span>Min lot</span><span className="mono">0.01</span></div>
-              <div className="si-row"><span>Max lot</span><span className="mono">100</span></div>
-              <div className="si-row"><span>Swap long</span><span className="mono">-1.20</span></div>
-              <div className="si-row"><span>Swap short</span><span className="mono">+0.35</span></div>
+              <div className="si-row"><span>Min lot</span><span className="mono">{m.def.minLot}</span></div>
+              <div className="si-row"><span>Max lot</span><span className="mono">{m.def.maxLot}</span></div>
+              <div className="si-row"><span>Lot step</span><span className="mono">{m.def.lotStep}</span></div>
               <div className="si-row"><span>Trading hours</span><span className="mono">24/5</span></div>
             </div>
           </div>
         </div>
       ) : null}
+
+      {/* ---------- Partial close modal (item 9) ---------- */}
+      {partialCloseTarget ? (() => {
+        const p = positions.find((x) => x.id === partialCloseTarget);
+        if (!p) return null;
+        const fullVolume = parseFloat(p.volume);
+        const def = allSymbols.find((s) => s.name === p.symbol.name);
+        const minLot = def?.minLot ?? 0.01;
+        const lotStep = def?.lotStep ?? 0.01;
+        const raw = parseFloat(partialCloseValue);
+        const previewAmount = partialCloseMode === "percent" ? +((raw / 100) * fullVolume).toFixed(2) : +((Number.isFinite(raw) ? raw : 0)).toFixed(2);
+        return (
+          <div className="modal-overlay show" onClick={(e) => { if (e.target === e.currentTarget) setPartialCloseTarget(null); }}>
+            <div className="modal-wrap">
+              <button className="modal-close" onClick={() => setPartialCloseTarget(null)}>✕</button>
+              <div className="generic-modal-card" style={{ width: 300 }}>
+                <div className="quick-order-header"><span>Partial close — {p.symbol.name}</span></div>
+                <p className="margin-note" style={{ marginTop: 0 }}>
+                  {fullVolume.toFixed(2)} lots open @ {fmt(parseFloat(p.openPrice), p.symbol.digits)}
+                </p>
+                <div className="occ-toggle-row" style={{ marginBottom: 10 }}>
+                  <button
+                    className={`funds-tab${partialCloseMode === "lots" ? " active" : ""}`}
+                    onClick={() => { setPartialCloseMode("lots"); setPartialCloseValue((fullVolume / 2).toFixed(2)); setPartialCloseError(null); }}
+                  >
+                    Lots
+                  </button>
+                  <button
+                    className={`funds-tab${partialCloseMode === "percent" ? " active" : ""}`}
+                    onClick={() => { setPartialCloseMode("percent"); setPartialCloseValue("50"); setPartialCloseError(null); }}
+                  >
+                    %
+                  </button>
+                </div>
+                <div className="field">
+                  <span className="field-label">{partialCloseMode === "lots" ? `Lots (min ${minLot}, step ${lotStep})` : "Percent of position"}</span>
+                  <input
+                    className="generic-modal-input mono"
+                    autoFocus
+                    value={partialCloseValue}
+                    onChange={(e) => { setPartialCloseValue(e.target.value); setPartialCloseError(null); }}
+                    onKeyDown={(e) => { if (e.key === "Enter") submitPartialClose(); }}
+                  />
+                </div>
+                <p className="margin-note">
+                  {partialCloseMode === "percent" ? `= ${previewAmount.toFixed(2)} lots` : `Remaining open: ${(fullVolume - previewAmount).toFixed(2)} lots`}
+                </p>
+                {[25, 50, 75].map((pct) => (
+                  <button
+                    key={pct}
+                    className="modal-btn secondary"
+                    style={{ padding: "4px 10px", fontSize: 12, marginRight: 6 }}
+                    onClick={() => { setPartialCloseMode("percent"); setPartialCloseValue(String(pct)); setPartialCloseError(null); }}
+                  >
+                    {pct}%
+                  </button>
+                ))}
+                {partialCloseError ? <p className="margin-note" style={{ color: "var(--sell)" }}>{partialCloseError}</p> : null}
+                <div className="modal-actions" style={{ marginTop: 12 }}>
+                  <button className="modal-btn secondary" onClick={() => setPartialCloseTarget(null)}>Cancel</button>
+                  <button className="modal-btn primary" disabled={partialCloseBusy} onClick={submitPartialClose}>
+                    {partialCloseBusy ? "Closing…" : "Close partial"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })() : null}
+
+      {/* ---------- Close by modal (item 9) ---------- */}
+      {closeByTarget ? (() => {
+        const p = positions.find((x) => x.id === closeByTarget);
+        if (!p) return null;
+        const candidates = closeByCandidates(p);
+        return (
+          <div className="modal-overlay show" onClick={(e) => { if (e.target === e.currentTarget) setCloseByTarget(null); }}>
+            <div className="modal-wrap">
+              <button className="modal-close" onClick={() => setCloseByTarget(null)}>✕</button>
+              <div className="generic-modal-card" style={{ width: 320 }}>
+                <div className="quick-order-header"><span>Close by — {p.symbol.name}</span></div>
+                <p className="margin-note" style={{ marginTop: 0 }}>
+                  Net {p.side === "BUY" ? "Buy" : "Sell"} {parseFloat(p.volume).toFixed(2)} @ {fmt(parseFloat(p.openPrice), p.symbol.digits)} against an opposite position on the same symbol, at one shared price -- no market spread charged on the netted amount.
+                </p>
+                {candidates.length === 0 ? (
+                  <p className="margin-note">No opposite-side {p.symbol.name} position to close against anymore.</p>
+                ) : (
+                  candidates.map((c) => (
+                    <div className="simple-row" key={c.id}>
+                      <div className="simple-left">
+                        <span className={`pos-side ${c.side.toLowerCase()}`}>{c.side === "BUY" ? "Buy" : "Sell"} {parseFloat(c.volume).toFixed(2)}</span>
+                        <span className="net-pos-detail mono">@ {fmt(parseFloat(c.openPrice), c.symbol.digits)}</span>
+                      </div>
+                      <div className="simple-right">
+                        <button className="modal-btn primary" style={{ padding: "4px 10px", fontSize: 12 }} disabled={closeByBusy} onClick={() => submitCloseBy(p.id, c.id)}>
+                          {closeByBusy ? "Closing…" : `Net ${Math.min(parseFloat(p.volume), parseFloat(c.volume)).toFixed(2)} lots`}
+                        </button>
+                      </div>
+                    </div>
+                  ))
+                )}
+                {closeByError ? <p className="margin-note" style={{ color: "var(--sell)" }}>{closeByError}</p> : null}
+              </div>
+            </div>
+          </div>
+        );
+      })() : null}
 
       {/* ---------- Funds modal ---------- */}
       {fundsModalOpen ? (
