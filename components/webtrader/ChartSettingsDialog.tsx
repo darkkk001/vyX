@@ -41,6 +41,17 @@ export default function ChartSettingsDialog({
     { key: "showOhlcBar", label: "OHLC info bar" },
   ];
 
+  const soundFields: { key: keyof ChartSettings; label: string }[] = [
+    { key: "soundOrderFilled", label: "Order filled" },
+    { key: "soundPositionClosed", label: "Position closed" },
+    { key: "soundSlHit", label: "Stop loss hit" },
+    { key: "soundTpHit", label: "Take profit hit" },
+    { key: "soundPendingTriggered", label: "Pending order triggered" },
+    { key: "soundRequoteReceived", label: "Requote received" },
+    { key: "soundAlertTriggered", label: "Price alert triggered" },
+    { key: "soundError", label: "Order error / reject" },
+  ];
+
   return (
     <div className="modal-overlay show" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="modal-wrap">
@@ -73,6 +84,25 @@ export default function ChartSettingsDialog({
               </label>
             </div>
           ))}
+
+          <div style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: 0.4, color: "var(--text-3)", margin: "14px 0 6px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <span>Sounds</span>
+            <label className="switch">
+              <input type="checkbox" checked={draft.soundsEnabled} onChange={(e) => set("soundsEnabled", e.target.checked)} />
+              <span className="switch-slider" />
+            </label>
+          </div>
+          <div style={{ opacity: draft.soundsEnabled ? 1 : 0.4, pointerEvents: draft.soundsEnabled ? "auto" : "none" }}>
+            {soundFields.map((f) => (
+              <div key={f.key} className="occ-toggle-row">
+                <span className="field-label">{f.label}</span>
+                <label className="switch">
+                  <input type="checkbox" checked={draft[f.key] as boolean} onChange={(e) => set(f.key, e.target.checked as ChartSettings[typeof f.key])} />
+                  <span className="switch-slider" />
+                </label>
+              </div>
+            ))}
+          </div>
 
           <div className="field" style={{ marginTop: 10 }}>
             <span className="field-label">Timezone</span>

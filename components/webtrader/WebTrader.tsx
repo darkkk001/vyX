@@ -36,6 +36,7 @@ import ChartCell from "./ChartCell";
 import SmartTradeManager from "./SmartTradeManager";
 import { computeOrderReferenceLines } from "@/lib/chart-lines";
 import { DEFAULT_CHART_SETTINGS, type ChartSettings } from "@/lib/chart-settings";
+import { playSound } from "@/lib/sounds";
 
 // Watchlist SPREAD column -- MT4/5's own "points" convention: a symbol's
 // point size is 10^-digits (its own smallest tradable price increment,
@@ -545,6 +546,13 @@ export default function WebTrader({
   // chart never renders unstyled before the GET resolves.
   const [chartSettings, setChartSettings] = useState<ChartSettings>(DEFAULT_CHART_SETTINGS);
   const [chartSettingsOpen, setChartSettingsOpen] = useState(false);
+  // Terminal notification sounds read this ref, not chartSettings state
+  // directly -- several of the callbacks below are memoized with a
+  // deliberately narrow dependency array (see their own comments), and
+  // adding chartSettings to those would redefine them on every settings
+  // change for no functional reason.
+  const chartSettingsRef = useRef(chartSettings);
+  useEffect(() => { chartSettingsRef.current = chartSettings; }, [chartSettings]);
 
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
   const [cpCurrent, setCpCurrent] = useState("");
@@ -618,6 +626,7 @@ export default function WebTrader({
   // one-click retry against the now-current price rather than making the
   // trader re-open the ticket and re-enter everything.
   const handleOrderError = useCallback((err: unknown, retry?: () => void) => {
+    playSound("error", chartSettingsRef.current);
     if (err instanceof ApiError && (err.message === "PRICE_STALE" || err.message === "SLIPPAGE_EXCEEDED")) {
       const reason = err.message === "PRICE_STALE" ? "Feed went stale — order not placed" : "Price moved — order not placed";
       pushToast(reason, false, retry);
@@ -665,7 +674,47 @@ export default function WebTrader({
       }
     }
   }, [onSessionExpired]);
-  const refreshPositions = useCallback(async () => setPositions(await tradeApi.positions().catch(() => [])), []);
+  // Terminal sounds need the live bid/ask at the moment a position
+  // disappears from the open list (see prevPositionsRef below) --
+  // refreshPositions is a stable ([]) callback, so it reads this ref
+  // rather than the market state directly to avoid going stale.
+  const marketRef = useRef(market);
+  useEffect(() => { marketRef.current = market; }, [market]);
+
+  // Position.status only ever has OPEN/CLOSED (no closeReason column --
+  // see prisma/schema.prisma's own comment), so "why did it close" has no
+  // source of truth to read. This keeps the last-known OPEN snapshot of
+  // every position (incl. slPrice/tpPrice) and, when one vanishes from a
+  // fresh fetch, compares the live price at that moment against those
+  // levels to guess SL/TP vs. a plain close -- a heuristic, not a real
+  // audit trail, but good enough for which sound to play.
+  const prevPositionsRef = useRef<Map<string, ApiPosition>>(new Map());
+  const positionsLoadedRef = useRef(false);
+  const refreshPositions = useCallback(async () => {
+    const fresh = await tradeApi.positions().catch(() => []);
+    if (positionsLoadedRef.current) {
+      const freshIds = new Set(fresh.map((p) => p.id));
+      for (const [id, prev] of prevPositionsRef.current) {
+        if (freshIds.has(id)) continue;
+        const digits = prev.symbol.digits;
+        const sl = prev.slPrice ? parseFloat(prev.slPrice) : null;
+        const tp = prev.tpPrice ? parseFloat(prev.tpPrice) : null;
+        const live = marketRef.current[prev.symbol.name];
+        const refPrice = live ? (prev.side === "BUY" ? live.bid : live.ask) : null;
+        const closeEpsilon = Math.pow(10, -digits) * 3; // a few points of tolerance
+        if (refPrice !== null && sl !== null && Math.abs(refPrice - sl) <= closeEpsilon) {
+          playSound("slHit", chartSettingsRef.current);
+        } else if (refPrice !== null && tp !== null && Math.abs(refPrice - tp) <= closeEpsilon) {
+          playSound("tpHit", chartSettingsRef.current);
+        } else {
+          playSound("positionClosed", chartSettingsRef.current);
+        }
+      }
+    }
+    prevPositionsRef.current = new Map(fresh.map((p) => [p.id, p]));
+    positionsLoadedRef.current = true;
+    setPositions(fresh);
+  }, []);
   // Real fix for the "30 enabled, only 10 shown" bug: replaces the
   // SYMBOL_DEFS bootstrap with the broker's actual enabled-symbol
   // universe and this account's real (server-persisted) watchlist order.
@@ -703,11 +752,34 @@ export default function WebTrader({
   // mutation just happened," which is exactly the signal both tabs need,
   // so this piggybacks allOrders onto the same calls rather than needing
   // its own call site added everywhere refreshOrders() already is.
+  // Terminal sounds: diffs each order's status against its last-known
+  // value to catch a FILLED/REJECTED transition that happened
+  // asynchronously (a pending LIMIT/STOP triggering, a dealer accepting
+  // or rejecting from the dealing queue) -- a MARKET order this same tab
+  // just placed also flows through here on the next poll, which is fine,
+  // real platforms confirm every fill with a sound regardless of who
+  // initiated it. Distinguishes "order filled" (MARKET) from "pending
+  // order triggered" (LIMIT/STOP) since they're separate settings.
+  const prevOrderStatusRef = useRef<Map<string, string>>(new Map());
+  const ordersLoadedRef = useRef(false);
   const refreshOrders = useCallback(async () => {
     const [pending, all] = await Promise.all([
       tradeApi.orders().catch(() => []),
       tradeApi.allOrders().catch(() => []),
     ]);
+    if (ordersLoadedRef.current) {
+      for (const order of all) {
+        const prevStatus = prevOrderStatusRef.current.get(order.id);
+        if (prevStatus === order.status) continue;
+        if (order.status === "FILLED" && prevStatus !== undefined) {
+          playSound(order.type === "MARKET" ? "orderFilled" : "pendingTriggered", chartSettingsRef.current);
+        } else if (order.status === "REJECTED" && prevStatus !== undefined) {
+          playSound("error", chartSettingsRef.current);
+        }
+      }
+    }
+    prevOrderStatusRef.current = new Map(all.map((o) => [o.id, o.status]));
+    ordersLoadedRef.current = true;
     setPendingOrders(pending);
     setAllOrders(all);
   }, []);
@@ -1622,6 +1694,7 @@ export default function WebTrader({
     const requoted = pendingOrders.find((o) => o.status === "REQUOTED" && !requotedPromptedRef.current.has(o.id));
     if (!requoted) return;
     requotedPromptedRef.current.add(requoted.id);
+    playSound("requoteReceived", chartSettingsRef.current);
     setGenericModal({
       title: "Dealer requoted your order",
       message: `${requoted.side} ${requoted.volume} ${requoted.symbol.name} — dealer offered ${
@@ -1705,6 +1778,11 @@ export default function WebTrader({
         slPrice: sl, tpPrice: tp, idempotencyKey: crypto.randomUUID(),
       });
       if (result.position) {
+        // refreshOrders() isn't called on this path (no pending order was
+        // created to reflect), so its own fill-detection diff never sees
+        // this order -- play the sound directly since a fill is exactly
+        // what just happened.
+        playSound("orderFilled", chartSettingsRef.current);
         pushToast(`${side === "BUY" ? "Bought" : "Sold"} ${volume} lots of ${activeSymbol} @ ${fmt(refPrice, m.def.digits)}`);
         await Promise.all([refreshPositions(), refreshAccount()]);
       } else {
@@ -1752,6 +1830,7 @@ export default function WebTrader({
         price: ocPrice, idempotencyKey: crypto.randomUUID(),
       });
       if (result.position) {
+        playSound("orderFilled", chartSettingsRef.current);
         pushToast(`${side === "BUY" ? "Bought" : "Sold"} ${volume} lots of ${symbolName} @ ${fmt(ocPrice, mm.def.digits)} — one-click`);
         await Promise.all([refreshPositions(), refreshAccount()]);
       } else {
@@ -1774,6 +1853,8 @@ export default function WebTrader({
       const res = await tradeApi.closePosition(id, price);
       const pnl = parseFloat((res as { transaction: { amount: string } }).transaction.amount);
       pushToast(`Closed ${p.symbol.name} — ${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)} USD`);
+      // refreshPositions()'s own diff (see that callback) is what plays
+      // the close sound -- not duplicated here, to avoid firing twice.
       await Promise.all([refreshPositions(), refreshHistory(), refreshAccount()]);
     } catch (err) {
       pushToast(err instanceof Error ? err.message : "failed to close position");
@@ -2049,6 +2130,7 @@ export default function WebTrader({
       const result = await tradeApi.placeOrder({ symbol: quickOrder.symbol, side, type: "MARKET", volume: vol, price: refPrice, slPrice: sl, tpPrice: tp, idempotencyKey: crypto.randomUUID() });
       setQuickOrder(null);
       if (result.position) {
+        playSound("orderFilled", chartSettingsRef.current);
         pushToast(`${side === "BUY" ? "Bought" : "Sold"} ${vol} lots of ${quickOrder.symbol} @ ${fmt(refPrice, mm.def.digits)}`);
         await Promise.all([refreshPositions(), refreshAccount()]);
       } else {

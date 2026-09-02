@@ -17,6 +17,21 @@ export type ChartSettings = {
   // the chart interaction pack spec ("timezone display (UTC default --
   // groundwork for the TZ selector)").
   timezone: "UTC";
+  // MT5-style terminal notification sounds (lib/sounds.ts) -- one master
+  // switch plus a toggle per event so a trader can e.g. keep fills/SL/TP
+  // audible but silence requotes. soundsEnabled gates all of them; a
+  // false per-event toggle silences that event even if soundsEnabled is
+  // true. soundError defaults off (a rejected order already gets a toast
+  // -- the sound is opt-in noise, not a default alarm).
+  soundsEnabled: boolean;
+  soundOrderFilled: boolean;
+  soundPositionClosed: boolean;
+  soundSlHit: boolean;
+  soundTpHit: boolean;
+  soundPendingTriggered: boolean;
+  soundRequoteReceived: boolean;
+  soundAlertTriggered: boolean;
+  soundError: boolean;
 };
 
 export const DEFAULT_CHART_SETTINGS: ChartSettings = {
@@ -31,6 +46,15 @@ export const DEFAULT_CHART_SETTINGS: ChartSettings = {
   showSessionHighLow: false,
   showOhlcBar: true,
   timezone: "UTC",
+  soundsEnabled: true,
+  soundOrderFilled: true,
+  soundPositionClosed: true,
+  soundSlHit: true,
+  soundTpHit: true,
+  soundPendingTriggered: true,
+  soundRequoteReceived: true,
+  soundAlertTriggered: true,
+  soundError: false,
 };
 
 // Merges a possibly-partial/stale persisted blob over the defaults so an
