@@ -1,4 +1,4 @@
-import type { ApiPosition, ApiOrder } from "@/lib/trade-api";
+import type { ApiPosition, ApiOrder, ApiAlert } from "@/lib/trade-api";
 import type { ChartLine } from "@/components/webtrader/KLineChartPanel";
 
 // A pending order's own SL/TP (not its entry price) -- used alongside the
@@ -22,15 +22,38 @@ export function computeOrderReferenceLines(symbol: string, pendingOrders: ApiOrd
   return lines;
 }
 
+// Phase 1 trust pack §3 -- a distinct color from every position/order
+// line (green/red buy/sell) so an alert level reads as "watching", not
+// "an open trade".
+const ALERT_LINE_COLOR = "#F0B90B";
+
+// The focused/single chart already gets its position lines from the
+// richer interactive vyxPositionLine/vyxEditablePriceLine overlays (see
+// computeOrderReferenceLines's own comment) -- this is just the alert
+// levels on top of that, since alerts have no interactive overlay of
+// their own (no drag/close affordance, just a reference level).
+export function computeAlertLines(symbol: string, alerts: ApiAlert[]): ChartLine[] {
+  return alerts
+    .filter((a) => a.symbol === symbol && a.status === "ACTIVE")
+    .map((a) => ({ id: `alert-${a.id}`, price: parseFloat(a.price), color: ALERT_LINE_COLOR, dashed: true }));
+}
+
 // The original plain-line behavior (position open/SL/TP + pending order
-// entry/SL/TP, all as simple locked reference lines) -- kept as-is for the
-// multi-chart grid cells (ChartCell.tsx), which don't wire up the chart
-// interaction pack's drag/close interactivity. Losing the reference lines
-// entirely in the grid view (by only ever calling
-// computeOrderReferenceLines there) would be a real visual regression, not
-// a simplification.
-export function computeAllChartLines(symbol: string, positions: ApiPosition[], pendingOrders: ApiOrder[]): ChartLine[] {
-  const lines: ChartLine[] = [];
+// entry/SL/TP + alert levels, all as simple locked reference lines) --
+// kept as-is for the multi-chart grid cells (ChartCell.tsx), which don't
+// wire up the chart interaction pack's drag/close interactivity. Losing
+// the reference lines entirely in the grid view (by only ever calling
+// computeOrderReferenceLines/computeAlertLines there) would be a real
+// visual regression, not a simplification. `alerts` defaults to [] so
+// every call site written before alerts existed keeps compiling
+// unchanged. Renamed from computeAllChartLines when alerts were added.
+export function computeChartLines(
+  symbol: string,
+  positions: ApiPosition[],
+  pendingOrders: ApiOrder[],
+  alerts: ApiAlert[] = []
+): ChartLine[] {
+  const lines: ChartLine[] = [...computeAlertLines(symbol, alerts)];
   positions
     .filter((p) => p.symbol.name === symbol)
     .forEach((p) => {

@@ -20,7 +20,7 @@ import {
   type SymbolDef,
   type SymbolCategory,
 } from "@/lib/market-simulator";
-import { tradeApi, serverNow, ApiError, type AccountInfo, type ApiPosition, type ApiOrder, type ApiFundsRequest, type ApiKycStatus, type ApiLinkedAccount, type ApiSession } from "@/lib/trade-api";
+import { tradeApi, serverNow, ApiError, type AccountInfo, type ApiPosition, type ApiOrder, type ApiFundsRequest, type ApiKycStatus, type ApiLinkedAccount, type ApiSession, type ApiAlert } from "@/lib/trade-api";
 import AddSymbolDialog from "./AddSymbolDialog";
 import ChartSettingsDialog from "./ChartSettingsDialog";
 import KLineChartPanel, {
@@ -34,7 +34,7 @@ import SessionClock from "./SessionClock";
 import NewsPanel from "./NewsPanel";
 import ChartCell from "./ChartCell";
 import SmartTradeManager from "./SmartTradeManager";
-import { computeOrderReferenceLines } from "@/lib/chart-lines";
+import { computeOrderReferenceLines, computeAlertLines } from "@/lib/chart-lines";
 import { DEFAULT_CHART_SETTINGS, type ChartSettings } from "@/lib/chart-settings";
 import { playSound } from "@/lib/sounds";
 import { filterEventsForSymbol, isSameUtcDay, nextHighImpactEventWithin, type CalendarEvent } from "@/lib/economic-calendar";
@@ -68,11 +68,44 @@ type LogEntry = { id: number; time: string; message: string };
 type OrderMode = "market" | "pending";
 type PendingType = "buy_limit" | "sell_limit" | "buy_stop" | "sell_stop";
 type Toast = { id: number; message: string; retry?: () => void };
-type Alert = { id: number; symbol: string; condition: "above" | "below"; price: number; triggered: boolean; time?: string };
 
 let idCounter = 1;
 function nextId() {
   return idCounter++;
+}
+
+// Phase 1 trust pack §3 -- "toast + sound on trigger". Synthesized with
+// the Web Audio API (two quick tones) rather than an audio file: no
+// asset to ship/bundle, and WebView2 (the desktop shell's own webview)
+// supports this the same as a real browser. One-shot AudioContext per
+// chime rather than a shared one kept alive for the component's whole
+// lifetime -- alerts fire rarely, so there's no meaningful cost to
+// creating and closing one each time, and it sidesteps ever holding a
+// suspended context across a long idle period.
+function playAlertChime() {
+  try {
+    const AudioContextCtor = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioContextCtor) return;
+    const ctx = new AudioContextCtor();
+    const now = ctx.currentTime;
+    [880, 1174.66].forEach((freq, i) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.value = freq;
+      const start = now + i * 0.12;
+      gain.gain.setValueAtTime(0, start);
+      gain.gain.linearRampToValueAtTime(0.2, start + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.001, start + 0.18);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(start);
+      osc.stop(start + 0.2);
+    });
+    setTimeout(() => ctx.close().catch(() => {}), 500);
+  } catch {
+    // Autoplay policy / no audio device / unsupported -- the toast alone
+    // already conveys the trigger, so a silent failure here is fine.
+  }
 }
 
 function isValidSlTpForSide(side: "BUY" | "SELL", sl: number | null, tp: number | null, currentPrice: number): string | null {
@@ -411,8 +444,12 @@ export default function WebTrader({
     setHistTo(today.toISOString().slice(0, 10));
   }
 
-  const [alerts, setAlerts] = useState<Alert[]>([]);
-  const [alertHistory, setAlertHistory] = useState<Alert[]>([]);
+  // Phase 1 trust pack §3 -- real, server-evaluated alerts (see
+  // ApiAlert/PriceAlert's own comments), replacing the old client-side-
+  // only mock (a plain in-memory array, gone on reload, checked only by
+  // this tab's own local price feed) entirely.
+  const [alerts, setAlerts] = useState<ApiAlert[]>([]);
+  const [alertHistory, setAlertHistory] = useState<ApiAlert[]>([]);
   const [alertsModalOpen, setAlertsModalOpen] = useState(false);
   const [alertsTab, setAlertsTab] = useState<"active" | "history">("active");
 
@@ -831,6 +868,19 @@ export default function WebTrader({
     setPendingOrders(pending);
     setAllOrders(all);
   }, []);
+  // Phase 1 trust pack §3 -- moved above the trading-events WebSocket
+  // effect (which references it in a dependency array) rather than left
+  // in the "---------- alerts ----------" section further down; a
+  // useCallback referenced by an earlier hook has to be declared before
+  // it, same as any other JS binding.
+  const refreshAlerts = useCallback(async () => {
+    const [active, all] = await Promise.all([
+      tradeApi.alerts().catch(() => []),
+      tradeApi.allAlerts().catch(() => []),
+    ]);
+    setAlerts(active);
+    setAlertHistory(all.filter((a) => a.status !== "ACTIVE"));
+  }, []);
 
   // A dealer requoted one of this account's orders (see
   // app/api/manage/dealing-queue/[id]/route.ts) -- respond with accept
@@ -1007,6 +1057,7 @@ export default function WebTrader({
           refreshPositions(),
           refreshOrders(),
           refreshSymbolsAndWatchlist(),
+          refreshAlerts(),
           tradeApi.chartSettings().then((res) => setChartSettings(res.settings)).catch(() => {}),
         ]);
       } catch (err) {
@@ -1362,21 +1413,44 @@ export default function WebTrader({
   // on this account, are the cases this actually shaves the up-to-2s poll
   // delay off of -- this tab's own actions already get their result
   // synchronously in the HTTP response, so this is a genuine latency win
-  // only for changes another actor made. Doesn't distinguish event `type`
-  // -- refreshing all three is cheap and avoids this effect needing to
-  // track every event shape the backend might ever add. Same silent-
-  // failure/2s-poll-fallback rule as the price-tick socket above.
+  // only for changes another actor made. Same silent-failure/2s-poll-
+  // fallback rule as the price-tick socket above.
+  //
+  // Phase 1 trust pack §3 -- one event type IS now distinguished:
+  // AlertTriggered (engine/server's own publish, forwarded here via
+  // services/api-gateway's alert.> subscription) needs its own toast +
+  // sound + alerts-list refresh instead of the generic order/position/
+  // account refresh every other event type still gets.
   useEffect(() => {
+    function handleEvent(raw: string) {
+      let parsed: { type?: string; symbol?: string; triggered_price?: string } | null = null;
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        // Not JSON, or empty -- fall through to the generic refresh below
+        // rather than dropping the event entirely (every non-alert event
+        // this stream forwards is still just a "something changed"
+        // signal, not something this client parses field-by-field).
+      }
+
+      if (parsed?.type === "AlertTriggered") {
+        pushToast(`Alert triggered — ${parsed.symbol} reached ${parsed.triggered_price ?? ""}`, true);
+        playAlertChime();
+        refreshAlerts();
+        return;
+      }
+
+      refreshOrders();
+      refreshPositions();
+      refreshAccount();
+    }
+
     // Desktop: same native-relay reasoning as the price-tick effect
     // above -- startLiveStreams isn't called again here, it starts both
     // streams together, so calling it from that effect alone is enough
     // (both effects always mount together, this component owning both).
     if (typeof window !== "undefined" && window.vyxDesktop?.onTradingEvent) {
-      return window.vyxDesktop.onTradingEvent(() => {
-        refreshOrders();
-        refreshPositions();
-        refreshAccount();
-      });
+      return window.vyxDesktop.onTradingEvent(handleEvent);
     }
 
     let cancelled = false;
@@ -1387,11 +1461,7 @@ export default function WebTrader({
       if (cancelled) return;
       const base = process.env.NEXT_PUBLIC_GATEWAY_WS_URL ?? "ws://127.0.0.1:8080";
       socket = new WebSocket(`${base}/v1/trading/stream`);
-      socket.onmessage = () => {
-        refreshOrders();
-        refreshPositions();
-        refreshAccount();
-      };
+      socket.onmessage = (event) => handleEvent(typeof event.data === "string" ? event.data : "");
       socket.onclose = () => {
         if (!cancelled) reconnectTimer = setTimeout(connect, 3000);
       };
@@ -1404,7 +1474,7 @@ export default function WebTrader({
       if (reconnectTimer) clearTimeout(reconnectTimer);
       socket?.close();
     };
-  }, [refreshOrders, refreshPositions, refreshAccount]);
+  }, [refreshOrders, refreshPositions, refreshAccount, refreshAlerts, pushToast]);
 
   // fix/realtime-sync §7 -- F5/Ctrl+R (Cmd+R on Mac) refetches this tab's
   // own data instead of a full page reload, which used to throw away
@@ -1664,26 +1734,12 @@ export default function WebTrader({
     setPendingMarketSide(null);
   }
 
-  // ---------- auto-close / auto-fill / alerts / trailing stops ----------
+  // ---------- auto-close / auto-fill / trailing stops ----------
+  // Alert evaluation moved server-side (Phase 1 trust pack §3, see
+  // engine/market-data/src/alerts.rs) -- the AlertTriggered handler on
+  // the trading-events WebSocket below is what reacts to a real trigger
+  // now, not this per-render client-side check against the local feed.
   useEffect(() => {
-    setAlerts((prev) => {
-      let changed = false;
-      const next = prev.map((a) => {
-        if (a.triggered) return a;
-        const m = market[a.symbol];
-        if (!m || !m.live) return a;
-        const hit = a.condition === "above" ? m.bid >= a.price : m.bid <= a.price;
-        if (hit) {
-          changed = true;
-          pushToast(`Alert triggered — ${a.symbol} reached ${fmt(a.price, m.def.digits)}`, true);
-          setAlertHistory((h) => [{ ...a, triggered: true, time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) }, ...h]);
-          return { ...a, triggered: true };
-        }
-        return a;
-      });
-      return changed ? next.filter((a) => !a.triggered) : prev;
-    });
-
     positions.forEach((p) => {
       if (closingIds.current.has(p.id)) return;
       const m = market[p.symbol.name];
@@ -2269,21 +2325,34 @@ export default function WebTrader({
   // "+ New alert") keeps defaulting to the live bid exactly as before.
   function openPriceAlert(symbolName: string, presetPrice?: number) {
     const mm = market[symbolName];
-    askPrompt(`Alert me when ${symbolName} reaches:`, fmt(presetPrice ?? mm.bid, mm.def.digits), (priceStr) => {
+    askPrompt(`Alert me when ${symbolName} reaches:`, fmt(presetPrice ?? mm.bid, mm.def.digits), async (priceStr) => {
       const price = parseFloat(priceStr);
       if (isNaN(price)) { pushToast("Enter a valid price"); return; }
-      // Always hardcoded "above" regardless of where the target price sat
-      // relative to the market -- an alert for a price already below the
-      // current bid got condition "above" (triggers on bid >= price),
-      // which was already true the instant it was created, firing
-      // immediately instead of waiting for the price to actually drop
-      // there. Infer the direction from where the price is right now,
-      // same "below market" logic the chart's own right-click menu
-      // already uses to label a price (see chartContextMenu below).
-      const condition: Alert["condition"] = price >= mm.bid ? "above" : "below";
-      setAlerts((prev) => [...prev, { id: nextId(), symbol: symbolName, condition, price, triggered: false }]);
-      pushToast(`Alert set — ${symbolName} @ ${fmt(price, mm.def.digits)}`);
+      // Infer the direction from where the price is right now, relative
+      // to the current bid -- same "below market" logic the chart's own
+      // right-click menu already uses to label a price (see
+      // chartContextMenu below). Always creating an ABOVE alert
+      // regardless of where the target sat would trigger immediately for
+      // a price already below the current bid (ABOVE fires on
+      // current >= target, already true the instant it's created).
+      const condition: "ABOVE" | "BELOW" = price >= mm.bid ? "ABOVE" : "BELOW";
+      try {
+        await tradeApi.createAlert({ symbol: symbolName, condition, price });
+        pushToast(`Alert set — ${symbolName} @ ${fmt(price, mm.def.digits)}`);
+        await refreshAlerts();
+      } catch (err) {
+        pushToast(err instanceof Error ? err.message : "failed to set alert");
+      }
     });
+  }
+
+  async function cancelPriceAlert(id: string) {
+    try {
+      await tradeApi.cancelAlert(id);
+      await refreshAlerts();
+    } catch (err) {
+      pushToast(err instanceof Error ? err.message : "failed to cancel alert");
+    }
   }
 
   // ---------- watchlist add/hide/reset (server-persisted) ----------
@@ -2441,8 +2510,8 @@ export default function WebTrader({
   const candles: Candle[] = m.candles[currentTf];
 
   const chartLines: ChartLine[] = useMemo(
-    () => computeOrderReferenceLines(activeSymbol, pendingOrders),
-    [pendingOrders, activeSymbol]
+    () => [...computeOrderReferenceLines(activeSymbol, pendingOrders), ...computeAlertLines(activeSymbol, alerts)],
+    [pendingOrders, activeSymbol, alerts]
   );
 
   // chart interaction pack -- restyled position lines. Depends on `market`
@@ -4275,8 +4344,11 @@ export default function WebTrader({
                 {alertsTab === "active" ? (
                   alerts.length === 0 ? <div className="empty-state">No alerts — get notified instantly about price movements</div> : alerts.map((a) => (
                     <div className="simple-row" key={a.id}>
-                      <div className="simple-left"><span className="pos-symbol">{a.symbol}</span><span className="net-pos-detail mono">@ {fmt(a.price, market[a.symbol].def.digits)}</span></div>
-                      <div className="simple-right"><button className="icon-btn" onClick={() => setAlerts((prev) => prev.filter((x) => x.id !== a.id))}>
+                      <div className="simple-left">
+                        <span className="pos-symbol">{a.symbol}</span>
+                        <span className="net-pos-detail mono">{a.condition.toLowerCase()} {fmt(parseFloat(a.price), market[a.symbol]?.def.digits ?? 2)}</span>
+                      </div>
+                      <div className="simple-right"><button className="icon-btn" onClick={() => cancelPriceAlert(a.id)}>
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
                       </button></div>
                     </div>
@@ -4284,8 +4356,13 @@ export default function WebTrader({
                 ) : (
                   alertHistory.length === 0 ? <div className="empty-state">No triggered alerts yet</div> : alertHistory.slice(0, 30).map((h) => (
                     <div className="simple-row" key={h.id}>
-                      <div className="simple-left"><span className="pos-symbol">{h.symbol}</span><span className="net-pos-detail mono">@ {fmt(h.price, market[h.symbol].def.digits)}</span></div>
-                      <div className="simple-right"><span className="net-pos-detail">{h.time}</span></div>
+                      <div className="simple-left">
+                        <span className="pos-symbol">{h.symbol}</span>
+                        <span className="net-pos-detail mono">@ {fmt(parseFloat(h.triggeredPrice ?? h.price), market[h.symbol]?.def.digits ?? 2)}</span>
+                      </div>
+                      <div className="simple-right">
+                        <span className="net-pos-detail">{h.status === "TRIGGERED" ? "Triggered" : h.status === "CANCELLED" ? "Cancelled" : "Expired"}</span>
+                      </div>
                     </div>
                   ))
                 )}

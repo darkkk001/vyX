@@ -86,3 +86,53 @@ export async function publishTradingEvent(
     console.warn("failed to publish trading event to gateway", type, err);
   }
 }
+
+// Phase 1 trust pack §3 -- hot-reloads engine/server's in-memory
+// AlertCache (engine/market-data/src/alerts.rs) the moment
+// app/api/trade/alerts creates or cancels a PriceAlert, so a trader's new
+// alert is checked against the very next tick instead of waiting for the
+// engine's own restart-only boot load. Per-broker subject
+// (`cfg.alerts.{brokerId}`, not a shared `cfg.alerts.*` topic every
+// engine process would need to filter itself) even though today there's
+// only one engine process subscribing to the wildcard -- keeps this
+// symmetric with every other broker-scoped publish in this file rather
+// than being the one exception.
+export type AlertConfigMessage =
+  | {
+      action: "create";
+      id: string;
+      account_id: string;
+      broker_id: string;
+      symbol: string;
+      condition: "ABOVE" | "BELOW" | "CROSSES";
+      price: string;
+    }
+  | { action: "cancel"; id: string; broker_id: string };
+
+// Same publish-over-HTTPS-to-the-gateway approach as publishTradingEvent
+// above (this file no longer holds a direct NATS connection at all --
+// see this file's own top-of-file comment on why), just with a dynamic
+// per-broker subject instead of a fixed SUBJECTS[type] lookup --
+// /internal/events accepts any subject string, not just the trading-
+// event ones.
+export async function publishAlertConfig(message: AlertConfigMessage): Promise<void> {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 2000);
+    try {
+      const res = await fetch(`${GATEWAY_URL}/internal/events`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-internal-secret": INTERNAL_SERVICE_SECRET },
+        body: JSON.stringify({ subject: `cfg.alerts.${message.broker_id}`, payload: message }),
+        signal: controller.signal,
+      });
+      if (!res.ok) {
+        console.warn("publishAlertConfig: gateway rejected event", message.action, res.status);
+      }
+    } finally {
+      clearTimeout(timeout);
+    }
+  } catch (err) {
+    console.warn("failed to publish alert config to gateway", message.action, err);
+  }
+}

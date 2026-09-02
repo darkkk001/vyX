@@ -5,7 +5,14 @@
 //! ../../docs/execution.md's Phase 5 note that the consumer shape doesn't
 //! change when the feed source does.
 
-use crate::{cache::TickCache, candle_updates_for_tick, db, gap_fill::GapFillTracker, stats::FeedStats, symbol_activity::SymbolActivity};
+use crate::{
+    alerts::{AlertCache, TriggeredAlert},
+    cache::TickCache,
+    candle_updates_for_tick, db,
+    gap_fill::GapFillTracker,
+    stats::FeedStats,
+    symbol_activity::SymbolActivity,
+};
 use chrono::{DateTime, Utc};
 use protocol::Tick;
 use sqlx::PgPool;
@@ -87,19 +94,30 @@ fn resolve_tick_time(tick: &Tick, fallback: DateTime<Utc>) -> DateTime<Utc> {
     }
 }
 
+/// Phase 1 trust pack §3 -- `alert_cache` is checked in-memory only
+/// (AlertCache::check_tick does no I/O), same "no Postgres on this path"
+/// rule as everything else here; this function's own doc comment above.
+/// Triggered alerts are returned rather than persisted here -- the
+/// caller (engine/server's ingest_price_feed) owns the DB write + NATS
+/// publish for whichever few actually fired, keeping this hot path's own
+/// contract intact for the overwhelming common case (nothing triggers on
+/// a given tick).
 pub async fn ingest_ticks(
     nats: &async_nats::Client,
     cache: &TickCache,
     stats: &Arc<FeedStats>,
     symbol_activity: &SymbolActivity,
+    alert_cache: &AlertCache,
     ticks: &[Tick],
-) -> Result<(), IngestError> {
+) -> Result<Vec<TriggeredAlert>, IngestError> {
     let now = Utc::now();
     let now_ms = now.timestamp_millis();
+    let mut triggered = Vec::new();
 
     for tick in ticks {
         cache.set(tick, resolve_tick_time(tick, now));
         symbol_activity.record(&tick.symbol, now_ms);
+        triggered.extend(alert_cache.check_tick(&tick.symbol, tick.bid));
         if let (Some(offset_ms), Some(rtt_ms)) = (tick.clock_offset_ms, tick.rtt_ms) {
             stats.record_clock_info(offset_ms, rtt_ms);
         }
@@ -121,7 +139,7 @@ pub async fn ingest_ticks(
         }
     }
 
-    Ok(())
+    Ok(triggered)
 }
 
 /// Periodically flushes the in-memory `TickCache` to Postgres — LivePrice
