@@ -185,6 +185,14 @@ export default function PositionsManager() {
       count: number;
       buyVolume: number;
       sellVolume: number;
+      // Volume-weighted notional (price * volume) per side, kept separate
+      // from a single blended sum -- a dealer judging hedge risk on a
+      // mixed book needs "what did the net-long/net-short side actually
+      // pay", not a side-blind average across buys and sells entered at
+      // completely different price clusters, which would produce a
+      // number that means nothing.
+      buyNotional: number;
+      sellNotional: number;
       currentPrice: string | null;
       floatingPnl: number;
     };
@@ -196,26 +204,46 @@ export default function PositionsManager() {
         count: 0,
         buyVolume: 0,
         sellVolume: 0,
+        buyNotional: 0,
+        sellNotional: 0,
         currentPrice: p.currentPrice,
         floatingPnl: 0,
       };
       entry.count += 1;
       const volume = Number(p.volume);
-      if (p.side === "BUY") entry.buyVolume += volume;
-      else entry.sellVolume += volume;
+      const openPrice = Number(p.openPrice);
+      if (p.side === "BUY") {
+        entry.buyVolume += volume;
+        entry.buyNotional += volume * openPrice;
+      } else {
+        entry.sellVolume += volume;
+        entry.sellNotional += volume * openPrice;
+      }
       if (p.floatingPnl != null) entry.floatingPnl += Number(p.floatingPnl);
       bySymbol.set(p.symbolName, entry);
     }
-    const rows = [...bySymbol.values()].map((e) => ({
-      symbol: e.symbol,
-      count: e.count,
-      buyVolume: e.buyVolume.toFixed(2),
-      sellVolume: e.sellVolume.toFixed(2),
-      netExposure: (e.buyVolume - e.sellVolume).toFixed(2),
-      netExposureNum: e.buyVolume - e.sellVolume,
-      currentPrice: e.currentPrice,
-      floatingPnl: e.floatingPnl,
-    }));
+    const rows = [...bySymbol.values()].map((e) => {
+      const netExposureNum = e.buyVolume - e.sellVolume;
+      const buyAvg = e.buyVolume > 0 ? e.buyNotional / e.buyVolume : null;
+      const sellAvg = e.sellVolume > 0 ? e.sellNotional / e.sellVolume : null;
+      // Net-side-aware: the average entry price of whichever side is
+      // actually driving the net exposure a dealer would need to hedge --
+      // a flat book (net exposure exactly 0) has no single "net side", so
+      // there's nothing meaningful to show.
+      const netAvgPrice = netExposureNum > 0 ? buyAvg : netExposureNum < 0 ? sellAvg : null;
+      return {
+        symbol: e.symbol,
+        count: e.count,
+        digits: e.digits,
+        buyVolume: e.buyVolume.toFixed(2),
+        sellVolume: e.sellVolume.toFixed(2),
+        netExposure: netExposureNum.toFixed(2),
+        netExposureNum,
+        netAvgPrice,
+        currentPrice: e.currentPrice,
+        floatingPnl: e.floatingPnl,
+      };
+    });
     if (sortMode === "exposure") {
       rows.sort((a, b) => Math.abs(b.netExposureNum) - Math.abs(a.netExposureNum));
     } else if (sortMode === "risk") {
@@ -561,12 +589,15 @@ export default function PositionsManager() {
             <TableHeaderCell align="right">Buy volume</TableHeaderCell>
             <TableHeaderCell align="right">Sell volume</TableHeaderCell>
             <TableHeaderCell align="right">Net exposure</TableHeaderCell>
+            <TableHeaderCell align="right" title="Volume-weighted average open price of the side driving net exposure (net-side-aware VWAP) -- helps judge hedge levels.">
+              Avg open price (net)
+            </TableHeaderCell>
             <TableHeaderCell align="right">Client floating P&L</TableHeaderCell>
             <TableHeaderCell align="right">Current price</TableHeaderCell>
           </TableHead>
           <TableBody>
             {exposureRows.length === 0 ? (
-              <TableEmptyState colSpan={7}>No open positions match the current filters.</TableEmptyState>
+              <TableEmptyState colSpan={8}>No open positions match the current filters.</TableEmptyState>
             ) : (
               exposureRows.map((e) => (
                 <TableRow key={e.symbol}>
@@ -585,6 +616,9 @@ export default function PositionsManager() {
                   >
                     {e.netExposureNum > 0 ? "+" : ""}
                     {e.netExposure}
+                  </TableCell>
+                  <TableCell align="right" mono>
+                    {e.netAvgPrice != null ? e.netAvgPrice.toFixed(e.digits) : "—"}
                   </TableCell>
                   <TableCell align="right" mono className={e.floatingPnl >= 0 ? "text-[var(--buy)]" : "text-[var(--sell)]"}>
                     {e.floatingPnl.toFixed(2)}
