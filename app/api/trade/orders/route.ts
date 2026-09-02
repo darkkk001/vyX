@@ -297,7 +297,13 @@ async function handlePlaceOrder(request: NextRequest) {
               volume: volume.toString(),
               remaining_volume: "0",
             });
-            return NextResponse.json({ order: { ...order, status: "FILLED", filledPrice: fillPrice }, positionId: position.id }, { status: 201 });
+            // `position`, not `positionId` -- must match the direct-fill
+            // branch's shape below (and lib/trade-api.ts's placeOrder type)
+            // exactly. This mismatch previously meant a Smart-Dealer
+            // auto-accepted order (a real, immediate fill) showed the
+            // client its "awaiting dealer approval" toast instead of the
+            // fill confirmation, and skipped the orderFilled sound.
+            return NextResponse.json({ order: { ...order, status: "FILLED", filledPrice: fillPrice }, position: { id: position.id } }, { status: 201 });
           }
         }
 
