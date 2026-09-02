@@ -10,6 +10,7 @@
 //! build time in every environment this crate builds in.
 
 use crate::{CandleUpdate, Timeframe};
+use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use sqlx::PgPool;
 
@@ -45,24 +46,35 @@ pub async fn upsert_live_prices_batch(
     symbols: &[String],
     bids: &[Decimal],
     asks: &[Decimal],
+    // The REAL last-tick time (ingest::resolve_tick_time) -- separate from
+    // "updatedAt" (this row's own last-write time, still set to now()
+    // below, kept purely as ordinary row-bookkeeping) specifically so a
+    // staleness check has something that doesn't advance just because
+    // this row got rewritten. See LivePrice.tickAt's own schema comment
+    // and lib/risk.ts's checkPriceFreshness for why "updatedAt" alone
+    // couldn't tell a live price apart from a frozen one being
+    // heartbeat-resent.
+    tick_ats: &[DateTime<Utc>],
 ) -> Result<(), sqlx::Error> {
     if symbols.is_empty() {
         return Ok(());
     }
     sqlx::query(
         r#"
-        INSERT INTO "LivePrice" (symbol, bid, ask, "updatedAt")
-        SELECT symbol, bid, ask, now()
-        FROM UNNEST($1::text[], $2::numeric[], $3::numeric[]) AS t(symbol, bid, ask)
+        INSERT INTO "LivePrice" (symbol, bid, ask, "updatedAt", "tickAt")
+        SELECT symbol, bid, ask, now(), tick_at
+        FROM UNNEST($1::text[], $2::numeric[], $3::numeric[], $4::timestamptz[]) AS t(symbol, bid, ask, tick_at)
         ON CONFLICT (symbol) DO UPDATE SET
             bid = EXCLUDED.bid,
             ask = EXCLUDED.ask,
-            "updatedAt" = now()
+            "updatedAt" = now(),
+            "tickAt" = EXCLUDED."tickAt"
         "#,
     )
     .bind(symbols)
     .bind(bids)
     .bind(asks)
+    .bind(tick_ats)
     .execute(&mut **tx)
     .await?;
     Ok(())
@@ -192,15 +204,20 @@ pub async fn upsert_candles_authoritative_batch(
 /// anything was wrong. 15s matches the staleness threshold already
 /// established for the chart (`components/webtrader/WebTrader.tsx`'s
 /// `now - updatedAt > 15000`) — one convention, not two independently
-/// invented numbers. Filtering in SQL against Postgres's own `now()`
-/// (the same clock `upsert_live_price` writes `updatedAt` from) avoids
+/// invented numbers. Filters on `"tickAt"`, not `"updatedAt"` -- see that
+/// column's own schema comment: `"updatedAt"` advances on every write
+/// regardless of whether the underlying price actually changed (an MT5
+/// EA heartbeat resends an unchanged/frozen price every 5s), which made
+/// this exact check blind to a genuinely stale-but-still-"updated" feed.
+/// Filtering in SQL against Postgres's own `now()` (the same clock
+/// `upsert_live_prices_batch` writes both timestamp columns from) avoids
 /// any client-clock-skew concern a Rust-side comparison would have.
 pub async fn get_live_price(
     pool: &PgPool,
     symbol: &str,
 ) -> Result<Option<(Decimal, Decimal)>, sqlx::Error> {
     let row: Option<(Decimal, Decimal)> = sqlx::query_as(
-        r#"SELECT bid, ask FROM "LivePrice" WHERE symbol = $1 AND "updatedAt" > now() - interval '15 seconds'"#,
+        r#"SELECT bid, ask FROM "LivePrice" WHERE symbol = $1 AND "tickAt" > now() - interval '15 seconds'"#,
     )
     .bind(symbol)
     .fetch_optional(pool)
@@ -315,7 +332,8 @@ mod tests {
         let symbols: Vec<String> = (0..50).map(|i| format!("TESTBATCH_QUERYCOUNT_{i}")).collect();
         let bids = vec![Decimal::ONE; 50];
         let asks = vec![Decimal::TWO; 50];
-        let (n, result) = count_sqlx_queries(upsert_live_prices_batch(&mut tx, &symbols, &bids, &asks)).await;
+        let tick_ats = vec![chrono::Utc::now(); 50];
+        let (n, result) = count_sqlx_queries(upsert_live_prices_batch(&mut tx, &symbols, &bids, &asks, &tick_ats)).await;
         result.expect("upsert_live_prices_batch should succeed");
         assert_eq!(n, 1, "upsert_live_prices_batch must issue exactly one query for 50 rows, got {n}");
 

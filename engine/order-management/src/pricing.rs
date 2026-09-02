@@ -33,6 +33,7 @@ pub fn apply_spread_markup(raw: &Tick, spread_markup: Decimal, digits: i32) -> T
         t0: raw.t0,
         clock_offset_ms: raw.clock_offset_ms,
         rtt_ms: raw.rtt_ms,
+        tick_ms: raw.tick_ms,
     }
 }
 
@@ -42,7 +43,7 @@ mod tests {
     use rust_decimal_macros::dec;
 
     fn tick() -> Tick {
-        Tick { symbol: "EURUSD".into(), bid: dec!(1.10000), ask: dec!(1.10020), t0: None, clock_offset_ms: None, rtt_ms: None }
+        Tick { symbol: "EURUSD".into(), bid: dec!(1.10000), ask: dec!(1.10020), t0: None, clock_offset_ms: None, rtt_ms: None, tick_ms: None }
     }
 
     #[test]
@@ -63,7 +64,7 @@ mod tests {
     #[test]
     fn three_digit_symbol_uses_a_larger_pip() {
         // e.g. USDJPY-style: digits=3, pip = 0.01.
-        let jpy_tick = Tick { symbol: "USDJPY".into(), bid: dec!(150.000), ask: dec!(150.020), t0: None, clock_offset_ms: None, rtt_ms: None };
+        let jpy_tick = Tick { symbol: "USDJPY".into(), bid: dec!(150.000), ask: dec!(150.020), t0: None, clock_offset_ms: None, rtt_ms: None, tick_ms: None };
         let quoted = apply_spread_markup(&jpy_tick, dec!(1.5), 3);
         assert_eq!(quoted.ask, dec!(150.035));
     }

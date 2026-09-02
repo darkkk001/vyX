@@ -1087,14 +1087,18 @@ export default function WebTrader({
         const closedNext: Record<string, boolean> = {};
         for (const row of rows) {
           closedNext[row.symbol] = row.marketClosed;
-          // Ignore stale rows (EA/terminal offline) so the chart falls back
-          // to simulation instead of freezing on the last real tick.
-          const updatedAtMs = new Date(row.updatedAt).getTime();
-          if (now - updatedAtMs > 15000) continue;
-          // `at` is the row's own updatedAt, not "now this poll happened to
+          // Ignore stale rows (EA/terminal offline, or a genuinely frozen
+          // market) so the chart falls back to simulation instead of
+          // freezing on the last real tick. tickAt, not updatedAt -- the
+          // latter bumps on every write regardless of whether the price
+          // actually changed (see LivePrice.tickAt's own schema comment),
+          // so it never actually caught a heartbeat-resent frozen price.
+          const tickAtMs = new Date(row.tickAt).getTime();
+          if (now - tickAtMs > 15000) continue;
+          // `at` is the row's own tickAt, not "now this poll happened to
           // resolve" -- feedStatusFor's staleness clock should reflect how
           // fresh the price actually is, not this request's own latency.
-          next[row.symbol] = { bid: parseFloat(row.bid), ask: parseFloat(row.ask), at: updatedAtMs };
+          next[row.symbol] = { bid: parseFloat(row.bid), ask: parseFloat(row.ask), at: tickAtMs };
         }
         setMarketClosedBySymbol(closedNext);
         // Merges onto whatever the WS/desktop relay has already written

@@ -6,7 +6,7 @@
 //! change when the feed source does.
 
 use crate::{cache::TickCache, candle_updates_for_tick, db, gap_fill::GapFillTracker, stats::FeedStats, symbol_activity::SymbolActivity};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use protocol::Tick;
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -63,6 +63,30 @@ pub enum IngestError {
 /// needed per-tick Postgres freshness -- `get_if_fresh` already serves
 /// order placement straight from memory, and the NATS-fed WebSocket path
 /// (services/api-gateway) never touched Postgres for ticks either.
+// The REAL moment this tick's price is FROM, not when this process
+// received it -- prefers Tick::tick_ms (the EA's own SymbolInfoTick time,
+// carried through unchanged on a heartbeat resend of an unchanged price;
+// see that field's own doc comment on protocol::Tick) and only falls back
+// to `fallback` (the ingest-arrival time) for a tick with no tick_ms at
+// all -- an EA build that predates this field, or a test. That fallback
+// is exactly today's pre-existing behavior (arrival time stood in for
+// tick time everywhere), so nothing gets WORSE for an unupgraded EA; it
+// just doesn't get the fix until it's upgraded.
+//
+// A tick_ms claiming to be from the FUTURE (more than T0's own -100ms
+// jitter tolerance ahead of `fallback`) can't be a real tick time -- a
+// real tick is never later than the moment we're ingesting it -- and
+// falls back rather than trusting it. No upper bound on how far in the
+// PAST it can be: a large positive gap is exactly "this price is stale,"
+// the real condition this whole fix exists to preserve rather than
+// clamp away.
+fn resolve_tick_time(tick: &Tick, fallback: DateTime<Utc>) -> DateTime<Utc> {
+    match tick.tick_ms.and_then(chrono::DateTime::from_timestamp_millis) {
+        Some(t) if (fallback - t).num_milliseconds() >= T0_MIN_PLAUSIBLE_DELTA_MS => t,
+        _ => fallback,
+    }
+}
+
 pub async fn ingest_ticks(
     nats: &async_nats::Client,
     cache: &TickCache,
@@ -74,7 +98,7 @@ pub async fn ingest_ticks(
     let now_ms = now.timestamp_millis();
 
     for tick in ticks {
-        cache.set(tick, now);
+        cache.set(tick, resolve_tick_time(tick, now));
         symbol_activity.record(&tick.symbol, now_ms);
         if let (Some(offset_ms), Some(rtt_ms)) = (tick.clock_offset_ms, tick.rtt_ms) {
             stats.record_clock_info(offset_ms, rtt_ms);
@@ -246,6 +270,15 @@ fn spawn_gap_sweep(pool: PgPool, stats: Arc<FeedStats>, gap_fill: Arc<GapFillTra
 // the hot path regardless.
 async fn flush_live_prices(pool: &PgPool, cache: &TickCache, ticks: &[Tick], stats: &Arc<FeedStats>) {
     let started = Instant::now();
+    // Re-resolved here (not carried from ingest_ticks' own call) since
+    // take_dirty_live_prices only returns the Tick itself, not the
+    // DateTime ingest_ticks resolved for it -- tick_ms lives on the Tick,
+    // so this reproduces the identical result for a tick that has it, and
+    // the same "old EA" fallback (now flush-time instead of ingest-time,
+    // a difference of at most one flush interval -- immaterial next to
+    // what this is a fallback FOR: an EA build with no staleness fix at
+    // all) for one that doesn't.
+    let flush_now = Utc::now();
     let result = tokio::time::timeout(DB_FLUSH_TIMEOUT, async {
         let mut tx = pool.begin().await?;
         // One batched round trip for the whole flush, not one per symbol
@@ -253,7 +286,8 @@ async fn flush_live_prices(pool: &PgPool, cache: &TickCache, ticks: &[Tick], sta
         let symbols: Vec<String> = ticks.iter().map(|t| t.symbol.clone()).collect();
         let bids: Vec<_> = ticks.iter().map(|t| t.bid).collect();
         let asks: Vec<_> = ticks.iter().map(|t| t.ask).collect();
-        db::upsert_live_prices_batch(&mut tx, &symbols, &bids, &asks).await?;
+        let tick_ats: Vec<DateTime<Utc>> = ticks.iter().map(|t| resolve_tick_time(t, flush_now)).collect();
+        db::upsert_live_prices_batch(&mut tx, &symbols, &bids, &asks, &tick_ats).await?;
         tx.commit().await
     })
     .await;
@@ -364,4 +398,72 @@ async fn publish_tick(nats: &async_nats::Client, tick: &Tick) -> bool {
         return false;
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Duration;
+    use rust_decimal_macros::dec;
+
+    fn tick_with_ms(tick_ms: Option<i64>) -> Tick {
+        Tick { symbol: "XAUUSD".into(), bid: dec!(2400.00), ask: dec!(2400.20), t0: None, clock_offset_ms: None, rtt_ms: None, tick_ms }
+    }
+
+    // tick_ms round-trips through i64 milliseconds, which truncates
+    // Utc::now()'s sub-millisecond precision -- expectations below go
+    // through this same truncation so the comparison is meaningful rather
+    // than incidentally failing on nanosecond jitter that has nothing to
+    // do with the logic under test.
+    fn truncate_to_ms(t: DateTime<Utc>) -> DateTime<Utc> {
+        DateTime::from_timestamp_millis(t.timestamp_millis()).unwrap()
+    }
+
+    // The exact scenario this fix closes: a frozen weekend price whose
+    // tick_ms hasn't advanced in days must resolve to that OLD time, not
+    // "now" -- that's what lets a downstream staleness check (tickAt >
+    // now() - interval) actually see it as stale.
+    #[test]
+    fn a_tick_from_days_ago_resolves_to_its_own_old_time_not_now() {
+        let now = Utc::now();
+        let old = now - Duration::days(3);
+        let tick = tick_with_ms(Some(old.timestamp_millis()));
+        assert_eq!(resolve_tick_time(&tick, now), truncate_to_ms(old));
+    }
+
+    #[test]
+    fn a_tick_with_no_tick_ms_falls_back_to_the_given_fallback() {
+        let now = Utc::now();
+        let tick = tick_with_ms(None);
+        assert_eq!(resolve_tick_time(&tick, now), now);
+    }
+
+    #[test]
+    fn a_tick_ms_within_normal_jitter_of_now_is_trusted() {
+        let now = Utc::now();
+        let tick = tick_with_ms(Some(now.timestamp_millis()));
+        assert_eq!(resolve_tick_time(&tick, now), truncate_to_ms(now));
+    }
+
+    // A tick claiming to be from the future (beyond t0's own -100ms
+    // jitter tolerance) can't be a real tick time -- falls back rather
+    // than letting a bad/garbage tick_ms make a price look artificially
+    // fresher than it is.
+    #[test]
+    fn an_implausibly_future_tick_ms_falls_back_instead_of_being_trusted() {
+        let now = Utc::now();
+        let future = now + Duration::seconds(30);
+        let tick = tick_with_ms(Some(future.timestamp_millis()));
+        assert_eq!(resolve_tick_time(&tick, now), now);
+    }
+
+    // No upper bound on how far in the past tick_ms can be -- that's
+    // "stale," the exact condition this fix must preserve, not clamp.
+    #[test]
+    fn an_extremely_old_tick_ms_is_still_trusted_not_clamped() {
+        let now = Utc::now();
+        let ancient = now - Duration::days(400);
+        let tick = tick_with_ms(Some(ancient.timestamp_millis()));
+        assert_eq!(resolve_tick_time(&tick, now), truncate_to_ms(ancient));
+    }
 }

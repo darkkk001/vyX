@@ -69,6 +69,23 @@ pub struct Tick {
     pub clock_offset_ms: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rtt_ms: Option<i64>,
+    // The REAL last-tick time, UTC epoch ms -- MT5's own SymbolInfoTick's
+    // time_msc for this symbol, corrected from broker-server time to UTC
+    // (mt5-ea/VyXTraderPriceFeed.mq5's BrokerOffsetSec, the same
+    // correction already applied to CopyRates bar times). Unlike t0 above
+    // (recomputed fresh on every send, including heartbeat resends of an
+    // unchanged price -- "when did I send this," not "when did the
+    // market actually last move"), this field carries the ORIGINAL tick's
+    // own timestamp even on a heartbeat resend, since the EA only updates
+    // its tracked time_msc when SymbolInfoTick reports a real change. This
+    // is what a genuine staleness check (LivePrice.tickAt,
+    // lib/risk.ts's checkPriceFreshness) needs: t0 alone can't tell a
+    // live, unchanged-but-current price apart from a frozen weekend one,
+    // since both produce a fresh-looking t0 on every heartbeat.
+    // Optional for the same reason t0 is -- an EA build that predates this
+    // field, or a test constructing a bare Tick, doesn't set it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tick_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

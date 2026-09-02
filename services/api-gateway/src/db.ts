@@ -76,11 +76,18 @@ export interface OpenPositionsSummary {
 // same threshold as market_data::db::get_live_price and WebTrader.tsx's
 // chart) -- without this, a dead price feed (MT5 EA today, any future
 // paid/FIX feed later -- this check is source-agnostic since it's keyed
-// off LivePrice.updatedAt, not who wrote it) leaves bid/ask frozen at
+// off LivePrice.tickAt, not who wrote it) leaves bid/ask frozen at
 // their last real value forever, and equity computed from a frozen price
 // would keep permitting trades that a real price would have blocked.
 // Treating a stale tick as "no tick" (bid/ask: null) reuses the same
 // skip-this-one-for-P&L handling already below, no new case to add.
+//
+// Filters on "tickAt", not "updatedAt" -- "updatedAt" bumps on every row
+// write regardless of whether the underlying price changed (the MT5 EA's
+// heartbeat resends an unchanged price every 5s), which left this blind
+// to a genuinely frozen feed as long as it kept heartbeating. "tickAt" is
+// the real last-tick time and only advances when the market's own last
+// tick actually does -- see that column's own schema comment.
 export async function getOpenPositionsSummary(
   accountId: string,
   leverage: number
@@ -90,7 +97,7 @@ export async function getOpenPositionsSummary(
             lp.bid, lp.ask
      FROM positions p
      JOIN "Symbol" s ON s.name = p.symbol
-     LEFT JOIN "LivePrice" lp ON lp.symbol = p.symbol AND lp."updatedAt" > now() - interval '15 seconds'
+     LEFT JOIN "LivePrice" lp ON lp.symbol = p.symbol AND lp."tickAt" > now() - interval '15 seconds'
      WHERE p.account_id = $1 AND p.status = 'OPEN'`,
     [accountId]
   );

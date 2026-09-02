@@ -46,7 +46,11 @@ export type ApiPosition = {
   symbol: { name: string; digits: number; contractSize?: string };
 };
 
-export type ApiLivePrice = { symbol: string; bid: string; ask: string; updatedAt: string; marketClosed: boolean };
+// tickAt is the real last-tick time (see LivePrice.tickAt's own schema
+// comment) -- what feedStatusFor's staleness clock should read, not
+// updatedAt (row-write time, bumped on every heartbeat resend regardless
+// of whether the price actually changed).
+export type ApiLivePrice = { symbol: string; bid: string; ask: string; updatedAt: string; tickAt: string; marketClosed: boolean };
 
 export type ApiCandleTimeframe = "M1" | "M5" | "M30" | "H1" | "H4" | "D1" | "W1" | "MN1" | "Y1";
 

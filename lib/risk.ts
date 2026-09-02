@@ -229,11 +229,11 @@ const PRICE_DEVIATION_TOLERANCE_PCT = 2;
 // below is the fetch-it-yourself convenience wrapper for the two callers
 // that don't already have a LivePrice row in hand (close, fill).
 export function evaluateLiveMarketPrice(
-  livePrice: { bid: Prisma.Decimal; ask: Prisma.Decimal; updatedAt: Date } | null,
+  livePrice: { bid: Prisma.Decimal; ask: Prisma.Decimal; tickAt: Date } | null,
   symbolName: string,
   clientPrice: Prisma.Decimal | string
 ): string | null {
-  if (!livePrice || Date.now() - livePrice.updatedAt.getTime() > LIVE_PRICE_MAX_AGE_MS) {
+  if (!livePrice || Date.now() - livePrice.tickAt.getTime() > LIVE_PRICE_MAX_AGE_MS) {
     return "no live feed for this symbol";
   }
   const price = new Prisma.Decimal(clientPrice);
@@ -266,8 +266,16 @@ export async function checkLiveMarketPrice(
 // price-moved retry toast specifically for this code.
 const FILL_PRICE_MAX_AGE_MS = 3_000;
 
-export function checkPriceFreshness(livePrice: { updatedAt: Date } | null): string | null {
-  if (!livePrice || Date.now() - livePrice.updatedAt.getTime() > FILL_PRICE_MAX_AGE_MS) {
+// tick timestamp follow-up -- reads LivePrice.tickAt (the real last-tick
+// time engine/market-data/src/ingest.rs's resolve_tick_time computes),
+// NOT updatedAt. The incident this closes: updatedAt bumps on every row
+// write regardless of whether the underlying price actually changed, and
+// the MT5 EA's 5s heartbeat resends an unchanged/frozen price forever --
+// so a genuinely stale weekend (or mid-week outage) price still looked
+// "fresh" by updatedAt's own clock. tickAt only advances when the
+// market's own last tick actually does.
+export function checkPriceFreshness(livePrice: { tickAt: Date } | null): string | null {
+  if (!livePrice || Date.now() - livePrice.tickAt.getTime() > FILL_PRICE_MAX_AGE_MS) {
     return "PRICE_STALE";
   }
   return null;
