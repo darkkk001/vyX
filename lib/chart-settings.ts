@@ -11,7 +11,16 @@ export type ChartSettings = {
   candleDownWickColor: string;
   showGrid: boolean;
   showLastPriceLine: boolean;
+  // Previous day's high/low as labeled dashed lines (PDH/PDL), computed
+  // client-side from the D1 candle series already loaded for every
+  // symbol regardless of the active chart timeframe -- see
+  // WebTrader.tsx's previousDayHighLow. Applies on every timeframe,
+  // including D1 itself.
   showSessionHighLow: boolean;
+  // Shaded Asia/London/New York session backgrounds (lib/session-map.ts)
+  // -- intraday timeframes only (M1..H4); a daily+ bar already spans every
+  // session, so the bands would be meaningless there.
+  showSessionMap: boolean;
   showOhlcBar: boolean;
   // Only "UTC" is offered today -- groundwork for a real TZ selector, per
   // the chart interaction pack spec ("timezone display (UTC default --
@@ -43,7 +52,8 @@ export const DEFAULT_CHART_SETTINGS: ChartSettings = {
   candleDownWickColor: "#ef5350",
   showGrid: true,
   showLastPriceLine: true,
-  showSessionHighLow: false,
+  showSessionHighLow: true,
+  showSessionMap: true,
   showOhlcBar: true,
   timezone: "UTC",
   soundsEnabled: true,

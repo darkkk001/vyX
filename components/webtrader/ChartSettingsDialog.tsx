@@ -37,7 +37,8 @@ export default function ChartSettingsDialog({
   const toggleFields: { key: keyof ChartSettings; label: string }[] = [
     { key: "showGrid", label: "Grid lines" },
     { key: "showLastPriceLine", label: "Last-price line" },
-    { key: "showSessionHighLow", label: "Session high/low" },
+    { key: "showSessionHighLow", label: "Previous day high/low (PDH/PDL)" },
+    { key: "showSessionMap", label: "Session map (Asia/London/NY)" },
     { key: "showOhlcBar", label: "OHLC info bar" },
   ];
 

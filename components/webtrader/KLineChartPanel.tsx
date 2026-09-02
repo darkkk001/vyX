@@ -1,9 +1,10 @@
 "use client";
 
-import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { init, dispose, ActionType, registerOverlay } from "klinecharts";
 import type { Candle } from "@/lib/market-simulator";
 import type { ChartSettings } from "@/lib/chart-settings";
+import { computeSessionBands, isIntradayTimeframe, SESSION_COLORS, type SessionName } from "@/lib/session-map";
 
 export type ChartLine = {
   id: string;
@@ -192,6 +193,37 @@ registerOverlay({
   },
 });
 
+// Impression Pack #2 -- a plain locked dashed line with a small left-edge
+// label (PDH/PDL), same tag styling as the interactive lines above but
+// with no drag/close affordance since this is a computed reference value,
+// not something a trader edits.
+registerOverlay({
+  name: "vyxLabeledLine",
+  totalStep: 1,
+  needDefaultPointFigure: false,
+  needDefaultXAxisFigure: false,
+  needDefaultYAxisFigure: true,
+  createPointFigures: ({ overlay, coordinates, bounding }) => {
+    const y = coordinates[0].y;
+    const { color, label } = overlay.extendData as { color: string; label: string };
+    return [
+      {
+        type: "line",
+        ignoreEvent: true,
+        attrs: { coordinates: [{ x: 0, y }, { x: bounding.width, y }] },
+        styles: { style: "dashed", dashedValue: [4, 4], size: 1, color },
+      },
+      {
+        key: "label",
+        type: "text",
+        ignoreEvent: true,
+        attrs: { x: 4, y, text: label, align: "left", baseline: "middle" },
+        styles: { ...TAG_TEXT_STYLE, backgroundColor: color },
+      },
+    ];
+  },
+});
+
 // chart-polish round -- the slice of klinecharts' real Overlay/OverlayEvent
 // shape (node_modules/klinecharts/dist/index.d.ts) this file actually
 // reads. The chart instance itself stays `any` (see the component's own
@@ -248,6 +280,11 @@ type Props = {
   // Undefined means "caller hasn't loaded settings yet," not "use no
   // settings" -- the effect below just skips applying anything that render.
   settings?: ChartSettings;
+  // Impression Pack #2 -- computed by WebTrader.tsx from market[symbol]'s
+  // already-loaded D1 candles (the prior, fully-closed day), independent
+  // of whatever timeframe this panel is currently displaying. Null when
+  // not yet known (fewer than 2 D1 candles loaded) or not applicable.
+  previousDayHighLow?: { high: number; low: number } | null;
 };
 
 // Thin React wrapper around klinecharts (free, open-source — no license
@@ -276,6 +313,7 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
     onClosePositionLine,
     onDragEditableLine,
     settings,
+    previousDayHighLow,
   },
   ref
 ) {
@@ -284,6 +322,17 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
   const chartRef = useRef<any>(null);
   const maOnRef = useRef(false);
   const lineIdsRef = useRef<string[]>([]);
+  const sessionHighLowIdsRef = useRef<string[]>([]);
+  // Impression Pack #2 -- session bands are plain DOM divs positioned via
+  // chart.convertToPixel, not a klinecharts custom overlay: an overlay
+  // whose two points are anchored by timestamp only (no real price value)
+  // reliably resolved to off-pane negative x coordinates in testing --
+  // likely a coordinate-conversion edge case specific to two-point
+  // overlays with a shared, arbitrary price value. Rendering as a DOM
+  // layer on top of the canvas (pointer-events: none, low opacity) sidesteps
+  // that entirely and is a standard technique for chart session shading.
+  const [sessionBandRects, setSessionBandRects] = useState<{ key: string; session: SessionName; left: number; width: number }[]>([]);
+  const recomputeSessionBandsRef = useRef<() => void>(() => {});
   const positionLineIdsRef = useRef<string[]>([]);
   const editableLineIdsRef = useRef<string[]>([]);
   const userOverlayIdsRef = useRef<string[]>([]);
@@ -465,6 +514,7 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
     const onResize = () => {
       try {
         chartRef.current?.resize?.();
+        recomputeSessionBandsRef.current?.();
       } catch {
         // ignore
       }
@@ -520,7 +570,10 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
     };
     el.addEventListener("click", onClickPersist);
 
-    const onChartAction = () => onPanOrZoomRef.current?.();
+    const onChartAction = () => {
+      onPanOrZoomRef.current?.();
+      recomputeSessionBandsRef.current?.();
+    };
     try {
       chart?.subscribeAction?.(ActionType.OnZoom, onChartAction);
       chart?.subscribeAction?.(ActionType.OnScroll, onChartAction);
@@ -728,6 +781,69 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
     }
   }, [lines]);
 
+  // Impression Pack #2 -- shaded Asia/London/New York session backgrounds,
+  // intraday timeframes only. Positions are recomputed on every data
+  // change AND on pan/zoom (the ref is invoked from the main chart-init
+  // effect's existing OnZoom/OnScroll subscription below) since a DOM
+  // overlay, unlike a klinecharts overlay, doesn't reposition itself.
+  useEffect(() => {
+    function recompute() {
+      const chart = chartRef.current;
+      if (!chart) return;
+      if (!settings?.showSessionMap || !isIntradayTimeframe(timeframe) || candles.length < 2) {
+        setSessionBandRects([]);
+        return;
+      }
+      try {
+        const fromMs = candles[0].t;
+        const toMs = candles[candles.length - 1].t;
+        const bands = computeSessionBands(fromMs, toMs);
+        const rects = bands
+          .map((band, i) => {
+            const p1 = chart.convertToPixel?.({ timestamp: band.startMs }, {}) as { x?: number } | undefined;
+            const p2 = chart.convertToPixel?.({ timestamp: band.endMs }, {}) as { x?: number } | undefined;
+            if (typeof p1?.x !== "number" || typeof p2?.x !== "number") return null;
+            return { key: `session-band-${i}`, session: band.session, left: Math.min(p1.x, p2.x), width: Math.abs(p2.x - p1.x) };
+          })
+          .filter((r): r is { key: string; session: SessionName; left: number; width: number } => r !== null);
+        setSessionBandRects(rects);
+      } catch {
+        setSessionBandRects([]);
+      }
+    }
+    recomputeSessionBandsRef.current = recompute;
+    recompute();
+  }, [candles, timeframe, settings?.showSessionMap]);
+
+  // Impression Pack #2 -- previous-day high/low (PDH/PDL), every timeframe.
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart) return;
+    try {
+      sessionHighLowIdsRef.current.forEach((id) => chart.removeOverlay?.(id));
+      sessionHighLowIdsRef.current = [];
+      if (!settings?.showSessionHighLow || !previousDayHighLow) return;
+      const specs = [
+        { id: "session-pdh", price: previousDayHighLow.high, label: `PDH ${previousDayHighLow.high.toFixed(digits)}`, color: "#16C784" },
+        { id: "session-pdl", price: previousDayHighLow.low, label: `PDL ${previousDayHighLow.low.toFixed(digits)}`, color: "#EA3943" },
+      ];
+      const ids: string[] = [];
+      specs.forEach((spec) => {
+        const created = chart.createOverlay?.({
+          name: "vyxLabeledLine",
+          id: spec.id,
+          lock: true,
+          points: [{ value: spec.price }],
+          extendData: { color: spec.color, label: spec.label },
+        });
+        if (created) ids.push(spec.id);
+      });
+      sessionHighLowIdsRef.current = ids;
+    } catch {
+      // ignore
+    }
+  }, [previousDayHighLow, settings?.showSessionHighLow, digits]);
+
   // chart interaction pack -- restyled position lines. Recreated wholesale
   // on every positionLines change (same "remove all, recreate" shape as the
   // `lines` effect above) rather than diffed -- WebTrader.tsx already
@@ -928,7 +1044,21 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
     [overlayLifecycleCallbacks, persistDrawings]
   );
 
-  return <div ref={containerRef} style={{ width: "100%", height: "100%" }} />;
+  return (
+    <div style={{ position: "relative", width: "100%", height: "100%" }}>
+      <div ref={containerRef} style={{ width: "100%", height: "100%" }} />
+      {sessionBandRects.length > 0 ? (
+        <div style={{ position: "absolute", inset: 0, pointerEvents: "none", overflow: "hidden" }}>
+          {sessionBandRects.map((r) => (
+            <div
+              key={r.key}
+              style={{ position: "absolute", top: 0, bottom: 0, left: r.left, width: r.width, background: SESSION_COLORS[r.session] }}
+            />
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
 });
 
 export default KLineChartPanel;

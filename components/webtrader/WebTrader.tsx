@@ -1501,6 +1501,19 @@ export default function WebTrader({
     return () => { cancelled = true; };
   }, [activeSymbol, seedDayOpen]);
 
+  // Impression Pack #2 -- PDH/PDL needs the full D1 candle array, not just
+  // today's open (seedDayOpen's own concern, above). Fetched independently
+  // of the active chart timeframe -- same reasoning as seedDayOpen's own
+  // comment: a trader on M30 still needs yesterday's D1 high/low. A minor
+  // duplicate fetch on the rare case the chart *is* already showing D1
+  // (that timeframe's own seedRealCandles effect covers it too) is cheap
+  // and harmless, not worth branching on.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => { if (!cancelled) await seedRealCandles(activeSymbol, "D1"); })();
+    return () => { cancelled = true; };
+  }, [activeSymbol, seedRealCandles]);
+
   // Multi-chart grid: each cell seeds its own symbol+timeframe the same way
   // the focused chart does above, independently.
   useEffect(() => {
@@ -1725,6 +1738,16 @@ export default function WebTrader({
   // transition (connecting -> live -> stale -> no-feed) is reflected
   // within that same worst-case window even with zero new ticks.
   const activeFeedStatus: FeedStatus = feedStatusFor(m.lastTickAt, serverNow(), sessionStartedAtRef.current);
+  // Impression Pack #2 -- PDH/PDL. m.candles.D1's last entry is today's
+  // still-forming bucket (see MarketState.lastCandleStart's own comment
+  // on bucket rollover); the one before it is the last fully-closed day,
+  // reused across every timeframe regardless of what's currently charted.
+  const previousDayHighLow = useMemo(() => {
+    const d1 = m.candles.D1;
+    if (!d1 || d1.length < 2) return null;
+    const prevDay = d1[d1.length - 2];
+    return { high: prevDay.h, low: prevDay.l };
+  }, [m.candles.D1]);
 
   function updateRiskVolume(riskPctValue: string, slValue: string) {
     const rp = parseFloat(riskPctValue);
@@ -3121,6 +3144,7 @@ export default function WebTrader({
                     onClosePositionLine={closePositionFull}
                     onDragEditableLine={onDragEditableLine}
                     settings={chartSettings}
+                    previousDayHighLow={previousDayHighLow}
                     onContextMenuPrice={handleChartContextMenuPrice}
                     onPanOrZoom={() => setChartContextMenu(null)}
                   />
