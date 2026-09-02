@@ -37,6 +37,7 @@ import SmartTradeManager from "./SmartTradeManager";
 import { computeOrderReferenceLines } from "@/lib/chart-lines";
 import { DEFAULT_CHART_SETTINGS, type ChartSettings } from "@/lib/chart-settings";
 import { playSound } from "@/lib/sounds";
+import { filterEventsForSymbol, isSameUtcDay, nextHighImpactEventWithin, type CalendarEvent } from "@/lib/economic-calendar";
 
 // Watchlist SPREAD column -- MT4/5's own "points" convention: a symbol's
 // point size is 10^-digits (its own smallest tradable price increment,
@@ -553,6 +554,53 @@ export default function WebTrader({
   // change for no functional reason.
   const chartSettingsRef = useRef(chartSettings);
   useEffect(() => { chartSettingsRef.current = chartSettings; }, [chartSettings]);
+
+  // Impression Pack #3 -- economic calendar. Single shared fetch (the
+  // NewsPanel list, the chart's vertical markers, and the order ticket's
+  // high-impact-soon warning chip all read from this one poll instead of
+  // each hitting /api/trade/news independently).
+  const [calendarEvents, setCalendarEvents] = useState<CalendarEvent[] | null>(null);
+  const [calendarUnavailable, setCalendarUnavailable] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      try {
+        const res = await fetch("/api/trade/news");
+        if (cancelled) return;
+        if (!res.ok) { setCalendarUnavailable(true); return; }
+        setCalendarEvents(await res.json());
+      } catch {
+        if (!cancelled) setCalendarUnavailable(true);
+      }
+    }
+    load();
+    const interval = setInterval(load, 5 * 60 * 1000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, []);
+
+  const activeSymbolCalendarEvents = useMemo(
+    () => (calendarEvents ? filterEventsForSymbol(calendarEvents, activeSymbol) : []),
+    [calendarEvents, activeSymbol]
+  );
+  // Re-evaluated every 30s (not just when events/symbol change) since
+  // "within 15 minutes" is itself a function of the current time -- an
+  // event doesn't stop being "soon" just because nothing else changed.
+  const [calendarNowTick, setCalendarNowTick] = useState(() => Date.now());
+  useEffect(() => {
+    const interval = setInterval(() => setCalendarNowTick(Date.now()), 30_000);
+    return () => clearInterval(interval);
+  }, []);
+  // Chart markers: today's events only, per spec -- the warning chip
+  // above stays symbol-filtered-only (an event could be "in 15 minutes"
+  // right at a UTC day boundary and still matter).
+  const todayCalendarEvents = useMemo(
+    () => activeSymbolCalendarEvents.filter((e) => isSameUtcDay(e, new Date(calendarNowTick))),
+    [activeSymbolCalendarEvents, calendarNowTick]
+  );
+  const soonHighImpactEvent = useMemo(
+    () => nextHighImpactEventWithin(activeSymbolCalendarEvents, new Date(calendarNowTick), 15),
+    [activeSymbolCalendarEvents, calendarNowTick]
+  );
 
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
   const [cpCurrent, setCpCurrent] = useState("");
@@ -3145,6 +3193,7 @@ export default function WebTrader({
                     onDragEditableLine={onDragEditableLine}
                     settings={chartSettings}
                     previousDayHighLow={previousDayHighLow}
+                    calendarEvents={todayCalendarEvents}
                     onContextMenuPrice={handleChartContextMenuPrice}
                     onPanOrZoom={() => setChartContextMenu(null)}
                   />
@@ -3571,6 +3620,15 @@ export default function WebTrader({
                 {activeSymbolMarketClosed ? (
                   <div className="margin-note" style={{ textAlign: "center", padding: "10px 0" }}>Market closed — opens Sun 22:00 UTC</div>
                 ) : null}
+                {soonHighImpactEvent ? (
+                  <div
+                    className="margin-note"
+                    style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 8px", marginBottom: 6, borderRadius: 4, background: "rgba(234, 57, 67, 0.12)", color: "var(--sell)" }}
+                    title={`${soonHighImpactEvent.event} at ${new Date(soonHighImpactEvent.time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}${soonHighImpactEvent.estimate != null ? ` — forecast ${soonHighImpactEvent.estimate}` : ""}`}
+                  >
+                    ⚠ High-impact {soonHighImpactEvent.country} news in {Math.max(0, Math.round((new Date(soonHighImpactEvent.time).getTime() - calendarNowTick) / 60000))}m: {soonHighImpactEvent.event}
+                  </div>
+                ) : null}
                 <div className="sentiment-prices">
                   <button className={`sentiment-price-btn sell${pendingMarketSide === "SELL" ? " selected" : ""}`} disabled={sellDisabled} onClick={() => confirmAndPlace("SELL")}>
                     <span className="sp-label">Sell</span>
@@ -3652,7 +3710,7 @@ export default function WebTrader({
             </div>
 
             <SessionClock />
-            <NewsPanel />
+            <NewsPanel events={calendarEvents} unavailable={calendarUnavailable} />
           </div>
         </div>
 

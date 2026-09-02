@@ -1,16 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
-
-type NewsEvent = {
-  time: string;
-  country: string;
-  event: string;
-  impact: string;
-  actual: string | number | null;
-  estimate: string | number | null;
-  previous: string | number | null;
-};
+import type { CalendarEvent } from "@/lib/economic-calendar";
 
 const IMPACT_COLOR: Record<string, string> = {
   high: "var(--sell)",
@@ -18,30 +8,11 @@ const IMPACT_COLOR: Record<string, string> = {
   low: "var(--text-3)",
 };
 
-export default function NewsPanel() {
-  const [events, setEvents] = useState<NewsEvent[] | null>(null);
-  const [unavailable, setUnavailable] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    async function load() {
-      try {
-        const res = await fetch("/api/trade/news");
-        if (cancelled) return;
-        if (!res.ok) {
-          setUnavailable(true);
-          return;
-        }
-        setEvents(await res.json());
-      } catch {
-        if (!cancelled) setUnavailable(true);
-      }
-    }
-    load();
-    const interval = setInterval(load, 5 * 60 * 1000);
-    return () => { cancelled = true; clearInterval(interval); };
-  }, []);
-
+// Impression Pack #3 -- events/unavailable lifted up to WebTrader.tsx
+// (single shared fetch, since the chart markers and order-ticket warning
+// chip need the exact same data, not a second independent poll of the
+// same Finnhub-backed route).
+export default function NewsPanel({ events, unavailable }: { events: CalendarEvent[] | null; unavailable: boolean }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: "10px 0", borderTop: "1px solid var(--border)", marginTop: 10 }}>
       <span className="field-label">Economic calendar</span>
