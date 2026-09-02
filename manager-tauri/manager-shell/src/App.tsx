@@ -29,6 +29,7 @@ import LpRoutingManager from "@/app/manage/(shell)/liquidity-routing/LpRoutingMa
 import ReportsView from "@/app/manage/(shell)/reports/ReportsView";
 import TeamManager from "@/app/manage/(shell)/team/TeamManager";
 import SettingsManager from "@/app/manage/(shell)/settings/SettingsManager";
+import ManagerSecurityManager from "@/app/manage/(shell)/security/ManagerSecurityManager";
 import { apiCall } from "@/lib/desktop-api";
 import type { ApiBrokerBranding } from "@/lib/trade-api";
 import { AdminRealtimeProvider } from "@/lib/admin-realtime";
@@ -165,6 +166,7 @@ export default function App() {
         { href: "/manage/reports", label: "Reports" },
         ...(isBrokerAdmin ? [{ href: "/manage/team", label: "Staff & roles" }] : []),
         { href: "/manage/audit", label: "Audit log" },
+        { href: "/manage/security", label: "Security" },
         ...(isBrokerAdmin ? [{ href: "/manage/settings", label: "System settings" }] : []),
       ],
     },
@@ -363,6 +365,12 @@ export default function App() {
             <AuditLogTable />
           </Section>
         );
+      case "/manage/security":
+        return (
+          <Section maxWidth="max-w-[720px]" title="Security" description="Devices currently signed in to your admin account.">
+            <ManagerSecurityManager onLoggedOut={() => setLoggedIn(false)} />
+          </Section>
+        );
       case "/manage/settings":
         return isBrokerAdmin ? (
           <Section maxWidth="max-w-2xl" title="System settings" description="Broker info (read-only — edited in the Super Admin console) and defaults this team controls.">
@@ -370,7 +378,7 @@ export default function App() {
           </Section>
         ) : null;
       default:
-        return <p className="text-sm text-[var(--text-3)]">This section isn't available in the desktop app yet.</p>;
+        return <p className="text-sm text-[var(--text-3)]">This section isn&apos;t available in the desktop app yet.</p>;
     }
   }
 

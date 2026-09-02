@@ -58,7 +58,13 @@ export async function POST(request: NextRequest) {
     return invalid();
   }
 
-  const token = await createSessionToken({ adminId: admin.id, role: admin.role, brokerId: admin.brokerId }, remember);
+  const userAgent = request.headers.get("user-agent");
+  const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? null;
+  const token = await createSessionToken(
+    { adminId: admin.id, role: admin.role, brokerId: admin.brokerId },
+    remember,
+    { userAgent, ip }
+  );
 
   await prisma.adminUser.update({ where: { id: admin.id }, data: { lastLoginAt: new Date() } });
 

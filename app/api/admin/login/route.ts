@@ -50,11 +50,13 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ requiresTwoFactor: true, pendingToken });
   }
 
-  const token = await createSessionToken({
-    adminId: admin.id,
-    role: admin.role,
-    brokerId: admin.brokerId,
-  });
+  const userAgent = request.headers.get("user-agent");
+  const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? null;
+  const token = await createSessionToken(
+    { adminId: admin.id, role: admin.role, brokerId: admin.brokerId },
+    false,
+    { userAgent, ip }
+  );
 
   await prisma.adminUser.update({
     where: { id: admin.id },

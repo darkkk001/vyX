@@ -8,6 +8,7 @@ import { Alert } from "@/components/ui/Alert";
 import { FormField } from "@/components/ui/FormField";
 import { Input } from "@/components/ui/Input";
 import { PasswordInput } from "@/components/ui/PasswordInput";
+import AdminSessionsCard from "@/components/admin/AdminSessionsCard";
 
 // Same enable/confirm/disable flow WebTrader.tsx's own Security modal
 // already uses for a trader's 2FA (tradeApi.setupTwoFactor/
@@ -17,7 +18,7 @@ import { PasswordInput } from "@/components/ui/PasswordInput";
 // instead of receiving it as a server-rendered prop -- both the website
 // and a bundled admin-shell desktop app (no Server Component of its
 // own) share this one path now.
-export default function SecurityManager() {
+export default function SecurityManager({ onLoggedOut }: { onLoggedOut?: () => void } = {}) {
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [setupData, setSetupData] = useState<{ secret: string; qrCodeDataUri: string } | null>(null);
@@ -95,6 +96,7 @@ export default function SecurityManager() {
   }
 
   return (
+    <div className="flex flex-col gap-6">
     <Card
       title="Two-factor authentication"
       description="Adds a 6-digit code from an authenticator app on top of your password."
@@ -166,5 +168,7 @@ export default function SecurityManager() {
         </div>
       )}
     </Card>
+    <AdminSessionsCard loginHref="/login" onLoggedOut={onLoggedOut} />
+    </div>
   );
 }
