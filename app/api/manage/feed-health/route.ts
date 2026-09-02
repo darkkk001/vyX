@@ -43,6 +43,17 @@ type FeedStatsResponse = FeedStatsSnapshot & {
   per_symbol: PerSymbolStat[];
 };
 
+// Field names match engine/server's alert_stats handler exactly
+// (market_data::alerts::AlertMetricsSnapshot).
+type AlertStats = {
+  active_alerts_total: number;
+  triggered_total: number;
+  persist_failures_total: number;
+  hot_reload_add_total: number;
+  hot_reload_cancel_total: number;
+  hot_reload_malformed_total: number;
+};
+
 type GatewayStats = {
   wsConnectionsTotal: number;
   wsDisconnectionsTotal: number;
@@ -89,10 +100,11 @@ export async function GET() {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
 
-  const [feedStats, gatewayStats] = await Promise.all([
+  const [feedStats, gatewayStats, alertStats] = await Promise.all([
     fetchStats<FeedStatsResponse>(`${TRADING_CORE_URL}/internal/feed-stats`),
     fetchStats<GatewayStats>(`${GATEWAY_URL}/internal/gateway-stats`),
+    fetchStats<AlertStats>(`${TRADING_CORE_URL}/internal/alert-stats`),
   ]);
 
-  return NextResponse.json({ feedStats, gatewayStats });
+  return NextResponse.json({ feedStats, gatewayStats, alertStats });
 }

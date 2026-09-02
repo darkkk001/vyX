@@ -11,7 +11,9 @@
 //! not a restart.
 
 use rust_decimal::Decimal;
+use serde::Serialize;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -136,6 +138,17 @@ impl AlertCache {
         guard.get(symbol).map(|v| v.len()).unwrap_or(0)
     }
 
+    /// Total active alerts across every symbol -- the gauge half of
+    /// GET /internal/alert-stats (engine/server/src/main.rs's
+    /// alert_stats handler); AlertMetrics below only tracks cumulative
+    /// counters, since "how many right now" is already exactly what this
+    /// cache's own book holds, not something to duplicate in a separate
+    /// counter that could drift out of sync with it.
+    pub fn count_total(&self) -> usize {
+        let guard = self.by_symbol.lock().unwrap_or_else(|e| e.into_inner());
+        guard.values().map(|v| v.len()).sum()
+    }
+
     /// Called once per tick (ingest.rs) -- checks every active alert for
     /// this symbol and returns whichever fired. A fired alert is removed
     /// from the in-memory book immediately (not just returned) since
@@ -175,6 +188,98 @@ impl Default for AlertCache {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Cumulative alert-pipeline counters -- same "in-memory atomics, no
+/// Prometheus" convention as market_data::stats::FeedStats (see that
+/// module's own doc comment on why, at this scale). Read via
+/// GET /internal/alert-stats (engine/server/src/main.rs), same
+/// shared-secret guard as /internal/feed-stats. Separate struct from
+/// AlertCache itself (rather than folding counters into it) since these
+/// are pure bookkeeping with no bearing on which alerts are actually
+/// watched -- AlertCache stays the single source of truth for that,
+/// queried live via count_total() rather than mirrored into a counter
+/// here that could drift out of sync with it.
+pub struct AlertMetrics {
+    triggered_total: AtomicU64,
+    // A trigger that fired in-memory (removed from AlertCache, one-shot)
+    // but failed to persist to Postgres -- see engine/server's
+    // ingest_price_feed handler, which deliberately does not publish
+    // alert.triggered when this happens. Real ops signal: every count
+    // here is an alert a trader will never be notified fired, until the
+    // next full AlertCache::load() resync (a boot, or a manual recovery)
+    // picks it back up from Postgres's still-ACTIVE row.
+    persist_failures_total: AtomicU64,
+    hot_reload_add_total: AtomicU64,
+    hot_reload_cancel_total: AtomicU64,
+    // Any cfg.alerts.* message this engine couldn't act on: unparseable
+    // JSON, a missing required field, an unrecognized condition/action.
+    // Doesn't distinguish which -- the point of this counter is only "is
+    // the hot-reload pipeline healthy", the *cause* is what engine.log's
+    // own tracing::warn! lines (already emitted at each of these sites)
+    // are for.
+    hot_reload_malformed_total: AtomicU64,
+}
+
+impl AlertMetrics {
+    pub fn new() -> Self {
+        Self {
+            triggered_total: AtomicU64::new(0),
+            persist_failures_total: AtomicU64::new(0),
+            hot_reload_add_total: AtomicU64::new(0),
+            hot_reload_cancel_total: AtomicU64::new(0),
+            hot_reload_malformed_total: AtomicU64::new(0),
+        }
+    }
+
+    pub fn record_triggered(&self) {
+        self.triggered_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_persist_failure(&self) {
+        self.persist_failures_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_hot_reload_add(&self) {
+        self.hot_reload_add_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_hot_reload_cancel(&self) {
+        self.hot_reload_cancel_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_hot_reload_malformed(&self) {
+        self.hot_reload_malformed_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// `active_alerts_total` is the caller's own AlertCache.count_total()
+    /// reading, not this struct's -- see this struct's own doc comment.
+    pub fn snapshot(&self, active_alerts_total: usize) -> AlertMetricsSnapshot {
+        AlertMetricsSnapshot {
+            active_alerts_total,
+            triggered_total: self.triggered_total.load(Ordering::Relaxed),
+            persist_failures_total: self.persist_failures_total.load(Ordering::Relaxed),
+            hot_reload_add_total: self.hot_reload_add_total.load(Ordering::Relaxed),
+            hot_reload_cancel_total: self.hot_reload_cancel_total.load(Ordering::Relaxed),
+            hot_reload_malformed_total: self.hot_reload_malformed_total.load(Ordering::Relaxed),
+        }
+    }
+}
+
+impl Default for AlertMetrics {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct AlertMetricsSnapshot {
+    pub active_alerts_total: usize,
+    pub triggered_total: u64,
+    pub persist_failures_total: u64,
+    pub hot_reload_add_total: u64,
+    pub hot_reload_cancel_total: u64,
+    pub hot_reload_malformed_total: u64,
 }
 
 #[cfg(test)]
@@ -341,6 +446,57 @@ mod tests {
             let fired = cache.check_tick("XAUUSD", dec!(1999));
             assert_eq!(fired.len(), 1);
             assert_eq!(fired[0].alert.id, "a1");
+        }
+
+        #[test]
+        fn count_total_sums_every_symbol_not_just_one() {
+            let cache = AlertCache::new();
+            cache.add(alert("a1", "XAUUSD", AlertCondition::Above, dec!(2000)));
+            cache.add(alert("a2", "XAUUSD", AlertCondition::Above, dec!(3000)));
+            cache.add(alert("a3", "EURUSD", AlertCondition::Above, dec!(1.10)));
+            assert_eq!(cache.count_total(), 3);
+
+            cache.check_tick("XAUUSD", dec!(2500)); // fires a1 only
+            assert_eq!(cache.count_total(), 2);
+        }
+    }
+
+    mod alert_metrics_tests {
+        use super::*;
+
+        #[test]
+        fn counters_start_at_zero_and_active_alerts_total_reflects_whatever_the_caller_passes() {
+            let metrics = AlertMetrics::new();
+            let snap = metrics.snapshot(0);
+            assert_eq!(snap.active_alerts_total, 0);
+            assert_eq!(snap.triggered_total, 0);
+            assert_eq!(snap.persist_failures_total, 0);
+            assert_eq!(snap.hot_reload_add_total, 0);
+            assert_eq!(snap.hot_reload_cancel_total, 0);
+            assert_eq!(snap.hot_reload_malformed_total, 0);
+
+            let snap2 = metrics.snapshot(7);
+            assert_eq!(snap2.active_alerts_total, 7);
+        }
+
+        #[test]
+        fn each_counter_accumulates_independently() {
+            let metrics = AlertMetrics::new();
+            metrics.record_triggered();
+            metrics.record_triggered();
+            metrics.record_persist_failure();
+            metrics.record_hot_reload_add();
+            metrics.record_hot_reload_add();
+            metrics.record_hot_reload_add();
+            metrics.record_hot_reload_cancel();
+            metrics.record_hot_reload_malformed();
+
+            let snap = metrics.snapshot(1);
+            assert_eq!(snap.triggered_total, 2);
+            assert_eq!(snap.persist_failures_total, 1);
+            assert_eq!(snap.hot_reload_add_total, 3);
+            assert_eq!(snap.hot_reload_cancel_total, 1);
+            assert_eq!(snap.hot_reload_malformed_total, 1);
         }
     }
 }

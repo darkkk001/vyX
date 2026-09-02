@@ -51,6 +51,18 @@ type GatewayStats = {
   order_ack_sample_count: number;
 };
 
+// Field names match engine/server's alert_stats handler exactly
+// (market_data::alerts::AlertMetricsSnapshot) -- see
+// app/api/manage/feed-health/route.ts's identical comment.
+type AlertStats = {
+  active_alerts_total: number;
+  triggered_total: number;
+  persist_failures_total: number;
+  hot_reload_add_total: number;
+  hot_reload_cancel_total: number;
+  hot_reload_malformed_total: number;
+};
+
 // Legacy Next.js/Vercel path's own order-ack window -- see
 // app/api/manage/order-latency/route.ts and lib/order-latency.ts's own
 // comment on why this one is Redis-backed instead of an in-process array
@@ -67,14 +79,14 @@ function ms(value: number | null): string {
 // those same two probes server-side (the internal-service secret header
 // can't be sent from the client).
 export default function FeedHealthManager() {
-  const [data, setData] = useState<{ feedStats: FeedStatsSnapshot | null; gatewayStats: GatewayStats | null } | null>(null);
+  const [data, setData] = useState<{ feedStats: FeedStatsSnapshot | null; gatewayStats: GatewayStats | null; alertStats: AlertStats | null } | null>(null);
   const [orderAck, setOrderAck] = useState<OrderAckStats | null>(null);
 
   useEffect(() => {
     fetch("/api/manage/feed-health")
       .then((r) => r.json())
       .then(setData)
-      .catch(() => setData({ feedStats: null, gatewayStats: null }));
+      .catch(() => setData({ feedStats: null, gatewayStats: null, alertStats: null }));
     fetch("/api/manage/order-latency")
       .then((r) => r.json())
       .then(setOrderAck)
@@ -85,7 +97,7 @@ export default function FeedHealthManager() {
     return <p className="text-sm text-[var(--text-3)]">Loading...</p>;
   }
 
-  const { feedStats, gatewayStats } = data;
+  const { feedStats, gatewayStats, alertStats } = data;
 
   return (
     <>
@@ -163,6 +175,44 @@ export default function FeedHealthManager() {
           <TableRow>
             <TableCell primary>Symbols tracked (queue length)</TableCell>
             <TableCell align="right" mono>{feedStats ? feedStats.queue_len : <Badge tone="neutral">Not monitored</Badge>}</TableCell>
+          </TableRow>
+        </TableBody>
+      </Table>
+
+      <div className="mb-2 mt-6 flex items-center gap-2">
+        <h2 className="text-sm font-medium text-[var(--text-2)]">Price alerts (engine/server)</h2>
+        <Badge tone={alertStats ? "success" : "neutral"}>{alertStats ? "Reachable" : "Not monitored"}</Badge>
+      </div>
+      {alertStats ? (
+        <StatGrid columns={4}>
+          <StatCard label="Active alerts" value={String(alertStats.active_alerts_total)} />
+          <StatCard label="Triggered (since boot)" value={String(alertStats.triggered_total)} />
+          <StatCard label="Persist failures" value={String(alertStats.persist_failures_total)} />
+          <StatCard label="Hot-reload malformed" value={String(alertStats.hot_reload_malformed_total)} />
+        </StatGrid>
+      ) : (
+        <p className="text-sm text-[var(--text-3)]">engine/server unreachable -- expected until it&apos;s deployed.</p>
+      )}
+      <Table>
+        <TableHead>
+          <TableHeaderCell>Counter</TableHeaderCell>
+          <TableHeaderCell align="right">Value</TableHeaderCell>
+        </TableHead>
+        <TableBody>
+          <TableRow>
+            <TableCell primary>Hot-reload adds / cancels</TableCell>
+            <TableCell align="right" mono>
+              {alertStats ? `${alertStats.hot_reload_add_total} / ${alertStats.hot_reload_cancel_total}` : <Badge tone="neutral">Not monitored</Badge>}
+            </TableCell>
+          </TableRow>
+          <TableRow>
+            <TableCell primary>
+              Persist failures{" "}
+              <span className="font-normal text-[var(--text-3)]">
+                (fired in-memory but failed to save -- trader was never notified; resolves on the next full resync)
+              </span>
+            </TableCell>
+            <TableCell align="right" mono>{alertStats ? alertStats.persist_failures_total : <Badge tone="neutral">Not monitored</Badge>}</TableCell>
           </TableRow>
         </TableBody>
       </Table>

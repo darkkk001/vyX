@@ -73,6 +73,10 @@ struct AppState {
     // this struct -- it only needs the cache handle, not the rest of
     // AppState). Checked in-memory on every tick by ingest_price_feed.
     alert_cache: Arc<market_data::alerts::AlertCache>,
+    // Cumulative alert-pipeline counters -- see AlertMetrics's own doc
+    // comment. Separate from alert_cache since it's pure bookkeeping, not
+    // part of the actual in-memory alert book.
+    alert_metrics: Arc<market_data::alerts::AlertMetrics>,
 }
 
 // Applied via .layer() to every order/position route (main() below) --
@@ -527,8 +531,10 @@ async fn ingest_price_feed(
 
         if let Err(err) = result {
             tracing::warn!(?err, alert_id = %fired.alert.id, "failed to persist triggered price alert");
+            state.alert_metrics.record_persist_failure();
             continue; // don't publish a trigger that failed to persist
         }
+        state.alert_metrics.record_triggered();
 
         let payload = serde_json::json!({
             "type": "AlertTriggered",
@@ -768,6 +774,15 @@ async fn feed_stats(State(state): State<Arc<AppState>>) -> Json<FeedStatsRespons
     })
 }
 
+/// Alert-pipeline health snapshot -- same shared-secret guard and
+/// "in-memory atomics, no Prometheus" convention as feed_stats above. See
+/// market_data::alerts::AlertMetrics's own doc comment for what each
+/// field means and why active_alerts_total comes from AlertCache
+/// directly rather than a counter of its own.
+async fn alert_stats(State(state): State<Arc<AppState>>) -> Json<market_data::alerts::AlertMetricsSnapshot> {
+    Json(state.alert_metrics.snapshot(state.alert_cache.count_total()))
+}
+
 /// Subscribes once to the Market Data Core's tick stream
 /// (../../docs/market-data.md §2) and fans each tick out to both
 /// tick-driven consumers this binary runs, so the payload is only
@@ -846,6 +861,7 @@ async fn spawn_tick_driven_triggers(
 /// hot-reloading.
 async fn spawn_alert_hot_reload(
     alert_cache: Arc<market_data::alerts::AlertCache>,
+    alert_metrics: Arc<market_data::alerts::AlertMetrics>,
     nats: async_nats::Client,
 ) -> Result<(), async_nats::SubscribeError> {
     let mut sub = nats.subscribe("cfg.alerts.*").await?;
@@ -856,6 +872,7 @@ async fn spawn_alert_hot_reload(
                 Ok(v) => v,
                 Err(err) => {
                     tracing::warn!(?err, subject = %msg.subject, "alert hot-reload: malformed payload");
+                    alert_metrics.record_hot_reload_malformed();
                     continue;
                 }
             };
@@ -871,14 +888,17 @@ async fn spawn_alert_hot_reload(
                         (id, account_id, broker_id, symbol, condition_str, price_str)
                     else {
                         tracing::warn!("alert hot-reload: create payload missing a required field");
+                        alert_metrics.record_hot_reload_malformed();
                         continue;
                     };
                     let Some(condition) = market_data::alerts::condition_from_str(condition_str) else {
                         tracing::warn!(condition_str, "alert hot-reload: unrecognized condition");
+                        alert_metrics.record_hot_reload_malformed();
                         continue;
                     };
                     let Ok(price) = price_str.parse::<rust_decimal::Decimal>() else {
                         tracing::warn!(price_str, "alert hot-reload: unparseable price");
+                        alert_metrics.record_hot_reload_malformed();
                         continue;
                     };
                     alert_cache.add(market_data::alerts::PriceAlert {
@@ -889,15 +909,21 @@ async fn spawn_alert_hot_reload(
                         condition,
                         price,
                     });
+                    alert_metrics.record_hot_reload_add();
                 }
                 Some("cancel") => {
                     if let Some(id) = payload.get("id").and_then(|v| v.as_str()) {
                         alert_cache.remove(id);
+                        alert_metrics.record_hot_reload_cancel();
                     } else {
                         tracing::warn!("alert hot-reload: cancel payload missing id");
+                        alert_metrics.record_hot_reload_malformed();
                     }
                 }
-                other => tracing::warn!(?other, "alert hot-reload: unrecognized action"),
+                other => {
+                    tracing::warn!(?other, "alert hot-reload: unrecognized action");
+                    alert_metrics.record_hot_reload_malformed();
+                }
             }
         }
         tracing::warn!("alert hot-reload: cfg.alerts.* subscription ended");
@@ -1010,6 +1036,7 @@ async fn main() {
     // Loaded once here (every currently ACTIVE alert), then kept current
     // by spawn_alert_hot_reload's own NATS subscription.
     let alert_cache = Arc::new(market_data::alerts::AlertCache::new());
+    let alert_metrics = Arc::new(market_data::alerts::AlertMetrics::new());
     match market_data::db::load_active_price_alerts(&pool).await {
         Ok(alerts) => {
             tracing::info!(count = alerts.len(), "loaded active price alerts");
@@ -1019,7 +1046,7 @@ async fn main() {
             tracing::error!(?err, "failed to load active price alerts at boot -- starting with an empty alert book");
         }
     }
-    spawn_alert_hot_reload(alert_cache.clone(), nats.clone())
+    spawn_alert_hot_reload(alert_cache.clone(), alert_metrics.clone(), nats.clone())
         .await
         .expect("failed to subscribe alert hot-reload to cfg.alerts.*");
 
@@ -1033,6 +1060,7 @@ async fn main() {
         symbol_activity: symbol_activity_registry,
         gap_fill: gap_fill_tracker,
         alert_cache,
+        alert_metrics,
     });
 
     // Order/position/stats routes require x-internal-secret
@@ -1047,6 +1075,7 @@ async fn main() {
         .route("/v1/positions/{position_id}/modify", post(modify_position))
         .route("/v1/positions/{position_id}/close", post(close_position))
         .route("/internal/feed-stats", get(feed_stats))
+        .route("/internal/alert-stats", get(alert_stats))
         .layer(middleware::from_fn_with_state(state.clone(), require_internal_secret));
 
     let app = Router::new()
