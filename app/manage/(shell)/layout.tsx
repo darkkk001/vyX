@@ -37,18 +37,25 @@ export default async function ManageShellLayout({ children }: { children: React.
   const pathname = (await headers()).get("x-pathname") ?? "";
   const onSecurityPage = pathname === SECURITY_PATH;
 
-  if (session!.role === "SUPPORT" && !onSecurityPage) {
-    redirect(SECURITY_PATH);
-  }
-
   const [broker, admin, unreadNotifications] = await Promise.all([
     prisma.broker.findUnique({ where: { id: session!.brokerId! }, select: { name: true, primaryColor: true, logoUrl: true, requireAdmin2fa: true } }),
     prisma.adminUser.findUnique({ where: { id: session!.adminId }, select: { email: true, twoFactorEnabled: true } }),
     prisma.notification.count({ where: { brokerId: session!.brokerId!, readAt: null } }),
   ]);
 
-  if (shouldForceAdminTwoFactorSetup(broker, admin) && !onSecurityPage) {
-    redirect(`${SECURITY_PATH}?setupRequired=1`);
+  // Both redirects land on the same page, so the forced-setup query param
+  // must be decided once and carried by whichever fires -- computing
+  // needsForcedSetup before the SUPPORT-only redirect (which used to fire
+  // first and always win, silently dropping ?setupRequired=1 for every
+  // SUPPORT admin whose broker requires 2FA) is what makes that possible.
+  const needsForcedSetup = shouldForceAdminTwoFactorSetup(broker, admin);
+  if (!onSecurityPage) {
+    if (session!.role === "SUPPORT") {
+      redirect(needsForcedSetup ? `${SECURITY_PATH}?setupRequired=1` : SECURITY_PATH);
+    }
+    if (needsForcedSetup) {
+      redirect(`${SECURITY_PATH}?setupRequired=1`);
+    }
   }
 
   const isBrokerAdmin = session!.role === "BROKER_ADMIN";
