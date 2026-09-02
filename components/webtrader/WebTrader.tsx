@@ -74,40 +74,6 @@ function nextId() {
   return idCounter++;
 }
 
-// Phase 1 trust pack §3 -- "toast + sound on trigger". Synthesized with
-// the Web Audio API (two quick tones) rather than an audio file: no
-// asset to ship/bundle, and WebView2 (the desktop shell's own webview)
-// supports this the same as a real browser. One-shot AudioContext per
-// chime rather than a shared one kept alive for the component's whole
-// lifetime -- alerts fire rarely, so there's no meaningful cost to
-// creating and closing one each time, and it sidesteps ever holding a
-// suspended context across a long idle period.
-function playAlertChime() {
-  try {
-    const AudioContextCtor = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-    if (!AudioContextCtor) return;
-    const ctx = new AudioContextCtor();
-    const now = ctx.currentTime;
-    [880, 1174.66].forEach((freq, i) => {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.type = "sine";
-      osc.frequency.value = freq;
-      const start = now + i * 0.12;
-      gain.gain.setValueAtTime(0, start);
-      gain.gain.linearRampToValueAtTime(0.2, start + 0.02);
-      gain.gain.exponentialRampToValueAtTime(0.001, start + 0.18);
-      osc.connect(gain).connect(ctx.destination);
-      osc.start(start);
-      osc.stop(start + 0.2);
-    });
-    setTimeout(() => ctx.close().catch(() => {}), 500);
-  } catch {
-    // Autoplay policy / no audio device / unsupported -- the toast alone
-    // already conveys the trigger, so a silent failure here is fine.
-  }
-}
-
 function isValidSlTpForSide(side: "BUY" | "SELL", sl: number | null, tp: number | null, currentPrice: number): string | null {
   if (sl != null && !isNaN(sl)) {
     if (side === "BUY" && sl >= currentPrice) return "Stop loss must be below the current price for a Buy";
@@ -1435,7 +1401,7 @@ export default function WebTrader({
 
       if (parsed?.type === "AlertTriggered") {
         pushToast(`Alert triggered — ${parsed.symbol} reached ${parsed.triggered_price ?? ""}`, true);
-        playAlertChime();
+        playSound("alertTriggered", chartSettingsRef.current);
         refreshAlerts();
         return;
       }

@@ -11,20 +11,55 @@ export type NewsEvent = {
   previous: string | number | null;
 };
 
-// Proxies Finnhub's economic calendar (free-tier, requires a
-// FINNHUB_API_KEY — sign up at finnhub.io) instead of the trader's browser
-// calling it directly, so the API key stays server-side. Also avoids
-// scraping ForexFactory/FXStreet's own pages, which their terms of service
-// don't allow — swap the fetch below for a different provider if Finnhub's
-// free tier doesn't cover this endpoint; nothing else needs to change.
+// Proxies Finnhub's economic calendar instead of the trader's browser
+// calling it directly, so the API key stays server-side.
+//
+// CONFIRMED (2026-09-02): the configured FINNHUB_API_KEY gets a real 403
+// "You don't have access to this resource" directly from Finnhub on this
+// endpoint -- verified with `curl` straight against
+// https://finnhub.io/api/v1/calendar/economic, independent of this app
+// entirely. This is a plan-tier limitation (economic calendar isn't
+// included), not a missing/expired/malformed key -- rotating the key
+// again will not fix it. Swap the fetch below for a different provider
+// (or upgrade the Finnhub plan) if this needs to actually return real
+// data; nothing else needs to change.
+//
+// Before 2026-09-02 this route wrapped every upstream failure (403
+// included) in a blanket 502 and re-hit Finnhub on every single incoming
+// request -- Next's `{next:{revalidate}}` fetch cache only ever
+// populates on a *successful* response, so a permanently-failing
+// upstream meant literally every trader's every poll (every page load
+// plus the 5-min client interval) went straight to Finnhub, all day.
+// That's the "tight retry loop spamming the console" -- not a client
+// bug, a cache that can only ever cache success. Fixed with an explicit
+// module-scope cache that also remembers *failure*, with a longer TTL
+// than success (real backoff instead of hammering a known-broken
+// upstream), and by passing the real upstream status/message through
+// instead of a generic 502 so this is diagnosable from the response
+// alone next time.
+const SUCCESS_TTL_MS = 5 * 60_000;
+const FAILURE_TTL_MS = 15 * 60_000;
+
+type CacheEntry =
+  | { kind: "success"; events: NewsEvent[]; expiresAt: number }
+  | { kind: "failure"; status: number; message: string; expiresAt: number };
+
+let cache: CacheEntry | null = null;
+
 export async function GET() {
   const session = await getAccountSession();
   if (!session) {
     return NextResponse.json({ error: "not authenticated" }, { status: 401 });
   }
 
+  if (cache && cache.expiresAt > Date.now()) {
+    if (cache.kind === "success") return NextResponse.json(cache.events);
+    return NextResponse.json({ error: cache.message }, { status: cache.status });
+  }
+
   const apiKey = process.env.FINNHUB_API_KEY;
   if (!apiKey) {
+    cache = { kind: "failure", status: 503, message: "news feed not configured", expiresAt: Date.now() + FAILURE_TTL_MS };
     return NextResponse.json({ error: "news feed not configured" }, { status: 503 });
   }
 
@@ -34,11 +69,14 @@ export async function GET() {
 
   try {
     const res = await fetch(
-      `https://finnhub.io/api/v1/calendar/economic?from=${fmtDate(from)}&to=${fmtDate(to)}&token=${apiKey}`,
-      { next: { revalidate: 300 } }
+      `https://finnhub.io/api/v1/calendar/economic?from=${fmtDate(from)}&to=${fmtDate(to)}&token=${apiKey}`
     );
     if (!res.ok) {
-      return NextResponse.json({ error: "news feed unavailable" }, { status: 502 });
+      const body = await res.text().catch(() => "");
+      const message = `Finnhub calendar request failed: ${res.status} ${body.slice(0, 200)}`;
+      console.warn("[trade/news]", message);
+      cache = { kind: "failure", status: res.status, message, expiresAt: Date.now() + FAILURE_TTL_MS };
+      return NextResponse.json({ error: message }, { status: res.status });
     }
     const data = await res.json().catch(() => null);
     const raw = Array.isArray(data?.economicCalendar) ? data.economicCalendar : [];
@@ -50,10 +88,14 @@ export async function GET() {
       actual: (e.actual as string | number | null) ?? null,
       estimate: (e.estimate as string | number | null) ?? null,
       previous: (e.prev as string | number | null) ?? null,
-    }));
+    })).slice(0, 40);
     events.sort((a, b) => a.time.localeCompare(b.time));
-    return NextResponse.json(events.slice(0, 40));
-  } catch {
-    return NextResponse.json({ error: "news feed unavailable" }, { status: 502 });
+    cache = { kind: "success", events, expiresAt: Date.now() + SUCCESS_TTL_MS };
+    return NextResponse.json(events);
+  } catch (err) {
+    const message = `Finnhub calendar request threw: ${err instanceof Error ? err.message : String(err)}`;
+    console.warn("[trade/news]", message);
+    cache = { kind: "failure", status: 502, message, expiresAt: Date.now() + FAILURE_TTL_MS };
+    return NextResponse.json({ error: message }, { status: 502 });
   }
 }

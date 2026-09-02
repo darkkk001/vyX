@@ -60,31 +60,57 @@ const TONE_SHAPES: Record<SoundEvent, Tone[]> = {
   error: [{ freq: 220, start: 0, duration: 0.2, type: "square", gain: 0.08 }],
 };
 
+// A fresh AudioContext per call (the original approach here, and the one
+// lib/sounds.ts's predecessor playAlertChime also used) can come back
+// `state: "suspended"` instead of "running" for a call that isn't
+// synchronously inside a click's own call stack -- which is exactly what
+// most of these events are (a WS push, a polling-diff detecting a fill/
+// close/SL/TP that happened asynchronously). start()/stop() on a
+// suspended context's oscillator throws nothing and logs nothing -- it
+// just produces no audible output, which is indistinguishable from "the
+// feature doesn't work" to a trader with sound genuinely toggled on.
+// A single shared, lazily-created context that's explicitly .resume()d
+// before every use fixes this: once resumed after any real gesture on
+// the page, it stays running for the rest of the session, the same
+// "sticky activation" every other autoplay-gated API relies on -- and
+// this app never needs more than one context at a time anyway.
+let sharedCtx: AudioContext | null = null;
+function getAudioContext(): AudioContext | null {
+  if (sharedCtx && sharedCtx.state !== "closed") return sharedCtx;
+  const AudioContextCtor =
+    window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+  if (!AudioContextCtor) return null;
+  sharedCtx = new AudioContextCtor();
+  return sharedCtx;
+}
+
 function playTones(tones: Tone[]) {
   try {
-    const AudioContextCtor =
-      window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-    if (!AudioContextCtor) return;
-    const ctx = new AudioContextCtor();
-    const now = ctx.currentTime;
-    let maxEnd = 0;
-    for (const tone of tones) {
-      const osc = ctx.createOscillator();
-      const gainNode = ctx.createGain();
-      osc.type = tone.type ?? "sine";
-      osc.frequency.value = tone.freq;
-      const start = now + tone.start;
-      const end = start + tone.duration;
-      const peak = tone.gain ?? 0.2;
-      gainNode.gain.setValueAtTime(0, start);
-      gainNode.gain.linearRampToValueAtTime(peak, start + 0.015);
-      gainNode.gain.exponentialRampToValueAtTime(0.001, end);
-      osc.connect(gainNode).connect(ctx.destination);
-      osc.start(start);
-      osc.stop(end + 0.02);
-      maxEnd = Math.max(maxEnd, tone.start + tone.duration);
+    const ctx = getAudioContext();
+    if (!ctx) return;
+    const schedule = () => {
+      const now = ctx.currentTime;
+      for (const tone of tones) {
+        const osc = ctx.createOscillator();
+        const gainNode = ctx.createGain();
+        osc.type = tone.type ?? "sine";
+        osc.frequency.value = tone.freq;
+        const start = now + tone.start;
+        const end = start + tone.duration;
+        const peak = tone.gain ?? 0.2;
+        gainNode.gain.setValueAtTime(0, start);
+        gainNode.gain.linearRampToValueAtTime(peak, start + 0.015);
+        gainNode.gain.exponentialRampToValueAtTime(0.001, end);
+        osc.connect(gainNode).connect(ctx.destination);
+        osc.start(start);
+        osc.stop(end + 0.02);
+      }
+    };
+    if (ctx.state === "suspended") {
+      ctx.resume().then(schedule).catch(() => {});
+    } else {
+      schedule();
     }
-    setTimeout(() => ctx.close().catch(() => {}), maxEnd * 1000 + 300);
   } catch {
     // Autoplay policy / no audio device / unsupported -- the toast/UI
     // change that triggered this already conveys the event, so a silent

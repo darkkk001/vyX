@@ -61,8 +61,11 @@ function NavGroup({
             ) : null}
             <span className="flex-1">{item.label}</span>
             {item.badge ? (
-              <span className="rounded-full bg-[var(--sell)] px-1.5 py-px text-[9.5px] font-bold text-white">
-                {item.badge}
+              <span
+                className="rounded-full bg-[var(--sell)] px-1.5 py-px text-[9.5px] font-bold text-white"
+                title={`${item.badge} unread notification${item.badge === 1 ? "" : "s"}`}
+              >
+                {item.badge > 99 ? "99+" : item.badge}
               </span>
             ) : null}
           </>
