@@ -93,6 +93,24 @@ export async function DELETE(
     where: { id },
     data: { status: "CANCELLED" },
   });
+  // Queued-order UX -- a trader withdrawing a dealing-group MARKET order
+  // before the desk reviews it is a real, money-relevant action (the
+  // dealer might already be looking at it) that had no audit trail at
+  // all before this: order creation (this same route's POST) already
+  // wrote an AuditLog row, cancellation never did. actorAdminId is null
+  // here on purpose -- this is the trader's own action, not staff's; the
+  // same AuditLog row shape backoffice-initiated cancellations would use
+  // just carries an actorAdminId instead.
+  await prisma.auditLog.create({
+    data: {
+      brokerId: order.brokerId,
+      action: order.type === "MARKET" ? "TRADER_CANCELLED_DEALING_ORDER" : "TRADER_CANCELLED_PENDING_ORDER",
+      entityType: "Order",
+      entityId: id,
+      oldValue: { status: order.status },
+      newValue: { status: "CANCELLED" },
+    },
+  });
   await publishTradingEvent("OrderCancelled", { order_id: id, account_id: session.accountId, broker_id: session.brokerId });
   return NextResponse.json(cancelled);
 }

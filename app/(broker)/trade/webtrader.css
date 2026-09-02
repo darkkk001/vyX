@@ -481,6 +481,14 @@ html, body, #root {
 .sltp-sep { color: var(--border-strong); }
 .net-pos-detail { color: var(--text-3); font-size: 11px; }
 
+/* Queued-order UX -- a dealing-group MARKET order awaiting manual dealer
+   review, distinct from a resting LIMIT/STOP order at the same PENDING
+   status (see WebTrader.tsx's isDealingPending). Same amber as the price-
+   alert chart line (#F0B90B) -- "something is actively being watched/
+   decided", not a green fill or a red rejection. */
+.pending-approval-badge { display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; font-weight: 600; letter-spacing: 0.02em; color: #F0B90B; background: rgba(240, 185, 11, 0.12); border: 1px solid rgba(240, 185, 11, 0.35); border-radius: 4px; padding: 2px 7px; }
+.order-row-pending-approval { background: rgba(240, 185, 11, 0.05); }
+
 .simple-row { display: flex; justify-content: space-between; align-items: center; padding: 9px 4px; border-bottom: 1px solid var(--bg-2); font-size: 12.5px; flex-wrap: wrap; row-gap: 4px; }
 .simple-row:last-child { border-bottom: none; }
 /* min-width: 0 + flex-wrap -- without them, a flex child's content-based

@@ -74,6 +74,18 @@ function nextId() {
   return idCounter++;
 }
 
+// MT5-style "how long has this been sitting in the dealing queue" --
+// seconds while fresh, minutes once it's been a while. Dealer review is
+// meant to be fast, so this deliberately never rolls over to hours: an
+// order still PENDING after 59+ minutes should read as "59m", a visibly
+// stale number, not quietly wrap into an hours format that reads calmer
+// than it is.
+function formatElapsed(sinceMs: number, nowMs: number): string {
+  const s = Math.max(0, Math.floor((nowMs - sinceMs) / 1000));
+  if (s < 60) return `${s}s`;
+  return `${Math.min(99, Math.floor(s / 60))}m`;
+}
+
 function isValidSlTpForSide(side: "BUY" | "SELL", sl: number | null, tp: number | null, currentPrice: number): string | null {
   if (sl != null && !isNaN(sl)) {
     if (side === "BUY" && sl >= currentPrice) return "Stop loss must be below the current price for a Buy";
@@ -384,6 +396,19 @@ export default function WebTrader({
   }, [columnPrefs, orderPanelWidth, watchlistWidth, bottomPanelHeight]);
 
   const [activeBottomTab, setActiveBottomTab] = useState<BottomTab>("positions");
+  // Queued-order UX -- a dealing-group MARKET order sits at the exact
+  // same OrderStatus.PENDING as a resting LIMIT/STOP order (see
+  // prisma/schema.prisma's own OrderStatus comment), so the Orders tab
+  // couldn't tell "waiting for a dealer to review this" apart from
+  // "waiting for the market to reach this price" -- they rendered
+  // identically. This tick just drives the live elapsed-time display on
+  // those rows; the badge/color distinction itself is a pure function of
+  // o.type/o.status, no new state needed for that part.
+  const [dealingPendingNowMs, setDealingPendingNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const interval = setInterval(() => setDealingPendingNowMs(Date.now()), 1000);
+    return () => clearInterval(interval);
+  }, []);
   const [histFrom, setHistFrom] = useState("");
   const [histTo, setHistTo] = useState("");
   const [histSymbol, setHistSymbol] = useState("");
@@ -3441,12 +3466,24 @@ export default function WebTrader({
 
               {activeBottomTab === "orders" ? (
                 <div className="panel-body">
-                  {pendingOrders.length === 0 ? <div className="empty-state">No pending orders</div> : pendingOrders.map((o) => (
-                    <div className="simple-row" key={o.id}>
+                  {pendingOrders.length === 0 ? <div className="empty-state">No pending orders</div> : pendingOrders.map((o) => {
+                    // A dealing-group MARKET order routed to the manual
+                    // desk sits at the same PENDING status a resting
+                    // LIMIT/STOP uses while it waits for its trigger price
+                    // -- distinguish by type, not status, since status
+                    // alone can't tell them apart (see prisma/schema.prisma's
+                    // OrderStatus comment).
+                    const isDealingPending = o.type === "MARKET" && o.status === "PENDING";
+                    return (
+                    <div className={`simple-row${isDealingPending ? " order-row-pending-approval" : ""}`} key={o.id}>
                       <div className="simple-left">
                         <span className="pos-symbol">{o.symbol.name}</span>
                         <span className={`pos-side ${o.side === "BUY" ? "buy" : "sell"}`}>{o.type} {o.side} {parseFloat(o.volume).toFixed(2)}</span>
-                        {o.status === "REQUOTED" ? (
+                        {isDealingPending ? (
+                          <span className="pending-approval-badge" title="Awaiting dealer review -- you can still trade this or any other symbol while you wait.">
+                            PENDING APPROVAL · {formatElapsed(new Date(o.createdAt).getTime(), dealingPendingNowMs)}
+                          </span>
+                        ) : o.status === "REQUOTED" ? (
                           <span className="net-pos-detail mono">
                             requoted to {o.requotedPrice ? fmt(parseFloat(o.requotedPrice), o.symbol.digits) : "—"}
                           </span>
@@ -3465,13 +3502,18 @@ export default function WebTrader({
                             </button>
                           </>
                         ) : (
-                          <button className="icon-btn" title="Cancel order" onClick={() => tradeApi.cancelOrder(o.id).then(refreshOrders)}>
+                          <button
+                            className="icon-btn"
+                            title={isDealingPending ? "Cancel — withdraw before the dealer reviews it" : "Cancel order"}
+                            onClick={() => tradeApi.cancelOrder(o.id).then(refreshOrders)}
+                          >
                             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
                           </button>
                         )}
                       </div>
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
               ) : null}
 
@@ -3481,12 +3523,16 @@ export default function WebTrader({
                     <div className="empty-state">No orders yet</div>
                   ) : (
                     allOrders.map((o) => {
+                      const isDealingPending = o.type === "MARKET" && o.status === "PENDING";
                       const statusColor =
                         o.status === "FILLED"
                           ? "var(--buy)"
                           : o.status === "REJECTED" || o.status === "CANCELLED"
                             ? "var(--sell)"
-                            : "var(--text-3)";
+                            : isDealingPending
+                              ? "#F0B90B"
+                              : "var(--text-3)";
+                      const statusLabel = isDealingPending ? "PENDING APPROVAL" : o.status;
                       const priceLabel =
                         o.status === "FILLED" && o.filledPrice
                           ? `filled @ ${fmt(parseFloat(o.filledPrice), o.symbol.digits)}`
@@ -3507,7 +3553,7 @@ export default function WebTrader({
                             <span className="net-pos-detail">{new Date(o.createdAt).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</span>
                           </div>
                           <div className="simple-right">
-                            <span className="mono" style={{ color: statusColor, fontSize: 12 }}>{o.status}</span>
+                            <span className="mono" style={{ color: statusColor, fontSize: 12 }}>{statusLabel}</span>
                           </div>
                         </div>
                       );
