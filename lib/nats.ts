@@ -109,11 +109,30 @@ export type AlertConfigMessage =
     }
   | { action: "cancel"; id: string; broker_id: string };
 
+// Same publish-over-HTTPS-to-the-gateway approach as publishTradingEvent
+// above (this file no longer holds a direct NATS connection at all --
+// see this file's own top-of-file comment on why), just with a dynamic
+// per-broker subject instead of a fixed SUBJECTS[type] lookup --
+// /internal/events accepts any subject string, not just the trading-
+// event ones.
 export async function publishAlertConfig(message: AlertConfigMessage): Promise<void> {
   try {
-    const nc = await getConnection();
-    nc.publish(`cfg.alerts.${message.broker_id}`, sc.encode(JSON.stringify(message)));
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 2000);
+    try {
+      const res = await fetch(`${GATEWAY_URL}/internal/events`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-internal-secret": INTERNAL_SERVICE_SECRET },
+        body: JSON.stringify({ subject: `cfg.alerts.${message.broker_id}`, payload: message }),
+        signal: controller.signal,
+      });
+      if (!res.ok) {
+        console.warn("publishAlertConfig: gateway rejected event", message.action, res.status);
+      }
+    } finally {
+      clearTimeout(timeout);
+    }
   } catch (err) {
-    console.warn("failed to publish alert config to NATS", message.action, err);
+    console.warn("failed to publish alert config to gateway", message.action, err);
   }
 }
