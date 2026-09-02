@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createInitialMarket, tickMarket, bucketStartMs, resolveDayOpenFromD1, type Timeframe } from "@/lib/market-simulator";
+import { createInitialMarket, tickMarket, bucketStartMs, resolveDayOpenFromD1, feedStatusFor, type Timeframe } from "@/lib/market-simulator";
 
 // hotfix/terminal-live-bugs -- production showed XAUUSD's daily %chg as
 // +88.85% (comparing a live ~4442 price against dayOpen, which was never
@@ -310,5 +310,47 @@ describe("tickMarket -- local gap-fill (round 5: patchy M1, missing bars mid-ses
     const later = t0 + 250 * 60_000; // 250 skipped minutes, well within the local gap-fill cap
     market = tickMarket(market, { XAUUSD: { bid: 4410, ask: 4410.3, at: later } }, later);
     expect(market.XAUUSD.candles[TF].length).toBeLessThanOrEqual(300);
+  });
+});
+
+// hotfix/terminal-live-bugs #4 -- a fresh login flashed "No live feed" for
+// about a second before settling into the real state. Root cause: `now`
+// is serverNow() (lib/desktop-api.ts), clock-corrected only once an API
+// response's Date header has been seen -- a WS tick carries no such
+// header, so the very first tick of a session judged against an
+// uncalibrated client clock can compute an artificially huge (or
+// negative) age purely from ordinary clock drift, unrelated to whether
+// the feed is actually connected.
+describe("feedStatusFor (hotfix/terminal-live-bugs #4: no premature no-feed flash)", () => {
+  const sessionStart = 1_000_000;
+
+  it("still returns connecting with no ticks yet, within the 30s window", () => {
+    expect(feedStatusFor(0, sessionStart + 100, sessionStart)).toBe("connecting");
+    expect(feedStatusFor(0, sessionStart + 29_999, sessionStart)).toBe("connecting");
+  });
+
+  it("returns no-feed once the no-ticks-yet session exceeds 30s", () => {
+    expect(feedStatusFor(0, sessionStart + 30_001, sessionStart)).toBe("no-feed");
+  });
+
+  it("returns live for a fresh tick, stale for an aging one, once the session is old enough", () => {
+    const now = sessionStart + 10_000;
+    expect(feedStatusFor(now - 1000, now, sessionStart)).toBe("live");
+    expect(feedStatusFor(now - 10_000, now, sessionStart)).toBe("stale");
+  });
+
+  it("the exact reported bug: an apparently-ancient tick age within the first 5s of the session reads as connecting, not no-feed", () => {
+    // A tick timestamped "now" from the server's clock, but the client's
+    // own now() is still far off (uncalibrated) -- exactly what an
+    // unrecalibrated serverTimeOffsetMs produces on the very first tick.
+    const now = sessionStart + 500; // 500ms into the session
+    const clockSkewedLastTickAt = now - 45_000; // looks 45s stale from an uncalibrated clock
+    expect(feedStatusFor(clockSkewedLastTickAt, now, sessionStart)).toBe("connecting");
+  });
+
+  it("a genuinely dead feed still reports no-feed once the session itself is old enough", () => {
+    const now = sessionStart + 6000; // past the 5s grace window
+    const longDeadTickAt = now - 45_000;
+    expect(feedStatusFor(longDeadTickAt, now, sessionStart)).toBe("no-feed");
   });
 });

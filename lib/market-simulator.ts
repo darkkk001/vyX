@@ -169,14 +169,35 @@ export type FeedStatus = "connecting" | "live" | "stale" | "no-feed";
 // symbol that never gets a tick would spin forever) and is what makes
 // "never show an error in the first 5s" possible: a fresh mount with zero
 // ticks yet reads as "connecting", not "no-feed", for up to 30s.
+//
+// hotfix/terminal-live-bugs #4 -- that guarantee only ever covered the
+// zero-ticks-yet branch below. `now` is `serverNow()` (lib/desktop-api.ts),
+// which reads `Date.now() + serverTimeOffsetMs` -- `serverTimeOffsetMs`
+// starts at 0 and only gets corrected once an API response's own `Date`
+// header has been seen (recalibrateFromDateHeader). A WS tick carries no
+// such header at all. So the very first tick of a session, judged against
+// a client clock that hasn't been recalibrated yet, can compute `age` as
+// enormous (or negative) purely from ordinary client/server clock drift --
+// nothing to do with whether the feed is actually connected -- and that
+// inflated age used to fall straight through to "no-feed", flashing the
+// error caption for the ~1s until a real REST response recalibrates the
+// clock. Clamping any "no-feed" verdict back to "connecting" while the
+// session itself is still within the same 5s live/stale grace window
+// closes that gap without weakening the real "genuinely dead feed" case,
+// which only ever gets reported once the session is old enough that this
+// can't be a first-tick calibration artifact.
 export function feedStatusFor(lastTickAt: number, now: number, sessionStartedAt: number): FeedStatus {
+  const sessionAge = now - sessionStartedAt;
+  let computed: FeedStatus;
   if (lastTickAt) {
     const age = now - lastTickAt;
-    if (age <= 5000) return "live";
-    if (age <= LIVE_MAX_AGE_MS) return "stale";
-    return "no-feed";
+    if (age <= 5000) computed = "live";
+    else if (age <= LIVE_MAX_AGE_MS) computed = "stale";
+    else computed = "no-feed";
+  } else {
+    computed = sessionAge <= LIVE_MAX_AGE_MS ? "connecting" : "no-feed";
   }
-  return now - sessionStartedAt <= LIVE_MAX_AGE_MS ? "connecting" : "no-feed";
+  return computed === "no-feed" && sessionAge < 5000 ? "connecting" : computed;
 }
 
 export function spreadFor(def: SymbolDef): number {

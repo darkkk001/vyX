@@ -2967,6 +2967,14 @@ export default function WebTrader({
                 if (!row) return null; // between an add/hide and the next server round trip -- skip rather than crash
                 const changePct = row.dayOpenKnown ? ((row.bid - row.dayOpen) / row.dayOpen) * 100 : null;
                 const flash = row.bid > row.prevBid ? "up" : row.bid < row.prevBid ? "down" : "";
+                // hotfix/terminal-live-bugs #4 -- this cell used to check
+                // row.live directly with zero grace period at all (unlike
+                // the chart header's own activeFeedStatus, which already
+                // waits out feedStatusFor's connecting window before ever
+                // saying so) -- on every fresh login, every single
+                // watchlist row flashed "No feed" for the ~1s before its
+                // first price arrived, regardless of the header's own fix.
+                const rowFeedStatus = feedStatusFor(row.lastTickAt, serverNow(), sessionStartedAtRef.current);
                 return (
                   <div
                     key={name}
@@ -2983,7 +2991,9 @@ export default function WebTrader({
                       {row.live ? (
                         <span className={`wl-price mono ${flash}`}>{fmt(row.bid, row.def.digits)}</span>
                       ) : (
-                        <span className="wl-price mono" style={{ color: "var(--text-3)", fontSize: 10.5 }}>No feed</span>
+                        <span className="wl-price mono" style={{ color: "var(--text-3)", fontSize: 10.5 }}>
+                          {rowFeedStatus === "connecting" ? "Connecting…" : "No feed"}
+                        </span>
                       )}
                       {oneClick ? (
                         <span className="wl-occ-buttons" style={{ display: "flex" }}>
