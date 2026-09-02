@@ -2,13 +2,29 @@
 
 ## 1. Today
 
-No automated test suite exists in the current Next.js codebase — no unit
-tests, no integration tests, no E2E tests. Verification during this
-engagement has been manual (build locally, click through the WebTrader
-UI, build/launch the Tauri desktop app locally). This is a real gap, stated
-plainly rather than implied — it means the "never destroy existing
-working functionality" rule (ADR-003) has so far been upheld by manual
-QA, not a regression suite.
+Phase 1 §4 (docs/ROADMAP.md) closed the gap this section used to describe
+plainly as absent. The Next.js codebase now has a real Vitest suite —
+200+ tests across `lib/*.test.ts` — covering the order/pricing path
+(`group-pricing`, `risk`, `margin`, `price-alerts`), every close site
+(`position-close`, `bulk-close`, `close-by`), and the backoffice
+maker-checker/decision flows (`funds-approval`, `balance-adjustment`,
+`kyc-decision`). DB-touching functions use a real-Postgres,
+rolled-back-transaction pattern (`prisma.$transaction` wrapping the test
+body, throwing to force a rollback at the end — see `lib/bulk-close.test.ts`
+for the canonical shape) rather than mocks, so they exercise real FK
+constraints, real Decimal arithmetic, and real query shapes. Pure
+functions (validation, pricing math, the maker-checker decision itself)
+are tested with no DB at all. `.github/workflows/nextjs-ci.yml` runs
+`tsc`, `eslint`, and `vitest` on every push/PR touching the app; CI for
+the Rust workspace was already covered separately (`engine-ci.yml`,
+`cargo build`/`cargo test`, `clippy`/`fmt` non-blocking).
+
+No E2E test suite exists yet — verification of a given feature during
+this engagement has been a real Playwright browser pass against a live
+dev session (create a real throwaway fixture, drive the actual UI,
+assert on real DB state, clean up), run manually per change rather than
+wired into CI. Automating that into CI is a reasonable next step but
+out of scope for §4 itself.
 
 ## 2. Target: Rust Trading Core test/benchmark gates (spec §21/§29)
 

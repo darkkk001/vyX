@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession } from "@/lib/auth";
 import { forbidUnlessBrokerAdminOrPermission } from "@/lib/permissions";
+import { validateKycDecision, applyKycDecision } from "@/lib/kyc-decision";
 
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await getAdminSession();
@@ -28,37 +29,15 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     return NextResponse.json({ error: "action must be APPROVE or REJECT" }, { status: 400 });
   }
   const rejectionReason = typeof body?.rejectionReason === "string" ? body.rejectionReason.trim().slice(0, 500) : "";
-  if (action === "REJECT" && !rejectionReason) {
-    return NextResponse.json({ error: "rejectionReason is required to reject" }, { status: 400 });
+
+  const validationError = validateKycDecision({ action, rejectionReason });
+  if (validationError) {
+    return NextResponse.json({ error: validationError }, { status: 400 });
   }
 
-  const status = action === "APPROVE" ? "APPROVED" : "REJECTED";
+  const updated = await prisma.$transaction((tx) =>
+    applyKycDecision(tx, { kycRecordId: id, brokerId, action, rejectionReason, adminId: session!.adminId })
+  );
 
-  const updated = await prisma.$transaction(async (tx) => {
-    const record = await tx.kycRecord.update({
-      where: { id },
-      data: {
-        status,
-        reviewedByAdminId: session!.adminId,
-        reviewedAt: new Date(),
-        rejectionReason: action === "REJECT" ? rejectionReason : null,
-      },
-    });
-
-    await tx.auditLog.create({
-      data: {
-        brokerId,
-        actorAdminId: session!.adminId,
-        action: action === "APPROVE" ? "KYC_APPROVAL" : "KYC_REJECTION",
-        entityType: "KycRecord",
-        entityId: id,
-        oldValue: { status: "PENDING" },
-        newValue: { status, rejectionReason: action === "REJECT" ? rejectionReason : null },
-      },
-    });
-
-    return record;
-  });
-
-  return NextResponse.json({ id: updated.id, status: updated.status });
+  return NextResponse.json(updated);
 }

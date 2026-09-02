@@ -3,6 +3,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession } from "@/lib/auth";
 import { forbidUnlessBrokerAdminOrPermission } from "@/lib/permissions";
+import { validateBalanceAdjustment, applyBalanceAdjustment } from "@/lib/balance-adjustment";
 
 // BROKER_ADMIN by default -- per AdminRole.MANAGER's own schema comment
 // ("not KYC/finance"), a direct balance correction (no underlying trade)
@@ -37,50 +38,20 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     return NextResponse.json({ error: "amount must not be zero" }, { status: 400 });
   }
   const note = typeof body?.note === "string" ? body.note.trim().slice(0, 500) : "";
-  if (!note) {
-    return NextResponse.json({ error: "note is required for a balance adjustment" }, { status: 400 });
+
+  const validationError = validateBalanceAdjustment({ amount, note });
+  if (validationError) {
+    return NextResponse.json({ error: validationError }, { status: 400 });
   }
 
-  const result = await prisma.$transaction(async (tx) => {
-    const fresh = await tx.account.findUniqueOrThrow({ where: { id } });
-    const balanceBefore = fresh.balance;
-    const balanceAfter = balanceBefore.add(amount);
-
-    await tx.account.update({ where: { id }, data: { balance: balanceAfter } });
-
-    const transaction = await tx.transaction.create({
-      data: {
-        brokerId,
-        accountId: id,
-        type: "ADJUSTMENT",
-        status: "COMPLETED",
-        amount,
-        balanceBefore,
-        balanceAfter,
-        note,
-        createdByAdminId: session!.adminId,
-      },
-    });
-
-    await tx.auditLog.create({
-      data: {
-        brokerId,
-        actorAdminId: session!.adminId,
-        action: "BALANCE_ADJUSTMENT",
-        entityType: "Account",
-        entityId: id,
-        oldValue: { balance: balanceBefore.toString() },
-        newValue: { balance: balanceAfter.toString(), amount: amount.toString(), note },
-      },
-    });
-
-    return { transaction, balanceAfter };
-  });
+  const result = await prisma.$transaction((tx) =>
+    applyBalanceAdjustment(tx, { accountId: id, brokerId, amount, note, adminId: session!.adminId })
+  );
 
   return NextResponse.json({
     accountId: id,
     amount: amount.toString(),
     balance: result.balanceAfter.toString(),
-    transactionId: result.transaction.id,
+    transactionId: result.transactionId,
   });
 }

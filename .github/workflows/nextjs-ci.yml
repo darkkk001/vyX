@@ -1,0 +1,87 @@
+name: Next.js CI
+
+# Phase 1 §4 (docs/ROADMAP.md's "CI: cargo test + vitest + tsc on every
+# push") -- the Rust half already existed (engine-ci.yml); this closes
+# the other half for the Next.js app. Scoped to paths that can actually
+# affect it, same convention as engine-ci.yml's own path filter, so an
+# engine-only or Tauri-shell-only push doesn't spend CI minutes here.
+#
+# Deliberately does NOT run against a live Postgres: this app's lib/*
+# tests already have their own "DB unreachable -> skip gracefully"
+# convention (see lib/bulk-close.test.ts's dbReachable check, copied by
+# every DB-touching test written since) specifically because the only
+# Postgres this project has today is the real shared dev/prod Neon
+# instance (see project notes on the 2026-09-01 Neon migration) -- there
+# is no separate CI/test database to point DATABASE_URL at, and wiring a
+# public CI runner up to run real transactions against that shared
+# instance on every push is a real infrastructure/security decision this
+# workflow doesn't make unilaterally. Pure-function tests (the majority
+# of this suite) still run for real; DB-backed ones no-op cleanly here
+# and only actually execute in a local dev environment that has a
+# DATABASE_URL configured. Revisit if/when a dedicated CI database exists.
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "app/**"
+      - "components/**"
+      - "lib/**"
+      - "prisma/**"
+      - "package.json"
+      - "package-lock.json"
+      - "tsconfig.json"
+      - ".github/workflows/nextjs-ci.yml"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "app/**"
+      - "components/**"
+      - "lib/**"
+      - "prisma/**"
+      - "package.json"
+      - "package-lock.json"
+      - "tsconfig.json"
+      - ".github/workflows/nextjs-ci.yml"
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    env:
+      # Syntactically valid but unreachable -- never actually connected
+      # to (see this workflow's own top comment on why there's no real
+      # CI database). Only exists so `prisma generate` has something to
+      # parse for schema.prisma's env("DATABASE_URL")/env("DIRECT_URL"),
+      # and so every DB-backed test's own dbReachable check fails fast
+      # and skips cleanly instead of hanging on a connection attempt to
+      # an unset variable.
+      DATABASE_URL: "postgresql://ci:ci@localhost:5432/ci_unreachable"
+      DIRECT_URL: "postgresql://ci:ci@localhost:5432/ci_unreachable"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Generates the @prisma/client types/runtime tsc and vitest both
+      # need -- no live database required for this step, it only reads
+      # prisma/schema.prisma.
+      - name: Prisma generate
+        run: npx prisma generate
+
+      # Hard gates -- a real type error, lint error, or test failure
+      # fails this job.
+      - name: Typecheck
+        run: npx tsc --noEmit -p tsconfig.json
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm run test
