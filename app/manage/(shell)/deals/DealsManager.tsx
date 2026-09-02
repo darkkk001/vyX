@@ -3,7 +3,9 @@
 import { useEffect, useState } from "react";
 import { Input } from "@/components/ui/Input";
 import { Badge } from "@/components/ui/Badge";
+import { Button } from "@/components/ui/Button";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
+import DealingReplayPanel from "@/components/admin/DealingReplayPanel";
 
 export type DealRow = {
   id: string;
@@ -27,6 +29,7 @@ export type DealRow = {
 export default function DealsManager() {
   const [rows, setRows] = useState<DealRow[] | null>(null);
   const [search, setSearch] = useState("");
+  const [replayPositionId, setReplayPositionId] = useState<string | null>(null);
 
   useEffect(() => {
     fetch("/api/manage/deals")
@@ -68,10 +71,11 @@ export default function DealsManager() {
           <TableHeaderCell align="right">Swap</TableHeaderCell>
           <TableHeaderCell align="right">P&L</TableHeaderCell>
           <TableHeaderCell>Closed</TableHeaderCell>
+          <TableHeaderCell></TableHeaderCell>
         </TableHead>
         <TableBody>
           {filtered.length === 0 ? (
-            <TableEmptyState colSpan={10}>No closed deals match.</TableEmptyState>
+            <TableEmptyState colSpan={11}>No closed deals match.</TableEmptyState>
           ) : (
             filtered.map((row) => (
               <TableRow key={row.id}>
@@ -92,11 +96,17 @@ export default function DealsManager() {
                   {row.realizedPnl}
                 </TableCell>
                 <TableCell className="text-xs text-[var(--text-3)]">{row.closedAt}</TableCell>
+                <TableCell align="right">
+                  <Button variant="ghost" onClick={() => setReplayPositionId(row.id)}>Replay</Button>
+                </TableCell>
               </TableRow>
             ))
           )}
         </TableBody>
       </Table>
+      {replayPositionId ? (
+        <DealingReplayPanel positionId={replayPositionId} onClose={() => setReplayPositionId(null)} />
+      ) : null}
     </div>
   );
 }
