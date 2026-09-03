@@ -362,6 +362,14 @@ async fn flush_candles(pool: &PgPool, cache: &TickCache, ticks: &[Tick], stats: 
             // known at the moment it's processed, not a single snapshot
             // read before the loop started.
             let offset_sec = broker_offset.observe(tick);
+            // See FeedStats::record_offset_fallback_tick's own doc
+            // comment -- checked directly against the tick's own field
+            // (not e.g. "offset_sec == 0", which a broker genuinely on
+            // UTC would trip on every tick for no reason) so this only
+            // fires for an actual missing-field fallback.
+            if tick.broker_offset_sec.is_none() {
+                stats.record_offset_fallback_tick();
+            }
             for update in candle_updates_for_tick(tick, now, offset_sec) {
                 // fix/realtime-sync §4 -- flat-fills every bucket skipped
                 // since the last one actually written for this
