@@ -73,7 +73,7 @@ async fn seed(pool: &PgPool) -> Result<Fixtures, Box<dyn std::error::Error>> {
     let account_number = format!("PARALLELRUN{}", chrono_like_millis());
     let password_hash = bcrypt::hash(TRADER_PASSWORD, bcrypt::DEFAULT_COST)?;
     sqlx::query(
-        r#"INSERT INTO "Account" (id, "brokerId", "accountNumber", email, "passwordHash", "fullName", "accountType", currency, leverage, balance, credit, status, "createdAt", "updatedAt")
+        r#"INSERT INTO "Account" (id, "brokerId", "accountNumber", email, "passwordHash", "fullName", "accountMode", currency, leverage, balance, credit, status, "createdAt", "updatedAt")
            VALUES ($1, $2, $3, $4, $5, 'Parallel Run Diagnostic', 'LIVE', 'USD', 100, 1000000, 0, 'ACTIVE', now(), now())"#,
     )
     .bind(&account_id)

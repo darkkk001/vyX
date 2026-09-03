@@ -231,7 +231,7 @@ async function createFixture(
       email: `mirror-source-${suffix}@test.local`,
       passwordHash: "x",
       fullName: "Mirror Source",
-      accountType: "LIVE",
+      accountMode: "LIVE",
       groupId: group.id,
       balance: D(10000),
     },
@@ -243,7 +243,7 @@ async function createFixture(
       email: `mirror-target-${suffix}@test.local`,
       passwordHash: "x",
       fullName: "Mirror Target (Master)",
-      accountType: "LIVE",
+      accountMode: "LIVE",
       balance: D(100000),
     },
   });

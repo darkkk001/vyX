@@ -59,7 +59,7 @@ async function createFixture(tx: Prisma.TransactionClient, balance = "1000") {
       email: `ba-client-${suffix}@test.local`,
       passwordHash: "x",
       fullName: "Balance Adj Test",
-      accountType: "LIVE",
+      accountMode: "LIVE",
       balance: D(balance),
     },
   });

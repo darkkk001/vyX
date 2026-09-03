@@ -43,7 +43,7 @@ export async function GET(request: NextRequest) {
           { email: { contains: q, mode: "insensitive" } },
         ],
       },
-      select: { id: true, accountNumber: true, fullName: true, email: true, accountType: true },
+      select: { id: true, accountNumber: true, fullName: true, email: true, accountMode: true },
       take: 6,
       orderBy: { accountNumber: "asc" },
     }),
@@ -77,7 +77,7 @@ export async function GET(request: NextRequest) {
   ]);
 
   return NextResponse.json({
-    accounts: accounts.map((a) => ({ id: a.id, accountNumber: a.accountNumber, fullName: a.fullName, email: a.email, accountType: a.accountType })),
+    accounts: accounts.map((a) => ({ id: a.id, accountNumber: a.accountNumber, fullName: a.fullName, email: a.email, accountMode: a.accountMode })),
     orders: orders.map((o) => ({ id: o.id, accountId: o.account.id, accountNumber: o.account.accountNumber, symbol: o.symbol.name, side: o.side, type: o.type, status: o.status })),
     positions: positions.map((p) => ({ id: p.id, accountId: p.account.id, accountNumber: p.account.accountNumber, symbol: p.symbol.name, side: p.side, status: p.status })),
     transactions: transactions.map((t) => ({ id: t.id, accountId: t.account.id, accountNumber: t.account.accountNumber, type: t.type, status: t.status, amount: t.amount.toString() })),

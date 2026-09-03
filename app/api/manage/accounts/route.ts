@@ -19,9 +19,25 @@ async function requireManager() {
 // broker's. A race between two concurrent creates is handled by retrying
 // on the unique-constraint error in the POST handler below, same idiom as
 // app/api/trade/orders/route.ts's idempotency-key retry.
+//
+// Numeric MAX via a raw cast, not `orderBy: { accountNumber: "desc" }` --
+// accountNumber is a Prisma String column, so that `desc` sort is
+// lexicographic, not numeric. A real incident: a 7-digit, non-zero-
+// padded test accountNumber ("9000001") sorted lexicographically ABOVE
+// every real 8-digit "5......." number ('9' > '5' as the first
+// character), so `findFirst` kept returning that test row as "the
+// max" forever -- every subsequent real account creation, for every
+// broker, computed the same colliding next number and failed outright
+// once nothing was left to retry into. Casting to bigint sidesteps the
+// whole class of bug regardless of what shape any future accountNumber
+// happens to take (differing digit counts, non-zero-padded values,
+// etc.) -- correct by construction, not by convention every writer has
+// to remember to uphold.
 async function nextAccountNumber(): Promise<string> {
-  const last = await prisma.account.findFirst({ orderBy: { accountNumber: "desc" }, select: { accountNumber: true } });
-  const base = last ? parseInt(last.accountNumber, 10) : 50000999;
+  const rows = await prisma.$queryRaw<{ max: bigint | null }[]>`
+    SELECT MAX("accountNumber"::bigint) as max FROM "Account" WHERE "accountNumber" ~ '^[0-9]+$'
+  `;
+  const base = rows[0]?.max != null ? Number(rows[0].max) : 50000999;
   return String((Number.isFinite(base) ? base : 50000999) + 1).padStart(8, "0");
 }
 
@@ -38,6 +54,7 @@ export async function GET() {
         group: { select: { id: true, name: true } },
         ibLinkAsClient: { select: { id: true } },
         kycRecord: { select: { status: true } },
+        accountType: { select: { id: true, name: true } },
       },
       orderBy: { accountNumber: "asc" },
     }),
@@ -60,7 +77,9 @@ export async function GET() {
         accountNumber: a.accountNumber,
         fullName: a.fullName,
         email: a.email,
-        accountType: a.accountType,
+        accountMode: a.accountMode,
+        accountTypeId: a.accountTypeId,
+        accountTypeName: a.accountType?.name ?? null,
         currency: a.currency,
         leverage: a.leverage,
         balance: a.balance.toString(),
@@ -120,13 +139,35 @@ async function createAccount(request: NextRequest, session: NonNullable<Awaited<
   const fullName = typeof body?.fullName === "string" ? body.fullName.trim() : "";
   const email = typeof body?.email === "string" ? body.email.trim().toLowerCase() : "";
   const password = typeof body?.password === "string" ? body.password : "";
-  const accountType = body?.accountType === "LIVE" ? "LIVE" : body?.accountType === "DEMO" ? "DEMO" : null;
+  // Renamed from "accountType" -- see prisma/schema.prisma's own comment
+  // on AccountMode for why. Still accepts DEMO/LIVE, still required.
+  const accountMode = body?.accountMode === "LIVE" ? "LIVE" : body?.accountMode === "DEMO" ? "DEMO" : null;
 
-  if (!fullName || !email || !email.includes("@") || !accountType) {
-    return NextResponse.json({ error: "fullName, a valid email, and accountType are required" }, { status: 400 });
+  if (!fullName || !email || !email.includes("@") || !accountMode) {
+    return NextResponse.json({ error: "fullName, a valid email, and accountMode are required" }, { status: 400 });
   }
   if (password.length < 8) {
     return NextResponse.json({ error: "password must be at least 8 characters" }, { status: 400 });
+  }
+
+  // AccountType (pricing tier -- Standard/Pro/Zero, see that model's own
+  // schema comment) is a SEPARATE choice from accountMode above, per the
+  // Add-account form's own field ordering. An explicit accountTypeId
+  // must belong to this broker and be enabled (can't assign a disabled
+  // type to a new account, same rule AccountType's own schema comment
+  // describes for the Settings CRUD page); omitted entirely falls back
+  // to the broker's isDefault type, matching the migration's own
+  // backfill convention for every pre-existing account.
+  let accountTypeId: string | null = null;
+  if (typeof body?.accountTypeId === "string" && body.accountTypeId) {
+    const found = await prisma.accountType.findUnique({ where: { id: body.accountTypeId } });
+    if (!found || found.brokerId !== brokerId || !found.enabled) {
+      return NextResponse.json({ error: "account type not found" }, { status: 404 });
+    }
+    accountTypeId = found.id;
+  } else {
+    const defaultType = await prisma.accountType.findFirst({ where: { brokerId, isDefault: true } });
+    accountTypeId = defaultType?.id ?? null;
   }
 
   const currency = typeof body?.currency === "string" && body.currency.trim() ? body.currency.trim().toUpperCase() : broker.defaultAccountCurrency;
@@ -196,7 +237,8 @@ async function createAccount(request: NextRequest, session: NonNullable<Awaited<
             email,
             passwordHash,
             fullName,
-            accountType,
+            accountMode,
+            accountTypeId,
             currency,
             leverage,
             groupId: group?.id ?? null,
@@ -231,7 +273,7 @@ async function createAccount(request: NextRequest, session: NonNullable<Awaited<
             entityType: "Account",
             entityId: account.id,
             oldValue: Prisma.JsonNull,
-            newValue: { accountNumber, email, accountType, initialBalance: initialBalance.toString() },
+            newValue: { accountNumber, email, accountMode, accountTypeId, initialBalance: initialBalance.toString() },
           },
         });
 
@@ -253,7 +295,7 @@ async function createAccount(request: NextRequest, session: NonNullable<Awaited<
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
         // Two distinct unique constraints can fire P2002 here --
         // accountNumber (a genuine allocation race, worth retrying with a
-        // freshly-read max) vs. the [brokerId, email, accountType]
+        // freshly-read max) vs. the [brokerId, email, accountMode]
         // constraint (a duplicate client, not a race -- retrying would
         // just fail the same way every time and burn all 5 attempts
         // before ever telling the caller why).

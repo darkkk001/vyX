@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 type SearchResults = {
-  accounts: { id: string; accountNumber: string; fullName: string; email: string; accountType: string }[];
+  accounts: { id: string; accountNumber: string; fullName: string; email: string; accountMode: string }[];
   orders: { id: string; accountId: string; accountNumber: string; symbol: string; side: string; type: string; status: string }[];
   positions: { id: string; accountId: string; accountNumber: string; symbol: string; side: string; status: string }[];
   transactions: { id: string; accountId: string; accountNumber: string; type: string; status: string; amount: string }[];
@@ -106,7 +106,7 @@ export function TopbarSearch({ placeholder }: { placeholder: string }) {
         badge: "Account",
         badgeClass: "bg-[var(--accent-bg)] text-[var(--accent)]",
         label: `${a.accountNumber} — ${a.fullName}`,
-        sublabel: `${a.email} · ${a.accountType}`,
+        sublabel: `${a.email} · ${a.accountMode}`,
         path: `/manage/accounts/${a.id}`,
       });
     }

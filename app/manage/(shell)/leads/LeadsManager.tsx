@@ -54,7 +54,7 @@ export default function LeadsManager() {
 
   const [convertTarget, setConvertTarget] = useState<LeadRow | null>(null);
   const [convertPassword, setConvertPassword] = useState("");
-  const [convertAccountType, setConvertAccountType] = useState<"DEMO" | "LIVE">("DEMO");
+  const [convertAccountMode, setConvertAccountMode] = useState<"DEMO" | "LIVE">("DEMO");
   const [convertBusy, setConvertBusy] = useState(false);
   const [convertError, setConvertError] = useState<string | null>(null);
   const [convertedCreds, setConvertedCreds] = useState<{ accountNumber: string; password: string } | null>(null);
@@ -97,7 +97,7 @@ export default function LeadsManager() {
   function openConvert(row: LeadRow) {
     setConvertTarget(row);
     setConvertPassword("");
-    setConvertAccountType("DEMO");
+    setConvertAccountMode("DEMO");
     setConvertError(null);
     setConvertedCreds(null);
   }
@@ -117,7 +117,7 @@ export default function LeadsManager() {
         fullName: convertTarget.fullName,
         email: convertTarget.email,
         password: convertPassword,
-        accountType: convertAccountType,
+        accountMode: convertAccountMode,
         phone: convertTarget.phone ?? undefined,
         country: convertTarget.country ?? undefined,
       }),
@@ -256,8 +256,8 @@ export default function LeadsManager() {
               {convertTarget?.phone ? ` · ${convertTarget.phone}` : ""}
               {convertTarget?.country ? ` · ${convertTarget.country}` : ""}
             </p>
-            <FormField label="Account type">
-              <Select value={convertAccountType} onChange={(e) => setConvertAccountType(e.target.value as "DEMO" | "LIVE")}>
+            <FormField label="Account mode">
+              <Select value={convertAccountMode} onChange={(e) => setConvertAccountMode(e.target.value as "DEMO" | "LIVE")}>
                 <option value="DEMO">DEMO</option>
                 <option value="LIVE">LIVE</option>
               </Select>

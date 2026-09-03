@@ -67,7 +67,7 @@ export async function POST(request: NextRequest) {
   const response = NextResponse.json({
     accountId: account.id,
     accountNumber: account.accountNumber,
-    accountType: account.accountType,
+    accountMode: account.accountMode,
   });
   response.cookies.set(ACCOUNT_SESSION_COOKIE_NAME, token, accountSessionCookieOptions(remember));
   return response;

@@ -9,7 +9,8 @@ type AccountHeader = {
   fullName: string;
   accountNumber: string;
   email: string;
-  accountType: string;
+  accountMode: string;
+  accountTypeName: string | null;
   status: string;
   groupName: string | null;
   kycStatus: string | null;
@@ -73,7 +74,8 @@ export default function ClientActivityView({ accountId, backLink }: { accountId:
     <main className="mx-auto max-w-[1000px]">
       <PageHeader
         title={`${account.fullName} — ${account.accountNumber}`}
-        description={`${account.email} · ${account.accountType} · ${account.status} · Group: ${account.groupName ?? "ungrouped"} · KYC: ${account.kycStatus ?? "none"}`}
+        description={`${account.email} · ${account.accountMode} · ${account.status} · Group: ${account.groupName ?? "ungrouped"} · KYC: ${account.kycStatus ?? "none"}`}
+        action={account.accountTypeName ? <Badge tone="accent">{account.accountTypeName}</Badge> : null}
       />
       <p className="mb-4">
         {backLink ? (

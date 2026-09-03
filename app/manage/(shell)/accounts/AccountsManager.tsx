@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/Badge";
 import { FormField } from "@/components/ui/FormField";
 import { LeverageInput } from "@/components/ui/LeverageInput";
 import { Modal, ModalActions } from "@/components/ui/Modal";
+import { SegmentedControl } from "@/components/ui/SegmentedControl";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
 import { TableSkeleton, TableErrorState } from "@/components/ui/TableExtras";
 import { useToast } from "@/lib/toast";
@@ -17,7 +18,9 @@ export type AccountRow = {
   accountNumber: string;
   fullName: string;
   email: string;
-  accountType: string;
+  accountMode: string;
+  accountTypeId: string | null;
+  accountTypeName: string | null;
   currency: string;
   leverage: number;
   balance: string;
@@ -32,6 +35,7 @@ export type AccountRow = {
 };
 
 export type GroupOption = { id: string; name: string };
+export type AccountTypeOption = { id: string; name: string; pricingHint: string | null; isDefault: boolean; enabled: boolean };
 
 const statusTone = { ACTIVE: "success", SUSPENDED: "warning", CLOSED: "neutral" } as const;
 const kycTone = { PENDING: "warning", APPROVED: "success", REJECTED: "danger" } as const;
@@ -50,6 +54,7 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
   const { showToast } = useToast();
   const [rows, setRows] = useState<AccountRow[] | null>(null);
   const [groups, setGroups] = useState<GroupOption[]>([]);
+  const [accountTypes, setAccountTypes] = useState<AccountTypeOption[]>([]);
   const [canManageFinance, setCanManageFinance] = useState(false);
   const [search, setSearch] = useState("");
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -77,6 +82,10 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
       .then((r) => r.json())
       .then((d: { id: string; name: string }[]) => setGroups(d.map((g) => ({ id: g.id, name: g.name }))))
       .catch(() => {});
+    fetch("/api/manage/account-types")
+      .then((r) => r.json())
+      .then((d: AccountTypeOption[]) => setAccountTypes(d))
+      .catch(() => {});
     fetch("/api/manage/shell-info")
       .then((r) => r.json())
       .then((d: { canManageFinance: boolean }) => setCanManageFinance(d.canManageFinance))
@@ -90,7 +99,8 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
   const [adjustError, setAdjustError] = useState<string | null>(null);
 
   const emptyNewAccount = {
-    fullName: "", email: "", password: "", accountType: "DEMO" as "DEMO" | "LIVE",
+    fullName: "", email: "", password: "", accountMode: "DEMO" as "DEMO" | "LIVE",
+    accountTypeId: "",
     currency: "USD", groupId: "", leverage: "100", initialBalance: "0",
     country: "", phone: "", dateOfBirth: "",
   };
@@ -101,7 +111,13 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
   const [createdAccount, setCreatedAccount] = useState<{ accountNumber: string; password: string } | null>(null);
 
   function openAddModal() {
-    setNewAccount(emptyNewAccount);
+    // Pre-select the broker's default type (Settings -> Account Types)
+    // rather than leaving the picker on nothing -- omitting accountTypeId
+    // entirely on submit falls back to the same default server-side
+    // anyway (app/api/manage/accounts/route.ts), so this is a UX
+    // convenience, not load-bearing.
+    const defaultType = accountTypes.find((t) => t.isDefault) ?? accountTypes[0];
+    setNewAccount({ ...emptyNewAccount, accountTypeId: defaultType?.id ?? "" });
     setAddError(null);
     setCreatedAccount(null);
     setAddOpen(true);
@@ -116,6 +132,7 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
       body: JSON.stringify({
         ...newAccount,
         groupId: newAccount.groupId || undefined,
+        accountTypeId: newAccount.accountTypeId || undefined,
         leverage: newAccount.groupId ? undefined : Number(newAccount.leverage),
       }),
     });
@@ -165,6 +182,11 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
 
   async function changeGroup(row: AccountRow, groupId: string) {
     await patchAccount(row.id, { groupId: groupId || null }, `${row.accountNumber} moved to a new group`);
+  }
+
+  async function changeAccountType(row: AccountRow, accountTypeId: string) {
+    const name = accountTypes.find((t) => t.id === accountTypeId)?.name ?? accountTypeId;
+    await patchAccount(row.id, { accountTypeId: accountTypeId || null }, `${row.accountNumber} account type set to ${name}`);
   }
 
   async function changeStatus(row: AccountRow, status: string) {
@@ -226,7 +248,8 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
       <Table>
         <TableHead>
           <TableHeaderCell className="min-w-[220px]">Account</TableHeaderCell>
-          <TableHeaderCell className="min-w-[70px]">Type</TableHeaderCell>
+          <TableHeaderCell className="min-w-[70px]" title="DEMO or LIVE">Mode</TableHeaderCell>
+          <TableHeaderCell className="min-w-[90px]" title="Pricing tier -- Standard/Pro/Zero, see Settings -> Account Types">Type</TableHeaderCell>
           <TableHeaderCell className="min-w-[90px]">Country</TableHeaderCell>
           <TableHeaderCell className="min-w-[90px]">KYC</TableHeaderCell>
           <TableHeaderCell className="min-w-[160px]">Group</TableHeaderCell>
@@ -238,7 +261,7 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
           <TableHeaderCell className="min-w-[140px]" />
         </TableHead>
         <TableBody>
-          <TableSkeleton columns={11} />
+          <TableSkeleton columns={12} />
         </TableBody>
       </Table>
     );
@@ -265,7 +288,8 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
       <Table>
         <TableHead>
           <TableHeaderCell className="min-w-[220px]">Account</TableHeaderCell>
-          <TableHeaderCell className="min-w-[70px]">Type</TableHeaderCell>
+          <TableHeaderCell className="min-w-[70px]" title="DEMO or LIVE">Mode</TableHeaderCell>
+          <TableHeaderCell className="min-w-[90px]" title="Pricing tier -- Standard/Pro/Zero, see Settings -> Account Types">Type</TableHeaderCell>
           <TableHeaderCell className="min-w-[90px]">Country</TableHeaderCell>
           <TableHeaderCell className="min-w-[90px]">KYC</TableHeaderCell>
           <TableHeaderCell className="min-w-[160px]">Group</TableHeaderCell>
@@ -280,9 +304,9 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
         </TableHead>
         <TableBody>
           {loadError ? (
-            <TableErrorState colSpan={11} onRetry={() => reloadRows().catch(() => setLoadError(true))} />
+            <TableErrorState colSpan={12} onRetry={() => reloadRows().catch(() => setLoadError(true))} />
           ) : filtered.length === 0 ? (
-            <TableEmptyState colSpan={11}>No accounts match.</TableEmptyState>
+            <TableEmptyState colSpan={12}>No accounts match.</TableEmptyState>
           ) : (
             filtered.map((row) => (
               <TableRow key={row.id}>
@@ -303,7 +327,32 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
                     </Badge>
                   ) : null}
                 </TableCell>
-                <TableCell className="min-w-[70px]">{row.accountType}</TableCell>
+                <TableCell className="min-w-[70px]">{row.accountMode}</TableCell>
+                <TableCell className="min-w-[90px]">
+                  <Select
+                    value={row.accountTypeId ?? ""}
+                    disabled={busyId === row.id}
+                    onChange={(e) => changeAccountType(row, e.target.value)}
+                    className="w-full"
+                  >
+                    {/* An account already on a disabled type keeps showing
+                        it here (see AccountType.enabled's own schema
+                        comment -- old references stay valid) even though
+                        it's excluded from `enabled`-filtered lists like
+                        the Add-account picker. */}
+                    {row.accountTypeId && !accountTypes.some((t) => t.id === row.accountTypeId) ? (
+                      <option value={row.accountTypeId}>{row.accountTypeName} (disabled)</option>
+                    ) : null}
+                    {accountTypes
+                      .filter((t) => t.enabled || t.id === row.accountTypeId)
+                      .map((t) => (
+                        <option key={t.id} value={t.id}>
+                          {t.name}
+                          {!t.enabled ? " (disabled)" : ""}
+                        </option>
+                      ))}
+                  </Select>
+                </TableCell>
                 <TableCell className="min-w-[90px]">{row.country ?? "—"}</TableCell>
                 <TableCell className="min-w-[90px]">{row.kycStatus ? <Badge tone={kycTone[row.kycStatus]}>{row.kycStatus}</Badge> : <Badge tone="neutral">NO KYC</Badge>}</TableCell>
                 <TableCell className="min-w-[160px]">
@@ -411,7 +460,7 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
         </div>
       </Modal>
 
-      <Modal open={addOpen} onClose={() => setAddOpen(false)} title="Add account">
+      <Modal open={addOpen} onClose={() => setAddOpen(false)} title="Add account" onSubmit={submitNewAccount}>
         {createdAccount ? (
           <div className="flex flex-col gap-3">
             <p className="text-sm text-[var(--text-2)]">
@@ -422,57 +471,20 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
               <div>Password: {createdAccount.password}</div>
             </div>
             <ModalActions>
-              <Button variant="primary" onClick={() => setAddOpen(false)}>
+              <Button type="button" variant="primary" onClick={() => setAddOpen(false)}>
                 Done
               </Button>
             </ModalActions>
           </div>
         ) : (
           <div className="flex flex-col gap-3">
+            {/* Client fields first -- who this account belongs to. */}
             <FormField label="Full name">
               <Input value={newAccount.fullName} onChange={(e) => setNewAccount((p) => ({ ...p, fullName: e.target.value }))} />
             </FormField>
             <FormField label="Email">
               <Input type="email" value={newAccount.email} onChange={(e) => setNewAccount((p) => ({ ...p, email: e.target.value }))} />
             </FormField>
-            <FormField label="Password (min 8 characters)">
-              <Input type="text" mono value={newAccount.password} onChange={(e) => setNewAccount((p) => ({ ...p, password: e.target.value }))} />
-            </FormField>
-            <div className="flex gap-3">
-              <div className="flex-1">
-                <FormField label="Account type">
-                  <Select value={newAccount.accountType} onChange={(e) => setNewAccount((p) => ({ ...p, accountType: e.target.value as "DEMO" | "LIVE" }))}>
-                    <option value="DEMO">DEMO</option>
-                    <option value="LIVE">LIVE</option>
-                  </Select>
-                </FormField>
-              </div>
-              <div className="flex-1">
-                <FormField label="Currency">
-                  <Input mono value={newAccount.currency} onChange={(e) => setNewAccount((p) => ({ ...p, currency: e.target.value }))} />
-                </FormField>
-              </div>
-            </div>
-            <FormField label="Group (optional)">
-              <Select value={newAccount.groupId} onChange={(e) => setNewAccount((p) => ({ ...p, groupId: e.target.value }))}>
-                <option value="">— ungrouped —</option>
-                {groups.map((g) => (
-                  <option key={g.id} value={g.id}>
-                    {g.name}
-                  </option>
-                ))}
-              </Select>
-            </FormField>
-            {canManageFinance && !newAccount.groupId ? (
-              <FormField label="Leverage">
-                <LeverageInput value={newAccount.leverage} onChange={(e) => setNewAccount((p) => ({ ...p, leverage: e.target.value }))} />
-              </FormField>
-            ) : null}
-            {canManageFinance ? (
-              <FormField label="Initial balance (USD)">
-                <Input type="text" inputMode="decimal" mono value={newAccount.initialBalance} onChange={(e) => setNewAccount((p) => ({ ...p, initialBalance: e.target.value }))} />
-              </FormField>
-            ) : null}
             <div className="flex gap-3">
               <div className="flex-1">
                 <FormField label="Country (optional)">
@@ -488,12 +500,76 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
             <FormField label="Date of birth (optional)">
               <Input type="date" value={newAccount.dateOfBirth} onChange={(e) => setNewAccount((p) => ({ ...p, dateOfBirth: e.target.value }))} />
             </FormField>
+
+            {/* Account mode -- DEMO vs LIVE. Orthogonal to Account type
+                below (see this form's own footer note). */}
+            <FormField label="Account mode">
+              <SegmentedControl
+                name="accountMode"
+                value={newAccount.accountMode}
+                onChange={(v) => setNewAccount((p) => ({ ...p, accountMode: v }))}
+                options={[
+                  { value: "DEMO", label: "Demo", hint: "Simulated funds" },
+                  { value: "LIVE", label: "Live", hint: "Real funds" },
+                ]}
+              />
+            </FormField>
+            {newAccount.accountMode === "LIVE" ? (
+              <p className="rounded-lg border border-[var(--warn)]/30 bg-[var(--warn-bg)] px-2.5 py-2 text-xs text-[var(--warn)]">
+                KYC required -- a brand-new Live account starts unverified. Some actions (e.g. withdrawals) will be
+                blocked until KYC is approved on the account&apos;s own page.
+              </p>
+            ) : null}
+
+            {/* Account type -- pricing tier, a separate axis from mode. */}
+            <FormField label="Account type">
+              <SegmentedControl
+                name="accountType"
+                value={newAccount.accountTypeId}
+                onChange={(v) => setNewAccount((p) => ({ ...p, accountTypeId: v }))}
+                options={accountTypes
+                  .filter((t) => t.enabled)
+                  .map((t) => ({ value: t.id, label: t.name, hint: t.pricingHint }))}
+              />
+            </FormField>
+
+            {/* Group -- routing, a distinct concept from type (pricing). */}
+            <FormField label="Group — routing">
+              <Select value={newAccount.groupId} onChange={(e) => setNewAccount((p) => ({ ...p, groupId: e.target.value }))}>
+                <option value="">— ungrouped —</option>
+                {groups.map((g) => (
+                  <option key={g.id} value={g.id}>
+                    {g.name}
+                  </option>
+                ))}
+              </Select>
+            </FormField>
+
+            {canManageFinance && !newAccount.groupId ? (
+              <FormField label="Leverage">
+                <LeverageInput value={newAccount.leverage} onChange={(e) => setNewAccount((p) => ({ ...p, leverage: e.target.value }))} />
+              </FormField>
+            ) : null}
+            <FormField label="Currency">
+              <Input mono value={newAccount.currency} onChange={(e) => setNewAccount((p) => ({ ...p, currency: e.target.value }))} />
+            </FormField>
+            {canManageFinance ? (
+              <FormField label="Initial balance (USD)">
+                <Input type="text" inputMode="decimal" mono value={newAccount.initialBalance} onChange={(e) => setNewAccount((p) => ({ ...p, initialBalance: e.target.value }))} />
+              </FormField>
+            ) : null}
+            <FormField label="Password (min 8 characters)">
+              <Input type="text" mono value={newAccount.password} onChange={(e) => setNewAccount((p) => ({ ...p, password: e.target.value }))} />
+            </FormField>
+
+            <p className="text-center text-[10.5px] uppercase tracking-wide text-[var(--text-3)]">Type = pricing · Group = routing</p>
+
             {addError ? <p className="text-sm text-[var(--sell)]">{addError}</p> : null}
             <ModalActions>
-              <Button variant="ghost" onClick={() => setAddOpen(false)}>
+              <Button type="button" variant="ghost" onClick={() => setAddOpen(false)}>
                 Cancel
               </Button>
-              <Button variant="primary" disabled={addBusy} onClick={submitNewAccount}>
+              <Button type="submit" variant="primary" disabled={addBusy}>
                 {addBusy ? "Creating..." : "Create account"}
               </Button>
             </ModalActions>

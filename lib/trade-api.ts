@@ -11,7 +11,7 @@ export { serverNow, ApiError };
 export type AccountInfo = {
   id: string;
   accountNumber: string;
-  accountType: "DEMO" | "LIVE";
+  accountMode: "DEMO" | "LIVE";
   currency: string;
   leverage: number;
   balance: string;
@@ -101,7 +101,7 @@ export type ApiKycStatus = {
 
 export type ApiLinkedAccount = {
   accountNumber: string;
-  accountType: "DEMO" | "LIVE";
+  accountMode: "DEMO" | "LIVE";
   currency: string;
   balance: string;
 };
@@ -248,7 +248,7 @@ export const tradeApi = {
   },
   // Response shape distinguishes a completed login (accountId present)
   // from a 2FA-gated one (requiresTwoFactor + pendingToken, no session
-  // cookie set yet) -- see app/api/trade/login/route.ts. `accountType` is
+  // cookie set yet) -- see app/api/trade/login/route.ts. `accountMode` is
   // optional and only meaningful from the login page's own Server
   // selector (DEMO/LIVE) -- when passed, the route rejects a mismatch
   // (e.g. a Demo account logging in against the Live "server") instead of
@@ -260,13 +260,13 @@ export const tradeApi = {
   // accountSessionCookieOptions. Defaults true (matches this form's own
   // initialRemember default) so an existing call site that never passes
   // it keeps today's always-persistent behavior.
-  login: (accountNumber: string, password: string, accountType?: "LIVE" | "DEMO", remember: boolean = true) =>
-    call<{ accountId: string; accountNumber: string; accountType: string } | { requiresTwoFactor: true; pendingToken: string }>(
+  login: (accountNumber: string, password: string, accountMode?: "LIVE" | "DEMO", remember: boolean = true) =>
+    call<{ accountId: string; accountNumber: string; accountMode: string } | { requiresTwoFactor: true; pendingToken: string }>(
       "/api/trade/login",
-      { method: "POST", body: JSON.stringify({ accountNumber, password, accountType, remember }) }
+      { method: "POST", body: JSON.stringify({ accountNumber, password, accountMode, remember }) }
     ),
   verifyTwoFactor: (pendingToken: string, code: string, remember: boolean = true) =>
-    call<{ accountId: string; accountNumber: string; accountType: string }>("/api/trade/login/verify-2fa", {
+    call<{ accountId: string; accountNumber: string; accountMode: string }>("/api/trade/login/verify-2fa", {
       method: "POST",
       body: JSON.stringify({ pendingToken, code, remember }),
     }),

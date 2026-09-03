@@ -82,7 +82,7 @@ export async function POST(request: NextRequest) {
   if (fromAccount.status !== "ACTIVE" || toAccount.status !== "ACTIVE") {
     return NextResponse.json({ error: "both accounts must be active" }, { status: 400 });
   }
-  if (fromAccount.accountType !== toAccount.accountType) {
+  if (fromAccount.accountMode !== toAccount.accountMode) {
     return NextResponse.json({ error: "cannot transfer between a Demo and a Live account" }, { status: 400 });
   }
   if (fromAccount.currency !== toAccount.currency) {

@@ -67,7 +67,7 @@ async function createFixture(): Promise<Fixture> {
       email: `dq-client-${suffix}@test.local`,
       passwordHash: "x",
       fullName: "Dealing Queue Test Client",
-      accountType: "LIVE",
+      accountMode: "LIVE",
       balance: D(10000),
     },
   });

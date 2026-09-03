@@ -3051,7 +3051,7 @@ export default function WebTrader({
     netBySymbol.set(p.symbol.name, entry);
   });
 
-  const serverName = account ? `${brokerName}-${account.accountType === "LIVE" ? "Live" : "Demo"}` : brokerName;
+  const serverName = account ? `${brokerName}-${account.accountMode === "LIVE" ? "Live" : "Demo"}` : brokerName;
 
   return (
     <div className="wt-root" data-theme={theme} data-mode={chartSettings.theme}>
@@ -3250,9 +3250,9 @@ export default function WebTrader({
               )}
             </button>
             <div className="account-switcher" ref={accountSwitcherRef}>
-              <div className={`mode-toggle${account?.accountType === "LIVE" ? " live" : ""}`} onClick={() => setAccountDropdownOpen((v) => !v)}>
+              <div className={`mode-toggle${account?.accountMode === "LIVE" ? " live" : ""}`} onClick={() => setAccountDropdownOpen((v) => !v)}>
                 <span className="mono mode-toggle-acc-num">{account?.accountNumber ?? "..."}</span>
-                <span className="mode-toggle-label">{account?.accountType ?? ""}</span>
+                <span className="mode-toggle-label">{account?.accountMode ?? ""}</span>
                 <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ marginLeft: 2 }}><path d="M6 9l6 6 6-6" /></svg>
               </div>
               {accountDropdownOpen ? (
@@ -3260,7 +3260,7 @@ export default function WebTrader({
                   <div className="acc-option active">
                     <div className="acc-option-top">
                       <span className="acc-option-num mono">{account?.accountNumber}</span>
-                      <span className={`acc-badge ${account?.accountType === "LIVE" ? "live" : "demo"}`}>{account?.accountType}</span>
+                      <span className={`acc-badge ${account?.accountMode === "LIVE" ? "live" : "demo"}`}>{account?.accountMode}</span>
                     </div>
                     <div className="acc-option-balance mono">{balanceHidden ? "••••••" : account ? money(parseFloat(account.balance)) : ""}</div>
                   </div>
@@ -3281,7 +3281,7 @@ export default function WebTrader({
                         >
                           <div className="acc-option-top">
                             <span className="acc-option-num mono">{la.accountNumber}</span>
-                            <span className={`acc-badge ${la.accountType === "LIVE" ? "live" : "demo"}`}>{la.accountType}</span>
+                            <span className={`acc-badge ${la.accountMode === "LIVE" ? "live" : "demo"}`}>{la.accountMode}</span>
                           </div>
                           <div className="acc-option-balance mono">
                             {balanceHidden ? "••••••" : `${money(parseFloat(la.balance))} ${la.currency}`}

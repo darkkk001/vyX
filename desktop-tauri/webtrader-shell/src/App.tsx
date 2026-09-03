@@ -13,7 +13,7 @@ import "@/app/(broker)/trade/webtrader.css";
 //
 // The login screen itself is the real TradeLoginForm (Live/Demo server
 // picker, 2FA, forgot-password) -- this used to be a thin hand-rolled
-// duplicate that hardcoded accountType "DEMO", meaning no LIVE account
+// duplicate that hardcoded the account mode to "DEMO", meaning no LIVE account
 // could ever log into the bundled app at all. TradeLoginForm.tsx was made
 // portable (no next/navigation dependency) specifically so this shell
 // could render the exact same login experience as the website instead.

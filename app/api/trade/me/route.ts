@@ -13,7 +13,7 @@ export async function GET() {
     select: {
       id: true,
       accountNumber: true,
-      accountType: true,
+      accountMode: true,
       currency: true,
       leverage: true,
       balance: true,

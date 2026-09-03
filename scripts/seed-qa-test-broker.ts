@@ -68,8 +68,15 @@ async function main() {
   // right-click, and multi-select during the audit.
   const accountPassword = await bcrypt.hash("QaTest123!", 10);
   const accountDefs = [
-    { accountNumber: "9000001", email: "qa-client-1@zzzqa.test", fullName: "QA Test Client One" },
-    { accountNumber: "9000002", email: "qa-client-2@zzzqa.test", fullName: "QA Test Client Two" },
+    // Zero-padded to the real 8-digit shape (app/api/manage/accounts/
+    // route.ts's own nextAccountNumber convention) and starting with 0
+    // -- NOT the unpadded "9000001" this used to be. That 7-digit value
+    // sorted lexicographically ABOVE every real "5......." account
+    // number, which broke account-number allocation for every broker
+    // system-wide until both this and the underlying string-sort bug in
+    // nextAccountNumber were fixed. See that function's own comment.
+    { accountNumber: "00090001", email: "qa-client-1@zzzqa.test", fullName: "QA Test Client One" },
+    { accountNumber: "00090002", email: "qa-client-2@zzzqa.test", fullName: "QA Test Client Two" },
   ];
   const accounts = [];
   for (const a of accountDefs) {
@@ -82,7 +89,7 @@ async function main() {
         email: a.email,
         passwordHash: accountPassword,
         fullName: a.fullName,
-        accountType: "DEMO",
+        accountMode: "DEMO",
         balance: D("50000"),
       },
     });

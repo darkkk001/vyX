@@ -146,7 +146,7 @@ describe("chargeCommission (live DB, rolled back)", () => {
         email: `comm-${suffix}@test.local`,
         passwordHash: "x",
         fullName: "Commission Test",
-        accountType: "LIVE",
+        accountMode: "LIVE",
         balance: D(balance),
       },
     });

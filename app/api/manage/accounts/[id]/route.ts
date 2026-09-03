@@ -37,9 +37,13 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
   const body = await request.json().catch(() => null);
   const hasGroupChange = body != null && "groupId" in body;
+  // Same permission tier as groupId -- a pricing-tier LABEL (see
+  // AccountType's own schema comment), not itself a balance/leverage
+  // change, so MANAGER can reassign it same as group.
+  const hasAccountTypeChange = body != null && "accountTypeId" in body;
   const hasFinanceChange = body != null && ("leverage" in body || "status" in body || "maxDailyLoss" in body);
 
-  if (!hasGroupChange && !hasFinanceChange) {
+  if (!hasGroupChange && !hasAccountTypeChange && !hasFinanceChange) {
     return NextResponse.json({ error: "nothing to update" }, { status: 400 });
   }
   if (hasFinanceChange && session.role !== "BROKER_ADMIN" && !(await hasPermission(session, "ACCOUNT_FINANCE"))) {
@@ -56,6 +60,21 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       return NextResponse.json({ error: "group not found" }, { status: 404 });
     }
     group = { id: found.id, leverage: found.leverage };
+  }
+
+  let accountTypeId: string | null = null;
+  if (hasAccountTypeChange && body.accountTypeId != null) {
+    const found = await prisma.accountType.findUnique({ where: { id: body.accountTypeId } });
+    // Deliberately NOT checking `enabled` here -- an existing account can
+    // stay on (or be moved back to) a disabled type; `enabled` only gates
+    // the Add-account picker and new assignments from a broker actively
+    // choosing among CURRENT options, not this "put it back the way it
+    // was" case. Same "old references still resolve" rule as
+    // AccountType.enabled's own schema comment.
+    if (!found || found.brokerId !== brokerId) {
+      return NextResponse.json({ error: "account type not found" }, { status: 404 });
+    }
+    accountTypeId = found.id;
   }
 
   let leverage: number | undefined;
@@ -93,6 +112,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   const updated = await prisma.$transaction(async (tx) => {
     const data: {
       groupId?: string | null;
+      accountTypeId?: string | null;
       leverage?: number;
       status?: typeof status;
       maxDailyLoss?: Prisma.Decimal | null;
@@ -112,6 +132,15 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         action: "ACCOUNT_GROUP_CHANGED",
         oldValue: { groupId: account.groupId },
         newValue: { groupId: group?.id ?? null, appliedLeverage: group?.leverage ?? null },
+      });
+    }
+
+    if (hasAccountTypeChange) {
+      data.accountTypeId = accountTypeId;
+      auditEntries.push({
+        action: "ACCOUNT_TYPE_CHANGED",
+        oldValue: { accountTypeId: account.accountTypeId },
+        newValue: { accountTypeId },
       });
     }
 
@@ -164,6 +193,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     leverage: updated.leverage,
     status: updated.status,
     groupId: updated.groupId,
+    accountTypeId: updated.accountTypeId,
     maxDailyLoss: updated.maxDailyLoss?.toString() ?? null,
   });
 }

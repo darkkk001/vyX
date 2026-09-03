@@ -116,7 +116,7 @@ async function createFixture(
       email: `swap-${suffix}@test.local`,
       passwordHash: "x",
       fullName: "Swap Rollover Test Client",
-      accountType: "LIVE",
+      accountMode: "LIVE",
       balance: D("10000"),
       groupId,
     },

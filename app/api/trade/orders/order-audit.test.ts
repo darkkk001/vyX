@@ -55,7 +55,7 @@ async function createFixture(): Promise<Fixture> {
       email: `oa-client-${suffix}@test.local`,
       passwordHash: "x",
       fullName: "Order Audit Test Client",
-      accountType: "LIVE",
+      accountMode: "LIVE",
       // Symbol.contractSize defaults to 100000 (a plain FOREX-shaped
       // symbol here) -- a high balance keeps checkAccountPreTradeMargin
       // from rejecting the MARKET-fill tests below over margin, which

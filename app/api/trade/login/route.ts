@@ -25,7 +25,7 @@ export async function POST(request: NextRequest) {
   // sends this; the Account Selector's call site (WebTrader.tsx,
   // switching between linked accounts) omits it and skips this check
   // entirely, same as before this parameter existed.
-  const expectedAccountType = body?.accountType === "LIVE" ? "LIVE" : body?.accountType === "DEMO" ? "DEMO" : null;
+  const expectedAccountMode = body?.accountMode === "LIVE" ? "LIVE" : body?.accountMode === "DEMO" ? "DEMO" : null;
   // fix/realtime-sync §7 -- "Keep me signed in" checkbox (TradeLoginForm.tsx).
   // Defaults true so a caller that never sends it (the Account Selector's
   // own use of this same route, WebTrader.tsx switching linked accounts)
@@ -60,8 +60,8 @@ export async function POST(request: NextRequest) {
   // Checked only after a correct password -- the trader has already
   // proven they own this account, so telling them its real type here
   // isn't a meaningful information leak the way it would be pre-auth.
-  if (expectedAccountType && account.accountType !== expectedAccountType) {
-    const actual = account.accountType === "LIVE" ? "Live" : "Demo";
+  if (expectedAccountMode && account.accountMode !== expectedAccountMode) {
+    const actual = account.accountMode === "LIVE" ? "Live" : "Demo";
     return NextResponse.json(
       { error: `this is a ${actual} account -- select the ${actual} server and try again` },
       { status: 400 }
@@ -86,7 +86,7 @@ export async function POST(request: NextRequest) {
   const response = NextResponse.json({
     accountId: account.id,
     accountNumber: account.accountNumber,
-    accountType: account.accountType,
+    accountMode: account.accountMode,
   });
   response.cookies.set(ACCOUNT_SESSION_COOKIE_NAME, token, accountSessionCookieOptions(remember));
   return response;

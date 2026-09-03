@@ -29,7 +29,7 @@ export async function GET() {
       id: { not: session.accountId },
       status: "ACTIVE",
     },
-    select: { accountNumber: true, accountType: true, currency: true, balance: true },
+    select: { accountNumber: true, accountMode: true, currency: true, balance: true },
     orderBy: { accountNumber: "asc" },
   });
 

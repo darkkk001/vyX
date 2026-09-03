@@ -38,6 +38,10 @@ const LABELS: Record<string, string> = {
   LEVERAGE_CHANGE: "Changed leverage",
   ACCOUNT_STATUS_CHANGED: "Changed account status",
   ACCOUNT_MAX_DAILY_LOSS_CHANGED: "Changed max daily loss",
+  // AccountType (pricing tier -- Standard/Pro/Zero) scaffold.
+  ACCOUNT_TYPE_CREATED: "Created account type",
+  ACCOUNT_TYPE_UPDATED: "Updated account type",
+  ACCOUNT_TYPE_CHANGED: "Changed account type",
   GROUP_CREATED: "Created group",
   GROUP_CONFIG_UPDATED: "Updated group config",
   GROUP_SYMBOLS_UPDATED: "Updated group symbol allowlist",
@@ -141,6 +145,7 @@ const ENTITY_LIST_PATHS: Record<string, string> = {
   IbRelationship: "/manage/ib",
   BrokerSymbol: "/manage/symbols",
   Transaction: "/manage/funds",
+  AccountType: "/manage/settings",
 };
 
 export function auditEntityHref(entityType: string, entityId: string): string | null {

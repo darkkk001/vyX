@@ -122,7 +122,7 @@ GET /trade/sso — validates token (one-time use, checks broker match),
 
 ### 4.2 Account Selector (lightweight)
 
-- New `GET /api/trade/linked-accounts` — `prisma.account.findMany({ where: { email: session.email, brokerId: session.brokerId, id: { not: session.accountId } } })`, returns `accountNumber`, `accountType`, `currency`, masked balance.
+- New `GET /api/trade/linked-accounts` — `prisma.account.findMany({ where: { email: session.email, brokerId: session.brokerId, id: { not: session.accountId } } })`, returns `accountNumber`, `accountMode`, `currency`, masked balance.
 - New UI: dropdown in the top bar next to the existing account info, listing linked accounts. Selecting one opens a small password-confirm modal, then calls the existing `/api/trade/login` for that `accountNumber` — this **replaces** the session (matches MT4/5 behavior: switching accounts is a real re-login, just conveniently pre-filled).
 - No schema change.
 

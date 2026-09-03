@@ -56,7 +56,7 @@ async function createFixture(tx: Prisma.TransactionClient) {
       email: `kd-client-${suffix}@test.local`,
       passwordHash: "x",
       fullName: "KYC Decision Test",
-      accountType: "LIVE",
+      accountMode: "LIVE",
     },
   });
   const kyc = await tx.kycRecord.create({

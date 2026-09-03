@@ -75,7 +75,7 @@ async function createFixture(tx: Prisma.TransactionClient, balance = "1000") {
       email: `fa-client-${suffix}@test.local`,
       passwordHash: "x",
       fullName: "Funds Approval Test",
-      accountType: "LIVE",
+      accountMode: "LIVE",
       balance: D(balance),
     },
   });

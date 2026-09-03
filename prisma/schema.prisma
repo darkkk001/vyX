@@ -70,7 +70,16 @@ enum AdminStatus {
   DISABLED
 }
 
-enum AccountType {
+// DEMO vs LIVE -- renamed from AccountType (and Account.accountType
+// renamed to accountMode below) once "Account type" came to mean
+// something else entirely: which pricing tier (Standard/Pro/Zero -- see
+// the AccountType model further down) an account is priced under. Mode
+// and type are orthogonal -- an account has exactly one of each. Also a
+// hard requirement, not just a naming preference: Postgres implicitly
+// creates a composite row type for every table with the table's own
+// name, so a model literally named AccountType could not coexist with
+// an enum also named AccountType.
+enum AccountMode {
   DEMO
   LIVE
 }
@@ -315,6 +324,7 @@ model Broker {
   mirrorRules     MirrorRule[]
   priceAlerts     PriceAlert[]
   positionActionRequests PositionActionRequest[]
+  accountTypes    AccountType[]
   paymentMethods  PaymentMethod[]
 }
 
@@ -397,7 +407,7 @@ model Account {
   email         String
   passwordHash  String
   fullName      String
-  accountType   AccountType
+  accountMode   AccountMode
   currency      String        @default("USD")
   leverage      Int           @default(100) // 1:100
   balance       Decimal       @default(0) @db.Decimal(18, 4)
@@ -414,6 +424,21 @@ model Account {
   // what assigning a group actually does today.
   groupId       String?
   group         Group?        @relation(fields: [groupId], references: [id])
+  // Which pricing tier (Standard/Pro/Zero, or whatever a broker has
+  // renamed/added under Settings -> Account Types) this account is
+  // classified under -- see AccountType's own doc comment. Null = every
+  // account created before this feature existed; the migration that
+  // added this column backfilled every one of those to its broker's
+  // isDefault AccountType, so in practice a real account is never
+  // actually null (only a test fixture that doesn't care about type
+  // would leave it so) -- nullable anyway, same "null until assigned"
+  // shape as groupId just above, rather than forcing every existing
+  // call site (tests included) to start passing one. Purely a
+  // pricing-tier LABEL today: real spread/commission/swap still resolve
+  // from Group exactly as before (see GroupSymbolConfig) -- this field
+  // affects no live fill until the Phase 2 pricing engine reads it.
+  accountTypeId String?
+  accountType   AccountType?  @relation(fields: [accountTypeId], references: [id])
 
   // Basic identity/KYC fields -- null for every account that existed
   // before this feature (there was previously no way to enter any of
@@ -476,9 +501,50 @@ model Account {
   watchlistItems WatchlistItem[]
   savedWithdrawalAddresses SavedWithdrawalAddress[]
 
-  @@unique([brokerId, email, accountType])
+  @@unique([brokerId, email, accountMode])
   @@index([brokerId])
   @@index([groupId])
+  @@index([accountTypeId])
+}
+
+// Per-broker pricing-tier classification an Account can be tagged with
+// (Standard/Pro/Zero by default -- see the migration that seeds these
+// for every existing broker; a broker can rename/add/disable its own
+// via Settings -> Account Types). Display/reporting only for now --
+// pricing still resolves purely from Group (GroupSymbolConfig/
+// BrokerSymbol, see lib/group-pricing.ts) exactly as it did before this
+// model existed; wiring real per-type pricing is the Phase 2 pricing
+// engine's job, not this one's -- the UI says so wherever a type is
+// picked so nobody mistakes this for already being load-bearing.
+model AccountType {
+  id          String  @id @default(cuid())
+  brokerId    String
+  broker      Broker  @relation(fields: [brokerId], references: [id])
+  name        String
+  description String?
+  // One-line "what this tier means" shown next to the option in the
+  // Add-account picker and the Settings CRUD table -- e.g. "Spread-only,
+  // no commission". Purely a label (see this model's own doc comment).
+  pricingHint String?
+  sortOrder   Int     @default(0)
+  isDefault   Boolean @default(false)
+  // Soft-disable, not delete -- there is no delete route at all, so an
+  // Account.accountTypeId row can never dangle. A disabled type stays
+  // selectable-in-place for accounts already on it (their badge keeps
+  // rendering, findMany/include is unaffected, disabling is always
+  // allowed regardless of how many accounts reference it) but drops out
+  // of the Add-account picker and can't be assigned to another account
+  // -- same "hide from new use, keep old references intact" shape as
+  // BrokerSymbol.enabled. See app/api/manage/account-types/[id]/route.ts.
+  enabled     Boolean @default(true)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  accounts Account[]
+
+  @@unique([brokerId, name])
+  @@index([brokerId])
 }
 
 enum AlertCondition {

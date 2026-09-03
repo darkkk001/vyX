@@ -26,7 +26,7 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
 
   const account = await prisma.account.findUnique({
     where: { id },
-    include: { group: { select: { name: true } }, kycRecord: { select: { status: true } } },
+    include: { group: { select: { name: true } }, kycRecord: { select: { status: true } }, accountType: { select: { name: true } } },
   });
   if (!account || account.brokerId !== brokerId) {
     return NextResponse.json({ error: "not found" }, { status: 404 });
@@ -75,7 +75,8 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
       fullName: account.fullName,
       accountNumber: account.accountNumber,
       email: account.email,
-      accountType: account.accountType,
+      accountMode: account.accountMode,
+      accountTypeName: account.accountType?.name ?? null,
       status: account.status,
       groupName: account.group?.name ?? null,
       kycStatus: account.kycRecord?.status ?? null,

@@ -65,7 +65,7 @@ async function createFixture(tx: Prisma.TransactionClient): Promise<Fixture> {
       email: `bc-client-${suffix}@test.local`,
       passwordHash: "x",
       fullName: "Bulk Close Test Client",
-      accountType: "LIVE",
+      accountMode: "LIVE",
       balance: D(1_000_000), // large enough that 30 positions' margin/PNL never matters here
     },
   });
