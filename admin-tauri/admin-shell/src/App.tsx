@@ -244,7 +244,10 @@ export default function App() {
     // Same fix as manager-shell's App.tsx -- see its own comment. Mirrors
     // app/(super-admin)/layout.tsx's root data-surface="super-admin" div.
     <div data-surface="super-admin" className="min-h-dvh antialiased">
-     <AdminRealtimeProvider>
+     {/* enabled=false: the gateway hard-403s Super Admin (brokerId: null)
+         on this stream by design -- see AdminRealtimeProvider's own doc
+         comment. Same fix as NextAdminShell's enableRealtime prop. */}
+     <AdminRealtimeProvider enabled={false}>
       <AdminShell
         title="vyX Super Admin"
         planeTag="PLATFORM CONTROL PLANE"

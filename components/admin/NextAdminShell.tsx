@@ -18,11 +18,17 @@ import { AdminRealtimeProvider } from "@/lib/admin-realtime";
 // renderNavLink are injected instead of hardcoded: AdminShell stays
 // framework-agnostic markup shared with the bundled Tauri shells, which
 // mount their own AdminRealtimeProvider directly in their own App.tsx
-// instead (manager-shell, admin-shell).
-export function NextAdminShell(props: Omit<AdminShellProps, "isActive" | "renderNavLink">) {
+// instead (manager-shell, admin-shell). `enableRealtime={false}`
+// (app/(super-admin)/(shell)/layout.tsx) skips it for Super Admin, whose
+// sessions the gateway hard-403s on this stream by design -- see
+// AdminRealtimeProvider's own doc comment.
+export function NextAdminShell({
+  enableRealtime = true,
+  ...props
+}: Omit<AdminShellProps, "isActive" | "renderNavLink"> & { enableRealtime?: boolean }) {
   const pathname = usePathname();
   return (
-    <AdminRealtimeProvider>
+    <AdminRealtimeProvider enabled={enableRealtime}>
       <AdminShell
         {...props}
         isActive={(href) => pathname === href || (pathname?.startsWith(`${href}/`) ?? false)}

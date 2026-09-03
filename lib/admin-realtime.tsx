@@ -55,8 +55,16 @@ const AdminRealtimeContext = createContext<AdminRealtimeContextValue | null>(nul
 const INITIAL_BACKOFF_MS = 1000;
 const MAX_BACKOFF_MS = 15000;
 
-export function AdminRealtimeProvider({ children }: { children: ReactNode }) {
-  const [status, setStatus] = useState<AdminConnectionStatus>("connecting");
+// `enabled: false` skips opening the socket entirely and holds `status`
+// at "live" (so AdminShell's pill never renders) -- for Super Admin
+// sessions, which the gateway's attachAdminEventStream hard-403s
+// (brokerId: null is explicitly out of scope, see that function's own
+// doc comment). Without this, a Super Admin session got a 401/403 on
+// every connect attempt forever, and the client had no way to tell that
+// permanent rejection apart from a transient outage -- the "Reconnecting…"
+// pill was stuck for the lifetime of every Super Admin session.
+export function AdminRealtimeProvider({ children, enabled = true }: { children: ReactNode; enabled?: boolean }) {
+  const [status, setStatus] = useState<AdminConnectionStatus>(enabled ? "connecting" : "live");
   const handlersRef = useRef<Set<Handler>>(new Set());
 
   const subscribe = useCallback((handler: Handler) => {
@@ -67,6 +75,7 @@ export function AdminRealtimeProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
+    if (!enabled) return;
     let cancelled = false;
     let socket: WebSocket | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -111,7 +120,7 @@ export function AdminRealtimeProvider({ children }: { children: ReactNode }) {
       if (reconnectTimer) clearTimeout(reconnectTimer);
       socket?.close();
     };
-  }, []);
+  }, [enabled]);
 
   return <AdminRealtimeContext.Provider value={{ status, subscribe }}>{children}</AdminRealtimeContext.Provider>;
 }

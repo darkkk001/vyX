@@ -43,6 +43,7 @@ export default async function SuperAdminShellLayout({ children }: { children: Re
   return (
     <NextAdminShell
       title="vyX Super Admin"
+      enableRealtime={false}
       planeTag="PLATFORM CONTROL PLANE"
       pageTitle="Super Admin"
       navGroups={navGroups}
