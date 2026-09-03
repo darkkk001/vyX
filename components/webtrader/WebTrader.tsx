@@ -38,18 +38,7 @@ import { computeOrderReferenceLines, computeAlertLines } from "@/lib/chart-lines
 import { DEFAULT_CHART_SETTINGS, type ChartSettings } from "@/lib/chart-settings";
 import { playSound } from "@/lib/sounds";
 import { filterEventsForSymbol, isSameUtcDay, nextHighImpactEventWithin, type CalendarEvent } from "@/lib/economic-calendar";
-
-// Watchlist SPREAD column -- MT4/5's own "points" convention: a symbol's
-// point size is 10^-digits (its own smallest tradable price increment,
-// the same value klinecharts' priceMark/tooltip formatting already keys
-// off of), so a spread of 0.17 on a 2-digit symbol (XAUUSD) is 17 points,
-// and 0.00002 on a 5-digit symbol (EURUSD) is 2 points -- a much more
-// readable "how wide is this market" number than the raw price-unit
-// difference, and the standard unit every MT4/5 trader already thinks in.
-function spreadPoints(ask: number, bid: number, digits: number): string {
-  const points = (ask - bid) * Math.pow(10, digits);
-  return points.toFixed(1).replace(/\.0$/, "");
-}
+import { spreadPoints, DEFAULT_WATCHLIST_COLUMN_PREFS, type WatchlistColumnPrefs } from "@/lib/watchlist-columns";
 
 const TF_LABELS: { key: Timeframe; label: string }[] = [
   { key: "M1", label: "1m" },
@@ -130,7 +119,7 @@ type StoredLayout = {
   // app/api/trade/watchlist), not localStorage, so web and desktop stay
   // in sync. A pre-existing localStorage entry with this key is simply
   // never read again; harmless, doesn't need a migration.
-  columnPrefs?: { change: boolean; spread: boolean; high: boolean; low: boolean };
+  columnPrefs?: WatchlistColumnPrefs;
   orderPanelWidth?: number;
   watchlistWidth?: number;
   bottomPanelHeight?: number;
@@ -228,7 +217,7 @@ export default function WebTrader({
   const [watchlistFilter, setWatchlistFilter] = useState("");
   const [addSymbolOpen, setAddSymbolOpen] = useState(false);
   const [columnPrefs, setColumnPrefs] = useState(
-    storedLayout.columnPrefs ?? { change: true, spread: false, high: false, low: false }
+    storedLayout.columnPrefs ?? DEFAULT_WATCHLIST_COLUMN_PREFS
   );
   const [wlMenuOpen, setWlMenuOpen] = useState(false);
   const wlContextMenuRef = useRef<HTMLDivElement | null>(null);
