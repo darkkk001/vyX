@@ -249,6 +249,13 @@ export default function WebTrader({
   // "Selected" scope for Smart Trade Manager's bulk actions (break-even,
   // partial close, close) -- otherwise unused outside SmartTradeManager.tsx.
   const [selectedPositionIds, setSelectedPositionIds] = useState<Set<string>>(new Set());
+  // Drag-to-create SL/TP affordance -- which position's UNSET SL/TP ghost
+  // handles (see editableLines below) are currently shown on the chart.
+  // null by default, on purpose: a ghost handle used to render for every
+  // open position regardless, which looked exactly like a real SL/TP the
+  // trader had to notice was fake and drag away. Set by hovering that
+  // position's own row in the positions table (.position-row below).
+  const [hoveredPositionId, setHoveredPositionId] = useState<string | null>(null);
   // Now doubles as the embedded Smart Trade Manager panel's expand/
   // collapse state (below the Watchlist) -- defaults open since it's
   // meant to be visible there, not hidden behind the rail icon anymore.
@@ -2766,36 +2773,48 @@ export default function WebTrader({
           const pnl = pnlAtPrice(p.symbol.name, p.side, openPrice, vol, price);
           return `${prefix} ${fmt(price, mm.def.digits)}  ${pnl >= 0 ? "+" : "-"}$${Math.abs(pnl).toFixed(2)}`;
         };
+        // Ghost (drag-to-create) SL/TP handles used to render for every
+        // open position unconditionally -- looked exactly like a real
+        // SL/TP the trader had to notice was fake and drag away, on
+        // every single trade opened with neither set. Now only included
+        // when there's a real price to show, OR the trader is actively
+        // hovering that position's own row (the affordance, not a
+        // permanent fixture) -- see hoveredPositionId's own comment.
+        const isHovered = p.id === hoveredPositionId;
         const slPrice = p.slPrice ? parseFloat(p.slPrice) : null;
         const slGhostPrice = p.side === "BUY" ? openPrice - ghostOffset : openPrice + ghostOffset;
-        out.push({
-          id: `editsl-${p.id}`,
-          entityId: p.id,
-          entityType: "position",
-          kind: "sl",
-          price: slPrice ?? slGhostPrice,
-          color: "#EA3943",
-          digits: mm.def.digits,
-          minDistance,
-          referencePrice: mm.bid,
-          ghost: slPrice == null,
-          formatLabel: makeFormatLabel("SL"),
-        });
+        if (slPrice != null || isHovered) {
+          out.push({
+            id: `editsl-${p.id}`,
+            entityId: p.id,
+            entityType: "position",
+            kind: "sl",
+            price: slPrice ?? slGhostPrice,
+            color: "#EA3943",
+            digits: mm.def.digits,
+            minDistance,
+            referencePrice: mm.bid,
+            ghost: slPrice == null,
+            formatLabel: makeFormatLabel("SL"),
+          });
+        }
         const tpPrice = p.tpPrice ? parseFloat(p.tpPrice) : null;
         const tpGhostPrice = p.side === "BUY" ? openPrice + ghostOffset : openPrice - ghostOffset;
-        out.push({
-          id: `edittp-${p.id}`,
-          entityId: p.id,
-          entityType: "position",
-          kind: "tp",
-          price: tpPrice ?? tpGhostPrice,
-          color: "#16C784",
-          digits: mm.def.digits,
-          minDistance,
-          referencePrice: mm.bid,
-          ghost: tpPrice == null,
-          formatLabel: makeFormatLabel("TP"),
-        });
+        if (tpPrice != null || isHovered) {
+          out.push({
+            id: `edittp-${p.id}`,
+            entityId: p.id,
+            entityType: "position",
+            kind: "tp",
+            price: tpPrice ?? tpGhostPrice,
+            color: "#16C784",
+            digits: mm.def.digits,
+            minDistance,
+            referencePrice: mm.bid,
+            ghost: tpPrice == null,
+            formatLabel: makeFormatLabel("TP"),
+          });
+        }
       });
     pendingOrders
       .filter((o) => o.symbol.name === activeSymbol && o.requestedPrice)
@@ -2855,7 +2874,7 @@ export default function WebTrader({
         });
       });
     return out;
-  }, [positions, pendingOrders, activeSymbol, market, pnlAtPrice]);
+  }, [positions, pendingOrders, activeSymbol, market, pnlAtPrice, hoveredPositionId]);
 
   function handleChartContextMenuPrice(price: number, clientX: number, clientY: number) {
     setChartContextMenu({ x: clientX, y: clientY, price });
@@ -3658,7 +3677,12 @@ export default function WebTrader({
                       const isSlEditing = inlineEditing?.id === p.id && inlineEditing.field === "sl";
                       const isTpEditing = inlineEditing?.id === p.id && inlineEditing.field === "tp";
                       return (
-                        <div className="position-row" key={p.id}>
+                        <div
+                          className="position-row"
+                          key={p.id}
+                          onMouseEnter={() => setHoveredPositionId(p.id)}
+                          onMouseLeave={() => setHoveredPositionId((id) => (id === p.id ? null : id))}
+                        >
                           <span className="pos-cell">
                             <input
                               type="checkbox"

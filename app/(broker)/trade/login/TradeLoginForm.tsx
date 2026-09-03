@@ -183,9 +183,14 @@ export default function TradeLoginForm({
 
   const filteredServers = servers.filter((s) => s.name.toLowerCase().includes(serverSearch.toLowerCase()));
 
+  // data-mode="light" -- no account session exists yet at the login
+  // screen, so there's no ChartSettings.theme to read; matches the new
+  // default (lib/chart-settings.ts's DEFAULT_CHART_SETTINGS) rather than
+  // hardcoding the OLD dark-by-default look this page never actually
+  // read a preference for either.
   if (pendingToken) {
     return (
-      <div className="wt-root" data-theme="default" style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
+      <div className="wt-root" data-theme="default" data-mode="light" style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
         <DesktopTitleBar brokerName={brokerName} brokerLogoUrl={brokerLogoUrl} server="" connected={false} />
         <div className={styles.loginArea}>
           <div className={styles.loginMesh} />
@@ -233,7 +238,7 @@ export default function TradeLoginForm({
 
   if (forgotOpen) {
     return (
-      <div className="wt-root" data-theme="default" style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
+      <div className="wt-root" data-theme="default" data-mode="light" style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
         <DesktopTitleBar brokerName={brokerName} brokerLogoUrl={brokerLogoUrl} server="" connected={false} />
         <div className={styles.loginArea}>
           <div className={styles.loginMesh} />
@@ -301,7 +306,7 @@ export default function TradeLoginForm({
   }
 
   return (
-    <div className="wt-root" data-theme="default" style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
+    <div className="wt-root" data-theme="default" data-mode="light" style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
       <DesktopTitleBar brokerName={brokerName} brokerLogoUrl={brokerLogoUrl} server="" connected={false} />
 
       <div className={styles.loginArea}>

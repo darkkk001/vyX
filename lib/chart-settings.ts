@@ -10,7 +10,11 @@ export type ChartSettings = {
   // tooltip -- CSS custom properties can't reach into klinecharts' own
   // draw calls, so those few values are kept in sync by hand between the
   // two files). Buy/sell/accent colors are deliberately IDENTICAL in both
-  // themes -- only backgrounds/borders/text/grid-lines change.
+  // themes -- only backgrounds/borders/text/grid-lines change. Defaults
+  // to "light" (DEFAULT_CHART_SETTINGS below) -- a fresh login or any
+  // account that has never saved a chart setting at all gets light; the
+  // sun/moon toggle and an explicit prior "dark" choice always win, same
+  // "saved blob overrides the default" rule every other field here follows.
   theme: "dark" | "light";
   candleUpColor: string;
   candleDownColor: string;
@@ -53,7 +57,16 @@ export type ChartSettings = {
 };
 
 export const DEFAULT_CHART_SETTINGS: ChartSettings = {
-  theme: "dark",
+  // Light is the default now -- a fresh login with no saved preference
+  // gets light; the sun/moon toggle and an explicit prior choice still
+  // win (see mergeChartSettings below -- a saved blob with theme:"dark"
+  // in it always overrides this). scripts/migrate-chart-defaults.ts is
+  // the one-time backfill for accounts that saved a blob BEFORE this
+  // default flipped (their blob has no `theme` key at all, since the
+  // field didn't exist yet then, and this default alone already covers
+  // exactly that case correctly via mergeChartSettings' spread) --
+  // that script exists for showSessionHighLow below, not this field.
+  theme: "light",
   candleUpColor: "#26a69a",
   candleDownColor: "#ef5350",
   candleUpBorderColor: "#26a69a",
@@ -62,7 +75,18 @@ export const DEFAULT_CHART_SETTINGS: ChartSettings = {
   candleDownWickColor: "#ef5350",
   showGrid: true,
   showLastPriceLine: true,
-  showSessionHighLow: true,
+  // Defaults OFF -- was on for every trader with no saved preference,
+  // cluttering every chart by default. Unlike `theme` above, this one
+  // NEEDS the one-time migration (scripts/migrate-chart-defaults.ts):
+  // ChartSettingsDialog.tsx always PUTs the FULL settings object (see
+  // the API route's own comment), so any account that has EVER saved
+  // ANY chart setting already has `showSessionHighLow: true` baked into
+  // its stored blob explicitly -- mergeChartSettings' spread can't tell
+  // "explicitly baked in because it was the old default" apart from
+  // "explicitly chosen" from the stored JSON alone, so this default
+  // flip alone only reaches accounts that have NEVER saved any chart
+  // setting at all.
+  showSessionHighLow: false,
   showSessionMap: true,
   showOhlcBar: true,
   timezone: "UTC",
