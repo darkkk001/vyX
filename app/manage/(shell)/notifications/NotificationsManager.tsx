@@ -40,12 +40,25 @@ export default function NotificationsManager({
   onNavigateToSection = (section) => {
     window.location.href = section;
   },
+  onMutated = () => {},
 }: {
   // Same "callback with a hard-nav default" pattern as AccountsManager's
   // onOpenAccount/LogoutButton's onLoggedOut -- the website's hard nav
   // is a full page load (fine, notifications aren't clicked often); a
   // bundled shell passes its own section-switch instead.
   onNavigateToSection?: (section: string) => void;
+  // Fired after markRead/markAllRead actually change something server-side
+  // -- app/manage/(shell)/layout.tsx computes the sidebar's unread-count
+  // badge server-side once per navigation (a Server Component, no
+  // subscription to this page's own state), so without this the badge
+  // stayed stuck at whatever count was true when the layout last
+  // rendered, no matter how many notifications got marked read here.
+  // This component stays framework-agnostic (no next/navigation import --
+  // manager-shell/admin-shell bundle it directly with no `next` package
+  // at all, same reasoning as NextAdminShell.tsx's own split): the
+  // website's page.tsx passes `() => router.refresh()`, manager-shell/
+  // admin-shell's App.tsx pass their own shellInfo reload.
+  onMutated?: () => void;
 } = {}) {
   const [rows, setRows] = useState<NotificationRow[] | null>(null);
   const [busy, setBusy] = useState(false);
@@ -73,6 +86,7 @@ export default function NotificationsManager({
       body: JSON.stringify({ read: true }),
     });
     load().catch(() => {});
+    onMutated();
   }
 
   async function markAllRead() {
@@ -84,6 +98,7 @@ export default function NotificationsManager({
     });
     setBusy(false);
     load().catch(() => {});
+    onMutated();
   }
 
   function openReset(row: NotificationRow) {

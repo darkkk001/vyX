@@ -226,7 +226,7 @@ export default function App() {
       case "/notifications":
         return (
           <Section maxWidth="max-w-3xl" title="Notifications" description="Backoffice staff password-reset requests, across every broker.">
-            <NotificationsManager />
+            <NotificationsManager onMutated={() => loadShellInfo().catch(() => {})} />
           </Section>
         );
       case "/admins":

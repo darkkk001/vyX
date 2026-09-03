@@ -202,7 +202,7 @@ export default function App() {
       case "/manage/notifications":
         return (
           <Section maxWidth="max-w-3xl" title="Notifications" description="System-generated alerts for new leads, KYC submissions, funds requests, and dealing-queue orders.">
-            <NotificationsManager onNavigateToSection={setSection} />
+            <NotificationsManager onNavigateToSection={setSection} onMutated={() => loadShellInfo().catch(() => {})} />
           </Section>
         );
       case "/manage/accounts":

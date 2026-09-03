@@ -23,7 +23,20 @@ export type NotificationRow = {
 // backoffice staff) instead of Account. Self-fetches from the already-
 // existing /api/admin/notifications GET (returns this exact shape,
 // unmodified) instead of receiving rows as a server-rendered prop.
-export default function NotificationsManager() {
+export default function NotificationsManager({
+  onMutated = () => {},
+}: {
+  // Fired after markRead/markAllRead actually change something server-
+  // side -- app/(super-admin)/(shell)/layout.tsx computes the sidebar's
+  // unread-count badge server-side once per navigation (a Server
+  // Component, no subscription to this page's own state), so without
+  // this the badge stayed stuck at whatever count was true when the
+  // layout last rendered. Same fix and reasoning as
+  // app/manage/(shell)/notifications/NotificationsManager.tsx's own
+  // onMutated -- kept framework-agnostic (no next/navigation import)
+  // since admin-tauri bundles this file directly with no `next` package.
+  onMutated?: () => void;
+} = {}) {
   const [rows, setRows] = useState<NotificationRow[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [resetTarget, setResetTarget] = useState<NotificationRow | null>(null);
@@ -50,6 +63,7 @@ export default function NotificationsManager() {
       body: JSON.stringify({ read: true }),
     });
     load().catch(() => {});
+    onMutated();
   }
 
   async function markAllRead() {
@@ -61,6 +75,7 @@ export default function NotificationsManager() {
     });
     setBusy(false);
     load().catch(() => {});
+    onMutated();
   }
 
   function openReset(row: NotificationRow) {
