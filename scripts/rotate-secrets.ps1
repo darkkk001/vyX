@@ -10,8 +10,7 @@
     reports only that a value changed, never what it changed to -- if you
     need to see a rotated value, open the .cmd/.set file directly
     yourself, on the box, outside any tool that might log or transcript
-    it (see CLAUDE.md's "never print secret values" note, added
-    alongside this script for exactly that reason).
+    it.
 
     Neither secret is read anywhere in the Next.js app (grepped: both are
     Contabo-only -- PRICE_FEED_SECRET gates engine/server's MT5 ingest

@@ -19,7 +19,8 @@ import {
 // out). This is the one place a Transaction row is ever updated after
 // creation (see the field's own schema comment) -- resolving a PENDING
 // state-machine row, not editing an executed trade, so it doesn't
-// conflict with CLAUDE.md's never-edit-history rule.
+// conflict with this app's own never-edit-history invariant for
+// completed transactions.
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await getAdminSession();
   if (await forbidUnlessBrokerAdminOrPermission(session, "FUNDS_APPROVAL")) {
