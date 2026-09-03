@@ -12,10 +12,13 @@ const IMPACT_COLOR: Record<string, string> = {
 // (single shared fetch, since the chart markers and order-ticket warning
 // chip need the exact same data, not a second independent poll of the
 // same Finnhub-backed route).
-export default function NewsPanel({ events, unavailable }: { events: CalendarEvent[] | null; unavailable: boolean }) {
+// hideLabel -- WebTrader.tsx now wraps this in its own CollapsibleSection
+// (title "Economic calendar"), which owns the header; this own internal
+// label would just duplicate it.
+export default function NewsPanel({ events, unavailable, hideLabel = false }: { events: CalendarEvent[] | null; unavailable: boolean; hideLabel?: boolean }) {
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: "10px 0", borderTop: "1px solid var(--border)", marginTop: 10 }}>
-      <span className="field-label">Economic calendar</span>
+    <div style={hideLabel ? { display: "flex", flexDirection: "column", gap: 6 } : { display: "flex", flexDirection: "column", gap: 6, padding: "10px 0", borderTop: "1px solid var(--border)", marginTop: 10 }}>
+      {hideLabel ? null : <span className="field-label">Economic calendar</span>}
       {unavailable ? (
         <div className="net-pos-detail" style={{ fontSize: 11 }}>News feed unavailable right now.</div>
       ) : events === null ? (

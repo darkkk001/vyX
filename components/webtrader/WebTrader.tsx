@@ -31,6 +31,7 @@ import DesktopTitleBar from "./DesktopTitleBar";
 import SessionClock from "./SessionClock";
 import NewsPanel from "./NewsPanel";
 import ChartCell from "./ChartCell";
+import CollapsibleSection from "./CollapsibleSection";
 import SmartTradeManager from "./SmartTradeManager";
 import { computeOrderReferenceLines, computeAlertLines } from "@/lib/chart-lines";
 import { DEFAULT_CHART_SETTINGS, type ChartSettings } from "@/lib/chart-settings";
@@ -298,6 +299,10 @@ export default function WebTrader({
   const ORDER_PANEL_MAX = 420;
   const WATCHLIST_MIN = 220;
   const WATCHLIST_MAX = 420;
+  // Collapsible panel system -- the thin rail width the watchlist/order-
+  // ticket panel shrinks to (its own resize handle is hidden below MIN
+  // anyway, so this can safely sit well under WATCHLIST_MIN/ORDER_PANEL_MIN).
+  const PANEL_RAIL_WIDTH = 36;
   const [orderPanelWidth, setOrderPanelWidth] = useState(ORDER_PANEL_MIN);
   const [watchlistWidth, setWatchlistWidth] = useState(WATCHLIST_MIN);
   const [bottomPanelHeight, setBottomPanelHeight] = useState(190);
@@ -685,6 +690,26 @@ export default function WebTrader({
   // same shape as watchlist prefs. Starts at the client default so the
   // chart never renders unstyled before the GET resolves.
   const [chartSettings, setChartSettings] = useState<ChartSettings>(DEFAULT_CHART_SETTINGS);
+  // Guards against a real race: the mount effect's own tradeApi.
+  // chartSettings() GET below can still be in flight when the trader
+  // clicks a toggle that saves through saveChartSettingsHandler (theme,
+  // or any of the new collapse chevrons) -- if that GET resolves AFTER
+  // the optimistic local update, its .then would silently clobber the
+  // fresh choice back to whatever was saved before this page load. Once
+  // any local save has happened, this page's own state is authoritative
+  // -- the late GET is discarded rather than applied.
+  const chartSettingsDirtyRef = useRef(false);
+  // Serializes the actual network PUTs -- the collapsible panel system
+  // can fire several saves within a couple seconds (watchlist, order
+  // panel, bottom panel, 3 accordion sections), each carrying the FULL
+  // settings object (this API has no partial-patch shape). Fired
+  // concurrently, two in-flight requests can resolve out of order and
+  // the later-CLICKED one loses if its request happens to reach the
+  // server first -- the DB then silently reverts to an earlier click's
+  // snapshot even though the client already rendered the later one.
+  // Chaining onto this ref's promise guarantees requests reach the
+  // server in the same order they were clicked.
+  const chartSettingsSaveChainRef = useRef<Promise<void>>(Promise.resolve());
   const [chartSettingsOpen, setChartSettingsOpen] = useState(false);
   // Terminal notification sounds read this ref, not chartSettings state
   // directly -- several of the callbacks below are memoized with a
@@ -1182,7 +1207,7 @@ export default function WebTrader({
           refreshOrders(),
           refreshSymbolsAndWatchlist(),
           refreshAlerts(),
-          tradeApi.chartSettings().then((res) => setChartSettings(res.settings)).catch(() => {}),
+          tradeApi.chartSettings().then((res) => { if (!chartSettingsDirtyRef.current) setChartSettings(res.settings); }).catch(() => {}),
         ]);
       } catch (err) {
         setLoadError(err instanceof Error ? err.message : "failed to load account data");
@@ -2918,12 +2943,17 @@ export default function WebTrader({
   }
 
   async function saveChartSettingsHandler(next: ChartSettings) {
+    chartSettingsDirtyRef.current = true;
     setChartSettings(next); // optimistic -- a low-risk, purely cosmetic mutation
-    try {
-      await tradeApi.saveChartSettings(next);
-    } catch (err) {
-      pushToast(err instanceof Error ? err.message : "failed to save chart settings");
-    }
+    // Chained (not fired directly) -- see chartSettingsSaveChainRef's own
+    // comment on why a rapid run of saves needs this serialized.
+    chartSettingsSaveChainRef.current = chartSettingsSaveChainRef.current.then(async () => {
+      try {
+        await tradeApi.saveChartSettings(next);
+      } catch (err) {
+        pushToast(err instanceof Error ? err.message : "failed to save chart settings");
+      }
+    });
   }
 
   // Light/dark terminal theme -- same optimistic-save shape as
@@ -2936,6 +2966,22 @@ export default function WebTrader({
   // per-browser preference.
   function changeColorMode(next: "dark" | "light") {
     saveChartSettingsHandler({ ...chartSettings, theme: next });
+  }
+
+  // Collapsible panel system -- every chevron below (watchlist/order-
+  // ticket panel rails, the three right-panel accordion sections, the
+  // bottom positions panel) flips one boolean field on the same
+  // server-persisted ChartSettings blob, same optimistic-save shape as
+  // changeColorMode above.
+  function toggleCollapsed(key: "watchlistCollapsed" | "orderTicketPanelCollapsed" | "bottomPanelCollapsed" | "orderTicketSectionCollapsed" | "tradingSessionsSectionCollapsed" | "economicCalendarSectionCollapsed") {
+    if (key === "watchlistCollapsed" && !chartSettings.watchlistCollapsed) {
+      // Collapsing the watchlist rail also closes the embedded Smart
+      // Trade Manager -- it renders inline inside this same column (see
+      // .watchlist below), so it has nowhere sensible to live squeezed
+      // into a 36px rail.
+      setStmOpen(false);
+    }
+    saveChartSettingsHandler({ ...chartSettings, [key]: !chartSettings[key] });
   }
 
   if (loadError) {
@@ -3216,7 +3262,13 @@ export default function WebTrader({
 
         <div
           className={`main${isMobileView ? " mobile" : ""}`}
-          style={isMobileView ? undefined : { gridTemplateColumns: `48px ${watchlistWidth}px 6px 1fr 6px ${orderPanelWidth}px` }}
+          style={
+            isMobileView
+              ? undefined
+              : {
+                  gridTemplateColumns: `48px ${chartSettings.watchlistCollapsed ? PANEL_RAIL_WIDTH : watchlistWidth}px 6px 1fr 6px ${chartSettings.orderTicketPanelCollapsed ? PANEL_RAIL_WIDTH : orderPanelWidth}px`,
+                }
+          }
         >
           {/* ---------- ICON RAIL (far left, desktop only -- replaced by
               the bottom nav bar on mobile, rendered after .main below) ---------- */}
@@ -3248,9 +3300,19 @@ export default function WebTrader({
           {/* ---------- WATCHLIST (left) ---------- */}
           <div
             className={`watchlist${isMobileView ? ` mobile${mobileTab === "watchlist" ? " mobile-active" : ""}` : ""}`}
-            onContextMenu={(e) => { e.preventDefault(); setWlMenuOpen(true); setWlContextMenu({ x: e.clientX, y: e.clientY }); }}
+            onContextMenu={chartSettings.watchlistCollapsed ? undefined : (e) => { e.preventDefault(); setWlMenuOpen(true); setWlContextMenu({ x: e.clientX, y: e.clientY }); }}
           >
-            <div className="section-label">Watchlist</div>
+          {chartSettings.watchlistCollapsed ? (
+            <button type="button" className="panel-rail" onClick={() => toggleCollapsed("watchlistCollapsed")} title="Expand watchlist" aria-expanded={false}>
+              <span className="wl-category-chevron collapsed">›</span>
+              <span className="panel-rail-label">Watchlist</span>
+            </button>
+          ) : (
+            <>
+            <button type="button" className="panel-collapse-header" onClick={() => toggleCollapsed("watchlistCollapsed")} aria-expanded={true} title="Collapse watchlist">
+              <span className="wl-category-chevron">›</span>
+              <span>Watchlist</span>
+            </button>
             <input className="wl-search mono" placeholder="Search symbol..." value={watchlistFilter} onChange={(e) => setWatchlistFilter(e.target.value)} />
             <div className="wl-header" style={{ gridTemplateColumns: wlGridTemplate }}>
               <span></span><span>Symbol</span>
@@ -3445,9 +3507,17 @@ export default function WebTrader({
                 refreshAccount={refreshAccount}
               />
             ) : null}
+            </>
+          )}
           </div>
 
-          {isMobileView ? null : <div className="col-resizer" onMouseDown={startResize("watchlist")} />}
+          {isMobileView ? null : (
+            <div
+              className="col-resizer"
+              style={chartSettings.watchlistCollapsed ? { cursor: "default", pointerEvents: "none" } : undefined}
+              onMouseDown={chartSettings.watchlistCollapsed ? undefined : startResize("watchlist")}
+            />
+          )}
 
           {/* ---------- CENTER (chart) ---------- */}
           <div ref={centerRef} className={`center${isMobileView ? ` mobile${mobileTab === "chart" || mobileTab === "positions" ? " mobile-active" : ""}` : ""}`}>
@@ -3652,13 +3722,26 @@ export default function WebTrader({
               )}
             </div>
 
-            {isMobileView ? null : <div className="row-resizer" onMouseDown={startResize("bottom")} />}
+            {isMobileView || chartSettings.bottomPanelCollapsed ? null : <div className="row-resizer" onMouseDown={startResize("bottom")} />}
 
             <div
-              className={`bottom-panel${isMobileView ? " mobile" : ""}`}
-              style={isMobileView ? { display: mobileTab === "positions" ? "flex" : "none", height: "auto", flex: 1 } : { height: bottomPanelHeight }}
+              className={`bottom-panel${isMobileView ? " mobile" : ""}${chartSettings.bottomPanelCollapsed ? " collapsed" : ""}`}
+              style={
+                isMobileView
+                  ? { display: mobileTab === "positions" ? "flex" : "none", height: "auto", flex: 1 }
+                  : { height: chartSettings.bottomPanelCollapsed ? 37 : bottomPanelHeight }
+              }
             >
               <div className="tabs-row">
+                <button
+                  type="button"
+                  className="bottom-panel-collapse-btn"
+                  onClick={() => toggleCollapsed("bottomPanelCollapsed")}
+                  aria-expanded={!chartSettings.bottomPanelCollapsed}
+                  title={chartSettings.bottomPanelCollapsed ? "Expand positions panel" : "Collapse positions panel"}
+                >
+                  <span className={`wl-category-chevron${chartSettings.bottomPanelCollapsed ? " collapsed" : ""}`}>›</span>
+                </button>
                 <div className="tabs">
                   <div className={`tab${activeBottomTab === "positions" ? " active" : ""}`} onClick={() => setActiveBottomTab("positions")}>Positions ({acctPositions.length})</div>
                   <div className={`tab${activeBottomTab === "net" ? " active" : ""}`} onClick={() => setActiveBottomTab("net")}>Net positions ({netBySymbol.size})</div>
@@ -3677,6 +3760,8 @@ export default function WebTrader({
                 ) : null}
               </div>
 
+              {chartSettings.bottomPanelCollapsed ? null : (
+              <>
               {activeBottomTab === "positions" ? (
                 <div className="panel-body">
                   <div className="pos-table-header">
@@ -4036,15 +4121,38 @@ export default function WebTrader({
                   )}
                 </div>
               ) : null}
+              </>
+              )}
             </div>
           </div>
 
-          {isMobileView ? null : <div className="col-resizer" onMouseDown={startResize("order")} />}
+          {isMobileView ? null : (
+            <div
+              className="col-resizer"
+              style={chartSettings.orderTicketPanelCollapsed ? { cursor: "default", pointerEvents: "none" } : undefined}
+              onMouseDown={chartSettings.orderTicketPanelCollapsed ? undefined : startResize("order")}
+            />
+          )}
 
           {/* ---------- ORDER PANEL (right) ---------- */}
           <div className={`order-panel${isMobileView ? ` mobile${mobileTab === "trade" ? " mobile-active" : ""}` : ""}`}>
-            <div className="section-label" style={{ paddingLeft: 0 }}>Order ticket</div>
+          {chartSettings.orderTicketPanelCollapsed ? (
+            <button type="button" className="panel-rail" onClick={() => toggleCollapsed("orderTicketPanelCollapsed")} title="Expand order ticket" aria-expanded={false}>
+              <span className="wl-category-chevron collapsed">›</span>
+              <span className="panel-rail-label">Order ticket</span>
+            </button>
+          ) : (
+            <>
+            <button type="button" className="panel-collapse-header" style={{ paddingLeft: 0 }} onClick={() => toggleCollapsed("orderTicketPanelCollapsed")} aria-expanded={true} title="Collapse order ticket">
+              <span className="wl-category-chevron">›</span>
+              <span>Order ticket</span>
+            </button>
 
+            <CollapsibleSection
+              title="Order ticket"
+              collapsed={chartSettings.orderTicketSectionCollapsed}
+              onToggle={() => toggleCollapsed("orderTicketSectionCollapsed")}
+            >
             <div className="order-type-tabs">
               <button className={`ot-tab${orderMode === "market" ? " active" : ""}`} onClick={() => setOrderMode("market")}>Market</button>
               <button className={`ot-tab${orderMode === "pending" ? " active" : ""}`} onClick={() => {
@@ -4170,9 +4278,25 @@ export default function WebTrader({
                 <span className="switch-slider" />
               </label>
             </div>
+            </CollapsibleSection>
 
-            <SessionClock />
-            <NewsPanel events={calendarEvents} unavailable={calendarUnavailable} />
+            <CollapsibleSection
+              title="Trading sessions"
+              collapsed={chartSettings.tradingSessionsSectionCollapsed}
+              onToggle={() => toggleCollapsed("tradingSessionsSectionCollapsed")}
+            >
+              <SessionClock hideLabel />
+            </CollapsibleSection>
+
+            <CollapsibleSection
+              title="Economic calendar"
+              collapsed={chartSettings.economicCalendarSectionCollapsed}
+              onToggle={() => toggleCollapsed("economicCalendarSectionCollapsed")}
+            >
+              <NewsPanel events={calendarEvents} unavailable={calendarUnavailable} hideLabel />
+            </CollapsibleSection>
+            </>
+          )}
           </div>
         </div>
 

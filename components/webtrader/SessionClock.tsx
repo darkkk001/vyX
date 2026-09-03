@@ -17,7 +17,12 @@ function isActive(hourUtc: number, start: number, end: number) {
   return start < end ? hourUtc >= start && hourUtc < end : hourUtc >= start || hourUtc < end;
 }
 
-export default function SessionClock() {
+// hideLabel -- WebTrader.tsx now wraps this in its own CollapsibleSection
+// (title "Trading sessions"), which owns the header; this own internal
+// label would just duplicate it. Still renders the live UTC clock inline
+// on the border-top row (the collapsible header shows a static title
+// only) when hidden -- see the border-top row just below.
+export default function SessionClock({ hideLabel = false }: { hideLabel?: boolean }) {
   const [now, setNow] = useState<Date | null>(null);
 
   useEffect(() => {
@@ -30,8 +35,12 @@ export default function SessionClock() {
   const hourUtc = now.getUTCHours();
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: "10px 0", borderTop: "1px solid var(--border)", marginTop: 10 }}>
-      <span className="field-label">Trading sessions (UTC {hourUtc.toString().padStart(2, "0")}:{now.getUTCMinutes().toString().padStart(2, "0")})</span>
+    <div style={hideLabel ? { display: "flex", flexDirection: "column", gap: 6 } : { display: "flex", flexDirection: "column", gap: 6, padding: "10px 0", borderTop: "1px solid var(--border)", marginTop: 10 }}>
+      {hideLabel ? (
+        <span className="field-label" style={{ padding: 0 }}>UTC {hourUtc.toString().padStart(2, "0")}:{now.getUTCMinutes().toString().padStart(2, "0")}</span>
+      ) : (
+        <span className="field-label">Trading sessions (UTC {hourUtc.toString().padStart(2, "0")}:{now.getUTCMinutes().toString().padStart(2, "0")})</span>
+      )}
       <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
         {SESSIONS.map((s) => {
           const active = isActive(hourUtc, s.start, s.end);

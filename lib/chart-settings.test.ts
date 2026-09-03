@@ -19,4 +19,15 @@ describe("DEFAULT_CHART_SETTINGS", () => {
   it("defaults PDH/PDL (showSessionHighLow) to off", () => {
     expect(DEFAULT_CHART_SETTINGS.showSessionHighLow).toBe(false);
   });
+
+  // Collapsible panel system -- everything starts open for a fresh login
+  // / an account that has never saved a chart setting.
+  it("defaults every collapsible-panel flag to open (false)", () => {
+    expect(DEFAULT_CHART_SETTINGS.watchlistCollapsed).toBe(false);
+    expect(DEFAULT_CHART_SETTINGS.orderTicketPanelCollapsed).toBe(false);
+    expect(DEFAULT_CHART_SETTINGS.bottomPanelCollapsed).toBe(false);
+    expect(DEFAULT_CHART_SETTINGS.orderTicketSectionCollapsed).toBe(false);
+    expect(DEFAULT_CHART_SETTINGS.tradingSessionsSectionCollapsed).toBe(false);
+    expect(DEFAULT_CHART_SETTINGS.economicCalendarSectionCollapsed).toBe(false);
+  });
 });

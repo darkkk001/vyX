@@ -336,6 +336,59 @@ html, body, #root {
 .row-resizer { cursor: row-resize; height: 6px; flex-shrink: 0; background: transparent; }
 .row-resizer:hover, .row-resizer:active { background: var(--bg-4); }
 
+/* ---------- COLLAPSIBLE PANEL SYSTEM ---------- */
+/* The watchlist/order-ticket panels' own header, made clickable + given a
+   chevron (was a plain non-interactive .section-label div). */
+.panel-collapse-header {
+  display: flex; align-items: center; gap: 4px; width: 100%;
+  background: none; border: none; cursor: pointer; text-align: left;
+  font: inherit; color: var(--text-3); font-size: 10px; letter-spacing: .06em;
+  text-transform: uppercase; padding: 4px 8px 8px; border-radius: 4px;
+}
+.panel-collapse-header:hover { color: var(--text-2); }
+.panel-collapse-header:focus-visible { outline: 1px solid var(--text-3); outline-offset: -1px; }
+/* Collapsed rail -- watchlist/order-ticket panel shrunk to a thin strip
+   with just a rotated label, chart/center column reclaims the rest via
+   the grid-template-columns swap in WebTrader.tsx (same ResizeObserver
+   reflow the resizable panels already rely on -- no extra plumbing). */
+.panel-rail {
+  display: flex; flex-direction: column; align-items: center; justify-content: flex-start;
+  padding-top: 12px; height: 100%; cursor: pointer; background: var(--bg-1);
+  border: none; width: 100%;
+}
+.panel-rail:hover .panel-rail-label { color: var(--text-2); }
+.panel-rail:focus-visible { outline: 1px solid var(--text-3); outline-offset: -2px; }
+.panel-rail-label {
+  writing-mode: vertical-rl; text-orientation: mixed; transform: rotate(180deg);
+  font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: var(--text-3);
+  margin-top: 8px; white-space: nowrap;
+}
+.panel-rail .wl-category-chevron { transform: rotate(-90deg); }
+
+/* Right-panel accordion sections (Order ticket, Trading sessions,
+   Economic calendar) -- independent of the panel-level rail collapse
+   above; every section starts open (DEFAULT_CHART_SETTINGS). */
+.collapsible-section { margin-top: 4px; }
+.collapsible-section-header {
+  display: flex; align-items: center; gap: 5px; width: 100%;
+  background: none; border: none; cursor: pointer; text-align: left;
+  font: inherit; color: var(--text-3); font-size: 10px; letter-spacing: .06em;
+  text-transform: uppercase; font-weight: 600; padding: 8px 4px 4px; border-radius: 4px;
+}
+.collapsible-section-header:hover { color: var(--text-2); }
+.collapsible-section-header:focus-visible { outline: 1px solid var(--text-3); outline-offset: -1px; }
+.collapsible-section-body { padding-top: 2px; }
+
+/* Bottom positions panel collapsed to just its tab strip. */
+.bottom-panel.collapsed { overflow: hidden; }
+.bottom-panel-collapse-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; background: none; border: none; cursor: pointer;
+  color: var(--text-3); border-radius: 4px; margin-right: 4px;
+}
+.bottom-panel-collapse-btn:hover { color: var(--text-2); background: var(--bg-3); }
+.bottom-panel-collapse-btn:focus-visible { outline: 1px solid var(--text-3); outline-offset: -1px; }
+
 /* ---------- WATCHLIST ---------- */
 /* border-right, not border-left -- watchlist now sits on the left (next
    to the chart on its right), the mirror of when it sat on the right. */

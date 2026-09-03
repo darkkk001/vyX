@@ -54,6 +54,20 @@ export type ChartSettings = {
   soundRequoteReceived: boolean;
   soundAlertTriggered: boolean;
   soundError: boolean;
+  // Collapsible panel system -- server-persisted (per account, synced
+  // web/desktop) so a trader's layout choice follows them, unlike
+  // orderPanelWidth/watchlistWidth/bottomPanelHeight (WebTrader.tsx's own
+  // StoredLayout), which stay a per-browser localStorage preference.
+  // Defaults false (everything open) for every field here -- a fresh
+  // login or an account that has never saved a chart setting gets the
+  // full layout, same "saved blob overrides the default" rule every
+  // other field follows.
+  watchlistCollapsed: boolean;
+  orderTicketPanelCollapsed: boolean;
+  bottomPanelCollapsed: boolean;
+  orderTicketSectionCollapsed: boolean;
+  tradingSessionsSectionCollapsed: boolean;
+  economicCalendarSectionCollapsed: boolean;
 };
 
 export const DEFAULT_CHART_SETTINGS: ChartSettings = {
@@ -99,6 +113,12 @@ export const DEFAULT_CHART_SETTINGS: ChartSettings = {
   soundRequoteReceived: true,
   soundAlertTriggered: true,
   soundError: false,
+  watchlistCollapsed: false,
+  orderTicketPanelCollapsed: false,
+  bottomPanelCollapsed: false,
+  orderTicketSectionCollapsed: false,
+  tradingSessionsSectionCollapsed: false,
+  economicCalendarSectionCollapsed: false,
 };
 
 // Merges a possibly-partial/stale persisted blob over the defaults so an
