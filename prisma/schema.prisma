@@ -315,6 +315,7 @@ model Broker {
   mirrorRules     MirrorRule[]
   priceAlerts     PriceAlert[]
   positionActionRequests PositionActionRequest[]
+  paymentMethods  PaymentMethod[]
 }
 
 model AdminUser {
@@ -473,6 +474,7 @@ model Account {
   mirrorRuleTargets MirrorRule[] @relation("MirrorRuleTarget")
 
   watchlistItems WatchlistItem[]
+  savedWithdrawalAddresses SavedWithdrawalAddress[]
 
   @@unique([brokerId, email, accountType])
   @@index([brokerId])
@@ -735,6 +737,39 @@ model Transaction {
   markedByAdmin   AdminUser? @relation("TransactionMarkedBy", fields: [markedByAdminId], references: [id])
   markedAt        DateTime?  @db.Timestamptz(3)
 
+  // Client cabinet Funds UI (VYX-FUNDS-V0) -- provider-agnostic PSP
+  // adapter fields, all nullable/additive so every pre-existing
+  // Transaction row (trades, adjustments, swap, the old bare-amount
+  // funds requests) is simply "not a PSP-tracked request" rather than
+  // needing a backfill. See lib/psp/adapter.ts's own doc comment for
+  // the adapter interface these back.
+  paymentMethodId String?
+  paymentMethod   PaymentMethod? @relation(fields: [paymentMethodId], references: [id])
+  // Which adapter actually handled this request -- "MANUAL" (the only
+  // live implementation) or "MOCK" (dev/Playwright only, never chosen
+  // by a real trader-facing method). Not an enum: a real PSP integration
+  // (Phase 2) will add adapter kinds this schema shouldn't need a
+  // migration to accept.
+  pspAdapter      String?
+  // Adapter-internal sub-status, orthogonal to `status` above (the
+  // broker-approval maker-checker state, unchanged by this feature) --
+  // a deposit walks PENDING -> CONFIRMING (crypto, with `confirmations`)
+  // -> CREDITED; a withdrawal walks REQUESTED -> APPROVED -> PROCESSING
+  // -> PAID. `status` still governs whether balance has actually moved;
+  // this is purely the UI's own status-timeline display.
+  pspStatus       String?
+  // External reference -- a crypto txid once available, or the adapter's
+  // own request id. Null until the trader/adapter has one to show.
+  pspReference    String?
+  confirmations   Int?
+  // Withdrawal target (a crypto address, or free-text bank details) --
+  // set at request time, before any adapter involvement.
+  destinationAddress String?
+  // Manual-deposit receipt upload -- a data: URL, capped well under this
+  // column's practical limit by the API route accepting it (frontend-
+  // first: real object storage is Phase 2, alongside the real PSP).
+  receiptDataUrl  String? @db.Text
+
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   // First Transaction field to change after creation -- a PENDING
   // deposit/withdrawal request transitions to COMPLETED/REJECTED on
@@ -744,6 +779,73 @@ model Transaction {
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
 
   @@index([brokerId])
+  @@index([accountId])
+  @@index([paymentMethodId])
+}
+
+// Client cabinet Funds UI (VYX-FUNDS-V0). Not an enum on Transaction
+// itself (see pspAdapter's own comment) but IS an enum here, since a
+// broker's method list is a closed, backoffice-curated set -- adding a
+// method type is a real schema decision (Phase 2's real PSP list),
+// unlike which adapter happened to service one request.
+enum PaymentMethodType {
+  USDT_TRC20
+  USDT_BEP20
+  BTC
+  ETH
+  BANK_TRANSFER
+}
+
+// One row per (broker, method) -- what a broker's Payment Methods
+// settings page (app/manage/(shell)/payment-methods) configures, and
+// what the trader's own deposit/withdraw method picker reads. The
+// pspProvider/pspApiKey pair exists so that form has somewhere to
+// round-trip a real credential once Phase 2's PSP adapter lands --
+// nothing reads them yet, and the settings UI renders them disabled
+// with a "connects in Phase 2" note, per the brief.
+model PaymentMethod {
+  id       String            @id @default(cuid())
+  brokerId String
+  broker   Broker            @relation(fields: [brokerId], references: [id])
+  type     PaymentMethodType
+  enabled  Boolean           @default(true)
+  minAmount Decimal          @default(0) @db.Decimal(18, 2)
+  maxAmount Decimal?         @db.Decimal(18, 2)
+  feePercent Decimal         @default(0) @db.Decimal(6, 3)
+  feeFixed  Decimal          @default(0) @db.Decimal(18, 2)
+  // Shown to the trader on the method screen -- bank details for
+  // BANK_TRANSFER, deposit/receipt instructions for a manual crypto
+  // method. Null renders nothing extra beyond the address/QR.
+  instructions String?
+  // The broker's own shared wallet -- manual crypto deposits go to one
+  // static address (a real per-transaction-generated address needs an
+  // actual PSP/wallet integration, Phase 2). Null for BANK_TRANSFER.
+  walletAddress String?
+  pspProvider  String?
+  pspApiKey    String?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  transactions Transaction[]
+
+  @@unique([brokerId, type])
+  @@index([brokerId])
+}
+
+// Withdrawal destinations a trader has saved (labeled, add-new confirmed
+// twice on the client side) so a repeat withdrawal doesn't mean
+// retyping a crypto address. Never used for deposits.
+model SavedWithdrawalAddress {
+  id        String            @id @default(cuid())
+  accountId String
+  account   Account           @relation(fields: [accountId], references: [id])
+  label     String
+  type      PaymentMethodType
+  address   String
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
   @@index([accountId])
 }
 
