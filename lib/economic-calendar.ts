@@ -1,19 +1,19 @@
 // Impression Pack #3 -- economic calendar on chart. Reuses the existing
-// /api/trade/news route (Finnhub's economic calendar) rather than adding
-// a second endpoint; this module is purely the symbol<->currency
-// matching and high-impact-soon logic, shared by the chart markers and
-// the order-ticket warning chip.
+// /api/trade/news route rather than adding a second endpoint; this
+// module is purely the symbol<->currency matching and high-impact-soon
+// logic, shared by the chart markers and the order-ticket warning chip.
 //
-// NOTE (verified live against this deployment's own Finnhub key): the
-// configured key returns 403 "You don't have access to this resource"
-// on /calendar/economic -- that endpoint isn't included in Finnhub's
-// free tier despite the route's own comment claiming otherwise. This
-// module and its UI wiring are still correct and will start working the
-// moment that key is upgraded (or swapped for a provider that does
-// include it, per the route's own "swap the fetch" comment) -- nothing
-// else needs to change. Browser verification for this feature used a
-// temporary synthetic event list, not real Finnhub data, for exactly
-// this reason.
+// VYX-CALENDAR-FALLBACK-V0 -- that route now serves real data by
+// default: the configured Finnhub key never had calendar access on its
+// plan tier (confirmed with a direct curl against Finnhub itself,
+// independent of this app), so lib/economic-calendar-source.ts's
+// ForexFactory adapter is the primary source now, DB-cached for 1h.
+// countryMatchesCurrency below still works against it unmodified --
+// ForexFactory's `country` field is already a bare currency code
+// ("USD", "EUR", ...), and every ISO 4217 code in FIAT_CODES happens to
+// start with its own ISO 3166 country-code alias ("usd".includes("us"),
+// "eur".includes("eu"), etc.), so the existing substring match keeps
+// working by coincidence rather than needing a second alias table.
 export type CalendarEvent = {
   time: string;
   country: string;
