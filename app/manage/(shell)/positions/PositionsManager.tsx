@@ -29,6 +29,7 @@ import {
 import { useAdminEventStream, ADMIN_STREAM_RECONNECTED, type AdminEvent } from "@/lib/admin-realtime";
 import { useLiveTicks } from "@/lib/price-stream";
 import { formatPrice, formatNumber, formatPnl, formatDateTime } from "@/lib/format";
+import { useUnsavedChangesWarning } from "@/lib/use-unsaved-changes-warning";
 
 export type PositionRow = {
   id: string;
@@ -444,6 +445,15 @@ export default function PositionsManager() {
     setModReason("");
     setModifyError(null);
   }
+
+  // VYX-BASICS-AUDIT.md category 6 "unsaved-changes warning" --
+  // representative wiring for this checkbox; see
+  // lib/use-unsaved-changes-warning.ts's own comment for what this
+  // covers (tab close/refresh/URL nav) and what it deliberately
+  // doesn't (in-app Link clicks -- no clean App Router API for that).
+  const modifyIsDirty =
+    modifyTarget !== null && (modSl !== (modifyTarget.slPrice ?? "") || modTp !== (modifyTarget.tpPrice ?? "") || modReason.trim() !== "");
+  useUnsavedChangesWarning(modifyIsDirty);
 
   async function submitModify() {
     if (!modifyTarget) return;

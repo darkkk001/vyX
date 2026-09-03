@@ -1,4 +1,5 @@
 import { PageHeader } from "@/components/ui/PageHeader";
+import type { Metadata } from "next";
 import BrokersManager from "./BrokersManager";
 
 // No auth check or Prisma query here anymore -- app/(super-admin)/
@@ -8,6 +9,8 @@ import BrokersManager from "./BrokersManager";
 // GET, reshaped to return { rows, totalEndClients } -- the stat grid's
 // numbers are now derived client-side from rows, same pattern
 // RiskSettingsManager uses deriving its own stats from Margin's rows.
+export const metadata: Metadata = { title: "All brokers — Super Admin" };
+
 export default function BrokersPage() {
   return (
     <main className="mx-auto max-w-[1400px]">

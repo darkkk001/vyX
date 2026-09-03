@@ -1,4 +1,5 @@
 import { PageHeader } from "@/components/ui/PageHeader";
+import type { Metadata } from "next";
 import SymbolConfigTable from "./SymbolConfigTable";
 
 // No auth check or Prisma query here anymore -- app/manage/(shell)/
@@ -6,6 +7,8 @@ import SymbolConfigTable from "./SymbolConfigTable";
 // this page checked itself. SymbolConfigTable now self-fetches from the
 // already-existing /api/manage/symbols GET (extended to include
 // brokerSymbolId, which the table needs for the Sessions button).
+export const metadata: Metadata = { title: "Symbols — Backoffice" };
+
 export default function ManagerSymbolsPage() {
   return (
     <main className="mx-auto max-w-[1400px]">

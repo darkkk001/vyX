@@ -1,4 +1,5 @@
 import { PageHeader } from "@/components/ui/PageHeader";
+import type { Metadata } from "next";
 import SecurityManager from "@/components/admin/SecurityManager";
 
 // No auth check here -- app/manage/(shell)/layout.tsx's own MANAGER/
@@ -9,6 +10,8 @@ import SecurityManager from "@/components/admin/SecurityManager";
 // target. setupRequired is a plain search param, not session state --
 // SecurityManager only uses it to decide whether to show the "your
 // organization requires this" banner, never to skip real verification.
+export const metadata: Metadata = { title: "Security — Backoffice" };
+
 export default async function ManagerSecurityPage({
   searchParams,
 }: {

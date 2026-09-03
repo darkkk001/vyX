@@ -1,4 +1,5 @@
 import { redirect } from "next/navigation";
+import type { Metadata } from "next";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { PageHeader } from "@/components/ui/PageHeader";
 import SettingsManager from "./SettingsManager";
@@ -10,6 +11,8 @@ import SettingsManager from "./SettingsManager";
 // to load its data. SettingsManager itself now fetches its own data from
 // /api/manage/settings (already returning this exact combined shape,
 // unmodified) instead of receiving server-rendered props.
+export const metadata: Metadata = { title: "System settings — Backoffice" };
+
 export default async function ManagerSettingsPage() {
   const session = await getAdminSession();
   if (!requireAdminRole(session, ["BROKER_ADMIN"])) {

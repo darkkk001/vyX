@@ -1,4 +1,5 @@
 import { redirect } from "next/navigation";
+import type { Metadata } from "next";
 import { getAdminSession } from "@/lib/auth";
 import { forbidUnlessBrokerAdminOrPermission } from "@/lib/permissions";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -9,6 +10,8 @@ import RiskSettingsManager from "./RiskSettingsManager";
 // lib/risk.ts for how these settings are actually enforced on the live
 // trading path. Kept its own check here -- stricter than the shell
 // layout's own MANAGER-or-BROKER_ADMIN guard, same recurring reasoning.
+export const metadata: Metadata = { title: "Risk — Backoffice" };
+
 export default async function ManagerRiskPage() {
   const session = await getAdminSession();
   if (await forbidUnlessBrokerAdminOrPermission(session, "RISK_SETTINGS")) {

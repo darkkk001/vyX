@@ -1,4 +1,5 @@
 import { redirect } from "next/navigation";
+import type { Metadata } from "next";
 import { getAdminSession } from "@/lib/auth";
 import { forbidUnlessBrokerAdminOrPermission } from "@/lib/permissions";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -10,6 +11,8 @@ import FundsRequestsManager from "./FundsRequestsManager";
 // FUNDS_APPROVAL (see lib/permissions.ts). Kept its own check here --
 // stricter than the shell layout's own MANAGER-or-BROKER_ADMIN guard,
 // same reasoning as Settings/Emergency/KYC.
+export const metadata: Metadata = { title: "Funds — Backoffice" };
+
 export default async function ManagerFundsPage() {
   const session = await getAdminSession();
   if (await forbidUnlessBrokerAdminOrPermission(session, "FUNDS_APPROVAL")) {

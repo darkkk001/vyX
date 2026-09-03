@@ -1,4 +1,5 @@
 import { PageHeader } from "@/components/ui/PageHeader";
+import type { Metadata } from "next";
 import WalletsManager from "./WalletsManager";
 
 // A view of each account's existing balance/credit -- not a separate
@@ -10,6 +11,8 @@ import WalletsManager from "./WalletsManager";
 // layout.tsx's own MANAGER-or-BROKER_ADMIN guard is identical to what
 // this page checked itself. WalletsManager now fetches its own data
 // from the already-existing /api/manage/accounts route.
+export const metadata: Metadata = { title: "Wallets — Backoffice" };
+
 export default function ManagerWalletsPage() {
   return (
     <main className="mx-auto max-w-[1400px]">

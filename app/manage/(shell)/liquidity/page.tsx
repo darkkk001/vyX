@@ -1,4 +1,5 @@
 import { redirect } from "next/navigation";
+import type { Metadata } from "next";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { PageHeader } from "@/components/ui/PageHeader";
 import LiquidityManager from "./LiquidityManager";
@@ -8,6 +9,8 @@ import LiquidityManager from "./LiquidityManager";
 // keeping only -- see LiquidityProvider's schema comment. Kept its own
 // check here -- stricter than the shell layout's own MANAGER-or-
 // BROKER_ADMIN guard, same reasoning as Settings/Emergency/Team.
+export const metadata: Metadata = { title: "Liquidity providers — Backoffice" };
+
 export default async function ManagerLiquidityPage() {
   const session = await getAdminSession();
   if (!requireAdminRole(session, ["BROKER_ADMIN"])) {

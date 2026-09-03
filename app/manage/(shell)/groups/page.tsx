@@ -1,4 +1,5 @@
 import { PageHeader } from "@/components/ui/PageHeader";
+import type { Metadata } from "next";
 import GroupsManager from "./GroupsManager";
 
 // No auth check or Prisma query here anymore -- app/manage/(shell)/
@@ -7,6 +8,8 @@ import GroupsManager from "./GroupsManager";
 // already-existing /api/manage/groups GET (fixed to include
 // forceDealingMode, which it was missing, and to return "" instead of
 // null for an unset maxLotSize, matching this page's own prior mapping).
+export const metadata: Metadata = { title: "Groups — Backoffice" };
+
 export default function ManagerGroupsPage() {
   return (
     <main className="mx-auto max-w-[1400px]">

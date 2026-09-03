@@ -1,4 +1,5 @@
 import { PageHeader } from "@/components/ui/PageHeader";
+import type { Metadata } from "next";
 import SecurityManager from "@/components/admin/SecurityManager";
 
 // No auth check or Prisma query here anymore -- app/(super-admin)/
@@ -7,6 +8,8 @@ import SecurityManager from "@/components/admin/SecurityManager";
 // app/manage/(shell)/settings/page.tsx, which kept its own stricter
 // check -- see that commit). SecurityManager now fetches its own state
 // from /api/admin/two-factor/status.
+export const metadata: Metadata = { title: "Security — Super Admin" };
+
 export default function SuperAdminSecurityPage() {
   return (
     <main className="mx-auto max-w-[720px]">

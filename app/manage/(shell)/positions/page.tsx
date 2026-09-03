@@ -1,4 +1,5 @@
 import { PageHeader } from "@/components/ui/PageHeader";
+import type { Metadata } from "next";
 import PositionsManager from "./PositionsManager";
 
 // No auth check or Prisma query here anymore -- app/manage/(shell)/
@@ -8,6 +9,8 @@ import PositionsManager from "./PositionsManager";
 // GET on the already-existing /api/manage/positions route, and re-polls
 // it on the same 5s interval this page's own router.refresh() used to
 // drive, instead of a Server Component prop.
+export const metadata: Metadata = { title: "Live Exposure — Backoffice" };
+
 export default function ManagerPositionsPage() {
   return (
     <main className="mx-auto max-w-[1400px]">
