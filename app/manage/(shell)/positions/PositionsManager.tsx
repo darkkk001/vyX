@@ -472,6 +472,16 @@ export default function PositionsManager() {
   // lib/position-actions.ts's executeDelete), and this page only ever
   // shows OPEN ones.
 
+  // --- Position details panel -- click or double-click a row to open a
+  // consolidated read-only summary plus the same four actions the ⋮ menu
+  // offers, without hunting for the trigger. Each button here just hands
+  // off to that action's existing modal/handler and closes this one --
+  // no new mutation logic. detailsTarget is kept as the live row object
+  // (from positionRows, not a stale snapshot) so floating P/L keeps
+  // ticking while the panel is open.
+  const [detailsTargetId, setDetailsTargetId] = useState<string | null>(null);
+  const detailsTarget = detailsTargetId ? (positionRows.find((p) => p.id === detailsTargetId) ?? null) : null;
+
   // --- Pending approvals (MANAGER-filed requests a different admin must
   // review) -- kept in-page rather than a separate route so the whole
   // request -> approve loop is testable from one screen.
@@ -796,7 +806,12 @@ export default function PositionsManager() {
             <TableEmptyState colSpan={11}>No open positions match the current filters.</TableEmptyState>
           ) : (
             filteredPositions.map((p) => (
-              <TableRow key={p.id}>
+              <TableRow
+                key={p.id}
+                className="cursor-pointer"
+                onClick={() => setDetailsTargetId(p.id)}
+                onDoubleClick={() => setDetailsTargetId(p.id)}
+              >
                 <TableCell primary>
                   {p.accountNumber}
                   <div className="text-xs font-normal text-[var(--text-3)]">{p.accountFullName}</div>
@@ -828,7 +843,7 @@ export default function PositionsManager() {
                   {p.floatingPnl ?? "—"}
                 </TableCell>
                 <TableCell className="text-xs text-[var(--text-3)]">{p.openedAt}</TableCell>
-                <TableCell className="whitespace-nowrap">
+                <TableCell className="whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
                   <ActionMenu
                     items={[
                       { label: "Modify SL/TP", onClick: () => openModifyModal(p) },
@@ -1065,6 +1080,79 @@ export default function PositionsManager() {
                 {voidingId === voidConfirm.id ? "Voiding..." : "Confirm void"}
               </Button>
             </ModalActions>
+          </div>
+        ) : null}
+      </Modal>
+
+      <Modal
+        open={detailsTarget !== null}
+        onClose={() => setDetailsTargetId(null)}
+        title={detailsTarget ? `Position — ${detailsTarget.symbolName} — ${detailsTarget.accountNumber}` : ""}
+      >
+        {detailsTarget ? (
+          <div className="flex flex-col gap-4">
+            <div className="grid grid-cols-2 gap-x-4 gap-y-2.5 rounded-lg border border-[var(--border)] p-3 text-sm">
+              <div>
+                <p className="text-xs text-[var(--text-3)]">Account</p>
+                <p className="text-[var(--text-1)]">
+                  {detailsTarget.accountNumber} <span className="text-xs text-[var(--text-3)]">{detailsTarget.accountFullName}</span>
+                </p>
+              </div>
+              <div>
+                <p className="text-xs text-[var(--text-3)]">Side / Volume</p>
+                <p className="font-mono">
+                  <Badge tone={detailsTarget.side === "BUY" ? "success" : "danger"}>{detailsTarget.side}</Badge> {detailsTarget.volume}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs text-[var(--text-3)]">Open price</p>
+                <p className="font-mono text-[var(--text-1)]">{detailsTarget.openPrice}</p>
+              </div>
+              <div>
+                <p className="text-xs text-[var(--text-3)]">Current price</p>
+                <p className="font-mono text-[var(--text-1)]">{detailsTarget.currentPrice ?? "—"}</p>
+              </div>
+              <div>
+                <p className="text-xs text-[var(--text-3)]">S/L</p>
+                <p className="font-mono text-[var(--text-1)]">{detailsTarget.slPrice ?? "—"}</p>
+              </div>
+              <div>
+                <p className="text-xs text-[var(--text-3)]">T/P</p>
+                <p className="font-mono text-[var(--text-1)]">{detailsTarget.tpPrice ?? "—"}</p>
+              </div>
+              <div>
+                <p className="text-xs text-[var(--text-3)]">Floating P&L</p>
+                <p
+                  className={`font-mono font-semibold ${
+                    !detailsTarget.floatingPnl ? "text-[var(--text-1)]" : Number(detailsTarget.floatingPnl) >= 0 ? "text-[var(--buy)]" : "text-[var(--sell)]"
+                  }`}
+                >
+                  {detailsTarget.floatingPnl ?? "—"}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs text-[var(--text-3)]">Opened</p>
+                <p className="text-[var(--text-1)]">{detailsTarget.openedAt}</p>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button variant="secondary" size="sm" onClick={() => { const row = detailsTarget; setDetailsTargetId(null); openModifyModal(row); }}>
+                Modify SL/TP
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => { const row = detailsTarget; setDetailsTargetId(null); setReverseMode("IN_PLACE"); setReverseConfirm(row); }}
+              >
+                Reverse
+              </Button>
+              <Button variant="danger" size="sm" onClick={() => { const row = detailsTarget; setDetailsTargetId(null); setCloseConfirm(row); }}>
+                Close position
+              </Button>
+              <Button variant="danger" size="sm" onClick={() => { const row = detailsTarget; setDetailsTargetId(null); setVoidConfirm(row); }}>
+                Void
+              </Button>
+            </div>
           </div>
         ) : null}
       </Modal>
