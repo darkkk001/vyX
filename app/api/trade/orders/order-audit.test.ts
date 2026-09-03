@@ -221,6 +221,13 @@ describe("order-lifecycle audit payload completeness (live DB)", () => {
     const placed = await placeOrder(fx, { side: "BUY", type: "LIMIT", volume: "0.01", price: "99.00" });
     const orderId = placed.json.id;
 
+    // Re-tick the fixture's LivePrice immediately before filling --
+    // checkPriceFreshness (lib/risk.ts) rejects anything older than 3s,
+    // and createFixture+placeOrder's own sequential awaited writes
+    // (several round trips to the real Neon DB, not a local Postgres)
+    // can already eat past that budget before this line even runs.
+    await prisma.livePrice.update({ where: { symbol: fx.symbolName }, data: { bid: D("99.90"), ask: D("100.10"), tickAt: new Date() } });
+
     // Live ask is 100.10 -- the trigger fires later, at (close to) the
     // live price, not at the order's own original limit price.
     const { status, json } = await fillOrder(fx, orderId, "100.10");

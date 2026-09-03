@@ -14,5 +14,10 @@ export default async function ManagerLoginPage() {
     ? await prisma.broker.findUnique({ where: { id: brokerId }, select: { name: true, logoUrl: true } })
     : null;
 
-  return <NextManagerLoginForm brokerName={broker?.name ?? "Backoffice"} logoUrl={broker?.logoUrl ?? null} />;
+  // Falls back to the platform's own name, not "Backoffice" -- this
+  // form always appends " Backoffice" itself (see ManagerLoginForm.tsx),
+  // so that fallback rendered as the literal "Backoffice Backoffice"
+  // whenever no broker resolved (root domain, unknown subdomain).
+  // Matches manager-shell/App.tsx's own branding-fetch-failure fallback.
+  return <NextManagerLoginForm brokerName={broker?.name ?? "VyXTrader"} logoUrl={broker?.logoUrl ?? null} />;
 }

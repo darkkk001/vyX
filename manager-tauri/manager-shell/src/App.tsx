@@ -91,7 +91,11 @@ export default function App() {
     return (
       <div data-surface="manager" className="min-h-dvh antialiased">
         <ManagerLoginForm
-          brokerName={branding?.brokerName ?? "Backoffice"}
+          // Not "Backoffice" -- ManagerLoginForm always appends " Backoffice"
+          // itself, so that fallback rendered as literal "Backoffice
+          // Backoffice" during the brief window before the branding fetch
+          // resolves. Matches this same fetch's own catch-handler fallback.
+          brokerName={branding?.brokerName ?? "VyXTrader"}
           logoUrl={branding?.brokerLogoUrl ?? null}
           onAuthenticated={async () => {
             await loadShellInfo();
