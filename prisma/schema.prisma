@@ -1,7 +1,7 @@
 // VyXTrader — Phase 1 data model
 //
 // Design notes (flagging assumptions since this file did not exist before):
-// - "Account" is the trader's login (MT5-style): a client can have multiple
+// - "Account" is the trader's login: a client can have multiple
 //   Accounts (DEMO + LIVE) under the same Broker. KYC is modeled per-Account
 //   rather than introducing a separate Client entity, to match the model
 //   list in the spec exactly. Revisit if brokers need one KYC record shared

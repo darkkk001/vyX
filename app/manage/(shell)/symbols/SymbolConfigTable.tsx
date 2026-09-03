@@ -43,7 +43,7 @@ const NUMERIC_FIELDS: { key: EditableField; label: string; title: string; width:
   { key: "maxExposure", label: "Max exposure", title: "Max total open volume per account in this symbol — blank = no limit", width: 100 },
 ];
 
-// MT5 Manager-style symbol grid: one row per symbol, every config field
+// Manager-style symbol grid: one row per symbol, every config field
 // editable in place, one Save button per row. Mirrors
 // app/(super-admin)/brokers/CreateBrokerForm.tsx's fetch/error/
 // submitting-state shape, just per-row instead of a single form.

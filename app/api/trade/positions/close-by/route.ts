@@ -3,7 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
 import { closePositionsByEachOther } from "@/lib/close-by";
 
-// MT5-style "Close By" -- nets the smaller of two opposite-side
+// "Close By" -- nets the smaller of two opposite-side
 // positions on the same symbol against the larger one at a single fair
 // (midpoint) price, closing both legs in one transaction with one
 // PositionsClosed event. See lib/close-by.ts for the full reasoning.

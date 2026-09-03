@@ -28,7 +28,7 @@ export type PositionLineData = {
 };
 
 // chart interaction pack -- draggable SL/TP (position) or entry price
-// (pending order) line, MT5-style. `formatLabel` is called with the LIVE
+// (pending order) line. `formatLabel` is called with the LIVE
 // dragged price on every redraw (not just on drop) so the label's
 // dollar-P/L-if-hit / delta updates in real time while dragging -- it's a
 // closure so WebTrader.tsx's own volume/side/contractSize math stays out

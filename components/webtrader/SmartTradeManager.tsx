@@ -94,7 +94,7 @@ export default function SmartTradeManager({
   onClose: () => void;
   // Renders the panel content directly (no overlay/backdrop/close
   // button) instead of as a modal -- WebTrader.tsx's Watchlist column
-  // uses this to show it permanently, MT4/5-style, rather than behind a
+  // uses this to show it permanently, always visible, rather than behind a
   // rail icon. `open` is ignored when true; the confirm-enable dialog
   // still overlays normally either way.
   embedded?: boolean;

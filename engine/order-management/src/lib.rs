@@ -290,10 +290,9 @@ pub async fn place_market_order(
 /// Everything OMS needs to place a pending LIMIT/STOP order — see
 /// ../../docs/execution.md §2.1 step 3. Unlike `PlaceMarketOrderRequest`,
 /// there's no `equity`/`used_margin` here: a pending order doesn't
-/// reserve margin while it waits (matches how MT5-style platforms
-/// behave — margin is checked when the order actually triggers and
-/// opens a position, not while it's sitting unfilled). See
-/// `pending_orders.rs` for that trigger-time check.
+/// reserve margin while it waits — margin is checked when the order
+/// actually triggers and opens a position, not while it's sitting
+/// unfilled. See `pending_orders.rs` for that trigger-time check.
 pub struct PlacePendingOrderRequest {
     pub broker_id: String,
     pub account_id: String,

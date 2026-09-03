@@ -221,7 +221,7 @@ export const tradeApi = {
       "/api/trade/positions/close-bulk",
       { method: "POST", body: JSON.stringify({ scope, ...(symbol ? { symbol } : {}) }) }
     ),
-  // MT5-style "Close By" -- see lib/close-by.ts for the full reasoning.
+  // "Close By" -- see lib/close-by.ts for the full reasoning.
   closeBy: (positionId: string, againstPositionId: string) =>
     call<{ ok: true; closeVolume: string; closePrice: string; positionAId: string; positionBId: string; realizedPnlA: string; realizedPnlB: string }>(
       "/api/trade/positions/close-by",

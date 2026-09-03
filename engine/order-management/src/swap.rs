@@ -6,7 +6,7 @@
 //! — see that field's schema comment for the unit convention) as a
 //! `SWAP` ledger entry.
 //!
-//! Wednesday charges 3x, the common MT5-broker convention for rolling a
+//! Wednesday charges 3x, the common industry convention for rolling a
 //! position through the weekend (Fri/Sat/Sun nights collapsed into one
 //! charge) — a broker-level override for this isn't built, matching the
 //! project's own "don't build config nobody asked for yet" bias; flagged

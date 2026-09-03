@@ -45,7 +45,7 @@ async function withTx<T>(db: Db, fn: (tx: Prisma.TransactionClient) => Promise<T
 
 // Mirrors swap.rs's swap_multiplier exactly: 3x on Wednesday (ISO
 // weekday 3, Monday=1) rolls Fri/Sat/Sun's holding into one charge, the
-// common MT5-broker convention; any other value -- including an
+// common industry convention; any other value -- including an
 // out-of-range one, a schema-level surprise rather than something to
 // throw over -- falls back to the safe 1x, same as the Rust version.
 // Not broker-configurable, matching swap.rs's own deliberate

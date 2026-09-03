@@ -69,8 +69,8 @@ function nextId() {
   return idCounter++;
 }
 
-// MT5-style "how long has this been sitting in the dealing queue" --
-// seconds while fresh, minutes once it's been a while. Dealer review is
+// "How long has this been sitting in the dealing queue" -- seconds
+// while fresh, minutes once it's been a while. Dealer review is
 // meant to be fast, so this deliberately never rolls over to hours: an
 // order still PENDING after 59+ minutes should read as "59m", a visibly
 // stale number, not quietly wrap into an hours format that reads calmer
@@ -1379,7 +1379,7 @@ export default function WebTrader({
   // the low-latency case this used to be the only thing catching --
   // dealer fills, requotes, externally-created positions).
   const [connected, setConnected] = useState(true);
-  // Feed-loss UX -- MT5-style graceful degradation. When this connection
+  // Feed-loss UX -- graceful degradation. When this connection
   // drops, records the moment it did (used by the status-bar pill's
   // "Reconnecting… Xs"); null while connected. Deliberately a separate
   // piece of state from `connected` itself (not just `!connected`) so the
@@ -2231,7 +2231,7 @@ export default function WebTrader({
     }
   }
 
-  // MT5-style "Close by" -- only offered when this account actually holds
+  // "Close by" -- only offered when this account actually holds
   // an opposite-side position in the same symbol (a hedge) to net against.
   function closeByCandidates(p: ApiPosition): ApiPosition[] {
     return positions.filter((other) => other.id !== p.id && other.symbol.name === p.symbol.name && other.side !== p.side);
@@ -3432,7 +3432,7 @@ export default function WebTrader({
                 // symbol that has EVER had one real tick keeps showing
                 // that price/change/spread/high/low frozen as-is, with no
                 // caption at all, regardless of current feed status --
-                // MT5-style graceful degradation. Only a symbol that has
+                // graceful degradation. Only a symbol that has
                 // literally never ticked this session (hasEverTicked
                 // false) has no real number to freeze on, so that case
                 // alone still falls back to a plain "—" (never a
@@ -3551,9 +3551,9 @@ export default function WebTrader({
             ) : null}
 
             {/* ---------- Smart Trade Manager (embedded below the
-                Watchlist, MT4/5-style, instead of hidden behind the rail
-                icon) -- same rail button now just toggles this section's
-                collapse state. ---------- */}
+                Watchlist, always visible, instead of hidden behind the
+                rail icon) -- same rail button now just toggles this
+                section's collapse state. ---------- */}
             <div
               className="section-label"
               style={{ cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 10 }}
@@ -3638,7 +3638,7 @@ export default function WebTrader({
                 {m.lastTickAt > 0 ? (
                   // Feed-loss UX -- shows the frozen last-known price/
                   // change/spread regardless of activeFeedStatus, with no
-                  // caption and no muted "stale" color: MT5-style graceful
+                  // caption and no muted "stale" color: graceful
                   // degradation. Only the status-bar pill and the order
                   // ticket's own 10s-staleness gate say anything is wrong
                   // -- this header doesn't, on purpose. Only a symbol

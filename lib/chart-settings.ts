@@ -39,7 +39,7 @@ export type ChartSettings = {
   // the chart interaction pack spec ("timezone display (UTC default --
   // groundwork for the TZ selector)").
   timezone: "UTC";
-  // MT5-style terminal notification sounds (lib/sounds.ts) -- one master
+  // Terminal notification sounds (lib/sounds.ts) -- one master
   // switch plus a toggle per event so a trader can e.g. keep fills/SL/TP
   // audible but silence requotes. soundsEnabled gates all of them; a
   // false per-event toggle silences that event even if soundsEnabled is

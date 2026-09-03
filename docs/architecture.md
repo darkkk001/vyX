@@ -164,7 +164,7 @@ VyXTrader today is a single Next.js 15 monolith:
   and "Back Office" describe below (broker creation, admin login) — Phase 3
   in the existing roadmap (KYC review, real deposit/withdraw, IB
   commission) was never started.
-- **Root-domain launcher** (`app/launch`): an MT5-style "pick your server,
+- **Root-domain launcher** (`app/launch`): a "pick your server,
   log in" screen added this engagement, using a real cross-site
   `<form method="POST">` submit so a password never has to travel through
   a URL, landing on `/api/trade/login-redirect` on the picked broker's own
@@ -606,7 +606,7 @@ here, just the option the spec itself already pointed at.
     (`spreadMarkup`, lot limits, swap, `commissionPerLot`, `maxExposure`)
     had zero admin UI — direct DB edit only, even though the Rust engine
     had been reading and enforcing all of them for several slices already.
-    New `app/manage/` route group, modeled on MT5's own Manager terminal
+    New `app/manage/` route group, a Manager-terminal-style
     Symbols tab (one grid, one row per symbol, per-row save) per the
     user's explicit request. Lives on the broker's own subdomain, not a
     new `manager.<ROOT_DOMAIN>` subdomain — a deliberate, confirmed

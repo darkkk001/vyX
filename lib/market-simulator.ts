@@ -41,7 +41,7 @@ export type SymbolDef = {
   base: number;
   vol: number;
   contractSize: number;
-  // Chart interaction pack -- MT4/5-style minimum SL/TP/pending-entry
+  // Chart interaction pack -- minimum SL/TP/pending-entry
   // distance, in points, from the current price. 0 (every SYMBOL_DEFS
   // bootstrap entry, and any pre-migration broker) means unrestricted.
   // Client-side preview only -- see BrokerSymbol.stopLevel's own comment.

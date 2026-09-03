@@ -6,8 +6,8 @@ import DesktopTitleBar from "@/components/webtrader/DesktopTitleBar";
 type PublicBroker = { name: string; subdomain: string; logoUrl: string | null };
 
 // Root-domain "pick your server" screen — the generic desktop app build (no
-// broker baked in) and anyone landing on the bare domain start here, same
-// role as MT5's single login+password+server screen. Submitting does a real
+// broker baked in) and anyone landing on the bare domain start here, a
+// single login+password+server screen. Submitting does a real
 // cross-site <form method="POST"> to the picked broker's own subdomain
 // (app/api/trade/login-redirect) — a top-level navigation, which browsers
 // allow across origins unlike fetch/XHR — so the password never has to

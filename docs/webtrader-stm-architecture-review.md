@@ -64,7 +64,7 @@ Only `localStorage["vyx-theme"]` exists today. No workspace/watchlist/STM-config
 
 ### 2.7 Multi-account
 
-`Account.email` is **not** `@unique` in the schema — multiple accounts (e.g., a LIVE and a DEMO account) can already share one email under one broker. Each `Account` has its own independent `passwordHash`, and login (`POST /api/trade/login`) is by `accountNumber`, MT4/5-style. There is no session concept of "one identity, N accounts" and no account-switcher UI. Per your decision, this stays lightweight: switching = pick a linked account from a dropdown, re-enter that account's password.
+`Account.email` is **not** `@unique` in the schema — multiple accounts (e.g., a LIVE and a DEMO account) can already share one email under one broker. Each `Account` has its own independent `passwordHash`, and login (`POST /api/trade/login`) is by `accountNumber`. There is no session concept of "one identity, N accounts" and no account-switcher UI. Per your decision, this stays lightweight: switching = pick a linked account from a dropdown, re-enter that account's password.
 
 ### 2.8 Authentication
 

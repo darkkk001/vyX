@@ -20,7 +20,7 @@ async function withTx<T>(db: Db, fn: (tx: Prisma.TransactionClient) => Promise<T
   return fn(db as Prisma.TransactionClient);
 }
 
-// MT5-style "Close By" -- nets the smaller of two opposite-side positions
+// "Close By" -- nets the smaller of two opposite-side positions
 // on the same symbol against the larger one, without ever touching the
 // open market. The whole point (over just closing both positions
 // separately at the current bid/ask) is that separately closing a BUY at

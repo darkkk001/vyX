@@ -111,7 +111,7 @@ instead of before.
 **§2.1 step 3 (LIMIT/STOP trigger logic) — done.** `place_pending_order`
 (`order-management/src/lib.rs`) inserts a LIMIT/STOP order straight to
 `ACCEPTED` — no fill, no position, and deliberately **no margin check**
-at placement time, matching how MT5-style platforms actually behave: a
+at placement time: a
 pending order doesn't reserve margin while it waits, only a filled
 position does. Validates the requested price is on the correct side of
 the current market first though (BUY LIMIT below the current ask, BUY
@@ -153,7 +153,7 @@ exactly as described in §4.
 **Commission/swap — implemented.** Two decisions confirmed with the user
 first, since neither had an existing convention to inherit: commission
 is a flat fee per lot, charged once at position open (round-turn, not
-split between open/close); swap is a daily rollover job (MT5-style),
+split between open/close); swap is a daily rollover job,
 not computed once at close.
 
 New `BrokerSymbol.commissionPerLot` (flat fee/lot, default 0). Applied in
@@ -171,7 +171,7 @@ default), charging every OPEN position not yet charged today. "Today" and
 "which weekday" are both read from Postgres's own `CURRENT_DATE`, not the
 Rust process's clock — same one-clock reasoning as the staleness checks
 `market_data::db::get_live_price` added. Wednesday charges 3x (rolls the
-weekend into one charge, the common MT5-broker default; not
+weekend into one charge, the common industry default; not
 broker-configurable yet — flagged, not hidden). Idempotent via the same
 claim-then-apply pattern as `try_claim_order_for_routing`
 (`positions.last_swap_at`'s date guard), so polling more often than once

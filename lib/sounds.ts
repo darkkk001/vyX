@@ -1,6 +1,6 @@
 import type { ChartSettings } from "@/lib/chart-settings";
 
-// MT5-style terminal notification cues -- short (<400ms) synthesized Web
+// Terminal notification cues -- short (<400ms) synthesized Web
 // Audio tones, same technique as the price-alert chime (single-shot
 // AudioContext per sound, sine oscillators with a quick-attack/
 // exponential-decay gain envelope): no asset to ship, no autoplay-policy
@@ -21,8 +21,7 @@ export type SoundEvent =
 type Tone = { freq: number; start: number; duration: number; gain?: number; type?: OscillatorType };
 
 // Each event gets a distinct, deliberately short shape so they're
-// tellable apart by ear the way MT5's own fill/error sounds are --
-// ascending pairs read as "good" (fill, TP, alert), a descending pair
+// tellable apart by ear -- ascending pairs read as "good" (fill, TP, alert), a descending pair
 // reads as "loss" (SL), a single short blip reads as neutral/informational
 // (pending triggered), an alternating pair reads as "needs attention"
 // (requote), and a low buzz reads as "something went wrong" (error).
