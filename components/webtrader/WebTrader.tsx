@@ -32,6 +32,9 @@ import SessionClock from "./SessionClock";
 import NewsPanel from "./NewsPanel";
 import ChartCell from "./ChartCell";
 import CollapsibleSection from "./CollapsibleSection";
+import SettingsDialog from "./SettingsDialog";
+import KeyboardShortcutsDialog from "./KeyboardShortcutsDialog";
+import AboutDialog from "./AboutDialog";
 import SmartTradeManager from "./SmartTradeManager";
 import { computeOrderReferenceLines, computeAlertLines } from "@/lib/chart-lines";
 import { DEFAULT_CHART_SETTINGS, type ChartSettings } from "@/lib/chart-settings";
@@ -288,7 +291,6 @@ export default function WebTrader({
   const [slInput, setSlInput] = useState("");
   const [tpInput, setTpInput] = useState("");
   const [pendingMarketSide, setPendingMarketSide] = useState<"BUY" | "SELL" | null>(null);
-  const [oneClick, setOneClick] = useState(false);
   const [balanceHidden, setBalanceHidden] = useState(false);
 
   // ---------- resizable panel layout ----------
@@ -588,7 +590,7 @@ export default function WebTrader({
   // one was open (previously only File<->Tools did this, pairwise, by
   // each one's onClick manually clearing the other -- Actions/Help never
   // closed File or Tools, or each other).
-  type TopMenuId = "file" | "tools" | "actions" | "help";
+  type TopMenuId = "file" | "tools" | "reports" | "actions" | "help";
   const [topMenuOpen, setTopMenuOpen] = useState<TopMenuId | null>(null);
   const topMenuContainerRef = useRef<HTMLDivElement | null>(null);
   useDismiss(topMenuOpen !== null, () => setTopMenuOpen(null), topMenuContainerRef);
@@ -690,6 +692,10 @@ export default function WebTrader({
   // same shape as watchlist prefs. Starts at the client default so the
   // chart never renders unstyled before the GET resolves.
   const [chartSettings, setChartSettings] = useState<ChartSettings>(DEFAULT_CHART_SETTINGS);
+  // Menu IA pass -- was its own useState(false), reset every reload; now
+  // reads/writes ChartSettings.oneClickDefault (see that field's own
+  // comment) so Settings > Trading's "default" actually persists.
+  const oneClick = chartSettings.oneClickDefault;
   // Guards against a real race: the mount effect's own tradeApi.
   // chartSettings() GET below can still be in flight when the trader
   // clicks a toggle that saves through saveChartSettingsHandler (theme,
@@ -767,6 +773,13 @@ export default function WebTrader({
   );
 
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
+  // Menu IA pass -- the rail's gear icon used to open Change Password
+  // directly; it now opens this tabbed dialog instead (Profile/Trading/
+  // Appearance/Notifications), which itself opens Change Password (and
+  // Security/KYC) as before when the trader picks that row.
+  const [settingsModalOpen, setSettingsModalOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [aboutOpen, setAboutOpen] = useState(false);
   const [cpCurrent, setCpCurrent] = useState("");
   const [cpNew, setCpNew] = useState("");
   const [cpConfirm, setCpConfirm] = useState("");
@@ -2984,6 +2997,52 @@ export default function WebTrader({
     saveChartSettingsHandler({ ...chartSettings, [key]: !chartSettings[key] });
   }
 
+  // Generic boolean flip for any other ChartSettings field -- one-click
+  // trading default (Settings > Trading), and reused by SettingsDialog's
+  // own Notifications tab for the sound toggles instead of duplicating
+  // this exact merge-and-save shape a third time.
+  function toggleChartSetting<K extends keyof ChartSettings>(key: K) {
+    const current = chartSettings[key];
+    if (typeof current !== "boolean") return;
+    saveChartSettingsHandler({ ...chartSettings, [key]: !current });
+  }
+
+  function setChartSettingValue<K extends keyof ChartSettings>(key: K, value: ChartSettings[K]) {
+    saveChartSettingsHandler({ ...chartSettings, [key]: value });
+  }
+
+  // Settings > Appearance's "Reset layout to default" -- clears both
+  // halves of this page's layout state: the per-browser localStorage
+  // sizes (StoredLayout -- panel widths/heights/column prefs, saved only
+  // on drag-end, so setting the React state alone wouldn't persist it)
+  // and the server-persisted collapse flags this session's own
+  // collapsible-panel-system work added to ChartSettings.
+  function resetLayoutToDefault() {
+    setOrderPanelWidth(ORDER_PANEL_MIN);
+    setWatchlistWidth(WATCHLIST_MIN);
+    setBottomPanelHeight(190);
+    setColumnPrefs(DEFAULT_WATCHLIST_COLUMN_PREFS);
+    try {
+      window.localStorage.setItem(
+        LAYOUT_STORAGE_KEY,
+        JSON.stringify({ columnPrefs: DEFAULT_WATCHLIST_COLUMN_PREFS, orderPanelWidth: ORDER_PANEL_MIN, watchlistWidth: WATCHLIST_MIN, bottomPanelHeight: 190 })
+      );
+    } catch {
+      // localStorage unavailable (private mode, desktop shell quirk) --
+      // the React state above still reset for this session either way.
+    }
+    saveChartSettingsHandler({
+      ...chartSettings,
+      watchlistCollapsed: false,
+      orderTicketPanelCollapsed: false,
+      bottomPanelCollapsed: false,
+      orderTicketSectionCollapsed: false,
+      tradingSessionsSectionCollapsed: false,
+      economicCalendarSectionCollapsed: false,
+    });
+    pushToast("Layout reset to default");
+  }
+
   if (loadError) {
     return <div style={{ padding: 40, color: "#EDEFF2", background: "#07090C", minHeight: "100vh" }}>{loadError}</div>;
   }
@@ -3015,10 +3074,15 @@ export default function WebTrader({
               <div style={{ position: "relative" }}>
                 <div className="item" onClick={() => setTopMenuOpen((id) => (id === "file" ? null : "file"))}>File</div>
                 {topMenuOpen === "file" ? (
-                  <div className="account-dropdown show" style={{ top: "100%", left: 0, width: 180 }} onClick={() => setTopMenuOpen(null)}>
-                    <div className="acc-option" style={{ cursor: "pointer", padding: "8px 10px" }} onClick={handleLogout}>Switch account</div>
+                  <div className="account-dropdown show" style={{ top: "100%", left: 0, width: 190 }} onClick={() => setTopMenuOpen(null)}>
+                    <div className="acc-option" style={{ cursor: "pointer", padding: "8px 10px" }} onClick={() => setAccountDropdownOpen(true)}>Accounts ▸</div>
+                    <div className="acc-option" style={{ cursor: "pointer", padding: "8px 10px" }} onClick={() => setChartLayout("grid")}>New chart layout</div>
+                    <div className="acc-option" style={{ cursor: "pointer", padding: "8px 10px" }} onClick={handleLogout}>Logout</div>
                     {isDesktopApp ? (
-                      <div className="acc-option" style={{ cursor: "pointer", padding: "8px 10px" }} onClick={() => window.vyxDesktop?.close?.()}>Exit</div>
+                      <>
+                        <div style={{ height: 1, background: "var(--border)", margin: "4px 0" }} />
+                        <div className="acc-option" style={{ cursor: "pointer", padding: "8px 10px" }} onClick={() => window.vyxDesktop?.close?.()}>Exit</div>
+                      </>
                     ) : null}
                   </div>
                 ) : null}
@@ -3026,11 +3090,11 @@ export default function WebTrader({
               <div style={{ position: "relative" }}>
                 <div className="item" onClick={() => setTopMenuOpen((id) => (id === "tools" ? null : "tools"))}>Tools</div>
                 {topMenuOpen === "tools" ? (
-                  <div className="account-dropdown show" style={{ top: "100%", left: 0, width: 180 }}>
-                    <div className="acc-option" style={{ cursor: "pointer", padding: "8px 10px" }} onClick={() => { setTopMenuOpen(null); setChangePasswordOpen(true); }}>Change password</div>
-                    <div className="acc-option" style={{ cursor: "pointer", padding: "8px 10px" }} onClick={openSecurityModal}>Security</div>
-                    <div className="acc-option" style={{ cursor: "pointer", padding: "8px 10px" }} onClick={() => { setTopMenuOpen(null); setKycModalOpen(true); refreshKycStatus(); }}>Verify identity</div>
-                    <div className="acc-option" style={{ cursor: "pointer", padding: "8px 10px" }} onClick={() => { setTopMenuOpen(null); setActiveBottomTab("logs"); }}>View logs</div>
+                  <div className="account-dropdown show" style={{ top: "100%", left: 0, width: 210 }}>
+                    <div className="acc-option" style={{ cursor: "pointer", padding: "8px 10px" }} onClick={() => { setTopMenuOpen(null); setAlertsModalOpen(true); }}>Alerts manager</div>
+                    <div className="acc-option" style={{ cursor: "pointer", padding: "8px 10px" }} onClick={() => { setTopMenuOpen(null); setChartSettingsOpen(true); }}>Notification settings</div>
+                    <div className="acc-option" style={{ cursor: "pointer", padding: "8px 10px" }} onClick={() => { setTopMenuOpen(null); setChartSettingsOpen(true); }}>Chart settings</div>
+                    <div className="acc-option" style={{ cursor: "pointer", padding: "8px 10px" }} onClick={() => { setTopMenuOpen(null); setShortcutsOpen(true); }}>Keyboard shortcuts</div>
                     <div style={{ height: 1, background: "var(--border)", margin: "4px 0" }} />
                     <div style={{ padding: "4px 10px 2px", fontSize: 10, color: "var(--text-3)", textTransform: "uppercase" }}>Theme</div>
                     <div className="acc-option" style={{ cursor: "pointer", padding: "8px 10px", display: "flex", justifyContent: "space-between" }} onClick={() => changeTheme("default")}>
@@ -3042,7 +3106,15 @@ export default function WebTrader({
                   </div>
                 ) : null}
               </div>
-              <div className="item" onClick={() => { setReportsOpen(true); setReportRows(null); }}>Reports</div>
+              <div style={{ position: "relative" }}>
+                <div className="item" onClick={() => setTopMenuOpen((id) => (id === "reports" ? null : "reports"))}>Reports</div>
+                {topMenuOpen === "reports" ? (
+                  <div className="account-dropdown show" style={{ top: "100%", left: 0, width: 190 }} onClick={() => { setTopMenuOpen(null); setReportsOpen(true); setReportRows(null); }}>
+                    <div className="acc-option" style={{ cursor: "pointer", padding: "8px 10px" }}>Account statement</div>
+                    <div className="acc-option" style={{ cursor: "pointer", padding: "8px 10px" }}>Trade history export</div>
+                  </div>
+                ) : null}
+              </div>
               <div style={{ position: "relative" }}>
                 <div className="item" onClick={() => { setTopMenuOpen((id) => (id === "actions" ? null : "actions")); setActionsSearch(""); }}>Quick actions ▾</div>
                 {topMenuOpen === "actions" ? (
@@ -3095,7 +3167,7 @@ export default function WebTrader({
                         <div
                           className="acc-option"
                           style={{ cursor: "pointer", padding: "8px 10px" }}
-                          onClick={() => { setOneClick((v) => !v); pushToast(!oneClick ? "One-click trading enabled" : "One-click trading disabled"); setTopMenuOpen(null); }}
+                          onClick={() => { toggleChartSetting("oneClickDefault"); pushToast(!oneClick ? "One-click trading enabled" : "One-click trading disabled"); setTopMenuOpen(null); }}
                         >
                           Toggle one-click trading
                         </div>
@@ -3115,6 +3187,13 @@ export default function WebTrader({
                 <div className="item" onClick={() => setTopMenuOpen((id) => (id === "help" ? null : "help"))}>Help</div>
                 {topMenuOpen === "help" ? (
                   <div className="account-dropdown show" style={{ top: "100%", left: 0, width: 190 }}>
+                    <div
+                      className="acc-option"
+                      style={{ cursor: "pointer", padding: "8px 10px" }}
+                      onClick={() => { setTopMenuOpen(null); setShortcutsOpen(true); }}
+                    >
+                      Shortcuts
+                    </div>
                     {supportEmail ? (
                       <div
                         className="acc-option"
@@ -3127,7 +3206,7 @@ export default function WebTrader({
                     <div
                       className="acc-option"
                       style={{ cursor: "pointer", padding: "8px 10px" }}
-                      onClick={() => { setTopMenuOpen(null); pushToast(`${brokerName} — online trading platform`); }}
+                      onClick={() => { setTopMenuOpen(null); setAboutOpen(true); }}
                     >
                       About
                     </div>
@@ -3292,7 +3371,7 @@ export default function WebTrader({
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8Z" /></svg>
             </button>
             <div className="rail-sep" />
-            <button className="rail-item rail-bottom" title="Change password" onClick={() => setChangePasswordOpen(true)}>
+            <button className="rail-item rail-bottom" title="Settings" onClick={() => setSettingsModalOpen(true)}>
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" /></svg>
             </button>
           </div>
@@ -4274,7 +4353,7 @@ export default function WebTrader({
             <div className="occ-toggle-row">
               <span className="field-label">One-click trading</span>
               <label className="switch">
-                <input type="checkbox" checked={oneClick} onChange={(e) => { setOneClick(e.target.checked); pushToast(e.target.checked ? "One-click trading enabled" : "One-click trading disabled"); if (e.target.checked) setPendingMarketSide(null); }} />
+                <input type="checkbox" checked={oneClick} onChange={(e) => { setChartSettingValue("oneClickDefault", e.target.checked); pushToast(e.target.checked ? "One-click trading enabled" : "One-click trading disabled"); if (e.target.checked) setPendingMarketSide(null); }} />
                 <span className="switch-slider" />
               </label>
             </div>
@@ -4479,6 +4558,33 @@ export default function WebTrader({
             </div>
           </div>
         </div>
+      ) : null}
+
+      {/* ---------- Settings dialog (rail gear icon) ---------- */}
+      {settingsModalOpen ? (
+        <SettingsDialog
+          chartSettings={chartSettings}
+          colorMode={chartSettings.theme}
+          onChangeColorMode={changeColorMode}
+          theme={theme}
+          onChangeTheme={changeTheme}
+          onToggleSetting={toggleChartSetting}
+          twoFactorEnabled={account?.twoFactorEnabled ?? false}
+          onOpenChangePassword={() => { setSettingsModalOpen(false); setChangePasswordOpen(true); }}
+          onOpenSecurity={() => { setSettingsModalOpen(false); openSecurityModal(); }}
+          onOpenKyc={() => { setSettingsModalOpen(false); setKycModalOpen(true); refreshKycStatus(); }}
+          onOpenAlertsManager={() => { setSettingsModalOpen(false); setAlertsModalOpen(true); }}
+          onResetLayout={resetLayoutToDefault}
+          onClose={() => setSettingsModalOpen(false)}
+        />
+      ) : null}
+
+      {/* ---------- Keyboard shortcuts dialog ---------- */}
+      {shortcutsOpen ? <KeyboardShortcutsDialog onClose={() => setShortcutsOpen(false)} /> : null}
+
+      {/* ---------- About dialog ---------- */}
+      {aboutOpen ? (
+        <AboutDialog brokerName={brokerName} brokerLogoUrl={brokerLogoUrl} isDesktopApp={isDesktopApp} onClose={() => setAboutOpen(false)} />
       ) : null}
 
       {/* ---------- Change password modal ---------- */}

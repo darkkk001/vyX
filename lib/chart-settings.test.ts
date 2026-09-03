@@ -20,6 +20,10 @@ describe("DEFAULT_CHART_SETTINGS", () => {
     expect(DEFAULT_CHART_SETTINGS.showSessionHighLow).toBe(false);
   });
 
+  it("defaults one-click trading to off", () => {
+    expect(DEFAULT_CHART_SETTINGS.oneClickDefault).toBe(false);
+  });
+
   // Collapsible panel system -- everything starts open for a fresh login
   // / an account that has never saved a chart setting.
   it("defaults every collapsible-panel flag to open (false)", () => {

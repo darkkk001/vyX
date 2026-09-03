@@ -54,6 +54,14 @@ export type ChartSettings = {
   soundRequoteReceived: boolean;
   soundAlertTriggered: boolean;
   soundError: boolean;
+  // Menu IA pass -- the order ticket's "One-click trading" toggle used to
+  // be a plain useState(false) in WebTrader.tsx, resetting every reload.
+  // The new Settings > Trading tab calls this a "default," which only
+  // means something if it actually persists -- moved here, server-side,
+  // same as everything else on this page. The order ticket's own checkbox
+  // and the Quick Actions menu's toggle both still work exactly as
+  // before, they just read/write this field now instead of local state.
+  oneClickDefault: boolean;
   // Collapsible panel system -- server-persisted (per account, synced
   // web/desktop) so a trader's layout choice follows them, unlike
   // orderPanelWidth/watchlistWidth/bottomPanelHeight (WebTrader.tsx's own
@@ -113,6 +121,7 @@ export const DEFAULT_CHART_SETTINGS: ChartSettings = {
   soundRequoteReceived: true,
   soundAlertTriggered: true,
   soundError: false,
+  oneClickDefault: false,
   watchlistCollapsed: false,
   orderTicketPanelCollapsed: false,
   bottomPanelCollapsed: false,
