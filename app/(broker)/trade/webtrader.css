@@ -35,13 +35,20 @@ html, body, #root {
   --border-strong: #262E38;
   --text-1: #EDEFF2;
   --text-2: #8B93A1;
-  --text-3: #5A6472;
+  /* Nudged from #5A6472 (2.92:1 against this palette's own --bg-3, just
+     under the 3:1 UI-text floor -- measured with the theme work's
+     contrast script, not eyeballed; .wt-root[data-theme="default"] had
+     the identical problem against its own --bg-3 and got the same
+     treatment just below). */
+  --text-3: #5F6976;
   --buy: #16C784;
   --buy-bg: #0F2A1E;
   --buy-glow: rgba(22, 199, 132, .18);
   --sell: #EA3943;
   --sell-bg: #2A0F11;
   --sell-glow: rgba(234, 57, 67, .16);
+  --warn: #F0B90B;
+  --warn-bg: rgba(240, 185, 11, 0.12);
   --accent: var(--brand-primary, #16C784);
   --accent-bg: #0F2A1E;
   --accent-glow: rgba(22, 199, 132, .18);
@@ -63,16 +70,74 @@ html, body, #root {
   --border-strong: #262C36;
   --text-1: #EEF0F3;
   --text-2: #8A93A3;
-  --text-3: #565F6E;
+  /* Nudged from #565F6E (2.73:1 against this palette's own --bg-3,
+     3.04:1 against --bg-1 -- both under the 3:1 UI-text floor; measured
+     with the theme work's contrast script, not eyeballed). */
+  --text-3: #636D7A;
   --buy: #1FD68A;
   --buy-bg: #0D2A20;
   --buy-glow: rgba(31, 214, 138, .18);
   --sell: #F0475A;
   --sell-bg: #2E1218;
   --sell-glow: rgba(240, 71, 90, .16);
+  --warn: #F0B90B;
+  --warn-bg: rgba(240, 185, 11, 0.12);
   --accent: #7C6FFF;
   --accent-bg: #211E42;
   --accent-glow: rgba(124, 111, 255, .22);
+}
+
+/* Light theme -- data-mode="light" on .wt-root (WebTrader.tsx, driven by
+   ChartSettings.theme, persisted server-side -- see lib/chart-settings.ts).
+   Orthogonal to data-theme (Classic/Default) above: whichever of those is
+   selected, data-mode="light" overrides every token here regardless --
+   MUST stay physically last among the three .wt-root palette blocks for
+   that to hold. All three selectors share equal specificity (one class +
+   one attribute), so the cascade falls back to source order; data-theme
+   defaults to "default" (WebTrader.tsx's own useState), not "classic", so
+   .wt-root[data-theme="default"]'s block is the one this actually has to
+   out-order to win -- moving this block above it silently un-does the
+   whole light theme (confirmed live: every token round-tripped correctly
+   at the React/data-mode-attribute level, but the page stayed pitch
+   black, exactly this bug, before this block was moved below). Soft-white
+   surfaces, dark text, subtle borders per spec.
+
+   --buy and --warn are deliberately DARKER here than their dark-theme
+   values -- not a different color family, the same green/amber hue
+   adjusted for contrast: the literal dark-theme hex values measure
+   2.20:1 and 1.80:1 against a white background (checked with a real WCAG
+   relative-luminance script, not eyeballed), both well under even the
+   lenient 3:1 UI-component floor, because every one of the ~30 call
+   sites across webtrader.css/WebTrader.tsx that colors P&L/Chg%/status
+   text with var(--buy)/var(--warn) puts it directly on a page surface,
+   not inside a filled badge. --sell needed no change (EA3943 already
+   clears 4.07:1 on white). Every text-1/2/3, buy/sell/warn pairing in
+   this file passes WCAG AA (4.5:1 body text, 3:1 large text/UI) against
+   every bg-0..3 -- see the theme work's own contrast-check script. */
+.wt-root[data-mode="light"] {
+  --bg-0: #F8F9FB;
+  --bg-1: #FFFFFF;
+  --bg-2: #F1F3F6;
+  --bg-3: #E8EAEE;
+  --bg-4: #DEE1E6;
+  --border: #E2E5EA;
+  --border-strong: #CBD0D8;
+  --text-1: #14181F;
+  --text-2: #4B5563;
+  --text-3: #6B7280;
+  --buy: #0A7A4D;
+  --buy-bg: #E3FBF0;
+  --buy-glow: rgba(10, 122, 77, .12);
+  --sell: #EA3943;
+  --sell-bg: #FDEAEB;
+  --sell-glow: rgba(234, 57, 67, .10);
+  --warn: #8A5A05;
+  --warn-bg: rgba(138, 90, 5, 0.10);
+  --accent: var(--brand-primary, #0A7A4D);
+  --accent-bg: #E3FBF0;
+  --accent-glow: rgba(10, 122, 77, .12);
+  --brand: var(--brand-primary, #0A7A4D);
+  --brand-dim: #E3FBF0;
 }
 
 .wt-root * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -487,7 +552,7 @@ html, body, #root {
    status (see WebTrader.tsx's isDealingPending). Same amber as the price-
    alert chart line (#F0B90B) -- "something is actively being watched/
    decided", not a green fill or a red rejection. */
-.pending-approval-badge { display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; font-weight: 600; letter-spacing: 0.02em; color: #F0B90B; background: rgba(240, 185, 11, 0.12); border: 1px solid rgba(240, 185, 11, 0.35); border-radius: 4px; padding: 2px 7px; }
+.pending-approval-badge { display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; font-weight: 600; letter-spacing: 0.02em; color: var(--warn); background: var(--warn-bg); border: 1px solid rgba(240, 185, 11, 0.35); border-radius: 4px; padding: 2px 7px; }
 .order-row-pending-approval { background: rgba(240, 185, 11, 0.05); }
 
 .simple-row { display: flex; justify-content: space-between; align-items: center; padding: 9px 4px; border-bottom: 1px solid var(--bg-2); font-size: 12.5px; flex-wrap: wrap; row-gap: 4px; }

@@ -113,7 +113,7 @@ const TAG_TEXT_STYLE = {
 // other reason to be imported by this one).
 const CALENDAR_IMPACT_COLOR: Record<string, string> = {
   high: "var(--sell)",
-  medium: "#F0B90B",
+  medium: "var(--warn)",
   low: "var(--text-3)",
 };
 
@@ -459,13 +459,27 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
     // they get the same tabular font as every other number in the app
     // instead of the browser's default sans-serif.
     const MONO_FONT = "'JetBrains Mono', ui-monospace, monospace";
-    const AXIS_TEXT_COLOR = "#5A6472"; // --text-3
+    // Theme system -- klinecharts draws to canvas, not the DOM, so it can't
+    // read var(--text-3) etc. the way every other component here does;
+    // these are the same values as webtrader.css's .wt-root/
+    // .wt-root[data-mode="light"] tokens, kept in sync by hand (see
+    // ChartSettings.theme's own doc comment). Grid/axis lines are the one
+    // thing that HAS to flip, not just get quieter -- a white-alpha line
+    // (dark theme) is invisible on a light background. Initial values here
+    // are the dark defaults; the settings-reactive effect further down
+    // applies the real theme once ChartSettings has loaded (same
+    // init-then-reconcile pattern candle.bar's colors already use).
+    const CHART_THEME_COLORS = {
+      dark: { gridLine: "rgba(255,255,255,0.05)", axisLine: "rgba(255,255,255,0.08)", axisText: "#5A6472" },
+      light: { gridLine: "rgba(20,24,31,0.08)", axisLine: "rgba(20,24,31,0.12)", axisText: "#6B7280" },
+    } as const;
+    const AXIS_TEXT_COLOR = CHART_THEME_COLORS.dark.axisText;
     const chart = init(el, {
       // Cast: klinecharts' style option types are deep partials of its own
       // internal theme shape, not worth pinning exactly here — a mismatch
       // would otherwise fail the whole build over a color value.
       styles: {
-        grid: { horizontal: { color: "rgba(255,255,255,0.05)" }, vertical: { show: false } },
+        grid: { horizontal: { color: CHART_THEME_COLORS.dark.gridLine }, vertical: { show: false } },
         candle: {
           bar: {
             upColor: "#16C784",
@@ -512,11 +526,11 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
           tooltip: { text: { color: AXIS_TEXT_COLOR, size: 11, family: MONO_FONT, weight: "normal" } },
         },
         xAxis: {
-          axisLine: { color: "rgba(255,255,255,0.08)" },
+          axisLine: { color: CHART_THEME_COLORS.dark.axisLine },
           tickText: { color: AXIS_TEXT_COLOR, family: MONO_FONT, size: 11, marginStart: 4, marginEnd: 4 },
         },
         yAxis: {
-          axisLine: { color: "rgba(255,255,255,0.08)" },
+          axisLine: { color: CHART_THEME_COLORS.dark.axisLine },
           tickText: { color: AXIS_TEXT_COLOR, family: MONO_FONT, size: 11, marginStart: 4, marginEnd: 6 },
         },
         crosshair: {
@@ -1003,8 +1017,17 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
     const chart = chartRef.current;
     if (!chart || !settings) return;
     try {
+      // Theme system -- same CHART_THEME_COLORS map the init() call seeded
+      // with dark's own values (see that block's own comment); re-declared
+      // here rather than lifted to component scope since this effect is
+      // the only other place it's read, and both call sites sit right next
+      // to the exact klinecharts style keys they feed.
+      const chartColors =
+        settings.theme === "light"
+          ? { gridLine: "rgba(20,24,31,0.08)", axisLine: "rgba(20,24,31,0.12)", axisText: "#6B7280" }
+          : { gridLine: "rgba(255,255,255,0.05)", axisLine: "rgba(255,255,255,0.08)", axisText: "#5A6472" };
       chart.setStyles({
-        grid: { horizontal: { show: settings.showGrid } },
+        grid: { horizontal: { show: settings.showGrid, color: chartColors.gridLine } },
         candle: {
           bar: {
             upColor: settings.candleUpColor,
@@ -1019,8 +1042,16 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
           },
           priceMark: {
             last: { show: settings.showLastPriceLine, upColor: settings.candleUpColor, downColor: settings.candleDownColor },
+            high: { color: chartColors.axisText },
+            low: { color: chartColors.axisText },
           },
-          tooltip: { showRule: settings.showOhlcBar ? "always" : "none" },
+          tooltip: { showRule: settings.showOhlcBar ? "always" : "none", text: { color: chartColors.axisText } },
+        },
+        xAxis: { axisLine: { color: chartColors.axisLine }, tickText: { color: chartColors.axisText } },
+        yAxis: { axisLine: { color: chartColors.axisLine }, tickText: { color: chartColors.axisText } },
+        crosshair: {
+          horizontal: { line: { color: chartColors.axisText }, text: { backgroundColor: chartColors.axisText } },
+          vertical: { line: { color: chartColors.axisText }, text: { backgroundColor: chartColors.axisText } },
         },
       });
       chart.setTimezone?.(settings.timezone);
@@ -1123,7 +1154,7 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
                 <div
                   style={{
                     position: "absolute", top: 20, left: 8, zIndex: 10, minWidth: 160, maxWidth: 220,
-                    background: "#14181F", border: "1px solid var(--border-strong)", borderRadius: 4, padding: "6px 8px",
+                    background: "var(--bg-3)", border: "1px solid var(--border-strong)", borderRadius: 4, padding: "6px 8px",
                     fontSize: 10.5, color: "var(--text-2)", boxShadow: "0 4px 12px rgba(0,0,0,0.4)",
                   }}
                 >

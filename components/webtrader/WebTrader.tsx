@@ -2787,6 +2787,18 @@ export default function WebTrader({
     }
   }
 
+  // Light/dark terminal theme -- same optimistic-save shape as
+  // saveChartSettingsHandler (it IS one, just a one-field convenience so
+  // the header's sun/moon button doesn't need the whole ChartSettings
+  // object in scope). Persisted server-side via the same
+  // Account.chartSettings blob (see lib/chart-settings.ts's own comment
+  // on ChartSettings.theme) -- not localStorage, unlike the unrelated
+  // Classic/Default palette picker (`theme` state above), which stays a
+  // per-browser preference.
+  function changeColorMode(next: "dark" | "light") {
+    saveChartSettingsHandler({ ...chartSettings, theme: next });
+  }
+
   if (loadError) {
     return <div style={{ padding: 40, color: "#EDEFF2", background: "#07090C", minHeight: "100vh" }}>{loadError}</div>;
   }
@@ -2805,7 +2817,7 @@ export default function WebTrader({
   const serverName = account ? `${brokerName}-${account.accountType === "LIVE" ? "Live" : "Demo"}` : brokerName;
 
   return (
-    <div className="wt-root" data-theme={theme}>
+    <div className="wt-root" data-theme={theme} data-mode={chartSettings.theme}>
       <DesktopTitleBar brokerName={brokerName} brokerLogoUrl={brokerLogoUrl} server={serverName} connected={connected} />
       <div id="app">
         <div className={`margin-call-banner${marginCall ? " show" : ""}`}>
@@ -3043,6 +3055,17 @@ export default function WebTrader({
             <button className="funds-btn" onClick={() => { setFundsModalOpen(true); refreshFundsHistory(); }}>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="2" y="5" width="20" height="14" rx="2" /><line x1="2" y1="10" x2="22" y2="10" /></svg>
               <span className="funds-btn-label">Funds</span>
+            </button>
+            <button
+              className="bell-btn"
+              onClick={() => changeColorMode(chartSettings.theme === "light" ? "dark" : "light")}
+              title={chartSettings.theme === "light" ? "Switch to dark theme" : "Switch to light theme"}
+            >
+              {chartSettings.theme === "light" ? (
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79Z" /></svg>
+              ) : (
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41" /></svg>
+              )}
             </button>
             <button className="bell-btn" onClick={() => setAlertsModalOpen(true)} title="Price alerts">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9" /><path d="M13.73 21a2 2 0 0 1-3.46 0" /></svg>

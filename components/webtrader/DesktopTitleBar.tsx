@@ -93,7 +93,7 @@ export default function DesktopTitleBar({
             {brokerName.charAt(0).toUpperCase() || "V"}
           </span>
         )}
-        <span style={{ fontSize: 13, color: "#edeff2", fontWeight: 650 }}>{brokerName}</span>
+        <span style={{ fontSize: 13, color: "var(--text-1)", fontWeight: 650 }}>{brokerName}</span>
 
         <div style={{ flex: 1 }} />
 

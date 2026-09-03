@@ -3,6 +3,15 @@
 // comment). Shared between the website and the bundled desktop shells,
 // same as lib/watchlist.ts's watchlist rows.
 export type ChartSettings = {
+  // Light/dark terminal theme -- see app/(broker)/trade/webtrader.css's
+  // .wt-root[data-mode="light"] block (WebTrader.tsx sets data-mode from
+  // this field) and KLineChartPanel.tsx's CHART_COLORS map, which mirrors
+  // the same two palettes for the canvas-rendered chart (grid/axis/
+  // tooltip -- CSS custom properties can't reach into klinecharts' own
+  // draw calls, so those few values are kept in sync by hand between the
+  // two files). Buy/sell/accent colors are deliberately IDENTICAL in both
+  // themes -- only backgrounds/borders/text/grid-lines change.
+  theme: "dark" | "light";
   candleUpColor: string;
   candleDownColor: string;
   candleUpBorderColor: string;
@@ -44,6 +53,7 @@ export type ChartSettings = {
 };
 
 export const DEFAULT_CHART_SETTINGS: ChartSettings = {
+  theme: "dark",
   candleUpColor: "#26a69a",
   candleDownColor: "#ef5350",
   candleUpBorderColor: "#26a69a",
