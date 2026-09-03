@@ -195,7 +195,27 @@ export default function WebTrader({
   // allSymbols are never empty/undefined on first paint.
   const [allSymbols, setAllSymbols] = useState<SymbolDef[]>(SYMBOL_DEFS);
   const [market, setMarket] = useState<Record<string, MarketState>>(() => createInitialMarket(SYMBOL_DEFS));
-  const [storedLayout] = useState<StoredLayout>(() => loadStoredLayout());
+  // Deliberately NOT read here anymore (was `useState(() => loadStoredLayout())`,
+  // used directly in columnPrefs/orderPanelWidth/watchlistWidth/
+  // bottomPanelHeight's own initializers just below) -- that's the actual
+  // bug behind "watchlist squeezed on load, resize doesn't stick": a
+  // useState lazy initializer still runs during the FIRST CLIENT render,
+  // which is the render React hydration reconciles against the
+  // server-rendered HTML -- localStorage doesn't exist server-side, so
+  // that first render (both server and the client's hydration pass) has
+  // to produce IDENTICAL output on both sides to avoid a mismatch, and
+  // "identical" here can only mean "ignores localStorage." Confirmed
+  // live: the console logged a real "hydrated but some attributes...
+  // didn't match" warning, and a value written straight into localStorage
+  // then reloaded rendered the DEFAULT grid-template-columns regardless
+  // -- not a timing fluke, every layout-affecting field initialized from
+  // storedLayout had this same latent bug (columnPrefs included, not just
+  // the two panel widths the report named). The only correct fix is the
+  // standard Next.js one: every field below starts at its plain,
+  // SSR-safe default (identical on server and client), and the
+  // mount-effect right after this block applies the real stored values
+  // -- which necessarily happens on a SECOND, post-hydration render,
+  // same as any other browser-only API a component needs at mount.
   // Same bootstrap-then-replace shape as allSymbols above -- the real
   // per-account order comes from the server (app/api/trade/watchlist),
   // never localStorage (so web and desktop stay in sync).
@@ -216,9 +236,7 @@ export default function WebTrader({
   const [dragSymbol, setDragSymbol] = useState<string | null>(null);
   const [watchlistFilter, setWatchlistFilter] = useState("");
   const [addSymbolOpen, setAddSymbolOpen] = useState(false);
-  const [columnPrefs, setColumnPrefs] = useState(
-    storedLayout.columnPrefs ?? DEFAULT_WATCHLIST_COLUMN_PREFS
-  );
+  const [columnPrefs, setColumnPrefs] = useState(DEFAULT_WATCHLIST_COLUMN_PREFS);
   const [wlMenuOpen, setWlMenuOpen] = useState(false);
   const wlContextMenuRef = useRef<HTMLDivElement | null>(null);
   useDismiss(wlMenuOpen, () => setWlMenuOpen(false), wlContextMenuRef);
@@ -269,14 +287,56 @@ export default function WebTrader({
 
   // ---------- resizable panel layout ----------
   // fix/realtime-sync §5's bounds (order panel 260-420, watchlist
-  // 220-420) are clamped again here, not just in onMove's drag handler
-  // below -- a layout saved to localStorage before this fix (old bounds
-  // were 200-420 / 160-420) could otherwise load a narrower-than-allowed
-  // panel that only got corrected the next time the user happened to
-  // drag it.
-  const [orderPanelWidth, setOrderPanelWidth] = useState(() => Math.min(420, Math.max(260, storedLayout.orderPanelWidth ?? 260)));
-  const [watchlistWidth, setWatchlistWidth] = useState(() => Math.min(420, Math.max(220, storedLayout.watchlistWidth ?? 220)));
-  const [bottomPanelHeight, setBottomPanelHeight] = useState(storedLayout.bottomPanelHeight ?? 190);
+  // 220-420). Plain SSR-safe literal defaults -- see the mount-effect a
+  // few lines down for why these can no longer read storedLayout directly.
+  const ORDER_PANEL_MIN = 260;
+  const ORDER_PANEL_MAX = 420;
+  const WATCHLIST_MIN = 220;
+  const WATCHLIST_MAX = 420;
+  const [orderPanelWidth, setOrderPanelWidth] = useState(ORDER_PANEL_MIN);
+  const [watchlistWidth, setWatchlistWidth] = useState(WATCHLIST_MIN);
+  const [bottomPanelHeight, setBottomPanelHeight] = useState(190);
+  // Guards every save path (saveLayoutDebounced, and the columnPrefs
+  // effect that calls it) against firing before the restore-effect right
+  // below has actually applied storedLayout -- see that effect's own
+  // comment for the real bug this prevents.
+  const layoutHydratedRef = useRef(false);
+
+  // Applies storedLayout exactly once, after mount -- the fix for the
+  // hydration-mismatch bug this whole block's comment above describes.
+  // Deliberately skips columnPrefs/orderPanelWidth/watchlistWidth/
+  // bottomPanelHeight if storedLayout has no value for that specific
+  // field (leaves the plain default in place) rather than writing the
+  // default back over itself -- makes this a true no-op for a
+  // first-ever visit, not a redundant setState. A saved value outside
+  // today's clamp bounds (e.g. written before fix/realtime-sync §5
+  // tightened them from 200-420/160-420) is clamped back into range
+  // here instead of loading a narrower-than-allowed panel that only
+  // gets corrected the next time the trader happens to drag it.
+  useEffect(() => {
+    const stored = loadStoredLayout();
+    if (stored.columnPrefs) setColumnPrefs(stored.columnPrefs);
+    if (stored.orderPanelWidth != null) {
+      setOrderPanelWidth(Math.min(ORDER_PANEL_MAX, Math.max(ORDER_PANEL_MIN, stored.orderPanelWidth)));
+    }
+    if (stored.watchlistWidth != null) {
+      setWatchlistWidth(Math.min(WATCHLIST_MAX, Math.max(WATCHLIST_MIN, stored.watchlistWidth)));
+    }
+    if (stored.bottomPanelHeight != null) setBottomPanelHeight(stored.bottomPanelHeight);
+    // Runs synchronously, in the same effect-flush pass as (and strictly
+    // before) the columnPrefs-change effect a bit further down -- both
+    // fire once on this same initial mount regardless of dependency
+    // arrays, so this flag is already true by the time that effect's own
+    // mount-fire checks it. Without this, that effect's very first
+    // (mount) invocation ran with columnPrefs still at its plain default
+    // (this effect's own setColumnPrefs above hadn't re-rendered yet) and
+    // wrote those defaults back over whatever storedLayout actually had
+    // -- on the very same tick this effect was restoring it. Confirmed
+    // live: a value written straight into localStorage was gone,
+    // silently overwritten with the default, within ~250ms of a fresh
+    // load, every single time.
+    layoutHydratedRef.current = true;
+  }, []);
   const resizeStateRef = useRef<{ kind: "order" | "watchlist" | "bottom"; startPos: number; startSize: number } | null>(null);
   // Bounds the bottom-panel drag against the ACTUAL space available in
   // .center right now, instead of a flat 500px ceiling that ignores
@@ -312,6 +372,42 @@ export default function WebTrader({
     resizeStateRef.current = { kind, startPos: kind === "bottom" ? e.clientY : e.clientX, startSize };
   }, [orderPanelWidth, watchlistWidth, bottomPanelHeight]);
 
+  // Kept in sync on every render (cheap -- just a ref write, no
+  // localStorage I/O) so onUp below always has the CURRENT values to
+  // save without needing to be re-created (and re-attached to `window`)
+  // every time one of them changes mid-drag -- see onUp's own comment
+  // for why saving mid-drag at all was the actual "resize fights the
+  // persisted-size restore" bug.
+  const latestLayoutRef = useRef({ columnPrefs, orderPanelWidth, watchlistWidth, bottomPanelHeight });
+  useEffect(() => {
+    latestLayoutRef.current = { columnPrefs, orderPanelWidth, watchlistWidth, bottomPanelHeight };
+  }, [columnPrefs, orderPanelWidth, watchlistWidth, bottomPanelHeight]);
+
+  const saveLayoutTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Debounced write of latestLayoutRef's CURRENT values -- called from
+  // onUp (drag-end) and from the columnPrefs-change effect further down,
+  // never from onMove itself. 250ms coalesces a rapid sequence of quick
+  // successive drags/toggles into one write rather than one per event.
+  const saveLayoutDebounced = useCallback(() => {
+    // Before the restore-effect has run, latestLayoutRef still holds the
+    // plain SSR-safe defaults, not storedLayout -- saving here would
+    // overwrite a real saved layout with those defaults. Neither real
+    // call site (onUp, the columnPrefs effect) can otherwise tell
+    // "genuinely still the default" apart from "restored and happens to
+    // equal the default," so this flag is the one source of truth for
+    // "has storedLayout actually been applied yet."
+    if (!layoutHydratedRef.current) return;
+    if (saveLayoutTimerRef.current) clearTimeout(saveLayoutTimerRef.current);
+    saveLayoutTimerRef.current = setTimeout(() => {
+      try {
+        window.localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(latestLayoutRef.current));
+      } catch {
+        // localStorage unavailable (private mode, quota) -- layout just
+        // won't persist across reloads, nothing else depends on this.
+      }
+    }, 250);
+  }, []);
+
   useEffect(() => {
     function onMove(e: MouseEvent) {
       const rs = resizeStateRef.current;
@@ -342,6 +438,10 @@ export default function WebTrader({
       }
     }
     function onUp() {
+      // Only save if a drag was actually in progress -- every mouseup
+      // anywhere on the page reaches this listener (it's on `window`),
+      // not just the ones that end a resize.
+      if (resizeStateRef.current) saveLayoutDebounced();
       resizeStateRef.current = null;
     }
     window.addEventListener("mousemove", onMove);
@@ -350,7 +450,7 @@ export default function WebTrader({
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
-  }, [maxBottomPanelHeight]);
+  }, [maxBottomPanelHeight, saveLayoutDebounced]);
 
   // Catches the case the drag handler alone can't: a bottomPanelHeight
   // restored from a previous, larger window (loadStoredLayout) or a
@@ -374,19 +474,15 @@ export default function WebTrader({
     return () => window.removeEventListener("resize", clamp);
   }, [maxBottomPanelHeight]);
 
-  // Persists everything loadStoredLayout reads back on next visit. Fires
-  // on every resize-drag tick too (not just drag-end) -- three numbers
-  // plus a small array/object is cheap enough that debouncing isn't worth
-  // the added complexity here.
+  // Persists columnPrefs specifically (not orderPanelWidth/watchlistWidth/
+  // bottomPanelHeight -- those save only at drag-end, via onUp above,
+  // through the same saveLayoutDebounced/latestLayoutRef). columnPrefs
+  // changes via discrete checkbox clicks in a menu, never a drag, so
+  // there's no "fights the drag" concern here -- this fires once per
+  // actual toggle, already about as infrequent as an event can be.
   useEffect(() => {
-    try {
-      const layout: StoredLayout = { columnPrefs, orderPanelWidth, watchlistWidth, bottomPanelHeight };
-      window.localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(layout));
-    } catch {
-      // localStorage unavailable (private mode, quota) -- layout just
-      // won't persist across reloads, nothing else depends on this.
-    }
-  }, [columnPrefs, orderPanelWidth, watchlistWidth, bottomPanelHeight]);
+    saveLayoutDebounced();
+  }, [columnPrefs, saveLayoutDebounced]);
 
   const [activeBottomTab, setActiveBottomTab] = useState<BottomTab>("positions");
   // Queued-order UX -- a dealing-group MARKET order sits at the exact
