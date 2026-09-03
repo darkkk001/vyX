@@ -1270,6 +1270,26 @@ model AuditLog {
   @@index([entityType, entityId])
 }
 
+// Free-source economic calendar cache (VYX-CALENDAR-FALLBACK-V0) --
+// Finnhub's economic calendar isn't included in the configured API
+// key's plan tier (confirmed with a direct curl against Finnhub itself,
+// independent of this app -- see app/api/trade/news/route.ts's own
+// comment); rotating the key won't fix it. ForexFactory's own weekly
+// JSON feed (nfs.faireconomy.media, no auth, unofficial but widely
+// relied on) is the free fallback -- this is its DB-backed cache, not
+// module-scope memory, because a plain in-memory cache (the Finnhub
+// route's own original approach) doesn't survive across separate
+// serverless function instances on Vercel; every cold start would
+// re-hit the upstream instead of actually caching for the intended 1h.
+// One row per source (id is the source name, e.g. "forexfactory") --
+// not broker-scoped, since market-wide economic events are the same
+// for every broker. See lib/economic-calendar-source.ts.
+model EconomicCalendarCache {
+  id        String   @id
+  events    Json
+  fetchedAt DateTime @default(now()) @db.Timestamptz(3)
+}
+
 // In-app only (no email/SMS infra exists anywhere in this app) --
 // broker-scoped, shared read state (any staff member marking one read
 // marks it for the whole team, same "one dealing desk" mental model
