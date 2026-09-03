@@ -876,8 +876,15 @@ model BrokerSymbol {
   // Account-currency amount per standard lot per day held overnight —
   // not points/pips, to avoid needing per-symbol pip-size math the way
   // spreadMarkup does. Negative = cost to the trader, positive = credit.
-  // Applied by the daily rollover job (order_management::swap) — see
-  // docs/risk-engine.md and execution.md's commission/swap sections.
+  // Applied by two rollover jobs today: order_management::swap (Rust
+  // engine, only live once a broker is cut over -- see
+  // Broker.executionEngine) and lib/swap-rollover.ts (the interim job for
+  // every broker still on the legacy path, which is everyone today) --
+  // see docs/risk-engine.md and execution.md's commission/swap sections.
+  // A GroupSymbolConfig row for the account's group overrides this, same
+  // resolution order as spreadMarkup/commissionPerLot -- but only the
+  // legacy job honors that override today, see lib/swap-rollover.ts's own
+  // module comment for the known engine/legacy discrepancy this leaves.
   swapLong     Decimal @default(0) @db.Decimal(10, 4)
   swapShort    Decimal @default(0) @db.Decimal(10, 4)
   enabled      Boolean @default(true)
@@ -1001,6 +1008,12 @@ model Position {
   bookType      BookType       @default(B_BOOK)
   closedByAdminId String?
   closedByAdmin AdminUser?     @relation("PositionClosedBy", fields: [closedByAdminId], references: [id])
+  // Idempotency key for the daily swap rollover job (lib/swap-rollover.ts)
+  // -- NULL or a date before today means still due. Mirrors
+  // engine/order-management's own positions.last_swap_at exactly (see
+  // that column's comment) so the interim legacy job and the Rust
+  // engine's job can't both charge the same position for the same day.
+  lastSwapAt DateTime? @db.Timestamptz(3)
 
   openedAt DateTime  @default(now()) @db.Timestamptz(3)
   closedAt DateTime? @db.Timestamptz(3)
