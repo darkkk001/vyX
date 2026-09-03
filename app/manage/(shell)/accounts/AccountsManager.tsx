@@ -9,6 +9,7 @@ import { FormField } from "@/components/ui/FormField";
 import { LeverageInput } from "@/components/ui/LeverageInput";
 import { Modal, ModalActions } from "@/components/ui/Modal";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
+import { TableSkeleton, TableErrorState } from "@/components/ui/TableExtras";
 
 export type AccountRow = {
   id: string;
@@ -51,15 +52,25 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
   const [search, setSearch] = useState("");
   const [busyId, setBusyId] = useState<string | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
+  // Same Empty-vs-Error-vs-Loading fix as PositionsManager/DealsManager
+  // -- a failed fetch used to render identically to "zero accounts" via
+  // `.catch(() => setRows([]))`.
+  const [loadError, setLoadError] = useState(false);
 
   function reloadRows() {
     return fetch("/api/manage/accounts")
-      .then((r) => r.json())
-      .then(setRows);
+      .then((r) => {
+        if (!r.ok) throw new Error(`accounts fetch failed: ${r.status}`);
+        return r.json();
+      })
+      .then((d) => {
+        setRows(d);
+        setLoadError(false);
+      });
   }
 
   useEffect(() => {
-    reloadRows().catch(() => setRows([]));
+    reloadRows().catch(() => setLoadError(true));
     fetch("/api/manage/groups")
       .then((r) => r.json())
       .then((d: { id: string; name: string }[]) => setGroups(d.map((g) => ({ id: g.id, name: g.name }))))
@@ -202,14 +213,33 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
     reloadRows().catch(() => {});
   }
 
-  if (rows === null) {
-    return <p className="text-sm text-[var(--text-3)]">Loading...</p>;
+  if (rows === null && !loadError) {
+    return (
+      <Table>
+        <TableHead>
+          <TableHeaderCell className="min-w-[220px]">Account</TableHeaderCell>
+          <TableHeaderCell className="min-w-[70px]">Type</TableHeaderCell>
+          <TableHeaderCell className="min-w-[90px]">Country</TableHeaderCell>
+          <TableHeaderCell className="min-w-[90px]">KYC</TableHeaderCell>
+          <TableHeaderCell className="min-w-[160px]">Group</TableHeaderCell>
+          <TableHeaderCell className="min-w-[130px]">Leverage</TableHeaderCell>
+          <TableHeaderCell align="right" className="min-w-[100px]">Balance</TableHeaderCell>
+          <TableHeaderCell align="right" className="min-w-[100px]">Credit</TableHeaderCell>
+          <TableHeaderCell className="min-w-[150px]">Status</TableHeaderCell>
+          <TableHeaderCell align="right" className="min-w-[110px]">Max daily loss</TableHeaderCell>
+          <TableHeaderCell className="min-w-[140px]" />
+        </TableHead>
+        <TableBody>
+          <TableSkeleton columns={11} />
+        </TableBody>
+      </Table>
+    );
   }
 
   return (
     <div className="flex flex-col gap-4">
       <p className="text-sm text-[var(--text-3)]">
-        {rows.length} account{rows.length === 1 ? "" : "s"} for this broker.
+        {(rows ?? []).length} account{(rows ?? []).length === 1 ? "" : "s"} for this broker.
         {!canManageFinance
           ? " Leverage/status/balance changes -- including a starting balance on a new account -- require Broker Admin or the Account Finance permission."
           : ""}
@@ -241,7 +271,9 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
           <TableHeaderCell className="min-w-[140px]" />
         </TableHead>
         <TableBody>
-          {filtered.length === 0 ? (
+          {loadError ? (
+            <TableErrorState colSpan={11} onRetry={() => reloadRows().catch(() => setLoadError(true))} />
+          ) : filtered.length === 0 ? (
             <TableEmptyState colSpan={11}>No accounts match.</TableEmptyState>
           ) : (
             filtered.map((row) => (

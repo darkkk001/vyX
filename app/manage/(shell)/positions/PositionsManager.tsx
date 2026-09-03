@@ -10,6 +10,22 @@ import { ActionMenu } from "@/components/ui/ActionMenu";
 import { FormField } from "@/components/ui/FormField";
 import { Modal, ModalActions } from "@/components/ui/Modal";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
+import {
+  TableSkeleton,
+  TableErrorState,
+  useTableSort,
+  SortableHeaderCell,
+  useColumnWidths,
+  ColumnResizeHandle,
+  useColumnVisibility,
+  ColumnVisibilityMenu,
+  useRowContextMenu,
+  RowContextMenu,
+  useRowSelection,
+  SelectAllCheckbox,
+  BulkActionBar,
+  type ColumnDef,
+} from "@/components/ui/TableExtras";
 import { useAdminEventStream, ADMIN_STREAM_RECONNECTED, type AdminEvent } from "@/lib/admin-realtime";
 import { useLiveTicks } from "@/lib/price-stream";
 
@@ -50,6 +66,64 @@ const NO_IB = "__none__";
 
 type PositionsData = { rows: PositionRow[]; accounts: AccountOption[]; symbols: SymbolOption[]; groups: GroupOption[]; ibOptions: IbOption[] };
 
+// Column defs for the "Open positions" table -- one source of truth for
+// the skeleton's header, sort's getValue, resize's default widths, and
+// visibility's toggle list, instead of four places to keep in sync.
+// "Opened" stays alwaysVisible (nothing else identifies which position
+// is which once account/symbol/side are hidden too).
+const POSITION_COLUMNS: ColumnDef[] = [
+  { key: "account", label: "Account" },
+  { key: "symbol", label: "Symbol" },
+  { key: "side", label: "Side" },
+  { key: "volume", label: "Volume", align: "right" },
+  { key: "openPrice", label: "Open price", align: "right" },
+  { key: "currentPrice", label: "Current price", align: "right" },
+  { key: "sl", label: "S/L", align: "right" },
+  { key: "tp", label: "T/P", align: "right" },
+  { key: "floatingPnl", label: "Floating P&L", align: "right" },
+  { key: "opened", label: "Opened", alwaysVisible: true },
+];
+
+const POSITION_COLUMN_DEFAULT_WIDTHS: Record<string, number> = {
+  account: 170,
+  symbol: 90,
+  side: 70,
+  volume: 90,
+  openPrice: 100,
+  currentPrice: 110,
+  sl: 90,
+  tp: 90,
+  floatingPnl: 110,
+  opened: 140,
+};
+
+function getPositionSortValue(row: PositionRow, key: string): string | number | null {
+  switch (key) {
+    case "account":
+      return row.accountNumber;
+    case "symbol":
+      return row.symbolName;
+    case "side":
+      return row.side;
+    case "volume":
+      return Number(row.volume);
+    case "openPrice":
+      return Number(row.openPrice);
+    case "currentPrice":
+      return row.currentPrice != null ? Number(row.currentPrice) : null;
+    case "sl":
+      return row.slPrice != null ? Number(row.slPrice) : null;
+    case "tp":
+      return row.tpPrice != null ? Number(row.tpPrice) : null;
+    case "floatingPnl":
+      return row.floatingPnl != null ? Number(row.floatingPnl) : null;
+    case "opened":
+      return row.openedAt;
+    default:
+      return null;
+  }
+}
+
 // Exposure monitor: filters, sorting, per-symbol Client Floating P&L, an
 // "open a position" modal, a per-row "modify SL/TP" modal, and the open
 // positions table with a per-row Close action (full or partial volume).
@@ -63,6 +137,14 @@ type PositionsData = { rows: PositionRow[]; accounts: AccountOption[]; symbols: 
 // server-rendered props.
 export default function PositionsManager() {
   const [data, setData] = useState<PositionsData | null>(null);
+  // Kept separate from `data` (VYX-BASICS-AUDIT.md category 2's "Empty vs
+  // Error vs Loading" item) -- a fetch failure used to setData to the
+  // exact same {rows: [], ...} shape as "this broker genuinely has zero
+  // open positions", so the table rendered identically either way. Now a
+  // failed reload leaves the last-known-good `data` in place (if any)
+  // and just flips this flag, so TableErrorState renders instead of a
+  // false "no open positions" empty state.
+  const [loadError, setLoadError] = useState(false);
   const rawRows = data?.rows ?? [];
   const accounts = data?.accounts ?? [];
   const symbols = data?.symbols ?? [];
@@ -71,8 +153,14 @@ export default function PositionsManager() {
 
   function reload() {
     return fetch("/api/manage/positions")
-      .then((r) => r.json())
-      .then(setData);
+      .then((r) => {
+        if (!r.ok) throw new Error(`positions fetch failed: ${r.status}`);
+        return r.json();
+      })
+      .then((d) => {
+        setData(d);
+        setLoadError(false);
+      });
   }
 
   // Realtime-sync fix -- this used to be a 5s poll-everything interval
@@ -85,7 +173,7 @@ export default function PositionsManager() {
   // a real refetch -- that's the admin-event-stream reaction below, now
   // the only thing that reloads this page's own data.
   useEffect(() => {
-    reload().catch(() => setData({ rows: [], accounts: [], symbols: [], groups: [], ibOptions: [] }));
+    reload().catch(() => setLoadError(true));
   }, []);
 
   // Instant reaction to a fill/close/modify from anywhere (another
@@ -271,6 +359,17 @@ export default function PositionsManager() {
     () => filteredPositions.reduce((sum, p) => sum + (p.floatingPnl != null ? Number(p.floatingPnl) : 0), 0),
     [filteredPositions]
   );
+
+  // --- "Open positions" table chrome (VYX-BASICS-AUDIT.md category 2) ---
+  const { sortedRows: sortedPositions, sortKey: positionSortKey, direction: positionSortDir, onSort: onSortPositions } = useTableSort(
+    filteredPositions,
+    getPositionSortValue
+  );
+  const { widths: colWidths, startResize } = useColumnWidths("positions-open", POSITION_COLUMN_DEFAULT_WIDTHS);
+  const { visible: colVisible, toggle: toggleColumn } = useColumnVisibility("positions-open", POSITION_COLUMNS);
+  const [headerContextMenu, setHeaderContextMenu] = useState<{ x: number; y: number } | null>(null);
+  const { contextMenu: rowContextMenu, openContextMenu: openRowContextMenu, closeContextMenu: closeRowContextMenu } = useRowContextMenu<PositionRow>();
+  const rowSelection = useRowSelection(sortedPositions);
 
   // --- Open position modal ---
   const [openModalOpen, setOpenModalOpen] = useState(false);
@@ -467,6 +566,55 @@ export default function PositionsManager() {
     reload().catch(() => {});
   }
 
+  // --- Bulk close, from the multi-select checkbox column's action bar --
+  // there's no single "close these N specific position IDs" endpoint (the
+  // existing close-bulk route is account+scope scoped -- "ALL/PROFIT/LOSS
+  // for this one account", a different shape), so this reuses the same
+  // per-position close route the row-level Close action already calls,
+  // fired in parallel. One partial failure doesn't roll back the rest --
+  // each position closes or doesn't independently, same as if a dealer
+  // had closed them one by one.
+  const [bulkSelectionClosing, setBulkSelectionClosing] = useState(false);
+  const [bulkSelectionError, setBulkSelectionError] = useState<string | null>(null);
+
+  async function closeSelectedPositions() {
+    setBulkSelectionClosing(true);
+    setBulkSelectionError(null);
+    const ids = [...rowSelection.selectedIds];
+    const results = await Promise.all(
+      ids.map((id) => fetch(`/api/manage/positions/${id}/close`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }))
+    );
+    setBulkSelectionClosing(false);
+    const failedCount = results.filter((r) => !r.ok).length;
+    if (failedCount > 0) {
+      setBulkSelectionError(`${failedCount} of ${ids.length} positions failed to close -- the rest closed normally.`);
+    }
+    rowSelection.clear();
+    reload().catch(() => {});
+  }
+
+  // Shared between the row's ⋮ ActionMenu and its right-click
+  // RowContextMenu -- same actions, two entry points, one list to keep
+  // in sync instead of two.
+  function buildPositionActions(p: PositionRow) {
+    return [
+      { label: "Modify SL/TP", onClick: () => openModifyModal(p) },
+      { label: "Close position", onClick: () => setCloseConfirm(p) },
+      {
+        label: "Reverse",
+        onClick: () => { setReverseMode("IN_PLACE"); setReverseConfirm(p); },
+        title: "Flip the position's side in place, or close & reopen opposite at market",
+      },
+      {
+        label: "Void",
+        onClick: () => setVoidConfirm(p),
+        tone: "danger" as const,
+        title: "Cancel this position as if it never produced a P/L -- balance restored, hidden from the trader's statement",
+      },
+      { label: "Copy position ID", onClick: () => { navigator.clipboard.writeText(p.id).catch(() => {}); } },
+    ];
+  }
+
   // Delete lives on the Deals page (/manage/deals), not here -- it's only
   // ever eligible on an already-CLOSED/VOIDED position (see
   // lib/position-actions.ts's executeDelete), and this page only ever
@@ -557,8 +705,38 @@ export default function PositionsManager() {
     reload().catch(() => {});
   }
 
+  // Only the very first load (before any data has ever arrived) blanks
+  // the whole page -- once `data` exists, a later reload failure (e.g. a
+  // dropped connection right after a mutation) keeps showing the
+  // last-known-good page with the "Open positions" table itself
+  // switching to TableErrorState, never a full-page wipe.
+  if (data === null && loadError) {
+    return (
+      <Table title="Open positions">
+        <TableHead>
+          <TableHeaderCell>Loading failed</TableHeaderCell>
+        </TableHead>
+        <TableBody>
+          <TableErrorState colSpan={1} onRetry={() => reload().catch(() => setLoadError(true))} />
+        </TableBody>
+      </Table>
+    );
+  }
   if (data === null) {
-    return <p className="text-sm text-[var(--text-3)]">Loading...</p>;
+    return (
+      <Table title="Open positions">
+        <TableHead>
+          {POSITION_COLUMNS.map((c) => (
+            <TableHeaderCell key={c.key} align={c.align ?? "left"}>
+              {c.label}
+            </TableHeaderCell>
+          ))}
+        </TableHead>
+        <TableBody>
+          <TableSkeleton columns={POSITION_COLUMNS.length} />
+        </TableBody>
+      </Table>
+    );
   }
 
   return (
@@ -774,9 +952,16 @@ export default function PositionsManager() {
         </Table>
       </Card>
 
+      <BulkActionBar
+        count={rowSelection.selectedIds.size}
+        onClear={rowSelection.clear}
+        actions={[{ label: bulkSelectionClosing ? "Closing..." : "Close selected", variant: "danger", disabled: bulkSelectionClosing, onClick: closeSelectedPositions }]}
+      />
+      {bulkSelectionError ? <p className="text-xs text-[var(--sell)]">{bulkSelectionError}</p> : null}
+
       <Table
         title="Open positions"
-        description="Reflects the filters above"
+        description="Reflects the filters above -- right-click a column header to show/hide columns, drag a header's edge to resize"
         action={
           <div className="flex items-center gap-2">
             {bulkCloseAccount ? (
@@ -788,85 +973,127 @@ export default function PositionsManager() {
           </div>
         }
       >
-        <TableHead>
-          <TableHeaderCell>Account</TableHeaderCell>
-          <TableHeaderCell>Symbol</TableHeaderCell>
-          <TableHeaderCell>Side</TableHeaderCell>
-          <TableHeaderCell align="right">Volume</TableHeaderCell>
-          <TableHeaderCell align="right">Open price</TableHeaderCell>
-          <TableHeaderCell align="right">Current price</TableHeaderCell>
-          <TableHeaderCell align="right">S/L</TableHeaderCell>
-          <TableHeaderCell align="right">T/P</TableHeaderCell>
-          <TableHeaderCell align="right">Floating P&L</TableHeaderCell>
-          <TableHeaderCell>Opened</TableHeaderCell>
-          <TableHeaderCell />
-        </TableHead>
-        <TableBody>
-          {filteredPositions.length === 0 ? (
-            <TableEmptyState colSpan={11}>No open positions match the current filters.</TableEmptyState>
-          ) : (
-            filteredPositions.map((p) => (
-              <TableRow
-                key={p.id}
-                className="cursor-pointer"
-                onClick={() => setDetailsTargetId(p.id)}
-                onDoubleClick={() => setDetailsTargetId(p.id)}
+        <thead
+          className="sticky top-0 z-10 bg-[var(--bg-2)]"
+          onContextMenu={(e) => {
+            e.preventDefault();
+            setHeaderContextMenu({ x: e.clientX, y: e.clientY });
+          }}
+        >
+          <tr>
+            <TableHeaderCell className="w-8">
+              <SelectAllCheckbox checked={rowSelection.allSelected} indeterminate={rowSelection.someSelected} onChange={rowSelection.toggleAll} />
+            </TableHeaderCell>
+            {POSITION_COLUMNS.filter((c) => colVisible[c.key] ?? true).map((c) => (
+              <SortableHeaderCell
+                key={c.key}
+                sortKey={c.key}
+                activeSortKey={positionSortKey}
+                direction={positionSortDir}
+                onSort={onSortPositions}
+                align={c.align ?? "left"}
+                style={{ width: colWidths[c.key] }}
+                resizeHandle={<ColumnResizeHandle onMouseDown={startResize(c.key)} />}
               >
-                <TableCell primary>
-                  {p.accountNumber}
-                  <div className="text-xs font-normal text-[var(--text-3)]">{p.accountFullName}</div>
-                </TableCell>
-                <TableCell mono>{p.symbolName}</TableCell>
-                <TableCell>
-                  <Badge tone={p.side === "BUY" ? "success" : "danger"}>{p.side}</Badge>
-                </TableCell>
-                <TableCell align="right" mono>
-                  {p.volume}
-                </TableCell>
-                <TableCell align="right" mono>
-                  {p.openPrice}
-                </TableCell>
-                <TableCell align="right" mono>
-                  {p.currentPrice ?? "—"}
-                </TableCell>
-                <TableCell align="right" mono className="text-[var(--text-3)]">
-                  {p.slPrice ?? "—"}
-                </TableCell>
-                <TableCell align="right" mono className="text-[var(--text-3)]">
-                  {p.tpPrice ?? "—"}
-                </TableCell>
-                <TableCell
-                  align="right"
-                  mono
-                  className={!p.floatingPnl ? "" : Number(p.floatingPnl) >= 0 ? "text-[var(--buy)]" : "text-[var(--sell)]"}
+                {c.label}
+              </SortableHeaderCell>
+            ))}
+            <TableHeaderCell />
+          </tr>
+        </thead>
+        {headerContextMenu ? (
+          <ColumnVisibilityMenu
+            columns={POSITION_COLUMNS}
+            visible={colVisible}
+            onToggle={toggleColumn}
+            x={headerContextMenu.x}
+            y={headerContextMenu.y}
+            onClose={() => setHeaderContextMenu(null)}
+          />
+        ) : null}
+        <TableBody>
+          {loadError ? (
+            <TableErrorState colSpan={POSITION_COLUMNS.length + 2} onRetry={() => reload().catch(() => setLoadError(true))} />
+          ) : sortedPositions.length === 0 ? (
+            <TableEmptyState colSpan={POSITION_COLUMNS.length + 2}>No open positions match the current filters.</TableEmptyState>
+          ) : (
+            sortedPositions.map((p) => {
+              const positionActions = buildPositionActions(p);
+              return (
+                <TableRow
+                  key={p.id}
+                  className="cursor-pointer"
+                  onClick={() => setDetailsTargetId(p.id)}
+                  onDoubleClick={() => setDetailsTargetId(p.id)}
+                  onContextMenu={(e) => openRowContextMenu(p, e)}
                 >
-                  {p.floatingPnl ?? "—"}
-                </TableCell>
-                <TableCell className="text-xs text-[var(--text-3)]">{p.openedAt}</TableCell>
-                <TableCell className="whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
-                  <ActionMenu
-                    items={[
-                      { label: "Modify SL/TP", onClick: () => openModifyModal(p) },
-                      { label: "Close position", onClick: () => setCloseConfirm(p) },
-                      {
-                        label: "Reverse",
-                        onClick: () => { setReverseMode("IN_PLACE"); setReverseConfirm(p); },
-                        title: "Flip the position's side in place, or close & reopen opposite at market",
-                      },
-                      {
-                        label: "Void",
-                        onClick: () => setVoidConfirm(p),
-                        tone: "danger" as const,
-                        title: "Cancel this position as if it never produced a P/L -- balance restored, hidden from the trader's statement",
-                      },
-                    ]}
-                  />
-                </TableCell>
-              </TableRow>
-            ))
+                  <TableCell onClick={(e) => e.stopPropagation()}>
+                    <input type="checkbox" checked={rowSelection.selectedIds.has(p.id)} onChange={() => rowSelection.toggle(p.id)} aria-label={`Select ${p.symbolName} position`} />
+                  </TableCell>
+                  {(colVisible.account ?? true) ? (
+                    <TableCell primary style={{ width: colWidths.account }}>
+                      {p.accountNumber}
+                      <div className="text-xs font-normal text-[var(--text-3)]">{p.accountFullName}</div>
+                    </TableCell>
+                  ) : null}
+                  {(colVisible.symbol ?? true) ? (
+                    <TableCell mono style={{ width: colWidths.symbol }}>
+                      {p.symbolName}
+                    </TableCell>
+                  ) : null}
+                  {(colVisible.side ?? true) ? (
+                    <TableCell style={{ width: colWidths.side }}>
+                      <Badge tone={p.side === "BUY" ? "success" : "danger"}>{p.side}</Badge>
+                    </TableCell>
+                  ) : null}
+                  {(colVisible.volume ?? true) ? (
+                    <TableCell align="right" mono style={{ width: colWidths.volume }}>
+                      {p.volume}
+                    </TableCell>
+                  ) : null}
+                  {(colVisible.openPrice ?? true) ? (
+                    <TableCell align="right" mono style={{ width: colWidths.openPrice }}>
+                      {p.openPrice}
+                    </TableCell>
+                  ) : null}
+                  {(colVisible.currentPrice ?? true) ? (
+                    <TableCell align="right" mono style={{ width: colWidths.currentPrice }}>
+                      {p.currentPrice ?? "—"}
+                    </TableCell>
+                  ) : null}
+                  {(colVisible.sl ?? true) ? (
+                    <TableCell align="right" mono className="text-[var(--text-3)]" style={{ width: colWidths.sl }}>
+                      {p.slPrice ?? "—"}
+                    </TableCell>
+                  ) : null}
+                  {(colVisible.tp ?? true) ? (
+                    <TableCell align="right" mono className="text-[var(--text-3)]" style={{ width: colWidths.tp }}>
+                      {p.tpPrice ?? "—"}
+                    </TableCell>
+                  ) : null}
+                  {(colVisible.floatingPnl ?? true) ? (
+                    <TableCell
+                      align="right"
+                      mono
+                      style={{ width: colWidths.floatingPnl }}
+                      className={!p.floatingPnl ? "" : Number(p.floatingPnl) >= 0 ? "text-[var(--buy)]" : "text-[var(--sell)]"}
+                    >
+                      {p.floatingPnl ?? "—"}
+                    </TableCell>
+                  ) : null}
+                  <TableCell className="text-xs text-[var(--text-3)]" style={{ width: colWidths.opened }}>{p.openedAt}</TableCell>
+                  <TableCell className="whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+                    <ActionMenu items={positionActions} />
+                  </TableCell>
+                </TableRow>
+              );
+            })
           )}
         </TableBody>
       </Table>
+      {rowContextMenu ? (
+        <RowContextMenu x={rowContextMenu.x} y={rowContextMenu.y} onClose={closeRowContextMenu} items={buildPositionActions(rowContextMenu.row)} />
+      ) : null}
 
       <Modal open={openModalOpen} onClose={() => setOpenModalOpen(false)} title="New manual position">
         <div className="flex flex-col gap-3">

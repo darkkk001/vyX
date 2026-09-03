@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/Button";
 import { FormField } from "@/components/ui/FormField";
 import { Modal, ModalActions } from "@/components/ui/Modal";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
+import { TableSkeleton, TableErrorState, useTableSort, SortableHeaderCell } from "@/components/ui/TableExtras";
 import DealingReplayPanel from "@/components/admin/DealingReplayPanel";
 
 export type DealRow = {
@@ -29,18 +30,55 @@ export type DealRow = {
 // Self-fetches from /api/manage/deals instead of receiving rows as a
 // server-rendered prop -- both the website and a bundled manager-shell
 // desktop app (no Server Component of its own) share this one path now.
+function getDealSortValue(row: DealRow, key: string): string | number | null {
+  switch (key) {
+    case "account":
+      return row.accountNumber;
+    case "symbol":
+      return row.symbol;
+    case "side":
+      return row.side;
+    case "volume":
+      return Number(row.volume);
+    case "openPrice":
+      return Number(row.openPrice);
+    case "closePrice":
+      return Number(row.closePrice);
+    case "commission":
+      return Number(row.commission);
+    case "swap":
+      return Number(row.swap);
+    case "realizedPnl":
+      return row.realizedPnl === "—" ? null : Number(row.realizedPnl);
+    case "closedAt":
+      return row.closedAt;
+    default:
+      return null;
+  }
+}
+
 export default function DealsManager() {
   const [rows, setRows] = useState<DealRow[] | null>(null);
+  // Same Empty-vs-Error-vs-Loading fix as PositionsManager -- a failed
+  // fetch used to render identically to "zero closed deals" via
+  // `.catch(() => setRows([]))`.
+  const [loadError, setLoadError] = useState(false);
   const [search, setSearch] = useState("");
   const [replayPositionId, setReplayPositionId] = useState<string | null>(null);
 
   function reload() {
     return fetch("/api/manage/deals")
-      .then((r) => r.json())
-      .then(setRows);
+      .then((r) => {
+        if (!r.ok) throw new Error(`deals fetch failed: ${r.status}`);
+        return r.json();
+      })
+      .then((d) => {
+        setRows(d);
+        setLoadError(false);
+      });
   }
   useEffect(() => {
-    reload().catch(() => setRows([]));
+    reload().catch(() => setLoadError(true));
   }, []);
 
   // VYX-POSITION-TOOLS-V0 -- true DELETE (see Position.deletedAt's own
@@ -81,23 +119,10 @@ export default function DealsManager() {
   const filtered = (rows ?? []).filter(
     (r) => !q || r.accountNumber.toLowerCase().includes(q) || r.accountFullName.toLowerCase().includes(q) || r.symbol.toLowerCase().includes(q)
   );
+  const { sortedRows: sortedDeals, sortKey, direction, onSort } = useTableSort(filtered, getDealSortValue);
 
-  if (rows === null) {
-    return <p className="text-sm text-[var(--text-3)]">Loading...</p>;
-  }
-
-  return (
-    <div className="flex flex-col gap-4">
-      <p className="text-sm text-[var(--text-3)]">
-        {rows.length} closed trade{rows.length === 1 ? "" : "s"} (most recent 500) across this broker.
-      </p>
-      <Input
-        type="text"
-        placeholder="Search by account number, name, or symbol..."
-        value={search}
-        onChange={(e) => setSearch(e.target.value)}
-        className="max-w-sm"
-      />
+  if (rows === null && !loadError) {
+    return (
       <Table>
         <TableHead>
           <TableHeaderCell>Account</TableHeaderCell>
@@ -113,10 +138,53 @@ export default function DealsManager() {
           <TableHeaderCell></TableHeaderCell>
         </TableHead>
         <TableBody>
-          {filtered.length === 0 ? (
+          <TableSkeleton columns={11} />
+        </TableBody>
+      </Table>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-4">
+      <p className="text-sm text-[var(--text-3)]">
+        {(rows ?? []).length} closed trade{(rows ?? []).length === 1 ? "" : "s"} (most recent 500) across this broker.
+      </p>
+      <Input
+        type="text"
+        placeholder="Search by account number, name, or symbol..."
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+        className="max-w-sm"
+      />
+      <Table>
+        <thead className="sticky top-0 z-10 bg-[var(--bg-2)]">
+          <tr>
+            {[
+              { key: "account", label: "Account", align: "left" as const },
+              { key: "symbol", label: "Symbol", align: "left" as const },
+              { key: "side", label: "Side", align: "left" as const },
+              { key: "volume", label: "Volume", align: "right" as const },
+              { key: "openPrice", label: "Open", align: "right" as const },
+              { key: "closePrice", label: "Close", align: "right" as const },
+              { key: "commission", label: "Commission", align: "right" as const },
+              { key: "swap", label: "Swap", align: "right" as const },
+              { key: "realizedPnl", label: "P&L", align: "right" as const },
+              { key: "closedAt", label: "Closed", align: "left" as const },
+            ].map((c) => (
+              <SortableHeaderCell key={c.key} sortKey={c.key} activeSortKey={sortKey} direction={direction} onSort={onSort} align={c.align}>
+                {c.label}
+              </SortableHeaderCell>
+            ))}
+            <TableHeaderCell></TableHeaderCell>
+          </tr>
+        </thead>
+        <TableBody>
+          {loadError ? (
+            <TableErrorState colSpan={11} onRetry={() => reload().catch(() => setLoadError(true))} />
+          ) : sortedDeals.length === 0 ? (
             <TableEmptyState colSpan={11}>No closed deals match.</TableEmptyState>
           ) : (
-            filtered.map((row) => (
+            sortedDeals.map((row) => (
               <TableRow key={row.id}>
                 <TableCell primary>
                   <span className="font-mono">{row.accountNumber}</span>
