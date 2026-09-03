@@ -152,11 +152,21 @@ export default function PositionsManager() {
   const [sortMode, setSortMode] = useState<SortMode>("symbol");
 
   // Only accounts that actually have an open position -- filtering
-  // positions by an account with none would always show nothing.
+  // positions by an account with none would always show nothing. The
+  // currently-selected account is kept in this list even at zero
+  // positions (e.g. right after a bulk close) -- otherwise the <select>
+  // bound to accountFilter has no matching <option> the instant its
+  // account's last position closes, and a value with no matching option
+  // renders as the browser's own fallback (the first option, "All"),
+  // silently snapping the filter back to unfiltered even though
+  // accountFilter's own state never changed. Reported live: "Close all"
+  // correctly zeroed the account out, but the picker visually reset and
+  // the table looked wrong instead of showing 0 positions for the same
+  // account.
   const accountsWithPositions = useMemo(() => {
     const ids = new Set(positionRows.map((p) => p.accountId));
-    return accounts.filter((a) => ids.has(a.id));
-  }, [positionRows, accounts]);
+    return accounts.filter((a) => ids.has(a.id) || a.id === accountFilter);
+  }, [positionRows, accounts, accountFilter]);
 
   const filteredPositions = useMemo(() => {
     return positionRows.filter((p) => {
