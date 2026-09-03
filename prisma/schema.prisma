@@ -314,6 +314,7 @@ model Broker {
   lpRoutingRules  LpRoutingRule[]
   mirrorRules     MirrorRule[]
   priceAlerts     PriceAlert[]
+  positionActionRequests PositionActionRequest[]
 }
 
 model AdminUser {
@@ -353,6 +354,9 @@ model AdminUser {
   markedTxns     Transaction[]  @relation("TransactionMarkedBy")
   auditLogs      AuditLog[]     @relation("AuditLogActor")
   closedPosition Position[]     @relation("PositionClosedBy")
+  deletedPositions Position[]   @relation("PositionDeletedBy")
+  requestedPositionActions PositionActionRequest[] @relation("PositionActionRequestedBy")
+  reviewedPositionActions  PositionActionRequest[] @relation("PositionActionReviewedBy")
   createdMirrorRules MirrorRule[]
   backupCodes    AdminBackupCode[]
 
@@ -1015,11 +1019,82 @@ model Position {
   // engine's job can't both charge the same position for the same day.
   lastSwapAt DateTime? @db.Timestamptz(3)
 
+  // Backoffice manual position tools -- true DELETE (distinct from VOID,
+  // see PositionActionType's own doc comment): the row itself is never
+  // physically removed (every FK referencing it, and every historical
+  // report/audit query, must keep working) -- it's soft-deleted out of the
+  // trader-visible statement/history only. deletedAt is the single "is
+  // this deleted" source of truth; deletedByAdminId/deleteReason exist
+  // purely as the audit-view's mandatory record of who/why, not re-checked
+  // anywhere else. Every trader-facing query (positions list, statement,
+  // history export) must add `deletedAt: null` -- see
+  // app/api/trade/positions/route.ts and app/api/trade/history/route.ts.
+  // Backoffice/admin views deliberately do NOT filter on this -- a deleted
+  // row must stay visible there (with a "Deleted" badge) so it's
+  // recoverable from the audit view, per the brief.
+  deletedAt        DateTime?  @db.Timestamptz(3)
+  deletedByAdminId String?
+  deletedByAdmin   AdminUser? @relation("PositionDeletedBy", fields: [deletedByAdminId], references: [id])
+  deleteReason     String?
+
   openedAt DateTime  @default(now()) @db.Timestamptz(3)
   closedAt DateTime? @db.Timestamptz(3)
 
+  actionRequests PositionActionRequest[]
+
   @@index([brokerId])
   @@index([accountId])
+  @@index([deletedAt])
+}
+
+// Backoffice manual position tools' maker-checker gate (VYX-POSITION-
+// TOOLS-V0): BROKER_ADMIN executes REVERSE_IN_PLACE/REVERSE_CLOSE_REOPEN/
+// VOID/DELETE directly (no row created here at all -- see each route's own
+// role check); MANAGER instead creates one of these PENDING, and a
+// *different* admin's approval is what actually executes the action --
+// same two-step shape as lib/funds-approval.ts's withdrawal mark/approve,
+// generalized from "a different admin" (funds) to "any admin with
+// execute rights" here since a Position action has no natural maker/
+// checker role split of its own the way deposits/withdrawals do.
+enum PositionActionType {
+  REVERSE_IN_PLACE
+  REVERSE_CLOSE_REOPEN
+  VOID
+  DELETE
+}
+
+enum PositionActionRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model PositionActionRequest {
+  id         String                      @id @default(cuid())
+  brokerId   String
+  broker     Broker                      @relation(fields: [brokerId], references: [id])
+  positionId String
+  position   Position                    @relation(fields: [positionId], references: [id])
+  actionType PositionActionType
+  status     PositionActionRequestStatus @default(PENDING)
+  // Mandatory for DELETE (the brief's own "deletedBy/reason mandatory"),
+  // optional free text for the other three -- validated at the API layer,
+  // not here (same "pure check, DB mutation at the call site" split as
+  // lib/funds-approval.ts).
+  reason     String?
+
+  requestedByAdminId String
+  requestedByAdmin   AdminUser @relation("PositionActionRequestedBy", fields: [requestedByAdminId], references: [id])
+  reviewedByAdminId  String?
+  reviewedByAdmin    AdminUser? @relation("PositionActionReviewedBy", fields: [reviewedByAdminId], references: [id])
+  reviewNote         String?
+
+  createdAt  DateTime  @default(now()) @db.Timestamptz(3)
+  reviewedAt DateTime? @db.Timestamptz(3)
+
+  @@index([brokerId])
+  @@index([positionId])
+  @@index([status])
 }
 
 // ─────────────────────────────────────────────────────────────────────────
