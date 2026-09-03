@@ -444,7 +444,7 @@ export default function SmartTradeManager({
       {embedded ? card : (
         <div className="modal-overlay show" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
           <div className="modal-wrap">
-            <button className="modal-close" onClick={onClose}>✕</button>
+            <button className="modal-close" aria-label="Close" onClick={onClose}>✕</button>
             {card}
           </div>
         </div>

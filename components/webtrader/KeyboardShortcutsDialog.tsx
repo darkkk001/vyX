@@ -19,7 +19,7 @@ export default function KeyboardShortcutsDialog({ onClose }: { onClose: () => vo
   return (
     <div className="modal-overlay show" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="modal-wrap">
-        <button className="modal-close" onClick={onClose}>✕</button>
+        <button className="modal-close" aria-label="Close" onClick={onClose}>✕</button>
         <div className="generic-modal-card" style={{ width: 360 }}>
           <div className="generic-modal-title">Keyboard shortcuts</div>
           <div style={{ display: "flex", flexDirection: "column", gap: 2, marginTop: 10 }}>

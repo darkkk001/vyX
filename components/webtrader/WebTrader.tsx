@@ -4433,7 +4433,7 @@ export default function WebTrader({
       {quickOrder ? (
         <div className="modal-overlay show" onClick={(e) => { if (e.target === e.currentTarget) setQuickOrder(null); }}>
           <div className="modal-wrap">
-            <button className="modal-close" onClick={() => setQuickOrder(null)}>✕</button>
+            <button className="modal-close" aria-label="Close" onClick={() => setQuickOrder(null)}>✕</button>
             <div className="generic-modal-card">
               <div className="quick-order-header"><span>{quickOrder.symbol}</span><span className="mono">{market[quickOrder.symbol].lastTickAt > 0 ? fmt(market[quickOrder.symbol].bid, market[quickOrder.symbol].def.digits) : "—"}</span></div>
               <div className="field-group">
@@ -4483,7 +4483,7 @@ export default function WebTrader({
       {shareData ? (
         <div className="modal-overlay show" onClick={(e) => { if (e.target === e.currentTarget) setShareData(null); }}>
           <div className="modal-wrap">
-            <button className="modal-close" onClick={() => setShareData(null)}>✕</button>
+            <button className="modal-close" aria-label="Close" onClick={() => setShareData(null)}>✕</button>
             <div className={`share-card${shareData.pnl < 0 ? " sell-mode" : ""}`}>
               <div className="share-header">
                 <div className="share-logo">
@@ -4516,7 +4516,7 @@ export default function WebTrader({
       {sltpEdit ? (
         <div className="modal-overlay show" onClick={(e) => { if (e.target === e.currentTarget) setSltpEdit(null); }}>
           <div className="modal-wrap">
-            <button className="modal-close" onClick={() => setSltpEdit(null)}>✕</button>
+            <button className="modal-close" aria-label="Close" onClick={() => setSltpEdit(null)}>✕</button>
             <div className="sltp-edit-card">
               <div className="sltp-edit-header">
                 <span>{sltpEdit.netSymbol ?? positions.find((p) => p.id === sltpEdit.posId)?.symbol.name}</span>
@@ -4536,7 +4536,7 @@ export default function WebTrader({
       {genericModal ? (
         <div className="modal-overlay show" onClick={(e) => { if (e.target === e.currentTarget) { genericModal.onConfirm(null); setGenericModal(null); } }}>
           <div className="modal-wrap">
-            <button className="modal-close" onClick={() => { genericModal.onConfirm(null); setGenericModal(null); }}>✕</button>
+            <button className="modal-close" aria-label="Close" onClick={() => { genericModal.onConfirm(null); setGenericModal(null); }}>✕</button>
             <div className="generic-modal-card">
               <div className="generic-modal-title">{genericModal.title}</div>
               <div className="generic-modal-message">{genericModal.message}</div>
@@ -4583,7 +4583,7 @@ export default function WebTrader({
       {changePasswordOpen ? (
         <div className="modal-overlay show" onClick={(e) => { if (e.target === e.currentTarget) setChangePasswordOpen(false); }}>
           <div className="modal-wrap">
-            <button className="modal-close" onClick={() => setChangePasswordOpen(false)}>✕</button>
+            <button className="modal-close" aria-label="Close" onClick={() => setChangePasswordOpen(false)}>✕</button>
             <form className="generic-modal-card" onSubmit={handleChangePassword}>
               <div className="generic-modal-title">Change password</div>
               <input
@@ -4627,7 +4627,7 @@ export default function WebTrader({
       {securityModalOpen ? (
         <div className="modal-overlay show" onClick={(e) => { if (e.target === e.currentTarget) setSecurityModalOpen(false); }}>
           <div className="modal-wrap">
-            <button className="modal-close" onClick={() => setSecurityModalOpen(false)}>✕</button>
+            <button className="modal-close" aria-label="Close" onClick={() => setSecurityModalOpen(false)}>✕</button>
             <div className="generic-modal-card" style={{ width: 420 }}>
               <div className="generic-modal-title">Security</div>
 
@@ -4739,7 +4739,7 @@ export default function WebTrader({
       {switchTarget ? (
         <div className="modal-overlay show" onClick={(e) => { if (e.target === e.currentTarget) setSwitchTarget(null); }}>
           <div className="modal-wrap">
-            <button className="modal-close" onClick={() => setSwitchTarget(null)}>✕</button>
+            <button className="modal-close" aria-label="Close" onClick={() => setSwitchTarget(null)}>✕</button>
             {switchPendingToken ? (
               <form className="generic-modal-card" onSubmit={submitSwitchTwoFactor}>
                 <div className="generic-modal-title">Two-factor verification</div>
@@ -4795,7 +4795,7 @@ export default function WebTrader({
       {kycModalOpen ? (
         <div className="modal-overlay show" onClick={(e) => { if (e.target === e.currentTarget) setKycModalOpen(false); }}>
           <div className="modal-wrap">
-            <button className="modal-close" onClick={() => setKycModalOpen(false)}>✕</button>
+            <button className="modal-close" aria-label="Close" onClick={() => setKycModalOpen(false)}>✕</button>
             <div className="generic-modal-card" style={{ width: 320 }}>
               <div className="generic-modal-title">Verify identity</div>
               {kycStatus && kycStatus.status !== "REJECTED" ? (
@@ -4890,7 +4890,7 @@ export default function WebTrader({
       {reportsOpen ? (
         <div className="modal-overlay show" onClick={(e) => { if (e.target === e.currentTarget) setReportsOpen(false); }}>
           <div className="modal-wrap">
-            <button className="modal-close" onClick={() => setReportsOpen(false)}>✕</button>
+            <button className="modal-close" aria-label="Close" onClick={() => setReportsOpen(false)}>✕</button>
             <div className="generic-modal-card" style={{ width: 460 }}>
               <div className="generic-modal-title">Account statement</div>
               <div style={{ display: "flex", gap: 8, alignItems: "flex-end", marginBottom: 12 }}>
@@ -4964,7 +4964,7 @@ export default function WebTrader({
       {alertsModalOpen ? (
         <div className="modal-overlay show" onClick={(e) => { if (e.target === e.currentTarget) setAlertsModalOpen(false); }}>
           <div className="modal-wrap">
-            <button className="modal-close" onClick={() => setAlertsModalOpen(false)}>✕</button>
+            <button className="modal-close" aria-label="Close" onClick={() => setAlertsModalOpen(false)}>✕</button>
             <div className="generic-modal-card" style={{ width: 300 }}>
               <div className="funds-tabs">
                 <button className={`funds-tab${alertsTab === "active" ? " active" : ""}`} onClick={() => setAlertsTab("active")}>Active</button>
@@ -5007,7 +5007,7 @@ export default function WebTrader({
       {symbolInfoOpen ? (
         <div className="modal-overlay show" onClick={(e) => { if (e.target === e.currentTarget) setSymbolInfoOpen(false); }}>
           <div className="modal-wrap">
-            <button className="modal-close" onClick={() => setSymbolInfoOpen(false)}>✕</button>
+            <button className="modal-close" aria-label="Close" onClick={() => setSymbolInfoOpen(false)}>✕</button>
             <div className="generic-modal-card" style={{ width: 280 }}>
               <div className="quick-order-header"><span>{activeSymbol}</span></div>
               <div className="si-row"><span>Contract size</span><span className="mono">{m.def.contractSize}</span></div>
@@ -5034,7 +5034,7 @@ export default function WebTrader({
         return (
           <div className="modal-overlay show" onClick={(e) => { if (e.target === e.currentTarget) setPartialCloseTarget(null); }}>
             <div className="modal-wrap">
-              <button className="modal-close" onClick={() => setPartialCloseTarget(null)}>✕</button>
+              <button className="modal-close" aria-label="Close" onClick={() => setPartialCloseTarget(null)}>✕</button>
               <div className="generic-modal-card" style={{ width: 300 }}>
                 <div className="quick-order-header"><span>Partial close — {p.symbol.name}</span></div>
                 <p className="margin-note" style={{ marginTop: 0 }}>
@@ -5098,7 +5098,7 @@ export default function WebTrader({
         return (
           <div className="modal-overlay show" onClick={(e) => { if (e.target === e.currentTarget) setCloseByTarget(null); }}>
             <div className="modal-wrap">
-              <button className="modal-close" onClick={() => setCloseByTarget(null)}>✕</button>
+              <button className="modal-close" aria-label="Close" onClick={() => setCloseByTarget(null)}>✕</button>
               <div className="generic-modal-card" style={{ width: 320 }}>
                 <div className="quick-order-header"><span>Close by — {p.symbol.name}</span></div>
                 <p className="margin-note" style={{ marginTop: 0 }}>
@@ -5132,7 +5132,7 @@ export default function WebTrader({
       {fundsModalOpen ? (
         <div className="modal-overlay show" onClick={(e) => { if (e.target === e.currentTarget) setFundsModalOpen(false); }}>
           <div className="modal-wrap">
-            <button className="modal-close" onClick={() => setFundsModalOpen(false)}>✕</button>
+            <button className="modal-close" aria-label="Close" onClick={() => setFundsModalOpen(false)}>✕</button>
             <div className="generic-modal-card" style={{ width: 300 }}>
               <div className="funds-tabs">
                 <button className={`funds-tab${fundsTab === "deposit" ? " active" : ""}`} onClick={() => setFundsTab("deposit")}>Deposit</button>

@@ -157,6 +157,28 @@ html, body, #root {
   outline: none;
 }
 
+/* VYX-BASICS-AUDIT.md category 7 "focus states visible" -- every one of
+   these removes its native outline (border/bg styling above) but never
+   replaced it with anything, so tabbing into the order ticket's price/
+   volume fields, the watchlist search, an inline-edit cell, a pending-
+   order type select, a generic-modal prompt, or the history date range
+   showed no focus indication at all. One shared rule instead of patching
+   each selector separately -- accent ring matches the backoffice's own
+   Input.tsx/Select.tsx focus convention (focus:border-accent), not the
+   plain :text-3 outline the icon-rail buttons above use, since these are
+   actual value fields, not nav chrome. */
+.wt-root select:focus-visible,
+.wl-search:focus-visible,
+.inline-edit-input:focus-visible,
+.field input:focus-visible,
+.pending-select:focus-visible,
+.generic-modal-input:focus-visible,
+.history-period-select:focus-visible,
+.history-custom-range input:focus-visible {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(30, 217, 144, 0.12);
+}
+
 .wt-root {
   background: var(--bg-0);
   color: var(--text-1);

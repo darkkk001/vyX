@@ -56,7 +56,7 @@ export default function ChartSettingsDialog({
   return (
     <div className="modal-overlay show" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="modal-wrap">
-        <button className="modal-close" onClick={onClose}>✕</button>
+        <button className="modal-close" aria-label="Close" onClick={onClose}>✕</button>
         <div className="generic-modal-card" style={{ width: 340 }}>
           <div className="generic-modal-title">Chart settings</div>
 

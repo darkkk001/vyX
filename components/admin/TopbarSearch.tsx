@@ -171,7 +171,13 @@ export function TopbarSearch({ placeholder }: { placeholder: string }) {
 
   return (
     <div ref={containerRef} className="relative ml-3 w-72">
-      <div className="flex items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--bg-2)] px-3 py-1.5">
+      {/* VYX-BASICS-AUDIT.md category 7 "focus states visible" -- the
+          <input> below removes its native outline (same reasoning as
+          LeverageInput.tsx: the boundary is this wrapper's border, not
+          the input's own), but nothing replaced it, so tabbing/clicking
+          into search showed no focus indication at all. focus-within
+          on the wrapper, same pattern LeverageInput.tsx already uses. */}
+      <div className="flex items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--bg-2)] px-3 py-1.5 focus-within:border-[var(--accent)] focus-within:shadow-[0_0_0_3px_rgba(30,217,144,0.12)]">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="shrink-0 text-[var(--text-3)]">
           <circle cx="11" cy="11" r="8" />
           <line x1="21" y1="21" x2="16.65" y2="16.65" />

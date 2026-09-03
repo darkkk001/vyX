@@ -20,7 +20,7 @@ export default function AboutDialog({
   return (
     <div className="modal-overlay show" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="modal-wrap">
-        <button className="modal-close" onClick={onClose}>✕</button>
+        <button className="modal-close" aria-label="Close" onClick={onClose}>✕</button>
         <div className="generic-modal-card" style={{ width: 300, textAlign: "center" }}>
           <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10, padding: "8px 0 4px" }}>
             <span style={{ width: 44, height: 44, borderRadius: 10, background: "var(--bg-3)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, fontWeight: 700, overflow: "hidden" }}>

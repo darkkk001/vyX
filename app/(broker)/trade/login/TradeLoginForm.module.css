@@ -206,6 +206,15 @@
   font-family: inherit;
 }
 
+/* VYX-BASICS-AUDIT.md category 7 "focus states visible" -- unlike
+   .input above, this never got a :focus replacement for its removed
+   outline, so tabbing into the server-picker's filter box showed
+   nothing. Same accent treatment as .input:focus. */
+.serverSearch:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow, rgba(124, 111, 255, .15));
+}
+
 .serverOption {
   display: flex;
   align-items: center;

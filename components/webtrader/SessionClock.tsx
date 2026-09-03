@@ -47,6 +47,13 @@ export default function SessionClock({ hideLabel = false }: { hideLabel?: boolea
           return (
             <span
               key={s.name}
+              // VYX-BASICS-AUDIT.md category 7 "color is never the only
+              // signal" -- active vs. closed used to differ ONLY by
+              // green-vs-gray (bg/text/dot all recolored together, same
+              // name text either way). title + a filled-vs-hollow dot
+              // (border instead of solid fill when closed) give a second,
+              // non-color channel.
+              title={`${s.name} session: ${active ? "open" : "closed"}`}
               style={{
                 fontSize: 10.5,
                 padding: "3px 8px",
@@ -58,7 +65,15 @@ export default function SessionClock({ hideLabel = false }: { hideLabel?: boolea
                 gap: 4,
               }}
             >
-              <span style={{ width: 5, height: 5, borderRadius: "50%", background: active ? "var(--buy)" : "var(--text-3)" }} />
+              <span
+                style={{
+                  width: 5,
+                  height: 5,
+                  borderRadius: "50%",
+                  background: active ? "var(--buy)" : "transparent",
+                  border: active ? "none" : "1px solid var(--text-3)",
+                }}
+              />
               {s.name}
             </span>
           );
