@@ -182,7 +182,7 @@ New columns: `positions.commission`/`swap` (running totals for display,
 mirroring the legacy Prisma `Position` model's same two columns) and
 `positions.last_swap_at` (rollover's idempotency key) —
 `engine/migrations/20260817020000_commission_and_swap.sql`, hand-applied
-per `CLAUDE.md`'s offline-migration workflow (this crate's schema isn't
+per this project's offline-migration workflow (this crate's schema isn't
 Prisma-tracked, ADR-002).
 
 Verified live against a real Postgres: seeded a BUY position with

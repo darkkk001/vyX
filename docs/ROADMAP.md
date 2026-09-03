@@ -2,7 +2,7 @@
 
 Based on `docs/PRODUCT-INVENTORY.md` + `docs/STATE-OF-PROJECT.md` (commit `293c62d`).
 Rule: one phase in flight at a time; each phase ends with a Contabo/Vercel deploy and a
-written acceptance check. Claude Code briefs are cut per phase, not per feature.
+written acceptance check. Work is briefed and scoped per phase, not per feature.
 
 ## Standing decisions (locked now, stop re-deciding)
 

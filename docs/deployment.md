@@ -3,7 +3,7 @@
 ## 1. Today
 
 - **Web app**: Vercel, deployed from `darkkk001/vyX`. Two relevant refs:
-  the working branch (`claude/vyxtrader-platform-setup-0odm99`) and
+  the working branch (`feat/vyxtrader-platform-setup`) and
   `main` (production, `vyxtrader.com`). Wildcard-subdomain multi-tenancy —
   `middleware.ts` resolves the broker from the Host header, so one
   deployment serves every broker's subdomain plus the root-domain

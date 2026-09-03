@@ -38,10 +38,9 @@ assumed:
   ledger/audit rows. The unstyled UI is a separate, disconnected problem
   from this — the logic underneath is real.
   **Closed, same day**: styled with a small new `components/ui/`
-  Tailwind primitive layer + a shared `AdminShell` (see `CLAUDE.md`'s
-  own entry for the full writeup, including a real session/route bug
-  found and fixed along the way via `(shell)` route groups). Backend
-  logic untouched throughout.
+  Tailwind primitive layer + a shared `AdminShell`, including a real
+  session/route bug found and fixed along the way via `(shell)` route
+  groups. Backend logic untouched throughout.
 - **Scope confirmed/expanded by the user**: complete all three client
   surfaces (Desktop, WebTrader-in-broker-portal, Mobile — Mobile not
   started, Flutter, per §4/§7) for traders; Backoffice (Manager/Admin,
@@ -642,9 +641,9 @@ here, just the option the spec itself already pointed at.
     `app/api/manage/positions/route.ts` (open) and
     `app/api/manage/positions/[id]/close/route.ts` (close), UI in
     `PositionsManager.tsx`. The user's own first word for the close
-    action was "delete" — clarified against `CLAUDE.md`'s own
-    non-negotiable rule ("never delete executed trades... corrections
-    are compensating entries") before writing any code: this is a state
+    action was "delete" — clarified against this project's own
+    non-negotiable rule (never delete executed trades; corrections
+    are compensating entries) before writing any code: this is a state
     transition (OPEN → CLOSED, same state machine as every other close),
     never a row deletion. First real usage of two things the schema
     already anticipated but nothing wrote: `Position.closedByAdminId`
@@ -723,7 +722,7 @@ here, just the option the spec itself already pointed at.
     `"BALANCE_ADJUSTMENT"` audit row; confirmed broker-scoping (a
     different broker's account was cleanly rejected, not leaked).
 
-19. **Phase 3/6 — deposit/withdraw requests.** Closes `CLAUDE.md`'s own
+19. **Phase 3/6 — deposit/withdraw requests.** Closes a previously
     flagged gap: WebTrader's funds modal (Deposit/Withdraw tabs, amount
     input — already fully built) previously ended in a stub toast
     ("goes through the backoffice review flow (Phase 3) — not yet
@@ -835,7 +834,7 @@ here, just the option the spec itself already pointed at.
 
     **DB migration-history gap found during verification.** The live
     connection provided for this slice (`db.prisma.io`, not the
-    `ep-*.neon.tech` host `CLAUDE.md` still describes) turned out to be
+    `ep-*.neon.tech` host documented elsewhere as current) turned out to be
     a real but far-behind database — `_prisma_migrations` stopped at
     `20260812234500_extended_timeframes`, missing every migration from
     the rest of this session (`exposure_limits`, `commission_per_lot`,
@@ -874,7 +873,7 @@ here, just the option the spec itself already pointed at.
     instead of a `$0` payout.
 
 22. **Rust engine — cancel + modify order support (a real "Phase 5"
-    disambiguation).** `CLAUDE.md` calls Phase 5 "real execution engine /
+    disambiguation).** One project doc calls Phase 5 "real execution engine /
     LP FIX feed," but this doc's own phase table (§7) says Phase 5 =
     Mobile — the two docs never agreed. Investigated what "Phase 5" could
     actually mean here: a real LP FIX feed has zero design anywhere (one

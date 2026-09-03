@@ -16,7 +16,7 @@ on:
   push:
     branches:
       - main
-      - claude/vyxtrader-platform-setup-0odm99
+      - feat/vyxtrader-platform-setup
     paths:
       - "engine/**"
       - ".github/workflows/engine-ci.yml"

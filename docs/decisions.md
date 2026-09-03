@@ -276,7 +276,7 @@ published update feed). `desktop-tauri/` is now the only desktop shell;
 this ADR's own cutover step 2 ("both apps available side by side for
 some overlap period") is moot — there's nothing left to overlap with.
 Updated every doc that described Electron as current/live
-(`CLAUDE.md`, `architecture.md`, `security.md`, `testing.md`,
+(`architecture.md`, `security.md`, `testing.md`,
 `deployment.md`, `README.md`) and the handful of code comments in
 `components/webtrader/` that referenced `desktop/main.js`/
 `desktop/preload.js` by path. No functional change to the web app or

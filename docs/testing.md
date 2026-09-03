@@ -168,7 +168,7 @@ implementation/process decisions for Phase 1+, not architecture.
 Trading Core workspace — not the Next.js web app, which has no
 automated test suite yet per §1 above, and not `desktop-tauri/`'s own
 separate Cargo project). Runs on push to `main` and
-`claude/vyxtrader-platform-setup-0odm99` and on PRs targeting `main`,
+`feat/vyxtrader-platform-setup` and on PRs targeting `main`,
 path-filtered to `engine/**` so unrelated commits don't trigger it.
 `cargo build --workspace --all-targets` and `cargo test --workspace`
 are hard gates; `cargo clippy`/`cargo fmt --check` run but don't fail

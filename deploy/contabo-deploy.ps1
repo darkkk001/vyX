@@ -48,7 +48,7 @@ param(
     [string]$GatewayService   = "vyxtrader-gateway",
     [string]$TargetBranch     = "fix/tick-path-hardening",
     [string]$TargetCommit     = "1c556fc",
-    [string]$RollbackRef      = "claude/vyxtrader-platform-setup-0odm99",
+    [string]$RollbackRef      = "feat/vyxtrader-platform-setup",
     [string]$RollbackExeName  = "trading-core-server.7475312.exe",
     [string]$EngineLogPath    = "",
     [int]$PollIntervalSec     = 10,
