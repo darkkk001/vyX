@@ -13,8 +13,16 @@ export async function GET() {
   }
   const brokerId = session!.brokerId!;
 
+  // VYX-POSITION-TOOLS-V0 -- VOIDED rows belong here too (the brief's
+  // "visible to admins" for Void has nowhere else to land: the Live
+  // Exposure page only ever shows status: OPEN, so a just-voided position
+  // used to vanish from every backoffice view the instant it voided).
+  // deletedAt: null hides a soft-deleted row from this normal-browsing
+  // list -- "recoverable from the audit view" (the brief's own words)
+  // means the audit log, not this list; see POSITION_DELETED's own
+  // AuditLog entry for the full record.
   const positions = await prisma.position.findMany({
-    where: { brokerId, status: "CLOSED" },
+    where: { brokerId, status: { in: ["CLOSED", "VOIDED"] }, deletedAt: null },
     include: {
       account: { select: { accountNumber: true, fullName: true } },
       symbol: { select: { name: true, digits: true } },
@@ -31,6 +39,7 @@ export async function GET() {
       symbol: p.symbol.name,
       digits: p.symbol.digits,
       side: p.side,
+      status: p.status,
       volume: p.volume.toString(),
       openPrice: p.openPrice.toFixed(p.symbol.digits),
       closePrice: p.closePrice ? p.closePrice.toFixed(p.symbol.digits) : "—",

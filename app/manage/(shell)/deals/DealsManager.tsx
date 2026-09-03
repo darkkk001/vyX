@@ -4,6 +4,8 @@ import { useEffect, useState } from "react";
 import { Input } from "@/components/ui/Input";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
+import { FormField } from "@/components/ui/FormField";
+import { Modal, ModalActions } from "@/components/ui/Modal";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
 import DealingReplayPanel from "@/components/admin/DealingReplayPanel";
 
@@ -14,6 +16,7 @@ export type DealRow = {
   symbol: string;
   digits: number;
   side: "BUY" | "SELL";
+  status: "CLOSED" | "VOIDED";
   volume: string;
   openPrice: string;
   closePrice: string;
@@ -31,12 +34,48 @@ export default function DealsManager() {
   const [search, setSearch] = useState("");
   const [replayPositionId, setReplayPositionId] = useState<string | null>(null);
 
-  useEffect(() => {
-    fetch("/api/manage/deals")
+  function reload() {
+    return fetch("/api/manage/deals")
       .then((r) => r.json())
-      .then(setRows)
-      .catch(() => setRows([]));
+      .then(setRows);
+  }
+  useEffect(() => {
+    reload().catch(() => setRows([]));
   }, []);
+
+  // VYX-POSITION-TOOLS-V0 -- true DELETE (see Position.deletedAt's own
+  // schema comment). Only ever eligible here, never on Live Exposure's
+  // OPEN rows -- see lib/position-actions.ts's executeDelete.
+  const [deleteConfirm, setDeleteConfirm] = useState<DealRow | null>(null);
+  const [deleteReason, setDeleteReason] = useState("");
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState("");
+  const [pendingToast, setPendingToast] = useState<string | null>(null);
+
+  async function deleteDeal(row: DealRow) {
+    setDeletingId(row.id);
+    setDeleteError("");
+    const response = await fetch(`/api/manage/positions/${row.id}/delete`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reason: deleteReason }),
+    });
+    setDeletingId(null);
+    const body = await response.json().catch(() => ({}));
+    if (response.status === 202) {
+      setDeleteConfirm(null);
+      setDeleteReason("");
+      setPendingToast("Delete submitted for approval -- a different admin needs to review it (Live Exposure page).");
+      return;
+    }
+    if (!response.ok) {
+      setDeleteError(body.error ?? "delete failed");
+      return;
+    }
+    setDeleteConfirm(null);
+    setDeleteReason("");
+    reload().catch(() => {});
+  }
 
   const q = search.trim().toLowerCase();
   const filtered = (rows ?? []).filter(
@@ -86,6 +125,11 @@ export default function DealsManager() {
                 <TableCell mono>{row.symbol}</TableCell>
                 <TableCell>
                   <Badge tone={row.side === "BUY" ? "success" : "danger"}>{row.side}</Badge>
+                  {row.status === "VOIDED" ? (
+                    <span className="ml-1.5">
+                      <Badge tone="warning">VOIDED</Badge>
+                    </span>
+                  ) : null}
                 </TableCell>
                 <TableCell align="right" mono>{row.volume}</TableCell>
                 <TableCell align="right" mono>{row.openPrice}</TableCell>
@@ -97,7 +141,12 @@ export default function DealsManager() {
                 </TableCell>
                 <TableCell className="text-xs text-[var(--text-3)]">{row.closedAt}</TableCell>
                 <TableCell align="right">
-                  <Button variant="ghost" onClick={() => setReplayPositionId(row.id)}>Replay</Button>
+                  <div className="flex justify-end gap-1">
+                    <Button variant="ghost" onClick={() => setReplayPositionId(row.id)}>Replay</Button>
+                    <Button variant="ghost" onClick={() => { setDeleteReason(""); setDeleteError(""); setDeleteConfirm(row); }} title="Remove from the trader's statement/history -- admin-only, recoverable from the audit view">
+                      Delete
+                    </Button>
+                  </div>
                 </TableCell>
               </TableRow>
             ))
@@ -107,6 +156,31 @@ export default function DealsManager() {
       {replayPositionId ? (
         <DealingReplayPanel positionId={replayPositionId} onClose={() => setReplayPositionId(null)} />
       ) : null}
+
+      {pendingToast ? <p className="text-xs text-[var(--accent)]">{pendingToast}</p> : null}
+
+      <Modal open={deleteConfirm !== null} onClose={() => setDeleteConfirm(null)} title="Confirm delete deal">
+        {deleteConfirm ? (
+          <div className="flex flex-col gap-3">
+            <p className="text-sm text-[var(--text-2)]">
+              Removes {deleteConfirm.accountNumber}&apos;s {deleteConfirm.symbol} {deleteConfirm.side} deal from the trader-visible
+              statement/history entirely. The row itself isn&apos;t erased -- it&apos;s recoverable from the audit log. A reason is required.
+            </p>
+            <FormField label="Reason (required)">
+              <Input value={deleteReason} onChange={(e) => setDeleteReason(e.target.value)} placeholder="Why this row is being removed from the trader's history" />
+            </FormField>
+            {deleteError ? <div className="text-xs text-[var(--sell)]">{deleteError}</div> : null}
+            <ModalActions>
+              <Button variant="ghost" onClick={() => setDeleteConfirm(null)}>
+                Cancel
+              </Button>
+              <Button variant="danger" disabled={deletingId === deleteConfirm.id || deleteReason.trim() === ""} onClick={() => deleteDeal(deleteConfirm)}>
+                {deletingId === deleteConfirm.id ? "Deleting..." : "Confirm delete"}
+              </Button>
+            </ModalActions>
+          </div>
+        ) : null}
+      </Modal>
     </div>
   );
 }

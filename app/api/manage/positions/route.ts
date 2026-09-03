@@ -85,6 +85,15 @@ export async function GET() {
   const symbolNames = [...new Set(positions.map((p) => p.symbol.name))];
   const priceBySymbol = await getFreshPrices(symbolNames);
 
+  // Backoffice manual position tools -- Reverse's confirm dialog needs to
+  // warn when the position's account is mirror-relevant (see
+  // lib/position-actions.ts's isAccountMirrored). One query for every
+  // enabled rule's source instead of a per-row lookup -- this route
+  // already renders every open position in one page.
+  const mirrorRules = await prisma.mirrorRule.findMany({ where: { brokerId, enabled: true }, select: { sourceType: true, sourceId: true } });
+  const mirroredAccountIds = new Set(mirrorRules.filter((r) => r.sourceType === "ACCOUNT").map((r) => r.sourceId));
+  const mirroredGroupIds = new Set(mirrorRules.filter((r) => r.sourceType === "GROUP").map((r) => r.sourceId));
+
   const rows = positions.map((p) => {
     const lp = priceBySymbol.get(p.symbol.name);
     const currentPrice = lp ? (p.side === "BUY" ? lp.bid : lp.ask) : null;
@@ -123,6 +132,7 @@ export async function GET() {
       slPrice: p.slPrice ? p.slPrice.toFixed(p.symbol.digits) : null,
       tpPrice: p.tpPrice ? p.tpPrice.toFixed(p.symbol.digits) : null,
       isManualOrigin: p.originOrder.idempotencyKey.startsWith("manual_"),
+      mirrored: mirroredAccountIds.has(p.accountId) || (p.account.groupId != null && mirroredGroupIds.has(p.account.groupId)),
       openedAt: p.openedAt.toISOString().replace("T", " ").slice(0, 19),
     };
   });

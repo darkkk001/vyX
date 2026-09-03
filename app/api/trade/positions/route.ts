@@ -9,7 +9,7 @@ export async function GET() {
   }
 
   const positions = await prisma.position.findMany({
-    where: { accountId: session.accountId, status: "OPEN" },
+    where: { accountId: session.accountId, status: "OPEN", deletedAt: null },
     include: { symbol: { select: { name: true, digits: true, contractSize: true } } },
     orderBy: { openedAt: "desc" },
   });

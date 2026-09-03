@@ -17,6 +17,7 @@ export async function GET(request: NextRequest) {
     where: {
       accountId: session.accountId,
       status: "CLOSED",
+      deletedAt: null,
       ...(from || to
         ? {
             closedAt: {

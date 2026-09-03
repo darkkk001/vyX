@@ -32,6 +32,7 @@ export type PositionRow = {
   slPrice: string | null;
   tpPrice: string | null;
   isManualOrigin: boolean;
+  mirrored: boolean;
   openedAt: string;
 };
 
@@ -389,20 +390,46 @@ export default function PositionsManager() {
     reload().catch(() => {});
   }
 
-  // --- Reverse / Void, per row ---
+  // --- Reverse / Void / Delete, per row -- VYX-POSITION-TOOLS-V0.
+  // Every one of these three can come back 202 {pending, requestId}
+  // instead of 200 -- a MANAGER's call only ever files a
+  // PositionActionRequest (see lib/position-actions.ts's
+  // positionActionNeedsApproval); the position itself hasn't changed
+  // yet, so this only closes the modal with a "submitted for approval"
+  // toast and refreshes the pending-approvals panel, not the position
+  // list. A BROKER_ADMIN's call executes immediately (200), same as
+  // before -- reload() as usual.
   const [reversingId, setReversingId] = useState<string | null>(null);
   const [voidingId, setVoidingId] = useState<string | null>(null);
   const [reverseVoidErrors, setReverseVoidErrors] = useState<Record<string, string>>({});
   const [reverseConfirm, setReverseConfirm] = useState<PositionRow | null>(null);
+  const [reverseMode, setReverseMode] = useState<"IN_PLACE" | "CLOSE_REOPEN">("IN_PLACE");
   const [voidConfirm, setVoidConfirm] = useState<PositionRow | null>(null);
+  const [pendingSubmittedToast, setPendingSubmittedToast] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!pendingSubmittedToast) return;
+    const t = setTimeout(() => setPendingSubmittedToast(null), 4000);
+    return () => clearTimeout(t);
+  }, [pendingSubmittedToast]);
 
   async function reversePosition(row: PositionRow) {
     setReversingId(row.id);
     setReverseVoidErrors((prev) => ({ ...prev, [row.id]: "" }));
-    const response = await fetch(`/api/manage/positions/${row.id}/reverse`, { method: "POST" });
+    const response = await fetch(`/api/manage/positions/${row.id}/reverse`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: reverseMode }),
+    });
     setReversingId(null);
+    const body = await response.json().catch(() => ({}));
+    if (response.status === 202) {
+      setReverseConfirm(null);
+      setPendingSubmittedToast("Reverse submitted for approval");
+      reloadPendingActions().catch(() => {});
+      return;
+    }
     if (!response.ok) {
-      const body = await response.json().catch(() => ({}));
       setReverseVoidErrors((prev) => ({ ...prev, [row.id]: body.error ?? "reverse failed" }));
       return;
     }
@@ -415,12 +442,69 @@ export default function PositionsManager() {
     setReverseVoidErrors((prev) => ({ ...prev, [row.id]: "" }));
     const response = await fetch(`/api/manage/positions/${row.id}/void`, { method: "POST" });
     setVoidingId(null);
+    const body = await response.json().catch(() => ({}));
+    if (response.status === 202) {
+      setVoidConfirm(null);
+      setPendingSubmittedToast("Void submitted for approval");
+      reloadPendingActions().catch(() => {});
+      return;
+    }
     if (!response.ok) {
-      const body = await response.json().catch(() => ({}));
       setReverseVoidErrors((prev) => ({ ...prev, [row.id]: body.error ?? "void failed" }));
       return;
     }
     setVoidConfirm(null);
+    reload().catch(() => {});
+  }
+
+  // Delete lives on the Deals page (/manage/deals), not here -- it's only
+  // ever eligible on an already-CLOSED/VOIDED position (see
+  // lib/position-actions.ts's executeDelete), and this page only ever
+  // shows OPEN ones.
+
+  // --- Pending approvals (MANAGER-filed requests a different admin must
+  // review) -- kept in-page rather than a separate route so the whole
+  // request -> approve loop is testable from one screen.
+  type PendingAction = {
+    id: string;
+    actionType: "REVERSE_IN_PLACE" | "REVERSE_CLOSE_REOPEN" | "VOID" | "DELETE";
+    status: "PENDING" | "APPROVED" | "REJECTED";
+    reason: string | null;
+    createdAt: string;
+    requestedByName: string;
+    position: { symbolName: string; side: "BUY" | "SELL"; volume: string; accountNumber: string; accountFullName: string };
+  };
+  const [pendingActions, setPendingActions] = useState<PendingAction[]>([]);
+  const [pendingActionErrors, setPendingActionErrors] = useState<Record<string, string>>({});
+  const [reviewingId, setReviewingId] = useState<string | null>(null);
+
+  function reloadPendingActions() {
+    return fetch("/api/manage/position-action-requests")
+      .then((r) => (r.ok ? r.json() : []))
+      .then(setPendingActions);
+  }
+  useEffect(() => {
+    reloadPendingActions().catch(() => {});
+  }, []);
+
+  const ACTION_TYPE_LABELS: Record<PendingAction["actionType"], string> = {
+    REVERSE_IN_PLACE: "Reverse (in-place flip)",
+    REVERSE_CLOSE_REOPEN: "Reverse (close & reopen)",
+    VOID: "Void",
+    DELETE: "Delete",
+  };
+
+  async function reviewPendingAction(id: string, decision: "approve" | "reject") {
+    setReviewingId(id);
+    setPendingActionErrors((prev) => ({ ...prev, [id]: "" }));
+    const response = await fetch(`/api/manage/position-action-requests/${id}/${decision}`, { method: "POST" });
+    setReviewingId(null);
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      setPendingActionErrors((prev) => ({ ...prev, [id]: body.error ?? `${decision} failed` }));
+      return;
+    }
+    reloadPendingActions().catch(() => {});
     reload().catch(() => {});
   }
 
@@ -472,6 +556,43 @@ export default function PositionsManager() {
               : "Price feed connecting…"}
         </div>
       </div>
+
+      {pendingSubmittedToast ? (
+        <div className="rounded-lg border border-[var(--accent)]/30 bg-[var(--accent-bg)] px-3 py-2 text-sm text-[var(--accent)]">
+          {pendingSubmittedToast} -- a different admin needs to review it below before it takes effect.
+        </div>
+      ) : null}
+
+      {pendingActions.length > 0 ? (
+        <Card title={`Pending approvals (${pendingActions.length})`}>
+          <div className="flex flex-col gap-2">
+            {pendingActions.map((req) => (
+              <div key={req.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[var(--border)] p-2.5">
+                <div className="text-sm">
+                  <Badge tone="warning">{ACTION_TYPE_LABELS[req.actionType]}</Badge>{" "}
+                  <span className="text-[var(--text-1)]">
+                    {req.position.accountNumber} — {req.position.symbolName} {req.position.side} {req.position.volume}
+                  </span>
+                  <span className="block text-xs text-[var(--text-3)] mt-0.5">
+                    Requested by {req.requestedByName} · {new Date(req.createdAt).toLocaleString()}
+                    {req.reason ? ` · "${req.reason}"` : ""}
+                  </span>
+                  {pendingActionErrors[req.id] ? <span className="block text-xs text-[var(--sell)] mt-0.5">{pendingActionErrors[req.id]}</span> : null}
+                </div>
+                <div className="flex gap-1.5">
+                  <Button size="sm" variant="ghost" disabled={reviewingId === req.id} onClick={() => reviewPendingAction(req.id, "reject")}>
+                    Reject
+                  </Button>
+                  <Button size="sm" variant="success" disabled={reviewingId === req.id} onClick={() => reviewPendingAction(req.id, "approve")}>
+                    {reviewingId === req.id ? "Working..." : "Approve"}
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      ) : null}
+
       <Card title="Filters">
         <div className="flex flex-wrap items-end gap-3">
           <div className="flex flex-col gap-1.5">
@@ -704,19 +825,15 @@ export default function PositionsManager() {
                       { label: "Close position", onClick: () => setCloseConfirm(p) },
                       {
                         label: "Reverse",
-                        onClick: () => setReverseConfirm(p),
-                        title: "Close and immediately open the opposite side at the current price",
+                        onClick: () => { setReverseMode("IN_PLACE"); setReverseConfirm(p); },
+                        title: "Flip the position's side in place, or close & reopen opposite at market",
                       },
-                      ...(p.isManualOrigin
-                        ? [
-                            {
-                              label: "Void",
-                              onClick: () => setVoidConfirm(p),
-                              tone: "danger" as const,
-                              title: "Erase this manually-opened position -- no Transaction, not a real trade",
-                            },
-                          ]
-                        : []),
+                      {
+                        label: "Void",
+                        onClick: () => setVoidConfirm(p),
+                        tone: "danger" as const,
+                        title: "Cancel this position as if it never produced a P/L -- balance restored, hidden from the trader's statement",
+                      },
                     ]}
                   />
                 </TableCell>
@@ -877,11 +994,36 @@ export default function PositionsManager() {
       <Modal open={reverseConfirm !== null} onClose={() => setReverseConfirm(null)} title="Confirm reverse position">
         {reverseConfirm ? (
           <div className="flex flex-col gap-3">
-            <p className="text-sm text-[var(--text-2)]">
-              Closes {reverseConfirm.accountNumber}&apos;s {reverseConfirm.symbolName} {reverseConfirm.side} at the current live price (realizing
-              its P&amp;L), then immediately opens a new {reverseConfirm.side === "BUY" ? "SELL" : "BUY"} position for the same volume at that
-              price.
-            </p>
+            <div className="flex flex-col gap-2">
+              <label className="flex items-start gap-2 cursor-pointer rounded-lg border border-[var(--border)] p-2.5 has-[:checked]:border-[var(--accent)] has-[:checked]:bg-[var(--accent-bg)]">
+                <input type="radio" name="reverseMode" className="mt-0.5" checked={reverseMode === "IN_PLACE"} onChange={() => setReverseMode("IN_PLACE")} />
+                <span className="text-sm">
+                  <span className="font-medium text-[var(--text-1)]">Flip in place</span>
+                  <span className="block text-xs text-[var(--text-2)] mt-0.5">
+                    Same position, same entry price ({reverseConfirm.openPrice}) -- side flips {reverseConfirm.side} →{" "}
+                    {reverseConfirm.side === "BUY" ? "SELL" : "BUY"}, floating P/L sign flips with it. No close, no new position, no realized P/L
+                    event, no Transaction. Margin recalculates live for the new side.
+                  </span>
+                </span>
+              </label>
+              <label className="flex items-start gap-2 cursor-pointer rounded-lg border border-[var(--border)] p-2.5 has-[:checked]:border-[var(--accent)] has-[:checked]:bg-[var(--accent-bg)]">
+                <input type="radio" name="reverseMode" className="mt-0.5" checked={reverseMode === "CLOSE_REOPEN"} onChange={() => setReverseMode("CLOSE_REOPEN")} />
+                <span className="text-sm">
+                  <span className="font-medium text-[var(--text-1)]">Close &amp; reopen opposite @ market</span>
+                  <span className="block text-xs text-[var(--text-2)] mt-0.5">
+                    Closes {reverseConfirm.symbolName} {reverseConfirm.side} at the current live price (realizing its P&amp;L, booked to the
+                    ledger), then immediately opens a new {reverseConfirm.side === "BUY" ? "SELL" : "BUY"} position for the same volume at that
+                    price.
+                  </span>
+                </span>
+              </label>
+            </div>
+            {reverseConfirm.mirrored ? (
+              <div className="rounded-lg border border-[var(--warn)]/30 bg-[var(--warn-bg)] px-2.5 py-2 text-xs text-[var(--warn)]">
+                {reverseConfirm.accountNumber} is in a mirrored group -- this account&apos;s mirror target won&apos;t follow this correction
+                automatically.
+              </div>
+            ) : null}
             {reverseVoidErrors[reverseConfirm.id] ? <div className="text-xs text-[var(--sell)]">{reverseVoidErrors[reverseConfirm.id]}</div> : null}
             <ModalActions>
               <Button variant="ghost" onClick={() => setReverseConfirm(null)}>
@@ -899,8 +1041,10 @@ export default function PositionsManager() {
         {voidConfirm ? (
           <div className="flex flex-col gap-3">
             <p className="text-sm text-[var(--text-2)]">
-              Erases {voidConfirm.accountNumber}&apos;s manually-opened {voidConfirm.symbolName} {voidConfirm.side} position -- it never moved any
-              balance, so nothing is booked. Use this only to correct a mistaken manual entry, not to close a real trade.
+              Cancels {voidConfirm.accountNumber}&apos;s {voidConfirm.symbolName} {voidConfirm.side} position as if it never produced a P/L --
+              balance is restored to its pre-open state (any commission/swap already booked against it is reversed with a ledger entry), the
+              position is marked VOIDED. Visible to admins on the Deals page; hidden from the trader&apos;s own statement -- Delete (full
+              removal) is available there too, once it&apos;s no longer open.
             </p>
             {reverseVoidErrors[voidConfirm.id] ? <div className="text-xs text-[var(--sell)]">{reverseVoidErrors[voidConfirm.id]}</div> : null}
             <ModalActions>
