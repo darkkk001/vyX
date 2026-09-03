@@ -173,7 +173,7 @@ pub async fn place_market_order(
         Some(tick) => Some(tick),
         None => market_data::db::get_live_price(pool, &req.symbol)
             .await?
-            .map(|(bid, ask)| Tick { symbol: req.symbol.clone(), bid, ask, t0: None, clock_offset_ms: None, rtt_ms: None, tick_ms: None }),
+            .map(|(bid, ask)| Tick { symbol: req.symbol.clone(), bid, ask, t0: None, clock_offset_ms: None, rtt_ms: None, tick_ms: None, broker_offset_sec: None }),
     };
     let current_tick = match current_tick {
         Some(tick) => tick,
@@ -383,7 +383,7 @@ pub async fn place_pending_order(
         Some(tick) => Some(tick),
         None => market_data::db::get_live_price(pool, &req.symbol)
             .await?
-            .map(|(bid, ask)| Tick { symbol: req.symbol.clone(), bid, ask, t0: None, clock_offset_ms: None, rtt_ms: None, tick_ms: None }),
+            .map(|(bid, ask)| Tick { symbol: req.symbol.clone(), bid, ask, t0: None, clock_offset_ms: None, rtt_ms: None, tick_ms: None, broker_offset_sec: None }),
     };
     let current_tick = match current_tick {
         Some(tick) => tick,
@@ -724,7 +724,7 @@ mod tests {
         use rust_decimal_macros::dec;
 
         fn tick() -> Tick {
-            Tick { symbol: "EURUSD".into(), bid: dec!(1.10000), ask: dec!(1.10020), t0: None, clock_offset_ms: None, rtt_ms: None, tick_ms: None }
+            Tick { symbol: "EURUSD".into(), bid: dec!(1.10000), ask: dec!(1.10020), t0: None, clock_offset_ms: None, rtt_ms: None, tick_ms: None, broker_offset_sec: None }
         }
 
         #[test]

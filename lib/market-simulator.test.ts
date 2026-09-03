@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createInitialMarket, tickMarket, bucketStartMs, resolveDayOpenFromD1, feedStatusFor, type Timeframe } from "@/lib/market-simulator";
+import { createInitialMarket, tickMarket, bucketStartMs, correctedBucketStart, resolveDayOpenFromD1, feedStatusFor, type Timeframe } from "@/lib/market-simulator";
 
 // hotfix/terminal-live-bugs -- production showed XAUUSD's daily %chg as
 // +88.85% (comparing a live ~4442 price against dayOpen, which was never
@@ -86,6 +86,69 @@ describe("resolveDayOpenFromD1 (bug #1 follow-up: mid-day mount still showed the
   it("returns null rather than NaN on a malformed open value", () => {
     const rows = [{ bucketStart: new Date(todayBucket).toISOString(), open: "not-a-number" }];
     expect(resolveDayOpenFromD1(rows, now)).toBeNull();
+  });
+
+  // engine/market-data now aligns D1 to the broker's own day boundary
+  // (e.g. 21:00 UTC for a UTC+3 broker), not naive UTC midnight -- a real
+  // D1 row's bucketStart is no longer guaranteed to equal
+  // bucketStartMs("D1", now)'s own naive value. These pin the window-based
+  // rewrite against exactly that shape.
+  it("resolves today's open from a broker-day-boundary-aligned row (21:00 UTC, not midnight)", () => {
+    const brokerNow = Date.UTC(2026, 7, 13, 8, 0, 0); // 08:00 UTC
+    const brokerBucket = Date.UTC(2026, 7, 12, 21, 0, 0); // Pepperstone-shaped: UTC+3 broker midnight
+    const rows = [
+      { bucketStart: new Date(brokerBucket - 86_400_000).toISOString(), open: "4400.00" }, // yesterday's broker day
+      { bucketStart: new Date(brokerBucket).toISOString(), open: "4430.10" },
+    ];
+    expect(resolveDayOpenFromD1(rows, brokerNow)).toEqual({ open: 4430.10, bucketStart: brokerBucket });
+  });
+
+  it("stops resolving a broker-aligned row once a full day has elapsed past it", () => {
+    const brokerBucket = Date.UTC(2026, 7, 12, 21, 0, 0);
+    const rows = [{ bucketStart: new Date(brokerBucket).toISOString(), open: "4430.10" }];
+    const oneDayAndOneMinuteLater = brokerBucket + 86_400_000 + 60_000;
+    expect(resolveDayOpenFromD1(rows, oneDayAndOneMinuteLater)).toBeNull();
+  });
+});
+
+describe("correctedBucketStart -- D1/W1 stay phase-locked to a broker-aligned last bucket", () => {
+  it("D1: before a full day has elapsed since lastStart, returns lastStart unchanged regardless of naive-UTC boundaries in between", () => {
+    const lastStart = Date.UTC(2026, 7, 12, 21, 0, 0); // broker-day-aligned, not UTC midnight
+    const now = Date.UTC(2026, 7, 13, 8, 0, 0); // crossed a UTC midnight, but not yet 21:00 UTC
+    expect(correctedBucketStart("D1", lastStart, now)).toBe(lastStart);
+  });
+
+  it("D1: exactly one period later rolls forward by exactly one period, preserving phase", () => {
+    const lastStart = Date.UTC(2026, 7, 12, 21, 0, 0);
+    const now = lastStart + 86_400_000;
+    expect(correctedBucketStart("D1", lastStart, now)).toBe(lastStart + 86_400_000);
+  });
+
+  it("D1: catches up correctly across several elapsed periods (e.g. a backgrounded tab)", () => {
+    const lastStart = Date.UTC(2026, 7, 12, 21, 0, 0);
+    const now = lastStart + 86_400_000 * 3 + 60_000; // just past the 3rd rollover
+    expect(correctedBucketStart("D1", lastStart, now)).toBe(lastStart + 86_400_000 * 3);
+  });
+
+  it("W1: same phase-preservation, at a 7-day period", () => {
+    const lastStart = Date.UTC(2026, 7, 10, 21, 0, 0); // a broker-aligned Monday
+    const now = lastStart + 3 * 86_400_000; // still within the same broker week
+    expect(correctedBucketStart("W1", lastStart, now)).toBe(lastStart);
+
+    const nextWeek = lastStart + 7 * 86_400_000 + 60_000;
+    expect(correctedBucketStart("W1", lastStart, nextWeek)).toBe(lastStart + 7 * 86_400_000);
+  });
+
+  it("falls back to plain bucketStartMs when there is no known last bucket yet (the 0 sentinel)", () => {
+    const now = Date.UTC(2026, 7, 13, 8, 0, 0);
+    expect(correctedBucketStart("D1", 0, now)).toBe(bucketStartMs("D1", now));
+  });
+
+  it("is a pass-through to bucketStartMs for every non-calendar timeframe -- no broker-boundary concept applies", () => {
+    const now = Date.UTC(2026, 7, 13, 10, 37, 45);
+    for (const tf of ["M1", "M5", "M30", "H1", "H4"] as const) {
+      expect(correctedBucketStart(tf, 12345, now)).toBe(bucketStartMs(tf, now));
+    }
   });
 });
 

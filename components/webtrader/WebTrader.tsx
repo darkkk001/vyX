@@ -10,6 +10,7 @@ import {
   tickMarket,
   feedStatusFor,
   bucketStartMs,
+  correctedBucketStart,
   resolveDayOpenFromD1,
   fmt,
   money,
@@ -1537,10 +1538,16 @@ export default function WebTrader({
       // liveTicksRef since it was written. Only reconciles when the
       // server's last row IS the currently-open bucket for `tf` (a fully
       // closed historical bucket has nothing live to apply) and a real
-      // tick actually exists for this symbol right now.
+      // tick actually exists for this symbol right now. Uses
+      // correctedBucketStart, not a plain bucketStartMs(tf, nowForBucket)
+      // comparison, for D1/W1 specifically -- lastBucket already IS the
+      // server's real (possibly broker-day-boundary-aligned, not UTC
+      // midnight) bucket, so this checks "has a full period elapsed since
+      // it" rather than assuming a naive-UTC boundary the server may no
+      // longer be using (see correctedBucketStart's own doc comment).
       const live = liveTicksRef.current[symbol];
       const nowForBucket = serverNow();
-      if (live && lastBucket === bucketStartMs(tf, nowForBucket)) {
+      if (live && lastBucket === correctedBucketStart(tf, lastBucket, nowForBucket)) {
         const last = seededCandles[seededCandles.length - 1];
         seededCandles[seededCandles.length - 1] = {
           o: last.o,

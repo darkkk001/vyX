@@ -62,6 +62,7 @@ mod tests {
             clock_offset_ms: None,
             rtt_ms: None,
             tick_ms: None,
+            broker_offset_sec: None,
         }
     }
 

@@ -1016,6 +1016,10 @@ async fn main() {
         .and_then(|v| v.parse().ok())
         .unwrap_or(1_000);
     let gap_fill_tracker = Arc::new(GapFillTracker::new());
+    // See market_data::broker_offset::BrokerOffsetTracker's own doc
+    // comment -- one shared value, not per-symbol, since every symbol
+    // this crate ingests comes from the same MT5 terminal today.
+    let broker_offset_tracker = Arc::new(market_data::broker_offset::BrokerOffsetTracker::new());
     market_data::ingest::spawn_periodic_flush(
         pool.clone(),
         tick_cache.clone(),
@@ -1023,6 +1027,7 @@ async fn main() {
         std::time::Duration::from_millis(candle_flush_interval_ms),
         feed_stats_registry.clone(),
         gap_fill_tracker.clone(),
+        broker_offset_tracker.clone(),
     );
 
     // Nightly Candle retention -- Contabo DB hygiene audit (M1 was 68% of

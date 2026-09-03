@@ -237,6 +237,13 @@ export function spreadFor(def: SymbolDef): number {
 // of a fixed millisecond divisor. Mirrors lib/price-feed.ts's server-side
 // bucketing exactly, so client-simulated and server-fed candles for the
 // same timeframe always land on the same bucket boundaries.
+// Plain numeric constants, not FIXED_MS.D1/a literal `7 * 86_400_000`
+// inline, so correctedBucketStart/resolveDayOpenFromD1 don't fight
+// FIXED_MS's Partial<> indexing (TS can't know D1 is always present) for
+// two values that are never actually optional.
+const D1_MS = 86_400_000;
+const W1_MS = 7 * D1_MS;
+
 const FIXED_MS: Partial<Record<Timeframe, number>> = {
   M1: 60_000,
   M5: 300_000,
@@ -262,6 +269,29 @@ export function tfMillis(tf: Timeframe): number {
 // case the live tick that's already arrived since that row was written
 // should immediately overwrite it) or a fully-closed historical one
 // (nothing to reconcile).
+// D1 and W1 have an exact, broker-offset-independent PERIOD (24h / 7d)
+// even though their PHASE (where the boundary actually falls) depends on
+// the broker's own day boundary once the server buckets them that way
+// (see engine/market-data's bucket_start) rather than naive UTC midnight.
+// Rather than teach the client the broker's offset directly, this derives
+// the CURRENT bucket from the last REAL bucket start already known
+// (server-seeded via resolveDayOpenFromD1's own bucketStart, or a
+// previous tick's) by stepping forward whole periods -- correct for any
+// number of elapsed periods (e.g. a backgrounded tab), and exactly as
+// accurate as knowing the phase directly, since the period itself never
+// varies. `lastStart === 0` (createInitialMarket's "no real bucket yet"
+// sentinel) and every other timeframe fall back to the plain naive
+// boundary -- there is no phase to preserve before a first real one
+// arrives, and M1/M5/M30/H1/H4 have no day-boundary concept to begin
+// with (MN1/Y1 keep their pre-existing, already-imprecise-by-design
+// naive handling too -- see tfMillis's own "approximate" caveat).
+export function correctedBucketStart(tf: Timeframe, lastStart: number, now: number): number {
+  if (lastStart === 0 || (tf !== "D1" && tf !== "W1")) return bucketStartMs(tf, now);
+  const period = tf === "D1" ? D1_MS : W1_MS;
+  const periodsElapsed = Math.floor((now - lastStart) / period);
+  return lastStart + periodsElapsed * period;
+}
+
 export function bucketStartMs(tf: Timeframe, now: number): number {
   const fixed = FIXED_MS[tf];
   if (fixed) return Math.floor(now / fixed) * fixed;
@@ -339,7 +369,7 @@ function applyBidAsk(m: MarketState, bid: number, ask: number, now: number) {
   m.low = Math.min(m.low, m.bid);
 
   TIMEFRAMES.forEach((tf) => {
-    const start = bucketStartMs(tf, now);
+    const start = correctedBucketStart(tf, m.lastCandleStart[tf], now);
     const candles = m.candles[tf];
     if (m.lastCandleStart[tf] !== start) {
       // hotfix/terminal-live-bugs round 5 -- "client appends live bars but
@@ -374,8 +404,9 @@ function applyBidAsk(m: MarketState, bid: number, ask: number, now: number) {
       // months later against a real live price of ~4442 the header's
       // %chg read +88.85% -- comparing today's price against a number
       // that was never "today's open" at all. A new D1 bucket starting
-      // IS today's open, by definition, for every broker/session in this
-      // app's UTC-midnight bucketing (bucketStartMs), so resync here.
+      // IS today's open, by definition, regardless of which day-boundary
+      // phase this session's `start` (correctedBucketStart) landed on, so
+      // resync here.
       // Still only fires at the *next* rollover though -- a page loaded
       // mid-day sees this constant until UTC midnight, which is why
       // WebTrader.tsx separately seeds dayOpen from the real D1 history
@@ -469,15 +500,30 @@ export function tickMarket(
 // own bid. That's exactly how production kept showing "+0.00%": this
 // function's correctly-resolved dayOpen was overwritten by the first tick
 // to arrive after it, milliseconds later.
+// engine/market-data's bucket_start now aligns D1 to the broker's own day
+// boundary (see that function's own doc comment), not naive UTC midnight
+// -- so a real D1 row's bucketStart is no longer guaranteed to equal
+// bucketStartMs("D1", now)'s exact value, and an exact-match lookup would
+// silently stop finding "today" the moment a broker's offset is nonzero.
+// This instead finds whichever row's own 24h window actually CONTAINS
+// `now` (`bucketStart <= now < bucketStart + 1 day`) -- correct
+// regardless of the broker's day-boundary phase, and correct even for a
+// pre-fix naive-UTC row (offset 0 is just another phase). Picks the
+// latest such row if more than one somehow qualifies, and doesn't assume
+// `rows` is sorted.
 export function resolveDayOpenFromD1(
   rows: { bucketStart: string | number | Date; open: string | number }[],
   now: number
 ): { open: number; bucketStart: number } | null {
-  const todayStart = bucketStartMs("D1", now);
-  const todayRow = rows.find((r) => new Date(r.bucketStart).getTime() === todayStart);
-  if (!todayRow) return null;
-  const open = typeof todayRow.open === "number" ? todayRow.open : parseFloat(todayRow.open);
-  return Number.isFinite(open) ? { open, bucketStart: todayStart } : null;
+  let best: { bucketStart: number; open: number } | null = null;
+  for (const r of rows) {
+    const bs = new Date(r.bucketStart).getTime();
+    if (bs > now || now - bs >= D1_MS) continue;
+    if (best && bs <= best.bucketStart) continue;
+    const open = typeof r.open === "number" ? r.open : parseFloat(r.open);
+    if (Number.isFinite(open)) best = { bucketStart: bs, open };
+  }
+  return best;
 }
 
 export function fmt(value: number, digits: number): string {

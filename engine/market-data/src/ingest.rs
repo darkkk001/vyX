@@ -7,6 +7,7 @@
 
 use crate::{
     alerts::{AlertCache, TriggeredAlert},
+    broker_offset::BrokerOffsetTracker,
     cache::TickCache,
     candle_updates_for_tick, db,
     gap_fill::GapFillTracker,
@@ -175,6 +176,7 @@ pub fn spawn_periodic_flush(
     candle_interval: StdDuration,
     stats: Arc<FeedStats>,
     gap_fill: Arc<GapFillTracker>,
+    broker_offset: Arc<BrokerOffsetTracker>,
 ) {
     {
         let pool = pool.clone();
@@ -197,6 +199,7 @@ pub fn spawn_periodic_flush(
         let pool = pool.clone();
         let stats = stats.clone();
         let gap_fill = gap_fill.clone();
+        let broker_offset = broker_offset.clone();
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(candle_interval);
             loop {
@@ -205,12 +208,12 @@ pub fn spawn_periodic_flush(
                 if dirty.is_empty() {
                     continue;
                 }
-                flush_candles(&pool, &cache, &dirty, &stats, &gap_fill).await;
+                flush_candles(&pool, &cache, &dirty, &stats, &gap_fill, &broker_offset).await;
             }
         });
     }
 
-    spawn_gap_sweep(pool, stats, gap_fill);
+    spawn_gap_sweep(pool, stats, gap_fill, broker_offset);
 }
 
 // hotfix/terminal-live-bugs round 5 -- "flat-fill written promptly, not
@@ -227,12 +230,12 @@ pub fn spawn_periodic_flush(
 // which is the exception, not the steady state).
 const GAP_SWEEP_INTERVAL: StdDuration = StdDuration::from_secs(10);
 
-fn spawn_gap_sweep(pool: PgPool, stats: Arc<FeedStats>, gap_fill: Arc<GapFillTracker>) {
+fn spawn_gap_sweep(pool: PgPool, stats: Arc<FeedStats>, gap_fill: Arc<GapFillTracker>, broker_offset: Arc<BrokerOffsetTracker>) {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(GAP_SWEEP_INTERVAL);
         loop {
             ticker.tick().await;
-            let fills = gap_fill.sweep_stale_buckets(Utc::now());
+            let fills = gap_fill.sweep_stale_buckets(Utc::now(), broker_offset.current());
             if fills.is_empty() {
                 continue;
             }
@@ -337,7 +340,7 @@ fn re_mark_live_price_dirty(cache: &TickCache, ticks: &[Tick]) {
 
 // Same claim/retry-on-failure shape as flush_live_prices, via
 // cache::TickCache::mark_candle_dirty.
-async fn flush_candles(pool: &PgPool, cache: &TickCache, ticks: &[Tick], stats: &Arc<FeedStats>, gap_fill: &GapFillTracker) {
+async fn flush_candles(pool: &PgPool, cache: &TickCache, ticks: &[Tick], stats: &Arc<FeedStats>, gap_fill: &GapFillTracker, broker_offset: &BrokerOffsetTracker) {
     let now = Utc::now();
     let started = Instant::now();
     let result = tokio::time::timeout(DB_FLUSH_TIMEOUT, async {
@@ -351,7 +354,15 @@ async fn flush_candles(pool: &PgPool, cache: &TickCache, ticks: &[Tick], stats: 
         // bucket, so there's no same-batch ordering to preserve).
         let mut all_updates = Vec::new();
         for tick in ticks {
-            for update in candle_updates_for_tick(tick, now) {
+            // Records this tick's own broker_offset_sec if it has one
+            // (see BrokerOffsetTracker's own doc comment) and returns the
+            // value to bucket THIS tick's own candles against -- a batch
+            // can contain ticks from before and after a fresh offset
+            // arrives, and each one should use whatever was actually
+            // known at the moment it's processed, not a single snapshot
+            // read before the loop started.
+            let offset_sec = broker_offset.observe(tick);
+            for update in candle_updates_for_tick(tick, now, offset_sec) {
                 // fix/realtime-sync §4 -- flat-fills every bucket skipped
                 // since the last one actually written for this
                 // symbol+timeframe (a quiet period, or the engine having
@@ -425,7 +436,7 @@ mod tests {
     use rust_decimal_macros::dec;
 
     fn tick_with_ms(tick_ms: Option<i64>) -> Tick {
-        Tick { symbol: "XAUUSD".into(), bid: dec!(2400.00), ask: dec!(2400.20), t0: None, clock_offset_ms: None, rtt_ms: None, tick_ms }
+        Tick { symbol: "XAUUSD".into(), bid: dec!(2400.00), ask: dec!(2400.20), t0: None, clock_offset_ms: None, rtt_ms: None, tick_ms, broker_offset_sec: None }
     }
 
     // tick_ms round-trips through i64 milliseconds, which truncates

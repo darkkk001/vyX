@@ -12,6 +12,14 @@ export type ChartLine = {
   price: number;
   color: string;
   dashed?: boolean;
+  // Line-hierarchy pass -- klinecharts' own LineType enum has no real
+  // "dotted" value (only Dashed/Solid -- checked against
+  // node_modules/klinecharts/dist/index.d.ts, the same way the chart-
+  // polish round already had to for "trendLine"/"rectangle" silently not
+  // existing), so a tight dash ([1, 3], vs SL/TP's own wider default) is
+  // the deliberate dotted-look substitute for an alert line specifically
+  // -- see computeAlertLines. Ignored when `dashed` is false/unset.
+  dashedValue?: number[];
 };
 
 // chart interaction pack -- restyled position line: a thin solid line in
@@ -73,6 +81,20 @@ export type DrawingOverlayName =
   | "fibonacciLine"
   | "rect"
   | "simpleAnnotation";
+
+// Line-hierarchy pass -- every SL/TP color in this file/lib/chart-lines.ts
+// is a plain 6-digit hex (#EA3943/#16C784), so this only needs to handle
+// that one shape, not a general CSS-color parser. Falls back to the input
+// unchanged for anything else (e.g. a future rgba() literal passed
+// straight through) rather than producing a broken color string.
+function withOpacity(hex: string, alpha: number): string {
+  const match = /^#([0-9a-fA-F]{6})$/.exec(hex);
+  if (!match) return hex;
+  const r = parseInt(match[1].slice(0, 2), 16);
+  const g = parseInt(match[1].slice(2, 4), 16);
+  const b = parseInt(match[1].slice(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
 
 export type KLineChartHandle = {
   addOverlay: (name: DrawingOverlayName) => void;
@@ -190,7 +212,12 @@ registerOverlay({
       {
         type: "line",
         attrs: { coordinates: [{ x: 0, y }, { x: bounding.width, y }] },
-        styles: { style: "dashed", dashedValue: [4, 4], size: 1, color: lineColor },
+        // Line-hierarchy pass -- SL/TP at ~60% opacity so it reads as
+        // "reference," not competing with the solid last-price line or
+        // the fully-opaque position-entry line. Only the LINE itself is
+        // translucent; the price/label tag below stays fully opaque --
+        // it's still the thing a trader drags and needs to read exactly.
+        styles: { style: "dashed", dashedValue: [4, 4], size: 1, color: withOpacity(lineColor, 0.6) },
       },
       {
         key: "label",
@@ -493,7 +520,13 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
               upColor: "#16C784",
               downColor: "#EA3943",
               noChangeColor: "#5A6472",
-              line: { show: true, style: "dashed", size: 1, dashedValue: [4, 4] },
+              // Line-hierarchy pass -- was dashed at the same weight as
+              // SL/TP, reading as just another reference line instead of
+              // THE current price. Solid and a touch heavier (1.5 vs
+              // everything else's 1) makes it visually win over position/
+              // SL-TP/alert lines, which is the point of a "last price"
+              // line at all.
+              line: { show: true, style: "solid", size: 1.5 },
               text: { show: true, color: "#0B0F14", size: 11, family: MONO_FONT, weight: 600, paddingLeft: 4, paddingRight: 4, paddingTop: 2, paddingBottom: 2, borderRadius: 2 },
             },
             high: { color: AXIS_TEXT_COLOR, textFamily: MONO_FONT, textSize: 11 },
@@ -796,7 +829,14 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
           id,
           lock: true,
           points: [{ value: l.price }],
-          styles: { line: { color: l.color, style: l.dashed ? "dashed" : "solid", size: 1.25 } },
+          styles: {
+            line: {
+              color: l.color,
+              style: l.dashed ? "dashed" : "solid",
+              size: 1.25,
+              ...(l.dashed && l.dashedValue ? { dashedValue: l.dashedValue } : {}),
+            },
+          },
         });
         if (created) ids.push(id);
       });

@@ -86,6 +86,24 @@ pub struct Tick {
     // field, or a test constructing a bare Tick, doesn't set it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tick_ms: Option<i64>,
+    // EA's BrokerOffsetSec (TimeTradeServer() - TimeGMT(), seconds) --
+    // the broker-server-to-UTC offset, recomputed by the EA on every
+    // clock sync so a DST shift is picked up without an EA restart (see
+    // BrokerOffsetSec's own comment in the EA). Already used to convert
+    // CopyRates bar times and tick_ms above to real UTC on the EA side;
+    // sent here too, on every tick, so the live aggregation path
+    // (market_data::bucket_start) can align D1/W1/Mn1/Y1 candle buckets
+    // to the broker's own day boundary instead of naive UTC midnight --
+    // see bucket_start's own doc comment for why that was wrong (it
+    // silently produced a second, competing D1 bar for every real
+    // trading day once the broker's server time doesn't line up with
+    // UTC midnight, which for a UTC+3 broker like Pepperstone is always).
+    // Optional for the same reason tick_ms is -- an EA build that
+    // predates this field doesn't set it, and the tracker that consumes
+    // this just keeps using the last value it did see (or 0, pure UTC,
+    // today's behavior, if none has ever arrived).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub broker_offset_sec: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
