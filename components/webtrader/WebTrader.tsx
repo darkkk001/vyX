@@ -8,7 +8,6 @@ import {
   buildSymbolDef,
   createInitialMarket,
   tickMarket,
-  feedStatusFor,
   bucketStartMs,
   resolveDayOpenFromD1,
   fmt,
@@ -16,7 +15,6 @@ import {
   type MarketState,
   type Candle,
   type Timeframe,
-  type FeedStatus,
   type SymbolDef,
   type SymbolCategory,
 } from "@/lib/market-simulator";
@@ -499,10 +497,27 @@ export default function WebTrader({
   // "waiting for the market to reach this price" -- they rendered
   // identically. This tick just drives the live elapsed-time display on
   // those rows; the badge/color distinction itself is a pure function of
-  // o.type/o.status, no new state needed for that part.
-  const [dealingPendingNowMs, setDealingPendingNowMs] = useState(() => Date.now());
+  // o.type/o.status, no new state needed for that part. Reused (not a
+  // second interval) by the feed-loss UX below for the status-bar pill's
+  // "Reconnecting… Xs" count and the order ticket's 10s-staleness gate --
+  // both need the exact same "a value that ticks once a second," nothing
+  // dealing-specific about the timer itself.
+  // Feed-loss UX verification: this must be serverNow(), not Date.now().
+  // Every value it's diffed against (m.lastTickAt / row.lastTickAt from
+  // the live-tick paths, o.createdAt from the server) is a server-clock
+  // timestamp -- see serverNow()'s own comment on why a trader's local
+  // clock can't be trusted for this. A raw Date.now() here would silently
+  // add the local machine's own clock skew to every "how stale is this"
+  // comparison. (Root cause of the reconnect-looked-stuck symptom seen
+  // while verifying this turned out to be something else entirely --
+  // this local dev box has no reachable WS gateway, so its only tick
+  // source is the 30s REST poll below, which can't keep pace with a 10s
+  // staleness threshold; production's WS ticks sub-second and doesn't
+  // have this gap. Keeping this serverNow() fix regardless -- it's still
+  // the correct clock to diff against.)
+  const [dealingPendingNowMs, setDealingPendingNowMs] = useState(() => serverNow());
   useEffect(() => {
-    const interval = setInterval(() => setDealingPendingNowMs(Date.now()), 1000);
+    const interval = setInterval(() => setDealingPendingNowMs(serverNow()), 1000);
     return () => clearInterval(interval);
   }, []);
   const [histFrom, setHistFrom] = useState("");
@@ -1277,11 +1292,6 @@ export default function WebTrader({
   }, [account]);
 
   // ---------- price tick ----------
-  // fix/realtime-sync §2 -- bounds feedStatusFor's "connecting" state to a
-  // real window instead of the mount timestamp drifting with re-renders;
-  // serverNow() (not Date.now()) so the 30s grace window and every
-  // lastTickAt comparison it's measured against share one clock.
-  const sessionStartedAtRef = useRef(serverNow());
   const liveTicksRef = useRef<Record<string, { bid: number; ask: number; at: number }>>({});
   // Coalesces both push-tick sources below (the browser WebSocket and the
   // desktop native relay) to at most 20 updates/s per symbol -- the
@@ -1338,6 +1348,13 @@ export default function WebTrader({
   // the low-latency case this used to be the only thing catching --
   // dealer fills, requotes, externally-created positions).
   const [connected, setConnected] = useState(true);
+  // Feed-loss UX -- MT5-style graceful degradation. When this connection
+  // drops, records the moment it did (used by the status-bar pill's
+  // "Reconnecting… Xs"); null while connected. Deliberately a separate
+  // piece of state from `connected` itself (not just `!connected`) so the
+  // elapsed count has a fixed start point to count from rather than
+  // recomputing "since when" on every render.
+  const [disconnectedSince, setDisconnectedSince] = useState<number | null>(null);
   // hotfix/terminal-live-bugs #3 -- this used to be timed off this same
   // REST poll (performance.now() around the tradeApi.prices() call below)
   // and labeled "Ping" in the status bar, which measured an HTTP
@@ -1395,10 +1412,12 @@ export default function WebTrader({
         }
         if (!wasConnected) { appendLog("Connection restored"); wasConnected = true; }
         setConnected(true);
+        setDisconnectedSince(null);
       } catch {
         // feed unreachable — keep simulating, nothing to surface to the trader
         if (wasConnected) { appendLog("Connection lost"); wasConnected = false; }
         setConnected(false);
+        setDisconnectedSince((since) => since ?? Date.now());
       }
       // Rides along with the price poll rather than its own interval --
       // this is the only thing that would otherwise surface a dealer's
@@ -1945,12 +1964,6 @@ export default function WebTrader({
 
   // ---------- order ticket ----------
   const m = market[activeSymbol];
-  // fix/realtime-sync §2 -- recomputed every render, which happens at
-  // least every 1500ms regardless of tick content (tickMarket's own
-  // setMarket call above always returns a new object), so a status
-  // transition (connecting -> live -> stale -> no-feed) is reflected
-  // within that same worst-case window even with zero new ticks.
-  const activeFeedStatus: FeedStatus = feedStatusFor(m.lastTickAt, serverNow(), sessionStartedAtRef.current);
   // Impression Pack #2 -- PDH/PDL. m.candles.D1's last entry is today's
   // still-forming bucket (see MarketState.lastCandleStart's own comment
   // on bucket rollover); the one before it is the last fully-closed day,
@@ -1998,8 +2011,19 @@ export default function WebTrader({
   // a proactive UI hint, not a second copy of the rule the server would
   // reject against anyway if this were ever wrong/stale.
   const activeSymbolMarketClosed = marketClosedBySymbol[activeSymbol] ?? false;
-  const buyDisabled = !m.live || activeSymbolMarketClosed || (!isNaN(ticketSl) && ticketSl >= m.bid) || (!isNaN(ticketTp) && ticketTp <= m.bid);
-  const sellDisabled = !m.live || activeSymbolMarketClosed || (!isNaN(ticketSl) && ticketSl <= m.bid) || (!isNaN(ticketTp) && ticketTp >= m.bid);
+  // Feed-loss UX -- was `!m.live` (flips at 30s, MarketState's own doc
+  // comment), which combined with the header/watchlist caption removal
+  // would have meant the ticket silently going dead with zero visual
+  // explanation for up to 30s. 10s, with a tooltip, per the explicit
+  // spec. Order VALIDATION itself is untouched (still server-side,
+  // still the various !mm.live checks scattered through the actual
+  // place/close handlers below) -- this only gates the button's own
+  // disabled/title, same "purely presentation" scope as the rest of
+  // this rework.
+  const priceStaleForTicket = dealingPendingNowMs - m.lastTickAt > 10_000;
+  const staleTicketTitle = priceStaleForTicket ? "Prices are stale — reconnecting" : undefined;
+  const buyDisabled = priceStaleForTicket || activeSymbolMarketClosed || (!isNaN(ticketSl) && ticketSl >= m.bid) || (!isNaN(ticketTp) && ticketTp <= m.bid);
+  const sellDisabled = priceStaleForTicket || activeSymbolMarketClosed || (!isNaN(ticketSl) && ticketSl <= m.bid) || (!isNaN(ticketTp) && ticketTp >= m.bid);
 
   async function placeOrder(side: "BUY" | "SELL") {
     if (!m.live) { pushToast("No live feed for this symbol"); return; }
@@ -3266,14 +3290,23 @@ export default function WebTrader({
                 if (!row) return null; // between an add/hide and the next server round trip -- skip rather than crash
                 const changePct = row.dayOpenKnown ? ((row.bid - row.dayOpen) / row.dayOpen) * 100 : null;
                 const flash = row.bid > row.prevBid ? "up" : row.bid < row.prevBid ? "down" : "";
-                // hotfix/terminal-live-bugs #4 -- this cell used to check
-                // row.live directly with zero grace period at all (unlike
-                // the chart header's own activeFeedStatus, which already
-                // waits out feedStatusFor's connecting window before ever
-                // saying so) -- on every fresh login, every single
-                // watchlist row flashed "No feed" for the ~1s before its
-                // first price arrived, regardless of the header's own fix.
-                const rowFeedStatus = feedStatusFor(row.lastTickAt, serverNow(), sessionStartedAtRef.current);
+                // Feed-loss UX -- `row.live` flips false as soon as the
+                // feed goes stale (30s, MarketState's own doc comment) or
+                // drops entirely, which used to blank the price out to a
+                // "Connecting…"/"No feed" caption immediately -- exactly
+                // the "floods with captions" this rework removes. A
+                // symbol that has EVER had one real tick keeps showing
+                // that price/change/spread/high/low frozen as-is, with no
+                // caption at all, regardless of current feed status --
+                // MT5-style graceful degradation. Only a symbol that has
+                // literally never ticked this session (hasEverTicked
+                // false) has no real number to freeze on, so that case
+                // alone still falls back to a plain "—" (never a
+                // sentence). Trading itself (the one-click buttons below)
+                // is a different question with its own explicit 10s-
+                // staleness rule -- see priceStaleForTrading.
+                const hasEverTicked = row.lastTickAt > 0;
+                const priceStaleForTrading = dealingPendingNowMs - row.lastTickAt > 10_000;
                 return (
                   <div
                     key={name}
@@ -3287,24 +3320,22 @@ export default function WebTrader({
                     <span className="wl-drag-handle">⋮⋮</span>
                     <span className="wl-cell wl-symbol">{name}</span>
                     <span className="wl-cell wl-price-cell">
-                      {row.live ? (
+                      {hasEverTicked ? (
                         <span className={`wl-price mono ${flash}`}>{fmt(row.bid, row.def.digits)}</span>
                       ) : (
-                        <span className="wl-price mono" style={{ color: "var(--text-3)", fontSize: 10.5 }}>
-                          {rowFeedStatus === "connecting" ? "Connecting…" : "No feed"}
-                        </span>
+                        <span className="wl-price mono" style={{ color: "var(--text-3)" }}>—</span>
                       )}
                       {oneClick ? (
                         <span className="wl-occ-buttons" style={{ display: "flex" }}>
-                          <button className="wl-occ-btn buy" disabled={!row.live} onClick={(e) => { e.stopPropagation(); oneClickTrade(name, "BUY"); }}>B</button>
-                          <button className="wl-occ-btn sell" disabled={!row.live} onClick={(e) => { e.stopPropagation(); oneClickTrade(name, "SELL"); }}>S</button>
+                          <button className="wl-occ-btn buy" disabled={priceStaleForTrading} title={priceStaleForTrading ? "Prices are stale — reconnecting" : undefined} onClick={(e) => { e.stopPropagation(); oneClickTrade(name, "BUY"); }}>B</button>
+                          <button className="wl-occ-btn sell" disabled={priceStaleForTrading} title={priceStaleForTrading ? "Prices are stale — reconnecting" : undefined} onClick={(e) => { e.stopPropagation(); oneClickTrade(name, "SELL"); }}>S</button>
                         </span>
                       ) : null}
                     </span>
-                    {columnPrefs.change ? <span className={`wl-cell mono ${changePct !== null && changePct >= 0 ? "wl-pos" : "wl-neg"}`}>{row.live && changePct !== null ? (changePct >= 0 ? "+" : "") + changePct.toFixed(2) + "%" : "—"}</span> : null}
-                    {columnPrefs.spread ? <span className="wl-cell mono" style={{ textAlign: "right" }}>{row.live ? spreadPoints(row.ask, row.bid, row.def.digits) : "—"}</span> : null}
-                    {columnPrefs.high ? <span className="wl-cell mono">{row.live ? fmt(row.high, row.def.digits) : "—"}</span> : null}
-                    {columnPrefs.low ? <span className="wl-cell mono">{row.live ? fmt(row.low, row.def.digits) : "—"}</span> : null}
+                    {columnPrefs.change ? <span className={`wl-cell mono ${changePct !== null && changePct >= 0 ? "wl-pos" : "wl-neg"}`}>{changePct !== null ? (changePct >= 0 ? "+" : "") + changePct.toFixed(2) + "%" : "—"}</span> : null}
+                    {columnPrefs.spread ? <span className="wl-cell mono" style={{ textAlign: "right" }}>{hasEverTicked ? spreadPoints(row.ask, row.bid, row.def.digits) : "—"}</span> : null}
+                    {columnPrefs.high ? <span className="wl-cell mono">{hasEverTicked ? fmt(row.high, row.def.digits) : "—"}</span> : null}
+                    {columnPrefs.low ? <span className="wl-cell mono">{hasEverTicked ? fmt(row.low, row.def.digits) : "—"}</span> : null}
                     <button className={`wl-alert-btn${alerts.some((a) => a.symbol === name) ? " active" : ""}`} onClick={(e) => { e.stopPropagation(); openPriceAlert(name); }} title="Set price alert">
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9" /></svg>
                     </button>
@@ -3462,12 +3493,17 @@ export default function WebTrader({
                     </div>
                   </div>
                 ) : null}
-                {activeFeedStatus === "live" || activeFeedStatus === "stale" ? (
+                {m.lastTickAt > 0 ? (
+                  // Feed-loss UX -- shows the frozen last-known price/
+                  // change/spread regardless of activeFeedStatus, with no
+                  // caption and no muted "stale" color: MT5-style graceful
+                  // degradation. Only the status-bar pill and the order
+                  // ticket's own 10s-staleness gate say anything is wrong
+                  // -- this header doesn't, on purpose. Only a symbol
+                  // that's never ticked at all this session (the else
+                  // branch) has nothing real to freeze on yet.
                   <>
-                    <div
-                      className="chart-price mono"
-                      style={{ color: activeFeedStatus === "stale" ? "var(--text-3)" : m.bid >= m.prevBid ? "var(--buy)" : "var(--sell)" }}
-                    >
+                    <div className="chart-price mono" style={{ color: m.bid >= m.prevBid ? "var(--buy)" : "var(--sell)" }}>
                       {fmt(m.bid, m.def.digits)}
                     </div>
                     {m.dayOpenKnown ? (
@@ -3481,16 +3517,9 @@ export default function WebTrader({
                       <div className="chart-change mono" style={{ color: "var(--text-3)" }}>—</div>
                     )}
                     <div className="chart-spread mono">Spread {fmt(m.ask - m.bid, m.def.digits)}</div>
-                    {activeFeedStatus === "stale" ? <div className="chart-spread mono">Stale</div> : null}
                   </>
                 ) : (
-                  // "connecting" (fix/realtime-sync §2's "no red text" rule
-                  // -- neutral wording/color, never styled as an error) vs
-                  // "no-feed" (the genuine dead-feed case, same wording as
-                  // before).
-                  <div className="chart-price mono" style={{ color: "var(--text-3)", fontSize: 12 }}>
-                    {activeFeedStatus === "connecting" ? "Connecting…" : "No live feed"}
-                  </div>
+                  <div className="chart-price mono" style={{ color: "var(--text-3)", fontSize: 12 }}>—</div>
                 )}
                 <button className="symbol-info-btn" onClick={() => setSymbolInfoOpen(true)} title="Symbol specifications">
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10" /><line x1="12" y1="16" x2="12" y2="12" /><line x1="12" y1="8" x2="12.01" y2="8" /></svg>
@@ -3566,18 +3595,11 @@ export default function WebTrader({
                     onContextMenuPrice={handleChartContextMenuPrice}
                     onPanOrZoom={() => setChartContextMenu(null)}
                   />
-                  {activeFeedStatus === "connecting" ? (
-                    // No dark overlay, no error-toned text -- fix/
-                    // realtime-sync §2's explicit "never show an error in
-                    // the first 5s" rule. The chart itself already renders
-                    // (seeded history + the placeholder base price), just
-                    // with a quiet corner note instead of a hard block.
-                    <div style={{ position: "absolute", top: 8, left: 8, fontSize: 11, color: "var(--text-3)", pointerEvents: "none" }}>Connecting…</div>
-                  ) : activeFeedStatus === "no-feed" ? (
-                    <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.35)", pointerEvents: "none" }}>
-                      <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text-2)" }}>No live feed for {activeSymbol}</span>
-                    </div>
-                  ) : null}
+                  {/* Feed-loss UX -- no corner note, no dark overlay, no
+                      caption at all regardless of activeFeedStatus. The
+                      chart keeps rendering its last real candles/price
+                      exactly as painted; the status-bar pill is the only
+                      place a dropped feed shows up now. */}
                   {chartContextMenu ? (
                     <div className="wl-context-menu show" ref={chartContextMenuRef} style={{ left: chartContextMenu.x, top: chartContextMenu.y }}>
                       <div className="wl-ctx-title">@ {fmt(chartContextMenu.price, m.def.digits)} — {chartContextMenu.price < m.bid ? "below" : "above"} market</div>
@@ -3618,7 +3640,6 @@ export default function WebTrader({
                       symbol={cell.symbol}
                       tf={cell.tf}
                       m={market[cell.symbol]}
-                      feedStatus={feedStatusFor(market[cell.symbol].lastTickAt, serverNow(), sessionStartedAtRef.current)}
                       positions={positions}
                       pendingOrders={pendingOrders}
                       focused={cell.symbol === activeSymbol && cell.tf === currentTf}
@@ -4071,13 +4092,13 @@ export default function WebTrader({
                   </div>
                 ) : null}
                 <div className="sentiment-prices">
-                  <button className={`sentiment-price-btn sell${pendingMarketSide === "SELL" ? " selected" : ""}`} disabled={sellDisabled} onClick={() => confirmAndPlace("SELL")}>
+                  <button className={`sentiment-price-btn sell${pendingMarketSide === "SELL" ? " selected" : ""}`} disabled={sellDisabled} title={staleTicketTitle} onClick={() => confirmAndPlace("SELL")}>
                     <span className="sp-label">Sell</span>
-                    <span className="sp-value mono">{m.live ? fmt(m.bid, m.def.digits) : "—"}</span>
+                    <span className="sp-value mono">{m.lastTickAt > 0 ? fmt(m.bid, m.def.digits) : "—"}</span>
                   </button>
-                  <button className={`sentiment-price-btn buy${pendingMarketSide === "BUY" ? " selected" : ""}`} disabled={buyDisabled} onClick={() => confirmAndPlace("BUY")}>
+                  <button className={`sentiment-price-btn buy${pendingMarketSide === "BUY" ? " selected" : ""}`} disabled={buyDisabled} title={staleTicketTitle} onClick={() => confirmAndPlace("BUY")}>
                     <span className="sp-label">Buy</span>
-                    <span className="sp-value mono">{m.live ? fmt(m.ask, m.def.digits) : "—"}</span>
+                    <span className="sp-value mono">{m.lastTickAt > 0 ? fmt(m.ask, m.def.digits) : "—"}</span>
                   </button>
                 </div>
               </div>
@@ -4181,8 +4202,22 @@ export default function WebTrader({
         <div className="statusbar">
           <div className="statusbar-left">
             <div className="status-item">
-              <span style={{ width: 6, height: 6, borderRadius: "50%", background: connected ? "var(--buy)" : "var(--sell)" }} />
-              <span className="status-value" style={{ fontSize: 11 }}>{connected ? "Connected" : "Disconnected"} · {serverName}</span>
+              {/* Feed-loss UX -- amber, not red: a dropped feed is a
+                  transient, expected thing this terminal recovers from on
+                  its own (engine restart, EA detach, a WS hiccup), not a
+                  fault the trader needs to react to. Red is reserved for
+                  genuine problems elsewhere (sell side, rejections,
+                  validation) -- this is the same reasoning the LIVE badge
+                  fix just above in this file's history applied the other
+                  direction (green, not red, for "this is real"). Elapsed
+                  time reuses dealingPendingNowMs's 1s tick rather than a
+                  new interval. */}
+              <span style={{ width: 6, height: 6, borderRadius: "50%", background: connected ? "var(--buy)" : "var(--warn)" }} />
+              <span className="status-value" style={{ fontSize: 11 }}>
+                {connected
+                  ? `Connected · ${serverName}`
+                  : `Reconnecting… ${Math.max(0, Math.floor((dealingPendingNowMs - (disconnectedSince ?? dealingPendingNowMs)) / 1000))}s`}
+              </span>
             </div>
             <div className="status-item"><span className="status-label">Ping</span><span className="status-value mono">{pingMs != null ? `${pingMs}ms` : "—"}</span></div>
             <div className="status-item"><span className="status-label">Balance</span><span className="status-value mono">{balanceHidden ? "••••••" : account ? fmt(parseFloat(account.balance), 2) : "—"}</span></div>
@@ -4205,7 +4240,7 @@ export default function WebTrader({
           <div className="modal-wrap">
             <button className="modal-close" onClick={() => setQuickOrder(null)}>✕</button>
             <div className="generic-modal-card">
-              <div className="quick-order-header"><span>{quickOrder.symbol}</span><span className="mono">{market[quickOrder.symbol].live ? fmt(market[quickOrder.symbol].bid, market[quickOrder.symbol].def.digits) : "No live feed"}</span></div>
+              <div className="quick-order-header"><span>{quickOrder.symbol}</span><span className="mono">{market[quickOrder.symbol].lastTickAt > 0 ? fmt(market[quickOrder.symbol].bid, market[quickOrder.symbol].def.digits) : "—"}</span></div>
               <div className="field-group">
                 <div className="field">
                   <span className="field-label">Order type</span>
@@ -4229,14 +4264,15 @@ export default function WebTrader({
               </div>
               {quickOrderType === "MARKET" ? (
                 <div className="oc-row" style={{ marginBottom: 0 }}>
-                  <button className="buysell-btn buy" disabled={!market[quickOrder.symbol].live} onClick={() => submitQuickOrder("BUY")}>Buy</button>
-                  <button className="buysell-btn sell" disabled={!market[quickOrder.symbol].live} onClick={() => submitQuickOrder("SELL")}>Sell</button>
+                  <button className="buysell-btn buy" disabled={dealingPendingNowMs - market[quickOrder.symbol].lastTickAt > 10_000} title={staleTicketTitle} onClick={() => submitQuickOrder("BUY")}>Buy</button>
+                  <button className="buysell-btn sell" disabled={dealingPendingNowMs - market[quickOrder.symbol].lastTickAt > 10_000} title={staleTicketTitle} onClick={() => submitQuickOrder("SELL")}>Sell</button>
                 </div>
               ) : (
                 <div className="oc-row" style={{ marginBottom: 0 }}>
                   <button
                     className={`buysell-btn ${quickOrderType.startsWith("buy") ? "buy" : "sell"}`}
-                    disabled={!market[quickOrder.symbol].live}
+                    disabled={dealingPendingNowMs - market[quickOrder.symbol].lastTickAt > 10_000}
+                    title={staleTicketTitle}
                     onClick={() => submitQuickPendingOrder(quickOrderType)}
                   >
                     Place {quickOrderType.replace("_", " ").replace(/\b\w/g, (c) => c.toUpperCase())}
