@@ -5,7 +5,6 @@ import { init, dispose, ActionType, registerOverlay } from "klinecharts";
 import type { Candle } from "@/lib/market-simulator";
 import type { ChartSettings } from "@/lib/chart-settings";
 import { computeSessionBands, isIntradayTimeframe, SESSION_COLORS, type SessionName } from "@/lib/session-map";
-import type { CalendarEvent } from "@/lib/economic-calendar";
 
 export type ChartLine = {
   id: string;
@@ -107,15 +106,6 @@ const TAG_TEXT_STYLE = {
   paddingBottom: 3,
   borderRadius: 2,
 } as const;
-
-// Impression Pack #3 -- same convention as NewsPanel.tsx's own
-// IMPACT_COLOR (not shared/exported from there since that file has no
-// other reason to be imported by this one).
-const CALENDAR_IMPACT_COLOR: Record<string, string> = {
-  high: "var(--sell)",
-  medium: "var(--warn)",
-  low: "var(--text-3)",
-};
 
 registerOverlay({
   name: "vyxPositionLine",
@@ -295,11 +285,6 @@ type Props = {
   // of whatever timeframe this panel is currently displaying. Null when
   // not yet known (fewer than 2 D1 candles loaded) or not applicable.
   previousDayHighLow?: { high: number; low: number } | null;
-  // Impression Pack #3 -- today's economic calendar events already
-  // filtered to the active symbol's currencies (WebTrader.tsx's own
-  // lib/economic-calendar.ts), rendered as vertical impact-colored
-  // markers with a hover tooltip.
-  calendarEvents?: CalendarEvent[];
 };
 
 // Thin React wrapper around klinecharts (free, open-source — no license
@@ -329,7 +314,6 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
     onDragEditableLine,
     settings,
     previousDayHighLow,
-    calendarEvents,
   },
   ref
 ) {
@@ -349,13 +333,6 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
   // that entirely and is a standard technique for chart session shading.
   const [sessionBandRects, setSessionBandRects] = useState<{ key: string; session: SessionName; left: number; width: number }[]>([]);
   const recomputeSessionBandsRef = useRef<() => void>(() => {});
-  // Impression Pack #3 -- economic calendar markers, same DOM-overlay
-  // technique as the session bands above (proven reliable; the
-  // klinecharts-overlay coordinate issue was specific to that mechanism,
-  // not this file's own math).
-  const [calendarMarkerRects, setCalendarMarkerRects] = useState<{ key: string; left: number; event: CalendarEvent }[]>([]);
-  const recomputeCalendarMarkersRef = useRef<() => void>(() => {});
-  const [hoveredCalendarKey, setHoveredCalendarKey] = useState<string | null>(null);
   const positionLineIdsRef = useRef<string[]>([]);
   const editableLineIdsRef = useRef<string[]>([]);
   const userOverlayIdsRef = useRef<string[]>([]);
@@ -552,7 +529,6 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
       try {
         chartRef.current?.resize?.();
         recomputeSessionBandsRef.current?.();
-        recomputeCalendarMarkersRef.current?.();
       } catch {
         // ignore
       }
@@ -611,7 +587,6 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
     const onChartAction = () => {
       onPanOrZoomRef.current?.();
       recomputeSessionBandsRef.current?.();
-      recomputeCalendarMarkersRef.current?.();
     };
     try {
       chart?.subscribeAction?.(ActionType.OnZoom, onChartAction);
@@ -853,33 +828,6 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
     recomputeSessionBandsRef.current = recompute;
     recompute();
   }, [candles, timeframe, settings?.showSessionMap]);
-
-  // Impression Pack #3 -- economic calendar vertical markers.
-  useEffect(() => {
-    function recompute() {
-      const chart = chartRef.current;
-      if (!chart || !calendarEvents || calendarEvents.length === 0) {
-        setCalendarMarkerRects([]);
-        return;
-      }
-      try {
-        const rects = calendarEvents
-          .map((event, i) => {
-            const t = new Date(event.time).getTime();
-            if (Number.isNaN(t)) return null;
-            const p = chart.convertToPixel?.({ timestamp: t }, {}) as { x?: number } | undefined;
-            if (typeof p?.x !== "number") return null;
-            return { key: `calendar-${i}`, left: p.x, event };
-          })
-          .filter((r): r is { key: string; left: number; event: CalendarEvent } => r !== null);
-        setCalendarMarkerRects(rects);
-      } catch {
-        setCalendarMarkerRects([]);
-      }
-    }
-    recomputeCalendarMarkersRef.current = recompute;
-    recompute();
-  }, [candles, calendarEvents]);
 
   // Impression Pack #2 -- previous-day high/low (PDH/PDL), every timeframe.
   useEffect(() => {
@@ -1137,40 +1085,6 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
               key={r.key}
               style={{ position: "absolute", top: 0, bottom: 0, left: r.left, width: r.width, background: SESSION_COLORS[r.session] }}
             />
-          ))}
-        </div>
-      ) : null}
-      {calendarMarkerRects.length > 0 ? (
-        <div style={{ position: "absolute", inset: 0, pointerEvents: "none", overflow: "hidden" }}>
-          {calendarMarkerRects.map((r) => (
-            <div
-              key={r.key}
-              style={{ position: "absolute", top: 0, bottom: 0, left: r.left - 4, width: 8, pointerEvents: "auto", cursor: "help" }}
-              onMouseEnter={() => setHoveredCalendarKey(r.key)}
-              onMouseLeave={() => setHoveredCalendarKey((k) => (k === r.key ? null : k))}
-            >
-              <div style={{ position: "absolute", top: 0, bottom: 0, left: 4, width: 1, background: CALENDAR_IMPACT_COLOR[r.event.impact?.toLowerCase()] ?? "var(--text-3)" }} />
-              {hoveredCalendarKey === r.key ? (
-                <div
-                  style={{
-                    position: "absolute", top: 20, left: 8, zIndex: 10, minWidth: 160, maxWidth: 220,
-                    background: "var(--bg-3)", border: "1px solid var(--border-strong)", borderRadius: 4, padding: "6px 8px",
-                    fontSize: 10.5, color: "var(--text-2)", boxShadow: "0 4px 12px rgba(0,0,0,0.4)",
-                  }}
-                >
-                  <div className="mono" style={{ color: "var(--text-3)", marginBottom: 2 }}>
-                    {new Date(r.event.time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} · {r.event.country}
-                  </div>
-                  <div>{r.event.event}</div>
-                  {(r.event.estimate != null || r.event.previous != null) ? (
-                    <div className="mono" style={{ color: "var(--text-3)", marginTop: 2 }}>
-                      {r.event.estimate != null ? `F: ${r.event.estimate} ` : ""}
-                      {r.event.previous != null ? `P: ${r.event.previous}` : ""}
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
-            </div>
           ))}
         </div>
       ) : null}

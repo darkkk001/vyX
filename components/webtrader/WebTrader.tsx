@@ -39,7 +39,7 @@ import SmartTradeManager from "./SmartTradeManager";
 import { computeOrderReferenceLines, computeAlertLines } from "@/lib/chart-lines";
 import { DEFAULT_CHART_SETTINGS, type ChartSettings } from "@/lib/chart-settings";
 import { playSound } from "@/lib/sounds";
-import { filterEventsForSymbol, isSameUtcDay, nextHighImpactEventWithin, type CalendarEvent } from "@/lib/economic-calendar";
+import { filterEventsForSymbol, nextHighImpactEventWithin, type CalendarEvent } from "@/lib/economic-calendar";
 import { spreadPoints, DEFAULT_WATCHLIST_COLUMN_PREFS, type WatchlistColumnPrefs } from "@/lib/watchlist-columns";
 
 const TF_LABELS: { key: Timeframe; label: string }[] = [
@@ -760,13 +760,6 @@ export default function WebTrader({
     const interval = setInterval(() => setCalendarNowTick(Date.now()), 30_000);
     return () => clearInterval(interval);
   }, []);
-  // Chart markers: today's events only, per spec -- the warning chip
-  // above stays symbol-filtered-only (an event could be "in 15 minutes"
-  // right at a UTC day boundary and still matter).
-  const todayCalendarEvents = useMemo(
-    () => activeSymbolCalendarEvents.filter((e) => isSameUtcDay(e, new Date(calendarNowTick))),
-    [activeSymbolCalendarEvents, calendarNowTick]
-  );
   const soonHighImpactEvent = useMemo(
     () => nextHighImpactEventWithin(activeSymbolCalendarEvents, new Date(calendarNowTick), 15),
     [activeSymbolCalendarEvents, calendarNowTick]
@@ -3740,7 +3733,6 @@ export default function WebTrader({
                     onDragEditableLine={onDragEditableLine}
                     settings={chartSettings}
                     previousDayHighLow={previousDayHighLow}
-                    calendarEvents={todayCalendarEvents}
                     onContextMenuPrice={handleChartContextMenuPrice}
                     onPanOrZoom={() => setChartContextMenu(null)}
                   />
