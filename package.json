@@ -12,6 +12,7 @@
   "dependencies": {
     "@prisma/client": "^6.19.3",
     "@prisma/extension-accelerate": "^3.0.1",
+    "@tanstack/react-virtual": "^3.14.10",
     "@vercel/blob": "^2.8.0",
     "bcryptjs": "^3.0.3",
     "ioredis": "^6.0.0",

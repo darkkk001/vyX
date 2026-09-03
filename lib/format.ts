@@ -20,12 +20,35 @@ export function initialsFrom(text: string): string {
 
 const num = (v: number | string): number => (typeof v === "number" ? v : Number(v));
 
+// VYX-BASICS-AUDIT.md category 8 -- `new Intl.NumberFormat(...)` is a
+// genuinely expensive constructor (locale data lookup + options
+// parsing, not a cheap object literal), and formatPrice/formatNumber
+// used to build a fresh one on every single call. Measured live against
+// a 552-row Positions table: this alone was still producing 140ms+
+// main-thread long tasks on every re-render even after virtualizing the
+// table (virtualizing cuts DOM node count, not the per-row formatting
+// work every visible row's cells still call). One instance per distinct
+// (digits, decimals) pair, built once and reused, is the standard fix
+// (same guidance V8/MDN give for this exact constructor) -- table sizes
+// only ever use a handful of distinct digit counts, so this cache never
+// grows unbounded.
+const numberFormatCache = new Map<string, Intl.NumberFormat>();
+function getNumberFormat(decimals: number): Intl.NumberFormat {
+  const key = String(decimals);
+  let fmt = numberFormatCache.get(key);
+  if (!fmt) {
+    fmt = new Intl.NumberFormat("en-US", { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+    numberFormatCache.set(key, fmt);
+  }
+  return fmt;
+}
+
 // A symbol's own digit count (EURUSD=5, XAUUSD=2, USDJPY=3, ...) is
 // already threaded through every price-bearing row (`row.digits`) --
 // this just centralizes the `.toFixed(digits)` call and thousands-
 // separates the integer part, which no existing price display did.
 export function formatPrice(value: number | string, digits: number): string {
-  return new Intl.NumberFormat("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits }).format(num(value));
+  return getNumberFormat(digits).format(num(value));
 }
 
 // Plain thousands-separated number, fixed decimals -- balances,
@@ -35,7 +58,7 @@ export function formatPrice(value: number | string, digits: number): string {
 // label prefix/suffix it themselves, same as WalletsManager.tsx
 // already does ("Total balance: {formatNumber(...)}").
 export function formatNumber(value: number | string, decimals = 2): string {
-  return new Intl.NumberFormat("en-US", { minimumFractionDigits: decimals, maximumFractionDigits: decimals }).format(num(value));
+  return getNumberFormat(decimals).format(num(value));
 }
 
 // P/L convention already used consistently everywhere it appears

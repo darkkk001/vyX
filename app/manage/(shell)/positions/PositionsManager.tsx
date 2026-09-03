@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { Card } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
@@ -373,6 +374,29 @@ export default function PositionsManager() {
   const { contextMenu: rowContextMenu, openContextMenu: openRowContextMenu, closeContextMenu: closeRowContextMenu } = useRowContextMenu<PositionRow>();
   const rowSelection = useRowSelection(sortedPositions);
 
+  // VYX-BASICS-AUDIT.md category 8 -- measured live against a real
+  // 552-row broker (scripts/seed-qa-bulk-positions.mjs): unvirtualized,
+  // this table produced main-thread long tasks up to 782ms and 10 wheel-
+  // scroll steps took ~7x longer than an unblocked baseline (Playwright
+  // PerformanceObserver longtask entries + wall-clock scroll timing).
+  // Below the threshold, a real broker's row count is small enough
+  // (dozens, not hundreds) that virtualizing adds complexity for no
+  // measurable win -- only the actually-large case pays for it.
+  const VIRTUALIZE_THRESHOLD = 150;
+  const shouldVirtualizePositions = sortedPositions.length > VIRTUALIZE_THRESHOLD;
+  const positionsScrollRef = useRef<HTMLDivElement>(null);
+  // estimateSize matches TableCell's own px-4 py-2.5 padding + this
+  // table's text-[12.5px] line height -- close enough that
+  // react-virtual's dynamic remeasurement (it corrects on scroll
+  // regardless) never has a visible first-paint jump.
+  const positionsVirtualizer = useVirtualizer({
+    count: sortedPositions.length,
+    getScrollElement: () => positionsScrollRef.current,
+    estimateSize: () => 45,
+    overscan: 12,
+    enabled: shouldVirtualizePositions,
+  });
+
   // --- Open position modal ---
   const [openModalOpen, setOpenModalOpen] = useState(false);
   const [accountId, setAccountId] = useState(accounts[0]?.id ?? "");
@@ -733,6 +757,81 @@ export default function PositionsManager() {
       </Table>
     );
   }
+  // Extracted so both the plain-map path and the virtualized path (only
+  // the visible ~12-24 rows, not all 552) render identically -- one
+  // function, not two copies of this markup to keep in sync.
+  function renderPositionRow(p: PositionRow) {
+    const positionActions = buildPositionActions(p);
+    return (
+      <TableRow
+        key={p.id}
+        className="cursor-pointer"
+        onClick={() => setDetailsTargetId(p.id)}
+        onDoubleClick={() => setDetailsTargetId(p.id)}
+        onContextMenu={(e) => openRowContextMenu(p, e)}
+      >
+        <TableCell onClick={(e) => e.stopPropagation()}>
+          <input type="checkbox" checked={rowSelection.selectedIds.has(p.id)} onChange={() => rowSelection.toggle(p.id)} aria-label={`Select ${p.symbolName} position`} />
+        </TableCell>
+        {(colVisible.account ?? true) ? (
+          <TableCell primary style={{ width: colWidths.account }}>
+            {p.accountNumber}
+            <div className="text-xs font-normal text-[var(--text-3)]">{p.accountFullName}</div>
+          </TableCell>
+        ) : null}
+        {(colVisible.symbol ?? true) ? (
+          <TableCell mono style={{ width: colWidths.symbol }}>
+            {p.symbolName}
+          </TableCell>
+        ) : null}
+        {(colVisible.side ?? true) ? (
+          <TableCell style={{ width: colWidths.side }}>
+            <Badge tone={p.side === "BUY" ? "success" : "danger"}>{p.side}</Badge>
+          </TableCell>
+        ) : null}
+        {(colVisible.volume ?? true) ? (
+          <TableCell align="right" mono style={{ width: colWidths.volume }}>
+            {formatNumber(p.volume)}
+          </TableCell>
+        ) : null}
+        {(colVisible.openPrice ?? true) ? (
+          <TableCell align="right" mono style={{ width: colWidths.openPrice }}>
+            {formatPrice(p.openPrice, p.digits)}
+          </TableCell>
+        ) : null}
+        {(colVisible.currentPrice ?? true) ? (
+          <TableCell align="right" mono style={{ width: colWidths.currentPrice }}>
+            {p.currentPrice != null ? formatPrice(p.currentPrice, p.digits) : "—"}
+          </TableCell>
+        ) : null}
+        {(colVisible.sl ?? true) ? (
+          <TableCell align="right" mono className="text-[var(--text-3)]" style={{ width: colWidths.sl }}>
+            {p.slPrice != null ? formatPrice(p.slPrice, p.digits) : "—"}
+          </TableCell>
+        ) : null}
+        {(colVisible.tp ?? true) ? (
+          <TableCell align="right" mono className="text-[var(--text-3)]" style={{ width: colWidths.tp }}>
+            {p.tpPrice != null ? formatPrice(p.tpPrice, p.digits) : "—"}
+          </TableCell>
+        ) : null}
+        {(colVisible.floatingPnl ?? true) ? (
+          <TableCell
+            align="right"
+            mono
+            style={{ width: colWidths.floatingPnl }}
+            className={!p.floatingPnl ? "" : formatPnl(p.floatingPnl).toneClass}
+          >
+            {p.floatingPnl != null ? formatPnl(p.floatingPnl).text : "—"}
+          </TableCell>
+        ) : null}
+        <TableCell className="text-xs text-[var(--text-3)]" style={{ width: colWidths.opened }}>{formatDateTime(p.openedAt)}</TableCell>
+        <TableCell className="whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+          <ActionMenu items={positionActions} />
+        </TableCell>
+      </TableRow>
+    );
+  }
+
   if (data === null) {
     return (
       <Table title="Open positions">
@@ -972,7 +1071,13 @@ export default function PositionsManager() {
 
       <Table
         title="Open positions"
-        description="Reflects the filters above -- right-click a column header to show/hide columns, drag a header's edge to resize"
+        description={
+          shouldVirtualizePositions
+            ? `Reflects the filters above -- right-click a column header to show/hide columns, drag a header's edge to resize. ${sortedPositions.length} rows: showing a scrolling window, not all at once, to keep this responsive.`
+            : "Reflects the filters above -- right-click a column header to show/hide columns, drag a header's edge to resize"
+        }
+        scrollRef={positionsScrollRef}
+        maxBodyHeight={shouldVirtualizePositions ? 640 : undefined}
         action={
           <div className="flex items-center gap-2">
             {bulkCloseAccount ? (
@@ -1027,78 +1132,26 @@ export default function PositionsManager() {
             <TableErrorState colSpan={POSITION_COLUMNS.length + 2} onRetry={() => reload().catch(() => setLoadError(true))} />
           ) : sortedPositions.length === 0 ? (
             <TableEmptyState colSpan={POSITION_COLUMNS.length + 2}>No open positions match the current filters.</TableEmptyState>
+          ) : shouldVirtualizePositions ? (
+            <>
+              {/* Two spacer rows (native <table> can't absolutely-position
+                  individual <tr>s without breaking column alignment) --
+                  their height stands in for however many real rows are
+                  scrolled past above/below the rendered window, so the
+                  scrollbar's size/position stays correct while only
+                  ~12-24 rows are ever actually in the DOM. */}
+              <tr style={{ height: positionsVirtualizer.getVirtualItems()[0]?.start ?? 0 }} />
+              {positionsVirtualizer.getVirtualItems().map((vi) => renderPositionRow(sortedPositions[vi.index]))}
+              <tr
+                style={{
+                  height:
+                    positionsVirtualizer.getTotalSize() -
+                    (positionsVirtualizer.getVirtualItems().at(-1)?.end ?? 0),
+                }}
+              />
+            </>
           ) : (
-            sortedPositions.map((p) => {
-              const positionActions = buildPositionActions(p);
-              return (
-                <TableRow
-                  key={p.id}
-                  className="cursor-pointer"
-                  onClick={() => setDetailsTargetId(p.id)}
-                  onDoubleClick={() => setDetailsTargetId(p.id)}
-                  onContextMenu={(e) => openRowContextMenu(p, e)}
-                >
-                  <TableCell onClick={(e) => e.stopPropagation()}>
-                    <input type="checkbox" checked={rowSelection.selectedIds.has(p.id)} onChange={() => rowSelection.toggle(p.id)} aria-label={`Select ${p.symbolName} position`} />
-                  </TableCell>
-                  {(colVisible.account ?? true) ? (
-                    <TableCell primary style={{ width: colWidths.account }}>
-                      {p.accountNumber}
-                      <div className="text-xs font-normal text-[var(--text-3)]">{p.accountFullName}</div>
-                    </TableCell>
-                  ) : null}
-                  {(colVisible.symbol ?? true) ? (
-                    <TableCell mono style={{ width: colWidths.symbol }}>
-                      {p.symbolName}
-                    </TableCell>
-                  ) : null}
-                  {(colVisible.side ?? true) ? (
-                    <TableCell style={{ width: colWidths.side }}>
-                      <Badge tone={p.side === "BUY" ? "success" : "danger"}>{p.side}</Badge>
-                    </TableCell>
-                  ) : null}
-                  {(colVisible.volume ?? true) ? (
-                    <TableCell align="right" mono style={{ width: colWidths.volume }}>
-                      {formatNumber(p.volume)}
-                    </TableCell>
-                  ) : null}
-                  {(colVisible.openPrice ?? true) ? (
-                    <TableCell align="right" mono style={{ width: colWidths.openPrice }}>
-                      {formatPrice(p.openPrice, p.digits)}
-                    </TableCell>
-                  ) : null}
-                  {(colVisible.currentPrice ?? true) ? (
-                    <TableCell align="right" mono style={{ width: colWidths.currentPrice }}>
-                      {p.currentPrice != null ? formatPrice(p.currentPrice, p.digits) : "—"}
-                    </TableCell>
-                  ) : null}
-                  {(colVisible.sl ?? true) ? (
-                    <TableCell align="right" mono className="text-[var(--text-3)]" style={{ width: colWidths.sl }}>
-                      {p.slPrice != null ? formatPrice(p.slPrice, p.digits) : "—"}
-                    </TableCell>
-                  ) : null}
-                  {(colVisible.tp ?? true) ? (
-                    <TableCell align="right" mono className="text-[var(--text-3)]" style={{ width: colWidths.tp }}>
-                      {p.tpPrice != null ? formatPrice(p.tpPrice, p.digits) : "—"}
-                    </TableCell>
-                  ) : null}
-                  {(colVisible.floatingPnl ?? true) ? (
-                    <TableCell
-                      align="right"
-                      mono
-                      style={{ width: colWidths.floatingPnl }}
-                      className={!p.floatingPnl ? "" : formatPnl(p.floatingPnl).toneClass}
-                    >
-                      {p.floatingPnl != null ? formatPnl(p.floatingPnl).text : "—"}
-                    </TableCell>
-                  ) : null}
-                  <TableCell className="text-xs text-[var(--text-3)]" style={{ width: colWidths.opened }}>{formatDateTime(p.openedAt)}</TableCell>
-                  <TableCell className="whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
-                    <ActionMenu items={positionActions} />
-                  </TableCell>
-                </TableRow>
-              );
-            })
+            sortedPositions.map((p) => renderPositionRow(p))
           )}
         </TableBody>
       </Table>
