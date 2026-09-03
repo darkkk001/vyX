@@ -15,7 +15,7 @@ type AccountHeader = {
   kycStatus: string | null;
 };
 
-type TimelineRow = { kind: string; tone: "success" | "danger" | "warning" | "neutral" | "info" | "accent"; summary: string; timeLabel: string };
+type TimelineRow = { kind: string; tone: "success" | "danger" | "warning" | "neutral" | "info" | "accent"; summary: string; timeLabel: string; entityId?: string };
 
 // Self-fetches from a new /api/manage/accounts/[id]/activity GET instead
 // of a dynamic-route Server Component -- a bundled manager-shell desktop
@@ -38,6 +38,27 @@ export default function ClientActivityView({ accountId, backLink }: { accountId:
       .then(setData)
       .catch(() => setData("not-found"));
   }, [accountId]);
+
+  // Omni-search's "order/position/transaction ID -> that record in
+  // context" destination -- ?highlight=<id> in the URL. Read via
+  // window.location directly (not next/navigation's useSearchParams):
+  // this component also bundles into manager-tauri's Vite shell, which
+  // has no Next.js router to satisfy that hook's Suspense requirement.
+  useEffect(() => {
+    if (data === null || data === "not-found") return;
+    const highlight = new URLSearchParams(window.location.search).get("highlight");
+    if (!highlight) return;
+    const el = document.getElementById(`activity-row-${highlight}`);
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    // Inline style, not a Tailwind/CSS class -- this admin area has no
+    // stylesheet of its own to add a one-off animation class to, and a
+    // plain style + transition does the same "flash then fade" job.
+    el.style.transition = "background-color 2s ease";
+    el.style.backgroundColor = "var(--accent-bg)";
+    const timer = setTimeout(() => { el.style.backgroundColor = ""; }, 2000);
+    return () => clearTimeout(timer);
+  }, [data]);
 
   if (data === null) {
     return <p className="text-sm text-[var(--text-3)]">Loading...</p>;
@@ -79,7 +100,7 @@ export default function ClientActivityView({ accountId, backLink }: { accountId:
             <TableEmptyState colSpan={3}>No activity yet.</TableEmptyState>
           ) : (
             timeline.map((row, i) => (
-              <TableRow key={i}>
+              <TableRow key={i} id={row.entityId ? `activity-row-${row.entityId}` : undefined}>
                 <TableCell>
                   <Badge tone={row.tone}>{row.kind}</Badge>
                 </TableCell>

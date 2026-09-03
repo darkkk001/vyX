@@ -3,7 +3,12 @@ import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { humanizeAction, excludeSuperAdminActor } from "@/lib/audit-labels";
 
-type TimelineRow = { time: string; kind: string; tone: "success" | "danger" | "warning" | "neutral" | "info" | "accent"; summary: string };
+// entityId -- added for the omni-search's "order/position/transaction ID
+// -> that record in context" destination (see app/api/manage/search's
+// own comment): the search result links here with ?highlight=<id>, and
+// this is what ClientActivityView.tsx scrolls to/highlights. Optional
+// since an admin-action row has no single record it maps to as cleanly.
+type TimelineRow = { time: string; kind: string; tone: "success" | "danger" | "warning" | "neutral" | "info" | "accent"; summary: string; entityId?: string };
 
 // Same query app/manage/(shell)/accounts/[id]/page.tsx's Server Component
 // used to do inline (account header fields + a merged AuditLog/
@@ -40,24 +45,28 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
       kind: "Admin action",
       tone: "accent",
       summary: `${humanizeAction(a.action)} — by ${a.actorAdmin?.email ?? "system"}`,
+      entityId: a.id,
     })),
     ...transactions.map((t): TimelineRow => ({
       time: t.createdAt.toISOString(),
       kind: "Ledger",
       tone: t.amount.isNegative() ? "danger" : "success",
       summary: `${t.type} — ${t.amount.toString()} (${t.status})${t.note ? ` — ${t.note}` : ""}`,
+      entityId: t.id,
     })),
     ...orders.map((o): TimelineRow => ({
       time: o.createdAt.toISOString(),
       kind: "Order",
       tone: o.status === "REJECTED" || o.status === "CANCELLED" ? "danger" : "info",
       summary: `${o.side} ${o.volume} ${o.symbol.name} ${o.type} — ${o.status}${o.rejectionReason ? ` (${o.rejectionReason})` : ""}`,
+      entityId: o.id,
     })),
     ...positions.map((p): TimelineRow => ({
       time: p.openedAt.toISOString(),
       kind: "Position",
       tone: p.status === "OPEN" ? "warning" : "neutral",
       summary: `${p.side} ${p.volume} ${p.symbol.name} opened @ ${p.openPrice.toString()}${p.status === "CLOSED" ? ` — closed @ ${p.closePrice?.toString() ?? "—"}, P&L ${p.realizedPnl?.toString() ?? "—"}` : " — OPEN"}`,
+      entityId: p.id,
     })),
   ].sort((a, b) => (a.time < b.time ? 1 : -1));
 

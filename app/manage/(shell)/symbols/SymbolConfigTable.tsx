@@ -64,6 +64,24 @@ export default function SymbolConfigTable() {
       .catch(() => setRows([]));
   }, []);
 
+  // Omni-search's "symbol -> symbol config" destination -- ?symbol=<name>
+  // in the URL. window.location, not next/navigation's useSearchParams:
+  // this component also bundles into manager-tauri's Vite shell.
+  useEffect(() => {
+    if (!rows) return;
+    const target = new URLSearchParams(window.location.search).get("symbol");
+    if (!target) return;
+    const row = rows.find((r) => r.symbolName === target);
+    if (!row) return;
+    const el = document.getElementById(`symbol-row-${row.symbolId}`);
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    el.style.transition = "background-color 2s ease";
+    el.style.backgroundColor = "var(--accent-bg)";
+    const timer = setTimeout(() => { el.style.backgroundColor = ""; }, 2000);
+    return () => clearTimeout(timer);
+  }, [rows]);
+
   function updateField(symbolId: string, field: EditableField, value: string) {
     setRows((prev) => prev && prev.map((r) => (r.symbolId === symbolId ? { ...r, [field]: value } : r)));
     setSavedId(null);
@@ -127,7 +145,7 @@ export default function SymbolConfigTable() {
       </TableHead>
       <TableBody>
         {rows.map((row) => (
-          <TableRow key={row.symbolId}>
+          <TableRow key={row.symbolId} id={`symbol-row-${row.symbolId}`}>
             <TableCell mono className="min-w-[130px]">
               {row.symbolName}
               <div className="text-xs text-[var(--text-3)]">{row.category}</div>
