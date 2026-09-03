@@ -28,6 +28,7 @@ import {
 } from "@/components/ui/TableExtras";
 import { useAdminEventStream, ADMIN_STREAM_RECONNECTED, type AdminEvent } from "@/lib/admin-realtime";
 import { useLiveTicks } from "@/lib/price-stream";
+import { formatPrice, formatNumber, formatPnl, formatDateTime } from "@/lib/format";
 
 export type PositionRow = {
   id: string;
@@ -894,8 +895,8 @@ export default function PositionsManager() {
             </div>
             <div className="text-right">
               <p className="text-xs text-[var(--text-3)]">Total floating P&L</p>
-              <p className={`font-mono text-lg font-semibold ${totalFloatingPnl >= 0 ? "text-[var(--buy)]" : "text-[var(--sell)]"}`}>
-                {totalFloatingPnl.toFixed(2)}
+              <p className={`font-mono text-lg font-semibold ${formatPnl(totalFloatingPnl).toneClass}`}>
+                {formatPnl(totalFloatingPnl).text}
               </p>
             </div>
           </div>
@@ -923,10 +924,10 @@ export default function PositionsManager() {
                   <TableCell mono>{e.symbol}</TableCell>
                   <TableCell align="right">{e.count}</TableCell>
                   <TableCell align="right" mono>
-                    {e.buyVolume}
+                    {formatNumber(e.buyVolume)}
                   </TableCell>
                   <TableCell align="right" mono>
-                    {e.sellVolume}
+                    {formatNumber(e.sellVolume)}
                   </TableCell>
                   <TableCell
                     align="right"
@@ -934,16 +935,16 @@ export default function PositionsManager() {
                     className={e.netExposureNum === 0 ? "" : e.netExposureNum > 0 ? "text-[var(--buy)]" : "text-[var(--sell)]"}
                   >
                     {e.netExposureNum > 0 ? "+" : ""}
-                    {e.netExposure}
+                    {formatNumber(e.netExposure)}
                   </TableCell>
                   <TableCell align="right" mono>
-                    {e.netAvgPrice != null ? e.netAvgPrice.toFixed(e.digits) : "—"}
+                    {e.netAvgPrice != null ? formatPrice(e.netAvgPrice, e.digits) : "—"}
                   </TableCell>
-                  <TableCell align="right" mono className={e.floatingPnl >= 0 ? "text-[var(--buy)]" : "text-[var(--sell)]"}>
-                    {e.floatingPnl.toFixed(2)}
+                  <TableCell align="right" mono className={formatPnl(e.floatingPnl).toneClass}>
+                    {formatPnl(e.floatingPnl).text}
                   </TableCell>
                   <TableCell align="right" mono>
-                    {e.currentPrice ?? "—"}
+                    {e.currentPrice != null ? formatPrice(e.currentPrice, e.digits) : "—"}
                   </TableCell>
                 </TableRow>
               ))
@@ -1048,27 +1049,27 @@ export default function PositionsManager() {
                   ) : null}
                   {(colVisible.volume ?? true) ? (
                     <TableCell align="right" mono style={{ width: colWidths.volume }}>
-                      {p.volume}
+                      {formatNumber(p.volume)}
                     </TableCell>
                   ) : null}
                   {(colVisible.openPrice ?? true) ? (
                     <TableCell align="right" mono style={{ width: colWidths.openPrice }}>
-                      {p.openPrice}
+                      {formatPrice(p.openPrice, p.digits)}
                     </TableCell>
                   ) : null}
                   {(colVisible.currentPrice ?? true) ? (
                     <TableCell align="right" mono style={{ width: colWidths.currentPrice }}>
-                      {p.currentPrice ?? "—"}
+                      {p.currentPrice != null ? formatPrice(p.currentPrice, p.digits) : "—"}
                     </TableCell>
                   ) : null}
                   {(colVisible.sl ?? true) ? (
                     <TableCell align="right" mono className="text-[var(--text-3)]" style={{ width: colWidths.sl }}>
-                      {p.slPrice ?? "—"}
+                      {p.slPrice != null ? formatPrice(p.slPrice, p.digits) : "—"}
                     </TableCell>
                   ) : null}
                   {(colVisible.tp ?? true) ? (
                     <TableCell align="right" mono className="text-[var(--text-3)]" style={{ width: colWidths.tp }}>
-                      {p.tpPrice ?? "—"}
+                      {p.tpPrice != null ? formatPrice(p.tpPrice, p.digits) : "—"}
                     </TableCell>
                   ) : null}
                   {(colVisible.floatingPnl ?? true) ? (
@@ -1076,12 +1077,12 @@ export default function PositionsManager() {
                       align="right"
                       mono
                       style={{ width: colWidths.floatingPnl }}
-                      className={!p.floatingPnl ? "" : Number(p.floatingPnl) >= 0 ? "text-[var(--buy)]" : "text-[var(--sell)]"}
+                      className={!p.floatingPnl ? "" : formatPnl(p.floatingPnl).toneClass}
                     >
-                      {p.floatingPnl ?? "—"}
+                      {p.floatingPnl != null ? formatPnl(p.floatingPnl).text : "—"}
                     </TableCell>
                   ) : null}
-                  <TableCell className="text-xs text-[var(--text-3)]" style={{ width: colWidths.opened }}>{p.openedAt}</TableCell>
+                  <TableCell className="text-xs text-[var(--text-3)]" style={{ width: colWidths.opened }}>{formatDateTime(p.openedAt)}</TableCell>
                   <TableCell className="whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
                     <ActionMenu items={positionActions} />
                   </TableCell>
@@ -1095,7 +1096,7 @@ export default function PositionsManager() {
         <RowContextMenu x={rowContextMenu.x} y={rowContextMenu.y} onClose={closeRowContextMenu} items={buildPositionActions(rowContextMenu.row)} />
       ) : null}
 
-      <Modal open={openModalOpen} onClose={() => setOpenModalOpen(false)} title="New manual position">
+      <Modal open={openModalOpen} onClose={() => setOpenModalOpen(false)} title="New manual position" onSubmit={openPosition}>
         <div className="flex flex-col gap-3">
           <FormField label="Client account">
             <Select value={accountId} onChange={(e) => setAccountId(e.target.value)} required>
@@ -1151,10 +1152,10 @@ export default function PositionsManager() {
           </FormField>
           {openError ? <p className="text-sm text-[var(--sell)]">{openError}</p> : null}
           <ModalActions>
-            <Button variant="ghost" onClick={() => setOpenModalOpen(false)}>
+            <Button type="button" variant="ghost" onClick={() => setOpenModalOpen(false)}>
               Cancel
             </Button>
-            <Button variant="primary" disabled={opening || !accountId || !symbolId} onClick={openPosition}>
+            <Button type="submit" variant="primary" disabled={opening || !accountId || !symbolId}>
               {opening ? "Opening..." : "Open position"}
             </Button>
           </ModalActions>
@@ -1165,6 +1166,7 @@ export default function PositionsManager() {
         open={modifyTarget !== null}
         onClose={() => setModifyTarget(null)}
         title={modifyTarget ? `Modify position — ${modifyTarget.symbolName} — ${modifyTarget.accountNumber}` : ""}
+        onSubmit={submitModify}
       >
         <div className="flex flex-col gap-3">
           <FormField label="Stop loss">
@@ -1184,10 +1186,10 @@ export default function PositionsManager() {
           </FormField>
           {modifyError ? <p className="text-sm text-[var(--sell)]">{modifyError}</p> : null}
           <ModalActions>
-            <Button variant="ghost" onClick={() => setModifyTarget(null)}>
+            <Button type="button" variant="ghost" onClick={() => setModifyTarget(null)}>
               Cancel
             </Button>
-            <Button variant="primary" disabled={modifying} onClick={submitModify}>
+            <Button type="submit" variant="primary" disabled={modifying}>
               {modifying ? "Saving..." : "Save changes"}
             </Button>
           </ModalActions>
@@ -1328,38 +1330,34 @@ export default function PositionsManager() {
               <div>
                 <p className="text-xs text-[var(--text-3)]">Side / Volume</p>
                 <p className="font-mono">
-                  <Badge tone={detailsTarget.side === "BUY" ? "success" : "danger"}>{detailsTarget.side}</Badge> {detailsTarget.volume}
+                  <Badge tone={detailsTarget.side === "BUY" ? "success" : "danger"}>{detailsTarget.side}</Badge> {formatNumber(detailsTarget.volume)}
                 </p>
               </div>
               <div>
                 <p className="text-xs text-[var(--text-3)]">Open price</p>
-                <p className="font-mono text-[var(--text-1)]">{detailsTarget.openPrice}</p>
+                <p className="font-mono text-[var(--text-1)]">{formatPrice(detailsTarget.openPrice, detailsTarget.digits)}</p>
               </div>
               <div>
                 <p className="text-xs text-[var(--text-3)]">Current price</p>
-                <p className="font-mono text-[var(--text-1)]">{detailsTarget.currentPrice ?? "—"}</p>
+                <p className="font-mono text-[var(--text-1)]">{detailsTarget.currentPrice != null ? formatPrice(detailsTarget.currentPrice, detailsTarget.digits) : "—"}</p>
               </div>
               <div>
                 <p className="text-xs text-[var(--text-3)]">S/L</p>
-                <p className="font-mono text-[var(--text-1)]">{detailsTarget.slPrice ?? "—"}</p>
+                <p className="font-mono text-[var(--text-1)]">{detailsTarget.slPrice != null ? formatPrice(detailsTarget.slPrice, detailsTarget.digits) : "—"}</p>
               </div>
               <div>
                 <p className="text-xs text-[var(--text-3)]">T/P</p>
-                <p className="font-mono text-[var(--text-1)]">{detailsTarget.tpPrice ?? "—"}</p>
+                <p className="font-mono text-[var(--text-1)]">{detailsTarget.tpPrice != null ? formatPrice(detailsTarget.tpPrice, detailsTarget.digits) : "—"}</p>
               </div>
               <div>
                 <p className="text-xs text-[var(--text-3)]">Floating P&L</p>
-                <p
-                  className={`font-mono font-semibold ${
-                    !detailsTarget.floatingPnl ? "text-[var(--text-1)]" : Number(detailsTarget.floatingPnl) >= 0 ? "text-[var(--buy)]" : "text-[var(--sell)]"
-                  }`}
-                >
-                  {detailsTarget.floatingPnl ?? "—"}
+                <p className={`font-mono font-semibold ${!detailsTarget.floatingPnl ? "text-[var(--text-1)]" : formatPnl(detailsTarget.floatingPnl).toneClass}`}>
+                  {detailsTarget.floatingPnl != null ? formatPnl(detailsTarget.floatingPnl).text : "—"}
                 </p>
               </div>
               <div>
                 <p className="text-xs text-[var(--text-3)]">Opened</p>
-                <p className="text-[var(--text-1)]">{detailsTarget.openedAt}</p>
+                <p className="text-[var(--text-1)]">{formatDateTime(detailsTarget.openedAt)}</p>
               </div>
             </div>
             <div className="flex flex-wrap gap-2">

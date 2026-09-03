@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/Badge";
 import { FormField } from "@/components/ui/FormField";
 import { Modal, ModalActions } from "@/components/ui/Modal";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
+import { formatDateTime } from "@/lib/format";
 
 export type LeadRow = {
   id: string;
@@ -34,7 +35,7 @@ export default function LeadsManager() {
   function load() {
     return fetch("/api/manage/leads")
       .then((r) => r.json())
-      .then((d: LeadRow[]) => setRows(d.map((r) => ({ ...r, createdAt: r.createdAt.replace("T", " ").slice(0, 19) }))));
+      .then((d: LeadRow[]) => setRows(d.map((r) => ({ ...r, createdAt: formatDateTime(r.createdAt) }))));
   }
 
   useEffect(() => {

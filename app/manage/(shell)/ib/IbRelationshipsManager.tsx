@@ -7,6 +7,7 @@ import { Select } from "@/components/ui/Select";
 import { Button } from "@/components/ui/Button";
 import { Modal, ModalActions } from "@/components/ui/Modal";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
+import { formatDateTime } from "@/lib/format";
 
 export type IbRelationshipRow = {
   id: string;
@@ -104,7 +105,7 @@ export default function IbRelationshipsManager() {
       fetch("/api/manage/ib-relationships")
         .then((r) => r.json())
         .then((d: (IbRelationshipRow & { lastPayoutAt: string | null })[]) =>
-          setRows(d.map((r) => ({ ...r, lastPayoutAt: r.lastPayoutAt ? r.lastPayoutAt.replace("T", " ").slice(0, 19) : null })))
+          setRows(d.map((r) => ({ ...r, lastPayoutAt: r.lastPayoutAt ? formatDateTime(r.lastPayoutAt) : null })))
         ),
       fetch("/api/manage/accounts")
         .then((r) => r.json())

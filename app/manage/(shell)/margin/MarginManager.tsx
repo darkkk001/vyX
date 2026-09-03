@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { Badge } from "@/components/ui/Badge";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
+import { formatNumber, formatPnl, formatPercent } from "@/lib/format";
 
 export type MarginRow = {
   accountId: string;
@@ -59,11 +60,11 @@ export default function MarginManager() {
               <TableRow key={row.accountId}>
                 <TableCell primary mono>{row.accountNumber}</TableCell>
                 <TableCell align="right" mono>{row.positionCount}</TableCell>
-                <TableCell align="right" mono>{row.exposure}</TableCell>
-                <TableCell align="right" mono className={Number(row.floatingPnl) < 0 ? "text-[var(--sell)]" : "text-[var(--buy)]"}>
-                  {row.floatingPnl}
+                <TableCell align="right" mono>{formatNumber(row.exposure)}</TableCell>
+                <TableCell align="right" mono className={formatPnl(row.floatingPnl).toneClass}>
+                  {formatPnl(row.floatingPnl).text}
                 </TableCell>
-                <TableCell align="right" mono>{row.marginLevel != null ? `${row.marginLevel.toFixed(0)}%` : "—"}</TableCell>
+                <TableCell align="right" mono>{row.marginLevel != null ? formatPercent(row.marginLevel, 0, false) : "—"}</TableCell>
                 <TableCell>
                   <Badge tone={status.tone}>{status.label}</Badge>
                 </TableCell>

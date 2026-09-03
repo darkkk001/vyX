@@ -12,7 +12,9 @@ import { initialsFrom } from "@/lib/format";
 export default async function SuperAdminShellLayout({ children }: { children: React.ReactNode }) {
   const session = await getAdminSession();
   if (!requireAdminRole(session, ["SUPER_ADMIN"])) {
-    redirect("/login");
+    // ?reason=expired -- VYX-BASICS-AUDIT.md category 4, same reasoning
+    // as app/manage/(shell)/layout.tsx's own redirect.
+    redirect("/login?reason=expired");
   }
 
   const [admin, unreadNotifications] = await Promise.all([

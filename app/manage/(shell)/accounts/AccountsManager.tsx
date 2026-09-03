@@ -10,6 +10,7 @@ import { LeverageInput } from "@/components/ui/LeverageInput";
 import { Modal, ModalActions } from "@/components/ui/Modal";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
 import { TableSkeleton, TableErrorState } from "@/components/ui/TableExtras";
+import { useToast } from "@/lib/toast";
 
 export type AccountRow = {
   id: string;
@@ -46,6 +47,7 @@ const kycTone = { PENDING: "warning", APPROVED: "success", REJECTED: "danger" } 
 // app/api/manage/accounts/route.ts POST silently forcing both to their
 // defaults for that same caller.
 export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (accountId: string) => void } = {}) {
+  const { showToast } = useToast();
   const [rows, setRows] = useState<AccountRow[] | null>(null);
   const [groups, setGroups] = useState<GroupOption[]>([]);
   const [canManageFinance, setCanManageFinance] = useState(false);
@@ -137,7 +139,12 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
     return r.accountNumber.toLowerCase().includes(q) || r.fullName.toLowerCase().includes(q) || r.email.toLowerCase().includes(q);
   });
 
-  async function patchAccount(id: string, body: Record<string, unknown>) {
+  // VYX-BASICS-AUDIT.md category 4 "every action gives feedback" --
+  // these inline row editors (group/status/leverage/max-daily-loss) used
+  // to just silently reload the table on success, no confirmation a
+  // dealer's edit actually landed. successMessage is per-caller since
+  // "Account updated" alone doesn't say WHAT changed.
+  async function patchAccount(id: string, body: Record<string, unknown>, successMessage: string) {
     setBusyId(id);
     setErrors((prev) => ({ ...prev, [id]: "" }));
     const response = await fetch(`/api/manage/accounts/${id}`, {
@@ -152,25 +159,26 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
       return false;
     }
     reloadRows().catch(() => {});
+    showToast(successMessage, "success");
     return true;
   }
 
   async function changeGroup(row: AccountRow, groupId: string) {
-    await patchAccount(row.id, { groupId: groupId || null });
+    await patchAccount(row.id, { groupId: groupId || null }, `${row.accountNumber} moved to a new group`);
   }
 
   async function changeStatus(row: AccountRow, status: string) {
-    await patchAccount(row.id, { status });
+    await patchAccount(row.id, { status }, `${row.accountNumber} status set to ${status}`);
   }
 
   async function changeLeverage(row: AccountRow, leverage: string) {
     const n = Number(leverage);
     if (!Number.isFinite(n) || n <= 0) return;
-    await patchAccount(row.id, { leverage: n });
+    await patchAccount(row.id, { leverage: n }, `${row.accountNumber} leverage set to 1:${n}`);
   }
 
   async function changeMaxDailyLoss(row: AccountRow, value: string) {
-    await patchAccount(row.id, { maxDailyLoss: value.trim() === "" ? null : value.trim() });
+    await patchAccount(row.id, { maxDailyLoss: value.trim() === "" ? null : value.trim() }, `${row.accountNumber} max daily loss updated`);
   }
 
   function openAdjustModal(row: AccountRow) {

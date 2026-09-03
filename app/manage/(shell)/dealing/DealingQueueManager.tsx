@@ -9,6 +9,7 @@ import { Modal, ModalActions } from "@/components/ui/Modal";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
 import { useAdminEventStream, ADMIN_STREAM_RECONNECTED, type AdminEvent } from "@/lib/admin-realtime";
 import { useLiveTicks } from "@/lib/price-stream";
+import { formatDateTime } from "@/lib/format";
 
 export type DealingOrderRow = {
   id: string;
@@ -60,8 +61,8 @@ export default function DealingQueueManager() {
     return fetch("/api/manage/dealing-queue")
       .then((r) => r.json())
       .then((d: { rows: DealingOrderRow[]; requotedRows: RequotedOrderRow[] }) => {
-        setRows(d.rows.map((r) => ({ ...r, createdAt: r.createdAt.replace("T", " ").slice(0, 19) })));
-        setRequotedRows(d.requotedRows.map((r) => ({ ...r, createdAt: r.createdAt.replace("T", " ").slice(0, 19) })));
+        setRows(d.rows.map((r) => ({ ...r, createdAt: formatDateTime(r.createdAt) })));
+        setRequotedRows(d.requotedRows.map((r) => ({ ...r, createdAt: formatDateTime(r.createdAt) })));
       });
   }
 
@@ -100,7 +101,7 @@ export default function DealingQueueManager() {
         side: event.side as "BUY" | "SELL",
         volume: String(event.volume),
         requestedPrice: event.requested_price == null ? null : String(event.requested_price),
-        createdAt: String(event.created_at).replace("T", " ").slice(0, 19),
+        createdAt: formatDateTime(String(event.created_at)),
         liveBid: event.live_bid == null ? null : String(event.live_bid),
         liveAsk: event.live_ask == null ? null : String(event.live_ask),
       };

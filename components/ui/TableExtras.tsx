@@ -66,6 +66,42 @@ export function TableErrorState({ colSpan, message = "Couldn't load this data.",
   );
 }
 
+// --- Page-level loading/error (non-table pages) --------------------------
+//
+// The same "Loading vs Error vs Empty must never collapse into one
+// state" fix as TableSkeleton/TableErrorState above, for pages that
+// aren't a table at all (a stat-grid dashboard, a settings form) --
+// those still had the exact same bug: `.catch(() => {})` left `data`
+// null forever on a fetch failure, so the page just showed "Loading..."
+// with no way out, indistinguishable from a slow network. Not folded
+// into TableSkeleton/TableErrorState themselves since those render as
+// <tr>/<td> and can't be dropped into a non-table page.
+export function PageLoading() {
+  return (
+    <div className="flex flex-col gap-3 py-4">
+      {Array.from({ length: 4 }, (_, r) => (
+        <div key={r} className="h-4 animate-pulse rounded bg-[var(--bg-3)]" style={{ width: `${40 + ((r * 17) % 45)}%` }} />
+      ))}
+    </div>
+  );
+}
+
+export function PageError({ message = "Couldn't load this page.", onRetry }: { message?: string; onRetry: () => void }) {
+  return (
+    <div className="flex flex-col items-center gap-2 py-16 text-center">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-[var(--sell)]">
+        <circle cx="12" cy="12" r="10" />
+        <line x1="12" y1="8" x2="12" y2="13" />
+        <line x1="12" y1="16" x2="12.01" y2="16" />
+      </svg>
+      <p className="text-sm text-[var(--sell)]">{message}</p>
+      <Button size="sm" variant="secondary" onClick={onRetry}>
+        Retry
+      </Button>
+    </div>
+  );
+}
+
 // --- Sort -----------------------------------------------------------------
 // sortRowsBy/SortDirection live in lib/table-sort.ts (see that file's
 // own comment for why) and are re-exported above for callers that only
@@ -321,6 +357,7 @@ export function ColumnVisibilityMenu({
       {columns.map((col) => (
         <label
           key={col.key}
+          title={col.alwaysVisible ? "Always shown -- needed to tell rows apart" : undefined}
           className={`flex items-center gap-2 px-3 py-1.5 text-xs text-[var(--text-1)] ${col.alwaysVisible ? "opacity-40" : "cursor-pointer hover:bg-[var(--bg-3)]"}`}
         >
           <input

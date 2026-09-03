@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Badge } from "@/components/ui/Badge";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
+import { formatPercent, formatNumber, formatPnl } from "@/lib/format";
 
 export type RiskRadarRow = {
   accountId: string;
@@ -98,11 +99,11 @@ export default function RiskRadarManager({ onOpenAccount }: { onOpenAccount?: (a
             <TableRow key={row.accountId} className="cursor-pointer" onClick={() => openAccount(row.accountId)}>
               <TableCell primary mono>{row.accountNumber}</TableCell>
               <TableCell align="right" mono>{row.trades30d}</TableCell>
-              <TableCell align="right" mono>{row.winRatePct != null ? `${row.winRatePct.toFixed(0)}%` : "—"}</TableCell>
+              <TableCell align="right" mono>{row.winRatePct != null ? formatPercent(row.winRatePct, 0, false) : "—"}</TableCell>
               <TableCell align="right" mono>{row.avgHoldMinutes != null ? `${row.avgHoldMinutes.toFixed(1)}m` : "—"}</TableCell>
-              <TableCell align="right" mono>{row.avgLot != null ? row.avgLot.toFixed(2) : "—"}</TableCell>
-              <TableCell align="right" mono className={row.profitVelocityPerDay < 0 ? "text-[var(--sell)]" : "text-[var(--buy)]"}>
-                {row.profitVelocityPerDay >= 0 ? "+" : ""}{row.profitVelocityPerDay.toFixed(2)}
+              <TableCell align="right" mono>{row.avgLot != null ? formatNumber(row.avgLot) : "—"}</TableCell>
+              <TableCell align="right" mono className={formatPnl(row.profitVelocityPerDay).toneClass}>
+                {formatPnl(row.profitVelocityPerDay).text}
               </TableCell>
               <TableCell onClick={(e) => e.stopPropagation()}>
                 <div className="flex gap-1.5">

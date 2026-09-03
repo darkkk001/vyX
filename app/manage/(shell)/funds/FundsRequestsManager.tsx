@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { Modal, ModalActions } from "@/components/ui/Modal";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
+import { formatDateTime } from "@/lib/format";
 
 export type FundsRequestRow = {
   id: string;
@@ -39,7 +40,7 @@ export default function FundsRequestsManager() {
       .then((r) => r.json())
       .then((d: { currentAdminId: string; rows: FundsRequestRow[] }) => {
         setCurrentAdminId(d.currentAdminId);
-        setRows(d.rows.map((r) => ({ ...r, createdAt: r.createdAt.replace("T", " ").slice(0, 19) })));
+        setRows(d.rows.map((r) => ({ ...r, createdAt: formatDateTime(r.createdAt) })));
       });
   }
 

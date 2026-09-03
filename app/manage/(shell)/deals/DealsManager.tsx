@@ -9,6 +9,7 @@ import { Modal, ModalActions } from "@/components/ui/Modal";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
 import { TableSkeleton, TableErrorState, useTableSort, SortableHeaderCell } from "@/components/ui/TableExtras";
 import DealingReplayPanel from "@/components/admin/DealingReplayPanel";
+import { formatPrice, formatNumber, formatPnl, formatDateTime } from "@/lib/format";
 
 export type DealRow = {
   id: string;
@@ -199,15 +200,15 @@ export default function DealsManager() {
                     </span>
                   ) : null}
                 </TableCell>
-                <TableCell align="right" mono>{row.volume}</TableCell>
-                <TableCell align="right" mono>{row.openPrice}</TableCell>
-                <TableCell align="right" mono>{row.closePrice}</TableCell>
-                <TableCell align="right" mono>{row.commission}</TableCell>
-                <TableCell align="right" mono>{row.swap}</TableCell>
-                <TableCell align="right" mono className={row.realizedPnl !== "—" && Number(row.realizedPnl) < 0 ? "text-[var(--sell)]" : "text-[var(--buy)]"}>
-                  {row.realizedPnl}
+                <TableCell align="right" mono>{formatNumber(row.volume)}</TableCell>
+                <TableCell align="right" mono>{formatPrice(row.openPrice, row.digits)}</TableCell>
+                <TableCell align="right" mono>{formatPrice(row.closePrice, row.digits)}</TableCell>
+                <TableCell align="right" mono>{formatNumber(row.commission)}</TableCell>
+                <TableCell align="right" mono>{formatNumber(row.swap)}</TableCell>
+                <TableCell align="right" mono className={row.realizedPnl === "—" ? "" : formatPnl(row.realizedPnl).toneClass}>
+                  {row.realizedPnl === "—" ? "—" : formatPnl(row.realizedPnl).text}
                 </TableCell>
-                <TableCell className="text-xs text-[var(--text-3)]">{row.closedAt}</TableCell>
+                <TableCell className="text-xs text-[var(--text-3)]">{row.closedAt === "—" ? row.closedAt : formatDateTime(row.closedAt)}</TableCell>
                 <TableCell align="right">
                   <div className="flex justify-end gap-1">
                     <Button variant="ghost" onClick={() => setReplayPositionId(row.id)}>Replay</Button>

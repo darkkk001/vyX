@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/Badge";
 import { FormField } from "@/components/ui/FormField";
 import { Modal, ModalActions } from "@/components/ui/Modal";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
+import { formatDateTime } from "@/lib/format";
 
 export type KycRequestRow = {
   id: string;
@@ -37,7 +38,7 @@ export default function KycRequestsManager() {
   function load() {
     return fetch("/api/manage/kyc-requests")
       .then((r) => r.json())
-      .then((d: KycRequestRow[]) => setRows(d.map((r) => ({ ...r, createdAt: r.createdAt.replace("T", " ").slice(0, 19) }))));
+      .then((d: KycRequestRow[]) => setRows(d.map((r) => ({ ...r, createdAt: formatDateTime(r.createdAt) }))));
   }
 
   useEffect(() => {

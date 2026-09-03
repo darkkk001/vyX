@@ -31,7 +31,12 @@ const SECURITY_PATH = "/manage/security";
 export default async function ManageShellLayout({ children }: { children: React.ReactNode }) {
   const session = await getAdminSession();
   if (!requireAdminRole(session, ["MANAGER", "BROKER_ADMIN", "SUPPORT"]) || !session!.brokerId) {
-    redirect("/manage/login");
+    // ?reason=expired -- VYX-BASICS-AUDIT.md category 4: this fires both
+    // for "never logged in" and "session expired/invalid" (getAdminSession
+    // can't tell those apart, and doesn't need to -- either way the fix
+    // is the same sign-in form), so the login page shows a neutral
+    // "session expired" notice rather than silently reappearing blank.
+    redirect("/manage/login?reason=expired");
   }
 
   const pathname = (await headers()).get("x-pathname") ?? "";

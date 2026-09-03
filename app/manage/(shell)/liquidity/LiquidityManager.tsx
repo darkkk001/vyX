@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/Badge";
 import { FormField } from "@/components/ui/FormField";
 import { Modal, ModalActions } from "@/components/ui/Modal";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
+import { formatDateTime } from "@/lib/format";
 
 export type LiquidityProviderRow = {
   id: string;
@@ -47,7 +48,7 @@ export default function LiquidityManager() {
       fetch("/api/manage/liquidity-providers").then((r) => r.json()),
       fetch("/api/manage/liquidity").then((r) => r.json()),
     ]).then(([providers, exposure]: [LiquidityProviderRow[], BookExposureRow[]]) => {
-      setRows(providers.map((p) => ({ ...p, createdAt: p.createdAt.replace("T", " ").slice(0, 19) })));
+      setRows(providers.map((p) => ({ ...p, createdAt: formatDateTime(p.createdAt) })));
       setBookExposure(exposure);
     });
   }

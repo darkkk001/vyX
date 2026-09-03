@@ -10,6 +10,7 @@ import { Alert } from "@/components/ui/Alert";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
 import { PERMISSIONS, PERMISSION_LABELS, type Permission } from "@/lib/permission-labels";
+import { formatDateTime } from "@/lib/format";
 
 export type AdminRow = {
   id: string;
@@ -39,7 +40,7 @@ export default function TeamManager() {
       .then((r) => r.json())
       .then((d: { currentAdminId: string; rows: AdminRow[] }) => {
         setCurrentAdminId(d.currentAdminId);
-        setRows(d.rows.map((r) => ({ ...r, lastLoginAt: r.lastLoginAt ? r.lastLoginAt.replace("T", " ").slice(0, 19) : null })));
+        setRows(d.rows.map((r) => ({ ...r, lastLoginAt: r.lastLoginAt ? formatDateTime(r.lastLoginAt) : null })));
       });
   }
 

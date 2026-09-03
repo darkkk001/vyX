@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Card } from "@/components/ui/Card";
 import { FormField } from "@/components/ui/FormField";
 import { Input } from "@/components/ui/Input";
@@ -9,8 +9,29 @@ import { PasswordInput } from "@/components/ui/PasswordInput";
 import { Button } from "@/components/ui/Button";
 import { Alert } from "@/components/ui/Alert";
 
+// useSearchParams() (below, for the ?reason=expired notice) opts this
+// page out of static prerendering unless wrapped in Suspense -- the
+// build fails without this ("useSearchParams() should be wrapped in a
+// suspense boundary"). The fallback is effectively invisible in
+// practice (this page has no server data to wait on, so the real
+// component resolves on the same tick).
 export default function SuperAdminLoginPage() {
+  return (
+    <Suspense fallback={null}>
+      <SuperAdminLoginForm />
+    </Suspense>
+  );
+}
+
+function SuperAdminLoginForm() {
   const router = useRouter();
+  // VYX-BASICS-AUDIT.md category 4 "session-expiry -> clean redirect
+  // with a message" -- app/(super-admin)/(shell)/layout.tsx appends
+  // ?reason=expired when it redirects here over a missing/invalid
+  // session; cleared the moment the admin starts typing, same reasoning
+  // as ManagerLoginForm.tsx's own showExpiredNotice.
+  const searchParams = useSearchParams();
+  const [showExpiredNotice, setShowExpiredNotice] = useState(searchParams.get("reason") === "expired");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [pendingToken, setPendingToken] = useState<string | null>(null);
@@ -138,7 +159,10 @@ export default function SuperAdminLoginPage() {
               autoComplete="username"
               placeholder="you@vyxtrader.com"
               value={email}
-              onChange={(e) => setEmail(e.target.value)}
+              onChange={(e) => {
+                setEmail(e.target.value);
+                setShowExpiredNotice(false);
+              }}
               required
             />
           </FormField>
@@ -153,7 +177,7 @@ export default function SuperAdminLoginPage() {
               required
             />
           </FormField>
-          {error ? <Alert tone="danger">{error}</Alert> : null}
+          {error ? <Alert tone="danger">{error}</Alert> : showExpiredNotice ? <Alert tone="warning">Your session expired. Sign in again to continue.</Alert> : null}
           <Button type="submit" variant="primary" loading={submitting} className="w-full">
             {submitting ? "Signing in..." : "Sign in"}
           </Button>

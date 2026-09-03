@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { StatCard, StatGrid } from "@/components/ui/StatCard";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
+import { PageLoading, PageError } from "@/components/ui/TableExtras";
 
 type ActivityRow = { id: string; actionLabel: string; actorEmail: string; entityId: string; createdAtLabel: string };
 
@@ -25,16 +26,31 @@ type DashboardData = {
 // Super Admin admins/health pages.
 export default function DashboardManager() {
   const [data, setData] = useState<DashboardData | null>(null);
+  // Separate from `data` being null -- a fetch failure used to leave
+  // `data` null forever with no way to tell "still loading" apart from
+  // "the request actually failed" (VYX-BASICS-AUDIT.md category 4).
+  const [loadError, setLoadError] = useState(false);
+
+  function load() {
+    setLoadError(false);
+    fetch("/api/manage/dashboard")
+      .then((r) => {
+        if (!r.ok) throw new Error(`dashboard fetch failed: ${r.status}`);
+        return r.json();
+      })
+      .then(setData)
+      .catch(() => setLoadError(true));
+  }
 
   useEffect(() => {
-    fetch("/api/manage/dashboard")
-      .then((r) => r.json())
-      .then(setData)
-      .catch(() => {});
+    load();
   }, []);
 
+  if (loadError) {
+    return <PageError onRetry={load} />;
+  }
   if (data === null) {
-    return <p className="text-sm text-[var(--text-3)]">Loading...</p>;
+    return <PageLoading />;
   }
 
   return (

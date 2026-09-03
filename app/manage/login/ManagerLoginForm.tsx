@@ -21,10 +21,18 @@ type View = "signin" | "twoFactor" | "forgot" | "forgotSent" | "success";
 export default function ManagerLoginForm({
   brokerName,
   logoUrl,
+  sessionExpired = false,
   onAuthenticated,
 }: {
   brokerName: string;
   logoUrl: string | null;
+  // VYX-BASICS-AUDIT.md category 4 -- true when this render is a
+  // session-expiry bounce (the manage/super-admin shell layouts redirect
+  // here with ?reason=expired), so the sign-in view can say why instead
+  // of just silently reappearing. Cleared the moment the trader starts
+  // typing -- it's an explanation for the redirect that just happened,
+  // not a persistent banner that should survive a form interaction.
+  sessionExpired?: boolean;
   onAuthenticated: () => void;
 }) {
   const [email, setEmail] = useState("");
@@ -33,6 +41,7 @@ export default function ManagerLoginForm({
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [view, setView] = useState<View>("signin");
+  const [showExpiredNotice, setShowExpiredNotice] = useState(sessionExpired);
 
   // Forgot-password -- an in-app request instead of a mailto: link (which
   // does nothing if the device has no email client configured, and
@@ -258,6 +267,10 @@ export default function ManagerLoginForm({
             <div className="mb-4">
               <Alert tone="danger">{error}</Alert>
             </div>
+          ) : showExpiredNotice ? (
+            <div className="mb-4">
+              <Alert tone="warning">Your session expired. Sign in again to continue.</Alert>
+            </div>
           ) : null}
 
           <div className="mb-4">
@@ -269,7 +282,10 @@ export default function ManagerLoginForm({
                 autoComplete="username"
                 placeholder="you@broker.com"
                 value={email}
-                onChange={(e) => setEmail(e.target.value)}
+                onChange={(e) => {
+                  setEmail(e.target.value);
+                  setShowExpiredNotice(false);
+                }}
               />
             </FormField>
           </div>

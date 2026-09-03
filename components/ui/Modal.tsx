@@ -18,12 +18,22 @@ export function Modal({
   onClose,
   title,
   wide = false,
+  onSubmit,
   children,
 }: {
   open: boolean;
   onClose: () => void;
   title: string;
   wide?: boolean;
+  // VYX-BASICS-AUDIT.md category 3 "Enter submits, Esc cancels" -- Esc
+  // already worked (below), Enter didn't: every caller's modal body was
+  // a plain <div>, not a <form>, so pressing Enter in a text input did
+  // nothing (a <select>'s Enter is a native no-op either way). Passing
+  // onSubmit wraps `children` in a real <form onSubmit>, so Enter-to-
+  // submit comes from native browser form semantics, not a per-page
+  // keydown handler -- callers keep their own submit Button as
+  // type="submit" inside it (no onClick needed) and it just works.
+  onSubmit?: () => void;
   children: ReactNode;
 }) {
   const cardRef = useRef<HTMLDivElement>(null);
@@ -82,7 +92,18 @@ export function Modal({
             ✕
           </button>
         </div>
-        {children}
+        {onSubmit ? (
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              onSubmit();
+            }}
+          >
+            {children}
+          </form>
+        ) : (
+          children
+        )}
       </div>
     </div>
   );

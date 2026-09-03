@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/Input";
 import { FormField } from "@/components/ui/FormField";
 import { Modal, ModalActions } from "@/components/ui/Modal";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
+import { formatDateTime } from "@/lib/format";
 
 type RuleRow = {
   id: string;
@@ -383,7 +384,7 @@ function MirrorRuleDetail({ id, onClose }: { id: string; onClose: () => void }) 
               ) : (
                 data.recentFailures.map((f, i) => (
                   <TableRow key={i}>
-                    <TableCell mono className="text-xs">{f.createdAt.replace("T", " ").slice(0, 19)}</TableCell>
+                    <TableCell mono className="text-xs">{formatDateTime(f.createdAt)}</TableCell>
                     <TableCell className="text-xs">{f.reason ?? "—"}</TableCell>
                   </TableRow>
                 ))

@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { Modal } from "@/components/ui/Modal";
 import { Alert } from "@/components/ui/Alert";
+import { formatDateTime } from "@/lib/format";
 
 export type NotificationRow = {
   id: string;
@@ -70,7 +71,7 @@ export default function NotificationsManager({
   function load() {
     return fetch("/api/manage/notifications")
       .then((r) => r.json())
-      .then((d: NotificationRow[]) => setRows(d.map((n) => ({ ...n, createdAt: n.createdAt.replace("T", " ").slice(0, 19) }))));
+      .then((d: NotificationRow[]) => setRows(d.map((n) => ({ ...n, createdAt: formatDateTime(n.createdAt) }))));
   }
 
   useEffect(() => {

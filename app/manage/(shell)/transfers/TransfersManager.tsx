@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { FormField } from "@/components/ui/FormField";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
+import { formatDateTime } from "@/lib/format";
 
 export type TransferRow = {
   id: string;
@@ -131,7 +132,7 @@ export default function TransfersManager() {
                 </TableCell>
                 <TableCell align="right" mono>{row.amount}</TableCell>
                 <TableCell className="text-xs text-[var(--text-3)]">{row.note ?? "—"}</TableCell>
-                <TableCell className="text-xs text-[var(--text-3)]">{row.createdAt.replace("T", " ").slice(0, 19)}</TableCell>
+                <TableCell className="text-xs text-[var(--text-3)]">{formatDateTime(row.createdAt)}</TableCell>
               </TableRow>
             ))
           )}

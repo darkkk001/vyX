@@ -8,7 +8,22 @@ import ManagerLoginForm from "./ManagerLoginForm";
 // ManagerLoginForm -- same split as NextTradeLoginForm.tsx/
 // TradeLoginForm.tsx. page.tsx renders this, not ManagerLoginForm
 // directly.
-export default function NextManagerLoginForm({ brokerName, logoUrl }: { brokerName: string; logoUrl: string | null }) {
+export default function NextManagerLoginForm({
+  brokerName,
+  logoUrl,
+  sessionExpired = false,
+}: {
+  brokerName: string;
+  logoUrl: string | null;
+  sessionExpired?: boolean;
+}) {
   const router = useRouter();
-  return <ManagerLoginForm brokerName={brokerName} logoUrl={logoUrl} onAuthenticated={() => router.push("/manage/dashboard")} />;
+  return (
+    <ManagerLoginForm
+      brokerName={brokerName}
+      logoUrl={logoUrl}
+      sessionExpired={sessionExpired}
+      onAuthenticated={() => router.push("/manage/dashboard")}
+    />
+  );
 }
