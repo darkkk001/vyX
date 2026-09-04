@@ -23,6 +23,13 @@ import {
 
 const STORAGE_KEY = "vyx-stm-config";
 
+// Compact override for .modal-btn's own shared padding/font-size (9px
+// 18px / 12.5px), sized for a full-width modal action -- STM's own
+// hotkey/action-row buttons live in a much narrower embedded sidebar
+// context (down to ~160px) and overflowed it at that size, reported
+// live (2026-09-04).
+const compactBtn = { padding: "5px 8px", fontSize: 11 } as const;
+
 type OrderType = "MARKET" | "LIMIT" | "STOP";
 type CloseScope = "ALL_SYMBOLS" | "CURRENT_SYMBOL" | "SELECTED";
 type DirectionFilter = "ALL" | "BUY" | "SELL";
@@ -313,13 +320,19 @@ export default function SmartTradeManager({
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 10 }}>
             <div>
               <label style={{ fontSize: 11, color: "var(--text-3)", display: "block", marginBottom: 3 }}>Symbol</label>
-              <select className="mono" style={{ width: "100%" }} value={config.symbol} onChange={(e) => setConfig((c) => ({ ...c, symbol: e.target.value }))}>
+              {/* Compact override -- the shared .wt-root select rule
+                  (padding: 8px 10px, font-size: 12.5px) was sized for the
+                  full-width order ticket, not this half-width embedded
+                  grid cell (as narrow as ~75px in the docked Watchlist
+                  column), where it clipped option text like "XAUUSD" down
+                  to "XAUUS". Reported live (2026-09-04). */}
+              <select className="mono" style={{ width: "100%", padding: "5px 4px", fontSize: 11 }} value={config.symbol} onChange={(e) => setConfig((c) => ({ ...c, symbol: e.target.value }))}>
                 {symbols.map((s) => <option key={s.name} value={s.name}>{s.name}</option>)}
               </select>
             </div>
             <div>
               <label style={{ fontSize: 11, color: "var(--text-3)", display: "block", marginBottom: 3 }}>Order type</label>
-              <select className="mono" style={{ width: "100%" }} value={config.orderType} onChange={(e) => setConfig((c) => ({ ...c, orderType: e.target.value as OrderType }))}>
+              <select className="mono" style={{ width: "100%", padding: "5px 4px", fontSize: 11 }} value={config.orderType} onChange={(e) => setConfig((c) => ({ ...c, orderType: e.target.value as OrderType }))}>
                 <option value="MARKET">Market</option>
                 <option value="LIMIT">Limit</option>
                 <option value="STOP">Stop</option>
@@ -366,13 +379,17 @@ export default function SmartTradeManager({
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 10 }}>
             <div>
               <label style={{ fontSize: 11, color: "var(--text-3)", display: "block", marginBottom: 3 }}>Buy hotkey</label>
-              <button className="modal-btn" style={{ width: "100%" }} onClick={() => setCapturingHotkey("buy")}>
+              {/* Compact override -- see the Symbol select's own comment
+                  above; .modal-btn's shared padding (9px 18px) was sized
+                  for a full-width modal action, not a half-width embedded
+                  grid cell. */}
+              <button className="modal-btn" style={{ width: "100%", padding: "5px 8px", fontSize: 11 }} onClick={() => setCapturingHotkey("buy")}>
                 {capturingHotkey === "buy" ? "Press a key…" : hotkeyToLabel(config.buyHotkey)}
               </button>
             </div>
             <div>
               <label style={{ fontSize: 11, color: "var(--text-3)", display: "block", marginBottom: 3 }}>Sell hotkey</label>
-              <button className="modal-btn" style={{ width: "100%" }} onClick={() => setCapturingHotkey("sell")}>
+              <button className="modal-btn" style={{ width: "100%", padding: "5px 8px", fontSize: 11 }} onClick={() => setCapturingHotkey("sell")}>
                 {capturingHotkey === "sell" ? "Press a key…" : hotkeyToLabel(config.sellHotkey)}
               </button>
             </div>
@@ -392,7 +409,7 @@ export default function SmartTradeManager({
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 10 }}>
             <div>
               <label style={{ fontSize: 11, color: "var(--text-3)", display: "block", marginBottom: 3 }}>Scope</label>
-              <select className="mono" style={{ width: "100%" }} value={closeScope} onChange={(e) => setCloseScope(e.target.value as CloseScope)}>
+              <select className="mono" style={{ width: "100%", padding: "5px 4px", fontSize: 11 }} value={closeScope} onChange={(e) => setCloseScope(e.target.value as CloseScope)}>
                 <option value="ALL_SYMBOLS">All symbols</option>
                 <option value="CURRENT_SYMBOL">Current symbol ({activeSymbol})</option>
                 <option value="SELECTED">Selected ({selectedPositionIds.size})</option>
@@ -400,7 +417,7 @@ export default function SmartTradeManager({
             </div>
             <div>
               <label style={{ fontSize: 11, color: "var(--text-3)", display: "block", marginBottom: 3 }}>Direction</label>
-              <select className="mono" style={{ width: "100%" }} value={closeDirection} onChange={(e) => setCloseDirection(e.target.value as DirectionFilter)}>
+              <select className="mono" style={{ width: "100%", padding: "5px 4px", fontSize: 11 }} value={closeDirection} onChange={(e) => setCloseDirection(e.target.value as DirectionFilter)}>
                 <option value="ALL">All</option>
                 <option value="BUY">Buy</option>
                 <option value="SELL">Sell</option>
@@ -419,21 +436,21 @@ export default function SmartTradeManager({
           <div style={{ marginBottom: 10 }}>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center", marginBottom: 6 }}>
               <span style={{ fontSize: 11, color: "var(--text-3)", width: 90 }}>Break-even</span>
-              <input className="mono" style={{ width: 70 }} type="number" step="any" value={beOffset} onChange={(e) => setBeOffset(e.target.value)} title="Offset from entry price" />
-              <button className="modal-btn" disabled={busy} onClick={breakEven}>Apply</button>
+              <input className="mono" style={{ width: 70, fontSize: 11 }} type="number" step="any" value={beOffset} onChange={(e) => setBeOffset(e.target.value)} title="Offset from entry price" />
+              <button className="modal-btn" style={compactBtn} disabled={busy} onClick={breakEven}>Apply</button>
             </div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center", marginBottom: 6 }}>
               <span style={{ fontSize: 11, color: "var(--text-3)", width: 90 }}>Partial close</span>
-              <button className="modal-btn" disabled={busy} onClick={() => partialClosePct(0.25)}>25%</button>
-              <button className="modal-btn" disabled={busy} onClick={() => partialClosePct(0.5)}>50%</button>
-              <button className="modal-btn" disabled={busy} onClick={() => partialClosePct(0.75)}>75%</button>
-              <input className="mono" style={{ width: 50 }} type="number" min="1" max="99" value={customPct} onChange={(e) => setCustomPct(e.target.value)} />
-              <button className="modal-btn" disabled={busy} onClick={partialCloseCustom}>%</button>
+              <button className="modal-btn" style={compactBtn} disabled={busy} onClick={() => partialClosePct(0.25)}>25%</button>
+              <button className="modal-btn" style={compactBtn} disabled={busy} onClick={() => partialClosePct(0.5)}>50%</button>
+              <button className="modal-btn" style={compactBtn} disabled={busy} onClick={() => partialClosePct(0.75)}>75%</button>
+              <input className="mono" style={{ width: 50, fontSize: 11 }} type="number" min="1" max="99" value={customPct} onChange={(e) => setCustomPct(e.target.value)} />
+              <button className="modal-btn" style={compactBtn} disabled={busy} onClick={partialCloseCustom}>%</button>
             </div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-              <button className="modal-btn" disabled={busy} onClick={closeProfitable} style={{ flex: 1, minWidth: 90 }}>Close profitable</button>
-              <button className="modal-btn" disabled={busy} onClick={closeLosing} style={{ flex: 1, minWidth: 80 }}>Close losing</button>
-              <button className="modal-btn" disabled={busy} onClick={closeAll} style={{ flex: 1, minWidth: 70 }}>Close all</button>
+              <button className="modal-btn" disabled={busy} onClick={closeProfitable} style={{ ...compactBtn, flex: 1, minWidth: 90 }}>Close profitable</button>
+              <button className="modal-btn" disabled={busy} onClick={closeLosing} style={{ ...compactBtn, flex: 1, minWidth: 80 }}>Close losing</button>
+              <button className="modal-btn" disabled={busy} onClick={closeAll} style={{ ...compactBtn, flex: 1, minWidth: 70 }}>Close all</button>
             </div>
           </div>
         </div>

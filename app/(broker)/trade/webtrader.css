@@ -583,7 +583,12 @@ html, body, #root {
 .pos-side.sell { background: var(--sell-bg); color: var(--sell); }
 .pos-comment { color: var(--text-3); cursor: pointer; font-size: 11.5px; border-bottom: 1px dashed transparent; }
 .pos-comment:hover { color: var(--text-2); border-color: var(--border-strong); }
-.pos-swap, .pos-commission { color: var(--text-3); font-size: 11.5px; }
+/* Read-only values -- reported live as looking editable (2026-09-04):
+   plain text with no explicit cursor defaults to an I-beam on hover in
+   most browsers, which reads as "click to edit" right next to the
+   genuinely-editable S/L, T/P, and Comment cells in the same row. These
+   two never had a click handler at all -- cursor: default says so. */
+.pos-swap, .pos-commission { color: var(--text-3); font-size: 11.5px; cursor: default; }
 .pos-pnl { font-weight: 600; font-size: 12.5px; }
 .pos-pnl.pos { color: var(--buy); }
 .pos-pnl.neg { color: var(--sell); }
@@ -635,7 +640,16 @@ html, body, #root {
 .pending-approval-badge { display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; font-weight: 600; letter-spacing: 0.02em; color: var(--warn); background: var(--warn-bg); border: 1px solid rgba(240, 185, 11, 0.35); border-radius: 4px; padding: 2px 7px; }
 .order-row-pending-approval { background: rgba(240, 185, 11, 0.05); }
 
-.simple-row { display: flex; justify-content: space-between; align-items: center; padding: 9px 4px; border-bottom: 1px solid var(--bg-2); font-size: 12.5px; flex-wrap: wrap; row-gap: 4px; }
+/* Bottom-panel tab layout-shift fix (2026-09-04) -- Positions/History use
+   a fixed-column grid with min-width: 960px (horizontal scroll on a
+   narrow panel); this shared row had NO min-width at all, so switching
+   to/from Net positions/Pending Orders/Orders changed .panel-body's own
+   scrollable content width (and therefore its scrollbar/scroll-position
+   state) out from under the trader, reading as the whole panel jumping
+   left or right depending on which tab. Matching the same min-width
+   keeps .panel-body's horizontal geometry identical across every tab,
+   not just this one row style. */
+.simple-row { display: flex; justify-content: space-between; align-items: center; padding: 9px 4px; border-bottom: 1px solid var(--bg-2); font-size: 12.5px; flex-wrap: wrap; row-gap: 4px; min-width: 960px; }
 .simple-row:last-child { border-bottom: none; }
 /* min-width: 0 + flex-wrap -- without them, a flex child's content-based
    min-width can't shrink below its packed symbol/side/price/time text,

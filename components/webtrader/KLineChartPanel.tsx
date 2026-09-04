@@ -125,8 +125,17 @@ registerOverlay({
     const tagWidth = label.length * 6.6 + TAG_TEXT_STYLE.paddingLeft + TAG_TEXT_STYLE.paddingRight;
     return [
       {
+        // Click-to-reveal TP/SL feature (2026-09-04) -- this was
+        // ignoreEvent: true (and so was "tag" below), meaning NEITHER
+        // could ever receive a click at all; only the tiny "close" figure
+        // near the left edge was interactive. That's what silently made
+        // WebTrader.tsx's own "click anywhere else on the line" handler
+        // unreachable dead code until this was caught live. The line
+        // itself is now the click target for reveal -- "tag" stays
+        // decorative (it visually sits on top of this same line anyway,
+        // so a click there still lands on the line), "close" stays its
+        // own separate, more specific hit target drawn after this one.
         type: "line",
-        ignoreEvent: true,
         attrs: { coordinates: [{ x: 0, y }, { x: bounding.width, y }] },
         styles: { style: "solid", size: 1, color },
       },
@@ -432,6 +441,18 @@ type Props = {
   positionLines?: PositionLineData[];
   editableLines?: EditablePriceLineData[];
   onClosePositionLine?: (positionId: string) => void;
+  // Click-to-reveal TP/SL feature (2026-09-04) -- clicking anywhere on a
+  // position's own entry line OTHER than its close "x" toggles this.
+  // WebTrader.tsx owns which position (if any) is currently revealed.
+  onPositionLineClick?: (positionId: string) => void;
+  // The revealed position's own TP/SL button pair, rendered as a small
+  // floating DOM control near its entry line (same convertToPixel
+  // technique the session-band shading below already uses -- a real
+  // klinecharts overlay figure can't host two independently clickable,
+  // state-dependent buttons without much deeper surgery on
+  // vyxPositionLine's own figure set). Null when no position is revealed.
+  revealedPosition?: { id: string; price: number; hasTp: boolean; hasSl: boolean } | null;
+  onTpSlButtonClick?: (kind: "tp" | "sl") => void;
   // Resolves true to keep the drag's new price (the line stays there until
   // the caller's own state refresh reconciles it against the server), or
   // false to snap back to the price it had when this line was last
@@ -484,6 +505,9 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
     positionLines,
     editableLines,
     onClosePositionLine,
+    onPositionLineClick,
+    revealedPosition,
+    onTpSlButtonClick,
     onDragEditableLine,
     settings,
     previousDayHighLow,
@@ -512,6 +536,13 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
   // that entirely and is a standard technique for chart session shading.
   const [sessionBandRects, setSessionBandRects] = useState<{ key: string; session: SessionName; left: number; width: number }[]>([]);
   const recomputeSessionBandsRef = useRef<() => void>(() => {});
+  // Click-to-reveal TP/SL feature -- same DOM-overlay technique as the
+  // session bands above (a klinecharts overlay figure can't host two
+  // independently clickable, state-dependent buttons without much deeper
+  // surgery on vyxPositionLine's own figure set). Repositioned on pan/
+  // zoom via the same recompute-ref hook the session bands already use.
+  const [tpSlButtonRect, setTpSlButtonRect] = useState<{ top: number } | null>(null);
+  const recomputeTpSlButtonRef = useRef<() => void>(() => {});
   const positionLineIdsRef = useRef<string[]>([]);
   const editableLineIdsRef = useRef<string[]>([]);
   const userOverlayIdsRef = useRef<string[]>([]);
@@ -521,6 +552,8 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
   onPanOrZoomRef.current = onPanOrZoom;
   const onClosePositionLineRef = useRef(onClosePositionLine);
   onClosePositionLineRef.current = onClosePositionLine;
+  const onPositionLineClickRef = useRef(onPositionLineClick);
+  onPositionLineClickRef.current = onPositionLineClick;
   const onDragEditableLineRef = useRef(onDragEditableLine);
   onDragEditableLineRef.current = onDragEditableLine;
   // Always read the *current* symbol/timeframe from inside overlay
@@ -708,6 +741,7 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
       try {
         chartRef.current?.resize?.();
         recomputeSessionBandsRef.current?.();
+        recomputeTpSlButtonRef.current?.();
       } catch {
         // ignore
       }
@@ -766,6 +800,7 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
     const onChartAction = () => {
       onPanOrZoomRef.current?.();
       recomputeSessionBandsRef.current?.();
+      recomputeTpSlButtonRef.current?.();
     };
     try {
       chart?.subscribeAction?.(ActionType.OnZoom, onChartAction);
@@ -826,6 +861,21 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
         // ignore
       }
       chartRef.current = null;
+      // Chart indicators feature -- the real bug this fixes: this ref
+      // tracks which keys have a LIVE instance on the CURRENT chart, but
+      // was never cleared here. React StrictMode double-invokes this
+      // whole effect on every dev-mode mount (setup -> cleanup -> setup
+      // again, same instance, same refs) -- without this line, the
+      // second setup's reconcile effect (below) saw a stale ref still
+      // claiming e.g. "RSI already exists" from the FIRST (now-disposed)
+      // chart, called overrideIndicator instead of createIndicator
+      // against the brand-new chart, silently no-op'd (try/catch
+      // swallows it), and the indicator never actually attached to the
+      // real chart at all -- while the persisted state/chip UI still
+      // said it was active, since that lives in React state untouched by
+      // any of this. Reproduced live by watching the exact StrictMode
+      // double-GET this file's own mount effect already fires in dev.
+      activeIndicatorKeysRef.current.clear();
     };
   }, []);
 
@@ -1008,6 +1058,32 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
     recompute();
   }, [candles, timeframe, settings?.showSessionMap]);
 
+  // Click-to-reveal TP/SL feature -- positions the floating TP/SL button
+  // pair at the revealed position's own entry-line price, same
+  // convertToPixel + recompute-on-pan/zoom pattern as the session bands
+  // above.
+  useEffect(() => {
+    function recompute() {
+      const chart = chartRef.current;
+      if (!chart || !revealedPosition) {
+        setTpSlButtonRect(null);
+        return;
+      }
+      try {
+        const p = chart.convertToPixel?.({ value: revealedPosition.price }, { paneId: "candle_pane" }) as { y?: number } | undefined;
+        if (typeof p?.y !== "number") {
+          setTpSlButtonRect(null);
+          return;
+        }
+        setTpSlButtonRect({ top: p.y });
+      } catch {
+        setTpSlButtonRect(null);
+      }
+    }
+    recomputeTpSlButtonRef.current = recompute;
+    recompute();
+  }, [revealedPosition, candles]);
+
   // Impression Pack #2 -- previous-day high/low (PDH/PDL), every timeframe.
   useEffect(() => {
     const chart = chartRef.current;
@@ -1056,7 +1132,14 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
           points: [{ value: pl.price }],
           extendData: { color: pl.color, label: pl.label },
           onClick: (event: { figureKey?: string }) => {
-            if (event.figureKey === "close") onClosePositionLineRef.current?.(pl.positionId);
+            if (event.figureKey === "close") {
+              onClosePositionLineRef.current?.(pl.positionId);
+            } else {
+              // Click-to-reveal TP/SL feature -- clicking anywhere else on
+              // the line (the tag, or the line itself) toggles the TP/SL
+              // button pair for this position.
+              onPositionLineClickRef.current?.(pl.positionId);
+            }
             return true;
           },
         });
@@ -1316,6 +1399,52 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
               style={{ position: "absolute", top: 0, bottom: 0, left: r.left, width: r.width, background: SESSION_COLORS[r.session] }}
             />
           ))}
+        </div>
+      ) : null}
+      {tpSlButtonRect && revealedPosition ? (
+        <div
+          style={{
+            position: "absolute",
+            top: tpSlButtonRect.top,
+            right: 8,
+            transform: "translateY(-50%)",
+            display: "flex",
+            gap: 4,
+            zIndex: 4,
+          }}
+        >
+          <button
+            onClick={() => onTpSlButtonClick?.("tp")}
+            title={revealedPosition.hasTp ? "Take profit set -- drag its line to adjust" : "Click, then drag to set a take profit"}
+            style={{
+              padding: "3px 8px",
+              borderRadius: 4,
+              border: revealedPosition.hasTp ? "none" : "1px solid var(--border-strong)",
+              background: revealedPosition.hasTp ? "#16C784" : "var(--bg-2)",
+              color: revealedPosition.hasTp ? "#04140C" : "var(--text-2)",
+              fontSize: 10.5,
+              fontWeight: 700,
+              cursor: "pointer",
+            }}
+          >
+            TP
+          </button>
+          <button
+            onClick={() => onTpSlButtonClick?.("sl")}
+            title={revealedPosition.hasSl ? "Stop loss set -- drag its line to adjust" : "Click, then drag to set a stop loss"}
+            style={{
+              padding: "3px 8px",
+              borderRadius: 4,
+              border: revealedPosition.hasSl ? "none" : "1px solid var(--border-strong)",
+              background: revealedPosition.hasSl ? "#EA3943" : "var(--bg-2)",
+              color: revealedPosition.hasSl ? "#fff" : "var(--text-2)",
+              fontSize: 10.5,
+              fontWeight: 700,
+              cursor: "pointer",
+            }}
+          >
+            SL
+          </button>
         </div>
       ) : null}
     </div>

@@ -278,13 +278,19 @@ export default function WebTrader({
   // "Selected" scope for Smart Trade Manager's bulk actions (break-even,
   // partial close, close) -- otherwise unused outside SmartTradeManager.tsx.
   const [selectedPositionIds, setSelectedPositionIds] = useState<Set<string>>(new Set());
-  // Drag-to-create SL/TP affordance -- which position's UNSET SL/TP ghost
-  // handles (see editableLines below) are currently shown on the chart.
-  // null by default, on purpose: a ghost handle used to render for every
-  // open position regardless, which looked exactly like a real SL/TP the
-  // trader had to notice was fake and drag away. Set by hovering that
-  // position's own row in the positions table (.position-row below).
-  const [hoveredPositionId, setHoveredPositionId] = useState<string | null>(null);
+  // Click-to-reveal TP/SL feature (2026-09-04) -- which position's entry
+  // line was clicked on the chart (reveals its TP/SL button pair, see
+  // KLineChartPanel's revealedPosition prop), and which of its UNSET
+  // SL/TP the trader then clicked to activate a drag-to-create ghost
+  // handle for (see editableLines below). Both null by default: a ghost
+  // handle used to render for every open position regardless, then
+  // briefly on row hover, both of which looked exactly like a real SL/TP
+  // the trader had to notice was fake and drag away, or (hover) that
+  // appeared just from moving the mouse over a table row with no click at
+  // all -- reported live as a real bug. Now genuinely opt-in: click the
+  // line, then click TP or SL.
+  const [revealedPositionId, setRevealedPositionId] = useState<string | null>(null);
+  const [activeGhostKind, setActiveGhostKind] = useState<"sl" | "tp" | null>(null);
   // Now doubles as the embedded Smart Trade Manager panel's expand/
   // collapse state (below the Watchlist) -- defaults open since it's
   // meant to be visible there, not hidden behind the rail icon anymore.
@@ -2229,18 +2235,6 @@ export default function WebTrader({
     }
   }
 
-  // ---------- close menu (item 9: Close / Partial close / Close by) ----------
-  // Fixed-position + click-coordinate, same convention as this file's
-  // other context menus (wlContextMenu/chartContextMenu) -- NOT anchored
-  // via position: relative/absolute under the trigger button, which
-  // .panel-body's own overflow: auto (the positions table scrolls) would
-  // clip the instant the dropdown tried to paint past this row's cell
-  // bounds. position: fixed escapes that entirely.
-  const [closeMenuState, setCloseMenuState] = useState<{ id: string; x: number; y: number; openUpward: boolean } | null>(null);
-  const closeMenuOpenId = closeMenuState?.id ?? null;
-  const closeMenuRef = useRef<HTMLDivElement>(null);
-  useDismiss(closeMenuState !== null, () => setCloseMenuState(null), closeMenuRef);
-
   const [partialCloseTarget, setPartialCloseTarget] = useState<string | null>(null);
   const [partialCloseMode, setPartialCloseMode] = useState<"lots" | "percent">("lots");
   const [partialCloseValue, setPartialCloseValue] = useState("50");
@@ -2248,7 +2242,6 @@ export default function WebTrader({
   const [partialCloseBusy, setPartialCloseBusy] = useState(false);
 
   function openPartialClose(id: string) {
-    setCloseMenuState(null);
     setPartialCloseTarget(id);
     setPartialCloseMode("lots");
     const p = positions.find((x) => x.id === id);
@@ -2319,7 +2312,6 @@ export default function WebTrader({
   const [closeByError, setCloseByError] = useState<string | null>(null);
 
   function openCloseByPicker(id: string) {
-    setCloseMenuState(null);
     setCloseByTarget(id);
     setCloseByError(null);
   }
@@ -2908,14 +2900,20 @@ export default function WebTrader({
         // Ghost (drag-to-create) SL/TP handles used to render for every
         // open position unconditionally -- looked exactly like a real
         // SL/TP the trader had to notice was fake and drag away, on
-        // every single trade opened with neither set. Now only included
-        // when there's a real price to show, OR the trader is actively
-        // hovering that position's own row (the affordance, not a
-        // permanent fixture) -- see hoveredPositionId's own comment.
-        const isHovered = p.id === hoveredPositionId;
+        // every single trade opened with neither set. Then briefly tied
+        // to row hover -- ghost lines appeared on the chart just from
+        // moving the mouse over a position row in the bottom panel,
+        // reported as a real bug (2026-09-04): a phantom TP/SL affordance
+        // with no click involved. Now only included when there's a real
+        // price to show, OR the trader explicitly clicked this exact
+        // position's own entry line AND then clicked the TP/SL button for
+        // the one that's not set yet (click-to-reveal-then-drag-to-create
+        // -- see revealedPositionId/activeGhostKind's own comments).
+        const wantsGhostSl = p.id === revealedPositionId && activeGhostKind === "sl";
+        const wantsGhostTp = p.id === revealedPositionId && activeGhostKind === "tp";
         const slPrice = p.slPrice ? parseFloat(p.slPrice) : null;
         const slGhostPrice = p.side === "BUY" ? openPrice - ghostOffset : openPrice + ghostOffset;
-        if (slPrice != null || isHovered) {
+        if (slPrice != null || wantsGhostSl) {
           out.push({
             id: `editsl-${p.id}`,
             entityId: p.id,
@@ -2932,7 +2930,7 @@ export default function WebTrader({
         }
         const tpPrice = p.tpPrice ? parseFloat(p.tpPrice) : null;
         const tpGhostPrice = p.side === "BUY" ? openPrice + ghostOffset : openPrice - ghostOffset;
-        if (tpPrice != null || isHovered) {
+        if (tpPrice != null || wantsGhostTp) {
           out.push({
             id: `edittp-${p.id}`,
             entityId: p.id,
@@ -3006,7 +3004,56 @@ export default function WebTrader({
         });
       });
     return out;
-  }, [positions, pendingOrders, activeSymbol, market, pnlAtPrice, hoveredPositionId]);
+  }, [positions, pendingOrders, activeSymbol, market, pnlAtPrice, revealedPositionId, activeGhostKind]);
+
+  // Click-to-reveal TP/SL feature -- the revealed position's own TP/SL
+  // button state, passed to KLineChartPanel for its floating button pair.
+  // Scoped to the active symbol too: a position on a different symbol has
+  // no entry line on screen right now, so nothing should stay "revealed"
+  // for it.
+  const revealedPosition = useMemo(() => {
+    if (!revealedPositionId) return null;
+    const p = positions.find((x) => x.id === revealedPositionId && x.symbol.name === activeSymbol);
+    if (!p) return null;
+    return { id: p.id, price: parseFloat(p.openPrice), hasTp: !!p.tpPrice, hasSl: !!p.slPrice };
+  }, [revealedPositionId, positions, activeSymbol]);
+
+  function handlePositionLineClick(positionId: string) {
+    setRevealedPositionId((id) => (id === positionId ? null : positionId));
+    setActiveGhostKind(null);
+  }
+
+  function handleTpSlButtonClick(kind: "sl" | "tp") {
+    if (!revealedPosition) return;
+    // Already set -- the real line is already draggable on its own
+    // (unconditionally, regardless of reveal state), nothing to activate.
+    if (kind === "sl" ? revealedPosition.hasSl : revealedPosition.hasTp) return;
+    setActiveGhostKind((k) => (k === kind ? null : kind));
+  }
+
+  // Auto-clear the ghost-creation flag once the drag actually succeeds
+  // (the position's real slPrice/tpPrice comes back set on the next
+  // positions refresh) -- otherwise re-revealing the same position later
+  // would still think a drag was "in progress" for a kind that's now a
+  // real, already-set line.
+  useEffect(() => {
+    if (!revealedPositionId || !activeGhostKind) return;
+    const p = positions.find((x) => x.id === revealedPositionId);
+    if (!p) return;
+    const isSet = activeGhostKind === "sl" ? !!p.slPrice : !!p.tpPrice;
+    if (isSet) setActiveGhostKind(null);
+  }, [positions, revealedPositionId, activeGhostKind]);
+
+  // The revealed position closing, or the trader switching symbol/
+  // account, leaves nothing real to reveal buttons for.
+  useEffect(() => {
+    if (!revealedPositionId) return;
+    const stillValid = positions.some((p) => p.id === revealedPositionId && p.symbol.name === activeSymbol);
+    if (!stillValid) {
+      setRevealedPositionId(null);
+      setActiveGhostKind(null);
+    }
+  }, [positions, activeSymbol, revealedPositionId]);
 
   function handleChartContextMenuPrice(price: number, clientX: number, clientY: number) {
     setChartContextMenu({ x: clientX, y: clientY, price });
@@ -3786,6 +3833,68 @@ export default function WebTrader({
                   ))}
                 </div>
               ) : null}
+              {chartLayout === "single" ? (
+                <div style={{ position: "relative", marginLeft: 8 }} ref={indicatorsMenuRef}>
+                  <button
+                    onClick={() => setIndicatorsMenuOpen((v) => !v)}
+                    title="Indicators"
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 5,
+                      padding: "5px 10px",
+                      borderRadius: 7,
+                      border: "none",
+                      cursor: "pointer",
+                      background: activeIndicators.length > 0 || indicatorsMenuOpen ? "var(--bg-4)" : "var(--bg-2)",
+                      color: activeIndicators.length > 0 || indicatorsMenuOpen ? "var(--text-1)" : "var(--text-3)",
+                      fontSize: 11.5,
+                      fontWeight: 600,
+                    }}
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 17c3-8 5-8 8 0s5 8 8 0" /></svg>
+                    Indicators
+                    {activeIndicators.length > 0 ? (
+                      <span
+                        className="mono"
+                        style={{
+                          background: "var(--accent)",
+                          color: "#04140C",
+                          borderRadius: 9,
+                          minWidth: 15,
+                          height: 15,
+                          fontSize: 9.5,
+                          fontWeight: 700,
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          padding: "0 3px",
+                        }}
+                      >
+                        {activeIndicators.length}
+                      </span>
+                    ) : null}
+                  </button>
+                  {indicatorsMenuOpen ? (
+                    <div className="wl-context-menu show" style={{ position: "absolute", left: 0, top: "calc(100% + 6px)", maxHeight: 360, overflowY: "auto", minWidth: 200 }}>
+                      <div className="wl-ctx-title">Overlay</div>
+                      {OVERLAY_INDICATOR_KEYS.map((key) => (
+                        <div key={key} className="wl-ctx-item" onClick={() => addIndicatorFromMenu(key)}>
+                          <span className="wl-ctx-check">{activeIndicators.some((a) => a.key === key) ? "✓" : ""}</span>
+                          <span>{INDICATOR_DEFS[key].label}</span>
+                        </div>
+                      ))}
+                      <div className="wl-ctx-title">Sub-pane</div>
+                      {SUBPANE_INDICATOR_KEYS.map((key) => (
+                        <div key={key} className="wl-ctx-item" onClick={() => addIndicatorFromMenu(key)}>
+                          <span className="wl-ctx-check">{activeIndicators.some((a) => a.key === key) ? "✓" : ""}</span>
+                          <span>{INDICATOR_DEFS[key].label}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
               <div style={{ display: "flex", gap: 3, background: "var(--bg-2)", padding: 3, borderRadius: 8, marginLeft: 8 }}>
                 <button
                   title="Single chart"
@@ -3826,34 +3935,6 @@ export default function WebTrader({
                     <button className="draw-tool-btn" onClick={() => { chartRef.current?.removeAllDrawings(); pushToast("Drawings cleared"); }} title="Clear all drawings">
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 6h18" /><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" /></svg>
                     </button>
-                    <div className="draw-tool-sep" />
-                    <div style={{ position: "relative" }} ref={indicatorsMenuRef}>
-                      <button
-                        className={`draw-tool-btn${activeIndicators.length > 0 ? " active" : ""}`}
-                        onClick={() => setIndicatorsMenuOpen((v) => !v)}
-                        title="Indicators"
-                      >
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 17c3-8 5-8 8 0s5 8 8 0" /></svg>
-                      </button>
-                      {indicatorsMenuOpen ? (
-                        <div className="wl-context-menu show" style={{ position: "absolute", left: "calc(100% + 6px)", top: 0, maxHeight: 360, overflowY: "auto" }}>
-                          <div className="wl-ctx-title">Overlay</div>
-                          {OVERLAY_INDICATOR_KEYS.map((key) => (
-                            <div key={key} className="wl-ctx-item" onClick={() => addIndicatorFromMenu(key)}>
-                              <span className="wl-ctx-check">{activeIndicators.some((a) => a.key === key) ? "✓" : ""}</span>
-                              <span>{INDICATOR_DEFS[key].label}</span>
-                            </div>
-                          ))}
-                          <div className="wl-ctx-title">Sub-pane</div>
-                          {SUBPANE_INDICATOR_KEYS.map((key) => (
-                            <div key={key} className="wl-ctx-item" onClick={() => addIndicatorFromMenu(key)}>
-                              <span className="wl-ctx-check">{activeIndicators.some((a) => a.key === key) ? "✓" : ""}</span>
-                              <span>{INDICATOR_DEFS[key].label}</span>
-                            </div>
-                          ))}
-                        </div>
-                      ) : null}
-                    </div>
                   </div>
                   {activeIndicators.length > 0 ? (
                     <div style={{ position: "absolute", left: 44, top: 8, zIndex: 5, display: "flex", flexWrap: "wrap", gap: 4, maxWidth: "calc(100% - 60px)" }}>
@@ -3899,6 +3980,9 @@ export default function WebTrader({
                     positionLines={positionLines}
                     editableLines={editableLines}
                     onClosePositionLine={closePositionFull}
+                    onPositionLineClick={handlePositionLineClick}
+                    revealedPosition={revealedPosition}
+                    onTpSlButtonClick={handleTpSlButtonClick}
                     onDragEditableLine={onDragEditableLine}
                     settings={chartSettings}
                     previousDayHighLow={previousDayHighLow}
@@ -3920,12 +4004,25 @@ export default function WebTrader({
                       <div className="wl-ctx-item" onClick={() => { setChartSettingsOpen(true); setChartContextMenu(null); }}>
                         <span>Chart settings…</span>
                       </div>
-                      <div className="wl-ctx-item" onClick={() => { openQuickOrderAtPrice(activeSymbol, "BUY", chartContextMenu.price); setChartContextMenu(null); }}>
-                        <span>Buy at this price</span>
-                      </div>
-                      <div className="wl-ctx-item" onClick={() => { openQuickOrderAtPrice(activeSymbol, "SELL", chartContextMenu.price); setChartContextMenu(null); }}>
-                        <span>Sell at this price</span>
-                      </div>
+                      {chartContextMenu.price <= m.bid ? (
+                        <>
+                          <div className="wl-ctx-item" onClick={() => { openQuickOrderAtPrice(activeSymbol, "BUY", chartContextMenu.price); setChartContextMenu(null); }}>
+                            <span>Add Buy Limit</span>
+                          </div>
+                          <div className="wl-ctx-item" onClick={() => { openQuickOrderAtPrice(activeSymbol, "SELL", chartContextMenu.price); setChartContextMenu(null); }}>
+                            <span>Add Sell Stop</span>
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <div className="wl-ctx-item" onClick={() => { openQuickOrderAtPrice(activeSymbol, "SELL", chartContextMenu.price); setChartContextMenu(null); }}>
+                            <span>Add Sell Limit</span>
+                          </div>
+                          <div className="wl-ctx-item" onClick={() => { openQuickOrderAtPrice(activeSymbol, "BUY", chartContextMenu.price); setChartContextMenu(null); }}>
+                            <span>Add Buy Stop</span>
+                          </div>
+                        </>
+                      )}
                       <div className="wl-ctx-item" onClick={() => { openPriceAlert(activeSymbol, chartContextMenu.price); setChartContextMenu(null); }}>
                         <span>Add alert at this price</span>
                       </div>
@@ -4041,8 +4138,6 @@ export default function WebTrader({
                         <div
                           className="position-row"
                           key={p.id}
-                          onMouseEnter={() => setHoveredPositionId(p.id)}
-                          onMouseLeave={() => setHoveredPositionId((id) => (id === p.id ? null : id))}
                         >
                           <span className="pos-cell">
                             <input
@@ -4091,30 +4186,19 @@ export default function WebTrader({
                             <button className="icon-btn" title="Share" onClick={() => openShareForPosition(p.id)}>
                               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="18" cy="5" r="3" /><circle cx="6" cy="12" r="3" /><circle cx="18" cy="19" r="3" /><line x1="8.6" y1="13.5" x2="15.4" y2="17.5" /><line x1="15.4" y1="6.5" x2="8.6" y2="10.5" /></svg>
                             </button>
-                            <button
-                              className="icon-btn close-menu-trigger"
-                              title="Close"
-                              onClick={(e) => {
-                                if (closeMenuOpenId === p.id) { setCloseMenuState(null); return; }
-                                const rect = e.currentTarget.getBoundingClientRect();
-                                // The positions panel sits low on the page (chart/ticket
-                                // stack above it) -- a row near the bottom of a tall list
-                                // would push this 3-item menu past the viewport's own
-                                // bottom edge if always anchored below the button. Flip to
-                                // opening upward (anchored via `bottom`, not `top`, so it
-                                // doesn't need to know its own exact rendered height) once
-                                // there isn't reasonably room underneath.
-                                const openUpward = window.innerHeight - rect.bottom < 160;
-                                setCloseMenuState({
-                                  id: p.id,
-                                  x: rect.right,
-                                  y: openUpward ? window.innerHeight - rect.top + 4 : rect.bottom + 4,
-                                  openUpward,
-                                });
-                              }}
-                            >
+                            <button className="icon-btn" title="Partial close" onClick={() => openPartialClose(p.id)}>
+                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2v20" strokeDasharray="3 3" /><rect x="3" y="6" width="7" height="12" rx="1" /><rect x="14" y="6" width="7" height="12" rx="1" opacity="0.35" /></svg>
+                            </button>
+                            {closeByCandidates(p).length > 0 ? (
+                              <button className="icon-btn" title="Close by…" onClick={() => openCloseByPicker(p.id)}>
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M7 16V4M7 4L3 8M7 4l4 4" /><path d="M17 8v12M17 20l4-4M17 20l-4-4" /></svg>
+                              </button>
+                            ) : null}
+                            {/* Position close button (2026-09-04) -- the "x" now closes the
+                                whole position in one click, no menu; partial/close-by are their
+                                own separate icon buttons above, no longer hidden behind it. */}
+                            <button className="icon-btn" title="Close" onClick={() => closePositionFull(p.id)}>
                               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
-                              <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" style={{ marginLeft: 1 }}><polyline points="6 9 12 15 18 9" /></svg>
                             </button>
                           </span>
                         </div>
@@ -4124,37 +4208,10 @@ export default function WebTrader({
                 </div>
               ) : null}
 
-              {closeMenuState ? (() => {
-                const p = positions.find((x) => x.id === closeMenuState.id);
-                if (!p) return null;
-                return (
-                  <div
-                    className="wl-context-menu show"
-                    ref={closeMenuRef}
-                    style={{
-                      left: Math.max(8, closeMenuState.x - 160),
-                      ...(closeMenuState.openUpward ? { bottom: closeMenuState.y } : { top: closeMenuState.y }),
-                    }}
-                  >
-                    <div className="wl-ctx-item" onClick={() => { setCloseMenuState(null); closePositionFull(p.id); }}>
-                      <span>Close</span>
-                    </div>
-                    <div className="wl-ctx-item" onClick={() => openPartialClose(p.id)}>
-                      <span>Partial close…</span>
-                    </div>
-                    {closeByCandidates(p).length > 0 ? (
-                      <div className="wl-ctx-item" onClick={() => openCloseByPicker(p.id)}>
-                        <span>Close by…</span>
-                      </div>
-                    ) : null}
-                  </div>
-                );
-              })() : null}
-
               {activeBottomTab === "net" ? (
                 <div className="panel-body">
                   {netBySymbol.size === 0 ? (
-                    <div className="empty-state">No open positions, place a trade to see it here</div>
+                    <div className="empty-state" style={{ minWidth: 960 }}>No open positions, place a trade to see it here</div>
                   ) : (
                     Array.from(netBySymbol.entries()).map(([symbolName, g]) => {
                       const netLots = +(g.buyLots - g.sellLots).toFixed(2);
@@ -4187,7 +4244,7 @@ export default function WebTrader({
 
               {activeBottomTab === "orders" ? (
                 <div className="panel-body">
-                  {pendingOrders.length === 0 ? <div className="empty-state">No pending orders</div> : pendingOrders.map((o) => {
+                  {pendingOrders.length === 0 ? <div className="empty-state" style={{ minWidth: 960 }}>No pending orders</div> : pendingOrders.map((o) => {
                     // A dealing-group MARKET order routed to the manual
                     // desk sits at the same PENDING status a resting
                     // LIMIT/STOP uses while it waits for its trigger price
@@ -4241,7 +4298,7 @@ export default function WebTrader({
               {activeBottomTab === "allOrders" ? (
                 <div className="panel-body">
                   {allOrders.length === 0 ? (
-                    <div className="empty-state">No orders yet</div>
+                    <div className="empty-state" style={{ minWidth: 960 }}>No orders yet</div>
                   ) : (
                     allOrders.map((o) => {
                       const isDealingPending = o.type === "MARKET" && o.status === "PENDING";

@@ -76,9 +76,10 @@ export default function DealerDeskToggle() {
   return (
     <>
       <div
-        className={`flex items-center gap-4 rounded-xl border px-4 py-3 ${
+        className={`grid items-center rounded-xl border px-4 py-3 ${
           state.dealerOn ? "border-[var(--border)] bg-[var(--bg-1)]" : "border-[var(--warn)]/40 bg-[var(--warn-bg)]"
         }`}
+        style={{ gridTemplateColumns: "48px 1fr", columnGap: 16 }}
       >
         <button
           type="button"
@@ -86,7 +87,7 @@ export default function DealerDeskToggle() {
           aria-checked={state.dealerOn}
           disabled={busy}
           onClick={handleToggleClick}
-          className={`relative h-7 w-12 shrink-0 rounded-full transition-colors disabled:opacity-50 ${
+          className={`relative h-7 w-12 rounded-full transition-colors disabled:opacity-50 ${
             state.dealerOn ? "bg-[var(--buy)]" : "bg-[var(--text-3)]"
           }`}
         >
