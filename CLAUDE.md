@@ -44,6 +44,40 @@ simulated/live prices.
   assume the exposure is harmless because it was "only" in a terminal or
   a session transcript.
 
+## Deployment safety
+
+Learned the hard way during the 2026-09-04 Futurix incident (a Neon
+point-in-time restore rolled the DB back behind already-deployed code,
+which threw `P2022 column does not exist` in production) and its
+follow-on QA-broker leak (`acctest-*` rows found live in production,
+traced to `route.test.ts`'s fixture helper running against a production
+`DATABASE_URL`):
+
+- After any schema migration, verify the column/table physically exists
+  in the **target** database before deploying code that references it —
+  a migration recorded as applied in one environment's `_prisma_migrations`
+  (or in git) says nothing about what actually landed in the DB the next
+  deploy will hit, especially post-restore. Check with a real
+  `information_schema`/`pg_type` query against that DB, not by trusting
+  the migration file's existence.
+- After every production deploy, `curl` the production root domain **and**
+  a real broker subdomain and confirm `200` before calling the deploy
+  done — a broker-scoped page can fail (missing broker row, missing
+  column) even when the root domain is fine.
+- Never run `prisma migrate resolve --applied` unless the migration's SQL
+  has been independently verified to have actually run against that
+  database — `migrate resolve` only edits the `_prisma_migrations` ledger;
+  it does not run anything, so marking a migration "applied" that wasn't
+  hides exactly the kind of drift that caused the incident above.
+- Every QA/seed/test script (`scripts/*`, `prisma/seed.ts`, any
+  `*.test.ts` that writes real DB rows) must call
+  `scripts/lib/assert-not-production.mjs`'s `assertNotProductionDatabase()`
+  before any write — refuses to run if the connected DB contains the real
+  `futurixglobal` broker. Never enumerate or bulk-delete brokers from a
+  script; deletions of real rows (including leaked test data found in
+  production) are explicit, id-scoped, and reviewed by hand, not scripted
+  cleanup.
+
 ## Architecture
 
 - `middleware.ts` resolves the broker from the request's Host header

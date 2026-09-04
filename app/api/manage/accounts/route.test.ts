@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { assertNotProductionDatabase } from "@/scripts/lib/assert-not-production.mjs";
 
 // Regression coverage for a real incident: nextAccountNumber() (this
 // route's own POST handler) used to pick "the max" via
@@ -27,7 +28,17 @@ beforeAll(async () => {
   } catch {
     dbReachable = false;
     console.warn("accounts route.test.ts: DB unreachable, skipping");
+    return;
   }
+  // Deliberately NOT caught -- incident 2026-09-04: this suite's own
+  // fixture helper below created two real "Accounts Test <suffix>"
+  // brokers in PRODUCTION, almost certainly from a run that had a
+  // production DATABASE_URL loaded instead of a dev one. A reachable
+  // production DB must fail this suite loudly and stop before any
+  // fixture is created, not silently skip the way the unreachable case
+  // above does -- that silent-skip path is exactly what would have hidden
+  // this running against the wrong database in the first place.
+  await assertNotProductionDatabase(prisma);
 });
 
 type Fixture = { brokerId: string; adminId: string };

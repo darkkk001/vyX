@@ -24,7 +24,15 @@
 // this script was written) are hardcoded below as the revert targets --
 // this only ever toggles between exactly two known states, never guesses.
 import { PrismaClient } from "@prisma/client";
+import { assertNotProductionDatabase } from "./lib/assert-not-production.mjs";
 
+// Deliberately NOT locked to the zzzqa test broker -- this fixture needs
+// a broker that plausibly stands in for a real tenant's own custom-domain
+// flow, which is Nova Markets' documented role (see module comment
+// above: "a clean, low-stakes test broker -- not Futurix Global"). The
+// hard lock here is assertNotProductionDatabase() below, same as every
+// other script in this file's family -- never run against the DB that
+// has the real Futurix Global broker in it.
 const NOVA_MARKETS_ID = "cmsz4syr90003vcz4v9lom7ro";
 const PREVIEW_HOST = "vyxterminal-git-fix-p0-money-risk-bigfishs-projects-260e2a83.vercel.app";
 
@@ -35,6 +43,7 @@ const TEST_XAU_SPREAD_MARKUP = 50; // pips -- see module comment
 async function main() {
   const revert = process.argv.includes("--revert");
   const prisma = new PrismaClient();
+  await assertNotProductionDatabase(prisma);
 
   const broker = await prisma.broker.findUniqueOrThrow({
     where: { id: NOVA_MARKETS_ID },

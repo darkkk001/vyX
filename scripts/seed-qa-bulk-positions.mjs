@@ -5,17 +5,24 @@
 // identifiable and removable -- see the DELETE variant invoked with
 // `node scripts/seed-qa-bulk-positions.mjs delete`.
 import { PrismaClient, Prisma } from "@prisma/client";
+import { assertNotProductionDatabase } from "./lib/assert-not-production.mjs";
 const prisma = new PrismaClient();
 const D = (v) => new Prisma.Decimal(v);
 
 const BROKER_ID = "cmtlvoyqw0000vcjosb8amv2m";
+const BROKER_SUBDOMAIN = "zzzqa";
 const ACCOUNT_NUMBER = "9000001";
 const COUNT = 550;
 
 async function main() {
+  await assertNotProductionDatabase(prisma);
+
   const mode = process.argv[2] ?? "create";
-  const account = await prisma.account.findUnique({ where: { accountNumber: ACCOUNT_NUMBER }, select: { id: true, brokerId: true } });
+  const account = await prisma.account.findUnique({ where: { accountNumber: ACCOUNT_NUMBER }, select: { id: true, brokerId: true, broker: { select: { subdomain: true } } } });
   if (!account || account.brokerId !== BROKER_ID) throw new Error("QA account not found or wrong broker");
+  if (account.broker.subdomain !== BROKER_SUBDOMAIN) {
+    throw new Error(`Refusing to proceed: account's broker subdomain "${account.broker.subdomain}" is not the whitelisted test broker "${BROKER_SUBDOMAIN}"`);
+  }
 
   if (mode === "delete") {
     const orders = await prisma.order.findMany({ where: { accountId: account.id, idempotencyKey: { startsWith: "qa-bulk:" } }, select: { id: true } });

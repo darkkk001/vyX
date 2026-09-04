@@ -1,9 +1,18 @@
 import { PrismaClient } from "@prisma/client";
 import bcrypt from "bcryptjs";
+import { assertNotProductionDatabase } from "../scripts/lib/assert-not-production.mjs";
 
 const prisma = new PrismaClient();
 
+// Not locked to a single "zzzqa"-style test broker -- this seed's actual
+// job is provisioning the fixed demo tenants (AcmeFX, Nova Markets)
+// documented in CLAUDE.md's "Demo credentials" section, so it legitimately
+// needs to create more than one named broker. The hard lock is
+// assertNotProductionDatabase() below: refuse outright if this DATABASE_URL
+// resolves to the DB holding the real Futurix Global broker.
 async function main() {
+  await assertNotProductionDatabase(prisma);
+
   const superAdminPassword = await bcrypt.hash("ChangeMe123!", 10);
   await prisma.adminUser.upsert({
     where: { email: "super@vyxtrader.com" },

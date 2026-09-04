@@ -1,5 +1,6 @@
 import { PrismaClient, Prisma } from "@prisma/client";
 import bcrypt from "bcryptjs";
+import { assertNotProductionDatabase } from "./lib/assert-not-production.mjs";
 
 const prisma = new PrismaClient();
 
@@ -11,17 +12,23 @@ const prisma = new PrismaClient();
 // (every write is an upsert) so re-running this to reset state between
 // audit passes is safe. Never touches any other broker's data.
 const D = (v: string) => new Prisma.Decimal(v);
+const TEST_BROKER_SUBDOMAIN = "zzzqa";
 
 async function main() {
+  await assertNotProductionDatabase(prisma);
+
   const broker = await prisma.broker.upsert({
-    where: { subdomain: "zzzqa" },
+    where: { subdomain: TEST_BROKER_SUBDOMAIN },
     update: {},
     create: {
       name: "ZZZ QA Test Broker (not real)",
-      subdomain: "zzzqa",
+      subdomain: TEST_BROKER_SUBDOMAIN,
       tier: "STANDARD",
     },
   });
+  if (broker.subdomain !== TEST_BROKER_SUBDOMAIN) {
+    throw new Error(`Refusing to proceed: resolved broker subdomain "${broker.subdomain}" is not the whitelisted test broker "${TEST_BROKER_SUBDOMAIN}"`);
+  }
 
   const password = await bcrypt.hash("QaTest123!", 10);
   await prisma.adminUser.upsert({
