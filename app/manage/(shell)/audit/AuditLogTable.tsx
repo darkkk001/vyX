@@ -123,7 +123,7 @@ export default function AuditLogTable({ onOpenEntity }: { onOpenEntity?: (href: 
                           {row.order.accountNumber ? <span className="block text-[var(--text-3)]">{row.order.accountNumber}</span> : null}
                         </>
                       ) : (
-                        "—"
+                        "-"
                       )}
                     </TableCell>
                     <TableCell mono className="text-[var(--text-3)]">

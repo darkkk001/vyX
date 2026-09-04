@@ -9,7 +9,7 @@ import TrialsManager from "./TrialsManager";
 // status client-side, instead of a separate Prisma query here -- the
 // empty-state table used to live in this Server Component; that's moved
 // into TrialsManager too since it now owns loading/empty state itself.
-export const metadata: Metadata = { title: "Trials pending — Super Admin" };
+export const metadata: Metadata = { title: "Trials pending - Super Admin" };
 
 export default function TrialsPage() {
   return (

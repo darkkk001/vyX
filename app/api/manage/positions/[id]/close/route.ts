@@ -7,6 +7,7 @@ import { computeRealizedPnl } from "@/lib/trading";
 import * as mirror from "@/lib/mirror";
 import { publishTradingEvent } from "@/lib/nats";
 import { recordDealerActivity } from "@/lib/dealer-activity";
+import { isDealingManagedAccount } from "@/lib/dealing-routing";
 
 async function requireManager() {
   const session = await getAdminSession();
@@ -39,7 +40,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     where: { id },
     include: {
       symbol: { select: { name: true, contractSize: true } },
-      account: { select: { accountNumber: true, fullName: true, group: { select: { groupType: true } } } },
+      account: { select: { accountNumber: true, fullName: true, group: { select: { groupType: true, dealingMode: true, forceDealingMode: true } } } },
     },
   });
   if (!position || position.brokerId !== brokerId) {
@@ -169,12 +170,17 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   // bug. Without it, a dealer-initiated close never appeared on the
   // backoffice Positions/Exposure views until a manual refresh.
   await publishTradingEvent("PositionClosed", { position_id: position.id, account_id: position.accountId, broker_id: brokerId });
+  const brokerForActivity = await prisma.broker.findUnique({ where: { id: brokerId }, select: { dealingModeAt: true, dealingDeskAutoFillAt: true } });
   await recordDealerActivity(prisma, {
     brokerId,
     accountId: position.accountId,
     accountNumber: position.account.accountNumber,
     accountFullName: position.account.fullName,
-    isDealingGroup: position.account.group?.groupType === "DEALING",
+    isDealingGroup: isDealingManagedAccount({
+      group: position.account.group,
+      brokerDealingModeOn: !!brokerForActivity?.dealingModeAt,
+      dealingDeskAutoFillOn: !!brokerForActivity?.dealingDeskAutoFillAt,
+    }),
     action: "POSITION_CLOSED",
     symbol: position.symbol.name,
     side: position.side,

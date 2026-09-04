@@ -431,7 +431,7 @@ export default function TradeLoginForm({
 
           <div className={styles.loginFooter}>
             {supportEmail ? (
-              <a href={`mailto:${supportEmail}?subject=${encodeURIComponent("New to trading — open a demo account")}`}>
+              <a href={`mailto:${supportEmail}?subject=${encodeURIComponent("New to trading, open a demo account")}`}>
                 New to trading? Open a demo account
               </a>
             ) : null}

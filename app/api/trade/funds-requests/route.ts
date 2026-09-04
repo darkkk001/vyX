@@ -157,7 +157,7 @@ export async function POST(request: NextRequest) {
     brokerId: session.brokerId,
     type: "FUNDS_REQUEST",
     title: `New ${type.toLowerCase()} request`,
-    body: `${account.accountNumber} requested ${requestedAmount.toString()}${note ? ` — ${note}` : ""}`,
+    body: `${account.accountNumber} requested ${requestedAmount.toString()}${note ? ` (${note})` : ""}`,
     entityType: "Transaction",
     entityId: created.id,
   });

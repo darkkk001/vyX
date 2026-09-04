@@ -11,7 +11,7 @@ import WalletsManager from "./WalletsManager";
 // layout.tsx's own MANAGER-or-BROKER_ADMIN guard is identical to what
 // this page checked itself. WalletsManager now fetches its own data
 // from the already-existing /api/manage/accounts route.
-export const metadata: Metadata = { title: "Wallets — Backoffice" };
+export const metadata: Metadata = { title: "Wallets - Backoffice" };
 
 export default function ManagerWalletsPage() {
   return (

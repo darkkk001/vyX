@@ -4,7 +4,7 @@ import RiskRadarManager from "./RiskRadarManager";
 
 // No auth check or Prisma query here -- app/manage/(shell)/layout.tsx's
 // own MANAGER-or-BROKER_ADMIN guard already covers this route.
-export const metadata: Metadata = { title: "Risk Radar — Backoffice" };
+export const metadata: Metadata = { title: "Risk Radar - Backoffice" };
 
 export default function RiskRadarPage() {
   return (

@@ -11,7 +11,7 @@ import SettingsManager from "./SettingsManager";
 // to load its data. SettingsManager itself now fetches its own data from
 // /api/manage/settings (already returning this exact combined shape,
 // unmodified) instead of receiving server-rendered props.
-export const metadata: Metadata = { title: "System settings — Backoffice" };
+export const metadata: Metadata = { title: "System settings - Backoffice" };
 
 export default async function ManagerSettingsPage() {
   const session = await getAdminSession();
@@ -21,7 +21,7 @@ export default async function ManagerSettingsPage() {
 
   return (
     <main className="mx-auto max-w-2xl">
-      <PageHeader title="System settings" description="Broker info (read-only — edited in the Super Admin console) and defaults this team controls." />
+      <PageHeader title="System settings" description="Broker info (read-only - edited in the Super Admin console) and defaults this team controls." />
       <SettingsManager />
     </main>
   );

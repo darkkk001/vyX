@@ -270,7 +270,7 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
   return (
     <div className="flex flex-col gap-4">
       <p className="text-sm text-[var(--text-3)]">
-        {(rows ?? []).length} account{(rows ?? []).length === 1 ? "" : "s"} for this broker.
+        {(rows ?? []).length} account{(rows ?? []).length === 1 ? "" : "s"}.
         {!canManageFinance
           ? " Leverage/status/balance changes -- including a starting balance on a new account -- require Broker Admin or the Account Finance permission."
           : ""}
@@ -319,7 +319,7 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
                     {row.accountNumber}
                   </button>
                   <div className="text-xs font-normal text-[var(--text-3)]">
-                    {row.fullName} — {row.email}
+                    {row.fullName}, {row.email}
                   </div>
                   {row.mirror ? (
                     <Badge tone="accent">
@@ -353,7 +353,7 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
                       ))}
                   </Select>
                 </TableCell>
-                <TableCell className="min-w-[90px]">{row.country ?? "—"}</TableCell>
+                <TableCell className="min-w-[90px]">{row.country ?? "-"}</TableCell>
                 <TableCell className="min-w-[90px]">{row.kycStatus ? <Badge tone={kycTone[row.kycStatus]}>{row.kycStatus}</Badge> : <Badge tone="neutral">NO KYC</Badge>}</TableCell>
                 <TableCell className="min-w-[160px]">
                   <Select
@@ -362,7 +362,7 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
                     onChange={(e) => changeGroup(row, e.target.value)}
                     className="w-full"
                   >
-                    <option value="">— ungrouped —</option>
+                    <option value="">Ungrouped</option>
                     {groups.map((g) => (
                       <option key={g.id} value={g.id}>
                         {g.name}
@@ -411,7 +411,7 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
                       className="w-full text-right"
                     />
                   ) : (
-                    row.maxDailyLoss ?? "—"
+                    row.maxDailyLoss ?? "-"
                   )}
                 </TableCell>
                 <TableCell className="min-w-[140px] whitespace-nowrap">
@@ -428,7 +428,7 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
         </TableBody>
       </Table>
 
-      <Modal open={adjustTarget !== null} onClose={() => setAdjustTarget(null)} title={`Adjust balance — ${adjustTarget?.accountNumber ?? ""}`}>
+      <Modal open={adjustTarget !== null} onClose={() => setAdjustTarget(null)} title={`Adjust balance - ${adjustTarget?.accountNumber ?? ""}`}>
         <div className="flex flex-col gap-3">
           <FormField label="Adjustment type">
             <Select value={adjustType} onChange={(e) => setAdjustType(e.target.value as "credit" | "debit")}>
@@ -464,7 +464,7 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
         {createdAccount ? (
           <div className="flex flex-col gap-3">
             <p className="text-sm text-[var(--text-2)]">
-              Account created. This password is shown once — copy it now, it can&apos;t be retrieved again afterward.
+              Account created. This password is shown once, copy it now, it can&apos;t be retrieved again afterward.
             </p>
             <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-2)] p-3 font-mono text-sm">
               <div>Account: {createdAccount.accountNumber}</div>
@@ -534,9 +534,9 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
             </FormField>
 
             {/* Group -- routing, a distinct concept from type (pricing). */}
-            <FormField label="Group — routing">
+            <FormField label="Group, routing">
               <Select value={newAccount.groupId} onChange={(e) => setNewAccount((p) => ({ ...p, groupId: e.target.value }))}>
-                <option value="">— ungrouped —</option>
+                <option value="">Ungrouped</option>
                 {groups.map((g) => (
                   <option key={g.id} value={g.id}>
                     {g.name}

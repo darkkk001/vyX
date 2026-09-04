@@ -261,7 +261,7 @@ export default function ManagerLoginForm({
       ) : (
         <form onSubmit={handleSubmit} className={styles.step}>
           <h1 className="text-[20px] font-bold tracking-tight text-[var(--text-1)]">Sign in</h1>
-          <p className="mb-7 mt-1.5 text-[12.5px] leading-[1.5] text-[var(--text-3)]">Access your broker&apos;s management console.</p>
+          <p className="mb-7 mt-1.5 text-[12.5px] leading-[1.5] text-[var(--text-3)]">Access your management console.</p>
 
           {error ? (
             <div className="mb-4">

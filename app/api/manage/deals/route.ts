@@ -42,11 +42,11 @@ export async function GET() {
       status: p.status,
       volume: p.volume.toString(),
       openPrice: p.openPrice.toFixed(p.symbol.digits),
-      closePrice: p.closePrice ? p.closePrice.toFixed(p.symbol.digits) : "—",
+      closePrice: p.closePrice ? p.closePrice.toFixed(p.symbol.digits) : "-",
       commission: p.commission.toFixed(2),
       swap: p.swap.toFixed(2),
-      realizedPnl: p.realizedPnl ? p.realizedPnl.toFixed(2) : "—",
-      closedAt: p.closedAt ? p.closedAt.toISOString().replace("T", " ").slice(0, 19) : "—",
+      realizedPnl: p.realizedPnl ? p.realizedPnl.toFixed(2) : "-",
+      closedAt: p.closedAt ? p.closedAt.toISOString().replace("T", " ").slice(0, 19) : "-",
     }))
   );
 }

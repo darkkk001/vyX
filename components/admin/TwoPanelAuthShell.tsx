@@ -12,7 +12,7 @@ export default function TwoPanelAuthShell({
   logoUrl,
   brandName,
   brandSubtitle,
-  quote = "Every deposit, withdrawal and dealing decision — logged, auditable, and never one click away from a mistake.",
+  quote = "Every deposit, withdrawal and dealing decision, logged, auditable, and never one click away from a mistake.",
   quoteAttribution = "Built for teams who manage real client money.",
   children,
 }: {

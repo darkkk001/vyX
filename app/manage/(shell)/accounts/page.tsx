@@ -9,7 +9,7 @@ import AccountsManager from "./AccountsManager";
 // maxDailyLoss/country/kycStatus), /api/manage/groups GET, and
 // /api/manage/shell-info (extended with canManageFinance) instead of
 // receiving all three as server-rendered props.
-export const metadata: Metadata = { title: "Trading Accounts — Backoffice" };
+export const metadata: Metadata = { title: "Trading Accounts - Backoffice" };
 
 export default function ManagerAccountsPage() {
   return (

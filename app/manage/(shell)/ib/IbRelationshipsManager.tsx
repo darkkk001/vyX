@@ -53,12 +53,12 @@ function HierarchyView({ rows }: { rows: IbRelationshipRow[] }) {
         {children.map((c) => (
           <div key={c.id} className="mt-1" style={{ marginLeft: 20 }}>
             <div className="text-sm text-[var(--text-2)]">
-              → {c.clientAccountNumber} — {c.clientAccountFullName}{" "}
+              → {c.clientAccountNumber}, {c.clientAccountFullName}{" "}
               <span className="text-xs text-[var(--text-3)]">
                 ({c.commissionType === "PER_LOT" ? `$${c.commissionRate}/lot` : `${c.commissionRate}%`}, pending {c.pendingCommission})
               </span>
             </div>
-            {byIb.has(c.clientAccountId) ? renderNode(c.clientAccountId, `${c.clientAccountNumber} — ${c.clientAccountFullName} (as IB)`, next, depth + 2) : null}
+            {byIb.has(c.clientAccountId) ? renderNode(c.clientAccountId, `${c.clientAccountNumber}, ${c.clientAccountFullName} (as IB)`, next, depth + 2) : null}
           </div>
         ))}
       </div>
@@ -72,7 +72,7 @@ function HierarchyView({ rows }: { rows: IbRelationshipRow[] }) {
     <div className="flex flex-col gap-3">
       {roots.map((ibId) => {
         const first = byIb.get(ibId)![0];
-        return renderNode(ibId, `${first.ibAccountNumber} — ${first.ibAccountFullName}`, new Set(), 0);
+        return renderNode(ibId, `${first.ibAccountNumber}, ${first.ibAccountFullName}`, new Set(), 0);
       })}
     </div>
   );
@@ -218,17 +218,17 @@ export default function IbRelationshipsManager() {
           <Select value={ibAccountId} onChange={(e) => setIbAccountId(e.target.value)} required className="w-56">
             {ibOptions.map((a) => (
               <option key={a.id} value={a.id}>
-                IB: {a.accountNumber} — {a.fullName}
+                IB: {a.accountNumber}, {a.fullName}
               </option>
             ))}
           </Select>
           <Select value={clientAccountId} onChange={(e) => setClientAccountId(e.target.value)} required className="w-56">
             {clientOptions.length === 0 ? (
-              <option value="">— no unlinked accounts —</option>
+              <option value="">No unlinked accounts</option>
             ) : (
               clientOptions.map((a) => (
                 <option key={a.id} value={a.id}>
-                  Client: {a.accountNumber} — {a.fullName}
+                  Client: {a.accountNumber}, {a.fullName}
                 </option>
               ))
             )}
@@ -352,7 +352,7 @@ export default function IbRelationshipsManager() {
             <p className="text-sm text-[var(--text-2)]">
               Pay <span className="font-mono text-[var(--text-1)]">{payTarget.pendingCommission}</span> to{" "}
               <span className="text-[var(--text-1)]">
-                {payTarget.ibAccountNumber} — {payTarget.ibAccountFullName}
+                {payTarget.ibAccountNumber}, {payTarget.ibAccountFullName}
               </span>
               ? This moves the amount through the ledger onto the IB&apos;s own account balance and resets pending commission to zero.
             </p>

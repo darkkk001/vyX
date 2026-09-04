@@ -36,10 +36,10 @@ export async function GET() {
       service: "PostgreSQL (primary)",
       status: dbOperational ? "operational" : "degraded",
       latency: `${dbLatencyMs}ms`,
-      uptime: "—",
+      uptime: "-",
     },
-    { service: "API Gateway", status: "unmonitored", latency: "—", uptime: "—" },
-    { service: "WebSocket Gateway", status: "unmonitored", latency: "—", uptime: "—" },
-    { service: "Execution Engine", status: "unmonitored", latency: "—", uptime: "—" },
+    { service: "API Gateway", status: "unmonitored", latency: "-", uptime: "-" },
+    { service: "WebSocket Gateway", status: "unmonitored", latency: "-", uptime: "-" },
+    { service: "Execution Engine", status: "unmonitored", latency: "-", uptime: "-" },
   ]);
 }

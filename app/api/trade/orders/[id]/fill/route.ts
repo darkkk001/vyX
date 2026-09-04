@@ -130,6 +130,7 @@ export async function POST(
     brokerDealingModeOn: !!broker.dealingModeAt,
     groupForceDealingMode: !!account.group?.forceDealingMode,
     groupTypeIsDealing: account.group?.groupType === "DEALING",
+    dealingDeskAutoFillOn: !!broker.dealingDeskAutoFillAt,
   });
   if (wantsQueue) {
     const originalType = order.type;
@@ -169,7 +170,7 @@ export async function POST(
       brokerId: order.brokerId,
       type: "DEALING_ORDER_PENDING",
       title: "Order awaiting dealer review",
-      body: `${account.accountNumber} — ${order.side} ${order.volume.toString()} ${brokerSymbol?.symbol.name ?? ""} (triggered pending order)`,
+      body: `${account.accountNumber}, ${order.side} ${order.volume.toString()} ${brokerSymbol?.symbol.name ?? ""} (triggered pending order)`,
       entityType: "Order",
       entityId: order.id,
     });
@@ -201,7 +202,7 @@ export async function POST(
       accountId: order.accountId,
       accountNumber: account.accountNumber,
       accountFullName: account.fullName,
-      isDealingGroup: account.group?.groupType === "DEALING",
+      isDealingGroup: wantsQueue,
       action: "ORDER_TRIGGERED",
       symbol: order.symbol.name,
       side: order.side,
@@ -319,7 +320,7 @@ export async function POST(
     accountId: order.accountId,
     accountNumber: account.accountNumber,
     accountFullName: account.fullName,
-    isDealingGroup: account.group?.groupType === "DEALING",
+    isDealingGroup: wantsQueue,
     action: "POSITION_OPENED",
     symbol: order.symbol.name,
     side: order.side,

@@ -9,7 +9,7 @@ import BrokersManager from "./BrokersManager";
 // GET, reshaped to return { rows, totalEndClients } -- the stat grid's
 // numbers are now derived client-side from rows, same pattern
 // RiskSettingsManager uses deriving its own stats from Margin's rows.
-export const metadata: Metadata = { title: "All brokers — Super Admin" };
+export const metadata: Metadata = { title: "All brokers - Super Admin" };
 
 export default function BrokersPage() {
   return (

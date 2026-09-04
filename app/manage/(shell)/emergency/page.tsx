@@ -11,7 +11,7 @@ import EmergencyControls from "./EmergencyControls";
 // own check here -- stricter than app/manage/(shell)/layout.tsx's own
 // MANAGER-or-BROKER_ADMIN guard, same reasoning as the Manager Settings
 // page's own kept check.
-export const metadata: Metadata = { title: "Emergency controls — Backoffice" };
+export const metadata: Metadata = { title: "Emergency controls - Backoffice" };
 
 export default async function ManagerEmergencyPage() {
   const session = await getAdminSession();
@@ -21,7 +21,7 @@ export default async function ManagerEmergencyPage() {
 
   return (
     <main className="mx-auto max-w-2xl">
-      <PageHeader title="Emergency controls" description="The broker-wide kill switch. Existing open positions are never touched by this — it only blocks new orders." />
+      <PageHeader title="Emergency controls" description="The broker-wide kill switch. Existing open positions are never touched by this - it only blocks new orders." />
       <EmergencyControls />
     </main>
   );

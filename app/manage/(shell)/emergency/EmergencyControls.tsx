@@ -68,7 +68,7 @@ export default function EmergencyControls() {
             <Badge tone={tradingHalted ? "danger" : "success"}>{tradingHalted ? "HALTED" : "Trading active"}</Badge>
             <p className="mt-2 text-sm text-[var(--text-3)]">
               {tradingHalted
-                ? "All new orders and manual position opens are being rejected for this broker."
+                ? "All new orders and manual position opens are being rejected."
                 : "New orders are being accepted normally."}
             </p>
           </div>
@@ -88,7 +88,7 @@ export default function EmergencyControls() {
           <p className="text-sm text-[var(--text-2)]">
             {tradingHalted
               ? "New orders and manual position opens will be accepted again immediately."
-              : "New orders and manual position opens will be rejected for this broker until resumed. Existing open positions are untouched."}
+              : "New orders and manual position opens will be rejected until resumed. Existing open positions are untouched."}
           </p>
           <ModalActions>
             <Button variant="ghost" onClick={() => setConfirming(false)}>

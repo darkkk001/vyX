@@ -902,20 +902,20 @@ export default function WebTrader({
   const handleOrderError = useCallback((err: unknown, retry?: () => void) => {
     playSound("error", chartSettingsRef.current);
     if (err instanceof ApiError && (err.message === "PRICE_STALE" || err.message === "SLIPPAGE_EXCEEDED")) {
-      const reason = err.message === "PRICE_STALE" ? "Feed went stale — order not placed" : "Price moved — order not placed";
+      const reason = err.message === "PRICE_STALE" ? "Feed went stale, order not placed" : "Price moved, order not placed";
       pushToast(reason, false, retry);
       return;
     }
     if (err instanceof ApiError && err.message === "MARKET_CLOSED") {
-      pushToast("Market closed — opens Sun 22:00 UTC");
+      pushToast("Market closed, opens Sun 22:00 UTC");
       return;
     }
     if (err instanceof ApiError && err.message === "INSUFFICIENT_MARGIN") {
       const info = err.body as { required?: string; available?: string } | null;
       pushToast(
         info?.required && info?.available
-          ? `Insufficient margin — required $${info.required}, available $${info.available}`
-          : "Insufficient margin — order not placed"
+          ? `Insufficient margin, required $${info.required}, available $${info.available}`
+          : "Insufficient margin, order not placed"
       );
       return;
     }
@@ -1079,7 +1079,7 @@ export default function WebTrader({
       try {
         await tradeApi.requoteResponse(order.id, accept);
         pushToast(
-          accept ? `${order.symbol.name} requote accepted — position opened` : `${order.symbol.name} requote rejected`,
+          accept ? `${order.symbol.name} requote accepted, position opened` : `${order.symbol.name} requote rejected`,
           true
         );
         await Promise.all([refreshOrders(), refreshPositions(), refreshAccount()]);
@@ -1633,7 +1633,7 @@ export default function WebTrader({
       }
 
       if (parsed?.type === "AlertTriggered") {
-        pushToast(`Alert triggered — ${parsed.symbol} reached ${parsed.triggered_price ?? ""}`, true);
+        pushToast(`Alert triggered, ${parsed.symbol} reached ${parsed.triggered_price ?? ""}`, true);
         playSound("alertTriggered", chartSettingsRef.current);
         refreshAlerts();
         return;
@@ -1792,7 +1792,7 @@ export default function WebTrader({
     try {
       const rows = await tradeApi.candles(symbol, "D1");
       const resolved = resolveDayOpenFromD1(rows, serverNow());
-      if (resolved === null) return; // no D1 bar for today yet -- leave as-is (unknown stays "—", known stays known)
+      if (resolved === null) return; // no D1 bar for today yet -- leave as-is (unknown stays "-", known stays known)
       setMarket((prev) => {
         const ms = prev[symbol];
         if (!ms) return prev;
@@ -1921,7 +1921,7 @@ export default function WebTrader({
   useEffect(() => {
     if (marginCall && !marginCallNotifiedRef.current) {
       marginCallNotifiedRef.current = true;
-      pushToast("Margin call — your margin level is below 100%", true);
+      pushToast("Margin call, your margin level is below 100%", true);
     } else if (!marginCall) {
       marginCallNotifiedRef.current = false;
     }
@@ -1954,7 +1954,7 @@ export default function WebTrader({
         tradeApi.closePosition(p.id, price)
           .then((res) => {
             const pnl = (res as { transaction: { amount: string } }).transaction.amount;
-            pushToast(`${p.symbol.name} closed — ${hitType} hit — ${parseFloat(pnl) >= 0 ? "+" : ""}${parseFloat(pnl).toFixed(2)} USD`, true);
+            pushToast(`${p.symbol.name} closed, ${hitType} hit, ${parseFloat(pnl) >= 0 ? "+" : ""}${parseFloat(pnl).toFixed(2)} USD`, true);
             return Promise.all([refreshPositions(), refreshHistory(), refreshAccount()]);
           })
           .catch(() => {})
@@ -2006,7 +2006,7 @@ export default function WebTrader({
         fillingIds.current.add(o.id);
         tradeApi.fillOrder(o.id, price)
           .then(() => {
-            pushToast(`${o.symbol.name} pending order triggered — ${o.side} ${o.volume}`, true);
+            pushToast(`${o.symbol.name} pending order triggered, ${o.side} ${o.volume}`, true);
             return Promise.all([refreshOrders(), refreshPositions()]);
           })
           .catch(() => {})
@@ -2030,7 +2030,7 @@ export default function WebTrader({
     playSound("requoteReceived", chartSettingsRef.current);
     setGenericModal({
       title: "Dealer requoted your order",
-      message: `${requoted.side} ${requoted.volume} ${requoted.symbol.name} — dealer offered ${
+      message: `${requoted.side} ${requoted.volume} ${requoted.symbol.name}, dealer offered ${
         requoted.requotedPrice ? fmt(parseFloat(requoted.requotedPrice), requoted.symbol.digits) : "a different price"
       } instead of ${requoted.requestedPrice ? fmt(parseFloat(requoted.requestedPrice), requoted.symbol.digits) : "market"}. Accept the new price?`,
       showInput: false,
@@ -2109,7 +2109,7 @@ export default function WebTrader({
   // disabled/title, same "purely presentation" scope as the rest of
   // this rework.
   const priceStaleForTicket = dealingPendingNowMs - m.lastTickAt > 10_000;
-  const staleTicketTitle = priceStaleForTicket ? "Prices are stale — reconnecting" : undefined;
+  const staleTicketTitle = priceStaleForTicket ? "Prices are stale, reconnecting" : undefined;
   const buyDisabled = priceStaleForTicket || activeSymbolMarketClosed || (!isNaN(ticketSl) && ticketSl >= m.bid) || (!isNaN(ticketTp) && ticketTp <= m.bid);
   const sellDisabled = priceStaleForTicket || activeSymbolMarketClosed || (!isNaN(ticketSl) && ticketSl <= m.bid) || (!isNaN(ticketTp) && ticketTp >= m.bid);
 
@@ -2134,7 +2134,7 @@ export default function WebTrader({
         pushToast(`${side === "BUY" ? "Bought" : "Sold"} ${volume} lots of ${activeSymbol} @ ${fmt(refPrice, m.def.digits)}`);
         await Promise.all([refreshPositions(), refreshAccount()]);
       } else {
-        pushToast(`${activeSymbol} order submitted — awaiting dealer approval`);
+        pushToast(`${activeSymbol} order submitted, awaiting dealer approval`);
         await refreshOrders();
       }
     } catch (err) {
@@ -2179,10 +2179,10 @@ export default function WebTrader({
       });
       if (result.position) {
         playSound("orderFilled", chartSettingsRef.current);
-        pushToast(`${side === "BUY" ? "Bought" : "Sold"} ${volume} lots of ${symbolName} @ ${fmt(ocPrice, mm.def.digits)} — one-click`);
+        pushToast(`${side === "BUY" ? "Bought" : "Sold"} ${volume} lots of ${symbolName} @ ${fmt(ocPrice, mm.def.digits)}, one-click`);
         await Promise.all([refreshPositions(), refreshAccount()]);
       } else {
-        pushToast(`${symbolName} order submitted — awaiting dealer approval`);
+        pushToast(`${symbolName} order submitted, awaiting dealer approval`);
         await refreshOrders();
       }
     } catch (err) {
@@ -2200,7 +2200,7 @@ export default function WebTrader({
     try {
       const res = await tradeApi.closePosition(id, price);
       const pnl = parseFloat((res as { transaction: { amount: string } }).transaction.amount);
-      pushToast(`Closed ${p.symbol.name} — ${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)} USD`);
+      pushToast(`Closed ${p.symbol.name}, ${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)} USD`);
       // refreshPositions()'s own diff (see that callback) is what plays
       // the close sound -- not duplicated here, to avoid firing twice.
       await Promise.all([refreshPositions(), refreshHistory(), refreshAccount()]);
@@ -2278,7 +2278,7 @@ export default function WebTrader({
     try {
       const res = await tradeApi.closePosition(id, price, amount);
       const pnl = parseFloat((res as { transaction: { amount: string } }).transaction.amount);
-      pushToast(`Closed ${amount} lots of ${p.symbol.name} — ${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)} USD`);
+      pushToast(`Closed ${amount} lots of ${p.symbol.name}, ${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)} USD`);
       setPartialCloseTarget(null);
       await Promise.all([refreshPositions(), refreshHistory(), refreshAccount()]);
     } catch (err) {
@@ -2310,7 +2310,7 @@ export default function WebTrader({
     try {
       const res = await tradeApi.closeBy(positionId, againstPositionId);
       const totalPnl = parseFloat(res.realizedPnlA) + parseFloat(res.realizedPnlB);
-      pushToast(`Closed by: ${res.closeVolume} lots netted @ ${res.closePrice} — ${totalPnl >= 0 ? "+" : ""}${totalPnl.toFixed(2)} USD`, true);
+      pushToast(`Closed by: ${res.closeVolume} lots netted @ ${res.closePrice}, ${totalPnl >= 0 ? "+" : ""}${totalPnl.toFixed(2)} USD`, true);
       setCloseByTarget(null);
       await Promise.all([refreshPositions(), refreshHistory(), refreshAccount()]);
     } catch (err) {
@@ -2327,7 +2327,7 @@ export default function WebTrader({
       const dist = parseFloat(distStr);
       if (isNaN(dist) || dist <= 0) { pushToast("Enter a valid distance"); return; }
       trailingDistances.current[id] = dist;
-      pushToast(`Trailing stop of ${dist} set on ${p.symbol.name} — SL follows price automatically`);
+      pushToast(`Trailing stop of ${dist} set on ${p.symbol.name}, SL follows price automatically`);
     });
   }
 
@@ -2365,11 +2365,11 @@ export default function WebTrader({
     const pnlPct = account ? (pnl / parseFloat(account.balance)) * 100 : 0;
     const sl = p.slPrice ? parseFloat(p.slPrice) : null;
     const tp = p.tpPrice ? parseFloat(p.tpPrice) : null;
-    const rr = sl && tp ? Math.abs((tp - parseFloat(p.openPrice)) / (parseFloat(p.openPrice) - sl)).toFixed(1) : "—";
+    const rr = sl && tp ? Math.abs((tp - parseFloat(p.openPrice)) / (parseFloat(p.openPrice) - sl)).toFixed(1) : "-";
     setShareData({
       symbolLabel: p.symbol.name, pnl, pnlPct,
       entryLabel: fmt(parseFloat(p.openPrice), p.symbol.digits), currentLabel: fmt(mm.bid, p.symbol.digits),
-      rrLabel: rr === "—" ? "—" : `1 : ${rr}`, rrTitle: "RR",
+      rrLabel: rr === "-" ? "-" : `1 : ${rr}`, rrTitle: "RR",
     });
   }
 
@@ -2405,7 +2405,7 @@ export default function WebTrader({
   async function closeManyBySymbol(symbolName: string) {
     try {
       const result = await tradeApi.closeBulk("SYMBOL", symbolName);
-      pushToast(`Closed all in ${symbolName} — ${result.successful} position${result.successful === 1 ? "" : "s"} closed${result.failed ? `, ${result.failed} failed` : ""}`, result.failed === 0);
+      pushToast(`Closed all in ${symbolName}, ${result.successful} position${result.successful === 1 ? "" : "s"} closed${result.failed ? `, ${result.failed} failed` : ""}`, result.failed === 0);
       await Promise.all([refreshPositions(), refreshHistory(), refreshAccount()]);
     } catch (err) {
       pushToast(err instanceof Error ? err.message : "failed to close positions");
@@ -2415,7 +2415,7 @@ export default function WebTrader({
     try {
       const result = await tradeApi.closeBulk(scope);
       if (result.requested === 0) return;
-      pushToast(`${label} — Requested: ${result.requested}, Successful: ${result.successful}, Failed: ${result.failed}`, result.failed === 0);
+      pushToast(`${label}, Requested: ${result.requested}, Successful: ${result.successful}, Failed: ${result.failed}`, result.failed === 0);
       await Promise.all([refreshPositions(), refreshHistory(), refreshAccount()]);
     } catch (err) {
       pushToast(err instanceof Error ? err.message : "failed to close positions");
@@ -2442,7 +2442,7 @@ export default function WebTrader({
         await tradeApi.editPositionSlTp(p.id, { currentPrice: mm.bid, slPrice: sl ?? undefined, tpPrice: tp ?? undefined });
         updated++;
       }
-      pushToast(skipped > 0 ? `${sltpEdit.netSymbol} — updated ${updated}, skipped ${skipped}` : `${sltpEdit.netSymbol} — updated SL/TP on ${updated} positions`);
+      pushToast(skipped > 0 ? `${sltpEdit.netSymbol}, updated ${updated}, skipped ${skipped}` : `${sltpEdit.netSymbol}, updated SL/TP on ${updated} positions`);
     } else if (sltpEdit.posId) {
       const p = positions.find((x) => x.id === sltpEdit.posId);
       if (p) {
@@ -2589,7 +2589,7 @@ export default function WebTrader({
         pushToast(`${side === "BUY" ? "Bought" : "Sold"} ${vol} lots of ${quickOrder.symbol} @ ${fmt(refPrice, mm.def.digits)}`);
         await Promise.all([refreshPositions(), refreshAccount()]);
       } else {
-        pushToast(`${quickOrder.symbol} order submitted — awaiting dealer approval`);
+        pushToast(`${quickOrder.symbol} order submitted, awaiting dealer approval`);
         await refreshOrders();
       }
     } catch (err) {
@@ -2666,7 +2666,7 @@ export default function WebTrader({
       const condition: "ABOVE" | "BELOW" = price >= mm.bid ? "ABOVE" : "BELOW";
       try {
         await tradeApi.createAlert({ symbol: symbolName, condition, price });
-        pushToast(`Alert set — ${symbolName} @ ${fmt(price, mm.def.digits)}`);
+        pushToast(`Alert set, ${symbolName} @ ${fmt(price, mm.def.digits)}`);
         await refreshAlerts();
       } catch (err) {
         pushToast(err instanceof Error ? err.message : "failed to set alert");
@@ -3115,7 +3115,7 @@ export default function WebTrader({
       <DesktopTitleBar brokerName={brokerName} brokerLogoUrl={brokerLogoUrl} server={serverName} connected={connected} />
       <div id="app">
         <div className={`margin-call-banner${marginCall ? " show" : ""}`}>
-          Margin call — your margin level is below 100%. Deposit funds or close positions to avoid stop-out.
+          Margin call, your margin level is below 100%. Deposit funds or close positions to avoid stop-out.
         </div>
 
         <div className={`topbar${isDesktopApp ? " topbar-desktop" : ""}`}>
@@ -3385,7 +3385,7 @@ export default function WebTrader({
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9" /><path d="M13.73 21a2 2 0 0 1-3.46 0" /></svg>
               {alerts.length > 0 ? <span className="bell-count">{alerts.length}</span> : null}
             </button>
-            <div className="avatar">{account?.accountNumber?.slice(-2) ?? "—"}</div>
+            <div className="avatar">{account?.accountNumber?.slice(-2) ?? "-"}</div>
           </div>
         </div>
 
@@ -3514,19 +3514,19 @@ export default function WebTrader({
                       {hasEverTicked ? (
                         <span className={`wl-price mono ${flash}`}>{fmt(row.bid, row.def.digits)}</span>
                       ) : (
-                        <span className="wl-price mono" style={{ color: "var(--text-3)" }}>—</span>
+                        <span className="wl-price mono" style={{ color: "var(--text-3)" }}>-</span>
                       )}
                       {oneClick ? (
                         <span className="wl-occ-buttons" style={{ display: "flex" }}>
-                          <button className="wl-occ-btn buy" disabled={priceStaleForTrading} title={priceStaleForTrading ? "Prices are stale — reconnecting" : undefined} onClick={(e) => { e.stopPropagation(); oneClickTrade(name, "BUY"); }}>B</button>
-                          <button className="wl-occ-btn sell" disabled={priceStaleForTrading} title={priceStaleForTrading ? "Prices are stale — reconnecting" : undefined} onClick={(e) => { e.stopPropagation(); oneClickTrade(name, "SELL"); }}>S</button>
+                          <button className="wl-occ-btn buy" disabled={priceStaleForTrading} title={priceStaleForTrading ? "Prices are stale - reconnecting" : undefined} onClick={(e) => { e.stopPropagation(); oneClickTrade(name, "BUY"); }}>B</button>
+                          <button className="wl-occ-btn sell" disabled={priceStaleForTrading} title={priceStaleForTrading ? "Prices are stale - reconnecting" : undefined} onClick={(e) => { e.stopPropagation(); oneClickTrade(name, "SELL"); }}>S</button>
                         </span>
                       ) : null}
                     </span>
-                    {columnPrefs.change ? <span className={`wl-cell mono ${changePct !== null && changePct >= 0 ? "wl-pos" : "wl-neg"}`}>{changePct !== null ? (changePct >= 0 ? "+" : "") + changePct.toFixed(2) + "%" : "—"}</span> : null}
-                    {columnPrefs.spread ? <span className="wl-cell mono" style={{ textAlign: "right" }}>{hasEverTicked ? spreadPoints(row.ask, row.bid, row.def.digits) : "—"}</span> : null}
-                    {columnPrefs.high ? <span className="wl-cell mono">{hasEverTicked ? fmt(row.high, row.def.digits) : "—"}</span> : null}
-                    {columnPrefs.low ? <span className="wl-cell mono">{hasEverTicked ? fmt(row.low, row.def.digits) : "—"}</span> : null}
+                    {columnPrefs.change ? <span className={`wl-cell mono ${changePct !== null && changePct >= 0 ? "wl-pos" : "wl-neg"}`}>{changePct !== null ? (changePct >= 0 ? "+" : "") + changePct.toFixed(2) + "%" : "-"}</span> : null}
+                    {columnPrefs.spread ? <span className="wl-cell mono" style={{ textAlign: "right" }}>{hasEverTicked ? spreadPoints(row.ask, row.bid, row.def.digits) : "-"}</span> : null}
+                    {columnPrefs.high ? <span className="wl-cell mono">{hasEverTicked ? fmt(row.high, row.def.digits) : "-"}</span> : null}
+                    {columnPrefs.low ? <span className="wl-cell mono">{hasEverTicked ? fmt(row.low, row.def.digits) : "-"}</span> : null}
                     <button className={`wl-alert-btn${alerts.some((a) => a.symbol === name) ? " active" : ""}`} onClick={(e) => { e.stopPropagation(); openPriceAlert(name); }} title="Set price alert">
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9" /></svg>
                     </button>
@@ -3551,7 +3551,7 @@ export default function WebTrader({
                       }}
                     >
                       <span className="wl-ctx-check" />
-                      <span>Symbol specification — {wlContextMenu.symbol}</span>
+                      <span>Symbol specification, {wlContextMenu.symbol}</span>
                     </div>
                     <div
                       className="wl-ctx-item"
@@ -3713,12 +3713,12 @@ export default function WebTrader({
                       // hotfix/terminal-live-bugs #1 -- no trustworthy D1
                       // open yet (mid-day mount, D1 history unavailable) --
                       // "—", never a number computed against the launch seed.
-                      <div className="chart-change mono" style={{ color: "var(--text-3)" }}>—</div>
+                      <div className="chart-change mono" style={{ color: "var(--text-3)" }}>-</div>
                     )}
                     <div className="chart-spread mono">Spread {fmt(m.ask - m.bid, m.def.digits)}</div>
                   </>
                 ) : (
-                  <div className="chart-price mono" style={{ color: "var(--text-3)", fontSize: 12 }}>—</div>
+                  <div className="chart-price mono" style={{ color: "var(--text-3)", fontSize: 12 }}>-</div>
                 )}
                 <button className="symbol-info-btn" onClick={() => setSymbolInfoOpen(true)} title="Symbol specifications">
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10" /><line x1="12" y1="16" x2="12" y2="12" /><line x1="12" y1="8" x2="12.01" y2="8" /></svg>
@@ -3800,7 +3800,7 @@ export default function WebTrader({
                       place a dropped feed shows up now. */}
                   {chartContextMenu ? (
                     <div className="wl-context-menu show" ref={chartContextMenuRef} style={{ left: chartContextMenu.x, top: chartContextMenu.y }}>
-                      <div className="wl-ctx-title">@ {fmt(chartContextMenu.price, m.def.digits)} — {chartContextMenu.price < m.bid ? "below" : "above"} market</div>
+                      <div className="wl-ctx-title">@ {fmt(chartContextMenu.price, m.def.digits)}, {chartContextMenu.price < m.bid ? "below" : "above"} market</div>
                       <div className="wl-ctx-item" onClick={() => { chartRef.current?.resetView(); setChartContextMenu(null); }}>
                         <span>Reset view</span>
                       </div>
@@ -3904,7 +3904,7 @@ export default function WebTrader({
                     <span>ID</span><span>Symbol</span><span>Type</span><span>Lots</span><span>Price</span><span>Opened</span><span>S/L</span><span>T/P</span><span>Comment</span><span>Swap</span><span>Commission</span><span>Profit</span><span></span>
                   </div>
                   {acctPositions.length === 0 ? (
-                    <div className="empty-state">No open positions — place a trade to see it here</div>
+                    <div className="empty-state">No open positions, place a trade to see it here</div>
                   ) : (
                     acctPositions.map((p) => {
                       const pnl = positionPnl(p);
@@ -3941,16 +3941,16 @@ export default function WebTrader({
                               <input autoFocus className="inline-edit-input mono" defaultValue={p.slPrice ? fmt(parseFloat(p.slPrice), p.symbol.digits) : ""}
                                 onBlur={(e) => { commitInlineEdit(p.id, "sl", e.target.value); setInlineEditing(null); }}
                                 onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); if (e.key === "Escape") setInlineEditing(null); }} />
-                            ) : <span className="mono">{p.slPrice ? fmt(parseFloat(p.slPrice), p.symbol.digits) : "—"}</span>}
+                            ) : <span className="mono">{p.slPrice ? fmt(parseFloat(p.slPrice), p.symbol.digits) : "-"}</span>}
                           </span>
                           <span className="pos-cell sltp-pill" onClick={() => !isTpEditing && setInlineEditing({ id: p.id, field: "tp", value: p.tpPrice ?? "" })}>
                             {isTpEditing ? (
                               <input autoFocus className="inline-edit-input mono" defaultValue={p.tpPrice ? fmt(parseFloat(p.tpPrice), p.symbol.digits) : ""}
                                 onBlur={(e) => { commitInlineEdit(p.id, "tp", e.target.value); setInlineEditing(null); }}
                                 onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); if (e.key === "Escape") setInlineEditing(null); }} />
-                            ) : <span className="mono">{p.tpPrice ? fmt(parseFloat(p.tpPrice), p.symbol.digits) : "—"}</span>}
+                            ) : <span className="mono">{p.tpPrice ? fmt(parseFloat(p.tpPrice), p.symbol.digits) : "-"}</span>}
                           </span>
-                          <span className="pos-cell pos-comment" onClick={() => editComment(p.id)}>{comments[p.id] || "—"}</span>
+                          <span className="pos-cell pos-comment" onClick={() => editComment(p.id)}>{comments[p.id] || "-"}</span>
                           <span className="pos-cell pos-swap mono">{parseFloat(p.swap) >= 0 ? "+" : ""}{parseFloat(p.swap).toFixed(2)}</span>
                           <span className="pos-cell pos-commission mono">{parseFloat(p.commission).toFixed(2)}</span>
                           <span className={`pos-cell pos-pnl mono ${pnl >= 0 ? "pos" : "neg"}`}>{pnl >= 0 ? "+" : ""}{pnl.toFixed(2)}</span>
@@ -4027,7 +4027,7 @@ export default function WebTrader({
               {activeBottomTab === "net" ? (
                 <div className="panel-body">
                   {netBySymbol.size === 0 ? (
-                    <div className="empty-state">No open positions — place a trade to see it here</div>
+                    <div className="empty-state">No open positions, place a trade to see it here</div>
                   ) : (
                     Array.from(netBySymbol.entries()).map(([symbolName, g]) => {
                       const netLots = +(g.buyLots - g.sellLots).toFixed(2);
@@ -4079,10 +4079,10 @@ export default function WebTrader({
                           </span>
                         ) : o.status === "REQUOTED" ? (
                           <span className="net-pos-detail mono">
-                            requoted to {o.requotedPrice ? fmt(parseFloat(o.requotedPrice), o.symbol.digits) : "—"}
+                            requoted to {o.requotedPrice ? fmt(parseFloat(o.requotedPrice), o.symbol.digits) : "-"}
                           </span>
                         ) : (
-                          <span className="net-pos-detail mono">@ {o.requestedPrice ? fmt(parseFloat(o.requestedPrice), o.symbol.digits) : "—"}</span>
+                          <span className="net-pos-detail mono">@ {o.requestedPrice ? fmt(parseFloat(o.requestedPrice), o.symbol.digits) : "-"}</span>
                         )}
                       </div>
                       <div className="simple-right">
@@ -4098,7 +4098,7 @@ export default function WebTrader({
                         ) : (
                           <button
                             className="icon-btn"
-                            title={isDealingPending ? "Cancel — withdraw before the dealer reviews it" : "Cancel order"}
+                            title={isDealingPending ? "Cancel - withdraw before the dealer reviews it" : "Cancel order"}
                             onClick={() => tradeApi.cancelOrder(o.id).then(refreshOrders)}
                           >
                             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
@@ -4195,9 +4195,9 @@ export default function WebTrader({
                               <span className="pos-cell"><span className={`pos-side ${h.side.toLowerCase()}`}>{h.side === "BUY" ? "Buy" : "Sell"}</span></span>
                               <span className="pos-cell mono">{parseFloat(h.volume).toFixed(2)}</span>
                               <span className="pos-cell mono">{fmt(parseFloat(h.openPrice), h.symbol.digits)}</span>
-                              <span className="pos-cell mono">{h.closePrice ? fmt(parseFloat(h.closePrice), h.symbol.digits) : "—"}</span>
+                              <span className="pos-cell mono">{h.closePrice ? fmt(parseFloat(h.closePrice), h.symbol.digits) : "-"}</span>
                               <span className="pos-cell" style={{ color: "var(--text-3)", fontSize: 11 }}>{new Date(h.openedAt).toLocaleDateString([], { month: "short", day: "numeric" })} {new Date(h.openedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
-                              <span className="pos-cell" style={{ color: "var(--text-3)", fontSize: 11 }}>{h.closedAt ? `${new Date(h.closedAt).toLocaleDateString([], { month: "short", day: "numeric" })} ${new Date(h.closedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "—"}</span>
+                              <span className="pos-cell" style={{ color: "var(--text-3)", fontSize: 11 }}>{h.closedAt ? `${new Date(h.closedAt).toLocaleDateString([], { month: "short", day: "numeric" })} ${new Date(h.closedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "-"}</span>
                               <span className="pos-cell pos-swap mono">{parseFloat(h.swap) >= 0 ? "+" : ""}{parseFloat(h.swap).toFixed(2)}</span>
                               <span className="pos-cell pos-commission mono">{parseFloat(h.commission).toFixed(2)}</span>
                               <span className={`pos-cell pos-pnl mono ${pnl >= 0 ? "pos" : "neg"}`}>{pnl >= 0 ? "+" : ""}{pnl.toFixed(2)}</span>
@@ -4211,15 +4211,15 @@ export default function WebTrader({
                         return (
                           <div className="history-row" key={f.id}>
                             <span className="pos-cell mono" style={{ color: "var(--text-3)", fontSize: 11 }}>{f.id.slice(-8)}</span>
-                            <span className="pos-cell" style={{ color: "var(--text-3)" }}>—</span>
+                            <span className="pos-cell" style={{ color: "var(--text-3)" }}>-</span>
                             <span className="pos-cell" title={f.note ?? undefined}>{label}</span>
-                            <span className="pos-cell" style={{ color: "var(--text-3)" }}>—</span>
-                            <span className="pos-cell" style={{ color: "var(--text-3)" }}>—</span>
-                            <span className="pos-cell" style={{ color: "var(--text-3)" }}>—</span>
+                            <span className="pos-cell" style={{ color: "var(--text-3)" }}>-</span>
+                            <span className="pos-cell" style={{ color: "var(--text-3)" }}>-</span>
+                            <span className="pos-cell" style={{ color: "var(--text-3)" }}>-</span>
                             <span className="pos-cell" style={{ color: "var(--text-3)", fontSize: 11 }}>{when.toLocaleDateString([], { month: "short", day: "numeric" })} {when.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
-                            <span className="pos-cell" style={{ color: "var(--text-3)" }}>—</span>
-                            <span className="pos-cell" style={{ color: "var(--text-3)" }}>—</span>
-                            <span className="pos-cell" style={{ color: "var(--text-3)" }}>—</span>
+                            <span className="pos-cell" style={{ color: "var(--text-3)" }}>-</span>
+                            <span className="pos-cell" style={{ color: "var(--text-3)" }}>-</span>
+                            <span className="pos-cell" style={{ color: "var(--text-3)" }}>-</span>
                             <span className={`pos-cell pos-pnl mono ${amount >= 0 ? "pos" : "neg"}`}>{money(amount)}</span>
                           </div>
                         );
@@ -4316,13 +4316,13 @@ export default function WebTrader({
             ) : (
               <div className="sentiment-box">
                 {activeSymbolMarketClosed ? (
-                  <div className="margin-note" style={{ textAlign: "center", padding: "10px 0" }}>Market closed — opens Sun 22:00 UTC</div>
+                  <div className="margin-note" style={{ textAlign: "center", padding: "10px 0" }}>Market closed, opens Sun 22:00 UTC</div>
                 ) : null}
                 {soonHighImpactEvent ? (
                   <div
                     className="margin-note"
                     style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 8px", marginBottom: 6, borderRadius: 4, background: "rgba(234, 57, 67, 0.12)", color: "var(--sell)" }}
-                    title={`${soonHighImpactEvent.event} at ${new Date(soonHighImpactEvent.time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}${soonHighImpactEvent.estimate != null ? ` — forecast ${soonHighImpactEvent.estimate}` : ""}`}
+                    title={`${soonHighImpactEvent.event} at ${new Date(soonHighImpactEvent.time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}${soonHighImpactEvent.estimate != null ? ` - forecast ${soonHighImpactEvent.estimate}` : ""}`}
                   >
                     ⚠ High-impact {soonHighImpactEvent.country} news in {Math.max(0, Math.round((new Date(soonHighImpactEvent.time).getTime() - calendarNowTick) / 60000))}m: {soonHighImpactEvent.event}
                   </div>
@@ -4330,11 +4330,11 @@ export default function WebTrader({
                 <div className="sentiment-prices">
                   <button className={`sentiment-price-btn sell${pendingMarketSide === "SELL" ? " selected" : ""}`} disabled={sellDisabled} title={staleTicketTitle} onClick={() => confirmAndPlace("SELL")}>
                     <span className="sp-label">Sell</span>
-                    <span className="sp-value mono">{m.lastTickAt > 0 ? fmt(m.bid, m.def.digits) : "—"}</span>
+                    <span className="sp-value mono">{m.lastTickAt > 0 ? fmt(m.bid, m.def.digits) : "-"}</span>
                   </button>
                   <button className={`sentiment-price-btn buy${pendingMarketSide === "BUY" ? " selected" : ""}`} disabled={buyDisabled} title={staleTicketTitle} onClick={() => confirmAndPlace("BUY")}>
                     <span className="sp-label">Buy</span>
-                    <span className="sp-value mono">{m.lastTickAt > 0 ? fmt(m.ask, m.def.digits) : "—"}</span>
+                    <span className="sp-value mono">{m.lastTickAt > 0 ? fmt(m.ask, m.def.digits) : "-"}</span>
                   </button>
                 </div>
               </div>
@@ -4367,19 +4367,19 @@ export default function WebTrader({
               </div>
               <div className="field">
                 <span className="field-label">Risk %</span>
-                <input className="mono" placeholder="—" value={riskPct} onChange={(e) => { setRiskPct(e.target.value); updateRiskVolume(e.target.value, slInput); }} />
+                <input className="mono" placeholder="-" value={riskPct} onChange={(e) => { setRiskPct(e.target.value); updateRiskVolume(e.target.value, slInput); }} />
               </div>
               <div className="field">
                 <span className="field-label">Stop loss</span>
                 <span className="input-with-clear">
-                  <input className="mono" placeholder="—" value={slInput} onChange={(e) => { setSlInput(e.target.value); if (riskPct) updateRiskVolume(riskPct, e.target.value); }} />
+                  <input className="mono" placeholder="-" value={slInput} onChange={(e) => { setSlInput(e.target.value); if (riskPct) updateRiskVolume(riskPct, e.target.value); }} />
                   <button className="clear-input-btn" onClick={() => setSlInput("")}>✕</button>
                 </span>
               </div>
               <div className="field">
                 <span className="field-label">Take profit</span>
                 <span className="input-with-clear">
-                  <input className="mono" placeholder="—" value={tpInput} onChange={(e) => setTpInput(e.target.value)} />
+                  <input className="mono" placeholder="-" value={tpInput} onChange={(e) => setTpInput(e.target.value)} />
                   <button className="clear-input-btn" onClick={() => setTpInput("")}>✕</button>
                 </span>
               </div>
@@ -4390,7 +4390,7 @@ export default function WebTrader({
               <div className="field"><span className="field-label">Leverage</span><span className="mono" style={{ fontSize: 12.5 }}>1:{account?.leverage ?? 100}</span></div>
             </div>
 
-            <div className="margin-note">Margin required <span className="mono">{account ? fmt((volume * m.def.contractSize * m.bid) / account.leverage, 2) : "—"}</span> USD</div>
+            <div className="margin-note">Margin required <span className="mono">{account ? fmt((volume * m.def.contractSize * m.bid) / account.leverage, 2) : "-"}</span> USD</div>
             {ticketHintLines.length > 0 ? <div className="sltp-preview" dangerouslySetInnerHTML={{ __html: ticketHintLines.join("<br>") }} /> : null}
 
             {orderMode === "market" && pendingMarketSide ? (
@@ -4471,8 +4471,8 @@ export default function WebTrader({
                   : `Reconnecting… ${Math.max(0, Math.floor((dealingPendingNowMs - (disconnectedSince ?? dealingPendingNowMs)) / 1000))}s`}
               </span>
             </div>
-            <div className="status-item"><span className="status-label">Ping</span><span className="status-value mono">{pingMs != null ? `${pingMs}ms` : "—"}</span></div>
-            <div className="status-item"><span className="status-label">Balance</span><span className="status-value mono">{balanceHidden ? "••••••" : account ? fmt(parseFloat(account.balance), 2) : "—"}</span></div>
+            <div className="status-item"><span className="status-label">Ping</span><span className="status-value mono">{pingMs != null ? `${pingMs}ms` : "-"}</span></div>
+            <div className="status-item"><span className="status-label">Balance</span><span className="status-value mono">{balanceHidden ? "••••••" : account ? fmt(parseFloat(account.balance), 2) : "-"}</span></div>
             <div className="status-item">
               <span className="status-label">Equity</span><span className="status-value mono">{balanceHidden ? "••••••" : fmt(equity, 2)}</span>
               <canvas ref={sparklineRef} width={70} height={20} className="equity-spark" />
@@ -4480,7 +4480,7 @@ export default function WebTrader({
           </div>
           <div className="status-item statusbar-center"><span className="status-label">Open P/L</span><span className="status-value mono" style={{ color: floatingPnl === 0 ? "var(--text-1)" : floatingPnl >= 0 ? "var(--buy)" : "var(--sell)" }}>{balanceHidden ? "••••" : (floatingPnl >= 0 ? "+" : "") + floatingPnl.toFixed(2)}</span></div>
           <div className="statusbar-right">
-            <div className="status-item"><span className="status-label">Margin level</span><span className="status-value mono" style={{ color: !isFinite(marginLevel) ? "var(--text-1)" : marginLevel < 100 ? "var(--sell)" : marginLevel < 200 ? "#FAC775" : "var(--buy)" }}>{balanceHidden ? "••••" : isFinite(marginLevel) ? marginLevel.toFixed(0) + "%" : "—"}</span></div>
+            <div className="status-item"><span className="status-label">Margin level</span><span className="status-value mono" style={{ color: !isFinite(marginLevel) ? "var(--text-1)" : marginLevel < 100 ? "var(--sell)" : marginLevel < 200 ? "#FAC775" : "var(--buy)" }}>{balanceHidden ? "••••" : isFinite(marginLevel) ? marginLevel.toFixed(0) + "%" : "-"}</span></div>
             <div className="status-item"><span className="status-label">Free margin</span><span className="status-value mono">{balanceHidden ? "••••••" : fmt(freeMargin, 2)}</span></div>
           </div>
         </div>
@@ -4492,7 +4492,7 @@ export default function WebTrader({
           <div className="modal-wrap">
             <button className="modal-close" aria-label="Close" onClick={() => setQuickOrder(null)}>✕</button>
             <div className="generic-modal-card">
-              <div className="quick-order-header"><span>{quickOrder.symbol}</span><span className="mono">{market[quickOrder.symbol].lastTickAt > 0 ? fmt(market[quickOrder.symbol].bid, market[quickOrder.symbol].def.digits) : "—"}</span></div>
+              <div className="quick-order-header"><span>{quickOrder.symbol}</span><span className="mono">{market[quickOrder.symbol].lastTickAt > 0 ? fmt(market[quickOrder.symbol].bid, market[quickOrder.symbol].def.digits) : "-"}</span></div>
               <div className="field-group">
                 <div className="field">
                   <span className="field-label">Order type</span>
@@ -4506,12 +4506,12 @@ export default function WebTrader({
                 </div>
                 <div className="field"><span className="field-label">Volume</span><input className="mono" style={{ width: 70 }} value={quickOrderVolume} onChange={(e) => setQuickOrderVolume(e.target.value)} /></div>
                 {quickOrderType === "MARKET" ? (
-                  <div className="field"><span className="field-label">Risk %</span><input className="mono" style={{ width: 70 }} placeholder="—" value={quickOrderRisk} onChange={(e) => setQuickOrderRisk(e.target.value)} /></div>
+                  <div className="field"><span className="field-label">Risk %</span><input className="mono" style={{ width: 70 }} placeholder="-" value={quickOrderRisk} onChange={(e) => setQuickOrderRisk(e.target.value)} /></div>
                 ) : (
                   <div className="field"><span className="field-label">Price</span><input className="mono" style={{ width: 90 }} placeholder={pendingPriceRuleText(quickOrderType)} value={quickOrderPrice} onChange={(e) => setQuickOrderPrice(e.target.value)} /></div>
                 )}
-                <div className="field"><span className="field-label">Stop loss</span><input className="mono" placeholder="—" value={quickOrderSl} onChange={(e) => setQuickOrderSl(e.target.value)} /></div>
-                <div className="field"><span className="field-label">Take profit</span><input className="mono" placeholder="—" value={quickOrderTp} onChange={(e) => setQuickOrderTp(e.target.value)} /></div>
+                <div className="field"><span className="field-label">Stop loss</span><input className="mono" placeholder="-" value={quickOrderSl} onChange={(e) => setQuickOrderSl(e.target.value)} /></div>
+                <div className="field"><span className="field-label">Take profit</span><input className="mono" placeholder="-" value={quickOrderTp} onChange={(e) => setQuickOrderTp(e.target.value)} /></div>
                 <div className="field"><span className="field-label">Comment</span><input className="mono" style={{ width: 110 }} placeholder="Optional" value={quickOrderComment} onChange={(e) => setQuickOrderComment(e.target.value)} /></div>
               </div>
               {quickOrderType === "MARKET" ? (
@@ -4580,8 +4580,8 @@ export default function WebTrader({
                 <span className="sltp-edit-side">{sltpEdit.netSymbol ? `All ${positions.filter((p) => p.symbol.name === sltpEdit.netSymbol).length} positions` : `${positions.find((p) => p.id === sltpEdit.posId)?.side} ${positions.find((p) => p.id === sltpEdit.posId)?.volume}`}</span>
               </div>
               <div className="field-group">
-                <div className="field"><span className="field-label">Stop loss</span><span className="input-with-clear"><input className="mono" placeholder="—" value={sltpEdit.sl} onChange={(e) => setSltpEdit({ ...sltpEdit, sl: e.target.value })} /><button className="clear-input-btn" onClick={() => setSltpEdit({ ...sltpEdit, sl: "" })}>✕</button></span></div>
-                <div className="field"><span className="field-label">Take profit</span><span className="input-with-clear"><input className="mono" placeholder="—" value={sltpEdit.tp} onChange={(e) => setSltpEdit({ ...sltpEdit, tp: e.target.value })} /><button className="clear-input-btn" onClick={() => setSltpEdit({ ...sltpEdit, tp: "" })}>✕</button></span></div>
+                <div className="field"><span className="field-label">Stop loss</span><span className="input-with-clear"><input className="mono" placeholder="-" value={sltpEdit.sl} onChange={(e) => setSltpEdit({ ...sltpEdit, sl: e.target.value })} /><button className="clear-input-btn" onClick={() => setSltpEdit({ ...sltpEdit, sl: "" })}>✕</button></span></div>
+                <div className="field"><span className="field-label">Take profit</span><span className="input-with-clear"><input className="mono" placeholder="-" value={sltpEdit.tp} onChange={(e) => setSltpEdit({ ...sltpEdit, tp: e.target.value })} /><button className="clear-input-btn" onClick={() => setSltpEdit({ ...sltpEdit, tp: "" })}>✕</button></span></div>
               </div>
               <button className="modal-btn primary" style={{ width: "100%", justifyContent: "center" }} onClick={saveSltpEdit}>Update position</button>
             </div>
@@ -4826,7 +4826,7 @@ export default function WebTrader({
               <form className="generic-modal-card" onSubmit={submitAccountSwitch}>
                 <div className="generic-modal-title">Switch to {switchTarget.accountNumber}</div>
                 <p style={{ fontSize: 12, color: "var(--text-3)", margin: "0 0 10px" }}>
-                  Confirm the password for this account — switching replaces your current session.
+                  Confirm the password for this account, switching replaces your current session.
                 </p>
                 <input
                   className="generic-modal-input mono"
@@ -4884,7 +4884,7 @@ export default function WebTrader({
                     setKycSubmitting(true);
                     try {
                       await tradeApi.submitKyc(kycDocumentType, kycFront, kycBack);
-                      pushToast("Identity documents submitted — pending review");
+                      pushToast("Identity documents submitted, pending review");
                       setKycFront(null);
                       setKycBack(null);
                       await refreshKycStatus();
@@ -4993,7 +4993,7 @@ export default function WebTrader({
                             <div key={p.id} className="simple-row" style={{ padding: "6px 10px" }}>
                               <div className="simple-left">
                                 <span className="pos-symbol">{p.symbol.name}</span>
-                                <span className="net-pos-detail mono">{p.side} {parseFloat(p.volume).toFixed(2)} @ {p.openPrice} → {p.closePrice ?? "—"}</span>
+                                <span className="net-pos-detail mono">{p.side} {parseFloat(p.volume).toFixed(2)} @ {p.openPrice} → {p.closePrice ?? "-"}</span>
                               </div>
                               <div className="simple-right mono" style={{ color: parseFloat(p.realizedPnl ?? "0") >= 0 ? "var(--buy)" : "var(--sell)" }}>
                                 {money(parseFloat(p.realizedPnl ?? "0"))}
@@ -5029,7 +5029,7 @@ export default function WebTrader({
               </div>
               <div style={{ maxHeight: 280, overflowY: "auto" }}>
                 {alertsTab === "active" ? (
-                  alerts.length === 0 ? <div className="empty-state">No alerts — get notified instantly about price movements</div> : alerts.map((a) => (
+                  alerts.length === 0 ? <div className="empty-state">No alerts, get notified instantly about price movements</div> : alerts.map((a) => (
                     <div className="simple-row" key={a.id}>
                       <div className="simple-left">
                         <span className="pos-symbol">{a.symbol}</span>
@@ -5093,7 +5093,7 @@ export default function WebTrader({
             <div className="modal-wrap">
               <button className="modal-close" aria-label="Close" onClick={() => setPartialCloseTarget(null)}>✕</button>
               <div className="generic-modal-card" style={{ width: 300 }}>
-                <div className="quick-order-header"><span>Partial close — {p.symbol.name}</span></div>
+                <div className="quick-order-header"><span>Partial close, {p.symbol.name}</span></div>
                 <p className="margin-note" style={{ marginTop: 0 }}>
                   {fullVolume.toFixed(2)} lots open @ {fmt(parseFloat(p.openPrice), p.symbol.digits)}
                 </p>
@@ -5157,7 +5157,7 @@ export default function WebTrader({
             <div className="modal-wrap">
               <button className="modal-close" aria-label="Close" onClick={() => setCloseByTarget(null)}>✕</button>
               <div className="generic-modal-card" style={{ width: 320 }}>
-                <div className="quick-order-header"><span>Close by — {p.symbol.name}</span></div>
+                <div className="quick-order-header"><span>Close by, {p.symbol.name}</span></div>
                 <p className="margin-note" style={{ marginTop: 0 }}>
                   Net {p.side === "BUY" ? "Buy" : "Sell"} {parseFloat(p.volume).toFixed(2)} @ {fmt(parseFloat(p.openPrice), p.symbol.digits)} against an opposite position on the same symbol, at one shared price -- no market spread charged on the netted amount.
                 </p>
@@ -5197,7 +5197,7 @@ export default function WebTrader({
               </div>
               <div className="section-label" style={{ paddingLeft: 0 }}>{fundsTab === "deposit" ? "Payment method" : "Withdraw via"}</div>
               {paymentMethods.length === 0 ? (
-                <div className="margin-note">No payment methods are set up for this broker yet — contact support.</div>
+                <div className="margin-note">No payment methods are set up yet. Contact support.</div>
               ) : (
                 <div className="method-row">
                   {paymentMethods.map((m) => (
@@ -5245,10 +5245,10 @@ export default function WebTrader({
                     </div>
                     {selectedMethod && (selectedMethod.feePercent !== "0" || selectedMethod.feeFixed !== "0") ? (
                       <div className="margin-note">
-                        Est. fee: {money(estimateFee(selectedMethod, parseFloat(fundsAmount) || 0))} (not deducted from your requested amount — shown for reference)
+                        Est. fee: {money(estimateFee(selectedMethod, parseFloat(fundsAmount) || 0))} (not deducted from your requested amount, shown for reference)
                       </div>
                     ) : null}
-                    {fundsTab === "withdraw" ? <div className="margin-note">Available: {account ? money(parseFloat(account.balance)) : "—"}</div> : null}
+                    {fundsTab === "withdraw" ? <div className="margin-note">Available: {account ? money(parseFloat(account.balance)) : "-"}</div> : null}
                   </>
                 );
               })()}
@@ -5282,8 +5282,8 @@ export default function WebTrader({
                     setFundsDestination("");
                     pushToast(
                       fundsTab === "deposit"
-                        ? "Deposit request submitted — pending review"
-                        : "Withdrawal request submitted — pending review"
+                        ? "Deposit request submitted, pending review"
+                        : "Withdrawal request submitted, pending review"
                     );
                     await refreshFundsHistory();
                   } catch (err) {
@@ -5313,7 +5313,7 @@ export default function WebTrader({
                       >
                         <span>
                           {r.type === "DEPOSIT" ? "Deposit" : r.type === "WITHDRAWAL" ? "Withdrawal" : "Adjustment"}
-                          {r.type === "ADJUSTMENT" && r.note ? <span style={{ color: "var(--text-3)" }}> — {r.note}</span> : null}
+                          {r.type === "ADJUSTMENT" && r.note ? <span style={{ color: "var(--text-3)" }}>, {r.note}</span> : null}
                         </span>
                         <span className="mono">{money(parseFloat(r.amount))}</span>
                         <span
@@ -5356,7 +5356,7 @@ export default function WebTrader({
 function AnalyticsGrid({ trades }: { trades: ApiPosition[] }) {
   const pnls = trades.map((t) => (t.realizedPnl ? parseFloat(t.realizedPnl) : 0));
   if (pnls.length === 0) {
-    return <div className="empty-state" style={{ gridColumn: "1/-1" }}>No closed trades yet — analytics will appear after you close some trades</div>;
+    return <div className="empty-state" style={{ gridColumn: "1/-1" }}>No closed trades yet, analytics will appear after you close some trades</div>;
   }
   const wins = pnls.filter((p) => p >= 0);
   const losses = pnls.filter((p) => p < 0);
@@ -5364,7 +5364,7 @@ function AnalyticsGrid({ trades }: { trades: ApiPosition[] }) {
   const totalPnl = pnls.reduce((s, p) => s + p, 0);
   const grossProfit = wins.reduce((s, p) => s + p, 0);
   const grossLoss = Math.abs(losses.reduce((s, p) => s + p, 0));
-  const profitFactor = grossLoss === 0 ? (grossProfit > 0 ? "∞" : "—") : (grossProfit / grossLoss).toFixed(2);
+  const profitFactor = grossLoss === 0 ? (grossProfit > 0 ? "∞" : "-") : (grossProfit / grossLoss).toFixed(2);
   const best = Math.max(...pnls);
   const worst = Math.min(...pnls);
   const avgTrade = totalPnl / pnls.length;

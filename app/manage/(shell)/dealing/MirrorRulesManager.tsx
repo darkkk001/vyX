@@ -188,7 +188,7 @@ export default function MirrorRulesManager() {
                 </TableCell>
                 <TableCell align="right" mono>×{r.multiplier}</TableCell>
                 <TableCell mono className="text-xs">
-                  {r.maxOpenLots ? `${r.maxOpenLots} lots` : "—"}
+                  {r.maxOpenLots ? `${r.maxOpenLots} lots` : "-"}
                   {r.maxDailyLoss ? ` / -${r.maxDailyLoss}` : ""}
                 </TableCell>
                 <TableCell>
@@ -233,7 +233,7 @@ export default function MirrorRulesManager() {
               <option value="">Select…</option>
               {form.sourceType === "GROUP"
                 ? groups.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)
-                : accounts.map((a) => <option key={a.id} value={a.id}>{a.accountNumber} — {a.fullName}</option>)}
+                : accounts.map((a) => <option key={a.id} value={a.id}>{a.accountNumber}, {a.fullName}</option>)}
             </select>
           </FormField>
           <FormField label="Target account (master)">
@@ -243,7 +243,7 @@ export default function MirrorRulesManager() {
               onChange={(e) => setForm((f) => ({ ...f, targetAccountId: e.target.value }))}
             >
               <option value="">Select…</option>
-              {accounts.map((a) => <option key={a.id} value={a.id}>{a.accountNumber} — {a.fullName}</option>)}
+              {accounts.map((a) => <option key={a.id} value={a.id}>{a.accountNumber}, {a.fullName}</option>)}
             </select>
           </FormField>
           <FormField label="Direction">
@@ -281,12 +281,12 @@ export default function MirrorRulesManager() {
         </div>
         <p className="mt-3 text-xs text-[var(--text-3)]">
           {form.fillPriceMode === "SOURCE_PRICE"
-            ? "Source price: the mirror opens/closes at exactly the client's own fill price — correct when the target is the broker's own ledger account, since the spread is already earned from the client."
-            : "Market: the mirror opens/closes at the live bid/ask, same as a real client fill — use this only for a target that behaves like an external account."}
+            ? "Source price: the mirror opens/closes at exactly the client's own fill price, correct when the target is the broker's own ledger account, since the spread is already earned from the client."
+            : "Market: the mirror opens/closes at the live bid/ask, same as a real client fill, use this only for a target that behaves like an external account."}
         </p>
         {targetAccount?.hasKyc ? (
           <p className="mt-3 rounded-lg bg-[var(--warn-bg)] px-3 py-2 text-xs text-[var(--warn)]">
-            This target account has a KYC record on file — it looks like a real client account. A dedicated master
+            This target account has a KYC record on file, it looks like a real client account. A dedicated master
             account (no KYC, not traded manually) is recommended for mirror targets.
           </p>
         ) : null}
@@ -343,7 +343,7 @@ function MirrorRuleDetail({ id, onClose }: { id: string; onClose: () => void }) 
             <div>
               <div className="text-[10.5px] uppercase tracking-wide text-[var(--text-3)]">Net strategy P/L</div>
               <div className={`font-mono ${data.netStrategyPnl && Number(data.netStrategyPnl) < 0 ? "text-[var(--sell)]" : "text-[var(--buy)]"}`}>
-                {data.netStrategyPnl ?? "— (no live price)"}
+                {data.netStrategyPnl ?? "No live price"}
               </div>
             </div>
           </div>
@@ -362,11 +362,11 @@ function MirrorRuleDetail({ id, onClose }: { id: string; onClose: () => void }) 
               ) : (
                 data.positions.map((p) => (
                   <TableRow key={p.sourcePositionId}>
-                    <TableCell primary>{p.symbol ?? "—"}</TableCell>
+                    <TableCell primary>{p.symbol ?? "-"}</TableCell>
                     <TableCell mono>{p.sourceSide} {p.sourceVolume} ({p.sourceStatus})</TableCell>
-                    <TableCell align="right" mono>{p.sourcePnl ?? "—"}</TableCell>
+                    <TableCell align="right" mono>{p.sourcePnl ?? "-"}</TableCell>
                     <TableCell mono>{p.targetSide} {p.targetVolume} ({p.targetStatus})</TableCell>
-                    <TableCell align="right" mono>{p.targetPnl ?? "—"}</TableCell>
+                    <TableCell align="right" mono>{p.targetPnl ?? "-"}</TableCell>
                   </TableRow>
                 ))
               )}
@@ -385,7 +385,7 @@ function MirrorRuleDetail({ id, onClose }: { id: string; onClose: () => void }) 
                 data.recentFailures.map((f, i) => (
                   <TableRow key={i}>
                     <TableCell mono className="text-xs">{formatDateTime(f.createdAt)}</TableCell>
-                    <TableCell className="text-xs">{f.reason ?? "—"}</TableCell>
+                    <TableCell className="text-xs">{f.reason ?? "-"}</TableCell>
                   </TableRow>
                 ))
               )}

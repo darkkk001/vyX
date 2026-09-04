@@ -9,7 +9,7 @@ import TransfersManager from "./TransfersManager";
 // balance -- delegatable via INTERNAL_TRANSFERS (see lib/permissions.ts).
 // Kept its own check here -- stricter than the shell layout's own
 // MANAGER-or-BROKER_ADMIN guard, same reasoning as Settings/Emergency.
-export const metadata: Metadata = { title: "Internal transfers — Backoffice" };
+export const metadata: Metadata = { title: "Internal transfers - Backoffice" };
 
 export default async function ManagerTransfersPage() {
   const session = await getAdminSession();
@@ -19,7 +19,7 @@ export default async function ManagerTransfersPage() {
 
   return (
     <main className="mx-auto max-w-[1400px]">
-      <PageHeader title="Internal transfers" description="Move balance between two accounts on this broker. Both sides are ledger-backed." />
+      <PageHeader title="Internal transfers" description="Move balance between two accounts. Both sides are ledger-backed." />
       <TransfersManager />
     </main>
   );

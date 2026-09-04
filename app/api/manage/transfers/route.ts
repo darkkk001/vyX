@@ -104,7 +104,7 @@ export async function POST(request: NextRequest) {
       data: {
         brokerId, accountId: fromAccountId, type: "TRANSFER_OUT", status: "COMPLETED",
         amount: amount.neg(), balanceBefore: fromBalanceBefore, balanceAfter: fromBalanceAfter,
-        note: `Transfer to ${toAccount.accountNumber} — ${note}`, createdByAdminId: session.adminId,
+        note: `Transfer to ${toAccount.accountNumber}: ${note}`, createdByAdminId: session.adminId,
       },
     });
 
@@ -116,7 +116,7 @@ export async function POST(request: NextRequest) {
       data: {
         brokerId, accountId: toAccountId, type: "TRANSFER_IN", status: "COMPLETED",
         amount, balanceBefore: toBalanceBefore, balanceAfter: toBalanceAfter,
-        note: `Transfer from ${fromAccount.accountNumber} — ${note}`, createdByAdminId: session.adminId,
+        note: `Transfer from ${fromAccount.accountNumber}: ${note}`, createdByAdminId: session.adminId,
       },
     });
 

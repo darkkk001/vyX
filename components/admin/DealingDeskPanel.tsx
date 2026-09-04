@@ -149,7 +149,7 @@ export default function DealingDeskPanel() {
     }
   });
 
-  const accountLabel = (a: Account) => `${a.accountNumber} — ${a.fullName}`;
+  const accountLabel = (a: Account) => `${a.accountNumber}, ${a.fullName}`;
   const filteredResting = restingOrders?.filter((r) => accountFilter === ALL_ACCOUNTS || r.accountId === accountFilter) ?? null;
   const filteredFeed = feedRows?.filter((r) => accountFilter === ALL_ACCOUNTS || r.accountId === accountFilter) ?? null;
 
@@ -216,9 +216,9 @@ export default function DealingDeskPanel() {
                     <Badge tone={r.side === "BUY" ? "success" : "danger"}>{r.side}</Badge>
                   </TableCell>
                   <TableCell align="right" mono>{r.volume}</TableCell>
-                  <TableCell align="right" mono>{r.requestedPrice ?? "—"}</TableCell>
-                  <TableCell align="right" mono>{r.slPrice ?? "—"}</TableCell>
-                  <TableCell align="right" mono>{r.tpPrice ?? "—"}</TableCell>
+                  <TableCell align="right" mono>{r.requestedPrice ?? "-"}</TableCell>
+                  <TableCell align="right" mono>{r.slPrice ?? "-"}</TableCell>
+                  <TableCell align="right" mono>{r.tpPrice ?? "-"}</TableCell>
                   <TableCell className="text-xs text-[var(--text-3)]">{formatDateTime(r.createdAt)}</TableCell>
                 </TableRow>
               ))

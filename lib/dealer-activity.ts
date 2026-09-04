@@ -3,6 +3,7 @@ import type { Prisma, PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { createNotification } from "@/lib/notifications";
 import { publishTradingEvent } from "@/lib/nats";
+import { isDealingManagedAccount } from "@/lib/dealing-routing";
 
 // Dealer awareness (2026-09-04 feature) -- a dealer responsible for a
 // DEALING-group account (Group.groupType === "DEALING") needs to see
@@ -58,8 +59,8 @@ function bodyFor(params: { accountNumber: string; symbol: string; side: "BUY" | 
   else if (v.requestedPrice) parts.push(`@ ${v.requestedPrice}`);
   if (v.slPrice !== undefined || v.tpPrice !== undefined) {
     const slTp: string[] = [];
-    if (v.oldSlPrice !== undefined || v.newSlPrice !== undefined) slTp.push(`SL ${v.oldSlPrice ?? "—"}→${v.newSlPrice ?? "—"}`);
-    if (v.oldTpPrice !== undefined || v.newTpPrice !== undefined) slTp.push(`TP ${v.oldTpPrice ?? "—"}→${v.newTpPrice ?? "—"}`);
+    if (v.oldSlPrice !== undefined || v.newSlPrice !== undefined) slTp.push(`SL ${v.oldSlPrice ?? "-"}→${v.newSlPrice ?? "-"}`);
+    if (v.oldTpPrice !== undefined || v.newTpPrice !== undefined) slTp.push(`TP ${v.oldTpPrice ?? "-"}→${v.newTpPrice ?? "-"}`);
     if (slTp.length) parts.push(slTp.join(", "));
   }
   return parts.join(" ");
@@ -178,11 +179,16 @@ export async function getDealerActivityFeedRows(
   // per row. Over-fetches slightly when dealingOnly is true (a row that
   // turns out non-dealing is dropped after the join), acceptable at this
   // volume (`take: limit` rows, not the whole table).
-  const rows = await prisma.auditLog.findMany({
-    where: { brokerId, action: { in: Object.keys(AUDIT_ACTION_MAP) } },
-    orderBy: { createdAt: "desc" },
-    take: limit,
-  });
+  const [rows, broker] = await Promise.all([
+    prisma.auditLog.findMany({
+      where: { brokerId, action: { in: Object.keys(AUDIT_ACTION_MAP) } },
+      orderBy: { createdAt: "desc" },
+      take: limit,
+    }),
+    prisma.broker.findUnique({ where: { id: brokerId }, select: { dealingModeAt: true, dealingDeskAutoFillAt: true } }),
+  ]);
+  const brokerDealingModeOn = !!broker?.dealingModeAt;
+  const dealingDeskAutoFillOn = !!broker?.dealingDeskAutoFillAt;
 
   const accountNumbers = [
     ...new Set(
@@ -194,7 +200,7 @@ export async function getDealerActivityFeedRows(
   const accounts = accountNumbers.length
     ? await prisma.account.findMany({
         where: { brokerId, accountNumber: { in: accountNumbers } },
-        select: { id: true, accountNumber: true, fullName: true, group: { select: { groupType: true } } },
+        select: { id: true, accountNumber: true, fullName: true, group: { select: { groupType: true, dealingMode: true, forceDealingMode: true } } },
       })
     : [];
   const accountByNumber = new Map(accounts.map((a) => [a.accountNumber, a]));
@@ -207,7 +213,13 @@ export async function getDealerActivityFeedRows(
       const account = accountNumber ? accountByNumber.get(accountNumber) : undefined;
       const action = AUDIT_ACTION_MAP[r.action];
       if (!action || !account) return null;
-      const isDealingGroup = account.group?.groupType === "DEALING";
+      // 2026-09-04 bug fix: was `account.group?.groupType === "DEALING"`,
+      // which flagged ANY book-routing-DEALING group as dealer-managed --
+      // wrong for a group like "B-Book" that's groupType=DEALING but
+      // dealingMode=AUTO (a legitimate, common config: book accounting and
+      // manual review are independent). isDealingManagedAccount is the
+      // same resolution the real order-routing path uses.
+      const isDealingGroup = isDealingManagedAccount({ group: account.group, brokerDealingModeOn, dealingDeskAutoFillOn });
       if (opts.dealingOnly && !isDealingGroup) return null;
       return {
         id: r.id,
@@ -254,7 +266,7 @@ export type RestingOrderRow = {
   createdAt: string;
 };
 
-// Currently-active LIMIT/STOP pending orders for DEALING-group accounts --
+// Currently-active LIMIT/STOP pending orders for dealer-managed accounts --
 // the "resting orders" list the 2026-09-04 refinement asked for: a
 // persistent view of what's sitting active on a manually-managed account,
 // not just something that scrolled past in the feed. A MARKET order
@@ -262,40 +274,66 @@ export type RestingOrderRow = {
 // resting order -- it's already in the approval queue, see
 // DealingQueueManager.tsx); once a resting order TRIGGERS it reclassifies
 // to MARKET/PENDING too and naturally drops out of this same query.
+//
+// Filtered in application code, not a Prisma `where` clause -- the
+// 2026-09-04 bug fix moved this off a bare `group: { groupType: "DEALING" }`
+// filter (wrong: leaks any book-routing-DEALING group regardless of its
+// own dealingMode) to the real routing decision
+// (isDealingManagedAccount), which isn't expressible as a single relation
+// filter. Broker-scoped `type`/`status` filter keeps the candidate set
+// small regardless.
 export async function getDealingDeskRestingOrders(brokerId: string): Promise<RestingOrderRow[]> {
-  const orders = await prisma.order.findMany({
-    where: {
-      brokerId,
-      type: { in: ["LIMIT", "STOP"] },
-      status: "PENDING",
-      account: { group: { groupType: "DEALING" } },
-    },
-    include: {
-      account: { select: { id: true, accountNumber: true, fullName: true } },
-      symbol: { select: { name: true, digits: true } },
-    },
-    orderBy: { createdAt: "desc" },
-  });
-  return orders.map((o) => ({
-    orderId: o.id,
-    accountId: o.account.id,
-    accountNumber: o.account.accountNumber,
-    accountFullName: o.account.fullName,
-    symbol: o.symbol.name,
-    digits: o.symbol.digits,
-    side: o.side,
-    volume: o.volume.toString(),
-    orderType: o.type as "LIMIT" | "STOP",
-    requestedPrice: o.requestedPrice ? o.requestedPrice.toString() : null,
-    slPrice: o.slPrice ? o.slPrice.toString() : null,
-    tpPrice: o.tpPrice ? o.tpPrice.toString() : null,
-    createdAt: o.createdAt.toISOString(),
-  }));
+  const [orders, broker] = await Promise.all([
+    prisma.order.findMany({
+      where: { brokerId, type: { in: ["LIMIT", "STOP"] }, status: "PENDING" },
+      include: {
+        account: { select: { id: true, accountNumber: true, fullName: true, group: { select: { groupType: true, dealingMode: true, forceDealingMode: true } } } },
+        symbol: { select: { name: true, digits: true } },
+      },
+      orderBy: { createdAt: "desc" },
+    }),
+    prisma.broker.findUnique({ where: { id: brokerId }, select: { dealingModeAt: true, dealingDeskAutoFillAt: true } }),
+  ]);
+  const brokerDealingModeOn = !!broker?.dealingModeAt;
+  const dealingDeskAutoFillOn = !!broker?.dealingDeskAutoFillAt;
+
+  return orders
+    .filter((o) => isDealingManagedAccount({ group: o.account.group, brokerDealingModeOn, dealingDeskAutoFillOn }))
+    .map((o) => ({
+      orderId: o.id,
+      accountId: o.account.id,
+      accountNumber: o.account.accountNumber,
+      accountFullName: o.account.fullName,
+      symbol: o.symbol.name,
+      digits: o.symbol.digits,
+      side: o.side,
+      volume: o.volume.toString(),
+      orderType: o.type as "LIMIT" | "STOP",
+      requestedPrice: o.requestedPrice ? o.requestedPrice.toString() : null,
+      slPrice: o.slPrice ? o.slPrice.toString() : null,
+      tpPrice: o.tpPrice ? o.tpPrice.toString() : null,
+      createdAt: o.createdAt.toISOString(),
+    }));
 }
 
+// Same 2026-09-04 fix as above, but resolved a level higher for
+// efficiency: the routing decision only depends on GROUP settings (plus
+// the broker-wide toggles), so this narrows to dealing-managed GROUP ids
+// first (a broker has a handful of groups, not thousands) rather than
+// pulling every account broker-wide just to filter most of them back out.
 export async function getDealingGroupAccounts(brokerId: string): Promise<{ id: string; accountNumber: string; fullName: string }[]> {
+  const [groups, broker] = await Promise.all([
+    prisma.group.findMany({ where: { brokerId }, select: { id: true, groupType: true, dealingMode: true, forceDealingMode: true } }),
+    prisma.broker.findUnique({ where: { id: brokerId }, select: { dealingModeAt: true, dealingDeskAutoFillAt: true } }),
+  ]);
+  const brokerDealingModeOn = !!broker?.dealingModeAt;
+  const dealingDeskAutoFillOn = !!broker?.dealingDeskAutoFillAt;
+  const dealingGroupIds = groups
+    .filter((g) => isDealingManagedAccount({ group: g, brokerDealingModeOn, dealingDeskAutoFillOn }))
+    .map((g) => g.id);
+  if (dealingGroupIds.length === 0) return [];
   return prisma.account.findMany({
-    where: { brokerId, group: { groupType: "DEALING" } },
+    where: { brokerId, groupId: { in: dealingGroupIds } },
     select: { id: true, accountNumber: true, fullName: true },
     orderBy: { accountNumber: "asc" },
   });

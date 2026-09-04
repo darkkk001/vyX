@@ -184,11 +184,11 @@ export default function SmartTradeManager({
     const sl = config.sl === "" ? null : parseFloat(config.sl);
     const tp = config.tp === "" ? null : parseFloat(config.tp);
     if (sl != null && ((side === "BUY" && sl >= m.ask) || (side === "SELL" && sl <= m.bid))) {
-      pushToast(`Invalid Stop Loss — SL must be ${side === "BUY" ? "below" : "above"} the current market price`);
+      pushToast(`Invalid Stop Loss, SL must be ${side === "BUY" ? "below" : "above"} the current market price`);
       return;
     }
     if (tp != null && ((side === "BUY" && tp <= m.ask) || (side === "SELL" && tp >= m.bid))) {
-      pushToast(`Invalid Take Profit — TP must be ${side === "BUY" ? "above" : "below"} the current market price`);
+      pushToast(`Invalid Take Profit, TP must be ${side === "BUY" ? "above" : "below"} the current market price`);
       return;
     }
     const refPrice = side === "BUY" ? m.ask : m.bid;
@@ -205,7 +205,7 @@ export default function SmartTradeManager({
         pushToast(`Smart Execution: ${side === "BUY" ? "Bought" : "Sold"} ${config.lot} lots of ${config.symbol} @ ${fmt(refPrice, m.def.digits)}`, true);
         await Promise.all([refreshPositions(), refreshAccount()]);
       } else {
-        pushToast(`Smart Execution: ${config.symbol} order submitted — awaiting dealer approval`);
+        pushToast(`Smart Execution: ${config.symbol} order submitted, awaiting dealer approval`);
       }
     } catch (err) {
       pushToast(err instanceof Error ? err.message : "Smart Execution order failed");
@@ -242,7 +242,7 @@ export default function SmartTradeManager({
     const failed = results.filter((r) => r.status === "rejected");
     const reasons = failed.map((r) => (r as PromiseRejectedResult).reason?.message ?? "unknown error");
     pushToast(
-      `${label} — Requested: ${matching.length}, Successful: ${matching.length - failed.length}, Failed: ${failed.length}` +
+      `${label}, Requested: ${matching.length}, Successful: ${matching.length - failed.length}, Failed: ${failed.length}` +
         (reasons.length ? ` (${reasons[0]}${reasons.length > 1 ? ", …" : ""})` : ""),
       failed.length === 0
     );

@@ -59,7 +59,7 @@ export default function AuditLogTable() {
                     <span className="ml-1.5 text-[var(--text-3)]">{expandedId === row.id ? "▾" : "▸"}</span>
                   ) : null}
                 </TableCell>
-                <TableCell className="text-[var(--text-3)]">{row.brokerName ?? "—"}</TableCell>
+                <TableCell className="text-[var(--text-3)]">{row.brokerName ?? "-"}</TableCell>
                 <TableCell className="text-xs text-[var(--text-3)]">{row.createdAtLabel}</TableCell>
               </TableRow>
               {expandedId === row.id ? (

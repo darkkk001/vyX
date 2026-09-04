@@ -59,16 +59,16 @@ export function describeOrderAuditEvent(action: string, oldValue: Prisma.JsonVal
     case "ORDER_MODIFIED": {
       const changes: string[] = [];
       for (const key of ["requestedPrice", "slPrice", "tpPrice"]) {
-        if (key in after) changes.push(`${key} ${before[key] ?? "—"} → ${after[key]}`);
+        if (key in after) changes.push(`${key} ${before[key] ?? "-"} → ${after[key]}`);
       }
-      return `Order modified: ${desc}${changes.length ? " — " + changes.join(", ") : ""}`;
+      return `Order modified: ${desc}${changes.length ? ", " + changes.join(", ") : ""}`;
     }
     case "TRADER_CANCELLED_DEALING_ORDER":
     case "TRADER_CANCELLED_PENDING_ORDER":
       return `Order cancelled: ${desc}`;
     case "DEALING_ORDER_REJECTED":
     case "DEALING_ORDER_AUTO_REJECTED":
-      return `Order rejected: ${desc}${after.reason ? ` — ${after.reason}` : ""}`;
+      return `Order rejected: ${desc}${after.reason ? ` (${after.reason})` : ""}`;
     case "DEALING_ORDER_REQUOTED":
       return `Dealer requoted ${desc} @ ${after.requotedPrice}`;
     case "DEALING_ORDER_REQUOTE_ACCEPTED":
@@ -80,7 +80,7 @@ export function describeOrderAuditEvent(action: string, oldValue: Prisma.JsonVal
     case "ORDER_FILLED":
       return `Order filled: ${desc} @ ${after.filledPrice}`;
     case "ORDER_TRIGGERED_AND_FILLED":
-      return `Pending order triggered: ${desc} @ ${after.filledPrice} (requested ${before.requestedPrice ?? "—"})`;
+      return `Pending order triggered: ${desc} @ ${after.filledPrice} (requested ${before.requestedPrice ?? "-"})`;
     case "PENDING_ORDER_QUEUED_FOR_DEALING":
       return `Order queued for dealer review: ${desc} (triggered @ ${after.triggerPrice})`;
     default:

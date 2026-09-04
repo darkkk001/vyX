@@ -9,7 +9,7 @@ import AuditLogTable from "./AuditLogTable";
 // instead of receiving server-rendered rows as props -- the one path
 // both the website and a bundled desktop shell (manager-shell/, which
 // has no Server Component to pre-fetch anything) can share.
-export const metadata: Metadata = { title: "Audit log — Backoffice" };
+export const metadata: Metadata = { title: "Audit log - Backoffice" };
 
 export default function ManagerAuditPage() {
   return (

@@ -90,11 +90,11 @@ export default function ChartCell({
         {/* Feed-loss UX -- frozen last-known price regardless of
             feedStatus, no caption, matching WebTrader.tsx's own single-
             chart header. Only a cell whose symbol has never ticked at
-            all this session falls back to "—". */}
+            all this session falls back to "-". */}
         {m.lastTickAt > 0 ? (
           <span className="mono" style={{ fontSize: 11, fontWeight: 600, color: up ? "var(--buy)" : "var(--sell)" }}>{fmt(m.bid, m.def.digits)}</span>
         ) : (
-          <span className="mono" style={{ fontSize: 10.5, fontWeight: 600, color: "var(--text-3)" }}>—</span>
+          <span className="mono" style={{ fontSize: 10.5, fontWeight: 600, color: "var(--text-3)" }}>-</span>
         )}
         <div style={{ marginLeft: "auto", display: "flex", gap: 1 }}>
           {CELL_TF_LABELS.map((t) => (

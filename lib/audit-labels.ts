@@ -154,7 +154,7 @@ export function auditEntityHref(entityType: string, entityId: string): string | 
 }
 
 function formatDiffValue(value: unknown): string {
-  if (value === null || value === undefined) return "—";
+  if (value === null || value === undefined) return "-";
   if (typeof value === "object") return JSON.stringify(value);
   return String(value);
 }

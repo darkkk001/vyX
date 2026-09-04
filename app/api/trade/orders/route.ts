@@ -199,13 +199,19 @@ async function handlePlaceOrder(request: NextRequest) {
   }
 
   // See lib/dealing-routing.ts's own doc comment -- Group.dealingMode can
-  // override the three checks below entirely, in either direction.
-  const isDealingGroup = account.group?.groupType === "DEALING";
+  // override the four checks below entirely, in either direction.
+  // `wantsQueue` doubles as the correct "is this account dealer-managed"
+  // signal for the dealer-awareness feature below (recordDealerActivity's
+  // isDealingGroup) -- NOT the raw groupTypeIsDealing flag alone, which a
+  // group can be true for while still being AUTO/dealer-desk-off (see
+  // lib/dealing-routing.ts's isDealingManagedAccount doc comment for the
+  // 2026-09-04 bug this fixed).
   const wantsQueue = resolveWantsDealingQueue({
     groupDealingMode: account.group?.dealingMode ?? "INHERIT",
     brokerDealingModeOn: !!broker.dealingModeAt,
     groupForceDealingMode: !!account.group?.forceDealingMode,
-    groupTypeIsDealing: isDealingGroup,
+    groupTypeIsDealing: account.group?.groupType === "DEALING",
+    dealingDeskAutoFillOn: !!broker.dealingDeskAutoFillAt,
   });
 
   try {
@@ -334,7 +340,7 @@ async function handlePlaceOrder(request: NextRequest) {
               accountId: session.accountId,
               accountNumber: account.accountNumber,
               accountFullName: account.fullName,
-              isDealingGroup,
+              isDealingGroup: wantsQueue,
               action: "POSITION_OPENED",
               symbol: symbolName,
               side,
@@ -385,7 +391,7 @@ async function handlePlaceOrder(request: NextRequest) {
         brokerId: session.brokerId,
         type: "DEALING_ORDER_PENDING",
         title: "Order awaiting dealer review",
-        body: `${account.accountNumber} — ${side} ${volume.toString()} ${symbolName}`,
+        body: `${account.accountNumber}, ${side} ${volume.toString()} ${symbolName}`,
         entityType: "Order",
         entityId: order.id,
       });
@@ -421,7 +427,7 @@ async function handlePlaceOrder(request: NextRequest) {
         accountId: session.accountId,
         accountNumber: account.accountNumber,
         accountFullName: account.fullName,
-        isDealingGroup,
+        isDealingGroup: wantsQueue,
         action: "ORDER_PLACED",
         symbol: symbolName,
         side,
@@ -546,7 +552,7 @@ async function handlePlaceOrder(request: NextRequest) {
         accountId: session.accountId,
         accountNumber: account.accountNumber,
         accountFullName: account.fullName,
-        isDealingGroup,
+        isDealingGroup: wantsQueue,
         action: "POSITION_OPENED",
         symbol: symbolName,
         side,
@@ -603,7 +609,7 @@ async function handlePlaceOrder(request: NextRequest) {
       accountId: session.accountId,
       accountNumber: account.accountNumber,
       accountFullName: account.fullName,
-      isDealingGroup,
+      isDealingGroup: wantsQueue,
       action: "ORDER_PLACED",
       symbol: symbolName,
       side,

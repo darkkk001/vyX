@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveWantsDealingQueue } from "@/lib/dealing-routing";
+import { resolveWantsDealingQueue, isDealingManagedAccount } from "@/lib/dealing-routing";
 
 // Reverse-mirror hook gap follow-up: Futurix's "Reverse" group was left at
 // its default groupType=DEALING (see prisma/schema.prisma's own comment on
@@ -65,5 +65,109 @@ describe("resolveWantsDealingQueue -- MANUAL (always queue, regardless of anythi
     expect(
       resolveWantsDealingQueue({ groupDealingMode: "MANUAL", brokerDealingModeOn: true, groupForceDealingMode: true, groupTypeIsDealing: true })
     ).toBe(true);
+  });
+});
+
+describe("resolveWantsDealingQueue -- dealingDeskAutoFillOn (2026-09-04)", () => {
+  it("bypasses the queue for an INHERIT, groupType=DEALING group when the desk switch is off", () => {
+    expect(
+      resolveWantsDealingQueue({
+        groupDealingMode: "INHERIT",
+        brokerDealingModeOn: false,
+        groupForceDealingMode: false,
+        groupTypeIsDealing: true,
+        dealingDeskAutoFillOn: true,
+      })
+    ).toBe(false);
+  });
+
+  it("does not affect a group whose own dealingMode is explicitly MANUAL", () => {
+    expect(
+      resolveWantsDealingQueue({
+        groupDealingMode: "MANUAL",
+        brokerDealingModeOn: false,
+        groupForceDealingMode: false,
+        groupTypeIsDealing: true,
+        dealingDeskAutoFillOn: true,
+      })
+    ).toBe(true);
+  });
+
+  it("does not affect a group whose own dealingMode is explicitly AUTO (already false either way)", () => {
+    expect(
+      resolveWantsDealingQueue({
+        groupDealingMode: "AUTO",
+        brokerDealingModeOn: false,
+        groupForceDealingMode: false,
+        groupTypeIsDealing: true,
+        dealingDeskAutoFillOn: true,
+      })
+    ).toBe(false);
+  });
+
+  it("does not affect a non-dealing-type group (the switch only ever relaxes DEALING-type groups)", () => {
+    expect(
+      resolveWantsDealingQueue({
+        groupDealingMode: "INHERIT",
+        brokerDealingModeOn: true,
+        groupForceDealingMode: false,
+        groupTypeIsDealing: false,
+        dealingDeskAutoFillOn: true,
+      })
+    ).toBe(true);
+  });
+
+  it("defaults to off (undefined) with zero behavior change for callers that haven't been updated", () => {
+    expect(
+      resolveWantsDealingQueue({
+        groupDealingMode: "INHERIT",
+        brokerDealingModeOn: false,
+        groupForceDealingMode: false,
+        groupTypeIsDealing: true,
+      })
+    ).toBe(true);
+  });
+});
+
+describe("isDealingManagedAccount -- the 2026-09-04 bug fix", () => {
+  it("is false for a groupType=DEALING group whose own dealingMode is AUTO (the actual reported bug: a 'B-Book' group)", () => {
+    expect(
+      isDealingManagedAccount({
+        group: { groupType: "DEALING", dealingMode: "AUTO", forceDealingMode: false },
+        brokerDealingModeOn: false,
+      })
+    ).toBe(false);
+  });
+
+  it("is true for a groupType=DEALING group at the INHERIT default", () => {
+    expect(
+      isDealingManagedAccount({
+        group: { groupType: "DEALING", dealingMode: "INHERIT", forceDealingMode: false },
+        brokerDealingModeOn: false,
+      })
+    ).toBe(true);
+  });
+
+  it("is false for an account with no group at all", () => {
+    expect(isDealingManagedAccount({ group: null, brokerDealingModeOn: false })).toBe(false);
+  });
+
+  it("is true for any group when the broker-wide dealingModeAt is on", () => {
+    expect(
+      isDealingManagedAccount({
+        group: { groupType: "LP", dealingMode: "INHERIT", forceDealingMode: false },
+        brokerDealingModeOn: true,
+      })
+    ).toBe(true);
+  });
+
+  it("respects the dealer desk switch for a groupType=DEALING/INHERIT group", () => {
+    expect(
+      isDealingManagedAccount({
+        group: { groupType: "DEALING", dealingMode: "INHERIT", forceDealingMode: false },
+        brokerDealingModeOn: false,
+        dealingDeskAutoFillOn: true,
+      })
+    ).toBe(false);
   });
 });

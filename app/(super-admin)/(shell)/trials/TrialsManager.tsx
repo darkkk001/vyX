@@ -23,7 +23,7 @@ export default function TrialsManager() {
         setRows(
           d.rows
             .filter((b) => b.status === "TRIAL")
-            .map((b) => ({ id: b.id, name: b.name, createdAt: b.createdAt, trialEndsAt: b.trialEndsAt ? b.trialEndsAt.slice(0, 10) : "—" }))
+            .map((b) => ({ id: b.id, name: b.name, createdAt: b.createdAt, trialEndsAt: b.trialEndsAt ? b.trialEndsAt.slice(0, 10) : "-" }))
         )
       );
   }

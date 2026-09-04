@@ -124,7 +124,7 @@ export default function TeamManager() {
   return (
     <div className="flex flex-col gap-6">
       <p className="text-sm text-[var(--text-3)]">
-        {rows.length} admin{rows.length === 1 ? "" : "s"} for this broker.
+        {rows.length} admin{rows.length === 1 ? "" : "s"}.
       </p>
       <Card title="Add a team member">
         <form onSubmit={createAdmin} className="flex flex-col gap-2">
@@ -150,7 +150,7 @@ export default function TeamManager() {
           </div>
           {role === "SUPPORT" ? (
             <Alert tone="warning">
-              No backoffice page currently grants the Support role any access — every page requires Manager or
+              No backoffice page currently grants the Support role any access, every page requires Manager or
               Broker Admin. A Support admin can log in but every page will 403. Pick Manager (and delegate only the
               permissions they need) until Support has real access wired up.
             </Alert>

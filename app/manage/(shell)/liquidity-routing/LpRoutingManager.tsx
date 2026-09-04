@@ -86,7 +86,7 @@ export default function LpRoutingManager() {
           <FormField label="Liquidity provider">
             <Select value={liquidityProviderId} onChange={(e) => setLiquidityProviderId(e.target.value)} className="w-52">
               {lpOptions.length === 0 ? (
-                <option value="">— add a provider first —</option>
+                <option value="">Add a provider first</option>
               ) : (
                 lpOptions.map((p) => (
                   <option key={p.id} value={p.id}>
@@ -98,7 +98,7 @@ export default function LpRoutingManager() {
           </FormField>
           <FormField label="Symbol (blank = broker-wide default)">
             <Select value={symbolId} onChange={(e) => setSymbolId(e.target.value)} className="w-40">
-              <option value="">— default —</option>
+              <option value="">Default</option>
               {symbolOptions.map((s) => (
                 <option key={s.id} value={s.id}>
                   {s.name}
@@ -140,7 +140,7 @@ export default function LpRoutingManager() {
                 <TableCell>
                   {row.liquidityProviderName} <Badge tone="neutral">{row.liquidityProviderStatus}</Badge>
                 </TableCell>
-                <TableCell className="text-xs text-[var(--text-3)]">{row.notes ?? "—"}</TableCell>
+                <TableCell className="text-xs text-[var(--text-3)]">{row.notes ?? "-"}</TableCell>
                 <TableCell>
                   <Button size="sm" variant="ghost" disabled={deletingId === row.id} onClick={() => deleteRule(row.id)}>
                     Remove

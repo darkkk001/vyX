@@ -4,6 +4,7 @@ import { getAccountSession } from "@/lib/account-auth";
 import { validateSlTp } from "@/lib/trading";
 import { publishTradingEvent } from "@/lib/nats";
 import { recordDealerActivity } from "@/lib/dealer-activity";
+import { isDealingManagedAccount } from "@/lib/dealing-routing";
 
 // Inline SL/TP edit on an open position — side-aware validated against the
 // client-reported current price, same rule as order placement.
@@ -38,10 +39,13 @@ export async function PATCH(
     where: { brokerId_symbolId: { brokerId: position.brokerId, symbolId: position.symbolId } },
     include: { symbol: { select: { digits: true, name: true } } },
   });
-  const account = await prisma.account.findUnique({
-    where: { id: position.accountId },
-    select: { accountNumber: true, fullName: true, group: { select: { groupType: true } } },
-  });
+  const [account, brokerForActivity] = await Promise.all([
+    prisma.account.findUnique({
+      where: { id: position.accountId },
+      select: { accountNumber: true, fullName: true, group: { select: { groupType: true, dealingMode: true, forceDealingMode: true } } },
+    }),
+    prisma.broker.findUnique({ where: { id: session.brokerId }, select: { dealingModeAt: true, dealingDeskAutoFillAt: true } }),
+  ]);
 
   const validationError = validateSlTp({
     side: position.side,
@@ -69,7 +73,11 @@ export async function PATCH(
       accountId: session.accountId,
       accountNumber: account.accountNumber,
       accountFullName: account.fullName,
-      isDealingGroup: account.group?.groupType === "DEALING",
+      isDealingGroup: isDealingManagedAccount({
+        group: account.group,
+        brokerDealingModeOn: !!brokerForActivity?.dealingModeAt,
+        dealingDeskAutoFillOn: !!brokerForActivity?.dealingDeskAutoFillAt,
+      }),
       action: "ORDER_MODIFIED",
       symbol: brokerSymbol?.symbol.name ?? "",
       side: position.side,

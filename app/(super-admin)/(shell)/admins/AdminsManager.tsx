@@ -52,7 +52,7 @@ export default function AdminsManager() {
             admins.map((admin) => (
               <TableRow key={admin.id}>
                 <TableCell primary>{admin.email}</TableCell>
-                <TableCell>{admin.brokerName ?? "—"}</TableCell>
+                <TableCell>{admin.brokerName ?? "-"}</TableCell>
                 <TableCell>
                   <Badge tone="accent">{admin.role}</Badge>
                 </TableCell>

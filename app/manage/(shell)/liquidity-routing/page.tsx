@@ -8,7 +8,7 @@ import LpRoutingManager from "./LpRoutingManager";
 // not live routing -- see LpRoutingRule's schema comment. Kept its own
 // check here -- stricter than the shell layout's own MANAGER-or-
 // BROKER_ADMIN guard, same reasoning as Settings/Emergency/Transfers.
-export const metadata: Metadata = { title: "LP routing rules — Backoffice" };
+export const metadata: Metadata = { title: "LP routing rules - Backoffice" };
 
 export default async function ManagerLpRoutingPage() {
   const session = await getAdminSession();

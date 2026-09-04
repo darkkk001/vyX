@@ -156,7 +156,7 @@ export default function RiskSettingsManager() {
             <StatCard label="Accounts at risk" value={`${stats.atMarginCall + stats.atStopOut}`} />
           </StatGrid>
           <p className="mt-2 text-xs text-[var(--text-3)]">
-            {stats.atStopOut} account{stats.atStopOut === 1 ? "" : "s"} below stop-out, {stats.atMarginCall} below margin call — stop-out is enforced automatically (see lib/risk-monitor.ts); this count is a live snapshot, not a manual queue. Full list on the Margin page.
+            {stats.atStopOut} account{stats.atStopOut === 1 ? "" : "s"} below stop-out, {stats.atMarginCall} below margin call, stop-out is enforced automatically (see lib/risk-monitor.ts); this count is a live snapshot, not a manual queue. Full list on the Margin page.
           </p>
         </div>
       ) : null}

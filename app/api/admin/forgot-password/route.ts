@@ -30,7 +30,7 @@ export async function POST(request: NextRequest) {
       data: {
         brokerId: admin.brokerId,
         type: "ADMIN_PASSWORD_RESET_REQUESTED",
-        title: `Backoffice password reset requested — ${admin.email}`,
+        title: `Backoffice password reset requested: ${admin.email}`,
         body: note ? `${admin.email}: ${note}` : `${admin.email} requested a backoffice password reset.`,
         entityType: "AdminUser",
         entityId: admin.id,

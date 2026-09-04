@@ -66,7 +66,7 @@ export default function LiveActivityFeed() {
       <div className="flex items-center justify-between">
         <div>
           <h3 className="text-sm font-semibold text-[var(--text-1)]">Live activity</h3>
-          <p className="text-xs text-[var(--text-3)]">Every account&apos;s trading activity across the broker, live.</p>
+          <p className="text-xs text-[var(--text-3)]">All live trading activity.</p>
         </div>
         <span className="text-xs text-[var(--text-3)]">Live · last {MAX_ROWS}</span>
       </div>

@@ -106,7 +106,7 @@ export default function FundsRequestsManager() {
                   <Badge tone={statusTone[row.status as keyof typeof statusTone] ?? "neutral"}>{row.status}</Badge>
                   {row.markedByAdminId ? (
                     <div className="mt-0.5 text-xs text-[var(--warn)]">
-                      Marked by {row.markedByAdminEmail ?? "another staff member"} — needs 2nd approval
+                      Marked by {row.markedByAdminEmail ?? "another staff member"}, needs 2nd approval
                     </div>
                   ) : null}
                 </TableCell>
@@ -167,7 +167,7 @@ export default function FundsRequestsManager() {
           <div className="flex flex-col gap-3">
             <p className="text-sm text-[var(--text-2)]">
               {confirmTarget.action === "CANCEL_MARK"
-                ? "This request goes back to plain pending — either staff member can mark it again."
+                ? "This request goes back to plain pending, either staff member can mark it again."
                 : confirmTarget.action === "APPROVE"
                   ? confirmTarget.row.type === "WITHDRAWAL" && !confirmTarget.row.markedByAdminId
                     ? "This only marks the request -- a different staff member must confirm before any balance moves."

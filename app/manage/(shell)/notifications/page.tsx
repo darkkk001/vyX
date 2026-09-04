@@ -7,7 +7,7 @@ import NotificationsPageClient from "./NotificationsPageClient";
 // former single-file self) purely so `metadata` below is valid --
 // everything else lives in NotificationsPageClient.tsx, which needs
 // "use client" for router.refresh().
-export const metadata: Metadata = { title: "Notifications — Backoffice" };
+export const metadata: Metadata = { title: "Notifications - Backoffice" };
 
 export default function ManagerNotificationsPage() {
   return <NotificationsPageClient />;

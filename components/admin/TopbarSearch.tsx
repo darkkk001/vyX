@@ -105,7 +105,7 @@ export function TopbarSearch({ placeholder }: { placeholder: string }) {
         key: `account-${a.id}`,
         badge: "Account",
         badgeClass: "bg-[var(--accent-bg)] text-[var(--accent)]",
-        label: `${a.accountNumber} — ${a.fullName}`,
+        label: `${a.accountNumber}, ${a.fullName}`,
         sublabel: `${a.email} · ${a.accountMode}`,
         path: `/manage/accounts/${a.id}`,
       });
@@ -135,7 +135,7 @@ export function TopbarSearch({ placeholder }: { placeholder: string }) {
         key: `txn-${t.id}`,
         badge: "Txn",
         badgeClass: "bg-[var(--bg-3)] text-[var(--text-2)]",
-        label: `${t.type} — ${t.amount}`,
+        label: `${t.type}, ${t.amount}`,
         sublabel: `${t.accountNumber} · ${t.status} · ${t.id}`,
         path: `/manage/accounts/${t.accountId}?highlight=${t.id}`,
       });

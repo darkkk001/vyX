@@ -7,12 +7,12 @@ import DashboardManager from "./DashboardManager";
 // this page checked itself. DashboardManager now self-fetches from a new
 // /api/manage/dashboard GET instead of everything being computed and
 // rendered inline in this Server Component.
-export const metadata: Metadata = { title: "Dashboard — Backoffice" };
+export const metadata: Metadata = { title: "Dashboard - Backoffice" };
 
 export default function ManagerDashboardPage() {
   return (
     <main className="mx-auto max-w-[1400px]">
-      <PageHeader title="Dashboard" description="Overview of your brokerage — last updated just now" />
+      <PageHeader title="Dashboard" description="Overview of your brokerage - last updated just now" />
       <DashboardManager />
     </main>
   );

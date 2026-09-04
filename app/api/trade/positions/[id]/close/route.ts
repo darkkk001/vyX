@@ -5,6 +5,7 @@ import { getAccountSession } from "@/lib/account-auth";
 import { closePositionInTx } from "@/lib/position-close";
 import { publishTradingEvent } from "@/lib/nats";
 import { recordDealerActivity } from "@/lib/dealer-activity";
+import { isDealingManagedAccount } from "@/lib/dealing-routing";
 import { checkLiveMarketPrice, checkLotStep } from "@/lib/risk";
 import * as mirror from "@/lib/mirror";
 
@@ -40,7 +41,7 @@ export async function POST(
     where: { id },
     include: {
       symbol: { select: { id: true, name: true, contractSize: true } },
-      account: { select: { accountNumber: true, fullName: true, group: { select: { groupType: true } } } },
+      account: { select: { accountNumber: true, fullName: true, group: { select: { groupType: true, dealingMode: true, forceDealingMode: true } } } },
     },
   });
   if (!position || position.accountId !== session.accountId) {
@@ -149,12 +150,17 @@ export async function POST(
     closePrice: new Prisma.Decimal(closePrice),
   }).catch((err) => console.error("mirror.onClose failed", err));
   await publishTradingEvent("PositionClosed", { position_id: position.id, account_id: session.accountId, broker_id: session.brokerId });
+  const brokerForActivity = await prisma.broker.findUnique({ where: { id: session.brokerId }, select: { dealingModeAt: true, dealingDeskAutoFillAt: true } });
   await recordDealerActivity(prisma, {
     brokerId: session.brokerId,
     accountId: session.accountId,
     accountNumber: position.account.accountNumber,
     accountFullName: position.account.fullName,
-    isDealingGroup: position.account.group?.groupType === "DEALING",
+    isDealingGroup: isDealingManagedAccount({
+      group: position.account.group,
+      brokerDealingModeOn: !!brokerForActivity?.dealingModeAt,
+      dealingDeskAutoFillOn: !!brokerForActivity?.dealingDeskAutoFillAt,
+    }),
     action: "POSITION_CLOSED",
     symbol: position.symbol.name,
     side: position.side,

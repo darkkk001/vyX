@@ -7,14 +7,14 @@ import SymbolConfigTable from "./SymbolConfigTable";
 // this page checked itself. SymbolConfigTable now self-fetches from the
 // already-existing /api/manage/symbols GET (extended to include
 // brokerSymbolId, which the table needs for the Sessions button).
-export const metadata: Metadata = { title: "Symbols — Backoffice" };
+export const metadata: Metadata = { title: "Symbols - Backoffice" };
 
 export default function ManagerSymbolsPage() {
   return (
     <main className="mx-auto max-w-[1400px]">
       <PageHeader
         title="Symbols"
-        description="Spread markup, lot limits, swap, and commission per symbol for this broker. A symbol with no saved row yet shows the platform default — saving it creates the row."
+        description="Spread markup, lot limits, swap, and commission per symbol. A symbol with no saved row yet shows the platform default, saving it creates the row."
       />
       <SymbolConfigTable />
     </main>

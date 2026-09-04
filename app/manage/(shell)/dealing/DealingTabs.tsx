@@ -7,13 +7,19 @@ import DealingDeskPanel from "@/components/admin/DealingDeskPanel";
 
 const TABS = [
   { id: "queue", label: "Dealing queue" },
-  { id: "activity", label: "Activity" },
   { id: "mirror", label: "Mirror" },
 ] as const;
 
 // Plain useState tab switcher -- no Tabs primitive exists anywhere in this
 // codebase yet (checked), and WebTrader.tsx's own internal tabs use the
 // same plain-useState approach rather than a shared component.
+//
+// Layout fix (2026-09-04): the dealer-activity panel (resting orders +
+// feed) used to live behind its own separate "Activity" tab. Everything a
+// dealer needs is now on one screen under "Dealing queue" instead --
+// DealingDeskPanel renders directly below DealingQueueManager's own
+// tables (orders awaiting review, then "Awaiting client confirmation"),
+// same stacked-sections pattern, no tab switch required to see both.
 export default function DealingTabs() {
   const [tab, setTab] = useState<(typeof TABS)[number]["id"]>("queue");
 
@@ -35,7 +41,14 @@ export default function DealingTabs() {
           </button>
         ))}
       </div>
-      {tab === "queue" ? <DealingQueueManager /> : tab === "activity" ? <DealingDeskPanel /> : <MirrorRulesManager />}
+      {tab === "queue" ? (
+        <div className="flex flex-col gap-6">
+          <DealingQueueManager />
+          <DealingDeskPanel />
+        </div>
+      ) : (
+        <MirrorRulesManager />
+      )}
     </div>
   );
 }

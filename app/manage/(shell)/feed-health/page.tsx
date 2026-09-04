@@ -6,7 +6,7 @@ import FeedHealthManager from "./FeedHealthManager";
 // (shell)/layout.tsx's own MANAGER-or-BROKER_ADMIN guard is identical to
 // what this page checked itself. FeedHealthManager now self-fetches from
 // a new /api/manage/feed-health GET running the same two probes.
-export const metadata: Metadata = { title: "Feed health — Backoffice" };
+export const metadata: Metadata = { title: "Feed health - Backoffice" };
 
 export default function ManagerFeedHealthPage() {
   return (

@@ -43,7 +43,7 @@ async function serializeRule(rule: {
       ? (groupsById.get(rule.sourceId) ?? "(deleted group)")
       : (() => {
           const a = accountsById.get(rule.sourceId);
-          return a ? `${a.accountNumber} — ${a.fullName}` : "(deleted account)";
+          return a ? `${a.accountNumber}, ${a.fullName}` : "(deleted account)";
         })();
   const target = accountsById.get(rule.targetAccountId);
 
@@ -53,7 +53,7 @@ async function serializeRule(rule: {
     sourceId: rule.sourceId,
     sourceLabel,
     targetAccountId: rule.targetAccountId,
-    targetAccountLabel: target ? `${target.accountNumber} — ${target.fullName}` : "(deleted account)",
+    targetAccountLabel: target ? `${target.accountNumber}, ${target.fullName}` : "(deleted account)",
     direction: rule.direction,
     multiplier: rule.multiplier.toString(),
     fillPriceMode: rule.fillPriceMode,

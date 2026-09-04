@@ -74,7 +74,7 @@ export default function DealingReplayPanel({ positionId, onClose }: { positionId
             <div>
               <p className="text-[10.5px] uppercase text-[var(--text-3)]">Requested / Filled price</p>
               <p className="font-mono text-[var(--text-1)]">
-                {data.order.requestedPrice ?? "market"} → {data.order.filledPrice ?? "—"}
+                {data.order.requestedPrice ?? "market"} → {data.order.filledPrice ?? "-"}
                 {data.order.requotedPrice ? ` (requoted ${data.order.requotedPrice})` : ""}
               </p>
             </div>

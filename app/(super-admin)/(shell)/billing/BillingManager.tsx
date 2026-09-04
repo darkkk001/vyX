@@ -57,7 +57,7 @@ export default function BillingManager() {
                 {formatUsd(PLAN_PRICING[b.tier].monthlyCents)}
               </TableCell>
               <TableCell className="text-[var(--text-3)]">
-                {b.status === "TRIAL" ? "Trial — no charge yet" : b.nextInvoiceAt ? b.nextInvoiceAt.slice(0, 10) : "—"}
+                {b.status === "TRIAL" ? "Trial, no charge yet" : b.nextInvoiceAt ? b.nextInvoiceAt.slice(0, 10) : "-"}
               </TableCell>
               <TableCell>
                 <Badge tone={statusTone[b.status]}>{b.status}</Badge>

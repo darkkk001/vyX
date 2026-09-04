@@ -19,7 +19,7 @@ import LiveActivityFeed from "@/components/admin/LiveActivityFeed";
 // tab (components/admin/DealingDeskPanel.tsx), where the dealer actually
 // works -- this page's own feed is a different, broker-wide surface, not
 // a duplicate of that one.
-export const metadata: Metadata = { title: "Live Exposure — Backoffice" };
+export const metadata: Metadata = { title: "Live Exposure - Backoffice" };
 
 export default function ManagerPositionsPage() {
   return (

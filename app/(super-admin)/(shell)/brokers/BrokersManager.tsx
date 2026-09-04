@@ -405,7 +405,7 @@ export default function BrokersManager() {
                   <div className="text-xs font-normal text-[var(--text-3)]">{broker.subdomain}.vyxtrader.com</div>
                 </TableCell>
                 <TableCell mono className="text-[var(--text-3)]">
-                  {broker.customDomain ?? "—"}
+                  {broker.customDomain ?? "-"}
                 </TableCell>
                 <TableCell>
                   <Badge tone={broker.tier === "WHITE_LABEL" ? "accent" : "neutral"}>
@@ -449,7 +449,7 @@ export default function BrokersManager() {
             </FormField>
           </ModalRow2>
           <p className="mt-1.5 text-[10px] text-[var(--text-3)]">
-            Short lowercase label only (letters, numbers, hyphens) — becomes <span className="mono">{"{subdomain}"}.vyxtrader.com</span>, live
+            Short lowercase label only (letters, numbers, hyphens), becomes <span className="mono">{"{subdomain}"}.vyxtrader.com</span>, live
             immediately.
           </p>
           <div className="mt-2.5">
@@ -457,7 +457,7 @@ export default function BrokersManager() {
               <Input placeholder="trade.acmefx.com" mono value={customDomain} onChange={(e) => setCustomDomain(e.target.value)} />
             </FormField>
             <p className="mt-1.5 text-[10px] text-[var(--text-3)]">
-              Only fill this in if the broker owns that domain and has already pointed its DNS at us — leave blank for now and add it later
+              Only fill this in if the broker owns that domain and has already pointed its DNS at us, leave blank for now and add it later
               from Tenant Detail once that&apos;s set up.
             </p>
           </div>
@@ -500,8 +500,8 @@ export default function BrokersManager() {
 
         <ModalSection label="Plan">
           <Select value={tier} onChange={(e) => setTier(e.target.value as "STANDARD" | "WHITE_LABEL")}>
-            <option value="STANDARD">Standard ($500/mo) — logo only, no CRM access</option>
-            <option value="WHITE_LABEL">White-Label ($800/mo) — full branding + backoffice/CRM access</option>
+            <option value="STANDARD">Standard ($500/mo), logo only, no CRM access</option>
+            <option value="WHITE_LABEL">White-Label ($800/mo), full branding + backoffice/CRM access</option>
           </Select>
         </ModalSection>
 
@@ -514,7 +514,7 @@ export default function BrokersManager() {
               <Input type="password" value={adminPassword} onChange={(e) => setAdminPassword(e.target.value)} />
             </FormField>
           </ModalRow2>
-          <p className="mt-1.5 text-xs text-[var(--text-3)]">Leave both blank to create the broker without an admin — assign one later from Tenant Detail.</p>
+          <p className="mt-1.5 text-xs text-[var(--text-3)]">Leave both blank to create the broker without an admin, assign one later from Tenant Detail.</p>
         </ModalSection>
 
         {registerError ? <p className="mb-2 text-sm text-[var(--sell)]">{registerError}</p> : null}
@@ -528,7 +528,7 @@ export default function BrokersManager() {
         </ModalActions>
       </Modal>
 
-      <Modal open={detailTarget !== null} onClose={() => setDetailTarget(null)} title={detailTarget ? `${detailTarget.name} — manage` : ""} wide>
+      <Modal open={detailTarget !== null} onClose={() => setDetailTarget(null)} title={detailTarget ? `${detailTarget.name} - manage` : ""} wide>
         {detailTarget ? (
           <div className="flex flex-col gap-1">
             <ModalSection label="Assigned admins">
@@ -565,7 +565,7 @@ export default function BrokersManager() {
                 <div className="mt-2 flex items-center justify-between gap-2 rounded-lg border border-[var(--accent)] bg-[var(--bg-2)] px-3 py-2">
                   <div className="min-w-0">
                     <p className="text-[10px] text-[var(--text-3)]">
-                      One-time password for {revealedAdminPassword.email} — shown once, send it to them now:
+                      One-time password for {revealedAdminPassword.email}, shown once, send it to them now:
                     </p>
                     <code className="select-all break-all text-xs text-[var(--text-1)]">{revealedAdminPassword.password}</code>
                   </div>
@@ -578,7 +578,7 @@ export default function BrokersManager() {
             <ModalSection label="WebTrader SSO">
               <p className="mb-2 text-xs text-[var(--text-3)]">
                 Lets this broker&apos;s own portal hand off already-authenticated traders straight into WebTrader,
-                skipping the login form. Shown once at generation time — store it on the broker&apos;s side immediately.
+                skipping the login form. Shown once at generation time, store it on the broker&apos;s side immediately.
               </p>
               {revealedSsoSecret ? (
                 <div className="mb-2 flex items-center justify-between gap-2 rounded-lg border border-[var(--accent)] bg-[var(--bg-2)] px-3 py-2">
@@ -587,7 +587,7 @@ export default function BrokersManager() {
               ) : detailTarget.hasSsoSecret ? (
                 <div className="mb-2 flex items-center gap-2">
                   <Badge tone="success">Secret set</Badge>
-                  <span className="text-xs text-[var(--text-3)]">Value hidden — rotate to issue a new one.</span>
+                  <span className="text-xs text-[var(--text-3)]">Value hidden, rotate to issue a new one.</span>
                 </div>
               ) : (
                 <div className="mb-2">

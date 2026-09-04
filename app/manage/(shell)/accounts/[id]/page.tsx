@@ -24,13 +24,13 @@ export async function generateMetadata({ params }: { params: Promise<{ id: strin
   const { id } = await params;
   const session = await getAdminSession();
   if (!requireAdminRole(session, ["MANAGER", "BROKER_ADMIN"]) || !session!.brokerId) {
-    return { title: "Account — Backoffice" };
+    return { title: "Account - Backoffice" };
   }
   const account = await prisma.account.findUnique({
     where: { id, brokerId: session!.brokerId },
     select: { fullName: true, accountNumber: true },
   });
-  return { title: account ? `${account.fullName} — ${account.accountNumber} — Backoffice` : "Account — Backoffice" };
+  return { title: account ? `${account.fullName} - ${account.accountNumber} - Backoffice` : "Account - Backoffice" };
 }
 
 // No Prisma query here anymore -- app/manage/(shell)/layout.tsx's own

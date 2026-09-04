@@ -78,20 +78,20 @@ export default function TransfersManager() {
         <div className="flex flex-wrap items-end gap-3">
           <FormField label="From account">
             <Select value={fromAccountId} onChange={(e) => setFromAccountId(e.target.value)} className="w-56">
-              <option value="">— select —</option>
+              <option value="">Select account</option>
               {accounts.map((a) => (
                 <option key={a.id} value={a.id}>
-                  {a.accountNumber} — {a.fullName}
+                  {a.accountNumber}, {a.fullName}
                 </option>
               ))}
             </Select>
           </FormField>
           <FormField label="To account">
             <Select value={toAccountId} onChange={(e) => setToAccountId(e.target.value)} className="w-56">
-              <option value="">— select —</option>
+              <option value="">Select account</option>
               {accounts.map((a) => (
                 <option key={a.id} value={a.id}>
-                  {a.accountNumber} — {a.fullName}
+                  {a.accountNumber}, {a.fullName}
                 </option>
               ))}
             </Select>
@@ -131,7 +131,7 @@ export default function TransfersManager() {
                   <Badge tone={row.type === "TRANSFER_IN" ? "success" : "neutral"}>{row.type === "TRANSFER_IN" ? "IN" : "OUT"}</Badge>
                 </TableCell>
                 <TableCell align="right" mono>{row.amount}</TableCell>
-                <TableCell className="text-xs text-[var(--text-3)]">{row.note ?? "—"}</TableCell>
+                <TableCell className="text-xs text-[var(--text-3)]">{row.note ?? "-"}</TableCell>
                 <TableCell className="text-xs text-[var(--text-3)]">{formatDateTime(row.createdAt)}</TableCell>
               </TableRow>
             ))

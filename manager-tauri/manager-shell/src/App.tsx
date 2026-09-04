@@ -199,7 +199,7 @@ export default function App() {
     switch (section) {
       case "/manage/dashboard":
         return (
-          <Section maxWidth="max-w-[1400px]" title="Dashboard" description="Overview of your brokerage — last updated just now">
+          <Section maxWidth="max-w-[1400px]" title="Dashboard" description="Overview of your brokerage - last updated just now">
             <DashboardManager />
           </Section>
         );
@@ -239,7 +239,7 @@ export default function App() {
         ) : null;
       case "/manage/transfers":
         return isBrokerAdmin ? (
-          <Section maxWidth="max-w-[1400px]" title="Internal transfers" description="Move balance between two accounts on this broker. Both sides are ledger-backed.">
+          <Section maxWidth="max-w-[1400px]" title="Internal transfers" description="Move balance between two accounts. Both sides are ledger-backed.">
             <TransfersManager />
           </Section>
         ) : null;
@@ -288,7 +288,7 @@ export default function App() {
           <Section
             maxWidth="max-w-[1400px]"
             title="Symbols"
-            description="Spread markup, lot limits, swap, and commission per symbol for this broker. A symbol with no saved row yet shows the platform default — saving it creates the row."
+            description="Spread markup, lot limits, swap, and commission per symbol. A symbol with no saved row yet shows the platform default, saving it creates the row."
           >
             <SymbolConfigTable />
           </Section>
@@ -298,7 +298,7 @@ export default function App() {
           <Section
             maxWidth="max-w-[1400px]"
             title="Groups"
-            description="Settings templates for accounts — assigning an account to a group applies the group's leverage to that account immediately. Margin-call/stop-out levels are stored here but not yet enforced by the trading engine."
+            description="Settings templates for accounts, assigning an account to a group applies the group's leverage to that account immediately. Margin-call/stop-out levels are stored here but not yet enforced by the trading engine."
           >
             <GroupsManager />
           </Section>
@@ -308,7 +308,7 @@ export default function App() {
           <Section
             maxWidth="max-w-[1400px]"
             title="Margin monitoring"
-            description="Every account with an open position, sorted most-at-risk first. Informational only — not yet enforced automatically."
+            description="Every account with an open position, sorted most-at-risk first. Informational only, not yet enforced automatically."
           >
             <MarginManager />
           </Section>
@@ -325,7 +325,7 @@ export default function App() {
         );
       case "/manage/risk":
         return isBrokerAdmin ? (
-          <Section maxWidth="max-w-4xl" title="Risk" description="Broker-wide trading controls. Existing open positions are never touched by these — they only affect new orders.">
+          <Section maxWidth="max-w-4xl" title="Risk" description="Broker-wide trading controls. Existing open positions are never touched by these - they only affect new orders.">
             <RiskSettingsManager />
           </Section>
         ) : null;
@@ -334,7 +334,7 @@ export default function App() {
           <Section
             maxWidth="max-w-2xl"
             title="Emergency controls"
-            description="The broker-wide kill switch. Existing open positions are never touched by this — it only blocks new orders."
+            description="The broker-wide kill switch. Existing open positions are never touched by this, it only blocks new orders."
           >
             <EmergencyControls />
           </Section>
@@ -361,7 +361,7 @@ export default function App() {
         ) : null;
       case "/manage/reports":
         return (
-          <Section maxWidth="max-w-[1400px]" title="Reports" description="Trading volume, revenue, and client acquisition — trailing 30 days">
+          <Section maxWidth="max-w-[1400px]" title="Reports" description="Trading volume, revenue, and client acquisition - trailing 30 days">
             <ReportsView />
           </Section>
         );
@@ -389,7 +389,7 @@ export default function App() {
         );
       case "/manage/settings":
         return isBrokerAdmin ? (
-          <Section maxWidth="max-w-2xl" title="System settings" description="Broker info (read-only — edited in the Super Admin console) and defaults this team controls.">
+          <Section maxWidth="max-w-2xl" title="System settings" description="Broker info (read-only - edited in the Super Admin console) and defaults this team controls.">
             <SettingsManager />
           </Section>
         ) : null;

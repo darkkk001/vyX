@@ -9,7 +9,7 @@ import DealsManager from "./DealsManager";
 // layout.tsx's own MANAGER-or-BROKER_ADMIN guard is identical to what
 // this page checked itself. DealsManager now fetches its own data from
 // a new /api/manage/deals route.
-export const metadata: Metadata = { title: "Deals — Backoffice" };
+export const metadata: Metadata = { title: "Deals - Backoffice" };
 
 export default function ManagerDealsPage() {
   return (

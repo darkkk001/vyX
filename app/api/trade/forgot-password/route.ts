@@ -39,7 +39,7 @@ export async function POST(request: NextRequest) {
       data: {
         brokerId,
         type: "PASSWORD_RESET_REQUESTED",
-        title: `Password reset requested — ${account.accountNumber}`,
+        title: `Password reset requested: ${account.accountNumber}`,
         body: note ? `${account.fullName} (${account.accountNumber}): ${note}` : `${account.fullName} (${account.accountNumber}) requested a password reset.`,
         entityType: "Account",
         entityId: account.id,

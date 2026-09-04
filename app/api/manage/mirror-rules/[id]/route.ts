@@ -102,8 +102,8 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     rule: {
       id: rule.id,
       sourceType: rule.sourceType,
-      sourceLabel: rule.sourceType === "GROUP" ? (source as { name: string } | null)?.name ?? "(deleted group)" : source ? `${(source as { accountNumber: string; fullName: string }).accountNumber} — ${(source as { accountNumber: string; fullName: string }).fullName}` : "(deleted account)",
-      targetAccountLabel: targetAccount ? `${targetAccount.accountNumber} — ${targetAccount.fullName}` : "(deleted account)",
+      sourceLabel: rule.sourceType === "GROUP" ? (source as { name: string } | null)?.name ?? "(deleted group)" : source ? `${(source as { accountNumber: string; fullName: string }).accountNumber}, ${(source as { accountNumber: string; fullName: string }).fullName}` : "(deleted account)",
+      targetAccountLabel: targetAccount ? `${targetAccount.accountNumber}, ${targetAccount.fullName}` : "(deleted account)",
       direction: rule.direction,
       multiplier: rule.multiplier.toString(),
       fillPriceMode: rule.fillPriceMode,

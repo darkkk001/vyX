@@ -73,7 +73,7 @@ export default function CreateAdminForm({ brokers, onCreated }: { brokers: { id:
         </FormField>
         {role === "SUPPORT" ? (
           <Alert tone="warning">
-            No backoffice page currently grants the Support role any access — every route requires Manager or Broker
+            No backoffice page currently grants the Support role any access, every route requires Manager or Broker
             Admin. A Support admin can log in but every page will 403. Pick Manager (and delegate only the
             permissions they need) until Support has real access wired up.
           </Alert>

@@ -186,14 +186,14 @@ export default function SettingsManager() {
 
   return (
     <div className="flex flex-col gap-6">
-      <Card title="Broker info" description="Read-only — edited in the Super Admin console.">
+      <Card title="Broker info" description="Read-only - edited in the Super Admin console.">
         <dl className="grid grid-cols-2 gap-3 text-sm">
           <dt className="text-[var(--text-3)]">Name</dt>
           <dd className="text-[var(--text-1)]">{data.name}</dd>
           <dt className="text-[var(--text-3)]">Subdomain</dt>
           <dd className="font-mono text-[var(--text-1)]">{data.subdomain}</dd>
           <dt className="text-[var(--text-3)]">Custom domain</dt>
-          <dd className="font-mono text-[var(--text-1)]">{data.customDomain ?? "—"}</dd>
+          <dd className="font-mono text-[var(--text-1)]">{data.customDomain ?? "-"}</dd>
           <dt className="text-[var(--text-3)]">Tier</dt>
           <dd className="text-[var(--text-1)]">{data.tier}</dd>
           <dt className="text-[var(--text-3)]">Status</dt>
@@ -245,8 +245,8 @@ export default function SettingsManager() {
               accountTypes.map((t) => (
                 <TableRow key={t.id}>
                   <TableCell primary>{t.name}</TableCell>
-                  <TableCell className="text-[var(--text-3)]">{t.description ?? "—"}</TableCell>
-                  <TableCell className="text-[var(--text-3)]">{t.pricingHint ?? "—"}</TableCell>
+                  <TableCell className="text-[var(--text-3)]">{t.description ?? "-"}</TableCell>
+                  <TableCell className="text-[var(--text-3)]">{t.pricingHint ?? "-"}</TableCell>
                   <TableCell align="right" mono>{t.sortOrder}</TableCell>
                   <TableCell>
                     {t.isDefault ? (
@@ -282,7 +282,7 @@ export default function SettingsManager() {
       <Modal
         open={typeModalTarget !== null}
         onClose={() => setTypeModalTarget(null)}
-        title={typeModalTarget === "new" ? "Add account type" : `Edit account type — ${typeModalTarget?.name ?? ""}`}
+        title={typeModalTarget === "new" ? "Add account type" : `Edit account type - ${typeModalTarget?.name ?? ""}`}
         onSubmit={submitTypeForm}
       >
         <div className="flex flex-col gap-3">

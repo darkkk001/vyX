@@ -801,17 +801,17 @@ export default function PositionsManager() {
         ) : null}
         {(colVisible.currentPrice ?? true) ? (
           <TableCell align="right" mono style={{ width: colWidths.currentPrice }}>
-            {p.currentPrice != null ? formatPrice(p.currentPrice, p.digits) : "—"}
+            {p.currentPrice != null ? formatPrice(p.currentPrice, p.digits) : "-"}
           </TableCell>
         ) : null}
         {(colVisible.sl ?? true) ? (
           <TableCell align="right" mono className="text-[var(--text-3)]" style={{ width: colWidths.sl }}>
-            {p.slPrice != null ? formatPrice(p.slPrice, p.digits) : "—"}
+            {p.slPrice != null ? formatPrice(p.slPrice, p.digits) : "-"}
           </TableCell>
         ) : null}
         {(colVisible.tp ?? true) ? (
           <TableCell align="right" mono className="text-[var(--text-3)]" style={{ width: colWidths.tp }}>
-            {p.tpPrice != null ? formatPrice(p.tpPrice, p.digits) : "—"}
+            {p.tpPrice != null ? formatPrice(p.tpPrice, p.digits) : "-"}
           </TableCell>
         ) : null}
         {(colVisible.floatingPnl ?? true) ? (
@@ -821,7 +821,7 @@ export default function PositionsManager() {
             style={{ width: colWidths.floatingPnl }}
             className={!p.floatingPnl ? "" : formatPnl(p.floatingPnl).toneClass}
           >
-            {p.floatingPnl != null ? formatPnl(p.floatingPnl).text : "—"}
+            {p.floatingPnl != null ? formatPnl(p.floatingPnl).text : "-"}
           </TableCell>
         ) : null}
         <TableCell className="text-xs text-[var(--text-3)]" style={{ width: colWidths.opened }}>{formatDateTime(p.openedAt)}</TableCell>
@@ -853,14 +853,14 @@ export default function PositionsManager() {
     <div className="flex flex-col gap-6">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-sm text-[var(--text-3)]">
-          {positionRows.length} open position{positionRows.length === 1 ? "" : "s"} across this broker.
+          {positionRows.length} open position{positionRows.length === 1 ? "" : "s"}.
         </p>
         <div className="flex items-center gap-1.5 text-xs text-[var(--text-3)]" title="Floating P/L and current price update live from the price-tick feed; the position list itself updates on fill/close/modify events">
           <span className={`inline-block h-2 w-2 rounded-full ${priceFeedIsLive ? "bg-[var(--buy)]" : "bg-[var(--text-3)]"}`} />
           {priceFeedIsLive
-            ? `Live prices — as of ${new Date(mostRecentTickAt).toLocaleTimeString()}`
+            ? `Live prices, as of ${new Date(mostRecentTickAt).toLocaleTimeString()}`
             : mostRecentTickAt > 0
-              ? `Price feed stale — last tick ${new Date(mostRecentTickAt).toLocaleTimeString()}`
+              ? `Price feed stale, last tick ${new Date(mostRecentTickAt).toLocaleTimeString()}`
               : "Price feed connecting…"}
         </div>
       </div>
@@ -879,7 +879,7 @@ export default function PositionsManager() {
                 <div className="text-sm">
                   <Badge tone="warning">{ACTION_TYPE_LABELS[req.actionType]}</Badge>{" "}
                   <span className="text-[var(--text-1)]">
-                    {req.position.accountNumber} — {req.position.symbolName} {req.position.side} {req.position.volume}
+                    {req.position.accountNumber}, {req.position.symbolName} {req.position.side} {req.position.volume}
                   </span>
                   <span className="block text-xs text-[var(--text-3)] mt-0.5">
                     Requested by {req.requestedByName} · {new Date(req.createdAt).toLocaleString()}
@@ -920,7 +920,7 @@ export default function PositionsManager() {
               <option value="ALL">All</option>
               {accountsWithPositions.map((a) => (
                 <option key={a.id} value={a.id}>
-                  {a.accountNumber} — {a.fullName}
+                  {a.accountNumber}, {a.fullName}
                 </option>
               ))}
             </Select>
@@ -929,7 +929,7 @@ export default function PositionsManager() {
             <label className="text-xs font-medium text-[var(--text-3)]">Group</label>
             <Select value={groupFilter} onChange={(e) => setGroupFilter(e.target.value)} className="w-36">
               <option value="ALL">All</option>
-              <option value={NO_GROUP}>— ungrouped —</option>
+              <option value={NO_GROUP}>Ungrouped</option>
               {groups.map((g) => (
                 <option key={g.id} value={g.id}>
                   {g.name}
@@ -941,10 +941,10 @@ export default function PositionsManager() {
             <label className="text-xs font-medium text-[var(--text-3)]">IB</label>
             <Select value={ibFilter} onChange={(e) => setIbFilter(e.target.value)} className="w-44">
               <option value="ALL">All</option>
-              <option value={NO_IB}>— no IB —</option>
+              <option value={NO_IB}>No IB</option>
               {ibOptions.map((ib) => (
                 <option key={ib.id} value={ib.id}>
-                  {ib.accountNumber} — {ib.fullName}
+                  {ib.accountNumber}, {ib.fullName}
                 </option>
               ))}
             </Select>
@@ -1047,13 +1047,13 @@ export default function PositionsManager() {
                     {formatNumber(e.netExposure)}
                   </TableCell>
                   <TableCell align="right" mono>
-                    {e.netAvgPrice != null ? formatPrice(e.netAvgPrice, e.digits) : "—"}
+                    {e.netAvgPrice != null ? formatPrice(e.netAvgPrice, e.digits) : "-"}
                   </TableCell>
                   <TableCell align="right" mono className={formatPnl(e.floatingPnl).toneClass}>
                     {formatPnl(e.floatingPnl).text}
                   </TableCell>
                   <TableCell align="right" mono>
-                    {e.currentPrice != null ? formatPrice(e.currentPrice, e.digits) : "—"}
+                    {e.currentPrice != null ? formatPrice(e.currentPrice, e.digits) : "-"}
                   </TableCell>
                 </TableRow>
               ))
@@ -1073,8 +1073,8 @@ export default function PositionsManager() {
         title="Open positions"
         description={
           shouldVirtualizePositions
-            ? `Reflects the filters above -- right-click a column header to show/hide columns, drag a header's edge to resize. ${sortedPositions.length} rows: showing a scrolling window, not all at once, to keep this responsive.`
-            : "Reflects the filters above -- right-click a column header to show/hide columns, drag a header's edge to resize"
+            ? `Reflects the filters above. Right-click a column header to show/hide columns, drag a header's edge to resize. ${sortedPositions.length} rows: showing a scrolling window, not all at once, to keep this responsive.`
+            : "Reflects the filters above. Right-click a column header to show/hide columns, drag a header's edge to resize."
         }
         scrollRef={positionsScrollRef}
         maxBodyHeight={shouldVirtualizePositions ? 640 : undefined}
@@ -1165,7 +1165,7 @@ export default function PositionsManager() {
             <Select value={accountId} onChange={(e) => setAccountId(e.target.value)} required>
               {accounts.map((a) => (
                 <option key={a.id} value={a.id}>
-                  {a.accountNumber} — {a.fullName}
+                  {a.accountNumber}, {a.fullName}
                 </option>
               ))}
             </Select>
@@ -1195,7 +1195,7 @@ export default function PositionsManager() {
               mono
               value={openPrice}
               onChange={(e) => setOpenPrice(e.target.value)}
-              placeholder="e.g. 2415.30 — leave blank to fill at CMP"
+              placeholder="e.g. 2415.30, leave blank to fill at CMP"
             />
           </FormField>
           <FormField label="Stop loss (optional)">
@@ -1209,7 +1209,7 @@ export default function PositionsManager() {
               rows={2}
               value={openReason}
               onChange={(e) => setOpenReason(e.target.value)}
-              placeholder="e.g. Phone order — client unable to access platform"
+              placeholder="e.g. Phone order, client unable to access platform"
               className="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-2)] px-3 py-2 text-sm text-[var(--text-1)] placeholder:text-[var(--text-3)] focus:border-[var(--accent)] focus:outline-none"
             />
           </FormField>
@@ -1228,15 +1228,15 @@ export default function PositionsManager() {
       <Modal
         open={modifyTarget !== null}
         onClose={() => setModifyTarget(null)}
-        title={modifyTarget ? `Modify position — ${modifyTarget.symbolName} — ${modifyTarget.accountNumber}` : ""}
+        title={modifyTarget ? `Modify position - ${modifyTarget.symbolName} - ${modifyTarget.accountNumber}` : ""}
         onSubmit={submitModify}
       >
         <div className="flex flex-col gap-3">
           <FormField label="Stop loss">
-            <Input type="text" inputMode="decimal" mono placeholder="—" value={modSl} onChange={(e) => setModSl(e.target.value)} />
+            <Input type="text" inputMode="decimal" mono placeholder="-" value={modSl} onChange={(e) => setModSl(e.target.value)} />
           </FormField>
           <FormField label="Take profit">
-            <Input type="text" inputMode="decimal" mono placeholder="—" value={modTp} onChange={(e) => setModTp(e.target.value)} />
+            <Input type="text" inputMode="decimal" mono placeholder="-" value={modTp} onChange={(e) => setModTp(e.target.value)} />
           </FormField>
           <FormField label="Reason (required, logged in audit trail)">
             <textarea
@@ -1379,7 +1379,7 @@ export default function PositionsManager() {
       <Modal
         open={detailsTarget !== null}
         onClose={() => setDetailsTargetId(null)}
-        title={detailsTarget ? `Position — ${detailsTarget.symbolName} — ${detailsTarget.accountNumber}` : ""}
+        title={detailsTarget ? `Position - ${detailsTarget.symbolName} - ${detailsTarget.accountNumber}` : ""}
       >
         {detailsTarget ? (
           <div className="flex flex-col gap-4">
@@ -1402,20 +1402,20 @@ export default function PositionsManager() {
               </div>
               <div>
                 <p className="text-xs text-[var(--text-3)]">Current price</p>
-                <p className="font-mono text-[var(--text-1)]">{detailsTarget.currentPrice != null ? formatPrice(detailsTarget.currentPrice, detailsTarget.digits) : "—"}</p>
+                <p className="font-mono text-[var(--text-1)]">{detailsTarget.currentPrice != null ? formatPrice(detailsTarget.currentPrice, detailsTarget.digits) : "-"}</p>
               </div>
               <div>
                 <p className="text-xs text-[var(--text-3)]">S/L</p>
-                <p className="font-mono text-[var(--text-1)]">{detailsTarget.slPrice != null ? formatPrice(detailsTarget.slPrice, detailsTarget.digits) : "—"}</p>
+                <p className="font-mono text-[var(--text-1)]">{detailsTarget.slPrice != null ? formatPrice(detailsTarget.slPrice, detailsTarget.digits) : "-"}</p>
               </div>
               <div>
                 <p className="text-xs text-[var(--text-3)]">T/P</p>
-                <p className="font-mono text-[var(--text-1)]">{detailsTarget.tpPrice != null ? formatPrice(detailsTarget.tpPrice, detailsTarget.digits) : "—"}</p>
+                <p className="font-mono text-[var(--text-1)]">{detailsTarget.tpPrice != null ? formatPrice(detailsTarget.tpPrice, detailsTarget.digits) : "-"}</p>
               </div>
               <div>
                 <p className="text-xs text-[var(--text-3)]">Floating P&L</p>
                 <p className={`font-mono font-semibold ${!detailsTarget.floatingPnl ? "text-[var(--text-1)]" : formatPnl(detailsTarget.floatingPnl).toneClass}`}>
-                  {detailsTarget.floatingPnl != null ? formatPnl(detailsTarget.floatingPnl).text : "—"}
+                  {detailsTarget.floatingPnl != null ? formatPnl(detailsTarget.floatingPnl).text : "-"}
                 </p>
               </div>
               <div>

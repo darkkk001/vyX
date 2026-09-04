@@ -440,7 +440,7 @@ function SymbolsModal({ row, onClose }: { row: GroupRow; onClose: () => void }) 
   }
 
   return (
-    <Modal open onClose={onClose} title={`Symbols — ${row.name}`}>
+    <Modal open onClose={onClose} title={`Symbols - ${row.name}`}>
       <div className="flex flex-col gap-3">
         <Checkbox
           label="Restrict this group to only the symbols checked below"
@@ -450,12 +450,12 @@ function SymbolsModal({ row, onClose }: { row: GroupRow; onClose: () => void }) 
         <p className="text-xs text-[var(--text-3)]">
           {restrictSymbols
             ? "Accounts in this group can only trade the symbols checked below -- an order in any other symbol is rejected."
-            : "Unchecked (default) -- accounts in this group can trade every symbol enabled for this broker, same as before this feature existed."}
+            : "Unchecked (default) -- accounts in this group can trade every enabled symbol, same as before this feature existed."}
         </p>
         {data === null ? (
           <p className="text-sm text-[var(--text-3)]">Loading...</p>
         ) : data.availableSymbols.length === 0 ? (
-          <p className="text-sm text-[var(--text-3)]">No symbols enabled for this broker yet -- enable some on the Symbols page first.</p>
+          <p className="text-sm text-[var(--text-3)]">No symbols enabled yet -- enable some on the Symbols page first.</p>
         ) : (
           <div className="grid max-h-80 grid-cols-2 gap-x-3 gap-y-1.5 overflow-y-auto rounded-lg border border-[var(--border)] p-3 sm:grid-cols-3">
             {data.availableSymbols.map((s) => (
@@ -561,17 +561,17 @@ function PricingModal({ row, onClose }: { row: GroupRow; onClose: () => void }) 
   }
 
   return (
-    <Modal open onClose={onClose} title={`Pricing — ${row.name}`} wide>
+    <Modal open onClose={onClose} title={`Pricing - ${row.name}`} wide>
       <div className="flex flex-col gap-3">
         <p className="text-xs text-[var(--text-3)]">
           Spread markup and commission set here apply to every real order fill for accounts in this group -- not just a label. A symbol with no
-          saved override yet shows this broker&apos;s own default (matching the Symbols page) -- saving creates a group-specific row, Reset
+          saved override yet shows the platform default (matching the Symbols page) -- saving creates a group-specific row, Reset
           removes it.
         </p>
         {rows === null ? (
           <p className="text-sm text-[var(--text-3)]">Loading...</p>
         ) : rows.length === 0 ? (
-          <p className="text-sm text-[var(--text-3)]">No symbols enabled for this broker yet -- enable some on the Symbols page first.</p>
+          <p className="text-sm text-[var(--text-3)]">No symbols enabled yet -- enable some on the Symbols page first.</p>
         ) : (
           <div className="max-h-[420px] overflow-y-auto">
             <Table>

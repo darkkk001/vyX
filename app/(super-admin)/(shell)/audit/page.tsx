@@ -7,7 +7,7 @@ import AuditLogTable from "./AuditLogTable";
 // sessions before this page renders at all, and AuditLogTable now
 // fetches its own data from /api/admin/audit (which does its own, real
 // auth check) instead of being rendered inline here.
-export const metadata: Metadata = { title: "Audit log — Super Admin" };
+export const metadata: Metadata = { title: "Audit log - Super Admin" };
 
 export default function SuperAdminAuditPage() {
   return (

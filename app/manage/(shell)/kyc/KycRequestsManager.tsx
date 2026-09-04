@@ -89,8 +89,8 @@ export default function KycRequestsManager() {
                   <span className="font-mono">{row.accountNumber}</span>
                   <div className="text-xs font-normal text-[var(--text-3)]">
                     {row.accountFullName}
-                    {row.accountCountry ? ` — ${row.accountCountry}` : ""}
-                    {row.accountPhone ? ` — ${row.accountPhone}` : ""}
+                    {row.accountCountry ? `, ${row.accountCountry}` : ""}
+                    {row.accountPhone ? `, ${row.accountPhone}` : ""}
                   </div>
                 </TableCell>
                 <TableCell>{row.documentType}</TableCell>
@@ -147,7 +147,7 @@ export default function KycRequestsManager() {
         </TableBody>
       </Table>
 
-      <Modal open={rejectTarget !== null} onClose={() => setRejectTarget(null)} title={`Reject KYC — ${rejectTarget?.accountNumber ?? ""}`}>
+      <Modal open={rejectTarget !== null} onClose={() => setRejectTarget(null)} title={`Reject KYC - ${rejectTarget?.accountNumber ?? ""}`}>
         <div className="flex flex-col gap-3">
           <FormField label="Reason (required, shown to the client)">
             <Input type="text" value={rejectReason} onChange={(e) => setRejectReason(e.target.value)} placeholder="e.g. Photo is blurry, please resubmit" />

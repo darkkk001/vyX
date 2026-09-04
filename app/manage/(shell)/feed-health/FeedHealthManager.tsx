@@ -70,7 +70,7 @@ type AlertStats = {
 type OrderAckStats = { p50: number | null; p95: number | null; sampleCount: number };
 
 function ms(value: number | null): string {
-  return value == null ? "—" : `${value}ms`;
+  return value == null ? "-" : `${value}ms`;
 }
 
 // No client component existed for this page at all before -- the Server

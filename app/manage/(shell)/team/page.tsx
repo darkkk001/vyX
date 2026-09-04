@@ -8,7 +8,7 @@ import TeamManager from "./TeamManager";
 // Funds/KYC/IB, not the broader MANAGER+BROKER_ADMIN gate. Kept its own
 // check here -- stricter than the shell layout's own MANAGER-or-
 // BROKER_ADMIN guard, same reasoning as Settings/Emergency/KYC/Funds.
-export const metadata: Metadata = { title: "Team — Backoffice" };
+export const metadata: Metadata = { title: "Team - Backoffice" };
 
 export default async function ManageTeamPage() {
   const session = await getAdminSession();

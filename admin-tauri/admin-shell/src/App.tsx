@@ -197,7 +197,7 @@ export default function App() {
         );
       case "/billing":
         return (
-          <Section maxWidth="max-w-[1200px]" title="Plans & billing" description="Subscription status per broker — billing is separate from the trading ledger">
+          <Section maxWidth="max-w-[1200px]" title="Plans & billing" description="Subscription status per broker - billing is separate from the trading ledger">
             <BillingManager />
           </Section>
         );

@@ -8,6 +8,7 @@ import { orderAuditFields } from "@/lib/order-audit";
 import { resolveBookType, applySpreadMarkup, resolveSymbolPricing } from "@/lib/group-pricing";
 import { publishTradingEvent } from "@/lib/nats";
 import { recordDealerActivity } from "@/lib/dealer-activity";
+import { isDealingManagedAccount } from "@/lib/dealing-routing";
 import * as mirror from "@/lib/mirror";
 import {
   checkTradingHalted,
@@ -277,7 +278,11 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       accountId: order.accountId,
       accountNumber: order.account.accountNumber,
       accountFullName: order.account.fullName,
-      isDealingGroup: order.account.group?.groupType === "DEALING",
+      isDealingGroup: isDealingManagedAccount({
+        group: order.account.group,
+        brokerDealingModeOn: !!broker.dealingModeAt,
+        dealingDeskAutoFillOn: !!broker.dealingDeskAutoFillAt,
+      }),
       action: "POSITION_OPENED",
       symbol: order.symbol.name,
       side: order.side,

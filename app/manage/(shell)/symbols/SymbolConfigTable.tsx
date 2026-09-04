@@ -40,7 +40,7 @@ const NUMERIC_FIELDS: { key: EditableField; label: string; title: string; width:
   { key: "swapLong", label: "Swap long", title: "Account currency per lot per day, BUY positions", width: 90 },
   { key: "swapShort", label: "Swap short", title: "Account currency per lot per day, SELL positions", width: 90 },
   { key: "commissionPerLot", label: "Commission/lot", title: "Flat fee per lot, charged once at open", width: 100 },
-  { key: "maxExposure", label: "Max exposure", title: "Max total open volume per account in this symbol — blank = no limit", width: 100 },
+  { key: "maxExposure", label: "Max exposure", title: "Max total open volume per account in this symbol - blank = no limit", width: 100 },
 ];
 
 // Manager-style symbol grid: one row per symbol, every config field
@@ -266,19 +266,19 @@ function SessionsModal({ row, onClose }: { row: SymbolConfigRow; onClose: () => 
   }
 
   return (
-    <Modal open onClose={onClose} title={`Trading sessions — ${row.symbolName}`}>
+    <Modal open onClose={onClose} title={`Trading sessions - ${row.symbolName}`}>
       <div className="flex flex-col gap-3">
         <p className="text-sm text-[var(--text-3)]">No sessions = always tradable. All times UTC.</p>
         {sessions === null ? (
           <p className="text-sm text-[var(--text-3)]">Loading...</p>
         ) : sessions.length === 0 ? (
-          <p className="text-sm text-[var(--text-3)]">No sessions set — always tradable.</p>
+          <p className="text-sm text-[var(--text-3)]">No sessions set, always tradable.</p>
         ) : (
           <div className="flex flex-col gap-1.5">
             {sessions.map((s) => (
               <div key={s.id} className="flex items-center justify-between rounded-lg border border-[var(--border)] px-3 py-1.5 text-sm">
                 <span className="font-mono">
-                  {DAY_LABELS[s.dayOfWeek]} {s.openTime}–{s.closeTime}
+                  {DAY_LABELS[s.dayOfWeek]} {s.openTime}-{s.closeTime}
                 </span>
                 <Button size="sm" variant="ghost" disabled={saving} onClick={() => removeRow(s.id)}>
                   Remove
@@ -296,7 +296,7 @@ function SessionsModal({ row, onClose }: { row: SymbolConfigRow; onClose: () => 
             ))}
           </Select>
           <Input type="text" mono value={newOpen} onChange={(e) => setNewOpen(e.target.value)} className="w-20" placeholder="HH:MM" />
-          <span className="text-[var(--text-3)]">–</span>
+          <span className="text-[var(--text-3)]">-</span>
           <Input type="text" mono value={newClose} onChange={(e) => setNewClose(e.target.value)} className="w-20" placeholder="HH:MM" />
           <Button size="sm" disabled={saving || sessions === null} onClick={addRow}>
             Add

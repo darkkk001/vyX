@@ -8,7 +8,7 @@ import SecurityManager from "@/components/admin/SecurityManager";
 // app/manage/(shell)/settings/page.tsx, which kept its own stricter
 // check -- see that commit). SecurityManager now fetches its own state
 // from /api/admin/two-factor/status.
-export const metadata: Metadata = { title: "Security — Super Admin" };
+export const metadata: Metadata = { title: "Security - Super Admin" };
 
 export default function SuperAdminSecurityPage() {
   return (

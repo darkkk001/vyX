@@ -147,7 +147,7 @@ export default function LeadsManager() {
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between">
         <p className="text-sm text-[var(--text-3)]">
-          {rows.length} lead{rows.length === 1 ? "" : "s"} for this broker.
+          {rows.length} lead{rows.length === 1 ? "" : "s"}.
         </p>
         <Button onClick={openAdd}>Add lead</Button>
       </div>
@@ -171,9 +171,9 @@ export default function LeadsManager() {
                   {row.fullName}
                   <div className="text-xs font-normal text-[var(--text-3)]">{row.email}</div>
                 </TableCell>
-                <TableCell>{row.phone ?? "—"}</TableCell>
-                <TableCell>{row.country ?? "—"}</TableCell>
-                <TableCell>{row.source ?? "—"}</TableCell>
+                <TableCell>{row.phone ?? "-"}</TableCell>
+                <TableCell>{row.country ?? "-"}</TableCell>
+                <TableCell>{row.source ?? "-"}</TableCell>
                 <TableCell>
                   {row.status === "CONVERTED" ? (
                     <div>
@@ -235,10 +235,10 @@ export default function LeadsManager() {
         </div>
       </Modal>
 
-      <Modal open={convertTarget !== null} onClose={() => setConvertTarget(null)} title={`Convert lead — ${convertTarget?.fullName ?? ""}`}>
+      <Modal open={convertTarget !== null} onClose={() => setConvertTarget(null)} title={`Convert lead - ${convertTarget?.fullName ?? ""}`}>
         {convertedCreds ? (
           <div className="flex flex-col gap-3">
-            <p className="text-sm text-[var(--text-2)]">Account created. This password is shown once — copy it now.</p>
+            <p className="text-sm text-[var(--text-2)]">Account created. This password is shown once, copy it now.</p>
             <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-2)] p-3 font-mono text-sm">
               <div>Account: {convertedCreds.accountNumber}</div>
               <div>Password: {convertedCreds.password}</div>

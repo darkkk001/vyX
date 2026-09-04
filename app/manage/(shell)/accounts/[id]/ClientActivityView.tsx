@@ -73,7 +73,7 @@ export default function ClientActivityView({ accountId, backLink }: { accountId:
   return (
     <main className="mx-auto max-w-[1000px]">
       <PageHeader
-        title={`${account.fullName} — ${account.accountNumber}`}
+        title={`${account.fullName} - ${account.accountNumber}`}
         description={`${account.email} · ${account.accountMode} · ${account.status} · Group: ${account.groupName ?? "ungrouped"} · KYC: ${account.kycStatus ?? "none"}`}
         action={account.accountTypeName ? <Badge tone="accent">{account.accountTypeName}</Badge> : null}
       />

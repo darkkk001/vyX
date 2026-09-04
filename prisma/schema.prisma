@@ -254,6 +254,22 @@ model Broker {
   // trail entry point; who set it lives in the paired AuditLog row).
   // LIMIT/STOP triggered fills are unaffected.
   dealingModeAt DateTime? @db.Timestamptz(3)
+  // Dealer desk ON/OFF (2026-09-04) -- null = "Dealer ON" (default,
+  // preserves today's behavior: a DEALING-type group's orders route to
+  // the manual queue per resolveWantsDealingQueue's own groupTypeIsDealing
+  // branch). When set, "Dealer OFF" -- DEALING-type groups auto-fill at
+  // market instead of queuing, as if their own Group.dealingMode were
+  // AUTO, UNLESS that specific group has an explicit dealingMode override
+  // (MANUAL/AUTO always win regardless of this switch -- it never
+  // overrides a group an admin has deliberately configured, only the
+  // INHERIT default). Distinct from dealingModeAt above: that field can
+  // FORCE manual review broker-wide even for non-dealing groups; this one
+  // only ever relaxes review for dealing-type groups, never adds it.
+  // Flipping this off also immediately auto-fills whatever's already
+  // sitting in the queue for the affected groups -- see
+  // app/api/manage/dealing-desk-toggle/route.ts -- nothing is left stuck
+  // waiting on a queue nobody's watching.
+  dealingDeskAutoFillAt DateTime? @db.Timestamptz(3)
   // Null = fully manual dealing mode (today's behavior). When set,
   // a dealing-queue order auto-fills at the live price the moment it's
   // submitted if the requested price is within this % of live --

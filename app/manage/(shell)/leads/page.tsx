@@ -6,7 +6,7 @@ import LeadsManager from "./LeadsManager";
 // layout.tsx's own MANAGER-or-BROKER_ADMIN guard is identical to what
 // this page checked itself. LeadsManager now fetches its own data from
 // the already-existing /api/manage/leads route.
-export const metadata: Metadata = { title: "Leads — Backoffice" };
+export const metadata: Metadata = { title: "Leads - Backoffice" };
 
 export default function ManagerLeadsPage() {
   return (

@@ -76,7 +76,7 @@ export default function AddSymbolDialog({
                               {fmt(row.bid, s.digits)} / {fmt(row.ask, s.digits)}
                             </span>
                           ) : (
-                            <span style={{ fontSize: 10.5, color: "var(--text-3)" }}>—</span>
+                            <span style={{ fontSize: 10.5, color: "var(--text-3)" }}>-</span>
                           )}
                           {already ? (
                             <span style={{ fontSize: 10.5, color: "var(--text-3)" }}>Added</span>
