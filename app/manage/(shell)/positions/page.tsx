@@ -1,6 +1,7 @@
 import { PageHeader } from "@/components/ui/PageHeader";
 import type { Metadata } from "next";
 import PositionsManager from "./PositionsManager";
+import DealerActivityFeed from "@/components/admin/DealerActivityFeed";
 
 // No auth check or Prisma query here anymore -- app/manage/(shell)/
 // layout.tsx's own MANAGER-or-BROKER_ADMIN guard is identical to what
@@ -15,7 +16,10 @@ export default function ManagerPositionsPage() {
   return (
     <main className="mx-auto max-w-[1400px]">
       <PageHeader title="Live Exposure" />
-      <PositionsManager />
+      <div className="flex flex-col gap-6">
+        <PositionsManager />
+        <DealerActivityFeed />
+      </div>
     </main>
   );
 }

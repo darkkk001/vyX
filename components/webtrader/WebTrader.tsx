@@ -136,6 +136,11 @@ function pendingPriceRuleText(type: PendingType) {
 // default layout); a stale/corrupt value just falls back to the default
 // below rather than throwing.
 const LAYOUT_STORAGE_KEY = "vyx-webtrader-layout";
+// Must match lib/risk.ts's FILL_PRICE_MAX_AGE_MS exactly -- the pending-
+// order auto-fill effect below uses this to avoid attempting a fill the
+// server's own checkPriceFreshness is guaranteed to reject. See that
+// effect's own comment for the full incident writeup (2026-09-04).
+const FILL_PRICE_MAX_AGE_MS = 3000;
 type StoredLayout = {
   // watchlistOrder deliberately NOT here anymore -- server-side now (see
   // app/api/trade/watchlist), not localStorage, so web and desktop stay
@@ -1975,6 +1980,23 @@ export default function WebTrader({
       if (fillingIds.current.has(o.id)) return;
       const m = market[o.symbol.name];
       if (!m || !m.live || !o.requestedPrice) return;
+      // Production bug (2026-09-04): a red 400 on /api/trade/orders/[id]/fill
+      // was firing on load whenever a resting order's trigger was already
+      // met. Root cause -- two different freshness thresholds disagreeing
+      // about the SAME tick: `m.live` (and the client's own tick-blend-in
+      // rule, CLAUDE.md's "ticks older than 15s are treated as stale")
+      // tolerates a tick up to LIVE_MAX_AGE_MS/30s old, but the fill
+      // endpoint's own price-authority gate (app/api/trade/orders/[id]/
+      // fill/route.ts's checkPriceFreshness, lib/risk.ts's
+      // FILL_PRICE_MAX_AGE_MS) only accepts one within 3s -- a real tick
+      // that's, say, 5s old (routine on any live feed with a few seconds
+      // between EA pushes) reads as "live" here and gets attempted, then
+      // the server correctly rejects it as stale. Not harmful (the effect
+      // just re-fires on the next tick and usually succeeds then), but
+      // it's a fully avoidable failed request -- gate the ATTEMPT itself
+      // on the server's own stricter window, not the looser display-level
+      // one, so a doomed request is never sent in the first place.
+      if (serverNow() - m.lastTickAt > FILL_PRICE_MAX_AGE_MS) return;
       const trigger = parseFloat(o.requestedPrice);
       const price = o.side === "BUY" ? m.ask : m.bid;
       let shouldFill = false;

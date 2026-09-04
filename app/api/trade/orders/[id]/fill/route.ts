@@ -6,6 +6,7 @@ import { publishTradingEvent } from "@/lib/nats";
 import { createNotification } from "@/lib/notifications";
 import * as mirror from "@/lib/mirror";
 import { resolveWantsDealingQueue } from "@/lib/dealing-routing";
+import { recordDealerActivity } from "@/lib/dealer-activity";
 import { resolveBookType, applySpreadMarkup, resolveSymbolPricing, chargeCommission } from "@/lib/group-pricing";
 import { checkAccountPreTradeMargin } from "@/lib/margin";
 import { orderAuditFields } from "@/lib/order-audit";
@@ -172,6 +173,42 @@ export async function POST(
       entityType: "Order",
       entityId: order.id,
     });
+    // Realtime-sync gap fix -- this branch reclassifies the order into
+    // exactly the same PENDING/MARKET shape a fresh dealing-queue order
+    // has (this branch's own comment above), but never actually published
+    // the DealingQueued event DealingQueueManager.tsx listens for to apply
+    // a new row live -- unlike app/api/trade/orders/route.ts's own
+    // dealing-queue branch, which does. Previously a triggered pending
+    // order only reached the queue UI on that dealer's next manual
+    // refresh/reconnect.
+    await publishTradingEvent("DealingQueued", {
+      order_id: order.id,
+      broker_id: order.brokerId,
+      account_id: order.accountId,
+      account_number: account.accountNumber,
+      account_full_name: account.fullName,
+      symbol: order.symbol.name,
+      digits: brokerSymbol?.symbol.digits ?? 5,
+      side: order.side,
+      volume: order.volume.toString(),
+      requested_price: requestedFillPrice,
+      created_at: order.createdAt.toISOString(),
+      live_bid: livePrice?.bid.toString() ?? null,
+      live_ask: livePrice?.ask.toString() ?? null,
+    });
+    await recordDealerActivity(prisma, {
+      brokerId: order.brokerId,
+      accountId: order.accountId,
+      accountNumber: account.accountNumber,
+      accountFullName: account.fullName,
+      isDealingGroup: account.group?.groupType === "DEALING",
+      action: "ORDER_TRIGGERED",
+      symbol: order.symbol.name,
+      side: order.side,
+      volume: order.volume.toString(),
+      values: { triggerPrice: requestedFillPrice, originalRequestedPrice: originalRequestedPrice, originalType },
+      orderId: order.id,
+    });
     return NextResponse.json({ order: queued, position: null });
   }
 
@@ -276,6 +313,20 @@ export async function POST(
     price: fillPrice.toString(),
     volume: order.volume.toString(),
     remaining_volume: "0",
+  });
+  await recordDealerActivity(prisma, {
+    brokerId: order.brokerId,
+    accountId: order.accountId,
+    accountNumber: account.accountNumber,
+    accountFullName: account.fullName,
+    isDealingGroup: account.group?.groupType === "DEALING",
+    action: "POSITION_OPENED",
+    symbol: order.symbol.name,
+    side: order.side,
+    volume: order.volume.toString(),
+    values: { openPrice: fillPrice.toString(), origin: "pending_trigger" },
+    orderId: order.id,
+    positionId: result.position.id,
   });
   return NextResponse.json(result);
 }

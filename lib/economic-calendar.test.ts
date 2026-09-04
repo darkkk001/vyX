@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { currenciesForSymbol, filterEventsForSymbol, nextHighImpactEventWithin, type CalendarEvent } from "@/lib/economic-calendar";
+import { currenciesForSymbol, filterEventsForSymbol, filterUpcomingEvents, nextHighImpactEventWithin, type CalendarEvent } from "@/lib/economic-calendar";
 
 describe("currenciesForSymbol", () => {
   it("splits a plain forex pair into base+quote", () => {
@@ -33,6 +33,32 @@ const mkEvent = (overrides: Partial<CalendarEvent>): CalendarEvent => ({
   estimate: null,
   previous: null,
   ...overrides,
+});
+
+describe("filterUpcomingEvents", () => {
+  const now = new Date("2026-09-04T12:00:00Z");
+
+  it("drops events strictly before now", () => {
+    const events = [
+      mkEvent({ time: "2026-08-30T15:15:00Z", event: "Past, last week" }),
+      mkEvent({ time: "2026-09-04T11:59:59Z", event: "Past, one second ago" }),
+    ];
+    expect(filterUpcomingEvents(events, now)).toEqual([]);
+  });
+
+  it("keeps events at or after now", () => {
+    const events = [
+      mkEvent({ time: "2026-09-04T12:00:00Z", event: "Exactly now" }),
+      mkEvent({ time: "2026-09-04T17:30:00Z", event: "Later today" }),
+      mkEvent({ time: "2026-09-06T09:00:00Z", event: "Later this week" }),
+    ];
+    expect(filterUpcomingEvents(events, now)).toEqual(events);
+  });
+
+  it("drops unparseable event times rather than treating them as upcoming", () => {
+    const events = [mkEvent({ time: "not-a-date" })];
+    expect(filterUpcomingEvents(events, now)).toEqual([]);
+  });
 });
 
 describe("filterEventsForSymbol", () => {

@@ -5,6 +5,7 @@ import { getAccountSession } from "@/lib/account-auth";
 import { publishTradingEvent } from "@/lib/nats";
 import { validatePendingPriceDistance, validateSlTp } from "@/lib/trading";
 import { orderAuditFields } from "@/lib/order-audit";
+import { recordDealerActivity } from "@/lib/dealer-activity";
 
 // Edit a resting PENDING order's own entry price and/or its SL/TP -- the
 // chart's draggable entry-price line (LIMIT/STOP only) and, since broker
@@ -43,7 +44,10 @@ export async function PATCH(
 
   const order = await prisma.order.findUnique({
     where: { id },
-    include: { symbol: { select: { name: true } }, account: { select: { accountNumber: true } } },
+    include: {
+      symbol: { select: { name: true } },
+      account: { select: { accountNumber: true, fullName: true, group: { select: { groupType: true } } } },
+    },
   });
   if (!order || order.accountId !== session.accountId) {
     return NextResponse.json({ error: "order not found" }, { status: 404 });
@@ -133,6 +137,26 @@ export async function PATCH(
     return result;
   });
   await publishTradingEvent("OrderModified", { order_id: id, account_id: session.accountId, broker_id: session.brokerId });
+  await recordDealerActivity(prisma, {
+    brokerId: session.brokerId,
+    accountId: session.accountId,
+    accountNumber: order.account.accountNumber,
+    accountFullName: order.account.fullName,
+    isDealingGroup: order.account.group?.groupType === "DEALING",
+    action: "ORDER_MODIFIED",
+    symbol: order.symbol.name,
+    side: order.side,
+    volume: order.volume.toString(),
+    values: {
+      oldRequestedPrice: oldFields.requestedPrice ?? undefined,
+      newRequestedPrice: newFields.requestedPrice ?? undefined,
+      oldSlPrice: oldFields.slPrice ?? undefined,
+      newSlPrice: newFields.slPrice ?? undefined,
+      oldTpPrice: oldFields.tpPrice ?? undefined,
+      newTpPrice: newFields.tpPrice ?? undefined,
+    },
+    orderId: id,
+  });
   return NextResponse.json(updated);
 }
 
@@ -150,7 +174,10 @@ export async function DELETE(
 
   const order = await prisma.order.findUnique({
     where: { id },
-    include: { symbol: { select: { name: true } }, account: { select: { accountNumber: true } } },
+    include: {
+      symbol: { select: { name: true } },
+      account: { select: { accountNumber: true, fullName: true, group: { select: { groupType: true } } } },
+    },
   });
   if (!order || order.accountId !== session.accountId) {
     return NextResponse.json({ error: "order not found" }, { status: 404 });
@@ -189,5 +216,18 @@ export async function DELETE(
     },
   });
   await publishTradingEvent("OrderCancelled", { order_id: id, account_id: session.accountId, broker_id: session.brokerId });
+  await recordDealerActivity(prisma, {
+    brokerId: session.brokerId,
+    accountId: session.accountId,
+    accountNumber: order.account.accountNumber,
+    accountFullName: order.account.fullName,
+    isDealingGroup: order.account.group?.groupType === "DEALING",
+    action: "ORDER_CANCELLED",
+    symbol: order.symbol.name,
+    side: order.side,
+    volume: order.volume.toString(),
+    values: { requestedPrice: order.requestedPrice?.toString() ?? null, cancelledBy: "CLIENT" },
+    orderId: id,
+  });
   return NextResponse.json(cancelled);
 }

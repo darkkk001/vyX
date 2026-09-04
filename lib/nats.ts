@@ -44,6 +44,14 @@ const SUBJECTS: Record<string, string> = {
   // change was needed for it (same reasoning as DealingQueued's own
   // comment above).
   PositionsClosed: "position.closed_bulk",
+  // Dealer-awareness feed/notifications (backoffice-only -- see
+  // lib/dealer-activity.ts). Subject lives under the already-subscribed
+  // dealing.> wildcard (services/api-gateway/src/ws.ts's
+  // attachAdminEventStream), so no gateway change was needed; deliberately
+  // NOT under order.>/position.>, which attachTradingEventStream (the
+  // trader-facing stream) also subscribes to -- this event carries other
+  // accounts' activity and must never reach a trader's own browser.
+  DealerActivity: "dealing.activity",
 };
 
 export type TradingEventType = keyof typeof SUBJECTS;

@@ -9,6 +9,7 @@ import { resolveBookType, applySpreadMarkup, resolveSymbolPricing, chargeCommiss
 import { checkAccountPreTradeMargin } from "@/lib/margin";
 import { recordOrderAckLatency } from "@/lib/order-latency";
 import { publishTradingEvent } from "@/lib/nats";
+import { recordDealerActivity } from "@/lib/dealer-activity";
 import * as mirror from "@/lib/mirror";
 import { resolveWantsDealingQueue } from "@/lib/dealing-routing";
 import { orderAuditFields } from "@/lib/order-audit";
@@ -199,11 +200,12 @@ async function handlePlaceOrder(request: NextRequest) {
 
   // See lib/dealing-routing.ts's own doc comment -- Group.dealingMode can
   // override the three checks below entirely, in either direction.
+  const isDealingGroup = account.group?.groupType === "DEALING";
   const wantsQueue = resolveWantsDealingQueue({
     groupDealingMode: account.group?.dealingMode ?? "INHERIT",
     brokerDealingModeOn: !!broker.dealingModeAt,
     groupForceDealingMode: !!account.group?.forceDealingMode,
-    groupTypeIsDealing: account.group?.groupType === "DEALING",
+    groupTypeIsDealing: isDealingGroup,
   });
 
   try {
@@ -327,6 +329,20 @@ async function handlePlaceOrder(request: NextRequest) {
               volume: volume.toString(),
               remaining_volume: "0",
             });
+            await recordDealerActivity(prisma, {
+              brokerId: session.brokerId,
+              accountId: session.accountId,
+              accountNumber: account.accountNumber,
+              accountFullName: account.fullName,
+              isDealingGroup,
+              action: "POSITION_OPENED",
+              symbol: symbolName,
+              side,
+              volume: volume.toString(),
+              values: { openPrice: fillPrice.toString(), origin: "smart_dealer_auto_accept" },
+              orderId: order.id,
+              positionId: position.id,
+            });
             // `position`, not `positionId` -- must match the direct-fill
             // branch's shape below (and lib/trade-api.ts's placeOrder type)
             // exactly. This mismatch previously meant a Smart-Dealer
@@ -399,6 +415,20 @@ async function handlePlaceOrder(request: NextRequest) {
         // learn the live price.
         live_bid: livePrice?.bid.toString() ?? null,
         live_ask: livePrice?.ask.toString() ?? null,
+      });
+      await recordDealerActivity(prisma, {
+        brokerId: session.brokerId,
+        accountId: session.accountId,
+        accountNumber: account.accountNumber,
+        accountFullName: account.fullName,
+        isDealingGroup,
+        action: "ORDER_PLACED",
+        symbol: symbolName,
+        side,
+        volume: volume.toString(),
+        values: { requestedPrice: price, slPrice, tpPrice, queuedForDealing: true },
+        orderId: order.id,
+        skipNotification: true, // DEALING_ORDER_PENDING notification already fired above
       });
       return NextResponse.json({ order }, { status: 201 });
     }
@@ -511,6 +541,20 @@ async function handlePlaceOrder(request: NextRequest) {
         volume: volume.toString(),
         remaining_volume: "0",
       });
+      await recordDealerActivity(prisma, {
+        brokerId: session.brokerId,
+        accountId: session.accountId,
+        accountNumber: account.accountNumber,
+        accountFullName: account.fullName,
+        isDealingGroup,
+        action: "POSITION_OPENED",
+        symbol: symbolName,
+        side,
+        volume: volume.toString(),
+        values: { openPrice: result.order.filledPrice?.toString() ?? price, origin: "market" },
+        orderId: result.order.id,
+        positionId: result.position.id,
+      });
       return NextResponse.json(result, { status: 201 });
     }
 
@@ -554,6 +598,19 @@ async function handlePlaceOrder(request: NextRequest) {
     });
     if (source === "hotkey") await logHotkeyOrder(session.brokerId, order.id);
     await publishTradingEvent("OrderAccepted", { order_id: order.id, account_id: session.accountId, broker_id: session.brokerId });
+    await recordDealerActivity(prisma, {
+      brokerId: session.brokerId,
+      accountId: session.accountId,
+      accountNumber: account.accountNumber,
+      accountFullName: account.fullName,
+      isDealingGroup,
+      action: "ORDER_PLACED",
+      symbol: symbolName,
+      side,
+      volume: volume.toString(),
+      values: { requestedPrice: price, triggerPrice: price, slPrice, tpPrice, orderType: type },
+      orderId: order.id,
+    });
     return NextResponse.json(order, { status: 201 });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {

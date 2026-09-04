@@ -73,10 +73,21 @@ traced to `route.test.ts`'s fixture helper running against a production
   `*.test.ts` that writes real DB rows) must call
   `scripts/lib/assert-not-production.mjs`'s `assertNotProductionDatabase()`
   before any write — refuses to run if the connected DB contains the real
-  `futurixglobal` broker. Never enumerate or bulk-delete brokers from a
-  script; deletions of real rows (including leaked test data found in
-  production) are explicit, id-scoped, and reviewed by hand, not scripted
-  cleanup.
+  `futurixglobal` broker, *unless* `ALLOW_TEST_DB_WRITES=true` is set in
+  that environment's own `.env` (a Neon dev branch cloned from production
+  carries a full copy of that same row, so content alone can't tell "prod"
+  apart from "a deliberate dev branch" — this flag is the positive signal
+  that does). `ALLOW_TEST_DB_WRITES` must NEVER be set in Vercel's
+  production env vars — production secrets live only in Vercel, never in
+  a local `.env` (see the branch note below). Never enumerate or
+  bulk-delete brokers from a script; deletions of real rows (including
+  leaked test data found in production) are explicit, id-scoped, and
+  reviewed by hand, not scripted cleanup.
+- Local dev points at a dedicated Neon **dev branch** (created 2026-09-04,
+  branched from production), never at production directly — the original
+  incident above traced back to a local `.env` pointing at production by
+  accident. `DATABASE_URL`/`DIRECT_URL` for actual production live only in
+  Vercel's env vars now.
 
 ## Architecture
 

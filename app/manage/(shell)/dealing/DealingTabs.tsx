@@ -3,9 +3,11 @@
 import { useState } from "react";
 import DealingQueueManager from "./DealingQueueManager";
 import MirrorRulesManager from "./MirrorRulesManager";
+import DealingDeskPanel from "@/components/admin/DealingDeskPanel";
 
 const TABS = [
   { id: "queue", label: "Dealing queue" },
+  { id: "activity", label: "Activity" },
   { id: "mirror", label: "Mirror" },
 ] as const;
 
@@ -33,7 +35,7 @@ export default function DealingTabs() {
           </button>
         ))}
       </div>
-      {tab === "queue" ? <DealingQueueManager /> : <MirrorRulesManager />}
+      {tab === "queue" ? <DealingQueueManager /> : tab === "activity" ? <DealingDeskPanel /> : <MirrorRulesManager />}
     </div>
   );
 }

@@ -77,7 +77,7 @@ export default async function ManageShellLayout({ children }: { children: React.
       label: "Overview",
       items: [
         { href: "/manage/dashboard", label: "Dashboard" },
-        { href: "/manage/notifications", label: "Notifications", ...(unreadNotifications > 0 ? { badge: unreadNotifications } : {}) },
+        { href: "/manage/notifications", label: "Notifications" },
       ],
     },
     {
@@ -145,6 +145,8 @@ export default async function ManageShellLayout({ children }: { children: React.
       logoUrl={broker?.logoUrl}
       pageTitle="Backoffice"
       navGroups={navGroups}
+      initialUnreadNotifications={unreadNotifications}
+      notificationsHref="/manage/notifications"
       topbarSearch={<TopbarSearch placeholder="Search clients, transactions…" />}
       topbarRight={
         <>

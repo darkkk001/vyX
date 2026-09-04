@@ -95,6 +95,24 @@ export function isSameUtcDay(event: CalendarEvent, now: Date): boolean {
   );
 }
 
+// Trader-terminal calendar bug (2026-09-04): the panel showed every event
+// ForexFactory's "this week" feed returns, including days already passed
+// -- nothing in the pipeline (the route, WebTrader.tsx, or NewsPanel) ever
+// dropped a past event. Comparing raw Date instants (UTC under the hood
+// either way -- a Date carries no timezone of its own, only display does),
+// so this is correct regardless of the browser's local timezone; the bug
+// was a missing filter, not a timezone bug (confirmed: every other
+// timestamp in this terminal already renders via the same
+// toLocaleString/toLocaleDateString browser-local convention NewsPanel
+// itself already used).
+export function filterUpcomingEvents(events: CalendarEvent[], now: Date): CalendarEvent[] {
+  const nowMs = now.getTime();
+  return events.filter((e) => {
+    const t = new Date(e.time).getTime();
+    return !Number.isNaN(t) && t >= nowMs;
+  });
+}
+
 // The soonest high-impact event for this symbol landing within
 // `withinMinutes` from `now`, or null. Never looks backward -- an event
 // that already happened is history, not a warning.

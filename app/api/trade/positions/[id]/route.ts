@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
 import { validateSlTp } from "@/lib/trading";
 import { publishTradingEvent } from "@/lib/nats";
+import { recordDealerActivity } from "@/lib/dealer-activity";
 
 // Inline SL/TP edit on an open position — side-aware validated against the
 // client-reported current price, same rule as order placement.
@@ -35,7 +36,11 @@ export async function PATCH(
 
   const brokerSymbol = await prisma.brokerSymbol.findUnique({
     where: { brokerId_symbolId: { brokerId: position.brokerId, symbolId: position.symbolId } },
-    include: { symbol: { select: { digits: true } } },
+    include: { symbol: { select: { digits: true, name: true } } },
+  });
+  const account = await prisma.account.findUnique({
+    where: { id: position.accountId },
+    select: { accountNumber: true, fullName: true, group: { select: { groupType: true } } },
   });
 
   const validationError = validateSlTp({
@@ -58,5 +63,26 @@ export async function PATCH(
     },
   });
   await publishTradingEvent("PositionModified", { position_id: id, account_id: session.accountId, broker_id: session.brokerId });
+  if (account) {
+    await recordDealerActivity(prisma, {
+      brokerId: session.brokerId,
+      accountId: session.accountId,
+      accountNumber: account.accountNumber,
+      accountFullName: account.fullName,
+      isDealingGroup: account.group?.groupType === "DEALING",
+      action: "ORDER_MODIFIED",
+      symbol: brokerSymbol?.symbol.name ?? "",
+      side: position.side,
+      volume: position.volume.toString(),
+      values: {
+        oldSlPrice: position.slPrice?.toString() ?? null,
+        newSlPrice: slPrice === undefined ? (position.slPrice?.toString() ?? null) : slPrice,
+        oldTpPrice: position.tpPrice?.toString() ?? null,
+        newTpPrice: tpPrice === undefined ? (position.tpPrice?.toString() ?? null) : tpPrice,
+        onOpenPosition: true,
+      },
+      positionId: id,
+    });
+  }
   return NextResponse.json(updated);
 }

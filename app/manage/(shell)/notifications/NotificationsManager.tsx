@@ -31,6 +31,7 @@ const SECTION_FOR_TYPE: Record<string, string> = {
   KYC_SUBMITTED: "/manage/kyc",
   NEW_LEAD: "/manage/leads",
   FUNDS_REQUEST: "/manage/funds",
+  DEALER_ACTIVITY: "/manage/dealing",
 };
 
 // Self-fetches from the already-existing /api/manage/notifications GET

@@ -6,6 +6,7 @@ import { getFreshPrice } from "@/lib/live-price";
 import { computeRealizedPnl } from "@/lib/trading";
 import * as mirror from "@/lib/mirror";
 import { publishTradingEvent } from "@/lib/nats";
+import { recordDealerActivity } from "@/lib/dealer-activity";
 
 async function requireManager() {
   const session = await getAdminSession();
@@ -36,7 +37,10 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
   const position = await prisma.position.findUnique({
     where: { id },
-    include: { symbol: { select: { name: true, contractSize: true } }, account: { select: { accountNumber: true } } },
+    include: {
+      symbol: { select: { name: true, contractSize: true } },
+      account: { select: { accountNumber: true, fullName: true, group: { select: { groupType: true } } } },
+    },
   });
   if (!position || position.brokerId !== brokerId) {
     return NextResponse.json({ error: "position not found" }, { status: 404 });
@@ -165,6 +169,19 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   // bug. Without it, a dealer-initiated close never appeared on the
   // backoffice Positions/Exposure views until a manual refresh.
   await publishTradingEvent("PositionClosed", { position_id: position.id, account_id: position.accountId, broker_id: brokerId });
+  await recordDealerActivity(prisma, {
+    brokerId,
+    accountId: position.accountId,
+    accountNumber: position.account.accountNumber,
+    accountFullName: position.account.fullName,
+    isDealingGroup: position.account.group?.groupType === "DEALING",
+    action: "POSITION_CLOSED",
+    symbol: position.symbol.name,
+    side: position.side,
+    volume: closeVolume.toString(),
+    values: { closePrice: closePrice.toString(), partial: isPartial, realizedPnl: realizedPnl.toString(), origin: "admin_manual_close" },
+    positionId: position.id,
+  });
 
   return NextResponse.json({
     positionId: result.position.id,

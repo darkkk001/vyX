@@ -7,6 +7,7 @@ import { openPositionFromOrder } from "@/lib/dealing";
 import { orderAuditFields } from "@/lib/order-audit";
 import { resolveBookType, applySpreadMarkup, resolveSymbolPricing } from "@/lib/group-pricing";
 import { publishTradingEvent } from "@/lib/nats";
+import { recordDealerActivity } from "@/lib/dealer-activity";
 import * as mirror from "@/lib/mirror";
 import {
   checkTradingHalted,
@@ -270,6 +271,20 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       price: markedUpFillPrice.toString(),
       volume: order.volume.toString(),
       remaining_volume: "0",
+    });
+    await recordDealerActivity(prisma, {
+      brokerId,
+      accountId: order.accountId,
+      accountNumber: order.account.accountNumber,
+      accountFullName: order.account.fullName,
+      isDealingGroup: order.account.group?.groupType === "DEALING",
+      action: "POSITION_OPENED",
+      symbol: order.symbol.name,
+      side: order.side,
+      volume: order.volume.toString(),
+      values: { openPrice: markedUpFillPrice.toString(), origin: "dealer_accept" },
+      orderId: order.id,
+      positionId: result.id,
     });
     return NextResponse.json({ id: order.id, status: "FILLED", positionId: result.id, filledPrice: markedUpFillPrice.toString() });
   } catch (error) {
