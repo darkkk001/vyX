@@ -9,6 +9,7 @@ import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, Tabl
 import { useAdminEventStream, ADMIN_STREAM_RECONNECTED, type AdminEvent } from "@/lib/admin-realtime";
 import { formatDateTime } from "@/lib/format";
 import type { DealerActivityAction } from "@/lib/dealer-activity";
+import { ActivityFeedRows, type ActivityFeedRow } from "./ActivityFeedRows";
 
 type Account = { id: string; accountNumber: string; fullName: string };
 
@@ -28,84 +29,14 @@ type RestingOrder = {
   createdAt: string;
 };
 
-type FeedRow = {
-  id: string;
-  at: string;
-  accountId: string;
-  accountNumber: string;
-  accountFullName: string;
-  action: DealerActivityAction;
-  symbol?: string;
-  side?: string;
-  volume?: string;
-  values: Record<string, unknown>;
-};
+type FeedRow = ActivityFeedRow;
 
 const MAX_FEED_ROWS = 50;
 const ALL_ACCOUNTS = "__all__";
 
-const ACTION_LABEL: Record<DealerActivityAction, string> = {
-  ORDER_PLACED: "Order placed",
-  ORDER_MODIFIED: "SL/TP modified",
-  ORDER_CANCELLED: "Order cancelled",
-  ORDER_TRIGGERED: "Pending order triggered",
-  POSITION_OPENED: "Position opened",
-  POSITION_CLOSED: "Position closed",
-};
-
-const ACTION_TONE: Record<DealerActivityAction, "accent" | "warning" | "danger" | "success" | "neutral"> = {
-  ORDER_PLACED: "accent",
-  ORDER_MODIFIED: "warning",
-  ORDER_CANCELLED: "danger",
-  ORDER_TRIGGERED: "warning",
-  POSITION_OPENED: "success",
-  POSITION_CLOSED: "neutral",
-};
-
 function fmt(v: unknown): string | null {
   if (v == null || v === "") return null;
   return String(v);
-}
-
-function describeValues(row: FeedRow): string {
-  const v = row.values;
-  switch (row.action) {
-    case "ORDER_PLACED": {
-      const parts: string[] = [];
-      const trigger = fmt(v.triggerPrice) ?? fmt(v.requestedPrice);
-      if (trigger) parts.push(`@ ${trigger}`);
-      if (fmt(v.slPrice)) parts.push(`SL ${v.slPrice}`);
-      if (fmt(v.tpPrice)) parts.push(`TP ${v.tpPrice}`);
-      return parts.join(" ");
-    }
-    case "ORDER_MODIFIED": {
-      const parts: string[] = [];
-      if (fmt(v.oldSlPrice) !== fmt(v.newSlPrice) && (fmt(v.oldSlPrice) || fmt(v.newSlPrice))) {
-        parts.push(`SL ${fmt(v.oldSlPrice) ?? "—"} → ${fmt(v.newSlPrice) ?? "—"}`);
-      }
-      if (fmt(v.oldTpPrice) !== fmt(v.newTpPrice) && (fmt(v.oldTpPrice) || fmt(v.newTpPrice))) {
-        parts.push(`TP ${fmt(v.oldTpPrice) ?? "—"} → ${fmt(v.newTpPrice) ?? "—"}`);
-      }
-      if (fmt(v.oldRequestedPrice) !== fmt(v.newRequestedPrice) && (fmt(v.oldRequestedPrice) || fmt(v.newRequestedPrice))) {
-        parts.push(`Entry ${fmt(v.oldRequestedPrice) ?? "—"} → ${fmt(v.newRequestedPrice) ?? "—"}`);
-      }
-      return parts.join(", ");
-    }
-    case "ORDER_CANCELLED":
-      return fmt(v.requestedPrice) ? `@ ${v.requestedPrice}` : "";
-    case "ORDER_TRIGGERED":
-      return `triggered @ ${fmt(v.triggerPrice) ?? "—"} — now in approval queue`;
-    case "POSITION_OPENED":
-      return `@ ${fmt(v.openPrice) ?? fmt(v.filledPrice) ?? "—"}`;
-    case "POSITION_CLOSED": {
-      const parts = [`@ ${fmt(v.closePrice) ?? "—"}`];
-      if (v.partial) parts.push("(partial)");
-      if (fmt(v.realizedPnl)) parts.push(`P&L ${v.realizedPnl}`);
-      return parts.join(" ");
-    }
-    default:
-      return "";
-  }
 }
 
 // Dealing page's own dedicated panel (2026-09-04 refinement, tightened
@@ -160,6 +91,7 @@ export default function DealingDeskPanel() {
       accountId: String(event.account_id),
       accountNumber: String(event.account_number),
       accountFullName: String(event.account_full_name ?? ""),
+      isDealingGroup: true, // filtered to event.is_dealing_group above -- always true here
       action,
       symbol: event.symbol ? String(event.symbol) : undefined,
       side: event.side ? String(event.side) : undefined,
@@ -300,27 +232,16 @@ export default function DealingDeskPanel() {
           <h3 className="text-sm font-semibold text-[var(--text-1)]">Dealing-group activity feed</h3>
           <span className="text-xs text-[var(--text-3)]">Live · last {MAX_FEED_ROWS}</span>
         </div>
-        <div ref={feedScrollRef} className="flex max-h-[520px] flex-col gap-1 overflow-y-auto">
+        <div ref={feedScrollRef} className="max-h-[520px] overflow-y-auto">
           {filteredFeed === null ? (
             <p className="py-6 text-center text-sm text-[var(--text-3)]">Loading...</p>
           ) : filteredFeed.length === 0 ? (
             <p className="py-6 text-center text-sm text-[var(--text-3)]">No activity yet.</p>
           ) : (
-            filteredFeed.map((row) => (
-              <Link
-                key={row.id}
-                href={`/manage/accounts/${row.accountId}`}
-                className="flex items-center gap-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm transition-colors hover:brightness-105"
-              >
-                <span className="w-[110px] shrink-0 text-xs text-[var(--text-3)]">{formatDateTime(row.at)}</span>
-                <span className="w-[110px] shrink-0 font-mono text-xs">{row.accountNumber}</span>
-                <Badge tone={ACTION_TONE[row.action]}>{ACTION_LABEL[row.action]}</Badge>
-                <span className="w-[70px] shrink-0 font-mono text-xs">{row.symbol ?? "—"}</span>
-                {row.side ? <Badge tone={row.side === "BUY" ? "success" : "danger"}>{row.side}</Badge> : null}
-                <span className="shrink-0 font-mono text-xs">{row.volume ?? ""}</span>
-                <span className="min-w-0 flex-1 truncate text-xs text-[var(--text-2)]">{describeValues(row)}</span>
-              </Link>
-            ))
+            // showDealingChip omitted -- every row here is already
+            // DEALING-group by definition (this panel's own scope), so the
+            // chip would just repeat itself on every single row.
+            <ActivityFeedRows rows={filteredFeed} />
           )}
         </div>
       </Card>
