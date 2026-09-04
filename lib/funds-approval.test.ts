@@ -115,7 +115,7 @@ describe("approveFundsRequest (live DB, rolled back)", () => {
       const req = await createRequest(tx, fx, "DEPOSIT", "500");
 
       const result = await approveFundsRequest(tx, {
-        transactionId: req.id, brokerId: fx.brokerId, accountId: fx.accountId, amount: D("500"), adminId: fx.admin1Id, note: null,
+        transactionId: req.id, brokerId: fx.brokerId, accountId: fx.accountId, amount: D("500"), adminId: fx.admin1Id, note: null, type: "DEPOSIT",
       });
       expect(result.ok).toBe(true);
       if (!result.ok) return;
@@ -138,7 +138,7 @@ describe("approveFundsRequest (live DB, rolled back)", () => {
       const req = await createRequest(tx, fx, "WITHDRAWAL", "-500");
 
       const result = await approveFundsRequest(tx, {
-        transactionId: req.id, brokerId: fx.brokerId, accountId: fx.accountId, amount: D("-500"), adminId: fx.admin2Id, note: null,
+        transactionId: req.id, brokerId: fx.brokerId, accountId: fx.accountId, amount: D("-500"), adminId: fx.admin2Id, note: null, type: "WITHDRAWAL",
       });
       expect(result.ok).toBe(false);
       if (result.ok) return;
@@ -168,7 +168,7 @@ describe("approveFundsRequest (live DB, rolled back)", () => {
       const step2 = resolveFundsApprovalStep({ type: "WITHDRAWAL", markedByAdminId: fx.admin1Id, actingAdminId: fx.admin2Id });
       expect(step2.step).toBe("approve");
       const result = await approveFundsRequest(tx, {
-        transactionId: req.id, brokerId: fx.brokerId, accountId: fx.accountId, amount: D("-300"), adminId: fx.admin2Id, note: null,
+        transactionId: req.id, brokerId: fx.brokerId, accountId: fx.accountId, amount: D("-300"), adminId: fx.admin2Id, note: null, type: "WITHDRAWAL",
       });
       expect(result.ok).toBe(true);
       if (!result.ok) return;

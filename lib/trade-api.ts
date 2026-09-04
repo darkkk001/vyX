@@ -90,6 +90,26 @@ export type ApiFundsRequest = {
   amount: string;
   note: string | null;
   createdAt: string;
+  // PSP adapter fields (lib/psp/adapter.ts) -- null for ADJUSTMENT rows
+  // and any pre-existing request made before this feature.
+  paymentMethodType: PaymentMethodType | null;
+  pspStatus: string | null;
+  pspReference: string | null;
+  confirmations: number | null;
+  destinationAddress: string | null;
+};
+
+export type PaymentMethodType = "USDT_TRC20" | "USDT_BEP20" | "BTC" | "ETH" | "BANK_TRANSFER";
+
+export type ApiPaymentMethod = {
+  id: string;
+  type: PaymentMethodType;
+  minAmount: string;
+  maxAmount: string | null;
+  feePercent: string;
+  feeFixed: string;
+  instructions: string | null;
+  walletAddress: string | null;
 };
 
 export type ApiKycStatus = {
@@ -235,8 +255,14 @@ export const tradeApi = {
     call<ApiAlert>("/api/trade/alerts", { method: "POST", body: JSON.stringify(body) }),
   cancelAlert: (id: string) => call(`/api/trade/alerts/${id}`, { method: "DELETE" }),
   fundsHistory: () => call<ApiFundsRequest[]>("/api/trade/funds-requests"),
-  submitFundsRequest: (body: { type: "DEPOSIT" | "WITHDRAWAL"; amount: number; note?: string }) =>
-    call<ApiFundsRequest>("/api/trade/funds-requests", { method: "POST", body: JSON.stringify(body) }),
+  paymentMethods: () => call<ApiPaymentMethod[]>("/api/trade/payment-methods"),
+  submitFundsRequest: (body: {
+    type: "DEPOSIT" | "WITHDRAWAL";
+    amount: number;
+    paymentMethodId: string;
+    destinationAddress?: string;
+    note?: string;
+  }) => call<ApiFundsRequest>("/api/trade/funds-requests", { method: "POST", body: JSON.stringify(body) }),
   kycStatus: () => call<ApiKycStatus>("/api/trade/kyc"),
   linkedAccounts: () => call<ApiLinkedAccount[]>("/api/trade/linked-accounts"),
   submitKyc: (documentType: string, front: File, back: File) => {

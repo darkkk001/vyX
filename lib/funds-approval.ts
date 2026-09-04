@@ -1,5 +1,6 @@
 import "server-only";
 import { Prisma } from "@prisma/client";
+import { nextPspStatusOnMark, nextPspStatusOnApprove } from "@/lib/psp/adapter";
 
 type Tx = Prisma.TransactionClient;
 
@@ -43,7 +44,10 @@ export async function markFundsRequestForApproval(
 ): Promise<MarkResult> {
   await tx.transaction.update({
     where: { id: params.transactionId },
-    data: { markedByAdminId: params.adminId, markedAt: new Date() },
+    // pspStatus advances alongside the real mark regardless of which
+    // adapter created the request -- see lib/psp/adapter.ts's own header
+    // comment on why this is adapter-agnostic.
+    data: { markedByAdminId: params.adminId, markedAt: new Date(), pspStatus: nextPspStatusOnMark() },
   });
   await tx.auditLog.create({
     data: {
@@ -109,7 +113,15 @@ export type ApproveResult =
 // request time might not fit anymore.
 export async function approveFundsRequest(
   tx: Tx,
-  params: { transactionId: string; brokerId: string; accountId: string; amount: Prisma.Decimal; adminId: string; note: string | null }
+  params: {
+    transactionId: string;
+    brokerId: string;
+    accountId: string;
+    amount: Prisma.Decimal;
+    adminId: string;
+    note: string | null;
+    type: "DEPOSIT" | "WITHDRAWAL";
+  }
 ): Promise<ApproveResult> {
   const account = await tx.account.findUniqueOrThrow({ where: { id: params.accountId } });
   const balanceBefore = account.balance;
@@ -123,7 +135,14 @@ export async function approveFundsRequest(
 
   const updated = await tx.transaction.update({
     where: { id: params.transactionId },
-    data: { status: "COMPLETED", balanceBefore, balanceAfter, reviewedByAdminId: params.adminId, note: params.note },
+    data: {
+      status: "COMPLETED",
+      balanceBefore,
+      balanceAfter,
+      reviewedByAdminId: params.adminId,
+      note: params.note,
+      pspStatus: nextPspStatusOnApprove(params.type),
+    },
   });
 
   await tx.auditLog.create({

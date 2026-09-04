@@ -18,7 +18,7 @@ import {
   type SymbolDef,
   type SymbolCategory,
 } from "@/lib/market-simulator";
-import { tradeApi, serverNow, ApiError, type AccountInfo, type ApiPosition, type ApiOrder, type ApiFundsRequest, type ApiKycStatus, type ApiLinkedAccount, type ApiSession, type ApiAlert } from "@/lib/trade-api";
+import { tradeApi, serverNow, ApiError, type AccountInfo, type ApiPosition, type ApiOrder, type ApiFundsRequest, type ApiPaymentMethod, type ApiKycStatus, type ApiLinkedAccount, type ApiSession, type ApiAlert } from "@/lib/trade-api";
 import AddSymbolDialog from "./AddSymbolDialog";
 import ChartSettingsDialog from "./ChartSettingsDialog";
 import KLineChartPanel, {
@@ -53,6 +53,26 @@ const TF_LABELS: { key: Timeframe; label: string }[] = [
   { key: "MN1", label: "M" },
   { key: "Y1", label: "Y" },
 ];
+
+// Funds modal method buttons -- mirrors app/manage/(shell)/payment-
+// methods/PaymentMethodsManager.tsx's own TYPE_LABELS (kept separate,
+// not imported: that file is a Server/Manager-surface component tree,
+// this is the client-bundled trader terminal).
+const PAYMENT_METHOD_LABELS: Record<ApiPaymentMethod["type"], string> = {
+  USDT_TRC20: "USDT (TRC20)",
+  USDT_BEP20: "USDT (BEP20)",
+  BTC: "Bitcoin",
+  ETH: "Ethereum",
+  BANK_TRANSFER: "Bank transfer",
+};
+
+// Display-only estimate, same formula and same "not deducted from the
+// ledgered amount" boundary as lib/psp/adapter.ts's estimatePspFee --
+// duplicated rather than imported since that file is `import
+// "server-only"` and this component is client-bundled.
+function estimateFee(method: ApiPaymentMethod, amount: number): number {
+  return (amount * parseFloat(method.feePercent)) / 100 + parseFloat(method.feeFixed);
+}
 
 type BottomTab = "positions" | "net" | "orders" | "allOrders" | "history" | "analytics" | "logs";
 // id is string for a persisted server-side entry (its AuditLog cuid, see
@@ -644,6 +664,15 @@ export default function WebTrader({
   const [fundsAmount, setFundsAmount] = useState("");
   const [fundsSubmitting, setFundsSubmitting] = useState(false);
   const [fundsHistory, setFundsHistory] = useState<ApiFundsRequest[]>([]);
+  // Real broker-configured methods (lib/psp/adapter.ts), replacing the
+  // funds modal's previous hardcoded, non-functional Bank transfer/Card/
+  // Crypto buttons. selectedMethodId resets to the broker's first
+  // enabled method whenever the list (re)loads or the deposit/withdraw
+  // tab changes -- BANK_TRANSFER stays selectable for either, but a
+  // crypto method needs fundsDestination filled in only on withdraw.
+  const [paymentMethods, setPaymentMethods] = useState<ApiPaymentMethod[]>([]);
+  const [selectedMethodId, setSelectedMethodId] = useState<string | null>(null);
+  const [fundsDestination, setFundsDestination] = useState("");
 
   const [symbolInfoOpen, setSymbolInfoOpen] = useState(false);
   const [shareData, setShareData] = useState<null | {
@@ -1059,6 +1088,11 @@ export default function WebTrader({
     setHistory(await tradeApi.history({ from: histFrom, to: histTo, symbol: histSymbol }).catch(() => []));
   }, [histFrom, histTo, histSymbol]);
   const refreshFundsHistory = useCallback(async () => setFundsHistory(await tradeApi.fundsHistory().catch(() => [])), []);
+  const refreshPaymentMethods = useCallback(async () => {
+    const methods = await tradeApi.paymentMethods().catch(() => []);
+    setPaymentMethods(methods);
+    setSelectedMethodId((prev) => (prev && methods.some((m) => m.id === prev) ? prev : (methods[0]?.id ?? null)));
+  }, []);
   const refreshKycStatus = useCallback(async () => setKycStatus(await tradeApi.kycStatus().catch(() => null)), []);
 
   // Unifies closed trades with deposits/withdrawals/adjustments into one
@@ -1228,6 +1262,7 @@ export default function WebTrader({
   // loaded up front like trade history already is, not gated behind a
   // modal the trader might never open.
   useEffect(() => { refreshFundsHistory(); }, [refreshFundsHistory]);
+  useEffect(() => { refreshPaymentMethods(); }, [refreshPaymentMethods]);
 
   async function openSecurityModal() {
     setTopMenuOpen(null);
@@ -5138,24 +5173,79 @@ export default function WebTrader({
                 <button className={`funds-tab${fundsTab === "deposit" ? " active" : ""}`} onClick={() => setFundsTab("deposit")}>Deposit</button>
                 <button className={`funds-tab${fundsTab === "withdraw" ? " active" : ""}`} onClick={() => setFundsTab("withdraw")}>Withdraw</button>
               </div>
-              <div className="section-label" style={{ paddingLeft: 0 }}>{fundsTab === "deposit" ? "Payment method" : "Withdraw to"}</div>
-              <div className="method-row">
-                <button className="method-btn active">Bank transfer</button>
-                <button className="method-btn">Card</button>
-                {fundsTab === "deposit" ? <button className="method-btn">Crypto</button> : null}
-              </div>
-              <div className="field-group" style={{ marginTop: 10 }}>
-                <div className="field"><span className="field-label">Amount (USD)</span><input className="mono" placeholder="0.00" style={{ width: 100 }} value={fundsAmount} onChange={(e) => setFundsAmount(e.target.value)} /></div>
-              </div>
-              {fundsTab === "withdraw" ? <div className="margin-note">Available: {account ? money(parseFloat(account.balance)) : "—"}</div> : null}
+              <div className="section-label" style={{ paddingLeft: 0 }}>{fundsTab === "deposit" ? "Payment method" : "Withdraw via"}</div>
+              {paymentMethods.length === 0 ? (
+                <div className="margin-note">No payment methods are set up for this broker yet — contact support.</div>
+              ) : (
+                <div className="method-row">
+                  {paymentMethods.map((m) => (
+                    <button
+                      key={m.id}
+                      className={`method-btn${selectedMethodId === m.id ? " active" : ""}`}
+                      onClick={() => setSelectedMethodId(m.id)}
+                    >
+                      {PAYMENT_METHOD_LABELS[m.type]}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {(() => {
+                const selectedMethod = paymentMethods.find((m) => m.id === selectedMethodId) ?? null;
+                const isCrypto = selectedMethod ? selectedMethod.type !== "BANK_TRANSFER" : false;
+                return (
+                  <>
+                    {fundsTab === "deposit" && selectedMethod ? (
+                      <div className="margin-note" style={{ marginTop: 8 }}>
+                        {isCrypto && selectedMethod.walletAddress ? (
+                          <div>
+                            Send to: <span className="mono">{selectedMethod.walletAddress}</span>
+                          </div>
+                        ) : null}
+                        {selectedMethod.instructions ? <div style={{ marginTop: 4 }}>{selectedMethod.instructions}</div> : null}
+                      </div>
+                    ) : null}
+                    {fundsTab === "withdraw" ? (
+                      <div className="field-group" style={{ marginTop: 10 }}>
+                        <div className="field">
+                          <span className="field-label">{isCrypto ? "Your wallet address" : "Your bank details"}</span>
+                          <input
+                            className="mono"
+                            placeholder={isCrypto ? "Destination address" : "Account number, IBAN, etc."}
+                            style={{ width: "100%" }}
+                            value={fundsDestination}
+                            onChange={(e) => setFundsDestination(e.target.value)}
+                          />
+                        </div>
+                      </div>
+                    ) : null}
+                    <div className="field-group" style={{ marginTop: 10 }}>
+                      <div className="field"><span className="field-label">Amount (USD)</span><input className="mono" placeholder="0.00" style={{ width: 100 }} value={fundsAmount} onChange={(e) => setFundsAmount(e.target.value)} /></div>
+                    </div>
+                    {selectedMethod && (selectedMethod.feePercent !== "0" || selectedMethod.feeFixed !== "0") ? (
+                      <div className="margin-note">
+                        Est. fee: {money(estimateFee(selectedMethod, parseFloat(fundsAmount) || 0))} (not deducted from your requested amount — shown for reference)
+                      </div>
+                    ) : null}
+                    {fundsTab === "withdraw" ? <div className="margin-note">Available: {account ? money(parseFloat(account.balance)) : "—"}</div> : null}
+                  </>
+                );
+              })()}
               <button
                 className={`confirm-market-btn ${fundsTab === "deposit" ? "buy" : "sell"}`}
                 style={{ display: "block", marginTop: 12 }}
-                disabled={fundsSubmitting}
+                disabled={fundsSubmitting || !selectedMethodId}
                 onClick={async () => {
                   const amount = parseFloat(fundsAmount);
                   if (!Number.isFinite(amount) || amount <= 0) {
                     pushToast("Enter a valid amount");
+                    return;
+                  }
+                  if (!selectedMethodId) {
+                    pushToast("Select a payment method");
+                    return;
+                  }
+                  if (fundsTab === "withdraw" && !fundsDestination.trim()) {
+                    pushToast("Enter where to send the withdrawal");
                     return;
                   }
                   setFundsSubmitting(true);
@@ -5163,8 +5253,11 @@ export default function WebTrader({
                     await tradeApi.submitFundsRequest({
                       type: fundsTab === "deposit" ? "DEPOSIT" : "WITHDRAWAL",
                       amount,
+                      paymentMethodId: selectedMethodId,
+                      ...(fundsTab === "withdraw" ? { destinationAddress: fundsDestination.trim() } : {}),
                     });
                     setFundsAmount("");
+                    setFundsDestination("");
                     pushToast(
                       fundsTab === "deposit"
                         ? "Deposit request submitted — pending review"
@@ -5202,11 +5295,12 @@ export default function WebTrader({
                         </span>
                         <span className="mono">{money(parseFloat(r.amount))}</span>
                         <span
+                          title={r.pspReference ?? undefined}
                           style={{
                             color: r.status === "COMPLETED" ? "var(--buy)" : r.status === "REJECTED" ? "var(--sell)" : undefined,
                           }}
                         >
-                          {r.status}
+                          {r.status === "PENDING" && r.pspStatus ? r.pspStatus : r.status}
                         </span>
                       </div>
                     ))}

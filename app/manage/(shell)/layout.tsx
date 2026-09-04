@@ -94,6 +94,7 @@ export default async function ManageShellLayout({ children }: { children: React.
             label: "Finance",
             items: [
               { href: "/manage/funds", label: "Deposits & withdrawals" },
+              { href: "/manage/payment-methods", label: "Payment methods" },
               { href: "/manage/transfers", label: "Internal transfers" },
               { href: "/manage/wallets", label: "Wallets" },
               { href: "/manage/ib", label: "IB & affiliates" },

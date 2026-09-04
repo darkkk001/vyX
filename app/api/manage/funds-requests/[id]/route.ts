@@ -93,6 +93,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       amount: existing.amount,
       adminId: session!.adminId,
       note: note ?? existing.note,
+      type: existing.type as "DEPOSIT" | "WITHDRAWAL",
     })
   );
   if (!approved.ok) {
