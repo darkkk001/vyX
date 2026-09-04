@@ -1,5 +1,19 @@
 import { HTMLAttributes, ReactNode, RefObject, TdHTMLAttributes, ThHTMLAttributes } from "react";
 
+// VYX-BASICS-AUDIT.md category 2's own "Fixed-height scroll container,
+// sticky header, in-panel scrollbar" -- the one item that comment down in
+// maxBodyHeight's old doc left "QUEUED, not done" while the rest of
+// category 2 (sort/resize/column-hide/skeleton/error-state, all in
+// TableExtras.tsx) landed. A max-height only ever caps -- a table shorter
+// than this renders at its natural height with no scrollbar at all -- so
+// one universal default is safe for every one of this component's ~29
+// call sites, from a 3-row settings table to a 500-row deal log, without
+// auditing each individually. min() keeps it from overflowing a short
+// viewport (a laptop with devtools open, a narrow modal) the fixed 640px
+// PositionsManager.tsx's virtualizer case already used on its own alone
+// wouldn't.
+const DEFAULT_MAX_BODY_HEIGHT = "min(640px, 65vh)";
+
 // The wrapper doubles as the mockup's ".panel" -- every table-only page
 // (no surrounding Card) gets panel chrome (border/radius/header row) for
 // free instead of looking like a bare table floating on the page.
@@ -15,20 +29,16 @@ export function Table({
   description?: string;
   action?: ReactNode;
   children: ReactNode;
-  // VYX-BASICS-AUDIT.md category 8 -- opt-in vertical scroll boundary
-  // for the table body, unused by every existing caller (both undefined
-  // by default, no behavior change). Exists so a row-virtualizer (see
-  // PositionsManager.tsx's "Open positions" table, the one place this
-  // is actually needed -- 500+ real rows produced 300-800ms main-thread
-  // long tasks and visibly janky scrolling without it) has a bounded,
-  // measurable scroll element to attach to; @tanstack/react-virtual's
-  // useVirtualizer needs a real getScrollElement(), which an
-  // unconstrained page-scrolling table never had. Not the same thing as
-  // category 2's still-deferred "every table gets a fixed-height
-  // scroll container" item -- this is scoped to the one table that
-  // measurably needs it to not freeze the tab, not a redesign of every
-  // table's scroll behavior.
+  // A real scroll element for a row-virtualizer to attach to (see
+  // PositionsManager.tsx's "Open positions" table -- @tanstack/react-
+  // virtual's useVirtualizer needs a real getScrollElement()). Works the
+  // same with or without an explicit maxBodyHeight now that the default
+  // below always gives the body a bounded scroll container.
   scrollRef?: RefObject<HTMLDivElement | null>;
+  // Explicit pixel override for a caller with its own measured height
+  // requirement (PositionsManager's virtualized case: exactly 640).
+  // Omit this for every other table -- DEFAULT_MAX_BODY_HEIGHT applies
+  // automatically, no per-page opt-in needed.
   maxBodyHeight?: number;
 }) {
   return (
@@ -42,7 +52,11 @@ export function Table({
           {action}
         </div>
       )}
-      <div ref={scrollRef} className="overflow-x-auto" style={maxBodyHeight ? { maxHeight: maxBodyHeight, overflowY: "auto" } : undefined}>
+      <div
+        ref={scrollRef}
+        className="overflow-x-auto"
+        style={{ maxHeight: maxBodyHeight ?? DEFAULT_MAX_BODY_HEIGHT, overflowY: "auto" }}
+      >
         <table className="w-full border-collapse text-[12.5px]">{children}</table>
       </div>
     </div>

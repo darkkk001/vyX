@@ -14,7 +14,16 @@ hoti hai, chahe broker koi bhi ho. PC ko in-order diya jayega.
 - [ ] Window resize (narrow to wide) har breakpoint pe theek
 
 ## 2. Tables (universal — terminal + backoffice)
-- [ ] Fixed-height scroll container, sticky header, in-panel scrollbar — QUEUED, not done
+- [x] Fixed-height scroll container, sticky header, in-panel scrollbar — DONE. Terminal
+      (`.bottom-panel`, webtrader.css) already had this; backoffice's shared
+      `components/ui/Table.tsx` didn't (`maxBodyHeight` was opt-in, used by exactly one
+      table). Now defaults to `min(640px, 65vh)` on every one of its ~29 call sites — a
+      max-height only ever caps, so a short table still renders at its natural height, no
+      dead space or unwanted scrollbar. Sticky header was already correct (`position:
+      sticky` on the same scroll ancestor); this only had to make that ancestor bounded by
+      default. Browser-verified: a normal-height table scrolls internally with the header
+      pinned while the page's own sidebar/topbar stay put, confirmed at both a normal and
+      an artificially short viewport.
 - [ ] Column sort (click header) — click par ascending/descending, arrow indicator
 - [ ] Column resize (drag border) — MT5 mein hota hai
 - [ ] Column show/hide (right-click header) — "Right-click for more columns" text hai, verify kaam karta hai
