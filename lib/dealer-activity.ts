@@ -117,13 +117,16 @@ export async function recordDealerActivity(
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// Shared cold-load queries -- used by both GET /api/manage/dealer-activity
-// (every account, amber-highlighted -- Live Exposure / Dealing "Activity"
-// tab's original general feed) and GET /api/manage/dealing-desk (DEALING-
+// Shared cold-load query -- backs GET /api/manage/dealing-desk (DEALING-
 // group accounts only, plus the resting-orders list -- the Dealing page's
 // own dedicated panel, per the 2026-09-04 refinement: "nothing about a
-// dealing-group account happens without appearing here"). One query
-// function, one row shape, so the two consumers can never drift.
+// dealing-group account happens without appearing here"). Kept general
+// (the `dealingOnly` option) rather than hardcoded to that one caller --
+// an earlier general, every-account feed on Live Exposure used the same
+// function with dealingOnly:false before being removed as redundant
+// clutter (2026-09-04 follow-up: the dealer's own view belongs on the
+// Dealing page, not scattered elsewhere); nothing stops a future
+// general-purpose consumer from reusing it the same way.
 // ─────────────────────────────────────────────────────────────────────────
 
 // Same known, disclosed gap as before this refinement: two lifecycle

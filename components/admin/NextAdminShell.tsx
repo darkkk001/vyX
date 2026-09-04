@@ -17,8 +17,8 @@ const DEALER_NOTIFY_ACTIONS = new Set(["ORDER_PLACED", "ORDER_MODIFIED", "ORDER_
 // on the next full navigation/Server Component render, so a dealer
 // watching the shell without switching pages never saw the count rise
 // when a new DEALER_ACTIVITY notification landed. This tracks the same
-// DealerActivity event the activity feed listens to (see
-// components/admin/DealerActivityFeed.tsx) and live-increments on top of
+// DealerActivity event the Dealing page's own activity feed listens to
+// (see components/admin/DealingDeskPanel.tsx) and live-increments on top of
 // the server-provided initial count for exactly the notify-worthy subset
 // -- every other notification type (KYC, funds, leads, ...) still updates
 // on next navigation as before, unchanged.

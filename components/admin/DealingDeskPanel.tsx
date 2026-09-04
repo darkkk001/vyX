@@ -108,14 +108,16 @@ function describeValues(row: FeedRow): string {
   }
 }
 
-// Dealing page's own dedicated panel (2026-09-04 refinement) -- unlike
-// DealerActivityFeed.tsx (Live Exposure, every account, DEALING ones
-// amber-highlighted), everything here is scoped to DEALING-group accounts
-// ONLY: a persistent "resting orders" list (currently-active LIMIT/STOP
-// orders -- not just feed events that scroll away) plus an activity feed,
-// both filterable to one account. The point: a dealer watching this page
-// sees the complete picture of every manually-managed account, live, no
-// refresh -- see GET /api/manage/dealing-desk and lib/dealer-activity.ts.
+// Dealing page's own dedicated panel (2026-09-04 refinement, tightened
+// same day: a separate general every-account feed briefly lived on Live
+// Exposure too, removed as redundant clutter -- this is now the ONLY
+// place a dealer-activity feed is mounted). Scoped to DEALING-group
+// accounts ONLY: a persistent "resting orders" list (currently-active
+// LIMIT/STOP orders -- not just feed events that scroll away) plus an
+// activity feed, both filterable to one account. The point: a dealer
+// watching this page sees the complete picture of every manually-managed
+// account, live, no refresh -- see GET /api/manage/dealing-desk and
+// lib/dealer-activity.ts. Live Exposure stays focused on exposure/P&L.
 export default function DealingDeskPanel() {
   const [accounts, setAccounts] = useState<Account[] | null>(null);
   const [restingOrders, setRestingOrders] = useState<RestingOrder[] | null>(null);
