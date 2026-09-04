@@ -6,6 +6,7 @@
 import { apiCall as call, apiCallForm as callForm, serverNow, ApiError } from "./desktop-api";
 import type { SymbolCategory } from "./market-simulator";
 import type { ChartSettings } from "./chart-settings";
+import type { ChartIndicatorsState } from "./chart-indicators";
 export { serverNow, ApiError };
 
 export type AccountInfo = {
@@ -328,4 +329,7 @@ export const tradeApi = {
   chartSettings: () => call<{ settings: ChartSettings }>("/api/trade/chart-settings"),
   saveChartSettings: (settings: ChartSettings) =>
     call<{ settings: ChartSettings }>("/api/trade/chart-settings", { method: "PUT", body: JSON.stringify(settings) }),
+  chartIndicators: () => call<{ indicators: ChartIndicatorsState }>("/api/trade/chart-indicators"),
+  saveChartIndicators: (indicators: ChartIndicatorsState) =>
+    call<{ indicators: ChartIndicatorsState }>("/api/trade/chart-indicators", { method: "PUT", body: JSON.stringify(indicators) }),
 };

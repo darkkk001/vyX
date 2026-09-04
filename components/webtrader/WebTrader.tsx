@@ -38,6 +38,8 @@ import AboutDialog from "./AboutDialog";
 import SmartTradeManager from "./SmartTradeManager";
 import { computeOrderReferenceLines, computeAlertLines } from "@/lib/chart-lines";
 import { DEFAULT_CHART_SETTINGS, type ChartSettings } from "@/lib/chart-settings";
+import { INDICATOR_DEFS, OVERLAY_INDICATOR_KEYS, SUBPANE_INDICATOR_KEYS, type ActiveIndicator, type IndicatorKey } from "@/lib/chart-indicators";
+import IndicatorConfigDialog from "./IndicatorConfigDialog";
 import { playSound } from "@/lib/sounds";
 import { filterEventsForSymbol, nextHighImpactEventWithin, type CalendarEvent } from "@/lib/economic-calendar";
 import { spreadPoints, DEFAULT_WATCHLIST_COLUMN_PREFS, type WatchlistColumnPrefs } from "@/lib/watchlist-columns";
@@ -721,7 +723,6 @@ export default function WebTrader({
   const chartContextMenuRef = useRef<HTMLDivElement | null>(null);
   useDismiss(chartContextMenu !== null, () => setChartContextMenu(null), chartContextMenuRef);
   const chartRef = useRef<KLineChartHandle>(null);
-  const [maActive, setMaActive] = useState(false);
   // Chart interaction pack -- persisted server-side (lib/chart-settings.ts),
   // same shape as watchlist prefs. Starts at the client default so the
   // chart never renders unstyled before the GET resolves.
@@ -758,6 +759,24 @@ export default function WebTrader({
   // change for no functional reason.
   const chartSettingsRef = useRef(chartSettings);
   useEffect(() => { chartSettingsRef.current = chartSettings; }, [chartSettings]);
+
+  // Chart indicators feature -- persisted server-side
+  // (lib/chart-indicators.ts), same shape/pattern as chartSettings just
+  // above (starts empty so the chart never briefly shows a stale
+  // indicator before the GET resolves; dirty ref + chained save promise
+  // guard against exactly the same late-GET and out-of-order-PUT races
+  // chartSettings's own comments explain).
+  const [activeIndicators, setActiveIndicators] = useState<ActiveIndicator[]>([]);
+  const chartIndicatorsDirtyRef = useRef(false);
+  const chartIndicatorsSaveChainRef = useRef<Promise<void>>(Promise.resolve());
+  const [indicatorsMenuOpen, setIndicatorsMenuOpen] = useState(false);
+  const indicatorsMenuRef = useRef<HTMLDivElement | null>(null);
+  useDismiss(indicatorsMenuOpen, () => setIndicatorsMenuOpen(false), indicatorsMenuRef);
+  // Which active indicator's config dialog is open, if any -- opens
+  // automatically right after adding one (spec: "when added, opens a
+  // small config dialog"), and also reachable later via a chip's own
+  // gear icon.
+  const [indicatorConfigKey, setIndicatorConfigKey] = useState<IndicatorKey | null>(null);
 
   // Impression Pack #3 -- economic calendar. Single shared fetch (the
   // NewsPanel list, the chart's vertical markers, and the order ticket's
@@ -1253,6 +1272,7 @@ export default function WebTrader({
           refreshSymbolsAndWatchlist(),
           refreshAlerts(),
           tradeApi.chartSettings().then((res) => { if (!chartSettingsDirtyRef.current) setChartSettings(res.settings); }).catch(() => {}),
+          tradeApi.chartIndicators().then((res) => { if (!chartIndicatorsDirtyRef.current) setActiveIndicators(res.indicators.active); }).catch(() => {}),
         ]);
       } catch (err) {
         setLoadError(err instanceof Error ? err.message : "failed to load account data");
@@ -2992,10 +3012,6 @@ export default function WebTrader({
     setChartContextMenu({ x: clientX, y: clientY, price });
   }
 
-  function toggleMaIndicator() {
-    setMaActive(chartRef.current?.toggleMA() ?? false);
-  }
-
   async function copyPriceToClipboard(price: number) {
     try {
       await navigator.clipboard.writeText(fmt(price, m.def.digits));
@@ -3017,6 +3033,45 @@ export default function WebTrader({
         pushToast(err instanceof Error ? err.message : "failed to save chart settings");
       }
     });
+  }
+
+  // Chart indicators feature -- same optimistic-save + chained-PUT shape
+  // as saveChartSettingsHandler just above, for the same reasons (a rapid
+  // run of edits, e.g. dragging a period field, must reach the server in
+  // the order they happened, and a late in-flight GET from the mount
+  // effect must never clobber a save the trader already made).
+  function saveIndicatorsHandler(next: ActiveIndicator[]) {
+    chartIndicatorsDirtyRef.current = true;
+    setActiveIndicators(next); // optimistic -- KLineChartPanel's own reconcile effect applies it live
+    chartIndicatorsSaveChainRef.current = chartIndicatorsSaveChainRef.current.then(async () => {
+      try {
+        await tradeApi.saveChartIndicators({ active: next });
+      } catch (err) {
+        pushToast(err instanceof Error ? err.message : "failed to save chart indicators");
+      }
+    });
+  }
+
+  // Adding an indicator already active just reopens its config dialog
+  // (klinecharts allows at most one live instance per indicator name --
+  // see lib/chart-indicators.ts's own ActiveIndicator comment) rather
+  // than silently no-op'ing or duplicating it.
+  function addIndicatorFromMenu(key: IndicatorKey) {
+    setIndicatorsMenuOpen(false);
+    const existing = activeIndicators.find((a) => a.key === key);
+    if (!existing) {
+      saveIndicatorsHandler([...activeIndicators, { key, calcParams: INDICATOR_DEFS[key].defaultCalcParams }]);
+    }
+    setIndicatorConfigKey(key);
+  }
+
+  function updateIndicatorParams(key: IndicatorKey, calcParams: number[]) {
+    saveIndicatorsHandler(activeIndicators.map((a) => (a.key === key ? { ...a, calcParams } : a)));
+  }
+
+  function removeIndicator(key: IndicatorKey) {
+    saveIndicatorsHandler(activeIndicators.filter((a) => a.key !== key));
+    if (indicatorConfigKey === key) setIndicatorConfigKey(null);
   }
 
   // Light/dark terminal theme -- same optimistic-save shape as
@@ -3772,10 +3827,67 @@ export default function WebTrader({
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 6h18" /><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" /></svg>
                     </button>
                     <div className="draw-tool-sep" />
-                    <button className={`draw-tool-btn${maActive ? " active" : ""}`} onClick={toggleMaIndicator} title="Moving average">
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 17c3-8 5-8 8 0s5 8 8 0" /></svg>
-                    </button>
+                    <div style={{ position: "relative" }} ref={indicatorsMenuRef}>
+                      <button
+                        className={`draw-tool-btn${activeIndicators.length > 0 ? " active" : ""}`}
+                        onClick={() => setIndicatorsMenuOpen((v) => !v)}
+                        title="Indicators"
+                      >
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 17c3-8 5-8 8 0s5 8 8 0" /></svg>
+                      </button>
+                      {indicatorsMenuOpen ? (
+                        <div className="wl-context-menu show" style={{ position: "absolute", left: "calc(100% + 6px)", top: 0, maxHeight: 360, overflowY: "auto" }}>
+                          <div className="wl-ctx-title">Overlay</div>
+                          {OVERLAY_INDICATOR_KEYS.map((key) => (
+                            <div key={key} className="wl-ctx-item" onClick={() => addIndicatorFromMenu(key)}>
+                              <span className="wl-ctx-check">{activeIndicators.some((a) => a.key === key) ? "✓" : ""}</span>
+                              <span>{INDICATOR_DEFS[key].label}</span>
+                            </div>
+                          ))}
+                          <div className="wl-ctx-title">Sub-pane</div>
+                          {SUBPANE_INDICATOR_KEYS.map((key) => (
+                            <div key={key} className="wl-ctx-item" onClick={() => addIndicatorFromMenu(key)}>
+                              <span className="wl-ctx-check">{activeIndicators.some((a) => a.key === key) ? "✓" : ""}</span>
+                              <span>{INDICATOR_DEFS[key].label}</span>
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
                   </div>
+                  {activeIndicators.length > 0 ? (
+                    <div style={{ position: "absolute", left: 44, top: 8, zIndex: 5, display: "flex", flexWrap: "wrap", gap: 4, maxWidth: "calc(100% - 60px)" }}>
+                      {activeIndicators.map((a) => (
+                        <div
+                          key={a.key}
+                          className="mono"
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 5,
+                            background: "var(--bg-1)",
+                            border: "1px solid var(--border)",
+                            borderRadius: 6,
+                            padding: "3px 4px 3px 8px",
+                            fontSize: 11,
+                            color: "var(--text-2)",
+                          }}
+                        >
+                          <span onClick={() => setIndicatorConfigKey(a.key)} style={{ cursor: "pointer" }} title="Edit parameters">
+                            {INDICATOR_DEFS[a.key].label}
+                            {a.calcParams.length > 0 ? ` (${a.calcParams.join(",")})` : ""}
+                          </span>
+                          <button
+                            onClick={() => removeIndicator(a.key)}
+                            title="Remove"
+                            style={{ width: 16, height: 16, border: "none", background: "transparent", color: "var(--text-3)", cursor: "pointer", fontSize: 10, display: "flex", alignItems: "center", justifyContent: "center" }}
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
                   <KLineChartPanel
                     ref={chartRef}
                     candles={candles}
@@ -3792,6 +3904,7 @@ export default function WebTrader({
                     previousDayHighLow={previousDayHighLow}
                     onContextMenuPrice={handleChartContextMenuPrice}
                     onPanOrZoom={() => setChartContextMenu(null)}
+                    activeIndicators={activeIndicators}
                   />
                   {/* Feed-loss UX -- no corner note, no dark overlay, no
                       caption at all regardless of activeFeedStatus. The
@@ -3827,6 +3940,20 @@ export default function WebTrader({
                       onSave={saveChartSettingsHandler}
                       onClose={() => setChartSettingsOpen(false)}
                     />
+                  ) : null}
+                  {indicatorConfigKey ? (
+                    (() => {
+                      const active = activeIndicators.find((a) => a.key === indicatorConfigKey);
+                      if (!active) return null;
+                      return (
+                        <IndicatorConfigDialog
+                          indicator={active}
+                          onChange={(calcParams) => updateIndicatorParams(indicatorConfigKey, calcParams)}
+                          onRemove={() => removeIndicator(indicatorConfigKey)}
+                          onClose={() => setIndicatorConfigKey(null)}
+                        />
+                      );
+                    })()
                   ) : null}
                 </>
               ) : (

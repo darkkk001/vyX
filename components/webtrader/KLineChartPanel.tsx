@@ -1,10 +1,11 @@
 "use client";
 
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
-import { init, dispose, ActionType, registerOverlay } from "klinecharts";
+import { init, dispose, ActionType, registerOverlay, registerIndicator, IndicatorSeries } from "klinecharts";
 import type { Candle } from "@/lib/market-simulator";
 import type { ChartSettings } from "@/lib/chart-settings";
 import { computeSessionBands, isIntradayTimeframe, SESSION_COLORS, type SessionName } from "@/lib/session-map";
+import { INDICATOR_DEFS, type ActiveIndicator, type IndicatorKey } from "@/lib/chart-indicators";
 
 export type ChartLine = {
   id: string;
@@ -76,7 +77,6 @@ export type DrawingOverlayName =
 export type KLineChartHandle = {
   addOverlay: (name: DrawingOverlayName) => void;
   removeAllDrawings: () => void;
-  toggleMA: () => boolean;
   // chart interaction pack -- right-click menu's "Reset view": re-fits the
   // visible bar range and resets zoom. scrollToRealTime alone leaves
   // whatever zoom level the trader was at; setBarSpace back to
@@ -224,6 +224,168 @@ registerOverlay({
   },
 });
 
+// Chart indicators feature -- klinecharts ships MA/EMA/BOLL/SAR/RSI/MACD/
+// KDJ/VOL/OBV/CCI/WR as real built-ins (confirmed against the installed
+// 9.8.12 bundle's own getSupportedIndicators()), but not VWAP or ATR.
+// Both are registered here through klinecharts' own official extension
+// point (registerIndicator, module scope like registerOverlay above) --
+// calcParams/precision/figures/styles and every call site in this file
+// (createIndicator/overrideIndicator/removeIndicator) treat these
+// identically to a built-in; only the calc formula itself is supplied by
+// this codebase since klinecharts doesn't ship one for either.
+type IndicatorCalcRow = Record<string, number | undefined>;
+
+registerIndicator<IndicatorCalcRow>({
+  name: "VYX_VWAP",
+  shortName: "VWAP",
+  series: IndicatorSeries.Price,
+  calcParams: [],
+  precision: 5,
+  shouldOhlc: true,
+  figures: [{ key: "vwap", title: "VWAP: ", type: "line" }],
+  // Volume-weighted average price, reset at every UTC calendar-day
+  // boundary (the standard VWAP definition -- session-cumulative, not a
+  // rolling window). Guarded against a zero cumulative volume by emitting
+  // `undefined` rather than a divide-by-zero NaN or a fabricated flat
+  // line -- this codebase's own candle pipeline doesn't carry real
+  // trade/tick volume yet, every KLineData.volume reaching this calc is
+  // currently always 0 (see this component's own applyNewData/updateData
+  // calls below), which the built-in VOL/OBV indicators hit the exact
+  // same gap against. Disclosed, not silently fabricated: see
+  // lib/chart-indicators.ts's own module comment.
+  calc: (dataList) => {
+    let cumulativePV = 0;
+    let cumulativeVolume = 0;
+    let lastDayKey = -1;
+    return dataList.map((d) => {
+      const date = new Date(d.timestamp);
+      const dayKey = date.getUTCFullYear() * 10000 + (date.getUTCMonth() + 1) * 100 + date.getUTCDate();
+      if (dayKey !== lastDayKey) {
+        cumulativePV = 0;
+        cumulativeVolume = 0;
+        lastDayKey = dayKey;
+      }
+      const typicalPrice = (d.high + d.low + d.close) / 3;
+      const volume = d.volume ?? 0;
+      cumulativePV += typicalPrice * volume;
+      cumulativeVolume += volume;
+      return { vwap: cumulativeVolume > 0 ? cumulativePV / cumulativeVolume : undefined };
+    });
+  },
+});
+
+registerIndicator<IndicatorCalcRow>({
+  name: "VYX_ATR",
+  shortName: "ATR",
+  calcParams: [14],
+  precision: 5,
+  figures: [{ key: "atr", title: "ATR: ", type: "line" }],
+  // Average True Range, Wilder's smoothing -- the standard ATR
+  // definition every platform uses (a plain SMA of true range is a
+  // common simplification, not the real thing). True range for bar 0
+  // falls back to its own high-low since there's no prior close to
+  // compare against.
+  calc: (dataList, indicator) => {
+    const period = indicator.calcParams[0] ?? 14;
+    let prevClose: number | null = null;
+    let prevAtr: number | null = null;
+    let trSum = 0;
+    return dataList.map((d, i) => {
+      const trueRange =
+        prevClose === null
+          ? d.high - d.low
+          : Math.max(d.high - d.low, Math.abs(d.high - prevClose), Math.abs(d.low - prevClose));
+      let atr: number | undefined;
+      if (i < period - 1) {
+        trSum += trueRange;
+      } else if (i === period - 1) {
+        trSum += trueRange;
+        atr = trSum / period;
+      } else if (prevAtr !== null) {
+        atr = (prevAtr * (period - 1) + trueRange) / period;
+      }
+      if (atr !== undefined) prevAtr = atr;
+      prevClose = d.close;
+      return { atr };
+    });
+  },
+});
+
+// Indicator line colors, themed -- klinecharts draws to canvas, not the
+// DOM (same reasoning as CHART_THEME_COLORS above), so these can't read
+// var(--text-3) etc. directly. A repeating categorical palette assigned
+// positionally per figure/calcParams index, same convention most
+// charting platforms use for a generic indicator's Nth line -- except
+// MACD/VOL, whose up/down bars reuse the chart's own buy/sell colors
+// (bullish/bearish momentum, not an arbitrary category) and BOLL, whose
+// upper/lower band share ONE muted color with a distinct middle line
+// (the standard Bollinger-band convention -- two different-colored band
+// edges reads as two unrelated indicators, not one envelope).
+const INDICATOR_PALETTE = {
+  dark: ["#4C8DFF", "#F5A623", "#A78BFA", "#14B8A6", "#EC4899", "#38BDF8"],
+  light: ["#2563EB", "#D97706", "#7C3AED", "#0D9488", "#DB2777", "#0284C7"],
+} as const;
+
+// A freshly created klinecharts indicator instance starts with an EMPTY
+// `styles` object (confirmed against IndicatorImp's own constructor --
+// `this.styles = clone(styles ?? {})`, and neither this codebase's own
+// registerIndicator calls above nor any real klinecharts built-in
+// template sets one either). Its per-figure style lookup
+// (eachFigures' `formatValue(styles, 'lines', defaultStyles.lines)`)
+// returns an override array VERBATIM the moment it's present at all --
+// there is no per-field merge against the library's own fuller default
+// at the FIGURE level, only at the top-level styles OBJECT (via
+// IndicatorImp.setStyles' `merge(this.styles, styles)`, which recurses
+// into existing keys but can't invent missing ones). A `{ color }`-only
+// override therefore becomes the entire style for that line -- missing
+// `dashedValue` is exactly what crashed klinecharts' own line-merging
+// code in drawImp ("Cannot read properties of undefined (reading '0')",
+// caught live before this fix). Every line/bar style object below is
+// deliberately complete, matching klinecharts' own getDefaultIndicatorStyle
+// shape field-for-field (only `color`/`upColor`/`downColor`/
+// `noChangeColor` actually vary here).
+function line(color: string) {
+  return { style: "solid" as const, smooth: false, size: 1, dashedValue: [4, 4], color };
+}
+function bar(upColor: string, downColor: string, noChangeColor: string) {
+  return { style: "fill" as const, borderStyle: "solid" as const, borderSize: 1, borderDashedValue: [2, 2], upColor, downColor, noChangeColor };
+}
+
+function indicatorStyles(key: IndicatorKey, calcParams: number[], theme: "dark" | "light") {
+  const palette = INDICATOR_PALETTE[theme];
+  const mutedBand = theme === "light" ? "#94A3B8" : "#5A6472";
+  const neutralBar = theme === "light" ? "#94A3B8" : "#5A6472";
+  const upColor = "#16C784";
+  const downColor = "#EA3943";
+  switch (key) {
+    case "BOLL":
+      return { lines: [line(mutedBand), line(palette[0]), line(mutedBand)] };
+    case "MACD":
+      return { lines: [line(palette[0]), line(palette[1])], bars: [bar(upColor, downColor, neutralBar)] };
+    case "VOL":
+      return { lines: [line(palette[0]), line(palette[1]), line(palette[2])], bars: [bar(upColor, downColor, neutralBar)] };
+    case "OBV":
+      return { lines: [line(palette[0]), line(palette[1])] };
+    default: {
+      const lineCount = Math.max(calcParams.length, 1);
+      return { lines: Array.from({ length: lineCount }, (_, i) => line(palette[i % palette.length])) };
+    }
+  }
+}
+
+// Deterministic per-key pane id -- overlay indicators all share
+// "candle_pane" (the price pane itself); every sub-pane indicator gets
+// its OWN dedicated pane, one per key, so multiple sub-panes stack
+// independently and each is separately resizable/removable. No random
+// id needed: klinecharts allows at most one instance of a given
+// indicator NAME per pane (confirmed against its own IndicatorStore.
+// addInstance source -- a second one throws "Duplicate indicators."), so
+// this codebase only ever has one active instance per key at all,
+// making the key itself a stable, sufficient pane identity.
+function indicatorPaneId(key: IndicatorKey): string {
+  return INDICATOR_DEFS[key].pane === "overlay" ? "candle_pane" : `indicator-pane-${key}`;
+}
+
 // chart-polish round -- the slice of klinecharts' real Overlay/OverlayEvent
 // shape (node_modules/klinecharts/dist/index.d.ts) this file actually
 // reads. The chart instance itself stays `any` (see the component's own
@@ -285,6 +447,17 @@ type Props = {
   // of whatever timeframe this panel is currently displaying. Null when
   // not yet known (fewer than 2 D1 candles loaded) or not applicable.
   previousDayHighLow?: { high: number; low: number } | null;
+  // Chart indicators feature -- declarative, same pattern as `lines`/
+  // `positionLines` above: WebTrader.tsx owns the persisted active-
+  // indicator list (server-side, Account.chartIndicators) and passes the
+  // CURRENT desired state down; this component's own effect below diffs
+  // it against whatever's actually live on the chart and reconciles via
+  // createIndicator/overrideIndicator/removeIndicator. No imperative
+  // add/remove handle methods (unlike the drawing toolbar's addOverlay)
+  // -- there's no interactive draw-in-progress state to own here, just a
+  // list to reflect, so the same props-down shape chartSettings already
+  // uses fits better than an imperative one.
+  activeIndicators?: ActiveIndicator[];
 };
 
 // Thin React wrapper around klinecharts (free, open-source — no license
@@ -314,13 +487,19 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
     onDragEditableLine,
     settings,
     previousDayHighLow,
+    activeIndicators,
   },
   ref
 ) {
   const containerRef = useRef<HTMLDivElement>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const chartRef = useRef<any>(null);
-  const maOnRef = useRef(false);
+  // Chart indicators feature -- which keys currently have a live
+  // klinecharts instance, so the reconcile effect below knows what to
+  // remove (a key that dropped out of `activeIndicators`) vs. create (a
+  // new one) vs. just override (still active, params/theme may have
+  // changed).
+  const activeIndicatorKeysRef = useRef<Set<IndicatorKey>>(new Set());
   const lineIdsRef = useRef<string[]>([]);
   const sessionHighLowIdsRef = useRef<string[]>([]);
   // Impression Pack #2 -- session bands are plain DOM divs positioned via
@@ -953,6 +1132,72 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
     }
   }, [editableLines]);
 
+  // Chart indicators feature -- reconciles the live klinecharts instances
+  // against the `activeIndicators` prop (WebTrader.tsx's own persisted
+  // state). Deliberately NOT keyed on candles/latestBar: klinecharts
+  // recomputes every attached indicator's own data automatically
+  // whenever applyNewData/updateData runs (the effects above -- that's
+  // the whole benefit of using its real indicator pipeline instead of
+  // hand-rolling one), so live ticks stay smooth for free. This effect
+  // only needs to run when the SET of active indicators, their params,
+  // the theme, or the symbol's own price digits actually change.
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart) return;
+    const theme = settings?.theme ?? "dark";
+    const desired = activeIndicators ?? [];
+    const desiredKeys = new Set(desired.map((a) => a.key));
+
+    // Remove anything no longer desired -- removeIndicator also destroys
+    // the pane itself once it held its last indicator (confirmed against
+    // klinecharts' own IndicatorStore.removeInstance source), so a
+    // sub-pane indicator's own pane disappears in this one call, no
+    // separate pane-cleanup step needed.
+    for (const key of activeIndicatorKeysRef.current) {
+      if (desiredKeys.has(key)) continue;
+      try {
+        chart.removeIndicator?.(indicatorPaneId(key), INDICATOR_DEFS[key].klineName);
+      } catch {
+        // ignore
+      }
+      activeIndicatorKeysRef.current.delete(key);
+    }
+
+    // Create missing / override everything still desired. Unconditional
+    // override (not diffed against previous calcParams) is safe and
+    // cheap here -- this effect only fires on a real add/edit/remove/
+    // theme/digits change, never per tick, so re-applying the same
+    // values every so often costs nothing a trader would notice.
+    for (const entry of desired) {
+      const def = INDICATOR_DEFS[entry.key];
+      const paneId = indicatorPaneId(entry.key);
+      const precision = def.precision ?? digits;
+      const styles = indicatorStyles(entry.key, entry.calcParams, theme);
+      if (!activeIndicatorKeysRef.current.has(entry.key)) {
+        try {
+          const paneOptions = def.pane === "overlay" ? { id: paneId } : { id: paneId, height: 120 };
+          // isStack: true -- without it, createIndicator wipes every
+          // OTHER indicator already on the same pane before adding this
+          // one (confirmed against IndicatorStore.addInstance's own
+          // `if (!isStack) { paneInstances = [] }`), which would silently
+          // remove e.g. an existing MA the moment BOLL gets added to the
+          // same candle_pane. Harmless to always pass true even for a
+          // sub-pane that will only ever hold this one instance.
+          chart.createIndicator?.({ name: def.klineName, calcParams: entry.calcParams, precision, styles }, true, paneOptions);
+          activeIndicatorKeysRef.current.add(entry.key);
+        } catch {
+          // ignore
+        }
+      } else {
+        try {
+          chart.overrideIndicator?.({ name: def.klineName, calcParams: entry.calcParams, precision, styles }, paneId);
+        } catch {
+          // ignore
+        }
+      }
+    }
+  }, [activeIndicators, settings?.theme, digits]);
+
   // Chart interaction pack §2 -- chart settings applied live via
   // setStyles/setTimezone. Vertical gridlines stay permanently off
   // regardless of the setting (see the init() call's own styles) -- that
@@ -1040,21 +1285,6 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
         selectedOverlayIdRef.current = null;
         drawingOverlayIdRef.current = null;
         persistDrawings();
-      },
-      toggleMA() {
-        const chart = chartRef.current;
-        if (!chart) return maOnRef.current;
-        try {
-          if (maOnRef.current) {
-            chart.removeIndicator?.("candle_pane", "MA");
-          } else {
-            chart.createIndicator?.("MA", false, { id: "candle_pane" });
-          }
-          maOnRef.current = !maOnRef.current;
-        } catch {
-          // ignore
-        }
-        return maOnRef.current;
       },
       resetView() {
         const chart = chartRef.current;

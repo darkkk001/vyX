@@ -494,6 +494,17 @@ model Account {
   // own defaults (see lib/chart-settings.ts's DEFAULT_CHART_SETTINGS).
   chartSettings Json?
 
+  // Active chart indicators (RSI, MACD, MA, Bollinger, etc.) + their
+  // params -- server-side like chartSettings just above, same reasoning
+  // (web/desktop sync, survives reload). Separate field rather than
+  // folded into chartSettings: that blob is a single fixed-shape object
+  // (one value per key), while this is a growing LIST of independently
+  // add/remove/edit-able indicator instances -- see
+  // lib/chart-indicators.ts's ChartIndicatorsState. Null = no saved
+  // indicators yet, client applies its own empty default (chart shows
+  // none until the trader adds one).
+  chartIndicators Json?
+
   // Which watchlist category headers (Forex/Metals/.../Crypto) are
   // collapsed right now -- server-side like the watchlist's own row order
   // (not localStorage), so web and desktop stay in sync. Empty array
