@@ -76,37 +76,35 @@ export default function DealerDeskToggle() {
   return (
     <>
       <div
-        className={`flex items-center justify-between gap-4 rounded-xl border px-4 py-3 ${
+        className={`flex items-center gap-4 rounded-xl border px-4 py-3 ${
           state.dealerOn ? "border-[var(--border)] bg-[var(--bg-1)]" : "border-[var(--warn)]/40 bg-[var(--warn-bg)]"
         }`}
       >
-        <div className="flex items-center gap-3">
-          <button
-            type="button"
-            role="switch"
-            aria-checked={state.dealerOn}
-            disabled={busy}
-            onClick={handleToggleClick}
-            className={`relative h-7 w-12 shrink-0 rounded-full transition-colors disabled:opacity-50 ${
-              state.dealerOn ? "bg-[var(--buy)]" : "bg-[var(--text-3)]"
+        <button
+          type="button"
+          role="switch"
+          aria-checked={state.dealerOn}
+          disabled={busy}
+          onClick={handleToggleClick}
+          className={`relative h-7 w-12 shrink-0 rounded-full transition-colors disabled:opacity-50 ${
+            state.dealerOn ? "bg-[var(--buy)]" : "bg-[var(--text-3)]"
+          }`}
+        >
+          <span
+            className={`absolute top-1 h-5 w-5 rounded-full bg-white transition-transform ${
+              state.dealerOn ? "translate-x-6" : "translate-x-1"
             }`}
-          >
-            <span
-              className={`absolute top-1 h-5 w-5 rounded-full bg-white transition-transform ${
-                state.dealerOn ? "translate-x-6" : "translate-x-1"
-              }`}
-            />
-          </button>
-          <div>
-            <p className="text-sm font-semibold text-[var(--text-1)]">
-              {state.dealerOn ? "Dealer ON" : "Dealer OFF"}
-            </p>
-            <p className="text-xs text-[var(--text-3)]">
-              {state.dealerOn
-                ? "Orders from dealing-group accounts require manual review."
-                : "Orders from dealing-group accounts auto-fill at market."}
-            </p>
-          </div>
+          />
+        </button>
+        <div className="min-w-0">
+          <p className="text-sm font-semibold text-[var(--text-1)]">
+            {state.dealerOn ? "Dealer ON" : "Dealer OFF"}
+          </p>
+          <p className="text-xs text-[var(--text-3)]">
+            {state.dealerOn
+              ? "Orders from dealing-group accounts require manual review."
+              : "Orders from dealing-group accounts auto-fill at market."}
+          </p>
         </div>
       </div>
 
