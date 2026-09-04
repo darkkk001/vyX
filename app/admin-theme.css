@@ -25,6 +25,15 @@
   --sell-bg: #2a0f11;
   --warn: #f0b90b;
   --warn-bg: #2e2408;
+  /* "Order" result badge (components/admin/TopbarSearch.tsx) -- used to
+     be an inline var(--blue, #5B9DF0) fallback with no real token behind
+     it, which is what let it slip through unnoticed: fine against a dark
+     backdrop (5.89:1), but the light theme's near-white backgrounds
+     dropped that same fixed color to 2.49:1 (measured by compositing its
+     0.12-alpha bg over each theme's real --bg-1), a real regression this
+     light-theme work introduced. Real tokens now, both shades. */
+  --blue: #5b9df0;
+  --blue-bg: rgba(91, 157, 240, 0.12);
 
   color: var(--text-1);
   background: var(--bg-0);
@@ -34,11 +43,79 @@
 [data-surface="manager"] {
   --accent: #16c784;
   --accent-bg: #0f2a1e;
+  /* Foreground for text/icons painted directly ON --accent (the sidebar
+     mark, TwoPanelAuthShell's logo badge) -- was hardcoded per call site
+     (text-[#03150c]) before the light theme existed. Needs its own token
+     now: --accent flips from a bright color needing dark text (dark
+     theme) to a darker color needing light text (light theme, below) --
+     see that block's own comment for the contrast numbers that forced
+     this split. */
+  --accent-fg: #03150c;
 }
 
 [data-surface="super-admin"] {
   --accent: #7c6fff;
   --accent-bg: #211e42;
+  --accent-fg: #0a0714;
+}
+
+/* Light theme -- data-mode="light" on the [data-surface] element itself
+   (lib/admin-theme.tsx's AdminThemeSurface owns both attributes on the
+   same node), overriding the dark tokens above. No source-order trick
+   needed here unlike .wt-root's three-way palette cascade
+   (webtrader.css) -- [data-surface][data-mode="light"] is two attribute
+   selectors (specificity 0,2,0), strictly higher than the bare
+   [data-surface] block above (0,1,0) and the per-surface accent blocks
+   (0,1,0) regardless of source order.
+
+   --buy/--sell/--warn reuse the exact hex values already contrast-
+   verified for the trader terminal's own light theme (see
+   app/(broker)/trade/webtrader.css's identical block and its comment) --
+   same hues, same WCAG floor, same ~30-call-site "colors text directly
+   on a page surface" situation. Per-surface accents are NEW colors (the
+   dark accents fail contrast on white outright) verified with the same
+   relative-luminance approach: manager's light accent reuses --buy
+   (#0A7A4D, already >=4.5:1 on every bg-0..3 shade below); super-admin's
+   light accent (#5B3FD1) was chosen to clear 4.5:1 against bg-3 (the
+   deepest shade), the tightest case. */
+[data-surface][data-mode="light"] {
+  --bg-0: #f8f9fb;
+  --bg-1: #ffffff;
+  --bg-2: #f1f3f6;
+  --bg-3: #e8eaee;
+  --border: #e2e5ea;
+  --border-strong: #cbd0d8;
+  --text-1: #14181f;
+  --text-2: #4b5563;
+  --text-3: #6b7280;
+  --buy: #0a7a4d;
+  --buy-bg: #e3fbf0;
+  --sell: #ea3943;
+  --sell-bg: #fdeaeb;
+  --warn: #8a5a05;
+  --warn-bg: rgba(138, 90, 5, 0.1);
+  /* #1B57C4 clears 4.5:1 against every bg-0..3 shade above (tightest:
+     5.44:1 on bg-3) -- see this file's dark-mode --blue comment for why
+     this pair exists at all. */
+  --blue: #1b57c4;
+  --blue-bg: rgba(27, 87, 196, 0.1);
+}
+
+[data-surface="manager"][data-mode="light"] {
+  --accent: #0a7a4d;
+  --accent-bg: #e3fbf0;
+  /* #03150c (dark theme's --accent-fg) on this darker green measures
+     3.50:1 -- under the 4.5:1 body-text floor even for the short bold
+     logo-mark text it's used for. White clears 5.38:1. */
+  --accent-fg: #ffffff;
+}
+
+[data-surface="super-admin"][data-mode="light"] {
+  --accent: #5b3fd1;
+  --accent-bg: #eeebff;
+  /* Same reasoning as manager's own override -- #0a0714 on this purple
+     measures 2.92:1, white clears 6.83:1. */
+  --accent-fg: #ffffff;
 }
 
 /* Overrides Tailwind's generated .font-mono utility (mapped to Geist Mono

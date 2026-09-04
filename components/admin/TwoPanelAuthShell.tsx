@@ -34,7 +34,7 @@ export default function TwoPanelAuthShell({
             // eslint-disable-next-line @next/next/no-img-element
             <img src={logoUrl} alt="" className="h-[38px] w-[38px] shrink-0 rounded-[10px] object-cover" />
           ) : (
-            <div className="flex h-[38px] w-[38px] shrink-0 items-center justify-center rounded-[10px] bg-[var(--accent)] text-[15px] font-bold text-white">
+            <div className="flex h-[38px] w-[38px] shrink-0 items-center justify-center rounded-[10px] bg-[var(--accent)] text-[15px] font-bold text-[var(--accent-fg)]">
               {brandName.charAt(0).toUpperCase()}
             </div>
           )}

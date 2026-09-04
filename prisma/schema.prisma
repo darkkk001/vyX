@@ -356,6 +356,15 @@ model AdminUser {
   twoFactorSecret  String?
   twoFactorEnabled Boolean @default(false)
 
+  // Manager/Super Admin backoffice light/dark theme -- same "dark"|"light"
+  // string convention as ChartSettings.theme (lib/chart-settings.ts), just
+  // a plain column here instead of a JSON blob field since AdminUser has
+  // no settings blob of its own. Defaults "light", same override rule:
+  // the sun/moon toggle (components/admin/AdminShell.tsx) always wins
+  // once an admin has picked one. See app/admin-theme.css's
+  // [data-surface][data-mode="light"] block.
+  theme String @default("light")
+
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
 

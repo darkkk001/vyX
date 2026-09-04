@@ -97,7 +97,7 @@ function SuperAdminLoginForm() {
       <main className="flex min-h-dvh items-center justify-center px-4">
         <Card className="w-full max-w-sm">
           <div className="mb-6 flex items-center gap-2.5">
-            <div className="flex h-7 w-7 items-center justify-center rounded-[7px] bg-[var(--accent)] text-sm font-bold text-[#0a0714]">
+            <div className="flex h-7 w-7 items-center justify-center rounded-[7px] bg-[var(--accent)] text-sm font-bold text-[var(--accent-fg)]">
               X
             </div>
             <h1 className="text-lg font-semibold text-[var(--text-1)]">Two-factor verification</h1>
@@ -145,7 +145,7 @@ function SuperAdminLoginForm() {
     <main className="flex min-h-dvh items-center justify-center px-4">
       <Card className="w-full max-w-sm">
         <div className="mb-6 flex items-center gap-2.5">
-          <div className="flex h-7 w-7 items-center justify-center rounded-[7px] bg-[var(--accent)] text-sm font-bold text-[#0a0714]">
+          <div className="flex h-7 w-7 items-center justify-center rounded-[7px] bg-[var(--accent)] text-sm font-bold text-[var(--accent-fg)]">
             X
           </div>
           <h1 className="text-lg font-semibold text-[var(--text-1)]">vyX Super Admin</h1>

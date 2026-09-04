@@ -114,7 +114,7 @@ export function TopbarSearch({ placeholder }: { placeholder: string }) {
       items.push({
         key: `order-${o.id}`,
         badge: "Order",
-        badgeClass: "bg-[var(--blue-bg,rgba(91,157,240,0.12))] text-[var(--blue,#5B9DF0)]",
+        badgeClass: "bg-[var(--blue-bg)] text-[var(--blue)]",
         label: `${o.side} ${o.symbol} ${o.type}`,
         sublabel: `${o.accountNumber} · ${o.status} · ${o.id}`,
         path: `/manage/accounts/${o.accountId}?highlight=${o.id}`,
@@ -124,7 +124,7 @@ export function TopbarSearch({ placeholder }: { placeholder: string }) {
       items.push({
         key: `position-${p.id}`,
         badge: "Position",
-        badgeClass: "bg-[var(--warn-bg,rgba(224,168,69,0.12))] text-[var(--warn,#E0A845)]",
+        badgeClass: "bg-[var(--warn-bg)] text-[var(--warn)]",
         label: `${p.side} ${p.symbol}`,
         sublabel: `${p.accountNumber} · ${p.status} · ${p.id}`,
         path: `/manage/accounts/${p.accountId}?highlight=${p.id}`,

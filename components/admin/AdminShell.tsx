@@ -2,6 +2,7 @@
 
 import { ReactNode } from "react";
 import { useAdminConnectionStatus } from "@/lib/admin-realtime";
+import { useAdminTheme } from "@/lib/admin-theme";
 import { ToastProvider } from "@/lib/toast";
 
 export type AdminNavItem = { href: string; label: string; badge?: number };
@@ -91,6 +92,7 @@ export function AdminShell({
   renderNavLink,
 }: AdminShellProps) {
   const connectionStatus = useAdminConnectionStatus();
+  const { mode: themeMode, toggle: toggleTheme } = useAdminTheme();
   return (
     <ToastProvider>
     <div className="flex min-h-dvh bg-[var(--bg-0)]">
@@ -100,7 +102,7 @@ export function AdminShell({
             // eslint-disable-next-line @next/next/no-img-element
             <img src={logoUrl} alt="" className="h-[26px] w-[26px] shrink-0 rounded-[7px] object-cover" />
           ) : (
-            <div className="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-[7px] bg-[var(--accent)] text-[13px] font-bold text-[#03150c]">
+            <div className="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-[7px] bg-[var(--accent)] text-[13px] font-bold text-[var(--accent-fg)]">
               X
             </div>
           )}
@@ -135,7 +137,26 @@ export function AdminShell({
             </span>
           ) : null}
           {topbarSearch}
-          <div className="ml-auto flex items-center gap-3.5">{topbarRight}</div>
+          <div className="ml-auto flex items-center gap-3.5">
+            <button
+              type="button"
+              onClick={toggleTheme}
+              title={themeMode === "light" ? "Switch to dark theme" : "Switch to light theme"}
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-[var(--border-strong)] bg-[var(--bg-2)] text-[var(--text-2)] hover:text-[var(--text-1)]"
+            >
+              {themeMode === "light" ? (
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79Z" />
+                </svg>
+              ) : (
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <circle cx="12" cy="12" r="4" />
+                  <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41" />
+                </svg>
+              )}
+            </button>
+            {topbarRight}
+          </div>
         </header>
         <main className="min-w-0 flex-1 overflow-y-auto p-6 md:p-8">{children}</main>
       </div>
