@@ -146,6 +146,62 @@ export function checkTradingSession(
   return open ? null : "MARKET_CLOSED";
 }
 
+// Companion to checkTradingSession -- when it returns "MARKET_CLOSED",
+// this computes exactly when the symbol reopens, for a real "Market
+// closed, opens <time>" message instead of the generic, previously-
+// hardcoded "opens Sun 22:00 UTC" every symbol showed regardless of its
+// own configured sessions (reported live, 2026-09-05: a trader closing a
+// position outside trading hours saw "No live feed for this symbol" --
+// checkLiveMarketPrice's own generic message, since position close never
+// called checkTradingSession at all before this). Same two-branch shape
+// as checkTradingSession itself: the default global FX/metals weekend
+// rule (zero configured TradingSession rows) always reopens the next
+// Sunday 22:00 UTC; a broker with real configured sessions gets the
+// actual earliest upcoming slot from them, scanned day by day rather than
+// computed algebraically -- multiple sessions per day, and sessions not
+// sorted in the DB, make a closed-form formula more error-prone than a
+// plain forward scan.
+export function computeNextSessionOpen(
+  sessions: { dayOfWeek: number; openTime: string; closeTime: string }[],
+  now: Date
+): Date {
+  if (sessions.length === 0) {
+    const result = new Date(now);
+    result.setUTCHours(22, 0, 0, 0);
+    const daysToSunday = (7 - result.getUTCDay()) % 7;
+    result.setUTCDate(result.getUTCDate() + daysToSunday);
+    if (result.getTime() <= now.getTime()) {
+      result.setUTCDate(result.getUTCDate() + 7);
+    }
+    return result;
+  }
+  const toMinutes = (hhmm: string) => {
+    const [h, m] = hhmm.split(":").map(Number);
+    return h * 60 + m;
+  };
+  for (let offset = 0; offset <= 7; offset++) {
+    const candidateDay = (now.getUTCDay() + offset) % 7;
+    const daySessions = sessions
+      .filter((s) => s.dayOfWeek === candidateDay)
+      .sort((a, b) => toMinutes(a.openTime) - toMinutes(b.openTime));
+    for (const s of daySessions) {
+      const [h, m] = s.openTime.split(":").map(Number);
+      const candidate = new Date(now);
+      candidate.setUTCDate(now.getUTCDate() + offset);
+      candidate.setUTCHours(h, m, 0, 0);
+      if (candidate.getTime() > now.getTime()) return candidate;
+    }
+  }
+  // Unreachable in practice -- checkTradingSession only returns
+  // "MARKET_CLOSED" for a non-empty sessions array when NONE of them
+  // cover `now`, which means at least one must start within the next 7
+  // days (a session's own close-then-reopen cycle can't exceed a week).
+  // Falling back to `now` rather than throwing keeps a close/modify
+  // attempt from 500'ing over this instead of just showing an
+  // approximate reopen time.
+  return now;
+}
+
 // Null maxOpenPositions = no limit -- Broker.maxOpenPositionsPerAccount
 // has existed since migration 20260817000000_exposure_limits but this is
 // its first real read on any live path (previously only engine/risk
@@ -233,8 +289,17 @@ export function evaluateLiveMarketPrice(
   symbolName: string,
   clientPrice: Prisma.Decimal | string
 ): string | null {
+  // Bare machine code (2026-09-05, was the sentence "no live feed for this
+  // symbol") -- close/modify need to tell a genuine feed outage (market
+  // OPEN, feed down -- rare) apart from checkTradingSession's MARKET_CLOSED
+  // (market normally closed -- routine, e.g. every weekend). Both used to
+  // collapse into this one message, so a trader closing a position outside
+  // trading hours saw "no live feed" and read it as the system being
+  // broken. Callers now check checkTradingSession FIRST; by the time this
+  // runs, "closed" has already been ruled out, so this code means what it
+  // says -- render a "reconnecting" style message for it, not "closed".
   if (!livePrice || Date.now() - livePrice.tickAt.getTime() > LIVE_PRICE_MAX_AGE_MS) {
-    return "no live feed for this symbol";
+    return "NO_LIVE_FEED";
   }
   const price = new Prisma.Decimal(clientPrice);
   const mid = livePrice.bid.add(livePrice.ask).div(2);

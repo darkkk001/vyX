@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
 import { validateSlTp } from "@/lib/trading";
+import { checkTradingSession, computeNextSessionOpen } from "@/lib/risk";
 import { publishTradingEvent } from "@/lib/nats";
 import { recordDealerActivity } from "@/lib/dealer-activity";
 import { isDealingManagedAccount } from "@/lib/dealing-routing";
@@ -37,8 +38,23 @@ export async function PATCH(
 
   const brokerSymbol = await prisma.brokerSymbol.findUnique({
     where: { brokerId_symbolId: { brokerId: position.brokerId, symbolId: position.symbolId } },
-    include: { symbol: { select: { digits: true, name: true } } },
+    include: { symbol: { select: { digits: true, name: true } }, tradingSessions: true },
   });
+
+  // Same fix as position close (app/api/trade/positions/[id]/close/
+  // route.ts, 2026-09-05): this route had NO server-side market-state
+  // check at all, relying entirely on WebTrader.tsx's own client-side
+  // `mm.live` gate, which conflates "market normally closed" with "feed
+  // down" and always showed "No live feed for this symbol" for both. A
+  // trader modifying SL/TP against a closed market's stale reference price
+  // needs the same real MARKET_CLOSED + next-open-time answer close now
+  // gives, not a false report that the feed itself is broken.
+  const sessionError = checkTradingSession(brokerSymbol?.tradingSessions ?? [], new Date(), brokerSymbol?.symbol.name ?? "");
+  if (sessionError) {
+    const nextOpenAt = computeNextSessionOpen(brokerSymbol?.tradingSessions ?? [], new Date());
+    return NextResponse.json({ error: sessionError, nextOpenAt: nextOpenAt.toISOString() }, { status: 400 });
+  }
+
   const [account, brokerForActivity] = await Promise.all([
     prisma.account.findUnique({
       where: { id: position.accountId },

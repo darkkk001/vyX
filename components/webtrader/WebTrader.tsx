@@ -103,6 +103,23 @@ function formatElapsed(sinceMs: number, nowMs: number): string {
   return `${Math.min(99, Math.floor(s / 60))}m`;
 }
 
+// Real bug fixed here (2026-09-05): a trader closing a position, modifying
+// SL/TP, or placing an order outside trading hours saw "No live feed for
+// this symbol" or a hardcoded "Market closed, opens Sun 22:00 UTC" that
+// ignored the symbol's own actual configured sessions. The server now
+// returns a real nextOpenAt (lib/risk.ts's computeNextSessionOpen) with
+// every MARKET_CLOSED response -- this formats it into a real day+time,
+// falling back to the old generic wording only if a caller (order
+// placement's own risk-check chain doesn't attach nextOpenAt yet) has
+// none to give.
+function formatMarketClosedMessage(symbolName: string, nextOpenAtIso?: string | null): string {
+  if (!nextOpenAtIso) return "Market closed, opens Sun 22:00 UTC";
+  const d = new Date(nextOpenAtIso);
+  const dayLabel = d.toLocaleDateString("en-US", { weekday: "long", timeZone: "UTC" });
+  const timeLabel = d.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "UTC" });
+  return `Market closed, ${symbolName} opens ${dayLabel} ${timeLabel} UTC`;
+}
+
 function isValidSlTpForSide(side: "BUY" | "SELL", sl: number | null, tp: number | null, currentPrice: number): string | null {
   if (sl != null && !isNaN(sl)) {
     if (side === "BUY" && sl >= currentPrice) return "Stop loss must be below the current price for a Buy";
@@ -932,7 +949,12 @@ export default function WebTrader({
       return;
     }
     if (err instanceof ApiError && err.message === "MARKET_CLOSED") {
-      pushToast("Market closed, opens Sun 22:00 UTC");
+      const info = err.body as { nextOpenAt?: string } | null;
+      pushToast(formatMarketClosedMessage(activeSymbol, info?.nextOpenAt));
+      return;
+    }
+    if (err instanceof ApiError && err.message === "NO_LIVE_FEED") {
+      pushToast("Reconnecting to price feed, try again shortly");
       return;
     }
     if (err instanceof ApiError && err.message === "INSUFFICIENT_MARGIN") {
@@ -945,7 +967,7 @@ export default function WebTrader({
       return;
     }
     pushToast(err instanceof Error ? err.message : "order failed");
-  }, [pushToast]);
+  }, [pushToast, activeSymbol]);
 
   const askPrompt = useCallback((message: string, defaultValue: string, onSubmit: (value: string) => void) => {
     setGenericModalValue(defaultValue);
@@ -1024,9 +1046,10 @@ export default function WebTrader({
     try {
       const [symbolsRes, watchlistRes] = await Promise.all([tradeApi.symbols(), tradeApi.watchlist()]);
       const defs = symbolsRes.symbols.map(buildSymbolDef);
-      setAllSymbols(defs.length > 0 ? defs : SYMBOL_DEFS);
+      const effectiveDefs = defs.length > 0 ? defs : SYMBOL_DEFS;
+      setAllSymbols(effectiveDefs);
       setMarket((prev) => {
-        const fresh = createInitialMarket(defs.length > 0 ? defs : SYMBOL_DEFS);
+        const fresh = createInitialMarket(effectiveDefs);
         // Carry over any live state already captured under the bootstrap
         // set (a tick may have arrived in the brief window before this
         // fetch resolved) rather than discarding it outright.
@@ -1034,6 +1057,27 @@ export default function WebTrader({
           if (prev[name]?.live) fresh[name] = prev[name];
         }
         return fresh;
+      });
+      // Real bug, live-reproduced (2026-09-04): gridCells' own initial
+      // state hardcodes 4 universal symbols (XAUUSD/EURUSD/BTCUSD/GBPUSD)
+      // as a bootstrap default, before this broker's REAL enabled-symbol
+      // set is known. A broker without all four enabled (the zzzqa QA
+      // broker only has EURUSD/XAUUSD) left `market` with no entry at all
+      // for the missing ones, and ChartCell read `m.bid` on that
+      // `undefined` with no guard -- crashing the whole page the instant
+      // a trader switched to the 2x2 grid layout. Reconciles every cell
+      // still pointing at a symbol this broker doesn't have onto a real
+      // one instead, preferring a symbol no other cell already uses so
+      // the grid doesn't collapse to duplicates it doesn't need to.
+      setGridCells((prevCells) => {
+        const validNames = new Set(effectiveDefs.map((d) => d.name));
+        const usedNames = new Set(prevCells.filter((c) => validNames.has(c.symbol)).map((c) => c.symbol));
+        return prevCells.map((cell) => {
+          if (validNames.has(cell.symbol)) return cell;
+          const fallback = effectiveDefs.find((d) => !usedNames.has(d.name)) ?? effectiveDefs[0];
+          if (fallback) usedNames.add(fallback.name);
+          return fallback ? { ...cell, symbol: fallback.name } : cell;
+        });
       });
       setWatchlistOrder(watchlistRes.symbols.map((s) => s.name));
       if (!collapsedCategoriesLoadedRef.current) {
@@ -2221,7 +2265,15 @@ export default function WebTrader({
     const p = positions.find((x) => x.id === id);
     if (!p) return;
     const mm = market[p.symbol.name];
-    if (!mm.live) { pushToast("No live feed for this symbol"); return; }
+    // Real bug fixed here (2026-09-05): `mm.live` goes false for BOTH a
+    // genuinely closed market (nothing feeds a closed market, live or
+    // simulated) and a real feed outage while the market is open -- the
+    // client can't tell those apart from this flag alone, which is why
+    // this pre-check always showed the same wrong "No live feed" message
+    // for a routine weekend close. The server now distinguishes them
+    // (MARKET_CLOSED vs NO_LIVE_FEED, see app/api/trade/positions/[id]/
+    // close/route.ts) -- let the request through and branch on its answer
+    // instead of guessing client-side.
     const price = p.side === "BUY" ? mm.bid : mm.ask;
     try {
       const res = await tradeApi.closePosition(id, price);
@@ -2231,7 +2283,14 @@ export default function WebTrader({
       // the close sound -- not duplicated here, to avoid firing twice.
       await Promise.all([refreshPositions(), refreshHistory(), refreshAccount()]);
     } catch (err) {
-      pushToast(err instanceof Error ? err.message : "failed to close position");
+      if (err instanceof ApiError && err.message === "MARKET_CLOSED") {
+        const info = err.body as { nextOpenAt?: string } | null;
+        pushToast(formatMarketClosedMessage(p.symbol.name, info?.nextOpenAt));
+      } else if (err instanceof ApiError && err.message === "NO_LIVE_FEED") {
+        pushToast("Reconnecting to price feed, try again shortly");
+      } else {
+        pushToast(err instanceof Error ? err.message : "failed to close position");
+      }
     }
   }
 
@@ -2284,7 +2343,7 @@ export default function WebTrader({
     const validationError = validatePartialCloseAmount(amount, p);
     if (validationError) { setPartialCloseError(validationError); return; }
     const mm = market[p.symbol.name];
-    if (!mm.live) { setPartialCloseError("No live feed for this symbol"); return; }
+    // See closePositionFull's own comment -- same fix, same reason.
     const price = p.side === "BUY" ? mm.bid : mm.ask;
     setPartialCloseBusy(true);
     setPartialCloseError(null);
@@ -2295,7 +2354,14 @@ export default function WebTrader({
       setPartialCloseTarget(null);
       await Promise.all([refreshPositions(), refreshHistory(), refreshAccount()]);
     } catch (err) {
-      setPartialCloseError(err instanceof Error ? err.message : "failed to partially close");
+      if (err instanceof ApiError && err.message === "MARKET_CLOSED") {
+        const info = err.body as { nextOpenAt?: string } | null;
+        setPartialCloseError(formatMarketClosedMessage(p.symbol.name, info?.nextOpenAt));
+      } else if (err instanceof ApiError && err.message === "NO_LIVE_FEED") {
+        setPartialCloseError("Reconnecting to price feed, try again shortly");
+      } else {
+        setPartialCloseError(err instanceof Error ? err.message : "failed to partially close");
+      }
     } finally {
       setPartialCloseBusy(false);
     }
@@ -2444,29 +2510,48 @@ export default function WebTrader({
     if (sltpEdit.netSymbol) {
       const symPositions = positions.filter((p) => p.symbol.name === sltpEdit.netSymbol);
       const mm = market[sltpEdit.netSymbol];
-      if (!mm.live) { pushToast("No live feed for this symbol"); return; }
+      // See closePositionFull's own comment (2026-09-05 fix) -- `mm.live`
+      // can't distinguish a closed market from a genuine feed outage, so
+      // the request now goes through and the server's answer decides.
       let updated = 0, skipped = 0;
-      for (const p of symPositions) {
-        const testSl = sl ?? (p.slPrice ? parseFloat(p.slPrice) : null);
-        const testTp = tp ?? (p.tpPrice ? parseFloat(p.tpPrice) : null);
-        const error = isValidSlTpForSide(p.side, testSl, testTp, mm.bid);
-        if (error) { skipped++; continue; }
-        await tradeApi.editPositionSlTp(p.id, { currentPrice: mm.bid, slPrice: sl ?? undefined, tpPrice: tp ?? undefined });
-        updated++;
+      try {
+        for (const p of symPositions) {
+          const testSl = sl ?? (p.slPrice ? parseFloat(p.slPrice) : null);
+          const testTp = tp ?? (p.tpPrice ? parseFloat(p.tpPrice) : null);
+          const error = isValidSlTpForSide(p.side, testSl, testTp, mm.bid);
+          if (error) { skipped++; continue; }
+          await tradeApi.editPositionSlTp(p.id, { currentPrice: mm.bid, slPrice: sl ?? undefined, tpPrice: tp ?? undefined });
+          updated++;
+        }
+        pushToast(skipped > 0 ? `${sltpEdit.netSymbol}, updated ${updated}, skipped ${skipped}` : `${sltpEdit.netSymbol}, updated SL/TP on ${updated} positions`);
+      } catch (err) {
+        if (err instanceof ApiError && err.message === "MARKET_CLOSED") {
+          const info = err.body as { nextOpenAt?: string } | null;
+          pushToast(formatMarketClosedMessage(sltpEdit.netSymbol, info?.nextOpenAt));
+        } else if (err instanceof ApiError && err.message === "NO_LIVE_FEED") {
+          pushToast("Reconnecting to price feed, try again shortly");
+        } else {
+          pushToast(err instanceof Error ? err.message : "failed to update");
+        }
       }
-      pushToast(skipped > 0 ? `${sltpEdit.netSymbol}, updated ${updated}, skipped ${skipped}` : `${sltpEdit.netSymbol}, updated SL/TP on ${updated} positions`);
     } else if (sltpEdit.posId) {
       const p = positions.find((x) => x.id === sltpEdit.posId);
       if (p) {
         const mm = market[p.symbol.name];
-        if (!mm.live) { pushToast("No live feed for this symbol"); return; }
         const error = isValidSlTpForSide(p.side, sl, tp, mm.bid);
         if (error) { pushToast(error); return; }
         try {
           await tradeApi.editPositionSlTp(p.id, { currentPrice: mm.bid, slPrice: sl, tpPrice: tp });
           pushToast(`${p.symbol.name} position updated`);
         } catch (err) {
-          pushToast(err instanceof Error ? err.message : "failed to update");
+          if (err instanceof ApiError && err.message === "MARKET_CLOSED") {
+            const info = err.body as { nextOpenAt?: string } | null;
+            pushToast(formatMarketClosedMessage(p.symbol.name, info?.nextOpenAt));
+          } else if (err instanceof ApiError && err.message === "NO_LIVE_FEED") {
+            pushToast("Reconnecting to price feed, try again shortly");
+          } else {
+            pushToast(err instanceof Error ? err.message : "failed to update");
+          }
         }
       }
     }
@@ -2485,7 +2570,9 @@ export default function WebTrader({
     if (!p) return false;
     const trimmed = raw.trim();
     const mm = market[p.symbol.name];
-    if (!mm.live) { pushToast("No live feed for this symbol"); return false; }
+    // See closePositionFull's own comment (2026-09-05 fix) -- `mm.live`
+    // can't distinguish a closed market from a genuine feed outage, so
+    // the request now goes through and the server's answer decides.
     const value = trimmed === "" ? null : parseFloat(trimmed);
     if (value != null && isNaN(value)) { pushToast("Enter a valid price"); return false; }
     const testSl = field === "sl" ? value : p.slPrice ? parseFloat(p.slPrice) : null;
@@ -2498,7 +2585,14 @@ export default function WebTrader({
       await refreshPositions();
       return true;
     } catch (err) {
-      pushToast(err instanceof Error ? err.message : "failed to update");
+      if (err instanceof ApiError && err.message === "MARKET_CLOSED") {
+        const info = err.body as { nextOpenAt?: string } | null;
+        pushToast(formatMarketClosedMessage(p.symbol.name, info?.nextOpenAt));
+      } else if (err instanceof ApiError && err.message === "NO_LIVE_FEED") {
+        pushToast("Reconnecting to price feed, try again shortly");
+      } else {
+        pushToast(err instanceof Error ? err.message : "failed to update");
+      }
       return false;
     }
   }

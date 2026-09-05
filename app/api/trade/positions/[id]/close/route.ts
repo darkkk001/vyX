@@ -6,7 +6,7 @@ import { closePositionInTx } from "@/lib/position-close";
 import { publishTradingEvent } from "@/lib/nats";
 import { recordDealerActivity } from "@/lib/dealer-activity";
 import { isDealingManagedAccount } from "@/lib/dealing-routing";
-import { checkLiveMarketPrice, checkLotStep } from "@/lib/risk";
+import { checkLiveMarketPrice, checkLotStep, checkTradingSession, computeNextSessionOpen } from "@/lib/risk";
 import * as mirror from "@/lib/mirror";
 
 // Closing (fully or partially) is the one place a trade changes the
@@ -51,6 +51,28 @@ export async function POST(
     return NextResponse.json({ error: "position is not open" }, { status: 409 });
   }
 
+  // Real bug fixed here (2026-09-05): this route never checked whether the
+  // symbol's market was actually open at all -- a close outside trading
+  // hours fell straight through to checkLiveMarketPrice below, which (with
+  // no fresh LivePrice tick, since nothing feeds a closed market) always
+  // rejected as "no live feed", so a trader reading that message thought
+  // the system was broken rather than the market being routinely closed
+  // (e.g. every weekend). checkTradingSession now runs first and returns
+  // the real reason -- MARKET_CLOSED with the actual next-open time from
+  // this symbol's own TradingSession config -- distinguishing it from a
+  // genuine feed outage (market OPEN, feed down), which is what
+  // checkLiveMarketPrice below still guards, now correctly scoped to only
+  // that rarer case.
+  const brokerSymbol = await prisma.brokerSymbol.findUnique({
+    where: { brokerId_symbolId: { brokerId: session.brokerId, symbolId: position.symbol.id } },
+    include: { tradingSessions: true },
+  });
+  const sessionError = checkTradingSession(brokerSymbol?.tradingSessions ?? [], new Date(), position.symbol.name);
+  if (sessionError) {
+    const nextOpenAt = computeNextSessionOpen(brokerSymbol?.tradingSessions ?? [], new Date());
+    return NextResponse.json({ error: sessionError, nextOpenAt: nextOpenAt.toISOString() }, { status: 400 });
+  }
+
   const priceError = await checkLiveMarketPrice(prisma, position.symbol.name, closePrice);
   if (priceError) {
     return NextResponse.json({ error: priceError }, { status: 400 });
@@ -79,9 +101,6 @@ export async function POST(
     // opened before minLot/lotStep were configured (or before they
     // changed) must always still be fully closeable.
     if (!requested.equals(position.volume)) {
-      const brokerSymbol = await prisma.brokerSymbol.findUnique({
-        where: { brokerId_symbolId: { brokerId: session.brokerId, symbolId: position.symbol.id } },
-      });
       if (brokerSymbol) {
         const stepError = checkLotStep(requested, brokerSymbol.minLot, brokerSymbol.lotStep);
         if (stepError) {

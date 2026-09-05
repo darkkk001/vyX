@@ -40,7 +40,18 @@ export default function ChartCell({
   symbols: SymbolDef[];
   symbol: string;
   tf: Timeframe;
-  m: MarketState;
+  // Optional, honestly: `market[cell.symbol]` (WebTrader's own call site)
+  // is undefined whenever this cell's symbol isn't in the broker's own
+  // enabled-symbol set -- confirmed live as a real crash (2026-09-04),
+  // `m.bid` read with no guard at all. Reproduced on the zzzqa QA broker,
+  // whose real seed only enables EURUSD/XAUUSD, against gridCells' own
+  // hardcoded 4-symbol default (XAUUSD/EURUSD/BTCUSD/GBPUSD) -- any
+  // broker without all four enabled crashed the instant a trader switched
+  // to the 2x2 grid layout. WebTrader.tsx's own gridCells-reconciliation
+  // effect is the real fix (never lets an invalid symbol reach this
+  // component at all); this guard is the second, defensive layer for any
+  // other transient gap (e.g. the brief window before market first loads).
+  m: MarketState | undefined;
   positions: ApiPosition[];
   pendingOrders: ApiOrder[];
   focused: boolean;
@@ -49,6 +60,22 @@ export default function ChartCell({
   onTfChange: (tf: Timeframe) => void;
 }) {
   const [symbolPickerOpen, setSymbolPickerOpen] = useState(false);
+
+  if (!m) {
+    return (
+      <div
+        onClick={onFocus}
+        style={{
+          display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden",
+          background: "var(--bg-0)", boxShadow: focused ? "inset 0 0 0 1.5px var(--text-1)" : "inset 0 0 0 1px var(--border)",
+          color: "var(--text-3)", fontSize: 12,
+        }}
+      >
+        {symbol}, no live feed for this symbol
+      </div>
+    );
+  }
+
   const up = m.bid >= m.prevBid;
   const lines = computeChartLines(symbol, positions, pendingOrders);
 
