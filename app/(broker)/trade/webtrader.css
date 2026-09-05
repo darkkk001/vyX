@@ -20,6 +20,24 @@ html, body, #root {
   background: #07090C;
 }
 
+/* Real bug fixed here (2026-09-05): the dark background above never
+   updated with the theme, because --bg-0/etc are custom properties scoped
+   to .wt-root and its descendants -- html/body are .wt-root's ANCESTORS,
+   outside that scope entirely, so no .wt-root[data-mode="light"] rule
+   could ever reach them. Normally invisible (.wt-root fully covers the
+   viewport once mounted), but a real, always-reproducible mismatch the
+   instant it doesn't -- a pre-hydration flash, a dvh recalculation lag on
+   mobile, any overscroll -- would show the wrong (always-dark) color
+   regardless of the trader's chosen theme. WebTrader.tsx now mirrors
+   chartSettings.theme onto <html> itself (see that effect's own comment)
+   specifically so this rule has something in the SAME scope as .wt-root
+   to match against -- one value, not the whole palette, since this is
+   only ever a millisecond placeholder, not a themed surface a trader
+   actually looks at. */
+html[data-mode="light"], html[data-mode="light"] body {
+  background: #F8F9FB;
+}
+
 /* "Classic" palette (the original WebTrader look) — default unless
    data-theme="default" is set on .wt-root (see WebTrader.tsx's theme
    state, persisted to localStorage). Every color the UI uses is a

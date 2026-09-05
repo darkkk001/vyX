@@ -754,6 +754,37 @@ export default function WebTrader({
   // reads/writes ChartSettings.oneClickDefault (see that field's own
   // comment) so Settings > Trading's "default" actually persists.
   const oneClick = chartSettings.oneClickDefault;
+  // Real bug fixed here (2026-09-05): `html, body` (webtrader.css's own
+  // reset, near the top of the file) hardcode a dark background -- fine as
+  // a pre-hydration placeholder (avoids a white flash before `.wt-root`
+  // mounts), but that hardcoded value never updates afterward, because
+  // `--bg-0` and friends are custom properties scoped to `.wt-root` and
+  // its DESCENDANTS -- `html`/`body` are `.wt-root`'s ANCESTORS, and CSS
+  // custom properties only cascade downward, so no rule written against
+  // `.wt-root[data-mode="light"]` can ever reach them. Confirmed live: a
+  // light-themed session's `.wt-root` and every panel inside it (watchlist,
+  // chart area, topbar) all correctly compute the light palette, while
+  // `getComputedStyle(document.body).backgroundColor` stays the hardcoded
+  // dark value regardless of theme -- normally invisible since `.wt-root`
+  // fully covers the viewport, but a real, always-reproducible gap the
+  // instant it doesn't (a pre-hydration flash, a dvh recalculation lag on
+  // mobile, any overscroll). Mirroring the mode onto `<html>` itself puts
+  // it in the same inheritance scope as `.wt-root` and its descendants
+  // (html is their common ancestor), so a single new CSS rule
+  // (`html[data-mode="light"], body[data-mode="light"]`) can finally
+  // reach them -- see webtrader.css's html/body reset comment for the
+  // other half of this fix.
+  useEffect(() => {
+    document.documentElement.dataset.mode = chartSettings.theme;
+    // React re-runs this cleanup-then-effect pair on every theme change too
+    // (not just unmount), but that's just delete-then-immediately-reset --
+    // invisible, no flash. What this cleanup actually guards against is
+    // this component unmounting for good (a client-side navigation away
+    // from /trade to a different route entirely), so this global <html>
+    // attribute doesn't linger and leak into some other page that isn't
+    // this stylesheet's concern.
+    return () => { delete document.documentElement.dataset.mode; };
+  }, [chartSettings.theme]);
   // Guards against a real race: the mount effect's own tradeApi.
   // chartSettings() GET below can still be in flight when the trader
   // clicks a toggle that saves through saveChartSettingsHandler (theme,
