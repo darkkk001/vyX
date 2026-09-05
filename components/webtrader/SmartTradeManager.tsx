@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { SYMBOL_DEFS, fmt, type MarketState, type SymbolDef } from "@/lib/market-simulator";
-import { tradeApi, type ApiPosition } from "@/lib/trade-api";
+import { tradeApi, effectiveAsk, type ApiPosition } from "@/lib/trade-api";
 import {
   registerHotkeys,
   hotkeyToLabel,
@@ -88,6 +88,7 @@ export default function SmartTradeManager({
   embedded = false,
   symbols,
   market,
+  askMarkupBySymbol,
   positions,
   positionPnl,
   activeSymbol,
@@ -110,6 +111,11 @@ export default function SmartTradeManager({
   // SYMBOL_DEFS bootstrap directly, capping it at 10.
   symbols: SymbolDef[];
   market: Record<string, MarketState>;
+  // 2026-09-05 P0 fix -- this account's effective spread markup per symbol
+  // (raw price units), same shape/source as WebTrader.tsx's own state.
+  // See lib/trade-api.ts's ApiLivePrice/effectiveAsk comments for why this
+  // is a separate value rather than baked into market[symbol].ask itself.
+  askMarkupBySymbol: Record<string, number>;
   positions: ApiPosition[];
   positionPnl: (p: ApiPosition) => number;
   activeSymbol: string;
@@ -168,37 +174,41 @@ export default function SmartTradeManager({
   // above reference for BUY/SELL, TP the opposite) -- this is UX-only
   // feedback, the server call below re-validates with the same rule
   // authoritatively regardless of what this shows.
+  // 2026-09-05 P0 fix: the BUY-side reference used throughout this file
+  // is the marked-up ask (what a BUY will actually open at), not the raw
+  // feed ask -- matches placeOrder's own fix in WebTrader.tsx.
+  const buyAsk = m ? effectiveAsk(askMarkupBySymbol, config.symbol, m.ask) : 0;
   const slValidity = useMemo(() => {
     if (!m || !m.live || config.sl === "") return null;
     const sl = parseFloat(config.sl);
     if (isNaN(sl)) return null;
     const ref = m.bid; // BUY reference is ask, SELL is bid; SL side depends on which hotkey fires, so validate against both and report the worse case
-    const validForBuy = sl < m.ask;
+    const validForBuy = sl < buyAsk;
     const validForSell = sl > m.bid;
     return { validForBuy, validForSell };
-  }, [m, config.sl]);
+  }, [m, config.sl, buyAsk]);
   const tpValidity = useMemo(() => {
     if (!m || !m.live || config.tp === "") return null;
     const tp = parseFloat(config.tp);
     if (isNaN(tp)) return null;
-    const validForBuy = tp > m.ask;
+    const validForBuy = tp > buyAsk;
     const validForSell = tp < m.bid;
     return { validForBuy, validForSell };
-  }, [m, config.tp]);
+  }, [m, config.tp, buyAsk]);
 
   async function smartExecute(side: "BUY" | "SELL") {
     if (!m || !m.live) { pushToast("No live feed for this symbol"); return; }
     const sl = config.sl === "" ? null : parseFloat(config.sl);
     const tp = config.tp === "" ? null : parseFloat(config.tp);
-    if (sl != null && ((side === "BUY" && sl >= m.ask) || (side === "SELL" && sl <= m.bid))) {
+    const refPrice = side === "BUY" ? buyAsk : m.bid;
+    if (sl != null && ((side === "BUY" && sl >= refPrice) || (side === "SELL" && sl <= m.bid))) {
       pushToast(`Invalid Stop Loss, SL must be ${side === "BUY" ? "below" : "above"} the current market price`);
       return;
     }
-    if (tp != null && ((side === "BUY" && tp <= m.ask) || (side === "SELL" && tp >= m.bid))) {
+    if (tp != null && ((side === "BUY" && tp <= refPrice) || (side === "SELL" && tp >= m.bid))) {
       pushToast(`Invalid Take Profit, TP must be ${side === "BUY" ? "above" : "below"} the current market price`);
       return;
     }
-    const refPrice = side === "BUY" ? m.ask : m.bid;
     try {
       // A fresh idempotencyKey per call: two genuine hotkey presses are
       // two intended orders (fine), while the browser firing one keydown

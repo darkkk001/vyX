@@ -55,7 +55,25 @@ export type ApiPosition = {
 // comment) -- what feedStatusFor's staleness clock should read, not
 // updatedAt (row-write time, bumped on every heartbeat resend regardless
 // of whether the price actually changed).
-export type ApiLivePrice = { symbol: string; bid: string; ask: string; updatedAt: string; tickAt: string; marketClosed: boolean };
+// askMarkup (2026-09-05 P0 fix): this account's effective spread markup
+// for this symbol (group override, falling back to broker default -- the
+// same resolveSymbolPricing the fill path uses), already converted to raw
+// price units. bid/ask themselves stay RAW/unmarked-up -- markup only
+// ever applies to an OPENING fill on the ask side (a BUY; a SELL opens at
+// bid, unmarked), never to a close (either side), so baking it into `ask`
+// directly here would make every consumer of the shared client market
+// state that needs a true CLOSE reference (SELL position floating P&L,
+// margin, SL/TP preview) silently wrong. Callers apply it explicitly, via
+// effectiveAsk below, only at the specific "about to open a BUY" sites.
+export type ApiLivePrice = { symbol: string; bid: string; ask: string; updatedAt: string; tickAt: string; marketClosed: boolean; askMarkup: string };
+
+// The one place this addition happens -- every "what would a new BUY
+// actually cost" call site (order ticket, quick-order, Smart Trade
+// Manager, the watchlist/chart spread display) should go through this
+// rather than re-deriving it, so the fix stays in exactly one place.
+export function effectiveAsk(askMarkupBySymbol: Record<string, number>, symbol: string, rawAsk: number): number {
+  return rawAsk + (askMarkupBySymbol[symbol] ?? 0);
+}
 
 export type ApiCandleTimeframe = "M1" | "M5" | "M30" | "H1" | "H4" | "D1" | "W1" | "MN1" | "Y1";
 

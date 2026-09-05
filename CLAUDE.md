@@ -436,9 +436,27 @@ SQL Editor.
 Known simplifications, flagged deliberately rather than hidden: demo/live
 account switching requires logging out and back in with the other account
 number (one login = one `accountNumber`, no client-side balance-bucket
-faking); MARKET orders trust the client-supplied execution price until
-Phase 5's real matching engine exists; position `comment` and trailing-stop
-distance are client-only state (no schema field yet), lost on refresh.
+faking); position `comment` and trailing-stop distance are client-only
+state (no schema field yet), lost on refresh.
+
+Stale note removed (2026-09-05): this used to say "MARKET orders trust
+the client-supplied execution price until Phase 5's real matching engine
+exists." That stopped being true once the Phase 0 money-risk patch made
+the server the execution-price authority for MARKET orders (see
+`app/api/trade/orders/route.ts`'s own module comment) -- the client price
+is now only a slippage-tolerance anchor and SL/TP validation reference,
+never the fill basis. Caught while diagnosing a real bug (a group spread
+markup > 5 pips permanently rejected every order as `SLIPPAGE_EXCEEDED`,
+since the client's reference price never included markup while the
+server's fill did): `GET /api/trade/prices` now resolves and returns each
+symbol's effective markup for the logged-in account (`askMarkup`, group
+override then broker default, same `resolveSymbolPricing` the fill path
+uses), and the client applies it via `lib/trade-api.ts`'s `effectiveAsk`
+at every "about to open a BUY" site (ticket, quick-order, Smart Trade
+Manager, reverse-position, pending-order trigger-fill) plus the
+watchlist/chart spread display -- so the client's reference price and the
+server's fill agree, and the slippage check is free to catch real
+movement instead of the broker's own static markup.
 
 ## Demo credentials (seeded)
 

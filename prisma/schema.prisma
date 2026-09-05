@@ -1308,6 +1308,12 @@ model Position {
   @@index([brokerId])
   @@index([accountId])
   @@index([deletedAt])
+  // 2026-09-05 cost fix -- app/api/internal/margin-monitor's cron runs a
+  // `status = 'OPEN'` count/lookup every single minute, forever; without
+  // this, that's a full table scan that only gets slower as closed
+  // history accumulates over the platform's lifetime, undermining the
+  // exact cost/latency goal that cron exists for.
+  @@index([status])
 }
 
 // Backoffice manual position tools' maker-checker gate (VYX-POSITION-
