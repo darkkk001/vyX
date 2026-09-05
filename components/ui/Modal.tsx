@@ -18,6 +18,11 @@ export function Modal({
   onClose,
   title,
   wide = false,
+  // A 3rd, wider tier for content a 600px modal genuinely can't fit
+  // without an inner table needing its own horizontal scroll (e.g. a
+  // per-symbol pricing grid) -- added instead of widening every existing
+  // `wide` caller, since 3 other pages already rely on 600px specifically.
+  xl = false,
   onSubmit,
   children,
 }: {
@@ -25,6 +30,7 @@ export function Modal({
   onClose: () => void;
   title: string;
   wide?: boolean;
+  xl?: boolean;
   // VYX-BASICS-AUDIT.md category 3 "Enter submits, Esc cancels" -- Esc
   // already worked (below), Enter didn't: every caller's modal body was
   // a plain <div>, not a <form>, so pressing Enter in a text input did
@@ -78,7 +84,7 @@ export function Modal({
         aria-modal="true"
         aria-label={title}
         className={`max-h-[88vh] overflow-y-auto rounded-2xl border border-[var(--border-strong)] bg-[var(--bg-1)] p-5 outline-none ${
-          wide ? "w-[600px]" : "w-[400px]"
+          xl ? "w-[880px] max-w-[92vw]" : wide ? "w-[600px]" : "w-[400px]"
         }`}
       >
         <div className="mb-4 flex items-center justify-between">

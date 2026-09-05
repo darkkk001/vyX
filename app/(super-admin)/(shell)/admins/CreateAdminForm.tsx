@@ -8,11 +8,16 @@ import { Select } from "@/components/ui/Select";
 import { Button } from "@/components/ui/Button";
 import { Alert } from "@/components/ui/Alert";
 
+// Neutral-defaults rule (2026-09-05): broker and role are both real,
+// consequential choices here -- silently defaulting broker to brokers[0]
+// risks assigning a new admin to the WRONG broker entirely (cross-tenant
+// access), and silently defaulting role to BROKER_ADMIN hands out the
+// highest broker-scoped privilege by default. Both start unselected.
 export default function CreateAdminForm({ brokers, onCreated }: { brokers: { id: string; name: string }[]; onCreated?: () => void }) {
-  const [brokerId, setBrokerId] = useState(brokers[0]?.id ?? "");
+  const [brokerId, setBrokerId] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [role, setRole] = useState<"BROKER_ADMIN" | "MANAGER" | "SUPPORT">("BROKER_ADMIN");
+  const [role, setRole] = useState<"BROKER_ADMIN" | "MANAGER" | "SUPPORT" | "">("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -45,6 +50,9 @@ export default function CreateAdminForm({ brokers, onCreated }: { brokers: { id:
       <form onSubmit={handleSubmit} className="flex flex-col gap-4">
         <FormField label="Broker">
           <Select value={brokerId} onChange={(e) => setBrokerId(e.target.value)} required>
+            <option value="" disabled>
+              Select broker...
+            </option>
             {brokers.map((b) => (
               <option key={b.id} value={b.id}>
                 {b.name}
@@ -65,7 +73,10 @@ export default function CreateAdminForm({ brokers, onCreated }: { brokers: { id:
           />
         </FormField>
         <FormField label="Role">
-          <Select value={role} onChange={(e) => setRole(e.target.value as "BROKER_ADMIN" | "MANAGER" | "SUPPORT")}>
+          <Select value={role} onChange={(e) => setRole(e.target.value as "BROKER_ADMIN" | "MANAGER" | "SUPPORT")} required>
+            <option value="" disabled>
+              Select role...
+            </option>
             <option value="BROKER_ADMIN">Broker Admin</option>
             <option value="MANAGER">Manager</option>
             <option value="SUPPORT">Support</option>
@@ -79,7 +90,7 @@ export default function CreateAdminForm({ brokers, onCreated }: { brokers: { id:
           </Alert>
         ) : null}
         {error ? <Alert tone="danger">{error}</Alert> : null}
-        <Button type="submit" variant="primary" disabled={submitting || !brokerId}>
+        <Button type="submit" variant="primary" disabled={submitting || !brokerId || !role}>
           {submitting ? "Creating..." : "Create admin"}
         </Button>
       </form>

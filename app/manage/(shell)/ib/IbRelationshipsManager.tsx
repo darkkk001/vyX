@@ -118,18 +118,19 @@ export default function IbRelationshipsManager() {
   }, []);
 
   // --- Create form ---
+  // Neutral-defaults rule (2026-09-05): linking the WRONG two accounts
+  // silently misroutes real commission payouts, so none of these
+  // auto-select anymore -- the create Button below already disables
+  // while ibAccountId/clientAccountId are blank; the previous effect
+  // silently picked ibOptions[0]/clientOptions[0] the moment the account
+  // list loaded, which defeated that guard the same way a pre-filled
+  // Select defeats `required`.
   const [ibAccountId, setIbAccountId] = useState("");
   const [clientAccountId, setClientAccountId] = useState("");
-  const [commissionType, setCommissionType] = useState<"PER_LOT" | "PERCENTAGE">("PER_LOT");
+  const [commissionType, setCommissionType] = useState<"PER_LOT" | "PERCENTAGE" | "">("");
   const [commissionRate, setCommissionRate] = useState("");
   const [createError, setCreateError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
-
-  useEffect(() => {
-    if (!ibAccountId && ibOptions[0]) setIbAccountId(ibOptions[0].id);
-    if (!clientAccountId && clientOptions[0]) setClientAccountId(clientOptions[0].id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [accounts]);
 
   async function createRelationship(e: React.FormEvent) {
     e.preventDefault();
@@ -216,6 +217,9 @@ export default function IbRelationshipsManager() {
       <Card title="Add a relationship">
         <form onSubmit={createRelationship} className="flex flex-wrap items-center gap-2">
           <Select value={ibAccountId} onChange={(e) => setIbAccountId(e.target.value)} required className="w-56">
+            <option value="" disabled>
+              Select IB account...
+            </option>
             {ibOptions.map((a) => (
               <option key={a.id} value={a.id}>
                 IB: {a.accountNumber}, {a.fullName}
@@ -226,14 +230,27 @@ export default function IbRelationshipsManager() {
             {clientOptions.length === 0 ? (
               <option value="">No unlinked accounts</option>
             ) : (
-              clientOptions.map((a) => (
-                <option key={a.id} value={a.id}>
-                  Client: {a.accountNumber}, {a.fullName}
+              <>
+                <option value="" disabled>
+                  Select client account...
                 </option>
-              ))
+                {clientOptions.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    Client: {a.accountNumber}, {a.fullName}
+                  </option>
+                ))}
+              </>
             )}
           </Select>
-          <Select value={commissionType} onChange={(e) => setCommissionType(e.target.value as "PER_LOT" | "PERCENTAGE")} className="w-40">
+          <Select
+            value={commissionType}
+            onChange={(e) => setCommissionType(e.target.value as "PER_LOT" | "PERCENTAGE")}
+            className="w-40"
+            required
+          >
+            <option value="" disabled>
+              Select type...
+            </option>
             <option value="PER_LOT">Per lot ($)</option>
             <option value="PERCENTAGE">Percentage (%)</option>
           </Select>
@@ -247,7 +264,7 @@ export default function IbRelationshipsManager() {
             className="w-20"
             required
           />
-          <Button type="submit" variant="primary" disabled={creating || !ibAccountId || !clientAccountId}>
+          <Button type="submit" variant="primary" disabled={creating || !ibAccountId || !clientAccountId || !commissionType}>
             {creating ? "Adding..." : "Add"}
           </Button>
           {createError ? <span className="text-sm text-[var(--sell)]">{createError}</span> : null}

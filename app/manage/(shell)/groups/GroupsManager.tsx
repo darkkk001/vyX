@@ -110,8 +110,6 @@ function typeBadge(row: GroupRow) {
 export default function GroupsManager() {
   const [rows, setRows] = useState<GroupRow[] | null>(null);
   const [formFor, setFormFor] = useState<{ mode: "create" } | { mode: "edit"; row: GroupRow } | null>(null);
-  const [symbolsFor, setSymbolsFor] = useState<GroupRow | null>(null);
-  const [pricingFor, setPricingFor] = useState<GroupRow | null>(null);
 
   useEffect(() => {
     fetch("/api/manage/groups")
@@ -163,7 +161,7 @@ export default function GroupsManager() {
             <TableHeaderCell className="min-w-[85px]">Tier</TableHeaderCell>
             <TableHeaderCell align="center" className="min-w-[80px]">Swap-free</TableHeaderCell>
             <TableHeaderCell align="center" className="min-w-[70px]">Default</TableHeaderCell>
-            <TableHeaderCell className="min-w-[190px]" />
+            <TableHeaderCell className="min-w-[80px]" />
           </TableHead>
           <TableBody>
             {rows.length === 0 ? (
@@ -189,29 +187,21 @@ export default function GroupsManager() {
                     {row.stopOutLevel}
                   </TableCell>
                   <TableCell align="right" mono className="min-w-[75px]">
-                    {row.maxLotSize || "—"}
+                    {row.maxLotSize || "-"}
                   </TableCell>
                   <TableCell className="min-w-[95px]">{RESTRICTION_LABELS[row.tradingRestriction]}</TableCell>
                   <TableCell className="min-w-[175px]">{typeBadge(row)}</TableCell>
                   <TableCell className="min-w-[85px]">{TIER_LABELS[row.tier]}</TableCell>
                   <TableCell align="center" className="min-w-[80px]">
-                    {row.swapFree ? "✓" : "—"}
+                    {row.swapFree ? "✓" : "-"}
                   </TableCell>
                   <TableCell align="center" className="min-w-[70px]">
-                    {row.isDefault ? "✓" : "—"}
+                    {row.isDefault ? "✓" : "-"}
                   </TableCell>
-                  <TableCell className="min-w-[190px] whitespace-nowrap">
-                    <div className="flex items-center gap-2">
-                      <Button size="sm" onClick={() => setFormFor({ mode: "edit", row })}>
-                        Edit
-                      </Button>
-                      <Button size="sm" variant="ghost" onClick={() => setSymbolsFor(row)}>
-                        Symbols
-                      </Button>
-                      <Button size="sm" variant="ghost" onClick={() => setPricingFor(row)}>
-                        Pricing
-                      </Button>
-                    </div>
+                  <TableCell className="min-w-[80px] whitespace-nowrap">
+                    <Button size="sm" onClick={() => setFormFor({ mode: "edit", row })}>
+                      Edit
+                    </Button>
                   </TableCell>
                 </TableRow>
               ))
@@ -231,8 +221,6 @@ export default function GroupsManager() {
           }}
         />
       ) : null}
-      {symbolsFor ? <SymbolsModal row={symbolsFor} onClose={() => setSymbolsFor(null)} /> : null}
-      {pricingFor ? <PricingModal row={pricingFor} onClose={() => setPricingFor(null)} /> : null}
     </div>
   );
 }
@@ -255,22 +243,39 @@ function GroupFormModal({
 }) {
   const isEdit = initial !== null;
   const [name, setName] = useState(initial?.name ?? "");
-  const [leverage, setLeverage] = useState(String(initial?.leverage ?? "100"));
+  // Neutral-defaults rule (2026-09-05): a create form must never pre-pick
+  // a real business value the admin didn't consciously choose -- leverage,
+  // tier, restriction, and group type all start blank/unselected here
+  // (native `required` below forces a real choice before submit). Margin
+  // call %/stop out % keep their 100/50 seed values on purpose: those are
+  // near-universal safety-rail conventions, not a business decision like
+  // leverage or type, so pre-filling them doesn't hide a real choice the
+  // way defaulting to DEALING or 100x leverage would. Editing an existing
+  // group is unaffected either way -- it always starts from that group's
+  // own real saved values, never a "default."
+  const [leverage, setLeverage] = useState(initial ? String(initial.leverage) : "");
   const [callLevel, setCallLevel] = useState(initial?.marginCallLevel ?? "100");
   const [stopOutLevel, setStopOutLevel] = useState(initial?.stopOutLevel ?? "50");
   const [maxLotSize, setMaxLotSize] = useState(initial?.maxLotSize ?? "");
-  const [tradingRestriction, setTradingRestriction] = useState<GroupRow["tradingRestriction"]>(initial?.tradingRestriction ?? "BOTH");
+  const [tradingRestriction, setTradingRestriction] = useState<GroupRow["tradingRestriction"] | "">(
+    initial?.tradingRestriction ?? ""
+  );
   const [swapFree, setSwapFree] = useState(initial?.swapFree ?? false);
   const [isDefault, setIsDefault] = useState(initial?.isDefault ?? false);
-  const [tier, setTier] = useState<GroupRow["tier"]>(initial?.tier ?? "STANDARD");
-  const [uiType, setUiType] = useState<UiType>(
-    initial ? uiTypeFor(initial.groupType, initial.dealingMode, initial.hasMirrorRule) : "DEALING"
+  const [tier, setTier] = useState<GroupRow["tier"] | "">(initial?.tier ?? "");
+  const [uiType, setUiType] = useState<UiType | "">(
+    initial ? uiTypeFor(initial.groupType, initial.dealingMode, initial.hasMirrorRule) : ""
   );
   const [dealingChoice, setDealingChoice] = useState<"INHERIT" | "MANUAL">(
     initial && initial.dealingMode === "MANUAL" ? "MANUAL" : "INHERIT"
   );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Symbols/Pricing only make sense for a group that already exists, so
+  // these tabs are edit-only (see the create-mode "you can set up X after
+  // creating this group" placeholders elsewhere in this file) -- a create
+  // never has anything but "settings" to show.
+  const [tab, setTab] = useState<"settings" | "symbols" | "pricing">("settings");
 
   const showsDealingChoice = uiType === "DEALING" || uiType === "REVERSE_MIRROR";
 
@@ -313,21 +318,62 @@ function GroupFormModal({
   }
 
   return (
-    <Modal open onClose={onClose} title={isEdit ? `Edit group — ${initial!.name}` : "Create group"} onSubmit={submit} wide>
+    <Modal
+      open
+      onClose={onClose}
+      title={isEdit ? `Edit group: ${initial!.name}` : "Create group"}
+      onSubmit={tab === "settings" ? submit : undefined}
+      wide={!isEdit}
+      xl={isEdit}
+    >
       <div className="flex flex-col gap-4">
+        {isEdit ? (
+          <div className="-mt-1 flex gap-1 border-b border-[var(--border)]">
+            {(
+              [
+                ["settings", "Settings"],
+                ["symbols", "Symbols"],
+                ["pricing", "Pricing"],
+              ] as const
+            ).map(([id, label]) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => setTab(id)}
+                className={`-mb-px border-b-2 px-3 py-2 text-[13px] font-medium transition-colors ${
+                  tab === id
+                    ? "border-[var(--accent)] text-[var(--text-1)]"
+                    : "border-transparent text-[var(--text-3)] hover:text-[var(--text-1)]"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        ) : null}
+
+        {tab === "symbols" && isEdit ? <SymbolsPanel groupId={initial!.id} /> : null}
+        {tab === "pricing" && isEdit ? <PricingPanel groupId={initial!.id} groupName={initial!.name} /> : null}
+
+        {tab === "settings" ? (
+          <>
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
           <FormField label="Name">
             <Input value={name} onChange={(e) => setName(e.target.value)} required />
           </FormField>
           <FormField label="Leverage">
-            <LeverageInput value={leverage} onChange={(e) => setLeverage(e.target.value)} />
+            <LeverageInput value={leverage} onChange={(e) => setLeverage(e.target.value)} placeholder="e.g. 100" required />
           </FormField>
           <FormField label="Tier">
             <Select
               value={tier}
               onChange={(e) => setTier(e.target.value as GroupRow["tier"])}
-              title="Classification only -- set actual spread/commission/swap per symbol via the Pricing button"
+              title="Classification only -- set actual spread/commission/swap per symbol on the Pricing tab (existing groups only)"
+              required
             >
+              <option value="" disabled>
+                Select tier...
+              </option>
               <option value="STANDARD">Standard</option>
               <option value="PRO">Pro</option>
               <option value="ECN">ECN</option>
@@ -351,7 +397,14 @@ function GroupFormModal({
             />
           </FormField>
           <FormField label="Trading restriction">
-            <Select value={tradingRestriction} onChange={(e) => setTradingRestriction(e.target.value as GroupRow["tradingRestriction"])}>
+            <Select
+              value={tradingRestriction}
+              onChange={(e) => setTradingRestriction(e.target.value as GroupRow["tradingRestriction"])}
+              required
+            >
+              <option value="" disabled>
+                Select restriction...
+              </option>
               <option value="BOTH">Both</option>
               <option value="BUY_ONLY">Buy only</option>
               <option value="SELL_ONLY">Sell only</option>
@@ -375,14 +428,19 @@ function GroupFormModal({
         </div>
 
         <ModalSection label="Group type">
-          <Select value={uiType} onChange={(e) => setUiType(e.target.value as UiType)}>
+          <Select value={uiType} onChange={(e) => setUiType(e.target.value as UiType)} required>
+            <option value="" disabled>
+              Select group type...
+            </option>
             {UI_TYPE_OPTIONS.map((opt) => (
               <option key={opt.value} value={opt.value}>
                 {opt.label}
               </option>
             ))}
           </Select>
-          <p className="mt-1.5 text-xs text-[var(--text-3)]">{UI_TYPE_OPTIONS.find((o) => o.value === uiType)?.hint}</p>
+          {uiType ? (
+            <p className="mt-1.5 text-xs text-[var(--text-3)]">{UI_TYPE_OPTIONS.find((o) => o.value === uiType)?.hint}</p>
+          ) : null}
         </ModalSection>
 
         {uiType === "ABOOK_LP" ? (
@@ -422,6 +480,14 @@ function GroupFormModal({
             {saving ? "Saving..." : isEdit ? "Save" : "Create group"}
           </Button>
         </ModalActions>
+          </>
+        ) : (
+          <ModalActions>
+            <Button type="button" variant="ghost" onClick={onClose}>
+              Close
+            </Button>
+          </ModalActions>
+        )}
       </div>
     </Modal>
   );
@@ -436,16 +502,21 @@ type GroupSymbolsData = { restrictSymbols: boolean; allowedSymbolIds: string[]; 
 // here. See lib/risk.ts's checkGroupAllowedSymbol for the enforcement
 // side, and app/api/manage/symbols/[id]/sessions/route.ts's Sessions
 // modal (SymbolConfigTable.tsx) for the "replace whole list" precedent
-// this mirrors.
-function SymbolsModal({ row, onClose }: { row: GroupRow; onClose: () => void }) {
+// this mirrors. Lives inside the group's own Edit modal as a tab (not a
+// standalone popup on the main Groups page) -- a group's symbol/pricing
+// config is that group's own setting, configured where the rest of the
+// group's settings are, not scattered across the page as separate
+// always-visible actions.
+function SymbolsPanel({ groupId }: { groupId: string }) {
   const [data, setData] = useState<GroupSymbolsData | null>(null);
   const [restrictSymbols, setRestrictSymbols] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch(`/api/manage/groups/${row.id}/symbols`)
+    fetch(`/api/manage/groups/${groupId}/symbols`)
       .then((r) => r.json())
       .then((d: GroupSymbolsData) => {
         setData(d);
@@ -453,7 +524,7 @@ function SymbolsModal({ row, onClose }: { row: GroupRow; onClose: () => void }) 
         setSelected(new Set(d.allowedSymbolIds));
       })
       .catch(() => setError("failed to load"));
-  }, [row.id]);
+  }, [groupId]);
 
   function toggleSymbol(symbolId: string) {
     setSelected((prev) => {
@@ -462,12 +533,14 @@ function SymbolsModal({ row, onClose }: { row: GroupRow; onClose: () => void }) 
       else next.add(symbolId);
       return next;
     });
+    setSaved(false);
   }
 
   async function save() {
     setSaving(true);
     setError(null);
-    const response = await fetch(`/api/manage/groups/${row.id}/symbols`, {
+    setSaved(false);
+    const response = await fetch(`/api/manage/groups/${groupId}/symbols`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ restrictSymbols, symbolIds: Array.from(selected) }),
@@ -478,44 +551,43 @@ function SymbolsModal({ row, onClose }: { row: GroupRow; onClose: () => void }) 
       setError(b.error ?? "save failed");
       return;
     }
-    onClose();
+    setSaved(true);
   }
 
   return (
-    <Modal open onClose={onClose} title={`Symbols - ${row.name}`}>
-      <div className="flex flex-col gap-3">
-        <Checkbox
-          label="Restrict this group to only the symbols checked below"
-          checked={restrictSymbols}
-          onChange={(e) => setRestrictSymbols(e.target.checked)}
-        />
-        <p className="text-xs text-[var(--text-3)]">
-          {restrictSymbols
-            ? "Accounts in this group can only trade the symbols checked below -- an order in any other symbol is rejected."
-            : "Unchecked (default) -- accounts in this group can trade every enabled symbol, same as before this feature existed."}
-        </p>
-        {data === null ? (
-          <p className="text-sm text-[var(--text-3)]">Loading...</p>
-        ) : data.availableSymbols.length === 0 ? (
-          <p className="text-sm text-[var(--text-3)]">No symbols enabled yet -- enable some on the Symbols page first.</p>
-        ) : (
-          <div className="grid max-h-80 grid-cols-2 gap-x-3 gap-y-1.5 overflow-y-auto rounded-lg border border-[var(--border)] p-3 sm:grid-cols-3">
-            {data.availableSymbols.map((s) => (
-              <Checkbox key={s.id} label={s.name} checked={selected.has(s.id)} onChange={() => toggleSymbol(s.id)} />
-            ))}
-          </div>
-        )}
-        {error ? <p className="text-sm text-[var(--sell)]">{error}</p> : null}
-        <ModalActions>
-          <Button variant="ghost" onClick={onClose}>
-            Cancel
-          </Button>
-          <Button variant="primary" disabled={saving || data === null} onClick={save}>
-            {saving ? "Saving..." : "Save"}
-          </Button>
-        </ModalActions>
+    <div className="flex flex-col gap-3">
+      <Checkbox
+        label="Restrict this group to only the symbols checked below"
+        checked={restrictSymbols}
+        onChange={(e) => {
+          setRestrictSymbols(e.target.checked);
+          setSaved(false);
+        }}
+      />
+      <p className="text-xs text-[var(--text-3)]">
+        {restrictSymbols
+          ? "Accounts in this group can only trade the symbols checked below. An order in any other symbol is rejected."
+          : "Unchecked (default): accounts in this group can trade every enabled symbol, same as before this feature existed."}
+      </p>
+      {data === null ? (
+        <p className="text-sm text-[var(--text-3)]">Loading...</p>
+      ) : data.availableSymbols.length === 0 ? (
+        <p className="text-sm text-[var(--text-3)]">No symbols enabled yet. Enable some on the Symbols page first.</p>
+      ) : (
+        <div className="grid max-h-80 grid-cols-2 gap-x-3 gap-y-1.5 overflow-y-auto rounded-lg border border-[var(--border)] p-3 sm:grid-cols-3">
+          {data.availableSymbols.map((s) => (
+            <Checkbox key={s.id} label={s.name} checked={selected.has(s.id)} onChange={() => toggleSymbol(s.id)} />
+          ))}
+        </div>
+      )}
+      {error ? <p className="text-sm text-[var(--sell)]">{error}</p> : null}
+      <div className="flex items-center gap-3">
+        <Button type="button" variant="primary" disabled={saving || data === null} onClick={save}>
+          {saving ? "Saving..." : "Save symbols"}
+        </Button>
+        {saved ? <span className="text-xs text-[var(--buy)]">Saved</span> : null}
       </div>
-    </Modal>
+    </div>
   );
 }
 
@@ -537,19 +609,30 @@ type PricingRow = {
 // live Next.js trading path doesn't read at all). A row with no override
 // shows the broker-wide default (same "missing config = defaults"
 // convention as SymbolConfigTable itself) -- saving one creates a
-// group-specific row; Reset removes it, falling back to the broker
-// default again.
-function PricingModal({ row, onClose }: { row: GroupRow; onClose: () => void }) {
+// group-specific row, Reset removes it, falling back to the broker
+// default again. Lives inside the group's own Edit modal as a tab, same
+// reasoning as SymbolsPanel above.
+//
+// Overflow fix (2026-09-05): this table used to render inside a 600px
+// modal at the shared Table primitive's default px-4 cell padding -- 6
+// columns of that padding alone (192px) plus 4 real input boxes left no
+// room to fit without the table's own horizontal scrollbar kicking in
+// for every group, not just wide ones. The parent modal is now `xl`
+// (880px) specifically for this tab, and the padding/input widths here
+// are tightened further (px-3, narrower swap columns) on top of that for
+// real headroom -- scoped to just this table via className overrides, so
+// every other page's Table keeps its normal spacing.
+function PricingPanel({ groupId, groupName }: { groupId: string; groupName: string }) {
   const [rows, setRows] = useState<PricingRow[] | null>(null);
   const [savingId, setSavingId] = useState<string | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
 
   useEffect(() => {
-    fetch(`/api/manage/groups/${row.id}/pricing`)
+    fetch(`/api/manage/groups/${groupId}/pricing`)
       .then((r) => r.json())
       .then(setRows)
       .catch(() => setRows([]));
-  }, [row.id]);
+  }, [groupId]);
 
   function updatePricingRow(symbolId: string, patch: Partial<PricingRow>) {
     setRows((prev) => prev && prev.map((r) => (r.symbolId === symbolId ? { ...r, ...patch } : r)));
@@ -558,7 +641,7 @@ function PricingModal({ row, onClose }: { row: GroupRow; onClose: () => void }) 
   async function save(pr: PricingRow) {
     setSavingId(pr.symbolId);
     setErrors((prev) => ({ ...prev, [pr.symbolId]: "" }));
-    const response = await fetch(`/api/manage/groups/${row.id}/pricing`, {
+    const response = await fetch(`/api/manage/groups/${groupId}/pricing`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -581,7 +664,7 @@ function PricingModal({ row, onClose }: { row: GroupRow; onClose: () => void }) 
   async function reset(pr: PricingRow) {
     setSavingId(pr.symbolId);
     setErrors((prev) => ({ ...prev, [pr.symbolId]: "" }));
-    const response = await fetch(`/api/manage/groups/${row.id}/pricing`, {
+    const response = await fetch(`/api/manage/groups/${groupId}/pricing`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ symbolId: pr.symbolId, reset: true }),
@@ -603,98 +686,90 @@ function PricingModal({ row, onClose }: { row: GroupRow; onClose: () => void }) 
   }
 
   return (
-    <Modal open onClose={onClose} title={`Pricing - ${row.name}`} wide>
-      <div className="flex flex-col gap-3">
-        <p className="text-xs text-[var(--text-3)]">
-          Spread markup and commission set here apply to every real order fill for accounts in this group -- not just a label. A symbol with no
-          saved override yet shows the platform default (matching the Symbols page) -- saving creates a group-specific row, Reset
-          removes it.
-        </p>
-        {rows === null ? (
-          <p className="text-sm text-[var(--text-3)]">Loading...</p>
-        ) : rows.length === 0 ? (
-          <p className="text-sm text-[var(--text-3)]">No symbols enabled yet -- enable some on the Symbols page first.</p>
-        ) : (
-          <div className="max-h-[420px] overflow-y-auto">
-            <Table>
-              <TableHead>
-                <TableHeaderCell>Symbol</TableHeaderCell>
-                <TableHeaderCell align="right">Spread markup</TableHeaderCell>
-                <TableHeaderCell align="right">Commission/lot</TableHeaderCell>
-                <TableHeaderCell align="right">Swap long</TableHeaderCell>
-                <TableHeaderCell align="right">Swap short</TableHeaderCell>
-                <TableHeaderCell />
-              </TableHead>
-              <TableBody>
-                {rows.map((pr) => (
-                  <TableRow key={pr.symbolId}>
-                    <TableCell mono>
-                      {pr.symbolName}
-                      {!pr.hasOverride ? <div className="text-xs text-[var(--text-3)]">broker default</div> : null}
-                    </TableCell>
-                    <TableCell align="right">
-                      <Input
-                        type="text"
-                        inputMode="decimal"
-                        mono
-                        value={pr.spreadMarkup}
-                        onChange={(e) => updatePricingRow(pr.symbolId, { spreadMarkup: e.target.value })}
-                        className="w-24 text-right"
-                      />
-                    </TableCell>
-                    <TableCell align="right">
-                      <Input
-                        type="text"
-                        inputMode="decimal"
-                        mono
-                        value={pr.commissionPerLot}
-                        onChange={(e) => updatePricingRow(pr.symbolId, { commissionPerLot: e.target.value })}
-                        className="w-24 text-right"
-                      />
-                    </TableCell>
-                    <TableCell align="right">
-                      <Input
-                        type="text"
-                        inputMode="decimal"
-                        mono
-                        value={pr.swapLong}
-                        onChange={(e) => updatePricingRow(pr.symbolId, { swapLong: e.target.value })}
-                        className="w-20 text-right"
-                      />
-                    </TableCell>
-                    <TableCell align="right">
-                      <Input
-                        type="text"
-                        inputMode="decimal"
-                        mono
-                        value={pr.swapShort}
-                        onChange={(e) => updatePricingRow(pr.symbolId, { swapShort: e.target.value })}
-                        className="w-20 text-right"
-                      />
-                    </TableCell>
-                    <TableCell className="whitespace-nowrap">
-                      <div className="flex items-center gap-1.5">
-                        <Button size="sm" disabled={savingId === pr.symbolId} onClick={() => save(pr)}>
-                          {savingId === pr.symbolId ? "Saving..." : "Save"}
-                        </Button>
-                        <Button size="sm" variant="ghost" disabled={savingId === pr.symbolId || !pr.hasOverride} onClick={() => reset(pr)}>
-                          Reset
-                        </Button>
-                      </div>
-                      {errors[pr.symbolId] ? <div className="mt-1 text-xs text-[var(--sell)]">{errors[pr.symbolId]}</div> : null}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
-        )}
-        <ModalActions>
-          <Button variant="ghost" onClick={onClose}>
-            Close
-          </Button>
-        </ModalActions>
-      </div>
-    </Modal>
+    <div className="flex flex-col gap-3">
+      <p className="text-xs text-[var(--text-3)]">
+        Spread markup and commission set here apply to every real order fill for accounts in {groupName}, not just a label. A symbol with no
+        saved override yet shows the platform default (matching the Symbols page); saving creates a group-specific row, Reset removes it.
+      </p>
+      {rows === null ? (
+        <p className="text-sm text-[var(--text-3)]">Loading...</p>
+      ) : rows.length === 0 ? (
+        <p className="text-sm text-[var(--text-3)]">No symbols enabled yet. Enable some on the Symbols page first.</p>
+      ) : (
+        <div className="max-h-[420px] overflow-y-auto">
+          <Table>
+            <TableHead>
+              <TableHeaderCell className="!px-3">Symbol</TableHeaderCell>
+              <TableHeaderCell align="right" className="!px-3">Spread</TableHeaderCell>
+              <TableHeaderCell align="right" className="!px-3">Commission</TableHeaderCell>
+              <TableHeaderCell align="right" className="!px-3">Swap L</TableHeaderCell>
+              <TableHeaderCell align="right" className="!px-3">Swap S</TableHeaderCell>
+              <TableHeaderCell className="!px-3" />
+            </TableHead>
+            <TableBody>
+              {rows.map((pr) => (
+                <TableRow key={pr.symbolId}>
+                  <TableCell mono className="!px-3">
+                    {pr.symbolName}
+                    {!pr.hasOverride ? <div className="text-xs text-[var(--text-3)]">broker default</div> : null}
+                  </TableCell>
+                  <TableCell align="right" className="!px-3">
+                    <Input
+                      type="text"
+                      inputMode="decimal"
+                      mono
+                      value={pr.spreadMarkup}
+                      onChange={(e) => updatePricingRow(pr.symbolId, { spreadMarkup: e.target.value })}
+                      className="w-20 text-right"
+                    />
+                  </TableCell>
+                  <TableCell align="right" className="!px-3">
+                    <Input
+                      type="text"
+                      inputMode="decimal"
+                      mono
+                      value={pr.commissionPerLot}
+                      onChange={(e) => updatePricingRow(pr.symbolId, { commissionPerLot: e.target.value })}
+                      className="w-20 text-right"
+                    />
+                  </TableCell>
+                  <TableCell align="right" className="!px-3">
+                    <Input
+                      type="text"
+                      inputMode="decimal"
+                      mono
+                      value={pr.swapLong}
+                      onChange={(e) => updatePricingRow(pr.symbolId, { swapLong: e.target.value })}
+                      className="w-16 text-right"
+                    />
+                  </TableCell>
+                  <TableCell align="right" className="!px-3">
+                    <Input
+                      type="text"
+                      inputMode="decimal"
+                      mono
+                      value={pr.swapShort}
+                      onChange={(e) => updatePricingRow(pr.symbolId, { swapShort: e.target.value })}
+                      className="w-16 text-right"
+                    />
+                  </TableCell>
+                  <TableCell className="!px-3 whitespace-nowrap">
+                    <div className="flex items-center gap-1.5">
+                      <Button size="sm" disabled={savingId === pr.symbolId} onClick={() => save(pr)}>
+                        {savingId === pr.symbolId ? "Saving..." : "Save"}
+                      </Button>
+                      <Button size="sm" variant="ghost" disabled={savingId === pr.symbolId || !pr.hasOverride} onClick={() => reset(pr)}>
+                        Reset
+                      </Button>
+                    </div>
+                    {errors[pr.symbolId] ? <div className="mt-1 text-xs text-[var(--sell)]">{errors[pr.symbolId]}</div> : null}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+      )}
+    </div>
   );
 }

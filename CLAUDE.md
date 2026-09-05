@@ -43,6 +43,17 @@ simulated/live prices.
   printed, treat it as compromised and rotate it immediately — don't
   assume the exposure is harmless because it was "only" in a terminal or
   a session transcript.
+- Never use an em-dash (—, U+2014) or en-dash (–, U+2013) in user-facing
+  text (JSX text, string literals rendered to the UI, labels,
+  descriptions, help text, placeholders, tooltips, empty states, commit
+  messages) — a recurring reputation finding, since it reads as an AI
+  fingerprint to anyone who's seen enough LLM output. Use a plain ASCII
+  hyphen, a comma, a colon, or restructure the sentence instead.
+  `scripts/check-no-dashes.mjs` (wired into `npm run lint` and a local
+  pre-commit hook — run `scripts/setup-git-hooks.sh` once after a fresh
+  clone, since git doesn't version-control `.git/hooks`) catches this
+  outside comments and test files; comments and test descriptions are
+  developer-facing, not user-facing, and are exempt.
 
 ## Deployment safety
 

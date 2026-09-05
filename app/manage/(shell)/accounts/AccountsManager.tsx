@@ -98,10 +98,16 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
   const [adjustNote, setAdjustNote] = useState("");
   const [adjustError, setAdjustError] = useState<string | null>(null);
 
+  // Neutral-defaults rule (2026-09-05): a create form must never pre-pick
+  // a real business value the admin didn't consciously choose. Mode, type,
+  // and leverage all start blank/unselected here (validated in
+  // submitNewAccount below) -- currency/initialBalance keep their USD/0
+  // seed values on purpose, since those are near-universal starting
+  // conventions, not a business decision the way mode/type/leverage are.
   const emptyNewAccount = {
-    fullName: "", email: "", password: "", accountMode: "DEMO" as "DEMO" | "LIVE",
+    fullName: "", email: "", password: "", accountMode: "" as "DEMO" | "LIVE" | "",
     accountTypeId: "",
-    currency: "USD", groupId: "", leverage: "100", initialBalance: "0",
+    currency: "USD", groupId: "", leverage: "", initialBalance: "0",
     country: "", phone: "", dateOfBirth: "",
   };
   const [addOpen, setAddOpen] = useState(false);
@@ -111,19 +117,31 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
   const [createdAccount, setCreatedAccount] = useState<{ accountNumber: string; password: string } | null>(null);
 
   function openAddModal() {
-    // Pre-select the broker's default type (Settings -> Account Types)
-    // rather than leaving the picker on nothing -- omitting accountTypeId
-    // entirely on submit falls back to the same default server-side
-    // anyway (app/api/manage/accounts/route.ts), so this is a UX
-    // convenience, not load-bearing.
-    const defaultType = accountTypes.find((t) => t.isDefault) ?? accountTypes[0];
-    setNewAccount({ ...emptyNewAccount, accountTypeId: defaultType?.id ?? "" });
+    setNewAccount(emptyNewAccount);
     setAddError(null);
     setCreatedAccount(null);
     setAddOpen(true);
   }
 
   async function submitNewAccount() {
+    // Mode/type/leverage start blank now (see emptyNewAccount's own
+    // comment) -- SegmentedControl's underlying <input type="radio"> is
+    // sr-only, so native HTML `required` validation on it isn't reliable
+    // across browsers; this is the explicit equivalent for the fields
+    // that don't already have it (leverage does, via LeverageInput's
+    // `required` prop below).
+    if (!newAccount.accountMode) {
+      setAddError("Select an account mode.");
+      return;
+    }
+    if (accountTypes.some((t) => t.enabled) && !newAccount.accountTypeId) {
+      setAddError("Select an account type.");
+      return;
+    }
+    if (canManageFinance && !newAccount.groupId && !newAccount.leverage.trim()) {
+      setAddError("Enter a leverage.");
+      return;
+    }
     setAddBusy(true);
     setAddError(null);
     const response = await fetch("/api/manage/accounts", {
@@ -547,7 +565,12 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
 
             {canManageFinance && !newAccount.groupId ? (
               <FormField label="Leverage">
-                <LeverageInput value={newAccount.leverage} onChange={(e) => setNewAccount((p) => ({ ...p, leverage: e.target.value }))} />
+                <LeverageInput
+                  value={newAccount.leverage}
+                  onChange={(e) => setNewAccount((p) => ({ ...p, leverage: e.target.value }))}
+                  placeholder="e.g. 100"
+                  required
+                />
               </FormField>
             ) : null}
             <FormField label="Currency">

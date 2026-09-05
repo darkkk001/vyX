@@ -45,7 +45,11 @@ export default function LpRoutingManager() {
     setRows(ruleRows);
     const lpOpts: LpOption[] = (providers as { id: string; name: string }[]).map((p) => ({ id: p.id, name: p.name }));
     setLpOptions(lpOpts);
-    setLiquidityProviderId((prev) => prev || lpOpts[0]?.id || "");
+    // Neutral-defaults rule (2026-09-05): which LP handles a symbol's
+    // orders is a real routing decision, so this no longer auto-selects
+    // lpOpts[0] the moment providers load -- the create Button already
+    // disables while empty, but that guard is meaningless if a value is
+    // silently pre-chosen before the admin ever looks at the picker.
     setSymbolOptions((symbols as { symbolId: string; symbolName: string }[]).map((s) => ({ id: s.symbolId, name: s.symbolName })));
   }
 
@@ -84,15 +88,20 @@ export default function LpRoutingManager() {
       <form onSubmit={createRule} className="rounded-xl border border-[var(--border)] bg-[var(--bg-1)] p-[18px]">
         <div className="flex flex-wrap items-end gap-3">
           <FormField label="Liquidity provider">
-            <Select value={liquidityProviderId} onChange={(e) => setLiquidityProviderId(e.target.value)} className="w-52">
+            <Select value={liquidityProviderId} onChange={(e) => setLiquidityProviderId(e.target.value)} className="w-52" required>
               {lpOptions.length === 0 ? (
                 <option value="">Add a provider first</option>
               ) : (
-                lpOptions.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name}
+                <>
+                  <option value="" disabled>
+                    Select provider...
                   </option>
-                ))
+                  {lpOptions.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ))}
+                </>
               )}
             </Select>
           </FormField>

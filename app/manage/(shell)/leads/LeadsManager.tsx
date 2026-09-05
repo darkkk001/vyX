@@ -54,7 +54,10 @@ export default function LeadsManager() {
 
   const [convertTarget, setConvertTarget] = useState<LeadRow | null>(null);
   const [convertPassword, setConvertPassword] = useState("");
-  const [convertAccountMode, setConvertAccountMode] = useState<"DEMO" | "LIVE">("DEMO");
+  // Neutral-defaults rule (2026-09-05): demo vs live is a real, consequential
+  // choice (real money vs. simulated), so it starts unselected here too --
+  // same reasoning as AccountsManager.tsx's own Add-account form.
+  const [convertAccountMode, setConvertAccountMode] = useState<"DEMO" | "LIVE" | "">("");
   const [convertBusy, setConvertBusy] = useState(false);
   const [convertError, setConvertError] = useState<string | null>(null);
   const [convertedCreds, setConvertedCreds] = useState<{ accountNumber: string; password: string } | null>(null);
@@ -97,7 +100,7 @@ export default function LeadsManager() {
   function openConvert(row: LeadRow) {
     setConvertTarget(row);
     setConvertPassword("");
-    setConvertAccountMode("DEMO");
+    setConvertAccountMode("");
     setConvertError(null);
     setConvertedCreds(null);
   }
@@ -257,7 +260,10 @@ export default function LeadsManager() {
               {convertTarget?.country ? ` · ${convertTarget.country}` : ""}
             </p>
             <FormField label="Account mode">
-              <Select value={convertAccountMode} onChange={(e) => setConvertAccountMode(e.target.value as "DEMO" | "LIVE")}>
+              <Select value={convertAccountMode} onChange={(e) => setConvertAccountMode(e.target.value as "DEMO" | "LIVE")} required>
+                <option value="" disabled>
+                  Select mode...
+                </option>
                 <option value="DEMO">DEMO</option>
                 <option value="LIVE">LIVE</option>
               </Select>
@@ -270,7 +276,7 @@ export default function LeadsManager() {
               <Button variant="ghost" onClick={() => setConvertTarget(null)}>
                 Cancel
               </Button>
-              <Button variant="primary" disabled={convertBusy} onClick={submitConvert}>
+              <Button variant="primary" disabled={convertBusy || !convertAccountMode} onClick={submitConvert}>
                 {convertBusy ? "Converting..." : "Create account"}
               </Button>
             </ModalActions>

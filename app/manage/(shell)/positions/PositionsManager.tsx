@@ -399,10 +399,15 @@ export default function PositionsManager() {
 
   // --- Open position modal ---
   const [openModalOpen, setOpenModalOpen] = useState(false);
-  const [accountId, setAccountId] = useState(accounts[0]?.id ?? "");
-  const [symbolId, setSymbolId] = useState(symbols[0]?.id ?? "");
-  const [side, setSide] = useState<"BUY" | "SELL">("BUY");
-  const [volume, setVolume] = useState("0.01");
+  // Neutral-defaults rule (2026-09-05): this opens a real position with
+  // real money -- silently pre-selecting accounts[0]/symbols[0]/BUY/0.01
+  // meant `required` on the Select below never actually blocked anything,
+  // since a value was already "chosen" before the dealer touched the
+  // form. All four now start blank and must be explicitly picked.
+  const [accountId, setAccountId] = useState("");
+  const [symbolId, setSymbolId] = useState("");
+  const [side, setSide] = useState<"BUY" | "SELL" | "">("");
+  const [volume, setVolume] = useState("");
   const [openPrice, setOpenPrice] = useState("");
   const [openSl, setOpenSl] = useState("");
   const [openTp, setOpenTp] = useState("");
@@ -411,10 +416,10 @@ export default function PositionsManager() {
   const [opening, setOpening] = useState(false);
 
   function launchOpenModal() {
-    setAccountId(accounts[0]?.id ?? "");
-    setSymbolId(symbols[0]?.id ?? "");
-    setSide("BUY");
-    setVolume("0.01");
+    setAccountId("");
+    setSymbolId("");
+    setSide("");
+    setVolume("");
     setOpenPrice("");
     setOpenSl("");
     setOpenTp("");
@@ -1163,6 +1168,9 @@ export default function PositionsManager() {
         <div className="flex flex-col gap-3">
           <FormField label="Client account">
             <Select value={accountId} onChange={(e) => setAccountId(e.target.value)} required>
+              <option value="" disabled>
+                Select account...
+              </option>
               {accounts.map((a) => (
                 <option key={a.id} value={a.id}>
                   {a.accountNumber}, {a.fullName}
@@ -1172,6 +1180,9 @@ export default function PositionsManager() {
           </FormField>
           <FormField label="Symbol">
             <Select value={symbolId} onChange={(e) => setSymbolId(e.target.value)} required>
+              <option value="" disabled>
+                Select symbol...
+              </option>
               {symbols.map((s) => (
                 <option key={s.id} value={s.id}>
                   {s.name}
@@ -1180,13 +1191,24 @@ export default function PositionsManager() {
             </Select>
           </FormField>
           <FormField label="Side">
-            <Select value={side} onChange={(e) => setSide(e.target.value as "BUY" | "SELL")}>
+            <Select value={side} onChange={(e) => setSide(e.target.value as "BUY" | "SELL")} required>
+              <option value="" disabled>
+                Select side...
+              </option>
               <option value="BUY">Buy</option>
               <option value="SELL">Sell</option>
             </Select>
           </FormField>
           <FormField label="Volume (lots)">
-            <Input type="text" inputMode="decimal" mono value={volume} onChange={(e) => setVolume(e.target.value)} />
+            <Input
+              type="text"
+              inputMode="decimal"
+              mono
+              value={volume}
+              onChange={(e) => setVolume(e.target.value)}
+              placeholder="e.g. 0.01"
+              required
+            />
           </FormField>
           <FormField label="Price (blank = current market price)">
             <Input

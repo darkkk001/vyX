@@ -51,7 +51,10 @@ export default function TeamManager() {
   // --- Create form ---
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [role, setRole] = useState<"BROKER_ADMIN" | "MANAGER" | "SUPPORT">("MANAGER");
+  // Neutral-defaults rule (2026-09-05): role is an access-control decision
+  // -- silently defaulting it risks inviting someone with more or less
+  // access than intended if the admin doesn't notice the pre-filled value.
+  const [role, setRole] = useState<"BROKER_ADMIN" | "MANAGER" | "SUPPORT" | "">("");
   const [createError, setCreateError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
 
@@ -138,12 +141,20 @@ export default function TeamManager() {
               required
               className="w-56"
             />
-            <Select value={role} onChange={(e) => setRole(e.target.value as "BROKER_ADMIN" | "MANAGER" | "SUPPORT")} className="w-40">
+            <Select
+              value={role}
+              onChange={(e) => setRole(e.target.value as "BROKER_ADMIN" | "MANAGER" | "SUPPORT")}
+              className="w-40"
+              required
+            >
+              <option value="" disabled>
+                Select role...
+              </option>
               <option value="BROKER_ADMIN">Broker Admin</option>
               <option value="MANAGER">Manager</option>
               <option value="SUPPORT">Support</option>
             </Select>
-            <Button type="submit" variant="primary" disabled={creating}>
+            <Button type="submit" variant="primary" disabled={creating || !role}>
               {creating ? "Adding..." : "Add"}
             </Button>
             {createError ? <span className="text-sm text-[var(--sell)]">{createError}</span> : null}

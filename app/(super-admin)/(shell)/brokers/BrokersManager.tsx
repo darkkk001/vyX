@@ -60,7 +60,11 @@ export default function BrokersManager() {
   const [name, setName] = useState("");
   const [subdomain, setSubdomain] = useState("");
   const [customDomain, setCustomDomain] = useState("");
-  const [tier, setTier] = useState<"STANDARD" | "WHITE_LABEL">("STANDARD");
+  // Neutral-defaults rule (2026-09-05): tier picks the broker's actual
+  // billing plan ($500/mo vs $800/mo, per the Select's own option labels)
+  // -- a real decision, not a UI convenience default like primaryColor
+  // below, so it starts unselected and is validated before submit.
+  const [tier, setTier] = useState<"STANDARD" | "WHITE_LABEL" | "">("");
   const [primaryColor, setPrimaryColor] = useState("#1e8a5f");
   const [logoUrl, setLogoUrl] = useState("");
   const [adminEmail, setAdminEmail] = useState("");
@@ -74,7 +78,7 @@ export default function BrokersManager() {
     setName("");
     setSubdomain("");
     setCustomDomain("");
-    setTier("STANDARD");
+    setTier("");
     setPrimaryColor("#1e8a5f");
     setLogoUrl("");
     setAdminEmail("");
@@ -499,7 +503,10 @@ export default function BrokersManager() {
         </ModalSection>
 
         <ModalSection label="Plan">
-          <Select value={tier} onChange={(e) => setTier(e.target.value as "STANDARD" | "WHITE_LABEL")}>
+          <Select value={tier} onChange={(e) => setTier(e.target.value as "STANDARD" | "WHITE_LABEL")} required>
+            <option value="" disabled>
+              Select tier...
+            </option>
             <option value="STANDARD">Standard ($500/mo), logo only, no CRM access</option>
             <option value="WHITE_LABEL">White-Label ($800/mo), full branding + backoffice/CRM access</option>
           </Select>
