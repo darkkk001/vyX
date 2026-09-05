@@ -87,7 +87,6 @@ const DEALING_CHOICE_OPTIONS: { value: "INHERIT" | "MANUAL"; label: string; hint
   },
 ];
 
-const TIER_LABELS: Record<GroupRow["tier"], string> = { STANDARD: "Standard", PRO: "Pro", ECN: "ECN", ZERO: "Zero" };
 const RESTRICTION_LABELS: Record<GroupRow["tradingRestriction"], string> = { BOTH: "Both", BUY_ONLY: "Buy only", SELL_ONLY: "Sell only" };
 
 function typeBadge(row: GroupRow) {
@@ -179,14 +178,13 @@ export default function GroupsManager() {
             <TableHeaderCell className="min-w-[175px]" title="Controls which book this group's new positions default into, and how dealing routes">
               Type
             </TableHeaderCell>
-            <TableHeaderCell className="min-w-[85px]">Tier</TableHeaderCell>
             <TableHeaderCell align="center" className="min-w-[80px]">Swap-free</TableHeaderCell>
             <TableHeaderCell align="center" className="min-w-[70px]">Default</TableHeaderCell>
             <TableHeaderCell className="min-w-[145px]" />
           </TableHead>
           <TableBody>
             {rows.length === 0 ? (
-              <TableEmptyState colSpan={10}>No groups yet.</TableEmptyState>
+              <TableEmptyState colSpan={9}>No groups yet.</TableEmptyState>
             ) : (
               rows.map((row) => (
                 <TableRow key={row.id}>
@@ -212,7 +210,6 @@ export default function GroupsManager() {
                   </TableCell>
                   <TableCell className="min-w-[95px]">{RESTRICTION_LABELS[row.tradingRestriction]}</TableCell>
                   <TableCell className="min-w-[175px]">{typeBadge(row)}</TableCell>
-                  <TableCell className="min-w-[85px]">{TIER_LABELS[row.tier]}</TableCell>
                   <TableCell align="center" className="min-w-[80px]">
                     {row.swapFree ? "✓" : "-"}
                   </TableCell>
@@ -281,11 +278,13 @@ export default function GroupsManager() {
 
 // Shared create/edit form -- context-aware: only the sections relevant to
 // the selected Group type render at all (see UI_TYPE_OPTIONS/uiTypeFor
-// above). Name/leverage/margin call/stop out/max lot/restriction/tier/
-// swap-free/default always show; the dealing-behavior choice and the
-// mirror-rule note are type-conditional. Same {initial, onClose, onSaved}
-// self-fetching-free shape as SymbolsModal/PricingModal below, just with
-// no GET (the row itself, or null for create, is all this needs).
+// above). Name/leverage/margin call/stop out/max lot/restriction/swap-
+// free/default always show; the dealing-behavior choice and the mirror-
+// rule note are type-conditional. Deliberately has NO tier/account-type
+// field -- see submit()'s own comment on why that was removed. Same
+// {initial, onClose, onSaved} self-fetching-free shape as SymbolsModal/
+// PricingModal below, just with no GET (the row itself, or null for
+// create, is all this needs).
 function GroupFormModal({
   initial,
   onClose,
@@ -299,8 +298,8 @@ function GroupFormModal({
   const [name, setName] = useState(initial?.name ?? "");
   // Neutral-defaults rule (2026-09-05): a create form must never pre-pick
   // a real business value the admin didn't consciously choose -- leverage,
-  // tier, restriction, and group type all start blank/unselected here
-  // (native `required` below forces a real choice before submit). Margin
+  // restriction, and group type all start blank/unselected here (native
+  // `required` below forces a real choice before submit). Margin
   // call %/stop out % keep their 100/50 seed values on purpose: those are
   // near-universal safety-rail conventions, not a business decision like
   // leverage or type, so pre-filling them doesn't hide a real choice the
@@ -316,7 +315,6 @@ function GroupFormModal({
   );
   const [swapFree, setSwapFree] = useState(initial?.swapFree ?? false);
   const [isDefault, setIsDefault] = useState(initial?.isDefault ?? false);
-  const [tier, setTier] = useState<GroupRow["tier"] | "">(initial?.tier ?? "");
   const [uiType, setUiType] = useState<UiType | "">(
     initial ? uiTypeFor(initial.groupType, initial.dealingMode, initial.hasMirrorRule) : ""
   );
@@ -358,7 +356,22 @@ function GroupFormModal({
         forceDealingMode: false,
         groupType,
         dealingMode,
-        tier,
+        // Design fix (2026-09-05): this form used to expose Group.tier
+        // (Standard/Pro/ECN/Zero) as a "Tier" field, which read as an
+        // account-type/pricing-tier picker on a GROUP -- exactly the
+        // "Group = routing, Account Type = pricing, they never mix"
+        // confusion this fix removes. Confirmed no fill-time code reads
+        // Group.tier at all (lib/group-pricing.ts's resolveSymbolPricing
+        // only ever takes groupId, never a tier or accountTypeId) -- it
+        // really was just a same-named, purposeless-today classification
+        // field, per its own schema comment. The column stays (no schema
+        // change here), but nothing in this form shows or sets it
+        // anymore; passing the group's own existing value straight
+        // through on edit (instead of a hidden state variable) means an
+        // edit can never silently change it to something the admin never
+        // touched, and omitting it on create lets the API's own default
+        // (STANDARD) apply to a value nothing reads anyway.
+        ...(isEdit ? { tier: initial!.tier } : {}),
       }),
     });
     setSaving(false);
@@ -417,22 +430,6 @@ function GroupFormModal({
           </FormField>
           <FormField label="Leverage">
             <LeverageInput value={leverage} onChange={(e) => setLeverage(e.target.value)} placeholder="e.g. 100" required />
-          </FormField>
-          <FormField label="Tier">
-            <Select
-              value={tier}
-              onChange={(e) => setTier(e.target.value as GroupRow["tier"])}
-              title="Classification only -- set actual spread/commission/swap per symbol on the Pricing tab (existing groups only)"
-              required
-            >
-              <option value="" disabled>
-                Select tier...
-              </option>
-              <option value="STANDARD">Standard</option>
-              <option value="PRO">Pro</option>
-              <option value="ECN">ECN</option>
-              <option value="ZERO">Zero</option>
-            </Select>
           </FormField>
           <FormField label="Margin call %">
             <Input type="text" inputMode="decimal" mono value={callLevel} onChange={(e) => setCallLevel(e.target.value)} />
