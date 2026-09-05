@@ -470,6 +470,11 @@ html, body, #root {
 .wl-occ-btn { width: 18px; height: 18px; border-radius: 4px; border: none; cursor: pointer; font-size: 10px; font-weight: 700; line-height: 1; }
 .wl-occ-btn.buy { background: var(--buy); color: #04140C; }
 .wl-occ-btn.sell { background: var(--sell); color: #2A0808; }
+/* Market-closed / stale-feed disable (2026-09-05) -- these buttons are now
+   always visible (not just under one-click trading), so a disabled state
+   needs its own visible treatment instead of relying on the buttons simply
+   not being rendered. */
+.wl-occ-btn:disabled { background: var(--bg-3); color: var(--text-3); cursor: not-allowed; }
 .wl-hint { font-size: 10px; color: var(--text-3); text-align: center; padding: 10px 8px 4px; margin-top: auto; }
 .wl-add-symbol-row {
   display: flex; align-items: center; gap: 6px; padding: 8px 8px; margin-top: 2px;
