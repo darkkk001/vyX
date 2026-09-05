@@ -446,6 +446,11 @@ html[data-mode="light"], html[data-mode="light"] body {
   letter-spacing: .03em; text-transform: uppercase;
   border-bottom: 1px solid var(--border); margin-bottom: 2px;
 }
+/* Matches .wl-cell's own overflow:hidden (2026-09-05) -- belt-and-suspenders
+   alongside wlGridTemplate's minmax(0, Nfr) fix: a label like "Spread"
+   clips instead of visually overflowing its own column if a very narrow
+   viewport ever squeezes a track below the label's natural width. */
+.wl-header > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* Watchlist category grouping -- collapsible (chevron + click/Enter/
    Space), collapsed state server-persisted. Never a real symbol row (no
    drag, not counted by watchlistOrder itself). */

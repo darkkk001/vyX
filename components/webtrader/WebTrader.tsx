@@ -1979,13 +1979,29 @@ export default function WebTrader({
   const freeMargin = equity - usedMargin;
   const marginLevel = usedMargin > 0 ? (equity / usedMargin) * 100 : Infinity;
 
+  // Real bug fixed here (2026-09-05): a bare "Nfr" track's automatic
+  // minimum size is its own content's min-content width, not 0 -- and
+  // .wl-header's plain <span> labels ("Spread", "Day H", ...) have no
+  // overflow-hidden equivalent to .wl-cell's, so the header and every row
+  // were independently solving the SAME fr ratios against DIFFERENT
+  // effective minimums (header text vs. whatever happened to be in a
+  // given row's cell that render), even given an identical template
+  // string and an identical, matching container width -- confirmed live
+  // via getComputedStyle: same "18px 1fr 0.95fr 0.7fr 0.8fr 0.8fr 20px"
+  // source template, same 203px container, but the HEADER resolved
+  // Spread to 39px while a row resolved its own corresponding column to
+  // 19px, visibly shifting every column after Symbol/Price out of
+  // alignment with its own header. minmax(0, Nfr) pins the minimum to 0
+  // explicitly instead of leaving it to each side's own content, so
+  // header and rows always resolve to the exact same pixel widths
+  // regardless of what text either one happens to contain.
   const wlGridTemplate = useMemo(() => {
-    const widths = ["1fr"]; // symbol
-    widths.push("0.95fr"); // price
-    if (columnPrefs.change) widths.push("0.75fr");
-    if (columnPrefs.spread) widths.push("0.7fr");
-    if (columnPrefs.high) widths.push("0.8fr");
-    if (columnPrefs.low) widths.push("0.8fr");
+    const widths = ["minmax(0,1fr)"]; // symbol
+    widths.push("minmax(0,0.95fr)"); // price
+    if (columnPrefs.change) widths.push("minmax(0,0.75fr)");
+    if (columnPrefs.spread) widths.push("minmax(0,0.7fr)");
+    if (columnPrefs.high) widths.push("minmax(0,0.8fr)");
+    if (columnPrefs.low) widths.push("minmax(0,0.8fr)");
     return `18px ${widths.join(" ")} 20px`;
   }, [columnPrefs]);
 
