@@ -36,32 +36,58 @@ export type GroupRow = {
   hasMirrorRule: boolean;
 };
 
-// UI-only "type" concept layered over groupType + dealingMode -- there is
-// no 4th/5th GroupType enum value in the schema (LP | DEALING | DEMO
+// UI-only "Order routing" concept layered over groupType + dealingMode --
+// there is no 4th GroupType enum value in the schema (LP | DEALING | DEMO
 // only, see prisma/schema.prisma), and per the standing P2022 rule this
 // redesign makes no schema change. Every option below persists as one of
-// the 3 real enum values; "B-Book (Auto)" and both DEALING-flavored
-// options ("Dealing" / "Reverse (Mirror)") all persist as
-// groupType=DEALING -- what actually varies underneath is dealingMode
-// (plus, for Reverse, whether a MirrorRule already sources from this
-// group). "Reverse" is a real, already-used pattern in this broker's
-// data (a DEALING group with a MirrorRule pointing away from it,
-// direction=REVERSE), not a speculative addition.
-type UiType = "BBOOK_AUTO" | "ABOOK_LP" | "DEALING" | "REVERSE_MIRROR" | "DEMO";
+// the real enum values; "B-Book (Auto)" and both DEALING-flavored options
+// ("Dealing" / "Reverse (Mirror)") all persist as groupType=DEALING --
+// what actually varies underneath is dealingMode (plus, for Reverse,
+// whether a MirrorRule already sources from this group). "Reverse" is a
+// real, already-used pattern in this broker's data (a DEALING group with
+// a MirrorRule pointing away from it, direction=REVERSE), not a
+// speculative addition.
+//
+// "Demo" is deliberately NOT one of these options (2026-09-05) -- Demo is
+// an ACCOUNT MODE (Account.accountMode, set per account), not a routing
+// choice: a demo account is simulated regardless of which group it's in,
+// and routing only matters for live orders in the first place. Confirmed
+// no fill/pricing/routing code branches on groupType==="DEMO" for
+// anything simulation-related -- lib/group-pricing.ts's resolveBookType
+// is the ONLY place that reads it at all, and treats DEMO identically to
+// DEALING (both -> B_BOOK, since the function is only `=== "LP" ? A_BOOK
+// : B_BOOK`), so uiTypeFor below folds a (currently nonexistent -- zero
+// real groups have groupType=DEMO, confirmed by querying every broker)
+// DEMO group into the "Dealing" option rather than needing a 5th choice.
+type UiType = "BBOOK_AUTO" | "ABOOK_LP" | "DEALING" | "REVERSE_MIRROR";
 
 function uiTypeFor(groupType: GroupRow["groupType"], dealingMode: GroupRow["dealingMode"], hasMirrorRule: boolean): UiType {
   if (groupType === "LP") return "ABOOK_LP";
-  if (groupType === "DEMO") return "DEMO";
-  if (dealingMode === "AUTO") return "BBOOK_AUTO";
+  if (groupType !== "DEMO" && dealingMode === "AUTO") return "BBOOK_AUTO";
   return hasMirrorRule ? "REVERSE_MIRROR" : "DEALING";
 }
 
 const UI_TYPE_OPTIONS: { value: UiType; label: string; hint: string }[] = [
-  { value: "BBOOK_AUTO", label: "B-Book (Auto)", hint: "Orders auto-fill at market -- no dealing queue at all." },
-  { value: "ABOOK_LP", label: "A-Book (LP)", hint: "Routed toward a liquidity provider." },
-  { value: "DEALING", label: "Dealing", hint: "Orders can queue for manual dealer review." },
-  { value: "REVERSE_MIRROR", label: "Reverse (Mirror)", hint: "B-book routing, mirrored onto another account." },
-  { value: "DEMO", label: "Demo", hint: "Practice accounts -- no real settlement." },
+  {
+    value: "BBOOK_AUTO",
+    label: "B-Book (Auto)",
+    hint: "Internalized, auto-fill: the broker holds the risk, no external routing.",
+  },
+  {
+    value: "ABOOK_LP",
+    label: "A-Book (LP)",
+    hint: "Routed to the liquidity provider/bridge (external market hedge) -- the only routing that bridges directly.",
+  },
+  {
+    value: "DEALING",
+    label: "Dealing",
+    hint: "Dealer queue: manual accept/reject, then internalized (no bridge).",
+  },
+  {
+    value: "REVERSE_MIRROR",
+    label: "Reverse (Mirror)",
+    hint: "Orders are reversed into a master account; hedging/bridge happens from the master (indirect).",
+  },
 ];
 
 // Only DEALING and REVERSE_MIRROR route through the dealing desk at all,
@@ -89,11 +115,10 @@ const DEALING_CHOICE_OPTIONS: { value: "INHERIT" | "MANUAL"; label: string; hint
 
 const RESTRICTION_LABELS: Record<GroupRow["tradingRestriction"], string> = { BOTH: "Both", BUY_ONLY: "Buy only", SELL_ONLY: "Sell only" };
 
-function typeBadge(row: GroupRow) {
+function routingBadge(row: GroupRow) {
   const uiType = uiTypeFor(row.groupType, row.dealingMode, row.hasMirrorRule);
   if (uiType === "BBOOK_AUTO") return <Badge tone="info">B-Book (Auto)</Badge>;
   if (uiType === "ABOOK_LP") return <Badge tone="accent">A-Book (LP)</Badge>;
-  if (uiType === "DEMO") return <Badge tone="neutral">Demo</Badge>;
   const dealingLabel = row.dealingMode === "MANUAL" ? "Force" : "Dealer-managed";
   return uiType === "REVERSE_MIRROR" ? (
     <Badge tone="warning">Reverse ({dealingLabel})</Badge>
@@ -175,8 +200,8 @@ export default function GroupsManager() {
             <TableHeaderCell align="right" className="min-w-[75px]">Stop out %</TableHeaderCell>
             <TableHeaderCell align="right" className="min-w-[75px]">Max lot</TableHeaderCell>
             <TableHeaderCell className="min-w-[95px]">Restriction</TableHeaderCell>
-            <TableHeaderCell className="min-w-[175px]" title="Controls which book this group's new positions default into, and how dealing routes">
-              Type
+            <TableHeaderCell className="min-w-[175px]" title="How live orders from this group are routed">
+              Routing
             </TableHeaderCell>
             <TableHeaderCell align="center" className="min-w-[80px]">Swap-free</TableHeaderCell>
             <TableHeaderCell align="center" className="min-w-[70px]">Default</TableHeaderCell>
@@ -209,7 +234,7 @@ export default function GroupsManager() {
                     {row.maxLotSize || "-"}
                   </TableCell>
                   <TableCell className="min-w-[95px]">{RESTRICTION_LABELS[row.tradingRestriction]}</TableCell>
-                  <TableCell className="min-w-[175px]">{typeBadge(row)}</TableCell>
+                  <TableCell className="min-w-[175px]">{routingBadge(row)}</TableCell>
                   <TableCell align="center" className="min-w-[80px]">
                     {row.swapFree ? "✓" : "-"}
                   </TableCell>
@@ -277,7 +302,7 @@ export default function GroupsManager() {
 }
 
 // Shared create/edit form -- context-aware: only the sections relevant to
-// the selected Group type render at all (see UI_TYPE_OPTIONS/uiTypeFor
+// the selected order routing render at all (see UI_TYPE_OPTIONS/uiTypeFor
 // above). Name/leverage/margin call/stop out/max lot/restriction/swap-
 // free/default always show; the dealing-behavior choice and the mirror-
 // rule note are type-conditional. Deliberately has NO tier/account-type
@@ -298,12 +323,12 @@ function GroupFormModal({
   const [name, setName] = useState(initial?.name ?? "");
   // Neutral-defaults rule (2026-09-05): a create form must never pre-pick
   // a real business value the admin didn't consciously choose -- leverage,
-  // restriction, and group type all start blank/unselected here (native
-  // `required` below forces a real choice before submit). Margin
+  // restriction, and order routing all start blank/unselected here
+  // (native `required` below forces a real choice before submit). Margin
   // call %/stop out % keep their 100/50 seed values on purpose: those are
   // near-universal safety-rail conventions, not a business decision like
-  // leverage or type, so pre-filling them doesn't hide a real choice the
-  // way defaulting to DEALING or 100x leverage would. Editing an existing
+  // leverage or routing, so pre-filling them doesn't hide a real choice
+  // the way defaulting to DEALING or 100x leverage would. Editing an existing
   // group is unaffected either way -- it always starts from that group's
   // own real saved values, never a "default."
   const [leverage, setLeverage] = useState(initial ? String(initial.leverage) : "");
@@ -334,7 +359,10 @@ function GroupFormModal({
   async function submit() {
     setSaving(true);
     setError(null);
-    const groupType: GroupRow["groupType"] = uiType === "ABOOK_LP" ? "LP" : uiType === "DEMO" ? "DEMO" : "DEALING";
+    // "Demo" is not a selectable routing option (see UI_TYPE_OPTIONS's own
+    // comment) -- every routing choice this form can produce persists as
+    // either LP or DEALING, never DEMO.
+    const groupType: GroupRow["groupType"] = uiType === "ABOOK_LP" ? "LP" : "DEALING";
     const dealingMode: GroupRow["dealingMode"] = uiType === "BBOOK_AUTO" ? "AUTO" : showsDealingChoice ? dealingChoice : "INHERIT";
     const response = await fetch(isEdit ? `/api/manage/groups/${initial!.id}` : "/api/manage/groups", {
       method: isEdit ? "PATCH" : "POST",
@@ -478,10 +506,11 @@ function GroupFormModal({
           />
         </div>
 
-        <ModalSection label="Group type">
+        <ModalSection label="Order routing">
+          <p className="mb-1.5 text-xs text-[var(--text-3)]">How live orders from this group are routed.</p>
           <Select value={uiType} onChange={(e) => setUiType(e.target.value as UiType)} required>
             <option value="" disabled>
-              Select group type...
+              Select order routing...
             </option>
             {UI_TYPE_OPTIONS.map((opt) => (
               <option key={opt.value} value={opt.value}>
@@ -495,7 +524,7 @@ function GroupFormModal({
         </ModalSection>
 
         {uiType === "ABOOK_LP" ? (
-          <ModalSection label="LP routing">
+          <ModalSection label="LP connection">
             <Alert tone="info">
               LP routing config isn&apos;t built yet (Phase 5) -- orders in this group are marked A-Book but still execute against the
               simulated/blended price feed until a real liquidity-provider connection exists.
