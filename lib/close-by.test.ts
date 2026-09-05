@@ -52,8 +52,16 @@ async function createFixture(tx: Prisma.TransactionClient): Promise<Fixture> {
     tx.symbol.findUniqueOrThrow({ where: { name: "XAUUSD" } }),
     tx.symbol.findUniqueOrThrow({ where: { name: "EURUSD" } }),
   ]);
-  await tx.brokerSymbol.create({ data: { brokerId: broker.id, symbolId: xau.id, minLot: D(0.01), maxLot: D(1000), lotStep: D(0.01), tradingMode: "BOTH" } });
-  await tx.brokerSymbol.create({ data: { brokerId: broker.id, symbolId: eur.id, minLot: D(0.01), maxLot: D(1000), lotStep: D(0.01), tradingMode: "BOTH" } });
+  // All 7 days, full 24h -- checkTradingSession's own default (zero
+  // TradingSession rows) is the real weekend-closed FX rule, which made
+  // this fixture flaky exactly once this ran for real on a Saturday
+  // (2026-09-05, the day close-by/bulk-close were first given a market-
+  // state check at all -- see lib/close-by.ts's own comment). An
+  // always-open explicit session keeps this test's pass/fail independent
+  // of which real-world day it happens to run on.
+  const alwaysOpen = { create: Array.from({ length: 7 }, (_, dayOfWeek) => ({ dayOfWeek, openTime: "00:00", closeTime: "23:59" })) };
+  await tx.brokerSymbol.create({ data: { brokerId: broker.id, symbolId: xau.id, minLot: D(0.01), maxLot: D(1000), lotStep: D(0.01), tradingMode: "BOTH", tradingSessions: alwaysOpen } });
+  await tx.brokerSymbol.create({ data: { brokerId: broker.id, symbolId: eur.id, minLot: D(0.01), maxLot: D(1000), lotStep: D(0.01), tradingMode: "BOTH", tradingSessions: alwaysOpen } });
   const account = await tx.account.create({
     data: {
       brokerId: broker.id,
@@ -105,6 +113,19 @@ afterAll(async () => {
   await prisma.$disconnect();
 });
 
+// getFreshPrices reads through the top-level `prisma` singleton, never
+// this test's own uncommitted `tx` (see createFixture's own comment) --
+// and this dev environment has no continuous feed re-ticking XAUUSD/
+// EURUSD in the background, so their LivePrice rows can sit stale for
+// hours between test runs. Only the two tests that actually expect a
+// real close need this; every "rejects ..." test fails earlier, before
+// ever reaching a price fetch.
+async function refreshPrices() {
+  const now = new Date();
+  await prisma.livePrice.update({ where: { symbol: "XAUUSD" }, data: { tickAt: now } });
+  await prisma.livePrice.update({ where: { symbol: "EURUSD" }, data: { tickAt: now } });
+}
+
 describe("closePositionsByEachOther (live DB, rolled back)", () => {
   it("nets the smaller of two opposite positions fully, leaves the larger open with reduced volume", async () => {
     if (!dbReachable) return;
@@ -113,6 +134,7 @@ describe("closePositionsByEachOther (live DB, rolled back)", () => {
       const buy = await createOpenPosition(tx, fx, { symbolId: fx.xauSymbolId, side: "BUY", volume: "1.00", openPrice: "4000.00" });
       const sell = await createOpenPosition(tx, fx, { symbolId: fx.xauSymbolId, side: "SELL", volume: "0.40", openPrice: "4050.00" });
 
+      await refreshPrices();
       const result = await closePositionsByEachOther(tx, { accountId: fx.accountId, brokerId: fx.brokerId, positionId: buy.id, againstPositionId: sell.id });
       expect(result.ok).toBe(true);
       if (!result.ok) return;
@@ -149,6 +171,7 @@ describe("closePositionsByEachOther (live DB, rolled back)", () => {
       const buy = await createOpenPosition(tx, fx, { symbolId: fx.xauSymbolId, side: "BUY", volume: "0.50", openPrice: "4000.00" });
       const sell = await createOpenPosition(tx, fx, { symbolId: fx.xauSymbolId, side: "SELL", volume: "0.50", openPrice: "4010.00" });
 
+      await refreshPrices();
       const result = await closePositionsByEachOther(tx, { accountId: fx.accountId, brokerId: fx.brokerId, positionId: buy.id, againstPositionId: sell.id });
       expect(result.ok).toBe(true);
       if (!result.ok) return;

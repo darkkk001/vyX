@@ -28,7 +28,10 @@ export async function POST(request: NextRequest) {
   });
 
   if (!result.ok) {
-    return NextResponse.json({ error: result.error }, { status: 400 });
+    return NextResponse.json(
+      { error: result.error, ...(result.nextOpenAt ? { nextOpenAt: result.nextOpenAt } : {}) },
+      { status: 400 }
+    );
   }
   return NextResponse.json(result);
 }

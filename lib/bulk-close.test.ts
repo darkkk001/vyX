@@ -56,8 +56,16 @@ async function createFixture(tx: Prisma.TransactionClient): Promise<Fixture> {
     tx.symbol.findUniqueOrThrow({ where: { name: "XAUUSD" } }),
     tx.symbol.findUniqueOrThrow({ where: { name: "EURUSD" } }),
   ]);
-  await tx.brokerSymbol.create({ data: { brokerId: broker.id, symbolId: xau.id, minLot: D(0.01), maxLot: D(1000), lotStep: D(0.01), tradingMode: "BOTH" } });
-  await tx.brokerSymbol.create({ data: { brokerId: broker.id, symbolId: eur.id, minLot: D(0.01), maxLot: D(1000), lotStep: D(0.01), tradingMode: "BOTH" } });
+  // All 7 days, full 24h -- checkTradingSession's own default (zero
+  // TradingSession rows) is the real weekend-closed FX rule, which made
+  // this fixture flaky exactly once this ran for real on a Saturday
+  // (2026-09-05, the day close-by/bulk-close were first given a market-
+  // state check at all -- see lib/bulk-close.ts's own comment). An
+  // always-open explicit session keeps this test's pass/fail independent
+  // of which real-world day it happens to run on.
+  const alwaysOpen = { create: Array.from({ length: 7 }, (_, dayOfWeek) => ({ dayOfWeek, openTime: "00:00", closeTime: "23:59" })) };
+  await tx.brokerSymbol.create({ data: { brokerId: broker.id, symbolId: xau.id, minLot: D(0.01), maxLot: D(1000), lotStep: D(0.01), tradingMode: "BOTH", tradingSessions: alwaysOpen } });
+  await tx.brokerSymbol.create({ data: { brokerId: broker.id, symbolId: eur.id, minLot: D(0.01), maxLot: D(1000), lotStep: D(0.01), tradingMode: "BOTH", tradingSessions: alwaysOpen } });
   const account = await tx.account.create({
     data: {
       brokerId: broker.id,
@@ -109,6 +117,17 @@ afterAll(async () => {
   await prisma.$disconnect();
 });
 
+// getFreshPrices reads through the top-level `prisma` singleton, never
+// this test's own uncommitted `tx` (see createFixture's own comment) --
+// and this dev environment has no continuous feed re-ticking XAUUSD/
+// EURUSD in the background, so their LivePrice rows can sit stale for
+// hours between test runs.
+async function refreshPrices() {
+  const now = new Date();
+  await prisma.livePrice.update({ where: { symbol: "XAUUSD" }, data: { tickAt: now } });
+  await prisma.livePrice.update({ where: { symbol: "EURUSD" }, data: { tickAt: now } });
+}
+
 describe("closeBulkForAccount (live DB, rolled back)", () => {
   it("closes 30 same-symbol positions in one call, every same-side position at an identical price", async () => {
     if (!dbReachable) return;
@@ -122,6 +141,7 @@ describe("closeBulkForAccount (live DB, rolled back)", () => {
         positions.push(await createOpenPosition(tx, fx, { symbolId: fx.xauSymbolId, side: "SELL", openPrice: "4000.00" }));
       }
 
+      await refreshPrices();
       const t0 = Date.now();
       const results = await closeBulkForAccount(tx, { accountId: fx.accountId, brokerId: fx.brokerId, scope: "ALL" });
       const elapsedMs = Date.now() - t0;
@@ -163,12 +183,14 @@ describe("closeBulkForAccount (live DB, rolled back)", () => {
       const winner = await createOpenPosition(tx, fx, { symbolId: fx.xauSymbolId, side: "BUY", openPrice: "1.00" }); // always deeply profitable
       const loser = await createOpenPosition(tx, fx, { symbolId: fx.xauSymbolId, side: "BUY", openPrice: "999999.00" }); // always deeply losing
 
+      await refreshPrices();
       const profitResults = await closeBulkForAccount(tx, { accountId: fx.accountId, brokerId: fx.brokerId, scope: "PROFIT" });
       expect(profitResults.map((r) => r.positionId)).toEqual([winner.id]);
 
       const stillOpenAfterProfit = await tx.position.findUniqueOrThrow({ where: { id: loser.id } });
       expect(stillOpenAfterProfit.status).toBe("OPEN");
 
+      await refreshPrices();
       const lossResults = await closeBulkForAccount(tx, { accountId: fx.accountId, brokerId: fx.brokerId, scope: "LOSS" });
       expect(lossResults.map((r) => r.positionId)).toEqual([loser.id]);
     });
@@ -181,6 +203,7 @@ describe("closeBulkForAccount (live DB, rolled back)", () => {
       const xauPos = await createOpenPosition(tx, fx, { symbolId: fx.xauSymbolId, side: "BUY", openPrice: "4000.00" });
       const eurPos = await createOpenPosition(tx, fx, { symbolId: fx.eurSymbolId, side: "BUY", openPrice: "1.10" });
 
+      await refreshPrices();
       const results = await closeBulkForAccount(tx, { accountId: fx.accountId, brokerId: fx.brokerId, scope: "SYMBOL", symbol: "XAUUSD" });
 
       expect(results.map((r) => r.positionId)).toEqual([xauPos.id]);

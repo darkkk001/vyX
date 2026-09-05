@@ -3,10 +3,11 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
 import { publishTradingEvent } from "@/lib/nats";
-import { validatePendingPriceDistance, validateSlTp } from "@/lib/trading";
+import { validatePendingPriceDistance, validatePendingOrderDirection, validateSlTp } from "@/lib/trading";
 import { orderAuditFields } from "@/lib/order-audit";
 import { recordDealerActivity } from "@/lib/dealer-activity";
 import { isDealingManagedAccount } from "@/lib/dealing-routing";
+import { checkTradingSession, computeNextSessionOpen } from "@/lib/risk";
 
 // Edit a resting PENDING order's own entry price and/or its SL/TP -- the
 // chart's draggable entry-price line (LIMIT/STOP only) and, since broker
@@ -62,10 +63,43 @@ export async function PATCH(
 
   const brokerSymbol = await prisma.brokerSymbol.findUnique({
     where: { brokerId_symbolId: { brokerId: order.brokerId, symbolId: order.symbolId } },
-    include: { symbol: { select: { digits: true } } },
+    include: { symbol: { select: { digits: true } }, tradingSessions: true },
   });
 
+  // Real bug fixed here (2026-09-05 audit finding): this route had NO
+  // market-state check at all -- a resting order's entry price or SL/TP
+  // could be repriced during a closed market (live-confirmed: a real
+  // EURUSD order was successfully modified on a Saturday). Same
+  // MARKET_CLOSED + next-open-time answer as place/close/SL-TP-modify.
+  const sessionError = checkTradingSession(brokerSymbol?.tradingSessions ?? [], new Date(), order.symbol.name);
+  if (sessionError) {
+    const nextOpenAt = computeNextSessionOpen(brokerSymbol?.tradingSessions ?? [], new Date());
+    return NextResponse.json({ error: sessionError, nextOpenAt: nextOpenAt.toISOString() }, { status: 400 });
+  }
+
   if (requestedPrice !== undefined) {
+    // Security/correctness fix (2026-09-05 audit finding), same rule and
+    // same reasoning as POST /api/trade/orders' own placement check --
+    // moving an order's entry price to the wrong side of the market is
+    // just as nonsensical as placing it there in the first place. Uses
+    // this route's own fresh server-side LivePrice, not the client-
+    // supplied `currentPrice` below (which only ever feeds the stopLevel-
+    // distance check) -- the server, never the client, is the price
+    // authority for anything that actually rejects a request.
+    const livePrice = await prisma.livePrice.findUnique({ where: { symbol: order.symbol.name } });
+    if (livePrice) {
+      const marketRef = order.side === "BUY" ? livePrice.ask : livePrice.bid;
+      const directionError = validatePendingOrderDirection({
+        type: order.type as "LIMIT" | "STOP",
+        side: order.side,
+        entryPrice: requestedPrice,
+        marketPrice: marketRef,
+      });
+      if (directionError) {
+        return NextResponse.json({ error: directionError }, { status: 400 });
+      }
+    }
+
     const validationError = validatePendingPriceDistance({
       type: order.type as "LIMIT" | "STOP",
       side: order.side,

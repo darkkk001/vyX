@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
-import { validateSlTp } from "@/lib/trading";
+import { validateSlTp, validatePendingOrderDirection } from "@/lib/trading";
 import { createNotification } from "@/lib/notifications";
 import { openPositionFromOrder } from "@/lib/dealing";
 import { resolveBookType, applySpreadMarkup, resolveSymbolPricing, chargeCommission } from "@/lib/group-pricing";
@@ -186,15 +186,35 @@ async function handlePlaceOrder(request: NextRequest) {
   // later (see lib/risk.ts's checkLiveMarketPrice, added after that close
   // half of the same exploit was fixed) to mint the difference as profit.
   // evaluateLiveMarketPrice now floors both halves the same way. PENDING
-  // (LIMIT/STOP) orders aren't checked here — they rest until a real tick
-  // triggers a fill via the separate fill endpoint, which runs this same
-  // check itself.
+  // (LIMIT/STOP) orders' price-sanity/freshness isn't checked here — they
+  // rest until a real tick triggers a fill via the separate fill endpoint,
+  // which runs this same check itself. Their *directional* validity
+  // (below/above the current market, see validatePendingOrderDirection's
+  // own comment) is a different, narrower thing that IS worth checking
+  // right now, at placement -- it's a static fact about the order that
+  // will never become more or less true while it rests, unlike staleness.
   let livePrice: Awaited<ReturnType<typeof prisma.livePrice.findUnique>> = null;
   if (type === "MARKET") {
     livePrice = await prisma.livePrice.findUnique({ where: { symbol: symbolName } });
     const priceError = evaluateLiveMarketPrice(livePrice, symbolName, price) ?? checkPriceFreshness(livePrice);
     if (priceError) {
       return NextResponse.json({ error: priceError }, { status: 400 });
+    }
+  } else {
+    // Security/correctness fix (2026-09-05 audit finding) -- a "BUY LIMIT"
+    // placed above market or a "SELL STOP" placed above market used to go
+    // through unrejected (live-confirmed). Skipped gracefully when there's
+    // no live price at all for this symbol yet -- same "nothing to check
+    // against" tolerance the rest of this route already extends to a
+    // brand-new/never-ticked symbol, rather than blocking every pending
+    // order until a feed exists.
+    const pendingLivePrice = await prisma.livePrice.findUnique({ where: { symbol: symbolName } });
+    if (pendingLivePrice) {
+      const marketRef = side === "BUY" ? pendingLivePrice.ask : pendingLivePrice.bid;
+      const directionError = validatePendingOrderDirection({ type, side, entryPrice: price, marketPrice: marketRef });
+      if (directionError) {
+        return NextResponse.json({ error: directionError }, { status: 400 });
+      }
     }
   }
 

@@ -3,6 +3,7 @@ import { Prisma, PrismaClient } from "@prisma/client";
 import { getFreshPrices } from "@/lib/live-price";
 import { closePositionInTx } from "@/lib/position-close";
 import { publishTradingEvent } from "@/lib/nats";
+import { checkTradingSession, computeNextSessionOpen } from "@/lib/risk";
 import * as mirror from "@/lib/mirror";
 
 type Db = PrismaClient | Prisma.TransactionClient;
@@ -43,7 +44,7 @@ export type CloseByResult =
       realizedPnlA: string;
       realizedPnlB: string;
     }
-  | { ok: false; error: string };
+  | { ok: false; error: string; nextOpenAt?: string };
 
 export async function closePositionsByEachOther(
   db: Db,
@@ -68,6 +69,22 @@ export async function closePositionsByEachOther(
   }
   if (a.side === b.side) {
     return { ok: false, error: "positions must be on opposite sides to close by each other" };
+  }
+
+  // Fix (2026-09-05 audit finding): this function only ever checked
+  // getFreshPrices' own staleness, which reports a closed-market symbol
+  // identically to a genuine feed outage ("no live price for this
+  // symbol") -- the same conflation app/api/trade/positions/[id]/close
+  // and the SL/TP-modify route were already fixed for. Both legs share
+  // one symbol (already enforced above), so one lookup covers the pair.
+  const brokerSymbol = await db.brokerSymbol.findUnique({
+    where: { brokerId_symbolId: { brokerId: params.brokerId, symbolId: a.symbolId } },
+    include: { tradingSessions: true },
+  });
+  const sessionError = checkTradingSession(brokerSymbol?.tradingSessions ?? [], new Date(), a.symbol.name);
+  if (sessionError) {
+    const nextOpenAt = computeNextSessionOpen(brokerSymbol?.tradingSessions ?? [], new Date());
+    return { ok: false, error: sessionError, nextOpenAt: nextOpenAt.toISOString() };
   }
 
   const priceMap = await getFreshPrices([a.symbol.name]);

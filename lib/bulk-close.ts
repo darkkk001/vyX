@@ -4,6 +4,7 @@ import { getFreshPrices } from "@/lib/live-price";
 import { computeRealizedPnl } from "@/lib/trading";
 import { closePositionInTx } from "@/lib/position-close";
 import { publishTradingEvent } from "@/lib/nats";
+import { checkTradingSession, computeNextSessionOpen } from "@/lib/risk";
 import * as mirror from "@/lib/mirror";
 
 // Replaces N sequential single-close HTTP round trips (WebTrader.tsx's
@@ -21,6 +22,7 @@ export type BulkClosePositionResult = {
   closePrice: string | null;
   realizedPnl: string | null;
   error: string | null;
+  nextOpenAt?: string;
 };
 
 type Db = PrismaClient | Prisma.TransactionClient;
@@ -56,12 +58,37 @@ export async function closeBulkForAccount(
   });
   if (openPositions.length === 0) return [];
 
-  // One fresh price per distinct symbol, fetched exactly once -- this
-  // Map is reused verbatim for every position in that symbol below, which
-  // is the whole point: same-symbol positions close at an identical price,
-  // not whatever the feed happened to tick to between sequential calls.
+  // Fix (2026-09-05 audit finding): a closed-market symbol used to fall
+  // straight through to "no live price" below, identical to a genuine
+  // feed outage -- same conflation close-by and the single-close/SL-TP-
+  // modify routes had before those were fixed. Computed per-symbol (a
+  // bulk close can span several symbols at once, each independently
+  // open/closed) and treated as authoritative regardless of whatever a
+  // stale LivePrice row might still say, same "closed session always
+  // wins" rule lib/risk-monitor.ts's own loadOpenPositionsWithMarket
+  // already applies for automatic SL/TP.
+  const symbolIds = [...new Set(openPositions.map((p) => p.symbolId))];
+  const brokerSymbols = await db.brokerSymbol.findMany({
+    where: { brokerId, symbolId: { in: symbolIds } },
+    include: { tradingSessions: true, symbol: { select: { name: true } } },
+  });
+  const now = new Date();
+  const nextOpenBySymbolName = new Map<string, string>();
+  for (const bs of brokerSymbols) {
+    if (checkTradingSession(bs.tradingSessions, now, bs.symbol.name) != null) {
+      nextOpenBySymbolName.set(bs.symbol.name, computeNextSessionOpen(bs.tradingSessions, now).toISOString());
+    }
+  }
+
+  // One fresh price per distinct OPEN-market symbol, fetched exactly
+  // once -- this Map is reused verbatim for every position in that symbol
+  // below, which is the whole point: same-symbol positions close at an
+  // identical price, not whatever the feed happened to tick to between
+  // sequential calls. Closed-market symbols are excluded from this fetch
+  // entirely (their positions are reported via nextOpenBySymbolName
+  // instead, never priced at all).
   const symbolNames = [...new Set(openPositions.map((p) => p.symbol.name))];
-  const priceBySymbol = await getFreshPrices(symbolNames);
+  const priceBySymbol = await getFreshPrices(symbolNames.filter((n) => !nextOpenBySymbolName.has(n)));
 
   const candidates = openPositions.filter((p) => {
     if (scope === "SYMBOL") return p.symbol.name === symbol;
@@ -72,9 +99,13 @@ export async function closeBulkForAccount(
   // below actually fills at -- never a stale/different read -- and the
   // same raw-price-diff formula the client's own positionPnl already
   // shows the trader (no commission subtracted), so "close profitable"
-  // matches what was on screen when they clicked it.
+  // matches what was on screen when they clicked it. A closed-market
+  // position can't be classified either way, but is kept in `matching`
+  // (rather than silently dropped) so the loop below still reports it
+  // with a real MARKET_CLOSED reason instead of it just vanishing.
   const matching = candidates.filter((p) => {
     if (scope !== "PROFIT" && scope !== "LOSS") return true;
+    if (nextOpenBySymbolName.has(p.symbol.name)) return true;
     const live = priceBySymbol.get(p.symbol.name);
     if (!live) return false; // no fresh price -- can't classify, excluded (also can't close, see below)
     const cp = closePriceFor(p.side, live.bid, live.ask);
@@ -89,6 +120,11 @@ export async function closeBulkForAccount(
 
   await withTx(db, async (tx) => {
     for (const p of matching) {
+      const nextOpenAt = nextOpenBySymbolName.get(p.symbol.name);
+      if (nextOpenAt) {
+        results.push({ positionId: p.id, closed: false, closePrice: null, realizedPnl: null, error: "MARKET_CLOSED", nextOpenAt });
+        continue;
+      }
       const live = priceBySymbol.get(p.symbol.name);
       if (!live) {
         results.push({ positionId: p.id, closed: false, closePrice: null, realizedPnl: null, error: "no live price" });

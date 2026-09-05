@@ -65,6 +65,39 @@ export function validatePendingPriceDistance(params: {
   return null;
 }
 
+// MT4/5 directional rule for a resting LIMIT/STOP, checked both at
+// placement and at entry-price modify (2026-09-05 audit finding -- until
+// now nothing validated this at all: a "BUY LIMIT" above market or a
+// "SELL STOP" above market went through unrejected, live-confirmed twice
+// during Section A). `marketPrice` must be the side-appropriate live
+// reference (ask for BUY, bid for SELL -- the same side this order would
+// actually fill against), fetched server-side by the caller, never a
+// client-supplied value -- same "server is the price authority" rule
+// every other price check in this app already follows.
+export function validatePendingOrderDirection(params: {
+  type: "LIMIT" | "STOP";
+  side: OrderSide;
+  entryPrice: Prisma.Decimal | number | string;
+  marketPrice: Prisma.Decimal | number | string;
+}): string | null {
+  const entry = new Prisma.Decimal(params.entryPrice);
+  const market = new Prisma.Decimal(params.marketPrice);
+  const sideLabel = params.side === "BUY" ? "Buy" : "Sell";
+  const typeLabel = params.type === "LIMIT" ? "Limit" : "Stop";
+  // BUY LIMIT (buy cheaper later) and SELL STOP (sell on a breakdown)
+  // both require the entry to sit BELOW the current price; SELL LIMIT
+  // (sell higher later) and BUY STOP (buy on a breakout) both require it
+  // ABOVE.
+  const mustBeBelow = (params.side === "BUY" && params.type === "LIMIT") || (params.side === "SELL" && params.type === "STOP");
+  if (mustBeBelow && entry.gte(market)) {
+    return `A ${sideLabel} ${typeLabel} must be below the current price`;
+  }
+  if (!mustBeBelow && entry.lte(market)) {
+    return `A ${sideLabel} ${typeLabel} must be above the current price`;
+  }
+  return null;
+}
+
 export function computeRealizedPnl(params: {
   side: OrderSide;
   openPrice: Prisma.Decimal;
