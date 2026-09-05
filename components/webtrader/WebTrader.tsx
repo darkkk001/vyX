@@ -1562,8 +1562,22 @@ export default function WebTrader({
           // latter bumps on every write regardless of whether the price
           // actually changed (see LivePrice.tickAt's own schema comment),
           // so it never actually caught a heartbeat-resent frozen price.
+          //
+          // Real bug fixed here (2026-09-05): that staleness skip applied
+          // unconditionally, so a symbol whose market is CLOSED (not an
+          // outage -- routinely closed, e.g. every weekend) never got its
+          // own last-known row included at all, since its real tickAt is
+          // always far older than 15s. The watchlist showed a blank "-"
+          // for every closed symbol until something ELSE eventually
+          // seeded it (open symbols only, in practice) -- a closed
+          // symbol's last-known price/day-range doesn't change while
+          // it's closed, so there's no reason to withhold it. Only skip
+          // the stale row when the market is actually OPEN (a genuine
+          // feed outage, the scenario this check exists for) --
+          // row.marketClosed is the same server-authoritative signal
+          // marketClosedBySymbol below already trusts.
           const tickAtMs = new Date(row.tickAt).getTime();
-          if (now - tickAtMs > 15000) continue;
+          if (now - tickAtMs > 15000 && !row.marketClosed) continue;
           // `at` is the row's own tickAt, not "now this poll happened to
           // resolve" -- feedStatusFor's staleness clock should reflect how
           // fresh the price actually is, not this request's own latency.

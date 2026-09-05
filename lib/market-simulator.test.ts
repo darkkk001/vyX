@@ -58,6 +58,50 @@ describe("tickMarket -- dayOpen (bug #1: impossible %chg)", () => {
   });
 });
 
+// Real bug fixed 2026-09-05 -- a symbol whose market is routinely CLOSED
+// (not an outage -- every weekend) has a real last tick that's always far
+// older than LIVE_MAX_AGE_MS (30s). Before this fix, tickMarket's `else`
+// branch only ever set `live = false` for any tick beyond that window,
+// never actually applying its bid/lastTickAt -- so a closed-market symbol
+// on a fresh page load stayed at createInitialMarket's placeholder
+// (lastTickAt: 0) forever, and the watchlist showed a blank "-" instead
+// of its real last-known price. WebTrader.tsx's own poll no longer
+// excludes a closed symbol's stale row from what it hands to tickMarket
+// in the first place (see that effect's own comment) -- this pins
+// tickMarket's own half of the fix: given that stale tick, it must
+// still seed the symbol once, correctly marked non-live.
+describe("tickMarket -- first-ever tick already stale (bug: closed-market symbol blank on load)", () => {
+  it("applies a symbol's first tick even when it's already older than LIVE_MAX_AGE_MS, marked non-live", () => {
+    const market = createInitialMarket();
+    expect(market.EURUSD.lastTickAt).toBe(0); // never ticked yet -- createInitialMarket's sentinel
+
+    const now = Date.UTC(2026, 8, 5, 12, 0, 0); // Saturday -- EURUSD's market is closed
+    const staleTickAt = now - 2 * 24 * 60 * 60 * 1000; // the real last tick, from Friday close -- 2 days stale
+    const ticked = tickMarket(market, { EURUSD: { bid: 1.0845, ask: 1.0847, at: staleTickAt } }, now);
+
+    expect(ticked.EURUSD.live).toBe(false); // still correctly not "live" -- it's stale
+    expect(ticked.EURUSD.lastTickAt).toBe(staleTickAt); // but the real tick IS applied now
+    expect(ticked.EURUSD.bid).toBe(1.0845); // real last-known price, not the def.base placeholder
+  });
+
+  it("does NOT re-apply a stale tick to a symbol that has already ticked live earlier this session (mid-session outage keeps the old frozen value, not a new stale one)", () => {
+    let market = createInitialMarket();
+    const liveAt = Date.UTC(2026, 8, 4, 10, 0, 0); // Friday, market open
+    market = tickMarket(market, { EURUSD: { bid: 1.09, ask: 1.0902, at: liveAt } }, liveAt);
+    expect(market.EURUSD.live).toBe(true);
+    expect(market.EURUSD.bid).toBe(1.09);
+
+    // Feed goes quiet (outage or the weekend close) -- a much later "now"
+    // with no fresher tick at all (liveTicks omits this symbol, matching
+    // what a real feed-loss looks like to tickMarket).
+    const muchLater = liveAt + 3 * 24 * 60 * 60 * 1000;
+    market = tickMarket(market, {}, muchLater);
+    expect(market.EURUSD.live).toBe(false);
+    expect(market.EURUSD.bid).toBe(1.09); // frozen at the last real value, unchanged
+    expect(market.EURUSD.lastTickAt).toBe(liveAt); // unchanged -- this is the pre-existing "graceful degradation" path, untouched by this fix
+  });
+});
+
 describe("resolveDayOpenFromD1 (bug #1 follow-up: mid-day mount still showed the impossible %chg)", () => {
   // The rollover fix above only takes effect at the *next* UTC midnight --
   // a trader loading the terminal mid-day (the actual reported case, 07:52

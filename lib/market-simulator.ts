@@ -441,6 +441,22 @@ export function tickMarket(
         m.lastTickAt = tick.at;
       }
       m.live = true;
+    } else if (tick && m.lastTickAt === 0) {
+      // Real bug fixed here (2026-09-05): a symbol that's NEVER received
+      // real tick data this session (0 is createInitialMarket's sentinel)
+      // used to stay at that placeholder forever if its first available
+      // tick already happened to be stale -- exactly a closed-market
+      // symbol on a fresh page load, whose real last tick is routinely
+      // far older than LIVE_MAX_AGE_MS. Apply it once anyway (still
+      // correctly marked non-live) so the watchlist shows the real
+      // last-known price/day-range immediately instead of a blank "-"
+      // that a closed symbol would otherwise never recover from. A
+      // symbol that WAS live earlier this session and has since gone
+      // stale keeps the plain `else` branch below -- this only covers
+      // the "never ticked at all yet" case, not a mid-session outage.
+      applyBidAsk(m, tick.bid, tick.ask, now);
+      m.lastTickAt = tick.at;
+      m.live = false;
     } else {
       m.live = false;
     }
