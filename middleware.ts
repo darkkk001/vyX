@@ -88,8 +88,18 @@ export async function middleware(request: NextRequest) {
     }
 
     try {
+      // 2026-09-05 security fix -- resolve-broker now requires this same
+      // shared secret every other internal-only route on the platform
+      // already checks (see that route's own comment for the finding).
+      // "x-internal-request" above was never actually checked by the
+      // route it was sent to -- purely documentation of intent, not a
+      // real gate -- which is exactly how the route stayed reachable from
+      // outside despite the comment implying otherwise.
       const resolveResponse = await fetch(lookupUrl, {
-        headers: { "x-internal-request": "middleware" },
+        headers: {
+          "x-internal-request": "middleware",
+          "x-internal-secret": process.env.INTERNAL_SERVICE_SECRET ?? "",
+        },
       });
 
       if (!resolveResponse.ok) {

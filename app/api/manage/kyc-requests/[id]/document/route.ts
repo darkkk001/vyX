@@ -59,6 +59,12 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       "content-type": result.blob.contentType,
       "content-disposition": "inline",
       "cache-control": "private, no-store",
+      // Security fix (2026-09-05 audit) -- belt-and-suspenders alongside
+      // the upload route's own magic-byte sniffing: even if a stored
+      // blob's declared contentType were ever wrong, this stops a
+      // browser from second-guessing it and rendering the bytes as
+      // something else (e.g. HTML) than what's declared.
+      "x-content-type-options": "nosniff",
     },
   });
 }
