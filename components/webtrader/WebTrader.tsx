@@ -1983,10 +1983,15 @@ export default function WebTrader({
   const floatingPnl = useMemo(() => positions.reduce((s, p) => s + positionPnl(p), 0), [positions, positionPnl]);
   const usedMargin = useMemo(() => {
     if (!account) return 0;
+    // Side-aware (bid for BUY, ask for SELL), matching lib/margin.ts's
+    // liveUsedMarginFor -- the server-side canonical version this was
+    // unified with 2026-09-05. Was always-bid regardless of side before,
+    // a minor (spread-sized) inconsistency with positionPnl just above.
     return positions.reduce((sum, p) => {
       const m = market[p.symbol.name];
       if (!m) return sum;
-      return sum + (m.def.contractSize * parseFloat(p.volume) * m.bid) / account.leverage;
+      const price = p.side === "BUY" ? m.bid : m.ask;
+      return sum + (m.def.contractSize * parseFloat(p.volume) * price) / account.leverage;
     }, 0);
   }, [positions, market, account]);
   const equity = account ? parseFloat(account.balance) + floatingPnl : 0;
@@ -2046,17 +2051,21 @@ export default function WebTrader({
     ctx.stroke();
   }, [equity, account]);
 
-  // margin call banner
-  const marginCall = positions.length > 0 && isFinite(marginLevel) && marginLevel < 100;
+  // margin call banner -- 2026-09-05 P0 fix: reads this account's real
+  // configured Group.marginCallLevel (via /api/trade/me) instead of a
+  // hardcoded 100%, so the banner/toast only fires at the level the
+  // broker actually set.
+  const marginCallLevel = account ? parseFloat(account.marginCallLevel) : 100;
+  const marginCall = positions.length > 0 && isFinite(marginLevel) && marginLevel < marginCallLevel;
   const marginCallNotifiedRef = useRef(false);
   useEffect(() => {
     if (marginCall && !marginCallNotifiedRef.current) {
       marginCallNotifiedRef.current = true;
-      pushToast("Margin call, your margin level is below 100%", true);
+      pushToast(`Margin call, your margin level is below ${marginCallLevel}%`, true);
     } else if (!marginCall) {
       marginCallNotifiedRef.current = false;
     }
-  }, [marginCall, pushToast]);
+  }, [marginCall, marginCallLevel, pushToast]);
 
   function selectSymbol(name: string) {
     if (name === activeSymbol) return;
@@ -3377,7 +3386,7 @@ export default function WebTrader({
       <DesktopTitleBar brokerName={brokerName} brokerLogoUrl={brokerLogoUrl} server={serverName} connected={connected} />
       <div id="app">
         <div className={`margin-call-banner${marginCall ? " show" : ""}`}>
-          Margin call, your margin level is below 100%. Deposit funds or close positions to avoid stop-out.
+          Margin call, your margin level is below {marginCallLevel}%. Deposit funds or close positions to avoid stop-out.
         </div>
 
         <div className={`topbar${isDesktopApp ? " topbar-desktop" : ""}`}>
@@ -4846,7 +4855,7 @@ export default function WebTrader({
           </div>
           <div className="status-item statusbar-center"><span className="status-label">Open P/L</span><span className="status-value mono" style={{ color: floatingPnl === 0 ? "var(--text-1)" : floatingPnl >= 0 ? "var(--buy)" : "var(--sell)" }}>{balanceHidden ? "••••" : (floatingPnl >= 0 ? "+" : "") + floatingPnl.toFixed(2)}</span></div>
           <div className="statusbar-right">
-            <div className="status-item"><span className="status-label">Margin level</span><span className="status-value mono" style={{ color: !isFinite(marginLevel) ? "var(--text-1)" : marginLevel < 100 ? "var(--sell)" : marginLevel < 200 ? "#FAC775" : "var(--buy)" }}>{balanceHidden ? "••••" : isFinite(marginLevel) ? marginLevel.toFixed(0) + "%" : "-"}</span></div>
+            <div className="status-item"><span className="status-label">Margin level</span><span className="status-value mono" style={{ color: !isFinite(marginLevel) ? "var(--text-1)" : marginLevel < marginCallLevel ? "var(--sell)" : marginLevel < marginCallLevel * 2 ? "#FAC775" : "var(--buy)" }}>{balanceHidden ? "••••" : isFinite(marginLevel) ? marginLevel.toFixed(0) + "%" : "-"}</span></div>
             <div className="status-item"><span className="status-label">Free margin</span><span className="status-value mono">{balanceHidden ? "••••••" : fmt(freeMargin, 2)}</span></div>
           </div>
         </div>

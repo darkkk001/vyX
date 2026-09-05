@@ -3,6 +3,10 @@
     {
       "path": "/api/internal/swap-rollover",
       "schedule": "5 0 * * *"
+    },
+    {
+      "path": "/api/internal/margin-monitor",
+      "schedule": "* * * * *"
     }
   ]
 }

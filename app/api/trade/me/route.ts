@@ -21,6 +21,12 @@ export async function GET() {
       status: true,
       fullName: true,
       twoFactorEnabled: true,
+      // 2026-09-05 P0 fix -- WebTrader's own margin-call banner/toast used
+      // to hardcode 100% rather than reading this account's real
+      // configured level (Group.marginCallLevel). Null group = ungrouped
+      // account, same 100 fallback Group.marginCallLevel's own schema
+      // default already uses everywhere else (lib/margin.ts, lib/risk-monitor.ts).
+      group: { select: { marginCallLevel: true } },
     },
   });
 
@@ -28,5 +34,6 @@ export async function GET() {
     return NextResponse.json({ error: "account not found" }, { status: 404 });
   }
 
-  return NextResponse.json(account);
+  const { group, ...rest } = account;
+  return NextResponse.json({ ...rest, marginCallLevel: (group?.marginCallLevel ?? 100).toString() });
 }

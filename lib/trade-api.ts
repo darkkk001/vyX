@@ -20,6 +20,10 @@ export type AccountInfo = {
   status: string;
   fullName: string;
   twoFactorEnabled: boolean;
+  // 2026-09-05 P0 fix -- this account's real configured margin-call level
+  // (from its Group, "100" if ungrouped), so WebTrader's own banner/toast
+  // stops hardcoding 100% regardless of what the broker actually set.
+  marginCallLevel: string;
 };
 
 export type ApiSession = {

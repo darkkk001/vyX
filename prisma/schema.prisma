@@ -101,6 +101,13 @@ enum TransactionType {
   WITHDRAWAL
   CREDIT
   ADJUSTMENT // manual balance correction by an admin — always audited
+  // 2026-09-05 P0 fix -- the compensating credit that brings a stop-out-
+  // closed account's balance back up to zero when Broker.negativeBalanceProtection
+  // is on and the raw TRADE_PNL close would have gone negative. Always
+  // paired 1:1 with the TRADE_PNL row for the same close (same
+  // referenceType/referenceId="Position"); the write-off amount the broker
+  // absorbed. See lib/position-close.ts's closePositionInTx.
+  NEGATIVE_BALANCE_PROTECTION
   COMMISSION
   SWAP
   TRADE_PNL
@@ -284,6 +291,15 @@ model Broker {
   // Sum of open volume (lots) across every symbol for this broker. Null
   // = no limit -- see lib/risk.ts's checkBrokerExposure.
   totalExposureLimit         Decimal?        @db.Decimal(18, 2)
+
+  // 2026-09-05 P0 fix (stop-out trigger gap) -- when true (default), a
+  // stop-out close that would drive Account.balance below zero clamps it
+  // at zero instead: the broker absorbs the excess loss as a
+  // NEGATIVE_BALANCE_PROTECTION ledger write-off rather than the client
+  // ledger ever showing negative. Off = today's old behavior (balance can
+  // go negative, broker's own risk to carry or chase). See
+  // lib/position-close.ts's closePositionInTx.
+  negativeBalanceProtection Boolean @default(true)
 
   // Applied by POST /api/manage/accounts when the admin doesn't specify
   // currency/leverage explicitly -- System Settings page.
@@ -475,6 +491,16 @@ model Account {
   // for any of the three today. Resolution priority once that changes:
   // account override > type > group.
   swapFree Boolean @default(false)
+
+  // 2026-09-05 P0 fix -- edge-detection state for the standing margin-call
+  // warning (lib/risk-monitor.ts's evaluateAccountRisk, Pass 3): set to
+  // "now" the moment this account's live margin level first drops to/below
+  // its group's marginCallLevel and a MARGIN_CALL Notification is fired;
+  // cleared back to null the moment margin level recovers back above that
+  // level. This is what stops every single poll cycle from re-firing a
+  // fresh notification while an account sits in margin call -- one
+  // notification per episode, not one per tick/poll.
+  marginCallNotifiedAt DateTime? @db.Timestamptz(3)
 
   // Basic identity/KYC fields -- null for every account that existed
   // before this feature (there was previously no way to enter any of

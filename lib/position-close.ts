@@ -79,11 +79,33 @@ export async function closePositionInTx(
 
   const account = await tx.account.findUniqueOrThrow({ where: { id: position.accountId } });
   const balanceBefore = account.balance;
-  const balanceAfter = balanceBefore.add(realizedPnl);
+  const rawBalanceAfter = balanceBefore.add(realizedPnl); // the true, uncapped result of this trade -- always what the TRADE_PNL row below records
+
+  // 2026-09-05 P0 fix: negative-balance protection. Before this, a
+  // stop-out (or any close) that lost more than the account's own
+  // balance could cover simply drove Account.balance negative -- live-
+  // reproduced this session (a $50 account closed a losing position for
+  // -$500, balance settled at -$450). Broker.negativeBalanceProtection
+  // (default ON) is the per-broker opt-out for brokers who don't offer
+  // this as a client feature; when it applies, the account's own ledger
+  // balance never goes below zero -- the broker absorbs the excess as a
+  // separate, explicit NEGATIVE_BALANCE_PROTECTION write-off transaction
+  // plus an AuditLog entry, rather than either silently capping the
+  // TRADE_PNL row itself (which would misstate the real trade P&L) or
+  // leaving the client ledger negative.
+  let finalBalance = rawBalanceAfter;
+  let writeOffAmount: Prisma.Decimal | null = null;
+  if (rawBalanceAfter.isNegative()) {
+    const broker = await tx.broker.findUniqueOrThrow({ where: { id: position.brokerId }, select: { negativeBalanceProtection: true } });
+    if (broker.negativeBalanceProtection) {
+      writeOffAmount = rawBalanceAfter.neg();
+      finalBalance = new Prisma.Decimal(0);
+    }
+  }
 
   await tx.account.update({
     where: { id: position.accountId },
-    data: { balance: balanceAfter },
+    data: { balance: finalBalance },
   });
 
   const transaction = await tx.transaction.create({
@@ -94,12 +116,42 @@ export async function closePositionInTx(
       status: "COMPLETED",
       amount: realizedPnl,
       balanceBefore,
-      balanceAfter,
+      balanceAfter: rawBalanceAfter,
       referenceType: "Position",
       referenceId: position.id,
       note: note ?? (isPartial ? `Partial close: ${closeVolume} lots @ ${closePrice}` : null),
     },
   });
+
+  if (writeOffAmount) {
+    await tx.transaction.create({
+      data: {
+        brokerId: position.brokerId,
+        accountId: position.accountId,
+        type: "NEGATIVE_BALANCE_PROTECTION",
+        status: "COMPLETED",
+        amount: writeOffAmount,
+        balanceBefore: rawBalanceAfter,
+        balanceAfter: finalBalance,
+        referenceType: "Position",
+        referenceId: position.id,
+        note: `Negative-balance protection: broker absorbed $${writeOffAmount.toFixed(2)} beyond zero`,
+      },
+    });
+    await tx.auditLog.create({
+      data: {
+        brokerId: position.brokerId,
+        action: "NEGATIVE_BALANCE_PROTECTION_APPLIED",
+        entityType: "Account",
+        entityId: position.accountId,
+        newValue: {
+          positionId: position.id,
+          writeOffAmount: writeOffAmount.toFixed(2),
+          rawBalanceAfter: rawBalanceAfter.toFixed(2),
+        },
+      },
+    });
+  }
 
   const updatedPosition = await tx.position.findUniqueOrThrow({ where: { id: position.id } });
 

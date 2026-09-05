@@ -1,7 +1,7 @@
 import "server-only";
 import { Prisma, PrismaClient } from "@prisma/client";
 import { getFreshPrices } from "@/lib/live-price";
-import { computeRealizedPnl } from "@/lib/trading";
+import { computeRealizedPnl, closePriceFor } from "@/lib/trading";
 
 export type AccountMarginSnapshot = {
   accountId: string;
@@ -56,9 +56,9 @@ export async function computeAccountMarginSnapshots(prisma: PrismaClient, broker
 
     const live = priceBySymbol.get(p.symbol.name);
     if (live) {
-      const currentPrice = p.side === "BUY" ? live.bid : live.ask;
+      const currentPrice = closePriceFor(p.side, live.bid, live.ask);
       snap.equity += computeRealizedPnl({ side: p.side, openPrice: p.openPrice, closePrice: currentPrice, volume: p.volume, contractSize: p.symbol.contractSize }).toNumber();
-      snap.usedMargin += p.symbol.contractSize.toNumber() * p.volume.toNumber() * live.bid.toNumber() / p.account.leverage;
+      snap.usedMargin += liveUsedMarginFor({ side: p.side, volume: p.volume, contractSize: p.symbol.contractSize, bid: live.bid, ask: live.ask, leverage: p.account.leverage }).toNumber();
     }
 
     byAccount.set(p.account.id, snap);
@@ -84,6 +84,36 @@ export function requiredMarginFor(
   leverage: number
 ): Prisma.Decimal {
   return volume.mul(contractSize).mul(price).div(leverage);
+}
+
+// 2026-09-05 P0 fix -- the single, unified "how much margin does this
+// OPEN position use right now" formula. Before this, three call sites
+// each computed it differently: computeAccountMarginSnapshots below and
+// lib/risk-monitor.ts's stop-out loop both used the position's CURRENT
+// bid regardless of side (a BUY and a SELL were both priced off bid --
+// an unintentional inconsistency with how P&L itself is computed, via
+// closePriceFor), while checkAccountPreTradeMargin below used each
+// position's own frozen OPEN price instead of a live one at all --
+// live-quantified to disagree by $54 on 3 real positions at the same
+// instant. Live price (not open price) was chosen deliberately: margin
+// is meant to reflect an open position's CURRENT market exposure/cost to
+// unwind, not what it happened to cost when it opened, and it's what 3 of
+// the 4 pre-existing implementations (including WebTrader.tsx's own
+// client-side display) already agreed on -- unifying onto open price
+// instead would have silently changed what every trader already sees on
+// their own dashboard. Side-aware (closePriceFor: bid for BUY, ask for
+// SELL) rather than "always bid," for full consistency with how P&L is
+// computed everywhere else in this app.
+export function liveUsedMarginFor(params: {
+  side: "BUY" | "SELL";
+  volume: Prisma.Decimal;
+  contractSize: Prisma.Decimal;
+  bid: Prisma.Decimal;
+  ask: Prisma.Decimal;
+  leverage: number;
+}): Prisma.Decimal {
+  const price = closePriceFor(params.side, params.bid, params.ask);
+  return requiredMarginFor(params.volume, params.contractSize, price, params.leverage);
 }
 
 // Same "would this order push the account below its margin-call level"
@@ -144,16 +174,25 @@ export async function checkAccountPreTradeMargin(
 
   const priceBySymbol = await getFreshPrices([...new Set(positions.map((p) => p.symbol.name))]);
 
+  // 2026-09-05 P0 fix: this used to always price existing positions'
+  // margin off their own frozen openPrice, the one outlier convention
+  // among four implementations (see liveUsedMarginFor's own comment) --
+  // now uses the same live, side-aware price as everywhere else,
+  // falling back to openPrice only for a symbol with no fresh live price
+  // right now (the same "can't get worse than before" fallback, never
+  // silently dropping a position's margin contribution during a feed gap).
   let equity = account.balance;
   let usedMargin = new Prisma.Decimal(0);
   for (const p of positions) {
-    usedMargin = usedMargin.add(requiredMarginFor(p.volume, p.symbol.contractSize, p.openPrice, params.leverage));
     const live = priceBySymbol.get(p.symbol.name);
     if (live) {
-      const currentPrice = p.side === "BUY" ? live.bid : live.ask;
+      const currentPrice = closePriceFor(p.side, live.bid, live.ask);
+      usedMargin = usedMargin.add(liveUsedMarginFor({ side: p.side, volume: p.volume, contractSize: p.symbol.contractSize, bid: live.bid, ask: live.ask, leverage: params.leverage }));
       equity = equity.add(
         computeRealizedPnl({ side: p.side, openPrice: p.openPrice, closePrice: currentPrice, volume: p.volume, contractSize: p.symbol.contractSize })
       );
+    } else {
+      usedMargin = usedMargin.add(requiredMarginFor(p.volume, p.symbol.contractSize, p.openPrice, params.leverage));
     }
   }
 

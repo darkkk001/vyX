@@ -3,9 +3,11 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getFreshPrices } from "@/lib/live-price";
 import { checkTradingSession } from "@/lib/risk";
-import { computeRealizedPnl } from "@/lib/trading";
+import { computeRealizedPnl, closePriceFor } from "@/lib/trading";
 import { closePositionInTx } from "@/lib/position-close";
 import { publishTradingEvent } from "@/lib/nats";
+import { createNotification } from "@/lib/notifications";
+import { liveUsedMarginFor } from "@/lib/margin";
 import * as mirror from "@/lib/mirror";
 
 // The legacy Next.js trading path (the one actually carrying every
@@ -92,13 +94,6 @@ async function loadOpenPositionsWithMarket(accountId: string): Promise<OpenPosit
   });
 }
 
-// Same convention as monitor.rs's close_price_for and every other close
-// price in this app: bid for a BUY, ask for a SELL -- the price closing
-// it *now* would actually fill at.
-function closePriceFor(side: "BUY" | "SELL", bid: Prisma.Decimal, ask: Prisma.Decimal): Prisma.Decimal {
-  return side === "BUY" ? bid : ask;
-}
-
 type SlTpReason = "stop_loss" | "take_profit";
 
 function slTpTrigger(p: OpenPositionWithMarket): SlTpReason | null {
@@ -159,7 +154,7 @@ export async function evaluateAccountRisk(accountId: string): Promise<RiskMonito
   // Pass 2: margin / stop-out, on whatever remains open after pass 1.
   const account = await prisma.account.findUnique({
     where: { id: accountId },
-    include: { group: { select: { stopOutLevel: true } } },
+    include: { group: { select: { stopOutLevel: true, marginCallLevel: true } } },
   });
   if (!account) return { evaluated: false, slTpClosed, stopOutClosed };
   const stopOutLevel = account.group?.stopOutLevel ?? new Prisma.Decimal(50);
@@ -183,7 +178,7 @@ export async function evaluateAccountRisk(accountId: string): Promise<RiskMonito
       const cp = closePriceFor(p.side, p.bid, p.ask);
       const pnl = computeRealizedPnl({ side: p.side, openPrice: p.openPrice, closePrice: cp, volume: p.volume, contractSize: p.contractSize });
       equity = equity.add(pnl);
-      usedMargin = usedMargin.add(p.contractSize.mul(p.volume).mul(p.bid).div(freshAccount.leverage));
+      usedMargin = usedMargin.add(liveUsedMarginFor({ side: p.side, volume: p.volume, contractSize: p.contractSize, bid: p.bid, ask: p.ask, leverage: freshAccount.leverage }));
       if (!worst || pnl.lt(worst.pnl)) worst = { position: p, pnl, closePrice: cp };
     }
 
@@ -218,6 +213,56 @@ export async function evaluateAccountRisk(accountId: string): Promise<RiskMonito
     // already closed this exact position first -- it's dropped from
     // consideration above via the stopOutClosed filter either way, so the
     // next loop iteration naturally retries with the next-worst position.
+  }
+
+  // Pass 3: standing margin-call warning (2026-09-05 P0 fix item 3) --
+  // unlike pass 2, this never closes anything; it's purely a notification.
+  // marginCallLevel was previously only ever checked pre-trade
+  // (lib/margin.ts's checkPreTradeMargin) -- nothing watched an EXISTING
+  // account's margin level for a warning-only crossing caused by price
+  // movement alone, and WebTrader.tsx's own client-side toast is
+  // ephemeral (only fires while that trader's own browser tab is open,
+  // and hardcodes 100% rather than reading the account's real configured
+  // level). This uses the account's own group.marginCallLevel and is
+  // edge-detected via Account.marginCallNotifiedAt so an account sitting
+  // in margin call across many poll cycles gets exactly one notification
+  // per episode, not one per cycle -- cleared the moment margin level
+  // recovers back above the threshold (or every position closes), so the
+  // next episode notifies fresh.
+  const marginCallLevel = account.group?.marginCallLevel ?? new Prisma.Decimal(100);
+  const remaining = (await loadOpenPositionsWithMarket(accountId)).filter((p) => !stopOutClosed.includes(p.id));
+  if (remaining.length > 0) {
+    const latestAccount = await prisma.account.findUniqueOrThrow({ where: { id: accountId } });
+    let equity = latestAccount.balance;
+    let usedMargin = new Prisma.Decimal(0);
+    for (const p of remaining) {
+      if (p.bid == null || p.ask == null) continue; // no live price -- not counted, same as passes 1/2
+      const cp = closePriceFor(p.side, p.bid, p.ask);
+      equity = equity.add(computeRealizedPnl({ side: p.side, openPrice: p.openPrice, closePrice: cp, volume: p.volume, contractSize: p.contractSize }));
+      usedMargin = usedMargin.add(liveUsedMarginFor({ side: p.side, volume: p.volume, contractSize: p.contractSize, bid: p.bid, ask: p.ask, leverage: latestAccount.leverage }));
+    }
+    if (usedMargin.gt(0)) {
+      const marginLevel = equity.div(usedMargin).mul(100);
+      const inMarginCall = marginLevel.lte(marginCallLevel);
+      if (inMarginCall && !latestAccount.marginCallNotifiedAt) {
+        const body = `Account ${latestAccount.accountNumber}'s margin level is ${marginLevel.toFixed(2)}%, at or below the ${marginCallLevel}% margin-call level. Deposit funds or close positions to avoid stop-out.`;
+        // Trader-facing copy (accountId set) and a separate dealer/broker-
+        // staff-facing copy (accountId omitted) -- same "two audiences, two
+        // rows" shape the funds-request/KYC notification types already use
+        // implicitly by being staff-only; MARGIN_CALL is the first type
+        // that needs both.
+        await createNotification(prisma, { brokerId: latestAccount.brokerId, type: "MARGIN_CALL", title: "Margin call", body, entityType: "Account", entityId: accountId, accountId });
+        await createNotification(prisma, { brokerId: latestAccount.brokerId, type: "MARGIN_CALL", title: "Margin call", body, entityType: "Account", entityId: accountId });
+        await prisma.account.update({ where: { id: accountId }, data: { marginCallNotifiedAt: new Date() } });
+      } else if (!inMarginCall && latestAccount.marginCallNotifiedAt) {
+        await prisma.account.update({ where: { id: accountId }, data: { marginCallNotifiedAt: null } });
+      }
+    }
+  } else if (account.marginCallNotifiedAt) {
+    // Nothing left open (stop-out/SL-TP closed everything above) -- reset
+    // so the next time this account opens a position and drifts into
+    // margin call again, it notifies fresh instead of staying silenced.
+    await prisma.account.update({ where: { id: accountId }, data: { marginCallNotifiedAt: null } });
   }
 
   return { evaluated: true, slTpClosed, stopOutClosed };

@@ -1,7 +1,7 @@
 import "server-only";
 import { Prisma, PrismaClient } from "@prisma/client";
 import { getFreshPrices } from "@/lib/live-price";
-import { computeRealizedPnl } from "@/lib/trading";
+import { computeRealizedPnl, closePriceFor } from "@/lib/trading";
 import { closePositionInTx } from "@/lib/position-close";
 import { publishTradingEvent } from "@/lib/nats";
 import { checkTradingSession, computeNextSessionOpen } from "@/lib/risk";
@@ -37,13 +37,6 @@ async function withTx<T>(db: Db, fn: (tx: Prisma.TransactionClient) => Promise<T
     return (db as PrismaClient).$transaction(fn);
   }
   return fn(db as Prisma.TransactionClient);
-}
-
-// side note for readers: BUY closes at bid, SELL closes at ask -- same
-// convention as every other close site in this app (lib/risk-monitor.ts's
-// closePriceFor, app/api/trade/positions/[id]/close/route.ts).
-function closePriceFor(side: "BUY" | "SELL", bid: Prisma.Decimal, ask: Prisma.Decimal): Prisma.Decimal {
-  return side === "BUY" ? bid : ask;
 }
 
 export async function closeBulkForAccount(

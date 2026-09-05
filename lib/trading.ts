@@ -98,6 +98,19 @@ export function validatePendingOrderDirection(params: {
   return null;
 }
 
+// The one canonical "what price would closing this position right now
+// actually fill at" rule, used everywhere a position's current market
+// value matters: closing (single/partial/bulk/close-by), automatic SL/TP,
+// stop-out, and (2026-09-05) the unified used-margin formula in
+// lib/margin.ts. A BUY is sold to close (fills at bid); a SELL is bought
+// to close (fills at ask). Previously duplicated verbatim in
+// lib/risk-monitor.ts and lib/bulk-close.ts -- consolidated here as part
+// of the P0 used-margin unification so there is exactly one definition to
+// keep correct.
+export function closePriceFor(side: OrderSide, bid: Prisma.Decimal, ask: Prisma.Decimal): Prisma.Decimal {
+  return side === "BUY" ? bid : ask;
+}
+
 export function computeRealizedPnl(params: {
   side: OrderSide;
   openPrice: Prisma.Decimal;

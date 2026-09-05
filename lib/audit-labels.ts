@@ -47,6 +47,7 @@ const LABELS: Record<string, string> = {
   GROUP_SYMBOLS_UPDATED: "Updated group symbol allowlist",
   GROUP_DELETED: "Deleted group",
   ACCOUNT_SWAP_FREE_CHANGED: "Changed account swap-free override",
+  NEGATIVE_BALANCE_PROTECTION_APPLIED: "Negative-balance protection applied (broker absorbed loss)",
   BROKER_CREATED: "Registered broker",
   BROKER_STATUS_CHANGED: "Changed broker status",
   SYMBOL_CONFIG_UPDATED: "Updated symbol config",
