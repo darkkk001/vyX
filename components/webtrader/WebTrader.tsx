@@ -972,13 +972,7 @@ export default function WebTrader({
   // rejections under a fast-moving market, not errors -- worth a
   // one-click retry against the now-current price rather than making the
   // trader re-open the ticket and re-enter everything.
-  // symbolName (optional): defaults to activeSymbol -- correct for every
-  // ticket/chart action, which always trades whatever's currently charted.
-  // Watchlist quick-trade (oneClickTrade) is the one caller that isn't --
-  // one-click trading can fire for ANY row in the list, not just the
-  // active one, so its MARKET_CLOSED message needs the symbol it actually
-  // tried to trade, not whatever happens to be on the chart.
-  const handleOrderError = useCallback((err: unknown, retry?: () => void, symbolName?: string) => {
+  const handleOrderError = useCallback((err: unknown, retry?: () => void) => {
     playSound("error", chartSettingsRef.current);
     if (err instanceof ApiError && (err.message === "PRICE_STALE" || err.message === "SLIPPAGE_EXCEEDED")) {
       const reason = err.message === "PRICE_STALE" ? "Feed went stale, order not placed" : "Price moved, order not placed";
@@ -987,7 +981,7 @@ export default function WebTrader({
     }
     if (err instanceof ApiError && err.message === "MARKET_CLOSED") {
       const info = err.body as { nextOpenAt?: string } | null;
-      pushToast(formatMarketClosedMessage(symbolName ?? activeSymbol, info?.nextOpenAt));
+      pushToast(formatMarketClosedMessage(activeSymbol, info?.nextOpenAt));
       return;
     }
     if (err instanceof ApiError && err.message === "NO_LIVE_FEED") {
@@ -2254,28 +2248,6 @@ export default function WebTrader({
     setPendingMarketSide((prev) => (prev === side ? null : side));
   }
 
-  // Watchlist B/S buttons (2026-09-05 fix) -- these used to fire a real
-  // MARKET order instantly with zero confirmation whenever one-click
-  // trading was on, and were hidden entirely (no quick-trade path at all)
-  // when it was off. A stray click placing a live trade is exactly the
-  // "accidental order" risk one-click trading is supposed to be an
-  // explicit opt-in for, not the default. Now: one-click OFF (the
-  // default) routes through the same select-symbol-then-confirm ticket
-  // flow confirmAndPlace already uses for the ticket's own Buy/Sell
-  // buttons, so a trader reviews volume/SL/TP before anything is sent.
-  // One-click ON keeps instant-fire (oneClickTrade) since that's what the
-  // trader explicitly opted into. selectSymbol's own reset of
-  // pendingMarketSide (see above) is why this sets it directly instead of
-  // calling selectSymbol then confirmAndPlace separately -- switching to a
-  // different watchlist symbol and pre-selecting a side has to land in a
-  // single state update, not two effects racing each other.
-  function watchlistQuickTrade(name: string, side: "BUY" | "SELL") {
-    if (oneClick) { oneClickTrade(name, side); return; }
-    setActiveSymbol(name);
-    setOrderMode("market");
-    setPendingMarketSide(side);
-  }
-
   async function placePendingOrder() {
     if (!m.live) { pushToast("No live feed for this symbol"); return; }
     const price = parseFloat(pendingPrice);
@@ -2294,34 +2266,6 @@ export default function WebTrader({
       await refreshOrders();
     } catch (err) {
       handleOrderError(err);
-    }
-  }
-
-  async function oneClickTrade(symbolName: string, side: "BUY" | "SELL") {
-    const mm = market[symbolName];
-    // Real bug fixed here (2026-09-05): `mm.live` goes false for BOTH a
-    // genuinely closed market and a real feed outage -- same fix as
-    // closePositionFull's own comment. The watchlist button is already
-    // disabled (with a "Market closed" tooltip) while the market is
-    // closed, so this is now just defense against the rare race where it
-    // closes between render and click -- let the request through and
-    // trust the server's real MARKET_CLOSED/NO_LIVE_FEED answer.
-    const ocPrice = side === "BUY" ? mm.ask : mm.bid;
-    try {
-      const result = await tradeApi.placeOrder({
-        symbol: symbolName, side, type: "MARKET", volume,
-        price: ocPrice, idempotencyKey: crypto.randomUUID(),
-      });
-      if (result.position) {
-        playSound("orderFilled", chartSettingsRef.current);
-        pushToast(`${side === "BUY" ? "Bought" : "Sold"} ${volume} lots of ${symbolName} @ ${fmt(ocPrice, mm.def.digits)}, one-click`);
-        await Promise.all([refreshPositions(), refreshAccount()]);
-      } else {
-        pushToast(`${symbolName} order submitted, awaiting dealer approval`);
-        await refreshOrders();
-      }
-    } catch (err) {
-      handleOrderError(err, () => oneClickTrade(symbolName, side), symbolName);
     }
   }
 
@@ -3754,23 +3698,8 @@ export default function WebTrader({
                 // literally never ticked this session (hasEverTicked
                 // false) has no real number to freeze on, so that case
                 // alone still falls back to a plain "—" (never a
-                // sentence). Trading itself (the one-click buttons below)
-                // is a different question with its own explicit 10s-
-                // staleness rule -- see priceStaleForTrading.
+                // sentence).
                 const hasEverTicked = row.lastTickAt > 0;
-                const priceStaleForTrading = dealingPendingNowMs - row.lastTickAt > 10_000;
-                // Same server-authoritative signal the order ticket's own
-                // Buy/Sell disable already uses (activeSymbolMarketClosed,
-                // marketClosedBySymbol above) -- a closed market takes
-                // priority over the plain feed-staleness message below,
-                // since "closed" is the actual reason, not a symptom of it.
-                const rowMarketClosed = marketClosedBySymbol[name] ?? false;
-                const wlTradeDisabled = rowMarketClosed || priceStaleForTrading;
-                const wlTradeTitle = rowMarketClosed
-                  ? "Market closed"
-                  : priceStaleForTrading
-                    ? "Prices are stale - reconnecting"
-                    : undefined;
                 return (
                   <div
                     key={name}
@@ -3784,27 +3713,20 @@ export default function WebTrader({
                     <span className="wl-drag-handle">⋮⋮</span>
                     <span className="wl-cell wl-symbol">{name}</span>
                     <span className="wl-cell wl-price-cell">
+                      {/* Real bug fixed here (2026-09-05): this cell used
+                          to also render B/S quick-trade buttons that fired a
+                          real MARKET order straight from the watchlist --
+                          even routed through the ticket (the safer form this
+                          briefly became), a fat-finger click here was judged
+                          too easy to trigger by accident for a price display
+                          cell. Removed outright; placing a trade from here
+                          now requires clicking the symbol (opens the chart)
+                          and using the order ticket like any other symbol. */}
                       {hasEverTicked ? (
                         <span className={`wl-price mono ${flash}`}>{fmt(row.bid, row.def.digits)}</span>
                       ) : (
                         <span className="wl-price mono" style={{ color: "var(--text-3)" }}>-</span>
                       )}
-                      {/* Watchlist quick-trade B/S (2026-09-05 fix) -- always
-                          shown now, not just under one-click trading. Off
-                          (the default), these open/focus the order ticket
-                          pre-filled with the chosen side for review, same as
-                          the ticket's own Buy/Sell buttons -- see
-                          watchlistQuickTrade's own comment for why a stray
-                          click firing a real, unconfirmed market order was a
-                          real accidental-trade risk this closes. On, they
-                          keep the existing instant-fire (opted into
-                          explicitly via the one-click setting). Either way,
-                          disabled with a "Market closed" tooltip while this
-                          symbol's market is closed. */}
-                      <span className="wl-occ-buttons" style={{ display: "flex" }}>
-                        <button className="wl-occ-btn buy" disabled={wlTradeDisabled} title={wlTradeTitle} onClick={(e) => { e.stopPropagation(); watchlistQuickTrade(name, "BUY"); }}>B</button>
-                        <button className="wl-occ-btn sell" disabled={wlTradeDisabled} title={wlTradeTitle} onClick={(e) => { e.stopPropagation(); watchlistQuickTrade(name, "SELL"); }}>S</button>
-                      </span>
                     </span>
                     {columnPrefs.change ? <span className={`wl-cell mono ${changePct !== null && changePct >= 0 ? "wl-pos" : "wl-neg"}`}>{changePct !== null ? (changePct >= 0 ? "+" : "") + changePct.toFixed(2) + "%" : "-"}</span> : null}
                     {columnPrefs.spread ? <span className="wl-cell mono" style={{ textAlign: "right" }}>{hasEverTicked ? spreadPoints(row.ask, row.bid, row.def.digits) : "-"}</span> : null}

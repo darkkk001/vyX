@@ -468,7 +468,7 @@ html[data-mode="light"], html[data-mode="light"] body {
 .wl-item.active { background: var(--bg-3); }
 .wl-cell { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wl-symbol { font-weight: 500; color: var(--text-1); }
-.wl-price-cell { display: flex; align-items: center; gap: 6px; }
+.wl-price-cell { display: flex; align-items: center; }
 .wl-price { transition: color .3s; }
 .wl-price.up { color: var(--buy); }
 .wl-price.down { color: var(--sell); }
@@ -484,15 +484,6 @@ html[data-mode="light"], html[data-mode="light"] body {
 .wl-alert-btn.active { color: var(--text-1); }
 .wl-drag-handle { color: var(--text-3); cursor: grab; font-size: 11px; letter-spacing: -1px; user-select: none; }
 .wl-item.dragging { opacity: .4; }
-.wl-occ-buttons { display: none; gap: 3px; }
-.wl-occ-btn { width: 18px; height: 18px; border-radius: 4px; border: none; cursor: pointer; font-size: 10px; font-weight: 700; line-height: 1; }
-.wl-occ-btn.buy { background: var(--buy); color: #04140C; }
-.wl-occ-btn.sell { background: var(--sell); color: #2A0808; }
-/* Market-closed / stale-feed disable (2026-09-05) -- these buttons are now
-   always visible (not just under one-click trading), so a disabled state
-   needs its own visible treatment instead of relying on the buttons simply
-   not being rendered. */
-.wl-occ-btn:disabled { background: var(--bg-3); color: var(--text-3); cursor: not-allowed; }
 .wl-hint { font-size: 10px; color: var(--text-3); text-align: center; padding: 10px 8px 4px; margin-top: auto; }
 .wl-add-symbol-row {
   display: flex; align-items: center; gap: 6px; padding: 8px 8px; margin-top: 2px;
