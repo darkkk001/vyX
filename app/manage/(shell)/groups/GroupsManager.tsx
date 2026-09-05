@@ -8,7 +8,11 @@ import { Checkbox } from "@/components/ui/Checkbox";
 import { FormField } from "@/components/ui/FormField";
 import { LeverageInput } from "@/components/ui/LeverageInput";
 import { Button } from "@/components/ui/Button";
-import { Modal, ModalActions } from "@/components/ui/Modal";
+import { IconButton } from "@/components/ui/IconButton";
+import { Badge } from "@/components/ui/Badge";
+import { Alert } from "@/components/ui/Alert";
+import { SegmentedControl } from "@/components/ui/SegmentedControl";
+import { Modal, ModalActions, ModalSection } from "@/components/ui/Modal";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
 
 export type GroupRow = {
@@ -25,14 +29,89 @@ export type GroupRow = {
   groupType: "LP" | "DEALING" | "DEMO";
   dealingMode: "INHERIT" | "AUTO" | "MANUAL";
   tier: "STANDARD" | "PRO" | "ECN" | "ZERO";
+  // Computed by the API from MirrorRule (sourceType=GROUP, sourceId=this
+  // group's id) -- not a real Group column. See uiTypeFor below for why
+  // this is what distinguishes the "Reverse (Mirror)" UI type from a
+  // plain "Dealing" one; both persist identically as groupType=DEALING.
+  hasMirrorRule: boolean;
 };
 
-// Create form + editable list, same fetch/error/submitting-state shape
-// as SymbolConfigTable.tsx (the symbols screen's own client component).
-// Self-fetches from the already-existing /api/manage/groups GET instead
-// of receiving initialRows as a server-rendered prop.
+// UI-only "type" concept layered over groupType + dealingMode -- there is
+// no 4th/5th GroupType enum value in the schema (LP | DEALING | DEMO
+// only, see prisma/schema.prisma), and per the standing P2022 rule this
+// redesign makes no schema change. Every option below persists as one of
+// the 3 real enum values; "B-Book (Auto)" and both DEALING-flavored
+// options ("Dealing" / "Reverse (Mirror)") all persist as
+// groupType=DEALING -- what actually varies underneath is dealingMode
+// (plus, for Reverse, whether a MirrorRule already sources from this
+// group). "Reverse" is a real, already-used pattern in this broker's
+// data (a DEALING group with a MirrorRule pointing away from it,
+// direction=REVERSE), not a speculative addition.
+type UiType = "BBOOK_AUTO" | "ABOOK_LP" | "DEALING" | "REVERSE_MIRROR" | "DEMO";
+
+function uiTypeFor(groupType: GroupRow["groupType"], dealingMode: GroupRow["dealingMode"], hasMirrorRule: boolean): UiType {
+  if (groupType === "LP") return "ABOOK_LP";
+  if (groupType === "DEMO") return "DEMO";
+  if (dealingMode === "AUTO") return "BBOOK_AUTO";
+  return hasMirrorRule ? "REVERSE_MIRROR" : "DEALING";
+}
+
+const UI_TYPE_OPTIONS: { value: UiType; label: string; hint: string }[] = [
+  { value: "BBOOK_AUTO", label: "B-Book (Auto)", hint: "Orders auto-fill at market -- no dealing queue at all." },
+  { value: "ABOOK_LP", label: "A-Book (LP)", hint: "Routed toward a liquidity provider." },
+  { value: "DEALING", label: "Dealing", hint: "Orders can queue for manual dealer review." },
+  { value: "REVERSE_MIRROR", label: "Reverse (Mirror)", hint: "B-book routing, mirrored onto another account." },
+  { value: "DEMO", label: "Demo", hint: "Practice accounts -- no real settlement." },
+];
+
+// Only DEALING and REVERSE_MIRROR route through the dealing desk at all,
+// so only those two render this choice -- everything else (B-Book/Auto,
+// LP, Demo) never shows it, which is what actually satisfies "Force
+// Dealing only for DEALING-type groups." The old standalone checkbox is
+// folded into dealingMode here instead of kept as a separate field:
+// forceDealingMode is a no-op for a DEALING-type group in
+// lib/dealing-routing.ts's resolveWantsDealingQueue (groupTypeIsDealing
+// alone already satisfies the fallback OR there) -- dealingMode=MANUAL is
+// the field that actually forces the queue unconditionally, so that's
+// what "Force Dealing" maps to below.
+const DEALING_CHOICE_OPTIONS: { value: "INHERIT" | "MANUAL"; label: string; hint: string }[] = [
+  {
+    value: "INHERIT",
+    label: "Dealer-managed / direct",
+    hint: "Follows the broker's Dealer switch (Dealing page): ON queues for manual review, OFF auto-fills at market.",
+  },
+  {
+    value: "MANUAL",
+    label: "Force Dealing",
+    hint: "Every order from this group always queues for manual dealer approval, regardless of the Dealer switch.",
+  },
+];
+
+const TIER_LABELS: Record<GroupRow["tier"], string> = { STANDARD: "Standard", PRO: "Pro", ECN: "ECN", ZERO: "Zero" };
+const RESTRICTION_LABELS: Record<GroupRow["tradingRestriction"], string> = { BOTH: "Both", BUY_ONLY: "Buy only", SELL_ONLY: "Sell only" };
+
+function typeBadge(row: GroupRow) {
+  const uiType = uiTypeFor(row.groupType, row.dealingMode, row.hasMirrorRule);
+  if (uiType === "BBOOK_AUTO") return <Badge tone="info">B-Book (Auto)</Badge>;
+  if (uiType === "ABOOK_LP") return <Badge tone="accent">A-Book (LP)</Badge>;
+  if (uiType === "DEMO") return <Badge tone="neutral">Demo</Badge>;
+  const dealingLabel = row.dealingMode === "MANUAL" ? "Force" : "Dealer-managed";
+  return uiType === "REVERSE_MIRROR" ? (
+    <Badge tone="warning">Reverse ({dealingLabel})</Badge>
+  ) : (
+    <Badge tone="success">Dealing ({dealingLabel})</Badge>
+  );
+}
+
+// Read-only list + button-triggered create/edit modal, same fetch/error
+// shape as SymbolConfigTable.tsx. Self-fetches from the already-existing
+// /api/manage/groups GET instead of receiving initialRows as a
+// server-rendered prop.
 export default function GroupsManager() {
   const [rows, setRows] = useState<GroupRow[] | null>(null);
+  const [formFor, setFormFor] = useState<{ mode: "create" } | { mode: "edit"; row: GroupRow } | null>(null);
+  const [symbolsFor, setSymbolsFor] = useState<GroupRow | null>(null);
+  const [pricingFor, setPricingFor] = useState<GroupRow | null>(null);
 
   useEffect(() => {
     fetch("/api/manage/groups")
@@ -41,89 +120,19 @@ export default function GroupsManager() {
       .catch(() => setRows([]));
   }, []);
 
-  const [newName, setNewName] = useState("");
-  const [newLeverage, setNewLeverage] = useState("100");
-  const [newCallLevel, setNewCallLevel] = useState("100");
-  const [newStopOutLevel, setNewStopOutLevel] = useState("50");
-  const [newIsDefault, setNewIsDefault] = useState(false);
-  const [newMaxLotSize, setNewMaxLotSize] = useState("");
-  const [newTradingRestriction, setNewTradingRestriction] = useState<"BOTH" | "BUY_ONLY" | "SELL_ONLY">("BOTH");
-  const [newSwapFree, setNewSwapFree] = useState(false);
-  const [newForceDealingMode, setNewForceDealingMode] = useState(false);
-  const [newGroupType, setNewGroupType] = useState<GroupRow["groupType"]>("DEALING");
-  const [newDealingMode, setNewDealingMode] = useState<GroupRow["dealingMode"]>("INHERIT");
-  const [newTier, setNewTier] = useState<GroupRow["tier"]>("STANDARD");
-  const [creating, setCreating] = useState(false);
-  const [createError, setCreateError] = useState<string | null>(null);
-
-  const [savingId, setSavingId] = useState<string | null>(null);
-  const [errors, setErrors] = useState<Record<string, string>>({});
-  const [savedId, setSavedId] = useState<string | null>(null);
-  const [symbolsFor, setSymbolsFor] = useState<GroupRow | null>(null);
-  const [pricingFor, setPricingFor] = useState<GroupRow | null>(null);
-
-  function updateRow(id: string, patch: Partial<GroupRow>) {
-    setRows((prev) => prev && prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
-    setSavedId(null);
-  }
-
-  async function createGroup(e: React.FormEvent) {
-    e.preventDefault();
-    setCreating(true);
-    setCreateError(null);
-    const response = await fetch("/api/manage/groups", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        name: newName,
-        leverage: newLeverage,
-        marginCallLevel: newCallLevel,
-        stopOutLevel: newStopOutLevel,
-        isDefault: newIsDefault,
-        maxLotSize: newMaxLotSize,
-        tradingRestriction: newTradingRestriction,
-        swapFree: newSwapFree,
-        forceDealingMode: newForceDealingMode,
-        groupType: newGroupType,
-        dealingMode: newDealingMode,
-        tier: newTier,
-      }),
-    });
-    setCreating(false);
-    if (!response.ok) {
-      const body = await response.json().catch(() => ({}));
-      setCreateError(body.error ?? "failed to create group");
-      return;
-    }
-    const created: GroupRow = await response.json();
-    // Append the row we just got back directly (same "only one default"
-    // rule the API itself applies) instead of re-fetching the whole list.
+  function handleCreated(created: GroupRow) {
+    // Same "only one default" rule the API itself applies -- append the
+    // row we got back directly instead of re-fetching the whole list.
     setRows((prev) => (created.isDefault ? (prev ?? []).map((r) => ({ ...r, isDefault: false })) : (prev ?? [])).concat(created));
-    setNewName("");
-    setNewMaxLotSize("");
-    setNewTradingRestriction("BOTH");
-    setNewSwapFree(false);
-    setNewForceDealingMode(false);
-    setNewGroupType("DEALING");
-    setNewDealingMode("INHERIT");
-    setNewTier("STANDARD");
   }
 
-  async function save(row: GroupRow) {
-    setSavingId(row.id);
-    setErrors((prev) => ({ ...prev, [row.id]: "" }));
-    const response = await fetch(`/api/manage/groups/${row.id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(row),
-    });
-    setSavingId(null);
-    if (!response.ok) {
-      const body = await response.json().catch(() => ({}));
-      setErrors((prev) => ({ ...prev, [row.id]: body.error ?? "save failed" }));
-      return;
-    }
-    setSavedId(row.id);
+  function handleUpdated(updated: GroupRow) {
+    setRows((prev) =>
+      (prev ?? []).map((r) => {
+        if (r.id === updated.id) return updated;
+        return updated.isDefault ? { ...r, isDefault: false } : r;
+      })
+    );
   }
 
   if (rows === null) {
@@ -132,235 +141,69 @@ export default function GroupsManager() {
 
   return (
     <div className="flex flex-col gap-6">
-      <Card title="Create group">
-        <form onSubmit={createGroup} className="flex flex-col gap-4">
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-            <FormField label="Name">
-              <Input value={newName} onChange={(e) => setNewName(e.target.value)} required />
-            </FormField>
-            <FormField label="Leverage">
-              <LeverageInput value={newLeverage} onChange={(e) => setNewLeverage(e.target.value)} />
-            </FormField>
-            <FormField label="Margin call %">
-              <Input type="text" inputMode="decimal" mono value={newCallLevel} onChange={(e) => setNewCallLevel(e.target.value)} />
-            </FormField>
-            <FormField label="Stop out %">
-              <Input type="text" inputMode="decimal" mono value={newStopOutLevel} onChange={(e) => setNewStopOutLevel(e.target.value)} />
-            </FormField>
-            <FormField label="Max lot">
-              <Input
-                type="text"
-                inputMode="decimal"
-                mono
-                placeholder="blank = no override"
-                value={newMaxLotSize}
-                onChange={(e) => setNewMaxLotSize(e.target.value)}
-              />
-            </FormField>
-            <FormField label="Trading restriction">
-              <Select value={newTradingRestriction} onChange={(e) => setNewTradingRestriction(e.target.value as "BOTH" | "BUY_ONLY" | "SELL_ONLY")}>
-                <option value="BOTH">Both</option>
-                <option value="BUY_ONLY">Buy only</option>
-                <option value="SELL_ONLY">Sell only</option>
-              </Select>
-            </FormField>
-            <FormField label="Type">
-              <Select value={newGroupType} onChange={(e) => setNewGroupType(e.target.value as GroupRow["groupType"])} title="Controls which book this group's new positions default into -- LP = A-Book (real LP hedge, once one exists), Dealing = B-Book, Demo = paper trading">
-                <option value="DEALING">Dealing (B-Book)</option>
-                <option value="LP">LP (A-Book)</option>
-                <option value="DEMO">Demo</option>
-              </Select>
-            </FormField>
-            <FormField label="Tier">
-              <Select value={newTier} onChange={(e) => setNewTier(e.target.value as GroupRow["tier"])} title="Classification only -- set actual spread/commission/swap per symbol via the Pricing button below">
-                <option value="STANDARD">Standard</option>
-                <option value="PRO">Pro</option>
-                <option value="ECN">ECN</option>
-                <option value="ZERO">Zero</option>
-              </Select>
-            </FormField>
-            <FormField label="Dealing override">
-              <Select
-                value={newDealingMode}
-                onChange={(e) => setNewDealingMode(e.target.value as GroupRow["dealingMode"])}
-                title="Overrides whether this group's orders reach the manual dealing queue, independent of Type/Force dealing/the broker-wide setting"
-              >
-                <option value="INHERIT">Inherit (default)</option>
-                <option value="AUTO">Auto-fill always</option>
-                <option value="MANUAL">Queue always</option>
-              </Select>
-            </FormField>
-          </div>
-          <p className="text-xs text-[var(--text-3)]">
-            Dealing override: Inherit changes nothing (Type/Force dealing/broker setting still decide). Auto-fill always bypasses the dealing
-            queue for this group no matter what else is set (still subject to margin + live price). Queue always forces manual review even if
-            nothing else would have.
-          </p>
-
-          <div className="flex flex-wrap items-center gap-5">
-            <Checkbox
-              label="Swap-free"
-              title="No overnight swap/rollover charged on positions held in this group"
-              checked={newSwapFree}
-              onChange={(e) => setNewSwapFree(e.target.checked)}
-            />
-            <Checkbox
-              label="Default group"
-              title="New accounts are placed in this group automatically when no group is chosen at creation"
-              checked={newIsDefault}
-              onChange={(e) => setNewIsDefault(e.target.checked)}
-            />
-            <Checkbox
-              label="Force dealing"
-              title="Route this group's market orders to the dealing queue for manual review, independent of the broker-wide setting"
-              checked={newForceDealingMode}
-              onChange={(e) => setNewForceDealingMode(e.target.checked)}
-            />
-            <Button type="submit" variant="primary" disabled={creating}>
-              {creating ? "Creating..." : "Create group"}
-            </Button>
-            {createError ? <span className="text-sm text-[var(--sell)]">{createError}</span> : null}
-          </div>
-        </form>
-      </Card>
-
-      <Card title="Groups">
+      <Card
+        title="Groups"
+        action={
+          <Button variant="primary" size="sm" onClick={() => setFormFor({ mode: "create" })}>
+            + Create group
+          </Button>
+        }
+      >
         <Table>
           <TableHead>
             <TableHeaderCell className="min-w-[150px]">Name</TableHeaderCell>
-            <TableHeaderCell className="min-w-[130px]">Leverage</TableHeaderCell>
+            <TableHeaderCell className="min-w-[110px]">Leverage</TableHeaderCell>
             <TableHeaderCell align="right" className="min-w-[85px]">Margin call %</TableHeaderCell>
             <TableHeaderCell align="right" className="min-w-[75px]">Stop out %</TableHeaderCell>
             <TableHeaderCell align="right" className="min-w-[75px]">Max lot</TableHeaderCell>
-            <TableHeaderCell className="min-w-[115px]">Restriction</TableHeaderCell>
-            <TableHeaderCell className="min-w-[130px]" title="Controls which book this group's new positions default into">Type</TableHeaderCell>
-            <TableHeaderCell className="min-w-[100px]">Tier</TableHeaderCell>
-            <TableHeaderCell align="center" className="min-w-[65px]">Swap-free</TableHeaderCell>
-            <TableHeaderCell align="center" className="min-w-[65px]">Default</TableHeaderCell>
-            <TableHeaderCell align="center" className="min-w-[80px]" title="Route this group's market orders to the dealing queue for manual review, independent of the broker-wide setting">
-              Dealing
+            <TableHeaderCell className="min-w-[95px]">Restriction</TableHeaderCell>
+            <TableHeaderCell className="min-w-[175px]" title="Controls which book this group's new positions default into, and how dealing routes">
+              Type
             </TableHeaderCell>
-            <TableHeaderCell
-              className="min-w-[140px]"
-              title="Overrides whether this group's orders reach the manual dealing queue, independent of Type/Force dealing/the broker-wide setting"
-            >
-              Dealing override
-            </TableHeaderCell>
+            <TableHeaderCell className="min-w-[85px]">Tier</TableHeaderCell>
+            <TableHeaderCell align="center" className="min-w-[80px]">Swap-free</TableHeaderCell>
+            <TableHeaderCell align="center" className="min-w-[70px]">Default</TableHeaderCell>
             <TableHeaderCell className="min-w-[190px]" />
           </TableHead>
           <TableBody>
             {rows.length === 0 ? (
-              <TableEmptyState colSpan={12}>No groups yet.</TableEmptyState>
+              <TableEmptyState colSpan={10}>No groups yet.</TableEmptyState>
             ) : (
               rows.map((row) => (
                 <TableRow key={row.id}>
-                  <TableCell className="min-w-[150px]">
-                    <Input value={row.name} onChange={(e) => updateRow(row.id, { name: e.target.value })} className="w-full" />
+                  <TableCell primary className="min-w-[150px]">
+                    {row.name}
                   </TableCell>
-                  <TableCell className="min-w-[130px]">
-                    <LeverageInput
-                      value={row.leverage}
-                      onChange={(e) => updateRow(row.id, { leverage: Number(e.target.value) || 0 })}
-                    />
+                  <TableCell className="min-w-[110px]">
+                    <div className="flex items-center gap-1.5">
+                      <span className="font-mono">1:{row.leverage}</span>
+                      <IconButton title="Edit leverage" onClick={() => setFormFor({ mode: "edit", row })}>
+                        ✎
+                      </IconButton>
+                    </div>
                   </TableCell>
-                  <TableCell align="right" className="min-w-[85px]">
-                    <Input
-                      type="text"
-                      inputMode="decimal"
-                      mono
-                      value={row.marginCallLevel}
-                      onChange={(e) => updateRow(row.id, { marginCallLevel: e.target.value })}
-                      className="w-full text-right"
-                    />
+                  <TableCell align="right" mono className="min-w-[85px]">
+                    {row.marginCallLevel}
                   </TableCell>
-                  <TableCell align="right" className="min-w-[75px]">
-                    <Input
-                      type="text"
-                      inputMode="decimal"
-                      mono
-                      value={row.stopOutLevel}
-                      onChange={(e) => updateRow(row.id, { stopOutLevel: e.target.value })}
-                      className="w-full text-right"
-                    />
+                  <TableCell align="right" mono className="min-w-[75px]">
+                    {row.stopOutLevel}
                   </TableCell>
-                  <TableCell align="right" className="min-w-[75px]">
-                    <Input
-                      type="text"
-                      inputMode="decimal"
-                      mono
-                      placeholder="none"
-                      value={row.maxLotSize}
-                      onChange={(e) => updateRow(row.id, { maxLotSize: e.target.value })}
-                      className="w-full text-right"
-                    />
+                  <TableCell align="right" mono className="min-w-[75px]">
+                    {row.maxLotSize || "—"}
                   </TableCell>
-                  <TableCell className="min-w-[115px]">
-                    <Select
-                      value={row.tradingRestriction}
-                      onChange={(e) => updateRow(row.id, { tradingRestriction: e.target.value as "BOTH" | "BUY_ONLY" | "SELL_ONLY" })}
-                      className="w-full"
-                    >
-                      <option value="BOTH">Both</option>
-                      <option value="BUY_ONLY">Buy only</option>
-                      <option value="SELL_ONLY">Sell only</option>
-                    </Select>
-                  </TableCell>
-                  <TableCell className="min-w-[130px]">
-                    <Select
-                      value={row.groupType}
-                      onChange={(e) => updateRow(row.id, { groupType: e.target.value as GroupRow["groupType"] })}
-                      className="w-full"
-                    >
-                      <option value="DEALING">Dealing (B-Book)</option>
-                      <option value="LP">LP (A-Book)</option>
-                      <option value="DEMO">Demo</option>
-                    </Select>
-                  </TableCell>
-                  <TableCell className="min-w-[100px]">
-                    <Select value={row.tier} onChange={(e) => updateRow(row.id, { tier: e.target.value as GroupRow["tier"] })} className="w-full">
-                      <option value="STANDARD">Standard</option>
-                      <option value="PRO">Pro</option>
-                      <option value="ECN">ECN</option>
-                      <option value="ZERO">Zero</option>
-                    </Select>
-                  </TableCell>
-                  <TableCell align="center" className="min-w-[65px]">
-                    <Checkbox
-                      title="No overnight swap/rollover charged on positions held in this group"
-                      checked={row.swapFree}
-                      onChange={(e) => updateRow(row.id, { swapFree: e.target.checked })}
-                    />
-                  </TableCell>
-                  <TableCell align="center" className="min-w-[65px]">
-                    <Checkbox
-                      title="New accounts are placed in this group automatically when no group is chosen at creation"
-                      checked={row.isDefault}
-                      onChange={(e) => updateRow(row.id, { isDefault: e.target.checked })}
-                    />
-                  </TableCell>
+                  <TableCell className="min-w-[95px]">{RESTRICTION_LABELS[row.tradingRestriction]}</TableCell>
+                  <TableCell className="min-w-[175px]">{typeBadge(row)}</TableCell>
+                  <TableCell className="min-w-[85px]">{TIER_LABELS[row.tier]}</TableCell>
                   <TableCell align="center" className="min-w-[80px]">
-                    <Checkbox
-                      title="Route this group's market orders to the dealing queue for manual review, independent of the broker-wide setting"
-                      checked={row.forceDealingMode}
-                      onChange={(e) => updateRow(row.id, { forceDealingMode: e.target.checked })}
-                    />
+                    {row.swapFree ? "✓" : "—"}
                   </TableCell>
-                  <TableCell className="min-w-[140px]">
-                    <Select
-                      value={row.dealingMode}
-                      onChange={(e) => updateRow(row.id, { dealingMode: e.target.value as GroupRow["dealingMode"] })}
-                      className="w-full"
-                      title="Overrides whether this group's orders reach the manual dealing queue, independent of Type/Force dealing/the broker-wide setting"
-                    >
-                      <option value="INHERIT">Inherit</option>
-                      <option value="AUTO">Auto-fill always</option>
-                      <option value="MANUAL">Queue always</option>
-                    </Select>
+                  <TableCell align="center" className="min-w-[70px]">
+                    {row.isDefault ? "✓" : "—"}
                   </TableCell>
                   <TableCell className="min-w-[190px] whitespace-nowrap">
                     <div className="flex items-center gap-2">
-                      <Button size="sm" disabled={savingId === row.id} onClick={() => save(row)}>
-                        {savingId === row.id ? "Saving..." : "Save"}
+                      <Button size="sm" onClick={() => setFormFor({ mode: "edit", row })}>
+                        Edit
                       </Button>
                       <Button size="sm" variant="ghost" onClick={() => setSymbolsFor(row)}>
                         Symbols
@@ -368,8 +211,6 @@ export default function GroupsManager() {
                       <Button size="sm" variant="ghost" onClick={() => setPricingFor(row)}>
                         Pricing
                       </Button>
-                      {savedId === row.id ? <span className="text-xs text-[var(--buy)]">Saved</span> : null}
-                      {errors[row.id] ? <span className="text-xs text-[var(--sell)]">{errors[row.id]}</span> : null}
                     </div>
                   </TableCell>
                 </TableRow>
@@ -379,9 +220,210 @@ export default function GroupsManager() {
         </Table>
       </Card>
 
+      {formFor ? (
+        <GroupFormModal
+          initial={formFor.mode === "edit" ? formFor.row : null}
+          onClose={() => setFormFor(null)}
+          onSaved={(saved) => {
+            if (formFor.mode === "create") handleCreated(saved);
+            else handleUpdated(saved);
+            setFormFor(null);
+          }}
+        />
+      ) : null}
       {symbolsFor ? <SymbolsModal row={symbolsFor} onClose={() => setSymbolsFor(null)} /> : null}
       {pricingFor ? <PricingModal row={pricingFor} onClose={() => setPricingFor(null)} /> : null}
     </div>
+  );
+}
+
+// Shared create/edit form -- context-aware: only the sections relevant to
+// the selected Group type render at all (see UI_TYPE_OPTIONS/uiTypeFor
+// above). Name/leverage/margin call/stop out/max lot/restriction/tier/
+// swap-free/default always show; the dealing-behavior choice and the
+// mirror-rule note are type-conditional. Same {initial, onClose, onSaved}
+// self-fetching-free shape as SymbolsModal/PricingModal below, just with
+// no GET (the row itself, or null for create, is all this needs).
+function GroupFormModal({
+  initial,
+  onClose,
+  onSaved,
+}: {
+  initial: GroupRow | null;
+  onClose: () => void;
+  onSaved: (row: GroupRow) => void;
+}) {
+  const isEdit = initial !== null;
+  const [name, setName] = useState(initial?.name ?? "");
+  const [leverage, setLeverage] = useState(String(initial?.leverage ?? "100"));
+  const [callLevel, setCallLevel] = useState(initial?.marginCallLevel ?? "100");
+  const [stopOutLevel, setStopOutLevel] = useState(initial?.stopOutLevel ?? "50");
+  const [maxLotSize, setMaxLotSize] = useState(initial?.maxLotSize ?? "");
+  const [tradingRestriction, setTradingRestriction] = useState<GroupRow["tradingRestriction"]>(initial?.tradingRestriction ?? "BOTH");
+  const [swapFree, setSwapFree] = useState(initial?.swapFree ?? false);
+  const [isDefault, setIsDefault] = useState(initial?.isDefault ?? false);
+  const [tier, setTier] = useState<GroupRow["tier"]>(initial?.tier ?? "STANDARD");
+  const [uiType, setUiType] = useState<UiType>(
+    initial ? uiTypeFor(initial.groupType, initial.dealingMode, initial.hasMirrorRule) : "DEALING"
+  );
+  const [dealingChoice, setDealingChoice] = useState<"INHERIT" | "MANUAL">(
+    initial && initial.dealingMode === "MANUAL" ? "MANUAL" : "INHERIT"
+  );
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const showsDealingChoice = uiType === "DEALING" || uiType === "REVERSE_MIRROR";
+
+  async function submit() {
+    setSaving(true);
+    setError(null);
+    const groupType: GroupRow["groupType"] = uiType === "ABOOK_LP" ? "LP" : uiType === "DEMO" ? "DEMO" : "DEALING";
+    const dealingMode: GroupRow["dealingMode"] = uiType === "BBOOK_AUTO" ? "AUTO" : showsDealingChoice ? dealingChoice : "INHERIT";
+    const response = await fetch(isEdit ? `/api/manage/groups/${initial!.id}` : "/api/manage/groups", {
+      method: isEdit ? "PATCH" : "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name,
+        leverage,
+        marginCallLevel: callLevel,
+        stopOutLevel,
+        isDefault,
+        maxLotSize,
+        tradingRestriction,
+        swapFree,
+        // The standalone "Force dealing" checkbox is fully retired -- every
+        // real group in this broker's data already has this false, and its
+        // only effect (forcing the queue for a non-DEALING group) is no
+        // longer reachable through this form now that "Force Dealing" is
+        // expressed as dealingMode=MANUAL under Dealing/Reverse instead.
+        forceDealingMode: false,
+        groupType,
+        dealingMode,
+        tier,
+      }),
+    });
+    setSaving(false);
+    if (!response.ok) {
+      const b = await response.json().catch(() => ({}));
+      setError(b.error ?? "save failed");
+      return;
+    }
+    const saved: GroupRow = await response.json();
+    onSaved(saved);
+  }
+
+  return (
+    <Modal open onClose={onClose} title={isEdit ? `Edit group — ${initial!.name}` : "Create group"} onSubmit={submit} wide>
+      <div className="flex flex-col gap-4">
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+          <FormField label="Name">
+            <Input value={name} onChange={(e) => setName(e.target.value)} required />
+          </FormField>
+          <FormField label="Leverage">
+            <LeverageInput value={leverage} onChange={(e) => setLeverage(e.target.value)} />
+          </FormField>
+          <FormField label="Tier">
+            <Select
+              value={tier}
+              onChange={(e) => setTier(e.target.value as GroupRow["tier"])}
+              title="Classification only -- set actual spread/commission/swap per symbol via the Pricing button"
+            >
+              <option value="STANDARD">Standard</option>
+              <option value="PRO">Pro</option>
+              <option value="ECN">ECN</option>
+              <option value="ZERO">Zero</option>
+            </Select>
+          </FormField>
+          <FormField label="Margin call %">
+            <Input type="text" inputMode="decimal" mono value={callLevel} onChange={(e) => setCallLevel(e.target.value)} />
+          </FormField>
+          <FormField label="Stop out %">
+            <Input type="text" inputMode="decimal" mono value={stopOutLevel} onChange={(e) => setStopOutLevel(e.target.value)} />
+          </FormField>
+          <FormField label="Max lot">
+            <Input
+              type="text"
+              inputMode="decimal"
+              mono
+              placeholder="blank = no override"
+              value={maxLotSize}
+              onChange={(e) => setMaxLotSize(e.target.value)}
+            />
+          </FormField>
+          <FormField label="Trading restriction">
+            <Select value={tradingRestriction} onChange={(e) => setTradingRestriction(e.target.value as GroupRow["tradingRestriction"])}>
+              <option value="BOTH">Both</option>
+              <option value="BUY_ONLY">Buy only</option>
+              <option value="SELL_ONLY">Sell only</option>
+            </Select>
+          </FormField>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-5">
+          <Checkbox
+            label="Swap-free"
+            title="No overnight swap/rollover charged on positions held in this group"
+            checked={swapFree}
+            onChange={(e) => setSwapFree(e.target.checked)}
+          />
+          <Checkbox
+            label="Default group"
+            title="New accounts are placed in this group automatically when no group is chosen at creation"
+            checked={isDefault}
+            onChange={(e) => setIsDefault(e.target.checked)}
+          />
+        </div>
+
+        <ModalSection label="Group type">
+          <Select value={uiType} onChange={(e) => setUiType(e.target.value as UiType)}>
+            {UI_TYPE_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </Select>
+          <p className="mt-1.5 text-xs text-[var(--text-3)]">{UI_TYPE_OPTIONS.find((o) => o.value === uiType)?.hint}</p>
+        </ModalSection>
+
+        {uiType === "ABOOK_LP" ? (
+          <ModalSection label="LP routing">
+            <Alert tone="info">
+              LP routing config isn&apos;t built yet (Phase 5) -- orders in this group are marked A-Book but still execute against the
+              simulated/blended price feed until a real liquidity-provider connection exists.
+            </Alert>
+          </ModalSection>
+        ) : null}
+
+        {showsDealingChoice ? (
+          <ModalSection label="Dealing behavior">
+            <SegmentedControl value={dealingChoice} onChange={setDealingChoice} options={DEALING_CHOICE_OPTIONS} name="dealingChoice" />
+          </ModalSection>
+        ) : null}
+
+        {uiType === "REVERSE_MIRROR" ? (
+          <ModalSection label="Mirror rule">
+            {isEdit && initial!.hasMirrorRule ? (
+              <Alert tone="success">A mirror rule already sources from this group. Manage it from Dealing → Mirror Rules.</Alert>
+            ) : (
+              <Alert tone="warning">
+                {isEdit ? "No mirror rule sources from this group yet." : "You can set up the mirror rule after creating this group."} Configure
+                it from Dealing → Mirror Rules (source = this group, direction = Reverse).
+              </Alert>
+            )}
+          </ModalSection>
+        ) : null}
+
+        {error ? <p className="text-sm text-[var(--sell)]">{error}</p> : null}
+        <ModalActions>
+          <Button type="button" variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button type="submit" variant="primary" disabled={saving}>
+            {saving ? "Saving..." : isEdit ? "Save" : "Create group"}
+          </Button>
+        </ModalActions>
+      </div>
+    </Modal>
   );
 }
 

@@ -26,6 +26,22 @@ export async function GET() {
     orderBy: { name: "asc" },
   });
 
+  // MirrorRule.sourceId is a polymorphic reference (Group.id or Account.id,
+  // not a real FK -- see the model's own schema comment), so "does this
+  // group currently source a mirror rule" can't come back via `include`.
+  // One extra query, scoped by this broker + sourceType=GROUP, gives the
+  // Groups form a real signal to distinguish a plain DEALING group from
+  // the "Reverse (Mirror)" UI-type label (see GroupsManager.tsx's
+  // uiTypeFor) -- both persist identically as groupType=DEALING.
+  const mirrorSourceGroupIds = new Set(
+    (
+      await prisma.mirrorRule.findMany({
+        where: { brokerId: session.brokerId!, sourceType: "GROUP" },
+        select: { sourceId: true },
+      })
+    ).map((r) => r.sourceId)
+  );
+
   return NextResponse.json(
     groups.map((g) => ({
       id: g.id,
@@ -41,6 +57,7 @@ export async function GET() {
       groupType: g.groupType,
       dealingMode: g.dealingMode,
       tier: g.tier,
+      hasMirrorRule: mirrorSourceGroupIds.has(g.id),
     }))
   );
 }
@@ -148,6 +165,7 @@ export async function POST(request: NextRequest) {
         groupType: group.groupType,
         dealingMode: group.dealingMode,
         tier: group.tier,
+        hasMirrorRule: false,
       },
       { status: 201 }
     );

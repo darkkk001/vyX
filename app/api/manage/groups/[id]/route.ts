@@ -120,6 +120,13 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       return updated;
     });
 
+    // Same polymorphic-reference lookup as GET's own -- see that route's
+    // comment. Recomputed here (not just echoed from the request body) so
+    // the row the form gets back after Save reflects reality even though
+    // this route never writes MirrorRule itself.
+    const hasMirrorRule =
+      (await prisma.mirrorRule.count({ where: { brokerId, sourceType: "GROUP", sourceId: group.id } })) > 0;
+
     return NextResponse.json({
       id: group.id,
       name: group.name,
@@ -134,6 +141,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       groupType: group.groupType,
       dealingMode: group.dealingMode,
       tier: group.tier,
+      hasMirrorRule,
     });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
