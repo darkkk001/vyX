@@ -74,6 +74,17 @@ function parseDecimal(value: unknown): Prisma.Decimal | null {
   }
 }
 
+// 2026-09-05 real bug fixed here: a broker leaving spreadMarkup/
+// commissionPerLot/swapLong/swapShort blank (choosing "no markup/no
+// commission/no swap") got a bare "must be a valid number" error instead
+// -- forcing them to type a literal "0" in every pricing field. Blank
+// means zero for all four of these; only genuinely non-numeric input
+// (e.g. stray text) should still reject.
+function parseDecimalOrZero(value: unknown): Prisma.Decimal | null {
+  if (value == null || value === "") return new Prisma.Decimal(0);
+  return parseDecimal(value);
+}
+
 // Upserts (or, with `reset: true`, deletes) one symbol's override for
 // this group -- same per-row upsert shape as
 // app/api/manage/symbols/route.ts's own PATCH, just scoped to one group
@@ -128,12 +139,12 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     });
   }
 
-  const spreadMarkup = parseDecimal(body?.spreadMarkup);
-  const commissionPerLot = parseDecimal(body?.commissionPerLot);
-  const swapLong = parseDecimal(body?.swapLong);
-  const swapShort = parseDecimal(body?.swapShort);
+  const spreadMarkup = parseDecimalOrZero(body?.spreadMarkup);
+  const commissionPerLot = parseDecimalOrZero(body?.commissionPerLot);
+  const swapLong = parseDecimalOrZero(body?.swapLong);
+  const swapShort = parseDecimalOrZero(body?.swapShort);
   if (!spreadMarkup || !commissionPerLot || !swapLong || !swapShort) {
-    return NextResponse.json({ error: "spreadMarkup, commissionPerLot, swapLong, and swapShort must all be valid numbers" }, { status: 400 });
+    return NextResponse.json({ error: "spreadMarkup, commissionPerLot, swapLong, and swapShort must all be valid numbers (leave blank for 0)" }, { status: 400 });
   }
   if (spreadMarkup.lt(0) || commissionPerLot.lt(0)) {
     return NextResponse.json({ error: "spreadMarkup and commissionPerLot must not be negative" }, { status: 400 });

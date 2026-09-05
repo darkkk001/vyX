@@ -7,6 +7,18 @@ import { pipSize } from "@/lib/group-pricing";
 // Polled by the WebTrader client every couple seconds to blend real MT5
 // ticks (see /api/internal/price-feed) into the otherwise-simulated market
 // state. Symbols with no live tick yet simply stay simulated client-side.
+//
+// 2026-09-05 real bug fixed here: this response carried no Cache-Control
+// header at all, so a broker changing a group's spread markup wasn't
+// reflected on the trader's terminal until a HARD refresh (which bypasses
+// the browser's HTTP cache) -- a normal reload or the 30s poll interval
+// alone could keep silently reusing a cached response for this exact URL.
+// `force-dynamic` also guards against Next.js's own route-handler caching
+// independent of the browser. Every value here (price, markup, market-
+// closed status) must always be live -- there is no correct case for a
+// trading terminal to ever be served a stale response for this route.
+export const dynamic = "force-dynamic";
+
 export async function GET() {
   const session = await getAccountSession();
   if (!session) {
@@ -72,6 +84,7 @@ export async function GET() {
       ...p,
       marketClosed: closedByName.get(p.symbol) ?? false,
       askMarkup: askMarkupByName.get(p.symbol) ?? "0",
-    }))
+    })),
+    { headers: { "Cache-Control": "no-store" } }
   );
 }

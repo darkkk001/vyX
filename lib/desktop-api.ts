@@ -68,8 +68,19 @@ export async function apiCall<T>(path: string, init?: RequestInit): Promise<T> {
     return body as T;
   }
 
+  // 2026-09-05 real bug fixed here: no cache option was ever passed, so a
+  // plain fetch() used the browser's default HTTP-cache behavior --
+  // caught via a group spread-markup change not reaching the trader's
+  // terminal until a HARD refresh. Every route this transport serves
+  // (balances, positions, orders, prices) needs to always be live; none
+  // of them has a correct case for a browser-cached response, so this is
+  // a blanket no-store rather than a per-route opt-out. Paired with
+  // /api/trade/prices's own explicit Cache-Control: no-store response
+  // header -- belt and suspenders, since a server-sent no-store already
+  // covers a compliant cache regardless of what the client requests.
   const response = await fetch(path, {
     ...init,
+    cache: "no-store",
     headers: { "Content-Type": "application/json", ...init?.headers },
   });
   recalibrateFromResponse(response);

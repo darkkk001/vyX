@@ -101,6 +101,18 @@ function parseDecimal(value: unknown): Prisma.Decimal | null {
   }
 }
 
+// 2026-09-05 real bug fixed here: leaving spreadMarkup/swapLong/
+// swapShort/commissionPerLot blank (choosing "no markup/no swap/no
+// commission") got a bare "must be a valid number" error -- blank means
+// zero for these four. Deliberately NOT used for minLot/maxLot/lotStep:
+// those have no sensible "blank means zero" meaning (a 0 lot step is
+// nonsensical config, not a valid default), so they stay on the strict
+// parser below.
+function parseDecimalOrZero(value: unknown): Prisma.Decimal | null {
+  if (value == null || value === "") return new Prisma.Decimal(0);
+  return parseDecimal(value);
+}
+
 export async function PATCH(request: NextRequest) {
   const session = await requireManager();
   if (!session) {
@@ -118,13 +130,13 @@ export async function PATCH(request: NextRequest) {
     return NextResponse.json({ error: "unknown symbolId" }, { status: 400 });
   }
 
-  const spreadMarkup = parseDecimal(body?.spreadMarkup);
+  const spreadMarkup = parseDecimalOrZero(body?.spreadMarkup);
   const minLot = parseDecimal(body?.minLot);
   const maxLot = parseDecimal(body?.maxLot);
   const lotStep = parseDecimal(body?.lotStep);
-  const swapLong = parseDecimal(body?.swapLong);
-  const swapShort = parseDecimal(body?.swapShort);
-  const commissionPerLot = parseDecimal(body?.commissionPerLot);
+  const swapLong = parseDecimalOrZero(body?.swapLong);
+  const swapShort = parseDecimalOrZero(body?.swapShort);
+  const commissionPerLot = parseDecimalOrZero(body?.commissionPerLot);
   const maxExposureRaw = body?.maxExposure;
   const maxExposure = maxExposureRaw == null || maxExposureRaw === "" ? null : parseDecimal(maxExposureRaw);
   const enabled = typeof body?.enabled === "boolean" ? body.enabled : null;
