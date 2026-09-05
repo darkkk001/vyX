@@ -8,7 +8,8 @@ import { LeverageInput } from "@/components/ui/LeverageInput";
 import { Button } from "@/components/ui/Button";
 import { Alert } from "@/components/ui/Alert";
 import { Badge } from "@/components/ui/Badge";
-import { Modal, ModalActions } from "@/components/ui/Modal";
+import { Checkbox } from "@/components/ui/Checkbox";
+import { Modal, ModalActions, ModalSection } from "@/components/ui/Modal";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
 import { useToast } from "@/lib/toast";
 
@@ -34,6 +35,14 @@ type AccountTypeRow = {
   sortOrder: number;
   isDefault: boolean;
   enabled: boolean;
+  // Storage-only pricing (2026-09-05) -- set/saved here, but no live
+  // fill-time path reads these yet. See AccountType.spreadMarkup's own
+  // schema comment for the full "config now, enforce later" reasoning.
+  spreadMarkup: string;
+  commissionPerLot: string;
+  swapLong: string;
+  swapShort: string;
+  swapFree: boolean;
 };
 
 // Self-fetches from /api/manage/settings (a route that already returned
@@ -75,7 +84,18 @@ export default function SettingsManager() {
     reloadAccountTypes().catch(() => setAccountTypes([]));
   }, []);
 
-  const emptyTypeForm = { name: "", description: "", pricingHint: "", sortOrder: "0", isDefault: false };
+  const emptyTypeForm = {
+    name: "",
+    description: "",
+    pricingHint: "",
+    sortOrder: "0",
+    isDefault: false,
+    spreadMarkup: "0",
+    commissionPerLot: "0",
+    swapLong: "0",
+    swapShort: "0",
+    swapFree: false,
+  };
   const [typeModalTarget, setTypeModalTarget] = useState<AccountTypeRow | "new" | null>(null);
   const [typeForm, setTypeForm] = useState(emptyTypeForm);
   const [typeFormError, setTypeFormError] = useState<string | null>(null);
@@ -93,8 +113,30 @@ export default function SettingsManager() {
             pricingHint: target.pricingHint ?? "",
             sortOrder: String(target.sortOrder),
             isDefault: target.isDefault,
+            spreadMarkup: target.spreadMarkup,
+            commissionPerLot: target.commissionPerLot,
+            swapLong: target.swapLong,
+            swapShort: target.swapShort,
+            swapFree: target.swapFree,
           }
     );
+  }
+
+  // Every PATCH here always resends every pricing field (not just the one
+  // field this specific action changes) -- account-types/[id]/route.ts's
+  // PATCH does fall back to the existing saved value for an ABSENT field,
+  // but relying on that from every call site would mean one route change
+  // silently controls whether toggleTypeEnabled/makeTypeDefault preserve
+  // pricing; sending it explicitly here keeps that guarantee visible at
+  // the call site instead.
+  function pricingPayload(row: AccountTypeRow) {
+    return {
+      spreadMarkup: row.spreadMarkup,
+      commissionPerLot: row.commissionPerLot,
+      swapLong: row.swapLong,
+      swapShort: row.swapShort,
+      swapFree: row.swapFree,
+    };
   }
 
   async function submitTypeForm() {
@@ -112,6 +154,11 @@ export default function SettingsManager() {
         pricingHint: typeForm.pricingHint || undefined,
         sortOrder: Number(typeForm.sortOrder) || 0,
         isDefault: typeForm.isDefault,
+        spreadMarkup: typeForm.spreadMarkup,
+        commissionPerLot: typeForm.commissionPerLot,
+        swapLong: typeForm.swapLong,
+        swapShort: typeForm.swapShort,
+        swapFree: typeForm.swapFree,
       }),
     });
     setTypeSaving(false);
@@ -130,7 +177,15 @@ export default function SettingsManager() {
     const response = await fetch(`/api/manage/account-types/${row.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: row.name, description: row.description, pricingHint: row.pricingHint, sortOrder: row.sortOrder, isDefault: row.isDefault, enabled: !row.enabled }),
+      body: JSON.stringify({
+        name: row.name,
+        description: row.description,
+        pricingHint: row.pricingHint,
+        sortOrder: row.sortOrder,
+        isDefault: row.isDefault,
+        enabled: !row.enabled,
+        ...pricingPayload(row),
+      }),
     });
     setTypeBusyId(null);
     if (!response.ok) {
@@ -147,7 +202,15 @@ export default function SettingsManager() {
     const response = await fetch(`/api/manage/account-types/${row.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: row.name, description: row.description, pricingHint: row.pricingHint, sortOrder: row.sortOrder, isDefault: true, enabled: row.enabled }),
+      body: JSON.stringify({
+        name: row.name,
+        description: row.description,
+        pricingHint: row.pricingHint,
+        sortOrder: row.sortOrder,
+        isDefault: true,
+        enabled: row.enabled,
+        ...pricingPayload(row),
+      }),
     });
     setTypeBusyId(null);
     if (!response.ok) {
@@ -223,14 +286,16 @@ export default function SettingsManager() {
 
       <Card
         title="Account types"
-        description="Pricing-tier labels a client account can be tagged with (Standard/Pro/Zero by default). Display/reporting only for now -- real spread/commission/swap still resolve from Group, not from type; per-type pricing arrives with a later pricing-engine phase."
+        description="Pricing-tier labels a client account can be tagged with (Standard/Pro/Zero by default). Each type's own spread/commission/swap below is saved here now, but fill-time enforcement of a type's pricing (rather than the account's group) is a later pricing-engine phase -- Group pricing (Client groups page) is what actually applies to a real fill today."
         action={<Button size="sm" onClick={() => openTypeModal("new")}>+ Add type</Button>}
       >
         <Table>
           <TableHead>
             <TableHeaderCell>Name</TableHeaderCell>
             <TableHeaderCell>Description</TableHeaderCell>
-            <TableHeaderCell>Pricing hint</TableHeaderCell>
+            <TableHeaderCell align="right">Spread</TableHeaderCell>
+            <TableHeaderCell align="right">Commission</TableHeaderCell>
+            <TableHeaderCell>Swap</TableHeaderCell>
             <TableHeaderCell align="right">Sort</TableHeaderCell>
             <TableHeaderCell>Default</TableHeaderCell>
             <TableHeaderCell>Enabled</TableHeaderCell>
@@ -238,15 +303,25 @@ export default function SettingsManager() {
           </TableHead>
           <TableBody>
             {accountTypes === null ? (
-              <TableEmptyState colSpan={7}>Loading...</TableEmptyState>
+              <TableEmptyState colSpan={9}>Loading...</TableEmptyState>
             ) : accountTypes.length === 0 ? (
-              <TableEmptyState colSpan={7}>No account types yet.</TableEmptyState>
+              <TableEmptyState colSpan={9}>No account types yet.</TableEmptyState>
             ) : (
               accountTypes.map((t) => (
                 <TableRow key={t.id}>
                   <TableCell primary>{t.name}</TableCell>
                   <TableCell className="text-[var(--text-3)]">{t.description ?? "-"}</TableCell>
-                  <TableCell className="text-[var(--text-3)]">{t.pricingHint ?? "-"}</TableCell>
+                  <TableCell align="right" mono>{t.spreadMarkup}p</TableCell>
+                  <TableCell align="right" mono>${t.commissionPerLot}</TableCell>
+                  <TableCell>
+                    {t.swapFree ? (
+                      <Badge tone="success">Swap-free</Badge>
+                    ) : (
+                      <span className="font-mono text-xs text-[var(--text-3)]">
+                        L {t.swapLong} / S {t.swapShort}
+                      </span>
+                    )}
+                  </TableCell>
                   <TableCell align="right" mono>{t.sortOrder}</TableCell>
                   <TableCell>
                     {t.isDefault ? (
@@ -284,6 +359,7 @@ export default function SettingsManager() {
         onClose={() => setTypeModalTarget(null)}
         title={typeModalTarget === "new" ? "Add account type" : `Edit account type - ${typeModalTarget?.name ?? ""}`}
         onSubmit={submitTypeForm}
+        wide
       >
         <div className="flex flex-col gap-3">
           <FormField label="Name">
@@ -306,6 +382,60 @@ export default function SettingsManager() {
             <input type="checkbox" checked={typeForm.isDefault} onChange={(e) => setTypeForm((p) => ({ ...p, isDefault: e.target.checked }))} />
             Make this the default type for new accounts
           </label>
+
+          <ModalSection label="Pricing">
+            <Alert tone="info">
+              Saved and shown here, but not yet applied to a real fill -- Group pricing (Client groups page) is what actually charges a real
+              order today. Type-level pricing takes effect once the pricing engine (Phase 2) reads it.
+            </Alert>
+          </ModalSection>
+          <div className="grid grid-cols-2 gap-3">
+            <FormField label="Spread markup (pips)">
+              <Input
+                type="text"
+                inputMode="decimal"
+                mono
+                value={typeForm.spreadMarkup}
+                onChange={(e) => setTypeForm((p) => ({ ...p, spreadMarkup: e.target.value }))}
+              />
+            </FormField>
+            <FormField label="Commission per lot">
+              <Input
+                type="text"
+                inputMode="decimal"
+                mono
+                value={typeForm.commissionPerLot}
+                onChange={(e) => setTypeForm((p) => ({ ...p, commissionPerLot: e.target.value }))}
+              />
+            </FormField>
+            <FormField label="Swap long">
+              <Input
+                type="text"
+                inputMode="decimal"
+                mono
+                disabled={typeForm.swapFree}
+                value={typeForm.swapLong}
+                onChange={(e) => setTypeForm((p) => ({ ...p, swapLong: e.target.value }))}
+              />
+            </FormField>
+            <FormField label="Swap short">
+              <Input
+                type="text"
+                inputMode="decimal"
+                mono
+                disabled={typeForm.swapFree}
+                value={typeForm.swapShort}
+                onChange={(e) => setTypeForm((p) => ({ ...p, swapShort: e.target.value }))}
+              />
+            </FormField>
+          </div>
+          <Checkbox
+            label="Swap-free (e.g. Islamic account type)"
+            title="No overnight swap/rollover charged on accounts of this type"
+            checked={typeForm.swapFree}
+            onChange={(e) => setTypeForm((p) => ({ ...p, swapFree: e.target.checked }))}
+          />
+
           {typeFormError ? <Alert tone="danger">{typeFormError}</Alert> : null}
           <ModalActions>
             <Button type="button" variant="ghost" onClick={() => setTypeModalTarget(null)}>

@@ -42,8 +42,12 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   // change, so MANAGER can reassign it same as group.
   const hasAccountTypeChange = body != null && "accountTypeId" in body;
   const hasFinanceChange = body != null && ("leverage" in body || "status" in body || "maxDailyLoss" in body);
+  // Same permission tier as groupId/accountTypeId -- a rate-category flag
+  // (see Account.swapFree's own schema comment), not a balance/leverage
+  // magnitude, so MANAGER can toggle it same as group/type.
+  const hasSwapFreeChange = body != null && "swapFree" in body;
 
-  if (!hasGroupChange && !hasAccountTypeChange && !hasFinanceChange) {
+  if (!hasGroupChange && !hasAccountTypeChange && !hasFinanceChange && !hasSwapFreeChange) {
     return NextResponse.json({ error: "nothing to update" }, { status: 400 });
   }
   if (hasFinanceChange && session.role !== "BROKER_ADMIN" && !(await hasPermission(session, "ACCOUNT_FINANCE"))) {
@@ -116,6 +120,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       leverage?: number;
       status?: typeof status;
       maxDailyLoss?: Prisma.Decimal | null;
+      swapFree?: boolean;
     } = {};
     const auditEntries: { action: string; oldValue: Prisma.InputJsonValue; newValue: Prisma.InputJsonValue }[] = [];
 
@@ -168,6 +173,15 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         newValue: { maxDailyLoss: maxDailyLoss?.toString() ?? null },
       });
     }
+    if (hasSwapFreeChange) {
+      const swapFree = body.swapFree === true;
+      data.swapFree = swapFree;
+      auditEntries.push({
+        action: "ACCOUNT_SWAP_FREE_CHANGED",
+        oldValue: { swapFree: account.swapFree },
+        newValue: { swapFree },
+      });
+    }
 
     const result = await tx.account.update({ where: { id }, data });
 
@@ -195,5 +209,6 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     groupId: updated.groupId,
     accountTypeId: updated.accountTypeId,
     maxDailyLoss: updated.maxDailyLoss?.toString() ?? null,
+    swapFree: updated.swapFree,
   });
 }

@@ -1,0 +1,9 @@
+-- AlterTable
+ALTER TABLE "Account" ADD COLUMN     "swapFree" BOOLEAN NOT NULL DEFAULT false;
+
+-- AlterTable
+ALTER TABLE "AccountType" ADD COLUMN     "commissionPerLot" DECIMAL(10,2) NOT NULL DEFAULT 0,
+ADD COLUMN     "spreadMarkup" DECIMAL(10,4) NOT NULL DEFAULT 0,
+ADD COLUMN     "swapFree" BOOLEAN NOT NULL DEFAULT false,
+ADD COLUMN     "swapLong" DECIMAL(10,4) NOT NULL DEFAULT 0,
+ADD COLUMN     "swapShort" DECIMAL(10,4) NOT NULL DEFAULT 0;

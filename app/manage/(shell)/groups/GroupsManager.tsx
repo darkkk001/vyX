@@ -110,6 +110,9 @@ function typeBadge(row: GroupRow) {
 export default function GroupsManager() {
   const [rows, setRows] = useState<GroupRow[] | null>(null);
   const [formFor, setFormFor] = useState<{ mode: "create" } | { mode: "edit"; row: GroupRow } | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<GroupRow | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   useEffect(() => {
     fetch("/api/manage/groups")
@@ -131,6 +134,24 @@ export default function GroupsManager() {
         return updated.isDefault ? { ...r, isDefault: false } : r;
       })
     );
+  }
+
+  async function confirmDelete() {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    setDeleteError(null);
+    const response = await fetch(`/api/manage/groups/${deleteTarget.id}`, { method: "DELETE" });
+    setDeleting(false);
+    if (!response.ok) {
+      const b = await response.json().catch(() => ({}));
+      // Stays open with the block reason visible (e.g. "N accounts are
+      // assigned...") instead of closing on failure -- the whole point of
+      // this guard is to make the admin actually read why, not just retry.
+      setDeleteError(b.error ?? "delete failed");
+      return;
+    }
+    setRows((prev) => (prev ?? []).filter((r) => r.id !== deleteTarget.id));
+    setDeleteTarget(null);
   }
 
   if (rows === null) {
@@ -161,7 +182,7 @@ export default function GroupsManager() {
             <TableHeaderCell className="min-w-[85px]">Tier</TableHeaderCell>
             <TableHeaderCell align="center" className="min-w-[80px]">Swap-free</TableHeaderCell>
             <TableHeaderCell align="center" className="min-w-[70px]">Default</TableHeaderCell>
-            <TableHeaderCell className="min-w-[80px]" />
+            <TableHeaderCell className="min-w-[145px]" />
           </TableHead>
           <TableBody>
             {rows.length === 0 ? (
@@ -198,10 +219,24 @@ export default function GroupsManager() {
                   <TableCell align="center" className="min-w-[70px]">
                     {row.isDefault ? "✓" : "-"}
                   </TableCell>
-                  <TableCell className="min-w-[80px] whitespace-nowrap">
-                    <Button size="sm" onClick={() => setFormFor({ mode: "edit", row })}>
-                      Edit
-                    </Button>
+                  <TableCell className="min-w-[145px] whitespace-nowrap">
+                    <div className="flex items-center gap-2">
+                      <Button size="sm" onClick={() => setFormFor({ mode: "edit", row })}>
+                        Edit
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        disabled={row.isDefault}
+                        title={row.isDefault ? "The default group cannot be deleted -- make another group the default first" : "Delete this group"}
+                        onClick={() => {
+                          setDeleteError(null);
+                          setDeleteTarget(row);
+                        }}
+                      >
+                        Delete
+                      </Button>
+                    </div>
                   </TableCell>
                 </TableRow>
               ))
@@ -220,6 +255,25 @@ export default function GroupsManager() {
             setFormFor(null);
           }}
         />
+      ) : null}
+
+      {deleteTarget ? (
+        <Modal open onClose={() => setDeleteTarget(null)} title={`Delete group: ${deleteTarget.name}`}>
+          <div className="flex flex-col gap-3">
+            <p className="text-sm text-[var(--text-2)]">
+              This deletes the group permanently. Its symbol allowlist and pricing overrides go with it. This can&apos;t be undone.
+            </p>
+            {deleteError ? <Alert tone="danger">{deleteError}</Alert> : null}
+            <ModalActions>
+              <Button variant="ghost" onClick={() => setDeleteTarget(null)}>
+                Cancel
+              </Button>
+              <Button variant="danger" disabled={deleting} onClick={confirmDelete}>
+                {deleting ? "Deleting..." : "Delete group"}
+              </Button>
+            </ModalActions>
+          </div>
+        </Modal>
       ) : null}
     </div>
   );

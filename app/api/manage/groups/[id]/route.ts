@@ -150,3 +150,70 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     throw error;
   }
 }
+
+// Destructive -- BROKER_ADMIN only, same escalation above PATCH/POST's
+// MANAGER-or-BROKER_ADMIN gate that app/api/manage/lp-routing/[id]/
+// route.ts's own DELETE already established as this app's convention for
+// a hard delete. Two hard blocks, in order: the broker's default group
+// (every account without an explicit group falls back to it -- see
+// Account.groupId's own schema comment -- so deleting it would silently
+// break that fallback for future account creation) can never be deleted
+// regardless of account count, and a group with ANY accounts still
+// assigned is blocked outright rather than cascading -- there is no
+// "reassign on delete" flow, and Account.groupId has no onDelete
+// behavior of its own to fall back on, so a bypassed check here would
+// leave Account rows with a group foreign key that no longer resolves.
+export async function DELETE(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const session = await getAdminSession();
+  if (!requireAdminRole(session, ["BROKER_ADMIN"]) || !session!.brokerId) {
+    return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  }
+  const brokerId = session!.brokerId!;
+  const { id } = await params;
+
+  const existing = await prisma.group.findUnique({ where: { id } });
+  if (!existing || existing.brokerId !== brokerId) {
+    return NextResponse.json({ error: "group not found" }, { status: 404 });
+  }
+
+  if (existing.isDefault) {
+    return NextResponse.json(
+      { error: "the default group cannot be deleted -- make another group the default first" },
+      { status: 400 }
+    );
+  }
+
+  const accountCount = await prisma.account.count({ where: { groupId: id } });
+  if (accountCount > 0) {
+    return NextResponse.json(
+      {
+        error: `Cannot delete: ${accountCount} account${accountCount === 1 ? " is" : "s are"} assigned to this group. Reassign them first.`,
+      },
+      { status: 409 }
+    );
+  }
+
+  await prisma.$transaction(async (tx) => {
+    // GroupSymbol/GroupSymbolConfig both cascade on Group (see their own
+    // onDelete: Cascade), so this alone is enough -- no orphaned rows.
+    await tx.group.delete({ where: { id } });
+    await tx.auditLog.create({
+      data: {
+        brokerId,
+        actorAdminId: session!.adminId,
+        action: "GROUP_DELETED",
+        entityType: "Group",
+        entityId: id,
+        oldValue: {
+          name: existing.name,
+          leverage: existing.leverage,
+          groupType: existing.groupType,
+          dealingMode: existing.dealingMode,
+          tier: existing.tier,
+        },
+      },
+    });
+  });
+
+  return NextResponse.json({ ok: true });
+}

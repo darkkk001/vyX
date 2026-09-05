@@ -11,6 +11,39 @@ async function requireManager() {
   return session!;
 }
 
+// Same "config now, enforce later" reasoning as account-types/route.ts's
+// own POST. A field entirely ABSENT from the body keeps `existing`'s
+// value (this PATCH's own `enabled` already works this way, a couple
+// lines below) -- toggleTypeEnabled/makeTypeDefault in SettingsManager.tsx
+// only ever resend name/description/pricingHint/sortOrder/isDefault/
+// enabled, never the pricing fields, so without this fallback either of
+// those two actions would silently zero out a type's saved pricing every
+// time. A field that IS present but unparseable falls back to 0 rather
+// than silently keeping the old value, since that's a real (if bad) input
+// the admin just typed, not an unrelated action that never touched pricing.
+function parsePricingFields(
+  body: unknown,
+  existing: { spreadMarkup: Prisma.Decimal; commissionPerLot: Prisma.Decimal; swapLong: Prisma.Decimal; swapShort: Prisma.Decimal; swapFree: boolean }
+) {
+  const b = body as Record<string, unknown> | null;
+  const parseDecimal = (v: unknown, fallback: Prisma.Decimal): Prisma.Decimal => {
+    if (v === undefined) return fallback;
+    try {
+      const d = new Prisma.Decimal(String(v));
+      return d.isFinite() ? d : new Prisma.Decimal(0);
+    } catch {
+      return new Prisma.Decimal(0);
+    }
+  };
+  return {
+    spreadMarkup: parseDecimal(b?.spreadMarkup, existing.spreadMarkup),
+    commissionPerLot: parseDecimal(b?.commissionPerLot, existing.commissionPerLot),
+    swapLong: parseDecimal(b?.swapLong, existing.swapLong),
+    swapShort: parseDecimal(b?.swapShort, existing.swapShort),
+    swapFree: typeof b?.swapFree === "boolean" ? b.swapFree : existing.swapFree,
+  };
+}
+
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await requireManager();
   if (!session) {
@@ -40,6 +73,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   // matching a PATCH's own partial-update convention rather than forcing
   // every caller to always resend it.
   const enabled = typeof body?.enabled === "boolean" ? body.enabled : existing.enabled;
+  const pricing = parsePricingFields(body, existing);
 
   // A broker must always have exactly one default (app/api/manage/
   // accounts/route.ts's own account-creation fallback depends on it
@@ -60,7 +94,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       }
       const type = await tx.accountType.update({
         where: { id },
-        data: { name, description, pricingHint, sortOrder, isDefault, enabled },
+        data: { name, description, pricingHint, sortOrder, isDefault, enabled, ...pricing },
       });
       await tx.auditLog.create({
         data: {
@@ -76,8 +110,25 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
             sortOrder: existing.sortOrder,
             isDefault: existing.isDefault,
             enabled: existing.enabled,
+            spreadMarkup: existing.spreadMarkup.toString(),
+            commissionPerLot: existing.commissionPerLot.toString(),
+            swapLong: existing.swapLong.toString(),
+            swapShort: existing.swapShort.toString(),
+            swapFree: existing.swapFree,
           },
-          newValue: { name, description, pricingHint, sortOrder, isDefault, enabled },
+          newValue: {
+            name,
+            description,
+            pricingHint,
+            sortOrder,
+            isDefault,
+            enabled,
+            spreadMarkup: pricing.spreadMarkup.toString(),
+            commissionPerLot: pricing.commissionPerLot.toString(),
+            swapLong: pricing.swapLong.toString(),
+            swapShort: pricing.swapShort.toString(),
+            swapFree: pricing.swapFree,
+          },
         },
       });
       return type;
@@ -91,6 +142,11 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       sortOrder: updated.sortOrder,
       isDefault: updated.isDefault,
       enabled: updated.enabled,
+      spreadMarkup: updated.spreadMarkup.toString(),
+      commissionPerLot: updated.commissionPerLot.toString(),
+      swapLong: updated.swapLong.toString(),
+      swapShort: updated.swapShort.toString(),
+      swapFree: updated.swapFree,
     });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {

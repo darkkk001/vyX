@@ -89,6 +89,7 @@ export async function GET() {
         groupName: a.group?.name ?? null,
         hasIbLink: !!a.ibLinkAsClient,
         maxDailyLoss: a.maxDailyLoss ? a.maxDailyLoss.toString() : null,
+        swapFree: a.swapFree,
         country: a.country,
         kycStatus: a.kycRecord?.status ?? null,
         mirror: mirror ? { direction: mirror.direction, multiplier: mirror.multiplier.toString() } : null,

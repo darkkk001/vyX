@@ -224,20 +224,20 @@ enum GroupTier {
 // ─────────────────────────────────────────────────────────────────────────
 
 model Broker {
-  id           String       @id @default(cuid())
-  name         String
-  subdomain    String       @unique // brokername.vyxtrader.com
-  customDomain String?      @unique // trade.brokername.com
-  tier         BrokerTier   @default(STANDARD)
-  status       BrokerStatus @default(ACTIVE)
+  id                         String          @id @default(cuid())
+  name                       String
+  subdomain                  String          @unique // brokername.vyxtrader.com
+  customDomain               String?         @unique // trade.brokername.com
+  tier                       BrokerTier      @default(STANDARD)
+  status                     BrokerStatus    @default(ACTIVE)
   // See ExecutionEngine's own doc comment -- currently decorative.
-  executionEngine ExecutionEngine @default(LEGACY)
+  executionEngine            ExecutionEngine @default(LEGACY)
   // Phase 1 trust pack -- when true, any AdminUser for this broker
   // (MANAGER/BROKER_ADMIN/SUPPORT) without twoFactorEnabled is forced
   // through 2FA setup on next login before reaching the manage shell
   // (see app/manage/(shell)/layout.tsx's own check). Does not affect
   // Super Admin (brokerId null -- this field is meaningless there).
-  requireAdmin2fa Boolean @default(false)
+  requireAdmin2fa            Boolean         @default(false)
   // Max open positions an account may hold at once, across all symbols.
   // Null = no limit — see docs/risk-engine.md §2.1 step 5.
   maxOpenPositionsPerAccount Int?
@@ -245,7 +245,7 @@ model Broker {
   // (existing open positions are untouched) -- see lib/risk.ts's
   // checkTradingHalted. The timestamp is itself the audit trail entry
   // point (when it was set); who set it lives in the paired AuditLog row.
-  tradingHaltedAt DateTime? @db.Timestamptz(3)
+  tradingHaltedAt            DateTime?       @db.Timestamptz(3)
   // Non-null = new MARKET orders from traders queue for a dealer
   // (MANAGER/BROKER_ADMIN) to manually Accept/Reject instead of
   // auto-filling -- see app/api/trade/orders/route.ts and
@@ -253,7 +253,7 @@ model Broker {
   // tradingHaltedAt, for the same reason (the timestamp is the audit
   // trail entry point; who set it lives in the paired AuditLog row).
   // LIMIT/STOP triggered fills are unaffected.
-  dealingModeAt DateTime? @db.Timestamptz(3)
+  dealingModeAt              DateTime?       @db.Timestamptz(3)
   // Dealer desk ON/OFF (2026-09-04) -- null = "Dealer ON" (default,
   // preserves today's behavior: a DEALING-type group's orders route to
   // the manual queue per resolveWantsDealingQueue's own groupTypeIsDealing
@@ -269,21 +269,21 @@ model Broker {
   // sitting in the queue for the affected groups -- see
   // app/api/manage/dealing-desk-toggle/route.ts -- nothing is left stuck
   // waiting on a queue nobody's watching.
-  dealingDeskAutoFillAt DateTime? @db.Timestamptz(3)
+  dealingDeskAutoFillAt      DateTime?       @db.Timestamptz(3)
   // Null = fully manual dealing mode (today's behavior). When set,
   // a dealing-queue order auto-fills at the live price the moment it's
   // submitted if the requested price is within this % of live --
   // see app/api/trade/orders/route.ts's dealingModeAt branch.
   // Percentage rather than pips/absolute so one broker-wide setting
   // stays meaningful across symbols with very different price scales.
-  smartDealerAcceptPct Decimal? @db.Decimal(6, 3)
+  smartDealerAcceptPct       Decimal?        @db.Decimal(6, 3)
   // Null = no auto-reject. Same submit-time check as
   // smartDealerAcceptPct -- if the requested price is this far (or
   // further) from live, the order is auto-REJECTED instead of queued.
-  smartDealerRejectPct Decimal? @db.Decimal(6, 3)
+  smartDealerRejectPct       Decimal?        @db.Decimal(6, 3)
   // Sum of open volume (lots) across every symbol for this broker. Null
   // = no limit -- see lib/risk.ts's checkBrokerExposure.
-  totalExposureLimit Decimal? @db.Decimal(18, 2)
+  totalExposureLimit         Decimal?        @db.Decimal(18, 2)
 
   // Applied by POST /api/manage/accounts when the admin doesn't specify
   // currency/leverage explicitly -- System Settings page.
@@ -324,35 +324,35 @@ model Broker {
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
 
-  adminUsers      AdminUser[]
-  accounts        Account[]
-  transactions    Transaction[]
-  brokerSymbols   BrokerSymbol[]
-  ibRelationships IbRelationship[]
-  orders          Order[]
-  positions       Position[]
-  auditLogs       AuditLog[]
-  groups          Group[]
-  leads           Lead[]
-  notifications   Notification[]
-  liquidityProviders LiquidityProvider[]
-  lpRoutingRules  LpRoutingRule[]
-  mirrorRules     MirrorRule[]
-  priceAlerts     PriceAlert[]
+  adminUsers             AdminUser[]
+  accounts               Account[]
+  transactions           Transaction[]
+  brokerSymbols          BrokerSymbol[]
+  ibRelationships        IbRelationship[]
+  orders                 Order[]
+  positions              Position[]
+  auditLogs              AuditLog[]
+  groups                 Group[]
+  leads                  Lead[]
+  notifications          Notification[]
+  liquidityProviders     LiquidityProvider[]
+  lpRoutingRules         LpRoutingRule[]
+  mirrorRules            MirrorRule[]
+  priceAlerts            PriceAlert[]
   positionActionRequests PositionActionRequest[]
-  accountTypes    AccountType[]
-  paymentMethods  PaymentMethod[]
+  accountTypes           AccountType[]
+  paymentMethods         PaymentMethod[]
 }
 
 model AdminUser {
-  id           String      @id @default(cuid())
-  brokerId     String? // null = super admin (VyXTechnologies staff)
-  broker       Broker?     @relation(fields: [brokerId], references: [id])
-  email        String      @unique
-  passwordHash String
-  role         AdminRole
-  status       AdminStatus @default(ACTIVE)
-  lastLoginAt  DateTime? @db.Timestamptz(3)
+  id               String      @id @default(cuid())
+  brokerId         String? // null = super admin (VyXTechnologies staff)
+  broker           Broker?     @relation(fields: [brokerId], references: [id])
+  email            String      @unique
+  passwordHash     String
+  role             AdminRole
+  status           AdminStatus @default(ACTIVE)
+  lastLoginAt      DateTime?   @db.Timestamptz(3)
   // Extra BROKER_ADMIN-only capabilities delegated to a MANAGER-role
   // admin -- see lib/permissions.ts's PERMISSIONS list. Meaningless for
   // BROKER_ADMIN (already has everything implicitly) and SUPPORT (no
@@ -360,7 +360,7 @@ model AdminUser {
   // login route, but it still has nowhere in the shell to use extra
   // permissions). Checked fresh from the DB on every request, not baked
   // into the session token -- see lib/permissions.ts's own comment for why.
-  extraPermissions String[] @default([])
+  extraPermissions String[]    @default([])
 
   // TOTP 2FA (RFC 6238) -- see lib/totp.ts, same scheme as Account's own
   // twoFactorSecret/Enabled (webtrader login). Phase 1 trust pack widened
@@ -384,17 +384,17 @@ model AdminUser {
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
 
-  reviewedKyc    KycRecord[]    @relation("KycReviewedBy")
-  createdTxns    Transaction[]  @relation("TransactionCreatedBy")
-  reviewedTxns   Transaction[]  @relation("TransactionReviewedBy")
-  markedTxns     Transaction[]  @relation("TransactionMarkedBy")
-  auditLogs      AuditLog[]     @relation("AuditLogActor")
-  closedPosition Position[]     @relation("PositionClosedBy")
-  deletedPositions Position[]   @relation("PositionDeletedBy")
+  reviewedKyc              KycRecord[]             @relation("KycReviewedBy")
+  createdTxns              Transaction[]           @relation("TransactionCreatedBy")
+  reviewedTxns             Transaction[]           @relation("TransactionReviewedBy")
+  markedTxns               Transaction[]           @relation("TransactionMarkedBy")
+  auditLogs                AuditLog[]              @relation("AuditLogActor")
+  closedPosition           Position[]              @relation("PositionClosedBy")
+  deletedPositions         Position[]              @relation("PositionDeletedBy")
   requestedPositionActions PositionActionRequest[] @relation("PositionActionRequestedBy")
   reviewedPositionActions  PositionActionRequest[] @relation("PositionActionReviewedBy")
-  createdMirrorRules MirrorRule[]
-  backupCodes    AdminBackupCode[]
+  createdMirrorRules       MirrorRule[]
+  backupCodes              AdminBackupCode[]
 
   @@index([brokerId])
 }
@@ -410,12 +410,12 @@ model AdminUser {
 // login, never deleted, so "was this code already used" survives a
 // re-generation cycle's own delete-then-recreate.
 model AdminBackupCode {
-  id          String    @id @default(cuid())
-  adminId     String
-  adminUser   AdminUser @relation(fields: [adminId], references: [id], onDelete: Cascade)
-  codeHash    String
-  usedAt      DateTime? @db.Timestamptz(3)
-  createdAt   DateTime  @default(now()) @db.Timestamptz(3)
+  id        String    @id @default(cuid())
+  adminId   String
+  adminUser AdminUser @relation(fields: [adminId], references: [id], onDelete: Cascade)
+  codeHash  String
+  usedAt    DateTime? @db.Timestamptz(3)
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
 
   @@index([adminId])
 }
@@ -464,6 +464,17 @@ model Account {
   // affects no live fill until the Phase 2 pricing engine reads it.
   accountTypeId String?
   accountType   AccountType?  @relation(fields: [accountTypeId], references: [id])
+
+  // Per-account swap-free OVERRIDE (2026-09-05) -- the 3rd of 3 swap-free
+  // levels (AccountType.swapFree, Group.swapFree, this one), for a
+  // specific client who needs Islamic/swap-free terms regardless of their
+  // type or group (or the reverse: an Islamic-type account that should
+  // still be charged swap as a one-off exception). Storage only, same as
+  // the other two levels -- no live fill-time path charges swap yet at
+  // all (see Group.swapFree's own comment), so there's nothing to skip
+  // for any of the three today. Resolution priority once that changes:
+  // account override > type > group.
+  swapFree Boolean @default(false)
 
   // Basic identity/KYC fields -- null for every account that existed
   // before this feature (there was previously no way to enter any of
@@ -534,7 +545,7 @@ model Account {
   // sourceId there is unrelated/polymorphic, not a real FK).
   mirrorRuleTargets MirrorRule[] @relation("MirrorRuleTarget")
 
-  watchlistItems WatchlistItem[]
+  watchlistItems           WatchlistItem[]
   savedWithdrawalAddresses SavedWithdrawalAddress[]
 
   @@unique([brokerId, email, accountMode])
@@ -553,17 +564,39 @@ model Account {
 // engine's job, not this one's -- the UI says so wherever a type is
 // picked so nobody mistakes this for already being load-bearing.
 model AccountType {
-  id          String  @id @default(cuid())
-  brokerId    String
-  broker      Broker  @relation(fields: [brokerId], references: [id])
-  name        String
-  description String?
+  id               String  @id @default(cuid())
+  brokerId         String
+  broker           Broker  @relation(fields: [brokerId], references: [id])
+  name             String
+  description      String?
   // One-line "what this tier means" shown next to the option in the
   // Add-account picker and the Settings CRUD table -- e.g. "Spread-only,
   // no commission". Purely a label (see this model's own doc comment).
-  pricingHint String?
-  sortOrder   Int     @default(0)
-  isDefault   Boolean @default(false)
+  pricingHint      String?
+  sortOrder        Int     @default(0)
+  isDefault        Boolean @default(false)
+  // Per-type pricing STORAGE only (2026-09-05) -- these are set/saved from
+  // Settings -> Account Types and are real values, but no live fill-time
+  // path reads them yet (Group/GroupSymbolConfig via lib/group-pricing.ts
+  // remains the only thing actually applied to a real fill, exactly as
+  // before this existed). Wiring these into the fill path (and deciding
+  // how a type's flat value interacts with a group's own per-symbol
+  // override) is the Phase 2 pricing engine's job, not this one's -- same
+  // "config now, enforce later" convention as several Group fields above
+  // it (forceDealingMode, dealingMode) used when they first landed.
+  // Same Decimal precision as GroupSymbolConfig's own spreadMarkup/
+  // commissionPerLot/swapLong/swapShort for consistency, even though this
+  // is a flat per-type value rather than a per-symbol override.
+  spreadMarkup     Decimal @default(0) @db.Decimal(10, 4)
+  commissionPerLot Decimal @default(0) @db.Decimal(10, 2)
+  swapLong         Decimal @default(0) @db.Decimal(10, 4)
+  swapShort        Decimal @default(0) @db.Decimal(10, 4)
+  // Swap-free is a 3-level setting (type / group / account) -- see
+  // Group.swapFree and Account.swapFree's own comments for the other two.
+  // Resolution priority once Phase 2 enforces any of these:
+  // account override > type > group. Storage only for now, same as the
+  // pricing fields just above.
+  swapFree         Boolean @default(false)
   // Soft-disable, not delete -- there is no delete route at all, so an
   // Account.accountTypeId row can never dangle. A disabled type stays
   // selectable-in-place for accounts already on it (their badge keeps
@@ -572,7 +605,7 @@ model AccountType {
   // of the Add-account picker and can't be assigned to another account
   // -- same "hide from new use, keep old references intact" shape as
   // BrokerSymbol.enabled. See app/api/manage/account-types/[id]/route.ts.
-  enabled     Boolean @default(true)
+  enabled          Boolean @default(true)
 
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
@@ -669,44 +702,44 @@ model Lead {
 // stays the one value every trading code path already reads;
 // marginCallLevel/stopOutLevel are stored/displayed only for now.
 model Group {
-  id              String  @id @default(cuid())
-  brokerId        String
-  broker          Broker  @relation(fields: [brokerId], references: [id])
-  name            String
-  leverage        Int     @default(100)
-  marginCallLevel Decimal @default(100) @db.Decimal(6, 2)
-  stopOutLevel    Decimal @default(50) @db.Decimal(6, 2)
-  isDefault       Boolean @default(false)
+  id                 String           @id @default(cuid())
+  brokerId           String
+  broker             Broker           @relation(fields: [brokerId], references: [id])
+  name               String
+  leverage           Int              @default(100)
+  marginCallLevel    Decimal          @default(100) @db.Decimal(6, 2)
+  stopOutLevel       Decimal          @default(50) @db.Decimal(6, 2)
+  isDefault          Boolean          @default(false)
   // Null = no override, falls through to the existing per-symbol
   // minLot/maxLot check unchanged -- see lib/risk.ts's checkGroupMaxLot.
-  maxLotSize      Decimal? @db.Decimal(10, 2)
+  maxLotSize         Decimal?         @db.Decimal(10, 2)
   // Same enum/semantics as BrokerSymbol.tradingMode -- see
   // lib/risk.ts's checkGroupTradingRestriction.
-  tradingRestriction TradingMode @default(BOTH)
+  tradingRestriction TradingMode      @default(BOTH)
   // Config-only -- no live Next.js path charges swap at all yet (that
   // only exists in the Rust engine's daily rollover job, which nothing
   // live is cut over to), so there's nothing to skip for a swap-free
   // group today. Recorded now so it's ready once that changes.
-  swapFree        Boolean @default(false)
+  swapFree           Boolean          @default(false)
   // Opt-in symbol allowlist -- false (default) means every enabled
   // BrokerSymbol is tradable by this group, identical to every group's
   // behavior before this field existed (zero change for existing
   // groups/accounts). true restricts trading to only the symbols with a
   // GroupSymbol row below -- see lib/risk.ts's checkGroupAllowedSymbol.
-  restrictSymbols Boolean @default(false)
+  restrictSymbols    Boolean          @default(false)
   // Independent of Broker.dealingModeAt -- either one alone is enough to
   // route a MARKET order from an account in this group to the dealing
   // queue instead of auto-filling. false (default) = zero change for
   // every existing group; this only ever ADDS accounts to dealing
   // review, never removes them from the broker-wide setting. See
   // app/api/trade/orders/route.ts's dealing-mode branch.
-  forceDealingMode Boolean @default(false)
+  forceDealingMode   Boolean          @default(false)
   // See GroupType's own doc comment -- book routing for this group's
   // accounts. Defaults to DEALING (B_BOOK), the same book every account
   // already fills into today via BrokerSymbol.defaultBookType's own
   // default -- zero behavior change for existing groups until a broker
   // deliberately sets one to LP or DEMO.
-  groupType GroupType @default(DEALING)
+  groupType          GroupType        @default(DEALING)
   // Overrides whether this group's MARKET orders reach the manual dealing
   // queue -- independent of groupType, forceDealingMode, and
   // Broker.dealingModeAt, all three of which stay meaningful for every
@@ -720,16 +753,16 @@ model Group {
   // accounting. MANUAL = always queue for this group, even if nothing
   // else would have. See app/api/trade/orders/route.ts's routing check
   // and docs/mirror.md.
-  dealingMode GroupDealingMode @default(INHERIT)
+  dealingMode        GroupDealingMode @default(INHERIT)
   // See GroupTier's own doc comment -- classification only, doesn't
   // affect pricing by itself. Defaults to STANDARD, same "config now"
   // zero-change-for-existing-groups convention as groupType above.
-  tier      GroupTier @default(STANDARD)
+  tier               GroupTier        @default(STANDARD)
 
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
 
-  accounts Account[]
+  accounts       Account[]
   allowedSymbols GroupSymbol[]
   symbolConfigs  GroupSymbolConfig[]
 
@@ -786,18 +819,18 @@ model GroupSymbol {
 }
 
 model KycRecord {
-  id               String    @id @default(cuid())
-  accountId        String    @unique
-  account          Account   @relation(fields: [accountId], references: [id])
-  status           KycStatus @default(PENDING)
-  documentType     String // passport | national_id | drivers_license
-  documentFrontUrl String
-  documentBackUrl  String?
-  addressProofUrl  String?
-  rejectionReason  String?
+  id                String     @id @default(cuid())
+  accountId         String     @unique
+  account           Account    @relation(fields: [accountId], references: [id])
+  status            KycStatus  @default(PENDING)
+  documentType      String // passport | national_id | drivers_license
+  documentFrontUrl  String
+  documentBackUrl   String?
+  addressProofUrl   String?
+  rejectionReason   String?
   reviewedByAdminId String?
-  reviewedByAdmin  AdminUser? @relation("KycReviewedBy", fields: [reviewedByAdminId], references: [id])
-  reviewedAt       DateTime? @db.Timestamptz(3)
+  reviewedByAdmin   AdminUser? @relation("KycReviewedBy", fields: [reviewedByAdminId], references: [id])
+  reviewedAt        DateTime?  @db.Timestamptz(3)
 
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
@@ -809,35 +842,35 @@ model KycRecord {
 // ─────────────────────────────────────────────────────────────────────────
 
 model Transaction {
-  id             String            @id @default(cuid())
-  brokerId       String
-  broker         Broker            @relation(fields: [brokerId], references: [id])
-  accountId      String
-  account        Account           @relation(fields: [accountId], references: [id])
-  type           TransactionType
-  status         TransactionStatus @default(PENDING)
-  amount         Decimal           @db.Decimal(18, 4) // signed: negative = debit
-  balanceBefore  Decimal           @db.Decimal(18, 4)
-  balanceAfter   Decimal           @db.Decimal(18, 4)
-  referenceType  String? // "Position" | "Order" | null for manual/deposit/withdrawal
-  referenceId    String?
-  note           String?
-  createdByAdminId String?
-  createdByAdmin AdminUser?        @relation("TransactionCreatedBy", fields: [createdByAdminId], references: [id])
+  id                String            @id @default(cuid())
+  brokerId          String
+  broker            Broker            @relation(fields: [brokerId], references: [id])
+  accountId         String
+  account           Account           @relation(fields: [accountId], references: [id])
+  type              TransactionType
+  status            TransactionStatus @default(PENDING)
+  amount            Decimal           @db.Decimal(18, 4) // signed: negative = debit
+  balanceBefore     Decimal           @db.Decimal(18, 4)
+  balanceAfter      Decimal           @db.Decimal(18, 4)
+  referenceType     String? // "Position" | "Order" | null for manual/deposit/withdrawal
+  referenceId       String?
+  note              String?
+  createdByAdminId  String?
+  createdByAdmin    AdminUser?        @relation("TransactionCreatedBy", fields: [createdByAdminId], references: [id])
   // Who approved/rejected a PENDING request (deposit/withdrawal) --
   // mirrors KycRecord.reviewedByAdminId's existing pattern. Null for
   // rows that never went through a review step (e.g. TRADE_PNL,
   // ADJUSTMENT, both created directly as COMPLETED).
   reviewedByAdminId String?
-  reviewedByAdmin AdminUser?        @relation("TransactionReviewedBy", fields: [reviewedByAdminId], references: [id])
+  reviewedByAdmin   AdminUser?        @relation("TransactionReviewedBy", fields: [reviewedByAdminId], references: [id])
   // Maker-checker for WITHDRAWAL requests only (deposits stay single-
   // approval) -- see app/api/manage/funds-requests/[id]/route.ts. Set on
   // the first APPROVE (status stays PENDING); a second APPROVE by a
   // *different* admin is what actually completes it. Null throughout for
   // every other Transaction type/flow.
-  markedByAdminId String?
-  markedByAdmin   AdminUser? @relation("TransactionMarkedBy", fields: [markedByAdminId], references: [id])
-  markedAt        DateTime?  @db.Timestamptz(3)
+  markedByAdminId   String?
+  markedByAdmin     AdminUser?        @relation("TransactionMarkedBy", fields: [markedByAdminId], references: [id])
+  markedAt          DateTime?         @db.Timestamptz(3)
 
   // Client cabinet Funds UI (VYX-FUNDS-V0) -- provider-agnostic PSP
   // adapter fields, all nullable/additive so every pre-existing
@@ -845,32 +878,32 @@ model Transaction {
   // funds requests) is simply "not a PSP-tracked request" rather than
   // needing a backfill. See lib/psp/adapter.ts's own doc comment for
   // the adapter interface these back.
-  paymentMethodId String?
-  paymentMethod   PaymentMethod? @relation(fields: [paymentMethodId], references: [id])
+  paymentMethodId    String?
+  paymentMethod      PaymentMethod? @relation(fields: [paymentMethodId], references: [id])
   // Which adapter actually handled this request -- "MANUAL" (the only
   // live implementation) or "MOCK" (dev/Playwright only, never chosen
   // by a real trader-facing method). Not an enum: a real PSP integration
   // (Phase 2) will add adapter kinds this schema shouldn't need a
   // migration to accept.
-  pspAdapter      String?
+  pspAdapter         String?
   // Adapter-internal sub-status, orthogonal to `status` above (the
   // broker-approval maker-checker state, unchanged by this feature) --
   // a deposit walks PENDING -> CONFIRMING (crypto, with `confirmations`)
   // -> CREDITED; a withdrawal walks REQUESTED -> APPROVED -> PROCESSING
   // -> PAID. `status` still governs whether balance has actually moved;
   // this is purely the UI's own status-timeline display.
-  pspStatus       String?
+  pspStatus          String?
   // External reference -- a crypto txid once available, or the adapter's
   // own request id. Null until the trader/adapter has one to show.
-  pspReference    String?
-  confirmations   Int?
+  pspReference       String?
+  confirmations      Int?
   // Withdrawal target (a crypto address, or free-text bank details) --
   // set at request time, before any adapter involvement.
   destinationAddress String?
   // Manual-deposit receipt upload -- a data: URL, capped well under this
   // column's practical limit by the API route accepting it (frontend-
   // first: real object storage is Phase 2, alongside the real PSP).
-  receiptDataUrl  String? @db.Text
+  receiptDataUrl     String?        @db.Text
 
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   // First Transaction field to change after creation -- a PENDING
@@ -906,25 +939,25 @@ enum PaymentMethodType {
 // nothing reads them yet, and the settings UI renders them disabled
 // with a "connects in Phase 2" note, per the brief.
 model PaymentMethod {
-  id       String            @id @default(cuid())
-  brokerId String
-  broker   Broker            @relation(fields: [brokerId], references: [id])
-  type     PaymentMethodType
-  enabled  Boolean           @default(true)
-  minAmount Decimal          @default(0) @db.Decimal(18, 2)
-  maxAmount Decimal?         @db.Decimal(18, 2)
-  feePercent Decimal         @default(0) @db.Decimal(6, 3)
-  feeFixed  Decimal          @default(0) @db.Decimal(18, 2)
+  id            String            @id @default(cuid())
+  brokerId      String
+  broker        Broker            @relation(fields: [brokerId], references: [id])
+  type          PaymentMethodType
+  enabled       Boolean           @default(true)
+  minAmount     Decimal           @default(0) @db.Decimal(18, 2)
+  maxAmount     Decimal?          @db.Decimal(18, 2)
+  feePercent    Decimal           @default(0) @db.Decimal(6, 3)
+  feeFixed      Decimal           @default(0) @db.Decimal(18, 2)
   // Shown to the trader on the method screen -- bank details for
   // BANK_TRANSFER, deposit/receipt instructions for a manual crypto
   // method. Null renders nothing extra beyond the address/QR.
-  instructions String?
+  instructions  String?
   // The broker's own shared wallet -- manual crypto deposits go to one
   // static address (a real per-transaction-generated address needs an
   // actual PSP/wallet integration, Phase 2). Null for BANK_TRANSFER.
   walletAddress String?
-  pspProvider  String?
-  pspApiKey    String?
+  pspProvider   String?
+  pspApiKey     String?
 
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
@@ -956,24 +989,24 @@ model SavedWithdrawalAddress {
 // ─────────────────────────────────────────────────────────────────────────
 
 model Symbol {
-  id           String         @id @default(cuid())
-  name         String         @unique // "EURUSD", "XAUUSD"
-  baseCurrency String
+  id            String         @id @default(cuid())
+  name          String         @unique // "EURUSD", "XAUUSD"
+  baseCurrency  String
   quoteCurrency String
-  digits       Int            @default(5)
-  contractSize Decimal        @default(100000) @db.Decimal(18, 4)
-  category     SymbolCategory
+  digits        Int            @default(5)
+  contractSize  Decimal        @default(100000) @db.Decimal(18, 4)
+  category      SymbolCategory
 
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
 
-  brokerSymbols BrokerSymbol[]
-  orders        Order[]
-  positions     Position[]
-  lpRoutingRules LpRoutingRule[]
-  groupAllowlists GroupSymbol[]
+  brokerSymbols      BrokerSymbol[]
+  orders             Order[]
+  positions          Position[]
+  lpRoutingRules     LpRoutingRule[]
+  groupAllowlists    GroupSymbol[]
   groupSymbolConfigs GroupSymbolConfig[]
-  watchlistItems WatchlistItem[]
+  watchlistItems     WatchlistItem[]
 }
 
 // Per-account watchlist, server-side (not localStorage) so web and desktop
@@ -1026,7 +1059,7 @@ model LivePrice {
   // backfill existing rows with -- every real write from that point on
   // sets it explicitly (see engine/market-data/src/ingest.rs's
   // resolve_tick_time).
-  tickAt DateTime @default(now()) @db.Timestamptz(3)
+  tickAt    DateTime @default(now()) @db.Timestamptz(3)
 }
 
 enum CandleTimeframe {
@@ -1072,15 +1105,15 @@ model Candle {
 
 // Per-broker override: spread markup, swap, lot limits, enable/disable.
 model BrokerSymbol {
-  id           String  @id @default(cuid())
-  brokerId     String
-  broker       Broker  @relation(fields: [brokerId], references: [id])
-  symbolId     String
-  symbol       Symbol  @relation(fields: [symbolId], references: [id])
-  spreadMarkup Decimal @default(0) @db.Decimal(10, 4) // pips added on top of raw spread
-  minLot       Decimal @default(0.01) @db.Decimal(10, 2)
-  maxLot       Decimal @default(100) @db.Decimal(10, 2)
-  lotStep      Decimal @default(0.01) @db.Decimal(10, 2)
+  id               String      @id @default(cuid())
+  brokerId         String
+  broker           Broker      @relation(fields: [brokerId], references: [id])
+  symbolId         String
+  symbol           Symbol      @relation(fields: [symbolId], references: [id])
+  spreadMarkup     Decimal     @default(0) @db.Decimal(10, 4) // pips added on top of raw spread
+  minLot           Decimal     @default(0.01) @db.Decimal(10, 2)
+  maxLot           Decimal     @default(100) @db.Decimal(10, 2)
+  lotStep          Decimal     @default(0.01) @db.Decimal(10, 2)
   // Account-currency amount per standard lot per day held overnight —
   // not points/pips, to avoid needing per-symbol pip-size math the way
   // spreadMarkup does. Negative = cost to the trader, positive = credit.
@@ -1093,27 +1126,27 @@ model BrokerSymbol {
   // resolution order as spreadMarkup/commissionPerLot -- but only the
   // legacy job honors that override today, see lib/swap-rollover.ts's own
   // module comment for the known engine/legacy discrepancy this leaves.
-  swapLong     Decimal @default(0) @db.Decimal(10, 4)
-  swapShort    Decimal @default(0) @db.Decimal(10, 4)
-  enabled      Boolean @default(true)
+  swapLong         Decimal     @default(0) @db.Decimal(10, 4)
+  swapShort        Decimal     @default(0) @db.Decimal(10, 4)
+  enabled          Boolean     @default(true)
   // BOTH (default) / BUY_ONLY / SELL_ONLY -- rejects orders on the
   // disallowed side even when the symbol is otherwise enabled. See
   // lib/risk.ts's checkSymbolTradingMode.
-  tradingMode  TradingMode @default(BOTH)
+  tradingMode      TradingMode @default(BOTH)
   // Flat fee per lot, charged once when a position opens (round-turn,
   // not split between open/close). Null-safe default of 0 means existing
   // brokers charge no commission until an admin sets a rate.
-  commissionPerLot Decimal @default(0) @db.Decimal(10, 2)
+  commissionPerLot Decimal     @default(0) @db.Decimal(10, 2)
   // Max total open volume (lots) an account may hold in this symbol at
   // once, summed across all its open positions. Null = no limit, so
   // existing brokers are unaffected until an admin sets one — see
   // docs/risk-engine.md §2.1 step 5.
-  maxExposure  Decimal? @db.Decimal(18, 2)
+  maxExposure      Decimal?    @db.Decimal(18, 2)
   // Stamped onto every new Position opened in this symbol -- config/
   // record-keeping only, no real hedge execution against an LP happens
   // (that's still blocked on a real LP relationship, same as
   // LiquidityProvider). See lib/dealing.ts's openPositionFromOrder.
-  defaultBookType BookType @default(B_BOOK)
+  defaultBookType  BookType    @default(B_BOOK)
   // Minimum distance, in POINTS (the symbol's own smallest price
   // increment -- 10^-digits), an SL/TP or a pending order's own entry
   // price must sit away from the current market price -- the standard
@@ -1122,7 +1155,7 @@ model BrokerSymbol {
   // drag against. 0 = no restriction (every existing symbol's behavior
   // is unchanged until a broker admin sets a real value). See
   // lib/trading.ts's validateSlTp.
-  stopLevel Int @default(0)
+  stopLevel        Int         @default(0)
 
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
@@ -1171,7 +1204,7 @@ model Order {
   tpPrice         Decimal?    @db.Decimal(18, 5)
   status          OrderStatus @default(PENDING)
   filledPrice     Decimal?    @db.Decimal(18, 5)
-  filledAt        DateTime? @db.Timestamptz(3)
+  filledAt        DateTime?   @db.Timestamptz(3)
   rejectionReason String?
   // Set when a dealer accepts this order at a price that differs from
   // the live price at accept time (a deliberate reprice, not ordinary
@@ -1192,36 +1225,36 @@ model Order {
 }
 
 model Position {
-  id            String         @id @default(cuid())
-  brokerId      String
-  broker        Broker         @relation(fields: [brokerId], references: [id])
-  accountId     String
-  account       Account        @relation(fields: [accountId], references: [id])
-  symbolId      String
-  symbol        Symbol         @relation(fields: [symbolId], references: [id])
-  originOrderId String         @unique
-  originOrder   Order          @relation(fields: [originOrderId], references: [id])
-  side          OrderSide
-  volume        Decimal        @db.Decimal(10, 2)
-  openPrice     Decimal        @db.Decimal(18, 5)
-  slPrice       Decimal?       @db.Decimal(18, 5)
-  tpPrice       Decimal?       @db.Decimal(18, 5)
-  status        PositionStatus @default(OPEN)
-  closePrice    Decimal?       @db.Decimal(18, 5)
-  realizedPnl   Decimal?       @db.Decimal(18, 4)
-  swap          Decimal        @default(0) @db.Decimal(18, 4)
-  commission    Decimal        @default(0) @db.Decimal(18, 4)
+  id              String         @id @default(cuid())
+  brokerId        String
+  broker          Broker         @relation(fields: [brokerId], references: [id])
+  accountId       String
+  account         Account        @relation(fields: [accountId], references: [id])
+  symbolId        String
+  symbol          Symbol         @relation(fields: [symbolId], references: [id])
+  originOrderId   String         @unique
+  originOrder     Order          @relation(fields: [originOrderId], references: [id])
+  side            OrderSide
+  volume          Decimal        @db.Decimal(10, 2)
+  openPrice       Decimal        @db.Decimal(18, 5)
+  slPrice         Decimal?       @db.Decimal(18, 5)
+  tpPrice         Decimal?       @db.Decimal(18, 5)
+  status          PositionStatus @default(OPEN)
+  closePrice      Decimal?       @db.Decimal(18, 5)
+  realizedPnl     Decimal?       @db.Decimal(18, 4)
+  swap            Decimal        @default(0) @db.Decimal(18, 4)
+  commission      Decimal        @default(0) @db.Decimal(18, 4)
   // Stamped from BrokerSymbol.defaultBookType at fill time -- record-
   // keeping only, see that field's schema comment.
-  bookType      BookType       @default(B_BOOK)
+  bookType        BookType       @default(B_BOOK)
   closedByAdminId String?
-  closedByAdmin AdminUser?     @relation("PositionClosedBy", fields: [closedByAdminId], references: [id])
+  closedByAdmin   AdminUser?     @relation("PositionClosedBy", fields: [closedByAdminId], references: [id])
   // Idempotency key for the daily swap rollover job (lib/swap-rollover.ts)
   // -- NULL or a date before today means still due. Mirrors
   // engine/order-management's own positions.last_swap_at exactly (see
   // that column's comment) so the interim legacy job and the Rust
   // engine's job can't both charge the same position for the same day.
-  lastSwapAt DateTime? @db.Timestamptz(3)
+  lastSwapAt      DateTime?      @db.Timestamptz(3)
 
   // Backoffice manual position tools -- true DELETE (distinct from VOID,
   // see PositionActionType's own doc comment): the row itself is never
@@ -1288,7 +1321,7 @@ model PositionActionRequest {
   reason     String?
 
   requestedByAdminId String
-  requestedByAdmin   AdminUser @relation("PositionActionRequestedBy", fields: [requestedByAdminId], references: [id])
+  requestedByAdmin   AdminUser  @relation("PositionActionRequestedBy", fields: [requestedByAdminId], references: [id])
   reviewedByAdminId  String?
   reviewedByAdmin    AdminUser? @relation("PositionActionReviewedBy", fields: [reviewedByAdminId], references: [id])
   reviewNote         String?
@@ -1358,8 +1391,8 @@ model MirrorRule {
   targetAccountId String
   targetAccount   Account @relation("MirrorRuleTarget", fields: [targetAccountId], references: [id])
 
-  direction  MirrorDirection @default(REVERSE)
-  multiplier Decimal         @default(1) @db.Decimal(10, 4) // lot scale, e.g. 0.5 = half size
+  direction     MirrorDirection     @default(REVERSE)
+  multiplier    Decimal             @default(1) @db.Decimal(10, 4) // lot scale, e.g. 0.5 = half size
   // See MirrorFillPriceMode's own doc comment. Defaults to SOURCE_PRICE --
   // every rule created before this field existed is backfilled to it too
   // (the column default), which is the *correct* retroactive behavior for
@@ -1370,7 +1403,7 @@ model MirrorRule {
   // this schema's existing BrokerSymbol.symbolMap-style free-text
   // conventions for a v0-scoped allowlist; a join table is the natural
   // upgrade if per-symbol config (not just inclusion) is ever needed.
-  symbolFilter String?
+  symbolFilter  String?
 
   // Both null = no cap (v0 default -- a broker must opt into limits
   // deliberately, same "null = unlimited" convention as Group.maxLotSize/
@@ -1378,7 +1411,7 @@ model MirrorRule {
   maxOpenLots  Decimal? @db.Decimal(10, 2) // sum of this rule's own open target-side lots
   maxDailyLoss Decimal? @db.Decimal(18, 2) // target account's realized-today + floating P/L
 
-  enabled Boolean @default(true)
+  enabled  Boolean   @default(true)
   // Set the instant a cap breaches (lib/mirror.ts's checkKillSwitch) --
   // the timestamp IS the audit trail entry point, same shape as
   // Broker.tradingHaltedAt/dealingModeAt. enabled is also flipped false at
@@ -1416,8 +1449,8 @@ model MirrorLink {
   ruleId String
   rule   MirrorRule @relation(fields: [ruleId], references: [id])
 
-  sourcePositionId String   @unique
-  targetPositionId String   @unique
+  sourcePositionId String @unique
+  targetPositionId String @unique
 
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
@@ -1457,16 +1490,16 @@ model IbRelationship {
 // ─────────────────────────────────────────────────────────────────────────
 
 model AuditLog {
-  id            String    @id @default(cuid())
-  brokerId      String?
-  broker        Broker?   @relation(fields: [brokerId], references: [id])
-  actorAdminId  String?
-  actorAdmin    AdminUser? @relation("AuditLogActor", fields: [actorAdminId], references: [id])
-  action        String // "BALANCE_ADJUSTMENT" | "LEVERAGE_CHANGE" | "KYC_APPROVAL" | "ADMIN_PERMISSION_CHANGE" | "MANUAL_POSITION_CLOSE" | ...
-  entityType    String // "Account" | "Position" | "AdminUser" | ...
-  entityId      String
-  oldValue      Json?
-  newValue      Json?
+  id           String     @id @default(cuid())
+  brokerId     String?
+  broker       Broker?    @relation(fields: [brokerId], references: [id])
+  actorAdminId String?
+  actorAdmin   AdminUser? @relation("AuditLogActor", fields: [actorAdminId], references: [id])
+  action       String // "BALANCE_ADJUSTMENT" | "LEVERAGE_CHANGE" | "KYC_APPROVAL" | "ADMIN_PERMISSION_CHANGE" | "MANUAL_POSITION_CLOSE" | ...
+  entityType   String // "Account" | "Position" | "AdminUser" | ...
+  entityId     String
+  oldValue     Json?
+  newValue     Json?
 
   createdAt DateTime @default(now()) @db.Timestamptz(3)
 

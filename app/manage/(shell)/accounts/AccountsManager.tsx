@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
+import { Checkbox } from "@/components/ui/Checkbox";
 import { FormField } from "@/components/ui/FormField";
 import { LeverageInput } from "@/components/ui/LeverageInput";
 import { Modal, ModalActions } from "@/components/ui/Modal";
@@ -29,6 +30,10 @@ export type AccountRow = {
   groupId: string | null;
   groupName: string | null;
   maxDailyLoss: string | null;
+  // Per-account swap-free OVERRIDE -- the 3rd of 3 swap-free levels (type/
+  // group/account, see Account.swapFree's own schema comment). Storage
+  // only for now; no live fill-time path charges swap yet at all.
+  swapFree: boolean;
   country: string | null;
   kycStatus: "PENDING" | "APPROVED" | "REJECTED" | null;
   mirror: { direction: "REVERSE" | "SAME"; multiplier: string } | null;
@@ -221,6 +226,10 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
     await patchAccount(row.id, { maxDailyLoss: value.trim() === "" ? null : value.trim() }, `${row.accountNumber} max daily loss updated`);
   }
 
+  async function changeSwapFree(row: AccountRow, swapFree: boolean) {
+    await patchAccount(row.id, { swapFree }, `${row.accountNumber} swap-free override ${swapFree ? "enabled" : "disabled"}`);
+  }
+
   function openAdjustModal(row: AccountRow) {
     setAdjustTarget(row);
     setAdjustType("credit");
@@ -276,10 +285,11 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
           <TableHeaderCell align="right" className="min-w-[100px]">Credit</TableHeaderCell>
           <TableHeaderCell className="min-w-[150px]">Status</TableHeaderCell>
           <TableHeaderCell align="right" className="min-w-[110px]">Max daily loss</TableHeaderCell>
+          <TableHeaderCell align="center" className="min-w-[75px]">Swap-free</TableHeaderCell>
           <TableHeaderCell className="min-w-[140px]" />
         </TableHead>
         <TableBody>
-          <TableSkeleton columns={12} />
+          <TableSkeleton columns={13} />
         </TableBody>
       </Table>
     );
@@ -318,13 +328,20 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
           <TableHeaderCell align="right" className="min-w-[110px]" title="Reject new orders once today's realized loss reaches this amount">
             Max daily loss
           </TableHeaderCell>
+          <TableHeaderCell
+            align="center"
+            className="min-w-[75px]"
+            title="Per-account swap-free override -- independent of the account's type or group (Account.swapFree). Storage only for now, no live fill charges swap yet."
+          >
+            Swap-free
+          </TableHeaderCell>
           <TableHeaderCell className="min-w-[140px]" />
         </TableHead>
         <TableBody>
           {loadError ? (
-            <TableErrorState colSpan={12} onRetry={() => reloadRows().catch(() => setLoadError(true))} />
+            <TableErrorState colSpan={13} onRetry={() => reloadRows().catch(() => setLoadError(true))} />
           ) : filtered.length === 0 ? (
-            <TableEmptyState colSpan={12}>No accounts match.</TableEmptyState>
+            <TableEmptyState colSpan={13}>No accounts match.</TableEmptyState>
           ) : (
             filtered.map((row) => (
               <TableRow key={row.id}>
@@ -431,6 +448,13 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
                   ) : (
                     row.maxDailyLoss ?? "-"
                   )}
+                </TableCell>
+                <TableCell align="center" className="min-w-[75px]">
+                  <Checkbox
+                    checked={row.swapFree}
+                    disabled={busyId === row.id}
+                    onChange={(e) => changeSwapFree(row, e.target.checked)}
+                  />
                 </TableCell>
                 <TableCell className="min-w-[140px] whitespace-nowrap">
                   {canManageFinance ? (
