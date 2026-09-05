@@ -3319,15 +3319,42 @@ export default function WebTrader({
   }
 
   const acctPositions = positions;
-  const netBySymbol = new Map<string, { buyLots: number; sellLots: number; pnl: number; count: number; digits: number; slLabel: string; tpLabel: string }>();
+  // avgPrice/slLabel/tpLabel added (2026-09-05) for the Net positions table
+  // -- previously unused fields (slLabel/tpLabel were declared, initialized
+  // to "", and never actually assigned anything) now back real columns.
+  // avgPrice is volume-weighted across every position folded into this
+  // symbol's net row. A net group can hold positions with DIFFERENT SL/TP
+  // values (openSltpEditForNet sets one value across all of them, but
+  // nothing stops them differing before that's ever clicked) -- slLabel/
+  // tpLabel show the shared value only when every position in the group
+  // actually agrees, "-" otherwise, same dash convention as an unset value.
+  const netBySymbol = new Map<string, { buyLots: number; sellLots: number; pnl: number; count: number; digits: number; avgPrice: number; slLabel: string; tpLabel: string }>();
+  const netAccum = new Map<string, { buyLots: number; sellLots: number; pnl: number; count: number; digits: number; volSum: number; priceWeightedSum: number; slValues: Set<string>; tpValues: Set<string> }>();
   acctPositions.forEach((p) => {
-    const entry = netBySymbol.get(p.symbol.name) ?? { buyLots: 0, sellLots: 0, pnl: 0, count: 0, digits: p.symbol.digits, slLabel: "", tpLabel: "" };
+    const entry = netAccum.get(p.symbol.name) ?? {
+      buyLots: 0, sellLots: 0, pnl: 0, count: 0, digits: p.symbol.digits,
+      volSum: 0, priceWeightedSum: 0, slValues: new Set<string>(), tpValues: new Set<string>(),
+    };
     const vol = parseFloat(p.volume);
     if (p.side === "BUY") entry.buyLots += vol; else entry.sellLots += vol;
     entry.pnl += positionPnl(p);
     entry.count += 1;
-    netBySymbol.set(p.symbol.name, entry);
+    entry.volSum += vol;
+    entry.priceWeightedSum += vol * parseFloat(p.openPrice);
+    entry.slValues.add(p.slPrice ?? "");
+    entry.tpValues.add(p.tpPrice ?? "");
+    netAccum.set(p.symbol.name, entry);
   });
+  for (const [symbolName, e] of netAccum) {
+    const sl = e.slValues.size === 1 ? Array.from(e.slValues)[0] : "";
+    const tp = e.tpValues.size === 1 ? Array.from(e.tpValues)[0] : "";
+    netBySymbol.set(symbolName, {
+      buyLots: e.buyLots, sellLots: e.sellLots, pnl: e.pnl, count: e.count, digits: e.digits,
+      avgPrice: e.volSum > 0 ? e.priceWeightedSum / e.volSum : 0,
+      slLabel: sl ? fmt(parseFloat(sl), e.digits) : "-",
+      tpLabel: tp ? fmt(parseFloat(tp), e.digits) : "-",
+    });
+  }
 
   const serverName = account ? `${brokerName}-${account.accountMode === "LIVE" ? "Live" : "Demo"}` : brokerName;
 
@@ -4332,85 +4359,107 @@ export default function WebTrader({
                   {netBySymbol.size === 0 ? (
                     <div className="empty-state" style={{ minWidth: 960 }}>No open positions, place a trade to see it here</div>
                   ) : (
-                    Array.from(netBySymbol.entries()).map(([symbolName, g]) => {
-                      const netLots = +(g.buyLots - g.sellLots).toFixed(2);
-                      const netSide = netLots > 0 ? "buy" : netLots < 0 ? "sell" : "flat";
-                      return (
-                        <div className="simple-row" key={symbolName}>
-                          <div className="simple-left">
-                            <span className="pos-symbol">{symbolName}</span>
-                            <span className={`pos-side ${netSide === "sell" ? "sell" : "buy"}`} style={netSide === "flat" ? { background: "var(--bg-3)", color: "var(--text-3)" } : undefined}>
-                              {netSide === "flat" ? "FLAT" : netSide.toUpperCase()} {Math.abs(netLots).toFixed(2)}
+                    <>
+                      <div className="net-table-header">
+                        <span>Symbol</span><span>Type</span><span>Lots</span><span>Price</span><span>S/L</span><span>T/P</span><span>Profit</span><span></span>
+                      </div>
+                      {Array.from(netBySymbol.entries()).map(([symbolName, g]) => {
+                        const netLots = +(g.buyLots - g.sellLots).toFixed(2);
+                        const netSide = netLots > 0 ? "buy" : netLots < 0 ? "sell" : "flat";
+                        return (
+                          <div className="net-row" key={symbolName}>
+                            <span className="pos-cell pos-symbol">{symbolName}</span>
+                            <span className="pos-cell">
+                              <span className={`pos-side ${netSide === "sell" ? "sell" : "buy"}`} style={netSide === "flat" ? { background: "var(--bg-3)", color: "var(--text-3)" } : undefined}>
+                                {netSide === "flat" ? "FLAT" : netSide.toUpperCase()}
+                              </span>
                             </span>
-                            <span className="net-pos-detail">{g.count} position{g.count > 1 ? "s" : ""} · B {g.buyLots.toFixed(2)} / S {g.sellLots.toFixed(2)}</span>
-                            <span className="sltp-pill" onClick={() => openSltpEditForNet(symbolName)}>Edit SL/TP</span>
+                            <span className="pos-cell mono" title={`${g.count} position${g.count > 1 ? "s" : ""} · B ${g.buyLots.toFixed(2)} / S ${g.sellLots.toFixed(2)}`}>{Math.abs(netLots).toFixed(2)}</span>
+                            <span className="pos-cell mono">{fmt(g.avgPrice, g.digits)}</span>
+                            <span className="pos-cell sltp-pill" onClick={() => openSltpEditForNet(symbolName)}><span className="mono">{g.slLabel}</span></span>
+                            <span className="pos-cell sltp-pill" onClick={() => openSltpEditForNet(symbolName)}><span className="mono">{g.tpLabel}</span></span>
+                            <span className={`pos-cell pos-pnl mono ${g.pnl >= 0 ? "pos" : "neg"}`}>{g.pnl >= 0 ? "+" : ""}{g.pnl.toFixed(2)}</span>
+                            <span className="pos-cell pos-actions">
+                              <button className="icon-btn" title="Share" onClick={() => openShareForNet(symbolName)}>
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="18" cy="5" r="3" /><circle cx="6" cy="12" r="3" /><circle cx="18" cy="19" r="3" /></svg>
+                              </button>
+                              <button className="icon-btn" title={`Close all in ${symbolName}`} onClick={() => closeManyBySymbol(symbolName)}>
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                              </button>
+                            </span>
                           </div>
-                          <div className="simple-right">
-                            <span className={`pos-pnl mono ${g.pnl >= 0 ? "pos" : "neg"}`}>{g.pnl >= 0 ? "+" : ""}{g.pnl.toFixed(2)}</span>
-                            <button className="icon-btn" title="Share" onClick={() => openShareForNet(symbolName)}>
-                              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="18" cy="5" r="3" /><circle cx="6" cy="12" r="3" /><circle cx="18" cy="19" r="3" /></svg>
-                            </button>
-                            <button className="icon-btn" title={`Close all in ${symbolName}`} onClick={() => closeManyBySymbol(symbolName)}>
-                              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
-                            </button>
-                          </div>
-                        </div>
-                      );
-                    })
+                        );
+                      })}
+                    </>
                   )}
                 </div>
               ) : null}
 
               {activeBottomTab === "orders" ? (
                 <div className="panel-body">
-                  {pendingOrders.length === 0 ? <div className="empty-state" style={{ minWidth: 960 }}>No pending orders</div> : pendingOrders.map((o) => {
-                    // A dealing-group MARKET order routed to the manual
-                    // desk sits at the same PENDING status a resting
-                    // LIMIT/STOP uses while it waits for its trigger price
-                    // -- distinguish by type, not status, since status
-                    // alone can't tell them apart (see prisma/schema.prisma's
-                    // OrderStatus comment).
-                    const isDealingPending = o.type === "MARKET" && o.status === "PENDING";
-                    return (
-                    <div className={`simple-row${isDealingPending ? " order-row-pending-approval" : ""}`} key={o.id}>
-                      <div className="simple-left">
-                        <span className="pos-symbol">{o.symbol.name}</span>
-                        <span className={`pos-side ${o.side === "BUY" ? "buy" : "sell"}`}>{o.type} {o.side} {parseFloat(o.volume).toFixed(2)}</span>
-                        {isDealingPending ? (
-                          <span className="pending-approval-badge" title="Awaiting dealer review -- you can still trade this or any other symbol while you wait.">
-                            PENDING APPROVAL · {formatElapsed(new Date(o.createdAt).getTime(), dealingPendingNowMs)}
-                          </span>
-                        ) : o.status === "REQUOTED" ? (
-                          <span className="net-pos-detail mono">
-                            requoted to {o.requotedPrice ? fmt(parseFloat(o.requotedPrice), o.symbol.digits) : "-"}
-                          </span>
-                        ) : (
-                          <span className="net-pos-detail mono">@ {o.requestedPrice ? fmt(parseFloat(o.requestedPrice), o.symbol.digits) : "-"}</span>
-                        )}
+                  {pendingOrders.length === 0 ? (
+                    <div className="empty-state" style={{ minWidth: 960 }}>No pending orders</div>
+                  ) : (
+                    <>
+                      <div className="orders-table-header">
+                        <span>ID</span><span>Symbol</span><span>Type</span><span>Lots</span><span>Price</span><span>S/L</span><span>T/P</span><span>Placed</span><span></span>
                       </div>
-                      <div className="simple-right">
-                        {o.status === "REQUOTED" ? (
-                          <>
-                            <button className="modal-btn primary" style={{ padding: "4px 10px", fontSize: 12 }} onClick={() => respondToRequote(o, true)}>
-                              Accept
-                            </button>
-                            <button className="modal-btn secondary" style={{ padding: "4px 10px", fontSize: 12 }} onClick={() => respondToRequote(o, false)}>
-                              Reject
-                            </button>
-                          </>
-                        ) : (
-                          <button
-                            className="icon-btn"
-                            title={isDealingPending ? "Cancel - withdraw before the dealer reviews it" : "Cancel order"}
-                            onClick={() => tradeApi.cancelOrder(o.id).then(refreshOrders)}
-                          >
-                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                    );
-                  })}
+                      {pendingOrders.map((o) => {
+                        // A dealing-group MARKET order routed to the manual
+                        // desk sits at the same PENDING status a resting
+                        // LIMIT/STOP uses while it waits for its trigger price
+                        // -- distinguish by type, not status, since status
+                        // alone can't tell them apart (see prisma/schema.prisma's
+                        // OrderStatus comment).
+                        const isDealingPending = o.type === "MARKET" && o.status === "PENDING";
+                        const typeLabel = `${o.side === "BUY" ? "Buy" : "Sell"} ${o.type === "LIMIT" ? "Limit" : o.type === "STOP" ? "Stop" : "Market"}`;
+                        return (
+                          <div className={`orders-row${isDealingPending ? " order-row-pending-approval" : ""}`} key={o.id}>
+                            <span className="pos-cell mono" style={{ color: "var(--text-3)", fontSize: 11 }}>{o.id.slice(-8)}</span>
+                            <span className="pos-cell pos-symbol">{o.symbol.name}</span>
+                            <span className="pos-cell"><span className={`pos-side ${o.side === "BUY" ? "buy" : "sell"}`}>{typeLabel}</span></span>
+                            <span className="pos-cell mono">{parseFloat(o.volume).toFixed(2)}</span>
+                            <span className="pos-cell mono" title={o.status === "REQUOTED" ? `requoted from ${o.requestedPrice ? fmt(parseFloat(o.requestedPrice), o.symbol.digits) : "-"}` : undefined} style={o.status === "REQUOTED" ? { color: "var(--warn)" } : undefined}>
+                              {o.status === "REQUOTED"
+                                ? (o.requotedPrice ? fmt(parseFloat(o.requotedPrice), o.symbol.digits) : "-")
+                                : (o.requestedPrice ? fmt(parseFloat(o.requestedPrice), o.symbol.digits) : "-")}
+                            </span>
+                            <span className="pos-cell mono">{o.slPrice ? fmt(parseFloat(o.slPrice), o.symbol.digits) : "-"}</span>
+                            <span className="pos-cell mono">{o.tpPrice ? fmt(parseFloat(o.tpPrice), o.symbol.digits) : "-"}</span>
+                            <span className="pos-cell" style={{ fontSize: 11 }}>
+                              {isDealingPending ? (
+                                <span className="pending-approval-badge" title="Awaiting dealer review -- you can still trade this or any other symbol while you wait.">
+                                  {formatElapsed(new Date(o.createdAt).getTime(), dealingPendingNowMs)}
+                                </span>
+                              ) : (
+                                <span style={{ color: "var(--text-3)" }}>{new Date(o.createdAt).toLocaleDateString([], { month: "short", day: "numeric" })} {new Date(o.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+                              )}
+                            </span>
+                            <span className="pos-cell pos-actions">
+                              {o.status === "REQUOTED" ? (
+                                <>
+                                  <button className="modal-btn primary" style={{ padding: "4px 10px", fontSize: 12 }} onClick={() => respondToRequote(o, true)}>
+                                    Accept
+                                  </button>
+                                  <button className="modal-btn secondary" style={{ padding: "4px 10px", fontSize: 12 }} onClick={() => respondToRequote(o, false)}>
+                                    Reject
+                                  </button>
+                                </>
+                              ) : (
+                                <button
+                                  className="icon-btn"
+                                  title={isDealingPending ? "Cancel - withdraw before the dealer reviews it" : "Cancel order"}
+                                  onClick={() => tradeApi.cancelOrder(o.id).then(refreshOrders)}
+                                >
+                                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                                </button>
+                              )}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </>
+                  )}
                 </div>
               ) : null}
 

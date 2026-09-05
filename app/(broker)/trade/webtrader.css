@@ -560,11 +560,24 @@ html[data-mode="light"], html[data-mode="light"] body {
 .draw-tool-sep { height: 1px; background: var(--border); margin: 2px 4px; }
 
 .bottom-panel { height: 190px; border-top: 1px solid var(--border); background: var(--bg-1); display: flex; flex-direction: column; flex-shrink: 0; }
-.tabs-row { display: flex; align-items: center; justify-content: space-between; padding: 10px 16px 0; border-bottom: 1px solid var(--border); }
+/* Real bug fixed here (2026-09-05): justify-content: space-between
+   redistributes ALL current children's positions based on how MANY of
+   them there are -- .bulk-actions only renders on the Positions tab, so
+   switching to any other tab drops the child count from 3 (chevron,
+   tabs, bulk-actions) to 2 (chevron, tabs), and space-between recomputes
+   .tabs' position from scratch against whatever's left -- with .tabs now
+   the LAST child, space-between pushes it all the way to the right edge
+   instead of leaving it where it sat on the Positions tab. margin-left:
+   auto on .bulk-actions itself (below) achieves the same "push the
+   trailing content right" visual without .tabs' own position depending
+   on whether that trailing content exists at all -- .tabs is simply the
+   second flex child in document order, always immediately after the
+   collapse chevron, on every tab. */
+.tabs-row { display: flex; align-items: center; padding: 10px 16px 0; border-bottom: 1px solid var(--border); }
 .tabs { display: flex; gap: 18px; font-size: 12px; color: var(--text-3); }
 .tab { padding-bottom: 9px; cursor: pointer; border-bottom: 2px solid transparent; }
 .tab.active { color: var(--text-1); border-color: var(--text-1); }
-.bulk-actions { display: flex; gap: 6px; padding-bottom: 8px; }
+.bulk-actions { display: flex; gap: 6px; padding-bottom: 8px; margin-left: auto; }
 .bulk-btn { font-size: 10.5px; padding: 4px 9px; border-radius: 6px; cursor: pointer; background: var(--bg-3); color: var(--text-2); border: 1px solid var(--border-strong); transition: filter .12s, opacity .12s; }
 .bulk-btn:hover { filter: brightness(1.15); }
 .bulk-btn.profit { color: var(--buy); border-color: var(--buy-bg); }
@@ -659,15 +672,58 @@ html[data-mode="light"], html[data-mode="light"] body {
 .pending-approval-badge { display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; font-weight: 600; letter-spacing: 0.02em; color: var(--warn); background: var(--warn-bg); border: 1px solid rgba(240, 185, 11, 0.35); border-radius: 4px; padding: 2px 7px; }
 .order-row-pending-approval { background: rgba(240, 185, 11, 0.05); }
 
-/* Bottom-panel tab layout-shift fix (2026-09-04) -- Positions/History use
-   a fixed-column grid with min-width: 960px (horizontal scroll on a
-   narrow panel); this shared row had NO min-width at all, so switching
-   to/from Net positions/Pending Orders/Orders changed .panel-body's own
-   scrollable content width (and therefore its scrollbar/scroll-position
-   state) out from under the trader, reading as the whole panel jumping
-   left or right depending on which tab. Matching the same min-width
-   keeps .panel-body's horizontal geometry identical across every tab,
-   not just this one row style. */
+/* Net positions / Pending Orders tables (2026-09-05) -- were a single
+   plain flex row per symbol/order (.simple-row below), not a real table,
+   unlike Positions/History. Same column-table pattern as those two
+   (reuses .pos-cell/.pos-symbol/.pos-side/.pos-pnl/.sltp-pill/.pos-actions
+   for identical styling/row-height/font), own grid-template per column
+   set, min-width: 960px matching Positions exactly (not History's 820px)
+   since Net/Pending Orders share the same bottom panel interchangeably
+   with Positions far more than with History -- keeps .panel-body's
+   horizontal scroll geometry identical across the tabs a trader actually
+   flips between while watching a trade. */
+/* minmax(0, Nfr) everywhere below, not bare Nfr (2026-09-05) -- the exact
+   bug just fixed for the watchlist (see wlGridTemplate's own comment): a
+   bare "Nfr" track's automatic minimum is its own content's min-content
+   width, so a header label and a row's actual cell content can solve the
+   identical ratios against different effective minimums and drift out of
+   alignment. Pinning every track's minimum to 0 up front avoids the same
+   class of bug in these brand-new grids rather than reintroducing it. */
+.net-table-header {
+  display: grid;
+  grid-template-columns: minmax(0,0.85fr) minmax(0,0.55fr) minmax(0,0.5fr) minmax(0,0.75fr) minmax(0,0.75fr) minmax(0,0.75fr) minmax(0,0.75fr) 70px;
+  gap: 8px; padding: 8px 4px; font-size: 10px; color: var(--text-3);
+  letter-spacing: .03em; text-transform: uppercase;
+  border-bottom: 1px solid var(--border); min-width: 960px;
+  position: sticky; top: 0; background: var(--bg-1); z-index: 1;
+}
+.net-row {
+  display: grid;
+  grid-template-columns: minmax(0,0.85fr) minmax(0,0.55fr) minmax(0,0.5fr) minmax(0,0.75fr) minmax(0,0.75fr) minmax(0,0.75fr) minmax(0,0.75fr) 70px;
+  gap: 8px; align-items: center; padding: 9px 4px; border-bottom: 1px solid var(--bg-2);
+  font-size: 12.5px; min-width: 960px;
+}
+.net-row:last-child { border-bottom: none; }
+/* Actions column is wider than Positions'/Net's own (150px vs 70-90px) --
+   REQUOTED shows two text buttons (Accept/Reject), not icon buttons, and
+   needs the room so they're never clipped by .pos-cell's overflow:hidden. */
+.orders-table-header {
+  display: grid;
+  grid-template-columns: 70px minmax(0,0.65fr) minmax(0,0.65fr) minmax(0,0.4fr) minmax(0,0.7fr) minmax(0,0.6fr) minmax(0,0.6fr) minmax(0,0.5fr) 150px;
+  gap: 8px; padding: 8px 4px; font-size: 10px; color: var(--text-3);
+  letter-spacing: .03em; text-transform: uppercase;
+  border-bottom: 1px solid var(--border); min-width: 960px;
+  position: sticky; top: 0; background: var(--bg-1); z-index: 1;
+}
+.orders-row {
+  display: grid;
+  grid-template-columns: 70px minmax(0,0.65fr) minmax(0,0.65fr) minmax(0,0.4fr) minmax(0,0.7fr) minmax(0,0.6fr) minmax(0,0.6fr) minmax(0,0.5fr) 150px;
+  gap: 8px; align-items: center; padding: 9px 4px; border-bottom: 1px solid var(--bg-2);
+  font-size: 12.5px; min-width: 960px;
+}
+.orders-row:last-child { border-bottom: none; }
+.orders-row.order-row-pending-approval { background: rgba(240, 185, 11, 0.05); }
+
 .simple-row { display: flex; justify-content: space-between; align-items: center; padding: 9px 4px; border-bottom: 1px solid var(--bg-2); font-size: 12.5px; flex-wrap: wrap; row-gap: 4px; min-width: 960px; }
 .simple-row:last-child { border-bottom: none; }
 /* min-width: 0 + flex-wrap -- without them, a flex child's content-based
