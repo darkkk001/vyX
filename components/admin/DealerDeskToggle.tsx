@@ -75,11 +75,29 @@ export default function DealerDeskToggle() {
 
   return (
     <>
+      {/* Layout fix (2026-09-05) -- the previous CSS Grid attempt
+          (`gridTemplateColumns: "48px 1fr"`) hardcoded the toggle's track
+          width as a literal "48px" string kept in sync BY HAND with the
+          button's own `w-12` Tailwind class (also 48px) -- two independent
+          sources of truth for the same number, and still overlapping in
+          production per a real screenshot despite matching today. Flexbox
+          removes that duplication entirely: `shrink-0` sizes the toggle
+          from its OWN rendered box (whatever `h-7 w-12` actually computes
+          to, no separate guess to fall out of sync with it), `gap-5`
+          reserves a hard 20px minimum space no sibling can ever occupy
+          (a flex/grid gap track, unlike a plain margin, can't be collapsed
+          or overlapped by content the way absolute positioning or a
+          margin miscalculation could), and `min-w-0 flex-1` on the text
+          block lets its two lines wrap and shrink to fit whatever room is
+          left -- it can never push back into the toggle's reserved space,
+          at any container width from a narrow mobile viewport up. Toggle
+          and text are also each other's only flex siblings (no third
+          item competing for space), so this holds regardless of theme or
+          viewport. */}
       <div
-        className={`grid items-center rounded-xl border px-4 py-3 ${
+        className={`flex items-center gap-5 rounded-xl border px-4 py-3 ${
           state.dealerOn ? "border-[var(--border)] bg-[var(--bg-1)]" : "border-[var(--warn)]/40 bg-[var(--warn-bg)]"
         }`}
-        style={{ gridTemplateColumns: "48px 1fr", columnGap: 16 }}
       >
         <button
           type="button"
@@ -87,7 +105,7 @@ export default function DealerDeskToggle() {
           aria-checked={state.dealerOn}
           disabled={busy}
           onClick={handleToggleClick}
-          className={`relative h-7 w-12 rounded-full transition-colors disabled:opacity-50 ${
+          className={`relative h-7 w-12 shrink-0 rounded-full transition-colors disabled:opacity-50 ${
             state.dealerOn ? "bg-[var(--buy)]" : "bg-[var(--text-3)]"
           }`}
         >
@@ -97,7 +115,7 @@ export default function DealerDeskToggle() {
             }`}
           />
         </button>
-        <div className="min-w-0">
+        <div className="min-w-0 flex-1">
           <p className="text-sm font-semibold text-[var(--text-1)]">
             {state.dealerOn ? "Dealer ON" : "Dealer OFF"}
           </p>
