@@ -38,8 +38,22 @@ export async function GET() {
       where: { brokerId, type: "DEPOSIT", status: "COMPLETED", createdAt: { gte: thirtyDaysAgo } },
       _sum: { amount: true },
     }),
-    prisma.position.count({ where: { brokerId, status: "OPEN" } }),
-    prisma.position.findMany({ where: { brokerId, status: "OPEN" }, select: { accountId: true }, distinct: ["accountId"] }),
+    // 2026-09-06 interim demo-exclusion (Section C audit) -- "Active
+    // trades" is a business-volume number a broker checks daily; blending
+    // in demo/test accounts' positions overstates real trading activity.
+    // Scoped narrowly to just this stat pair (same reasoning applies to
+    // the Reports Summary stats in .../reports/summary/route.ts) -- the
+    // rest of this route (totalClients, deposits, pending KYC/withdrawal
+    // queues) is left as-is, since those are either not business-volume
+    // numbers or are operational queues staff still need to act on
+    // regardless of account mode. Full demo/live separation across every
+    // report is deferred to the Phase 2 Reporting v2 module.
+    prisma.position.count({ where: { brokerId, status: "OPEN", account: { accountMode: "LIVE" } } }),
+    prisma.position.findMany({
+      where: { brokerId, status: "OPEN", account: { accountMode: "LIVE" } },
+      select: { accountId: true },
+      distinct: ["accountId"],
+    }),
     prisma.kycRecord.count({ where: { status: "PENDING", account: { brokerId } } }),
     prisma.transaction.aggregate({
       where: { brokerId, type: "WITHDRAWAL", status: "PENDING" },

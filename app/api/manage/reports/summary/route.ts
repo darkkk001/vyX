@@ -16,12 +16,33 @@ export async function GET() {
   const brokerId = session!.brokerId!;
   const thirtyDaysAgo = new Date(Date.now() - 30 * DAY_MS);
 
+  // 2026-09-06 interim demo-exclusion (Section C audit) -- these four are
+  // exactly the "how's our business today" numbers a broker looks at
+  // daily; blending in demo/test accounts (this dev broker's own
+  // stress-test accounts among them) overstates real trading volume,
+  // commission revenue, deposits, and client growth. `account:
+  // {accountMode: "LIVE"}` on the two relations, `accountMode: "LIVE"`
+  // directly on Account itself for newClients. Full demo/live separation
+  // across every report (not just these four) is deferred to the Phase 2
+  // Reporting v2 module -- this is intentionally narrow.
   const [volumeAgg, commissionAgg, depositsAgg, withdrawalsAgg, newClients] = await Promise.all([
-    prisma.position.aggregate({ where: { brokerId, openedAt: { gte: thirtyDaysAgo } }, _sum: { volume: true } }),
-    prisma.position.aggregate({ where: { brokerId, status: "CLOSED", closedAt: { gte: thirtyDaysAgo } }, _sum: { commission: true } }),
-    prisma.transaction.aggregate({ where: { brokerId, type: "DEPOSIT", status: "COMPLETED", createdAt: { gte: thirtyDaysAgo } }, _sum: { amount: true } }),
-    prisma.transaction.aggregate({ where: { brokerId, type: "WITHDRAWAL", status: "COMPLETED", createdAt: { gte: thirtyDaysAgo } }, _sum: { amount: true } }),
-    prisma.account.count({ where: { brokerId, createdAt: { gte: thirtyDaysAgo } } }),
+    prisma.position.aggregate({
+      where: { brokerId, openedAt: { gte: thirtyDaysAgo }, account: { accountMode: "LIVE" } },
+      _sum: { volume: true },
+    }),
+    prisma.position.aggregate({
+      where: { brokerId, status: "CLOSED", closedAt: { gte: thirtyDaysAgo }, account: { accountMode: "LIVE" } },
+      _sum: { commission: true },
+    }),
+    prisma.transaction.aggregate({
+      where: { brokerId, type: "DEPOSIT", status: "COMPLETED", createdAt: { gte: thirtyDaysAgo }, account: { accountMode: "LIVE" } },
+      _sum: { amount: true },
+    }),
+    prisma.transaction.aggregate({
+      where: { brokerId, type: "WITHDRAWAL", status: "COMPLETED", createdAt: { gte: thirtyDaysAgo }, account: { accountMode: "LIVE" } },
+      _sum: { amount: true },
+    }),
+    prisma.account.count({ where: { brokerId, accountMode: "LIVE", createdAt: { gte: thirtyDaysAgo } } }),
   ]);
 
   const netDeposits = (depositsAgg._sum.amount?.toNumber() ?? 0) - Math.abs(withdrawalsAgg._sum.amount?.toNumber() ?? 0);
