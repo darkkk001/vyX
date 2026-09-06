@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { resolvePricingV2, resolveEffectiveSpreadMarkup, resolveSymbolPricingV2, type SymbolConfigLevel, type AccountTypeFlatLevel } from "@/lib/pricing-engine";
+import { resolvePricingV2, resolveEffectiveSpreadMarkup, resolveSymbolPricingV2, resolveFillPricing, type SymbolConfigLevel, type AccountTypeFlatLevel } from "@/lib/pricing-engine";
 
 // Phase 2 pricing engine (docs/pricing-engine.md) -- exhaustive precedence
 // coverage for resolvePricingV2 (pure, no DB) plus a handful of DB-backed
@@ -412,6 +412,105 @@ describe("resolveSymbolPricingV2 (live DB, rolled back)", () => {
         brokerSwapShort: D("-2"),
       });
       expect(result.swapFree).toBe(true);
+    });
+  });
+});
+
+describe("resolveFillPricing -- the Stage 4 flag-gated shim (live DB, rolled back)", () => {
+  async function makeFixture(tx: Prisma.TransactionClient) {
+    const suffix = randomUUID().replace(/-/g, "").slice(0, 10);
+    const broker = await tx.broker.create({ data: { name: `FillPricing Test ${suffix}`, subdomain: `fptest-${suffix}` } });
+    const group = await tx.group.create({ data: { brokerId: broker.id, name: "FP Group", leverage: 100 } });
+    const accountType = await tx.accountType.create({ data: { brokerId: broker.id, name: "FP Type" } });
+    const symbol = await tx.symbol.findUniqueOrThrow({ where: { name: "XAUUSD" } });
+    const account = await tx.account.create({
+      data: {
+        brokerId: broker.id,
+        accountNumber: `7${suffix.slice(0, 7)}`,
+        email: `fp-${suffix}@test.local`,
+        passwordHash: "x",
+        fullName: "FP Test",
+        accountMode: "LIVE",
+        groupId: group.id,
+        accountTypeId: accountType.id,
+      },
+    });
+    return { broker, group, accountType, symbol, account };
+  }
+
+  it("flag OFF ignores every v2-only override and matches the old group-only resolution exactly", async () => {
+    if (!dbReachable) return;
+    await withRollback(async (tx) => {
+      const { symbol, account, accountType } = await makeFixture(tx);
+      // Set an AccountType override that v2 would definitely pick up --
+      // proves flag-off truly never looks at it.
+      await tx.accountType.update({ where: { id: accountType.id }, data: { spreadMarkup: D("0.05") } });
+
+      const result = await resolveFillPricing(tx, {
+        pricingEngineEnabled: false,
+        accountId: account.id,
+        accountTypeId: accountType.id,
+        groupId: account.groupId,
+        symbolId: symbol.id,
+        brokerSpreadMarkup: D("3"),
+        brokerCommissionPerLot: D("7"),
+        brokerSwapLong: D("-2"),
+        brokerSwapShort: D("-2"),
+        liveBaseSpreadPips: "1",
+      });
+      expect(result.spreadMarkup.toString()).toBe("3"); // broker base, NOT the type's 0.05 override
+      expect(result.commissionPerLot.toString()).toBe("7");
+      expect(result.warning).toBeNull();
+    });
+  });
+
+  it("flag ON picks up the same AccountType override and collapses target mode against the passed live base", async () => {
+    if (!dbReachable) return;
+    await withRollback(async (tx) => {
+      const { symbol, account, accountType } = await makeFixture(tx);
+      await tx.accountTypeSymbolConfig.create({
+        data: { accountTypeId: accountType.id, symbolId: symbol.id, targetTotalSpreadPips: D("2") },
+      });
+
+      const result = await resolveFillPricing(tx, {
+        pricingEngineEnabled: true,
+        accountId: account.id,
+        accountTypeId: accountType.id,
+        groupId: account.groupId,
+        symbolId: symbol.id,
+        brokerSpreadMarkup: D("3"),
+        brokerCommissionPerLot: D("7"),
+        brokerSwapLong: D("-2"),
+        brokerSwapShort: D("-2"),
+        liveBaseSpreadPips: "1.2",
+      });
+      expect(result.spreadMarkup.toString()).toBe("0.8"); // target 2 - live base 1.2
+      expect(result.warning).toBeNull();
+    });
+  });
+
+  it("flag ON with no live base available still fills (Q1) -- falls back to 0 with no fallback markup configured", async () => {
+    if (!dbReachable) return;
+    await withRollback(async (tx) => {
+      const { symbol, account, accountType } = await makeFixture(tx);
+      await tx.accountTypeSymbolConfig.create({
+        data: { accountTypeId: accountType.id, symbolId: symbol.id, targetTotalSpreadPips: D("2") },
+      });
+
+      const result = await resolveFillPricing(tx, {
+        pricingEngineEnabled: true,
+        accountId: account.id,
+        accountTypeId: accountType.id,
+        groupId: account.groupId,
+        symbolId: symbol.id,
+        brokerSpreadMarkup: D("3"),
+        brokerCommissionPerLot: D("7"),
+        brokerSwapLong: D("-2"),
+        brokerSwapShort: D("-2"),
+        liveBaseSpreadPips: null,
+      });
+      expect(result.spreadMarkup.toString()).toBe("0");
+      expect(result.warning).toEqual({ reason: "base_unavailable", targetTotalSpreadPips: D("2"), fallbackMarkupUsed: D("0") });
     });
   });
 });

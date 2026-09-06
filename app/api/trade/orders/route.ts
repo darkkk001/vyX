@@ -5,7 +5,8 @@ import { getAccountSession } from "@/lib/account-auth";
 import { validateSlTp, validatePendingOrderDirection } from "@/lib/trading";
 import { createNotification } from "@/lib/notifications";
 import { openPositionFromOrder } from "@/lib/dealing";
-import { resolveBookType, applySpreadMarkup, resolveSymbolPricing, chargeCommission } from "@/lib/group-pricing";
+import { resolveBookType, applySpreadMarkup, pipSize, chargeCommission } from "@/lib/group-pricing";
+import { resolveFillPricing, logSpreadWarning } from "@/lib/pricing-engine";
 import { checkAccountPreTradeMargin } from "@/lib/margin";
 import { recordOrderAckLatency } from "@/lib/order-latency";
 import { publishTradingEvent } from "@/lib/nats";
@@ -303,12 +304,19 @@ async function handlePlaceOrder(request: NextRequest) {
           // the market moved from what the client asked) -- spread markup
           // is a separate, broker-revenue adjustment applied only to the
           // actual fill price, not to the accept/reject threshold check.
-          const pricing = await resolveSymbolPricing(prisma, {
+          const pricing = await resolveFillPricing(prisma, {
+            pricingEngineEnabled: broker.pricingEngineEnabled,
+            accountId: account.id,
+            accountTypeId: account.accountTypeId,
             groupId: account.groupId,
             symbolId: brokerSymbol.symbolId,
             brokerSpreadMarkup: brokerSymbol.spreadMarkup,
             brokerCommissionPerLot: brokerSymbol.commissionPerLot,
+            brokerSwapLong: brokerSymbol.swapLong,
+            brokerSwapShort: brokerSymbol.swapShort,
+            liveBaseSpreadPips: livePrice.ask.sub(livePrice.bid).div(pipSize(brokerSymbol.symbol.digits)),
           });
+          logSpreadWarning({ accountId: account.id, symbolId: brokerSymbol.symbolId, brokerId: session.brokerId }, pricing.warning);
           const fillPrice = applySpreadMarkup({ side, price: liveRef, spreadMarkup: pricing.spreadMarkup, digits: brokerSymbol.symbol.digits });
           const bookType = account.group ? resolveBookType(account.group.groupType) : brokerSymbol.defaultBookType;
           // Phase 0 money-risk patch (docs/ROADMAP.md item 2) -- an
@@ -465,12 +473,19 @@ async function handlePlaceOrder(request: NextRequest) {
       // (already validated for staleness above), not the client's
       // submitted `price`. requestedPrice keeps the client's original
       // reference so the audit trail still shows what the client expected.
-      const pricing = await resolveSymbolPricing(prisma, {
+      const pricing = await resolveFillPricing(prisma, {
+        pricingEngineEnabled: broker.pricingEngineEnabled,
+        accountId: account.id,
+        accountTypeId: account.accountTypeId,
         groupId: account.groupId,
         symbolId: brokerSymbol.symbolId,
         brokerSpreadMarkup: brokerSymbol.spreadMarkup,
         brokerCommissionPerLot: brokerSymbol.commissionPerLot,
+        brokerSwapLong: brokerSymbol.swapLong,
+        brokerSwapShort: brokerSymbol.swapShort,
+        liveBaseSpreadPips: livePrice!.ask.sub(livePrice!.bid).div(pipSize(brokerSymbol.symbol.digits)),
       });
+      logSpreadWarning({ accountId: account.id, symbolId: brokerSymbol.symbolId, brokerId: session.brokerId }, pricing.warning);
       const serverRef = side === "BUY" ? livePrice!.ask : livePrice!.bid;
       const fillPrice = applySpreadMarkup({ side, price: serverRef, spreadMarkup: pricing.spreadMarkup, digits: brokerSymbol.symbol.digits });
       const slippageError = checkSlippage({

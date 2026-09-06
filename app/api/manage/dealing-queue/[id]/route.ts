@@ -5,7 +5,8 @@ import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { getFreshPrice } from "@/lib/live-price";
 import { openPositionFromOrder } from "@/lib/dealing";
 import { orderAuditFields } from "@/lib/order-audit";
-import { resolveBookType, applySpreadMarkup, resolveSymbolPricing } from "@/lib/group-pricing";
+import { resolveBookType, applySpreadMarkup } from "@/lib/group-pricing";
+import { resolveFillPricing, logSpreadWarning } from "@/lib/pricing-engine";
 import { publishTradingEvent } from "@/lib/nats";
 import { recordDealerActivity } from "@/lib/dealer-activity";
 import { isDealingManagedAccount } from "@/lib/dealing-routing";
@@ -223,12 +224,23 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
   // See lib/group-pricing.ts's own comments -- markup applied on top of
   // the client's own requested price, same as every other fill site.
-  const pricing = await resolveSymbolPricing(prisma, {
+  // No live tick basis here -- ACCEPT fills at exactly the order's own
+  // requestedPrice (see this branch's own comment above), so
+  // liveBaseSpreadPips is null (Q1: a target-spread level falls back to
+  // its own configured markup, never blocks the accept).
+  const pricing = await resolveFillPricing(prisma, {
+    pricingEngineEnabled: broker.pricingEngineEnabled,
+    accountId: order.accountId,
+    accountTypeId: order.account.accountTypeId,
     groupId: order.account.groupId,
     symbolId: order.symbolId,
     brokerSpreadMarkup: brokerSymbol.spreadMarkup,
     brokerCommissionPerLot: brokerSymbol.commissionPerLot,
+    brokerSwapLong: brokerSymbol.swapLong,
+    brokerSwapShort: brokerSymbol.swapShort,
+    liveBaseSpreadPips: null,
   });
+  logSpreadWarning({ accountId: order.accountId, symbolId: order.symbolId, brokerId }, pricing.warning);
   const markedUpFillPrice = applySpreadMarkup({ side: order.side, price: order.requestedPrice, spreadMarkup: pricing.spreadMarkup, digits: order.symbol.digits });
   const bookType = order.account.group ? resolveBookType(order.account.group.groupType) : brokerSymbol.defaultBookType;
 

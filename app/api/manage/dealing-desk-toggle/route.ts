@@ -5,7 +5,8 @@ import { getPermissionContext } from "@/lib/permissions";
 import { getFreshPrice } from "@/lib/live-price";
 import { openPositionFromOrder } from "@/lib/dealing";
 import { resolveWantsDealingQueue } from "@/lib/dealing-routing";
-import { resolveBookType, applySpreadMarkup, resolveSymbolPricing } from "@/lib/group-pricing";
+import { resolveBookType, applySpreadMarkup, pipSize } from "@/lib/group-pricing";
+import { resolveFillPricing, logSpreadWarning } from "@/lib/pricing-engine";
 import { orderAuditFields } from "@/lib/order-audit";
 import { recordDealerActivity } from "@/lib/dealer-activity";
 import { publishTradingEvent } from "@/lib/nats";
@@ -163,12 +164,19 @@ async function flushDealingQueueToMarket(
       continue;
     }
 
-    const pricing = await resolveSymbolPricing(prisma, {
+    const pricing = await resolveFillPricing(prisma, {
+      pricingEngineEnabled: broker.pricingEngineEnabled,
+      accountId: order.accountId,
+      accountTypeId: order.account.accountTypeId,
       groupId: order.account.groupId,
       symbolId: order.symbolId,
       brokerSpreadMarkup: brokerSymbol.spreadMarkup,
       brokerCommissionPerLot: brokerSymbol.commissionPerLot,
+      brokerSwapLong: brokerSymbol.swapLong,
+      brokerSwapShort: brokerSymbol.swapShort,
+      liveBaseSpreadPips: livePrice.ask.sub(livePrice.bid).div(pipSize(brokerSymbol.symbol.digits)),
     });
+    logSpreadWarning({ accountId: order.accountId, symbolId: order.symbolId, brokerId }, pricing.warning);
     const liveRef = order.side === "BUY" ? livePrice.ask : livePrice.bid;
     const fillPrice = applySpreadMarkup({ side: order.side, price: liveRef, spreadMarkup: pricing.spreadMarkup, digits: order.symbol.digits });
     const bookType = order.account.group ? resolveBookType(order.account.group.groupType) : brokerSymbol.defaultBookType;

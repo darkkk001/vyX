@@ -1,7 +1,8 @@
 import "server-only";
 import { Prisma, PrismaClient, MirrorRule, OrderSide } from "@prisma/client";
 import { openPositionFromOrder } from "@/lib/dealing";
-import { resolveSymbolPricing, applySpreadMarkup, resolveBookType } from "@/lib/group-pricing";
+import { applySpreadMarkup, pipSize, resolveBookType } from "@/lib/group-pricing";
+import { resolveFillPricing, logSpreadWarning } from "@/lib/pricing-engine";
 import { checkAccountPreTradeMargin } from "@/lib/margin";
 import { checkSymbolTradingMode, checkTradingSession } from "@/lib/risk";
 import { getFreshPrices } from "@/lib/live-price";
@@ -276,7 +277,7 @@ async function mirrorFillForRule(db: Db, rule: MirrorRule, source: MirrorSourceP
       return;
     }
 
-    const [targetAccount, brokerSymbol] = await Promise.all([
+    const [targetAccount, brokerSymbol, broker] = await Promise.all([
       db.account.findUnique({
         where: { id: rule.targetAccountId },
         include: { group: { select: { groupType: true, marginCallLevel: true } } },
@@ -285,6 +286,7 @@ async function mirrorFillForRule(db: Db, rule: MirrorRule, source: MirrorSourceP
         where: { brokerId: rule.brokerId, symbolId: source.symbolId, enabled: true },
         include: { symbol: true, tradingSessions: true },
       }),
+      db.broker.findUniqueOrThrow({ where: { id: rule.brokerId }, select: { pricingEngineEnabled: true } }),
     ]);
     if (!targetAccount) {
       await recordMirrorFailure(db, rule, "target account not found");
@@ -311,19 +313,19 @@ async function mirrorFillForRule(db: Db, rule: MirrorRule, source: MirrorSourceP
       return;
     }
 
-    const pricing = await resolveSymbolPricing(db, {
-      groupId: targetAccount.groupId,
-      symbolId: source.symbolId,
-      brokerSpreadMarkup: brokerSymbol.spreadMarkup,
-      brokerCommissionPerLot: brokerSymbol.commissionPerLot,
-    });
-
     // See MirrorFillPriceMode's own doc comment. SOURCE_PRICE copies the
     // source's own real fill price exactly -- no live-price lookup at
     // all, no spread markup -- correct for an internal ledger target
     // where the client's own trade already crossed the spread once.
-    // MARKET keeps the original live-bid/ask + markup behavior.
+    // MARKET keeps the original live-bid/ask + markup behavior. Resolved
+    // BEFORE pricing (rather than after, as before this Stage 4 wiring)
+    // so a real live tick -- when this mode fetches one -- can feed
+    // target-total-spread mode's collapse; SOURCE_PRICE's own "no
+    // live-price lookup at all" guarantee is preserved exactly (the
+    // livePrice query still only runs in the MARKET branch).
     let fillPrice: Prisma.Decimal;
+    let liveBaseSpreadPips: Prisma.Decimal | null = null;
+    let liveTickForMarkup: { bid: Prisma.Decimal; ask: Prisma.Decimal } | null = null;
     if (rule.fillPriceMode === "SOURCE_PRICE") {
       fillPrice = source.openPrice;
     } else {
@@ -332,7 +334,27 @@ async function mirrorFillForRule(db: Db, rule: MirrorRule, source: MirrorSourceP
         await recordMirrorFailure(db, rule, "no live price for symbol (market closed?)");
         return;
       }
-      const serverRef = mirrorSide === "BUY" ? livePrice.ask : livePrice.bid;
+      liveBaseSpreadPips = livePrice.ask.sub(livePrice.bid).div(pipSize(brokerSymbol.symbol.digits));
+      liveTickForMarkup = livePrice;
+      fillPrice = mirrorSide === "BUY" ? livePrice.ask : livePrice.bid; // markup applied below once pricing resolves
+    }
+
+    const pricing = await resolveFillPricing(db, {
+      pricingEngineEnabled: broker.pricingEngineEnabled,
+      accountId: targetAccount.id,
+      accountTypeId: targetAccount.accountTypeId,
+      groupId: targetAccount.groupId,
+      symbolId: source.symbolId,
+      brokerSpreadMarkup: brokerSymbol.spreadMarkup,
+      brokerCommissionPerLot: brokerSymbol.commissionPerLot,
+      brokerSwapLong: brokerSymbol.swapLong,
+      brokerSwapShort: brokerSymbol.swapShort,
+      liveBaseSpreadPips,
+    });
+    logSpreadWarning({ accountId: targetAccount.id, symbolId: source.symbolId, brokerId: rule.brokerId }, pricing.warning);
+
+    if (liveTickForMarkup) {
+      const serverRef = mirrorSide === "BUY" ? liveTickForMarkup.ask : liveTickForMarkup.bid;
       fillPrice = applySpreadMarkup({ side: mirrorSide, price: serverRef, spreadMarkup: pricing.spreadMarkup, digits: brokerSymbol.symbol.digits });
     }
 

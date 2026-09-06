@@ -7,7 +7,8 @@ import { createNotification } from "@/lib/notifications";
 import * as mirror from "@/lib/mirror";
 import { resolveWantsDealingQueue } from "@/lib/dealing-routing";
 import { recordDealerActivity } from "@/lib/dealer-activity";
-import { resolveBookType, applySpreadMarkup, resolveSymbolPricing, chargeCommission } from "@/lib/group-pricing";
+import { resolveBookType, applySpreadMarkup, pipSize, chargeCommission } from "@/lib/group-pricing";
+import { resolveFillPricing, logSpreadWarning } from "@/lib/pricing-engine";
 import { checkAccountPreTradeMargin } from "@/lib/margin";
 import { orderAuditFields } from "@/lib/order-audit";
 import {
@@ -218,12 +219,19 @@ export async function POST(
   // client's trigger-detected price) is now only the slippage-tolerance
   // anchor, not the fill basis; livePrice was already validated fresh
   // above by checkPriceFreshness.
-  const pricing = await resolveSymbolPricing(prisma, {
+  const pricing = await resolveFillPricing(prisma, {
+    pricingEngineEnabled: broker.pricingEngineEnabled,
+    accountId: account.id,
+    accountTypeId: account.accountTypeId,
     groupId: account.groupId,
     symbolId: order.symbolId,
     brokerSpreadMarkup: brokerSymbol?.spreadMarkup ?? new Prisma.Decimal(0),
     brokerCommissionPerLot: brokerSymbol?.commissionPerLot ?? new Prisma.Decimal(0),
+    brokerSwapLong: brokerSymbol?.swapLong ?? new Prisma.Decimal(0),
+    brokerSwapShort: brokerSymbol?.swapShort ?? new Prisma.Decimal(0),
+    liveBaseSpreadPips: brokerSymbol && livePrice ? livePrice.ask.sub(livePrice.bid).div(pipSize(brokerSymbol.symbol.digits)) : null,
   });
+  logSpreadWarning({ accountId: account.id, symbolId: order.symbolId, brokerId: order.brokerId }, pricing.warning);
   const serverRef = brokerSymbol && livePrice ? (order.side === "BUY" ? livePrice.ask : livePrice.bid) : new Prisma.Decimal(requestedFillPrice);
   const fillPrice = brokerSymbol
     ? applySpreadMarkup({ side: order.side, price: serverRef, spreadMarkup: pricing.spreadMarkup, digits: brokerSymbol.symbol.digits })

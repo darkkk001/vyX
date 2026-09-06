@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
 import { openPositionFromOrder } from "@/lib/dealing";
-import { resolveBookType, applySpreadMarkup, resolveSymbolPricing } from "@/lib/group-pricing";
+import { resolveBookType, applySpreadMarkup } from "@/lib/group-pricing";
+import { resolveFillPricing, logSpreadWarning } from "@/lib/pricing-engine";
 import { publishTradingEvent } from "@/lib/nats";
 import * as mirror from "@/lib/mirror";
 import { orderAuditFields } from "@/lib/order-audit";
@@ -126,12 +127,24 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   // See lib/group-pricing.ts's own comments -- the requoted price was
   // already the dealer's deliberate reprice; markup applies on top of
   // that, same as every other fill site.
-  const pricing = await resolveSymbolPricing(prisma, {
+  // No raw bid/ask tick at this fill point -- the requoted price already
+  // IS the base (see this branch's own comment above) -- so
+  // liveBaseSpreadPips is null, meaning a target-total-spread level (if
+  // one wins here) falls back to its own configured markup (Q1), never
+  // blocks accepting the requote.
+  const pricing = await resolveFillPricing(prisma, {
+    pricingEngineEnabled: broker.pricingEngineEnabled,
+    accountId: account.id,
+    accountTypeId: account.accountTypeId,
     groupId: account.groupId,
     symbolId: order.symbolId,
     brokerSpreadMarkup: brokerSymbol.spreadMarkup,
     brokerCommissionPerLot: brokerSymbol.commissionPerLot,
+    brokerSwapLong: brokerSymbol.swapLong,
+    brokerSwapShort: brokerSymbol.swapShort,
+    liveBaseSpreadPips: null,
   });
+  logSpreadWarning({ accountId: account.id, symbolId: order.symbolId, brokerId: order.brokerId }, pricing.warning);
   const fillPrice = applySpreadMarkup({ side: order.side, price: order.requotedPrice!, spreadMarkup: pricing.spreadMarkup, digits: brokerSymbol.symbol.digits });
   const bookType = account.group ? resolveBookType(account.group.groupType) : brokerSymbol.defaultBookType;
 

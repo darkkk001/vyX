@@ -5,7 +5,8 @@ import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { getFreshPrice, getFreshPrices } from "@/lib/live-price";
 import { computeRealizedPnl, validateSlTp } from "@/lib/trading";
-import { resolveBookType, applySpreadMarkup, resolveSymbolPricing, chargeCommission } from "@/lib/group-pricing";
+import { resolveBookType, applySpreadMarkup, pipSize, chargeCommission } from "@/lib/group-pricing";
+import { resolveFillPricing, logSpreadWarning } from "@/lib/pricing-engine";
 import { publishTradingEvent } from "@/lib/nats";
 import {
   checkTradingHalted,
@@ -266,6 +267,7 @@ export async function POST(request: NextRequest) {
   }
 
   let fillPrice: Prisma.Decimal;
+  let liveBaseSpreadPips: Prisma.Decimal | null = null;
   if (explicitPrice) {
     fillPrice = explicitPrice;
   } else {
@@ -276,19 +278,29 @@ export async function POST(request: NextRequest) {
     // BUY fills at ask, SELL fills at bid -- same convention as
     // engine/execution's execute_market_order.
     fillPrice = side === "BUY" ? price.ask : price.bid;
+    liveBaseSpreadPips = price.ask.sub(price.bid).div(pipSize(brokerSymbol.symbol.digits));
   }
 
   // See lib/group-pricing.ts's own comments -- a group's
   // GroupSymbolConfig overrides this symbol's broker-wide pricing, and
   // spread markup widens a BUY fill (a SELL fills at bid, unaffected).
   // SL/TP are validated against the actual fill price the position will
-  // open at, markup included.
-  const pricing = await resolveSymbolPricing(prisma, {
+  // open at, markup included. liveBaseSpreadPips stays null when a dealer
+  // typed an explicit price (no live tick was fetched at all) -- Q1: a
+  // target-spread level falls back to its own configured markup then.
+  const pricing = await resolveFillPricing(prisma, {
+    pricingEngineEnabled: broker.pricingEngineEnabled,
+    accountId: account.id,
+    accountTypeId: account.accountTypeId,
     groupId: account.groupId,
     symbolId: brokerSymbol.symbolId,
     brokerSpreadMarkup: brokerSymbol.spreadMarkup,
     brokerCommissionPerLot: brokerSymbol.commissionPerLot,
+    brokerSwapLong: brokerSymbol.swapLong,
+    brokerSwapShort: brokerSymbol.swapShort,
+    liveBaseSpreadPips,
   });
+  logSpreadWarning({ accountId: account.id, symbolId: brokerSymbol.symbolId, brokerId }, pricing.warning);
   fillPrice = applySpreadMarkup({ side, price: fillPrice, spreadMarkup: pricing.spreadMarkup, digits: brokerSymbol.symbol.digits });
 
   const slTpError = validateSlTp({ side, referencePrice: fillPrice, slPrice, tpPrice, digits: brokerSymbol.symbol.digits, stopLevel: brokerSymbol.stopLevel });

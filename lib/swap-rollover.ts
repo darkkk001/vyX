@@ -1,5 +1,6 @@
 import "server-only";
 import { Prisma, PrismaClient } from "@prisma/client";
+import { resolvePricingV2 } from "@/lib/pricing-engine";
 
 // Interim daily swap (overnight holding fee) rollover for every broker
 // still on the legacy Prisma trading path -- which is every broker today,
@@ -93,6 +94,8 @@ type DueRow = {
   side: "BUY" | "SELL";
   volume: Prisma.Decimal;
   groupId: string | null;
+  accountTypeId: string | null;
+  accountSwapFree: boolean | null;
 };
 
 export type SwapRolloverBrokerSummary = {
@@ -130,7 +133,8 @@ export async function runSwapRollover(
   const multiplier = swapMultiplier(isoWeekday);
 
   const due = await db.$queryRaw<DueRow[]>`
-    SELECT p.id, p."brokerId", p."accountId", p."symbolId", p.side::text as side, p.volume, a."groupId"
+    SELECT p.id, p."brokerId", p."accountId", p."symbolId", p.side::text as side, p.volume,
+      a."groupId", a."accountTypeId", a."swapFree" as "accountSwapFree"
     FROM "Position" p
     JOIN "Account" a ON a.id = p."accountId"
     WHERE p.status = 'OPEN' AND (p."lastSwapAt" IS NULL OR p."lastSwapAt"::date < CURRENT_DATE)
@@ -139,23 +143,45 @@ export async function runSwapRollover(
 
   if (due.length === 0) return { isoWeekday, multiplier: multiplier.toString(), brokers: [] };
 
-  // Batch-fetch every group override and broker default this run's
-  // positions could possibly need -- one query each, not one per
+  // Batch-fetch every group/type/account override and broker default this
+  // run's positions could possibly need -- one query each, not one per
   // position, same "fetch once, reuse via a Map" shape as
-  // lib/bulk-close.ts's own fresh-price fetch.
+  // lib/bulk-close.ts's own fresh-price fetch. Phase 2 pricing engine
+  // (2026-09-07) additions: accountTypes/accountTypeSymbolConfigs/
+  // accountSymbolConfigs/groups/brokers, needed only for a broker with
+  // Broker.pricingEngineEnabled true -- see the per-position branch below.
   const groupIds = [...new Set(due.map((p) => p.groupId).filter((g): g is string => g != null))];
+  const accountTypeIds = [...new Set(due.map((p) => p.accountTypeId).filter((t): t is string => t != null))];
+  const accountIds = [...new Set(due.map((p) => p.accountId))];
   const symbolIds = [...new Set(due.map((p) => p.symbolId))];
   const brokerIds = [...new Set(due.map((p) => p.brokerId))];
 
-  const [groupOverrides, brokerSymbols] = await Promise.all([
+  const [groupOverrides, brokerSymbols, brokers, groups, accountTypes, accountTypeSymbolConfigs, accountSymbolConfigs] = await Promise.all([
     groupIds.length > 0
       ? db.groupSymbolConfig.findMany({ where: { groupId: { in: groupIds }, symbolId: { in: symbolIds } } })
       : Promise.resolve([]),
     db.brokerSymbol.findMany({ where: { brokerId: { in: brokerIds }, symbolId: { in: symbolIds } } }),
+    db.broker.findMany({ where: { id: { in: brokerIds } }, select: { id: true, pricingEngineEnabled: true } }),
+    groupIds.length > 0 ? db.group.findMany({ where: { id: { in: groupIds } }, select: { id: true, swapFree: true } }) : Promise.resolve([]),
+    accountTypeIds.length > 0
+      ? db.accountType.findMany({
+          where: { id: { in: accountTypeIds } },
+          select: { id: true, spreadMarkup: true, commissionPerLot: true, swapLong: true, swapShort: true, swapFree: true },
+        })
+      : Promise.resolve([]),
+    accountTypeIds.length > 0
+      ? db.accountTypeSymbolConfig.findMany({ where: { accountTypeId: { in: accountTypeIds }, symbolId: { in: symbolIds } } })
+      : Promise.resolve([]),
+    db.accountSymbolConfig.findMany({ where: { accountId: { in: accountIds }, symbolId: { in: symbolIds } } }),
   ]);
 
   const groupOverrideMap = new Map(groupOverrides.map((g) => [`${g.groupId}:${g.symbolId}`, g]));
   const brokerSymbolMap = new Map(brokerSymbols.map((b) => [`${b.brokerId}:${b.symbolId}`, b]));
+  const brokerPricingEnabledMap = new Map(brokers.map((b) => [b.id, b.pricingEngineEnabled]));
+  const groupSwapFreeMap = new Map(groups.map((g) => [g.id, g.swapFree]));
+  const accountTypeMap = new Map(accountTypes.map((t) => [t.id, t]));
+  const accountTypeSymbolConfigMap = new Map(accountTypeSymbolConfigs.map((c) => [`${c.accountTypeId}:${c.symbolId}`, c]));
+  const accountSymbolConfigMap = new Map(accountSymbolConfigs.map((c) => [`${c.accountId}:${c.symbolId}`, c]));
 
   const byAccount = new Map<string, DueRow[]>();
   for (const p of due) {
@@ -190,27 +216,49 @@ export async function runSwapRollover(
         const brokerSymbol = brokerSymbolMap.get(`${p.brokerId}:${p.symbolId}`);
         const brokerSwapLong = brokerSymbol?.swapLong ?? new Prisma.Decimal(0);
         const brokerSwapShort = brokerSymbol?.swapShort ?? new Prisma.Decimal(0);
-        // Per-field fallback (2026-09-07 migration
-        // pricing_engine_nullable_widening made these columns nullable) --
-        // a group override row with, say, swapLong set but swapShort null
-        // now falls through to the broker default for swapShort only,
-        // rather than the whole row being all-or-nothing. No existing row
-        // has ever stored null, so this is a no-op for every row today.
-        const rawGroupOverride = p.groupId ? (groupOverrideMap.get(`${p.groupId}:${p.symbolId}`) ?? null) : null;
-        const groupOverride: SwapOverride = rawGroupOverride
-          ? { swapLong: rawGroupOverride.swapLong ?? brokerSwapLong, swapShort: rawGroupOverride.swapShort ?? brokerSwapShort }
-          : null;
-        const rate = resolveSwapRate({
-          side: p.side,
-          groupOverride,
-          brokerSwapLong,
-          brokerSwapShort,
-        });
-        const amount = computeSwapAmount(rate, p.volume, multiplier);
-        // Zero-swap symbol/config: position is still claimed (so it's not
-        // re-attempted today) but nothing to charge -- same "skip the
-        // no-op write" convention lib/group-pricing.ts's chargeCommission
-        // already uses.
+
+        let rate: Prisma.Decimal;
+        let isSwapFree: boolean;
+        if (brokerPricingEnabledMap.get(p.brokerId)) {
+          // Full Stage 2 resolver (2026-09-07) -- same per-field
+          // precedence used at fill time, applied here for swapLong/
+          // swapShort/swapFree. Only reached for a broker with
+          // pricingEngineEnabled true; every other broker keeps the exact
+          // old resolveSwapRate path below, byte-for-byte unchanged.
+          const resolved = resolvePricingV2({
+            accountSymbolConfig: accountSymbolConfigMap.get(`${p.accountId}:${p.symbolId}`) ?? null,
+            accountTypeSymbolConfig: p.accountTypeId ? (accountTypeSymbolConfigMap.get(`${p.accountTypeId}:${p.symbolId}`) ?? null) : null,
+            accountType: p.accountTypeId ? (accountTypeMap.get(p.accountTypeId) ?? null) : null,
+            groupSymbolConfig: p.groupId ? (groupOverrideMap.get(`${p.groupId}:${p.symbolId}`) ?? null) : null,
+            brokerSpreadMarkup: brokerSymbol?.spreadMarkup ?? new Prisma.Decimal(0),
+            brokerCommissionPerLot: brokerSymbol?.commissionPerLot ?? new Prisma.Decimal(0),
+            brokerSwapLong,
+            brokerSwapShort,
+            accountSwapFree: p.accountSwapFree,
+            groupSwapFree: p.groupId ? (groupSwapFreeMap.get(p.groupId) ?? null) : null,
+          });
+          rate = p.side === "BUY" ? resolved.swapLong : resolved.swapShort;
+          isSwapFree = resolved.swapFree;
+        } else {
+          // Per-field fallback (2026-09-07 migration
+          // pricing_engine_nullable_widening made these columns nullable)
+          // -- a group override row with, say, swapLong set but swapShort
+          // null now falls through to the broker default for swapShort
+          // only, rather than the whole row being all-or-nothing. No
+          // existing row has ever stored null, so this is a no-op today.
+          const rawGroupOverride = p.groupId ? (groupOverrideMap.get(`${p.groupId}:${p.symbolId}`) ?? null) : null;
+          const groupOverride: SwapOverride = rawGroupOverride
+            ? { swapLong: rawGroupOverride.swapLong ?? brokerSwapLong, swapShort: rawGroupOverride.swapShort ?? brokerSwapShort }
+            : null;
+          rate = resolveSwapRate({ side: p.side, groupOverride, brokerSwapLong, brokerSwapShort });
+          isSwapFree = false; // nothing reads any swapFree field on this path -- unchanged old behavior
+        }
+
+        const amount = isSwapFree ? new Prisma.Decimal(0) : computeSwapAmount(rate, p.volume, multiplier);
+        // Zero-swap symbol/config (or swap-free): position is still
+        // claimed (so it's not re-attempted today) but nothing to charge
+        // -- same "skip the no-op write" convention lib/group-pricing.ts's
+        // chargeCommission already uses.
         if (amount.isZero()) continue;
 
         chargedCount++;

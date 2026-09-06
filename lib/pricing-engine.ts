@@ -1,4 +1,5 @@
 import { Prisma } from "@prisma/client";
+import { resolveSymbolPricing } from "@/lib/group-pricing";
 
 type Tx = Prisma.TransactionClient;
 
@@ -267,4 +268,83 @@ export async function resolveSymbolPricingV2(
     accountSwapFree: account.swapFree,
     groupSwapFree: group?.swapFree ?? null,
   });
+}
+
+// Stage 4 compatibility shim -- the ONE thing every real fill site (and
+// the swap job) actually calls. Returns the same shape as lib/group-
+// pricing.ts's ResolvedSymbolPricing so no call site needs to change how
+// it USES the result, only which function it calls to get one -- see
+// docs/pricing-engine.md's own "low blast radius" call-site plan.
+//
+// pricingEngineEnabled false (the default, every broker today) runs the
+// OLD group-only resolveSymbolPricing exactly as before -- byte-for-byte
+// the same call this shim replaces, so a flag-off broker's fills are
+// provably unchanged by this function existing. Only true wires in the
+// full Stage 2 resolver, collapsing target-spread mode (if the winning
+// level used one) against whatever live base spread the caller passed --
+// null is fine (Q1: never blocks a fill over a missing tick), just skips
+// applying that tick's target adjustment.
+//
+// `warning` is non-null only on the v2 path when resolveEffectiveSpreadMarkup
+// itself returned one (target below live base, or base unavailable) --
+// always null on the old path. Callers are expected to log a non-null
+// warning (e.g. via the existing AuditLog pattern) but never to treat it
+// as a reason to reject the fill.
+export type FillPricing = {
+  spreadMarkup: Prisma.Decimal;
+  commissionPerLot: Prisma.Decimal;
+  warning: SpreadWarning | null;
+};
+
+export async function resolveFillPricing(
+  tx: Tx,
+  params: {
+    pricingEngineEnabled: boolean;
+    accountId: string;
+    accountTypeId: string | null | undefined;
+    groupId: string | null | undefined;
+    symbolId: string;
+    brokerSpreadMarkup: Prisma.Decimal;
+    brokerCommissionPerLot: Prisma.Decimal;
+    brokerSwapLong: Prisma.Decimal;
+    brokerSwapShort: Prisma.Decimal;
+    liveBaseSpreadPips: Prisma.Decimal | number | string | null | undefined;
+  }
+): Promise<FillPricing> {
+  if (!params.pricingEngineEnabled) {
+    const old = await resolveSymbolPricing(tx, {
+      groupId: params.groupId,
+      symbolId: params.symbolId,
+      brokerSpreadMarkup: params.brokerSpreadMarkup,
+      brokerCommissionPerLot: params.brokerCommissionPerLot,
+    });
+    return { spreadMarkup: old.spreadMarkup, commissionPerLot: old.commissionPerLot, warning: null };
+  }
+
+  const resolved = await resolveSymbolPricingV2(tx, {
+    accountId: params.accountId,
+    accountTypeId: params.accountTypeId,
+    groupId: params.groupId,
+    symbolId: params.symbolId,
+    brokerSpreadMarkup: params.brokerSpreadMarkup,
+    brokerCommissionPerLot: params.brokerCommissionPerLot,
+    brokerSwapLong: params.brokerSwapLong,
+    brokerSwapShort: params.brokerSwapShort,
+  });
+  const { markup, warning } = resolveEffectiveSpreadMarkup(resolved.spread, params.liveBaseSpreadPips);
+  return { spreadMarkup: markup, commissionPerLot: resolved.commissionPerLot, warning };
+}
+
+// Q3 (2026-09-07): "don't fail silently" -- every real fill site calls
+// this right after resolveFillPricing so a target spread sitting below
+// the live base, or a missing live base, actually surfaces somewhere a
+// broker can find it, instead of only ever showing up as a smaller-than-
+// expected spread-revenue number with no explanation. console.warn only
+// for now (this codebase has no dedicated ops-alerting sink yet) -- never
+// throws, never blocks the fill it's logging about. A no-op whenever
+// `warning` is null, which is always true on the flag-off path (every
+// broker today), so this is dormant code until a broker's flag is on.
+export function logSpreadWarning(context: { accountId: string; symbolId: string; brokerId?: string }, warning: SpreadWarning | null): void {
+  if (!warning) return;
+  console.warn("[pricing-engine] spread warning", { ...context, ...warning });
 }
