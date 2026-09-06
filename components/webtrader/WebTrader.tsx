@@ -581,6 +581,21 @@ export default function WebTrader({
   const [histTo, setHistTo] = useState("");
   const [histSymbol, setHistSymbol] = useState("");
   const [histPeriod, setHistPeriod] = useState("all");
+  // Local (trader's own browser) calendar date as YYYY-MM-DD -- NOT
+  // `date.toISOString().slice(0, 10)`, which gives the UTC calendar date.
+  // For any trader east of UTC (e.g. Pakistan, UTC+5), toISOString() still
+  // reads "yesterday" for the first several hours of their local day, so
+  // "Today" was silently resolving to the wrong date (real bug, fixed
+  // 2026-09-06). This must match how <input type="date"> itself reports
+  // the picked date (also local, no timezone), so the preset and the
+  // custom-range picker share one date basis.
+  function localDateStr(date: Date): string {
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, "0");
+    const d = String(date.getDate()).padStart(2, "0");
+    return `${y}-${m}-${d}`;
+  }
+
   // The preset dropdown (Today/7d/30d/All/Custom) used to only control
   // whether the manual date inputs showed -- picking "Today" or "Last 7
   // days" never actually touched histFrom/histTo, so refreshHistory's own
@@ -599,8 +614,24 @@ export default function WebTrader({
     const today = new Date();
     const from = new Date(today);
     from.setDate(from.getDate() - days);
-    setHistFrom(from.toISOString().slice(0, 10));
-    setHistTo(today.toISOString().slice(0, 10));
+    setHistFrom(localDateStr(from));
+    setHistTo(localDateStr(today));
+  }
+
+  // Converts a bare YYYY-MM-DD (the trader's own local calendar date, same
+  // string an <input type="date"> reports) into the UTC instant at that
+  // local day's start/end -- the one place histFrom/histTo actually leave
+  // the browser. `new Date(y, m, d, ...)` is interpreted in the browser's
+  // OWN timezone, so .toISOString() correctly encodes "midnight in the
+  // trader's timezone" as its true UTC equivalent, whatever that trader's
+  // offset is. Sent to the server as full ISO instants so
+  // app/api/trade/history/route.ts never has to re-guess a timezone of
+  // its own (it used to parse `to` as a bare local-server-time string,
+  // silently disagreeing with `from`'s UTC-midnight parse).
+  function localDayBoundary(dateStr: string, endOfDay: boolean): string {
+    const [y, m, d] = dateStr.split("-").map(Number);
+    const local = endOfDay ? new Date(y, m - 1, d, 23, 59, 59, 999) : new Date(y, m - 1, d, 0, 0, 0, 0);
+    return local.toISOString();
   }
 
   // Phase 1 trust pack §3 -- real, server-evaluated alerts (see
@@ -1190,7 +1221,15 @@ export default function WebTrader({
     [pushToast, refreshOrders, refreshPositions, refreshAccount]
   );
   const refreshHistory = useCallback(async () => {
-    setHistory(await tradeApi.history({ from: histFrom, to: histTo, symbol: histSymbol }).catch(() => []));
+    setHistory(
+      await tradeApi
+        .history({
+          from: histFrom ? localDayBoundary(histFrom, false) : undefined,
+          to: histTo ? localDayBoundary(histTo, true) : undefined,
+          symbol: histSymbol,
+        })
+        .catch(() => [])
+    );
   }, [histFrom, histTo, histSymbol]);
   const refreshFundsHistory = useCallback(async () => setFundsHistory(await tradeApi.fundsHistory().catch(() => [])), []);
   const refreshPaymentMethods = useCallback(async () => {

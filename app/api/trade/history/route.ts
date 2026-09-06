@@ -18,11 +18,19 @@ export async function GET(request: NextRequest) {
       accountId: session.accountId,
       status: "CLOSED",
       deletedAt: null,
+      // `from`/`to` arrive as full ISO instants -- the trader's own local
+      // day boundaries, converted client-side (WebTrader.tsx's
+      // localDayBoundary) before ever reaching this route. Parsing them
+      // directly here (no re-templating) is what fixes the previous
+      // inconsistency: `from` used to parse as UTC midnight while `to`
+      // parsed as a bare local-server-time string, silently disagreeing
+      // with each other and with neither matching the trader's own
+      // timezone (2026-09-06 Section C audit fix).
       ...(from || to
         ? {
             closedAt: {
               ...(from ? { gte: new Date(from) } : {}),
-              ...(to ? { lte: new Date(`${to}T23:59:59`) } : {}),
+              ...(to ? { lte: new Date(to) } : {}),
             },
           }
         : {}),
