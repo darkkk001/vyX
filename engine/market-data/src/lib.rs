@@ -88,15 +88,38 @@ pub(crate) fn fixed_ms(tf: Timeframe) -> Option<i64> {
 /// exactly when `broker_offset_sec` is 0: weeks start Monday, months/years
 /// start on the 1st. D1/W1/Mn1/Y1 all resolve to a "day" boundary using
 /// `broker_offset_sec` (see `broker_day_start`'s own doc comment for why
-/// that's the broker's day, not naive UTC) -- M1/M5/M30/H1/H4 have no
-/// calendar-day concept at all (a period is a period regardless of what
-/// "day" it falls on), so `broker_offset_sec` is simply unused for them;
-/// D1 is deliberately pulled out of the `fixed_ms` fast path below even
-/// though it has one, since falling through it unchanged (implicitly
-/// offset=0) is exactly the bug `broker_day_start` fixes.
+/// that's the broker's day, not naive UTC).
+///
+/// 2026-09-07 fix -- H4 is pulled out of the naive fast path alongside D1
+/// now too, for the identical reason: MT5's own H4 bars are anchored to
+/// the broker's day start (6 fixed buckets per broker day -- 00:00,
+/// 04:00, 08:00... broker-LOCAL, not UTC), exactly like D1/W1/Mn1/Y1, and
+/// the EA's history backfill (`HistoryBackfillPeriods` in the .mq5, which
+/// includes PERIOD_H4) already sends H4 bars converted to that same
+/// broker-boundary-aligned UTC bucketStart. This crate's live-tick path
+/// kept bucketing H4 at naive UTC 4-hour marks (0/4/8/12/16/20 UTC),
+/// which only coincidentally agrees with the broker-aligned grid when
+/// broker_offset_sec happens to be an exact multiple of 4 hours -- for
+/// any other whole-hour offset (the vast majority of real brokers: +2,
+/// +3, +5, ...) the two grids never collide, producing a second,
+/// spurious H4 row for literally every bucket, exactly the D1 bug one
+/// level down. Verified against production: 12,772 overlapping H4 rows
+/// across 30/30 symbols.
+///
+/// M1/M5/M30/H1 genuinely don't need this: any whole-hour
+/// `broker_offset_sec` (every real broker configuration seen in this
+/// codebase) is itself always an exact multiple of each of their periods
+/// (60s/300s/1800s/3600s all evenly divide 3600s*N), so shifting by it
+/// and flooring lands on the identical instant whether or not the shift
+/// is applied -- there is no grid to collide with. Only 4h (and D1's own
+/// 24h) can disagree with a whole-hour offset that isn't itself a
+/// multiple of 4 (respectively 24). A hypothetical non-whole-hour broker
+/// offset (e.g. a genuine UTC+X:30 trade-server clock) would reopen this
+/// for H1 and below too -- no such broker has been observed in this
+/// codebase's history, so that's flagged, not fixed, here.
 pub fn bucket_start(tf: Timeframe, now: DateTime<Utc>, broker_offset_sec: i64) -> DateTime<Utc> {
     if let Some(ms) = fixed_ms(tf) {
-        if tf != Timeframe::D1 {
+        if tf != Timeframe::D1 && tf != Timeframe::H4 {
             let floored = (now.timestamp_millis() / ms) * ms;
             return Utc.timestamp_millis_opt(floored).unwrap();
         }
@@ -104,6 +127,7 @@ pub fn bucket_start(tf: Timeframe, now: DateTime<Utc>, broker_offset_sec: i64) -
 
     match tf {
         Timeframe::D1 => broker_day_start(now, broker_offset_sec),
+        Timeframe::H4 => broker_period_start(now, broker_offset_sec, fixed_ms(Timeframe::H4).unwrap()),
         Timeframe::W1 => {
             let shifted = now + chrono::Duration::seconds(broker_offset_sec);
             let days_since_monday = shifted.weekday().num_days_from_monday();
@@ -126,7 +150,7 @@ pub fn bucket_start(tf: Timeframe, now: DateTime<Utc>, broker_offset_sec: i64) -
                 .unwrap();
             Utc.from_utc_datetime(&first_of_year_local) - chrono::Duration::seconds(broker_offset_sec)
         }
-        _ => unreachable!("fixed_ms (minus D1, handled above) covers every other variant"),
+        _ => unreachable!("fixed_ms (minus D1 and H4, handled above) covers every other variant"),
     }
 }
 
@@ -157,6 +181,28 @@ fn broker_day_start(now: DateTime<Utc>, broker_offset_sec: i64) -> DateTime<Utc>
     let offset = chrono::Duration::seconds(broker_offset_sec);
     let broker_local_midnight = (now + offset).date_naive().and_hms_opt(0, 0, 0).unwrap();
     Utc.from_utc_datetime(&broker_local_midnight) - offset
+}
+
+/// The UTC instant of the broker's own most recent fixed-`period_ms`
+/// boundary <= `now` -- the same "shift by the broker's offset, floor,
+/// shift back" idea as `broker_day_start` above, generalized to any
+/// period that evenly divides a day (today: only H4's 14,400,000ms,
+/// alongside D1's 86,400,000ms which still goes through `broker_day_start`
+/// itself for its date-based/DST-transition-friendly arithmetic -- both
+/// produce the identical instant for D1's own period; this one exists
+/// for H4, kept as a separate small function rather than rewriting
+/// `broker_day_start` in terms of it, so D1's own well-exercised tests
+/// keep exercising the exact code path they always have).
+///
+/// Plain integer division, not `div_euclid` -- safe here because
+/// `now.timestamp_millis() + offset_ms` stays a large positive number for
+/// any real date this app will ever see (a broker offset is at most
+/// +-24h, utterly dwarfed by the epoch-millis value itself), so truncating
+/// and flooring division agree.
+fn broker_period_start(now: DateTime<Utc>, broker_offset_sec: i64, period_ms: i64) -> DateTime<Utc> {
+    let offset_ms = broker_offset_sec * 1000;
+    let floored = ((now.timestamp_millis() + offset_ms) / period_ms) * period_ms - offset_ms;
+    Utc.timestamp_millis_opt(floored).unwrap()
 }
 
 #[derive(Debug, Clone)]
@@ -330,6 +376,93 @@ mod tests {
         assert_ne!(pre, post, "the D1 boundary must move when the observed broker offset changes");
         assert_eq!(post, Utc.with_ymd_and_hms(2026, 10, 26, 22, 0, 0).unwrap());
         assert_eq!(pre, Utc.with_ymd_and_hms(2026, 10, 26, 21, 0, 0).unwrap());
+    }
+
+    // ---- broker-day-boundary tests (the H4-duplicate-bar fix, 2026-09-07) ----
+
+    /// Same Pepperstone-shaped UTC+3 broker as the D1 test above. Broker
+    /// midnight is 21:00 UTC, so broker-local H4 buckets land at
+    /// 21:00/01:00/05:00/09:00/13:00/17:00 UTC -- NOT the naive
+    /// 00:00/04:00/08:00/12:00/16:00/20:00 UTC grid the old code produced
+    /// (offset by 3h, and 3 doesn't divide 4, so the two grids never
+    /// collide -- exactly the reported bug: 12,772 overlapping H4 rows
+    /// across 30/30 symbols).
+    #[test]
+    fn h4_aligns_to_the_broker_day_boundary_for_a_utc_plus_3_broker() {
+        let now = Utc.with_ymd_and_hms(2026, 8, 13, 8, 0, 0).unwrap(); // 11:00 broker-local
+        let offset_sec = 3 * 3600;
+        let start = bucket_start(Timeframe::H4, now, offset_sec);
+        // 11:00 broker-local falls in the broker's [08:00, 12:00) bucket;
+        // 08:00 broker-local - 3h = 05:00 UTC.
+        assert_eq!(start, Utc.with_ymd_and_hms(2026, 8, 13, 5, 0, 0).unwrap());
+
+        // One minute before the rollover (broker-local 07:59, still in the
+        // previous [04:00, 08:00) broker bucket) must still resolve to the
+        // PREVIOUS bucket...
+        let just_before = Utc.with_ymd_and_hms(2026, 8, 13, 4, 59, 0).unwrap();
+        assert_eq!(
+            bucket_start(Timeframe::H4, just_before, offset_sec),
+            Utc.with_ymd_and_hms(2026, 8, 13, 1, 0, 0).unwrap()
+        );
+        // ...while a tick AT that exact rollover instant (broker-local
+        // 08:00:00) has already rolled into the bucket `start` above
+        // resolves to.
+        let just_after = Utc.with_ymd_and_hms(2026, 8, 13, 5, 0, 0).unwrap();
+        assert_eq!(bucket_start(Timeframe::H4, just_after, offset_sec), start);
+    }
+
+    /// The exact production incident, reproduced directly: two ticks one
+    /// bucket apart under the OLD (naive, offset-ignoring) math land on
+    /// different `bucket_start`s than under the fix, proving the dual-grid
+    /// collision this closes -- not just that the new math is internally
+    /// consistent, but that it actually disagrees with what production
+    /// was doing before.
+    #[test]
+    fn h4_old_naive_math_and_the_fix_disagree_for_a_non_multiple_of_4_offset() {
+        let now = Utc.with_ymd_and_hms(2026, 8, 13, 8, 0, 0).unwrap();
+        let offset_sec = 3 * 3600;
+        let naive = Utc.timestamp_millis_opt((now.timestamp_millis() / 14_400_000) * 14_400_000).unwrap();
+        let fixed = bucket_start(Timeframe::H4, now, offset_sec);
+        assert_ne!(naive, fixed, "a non-multiple-of-4h broker offset must move the H4 boundary");
+        assert_eq!(naive, Utc.with_ymd_and_hms(2026, 8, 13, 8, 0, 0).unwrap()); // the spurious naive-UTC row
+        assert_eq!(fixed, Utc.with_ymd_and_hms(2026, 8, 13, 5, 0, 0).unwrap()); // the broker-authoritative row
+    }
+
+    /// offset=0 must reduce to exactly the old naive-UTC math -- same
+    /// "zero behavior change until a real offset is observed" guarantee
+    /// as D1's own equivalent test.
+    #[test]
+    fn h4_zero_offset_matches_the_old_naive_utc_behavior() {
+        let now = Utc.with_ymd_and_hms(2026, 8, 13, 10, 37, 45).unwrap();
+        assert_eq!(bucket_start(Timeframe::H4, now, 0), Utc.with_ymd_and_hms(2026, 8, 13, 8, 0, 0).unwrap());
+    }
+
+    /// An offset that IS an exact multiple of 4h (e.g. a UTC+4 or UTC+8
+    /// broker) never disagreed with the naive grid in the first place --
+    /// confirms the fix doesn't move anything for the brokers who were
+    /// never actually affected.
+    #[test]
+    fn h4_offset_that_is_a_multiple_of_4h_matches_the_naive_grid_too() {
+        let now = Utc.with_ymd_and_hms(2026, 8, 13, 10, 37, 45).unwrap();
+        let offset_sec = 4 * 3600;
+        assert_eq!(bucket_start(Timeframe::H4, now, offset_sec), Utc.with_ymd_and_hms(2026, 8, 13, 8, 0, 0).unwrap());
+    }
+
+    /// M1/M5/M30/H1 spot check with the same UTC+3 offset that breaks H4
+    /// above -- confirms these are genuinely unaffected (any whole-hour
+    /// offset is itself a multiple of each of their periods), not just
+    /// "untested."
+    #[test]
+    fn sub_h4_fixed_timeframes_are_unaffected_by_a_whole_hour_broker_offset() {
+        let now = Utc.with_ymd_and_hms(2026, 8, 13, 10, 37, 45).unwrap();
+        let offset_sec = 3 * 3600;
+        for tf in [Timeframe::M1, Timeframe::M5, Timeframe::M30, Timeframe::H1] {
+            assert_eq!(
+                bucket_start(tf, now, offset_sec),
+                bucket_start(tf, now, 0),
+                "{tf:?} must not move under a whole-hour broker offset"
+            );
+        }
     }
 
     /// W1/Mn1 spot checks with a nonzero broker offset -- same broker-day
