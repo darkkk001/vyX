@@ -355,9 +355,10 @@ model Broker {
   lpRoutingRules         LpRoutingRule[]
   mirrorRules            MirrorRule[]
   priceAlerts            PriceAlert[]
-  positionActionRequests PositionActionRequest[]
-  accountTypes           AccountType[]
-  paymentMethods         PaymentMethod[]
+  positionActionRequests    PositionActionRequest[]
+  balanceAdjustmentRequests BalanceAdjustmentRequest[]
+  accountTypes              AccountType[]
+  paymentMethods            PaymentMethod[]
 }
 
 model AdminUser {
@@ -407,10 +408,12 @@ model AdminUser {
   auditLogs                AuditLog[]              @relation("AuditLogActor")
   closedPosition           Position[]              @relation("PositionClosedBy")
   deletedPositions         Position[]              @relation("PositionDeletedBy")
-  requestedPositionActions PositionActionRequest[] @relation("PositionActionRequestedBy")
-  reviewedPositionActions  PositionActionRequest[] @relation("PositionActionReviewedBy")
-  createdMirrorRules       MirrorRule[]
-  backupCodes              AdminBackupCode[]
+  requestedPositionActions    PositionActionRequest[]    @relation("PositionActionRequestedBy")
+  reviewedPositionActions     PositionActionRequest[]    @relation("PositionActionReviewedBy")
+  requestedBalanceAdjustments BalanceAdjustmentRequest[] @relation("BalanceAdjustmentRequestedBy")
+  reviewedBalanceAdjustments  BalanceAdjustmentRequest[] @relation("BalanceAdjustmentReviewedBy")
+  createdMirrorRules          MirrorRule[]
+  backupCodes                 AdminBackupCode[]
 
   @@index([brokerId])
 }
@@ -571,8 +574,9 @@ model Account {
   // sourceId there is unrelated/polymorphic, not a real FK).
   mirrorRuleTargets MirrorRule[] @relation("MirrorRuleTarget")
 
-  watchlistItems           WatchlistItem[]
-  savedWithdrawalAddresses SavedWithdrawalAddress[]
+  watchlistItems            WatchlistItem[]
+  savedWithdrawalAddresses  SavedWithdrawalAddress[]
+  balanceAdjustmentRequests BalanceAdjustmentRequest[]
 
   @@unique([brokerId, email, accountMode])
   @@index([brokerId])
@@ -1363,6 +1367,50 @@ model PositionActionRequest {
 
   @@index([brokerId])
   @@index([positionId])
+  @@index([status])
+}
+
+enum BalanceAdjustmentRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+// 2026-09-06 Section D audit fix -- same maker-checker gate as
+// PositionActionRequest above, applied to direct balance adjustments
+// (lib/balance-adjustment.ts), which previously had none: a MANAGER (or
+// anyone holding only the delegated ACCOUNT_FINANCE permission, see
+// lib/permissions.ts) could move a real client balance unilaterally with
+// no second admin in the loop, unlike every position action (void/
+// delete/reverse) which already required a different admin's approval.
+// BROKER_ADMIN still executes directly -- same "trusted to execute solo"
+// rule positionActionNeedsApproval already applies.
+model BalanceAdjustmentRequest {
+  id        String  @id @default(cuid())
+  brokerId  String
+  broker    Broker  @relation(fields: [brokerId], references: [id])
+  accountId String
+  account   Account @relation(fields: [accountId], references: [id])
+  amount    Decimal @db.Decimal(18, 2)
+  // Required at request time already (lib/balance-adjustment.ts's own
+  // validateBalanceAdjustment) -- an unexplained balance correction is
+  // exactly what a dispute needs a reason on record for, same reasoning
+  // as the direct-execute path this replaces for MANAGER.
+  note String
+
+  status BalanceAdjustmentRequestStatus @default(PENDING)
+
+  requestedByAdminId String
+  requestedByAdmin   AdminUser  @relation("BalanceAdjustmentRequestedBy", fields: [requestedByAdminId], references: [id])
+  reviewedByAdminId  String?
+  reviewedByAdmin    AdminUser? @relation("BalanceAdjustmentReviewedBy", fields: [reviewedByAdminId], references: [id])
+  reviewNote         String?
+
+  createdAt  DateTime  @default(now()) @db.Timestamptz(3)
+  reviewedAt DateTime? @db.Timestamptz(3)
+
+  @@index([brokerId])
+  @@index([accountId])
   @@index([status])
 }
 

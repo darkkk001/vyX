@@ -27,6 +27,21 @@ export function validateBalanceAdjustment(params: { amount: Prisma.Decimal; note
   return null;
 }
 
+// 2026-09-06 Section D audit fix -- same maker-checker gate
+// lib/position-actions.ts's positionActionNeedsApproval already applies
+// to Reverse/Void/Delete: a MANAGER (even one holding the delegated
+// ACCOUNT_FINANCE permission) files a request a *different* admin must
+// approve before the balance actually moves; BROKER_ADMIN is trusted to
+// execute directly, same as it already does for position actions. Before
+// this, a direct balance correction -- real money moving with no
+// underlying trade -- was the one balance-changing action in this app
+// with no second admin in the loop at all.
+export function balanceAdjustmentNeedsApproval(role: "MANAGER" | "BROKER_ADMIN"): boolean {
+  return role === "MANAGER";
+}
+
+export class BalanceAdjustmentError extends Error {}
+
 export async function applyBalanceAdjustment(
   tx: Tx,
   params: { accountId: string; brokerId: string; amount: Prisma.Decimal; note: string; adminId: string }
@@ -64,4 +79,102 @@ export async function applyBalanceAdjustment(
   });
 
   return { transactionId: transaction.id, balanceAfter };
+}
+
+// ---------- MANAGER maker-checker: request / approve / reject ----------
+// Same shape as lib/position-actions.ts's requestPositionAction/
+// approvePositionActionRequest/rejectPositionActionRequest -- a PENDING
+// request has zero effect on the account's balance until a different
+// admin approves it.
+export async function requestBalanceAdjustment(
+  tx: Tx,
+  params: { brokerId: string; accountId: string; amount: Prisma.Decimal; note: string; adminId: string }
+) {
+  const account = await tx.account.findUnique({ where: { id: params.accountId } });
+  if (!account || account.brokerId !== params.brokerId) throw new BalanceAdjustmentError("account not found");
+
+  const request = await tx.balanceAdjustmentRequest.create({
+    data: {
+      brokerId: params.brokerId,
+      accountId: params.accountId,
+      amount: params.amount,
+      note: params.note,
+      requestedByAdminId: params.adminId,
+    },
+  });
+  await tx.auditLog.create({
+    data: {
+      brokerId: params.brokerId,
+      actorAdminId: params.adminId,
+      action: "BALANCE_ADJUSTMENT_REQUESTED",
+      entityType: "Account",
+      entityId: params.accountId,
+      newValue: { requestId: request.id, amount: params.amount.toString(), note: params.note },
+    },
+  });
+  return request;
+}
+
+export type ApproveBalanceAdjustmentResult =
+  | { ok: true; requestId: string; transactionId: string; balanceAfter: Prisma.Decimal; accountId: string }
+  | { ok: false; error: string };
+
+export async function approveBalanceAdjustmentRequest(
+  tx: Tx,
+  params: { requestId: string; brokerId: string; adminId: string; reviewNote: string | null }
+): Promise<ApproveBalanceAdjustmentResult> {
+  const request = await tx.balanceAdjustmentRequest.findUnique({ where: { id: params.requestId } });
+  if (!request || request.brokerId !== params.brokerId) return { ok: false, error: "request not found" };
+  if (request.status !== "PENDING") return { ok: false, error: "request already reviewed" };
+  if (request.requestedByAdminId === params.adminId) return { ok: false, error: "a different staff member must approve this request" };
+
+  const applied = await applyBalanceAdjustment(tx, {
+    accountId: request.accountId,
+    brokerId: params.brokerId,
+    amount: request.amount,
+    note: request.note,
+    adminId: params.adminId,
+  });
+
+  await tx.balanceAdjustmentRequest.update({
+    where: { id: request.id },
+    data: { status: "APPROVED", reviewedByAdminId: params.adminId, reviewedAt: new Date(), reviewNote: params.reviewNote },
+  });
+  await tx.auditLog.create({
+    data: {
+      brokerId: params.brokerId,
+      actorAdminId: params.adminId,
+      action: "BALANCE_ADJUSTMENT_APPROVED",
+      entityType: "Account",
+      entityId: request.accountId,
+      newValue: { requestId: request.id, transactionId: applied.transactionId },
+    },
+  });
+
+  return { ok: true, requestId: request.id, transactionId: applied.transactionId, balanceAfter: applied.balanceAfter, accountId: request.accountId };
+}
+
+export async function rejectBalanceAdjustmentRequest(
+  tx: Tx,
+  params: { requestId: string; brokerId: string; adminId: string; reviewNote: string | null }
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const request = await tx.balanceAdjustmentRequest.findUnique({ where: { id: params.requestId } });
+  if (!request || request.brokerId !== params.brokerId) return { ok: false, error: "request not found" };
+  if (request.status !== "PENDING") return { ok: false, error: "request already reviewed" };
+
+  await tx.balanceAdjustmentRequest.update({
+    where: { id: request.id },
+    data: { status: "REJECTED", reviewedByAdminId: params.adminId, reviewedAt: new Date(), reviewNote: params.reviewNote },
+  });
+  await tx.auditLog.create({
+    data: {
+      brokerId: params.brokerId,
+      actorAdminId: params.adminId,
+      action: "BALANCE_ADJUSTMENT_REJECTED",
+      entityType: "Account",
+      entityId: request.accountId,
+      newValue: { requestId: request.id, reviewNote: params.reviewNote },
+    },
+  });
+  return { ok: true };
 }

@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
+import { Card } from "@/components/ui/Card";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { FormField } from "@/components/ui/FormField";
 import { LeverageInput } from "@/components/ui/LeverageInput";
@@ -261,12 +262,58 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
       body: JSON.stringify({ amount: signedAmount, note: adjustNote }),
     });
     setBusyId(null);
+    if (response.status === 202) {
+      setAdjustTarget(null);
+      showToast("Balance adjustment submitted for approval -- a different admin needs to review it before it takes effect.", "success");
+      reloadPendingAdjustments().catch(() => {});
+      return;
+    }
     if (!response.ok) {
       const b = await response.json().catch(() => ({}));
       setAdjustError(b.error ?? "adjustment failed");
       return;
     }
     setAdjustTarget(null);
+    reloadRows().catch(() => {});
+  }
+
+  // --- Pending balance-adjustment approvals (MANAGER-filed requests a
+  // different admin must review) -- same maker-checker UI shape as
+  // PositionsManager.tsx's own "Pending approvals" card.
+  type PendingAdjustment = {
+    id: string;
+    status: "PENDING" | "APPROVED" | "REJECTED";
+    amount: string;
+    note: string;
+    createdAt: string;
+    requestedByAdminId: string;
+    requestedByName: string;
+    account: { id: string; accountNumber: string; fullName: string; balance: string };
+  };
+  const [pendingAdjustments, setPendingAdjustments] = useState<PendingAdjustment[]>([]);
+  const [pendingAdjustmentErrors, setPendingAdjustmentErrors] = useState<Record<string, string>>({});
+  const [reviewingAdjustmentId, setReviewingAdjustmentId] = useState<string | null>(null);
+
+  function reloadPendingAdjustments() {
+    return fetch("/api/manage/balance-adjustment-requests")
+      .then((r) => (r.ok ? r.json() : []))
+      .then(setPendingAdjustments);
+  }
+  useEffect(() => {
+    reloadPendingAdjustments().catch(() => {});
+  }, []);
+
+  async function reviewPendingAdjustment(id: string, decision: "approve" | "reject") {
+    setReviewingAdjustmentId(id);
+    setPendingAdjustmentErrors((prev) => ({ ...prev, [id]: "" }));
+    const response = await fetch(`/api/manage/balance-adjustment-requests/${id}/${decision}`, { method: "POST" });
+    setReviewingAdjustmentId(null);
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      setPendingAdjustmentErrors((prev) => ({ ...prev, [id]: body.error ?? `${decision} failed` }));
+      return;
+    }
+    reloadPendingAdjustments().catch(() => {});
     reloadRows().catch(() => {});
   }
 
@@ -313,6 +360,42 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
         />
         <Button onClick={openAddModal}>Add account</Button>
       </div>
+
+      {pendingAdjustments.length > 0 ? (
+        <Card title={`Pending balance adjustments (${pendingAdjustments.length})`}>
+          <div className="flex flex-col gap-2">
+            {pendingAdjustments.map((req) => (
+              <div key={req.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[var(--border)] p-2.5">
+                <div className="text-sm">
+                  <Badge tone={Number(req.amount) >= 0 ? "success" : "danger"}>{Number(req.amount) >= 0 ? "Credit" : "Debit"}</Badge>{" "}
+                  <span className="text-[var(--text-1)] font-mono">
+                    {Number(req.amount) >= 0 ? "+" : ""}
+                    {req.amount}
+                  </span>{" "}
+                  <span className="text-[var(--text-1)]">
+                    {req.account.accountNumber}, {req.account.fullName} (balance {req.account.balance})
+                  </span>
+                  <span className="block text-xs text-[var(--text-3)] mt-0.5">
+                    Requested by {req.requestedByName} · {new Date(req.createdAt).toLocaleString()} · &quot;{req.note}&quot;
+                  </span>
+                  {pendingAdjustmentErrors[req.id] ? (
+                    <span className="block text-xs text-[var(--sell)] mt-0.5">{pendingAdjustmentErrors[req.id]}</span>
+                  ) : null}
+                </div>
+                <div className="flex gap-1.5">
+                  <Button size="sm" variant="ghost" disabled={reviewingAdjustmentId === req.id} onClick={() => reviewPendingAdjustment(req.id, "reject")}>
+                    Reject
+                  </Button>
+                  <Button size="sm" variant="success" disabled={reviewingAdjustmentId === req.id} onClick={() => reviewPendingAdjustment(req.id, "approve")}>
+                    {reviewingAdjustmentId === req.id ? "Working..." : "Approve"}
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      ) : null}
+
       <Table>
         <TableHead>
           <TableHeaderCell className="min-w-[220px]">Account</TableHeaderCell>

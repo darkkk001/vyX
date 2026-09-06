@@ -209,6 +209,15 @@ async function createAccount(request: NextRequest, session: NonNullable<Awaited<
     dateOfBirth = parsed;
   }
 
+  // 2026-09-06 Section D audit fix -- an explicit groupId always wins;
+  // when omitted, fall back to the broker's isDefault group, same pattern
+  // accountTypeId already uses above (defaultType). Before this, omitting
+  // groupId always left a new account ungrouped (groupId: null) even when
+  // the broker had a real default group configured -- inconsistent with
+  // AccountType's own fallback. No default group configured for this
+  // broker still falls back to null -- a valid "use broker defaults"
+  // state (same convention BrokerSymbol already uses against Symbol),
+  // not an error.
   let group: { id: string; leverage: number } | null = null;
   if (typeof body?.groupId === "string" && body.groupId) {
     const found = await prisma.group.findUnique({ where: { id: body.groupId } });
@@ -216,6 +225,11 @@ async function createAccount(request: NextRequest, session: NonNullable<Awaited<
       return NextResponse.json({ error: "group not found" }, { status: 404 });
     }
     group = { id: found.id, leverage: found.leverage };
+  } else {
+    const defaultGroup = await prisma.group.findFirst({ where: { brokerId, isDefault: true } });
+    if (defaultGroup) {
+      group = { id: defaultGroup.id, leverage: defaultGroup.leverage };
+    }
   }
 
   // An explicit leverage always wins over a group's copied-down value,
