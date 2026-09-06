@@ -51,15 +51,26 @@ fn market_closed(t: DateTime<Utc>) -> bool {
 
 // hotfix/terminal-live-bugs round 2 -- market_closed() above is a FX/
 // metals weekend rule; applying it unconditionally to every symbol was
-// itself wrong for the handful of crypto pairs this platform lists
-// (SYMBOL_DEFS in lib/market-simulator.ts), which trade continuously and
-// have no weekend close at all. This crate has no live per-symbol
-// category/session lookup (see the module doc above), so this is a static
-// allowlist matching that same client-side list -- keep it in sync if a
-// new crypto symbol is ever added. A real fix is the same TradingSession-
-// config lookup noted above, scoped per symbol instead of a hardcoded list.
+// itself wrong for the handful of crypto pairs this platform lists,
+// which trade continuously and have no weekend close at all. This crate
+// has no live per-symbol category/session lookup (see the module doc
+// above), so this is a static allowlist -- keep it in sync if a new
+// crypto symbol is ever added.
+//
+// 2026-09-06 fix: this list had drifted -- SOLUSD and XRPUSD were added
+// to the real Symbol.category = CRYPTO catalog (lib/risk.ts's own
+// isContinuouslyTraded on the Next.js side had the identical bug, fixed
+// in the same commit, live-confirmed against Futurix Global) without
+// this one being updated, so this crate's own candle history would have
+// started flat-filling real gaps across their weekends the moment either
+// symbol's ticks reached it. Needs a real `cargo build --release -p
+// market-data` (or whichever binary embeds this crate) + Contabo
+// service restart to take effect -- a git pull alone does not update the
+// running binary, per this file's own round-2 deploy note above. A real
+// fix is the same TradingSession-config lookup noted above, scoped per
+// symbol instead of a hardcoded list -- Phase 3 scope, not this patch.
 fn is_continuously_traded(symbol: &str) -> bool {
-    matches!(symbol, "BTCUSD" | "ETHUSD")
+    matches!(symbol, "BTCUSD" | "ETHUSD" | "SOLUSD" | "XRPUSD")
 }
 
 // Caps how many flat-fill bars a single tick can generate -- protects
@@ -302,6 +313,20 @@ mod tests {
         let expected_count = ((mon - fri).num_hours() - 1) as usize;
         assert_eq!(fills.len(), expected_count);
         assert!(fills.iter().any(|f| f.bucket_start.weekday() == Weekday::Sat));
+    }
+
+    #[test]
+    fn is_continuously_traded_covers_the_full_current_crypto_catalog() {
+        // 2026-09-06 regression test: this list drifted once already
+        // (SOLUSD/XRPUSD added to the real catalog without this crate's
+        // copy being updated) -- pins all four current crypto symbols,
+        // plus a non-crypto control, so the next drift fails loudly here
+        // instead of silently flat-filling a real symbol's weekend gaps.
+        assert!(is_continuously_traded("BTCUSD"));
+        assert!(is_continuously_traded("ETHUSD"));
+        assert!(is_continuously_traded("SOLUSD"));
+        assert!(is_continuously_traded("XRPUSD"));
+        assert!(!is_continuously_traded("XAUUSD"));
     }
 
     #[test]

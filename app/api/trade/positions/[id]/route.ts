@@ -38,7 +38,7 @@ export async function PATCH(
 
   const brokerSymbol = await prisma.brokerSymbol.findUnique({
     where: { brokerId_symbolId: { brokerId: position.brokerId, symbolId: position.symbolId } },
-    include: { symbol: { select: { digits: true, name: true } }, tradingSessions: true },
+    include: { symbol: { select: { digits: true, name: true, category: true } }, tradingSessions: true },
   });
 
   // Same fix as position close (app/api/trade/positions/[id]/close/
@@ -49,7 +49,7 @@ export async function PATCH(
   // trader modifying SL/TP against a closed market's stale reference price
   // needs the same real MARKET_CLOSED + next-open-time answer close now
   // gives, not a false report that the feed itself is broken.
-  const sessionError = checkTradingSession(brokerSymbol?.tradingSessions ?? [], new Date(), brokerSymbol?.symbol.name ?? "");
+  const sessionError = checkTradingSession(brokerSymbol?.tradingSessions ?? [], new Date(), brokerSymbol?.symbol.category ?? "FOREX");
   if (sessionError) {
     const nextOpenAt = computeNextSessionOpen(brokerSymbol?.tradingSessions ?? [], new Date());
     return NextResponse.json({ error: sessionError, nextOpenAt: nextOpenAt.toISOString() }, { status: 400 });

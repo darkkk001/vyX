@@ -1,6 +1,7 @@
 import "server-only";
 import { Prisma, PositionActionType, type Position, type OrderSide } from "@prisma/client";
 import { getFreshPrice } from "@/lib/live-price";
+import { checkTradingSession, computeNextSessionOpen } from "@/lib/risk";
 import { computeRealizedPnl } from "@/lib/trading";
 import { randomUUID } from "node:crypto";
 
@@ -44,7 +45,7 @@ async function loadOpenPosition(tx: Tx, brokerId: string, positionId: string) {
   const position = await tx.position.findUnique({
     where: { id: positionId },
     include: {
-      symbol: { select: { name: true, contractSize: true } },
+      symbol: { select: { name: true, category: true, contractSize: true } },
       account: { select: { accountNumber: true, groupId: true } },
     },
   });
@@ -144,10 +145,26 @@ export async function executeReverseCloseReopen(
   params: { brokerId: string; positionId: string; adminId: string }
 ): Promise<ReverseCloseReopenResult> {
   const position = await loadOpenPosition(tx, params.brokerId, params.positionId);
+
+  // 2026-09-06 Section E audit fix -- this mode actually fills a close
+  // and a new open at live market prices (unlike REVERSE_IN_PLACE, which
+  // never touches price at all), so it needs the same explicit session
+  // check every trader-facing close/fill path already has, not just
+  // getFreshPrice's staleness proxy. See the identical fix in
+  // app/api/manage/positions/[id]/close/route.ts for the full reasoning.
+  const brokerSymbol = await tx.brokerSymbol.findFirst({
+    where: { brokerId: params.brokerId, symbolId: position.symbolId },
+    include: { tradingSessions: true },
+  });
+  const sessionError = checkTradingSession(brokerSymbol?.tradingSessions ?? [], new Date(), position.symbol.category);
+  if (sessionError) {
+    const nextOpenAt = computeNextSessionOpen(brokerSymbol?.tradingSessions ?? [], new Date());
+    throw new PositionActionError(`Market closed for ${position.symbol.name} -- opens ${nextOpenAt.toISOString()}`);
+  }
+
   const price = await getFreshPrice(position.symbol.name);
   if (!price) throw new PositionActionError(`no live price for ${position.symbol.name}`);
 
-  const brokerSymbol = await tx.brokerSymbol.findFirst({ where: { brokerId: params.brokerId, symbolId: position.symbolId } });
   const closePrice = position.side === "BUY" ? price.bid : price.ask;
   const newSide: OrderSide = position.side === "BUY" ? "SELL" : "BUY";
   const openPrice = newSide === "BUY" ? price.ask : price.bid;

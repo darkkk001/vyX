@@ -64,27 +64,34 @@ describe("isDefaultFxSessionClosed", () => {
 
 describe("checkTradingSession", () => {
   it("rejects a MARKET-style check at Fri 22:30 UTC with no configured sessions (the actual incident)", () => {
-    expect(checkTradingSession([], new Date(Date.UTC(2026, 8, 4, 22, 30)), "XAUUSD")).toBe("MARKET_CLOSED");
+    expect(checkTradingSession([], new Date(Date.UTC(2026, 8, 4, 22, 30)), "METALS")).toBe("MARKET_CLOSED");
   });
   it("rejects at Sun 21:59 UTC", () => {
-    expect(checkTradingSession([], new Date(Date.UTC(2026, 8, 6, 21, 59)), "XAUUSD")).toBe("MARKET_CLOSED");
+    expect(checkTradingSession([], new Date(Date.UTC(2026, 8, 6, 21, 59)), "METALS")).toBe("MARKET_CLOSED");
   });
   it("accepts at Sun 22:01 UTC", () => {
-    expect(checkTradingSession([], new Date(Date.UTC(2026, 8, 6, 22, 1)), "XAUUSD")).toBeNull();
+    expect(checkTradingSession([], new Date(Date.UTC(2026, 8, 6, 22, 1)), "METALS")).toBeNull();
   });
-  it("accepts BTCUSD at any time, including deep in the weekend closure", () => {
-    expect(checkTradingSession([], new Date(Date.UTC(2026, 8, 5, 12, 0)), "BTCUSD")).toBeNull();
-  });
-  it("accepts ETHUSD at any time too", () => {
-    expect(checkTradingSession([], new Date(Date.UTC(2026, 8, 5, 12, 0)), "ETHUSD")).toBeNull();
+  // 2026-09-06 fix -- this used to be a hardcoded ["BTCUSD", "ETHUSD"]
+  // name allowlist, wrong the moment SOLUSD/XRPUSD (also CRYPTO) were
+  // added to the catalog without it being updated (live-confirmed bug on
+  // Futurix Global: both enabled for real trading but incorrectly
+  // reported MARKET_CLOSED on a real Sunday). Now driven off
+  // Symbol.category directly -- these tests assert the category, not any
+  // particular symbol name, is what actually grants 24/7 trading.
+  it("accepts ANY CRYPTO-category symbol at any time, including deep in the weekend closure", () => {
+    expect(checkTradingSession([], new Date(Date.UTC(2026, 8, 5, 12, 0)), "CRYPTO")).toBeNull();
   });
   it("an explicit configured session overrides the default -- open outside the default window if the row says so", () => {
     const sessions = [{ dayOfWeek: 6, openTime: "00:00", closeTime: "23:59" }]; // Saturday, all day
-    expect(checkTradingSession(sessions, new Date(Date.UTC(2026, 8, 5, 12, 0)), "XAUUSD")).toBeNull();
+    expect(checkTradingSession(sessions, new Date(Date.UTC(2026, 8, 5, 12, 0)), "METALS")).toBeNull();
   });
   it("an explicit configured session still rejects outside its own window", () => {
     const sessions = [{ dayOfWeek: 3, openTime: "09:00", closeTime: "17:00" }]; // Wednesday only
-    expect(checkTradingSession(sessions, new Date(Date.UTC(2026, 8, 2, 20, 0)), "XAUUSD")).toBe("MARKET_CLOSED");
+    expect(checkTradingSession(sessions, new Date(Date.UTC(2026, 8, 2, 20, 0)), "METALS")).toBe("MARKET_CLOSED");
+  });
+  it("still rejects a non-CRYPTO category (e.g. INDICES) under the default weekend closure", () => {
+    expect(checkTradingSession([], new Date(Date.UTC(2026, 8, 5, 12, 0)), "INDICES")).toBe("MARKET_CLOSED");
   });
 });
 

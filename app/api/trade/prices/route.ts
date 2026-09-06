@@ -36,11 +36,11 @@ export async function GET() {
   // carry).
   const brokerSymbols = await prisma.brokerSymbol.findMany({
     where: { brokerId: session.brokerId, enabled: true },
-    include: { symbol: { select: { id: true, name: true, digits: true } }, tradingSessions: true },
+    include: { symbol: { select: { id: true, name: true, digits: true, category: true } }, tradingSessions: true },
   });
   const now = new Date();
   const closedByName = new Map(
-    brokerSymbols.map((bs) => [bs.symbol.name, checkTradingSession(bs.tradingSessions, now, bs.symbol.name) != null])
+    brokerSymbols.map((bs) => [bs.symbol.name, checkTradingSession(bs.tradingSessions, now, bs.symbol.category) != null])
   );
 
   // Resolve each symbol's effective spread markup for THIS account (group

@@ -202,7 +202,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   const riskError =
     checkTradingHalted(broker) ??
     checkSymbolTradingMode(brokerSymbol.tradingMode, order.side) ??
-    checkTradingSession(brokerSymbol.tradingSessions, new Date(), order.symbol.name) ??
+    checkTradingSession(brokerSymbol.tradingSessions, new Date(), order.symbol.category) ??
     checkLotStep(order.volume, brokerSymbol.minLot, brokerSymbol.lotStep) ??
     (order.account.group ? checkGroupMaxLot(order.volume, order.account.group.maxLotSize) : null) ??
     (order.account.group ? checkGroupTradingRestriction(order.account.group.tradingRestriction, order.side) : null) ??

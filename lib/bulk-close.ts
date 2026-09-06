@@ -63,12 +63,12 @@ export async function closeBulkForAccount(
   const symbolIds = [...new Set(openPositions.map((p) => p.symbolId))];
   const brokerSymbols = await db.brokerSymbol.findMany({
     where: { brokerId, symbolId: { in: symbolIds } },
-    include: { tradingSessions: true, symbol: { select: { name: true } } },
+    include: { tradingSessions: true, symbol: { select: { name: true, category: true } } },
   });
   const now = new Date();
   const nextOpenBySymbolName = new Map<string, string>();
   for (const bs of brokerSymbols) {
-    if (checkTradingSession(bs.tradingSessions, now, bs.symbol.name) != null) {
+    if (checkTradingSession(bs.tradingSessions, now, bs.symbol.category) != null) {
       nextOpenBySymbolName.set(bs.symbol.name, computeNextSessionOpen(bs.tradingSessions, now).toISOString());
     }
   }

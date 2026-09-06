@@ -59,7 +59,7 @@ async function loadOpenPositionsWithMarket(accountId: string): Promise<OpenPosit
     getFreshPrices(symbolNames),
     prisma.brokerSymbol.findMany({
       where: { brokerId: positions[0].brokerId, symbol: { name: { in: symbolNames } } },
-      include: { symbol: { select: { name: true } }, tradingSessions: true },
+      include: { symbol: { select: { name: true, category: true } }, tradingSessions: true },
     }),
   ]);
   // Trading-session gate reused verbatim from the order-placement path
@@ -72,7 +72,7 @@ async function loadOpenPositionsWithMarket(accountId: string): Promise<OpenPosit
   const now = new Date();
   const closedSymbols = new Set(
     brokerSymbols
-      .filter((bs) => checkTradingSession(bs.tradingSessions, now, bs.symbol.name) != null)
+      .filter((bs) => checkTradingSession(bs.tradingSessions, now, bs.symbol.category) != null)
       .map((bs) => bs.symbol.name)
   );
 

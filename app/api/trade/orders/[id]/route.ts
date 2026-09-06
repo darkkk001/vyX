@@ -47,7 +47,7 @@ export async function PATCH(
   const order = await prisma.order.findUnique({
     where: { id },
     include: {
-      symbol: { select: { name: true } },
+      symbol: { select: { name: true, category: true } },
       account: { select: { accountNumber: true, fullName: true, group: { select: { groupType: true, dealingMode: true, forceDealingMode: true } } } },
     },
   });
@@ -71,7 +71,7 @@ export async function PATCH(
   // could be repriced during a closed market (live-confirmed: a real
   // EURUSD order was successfully modified on a Saturday). Same
   // MARKET_CLOSED + next-open-time answer as place/close/SL-TP-modify.
-  const sessionError = checkTradingSession(brokerSymbol?.tradingSessions ?? [], new Date(), order.symbol.name);
+  const sessionError = checkTradingSession(brokerSymbol?.tradingSessions ?? [], new Date(), order.symbol.category);
   if (sessionError) {
     const nextOpenAt = computeNextSessionOpen(brokerSymbol?.tradingSessions ?? [], new Date());
     return NextResponse.json({ error: sessionError, nextOpenAt: nextOpenAt.toISOString() }, { status: 400 });

@@ -55,7 +55,7 @@ export async function closePositionsByEachOther(
   }
 
   const [a, b] = await Promise.all([
-    db.position.findUnique({ where: { id: params.positionId }, include: { symbol: { select: { name: true, contractSize: true } } } }),
+    db.position.findUnique({ where: { id: params.positionId }, include: { symbol: { select: { name: true, category: true, contractSize: true } } } }),
     db.position.findUnique({ where: { id: params.againstPositionId }, include: { symbol: { select: { name: true, contractSize: true } } } }),
   ]);
   if (!a || !b || a.accountId !== params.accountId || b.accountId !== params.accountId) {
@@ -81,7 +81,7 @@ export async function closePositionsByEachOther(
     where: { brokerId_symbolId: { brokerId: params.brokerId, symbolId: a.symbolId } },
     include: { tradingSessions: true },
   });
-  const sessionError = checkTradingSession(brokerSymbol?.tradingSessions ?? [], new Date(), a.symbol.name);
+  const sessionError = checkTradingSession(brokerSymbol?.tradingSessions ?? [], new Date(), a.symbol.category);
   if (sessionError) {
     const nextOpenAt = computeNextSessionOpen(brokerSymbol?.tradingSessions ?? [], new Date());
     return { ok: false, error: sessionError, nextOpenAt: nextOpenAt.toISOString() };

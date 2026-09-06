@@ -3,6 +3,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { getFreshPrice } from "@/lib/live-price";
+import { checkTradingSession, computeNextSessionOpen } from "@/lib/risk";
 import { computeRealizedPnl } from "@/lib/trading";
 import * as mirror from "@/lib/mirror";
 import { publishTradingEvent } from "@/lib/nats";
@@ -39,7 +40,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   const position = await prisma.position.findUnique({
     where: { id },
     include: {
-      symbol: { select: { name: true, contractSize: true } },
+      symbol: { select: { name: true, category: true, contractSize: true } },
       account: { select: { accountNumber: true, fullName: true, group: { select: { groupType: true, dealingMode: true, forceDealingMode: true } } } },
     },
   });
@@ -48,6 +49,27 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   }
   if (position.status !== "OPEN") {
     return NextResponse.json({ error: "position is not open" }, { status: 409 });
+  }
+
+  // 2026-09-06 Section E audit fix -- this route relied entirely on
+  // getFreshPrice's 15s staleness window as a proxy for "market closed,"
+  // unlike every trader-facing close/modify path (all fixed 2026-09-05),
+  // which check the real session directly. Not currently exploitable in
+  // practice (tickAt genuinely stops advancing within seconds of a real
+  // market closing), but inconsistent -- an admin closing during a real
+  // closed market got a confusing "no live price" instead of the same
+  // "Market closed, opens..." answer every other path now gives, and a
+  // broker configuring a real TradingSession window narrower than when
+  // the raw feed itself goes quiet would have let this proceed when it
+  // shouldn't.
+  const brokerSymbol = await prisma.brokerSymbol.findUnique({
+    where: { brokerId_symbolId: { brokerId, symbolId: position.symbolId } },
+    include: { tradingSessions: true },
+  });
+  const sessionError = checkTradingSession(brokerSymbol?.tradingSessions ?? [], new Date(), position.symbol.category);
+  if (sessionError) {
+    const nextOpenAt = computeNextSessionOpen(brokerSymbol?.tradingSessions ?? [], new Date());
+    return NextResponse.json({ error: sessionError, nextOpenAt: nextOpenAt.toISOString() }, { status: 400 });
   }
 
   const body = await request.json().catch(() => null);

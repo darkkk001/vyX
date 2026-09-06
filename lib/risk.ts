@@ -1,4 +1,4 @@
-import { Prisma, PrismaClient, TradingMode } from "@prisma/client";
+import { Prisma, PrismaClient, TradingMode, SymbolCategory } from "@prisma/client";
 import type { OrderSide } from "@/lib/trading";
 import { pipSize } from "@/lib/group-pricing";
 
@@ -70,18 +70,23 @@ export function checkLotStep(volume: Prisma.Decimal, minLot: Prisma.Decimal, lot
   return null;
 }
 
-// The two symbols this platform lists that trade continuously (see
-// lib/market-simulator.ts's SYMBOL_DEFS) -- same static allowlist
-// engine/market-data/src/gap_fill.rs's own is_continuously_traded()
-// keeps, for the same reason stated there: no live per-symbol
-// category/session lookup exists in that crate, so it's a hardcoded list
-// kept in sync by hand. Here in the legacy TS path a real lookup DOES
-// exist (BrokerSymbol.symbol.category), so this only needs to be the
-// crypto-detection rule for symbols that reach checkTradingSession
-// without that context already resolved -- kept name-based to match the
-// Rust side exactly, one rule expressed twice, not two different rules.
-function isContinuouslyTraded(symbolName: string): boolean {
-  return symbolName === "BTCUSD" || symbolName === "ETHUSD";
+// 2026-09-06 fix: this used to be a hardcoded ["BTCUSD", "ETHUSD"]
+// allowlist -- correct when those were the only two CRYPTO symbols this
+// platform had, wrong the moment SOLUSD/XRPUSD were added to the catalog
+// (Symbol.category = CRYPTO) without anyone updating this list. Live
+// bug, confirmed on Futurix Global: both are enabled for real trading,
+// but a real Sunday-afternoon UTC check (genuinely closed for FX/metals/
+// indices) incorrectly reported them MARKET_CLOSED too. Now driven
+// directly off Symbol.category -- every CRYPTO-category symbol is always
+// tradable, present or future, with nothing to keep in sync by hand on
+// this side. engine/market-data/src/gap_fill.rs's own
+// is_continuously_traded() has the identical hardcoded-list bug and needs
+// the equivalent category-driven fix on its own next Contabo deploy (that
+// crate has no live per-symbol category lookup today -- see its own
+// comment -- so its fix is a separate, larger change, not a one-line
+// mirror of this one).
+function isContinuouslyTraded(category: SymbolCategory): boolean {
+  return category === "CRYPTO";
 }
 
 // The standard global FX/metals weekend close every major venue observes,
@@ -113,7 +118,7 @@ export function isDefaultFxSessionClosed(now: Date): boolean {
 // present -- an explicit configuration always wins over the default.
 // Zero configured rows now falls through to isDefaultFxSessionClosed
 // instead of "always tradable" (see that function's own comment for why).
-// symbolName is required, not optional, specifically so a caller can't
+// `category` is required, not optional, specifically so a caller can't
 // forget it and silently get the old always-open behavior back.
 //
 // Returns the bare machine-readable code "MARKET_CLOSED" (same
@@ -125,9 +130,9 @@ export function isDefaultFxSessionClosed(now: Date): boolean {
 export function checkTradingSession(
   sessions: { dayOfWeek: number; openTime: string; closeTime: string }[],
   now: Date,
-  symbolName: string
+  category: SymbolCategory
 ): string | null {
-  if (isContinuouslyTraded(symbolName)) return null;
+  if (isContinuouslyTraded(category)) return null;
 
   if (sessions.length === 0) {
     return isDefaultFxSessionClosed(now) ? "MARKET_CLOSED" : null;

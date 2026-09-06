@@ -40,7 +40,7 @@ export async function POST(
   const position = await prisma.position.findUnique({
     where: { id },
     include: {
-      symbol: { select: { id: true, name: true, contractSize: true } },
+      symbol: { select: { id: true, name: true, category: true, contractSize: true } },
       account: { select: { accountNumber: true, fullName: true, group: { select: { groupType: true, dealingMode: true, forceDealingMode: true } } } },
     },
   });
@@ -67,7 +67,7 @@ export async function POST(
     where: { brokerId_symbolId: { brokerId: session.brokerId, symbolId: position.symbol.id } },
     include: { tradingSessions: true },
   });
-  const sessionError = checkTradingSession(brokerSymbol?.tradingSessions ?? [], new Date(), position.symbol.name);
+  const sessionError = checkTradingSession(brokerSymbol?.tradingSessions ?? [], new Date(), position.symbol.category);
   if (sessionError) {
     const nextOpenAt = computeNextSessionOpen(brokerSymbol?.tradingSessions ?? [], new Date());
     return NextResponse.json({ error: sessionError, nextOpenAt: nextOpenAt.toISOString() }, { status: 400 });
