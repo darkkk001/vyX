@@ -160,6 +160,14 @@ const LAYOUT_STORAGE_KEY = "vyx-webtrader-layout";
 // server's own checkPriceFreshness is guaranteed to reject. See that
 // effect's own comment for the full incident writeup (2026-09-04).
 const FILL_PRICE_MAX_AGE_MS = 3000;
+// 2026-09-07 Section F audit fix -- same exponential-backoff constants
+// as lib/admin-realtime.tsx's own backoffice reconnect (1s initial,
+// doubling, capped at 15s), used by both this file's price-tick and
+// trading-events WebSocket effects below. One disciplined reconnect
+// strategy shared by every realtime stream in the app, not a flat
+// retry here and real backoff there.
+const RECONNECT_INITIAL_BACKOFF_MS = 1000;
+const RECONNECT_MAX_BACKOFF_MS = 15000;
 type StoredLayout = {
   // watchlistOrder deliberately NOT here anymore -- server-side now (see
   // app/api/trade/watchlist), not localStorage, so web and desktop stay
@@ -1712,12 +1720,22 @@ export default function WebTrader({
     let socket: WebSocket | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let pingInterval: ReturnType<typeof setInterval> | null = null;
+    // 2026-09-07 Section F audit fix -- this used to be a flat 3000ms
+    // retry despite a comment elsewhere in this file claiming both
+    // WebSockets "already carry their own reconnect-with-backoff," which
+    // wasn't true. Now real exponential backoff, same shape and same
+    // constants as lib/admin-realtime.tsx's own backoffice stream (1s
+    // initial, doubling, capped at 15s, reset to 1s the moment a
+    // connection actually opens) -- one disciplined reconnect strategy
+    // instead of two different ones.
+    let backoffMs = RECONNECT_INITIAL_BACKOFF_MS;
 
     function connect() {
       if (cancelled) return;
       const base = process.env.NEXT_PUBLIC_GATEWAY_WS_URL ?? "ws://127.0.0.1:8080";
       socket = new WebSocket(`${base}/v1/prices/stream`);
       socket.onopen = () => {
+        backoffMs = RECONNECT_INITIAL_BACKOFF_MS;
         // hotfix/terminal-live-bugs #3 -- app-level ping/pong over this
         // same connection, echoed by services/api-gateway/src/ws.ts's
         // registerClient. The browser's native WebSocket API never
@@ -1756,7 +1774,10 @@ export default function WebTrader({
       socket.onclose = () => {
         if (pingInterval) { clearInterval(pingInterval); pingInterval = null; }
         setPingMs(null);
-        if (!cancelled) reconnectTimer = setTimeout(connect, 3000);
+        if (!cancelled) {
+          reconnectTimer = setTimeout(connect, backoffMs);
+          backoffMs = Math.min(backoffMs * 2, RECONNECT_MAX_BACKOFF_MS);
+        }
       };
       socket.onerror = () => socket?.close();
     }
@@ -1822,14 +1843,39 @@ export default function WebTrader({
     let cancelled = false;
     let socket: WebSocket | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    // 2026-09-07 Section F audit fix -- same exponential backoff as the
+    // price-tick effect above (see RECONNECT_INITIAL_BACKOFF_MS's own
+    // comment), plus an explicit reconnect-refetch: `everConnected`
+    // distinguishes the very first connect from a real reconnect
+    // following at least one drop, same shape as lib/admin-realtime.tsx's
+    // own ADMIN_STREAM_RECONNECTED handling. This stream (like NATS
+    // itself) has no replay/catch-up -- an order fill, requote, or
+    // externally-created position that happened while this socket was
+    // down would otherwise sit unknown to this tab for up to 30s (the
+    // existing poll's own cadence) instead of the moment the connection
+    // comes back.
+    let backoffMs = RECONNECT_INITIAL_BACKOFF_MS;
+    let everConnected = false;
 
     function connect() {
       if (cancelled) return;
       const base = process.env.NEXT_PUBLIC_GATEWAY_WS_URL ?? "ws://127.0.0.1:8080";
       socket = new WebSocket(`${base}/v1/trading/stream`);
+      socket.onopen = () => {
+        backoffMs = RECONNECT_INITIAL_BACKOFF_MS;
+        if (everConnected) {
+          refreshOrders();
+          refreshPositions();
+          refreshAccount();
+        }
+        everConnected = true;
+      };
       socket.onmessage = (event) => handleEvent(typeof event.data === "string" ? event.data : "");
       socket.onclose = () => {
-        if (!cancelled) reconnectTimer = setTimeout(connect, 3000);
+        if (!cancelled) {
+          reconnectTimer = setTimeout(connect, backoffMs);
+          backoffMs = Math.min(backoffMs * 2, RECONNECT_MAX_BACKOFF_MS);
+        }
       };
       socket.onerror = () => socket?.close();
     }
