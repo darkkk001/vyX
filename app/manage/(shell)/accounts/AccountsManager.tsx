@@ -331,7 +331,7 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
           <TableHeaderCell
             align="center"
             className="min-w-[75px]"
-            title="Per-account swap-free override -- independent of the account's type or group (Account.swapFree). Storage only for now, no live fill charges swap yet."
+            title="Per-account swap-free override (Account.swapFree). Not yet applied at execution -- arrives with the pricing engine (Phase 2). The account's group's per-symbol swap rate (Client groups -> Pricing) is what's actually charged today; zero those rates if you need this account swap-free right now."
           >
             Swap-free
           </TableHeaderCell>

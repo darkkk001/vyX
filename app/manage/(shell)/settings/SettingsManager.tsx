@@ -385,8 +385,9 @@ export default function SettingsManager() {
 
           <ModalSection label="Pricing">
             <Alert tone="info">
-              Saved and shown here, but not yet applied to a real fill -- Group pricing (Client groups page) is what actually charges a real
-              order today. Type-level pricing takes effect once the pricing engine (Phase 2) reads it.
+              Not yet applied at execution -- spread markup, commission, swap rates, and swap-free below are saved and shown here, but arrive
+              with the pricing engine (Phase 2). Group-level per-symbol pricing (Client groups, Pricing tab) is what actually charges a real
+              order today.
             </Alert>
           </ModalSection>
           <div className="grid grid-cols-2 gap-3">
@@ -431,7 +432,7 @@ export default function SettingsManager() {
           </div>
           <Checkbox
             label="Swap-free (e.g. Islamic account type)"
-            title="No overnight swap/rollover charged on accounts of this type"
+            title="Not yet read anywhere swap is charged (arrives with the pricing engine, Phase 2) -- see the note above"
             checked={typeForm.swapFree}
             onChange={(e) => setTypeForm((p) => ({ ...p, swapFree: e.target.checked }))}
           />

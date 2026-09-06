@@ -203,7 +203,7 @@ export default function GroupsManager() {
             <TableHeaderCell className="min-w-[175px]" title="How live orders from this group are routed">
               Routing
             </TableHeaderCell>
-            <TableHeaderCell align="center" className="min-w-[80px]">Swap-free</TableHeaderCell>
+            <TableHeaderCell align="center" className="min-w-[80px]" title="Not yet applied at execution -- arrives with the pricing engine (Phase 2). This group's own per-symbol swap rate (Pricing tab) is what's actually charged today.">Swap-free</TableHeaderCell>
             <TableHeaderCell align="center" className="min-w-[70px]">Default</TableHeaderCell>
             <TableHeaderCell className="min-w-[145px]" />
           </TableHead>
@@ -491,10 +491,14 @@ function GroupFormModal({
           </FormField>
         </div>
 
+        <Alert tone="info">
+          Not yet applied at execution -- arrives with the pricing engine (Phase 2). Group-level per-symbol swap (this group&apos;s Pricing tab)
+          is what&apos;s actually charged today; zero those rates directly if you need this group swap-free right now.
+        </Alert>
         <div className="flex flex-wrap items-center gap-5">
           <Checkbox
             label="Swap-free"
-            title="No overnight swap/rollover charged on positions held in this group"
+            title="Not yet read anywhere swap is charged (arrives with the pricing engine, Phase 2) -- see the note above"
             checked={swapFree}
             onChange={(e) => setSwapFree(e.target.checked)}
           />

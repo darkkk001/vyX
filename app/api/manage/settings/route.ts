@@ -42,7 +42,22 @@ export async function PATCH(request: NextRequest) {
   const data: { defaultAccountCurrency?: string; defaultAccountLeverage?: number } = {};
 
   if (typeof body?.defaultAccountCurrency === "string" && body.defaultAccountCurrency.trim()) {
-    data.defaultAccountCurrency = body.defaultAccountCurrency.trim().toUpperCase();
+    const defaultAccountCurrency = body.defaultAccountCurrency.trim().toUpperCase();
+    // 2026-09-06 interim guard (Section B audit finding #2) -- same "no
+    // cross-currency conversion exists yet" reasoning as the per-account
+    // guard in app/api/manage/accounts/route.ts, applied here too since
+    // this default is what a new account silently inherits when no
+    // explicit currency is given at creation.
+    if (defaultAccountCurrency !== "USD") {
+      return NextResponse.json(
+        {
+          error:
+            "Only USD is supported as the default account currency right now -- no cross-currency P/L/margin conversion exists yet. Contact engineering once currency conversion ships.",
+        },
+        { status: 400 }
+      );
+    }
+    data.defaultAccountCurrency = defaultAccountCurrency;
   }
   if (body?.defaultAccountLeverage != null) {
     const n = Math.trunc(Number(body.defaultAccountLeverage));

@@ -172,6 +172,26 @@ async function createAccount(request: NextRequest, session: NonNullable<Awaited<
   }
 
   const currency = typeof body?.currency === "string" && body.currency.trim() ? body.currency.trim().toUpperCase() : broker.defaultAccountCurrency;
+  // 2026-09-06 interim guard (Section B audit finding #2): every P/L,
+  // margin, swap, and commission formula in lib/trading.ts, lib/margin.ts,
+  // lib/swap-rollover.ts, and lib/group-pricing.ts credits its result
+  // straight onto Account.balance with NO currency conversion -- correct
+  // only when a position's quote currency already equals the account's
+  // own currency. A non-USD account trading any of this platform's
+  // (all-USD-quoted) symbols would be credited that USD amount 1:1 as if
+  // it were its own currency, silently wrong. Real conversion is a Phase 2
+  // roadmap item; until then, block the account side of the mismatch at
+  // creation. See the matching enable-time guard in
+  // app/api/manage/symbols/route.ts for the other side.
+  if (currency !== "USD") {
+    return NextResponse.json(
+      {
+        error:
+          "Only USD accounts are supported right now -- no cross-currency P/L/margin conversion exists yet, so a non-USD account would have trade results mis-credited 1:1. Contact engineering once currency conversion ships.",
+      },
+      { status: 400 }
+    );
+  }
   const country = typeof body?.country === "string" && body.country.trim() ? body.country.trim() : null;
   const phone = typeof body?.phone === "string" && body.phone.trim() ? body.phone.trim() : null;
   let dateOfBirth: Date | null = null;

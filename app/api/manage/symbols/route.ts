@@ -172,6 +172,24 @@ export async function PATCH(request: NextRequest) {
   if (maxExposure && maxExposure.lte(0)) {
     return NextResponse.json({ error: "maxExposure must be positive when set" }, { status: 400 });
   }
+  // 2026-09-06 interim guard (Section B audit finding #2) -- the flip side
+  // of the account-currency guard in app/api/manage/accounts/route.ts.
+  // Every P/L/margin/swap/commission formula credits its result straight
+  // onto Account.balance with no currency conversion; that's only correct
+  // when a symbol's quote currency matches the account's own (today,
+  // always USD). Enabling a non-USD-quoted symbol (e.g. USDJPY, EURGBP)
+  // for real trading would silently mis-credit every fill 1:1. Real
+  // conversion is a Phase 2 roadmap item -- block enabling until then.
+  // Only gates the transition to enabled=true, so a broker can still
+  // edit/leave-disabled a non-USD symbol's other config.
+  if (enabled && symbol.quoteCurrency !== "USD") {
+    return NextResponse.json(
+      {
+        error: `${symbol.name} is quoted in ${symbol.quoteCurrency}, not USD -- enabling it for trading would mis-credit P/L, margin, swap, and commission 1:1 with no currency conversion (not yet implemented). Contact engineering once currency conversion ships.`,
+      },
+      { status: 400 }
+    );
+  }
 
   const brokerId = session.brokerId!;
 
