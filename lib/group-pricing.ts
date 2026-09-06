@@ -61,7 +61,16 @@ export async function resolveSymbolPricing(
   if (!override) {
     return { spreadMarkup: params.brokerSpreadMarkup, commissionPerLot: params.brokerCommissionPerLot };
   }
-  return { spreadMarkup: override.spreadMarkup, commissionPerLot: override.commissionPerLot };
+  // Per-field fallback (2026-09-07 migration pricing_engine_nullable_widening
+  // made these columns nullable) -- a row existing here no longer forces
+  // BOTH fields, only whichever ones it actually sets; a null field falls
+  // through to the broker-wide default exactly like no row at all. No
+  // existing row has ever stored null (this function predates the
+  // migration), so this is a no-op for every row that exists today.
+  return {
+    spreadMarkup: override.spreadMarkup ?? params.brokerSpreadMarkup,
+    commissionPerLot: override.commissionPerLot ?? params.brokerCommissionPerLot,
+  };
 }
 
 // Charges commissionPerLot * volume against the account's balance as a

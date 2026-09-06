@@ -71,7 +71,11 @@ export async function GET() {
   const askMarkupByName = new Map<string, string>();
   for (const bs of brokerSymbols) {
     const override = overrideBySymbolId.get(bs.symbolId);
-    const markupPips = override ? override.spreadMarkup : bs.spreadMarkup;
+    // Per-field fallback (2026-09-07 migration pricing_engine_nullable_widening
+    // made GroupSymbolConfig.spreadMarkup nullable) -- an override row with
+    // this field null falls through to the broker default, same as no row
+    // at all. No existing row has ever stored null, so this is a no-op today.
+    const markupPips = override?.spreadMarkup ?? bs.spreadMarkup;
     if (markupPips.isZero()) continue;
     askMarkupByName.set(bs.symbol.name, markupPips.mul(pipSize(bs.symbol.digits)).toString());
   }

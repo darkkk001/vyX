@@ -51,10 +51,15 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
         symbolName: bs.symbol.name,
         category: bs.symbol.category,
         hasOverride: !!override,
-        spreadMarkup: (override ? override.spreadMarkup : bs.spreadMarkup).toString(),
-        commissionPerLot: (override ? override.commissionPerLot : bs.commissionPerLot).toString(),
-        swapLong: (override ? override.swapLong : bs.swapLong).toString(),
-        swapShort: (override ? override.swapShort : bs.swapShort).toString(),
+        // Per-field fallback (2026-09-07 migration
+        // pricing_engine_nullable_widening) -- see this route's own PATCH,
+        // which still only ever writes concrete values for all four fields
+        // together, so no existing row has ever stored null; this is a
+        // no-op today, just satisfying the now-nullable column type.
+        spreadMarkup: (override?.spreadMarkup ?? bs.spreadMarkup).toString(),
+        commissionPerLot: (override?.commissionPerLot ?? bs.commissionPerLot).toString(),
+        swapLong: (override?.swapLong ?? bs.swapLong).toString(),
+        swapShort: (override?.swapShort ?? bs.swapShort).toString(),
         brokerSpreadMarkup: bs.spreadMarkup.toString(),
         brokerCommissionPerLot: bs.commissionPerLot.toString(),
         brokerSwapLong: bs.swapLong.toString(),
@@ -168,10 +173,13 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         entityId: id,
         oldValue: existing
           ? {
-              spreadMarkup: existing.spreadMarkup.toString(),
-              commissionPerLot: existing.commissionPerLot.toString(),
-              swapLong: existing.swapLong.toString(),
-              swapShort: existing.swapShort.toString(),
+              // This route's own PATCH always writes all 4 fields together
+              // (never null), so the `?? "0"` never actually fires today --
+              // just satisfying the nullable column type.
+              spreadMarkup: existing.spreadMarkup?.toString() ?? "0",
+              commissionPerLot: existing.commissionPerLot?.toString() ?? "0",
+              swapLong: existing.swapLong?.toString() ?? "0",
+              swapShort: existing.swapShort?.toString() ?? "0",
             }
           : { usingBrokerDefault: true },
         newValue: { symbolId, spreadMarkup: spreadMarkup.toString(), commissionPerLot: commissionPerLot.toString(), swapLong: swapLong.toString(), swapShort: swapShort.toString() },
@@ -183,9 +191,11 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   return NextResponse.json({
     symbolId,
     hasOverride: true,
-    spreadMarkup: updated.spreadMarkup.toString(),
-    commissionPerLot: updated.commissionPerLot.toString(),
-    swapLong: updated.swapLong.toString(),
-    swapShort: updated.swapShort.toString(),
+    // Guaranteed non-null in practice -- `data` above always passes all 4
+    // as concrete Decimals -- the `?? "0"` just satisfies the nullable type.
+    spreadMarkup: updated.spreadMarkup?.toString() ?? "0",
+    commissionPerLot: updated.commissionPerLot?.toString() ?? "0",
+    swapLong: updated.swapLong?.toString() ?? "0",
+    swapShort: updated.swapShort?.toString() ?? "0",
   });
 }

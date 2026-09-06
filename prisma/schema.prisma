@@ -301,6 +301,19 @@ model Broker {
   // lib/position-close.ts's closePositionInTx.
   negativeBalanceProtection Boolean @default(true)
 
+  // Phase 2 pricing engine (2026-09-07) -- false (default) = every fill
+  // site and lib/swap-rollover.ts keep resolving pricing exactly as
+  // before (Group/GroupSymbolConfig only, via lib/group-pricing.ts's
+  // existing resolveSymbolPricing) -- zero behavior change for any
+  // broker until this is explicitly flipped. true = the full
+  // Account -> AccountType -> Group -> BrokerSymbol per-field resolution
+  // (see docs/pricing-engine.md) is used instead. Per-broker, not
+  // global, so each broker's cutover is independently shadow-verified
+  // (see the shadow-comparison endpoint) before its own flag flips --
+  // same "config now, enforce later, one tenant at a time" shape as
+  // executionEngine above.
+  pricingEngineEnabled Boolean @default(false)
+
   // Applied by POST /api/manage/accounts when the admin doesn't specify
   // currency/leverage explicitly -- System Settings page.
   defaultAccountCurrency String @default("USD")
@@ -484,16 +497,23 @@ model Account {
   accountTypeId String?
   accountType   AccountType?  @relation(fields: [accountTypeId], references: [id])
 
-  // Per-account swap-free OVERRIDE (2026-09-05) -- the 3rd of 3 swap-free
-  // levels (AccountType.swapFree, Group.swapFree, this one), for a
-  // specific client who needs Islamic/swap-free terms regardless of their
-  // type or group (or the reverse: an Islamic-type account that should
-  // still be charged swap as a one-off exception). Storage only, same as
-  // the other two levels -- no live fill-time path charges swap yet at
-  // all (see Group.swapFree's own comment), so there's nothing to skip
-  // for any of the three today. Resolution priority once that changes:
-  // account override > type > group.
-  swapFree Boolean @default(false)
+  // Per-account swap-free OVERRIDE -- the 3rd of 3 swap-free levels
+  // (AccountType.swapFree, Group.swapFree, this one), for a specific
+  // client who needs Islamic/swap-free terms regardless of their type or
+  // group (or the reverse: an Islamic-type account that should still be
+  // charged swap as a one-off exception). Nullable tri-state (2026-09-07,
+  // migration pricing_engine_schema) -- null = "not set, fall through to
+  // AccountType then Group then hardcoded false", same convention as
+  // AccountType.swapFree/Group.swapFree just below. Was a non-nullable
+  // `@default(false)` from 2026-09-05 until this migration; safe to widen
+  // since nothing has ever read this field at fill time (see
+  // lib/swap-rollover.ts's own resolution once Phase 2 wires it in) --
+  // every existing row's literal `false` is preserved as-is (ALTER
+  // COLUMN DROP NOT NULL / DROP DEFAULT only, no data rewrite), which
+  // means an account whose broker never touched this still resolves
+  // identically (false) either way once enforcement turns on. Resolution
+  // priority: account override > type > group.
+  swapFree Boolean?
 
   // 2026-09-05 P0 fix -- edge-detection state for the standing margin-call
   // warning (lib/risk-monitor.ts's evaluateAccountRisk, Pass 3): set to
@@ -578,6 +598,13 @@ model Account {
   savedWithdrawalAddresses  SavedWithdrawalAddress[]
   balanceAdjustmentRequests BalanceAdjustmentRequest[]
 
+  // Per-account, per-symbol pricing override -- see AccountSymbolConfig's
+  // own doc comment. Absence of a row for a symbol means "fall through to
+  // AccountTypeSymbolConfig/AccountType, then Group/GroupSymbolConfig,
+  // then BrokerSymbol" -- same "missing config = defaults" convention
+  // GroupSymbolConfig already uses.
+  symbolPricingOverrides AccountSymbolConfig[]
+
   @@unique([brokerId, email, accountMode])
   @@index([brokerId])
   @@index([groupId])
@@ -587,12 +614,13 @@ model Account {
 // Per-broker pricing-tier classification an Account can be tagged with
 // (Standard/Pro/Zero by default -- see the migration that seeds these
 // for every existing broker; a broker can rename/add/disable its own
-// via Settings -> Account Types). Display/reporting only for now --
-// pricing still resolves purely from Group (GroupSymbolConfig/
-// BrokerSymbol, see lib/group-pricing.ts) exactly as it did before this
-// model existed; wiring real per-type pricing is the Phase 2 pricing
-// engine's job, not this one's -- the UI says so wherever a type is
-// picked so nobody mistakes this for already being load-bearing.
+// via Settings -> Account Types). Storage only until Broker.
+// pricingEngineEnabled flips true for a given broker (Phase 2 pricing
+// engine, docs/pricing-engine.md) -- until then pricing still resolves
+// purely from Group (GroupSymbolConfig/BrokerSymbol, see
+// lib/group-pricing.ts) exactly as it did before this model existed. The
+// UI says so wherever a type is picked so nobody mistakes this for
+// already being load-bearing on a broker that hasn't been cut over.
 model AccountType {
   id               String  @id @default(cuid())
   brokerId         String
@@ -605,28 +633,31 @@ model AccountType {
   pricingHint      String?
   sortOrder        Int     @default(0)
   isDefault        Boolean @default(false)
-  // Per-type pricing STORAGE only (2026-09-05) -- these are set/saved from
-  // Settings -> Account Types and are real values, but no live fill-time
-  // path reads them yet (Group/GroupSymbolConfig via lib/group-pricing.ts
-  // remains the only thing actually applied to a real fill, exactly as
-  // before this existed). Wiring these into the fill path (and deciding
-  // how a type's flat value interacts with a group's own per-symbol
-  // override) is the Phase 2 pricing engine's job, not this one's -- same
-  // "config now, enforce later" convention as several Group fields above
-  // it (forceDealingMode, dealingMode) used when they first landed.
-  // Same Decimal precision as GroupSymbolConfig's own spreadMarkup/
-  // commissionPerLot/swapLong/swapShort for consistency, even though this
-  // is a flat per-type value rather than a per-symbol override.
-  spreadMarkup     Decimal @default(0) @db.Decimal(10, 4)
-  commissionPerLot Decimal @default(0) @db.Decimal(10, 2)
-  swapLong         Decimal @default(0) @db.Decimal(10, 4)
-  swapShort        Decimal @default(0) @db.Decimal(10, 4)
-  // Swap-free is a 3-level setting (type / group / account) -- see
-  // Group.swapFree and Account.swapFree's own comments for the other two.
-  // Resolution priority once Phase 2 enforces any of these:
-  // account override > type > group. Storage only for now, same as the
-  // pricing fields just above.
-  swapFree         Boolean @default(false)
+  // Type-WIDE default pricing (originally 2026-09-05, widened to nullable
+  // 2026-09-07 migration pricing_engine_schema) -- the fallback used for
+  // any symbol this type has no AccountTypeSymbolConfig row for. Null =
+  // "not set, fall through to Group/GroupSymbolConfig" -- same per-field
+  // nullable convention as GroupSymbolConfig's own fields now use (see
+  // that model's doc comment for why per-field, not per-row, matters).
+  // Was a non-nullable `@default(0)`/`@default(false)` until this
+  // migration; every existing row's literal 0/false is preserved as-is
+  // (ALTER COLUMN only, no data rewrite) -- see the migration's own
+  // pre-flight check for the one caveat (a broker who already saved a
+  // deliberate 0 here looks identical to one who never touched it; both
+  // keep charging/crediting exactly 0 either way, so there is no fill
+  // behavior change from this migration itself regardless of intent).
+  // Resolution order once Phase 2 enforces this (docs/pricing-engine.md):
+  // AccountSymbolConfig > AccountTypeSymbolConfig > this flat value >
+  // GroupSymbolConfig > BrokerSymbol, independently per field.
+  spreadMarkup     Decimal? @db.Decimal(10, 4)
+  commissionPerLot Decimal? @db.Decimal(10, 2)
+  swapLong         Decimal? @db.Decimal(10, 4)
+  swapShort        Decimal? @db.Decimal(10, 4)
+  // Swap-free is a 3-level setting (type / group / account), each now
+  // nullable tri-state -- see Group.swapFree and Account.swapFree's own
+  // comments for the other two. Resolution priority once Phase 2 enforces
+  // this: account override > type > group > hardcoded false.
+  swapFree         Boolean?
   // Soft-disable, not delete -- there is no delete route at all, so an
   // Account.accountTypeId row can never dangle. A disabled type stays
   // selectable-in-place for accounts already on it (their badge keeps
@@ -641,6 +672,12 @@ model AccountType {
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
 
   accounts Account[]
+
+  // Per-type, per-symbol pricing override -- see AccountTypeSymbolConfig's
+  // own doc comment for why per-symbol (not the flat fields above) is the
+  // real-world shape brokers need here (a Pro type's gold spread and its
+  // EURUSD spread are set independently, not to one shared number).
+  symbolConfigs AccountTypeSymbolConfig[]
 
   @@unique([brokerId, name])
   @@index([brokerId])
@@ -746,11 +783,14 @@ model Group {
   // Same enum/semantics as BrokerSymbol.tradingMode -- see
   // lib/risk.ts's checkGroupTradingRestriction.
   tradingRestriction TradingMode      @default(BOTH)
-  // Config-only -- no live Next.js path charges swap at all yet (that
-  // only exists in the Rust engine's daily rollover job, which nothing
-  // live is cut over to), so there's nothing to skip for a swap-free
-  // group today. Recorded now so it's ready once that changes.
-  swapFree           Boolean          @default(false)
+  // Nullable tri-state (widened 2026-09-07 migration
+  // pricing_engine_schema, was `@default(false)`) -- null = "not set,
+  // fall through to hardcoded false" once Phase 2's swap-free resolution
+  // (account override > type > group > false) is wired into
+  // lib/swap-rollover.ts; every existing row's literal `false` is
+  // preserved as-is (no data rewrite), which resolves identically either
+  // way for a broker that never touched this.
+  swapFree           Boolean?
   // Opt-in symbol allowlist -- false (default) means every enabled
   // BrokerSymbol is tradable by this group, identical to every group's
   // behavior before this field existed (zero change for existing
@@ -812,22 +852,103 @@ model Group {
 // (only the not-yet-cut-over Rust engine reads those), this table's
 // values ARE applied to real fills the moment a broker sets them, for
 // any account whose group has a row here.
+//
+// The 4 pricing fields were non-nullable `@default(0)` until the
+// 2026-09-07 migration pricing_engine_schema, which widened them to
+// nullable -- a ROW existing here meant "override this symbol," but any
+// individual field left at its form default of 0 silently overrode that
+// field too (e.g. a group override created for spreadMarkup alone forced
+// commissionPerLot to exactly 0 for that group+symbol, with no way to
+// say "override spread, inherit commission"). Null now means that per
+// FIELD, not per row -- same convention AccountType/AccountTypeSymbolConfig/
+// AccountSymbolConfig use. Existing rows keep their literal stored values
+// as-is (no data rewrite), so this migration itself changes no live fill;
+// it only makes future null writes possible.
 model GroupSymbolConfig {
   id               String  @id @default(cuid())
   groupId          String
   group            Group   @relation(fields: [groupId], references: [id], onDelete: Cascade)
   symbolId         String
   symbol           Symbol  @relation(fields: [symbolId], references: [id])
-  spreadMarkup     Decimal @default(0) @db.Decimal(10, 4) // pips added on top of raw spread, same convention as BrokerSymbol.spreadMarkup
-  commissionPerLot Decimal @default(0) @db.Decimal(10, 2) // flat fee per lot, charged once when a position opens
-  swapLong         Decimal @default(0) @db.Decimal(10, 4)
-  swapShort        Decimal @default(0) @db.Decimal(10, 4)
+  spreadMarkup     Decimal? @db.Decimal(10, 4) // pips added on top of raw spread, same convention as BrokerSymbol.spreadMarkup. Mutually exclusive with targetTotalSpreadPips (app-level validation, not a DB constraint -- see docs/pricing-engine.md)
+  // Client-visible TOTAL spread this group should show for the symbol --
+  // an alternate mode to spreadMarkup (at most one of the two set per
+  // row, enforced at the application layer where both are written, same
+  // "no DB CHECK constraint" convention this codebase already uses for
+  // every other cross-field invariant, e.g. lib/risk.ts's checks). When
+  // set, the Phase 2 resolver computes the effective markup at fill time
+  // as max(targetTotalSpreadPips - liveBaseSpreadPips, 0) using whichever
+  // live tick the call site already has (see docs/pricing-engine.md §5).
+  targetTotalSpreadPips Decimal? @db.Decimal(10, 4)
+  commissionPerLot Decimal? @db.Decimal(10, 2) // flat fee per lot, charged once when a position opens
+  swapLong         Decimal? @db.Decimal(10, 4)
+  swapShort        Decimal? @db.Decimal(10, 4)
 
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
 
   @@unique([groupId, symbolId])
   @@index([groupId])
+}
+
+// Per-type, per-symbol pricing override (2026-09-07) -- AccountType's own
+// flat spreadMarkup/commissionPerLot/swapLong/swapShort fields are a
+// type-WIDE default; this table is where a broker sets that a Pro
+// account's gold spread differs from its EURUSD spread, the real-world
+// shape per-tier pricing actually needs (see AccountType's own doc
+// comment for why flat-only was rejected for v1). Same "missing
+// row/field = fall through" convention as GroupSymbolConfig: no row for
+// a symbol falls through to AccountType's flat value; a row with a null
+// field falls through the same way, independently per field.
+// spreadMarkup and targetTotalSpreadPips are mutually exclusive per row,
+// same app-level (not DB) constraint as GroupSymbolConfig's own fields.
+model AccountTypeSymbolConfig {
+  id                    String      @id @default(cuid())
+  accountTypeId         String
+  accountType           AccountType @relation(fields: [accountTypeId], references: [id], onDelete: Cascade)
+  symbolId              String
+  symbol                Symbol      @relation(fields: [symbolId], references: [id])
+  spreadMarkup          Decimal?    @db.Decimal(10, 4)
+  targetTotalSpreadPips Decimal?    @db.Decimal(10, 4)
+  commissionPerLot      Decimal?    @db.Decimal(10, 2)
+  swapLong              Decimal?    @db.Decimal(10, 4)
+  swapShort             Decimal?    @db.Decimal(10, 4)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  @@unique([accountTypeId, symbolId])
+  @@index([accountTypeId])
+}
+
+// Per-account, per-symbol pricing override (2026-09-07) -- the most
+// specific level in the Phase 2 resolution chain (docs/pricing-engine.md):
+// AccountSymbolConfig > AccountTypeSymbolConfig/AccountType flat >
+// GroupSymbolConfig > BrokerSymbol, independently per field. For a
+// specific client who needs different terms than their type/group (e.g.
+// zero commission on majors as a retention deal) without reclassifying
+// their whole type or group. Same "missing row/field = fall through"
+// convention as GroupSymbolConfig and AccountTypeSymbolConfig.
+// spreadMarkup and targetTotalSpreadPips are mutually exclusive per row,
+// same app-level (not DB) constraint as the other two symbol-config
+// tables.
+model AccountSymbolConfig {
+  id                    String   @id @default(cuid())
+  accountId             String
+  account               Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  symbolId              String
+  symbol                Symbol   @relation(fields: [symbolId], references: [id])
+  spreadMarkup          Decimal? @db.Decimal(10, 4)
+  targetTotalSpreadPips Decimal? @db.Decimal(10, 4)
+  commissionPerLot      Decimal? @db.Decimal(10, 2)
+  swapLong              Decimal? @db.Decimal(10, 4)
+  swapShort             Decimal? @db.Decimal(10, 4)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  @@unique([accountId, symbolId])
+  @@index([accountId])
 }
 
 // One row = this symbol is explicitly allowed for this group. Only
@@ -1030,13 +1151,15 @@ model Symbol {
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
 
-  brokerSymbols      BrokerSymbol[]
-  orders             Order[]
-  positions          Position[]
-  lpRoutingRules     LpRoutingRule[]
-  groupAllowlists    GroupSymbol[]
-  groupSymbolConfigs GroupSymbolConfig[]
-  watchlistItems     WatchlistItem[]
+  brokerSymbols            BrokerSymbol[]
+  orders                   Order[]
+  positions                Position[]
+  lpRoutingRules           LpRoutingRule[]
+  groupAllowlists          GroupSymbol[]
+  groupSymbolConfigs       GroupSymbolConfig[]
+  watchlistItems           WatchlistItem[]
+  accountTypeSymbolConfigs AccountTypeSymbolConfig[]
+  accountSymbolConfigs     AccountSymbolConfig[]
 }
 
 // Per-account watchlist, server-side (not localStorage) so web and desktop

@@ -188,12 +188,23 @@ export async function runSwapRollover(
         claimedCount++;
 
         const brokerSymbol = brokerSymbolMap.get(`${p.brokerId}:${p.symbolId}`);
-        const groupOverride = p.groupId ? (groupOverrideMap.get(`${p.groupId}:${p.symbolId}`) ?? null) : null;
+        const brokerSwapLong = brokerSymbol?.swapLong ?? new Prisma.Decimal(0);
+        const brokerSwapShort = brokerSymbol?.swapShort ?? new Prisma.Decimal(0);
+        // Per-field fallback (2026-09-07 migration
+        // pricing_engine_nullable_widening made these columns nullable) --
+        // a group override row with, say, swapLong set but swapShort null
+        // now falls through to the broker default for swapShort only,
+        // rather than the whole row being all-or-nothing. No existing row
+        // has ever stored null, so this is a no-op for every row today.
+        const rawGroupOverride = p.groupId ? (groupOverrideMap.get(`${p.groupId}:${p.symbolId}`) ?? null) : null;
+        const groupOverride: SwapOverride = rawGroupOverride
+          ? { swapLong: rawGroupOverride.swapLong ?? brokerSwapLong, swapShort: rawGroupOverride.swapShort ?? brokerSwapShort }
+          : null;
         const rate = resolveSwapRate({
           side: p.side,
           groupOverride,
-          brokerSwapLong: brokerSymbol?.swapLong ?? new Prisma.Decimal(0),
-          brokerSwapShort: brokerSymbol?.swapShort ?? new Prisma.Decimal(0),
+          brokerSwapLong,
+          brokerSwapShort,
         });
         const amount = computeSwapAmount(rate, p.volume, multiplier);
         // Zero-swap symbol/config: position is still claimed (so it's not

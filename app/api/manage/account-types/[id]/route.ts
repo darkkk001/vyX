@@ -21,9 +21,16 @@ async function requireManager() {
 // time. A field that IS present but unparseable falls back to 0 rather
 // than silently keeping the old value, since that's a real (if bad) input
 // the admin just typed, not an unrelated action that never touched pricing.
+// `existing`'s fields are typed `| null` since the 2026-09-07 migration
+// pricing_engine_nullable_widening made these columns nullable -- this
+// route itself never causes that (it always resolves to a concrete
+// Decimal/boolean below, same as before), so the `?? 0`/`?? false` on the
+// existing-value fallback is a no-op for every row today. Not "inherit"
+// semantics -- that's the Phase 2 pricing engine's job (lib/pricing-
+// engine.ts), this route still only ever stores flat literal values.
 function parsePricingFields(
   body: unknown,
-  existing: { spreadMarkup: Prisma.Decimal; commissionPerLot: Prisma.Decimal; swapLong: Prisma.Decimal; swapShort: Prisma.Decimal; swapFree: boolean }
+  existing: { spreadMarkup: Prisma.Decimal | null; commissionPerLot: Prisma.Decimal | null; swapLong: Prisma.Decimal | null; swapShort: Prisma.Decimal | null; swapFree: boolean | null }
 ) {
   const b = body as Record<string, unknown> | null;
   const parseDecimal = (v: unknown, fallback: Prisma.Decimal): Prisma.Decimal => {
@@ -36,11 +43,11 @@ function parsePricingFields(
     }
   };
   return {
-    spreadMarkup: parseDecimal(b?.spreadMarkup, existing.spreadMarkup),
-    commissionPerLot: parseDecimal(b?.commissionPerLot, existing.commissionPerLot),
-    swapLong: parseDecimal(b?.swapLong, existing.swapLong),
-    swapShort: parseDecimal(b?.swapShort, existing.swapShort),
-    swapFree: typeof b?.swapFree === "boolean" ? b.swapFree : existing.swapFree,
+    spreadMarkup: parseDecimal(b?.spreadMarkup, existing.spreadMarkup ?? new Prisma.Decimal(0)),
+    commissionPerLot: parseDecimal(b?.commissionPerLot, existing.commissionPerLot ?? new Prisma.Decimal(0)),
+    swapLong: parseDecimal(b?.swapLong, existing.swapLong ?? new Prisma.Decimal(0)),
+    swapShort: parseDecimal(b?.swapShort, existing.swapShort ?? new Prisma.Decimal(0)),
+    swapFree: typeof b?.swapFree === "boolean" ? b.swapFree : (existing.swapFree ?? false),
   };
 }
 
@@ -110,11 +117,11 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
             sortOrder: existing.sortOrder,
             isDefault: existing.isDefault,
             enabled: existing.enabled,
-            spreadMarkup: existing.spreadMarkup.toString(),
-            commissionPerLot: existing.commissionPerLot.toString(),
-            swapLong: existing.swapLong.toString(),
-            swapShort: existing.swapShort.toString(),
-            swapFree: existing.swapFree,
+            spreadMarkup: existing.spreadMarkup?.toString() ?? "0",
+            commissionPerLot: existing.commissionPerLot?.toString() ?? "0",
+            swapLong: existing.swapLong?.toString() ?? "0",
+            swapShort: existing.swapShort?.toString() ?? "0",
+            swapFree: existing.swapFree ?? false,
           },
           newValue: {
             name,
@@ -142,11 +149,11 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       sortOrder: updated.sortOrder,
       isDefault: updated.isDefault,
       enabled: updated.enabled,
-      spreadMarkup: updated.spreadMarkup.toString(),
-      commissionPerLot: updated.commissionPerLot.toString(),
-      swapLong: updated.swapLong.toString(),
-      swapShort: updated.swapShort.toString(),
-      swapFree: updated.swapFree,
+      spreadMarkup: updated.spreadMarkup?.toString() ?? "0",
+      commissionPerLot: updated.commissionPerLot?.toString() ?? "0",
+      swapLong: updated.swapLong?.toString() ?? "0",
+      swapShort: updated.swapShort?.toString() ?? "0",
+      swapFree: updated.swapFree ?? false,
     });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {

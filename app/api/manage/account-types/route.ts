@@ -36,11 +36,15 @@ export async function GET() {
       sortOrder: t.sortOrder,
       isDefault: t.isDefault,
       enabled: t.enabled,
-      spreadMarkup: t.spreadMarkup.toString(),
-      commissionPerLot: t.commissionPerLot.toString(),
-      swapLong: t.swapLong.toString(),
-      swapShort: t.swapShort.toString(),
-      swapFree: t.swapFree,
+      // Guaranteed non-null in practice -- POST/PATCH below always write
+      // all 4 as concrete Decimals -- the `?? "0"` just satisfies the
+      // now-nullable column type (2026-09-07 migration
+      // pricing_engine_nullable_widening).
+      spreadMarkup: t.spreadMarkup?.toString() ?? "0",
+      commissionPerLot: t.commissionPerLot?.toString() ?? "0",
+      swapLong: t.swapLong?.toString() ?? "0",
+      swapShort: t.swapShort?.toString() ?? "0",
+      swapFree: t.swapFree ?? false,
     }))
   );
 }
@@ -135,11 +139,11 @@ export async function POST(request: NextRequest) {
         sortOrder: created.sortOrder,
         isDefault: created.isDefault,
         enabled: created.enabled,
-        spreadMarkup: created.spreadMarkup.toString(),
-        commissionPerLot: created.commissionPerLot.toString(),
-        swapLong: created.swapLong.toString(),
-        swapShort: created.swapShort.toString(),
-        swapFree: created.swapFree,
+        spreadMarkup: created.spreadMarkup?.toString() ?? "0",
+        commissionPerLot: created.commissionPerLot?.toString() ?? "0",
+        swapLong: created.swapLong?.toString() ?? "0",
+        swapShort: created.swapShort?.toString() ?? "0",
+        swapFree: created.swapFree ?? false,
       },
       { status: 201 }
     );
