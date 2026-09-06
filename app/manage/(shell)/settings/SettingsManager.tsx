@@ -432,7 +432,7 @@ export default function SettingsManager() {
           <ModalSection label="Pricing">
             <Alert tone="info">
               This type-wide flat pricing is the fallback for any symbol with no per-symbol override (Per-Symbol Pricing tab, once this type
-              is saved) -- both are applied at fill time once your broker's pricing engine is enabled.
+              is saved) -- both are applied at fill time once your broker&apos;s pricing engine is enabled.
             </Alert>
           </ModalSection>
           <div className="grid grid-cols-2 gap-3">
