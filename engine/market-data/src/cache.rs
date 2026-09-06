@@ -185,7 +185,7 @@ mod tests {
     use super::*;
 
     fn tick(symbol: &str) -> Tick {
-        Tick { symbol: symbol.to_string(), bid: rust_decimal::Decimal::ONE, ask: rust_decimal::Decimal::TWO, t0: None, clock_offset_ms: None, rtt_ms: None, tick_ms: None }
+        Tick { symbol: symbol.to_string(), bid: rust_decimal::Decimal::ONE, ask: rust_decimal::Decimal::TWO, t0: None, clock_offset_ms: None, rtt_ms: None, tick_ms: None, broker_offset_sec: None }
     }
 
     #[test]

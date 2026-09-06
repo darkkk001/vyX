@@ -28,7 +28,10 @@ export type ChartSettings = {
   // client-side from the D1 candle series already loaded for every
   // symbol regardless of the active chart timeframe -- see
   // WebTrader.tsx's previousDayHighLow. Applies on every timeframe,
-  // including D1 itself.
+  // including D1 itself. Defaults OFF (see DEFAULT_CHART_SETTINGS) -- it
+  // was on for every trader with no saved preference yet, cluttering
+  // every chart by default; still available as an opt-in via the chart
+  // settings dialog for anyone who wants it.
   showSessionHighLow: boolean;
   // Shaded Asia/London/New York session backgrounds (lib/session-map.ts)
   // -- intraday timeframes only (M1..H4); a daily+ bar already spans every

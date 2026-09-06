@@ -7,7 +7,7 @@
 //| LivePrice table this EA feeds.                                    |
 //+------------------------------------------------------------------+
 #property strict
-#property version   "1.37"
+#property version   "1.38"
 
 input string ServerUrl            = "https://www.vyxtrader.com/api/internal/price-feed";
 // No default -- this file is committed to a public-ish repo. A real
@@ -855,7 +855,16 @@ void BuildAndSend()
       // every downstream latency measurement (confirmed live: the VPS
       // deployment's /internal/feed-stats showed t0 collapsing to a tiny
       // leftover value once real Exness ticks started flowing).
-      json += StringFormat("{\"symbol\":\"%s\",\"bid\":%.5f,\"ask\":%.5f,\"t0\":%I64d,\"tick_ms\":%I64d", CanonicalFor(brokerSymbol), tick.bid, tick.ask, t0, tickMs);
+      // broker_offset_sec travels on every tick now, not just
+      // /internal/history's backfill bars (hotfix/history-broker-time) --
+      // the live tick-aggregation path needs it too, to bucket D1/W1/MN1/
+      // Y1 candles at the broker's own day boundary instead of naive UTC
+      // midnight (see market_data::bucket_start's own doc comment for the
+      // duplicate-D1-bar bug this fixes). Always sent, not conditional
+      // like clock_offset_ms below -- BrokerOffsetSec is computed at
+      // OnInit and refreshed on every clock sync (RefreshBrokerOffset),
+      // so unlike the clock-sync handshake it's never "not yet measured."
+      json += StringFormat("{\"symbol\":\"%s\",\"bid\":%.5f,\"ask\":%.5f,\"t0\":%I64d,\"tick_ms\":%I64d,\"broker_offset_sec\":%I64d", CanonicalFor(brokerSymbol), tick.bid, tick.ask, t0, tickMs, BrokerOffsetSec);
       // clock_offset_ms/rtt_ms are omitted entirely (not sent as 0) until
       // the first real handshake succeeds -- matches protocol::Tick's
       // Option<i64> fields on the Rust side, which skip serializing when

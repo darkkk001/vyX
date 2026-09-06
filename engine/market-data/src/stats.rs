@@ -76,6 +76,20 @@ pub struct FeedStats {
     // channel drops the message, it never queues), not just after someone
     // greps the log.
     nats_slow_consumer_total: AtomicU64,
+    // fix/d1-broker-day-boundary follow-up -- an EA build that predates
+    // broker_offset_sec (protocol::Tick's own field) sends ticks with it
+    // unset; BrokerOffsetTracker's own doc comment on that field
+    // explains why this silently reduces to offset=0, the OLD
+    // naive-UTC-midnight D1 bucketing -- correct for a genuinely never-
+    // upgraded EA, but a live regression for one that USED to report a
+    // real offset and stopped (a downgrade, a config rollback, a stale
+    // binary redeployed by accident). Counted here, unconditionally, on
+    // every such tick, so a sustained climb is visible in
+    // /internal/feed-stats even if nobody happens to be watching the log
+    // right when it starts -- warned_offset_fallback below is the log
+    // side of the same signal, fired once rather than per-tick.
+    offset_fallback_ticks_total: AtomicU64,
+    warned_offset_fallback: AtomicBool,
 }
 
 impl FeedStats {
@@ -98,6 +112,8 @@ impl FeedStats {
             last_mono_to_utc_offset_ms: AtomicI64::new(0),
             last_rtt_ms: AtomicI64::new(0),
             nats_slow_consumer_total: AtomicU64::new(0),
+            offset_fallback_ticks_total: AtomicU64::new(0),
+            warned_offset_fallback: AtomicBool::new(false),
         }
     }
 
@@ -147,6 +163,27 @@ impl FeedStats {
 
     pub fn record_nats_slow_consumer(&self) {
         self.nats_slow_consumer_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Called once per tick that arrived with no broker_offset_sec (an
+    /// old-build or misconfigured EA) -- see this field's own struct
+    /// comment. Logs a WARN exactly once per process lifetime
+    /// (compare_exchange, not the 30s-gate pattern the DB-failure loggers
+    /// use above -- this isn't a recurring condition to rate-limit, it's
+    /// a one-time "something changed" signal), so a stale EA shows up in
+    /// the log the moment it's first observed, not buried under a
+    /// per-tick flood.
+    pub fn record_offset_fallback_tick(&self) {
+        self.offset_fallback_ticks_total.fetch_add(1, Ordering::Relaxed);
+        if self
+            .warned_offset_fallback
+            .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+        {
+            tracing::warn!(
+                "tick arrived with no broker_offset_sec -- falling back to offset=0 (naive UTC midnight) for D1/W1/Mn1/Y1 bucketing; check the EA build reporting this feed (see /internal/feed-stats' offset_fallback_ticks_total for the running count)"
+            );
+        }
     }
 
     pub fn record_clock_info(&self, offset_ms: i64, rtt_ms: i64) {
@@ -230,6 +267,7 @@ impl FeedStats {
                 .load(Ordering::Relaxed)
                 .then(|| self.last_rtt_ms.load(Ordering::Relaxed)),
             nats_slow_consumer_total: self.nats_slow_consumer_total.load(Ordering::Relaxed),
+            offset_fallback_ticks_total: self.offset_fallback_ticks_total.load(Ordering::Relaxed),
         }
     }
 }
@@ -270,6 +308,12 @@ pub struct FeedStatsSnapshot {
     pub mono_to_utc_offset_ms: Option<i64>,
     pub rtt_ms: Option<i64>,
     pub nats_slow_consumer_total: u64,
+    // fix/d1-broker-day-boundary follow-up -- see
+    // FeedStats::record_offset_fallback_tick's own doc comment. 0 is the
+    // healthy state (every tick reporting broker_offset_sec); a nonzero
+    // and climbing value means at least one tick source is falling back
+    // to naive-UTC-midnight D1 bucketing right now.
+    pub offset_fallback_ticks_total: u64,
 }
 
 #[cfg(test)]
@@ -335,6 +379,30 @@ mod tests {
         stats.record_nats_slow_consumer();
         stats.record_nats_slow_consumer();
         assert_eq!(stats.snapshot().nats_slow_consumer_total, 2);
+    }
+
+    #[test]
+    fn offset_fallback_starts_at_zero_and_accumulates_every_call() {
+        let stats = FeedStats::new();
+        assert_eq!(stats.snapshot().offset_fallback_ticks_total, 0);
+        stats.record_offset_fallback_tick();
+        stats.record_offset_fallback_tick();
+        stats.record_offset_fallback_tick();
+        assert_eq!(stats.snapshot().offset_fallback_ticks_total, 3);
+    }
+
+    #[test]
+    fn offset_fallback_warns_only_once_regardless_of_how_many_ticks_fall_back() {
+        let stats = FeedStats::new();
+        assert!(!stats.warned_offset_fallback.load(Ordering::Relaxed));
+        stats.record_offset_fallback_tick();
+        assert!(stats.warned_offset_fallback.load(Ordering::Relaxed));
+        // Further calls keep accumulating the counter but must not panic
+        // or otherwise misbehave now that the warned flag is already set.
+        stats.record_offset_fallback_tick();
+        stats.record_offset_fallback_tick();
+        assert_eq!(stats.snapshot().offset_fallback_ticks_total, 3);
+        assert!(stats.warned_offset_fallback.load(Ordering::Relaxed));
     }
 
     #[test]
