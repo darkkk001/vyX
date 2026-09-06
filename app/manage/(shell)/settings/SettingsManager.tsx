@@ -8,10 +8,11 @@ import { LeverageInput } from "@/components/ui/LeverageInput";
 import { Button } from "@/components/ui/Button";
 import { Alert } from "@/components/ui/Alert";
 import { Badge } from "@/components/ui/Badge";
-import { Checkbox } from "@/components/ui/Checkbox";
 import { Modal, ModalActions, ModalSection } from "@/components/ui/Modal";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
 import { useToast } from "@/lib/toast";
+import { SwapFreeSelect } from "@/components/manage/SwapFreeSelect";
+import { SymbolPricingEditor } from "@/components/manage/SymbolPricingEditor";
 
 type SettingsData = {
   name: string;
@@ -42,7 +43,10 @@ type AccountTypeRow = {
   commissionPerLot: string;
   swapLong: string;
   swapShort: string;
-  swapFree: boolean;
+  // Tri-state (2026-09-07 Stage 5): null = inherit from Group, actually
+  // resolved at fill time now (lib/pricing-engine.ts) once your broker's
+  // pricing engine is enabled.
+  swapFree: boolean | null;
 };
 
 // Self-fetches from /api/manage/settings (a route that already returned
@@ -94,15 +98,21 @@ export default function SettingsManager() {
     commissionPerLot: "0",
     swapLong: "0",
     swapShort: "0",
-    swapFree: false,
+    // A brand-new type defaults to null (inherit) rather than an explicit
+    // false -- matches the resolver's own fall-through, avoids a new type
+    // silently locking out a Group's swap-free setting for every account
+    // on it (lib/pricing-engine.ts).
+    swapFree: null as boolean | null,
   };
   const [typeModalTarget, setTypeModalTarget] = useState<AccountTypeRow | "new" | null>(null);
+  const [typeTab, setTypeTab] = useState<"settings" | "pricing">("settings");
   const [typeForm, setTypeForm] = useState(emptyTypeForm);
   const [typeFormError, setTypeFormError] = useState<string | null>(null);
   const [typeSaving, setTypeSaving] = useState(false);
 
   function openTypeModal(target: AccountTypeRow | "new") {
     setTypeModalTarget(target);
+    setTypeTab("settings");
     setTypeFormError(null);
     setTypeForm(
       target === "new"
@@ -314,8 +324,10 @@ export default function SettingsManager() {
                   <TableCell align="right" mono>{t.spreadMarkup}p</TableCell>
                   <TableCell align="right" mono>${t.commissionPerLot}</TableCell>
                   <TableCell>
-                    {t.swapFree ? (
+                    {t.swapFree === true ? (
                       <Badge tone="success">Swap-free</Badge>
+                    ) : t.swapFree === null ? (
+                      <Badge tone="neutral">Inherits</Badge>
                     ) : (
                       <span className="font-mono text-xs text-[var(--text-3)]">
                         L {t.swapLong} / S {t.swapShort}
@@ -358,9 +370,43 @@ export default function SettingsManager() {
         open={typeModalTarget !== null}
         onClose={() => setTypeModalTarget(null)}
         title={typeModalTarget === "new" ? "Add account type" : `Edit account type - ${typeModalTarget?.name ?? ""}`}
-        onSubmit={submitTypeForm}
-        wide
+        onSubmit={typeTab === "settings" ? submitTypeForm : undefined}
+        wide={typeModalTarget === "new"}
+        xl={typeModalTarget !== "new" && typeModalTarget !== null}
       >
+        <div className="flex flex-col gap-4">
+          {typeModalTarget !== "new" && typeModalTarget !== null ? (
+            <div className="-mt-1 flex gap-1 border-b border-[var(--border)]">
+              {(
+                [
+                  ["settings", "Settings"],
+                  ["pricing", "Per-Symbol Pricing"],
+                ] as const
+              ).map(([id, label]) => (
+                <button
+                  key={id}
+                  type="button"
+                  onClick={() => setTypeTab(id)}
+                  className={`-mb-px border-b-2 px-3 py-2 text-[13px] font-medium transition-colors ${
+                    typeTab === id
+                      ? "border-[var(--accent)] text-[var(--text-1)]"
+                      : "border-transparent text-[var(--text-3)] hover:text-[var(--text-1)]"
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          ) : null}
+
+          {typeTab === "pricing" && typeModalTarget !== "new" && typeModalTarget !== null ? (
+            <SymbolPricingEditor
+              apiPath={`/api/manage/account-types/${typeModalTarget.id}/pricing`}
+              description={`Per-symbol overrides for ${typeModalTarget.name} -- blank means inherit this type's own flat default below (or, if that's also unset, whatever Group/broker resolves to). A Pro type's gold spread and its EURUSD spread can differ, unlike the flat fields.`}
+            />
+          ) : null}
+
+        {typeTab === "settings" ? (
         <div className="flex flex-col gap-3">
           <FormField label="Name">
             <Input value={typeForm.name} onChange={(e) => setTypeForm((p) => ({ ...p, name: e.target.value }))} />
@@ -385,9 +431,8 @@ export default function SettingsManager() {
 
           <ModalSection label="Pricing">
             <Alert tone="info">
-              Not yet applied at execution -- spread markup, commission, swap rates, and swap-free below are saved and shown here, but arrive
-              with the pricing engine (Phase 2). Group-level per-symbol pricing (Client groups, Pricing tab) is what actually charges a real
-              order today.
+              This type-wide flat pricing is the fallback for any symbol with no per-symbol override (Per-Symbol Pricing tab, once this type
+              is saved) -- both are applied at fill time once your broker's pricing engine is enabled.
             </Alert>
           </ModalSection>
           <div className="grid grid-cols-2 gap-3">
@@ -414,7 +459,7 @@ export default function SettingsManager() {
                 type="text"
                 inputMode="decimal"
                 mono
-                disabled={typeForm.swapFree}
+                disabled={typeForm.swapFree === true}
                 value={typeForm.swapLong}
                 onChange={(e) => setTypeForm((p) => ({ ...p, swapLong: e.target.value }))}
               />
@@ -424,18 +469,17 @@ export default function SettingsManager() {
                 type="text"
                 inputMode="decimal"
                 mono
-                disabled={typeForm.swapFree}
+                disabled={typeForm.swapFree === true}
                 value={typeForm.swapShort}
                 onChange={(e) => setTypeForm((p) => ({ ...p, swapShort: e.target.value }))}
               />
             </FormField>
           </div>
-          <Checkbox
-            label="Swap-free (e.g. Islamic account type)"
-            title="Not yet read anywhere swap is charged (arrives with the pricing engine, Phase 2) -- see the note above"
-            checked={typeForm.swapFree}
-            onChange={(e) => setTypeForm((p) => ({ ...p, swapFree: e.target.checked }))}
-          />
+          <FormField label="Swap-free (e.g. Islamic account type)">
+            <div className="w-40">
+              <SwapFreeSelect value={typeForm.swapFree} onChange={(v) => setTypeForm((p) => ({ ...p, swapFree: v }))} inheritLabel="Inherit (Group)" />
+            </div>
+          </FormField>
 
           {typeFormError ? <Alert tone="danger">{typeFormError}</Alert> : null}
           <ModalActions>
@@ -446,6 +490,8 @@ export default function SettingsManager() {
               {typeSaving ? "Saving..." : typeModalTarget === "new" ? "Create type" : "Save changes"}
             </Button>
           </ModalActions>
+        </div>
+        ) : null}
         </div>
       </Modal>
     </div>

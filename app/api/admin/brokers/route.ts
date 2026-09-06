@@ -51,6 +51,7 @@ export async function GET() {
       tier: b.tier,
       status: b.status,
       executionEngine: b.executionEngine,
+      pricingEngineEnabled: b.pricingEngineEnabled,
       trialEndsAt: b.trialEndsAt ? b.trialEndsAt.toISOString() : null,
       nextInvoiceAt: b.nextInvoiceAt ? b.nextInvoiceAt.toISOString() : null,
       createdAt: b.createdAt.toISOString().slice(0, 10),

@@ -69,6 +69,20 @@ export async function GET() {
   const mirrorByAccountId = new Map(mirrorRules.filter((r) => r.sourceType === "ACCOUNT").map((r) => [r.sourceId, r]));
   const mirrorByGroupId = new Map(mirrorRules.filter((r) => r.sourceType === "GROUP").map((r) => [r.sourceId, r]));
 
+  // "Custom pricing" badge (2026-09-07 Stage 5) -- which of this broker's
+  // accounts have at least one AccountSymbolConfig row, so the list can
+  // flag it at a glance without opening each account's own pricing panel.
+  // One batched distinct-accountId query, not one per account.
+  const accountIdsWithPricing = new Set(
+    (
+      await prisma.accountSymbolConfig.findMany({
+        where: { accountId: { in: accounts.map((a) => a.id) } },
+        select: { accountId: true },
+        distinct: ["accountId"],
+      })
+    ).map((r) => r.accountId)
+  );
+
   return NextResponse.json(
     accounts.map((a) => {
       const mirror = mirrorByAccountId.get(a.id) ?? (a.groupId ? mirrorByGroupId.get(a.groupId) : undefined);
@@ -93,6 +107,7 @@ export async function GET() {
         country: a.country,
         kycStatus: a.kycRecord?.status ?? null,
         mirror: mirror ? { direction: mirror.direction, multiplier: mirror.multiplier.toString() } : null,
+        hasCustomPricing: accountIdsWithPricing.has(a.id),
       };
     })
   );

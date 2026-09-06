@@ -6,7 +6,7 @@ import { Select } from "@/components/ui/Select";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { Card } from "@/components/ui/Card";
-import { Checkbox } from "@/components/ui/Checkbox";
+import { SwapFreeSelect } from "@/components/manage/SwapFreeSelect";
 import { FormField } from "@/components/ui/FormField";
 import { LeverageInput } from "@/components/ui/LeverageInput";
 import { Modal, ModalActions } from "@/components/ui/Modal";
@@ -32,12 +32,17 @@ export type AccountRow = {
   groupName: string | null;
   maxDailyLoss: string | null;
   // Per-account swap-free OVERRIDE -- the 3rd of 3 swap-free levels (type/
-  // group/account, see Account.swapFree's own schema comment). Storage
-  // only for now; no live fill-time path charges swap yet at all.
-  swapFree: boolean;
+  // group/account, see Account.swapFree's own schema comment). Tri-state
+  // (2026-09-07 Stage 5): null = inherit, actually resolved at fill time
+  // now (lib/pricing-engine.ts) once your broker's pricing engine is
+  // enabled.
+  swapFree: boolean | null;
   country: string | null;
   kycStatus: "PENDING" | "APPROVED" | "REJECTED" | null;
   mirror: { direction: "REVERSE" | "SAME"; multiplier: string } | null;
+  // At least one AccountSymbolConfig row exists for this account -- see
+  // that route's own "Custom Pricing" section on the account detail page.
+  hasCustomPricing: boolean;
 };
 
 export type GroupOption = { id: string; name: string };
@@ -227,8 +232,9 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
     await patchAccount(row.id, { maxDailyLoss: value.trim() === "" ? null : value.trim() }, `${row.accountNumber} max daily loss updated`);
   }
 
-  async function changeSwapFree(row: AccountRow, swapFree: boolean) {
-    await patchAccount(row.id, { swapFree }, `${row.accountNumber} swap-free override ${swapFree ? "enabled" : "disabled"}`);
+  async function changeSwapFree(row: AccountRow, swapFree: boolean | null) {
+    const label = swapFree === null ? "set to inherit" : swapFree ? "enabled" : "set to charge swap";
+    await patchAccount(row.id, { swapFree }, `${row.accountNumber} swap-free override ${label}`);
   }
 
   function openAdjustModal(row: AccountRow) {
@@ -413,8 +419,8 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
           </TableHeaderCell>
           <TableHeaderCell
             align="center"
-            className="min-w-[75px]"
-            title="Per-account swap-free override (Account.swapFree). Not yet applied at execution -- arrives with the pricing engine (Phase 2). The account's group's per-symbol swap rate (Client groups -> Pricing) is what's actually charged today; zero those rates if you need this account swap-free right now."
+            className="min-w-[110px]"
+            title="Per-account swap-free override (Account.swapFree) -- resolution order is this account > its Account Type > its Group > charged. Applied at fill/swap-rollover time once your broker's pricing engine is enabled."
           >
             Swap-free
           </TableHeaderCell>
@@ -443,6 +449,11 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
                     <Badge tone="accent">
                       Mirrored: {row.mirror.direction === "REVERSE" ? "Reverse" : "Same"} ×{row.mirror.multiplier}
                     </Badge>
+                  ) : null}
+                  {row.hasCustomPricing ? (
+                    <span title="Has per-symbol pricing overrides -- see Custom Pricing on this account's page">
+                      <Badge tone="warning">Custom pricing</Badge>
+                    </span>
                   ) : null}
                 </TableCell>
                 <TableCell className="min-w-[70px]">{row.accountMode}</TableCell>
@@ -532,11 +543,12 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
                     row.maxDailyLoss ?? "-"
                   )}
                 </TableCell>
-                <TableCell align="center" className="min-w-[75px]">
-                  <Checkbox
-                    checked={row.swapFree}
+                <TableCell align="center" className="min-w-[110px]">
+                  <SwapFreeSelect
+                    value={row.swapFree}
+                    onChange={(v) => changeSwapFree(row, v)}
+                    inheritLabel="Inherit (Type)"
                     disabled={busyId === row.id}
-                    onChange={(e) => changeSwapFree(row, e.target.checked)}
                   />
                 </TableCell>
                 <TableCell className="min-w-[140px] whitespace-nowrap">

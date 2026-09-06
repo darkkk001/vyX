@@ -29,6 +29,13 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   // from not touching the field at all. Explicit `in` checks rather than
   // `typeof === "string"` so an intentional `null`/"" clear isn't
   // silently ignored.
+  // Presence check, not truthy -- `false` is a real, meaningful value here
+  // (turn the pricing engine back off), not "field absent." See
+  // Broker.pricingEngineEnabled's own schema comment: per-broker, only
+  // ever flipped after that broker's shadow comparison
+  // (lib/pricing-shadow-compare.ts) has been reviewed clean.
+  const hasPricingEngineEnabled = "pricingEngineEnabled" in (body ?? {});
+  const pricingEngineEnabled = hasPricingEngineEnabled ? body.pricingEngineEnabled === true : undefined;
   const hasSupportEmail = "supportEmail" in (body ?? {});
   const supportEmail = hasSupportEmail ? (typeof body.supportEmail === "string" && body.supportEmail.trim() ? body.supportEmail.trim() : null) : undefined;
   const hasLogoUrl = "logoUrl" in (body ?? {});
@@ -39,8 +46,8 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     return NextResponse.json({ error: "primaryColor must be a 6-digit hex color like #1e8a5f" }, { status: 400 });
   }
   const primaryColor = hasPrimaryColor ? (typeof body.primaryColor === "string" && body.primaryColor.trim() ? body.primaryColor.trim() : null) : undefined;
-  if (!executionEngine && !status && !hasSupportEmail && !hasLogoUrl && !hasPrimaryColor) {
-    return NextResponse.json({ error: "executionEngine, status, supportEmail, logoUrl, or primaryColor is required" }, { status: 400 });
+  if (!executionEngine && !status && !hasPricingEngineEnabled && !hasSupportEmail && !hasLogoUrl && !hasPrimaryColor) {
+    return NextResponse.json({ error: "executionEngine, status, pricingEngineEnabled, supportEmail, logoUrl, or primaryColor is required" }, { status: 400 });
   }
 
   const existing = await prisma.broker.findUnique({ where: { id } });
@@ -92,6 +99,21 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
           entityId: id,
           oldValue: { status: existing.status },
           newValue: { status: broker.status },
+        },
+      });
+    }
+
+    if (hasPricingEngineEnabled) {
+      const broker = await tx.broker.update({ where: { id }, data: { pricingEngineEnabled } });
+      await tx.auditLog.create({
+        data: {
+          brokerId: id,
+          actorAdminId: session!.adminId,
+          action: "BROKER_PRICING_ENGINE_TOGGLED",
+          entityType: "Broker",
+          entityId: id,
+          oldValue: { pricingEngineEnabled: existing.pricingEngineEnabled },
+          newValue: { pricingEngineEnabled: broker.pricingEngineEnabled },
         },
       });
     }
@@ -150,6 +172,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     logoUrl: updated.logoUrl,
     primaryColor: updated.primaryColor,
     executionEngine: updated.executionEngine,
+    pricingEngineEnabled: updated.pricingEngineEnabled,
     status: updated.status,
     trialEndsAt: updated.trialEndsAt,
     nextInvoiceAt: updated.nextInvoiceAt,

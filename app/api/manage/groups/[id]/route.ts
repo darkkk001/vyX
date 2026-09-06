@@ -65,7 +65,13 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     }
   }
   const tradingRestriction = ["BOTH", "BUY_ONLY", "SELL_ONLY"].includes(body?.tradingRestriction) ? body.tradingRestriction : "BOTH";
-  const swapFree = body?.swapFree === true;
+  // Tri-state (2026-09-07 Stage 5, now that Group.swapFree is nullable and
+  // actually read at fill time -- lib/pricing-engine.ts): explicit null
+  // means "inherit from the hardcoded false floor" (there's nothing below
+  // Group in the swap-free chain), true/false are explicit overrides. This
+  // form always resends the full object, so there's no "field absent ->
+  // keep existing" case to handle here, unlike a true partial PATCH.
+  const swapFree: boolean | null = body?.swapFree === null ? null : body?.swapFree === true;
   const forceDealingMode = body?.forceDealingMode === true;
   const groupType = GROUP_TYPES.includes(body?.groupType) ? (body.groupType as GroupType) : "DEALING";
   const dealingMode = GROUP_DEALING_MODES.includes(body?.dealingMode) ? (body.dealingMode as GroupDealingMode) : "INHERIT";

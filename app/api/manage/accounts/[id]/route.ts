@@ -120,7 +120,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       leverage?: number;
       status?: typeof status;
       maxDailyLoss?: Prisma.Decimal | null;
-      swapFree?: boolean;
+      swapFree?: boolean | null;
     } = {};
     const auditEntries: { action: string; oldValue: Prisma.InputJsonValue; newValue: Prisma.InputJsonValue }[] = [];
 
@@ -174,7 +174,9 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       });
     }
     if (hasSwapFreeChange) {
-      const swapFree = body.swapFree === true;
+      // Tri-state (2026-09-07 Stage 5) -- explicit null means "inherit
+      // from AccountType/Group," true/false are explicit overrides.
+      const swapFree: boolean | null = body.swapFree === null ? null : body.swapFree === true;
       data.swapFree = swapFree;
       auditEntries.push({
         action: "ACCOUNT_SWAP_FREE_CHANGED",

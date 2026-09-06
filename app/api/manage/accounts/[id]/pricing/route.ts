@@ -11,25 +11,17 @@ async function requireManager() {
   return session!;
 }
 
-// Per-group pricing: every enabled BrokerSymbol for this broker, merged
-// with this group's own GroupSymbolConfig override (if any) -- same
-// "missing config = broker-wide default" merge SymbolConfigTable itself
-// already does against Symbol. hasOverride tells the UI whether a row's
-// values come from this group's own config or are just showing the
-// broker-wide fallback, so a broker can tell at a glance which symbols
-// they've actually customized for this group/tier. See lib/pricing-
-// engine.ts's resolveFillPricing for where these values are actually
-// applied at fill time (once Broker.pricingEngineEnabled is on; the old
-// group-only resolveSymbolPricing otherwise).
-//
-// 2026-09-07 Stage 5: each pricing field is now returned as its OWN
-// value (null if this row doesn't set it) rather than pre-merged with
-// the broker default -- the UI shows the broker default as a separate
-// muted hint per field, so a broker can tell "this specific field is
-// inherited" even when other fields on the same row ARE overridden
-// (the whole point of the per-field nullable migration). Also returns
-// targetTotalSpreadPips alongside spreadMarkup -- the two are mutually
-// exclusive per row (see lib/pricing-editor-shared.ts).
+// Per-account, per-symbol pricing override (2026-09-07 Stage 5) -- the
+// most specific level in the resolution chain (lib/pricing-engine.ts),
+// backed by AccountSymbolConfig. Same shape/semantics as the Group and
+// AccountType pricing editors, one level more specific again: a symbol
+// with no override here falls through to whatever this account's
+// AccountType resolves to (its own per-symbol AccountTypeSymbolConfig
+// row, else its flat default) -- returned per-row as "inheritedX" so the
+// UI can show a real number, not just "inherits". Null there means the
+// type itself doesn't set that field either (inherits further, from
+// Group/Broker -- not resolved here, same one-hop-down convention as the
+// AccountType editor).
 export async function GET(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await requireManager();
   if (!session) {
@@ -38,24 +30,30 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
   const brokerId = session.brokerId!;
   const { id } = await params;
 
-  const group = await prisma.group.findUnique({ where: { id } });
-  if (!group || group.brokerId !== brokerId) {
-    return NextResponse.json({ error: "group not found" }, { status: 404 });
+  const account = await prisma.account.findUnique({ where: { id } });
+  if (!account || account.brokerId !== brokerId) {
+    return NextResponse.json({ error: "account not found" }, { status: 404 });
   }
 
-  const [brokerSymbols, overrides] = await Promise.all([
+  const [brokerSymbols, overrides, accountType, typeSymbolConfigs] = await Promise.all([
     prisma.brokerSymbol.findMany({
       where: { brokerId, enabled: true },
       include: { symbol: { select: { id: true, name: true, category: true } } },
       orderBy: { symbol: { name: "asc" } },
     }),
-    prisma.groupSymbolConfig.findMany({ where: { groupId: id } }),
+    prisma.accountSymbolConfig.findMany({ where: { accountId: id } }),
+    account.accountTypeId ? prisma.accountType.findUnique({ where: { id: account.accountTypeId } }) : Promise.resolve(null),
+    account.accountTypeId
+      ? prisma.accountTypeSymbolConfig.findMany({ where: { accountTypeId: account.accountTypeId } })
+      : Promise.resolve([]),
   ]);
   const overrideBySymbolId = new Map(overrides.map((o) => [o.symbolId, o]));
+  const typeSymbolConfigBySymbolId = new Map(typeSymbolConfigs.map((c) => [c.symbolId, c]));
 
   return NextResponse.json(
     brokerSymbols.map((bs) => {
       const override = overrideBySymbolId.get(bs.symbolId);
+      const typeSymbolConfig = typeSymbolConfigBySymbolId.get(bs.symbolId);
       return {
         symbolId: bs.symbol.id,
         symbolName: bs.symbol.name,
@@ -66,27 +64,23 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
         commissionPerLot: decimalOrNull(override?.commissionPerLot ?? null),
         swapLong: decimalOrNull(override?.swapLong ?? null),
         swapShort: decimalOrNull(override?.swapShort ?? null),
-        // Unified "default" field naming (2026-09-07 Stage 5) shared
-        // across all three pricing editors (Group/AccountType/Account),
-        // even though what each one's "default" actually IS differs one
-        // level per editor -- see components/manage/SymbolPricingEditor.tsx.
-        defaultSpreadMarkup: bs.spreadMarkup.toString(),
-        defaultCommissionPerLot: bs.commissionPerLot.toString(),
-        defaultSwapLong: bs.swapLong.toString(),
-        defaultSwapShort: bs.swapShort.toString(),
+        // One hop down: this account's own type's per-symbol row for this
+        // symbol, falling back to the type's flat default -- null means
+        // neither is set (inherits further, from Group/Broker).
+        // Unified "default" field naming (2026-09-07 Stage 5) -- see
+        // components/manage/SymbolPricingEditor.tsx.
+        defaultSpreadMarkup: decimalOrNull(typeSymbolConfig?.spreadMarkup ?? accountType?.spreadMarkup ?? null),
+        defaultCommissionPerLot: decimalOrNull(typeSymbolConfig?.commissionPerLot ?? accountType?.commissionPerLot ?? null),
+        defaultSwapLong: decimalOrNull(typeSymbolConfig?.swapLong ?? accountType?.swapLong ?? null),
+        defaultSwapShort: decimalOrNull(typeSymbolConfig?.swapShort ?? accountType?.swapShort ?? null),
       };
     })
   );
 }
 
 // Upserts (or, with `reset: true`, deletes) one symbol's override for
-// this group -- same per-row upsert shape as
-// app/api/manage/symbols/route.ts's own PATCH, just scoped to one group
-// instead of the whole broker. 2026-09-07 Stage 5: a field left
-// blank/omitted now saves as null (inherit -- see lib/pricing-editor-
-// shared.ts's own comment for why this changed from the pre-Stage-5
-// "blank means 0" convention), and spreadMarkup/targetTotalSpreadPips
-// are mutually exclusive per row.
+// this account -- identical shape to the Group/AccountType pricing
+// routes' own PATCH.
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await requireManager();
   if (!session) {
@@ -95,9 +89,9 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   const brokerId = session.brokerId!;
   const { id } = await params;
 
-  const group = await prisma.group.findUnique({ where: { id } });
-  if (!group || group.brokerId !== brokerId) {
-    return NextResponse.json({ error: "group not found" }, { status: 404 });
+  const account = await prisma.account.findUnique({ where: { id } });
+  if (!account || account.brokerId !== brokerId) {
+    return NextResponse.json({ error: "account not found" }, { status: 404 });
   }
 
   const body = await request.json().catch(() => null);
@@ -115,21 +109,15 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     return NextResponse.json({ error: parsed }, { status: 400 });
   }
 
-  // reset: true removes this group's override entirely, falling back to
-  // the broker-wide BrokerSymbol value -- the "un-customize" action the
-  // Manager UI's own Reset button uses. A PATCH that clears every field
-  // to blank (isEmptyPricingPatch) is treated the same way rather than
-  // upserting a pointless all-null row -- same "skip the no-op write"
-  // convention lib/group-pricing.ts's chargeCommission already uses.
   if (body?.reset === true || isEmptyPricingPatch(parsed)) {
     await prisma.$transaction(async (tx) => {
-      await tx.groupSymbolConfig.deleteMany({ where: { groupId: id, symbolId } });
+      await tx.accountSymbolConfig.deleteMany({ where: { accountId: id, symbolId } });
       await tx.auditLog.create({
         data: {
           brokerId,
           actorAdminId: session.adminId,
-          action: "GROUP_SYMBOL_PRICING_RESET",
-          entityType: "Group",
+          action: "ACCOUNT_SYMBOL_PRICING_RESET",
+          entityType: "Account",
           entityId: id,
           newValue: { symbolId },
         },
@@ -146,20 +134,20 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     });
   }
 
-  const existing = await prisma.groupSymbolConfig.findUnique({ where: { groupId_symbolId: { groupId: id, symbolId } } });
+  const existing = await prisma.accountSymbolConfig.findUnique({ where: { accountId_symbolId: { accountId: id, symbolId } } });
 
   const updated = await prisma.$transaction(async (tx) => {
-    const row = await tx.groupSymbolConfig.upsert({
-      where: { groupId_symbolId: { groupId: id, symbolId } },
-      create: { groupId: id, symbolId, ...parsed },
+    const row = await tx.accountSymbolConfig.upsert({
+      where: { accountId_symbolId: { accountId: id, symbolId } },
+      create: { accountId: id, symbolId, ...parsed },
       update: parsed,
     });
     await tx.auditLog.create({
       data: {
         brokerId,
         actorAdminId: session.adminId,
-        action: "GROUP_SYMBOL_PRICING_UPDATED",
-        entityType: "Group",
+        action: "ACCOUNT_SYMBOL_PRICING_UPDATED",
+        entityType: "Account",
         entityId: id,
         oldValue: existing
           ? {
@@ -169,7 +157,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
               swapLong: decimalOrNull(existing.swapLong),
               swapShort: decimalOrNull(existing.swapShort),
             }
-          : { usingBrokerDefault: true },
+          : { usingInheritedDefault: true },
         newValue: {
           symbolId,
           spreadMarkup: decimalOrNull(parsed.spreadMarkup),

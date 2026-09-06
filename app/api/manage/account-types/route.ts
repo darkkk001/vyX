@@ -44,7 +44,7 @@ export async function GET() {
       commissionPerLot: t.commissionPerLot?.toString() ?? "0",
       swapLong: t.swapLong?.toString() ?? "0",
       swapShort: t.swapShort?.toString() ?? "0",
-      swapFree: t.swapFree ?? false,
+      swapFree: t.swapFree, // real tri-state (2026-09-07 Stage 5) -- null means "inherit from Group"
     }))
   );
 }
@@ -73,7 +73,9 @@ function parsePricingFields(body: unknown) {
     commissionPerLot: parseDecimal(b?.commissionPerLot),
     swapLong: parseDecimal(b?.swapLong),
     swapShort: parseDecimal(b?.swapShort),
-    swapFree: b?.swapFree === true,
+    // Tri-state (2026-09-07 Stage 5) -- explicit null means "inherit from
+    // Group," same as the PATCH route's own handling.
+    swapFree: b?.swapFree === null ? null : b?.swapFree === true,
   };
 }
 
@@ -143,7 +145,7 @@ export async function POST(request: NextRequest) {
         commissionPerLot: created.commissionPerLot?.toString() ?? "0",
         swapLong: created.swapLong?.toString() ?? "0",
         swapShort: created.swapShort?.toString() ?? "0",
-        swapFree: created.swapFree ?? false,
+        swapFree: created.swapFree,
       },
       { status: 201 }
     );

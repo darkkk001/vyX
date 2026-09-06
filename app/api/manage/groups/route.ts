@@ -108,7 +108,9 @@ export async function POST(request: NextRequest) {
     }
   }
   const tradingRestriction = ["BOTH", "BUY_ONLY", "SELL_ONLY"].includes(body?.tradingRestriction) ? body.tradingRestriction : "BOTH";
-  const swapFree = body?.swapFree === true;
+  // Tri-state (2026-09-07 Stage 5) -- explicit null means "inherit from
+  // the hardcoded false floor" (nothing below Group in the chain).
+  const swapFree: boolean | null = body?.swapFree === null ? null : body?.swapFree === true;
   const forceDealingMode = body?.forceDealingMode === true;
   const groupType = GROUP_TYPES.includes(body?.groupType) ? (body.groupType as GroupType) : "DEALING";
   const dealingMode = GROUP_DEALING_MODES.includes(body?.dealingMode) ? (body.dealingMode as GroupDealingMode) : "INHERIT";

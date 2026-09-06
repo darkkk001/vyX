@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Badge } from "@/components/ui/Badge";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
+import { SymbolPricingEditor } from "@/components/manage/SymbolPricingEditor";
 
 type AccountHeader = {
   fullName: string;
@@ -28,6 +29,8 @@ type TimelineRow = { kind: string; tone: "success" | "danger" | "warning" | "neu
 // state reset instead.
 export default function ClientActivityView({ accountId, backLink }: { accountId: string; backLink?: () => void }) {
   const [data, setData] = useState<{ account: AccountHeader; timeline: TimelineRow[] } | null | "not-found">(null);
+  const [pricingOpen, setPricingOpen] = useState(false);
+  const [customPricingCount, setCustomPricingCount] = useState(0);
 
   useEffect(() => {
     setData(null);
@@ -91,6 +94,35 @@ export default function ClientActivityView({ accountId, backLink }: { accountId:
           </a>
         )}
       </p>
+
+      <div className="mb-4">
+        <button
+          type="button"
+          onClick={() => setPricingOpen((v) => !v)}
+          className="mb-2 flex items-center gap-1.5 text-sm font-medium text-[var(--text-1)]"
+        >
+          <span className={`transition-transform ${pricingOpen ? "rotate-90" : ""}`}>›</span>
+          Custom Pricing
+          {customPricingCount > 0 ? (
+            <Badge tone="warning">
+              {customPricingCount} symbol{customPricingCount === 1 ? "" : "s"} overridden
+            </Badge>
+          ) : null}
+        </button>
+        {/* Stays mounted (hidden via CSS, not conditional rendering) even
+            when collapsed, so onOverrideCountChange keeps the badge above
+            accurate without needing the section expanded first -- an
+            admin should see "this account has custom pricing" at a
+            glance, not only after opening it. */}
+        <div hidden={!pricingOpen}>
+          <SymbolPricingEditor
+            apiPath={`/api/manage/accounts/${accountId}/pricing`}
+            description="Per-symbol overrides for this specific account -- the most specific level in the pricing resolution chain, applied at fill time once your broker's pricing engine is enabled. Blank means inherit from this account's own Account Type, then its Group, then the broker default."
+            onOverrideCountChange={setCustomPricingCount}
+          />
+        </div>
+      </div>
+
       <Table title="Activity" description="Most recent 50 of each type, merged and sorted by time.">
         <TableHead>
           <TableHeaderCell>Type</TableHeaderCell>

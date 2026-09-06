@@ -14,6 +14,8 @@ import { Alert } from "@/components/ui/Alert";
 import { SegmentedControl } from "@/components/ui/SegmentedControl";
 import { Modal, ModalActions, ModalSection } from "@/components/ui/Modal";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
+import { SwapFreeSelect } from "@/components/manage/SwapFreeSelect";
+import { SymbolPricingEditor } from "@/components/manage/SymbolPricingEditor";
 
 export type GroupRow = {
   id: string;
@@ -24,7 +26,7 @@ export type GroupRow = {
   isDefault: boolean;
   maxLotSize: string;
   tradingRestriction: "BOTH" | "BUY_ONLY" | "SELL_ONLY";
-  swapFree: boolean;
+  swapFree: boolean | null;
   forceDealingMode: boolean;
   groupType: "LP" | "DEALING" | "DEMO";
   dealingMode: "INHERIT" | "AUTO" | "MANUAL";
@@ -203,7 +205,7 @@ export default function GroupsManager() {
             <TableHeaderCell className="min-w-[175px]" title="How live orders from this group are routed">
               Routing
             </TableHeaderCell>
-            <TableHeaderCell align="center" className="min-w-[80px]" title="Not yet applied at execution -- arrives with the pricing engine (Phase 2). This group's own per-symbol swap rate (Pricing tab) is what's actually charged today.">Swap-free</TableHeaderCell>
+            <TableHeaderCell align="center" className="min-w-[80px]" title="Applied at fill/swap-rollover time once your broker's pricing engine is enabled -- resolution order is Account > Account Type > Group > charged. '-' means this group inherits (nothing set here).">Swap-free</TableHeaderCell>
             <TableHeaderCell align="center" className="min-w-[70px]">Default</TableHeaderCell>
             <TableHeaderCell className="min-w-[145px]" />
           </TableHead>
@@ -235,8 +237,8 @@ export default function GroupsManager() {
                   </TableCell>
                   <TableCell className="min-w-[95px]">{RESTRICTION_LABELS[row.tradingRestriction]}</TableCell>
                   <TableCell className="min-w-[175px]">{routingBadge(row)}</TableCell>
-                  <TableCell align="center" className="min-w-[80px]">
-                    {row.swapFree ? "✓" : "-"}
+                  <TableCell align="center" className="min-w-[80px]" title={row.swapFree === null ? "Inherits (nothing below Group resolves this)" : row.swapFree ? "Swap-free" : "Charges swap"}>
+                    {row.swapFree === null ? "-" : row.swapFree ? "✓" : "✗"}
                   </TableCell>
                   <TableCell align="center" className="min-w-[70px]">
                     {row.isDefault ? "✓" : "-"}
@@ -338,7 +340,11 @@ function GroupFormModal({
   const [tradingRestriction, setTradingRestriction] = useState<GroupRow["tradingRestriction"] | "">(
     initial?.tradingRestriction ?? ""
   );
-  const [swapFree, setSwapFree] = useState(initial?.swapFree ?? false);
+  // A brand-new group defaults to null (inherit) rather than an explicit
+  // false -- matches the resolver's own fall-through semantics, and
+  // avoids a new group silently locking out an AccountType's swap-free
+  // setting for every account placed in it (lib/pricing-engine.ts).
+  const [swapFree, setSwapFree] = useState<boolean | null>(initial ? initial.swapFree : null);
   const [isDefault, setIsDefault] = useState(initial?.isDefault ?? false);
   const [uiType, setUiType] = useState<UiType | "">(
     initial ? uiTypeFor(initial.groupType, initial.dealingMode, initial.hasMirrorRule) : ""
@@ -448,7 +454,12 @@ function GroupFormModal({
         ) : null}
 
         {tab === "symbols" && isEdit ? <SymbolsPanel groupId={initial!.id} /> : null}
-        {tab === "pricing" && isEdit ? <PricingPanel groupId={initial!.id} groupName={initial!.name} /> : null}
+        {tab === "pricing" && isEdit ? (
+          <SymbolPricingEditor
+            apiPath={`/api/manage/groups/${initial!.id}/pricing`}
+            description={`Spread markup/target, commission, and swap set here apply to every real fill for accounts in ${initial!.name} once your broker's pricing engine is enabled -- not just a label. Blank means inherit from the broker-wide default; Reset removes the whole row.`}
+          />
+        ) : null}
 
         {tab === "settings" ? (
           <>
@@ -491,17 +502,12 @@ function GroupFormModal({
           </FormField>
         </div>
 
-        <Alert tone="info">
-          Not yet applied at execution -- arrives with the pricing engine (Phase 2). Group-level per-symbol swap (this group&apos;s Pricing tab)
-          is what&apos;s actually charged today; zero those rates directly if you need this group swap-free right now.
-        </Alert>
-        <div className="flex flex-wrap items-center gap-5">
-          <Checkbox
-            label="Swap-free"
-            title="Not yet read anywhere swap is charged (arrives with the pricing engine, Phase 2) -- see the note above"
-            checked={swapFree}
-            onChange={(e) => setSwapFree(e.target.checked)}
-          />
+        <div className="flex flex-wrap items-end gap-5">
+          <FormField label="Swap-free">
+            <div className="w-40">
+              <SwapFreeSelect value={swapFree} onChange={setSwapFree} />
+            </div>
+          </FormField>
           <Checkbox
             label="Default group"
             title="New accounts are placed in this group automatically when no group is chosen at creation"
@@ -671,189 +677,6 @@ function SymbolsPanel({ groupId }: { groupId: string }) {
         </Button>
         {saved ? <span className="text-xs text-[var(--buy)]">Saved</span> : null}
       </div>
-    </div>
-  );
-}
-
-type PricingRow = {
-  symbolId: string;
-  symbolName: string;
-  category: string;
-  hasOverride: boolean;
-  spreadMarkup: string;
-  commissionPerLot: string;
-  swapLong: string;
-  swapShort: string;
-};
-
-// Per-group-per-symbol pricing override -- see GroupSymbolConfig's own
-// schema comment and lib/group-pricing.ts's resolveSymbolPricing for how
-// these values are actually applied at fill time (real spread markup and
-// commission, unlike BrokerSymbol's own broker-wide values, which the
-// live Next.js trading path doesn't read at all). A row with no override
-// shows the broker-wide default (same "missing config = defaults"
-// convention as SymbolConfigTable itself) -- saving one creates a
-// group-specific row, Reset removes it, falling back to the broker
-// default again. Lives inside the group's own Edit modal as a tab, same
-// reasoning as SymbolsPanel above.
-//
-// Overflow fix (2026-09-05): this table used to render inside a 600px
-// modal at the shared Table primitive's default px-4 cell padding -- 6
-// columns of that padding alone (192px) plus 4 real input boxes left no
-// room to fit without the table's own horizontal scrollbar kicking in
-// for every group, not just wide ones. The parent modal is now `xl`
-// (880px) specifically for this tab, and the padding/input widths here
-// are tightened further (px-3, narrower swap columns) on top of that for
-// real headroom -- scoped to just this table via className overrides, so
-// every other page's Table keeps its normal spacing.
-function PricingPanel({ groupId, groupName }: { groupId: string; groupName: string }) {
-  const [rows, setRows] = useState<PricingRow[] | null>(null);
-  const [savingId, setSavingId] = useState<string | null>(null);
-  const [errors, setErrors] = useState<Record<string, string>>({});
-
-  useEffect(() => {
-    fetch(`/api/manage/groups/${groupId}/pricing`)
-      .then((r) => r.json())
-      .then(setRows)
-      .catch(() => setRows([]));
-  }, [groupId]);
-
-  function updatePricingRow(symbolId: string, patch: Partial<PricingRow>) {
-    setRows((prev) => prev && prev.map((r) => (r.symbolId === symbolId ? { ...r, ...patch } : r)));
-  }
-
-  async function save(pr: PricingRow) {
-    setSavingId(pr.symbolId);
-    setErrors((prev) => ({ ...prev, [pr.symbolId]: "" }));
-    const response = await fetch(`/api/manage/groups/${groupId}/pricing`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        symbolId: pr.symbolId,
-        spreadMarkup: pr.spreadMarkup,
-        commissionPerLot: pr.commissionPerLot,
-        swapLong: pr.swapLong,
-        swapShort: pr.swapShort,
-      }),
-    });
-    setSavingId(null);
-    if (!response.ok) {
-      const b = await response.json().catch(() => ({}));
-      setErrors((prev) => ({ ...prev, [pr.symbolId]: b.error ?? "save failed" }));
-      return;
-    }
-    updatePricingRow(pr.symbolId, { hasOverride: true });
-  }
-
-  async function reset(pr: PricingRow) {
-    setSavingId(pr.symbolId);
-    setErrors((prev) => ({ ...prev, [pr.symbolId]: "" }));
-    const response = await fetch(`/api/manage/groups/${groupId}/pricing`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ symbolId: pr.symbolId, reset: true }),
-    });
-    setSavingId(null);
-    if (!response.ok) {
-      const b = await response.json().catch(() => ({}));
-      setErrors((prev) => ({ ...prev, [pr.symbolId]: b.error ?? "reset failed" }));
-      return;
-    }
-    const reverted = await response.json();
-    updatePricingRow(pr.symbolId, {
-      hasOverride: false,
-      spreadMarkup: reverted.spreadMarkup,
-      commissionPerLot: reverted.commissionPerLot,
-      swapLong: reverted.swapLong,
-      swapShort: reverted.swapShort,
-    });
-  }
-
-  return (
-    <div className="flex flex-col gap-3">
-      <p className="text-xs text-[var(--text-3)]">
-        Spread markup and commission set here apply to every real order fill for accounts in {groupName}, not just a label. A symbol with no
-        saved override yet shows the platform default (matching the Symbols page); saving creates a group-specific row, Reset removes it.
-      </p>
-      {rows === null ? (
-        <p className="text-sm text-[var(--text-3)]">Loading...</p>
-      ) : rows.length === 0 ? (
-        <p className="text-sm text-[var(--text-3)]">No symbols enabled yet. Enable some on the Symbols page first.</p>
-      ) : (
-        <div className="max-h-[420px] overflow-y-auto">
-          <Table>
-            <TableHead>
-              <TableHeaderCell className="!px-3">Symbol</TableHeaderCell>
-              <TableHeaderCell align="right" className="!px-3">Spread</TableHeaderCell>
-              <TableHeaderCell align="right" className="!px-3">Commission</TableHeaderCell>
-              <TableHeaderCell align="right" className="!px-3">Swap L</TableHeaderCell>
-              <TableHeaderCell align="right" className="!px-3">Swap S</TableHeaderCell>
-              <TableHeaderCell className="!px-3" />
-            </TableHead>
-            <TableBody>
-              {rows.map((pr) => (
-                <TableRow key={pr.symbolId}>
-                  <TableCell mono className="!px-3">
-                    {pr.symbolName}
-                    {!pr.hasOverride ? <div className="text-xs text-[var(--text-3)]">broker default</div> : null}
-                  </TableCell>
-                  <TableCell align="right" className="!px-3">
-                    <Input
-                      type="text"
-                      inputMode="decimal"
-                      mono
-                      value={pr.spreadMarkup}
-                      onChange={(e) => updatePricingRow(pr.symbolId, { spreadMarkup: e.target.value })}
-                      className="w-20 text-right"
-                    />
-                  </TableCell>
-                  <TableCell align="right" className="!px-3">
-                    <Input
-                      type="text"
-                      inputMode="decimal"
-                      mono
-                      value={pr.commissionPerLot}
-                      onChange={(e) => updatePricingRow(pr.symbolId, { commissionPerLot: e.target.value })}
-                      className="w-20 text-right"
-                    />
-                  </TableCell>
-                  <TableCell align="right" className="!px-3">
-                    <Input
-                      type="text"
-                      inputMode="decimal"
-                      mono
-                      value={pr.swapLong}
-                      onChange={(e) => updatePricingRow(pr.symbolId, { swapLong: e.target.value })}
-                      className="w-16 text-right"
-                    />
-                  </TableCell>
-                  <TableCell align="right" className="!px-3">
-                    <Input
-                      type="text"
-                      inputMode="decimal"
-                      mono
-                      value={pr.swapShort}
-                      onChange={(e) => updatePricingRow(pr.symbolId, { swapShort: e.target.value })}
-                      className="w-16 text-right"
-                    />
-                  </TableCell>
-                  <TableCell className="!px-3 whitespace-nowrap">
-                    <div className="flex items-center gap-1.5">
-                      <Button size="sm" disabled={savingId === pr.symbolId} onClick={() => save(pr)}>
-                        {savingId === pr.symbolId ? "Saving..." : "Save"}
-                      </Button>
-                      <Button size="sm" variant="ghost" disabled={savingId === pr.symbolId || !pr.hasOverride} onClick={() => reset(pr)}>
-                        Reset
-                      </Button>
-                    </div>
-                    {errors[pr.symbolId] ? <div className="mt-1 text-xs text-[var(--sell)]">{errors[pr.symbolId]}</div> : null}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </div>
-      )}
     </div>
   );
 }
