@@ -1090,6 +1090,45 @@ model Client {
 // serving whatever account never gets linked to a Client) -- same
 // field shape by design, so the review UI/logic can be near-identical,
 // just pointed at a Client instead of an Account.
+enum AnnualIncomeRange {
+  UNDER_25K
+  RANGE_25K_50K
+  RANGE_50K_100K
+  RANGE_100K_250K
+  OVER_250K
+}
+
+enum SourceOfFunds {
+  SALARY
+  BUSINESS_INCOME
+  SAVINGS
+  INVESTMENTS
+  INHERITANCE
+  OTHER
+}
+
+enum TradingExperience {
+  NONE
+  UNDER_1_YEAR
+  ONE_TO_3_YEARS
+  THREE_TO_5_YEARS
+  OVER_5_YEARS
+}
+
+enum EmploymentStatus {
+  EMPLOYED
+  SELF_EMPLOYED
+  UNEMPLOYED
+  STUDENT
+  RETIRED
+}
+
+enum RiskTolerance {
+  LOW
+  MEDIUM
+  HIGH
+}
+
 model ClientKycRecord {
   id       String @id @default(cuid())
   clientId String @unique
@@ -1101,6 +1140,20 @@ model ClientKycRecord {
   documentBackUrl  String?
   addressProofUrl  String?
   rejectionReason  String?
+
+  // Suitability questionnaire -- the standard broker onboarding
+  // assessment (2026-09-08), collected at KYC submission time, never at
+  // registration (see registration route's own comment on why that stays
+  // minimal). Nullable at the schema level since this model predates
+  // these fields and nothing has ever written to it yet; the KYC
+  // submission route requires all five for a real submission --
+  // app-level enforcement, same "schema permissive, route enforces"
+  // split as Broker.emailEnabled/emailFromAddress.
+  annualIncome      AnnualIncomeRange?
+  sourceOfFunds     SourceOfFunds?
+  tradingExperience TradingExperience?
+  employmentStatus  EmploymentStatus?
+  riskTolerance     RiskTolerance?
 
   reviewedByAdminId String?
   reviewedByAdmin   AdminUser? @relation("ClientKycReviewedBy", fields: [reviewedByAdminId], references: [id])
