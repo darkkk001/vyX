@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { issuePasswordResetToken } from "@/lib/client-auth";
 import { getEmailAdapter } from "@/lib/email/adapter";
+import { requestOrigin } from "@/lib/request-origin";
 
 // Real, email-based reset -- unlike app/api/trade/forgot-password (the
 // account-number one), which only creates a Notification for a dealer to
@@ -33,7 +34,7 @@ export async function POST(request: NextRequest) {
 
   if (client && client.status === "ACTIVE") {
     const token = await issuePasswordResetToken(client.id);
-    const origin = new URL(request.url).origin;
+    const origin = requestOrigin(request);
     const resetUrl = `${origin}/portal/reset-password?token=${token}`;
     devResetUrl = resetUrl;
 

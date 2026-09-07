@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { hashPassword, issueEmailVerificationToken } from "@/lib/client-auth";
 import { getEmailAdapter } from "@/lib/email/adapter";
+import { requestOrigin } from "@/lib/request-origin";
 
 // Client Portal self-registration (Stage 1) -- email + password, not an
 // account number (that's Account's own, separate credential -- see
@@ -55,7 +56,7 @@ export async function POST(request: NextRequest) {
   });
 
   const token = await issueEmailVerificationToken(client.id);
-  const origin = new URL(request.url).origin;
+  const origin = requestOrigin(request);
   // Points straight at the API route, not a /portal/... page -- clicking
   // it needs no user input (unlike a password reset), so there's nothing
   // a page would add except an extra hop. GET /api/portal/verify-email

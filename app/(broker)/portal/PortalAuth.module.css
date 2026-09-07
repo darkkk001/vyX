@@ -1,0 +1,228 @@
+/* Shared by register/login -- same visual language as
+   app/(broker)/trade/login/TradeLoginForm.module.css and
+   BrokerLandingPage.module.css (dark, mesh-gradient off --brand-primary,
+   Inter) so the landing -> auth -> portal path reads as one continuous
+   product, not three different looks bolted together. */
+
+.root {
+  --bg-0: #07090C;
+  --bg-1: #0B0F14;
+  --bg-2: #0E1319;
+  --border: #1E242C;
+  --border-strong: #262E38;
+  --text-1: #EDEFF2;
+  --text-2: #8B93A1;
+  --text-3: #5F6976;
+  --accent: var(--brand-primary, #16C784);
+  --sell: #EA3943;
+  --sell-bg: #2A0F11;
+
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  overflow: hidden;
+  background: var(--bg-0);
+  color: var(--text-1);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  padding: 24px;
+}
+
+.mesh {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(circle at 22% 20%, color-mix(in srgb, var(--accent) 14%, transparent), transparent 45%),
+    radial-gradient(circle at 80% 75%, color-mix(in srgb, var(--accent) 20%, transparent), transparent 45%);
+  pointer-events: none;
+}
+
+.card {
+  width: 380px;
+  max-width: 100%;
+  position: relative;
+  z-index: 1;
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 32px;
+  box-shadow: 0 20px 60px -20px rgba(0, 0, 0, .5);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 24px;
+}
+
+.logo {
+  height: 28px;
+  width: auto;
+}
+
+.brandName {
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.title {
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  margin: 0 0 6px;
+}
+
+.subtitle {
+  font-size: 13px;
+  color: var(--text-2);
+  margin: 0 0 24px;
+  line-height: 1.5;
+}
+
+.field {
+  margin-bottom: 14px;
+}
+
+.fieldLabel {
+  display: block;
+  font-size: 11px;
+  color: var(--text-2);
+  margin-bottom: 6px;
+  font-weight: 500;
+}
+
+.input {
+  width: 100%;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 13px;
+  color: var(--text-1);
+  outline: none;
+  font-family: inherit;
+  transition: border-color .15s ease;
+}
+
+.input::placeholder {
+  color: var(--text-3);
+}
+
+.input:hover {
+  border-color: var(--border-strong);
+}
+
+.input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.passwordWrap {
+  position: relative;
+}
+
+.passwordWrap .input {
+  padding-right: 38px;
+}
+
+.eyeBtn {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-3);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 4px;
+}
+
+.eyeBtn:hover {
+  color: var(--text-1);
+}
+
+.btnPrimary {
+  width: 100%;
+  background: var(--accent);
+  color: #04140C;
+  border: none;
+  border-radius: 8px;
+  padding: 11px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  margin-top: 6px;
+  transition: filter .15s, transform .1s;
+}
+
+.btnPrimary:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.btnPrimary:active:not(:disabled) {
+  transform: scale(.98);
+}
+
+.btnPrimary:disabled {
+  opacity: .5;
+  cursor: not-allowed;
+}
+
+.formError {
+  background: var(--sell-bg);
+  border: 1px solid color-mix(in srgb, var(--sell) 35%, transparent);
+  color: var(--sell);
+  font-size: 12px;
+  padding: 9px 11px;
+  border-radius: 7px;
+  margin-bottom: 14px;
+}
+
+.formNotice {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  color: var(--text-1);
+  font-size: 12px;
+  padding: 9px 11px;
+  border-radius: 7px;
+  margin-bottom: 14px;
+}
+
+.footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 18px;
+  font-size: 12px;
+}
+
+.footer a {
+  color: var(--text-3);
+  text-decoration: none;
+}
+
+.footer a:hover {
+  color: var(--accent);
+}
+
+.checkEmail {
+  text-align: center;
+  padding: 8px 0;
+}
+
+.checkEmailIcon {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto 16px;
+}

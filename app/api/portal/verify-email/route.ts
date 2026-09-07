@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { consumeEmailVerificationToken } from "@/lib/client-auth";
+import { requestOrigin } from "@/lib/request-origin";
 
 // The other half of registration's own token mint (POST /api/portal/
 // register) -- single-use (GETDEL under the hood), 24h TTL. Redirects to
@@ -8,7 +9,7 @@ import { consumeEmailVerificationToken } from "@/lib/client-auth";
 // JSON here, since this is always reached via a real browser navigation
 // (a link in an email), never fetch().
 export async function GET(request: NextRequest) {
-  const origin = new URL(request.url).origin;
+  const origin = requestOrigin(request);
   const token = request.nextUrl.searchParams.get("token");
   if (!token) {
     return NextResponse.redirect(`${origin}/portal/login?verify=invalid`, { status: 303 });
