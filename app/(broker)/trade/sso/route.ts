@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { consumeSsoToken } from "@/lib/sso";
 import { createAccountSession, ACCOUNT_SESSION_COOKIE_NAME, accountSessionCookieOptions } from "@/lib/account-auth";
 import { prisma } from "@/lib/prisma";
+import { requestOrigin } from "@/lib/request-origin";
 
 // The other half of the WebTrader SSO handoff (see
 // app/api/trade/sso/token/route.ts): a broker's own portal redirects the
@@ -12,7 +13,13 @@ import { prisma } from "@/lib/prisma";
 // (app/api/trade/login/route.ts), just skipping the credential check
 // because the broker already vouches for the trader.
 export async function GET(request: NextRequest) {
-  const origin = new URL(request.url).origin;
+  // requestOrigin (Host header), not new URL(request.url).origin -- see
+  // that function's own comment: the latter doesn't reliably reflect the
+  // actual incoming Host in local dev, confirmed live here (this hop
+  // landed on a bare localhost:3000 instead of the broker's own domain
+  // while testing the Client Portal's own new caller of this route,
+  // app/api/portal/webtrader-sso).
+  const origin = requestOrigin(request);
   const token = request.nextUrl.searchParams.get("token");
   if (!token) {
     return NextResponse.redirect(`${origin}/trade/login?error=sso`, { status: 303 });
