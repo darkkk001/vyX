@@ -5,6 +5,7 @@ import {
   SYMBOL_DEFS,
   SYMBOL_CATEGORY_ORDER,
   SYMBOL_CATEGORY_LABELS,
+  TIMEFRAMES,
   buildSymbolDef,
   createInitialMarket,
   tickMarket,
@@ -48,6 +49,7 @@ import { spreadPoints, DEFAULT_WATCHLIST_COLUMN_PREFS, type WatchlistColumnPrefs
 const TF_LABELS: { key: Timeframe; label: string }[] = [
   { key: "M1", label: "1m" },
   { key: "M5", label: "5m" },
+  { key: "M15", label: "15m" },
   { key: "M30", label: "30m" },
   { key: "H1", label: "1H" },
   { key: "H4", label: "4H" },
@@ -156,6 +158,11 @@ function pendingPriceRuleText(type: PendingType) {
 // default layout); a stale/corrupt value just falls back to the default
 // below rather than throwing.
 const LAYOUT_STORAGE_KEY = "vyx-webtrader-layout";
+// 2026-09-08 fix -- which symbol/timeframe the chart last had open, same
+// lazy-useState-initializer pattern as LAYOUT_STORAGE_KEY just above (read
+// once, before first paint). Replaces an unconditional hardcoded
+// XAUUSD/H1 default every time the terminal opened.
+const LAST_CHART_STORAGE_KEY = "vyx-webtrader-last-chart";
 // Must match lib/risk.ts's FILL_PRICE_MAX_AGE_MS exactly -- the pending-
 // order auto-fill effect below uses this to avoid attempting a fill the
 // server's own checkPriceFreshness is guaranteed to reject. See that
@@ -296,8 +303,35 @@ export default function WebTrader({
   const wlContextMenuRef = useRef<HTMLDivElement | null>(null);
   useDismiss(wlMenuOpen, () => setWlMenuOpen(false), wlContextMenuRef);
 
+  // 2026-09-08 fix -- the chart used to always open on a hardcoded
+  // XAUUSD/H1 regardless of what a trader was last looking at. Restored
+  // from localStorage (client-only preference, like TradeLoginForm's own
+  // REMEMBERED_SERVER_KEY -- not worth a server round trip/cross-device
+  // sync for "which chart was open") via the one-time effect below, NOT
+  // a useState lazy initializer -- this page is server-rendered before
+  // being hydrated (confirmed live: reading localStorage in the
+  // initializer made the server's HTML disagree with the client's first
+  // render, exactly the "server rendered text didn't match the client"
+  // React hydration-mismatch error, and an unreliable one at that --
+  // React's recovery-by-discarding-the-server-tree doesn't happen on a
+  // predictable frame). Starting from the same XAUUSD/H1 default the
+  // server renders, then correcting it in an effect that only ever runs
+  // client-side post-hydration, avoids the mismatch entirely -- the
+  // brief default-then-corrected flash this trades in for is a real
+  // improvement over the previous "always defaults to 1H gold,
+  // permanently" bug, not a regression.
   const [activeSymbol, setActiveSymbol] = useState("XAUUSD");
   const [currentTf, setCurrentTf] = useState<Timeframe>("H1");
+
+  useEffect(() => {
+    try {
+      const saved = JSON.parse(window.localStorage.getItem(LAST_CHART_STORAGE_KEY) ?? "null") as { symbol?: unknown; timeframe?: unknown } | null;
+      if (typeof saved?.symbol === "string" && saved.symbol) setActiveSymbol(saved.symbol);
+      if (TIMEFRAMES.includes(saved?.timeframe as Timeframe)) setCurrentTf(saved!.timeframe as Timeframe);
+    } catch {
+      // malformed/unavailable storage -- keep the XAUUSD/H1 default
+    }
+  }, []);
 
   const [account, setAccount] = useState<AccountInfo | null>(null);
   const [positions, setPositions] = useState<ApiPosition[]>([]);
@@ -2014,6 +2048,17 @@ export default function WebTrader({
     (async () => { if (!cancelled) await seedRealCandles(activeSymbol, currentTf); })();
     return () => { cancelled = true; };
   }, [activeSymbol, currentTf, seedRealCandles]);
+
+  // Persists whatever LAST_CHART_STORAGE_KEY's own lazy initializers read
+  // back on the next visit -- same deps as the seed effect just above
+  // since both fire on exactly "the chart's symbol or timeframe changed."
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(LAST_CHART_STORAGE_KEY, JSON.stringify({ symbol: activeSymbol, timeframe: currentTf }));
+    } catch {
+      // localStorage unavailable/full -- next visit just falls back to the default
+    }
+  }, [activeSymbol, currentTf]);
 
   // hotfix/terminal-live-bugs #1 follow-up -- applyBidAsk's D1-rollover
   // resync (lib/market-simulator.ts) only fixes dayOpen at the *next* UTC

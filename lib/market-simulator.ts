@@ -137,8 +137,8 @@ export function buildSymbolDef(row: {
   };
 }
 
-export type Timeframe = "M1" | "M5" | "M30" | "H1" | "H4" | "D1" | "W1" | "MN1" | "Y1";
-export const TIMEFRAMES: Timeframe[] = ["M1", "M5", "M30", "H1", "H4", "D1", "W1", "MN1", "Y1"];
+export type Timeframe = "M1" | "M5" | "M15" | "M30" | "H1" | "H4" | "D1" | "W1" | "MN1" | "Y1";
+export const TIMEFRAMES: Timeframe[] = ["M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1", "MN1", "Y1"];
 
 export type Candle = { o: number; h: number; l: number; c: number; t: number };
 
@@ -247,6 +247,7 @@ const W1_MS = 7 * D1_MS;
 const FIXED_MS: Partial<Record<Timeframe, number>> = {
   M1: 60_000,
   M5: 300_000,
+  M15: 900_000,
   M30: 1_800_000,
   H1: 3_600_000,
   H4: 14_400_000,
@@ -396,8 +397,28 @@ function applyBidAsk(m: MarketState, bid: number, ask: number, now: number) {
           count += 1;
         }
       }
+      // 2026-09-08 fix -- "blank flash + one stray candle" on every
+      // timeframe switch. Before this, the line below ran unconditionally,
+      // including the very FIRST live tick a freshly-switched (or
+      // freshly-loaded) timeframe ever sees -- when lastCandleStart[tf]
+      // was still createInitialMarket's 0 sentinel and candles was still
+      // empty, meaning no real history has been seeded for this
+      // (symbol, tf) yet. That push planted a single synthetic candle in
+      // the previously-empty array a moment before WebTrader.tsx's
+      // seedRealCandles (the real /api/trade/candles fetch) resolved and
+      // replaced the whole array anyway -- the one-candle flash reported
+      // on every switch, on top of KLineChartPanel skipping applyNewData
+      // entirely while candles.length was 0 (the blank half of the same
+      // flash). Recording lastCandleStart without pushing lets this first
+      // tick pass through silently; the real seed becomes the array's
+      // actual first content. Every subsequent bucket rollover
+      // (lastCandleStart no longer 0) still starts a new bar exactly as
+      // before -- this only ever skips the one-time bootstrap push.
+      const isFirstEverBucketForThisTf = m.lastCandleStart[tf] === 0 && candles.length === 0;
       m.lastCandleStart[tf] = start;
-      candles.push({ o: m.bid, h: m.bid, l: m.bid, c: m.bid, t: start });
+      if (!isFirstEverBucketForThisTf) {
+        candles.push({ o: m.bid, h: m.bid, l: m.bid, c: m.bid, t: start });
+      }
       // hotfix/terminal-live-bugs #1 -- dayOpen was seeded once at
       // createInitialMarket() to def.base (a hardcoded launch-time
       // constant, e.g. XAUUSD's 2352.40) and never touched again, so

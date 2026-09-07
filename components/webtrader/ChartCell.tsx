@@ -9,6 +9,7 @@ import KLineChartPanel from "./KLineChartPanel";
 const CELL_TF_LABELS: { key: Timeframe; label: string }[] = [
   { key: "M1", label: "1m" },
   { key: "M5", label: "5m" },
+  { key: "M15", label: "15m" },
   { key: "M30", label: "30m" },
   { key: "H1", label: "1H" },
   { key: "H4", label: "4H" },

@@ -22,6 +22,7 @@ pub mod symbol_activity;
 pub enum Timeframe {
     M1,
     M5,
+    M15,
     M30,
     H1,
     H4,
@@ -31,9 +32,10 @@ pub enum Timeframe {
     Y1,
 }
 
-pub const TIMEFRAMES: [Timeframe; 9] = [
+pub const TIMEFRAMES: [Timeframe; 10] = [
     Timeframe::M1,
     Timeframe::M5,
+    Timeframe::M15,
     Timeframe::M30,
     Timeframe::H1,
     Timeframe::H4,
@@ -45,17 +47,19 @@ pub const TIMEFRAMES: [Timeframe; 9] = [
 
 /// fix/realtime-sync §4's EA backfill (mt5-ea/VyXTraderPriceFeed.mq5)
 /// sends a plain string per timeframe -- the inverse of db.rs's own
-/// timeframe_to_str. Note the brief that drove this feature mentions
-/// "M15" among the EA's backfill timeframes, but this engine (and the
-/// Postgres CandleTimeframe enum it's generated from) has never had an
-/// M15 variant -- only M1/M5/M30. Treated as an unrecognized string here
-/// (None, silently skipped by the ingest route) rather than silently
-/// adding a tenth timeframe end-to-end (client TIMEFRAMES array, this
-/// enum, and a Prisma migration) as a side effect of a bug-fix PR.
+/// timeframe_to_str.
+///
+/// 2026-09-08 -- M15 added end-to-end (this enum, TIMEFRAMES, fixed_ms
+/// below, db.rs's Postgres mapping, the Prisma CandleTimeframe enum +
+/// migration, the EA's own HistoryBackfillPeriods, and the client
+/// selector) -- this comment previously documented it as deliberately
+/// left out to avoid a bug-fix PR silently growing into a 10th-timeframe
+/// feature; it's now the real, deliberate feature.
 pub fn timeframe_from_str(s: &str) -> Option<Timeframe> {
     match s {
         "M1" => Some(Timeframe::M1),
         "M5" => Some(Timeframe::M5),
+        "M15" => Some(Timeframe::M15),
         "M30" => Some(Timeframe::M30),
         "H1" => Some(Timeframe::H1),
         "H4" => Some(Timeframe::H4),
@@ -76,6 +80,7 @@ pub(crate) fn fixed_ms(tf: Timeframe) -> Option<i64> {
     match tf {
         Timeframe::M1 => Some(60_000),
         Timeframe::M5 => Some(300_000),
+        Timeframe::M15 => Some(900_000),
         Timeframe::M30 => Some(1_800_000),
         Timeframe::H1 => Some(3_600_000),
         Timeframe::H4 => Some(14_400_000),

@@ -22,6 +22,7 @@ fn timeframe_to_str(tf: Timeframe) -> &'static str {
     match tf {
         Timeframe::M1 => "M1",
         Timeframe::M5 => "M5",
+        Timeframe::M15 => "M15",
         Timeframe::M30 => "M30",
         Timeframe::H1 => "H1",
         Timeframe::H4 => "H4",

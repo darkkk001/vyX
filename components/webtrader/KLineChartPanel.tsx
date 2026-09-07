@@ -770,6 +770,18 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
     } as any);
     chartRef.current = chart ?? null;
 
+    // 2026-09-08 -- scroll-wheel-to-zoom on the price (Y) axis, TradingView-
+    // style. klinecharts already supports drag-to-zoom there by default;
+    // scrolling was doing nothing because scrollZoomEnabled defaults off
+    // for a pane's own axis (PaneAxisOptions) -- a separate switch from the
+    // main chart area's own horizontal scroll/zoom, which was already on.
+    // No custom wheel handler needed, just this one option.
+    try {
+      chart?.setPaneOptions?.({ id: "candle_pane", axisOptions: { scrollZoomEnabled: true } });
+    } catch {
+      // ignore -- chart still works with the default (drag-only) axis zoom
+    }
+
     const onResize = () => {
       try {
         chartRef.current?.resize?.();

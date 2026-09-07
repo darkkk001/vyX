@@ -75,7 +75,7 @@ export function effectiveAsk(askMarkupBySymbol: Record<string, number>, symbol: 
   return rawAsk + (askMarkupBySymbol[symbol] ?? 0);
 }
 
-export type ApiCandleTimeframe = "M1" | "M5" | "M30" | "H1" | "H4" | "D1" | "W1" | "MN1" | "Y1";
+export type ApiCandleTimeframe = "M1" | "M5" | "M15" | "M30" | "H1" | "H4" | "D1" | "W1" | "MN1" | "Y1";
 
 export type ApiCandle = {
   symbol: string;

@@ -190,18 +190,33 @@ void RefreshBrokerOffset()
 // backfill (deep or shallow) most recently finished.
 uint lastHistoryBackfillMs = 0;
 
-// Only the engine's actual configured fixed-duration timeframes
-// (engine/market-data/src/lib.rs's TIMEFRAMES / fixed_ms) -- W1/Mn1/Y1
-// are calendar-based and excluded from gap-filling there too, so
-// backfilling them isn't worth the extra CopyRates/WebRequest calls.
-// NOTE: the spec this feature was built from also listed "M15", but no
-// M15 timeframe has ever existed in this engine or its Postgres
-// CandleTimeframe enum (only M1/M5/M30) -- sending it would just get
-// silently skipped by ingest_history's own timeframe_from_str (see that
-// function's doc comment), so it's left out here rather than sent for
-// nothing.
-ENUM_TIMEFRAMES HistoryBackfillPeriods[] = { PERIOD_M1, PERIOD_M5, PERIOD_M30, PERIOD_H1, PERIOD_H4, PERIOD_D1 };
-string HistoryBackfillPeriodNames[]     = { "M1",      "M5",      "M30",      "H1",      "H4",      "D1"     };
+// Every engine-configured timeframe (engine/market-data/src/lib.rs's
+// TIMEFRAMES) that MT5's own CopyRates can actually serve. That's
+// everything except Y1 -- MT5 has no native PERIOD_Y1 at all, so a
+// yearly bar has no CopyRates call to make; see docs/ or the server-side
+// migration note for how Y1 history gets populated instead (rolled up
+// from D1, not backfilled from the terminal).
+//
+// 2026-09-08: M15 added (previously left out entirely -- no M15
+// timeframe existed anywhere in the engine or its Postgres
+// CandleTimeframe enum before now, so sending it would've just been
+// silently skipped by ingest_history's own timeframe_from_str). W1 and
+// MN1 added too -- these ARE natively CopyRates-able (PERIOD_W1/
+// PERIOD_MN1 are standard MQL5 periods), they simply hadn't been added
+// here yet; before this, W1/MN1/Y1 candles only ever came from the live
+// tick-aggregation path, one bucket at a time, as real weeks/months
+// actually elapsed -- which is why a freshly-started deployment's W1/MN1
+// charts showed almost nothing.
+//
+// IMPORTANT: adding a period here does NOT retroactively backfill it on
+// an EA that's already past its one-time deep pass (see
+// DEEP_BACKFILL_DONE_GVAR / StartDeepBackfill's own doc comment) -- an
+// already-running install needs ForceDeepBackfill set once (or that
+// global variable cleared) after upgrading to this EA build, or it'll
+// only start accumulating W1/M15/MN1 history live, going forward, same
+// as before.
+ENUM_TIMEFRAMES HistoryBackfillPeriods[] = { PERIOD_M1, PERIOD_M5, PERIOD_M15, PERIOD_M30, PERIOD_H1, PERIOD_H4, PERIOD_D1, PERIOD_W1, PERIOD_MN1 };
+string HistoryBackfillPeriodNames[]     = { "M1",      "M5",      "M15",      "M30",      "H1",      "H4",      "D1",      "W1",      "MN1"      };
 // Per timeframe, not one number for all of them (v1.34). A single count
 // means the window this backfill can actually repair scales with the
 // timeframe: at the previous flat 200, M30 reached only 4.2 days back, so
@@ -211,14 +226,20 @@ string HistoryBackfillPeriodNames[]     = { "M1",      "M5",      "M30",      "H
 //
 //   M1  1500 -> ~1 day     (30d would be 43,200 bars -- far past budget)
 //   M5  1500 -> ~5 days    (30d would be 8,640)
+//   M15 1500 -> ~15 days   (30d would be 2,880)
 //   M30 1500 -> ~31 days   full window
 //   H1   750 -> ~31 days   full window
 //   H4   200 -> ~33 days   full window already
 //   D1   200 -> 200 days   full window already
+//   W1   200 -> ~3.8 years full window already
+//   MN1  200 -> ~16.6 years full window already
 //
-// M1/M5 stay deliberately short of 30 days: they are the timeframes a
-// live feed refills fastest anyway, and 43,200 bars in one request would
-// blow both the payload size and HISTORY_WEBREQUEST_TIMEOUT_MS below.
+// M1/M5/M15 stay deliberately short of 30 days: they are the timeframes a
+// live feed refills fastest anyway, and going further (43,200 bars for a
+// full 30d of M1) would blow both the payload size and
+// HISTORY_WEBREQUEST_TIMEOUT_MS below. W1/MN1 need no such cap -- 200
+// bars is already years of history at those periods, comfortably inside
+// budget.
 // Index-aligned with HistoryBackfillPeriods/HistoryBackfillPeriodNames
 // above -- keep all three arrays in the same order.
 //
@@ -227,7 +248,7 @@ string HistoryBackfillPeriodNames[]     = { "M1",      "M5",      "M30",      "H
 // HISTORY_BACKFILL_SHALLOW_BAR_COUNT below instead (see
 // RunShallowHistoryBackfill) -- these deep counts are worth their ~37s-
 // per-symbol cost exactly once, not every 15 minutes forever.
-int HistoryBackfillBarCounts[]          = { 1500,      1500,      1500,      750,       200,       200      };
+int HistoryBackfillBarCounts[]          = { 1500,      1500,      1500,      1500,      750,       200,       200,       200,       200      };
 // Steady-state-only (see above) -- outage repair, not a full refill: the
 // live tick feed already keeps recent history current, this just catches
 // whatever gap happened while this EA/terminal wasn't running.
