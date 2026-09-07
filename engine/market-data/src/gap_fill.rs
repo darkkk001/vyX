@@ -11,10 +11,37 @@
 //! not missing data.
 
 use crate::{fixed_ms, CandleUpdate, Timeframe};
-use chrono::{DateTime, Datelike, Duration, Timelike, Utc, Weekday};
+use chrono::{DateTime, Datelike, Duration, NaiveDate, Timelike, Utc, Weekday};
 use rust_decimal::Decimal;
 use std::collections::HashMap;
 use std::sync::Mutex;
+
+// The Nth Sunday of `month` in `year` -- the only date arithmetic
+// us_eastern_is_dst below needs, so this crate can compute the real US
+// DST transition dates itself without pulling in chrono-tz (a whole IANA
+// timezone database) for one rule. Per the actual US law (Energy Policy
+// Act of 2005): DST runs from the 2nd Sunday of March to the 1st Sunday
+// of November.
+fn nth_sunday_of_month(year: i32, month: u32, nth: u32) -> NaiveDate {
+    let first = NaiveDate::from_ymd_opt(year, month, 1).unwrap();
+    let first_sunday_day = 1 + (7 - first.weekday().num_days_from_sunday()) % 7;
+    NaiveDate::from_ymd_opt(year, month, first_sunday_day + (nth - 1) * 7).unwrap()
+}
+
+// Whether `t` falls in US Eastern DST (EDT, UTC-4) rather than Standard
+// time (EST, UTC-5) -- exact, not approximated, since the whole point is
+// the two differ by a real hour and this module gates on that hour. Only
+// the DATE matters here (not the 2am-local transition instant): the
+// nearest real Friday/Sunday boundary this function is ever evaluated
+// against is always at least several days from either transition date,
+// so date-level precision is exact for this use, not just close enough.
+fn us_eastern_is_dst(t: DateTime<Utc>) -> bool {
+    let year = t.year();
+    let dst_start = nth_sunday_of_month(year, 3, 2); // 2nd Sunday of March
+    let dst_end = nth_sunday_of_month(year, 11, 1); // 1st Sunday of November
+    let date = t.date_naive();
+    date >= dst_start && date < dst_end
+}
 
 // Standard global FX weekend close, the same window every major venue
 // observes regardless of broker -- deliberately NOT Broker.tradingHaltedAt
@@ -30,21 +57,36 @@ use std::sync::Mutex;
 // across a real Sat/Sun close (08-29 -> 08-30), so whatever built this
 // exclusion never actually reached the Contabo binary (see the round-2
 // deploy notes: this needs a real `cargo build --release -p server` +
-// service restart, not just a git pull). While fixing that, tightened the
-// Friday boundary from hour>=22 to hour>=21 per the explicit ask: real FX
-// close is NY 17:00, which is 21:00 UTC in winter (EST) and 22:00 UTC in
-// summer (EDT) -- this picks the earlier, DST-safe bound rather than
-// tracking the actual DST transition date, so at most it skips
-// flat-filling one real trading hour (Fri 21:00-22:00 UTC) during EDT
-// months, never the reverse (never flat-fills real market-closed time).
-// A correct fix needs either a DST-aware clock or the real per-symbol
-// TradingSession config this module's own comment above already says it
-// deliberately doesn't have access to.
+// service restart, not just a git pull). While fixing that, this used to
+// hardcode the Friday boundary at hour>=21 (real FX close is NY 17:00,
+// 21:00 UTC in winter/EST, 22:00 UTC in summer/EDT) -- deliberately
+// picking the earlier, always-safe-in-one-direction bound rather than
+// tracking the actual DST transition date, accepting "at most skips
+// flat-filling one real trading hour during EDT months" as the cost.
+//
+// 2026-09-08 fix -- that cost stopped being acceptable the moment this
+// same function started gating the REAL-tick write path too (ingest.rs's
+// flush_candles, market_open), not just this module's own synthetic
+// fill: during EDT (roughly mid-March to early November -- in effect
+// most of the year), the old hardcoded 21:00 boundary wrongly called a
+// full, genuinely-open trading hour "closed" every single Friday,
+// silently dropping every real M1/M5/... tick between 21:00 and the
+// actual 22:00 EDT close -- a full hour of missing candles on the chart,
+// confirmed against a live Pepperstone comparison showing no such gap.
+// Computing the real boundary from us_eastern_is_dst above instead of
+// guessing removes the tradeoff entirely: correct in both directions,
+// both seasons, both callers (this module's synthetic fill AND
+// ingest.rs's real-tick gate now agree with the calendar, not a
+// hand-picked constant).
 fn market_closed(t: DateTime<Utc>) -> bool {
+    // NY FX close/reopen is 17:00 America/New_York -- 21:00 UTC in EST,
+    // 22:00 UTC in EDT. Both the Friday close and the Sunday reopen are
+    // the same NY-17:00 anchor, one week apart, so both move together.
+    let close_hour = if us_eastern_is_dst(t) { 22 } else { 21 };
     match t.weekday() {
         Weekday::Sat => true,
-        Weekday::Fri => t.hour() >= 21,
-        Weekday::Sun => t.hour() < 22,
+        Weekday::Fri => t.hour() >= close_hour,
+        Weekday::Sun => t.hour() < close_hour,
         _ => false,
     }
 }
@@ -235,6 +277,56 @@ mod tests {
     }
 
     #[test]
+    fn january_1_is_never_dst() {
+        // Deep winter, any year -- nowhere near either transition date, no
+        // boundary ambiguity to get wrong.
+        assert!(!us_eastern_is_dst(Utc.with_ymd_and_hms(2026, 1, 1, 12, 0, 0).unwrap()));
+        assert!(!us_eastern_is_dst(Utc.with_ymd_and_hms(2027, 1, 1, 12, 0, 0).unwrap()));
+    }
+
+    #[test]
+    fn july_1_is_always_dst() {
+        // Deep summer, any year -- same reasoning as january_1 above.
+        assert!(us_eastern_is_dst(Utc.with_ymd_and_hms(2026, 7, 1, 12, 0, 0).unwrap()));
+        assert!(us_eastern_is_dst(Utc.with_ymd_and_hms(2027, 7, 1, 12, 0, 0).unwrap()));
+    }
+
+    #[test]
+    fn dst_start_is_the_second_sunday_of_march() {
+        let start = nth_sunday_of_month(2026, 3, 2);
+        assert_eq!(start.weekday(), Weekday::Sun);
+        // The Sunday immediately before it is a different Sunday, 7 days
+        // earlier, and must NOT itself be the 2nd Sunday.
+        assert_eq!(start - chrono::Duration::days(7), nth_sunday_of_month(2026, 3, 1));
+        assert!(!us_eastern_is_dst(start.and_hms_opt(6, 0, 0).unwrap().and_utc() - Duration::days(1)));
+        assert!(us_eastern_is_dst(start.and_hms_opt(6, 0, 0).unwrap().and_utc()));
+    }
+
+    #[test]
+    fn dst_end_is_the_first_sunday_of_november() {
+        let end = nth_sunday_of_month(2026, 11, 1);
+        assert_eq!(end.weekday(), Weekday::Sun);
+        assert!(us_eastern_is_dst(end.and_hms_opt(6, 0, 0).unwrap().and_utc() - Duration::days(1)));
+        assert!(!us_eastern_is_dst(end.and_hms_opt(6, 0, 0).unwrap().and_utc()));
+    }
+
+    #[test]
+    fn sunday_reopen_boundary_shifts_with_dst_the_same_way_friday_close_does() {
+        // Winter: reopen is 21:00 UTC (EST). Anchor at Sat 20:00 so the
+        // very next hour is the first one this test can observe.
+        let tracker = GapFillTracker::new();
+        let sat_2000 = Utc.with_ymd_and_hms(2026, 1, 17, 20, 0, 0).unwrap(); // Saturday
+        let sun_2200 = Utc.with_ymd_and_hms(2026, 1, 18, 22, 0, 0).unwrap(); // Sunday
+        tracker.fill_gaps_and_record(&update("EURUSD", Timeframe::H1, sat_2000, dec!(1.1)));
+        let fills = tracker.fill_gaps_and_record(&update("EURUSD", Timeframe::H1, sun_2200, dec!(1.1)));
+        // Sat 21:00..23:00 stay closed (Saturday is always closed); Sun
+        // 21:00 must now be filled (winter reopen), Sun 20:00 stays closed.
+        let fill_starts: Vec<DateTime<Utc>> = fills.iter().map(|f| f.bucket_start).collect();
+        assert!(fill_starts.contains(&Utc.with_ymd_and_hms(2026, 1, 18, 21, 0, 0).unwrap()), "Sun 21:00 UTC should be open in winter/EST, got: {:?}", fill_starts);
+        assert!(!fill_starts.contains(&Utc.with_ymd_and_hms(2026, 1, 18, 20, 0, 0).unwrap()), "Sun 20:00 UTC should still be closed, got: {:?}", fill_starts);
+    }
+
+    #[test]
     fn first_tick_ever_for_a_pair_produces_no_fills() {
         let tracker = GapFillTracker::new();
         let now = Utc.with_ymd_and_hms(2026, 8, 12, 10, 0, 0).unwrap(); // Wednesday
@@ -297,20 +389,40 @@ mod tests {
         );
     }
 
+    // 2026-09-08 -- replaces the old, DST-imprecise version of this test
+    // (hardcoded Fri 21:00 UTC always closed, regardless of season). Real
+    // FX close is NY 17:00 -- 21:00 UTC in EST/winter, 22:00 UTC in
+    // EDT/summer -- so which of those two hours is "still open" now
+    // genuinely depends on the date, and this pins BOTH seasons instead
+    // of one hardcoded assumption. This exact boundary is what silently
+    // dropped a full hour of real, live M1 ticks every DST-season Friday
+    // once it started gating ingest.rs's real-tick path too (market_open)
+    // -- see this test module's neighboring market_open tests and
+    // ingest.rs's own comment on the fix.
     #[test]
-    fn friday_2100_to_2200_utc_is_now_treated_as_closed_too() {
-        // hotfix/terminal-live-bugs round 2 -- the boundary moved from
-        // hour>=22 to hour>=21 (DST-safe: real EST close is 21:00 UTC).
-        // Anchor the tracker's last-known bucket at Fri 20:00 so the very
-        // next hour, Fri 21:00, is the first one this test can actually
-        // observe being excluded (the anchor bucket itself is never
-        // checked against market_closed).
+    fn friday_21_to_22_utc_is_still_closed_in_winter_est() {
+        // 2026-01-16 -- January, well outside DST -- real close is 21:00 UTC.
+        let tracker = GapFillTracker::new();
+        let fri_2000 = Utc.with_ymd_and_hms(2026, 1, 16, 20, 0, 0).unwrap();
+        let fri_2200 = Utc.with_ymd_and_hms(2026, 1, 16, 22, 0, 0).unwrap();
+        tracker.fill_gaps_and_record(&update("EURUSD", Timeframe::H1, fri_2000, dec!(1.1)));
+        let fills = tracker.fill_gaps_and_record(&update("EURUSD", Timeframe::H1, fri_2200, dec!(1.1)));
+        assert!(fills.is_empty(), "Fri 21:00 UTC in EST/winter should be excluded as closed, got: {:?}", fills);
+    }
+
+    #[test]
+    fn friday_21_to_22_utc_is_genuinely_open_in_summer_edt() {
+        // 2026-08-14 -- August, deep in DST -- real close is 22:00 UTC, so
+        // the 21:00 bucket is a real, live trading hour and must produce a
+        // real fill, not be silently dropped the way the old hardcoded
+        // boundary did.
         let tracker = GapFillTracker::new();
         let fri_2000 = Utc.with_ymd_and_hms(2026, 8, 14, 20, 0, 0).unwrap();
         let fri_2200 = Utc.with_ymd_and_hms(2026, 8, 14, 22, 0, 0).unwrap();
         tracker.fill_gaps_and_record(&update("EURUSD", Timeframe::H1, fri_2000, dec!(1.1)));
         let fills = tracker.fill_gaps_and_record(&update("EURUSD", Timeframe::H1, fri_2200, dec!(1.1)));
-        assert!(fills.is_empty(), "Fri 21:00 UTC should be excluded as closed, got: {:?}", fills);
+        assert_eq!(fills.len(), 1, "Fri 21:00 UTC in EDT/summer is real market-open time, should be filled, got: {:?}", fills);
+        assert_eq!(fills[0].bucket_start, Utc.with_ymd_and_hms(2026, 8, 14, 21, 0, 0).unwrap());
     }
 
     #[test]

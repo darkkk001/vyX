@@ -547,7 +547,10 @@ mod tests {
         // Friday's close even though this flush cycle's own `now` is
         // Saturday. The fix must use the tick's own time for the session
         // check, not `now` -- asserted explicitly here, not just assumed.
-        let friday_close = Utc.with_ymd_and_hms(2026, 8, 14, 21, 0, 0).unwrap();
+        // 22:00 UTC, not 21:00 -- August is DST/EDT, when real NY-17:00
+        // close is 22:00 UTC (see gap_fill.rs's us_eastern_is_dst); 21:00
+        // that same Friday is genuinely still open market time.
+        let friday_close = Utc.with_ymd_and_hms(2026, 8, 14, 22, 0, 0).unwrap();
         let saturday_now = Utc.with_ymd_and_hms(2026, 8, 15, 12, 0, 0).unwrap();
         let tick = tick_with_ms_for("EURUSD", Some(friday_close.timestamp_millis()));
 
