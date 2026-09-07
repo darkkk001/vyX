@@ -58,6 +58,13 @@
   text-overflow: ellipsis;
 }
 
+.headerActions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
 .loginBtn {
   flex-shrink: 0;
   background: var(--accent);
@@ -75,6 +82,28 @@
 
 .loginBtn:hover {
   filter: brightness(1.08);
+}
+
+/* Header's "Client Login" -- secondary next to Open Account, which takes
+   over .loginBtn's filled/primary treatment as the header's main CTA. */
+.loginBtnOutline {
+  flex-shrink: 0;
+  background: transparent;
+  color: var(--text-1);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 9px 17px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: none;
+  transition: border-color .15s, background .15s;
+  display: inline-block;
+}
+
+.loginBtnOutline:hover {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
 }
 
 .hero {

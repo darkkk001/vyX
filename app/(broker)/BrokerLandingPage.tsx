@@ -6,9 +6,14 @@ import styles from "./BrokerLandingPage.module.css";
 // deliberately broker-agnostic (no claims about regulation/segregated
 // funds, which vary per broker and aren't ours to assert) -- only the
 // name, logo and accent color are tenant-specific, read from the Broker
-// row by app/(broker)/page.tsx and passed in as props. This is a Phase 1
-// "get something live" build: no registration/portal yet, just a
-// Client Login entry point into the existing WebTrader login flow.
+// row by app/(broker)/page.tsx and passed in as props.
+//
+// 2026-09-08 -- both CTAs point into the Client Portal now
+// (/portal/register, /portal/login), not straight into WebTrader's own
+// /trade/login. Login lands a client in the portal dashboard first
+// (app/(broker)/portal/(shell)), not the trading terminal directly --
+// WebTrader itself is reached from inside the portal (its own WebTrader
+// tab) once a client picks which linked account to trade on.
 export default function BrokerLandingPage({
   brokerName,
   brokerLogoUrl,
@@ -30,9 +35,14 @@ export default function BrokerLandingPage({
           ) : null}
           <span className={styles.brandName}>{brokerName}</span>
         </div>
-        <Link href="/trade/login" className={styles.loginBtn}>
-          Client Login
-        </Link>
+        <div className={styles.headerActions}>
+          <Link href="/portal/login" className={styles.loginBtnOutline}>
+            Client Login
+          </Link>
+          <Link href="/portal/register" className={styles.loginBtn}>
+            Open Account
+          </Link>
+        </div>
       </header>
 
       <section className={styles.hero}>
@@ -44,14 +54,12 @@ export default function BrokerLandingPage({
             platform built for serious traders.
           </p>
           <div className={styles.heroActions}>
-            <Link href="/trade/login" className={styles.heroPrimaryBtn}>
-              Client Login
+            <Link href="/portal/register" className={styles.heroPrimaryBtn}>
+              Open an Account
             </Link>
-            {supportEmail ? (
-              <a href={`mailto:${supportEmail}`} className={styles.heroSecondaryBtn}>
-                Contact Us
-              </a>
-            ) : null}
+            <Link href="/portal/login" className={styles.heroSecondaryBtn}>
+              Login
+            </Link>
           </div>
         </div>
       </section>
@@ -174,7 +182,7 @@ export default function BrokerLandingPage({
         <p className={styles.ctaSubtitle}>
           Log in to your {brokerName} account to get started.
         </p>
-        <Link href="/trade/login" className={styles.heroPrimaryBtn}>
+        <Link href="/portal/login" className={styles.heroPrimaryBtn}>
           Client Login
         </Link>
       </section>
