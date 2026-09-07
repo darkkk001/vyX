@@ -257,6 +257,9 @@ fn main() {
                 .title(&app_name)
                 .inner_size(1440.0, 900.0)
                 .min_inner_size(1024.0, 640.0)
+                // Same dark-titlebar fix as manager-tauri's own -- see its
+                // main.rs comment.
+                .theme(Some(tauri::Theme::Dark))
                 // Same lockdown as desktop-tauri's/manager-tauri's own:
                 // the window only ever shows the bundled local shell now.
                 .on_navigation(move |url| {

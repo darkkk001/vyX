@@ -11,8 +11,13 @@ export default defineConfig({
   plugins: [react(), tailwindcss()],
   define: {
     // See manager-tauri/manager-shell/vite.config.ts's identical entry --
-    // lib/admin-realtime.tsx needs the same process.env shim.
-    "process.env.NEXT_PUBLIC_GATEWAY_WS_URL": "undefined",
+    // lib/admin-realtime.tsx needs the same process.env shim. Moot in
+    // practice today (App.tsx passes AdminRealtimeProvider enabled={false}
+    // for Super Admin, so this socket never opens at all), kept in sync
+    // anyway so the two shells don't silently diverge again.
+    "process.env.NEXT_PUBLIC_GATEWAY_WS_URL": process.env.NEXT_PUBLIC_GATEWAY_WS_URL
+      ? JSON.stringify(process.env.NEXT_PUBLIC_GATEWAY_WS_URL)
+      : "undefined",
   },
   resolve: {
     alias: {

@@ -15,12 +15,15 @@ export async function GET() {
   }
 
   const [admin, unreadNotifications] = await Promise.all([
-    prisma.adminUser.findUnique({ where: { id: session!.adminId }, select: { email: true } }),
+    prisma.adminUser.findUnique({ where: { id: session!.adminId }, select: { email: true, theme: true } }),
     prisma.notification.count({ where: { type: "ADMIN_PASSWORD_RESET_REQUESTED", readAt: null } }),
   ]);
 
   return NextResponse.json({
     adminEmail: admin?.email ?? null,
     unreadNotifications,
+    // See app/api/manage/shell-info's own comment -- same reasoning,
+    // this app's bundled admin-shell desktop app.
+    theme: admin?.theme === "dark" ? "dark" : "light",
   });
 }

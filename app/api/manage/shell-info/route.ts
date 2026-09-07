@@ -20,7 +20,7 @@ export async function GET() {
 
   const [broker, admin, unreadNotifications, canManageFinance] = await Promise.all([
     prisma.broker.findUnique({ where: { id: session!.brokerId! }, select: { name: true, logoUrl: true } }),
-    prisma.adminUser.findUnique({ where: { id: session!.adminId }, select: { email: true } }),
+    prisma.adminUser.findUnique({ where: { id: session!.adminId }, select: { email: true, theme: true } }),
     prisma.notification.count({ where: { brokerId: session!.brokerId!, readAt: null } }),
     session!.role === "BROKER_ADMIN" ? Promise.resolve(true) : hasPermission(session, "ACCOUNT_FINANCE"),
   ]);
@@ -32,5 +32,11 @@ export async function GET() {
     role: session!.role,
     unreadNotifications,
     canManageFinance,
+    // Bundled shells (manager-shell) have no Server Component to read
+    // this the way app/manage/layout.tsx does -- see AdminThemeSurface's
+    // own usage there for why this needs to come from the DB, not a
+    // hardcoded default, or a broker's own light-theme admin always
+    // reopens the desktop app back in dark mode.
+    theme: admin?.theme === "dark" ? "dark" : "light",
   });
 }

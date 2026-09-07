@@ -36,6 +36,7 @@ import SettingsManager from "@/app/manage/(shell)/settings/SettingsManager";
 import { apiCall } from "@/lib/desktop-api";
 import type { ApiBrokerBranding } from "@/lib/trade-api";
 import { AdminRealtimeProvider } from "@/lib/admin-realtime";
+import { AdminThemeSurface } from "@/lib/admin-theme";
 
 type ShellInfo = {
   brokerName: string;
@@ -43,6 +44,7 @@ type ShellInfo = {
   adminEmail: string | null;
   role: "MANAGER" | "BROKER_ADMIN";
   unreadNotifications: number;
+  theme: "dark" | "light";
 };
 
 // A page's own <main className="mx-auto max-w-..."><PageHeader .../>
@@ -415,13 +417,16 @@ export default function App() {
   }
 
   return (
-    // Mirrors app/manage/layout.tsx's own root div exactly -- admin-theme.css
-    // gates the entire dark theme (backgrounds, text colors, accent) behind
-    // this attribute selector; without it every var(--text-*)/var(--bg-*)
-    // reference here is unset and the whole app falls back to browser
-    // default (white background, black text) once past the hardcoded-dark
-    // login screen.
-    <div data-surface="manager" className="min-h-dvh antialiased">
+    // Mirrors app/manage/layout.tsx's own AdminThemeSurface wiring exactly
+    // -- confirmed live (2026-09-08) that without it, the sun/moon toggle
+    // in AdminShell's header rendered and was clickable but did nothing
+    // (useAdminTheme() falls back to a static "light" no-op with no
+    // Context.Provider ancestor, per that hook's own doc comment), and the
+    // whole shell was stuck on admin-theme.css's base (dark) styling since
+    // [data-mode] was never set at all. AdminThemeSurface renders the
+    // data-surface/data-mode wrapper div itself, replacing the manual one
+    // this used to be.
+    <AdminThemeSurface surface="manager" initialMode={shellInfo.theme} saveUrl="/api/manage/theme" className="min-h-dvh antialiased">
      <AdminRealtimeProvider>
       <AdminShell
         title={shellInfo.brokerName}
@@ -450,6 +455,6 @@ export default function App() {
         {renderSection()}
       </AdminShell>
      </AdminRealtimeProvider>
-    </div>
+    </AdminThemeSurface>
   );
 }

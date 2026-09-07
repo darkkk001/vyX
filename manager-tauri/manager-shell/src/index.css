@@ -24,3 +24,19 @@
   --font-admin-sans: system-ui, sans-serif;
   --font-admin-mono: ui-monospace, monospace;
 }
+
+/* App-shell fit (2026-09-08) -- the Next.js website gets this for free
+   from app/globals.css's own reset; this Vite entry never imported that
+   file, so html/body/#root had no height at all here, only whatever
+   AdminShell's own `min-h-dvh` computed to. In a Tauri webview that isn't
+   equivalent to "fill the window" the way it is in a real browser tab --
+   confirmed live as a real cause of the packaged app needing a page-level
+   scrollbar and not filling the window edge-to-edge. AdminShell's own
+   internal layout (fixed sidebar + header, `overflow-y-auto` on just the
+   <main>) already expects to be the one scrollable region inside a fully-
+   filled ancestor chain; this is that chain.  */
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}

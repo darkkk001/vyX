@@ -305,6 +305,15 @@ fn main() {
                 .title(&broker_name)
                 .inner_size(1440.0, 900.0)
                 .min_inner_size(1024.0, 640.0)
+                // The app's own UI is dark by default (admin-theme.css's
+                // base [data-surface] rule) -- without this, Windows draws
+                // its own native title bar in the OS's light-mode colors
+                // regardless, a jarring white bar above a dark app.
+                // decorations stay on (a real native title bar, not a
+                // custom-drawn one -- that's desktop-tauri's own frameless/
+                // DesktopTitleBar.tsx treatment, an already-flagged-deferred
+                // decision for this app, not done here yet).
+                .theme(Some(tauri::Theme::Dark))
                 // Same lockdown as desktop-tauri's own: the window only
                 // ever shows the bundled local shell now, so any
                 // navigation away from it opens in the OS browser instead

@@ -13,8 +13,9 @@ import AdminsManager from "@/app/(super-admin)/(shell)/admins/AdminsManager";
 import { apiCall } from "@/lib/desktop-api";
 import { initialsFrom } from "@/lib/format";
 import { AdminRealtimeProvider } from "@/lib/admin-realtime";
+import { AdminThemeSurface } from "@/lib/admin-theme";
 
-type ShellInfo = { adminEmail: string | null; unreadNotifications: number };
+type ShellInfo = { adminEmail: string | null; unreadNotifications: number; theme: "dark" | "light" };
 
 // A page's own <main className="mx-auto max-w-..."><PageHeader .../>
 // wrapper, reproduced here since a bundled shell has no Server Component
@@ -241,9 +242,11 @@ export default function App() {
   }
 
   return (
-    // Same fix as manager-shell's App.tsx -- see its own comment. Mirrors
-    // app/(super-admin)/layout.tsx's root data-surface="super-admin" div.
-    <div data-surface="super-admin" className="min-h-dvh antialiased">
+    // Same theme-surface fix as manager-shell's App.tsx -- see its own
+    // comment for the confirmed bug this closes (toggle rendered but did
+    // nothing, shell stuck on admin-theme.css's base/dark styling).
+    // Mirrors app/(super-admin)/layout.tsx's own AdminThemeSurface wiring.
+    <AdminThemeSurface surface="super-admin" initialMode={shellInfo.theme} saveUrl="/api/admin/theme" className="min-h-dvh antialiased">
      {/* enabled=false: the gateway hard-403s Super Admin (brokerId: null)
          on this stream by design -- see AdminRealtimeProvider's own doc
          comment. Same fix as NextAdminShell's enableRealtime prop. */}
@@ -278,6 +281,6 @@ export default function App() {
         {renderSection()}
       </AdminShell>
      </AdminRealtimeProvider>
-    </div>
+    </AdminThemeSurface>
   );
 }

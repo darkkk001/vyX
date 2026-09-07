@@ -17,3 +17,11 @@
   --font-admin-sans: system-ui, sans-serif;
   --font-admin-mono: ui-monospace, monospace;
 }
+
+/* Same app-shell fit fix as manager-shell/src/index.css -- see its own
+   comment. */
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}

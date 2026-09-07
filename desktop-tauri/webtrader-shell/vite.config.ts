@@ -15,11 +15,20 @@ export default defineConfig({
   define: {
     // WebTrader.tsx reads process.env.NEXT_PUBLIC_GATEWAY_WS_URL directly
     // (a Next.js build-time inlining convention) -- Vite has no `process`
-    // global at all, so left alone this throws at runtime. Substituting
-    // the bare `undefined` identifier here (not a JSON string) makes the
-    // component's own `?? "ws://127.0.0.1:8080"` fallback take over,
-    // reproducing today's unset-env-var dev behavior exactly.
-    "process.env.NEXT_PUBLIC_GATEWAY_WS_URL": "undefined",
+    // global at all, so left alone this throws at runtime.
+    //
+    // 2026-09-08: same fix as manager-tauri/manager-shell/vite.config.ts
+    // (see its own comment for the confirmed "Connecting…" bug this was
+    // causing there) -- reads the real value from this process's own env
+    // if set at build time, same convention as TAURI_SIGNING_PRIVATE_KEY.
+    // WebTrader.tsx's own window.vyxDesktop?.onPriceTick native-relay
+    // check means this specific shell likely wasn't hitting the same
+    // visible symptom (it has an escape hatch manager/admin-shell don't),
+    // but the browser-WS path is still real and should point at the real
+    // gateway once that relay isn't in play.
+    "process.env.NEXT_PUBLIC_GATEWAY_WS_URL": process.env.NEXT_PUBLIC_GATEWAY_WS_URL
+      ? JSON.stringify(process.env.NEXT_PUBLIC_GATEWAY_WS_URL)
+      : "undefined",
   },
   resolve: {
     alias: {
