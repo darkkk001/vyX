@@ -103,6 +103,21 @@ const signature = fs.readFileSync(path.join(bundleDir, sigFile), "utf-8").trim()
 
 const destRelative = path.relative(path.join(__dirname, ".."), destDir).replace(/\\/g, "/");
 
+// Remove any previously-published installer left in destDir -- otherwise
+// every version ever published stays reachable at its own predictable
+// URL forever, even once a newer build supersedes it (confirmed nothing
+// currently does: every prior publish here happened to already delete
+// the old file by hand before committing, but that was diligence, not a
+// guarantee -- automating it removes the one step a human could forget).
+if (fs.existsSync(destDir)) {
+  for (const existing of fs.readdirSync(destDir)) {
+    if (existing.endsWith("-setup.exe") && existing !== installer) {
+      fs.unlinkSync(path.join(destDir, existing));
+      console.log(`Removed stale installer: ${destRelative}/${existing}`);
+    }
+  }
+}
+
 fs.mkdirSync(destDir, { recursive: true });
 fs.copyFileSync(path.join(bundleDir, installer), path.join(destDir, installer));
 console.log(`Copied ${installer} -> ${destRelative}/`);
