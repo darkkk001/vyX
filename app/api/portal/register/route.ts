@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { hashPassword, issueEmailVerificationToken } from "@/lib/client-auth";
 import { sendBrokerEmail } from "@/lib/email/adapter";
+import { renderBrokerEmail } from "@/lib/email/template";
 import { brokerPublicOrigin, requestOrigin } from "@/lib/request-origin";
 
 // Client Portal self-registration (Stage 1) -- email + password, not an
@@ -59,7 +60,10 @@ export async function POST(request: NextRequest) {
 
   const broker = await prisma.broker.findUnique({
     where: { id: brokerId },
-    select: { name: true, subdomain: true, customDomain: true, emailEnabled: true, emailFromAddress: true, emailFromName: true },
+    select: {
+      name: true, subdomain: true, customDomain: true, logoUrl: true, primaryColor: true, supportEmail: true,
+      emailEnabled: true, emailFromAddress: true, emailFromName: true,
+    },
   });
   const brokerName = broker?.name ?? "your broker";
 
@@ -76,13 +80,26 @@ export async function POST(request: NextRequest) {
   const origin = broker ? brokerPublicOrigin(broker) : requestOrigin(request);
   const verifyUrl = `${origin}/api/portal/verify-email?token=${token}`;
 
+  const { html, text } = renderBrokerEmail(
+    { name: brokerName, logoUrl: broker?.logoUrl ?? null, primaryColor: broker?.primaryColor ?? null, supportEmail: broker?.supportEmail ?? null },
+    {
+      preheader: `Verify your email to finish setting up your ${brokerName} account.`,
+      heading: `Welcome to ${brokerName}`,
+      bodyLines: [
+        `Thanks for creating an account with ${brokerName}. Confirm your email address to activate your account and get started.`,
+      ],
+      cta: { label: "Verify Email", url: verifyUrl },
+      extraNote: "This link expires in 24 hours.",
+    }
+  );
+
   const { usedMock } = await sendBrokerEmail(
     { name: brokerName, emailEnabled: broker?.emailEnabled ?? false, emailFromAddress: broker?.emailFromAddress ?? null, emailFromName: broker?.emailFromName ?? null },
     {
       to: email,
       subject: `Verify your email for ${brokerName}`,
-      html: `<p>Welcome to ${brokerName}. Click the link below to verify your email and finish setting up your account.</p><p><a href="${verifyUrl}">${verifyUrl}</a></p>`,
-      text: `Welcome to ${brokerName}. Verify your email: ${verifyUrl}`,
+      html,
+      text,
     }
   );
 

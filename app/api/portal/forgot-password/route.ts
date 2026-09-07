@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { issuePasswordResetToken } from "@/lib/client-auth";
 import { sendBrokerEmail } from "@/lib/email/adapter";
+import { renderBrokerEmail } from "@/lib/email/template";
 import { brokerPublicOrigin, requestOrigin } from "@/lib/request-origin";
 
 // Real, email-based reset -- unlike app/api/trade/forgot-password (the
@@ -38,7 +39,10 @@ export async function POST(request: NextRequest) {
 
     const broker = await prisma.broker.findUnique({
       where: { id: brokerId },
-      select: { name: true, subdomain: true, customDomain: true, emailEnabled: true, emailFromAddress: true, emailFromName: true },
+      select: {
+        name: true, subdomain: true, customDomain: true, logoUrl: true, primaryColor: true, supportEmail: true,
+        emailEnabled: true, emailFromAddress: true, emailFromName: true,
+      },
     });
     const brokerName = broker?.name ?? "your broker";
 
@@ -49,13 +53,24 @@ export async function POST(request: NextRequest) {
     const resetUrl = `${origin}/portal/reset-password?token=${token}`;
     devResetUrl = resetUrl;
 
+    const { html, text } = renderBrokerEmail(
+      { name: brokerName, logoUrl: broker?.logoUrl ?? null, primaryColor: broker?.primaryColor ?? null, supportEmail: broker?.supportEmail ?? null },
+      {
+        preheader: `Reset your ${brokerName} account password.`,
+        heading: "Reset your password",
+        bodyLines: [`We received a request to reset the password on your ${brokerName} account. Click below to choose a new one.`],
+        cta: { label: "Reset Password", url: resetUrl },
+        extraNote: "This link expires in 1 hour.",
+      }
+    );
+
     ({ usedMock } = await sendBrokerEmail(
       { name: brokerName, emailEnabled: broker?.emailEnabled ?? false, emailFromAddress: broker?.emailFromAddress ?? null, emailFromName: broker?.emailFromName ?? null },
       {
         to: email,
         subject: `Reset your password for ${brokerName}`,
-        html: `<p>Click the link below to reset your ${brokerName} account password. This link expires in 1 hour.</p><p><a href="${resetUrl}">${resetUrl}</a></p>`,
-        text: `Reset your password: ${resetUrl} (expires in 1 hour)`,
+        html,
+        text,
       }
     ));
   }
