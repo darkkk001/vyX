@@ -420,7 +420,7 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
           <TableHeaderCell
             align="center"
             className="min-w-[110px]"
-            title="Per-account swap-free override (Account.swapFree) -- resolution order is this account > its Account Type > its Group > charged. Applied at fill/swap-rollover time once your broker's pricing engine is enabled."
+            title="Per-account swap-free override (Account.swapFree). Resolution order is this account > its Account Type > its Group > charged. Applied at fill/swap-rollover time once your broker's pricing engine is enabled."
           >
             Swap-free
           </TableHeaderCell>
@@ -451,7 +451,7 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
                     </Badge>
                   ) : null}
                   {row.hasCustomPricing ? (
-                    <span title="Has per-symbol pricing overrides -- see Custom Pricing on this account's page">
+                    <span title="Has per-symbol pricing overrides; see Custom Pricing on this account's page">
                       <Badge tone="warning">Custom pricing</Badge>
                     </span>
                   ) : null}

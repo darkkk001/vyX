@@ -296,7 +296,7 @@ export default function SettingsManager() {
 
       <Card
         title="Account types"
-        description="Pricing-tier labels a client account can be tagged with (Standard/Pro/Zero by default). Each type's own spread/commission/swap below is saved here now, but fill-time enforcement of a type's pricing (rather than the account's group) is a later pricing-engine phase -- Group pricing (Client groups page) is what actually applies to a real fill today."
+        description="Pricing-tier labels a client account can be tagged with (Standard/Pro/Zero by default). Each type's own flat and per-symbol pricing below, and any Group-level pricing, is applied at fill time once your broker's pricing engine is enabled; until then, Group pricing (Client groups page) is what applies to a real fill."
         action={<Button size="sm" onClick={() => openTypeModal("new")}>+ Add type</Button>}
       >
         <Table>
@@ -402,7 +402,7 @@ export default function SettingsManager() {
           {typeTab === "pricing" && typeModalTarget !== "new" && typeModalTarget !== null ? (
             <SymbolPricingEditor
               apiPath={`/api/manage/account-types/${typeModalTarget.id}/pricing`}
-              description={`Per-symbol overrides for ${typeModalTarget.name} -- blank means inherit this type's own flat default below (or, if that's also unset, whatever Group/broker resolves to). A Pro type's gold spread and its EURUSD spread can differ, unlike the flat fields.`}
+              description={`Per-symbol overrides for ${typeModalTarget.name}: blank means inherit this type's own flat default below (or, if that's also unset, whatever Group/broker resolves to). A Pro type's gold spread and its EURUSD spread can differ, unlike the flat fields.`}
             />
           ) : null}
 
@@ -432,7 +432,7 @@ export default function SettingsManager() {
           <ModalSection label="Pricing">
             <Alert tone="info">
               This type-wide flat pricing is the fallback for any symbol with no per-symbol override (Per-Symbol Pricing tab, once this type
-              is saved) -- both are applied at fill time once your broker&apos;s pricing engine is enabled.
+              is saved); both are applied at fill time once your broker&apos;s pricing engine is enabled.
             </Alert>
           </ModalSection>
           <div className="grid grid-cols-2 gap-3">

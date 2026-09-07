@@ -117,7 +117,7 @@ export default function ClientActivityView({ accountId, backLink }: { accountId:
         <div hidden={!pricingOpen}>
           <SymbolPricingEditor
             apiPath={`/api/manage/accounts/${accountId}/pricing`}
-            description="Per-symbol overrides for this specific account -- the most specific level in the pricing resolution chain, applied at fill time once your broker's pricing engine is enabled. Blank means inherit from this account's own Account Type, then its Group, then the broker default."
+            description="Per-symbol overrides for this specific account, the most specific level in the pricing resolution chain, applied at fill time once your broker's pricing engine is enabled. Blank means inherit from this account's own Account Type, then its Group, then the broker default."
             onOverrideCountChange={setCustomPricingCount}
           />
         </div>

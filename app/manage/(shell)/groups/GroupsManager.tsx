@@ -205,7 +205,7 @@ export default function GroupsManager() {
             <TableHeaderCell className="min-w-[175px]" title="How live orders from this group are routed">
               Routing
             </TableHeaderCell>
-            <TableHeaderCell align="center" className="min-w-[80px]" title="Applied at fill/swap-rollover time once your broker's pricing engine is enabled -- resolution order is Account > Account Type > Group > charged. '-' means this group inherits (nothing set here).">Swap-free</TableHeaderCell>
+            <TableHeaderCell align="center" className="min-w-[80px]" title="Applied at fill/swap-rollover time once your broker's pricing engine is enabled. Resolution order is Account > Account Type > Group > charged. '-' means this group inherits (nothing set here).">Swap-free</TableHeaderCell>
             <TableHeaderCell align="center" className="min-w-[70px]">Default</TableHeaderCell>
             <TableHeaderCell className="min-w-[145px]" />
           </TableHead>
@@ -457,7 +457,7 @@ function GroupFormModal({
         {tab === "pricing" && isEdit ? (
           <SymbolPricingEditor
             apiPath={`/api/manage/groups/${initial!.id}/pricing`}
-            description={`Spread markup/target, commission, and swap set here apply to every real fill for accounts in ${initial!.name} once your broker's pricing engine is enabled -- not just a label. Blank means inherit from the broker-wide default; Reset removes the whole row.`}
+            description={`Spread markup/target, commission, and swap set here apply to every real fill for accounts in ${initial!.name} once your broker's pricing engine is enabled, not just a label. Blank means inherit from the broker-wide default; Reset removes the whole row.`}
           />
         ) : null}
 
