@@ -25,3 +25,11 @@ html, body, #root {
   margin: 0;
   overflow: hidden;
 }
+
+/* Same min-h-dvh cap fix as manager-shell/src/index.css -- see its own
+   comment for the full "cut off sidebar / blank clipped area" root cause. */
+#root, #root > [data-surface], #root .min-h-dvh {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}

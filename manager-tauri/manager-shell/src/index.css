@@ -40,3 +40,22 @@ html, body, #root {
   margin: 0;
   overflow: hidden;
 }
+
+/* AdminThemeSurface's own wrapper div and AdminShell's root div both use
+   Tailwind's `min-h-dvh` -- a FLOOR, not a cap, fine on the website (a
+   normal page, free to grow taller than the viewport and let the browser
+   scroll it) but wrong for exactly one #root-filling app window: nothing
+   above caps it at the window's actual height, so content taller than
+   the window grew past it and, combined with `overflow: hidden` on body
+   above, was silently clipped (not scrollable) rather than contained --
+   confirmed live as the cause of both the sidebar's own nav items being
+   cut off and a blank area where clipped content used to be. Equal
+   specificity to `.min-h-dvh` (one class vs. one attribute selector) and
+   after it in the cascade (Tailwind is @import'd above), so this wins.
+   AdminShell's own `overflow-y-auto` on <aside> and <main> is what
+   actually needs a bounded parent to scroll within -- this supplies it. */
+#root, #root > [data-surface], #root .min-h-dvh {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}

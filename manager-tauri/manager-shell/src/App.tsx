@@ -20,6 +20,7 @@ import WalletsManager from "@/app/manage/(shell)/wallets/WalletsManager";
 import IbRelationshipsManager from "@/app/manage/(shell)/ib/IbRelationshipsManager";
 import PositionsManager from "@/app/manage/(shell)/positions/PositionsManager";
 import DealingTabs from "@/app/manage/(shell)/dealing/DealingTabs";
+import DealerDeskToggle from "@/components/admin/DealerDeskToggle";
 import FeedHealthManager from "@/app/manage/(shell)/feed-health/FeedHealthManager";
 import DealsManager from "@/app/manage/(shell)/deals/DealsManager";
 import SymbolConfigTable from "@/app/manage/(shell)/symbols/SymbolConfigTable";
@@ -282,6 +283,9 @@ export default function App() {
       case "/manage/dealing":
         return (
           <Section maxWidth="max-w-[1400px]" title="Dealing">
+            <div className="mb-6">
+              <DealerDeskToggle />
+            </div>
             <DealingTabs />
           </Section>
         );
@@ -427,7 +431,23 @@ export default function App() {
     // data-surface/data-mode wrapper div itself, replacing the manual one
     // this used to be.
     <AdminThemeSurface surface="manager" initialMode={shellInfo.theme} saveUrl="/api/manage/theme" className="min-h-dvh antialiased">
-     <AdminRealtimeProvider>
+     {/* enabled=false (2026-09-08, interim): this stream is a plain
+         browser WebSocket with no native-relay/ticket-auth path yet (see
+         lib/admin-realtime.tsx's own "Known gap" comment) -- for a broker
+         on a CUSTOM domain (Futurix's trade.futurixglobal.com) the
+         session cookie it depends on can never reach feed.vyxtrader.com
+         at all (different domain, see lib/cookie-domain.ts's own
+         documented incident), so it would only ever sit in "Connecting…"
+         forever with no way to recover. Every actual read/write already
+         goes through the separate api_request Rust bridge (its own
+         reqwest cookie jar, not subject to this browser-only limitation)
+         and is completely unaffected -- this only ever gated a live-push
+         auto-refresh nicety, never real functionality. Same tradeoff
+         admin-shell's own App.tsx already makes for Super Admin, for a
+         different underlying reason (a hard 403 there vs. an
+         unreachable cookie here) -- showing a permanently-broken pill
+         would make a working interim app look broken for no benefit. */}
+     <AdminRealtimeProvider enabled={false}>
       <AdminShell
         title={shellInfo.brokerName}
         logoUrl={shellInfo.brokerLogoUrl}
