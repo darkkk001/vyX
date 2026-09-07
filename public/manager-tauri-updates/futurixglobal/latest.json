@@ -1,11 +1,11 @@
 {
-  "version": "0.1.11",
-  "notes": "Fix theme toggle, real-time connection, window fit, and native dark titlebar",
-  "pub_date": "2026-09-07T22:07:33.450Z",
+  "version": "0.1.12",
+  "notes": "Interim fixes: light theme, dealer toggle, window fit, native titlebar",
+  "pub_date": "2026-09-07T22:27:04.990Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUc2VqVXVBOHpXRHhzUVRpdVNzd3VEL0grUTlxeDRBOXJ1L0gycEw0d20rNjV2K0lGZEYrZFJtQUZ4bEdBTFdqUTlDZ3I4UnNlV0JNL0FaS2dQNGVRNTFVZjV5M1IzTkE4PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4ODE4ODQ0CWZpbGU6RnV0dXJpeCBHbG9iYWwgTWFuYWdlcl8wLjEuMTFfeDY0LXNldHVwLmV4ZQowOUZZSnBOVzI4cEVsQUllQ0ZuQXVodVR0VkN3WXkwSzJEWXo2V2NNUGQrTmRXU2JFYlNDaW0vMEVUSUxXU3pwK21wbWN5L2RiZlRzeFlEVXBMdUVCdz09Cg==",
-      "url": "https://vyxtrader.com/manager-tauri-updates/futurixglobal/Futurix%20Global%20Manager_0.1.11_x64-setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUc2VqVXVBOHpXRHozRUo5RjJBMVJ2aVpFS0tEWVhBd2REeG1oWWVWdHB1Z0JyL0RkNXl1eGxpeDZhTytaMm8wbkdMb1NQbG0zWVZxdjFlelVSRmc0bHV5elAvdHU3T0FnPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4ODIwMDE2CWZpbGU6RnV0dXJpeCBHbG9iYWwgTWFuYWdlcl8wLjEuMTJfeDY0LXNldHVwLmV4ZQp3bEthRCtWTG4yVWhKQ3BraUIvZC9rOTNoMW9SS2VqNWNzSVQzMHMrSU5teHNBWWtYbmY1QjNxTlVSdWpyZFJmY3I2T0VhL1lydTBFaDd3T3RTTjJBQT09Cg==",
+      "url": "https://vyxtrader.com/manager-tauri-updates/futurixglobal/Futurix%20Global%20Manager_0.1.12_x64-setup.exe"
     }
   }
 }
