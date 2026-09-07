@@ -8,12 +8,24 @@ import { prisma } from "@/lib/prisma";
 // specific layout/page's `title`, it doesn't merge/append, so this alone
 // is enough to stop every broker's browser tab from all showing the same
 // platform name.
+// Favicon is per-tenant here too, for the same reason as title -- a
+// broker's own browser tab should show ITS logo, not the platform's
+// app/favicon.ico. Reuses the x-broker-logo-url header middleware.ts
+// already resolved (see BrokerLayout below) instead of a second Prisma
+// query for the same broker row. Next's metadata resolution takes the
+// most specific segment's `icons` wholesale (not a merge with the root
+// layout's file-convention favicon.ico), so this alone is enough to
+// override it for every broker-facing route.
 export async function generateMetadata(): Promise<Metadata> {
   const headerList = await headers();
   const brokerId = headerList.get("x-broker-id");
   if (!brokerId) return {};
   const broker = await prisma.broker.findUnique({ where: { id: brokerId }, select: { name: true } });
-  return broker ? { title: broker.name } : {};
+  const logoUrl = headerList.get("x-broker-logo-url") || null;
+  return {
+    ...(broker ? { title: broker.name } : {}),
+    ...(logoUrl ? { icons: { icon: logoUrl } } : {}),
+  };
 }
 
 // Applies to every broker-facing route (WebTrader, broker login, etc).

@@ -55,6 +55,8 @@
   align-items: center;
   gap: 10px;
   margin-bottom: 24px;
+  text-decoration: none;
+  color: inherit;
 }
 
 .logo {

@@ -47,13 +47,13 @@ export default function RegisterForm({ brokerName, brokerLogoUrl }: { brokerName
       <div className={styles.root}>
         <div className={styles.mesh} />
         <div className={styles.card}>
-          <div className={styles.brand}>
+          <Link href="/" className={styles.brand}>
             {brokerLogoUrl ? (
               // eslint-disable-next-line @next/next/no-img-element
               <img src={brokerLogoUrl} alt={`${brokerName} logo`} className={styles.logo} />
             ) : null}
             <span className={styles.brandName}>{brokerName}</span>
-          </div>
+          </Link>
           <div className={styles.checkEmail}>
             <div className={styles.checkEmailIcon}>
               <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 4h16v16H4z" /><path d="M4 6l8 7 8-7" /></svg>
@@ -80,13 +80,13 @@ export default function RegisterForm({ brokerName, brokerLogoUrl }: { brokerName
     <div className={styles.root}>
       <div className={styles.mesh} />
       <div className={styles.card}>
-        <div className={styles.brand}>
+        <Link href="/" className={styles.brand}>
           {brokerLogoUrl ? (
             // eslint-disable-next-line @next/next/no-img-element
             <img src={brokerLogoUrl} alt={`${brokerName} logo`} className={styles.logo} />
           ) : null}
           <span className={styles.brandName}>{brokerName}</span>
-        </div>
+        </Link>
         <h1 className={styles.title}>Create your account</h1>
         <p className={styles.subtitle}>Manage your {brokerName} trading accounts, deposits, and KYC in one place.</p>
 

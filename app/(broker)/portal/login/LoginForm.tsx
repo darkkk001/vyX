@@ -44,13 +44,13 @@ export default function LoginForm({ brokerName, brokerLogoUrl }: { brokerName: s
     <div className={styles.root}>
       <div className={styles.mesh} />
       <div className={styles.card}>
-        <div className={styles.brand}>
+        <Link href="/" className={styles.brand}>
           {brokerLogoUrl ? (
             // eslint-disable-next-line @next/next/no-img-element
             <img src={brokerLogoUrl} alt={`${brokerName} logo`} className={styles.logo} />
           ) : null}
           <span className={styles.brandName}>{brokerName}</span>
-        </div>
+        </Link>
         <h1 className={styles.title}>Log in</h1>
         <p className={styles.subtitle}>Access your {brokerName} client portal.</p>
 
@@ -80,7 +80,10 @@ export default function LoginForm({ brokerName, brokerLogoUrl }: { brokerName: s
             />
           </div>
           <div className={styles.field}>
-            <label className={styles.fieldLabel} htmlFor="password">Password</label>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+              <label className={styles.fieldLabel} style={{ marginBottom: 0 }} htmlFor="password">Password</label>
+              <Link href="/portal/forgot-password" style={{ fontSize: 11, color: "var(--text-3)" }}>Forgot password?</Link>
+            </div>
             <div className={styles.passwordWrap}>
               <input
                 id="password"
@@ -109,8 +112,6 @@ export default function LoginForm({ brokerName, brokerLogoUrl }: { brokerName: s
           </button>
         </form>
 
-        {/* Forgot-password has a working API already (Stage 1/2), just no
-            page yet -- deferred rather than linking somewhere that 404s. */}
         <div className={styles.footer} style={{ justifyContent: "center" }}>
           <span style={{ color: "var(--text-3)" }}>New here?</span>
           <Link href="/portal/register">Create an account</Link>
