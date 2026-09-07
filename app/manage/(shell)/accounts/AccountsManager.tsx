@@ -270,7 +270,7 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
     setBusyId(null);
     if (response.status === 202) {
       setAdjustTarget(null);
-      showToast("Balance adjustment submitted for approval -- a different admin needs to review it before it takes effect.", "success");
+      showToast("Balance adjustment submitted for approval. A different admin needs to review it before it takes effect.", "success");
       reloadPendingAdjustments().catch(() => {});
       return;
     }
@@ -329,7 +329,7 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
         <TableHead>
           <TableHeaderCell className="min-w-[220px]">Account</TableHeaderCell>
           <TableHeaderCell className="min-w-[70px]" title="DEMO or LIVE">Mode</TableHeaderCell>
-          <TableHeaderCell className="min-w-[90px]" title="Pricing tier -- Standard/Pro/Zero, see Settings -> Account Types">Type</TableHeaderCell>
+          <TableHeaderCell className="min-w-[90px]" title="Pricing tier: Standard/Pro/Zero, see Settings -> Account Types">Type</TableHeaderCell>
           <TableHeaderCell className="min-w-[90px]">Country</TableHeaderCell>
           <TableHeaderCell className="min-w-[90px]">KYC</TableHeaderCell>
           <TableHeaderCell className="min-w-[160px]">Group</TableHeaderCell>
@@ -353,7 +353,7 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
       <p className="text-sm text-[var(--text-3)]">
         {(rows ?? []).length} account{(rows ?? []).length === 1 ? "" : "s"}.
         {!canManageFinance
-          ? " Leverage/status/balance changes -- including a starting balance on a new account -- require Broker Admin or the Account Finance permission."
+          ? " Leverage/status/balance changes, including a starting balance on a new account, require Broker Admin or the Account Finance permission."
           : ""}
       </p>
       <div className="flex items-center justify-between gap-3">
@@ -406,7 +406,7 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
         <TableHead>
           <TableHeaderCell className="min-w-[220px]">Account</TableHeaderCell>
           <TableHeaderCell className="min-w-[70px]" title="DEMO or LIVE">Mode</TableHeaderCell>
-          <TableHeaderCell className="min-w-[90px]" title="Pricing tier -- Standard/Pro/Zero, see Settings -> Account Types">Type</TableHeaderCell>
+          <TableHeaderCell className="min-w-[90px]" title="Pricing tier: Standard/Pro/Zero, see Settings -> Account Types">Type</TableHeaderCell>
           <TableHeaderCell className="min-w-[90px]">Country</TableHeaderCell>
           <TableHeaderCell className="min-w-[90px]">KYC</TableHeaderCell>
           <TableHeaderCell className="min-w-[160px]">Group</TableHeaderCell>
@@ -654,7 +654,7 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
             <p className="-mt-2.5 text-[10px] text-[var(--text-3)]">Demo is simulated practice trading; Live risks real money.</p>
             {newAccount.accountMode === "LIVE" ? (
               <p className="rounded-lg border border-[var(--warn)]/30 bg-[var(--warn-bg)] px-2.5 py-2 text-xs text-[var(--warn)]">
-                KYC required -- a brand-new Live account starts unverified. Some actions (e.g. withdrawals) will be
+                KYC required: a brand-new Live account starts unverified. Some actions (e.g. withdrawals) will be
                 blocked until KYC is approved on the account&apos;s own page.
               </p>
             ) : null}

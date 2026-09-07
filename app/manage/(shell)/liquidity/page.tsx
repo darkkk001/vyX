@@ -21,7 +21,7 @@ export default async function ManagerLiquidityPage() {
     <main className="mx-auto max-w-[1400px]">
       <PageHeader
         title="Liquidity providers"
-        description="Pre-integration roster only -- no real LP connection exists yet. Status is manually tracked, not detected."
+        description="Pre-integration roster only. No real LP connection exists yet. Status is manually tracked, not detected."
       />
       <LiquidityManager />
     </main>

@@ -95,7 +95,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   if (existing.isDefault && !isDefault) {
     const otherDefault = await prisma.accountType.findFirst({ where: { brokerId, isDefault: true, id: { not: id } } });
     if (!otherDefault) {
-      return NextResponse.json({ error: "make another type the default first -- a broker always needs exactly one" }, { status: 400 });
+      return NextResponse.json({ error: "make another type the default first, a broker always needs exactly one" }, { status: 400 });
     }
   }
 

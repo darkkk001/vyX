@@ -21,9 +21,9 @@ export type RiskRadarRow = {
 type SortKey = "trades30d" | "winRatePct" | "avgHoldMinutes" | "avgLot" | "profitVelocityPerDay";
 
 const FLAG_TOOLTIPS = {
-  scalp: "Heuristic: average trade hold time under 2 minutes over the last 30 days. Not a rule violation by itself -- a flag for review, not an accusation.",
+  scalp: "Heuristic: average trade hold time under 2 minutes over the last 30 days. Not a rule violation by itself, a flag for review, not an accusation.",
   martingale: "Heuristic: lot size at least 1.5x the previous trade's size, immediately after a loss, repeated 3+ times in the last 30 days.",
-  news: "Not available -- no historical economic-calendar data source exists yet (the configured Finnhub key doesn't include calendar access, and the existing feed is forward-looking only). Always false until that's resolved.",
+  news: "Not available. No historical economic-calendar data source exists yet (the configured Finnhub key doesn't include calendar access, and the existing feed is forward-looking only). Always false until that's resolved.",
 } as const;
 
 // Impression Pack #4 -- self-fetches from /api/manage/risk-radar (same

@@ -124,7 +124,7 @@ export default function FeedHealthManager() {
             <StatCard label="p99 / max" value={`${ms(feedStats.p99_ms)} / ${ms(feedStats.max_ms)}`} />
           </StatGrid>
         ) : (
-          <p className="text-sm text-[var(--text-3)]">engine/server unreachable -- expected until it&apos;s deployed.</p>
+          <p className="text-sm text-[var(--text-3)]">engine/server unreachable, expected until it&apos;s deployed.</p>
         )}
       </div>
 
@@ -191,7 +191,7 @@ export default function FeedHealthManager() {
           <StatCard label="Hot-reload malformed" value={String(alertStats.hot_reload_malformed_total)} />
         </StatGrid>
       ) : (
-        <p className="text-sm text-[var(--text-3)]">engine/server unreachable -- expected until it&apos;s deployed.</p>
+        <p className="text-sm text-[var(--text-3)]">engine/server unreachable, expected until it&apos;s deployed.</p>
       )}
       <Table>
         <TableHead>
@@ -209,7 +209,7 @@ export default function FeedHealthManager() {
             <TableCell primary>
               Persist failures{" "}
               <span className="font-normal text-[var(--text-3)]">
-                (fired in-memory but failed to save -- trader was never notified; resolves on the next full resync)
+                (fired in-memory but failed to save; trader was never notified; resolves on the next full resync)
               </span>
             </TableCell>
             <TableCell align="right" mono>{alertStats ? alertStats.persist_failures_total : <Badge tone="neutral">Not monitored</Badge>}</TableCell>

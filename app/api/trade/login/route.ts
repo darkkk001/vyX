@@ -63,7 +63,7 @@ export async function POST(request: NextRequest) {
   if (expectedAccountMode && account.accountMode !== expectedAccountMode) {
     const actual = account.accountMode === "LIVE" ? "Live" : "Demo";
     return NextResponse.json(
-      { error: `this is a ${actual} account -- select the ${actual} server and try again` },
+      { error: `this is a ${actual} account, select the ${actual} server and try again` },
       { status: 400 }
     );
   }

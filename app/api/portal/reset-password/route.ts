@@ -20,7 +20,7 @@ export async function POST(request: NextRequest) {
 
   const clientId = await consumePasswordResetToken(token);
   if (!clientId) {
-    return NextResponse.json({ error: "this reset link is invalid or has expired -- request a new one" }, { status: 400 });
+    return NextResponse.json({ error: "this reset link is invalid or has expired, request a new one" }, { status: 400 });
   }
 
   const passwordHash = await hashPassword(password);

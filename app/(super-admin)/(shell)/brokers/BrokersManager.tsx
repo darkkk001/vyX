@@ -678,7 +678,7 @@ export default function BrokersManager() {
               <p className="mb-2 text-xs text-[var(--text-3)]">
                 Registration, email verification and password reset send from this address once enabled. The
                 address&apos;s domain must already be verified as a sender on the platform&apos;s Resend account,
-                or sends will fail -- leave disabled to keep logging these links instead of sending real email.
+                or sends will fail. Leave disabled to keep logging these links instead of sending real email.
               </p>
               <ModalRow2>
                 <FormField label="From address">
@@ -794,10 +794,10 @@ export default function BrokersManager() {
             <ModalSection label="Pricing engine">
               <p className="mb-2 text-xs text-[var(--text-3)]">
                 OFF (default): every fill and the daily swap job price purely from this broker&apos;s Groups, exactly as before Phase 2. ON:
-                the same fills switch to the full Account &gt; Account Type &gt; Group &gt; broker-default resolver -- including per-symbol
-                overrides, target-total-spread, and swap-free settings this broker has saved. Verify with the shadow comparison first --{" "}
+                the same fills switch to the full Account &gt; Account Type &gt; Group &gt; broker-default resolver, including per-symbol
+                overrides, target-total-spread, and swap-free settings this broker has saved. Verify with the shadow comparison first:{" "}
                 <code className="mono">GET /api/manage/pricing-shadow-compare</code> as that broker&apos;s own admin, or{" "}
-                <code className="mono">npx tsx scripts/pricing-shadow-compare.ts &lt;subdomain&gt;</code> -- confirm it shows no unexpected
+                <code className="mono">npx tsx scripts/pricing-shadow-compare.ts &lt;subdomain&gt;</code>. Confirm it shows no unexpected
                 diffs before enabling for a real broker.
               </p>
               <PricingEngineSwitch brokerId={detailTarget.id} initialEnabled={detailTarget.pricingEngineEnabled} onSaved={reload} />

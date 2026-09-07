@@ -131,7 +131,7 @@ export default function AccountsView() {
         <div className={styles.panel} style={{ marginBottom: 20, borderColor: "var(--accent)" }}>
           <h2 className={styles.panelTitle}>Your Live account is ready</h2>
           <p className={styles.panelText} style={{ marginBottom: 10 }}>
-            This password is shown once -- it was also emailed to you.
+            This password is shown once. It was also emailed to you.
           </p>
           <div className={styles.credentialBox}>
             <div className={styles.credentialRow}>
@@ -203,7 +203,7 @@ export default function AccountsView() {
               <span>{r.accountTypeName ?? "Default"}</span>
               <span style={{ color: r.status === "APPROVED" ? "var(--accent)" : r.status === "REJECTED" ? "var(--sell, #EA3943)" : "var(--text-2)" }}>
                 {r.status}
-                {r.status === "REJECTED" && r.rejectionReason ? ` -- ${r.rejectionReason}` : ""}
+                {r.status === "REJECTED" && r.rejectionReason ? `: ${r.rejectionReason}` : ""}
               </span>
             </div>
           ))}
@@ -216,7 +216,7 @@ export default function AccountsView() {
             {newDemoCredentials ? (
               <>
                 <h3 className={styles.modalTitle}>Demo account created</h3>
-                <p className={styles.panelText} style={{ marginBottom: 4 }}>This password is shown once -- save it now.</p>
+                <p className={styles.panelText} style={{ marginBottom: 4 }}>This password is shown once. Save it now.</p>
                 <div className={styles.credentialBox}>
                   <div className={styles.credentialRow}>
                     <span className={styles.credentialLabel}>Account number</span>
@@ -249,7 +249,7 @@ export default function AccountsView() {
 
                 {tab === "DEMO" ? (
                   <>
-                    <p className={styles.panelText} style={{ marginBottom: 14 }}>Created instantly -- practice trading with virtual funds.</p>
+                    <p className={styles.panelText} style={{ marginBottom: 14 }}>Created instantly, with virtual funds to practice trading.</p>
                     {accountTypes.length > 0 ? (
                       <div className={styles.field}>
                         <label className={styles.fieldLabel}>Account type</label>

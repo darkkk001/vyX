@@ -357,7 +357,7 @@ export function ColumnVisibilityMenu({
       {columns.map((col) => (
         <label
           key={col.key}
-          title={col.alwaysVisible ? "Always shown -- needed to tell rows apart" : undefined}
+          title={col.alwaysVisible ? "Always shown, needed to tell rows apart" : undefined}
           className={`flex items-center gap-2 px-3 py-1.5 text-xs text-[var(--text-1)] ${col.alwaysVisible ? "opacity-40" : "cursor-pointer hover:bg-[var(--bg-3)]"}`}
         >
           <input

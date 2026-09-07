@@ -184,7 +184,7 @@ export async function DELETE(_request: NextRequest, { params }: { params: Promis
 
   if (existing.isDefault) {
     return NextResponse.json(
-      { error: "the default group cannot be deleted -- make another group the default first" },
+      { error: "the default group cannot be deleted, make another group the default first" },
       { status: 400 }
     );
   }

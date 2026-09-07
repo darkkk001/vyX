@@ -170,7 +170,7 @@ export default function FundsRequestsManager() {
                 ? "This request goes back to plain pending, either staff member can mark it again."
                 : confirmTarget.action === "APPROVE"
                   ? confirmTarget.row.type === "WITHDRAWAL" && !confirmTarget.row.markedByAdminId
-                    ? "This only marks the request -- a different staff member must confirm before any balance moves."
+                    ? "This only marks the request. A different staff member must confirm before any balance moves."
                     : `This moves ${confirmTarget.row.amount} through the ledger onto ${confirmTarget.row.accountNumber}'s balance.`
                   : `${confirmTarget.row.accountNumber}'s balance is left untouched.`}
             </p>

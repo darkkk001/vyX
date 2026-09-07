@@ -2565,7 +2565,7 @@ export default function WebTrader({
     if (Math.abs(steps - Math.round(steps)) > 1e-6) return `amount must be ${minLot} plus a multiple of ${lotStep} lots`;
     const remaining = fullVolume - amount;
     if (remaining > EPS && remaining < minLot - EPS) {
-      return `closing this amount would leave ${remaining.toFixed(2)} lots open, below this symbol's minimum of ${minLot} -- close the full position instead`;
+      return `closing this amount would leave ${remaining.toFixed(2)} lots open, below this symbol's minimum of ${minLot}. Close the full position instead`;
     }
     return null;
   }
@@ -4645,7 +4645,7 @@ export default function WebTrader({
                             <span className="pos-cell mono">{o.tpPrice ? fmt(parseFloat(o.tpPrice), o.symbol.digits) : "-"}</span>
                             <span className="pos-cell" style={{ fontSize: 11 }}>
                               {isDealingPending ? (
-                                <span className="pending-approval-badge" title="Awaiting dealer review -- you can still trade this or any other symbol while you wait.">
+                                <span className="pending-approval-badge" title="Awaiting dealer review. You can still trade this or any other symbol while you wait.">
                                   {formatElapsed(new Date(o.createdAt).getTime(), dealingPendingNowMs)}
                                 </span>
                               ) : (
@@ -5728,7 +5728,7 @@ export default function WebTrader({
               <div className="generic-modal-card" style={{ width: 320 }}>
                 <div className="quick-order-header"><span>Close by, {p.symbol.name}</span></div>
                 <p className="margin-note" style={{ marginTop: 0 }}>
-                  Net {p.side === "BUY" ? "Buy" : "Sell"} {parseFloat(p.volume).toFixed(2)} @ {fmt(parseFloat(p.openPrice), p.symbol.digits)} against an opposite position on the same symbol, at one shared price -- no market spread charged on the netted amount.
+                  Net {p.side === "BUY" ? "Buy" : "Sell"} {parseFloat(p.volume).toFixed(2)} @ {fmt(parseFloat(p.openPrice), p.symbol.digits)} against an opposite position on the same symbol, at one shared price. No market spread charged on the netted amount.
                 </p>
                 {candidates.length === 0 ? (
                   <p className="margin-note">No opposite-side {p.symbol.name} position to close against anymore.</p>

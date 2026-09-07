@@ -175,7 +175,7 @@ export default function TeamManager() {
             <TableHeaderCell className="min-w-[200px]">Email</TableHeaderCell>
             <TableHeaderCell className="min-w-[110px]">Role</TableHeaderCell>
             <TableHeaderCell className="min-w-[150px]">Status</TableHeaderCell>
-            <TableHeaderCell className="min-w-[200px]" title="Only applies to Manager-role staff -- Broker Admin already has everything">
+            <TableHeaderCell className="min-w-[200px]" title="Only applies to Manager-role staff (Broker Admin already has everything)">
               Delegated permissions
             </TableHeaderCell>
             <TableHeaderCell className="min-w-[150px]">Last login</TableHeaderCell>

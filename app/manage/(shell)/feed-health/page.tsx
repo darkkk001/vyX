@@ -13,7 +13,7 @@ export default function ManagerFeedHealthPage() {
     <main className="mx-auto max-w-4xl">
       <PageHeader
         title="Feed health"
-        description="Tick-pipeline latency and health, end to end. Not deployed publicly yet -- see the Tick Pipeline Audit -- so this shows real numbers only against a local dev stack."
+        description="Tick-pipeline latency and health, end to end. Not deployed publicly yet (see the Tick Pipeline Audit), so this shows real numbers only against a local dev stack."
       />
       <FeedHealthManager />
     </main>

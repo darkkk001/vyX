@@ -396,7 +396,7 @@ export async function checkMaxDailyLoss(
   });
   const realizedToday = agg._sum.amount ?? new Prisma.Decimal(0);
   if (realizedToday.lte(maxDailyLoss.neg())) {
-    return `daily loss limit of ${maxDailyLoss} reached for this account -- try again tomorrow`;
+    return `daily loss limit of ${maxDailyLoss} reached for this account, try again tomorrow`;
   }
   return null;
 }

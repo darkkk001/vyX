@@ -57,7 +57,7 @@ export default function DealingReplayPanel({ positionId, onClose }: { positionId
       ) : (
         <div className="flex flex-col gap-4">
           <p className="text-[10.5px] uppercase tracking-wide text-[var(--text-3)]">
-            Reconstructed from 1-minute candle data -- not a tick-accurate replay (this platform stores OHLC bars, not raw ticks).
+            Reconstructed from 1-minute candle data, not a tick-accurate replay (this platform stores OHLC bars, not raw ticks).
           </p>
 
           <div className="grid grid-cols-2 gap-2.5 text-sm">

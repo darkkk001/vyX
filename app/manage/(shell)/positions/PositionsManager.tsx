@@ -627,7 +627,7 @@ export default function PositionsManager() {
     setBulkSelectionClosing(false);
     const failedCount = results.filter((r) => !r.ok).length;
     if (failedCount > 0) {
-      setBulkSelectionError(`${failedCount} of ${ids.length} positions failed to close -- the rest closed normally.`);
+      setBulkSelectionError(`${failedCount} of ${ids.length} positions failed to close. The rest closed normally.`);
     }
     rowSelection.clear();
     reload().catch(() => {});
@@ -649,7 +649,7 @@ export default function PositionsManager() {
         label: "Void",
         onClick: () => setVoidConfirm(p),
         tone: "danger" as const,
-        title: "Cancel this position as if it never produced a P/L -- balance restored, hidden from the trader's statement",
+        title: "Cancel this position as if it never produced a P/L: balance restored, hidden from the trader's statement",
       },
       { label: "Copy position ID", onClick: () => { navigator.clipboard.writeText(p.id).catch(() => {}); } },
     ];
@@ -872,7 +872,7 @@ export default function PositionsManager() {
 
       {pendingSubmittedToast ? (
         <div className="rounded-lg border border-[var(--accent)]/30 bg-[var(--accent-bg)] px-3 py-2 text-sm text-[var(--accent)]">
-          {pendingSubmittedToast} -- a different admin needs to review it below before it takes effect.
+          {pendingSubmittedToast}. A different admin needs to review it below before it takes effect.
         </div>
       ) : null}
 
@@ -1023,7 +1023,7 @@ export default function PositionsManager() {
             <TableHeaderCell align="right">Buy volume</TableHeaderCell>
             <TableHeaderCell align="right">Sell volume</TableHeaderCell>
             <TableHeaderCell align="right">Net exposure</TableHeaderCell>
-            <TableHeaderCell align="right" title="Volume-weighted average open price of the side driving net exposure (net-side-aware VWAP) -- helps judge hedge levels.">
+            <TableHeaderCell align="right" title="Volume-weighted average open price of the side driving net exposure (net-side-aware VWAP), helps judge hedge levels.">
               Avg open price (net)
             </TableHeaderCell>
             <TableHeaderCell align="right">Client floating P&L</TableHeaderCell>
@@ -1339,7 +1339,7 @@ export default function PositionsManager() {
                 <span className="text-sm">
                   <span className="font-medium text-[var(--text-1)]">Flip in place</span>
                   <span className="block text-xs text-[var(--text-2)] mt-0.5">
-                    Same position, same entry price ({reverseConfirm.openPrice}) -- side flips {reverseConfirm.side} →{" "}
+                    Same position, same entry price ({reverseConfirm.openPrice}). Side flips {reverseConfirm.side} →{" "}
                     {reverseConfirm.side === "BUY" ? "SELL" : "BUY"}, floating P/L sign flips with it. No close, no new position, no realized P/L
                     event, no Transaction. Margin recalculates live for the new side.
                   </span>
@@ -1359,7 +1359,7 @@ export default function PositionsManager() {
             </div>
             {reverseConfirm.mirrored ? (
               <div className="rounded-lg border border-[var(--warn)]/30 bg-[var(--warn-bg)] px-2.5 py-2 text-xs text-[var(--warn)]">
-                {reverseConfirm.accountNumber} is in a mirrored group -- this account&apos;s mirror target won&apos;t follow this correction
+                {reverseConfirm.accountNumber} is in a mirrored group. This account&apos;s mirror target won&apos;t follow this correction
                 automatically.
               </div>
             ) : null}
@@ -1380,9 +1380,9 @@ export default function PositionsManager() {
         {voidConfirm ? (
           <div className="flex flex-col gap-3">
             <p className="text-sm text-[var(--text-2)]">
-              Cancels {voidConfirm.accountNumber}&apos;s {voidConfirm.symbolName} {voidConfirm.side} position as if it never produced a P/L --
+              Cancels {voidConfirm.accountNumber}&apos;s {voidConfirm.symbolName} {voidConfirm.side} position as if it never produced a P/L:
               balance is restored to its pre-open state (any commission/swap already booked against it is reversed with a ledger entry), the
-              position is marked VOIDED. Visible to admins on the Deals page; hidden from the trader&apos;s own statement -- Delete (full
+              position is marked VOIDED. Visible to admins on the Deals page; hidden from the trader&apos;s own statement. Delete (full
               removal) is available there too, once it&apos;s no longer open.
             </p>
             {reverseVoidErrors[voidConfirm.id] ? <div className="text-xs text-[var(--sell)]">{reverseVoidErrors[voidConfirm.id]}</div> : null}

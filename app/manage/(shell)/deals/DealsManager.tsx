@@ -104,7 +104,7 @@ export default function DealsManager() {
     if (response.status === 202) {
       setDeleteConfirm(null);
       setDeleteReason("");
-      setPendingToast("Delete submitted for approval -- a different admin needs to review it (Live Exposure page).");
+      setPendingToast("Delete submitted for approval. A different admin needs to review it (Live Exposure page).");
       return;
     }
     if (!response.ok) {
@@ -212,7 +212,7 @@ export default function DealsManager() {
                 <TableCell align="right">
                   <div className="flex justify-end gap-1">
                     <Button variant="ghost" onClick={() => setReplayPositionId(row.id)}>Replay</Button>
-                    <Button variant="ghost" onClick={() => { setDeleteReason(""); setDeleteError(""); setDeleteConfirm(row); }} title="Remove from the trader's statement/history -- admin-only, recoverable from the audit view">
+                    <Button variant="ghost" onClick={() => { setDeleteReason(""); setDeleteError(""); setDeleteConfirm(row); }} title="Remove from the trader's statement/history (admin-only, recoverable from the audit view)">
                       Delete
                     </Button>
                   </div>
@@ -233,7 +233,7 @@ export default function DealsManager() {
           <div className="flex flex-col gap-3">
             <p className="text-sm text-[var(--text-2)]">
               Removes {deleteConfirm.accountNumber}&apos;s {deleteConfirm.symbol} {deleteConfirm.side} deal from the trader-visible
-              statement/history entirely. The row itself isn&apos;t erased -- it&apos;s recoverable from the audit log. A reason is required.
+              statement/history entirely. The row itself isn&apos;t erased; it&apos;s recoverable from the audit log. A reason is required.
             </p>
             <FormField label="Reason (required)">
               <Input value={deleteReason} onChange={(e) => setDeleteReason(e.target.value)} placeholder="Why this row is being removed from the trader's history" />

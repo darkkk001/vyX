@@ -161,7 +161,7 @@ export default function DealingDeskPanel() {
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between">
         <p className="text-sm text-[var(--text-3)]">
-          Every action on a DEALING-group account, live -- resting pending orders plus the full activity feed. Nothing here is polled.
+          Every action on a DEALING-group account, live: resting pending orders plus the full activity feed. Nothing here is polled.
         </p>
         <div className="w-64">
           <Select value={accountFilter} onChange={(e) => setAccountFilter(e.target.value)}>

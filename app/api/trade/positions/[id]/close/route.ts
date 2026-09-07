@@ -109,7 +109,7 @@ export async function POST(
         const remaining = position.volume.sub(requested);
         if (remaining.gt(0) && remaining.lt(brokerSymbol.minLot)) {
           return NextResponse.json(
-            { error: `closing this amount would leave ${remaining} lots open, below this symbol's minimum of ${brokerSymbol.minLot} -- close the full position instead` },
+            { error: `closing this amount would leave ${remaining} lots open, below this symbol's minimum of ${brokerSymbol.minLot}. Close the full position instead` },
             { status: 400 }
           );
         }

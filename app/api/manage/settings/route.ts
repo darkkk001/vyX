@@ -52,7 +52,7 @@ export async function PATCH(request: NextRequest) {
       return NextResponse.json(
         {
           error:
-            "Only USD is supported as the default account currency right now -- no cross-currency P/L/margin conversion exists yet. Contact engineering once currency conversion ships.",
+            "Only USD is supported as the default account currency right now. No cross-currency P/L/margin conversion exists yet. Contact engineering once currency conversion ships.",
         },
         { status: 400 }
       );

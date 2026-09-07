@@ -21,7 +21,7 @@ export default function ResetPasswordForm({ brokerName, brokerLogoUrl }: { broke
     setError(null);
 
     if (!token) {
-      setError("This reset link is invalid or has expired -- request a new one.");
+      setError("This reset link is invalid or has expired. Request a new one.");
       return;
     }
     if (password !== confirmPassword) {

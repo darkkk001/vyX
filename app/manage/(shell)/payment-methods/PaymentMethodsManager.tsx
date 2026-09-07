@@ -100,7 +100,7 @@ export default function PaymentMethodsManager() {
         <TableHeaderCell className="min-w-[150px]">Method</TableHeaderCell>
         <TableHeaderCell className="min-w-[70px]">Enabled</TableHeaderCell>
         <TableHeaderCell className="min-w-[90px]" title="Smallest amount a trader can request">Min amount</TableHeaderCell>
-        <TableHeaderCell className="min-w-[90px]" title="Largest amount a trader can request -- blank = no limit">Max amount</TableHeaderCell>
+        <TableHeaderCell className="min-w-[90px]" title="Largest amount a trader can request (blank = no limit)">Max amount</TableHeaderCell>
         <TableHeaderCell className="min-w-[70px]" title="Shown to the trader as an estimate, not deducted from the ledgered amount">Fee %</TableHeaderCell>
         <TableHeaderCell className="min-w-[70px]" title="Shown to the trader as an estimate, not deducted from the ledgered amount">Fee fixed</TableHeaderCell>
         <TableHeaderCell className="min-w-[220px]">Wallet address / bank details</TableHeaderCell>

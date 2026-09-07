@@ -20,7 +20,7 @@ export default async function ManagerLpRoutingPage() {
     <main className="mx-auto max-w-[1200px]">
       <PageHeader
         title="LP routing rules"
-        description="Intended routing, recorded before the real integration exists -- no execution path reads this yet."
+        description="Intended routing, recorded before the real integration exists. No execution path reads this yet."
       />
       <LpRoutingManager />
     </main>

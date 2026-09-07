@@ -46,7 +46,7 @@ export async function POST(request: NextRequest) {
     // isn't, and neither leaks anything an attacker couldn't already
     // learn by attempting to log in with a guessed email regardless.
     return NextResponse.json(
-      { error: existing.emailVerifiedAt ? "an account with this email already exists -- try logging in" : "an account with this email already exists -- check your inbox for the verification link" },
+      { error: existing.emailVerifiedAt ? "an account with this email already exists, try logging in" : "an account with this email already exists, check your inbox for the verification link" },
       { status: 409 }
     );
   }

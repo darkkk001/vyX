@@ -73,7 +73,7 @@ export async function POST(request: NextRequest) {
 
   const body = await request.json().catch(() => null);
   if (body?.accountMode !== "DEMO") {
-    return NextResponse.json({ error: "only accountMode: \"DEMO\" can be created directly -- request a Live account instead" }, { status: 400 });
+    return NextResponse.json({ error: "only accountMode: \"DEMO\" can be created directly, request a Live account instead" }, { status: 400 });
   }
 
   const [client, broker] = await Promise.all([

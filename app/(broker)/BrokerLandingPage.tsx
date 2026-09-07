@@ -114,7 +114,7 @@ export default function BrokerLandingPage({
               </div>
               <h3 className={styles.cardTitle}>WebTrader</h3>
               <p className={styles.cardText}>
-                Trade directly from your browser -- real-time pricing,
+                Trade directly from your browser: real-time pricing,
                 charting and order management, no installation required.
               </p>
             </div>

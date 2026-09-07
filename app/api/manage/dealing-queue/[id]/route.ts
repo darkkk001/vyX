@@ -127,7 +127,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   // withdraw it (REJECT above), not accept/requote it again.
   if (order.status === "REQUOTED") {
     return NextResponse.json(
-      { error: "this order was already requoted -- it can only be withdrawn (Reject) until the client responds" },
+      { error: "this order was already requoted, it can only be withdrawn (Reject) until the client responds" },
       { status: 409 }
     );
   }

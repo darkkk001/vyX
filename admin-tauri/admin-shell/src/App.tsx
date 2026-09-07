@@ -218,7 +218,7 @@ export default function App() {
           <Section
             maxWidth="max-w-[720px]"
             title="Security"
-            description="This login is the only way in to platform-wide control -- every broker's tenants, billing, and admin accounts. Two-factor authentication is strongly recommended."
+            description="This login is the only way in to platform-wide control: every broker's tenants, billing, and admin accounts. Two-factor authentication is strongly recommended."
           >
             <SecurityManager onLoggedOut={() => setLoggedIn(false)} />
           </Section>

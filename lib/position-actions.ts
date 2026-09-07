@@ -159,7 +159,7 @@ export async function executeReverseCloseReopen(
   const sessionError = checkTradingSession(brokerSymbol?.tradingSessions ?? [], new Date(), position.symbol.category);
   if (sessionError) {
     const nextOpenAt = computeNextSessionOpen(brokerSymbol?.tradingSessions ?? [], new Date());
-    throw new PositionActionError(`Market closed for ${position.symbol.name} -- opens ${nextOpenAt.toISOString()}`);
+    throw new PositionActionError(`Market closed for ${position.symbol.name}, opens ${nextOpenAt.toISOString()}`);
   }
 
   const price = await getFreshPrice(position.symbol.name);
@@ -317,7 +317,7 @@ export async function executeVoid(tx: Tx, params: { brokerId: string; positionId
         balanceAfter,
         referenceType: "Position",
         referenceId: position.id,
-        note: "Void reversal -- undoes commission/swap booked against this position",
+        note: "Void reversal: undoes commission/swap booked against this position",
       },
     });
   }
@@ -374,7 +374,7 @@ export async function executeDelete(
     include: { account: { select: { accountNumber: true } }, symbol: { select: { name: true } } },
   });
   if (!position || position.brokerId !== params.brokerId) throw new PositionActionError("position not found");
-  if (position.status === "OPEN") throw new PositionActionError("cannot delete an open position -- void or close it first");
+  if (position.status === "OPEN") throw new PositionActionError("cannot delete an open position, void or close it first");
   if (position.deletedAt) throw new PositionActionError("position already deleted");
 
   const updated = await tx.position.update({
@@ -432,7 +432,7 @@ export async function requestPositionAction(
   if (params.actionType === "DELETE") {
     const position = await tx.position.findUnique({ where: { id: params.positionId } });
     if (!position || position.brokerId !== params.brokerId) throw new PositionActionError("position not found");
-    if (position.status === "OPEN") throw new PositionActionError("cannot delete an open position -- void or close it first");
+    if (position.status === "OPEN") throw new PositionActionError("cannot delete an open position, void or close it first");
     if (position.deletedAt) throw new PositionActionError("position already deleted");
   } else {
     await loadOpenPosition(tx, params.brokerId, params.positionId);

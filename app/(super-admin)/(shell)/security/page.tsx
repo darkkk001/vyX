@@ -15,7 +15,7 @@ export default function SuperAdminSecurityPage() {
     <main className="mx-auto max-w-[720px]">
       <PageHeader
         title="Security"
-        description="This login is the only way in to platform-wide control -- every broker's tenants, billing, and admin accounts. Two-factor authentication is strongly recommended."
+        description="This login is the only way in to platform-wide control: every broker's tenants, billing, and admin accounts. Two-factor authentication is strongly recommended."
       />
       <SecurityManager />
     </main>

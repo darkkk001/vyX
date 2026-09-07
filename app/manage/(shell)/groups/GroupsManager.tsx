@@ -78,7 +78,7 @@ const UI_TYPE_OPTIONS: { value: UiType; label: string; hint: string }[] = [
   {
     value: "ABOOK_LP",
     label: "A-Book (LP)",
-    hint: "Routed to the liquidity provider/bridge (external market hedge) -- the only routing that bridges directly.",
+    hint: "Routed to the liquidity provider/bridge (external market hedge), the only routing that bridges directly.",
   },
   {
     value: "DEALING",
@@ -272,7 +272,7 @@ export default function GroupsManager() {
                         size="sm"
                         variant="ghost"
                         disabled={row.isDefault}
-                        title={row.isDefault ? "The default group cannot be deleted -- make another group the default first" : "Delete this group"}
+                        title={row.isDefault ? "The default group cannot be deleted, make another group the default first" : "Delete this group"}
                         onClick={() => {
                           setDeleteError(null);
                           setDeleteTarget(row);
@@ -558,7 +558,7 @@ function GroupFormModal({
         {uiType === "ABOOK_LP" ? (
           <ModalSection label="LP connection">
             <Alert tone="info">
-              LP routing config isn&apos;t built yet (Phase 5) -- orders in this group are marked A-Book but still execute against the
+              LP routing config isn&apos;t built yet (Phase 5). Orders in this group are marked A-Book but still execute against the
               simulated/blended price feed until a real liquidity-provider connection exists.
             </Alert>
           </ModalSection>

@@ -273,7 +273,7 @@ export async function POST(request: NextRequest) {
   } else {
     const price = await getFreshPrice(brokerSymbol.symbol.name);
     if (!price) {
-      return NextResponse.json({ error: `no live price for ${brokerSymbol.symbol.name} -- type a price to open anyway` }, { status: 409 });
+      return NextResponse.json({ error: `no live price for ${brokerSymbol.symbol.name}, type a price to open anyway` }, { status: 409 });
     }
     // BUY fills at ask, SELL fills at bid -- same convention as
     // engine/execution's execute_market_order.

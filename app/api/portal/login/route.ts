@@ -27,7 +27,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "invalid email or password" }, { status: 401 });
   }
   if (!client.emailVerifiedAt) {
-    return NextResponse.json({ error: "please verify your email before logging in -- check your inbox" }, { status: 403 });
+    return NextResponse.json({ error: "please verify your email before logging in, check your inbox" }, { status: 403 });
   }
 
   const token = await createClientSession({ clientId: client.id, brokerId }, remember);

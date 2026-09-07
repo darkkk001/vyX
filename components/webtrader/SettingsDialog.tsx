@@ -121,7 +121,7 @@ export default function SettingsDialog({
                 </label>
               </div>
               <p className="net-pos-detail" style={{ marginTop: 6 }}>
-                Same switch as the order ticket&apos;s own one-click toggle -- persists across logins either way.
+                Same switch as the order ticket&apos;s own one-click toggle. Persists across logins either way.
               </p>
             </div>
           ) : null}

@@ -8,7 +8,7 @@
 // props needed.
 const SHORTCUTS: { keys: string; action: string; note?: string }[] = [
   { keys: "F5", action: "Refresh account data" },
-  { keys: "Ctrl/Cmd + R", action: "Refresh account data", note: "same as F5 -- doesn't reload the page" },
+  { keys: "Ctrl/Cmd + R", action: "Refresh account data", note: "same as F5, doesn't reload the page" },
   { keys: "Ctrl + 1", action: "Smart Trade Manager: Buy", note: "default binding, reassignable inside Smart Trade Manager" },
   { keys: "Ctrl + 2", action: "Smart Trade Manager: Sell", note: "default binding, reassignable inside Smart Trade Manager" },
   { keys: "Delete / Backspace", action: "Remove the selected chart drawing" },

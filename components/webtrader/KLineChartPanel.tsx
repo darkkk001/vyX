@@ -1034,7 +1034,7 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
           `[chart] history/tick timestamp drift: last history bar ${new Date(lastHistory).toISOString()}, ` +
             `tick bucket ${new Date(latestBar.t).toISOString()}, drift ${(drift / 3_600_000).toFixed(2)}h ` +
             `(more than one ${periodMs / 60_000}m period). The last candle will appear frozen. ` +
-            `Most likely history is stored in broker time rather than UTC -- see scripts/fix-broker-time-candles.ts.`
+            `Most likely history is stored in broker time rather than UTC. See scripts/fix-broker-time-candles.ts.`
         );
       }
     }
@@ -1467,7 +1467,7 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
         >
           <button
             onClick={() => onTpSlButtonClick?.("tp")}
-            title={revealedPosition.hasTp ? "Take profit set -- drag its line to adjust" : "Click, then drag to set a take profit"}
+            title={revealedPosition.hasTp ? "Take profit set, drag its line to adjust" : "Click, then drag to set a take profit"}
             style={{
               padding: "3px 8px",
               borderRadius: 4,
@@ -1483,7 +1483,7 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
           </button>
           <button
             onClick={() => onTpSlButtonClick?.("sl")}
-            title={revealedPosition.hasSl ? "Stop loss set -- drag its line to adjust" : "Click, then drag to set a stop loss"}
+            title={revealedPosition.hasSl ? "Stop loss set, drag its line to adjust" : "Click, then drag to set a stop loss"}
             style={{
               padding: "3px 8px",
               borderRadius: 4,

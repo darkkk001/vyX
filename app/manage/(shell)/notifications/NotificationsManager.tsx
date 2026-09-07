@@ -188,7 +188,7 @@ export default function NotificationsManager({
           <div className="flex flex-col gap-3">
             {resetResult ? (
               <>
-                <Alert tone="success">Password reset. Share this with the trader now -- it will not be shown again.</Alert>
+                <Alert tone="success">Password reset. Share this with the trader now, it will not be shown again.</Alert>
                 <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-2)] px-3 py-2 text-center font-mono text-lg text-[var(--text-1)]">
                   {resetResult.password}
                 </div>
@@ -200,7 +200,7 @@ export default function NotificationsManager({
               <>
                 <p className="text-sm text-[var(--text-2)]">
                   Generates a new random password for this account and shows it once. The trader will need to be told the
-                  new password directly (phone, secure channel) -- it isn&apos;t emailed automatically.
+                  new password directly (phone, secure channel); it isn&apos;t emailed automatically.
                 </p>
                 {resetError ? <Alert tone="danger">{resetError}</Alert> : null}
                 <div className="flex justify-end gap-2">

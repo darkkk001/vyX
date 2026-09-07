@@ -128,7 +128,7 @@ export async function approveFundsRequest(
   const balanceAfter = balanceBefore.add(params.amount); // amount already signed (negative for withdrawal)
 
   if (balanceAfter.lt(0)) {
-    return { ok: false, error: "account balance is no longer sufficient for this withdrawal -- reject or ask the trader to resubmit" };
+    return { ok: false, error: "account balance is no longer sufficient for this withdrawal, reject or ask the trader to resubmit" };
   }
 
   await tx.account.update({ where: { id: params.accountId }, data: { balance: balanceAfter } });

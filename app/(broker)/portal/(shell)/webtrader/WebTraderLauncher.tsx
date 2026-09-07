@@ -15,7 +15,7 @@ type Account = {
 
 const ERROR_MESSAGES: Record<string, string> = {
   missing_account: "Pick an account to launch.",
-  invalid_account: "That account couldn't be opened -- it may not belong to you or isn't active.",
+  invalid_account: "That account couldn't be opened.",
 };
 
 // Stage 7 -- the near-zero-build item: the SSO handoff already exists
@@ -64,10 +64,7 @@ export default function WebTraderLauncher() {
 
   return (
     <div className={styles.panel} style={{ maxWidth: 480 }}>
-      <h2 className={styles.panelTitle}>Launch WebTrader</h2>
-      <p className={styles.panelText} style={{ marginBottom: 18 }}>
-        Pick one of your linked accounts. You&apos;ll open the full trading terminal already signed in -- no account number or password to re-enter.
-      </p>
+      <h2 className={styles.panelTitle}>WebTrader</h2>
 
       {errorCode ? <div className={styles.formError}>{ERROR_MESSAGES[errorCode] ?? "Couldn't open WebTrader for that account."}</div> : null}
 
@@ -76,7 +73,7 @@ export default function WebTraderLauncher() {
         <select className={styles.select} value={selectedId} onChange={(e) => setSelectedId(e.target.value)}>
           {accounts.map((a) => (
             <option key={a.id} value={a.id}>
-              {a.accountNumber} -- {a.accountMode}{a.accountTypeName ? ` (${a.accountTypeName})` : ""} -- {a.currency} {parseFloat(a.balance).toFixed(2)}
+              {a.accountNumber} ({a.accountMode}{a.accountTypeName ? ` ${a.accountTypeName}` : ""}) {a.currency} {parseFloat(a.balance).toFixed(2)}
             </option>
           ))}
         </select>

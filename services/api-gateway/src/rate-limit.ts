@@ -35,7 +35,7 @@ export function rateLimitOrders(limit: number, windowSeconds: number) {
     const { allowed, remaining } = await checkRateLimit(`order:${accountId}`, limit, windowSeconds);
     res.setHeader("X-RateLimit-Remaining", String(remaining));
     if (!allowed) {
-      res.status(429).json({ error: "too many order requests -- slow down" });
+      res.status(429).json({ error: "too many order requests, slow down" });
       return;
     }
     next();

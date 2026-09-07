@@ -175,7 +175,7 @@ async function createAccount(request: NextRequest, session: NonNullable<Awaited<
     return NextResponse.json(
       {
         error:
-          "Only USD accounts are supported right now -- no cross-currency P/L/margin conversion exists yet, so a non-USD account would have trade results mis-credited 1:1. Contact engineering once currency conversion ships.",
+          "Only USD accounts are supported right now. No cross-currency P/L/margin conversion exists yet, so a non-USD account would have trade results mis-credited 1:1. Contact engineering once currency conversion ships.",
       },
       { status: 400 }
     );

@@ -230,7 +230,7 @@ export default function SecurityManager({
         </form>
       ) : (
         <div>
-          <p className="mb-3 text-sm text-[var(--text-3)]">Not enabled yet -- this account has no extra protection beyond your password.</p>
+          <p className="mb-3 text-sm text-[var(--text-3)]">Not enabled yet. This account has no extra protection beyond your password.</p>
           <Button type="button" variant="primary" loading={busy} onClick={startSetup} className="w-fit">
             Enable 2FA
           </Button>

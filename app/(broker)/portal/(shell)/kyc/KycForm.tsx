@@ -54,9 +54,9 @@ const EMPLOYMENT_STATUS_OPTIONS = [
 ];
 
 const RISK_TOLERANCE_OPTIONS = [
-  { value: "LOW", label: "Low -- I want to preserve capital" },
-  { value: "MEDIUM", label: "Medium -- I can accept moderate losses" },
-  { value: "HIGH", label: "High -- I can accept significant losses" },
+  { value: "LOW", label: "Low: preserve capital" },
+  { value: "MEDIUM", label: "Medium: accept moderate losses" },
+  { value: "HIGH", label: "High: accept significant losses" },
 ];
 
 // Client-level KYC submission (Stage 5) -- documents + the suitability
@@ -144,7 +144,7 @@ export default function KycForm({ initialRecord }: { initialRecord: KycRecordVie
         <>
           <h2 className={styles.panelTitle}>Verify your identity</h2>
           <p className={styles.panelText} style={{ marginBottom: 18 }}>
-            Submit your ID and a short suitability questionnaire once -- every Live account you go on to open inherits this approval.
+            Submit your ID and a short suitability questionnaire once. Every Live account you open later reuses this approval.
           </p>
           {record?.status === "REJECTED" ? (
             <div className={styles.formError}>

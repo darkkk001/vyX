@@ -288,7 +288,7 @@ export default function App() {
           <Section
             maxWidth="max-w-4xl"
             title="Feed health"
-            description="Tick-pipeline latency and health, end to end. Not deployed publicly yet -- see the Tick Pipeline Audit -- so this shows real numbers only against a local dev stack."
+            description="Tick-pipeline latency and health, end to end. Not deployed publicly yet (see the Tick Pipeline Audit), so this shows real numbers only against a local dev stack."
           >
             <FeedHealthManager />
           </Section>
@@ -334,7 +334,7 @@ export default function App() {
           <Section
             maxWidth="max-w-[1200px]"
             title="Risk Radar"
-            description="Trading-behavior heuristics over the last 30 days -- not rule violations, a starting point for review."
+            description="Trading-behavior heuristics over the last 30 days. Not rule violations, a starting point for review."
           >
             <RiskRadarManager onOpenAccount={(id) => { setOpenAccountId(id); setSection("/manage/accounts"); }} />
           </Section>
@@ -360,7 +360,7 @@ export default function App() {
           <Section
             maxWidth="max-w-[1400px]"
             title="Liquidity providers"
-            description="Pre-integration roster only -- no real LP connection exists yet. Status is manually tracked, not detected."
+            description="Pre-integration roster only. No real LP connection exists yet. Status is manually tracked, not detected."
           >
             <LiquidityManager />
           </Section>
@@ -370,7 +370,7 @@ export default function App() {
           <Section
             maxWidth="max-w-[1200px]"
             title="LP routing rules"
-            description="Intended routing, recorded before the real integration exists -- no execution path reads this yet."
+            description="Intended routing, recorded before the real integration exists. No execution path reads this yet."
           >
             <LpRoutingManager />
           </Section>

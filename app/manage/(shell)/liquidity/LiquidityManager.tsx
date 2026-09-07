@@ -107,7 +107,7 @@ export default function LiquidityManager() {
       <Card title="Current book exposure">
         <p className="mb-3 text-sm text-[var(--text-3)]">
           Real open volume per symbol, split by the book each position was stamped into at fill time. Config-only
-          routing decision (Symbols page) -- no real hedge to an LP happens for A-Book yet, since that&apos;s still
+          routing decision (Symbols page). No real hedge to an LP happens for A-Book yet, since that&apos;s still
           blocked on an actual LP relationship.
         </p>
         <Table>
@@ -182,7 +182,7 @@ export default function LiquidityManager() {
 
       <Card title="Latency & execution quality">
         <p className="mb-3 text-sm text-[var(--text-3)]">
-          Used to be two separate pages, each just a table of &quot;Not monitored&quot; badges -- no live LP
+          Used to be two separate pages, each just a table of &quot;Not monitored&quot; badges. No live LP
           connection exists yet to measure any of this from (see the roster above), so there was nothing a second
           or third nav item could show that this one line doesn&apos;t already say. Folded in here; both routes come
           back with real numbers once a real LP connection exists.

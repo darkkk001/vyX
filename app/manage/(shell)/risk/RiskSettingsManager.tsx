@@ -183,7 +183,7 @@ export default function RiskSettingsManager() {
         {dealingMode ? (
           <form onSubmit={saveSmartDealer} className="mt-4 flex flex-col gap-3 border-t border-[var(--border)] pt-4">
             <p className="text-sm text-[var(--text-2)]">
-              Smart Dealer -- auto-decide an order the moment it&apos;s submitted, before it ever reaches a human. Blank = fully manual (today&apos;s behavior).
+              Smart Dealer: auto-decide an order the moment it&apos;s submitted, before it ever reaches a human. Blank = fully manual (today&apos;s behavior).
             </p>
             <div className="flex flex-wrap items-end gap-3">
               <FormField label="Auto-accept within (%)">
