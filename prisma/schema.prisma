@@ -372,6 +372,8 @@ model Broker {
   balanceAdjustmentRequests BalanceAdjustmentRequest[]
   accountTypes              AccountType[]
   paymentMethods            PaymentMethod[]
+  clients                   Client[]
+  liveAccountRequests       LiveAccountRequest[]
 }
 
 model AdminUser {
@@ -427,6 +429,8 @@ model AdminUser {
   reviewedBalanceAdjustments  BalanceAdjustmentRequest[] @relation("BalanceAdjustmentReviewedBy")
   createdMirrorRules          MirrorRule[]
   backupCodes                 AdminBackupCode[]
+  reviewedClientKyc           ClientKycRecord[]       @relation("ClientKycReviewedBy")
+  reviewedLiveAccountRequests LiveAccountRequest[]    @relation("LiveAccountRequestReviewedBy")
 
   @@index([brokerId])
 }
@@ -496,6 +500,21 @@ model Account {
   // affects no live fill until the Phase 2 pricing engine reads it.
   accountTypeId String?
   accountType   AccountType?  @relation(fields: [accountTypeId], references: [id])
+
+  // Phase 2 Client Portal (2026-09-08) -- which Client (email+password
+  // identity, see that model's own doc comment) owns this trading
+  // account. Nullable: every account created before the portal existed
+  // (the entire platform to date -- accounts have only ever been created
+  // via app/api/manage/accounts, admin-side) has no Client yet, and stays
+  // fully functional via account-number login regardless -- this is
+  // purely additive. Gets set either by the portal's own self-service
+  // "link an existing account" flow (proves ownership via the same
+  // authenticateAccount check the login route already uses) or by a Live
+  // account request being approved (LiveAccountRequest.createdAccountId).
+  // One Client can own many Accounts of either mode -- see the removed
+  // @@unique([brokerId, email, accountMode]) below.
+  clientId String?
+  client   Client? @relation(fields: [clientId], references: [id])
 
   // Per-account swap-free OVERRIDE -- the 3rd of 3 swap-free levels
   // (AccountType.swapFree, Group.swapFree, this one), for a specific
@@ -605,9 +624,20 @@ model Account {
   // GroupSymbolConfig already uses.
   symbolPricingOverrides AccountSymbolConfig[]
 
-  @@unique([brokerId, email, accountMode])
+  // The reverse of LiveAccountRequest.createdAccountId (a unique FK) --
+  // present only for an account that was actually created by an approved
+  // Live account request, not one created directly via the admin route.
+  liveAccountRequest LiveAccountRequest?
+
+  // 2026-09-08 -- was @@unique([brokerId, email, accountMode]), capping a
+  // client at exactly one DEMO and one LIVE account per broker. A real
+  // Client Portal client owns several of each (different account types,
+  // multiple Live accounts) -- clientId is now the real ownership link,
+  // not an email-uniqueness side effect. accountNumber's own @unique
+  // above already prevents any actual duplicate account.
   @@index([brokerId])
   @@index([groupId])
+  @@index([clientId])
   @@index([accountTypeId])
 }
 
@@ -671,7 +701,8 @@ model AccountType {
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
 
-  accounts Account[]
+  accounts            Account[]
+  liveAccountRequests LiveAccountRequest[]
 
   // Per-type, per-symbol pricing override -- see AccountTypeSymbolConfig's
   // own doc comment for why per-symbol (not the flat fields above) is the
@@ -985,6 +1016,128 @@ model KycRecord {
 
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Client Portal (Phase 2, 2026-09-08) -- the CRM layer. A Client is an
+// email+password identity a trader registers ONCE, that owns many
+// Account rows (see Account.clientId) -- exactly the Exness/XM model,
+// and distinct from Account's own accountNumber+password credential
+// (which stays exactly as it is, still what the desktop Trader Terminal
+// and account-number login use; Client auth is additional, not a
+// replacement). See lib/client-auth.ts for the session mechanism
+// (mirrors lib/account-auth.ts's own Redis-backed opaque session) and
+// docs/client-portal.md (the approved design doc) for the full picture.
+// ─────────────────────────────────────────────────────────────────────────
+
+enum ClientStatus {
+  ACTIVE
+  SUSPENDED
+}
+
+model Client {
+  id       String @id @default(cuid())
+  brokerId String
+  broker   Broker @relation(fields: [brokerId], references: [id])
+
+  email        String
+  passwordHash String
+  // Null until the verification email's link is clicked
+  // (POST /api/portal/register mints a Redis-backed token, GET
+  // /api/portal/verify-email consumes it and sets this). Login is
+  // refused while this is null -- same "can't do anything until you
+  // verify" rule Exness/XM both use.
+  emailVerifiedAt DateTime? @db.Timestamptz(3)
+
+  fullName    String
+  country     String?
+  phone       String?
+  dateOfBirth DateTime? @db.Date
+
+  status ClientStatus @default(ACTIVE)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  accounts     Account[]
+  kycRecord    ClientKycRecord?
+  liveRequests LiveAccountRequest[]
+
+  @@unique([brokerId, email])
+  @@index([brokerId])
+}
+
+// One KYC submission per CLIENT (the person), not per account -- real
+// brokers verify the person once and every Live account they go on to
+// open inherits that approval, rather than repeating the same document
+// review per account. Deliberately separate from the existing,
+// account-level KycRecord above (which is left exactly as-is, still
+// serving whatever account never gets linked to a Client) -- same
+// field shape by design, so the review UI/logic can be near-identical,
+// just pointed at a Client instead of an Account.
+model ClientKycRecord {
+  id       String @id @default(cuid())
+  clientId String @unique
+  client   Client @relation(fields: [clientId], references: [id])
+
+  status           KycStatus @default(PENDING)
+  documentType     String // passport | national_id | drivers_license
+  documentFrontUrl String
+  documentBackUrl  String?
+  addressProofUrl  String?
+  rejectionReason  String?
+
+  reviewedByAdminId String?
+  reviewedByAdmin   AdminUser? @relation("ClientKycReviewedBy", fields: [reviewedByAdminId], references: [id])
+  reviewedAt        DateTime?  @db.Timestamptz(3)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+}
+
+enum RequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+// A Live account is CREATED at approval time, not requested-then-
+// pended -- there is no Account row (and therefore no real credential
+// to show the client) until an admin approves this. Gated on KYC at the
+// application layer (Stage 3): a client can't submit one of these while
+// their ClientKycRecord.status isn't APPROVED. Same review shape as the
+// existing KycRecord/ClientKycRecord above (status/rejectionReason/
+// reviewedByAdminId/reviewedAt) -- this platform's one established
+// approval-queue pattern, reused rather than reinvented.
+model LiveAccountRequest {
+  id       String @id @default(cuid())
+  brokerId String
+  broker   Broker @relation(fields: [brokerId], references: [id])
+  clientId String
+  client   Client @relation(fields: [clientId], references: [id])
+
+  accountTypeId String?
+  accountType   AccountType? @relation(fields: [accountTypeId], references: [id])
+
+  status          RequestStatus @default(PENDING)
+  rejectionReason String?
+
+  reviewedByAdminId String?
+  reviewedByAdmin   AdminUser? @relation("LiveAccountRequestReviewedBy", fields: [reviewedByAdminId], references: [id])
+  reviewedAt        DateTime?  @db.Timestamptz(3)
+
+  // Set only once APPROVED -- the real Account this request produced.
+  // The plaintext one-time password is never stored anywhere; it's
+  // returned once in the approval response and (if the email adapter is
+  // live) emailed, same "shown once" rule as a TOTP secret or an SSO
+  // token.
+  createdAccountId String?  @unique
+  createdAccount   Account? @relation(fields: [createdAccountId], references: [id])
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  @@index([brokerId])
+  @@index([clientId])
 }
 
 // ─────────────────────────────────────────────────────────────────────────
