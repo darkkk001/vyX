@@ -136,7 +136,26 @@ export async function middleware(request: NextRequest) {
   // Brokers with no customDomain (the common case) have broker.customDomain
   // === null, so this never fires for them -- their subdomain keeps working
   // exactly as it does today.
-  if (subdomain && broker.customDomain && broker.customDomain !== hostname) {
+  //
+  // 2026-09-07 outage fix -- this used to redirect EVERY request,
+  // /api/* included. That's fine for a top-level page navigation, but
+  // WebTrader's own client-side polling (api/trade/prices, api/trade/
+  // orders, .../positions -- confirmed live via `vercel logs` all
+  // returning 308 on the subdomain) issues same-origin fetch() calls
+  // from whatever origin the page already loaded on; a 308 across
+  // origins drops the session cookie (scoped to the subdomain) and/or
+  // gets blocked by CORS, breaking every open tab that hadn't yet
+  // itself navigated over to the custom domain -- and any other client
+  // (bundled desktop shell, a bookmarked/hardcoded subdomain URL) that
+  // talks to the subdomain's API directly would break the same way.
+  // Only real page navigations get redirected now; API traffic on the
+  // subdomain keeps working exactly as before, custom domain or not.
+  if (
+    subdomain &&
+    broker.customDomain &&
+    broker.customDomain !== hostname &&
+    !request.nextUrl.pathname.startsWith("/api/")
+  ) {
     const redirectUrl = new URL(
       `${request.nextUrl.pathname}${request.nextUrl.search}`,
       `https://${broker.customDomain}`,

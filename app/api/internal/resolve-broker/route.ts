@@ -29,10 +29,32 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "missing host param" }, { status: 400 });
   }
 
+  // 2026-09-07 outage fix -- a custom apex domain added to the Vercel
+  // project 308-redirects to its www subdomain at the platform level
+  // (same thing the root ROOT_DOMAIN already has to account for, see
+  // middleware.ts's own comment on isRootOrSuperAdmin) BEFORE the
+  // request ever reaches this app, so the Host our middleware actually
+  // sees is always "www.<customDomain>", never the bare form -- but
+  // Broker.customDomain is stored bare (see BrokersManager.tsx's
+  // "trade.acmefx.com" placeholder, no www). An exact-match lookup on
+  // the bare stored value against the www-prefixed live Host therefore
+  // never matched, 404ing every request to every broker's custom
+  // domain (confirmed live via `vercel logs`: www.futurixglobal.com's
+  // resolve-broker calls were 100% 404 while futurixglobal.vyxtrader.com's
+  // were 100% 200, on the exact same broker row). Matching both the
+  // bare and www-prefixed form here -- rather than assuming which way a
+  // given customDomain happens to be stored -- means this can't recur
+  // however a value ends up saved.
+  const customDomainVariants = customDomain
+    ? Array.from(
+        new Set([customDomain, customDomain.replace(/^www\./, ""), `www.${customDomain.replace(/^www\./, "")}`]),
+      )
+    : [];
+
   const broker = await prisma.broker.findFirst({
     where: subdomain
       ? { subdomain, status: "ACTIVE" }
-      : { customDomain, status: "ACTIVE" },
+      : { customDomain: { in: customDomainVariants }, status: "ACTIVE" },
     select: {
       id: true,
       subdomain: true,
