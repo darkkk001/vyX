@@ -73,6 +73,23 @@ fn is_continuously_traded(symbol: &str) -> bool {
     matches!(symbol, "BTCUSD" | "ETHUSD" | "SOLUSD" | "XRPUSD")
 }
 
+// The one place "is this symbol's market open at this instant" gets
+// decided -- both call sites below (the synthetic gap-fill paths) and
+// ingest.rs's real-tick write path (the ACTUAL source of weekend flat
+// candles, not this module -- a stale MT5 heartbeat resend of Friday's
+// last price arriving during the weekend was written as a completely
+// real, ungated Candle row; only the synthetic fill below was ever
+// gated) now share this single function instead of each repeating
+// `is_continuously_traded(..) || !market_closed(..)` -- exactly the kind
+// of duplicated rule that already drifted once (is_continuously_traded's
+// own comment, the SOLUSD/XRPUSD catalog gap). `pub(crate)` since
+// ingest.rs needs it too; market_closed/is_continuously_traded themselves
+// stay private -- this is the one function anything outside this module
+// should ever call.
+pub(crate) fn market_open(symbol: &str, t: DateTime<Utc>) -> bool {
+    is_continuously_traded(symbol) || !market_closed(t)
+}
+
 // Caps how many flat-fill bars a single tick can generate -- protects
 // against a pathological gap (the engine down for days, or a stale
 // tracker entry) turning one flush cycle into tens of thousands of
@@ -120,7 +137,7 @@ impl GapFillTracker {
             let carry_close = prev.close;
             let mut count = 0usize;
             while cursor < update.bucket_start && count < MAX_GAP_FILLS_PER_TICK {
-                if is_continuously_traded(&update.symbol) || !market_closed(cursor) {
+                if market_open(&update.symbol, cursor) {
                     fills.push(CandleUpdate {
                         symbol: update.symbol.clone(),
                         timeframe: update.timeframe,
@@ -176,7 +193,7 @@ impl GapFillTracker {
             let mut advanced_to = last.start;
 
             while cursor < now_bucket && count < MAX_GAP_FILLS_PER_TICK {
-                if is_continuously_traded(symbol) || !market_closed(cursor) {
+                if market_open(symbol, cursor) {
                     fills.push(CandleUpdate {
                         symbol: symbol.clone(),
                         timeframe: *timeframe,
@@ -313,6 +330,27 @@ mod tests {
         let expected_count = ((mon - fri).num_hours() - 1) as usize;
         assert_eq!(fills.len(), expected_count);
         assert!(fills.iter().any(|f| f.bucket_start.weekday() == Weekday::Sat));
+    }
+
+    #[test]
+    fn market_open_is_false_for_a_non_crypto_symbol_during_the_weekend() {
+        // The shared decision ingest.rs's real-tick write path now gates
+        // on too -- a stale MT5 heartbeat resend during Saturday must not
+        // read as "market open" for an FX/metals symbol.
+        let saturday = Utc.with_ymd_and_hms(2026, 8, 15, 12, 0, 0).unwrap();
+        assert!(!market_open("EURUSD", saturday));
+    }
+
+    #[test]
+    fn market_open_is_true_for_a_continuously_traded_symbol_during_the_weekend() {
+        let saturday = Utc.with_ymd_and_hms(2026, 8, 15, 12, 0, 0).unwrap();
+        assert!(market_open("BTCUSD", saturday));
+    }
+
+    #[test]
+    fn market_open_is_true_for_a_non_crypto_symbol_on_a_weekday() {
+        let wednesday = Utc.with_ymd_and_hms(2026, 8, 12, 10, 0, 0).unwrap();
+        assert!(market_open("EURUSD", wednesday));
     }
 
     #[test]

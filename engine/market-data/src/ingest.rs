@@ -10,7 +10,7 @@ use crate::{
     broker_offset::BrokerOffsetTracker,
     cache::TickCache,
     candle_updates_for_tick, db,
-    gap_fill::GapFillTracker,
+    gap_fill::{market_open, GapFillTracker},
     stats::FeedStats,
     symbol_activity::SymbolActivity,
 };
@@ -370,6 +370,30 @@ async fn flush_candles(pool: &PgPool, cache: &TickCache, ticks: &[Tick], stats: 
             if tick.broker_offset_sec.is_none() {
                 stats.record_offset_fallback_tick();
             }
+
+            // 2026-09-07 fix -- the actual source of weekend flat candles,
+            // not gap_fill.rs's own synthetic fill (that path was already
+            // correctly gated, see market_open's own comment there). MT5
+            // republishes its last real price as a heartbeat resend while
+            // the market is closed -- the EA forwards that unchanged, and
+            // until now this loop wrote it as a completely real,
+            // ungated Candle row every time, regardless of session state.
+            // Judged by the TICK's own represented time (resolve_tick_time,
+            // "the real moment this tick's price is FROM"), never `now`
+            // (this flush cycle's wall clock): a genuinely live tick right
+            // at the session boundary could otherwise get wrongly dropped
+            // by flush-cycle lag alone, and a stale weekend republish must
+            // not be wrongly allowed just because of when it happened to
+            // be flushed. LivePrice is unaffected either way -- it's a
+            // fully separate flush job (flush_live_prices, its own
+            // interval/dirty-tracking) that never goes through this loop,
+            // so the watchlist's last-known price still updates from a
+            // closed-market tick; only the candle write is skipped.
+            let tick_time = resolve_tick_time(tick, now);
+            if !market_open(&tick.symbol, tick_time) {
+                continue;
+            }
+
             for update in candle_updates_for_tick(tick, now, offset_sec) {
                 // fix/realtime-sync §4 -- flat-fills every bucket skipped
                 // since the last one actually written for this
@@ -440,7 +464,7 @@ async fn publish_tick(nats: &async_nats::Client, tick: &Tick) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Duration;
+    use chrono::{Duration, TimeZone};
     use rust_decimal_macros::dec;
 
     fn tick_with_ms(tick_ms: Option<i64>) -> Tick {
@@ -502,5 +526,42 @@ mod tests {
         let ancient = now - Duration::days(400);
         let tick = tick_with_ms(Some(ancient.timestamp_millis()));
         assert_eq!(resolve_tick_time(&tick, now), truncate_to_ms(ancient));
+    }
+
+    // 2026-09-07 fix -- the actual weekend-flat-candle bug: flush_candles
+    // used to gate NOTHING on session state, only gap_fill.rs's own
+    // synthetic fills were ever excluded. These two tests compose
+    // resolve_tick_time + market_open the exact same way flush_candles's
+    // real fix now does, covering the two cases asked for: a stale
+    // weekend republish must resolve to "not open" (so no candle gets
+    // written), and a crypto tick at the identical wall-clock moment must
+    // still resolve to "open" (so it keeps writing normally).
+    fn tick_with_ms_for(symbol: &str, tick_ms: Option<i64>) -> Tick {
+        Tick { symbol: symbol.into(), bid: dec!(1.1000), ask: dec!(1.1002), t0: None, clock_offset_ms: None, rtt_ms: None, tick_ms, broker_offset_sec: None }
+    }
+
+    #[test]
+    fn a_stale_weekend_republish_is_judged_by_its_own_frozen_tick_time_not_now() {
+        // MT5 republishes Friday's last real price as a heartbeat while
+        // the market is genuinely closed -- tick_ms stays frozen at
+        // Friday's close even though this flush cycle's own `now` is
+        // Saturday. The fix must use the tick's own time for the session
+        // check, not `now` -- asserted explicitly here, not just assumed.
+        let friday_close = Utc.with_ymd_and_hms(2026, 8, 14, 21, 0, 0).unwrap();
+        let saturday_now = Utc.with_ymd_and_hms(2026, 8, 15, 12, 0, 0).unwrap();
+        let tick = tick_with_ms_for("EURUSD", Some(friday_close.timestamp_millis()));
+
+        let tick_time = resolve_tick_time(&tick, saturday_now);
+        assert_eq!(tick_time, friday_close, "must resolve to the tick's own frozen time, not the flush cycle's wall clock");
+        assert!(!market_open(&tick.symbol, tick_time), "a stale Friday-close republish arriving Saturday must not be treated as market-open -- no candle should be written for it");
+    }
+
+    #[test]
+    fn a_crypto_tick_at_the_same_weekend_moment_still_writes_normally() {
+        let saturday = Utc.with_ymd_and_hms(2026, 8, 15, 12, 0, 0).unwrap();
+        let tick = tick_with_ms_for("BTCUSD", Some(saturday.timestamp_millis()));
+
+        let tick_time = resolve_tick_time(&tick, saturday);
+        assert!(market_open(&tick.symbol, tick_time), "BTCUSD trades all weekend -- its tick must still be treated as market-open");
     }
 }
