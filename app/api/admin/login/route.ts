@@ -69,6 +69,6 @@ export async function POST(request: NextRequest) {
     role: admin.role,
     brokerId: admin.brokerId,
   });
-  response.cookies.set(SESSION_COOKIE_NAME, token, sessionCookieOptions());
+  response.cookies.set(SESSION_COOKIE_NAME, token, await sessionCookieOptions());
   return response;
 }

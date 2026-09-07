@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import { cookies, headers } from "next/headers";
 import type { AdminRole } from "@prisma/client";
 import { getRedis } from "@/lib/redis";
+import { cookieScopeDomain } from "@/lib/cookie-domain";
 
 export const SESSION_COOKIE_NAME = "vyx_admin_session";
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 7; // 7 days -- Redis TTL backstop, same as lib/account-auth.ts's own
@@ -230,14 +231,19 @@ export function shouldForceAdminTwoFactorSetup(
   return broker.requireAdmin2fa && !admin.twoFactorEnabled;
 }
 
-export function sessionCookieOptions(remember: boolean = false) {
+export async function sessionCookieOptions(remember: boolean = false) {
   // Same site-wide cookie scoping as lib/account-auth.ts's
   // accountSessionCookieOptions -- see that function's comment. The
   // Manager backoffice's own real-time stream (Phase 2 of the
   // real-time-sync work) needs this admin session cookie to reach
   // feed.<ROOT_DOMAIN> the same way the trader session already does.
-  const rootDomain = (process.env.ROOT_DOMAIN ?? "localhost:3000").split(":")[0];
-  const domain = rootDomain === "localhost" ? undefined : `.${rootDomain}`;
+  //
+  // Host-aware since the 2026-09-07 outage fix (same cause as
+  // account-auth.ts's cookie, just never hit yet for an admin session --
+  // an admin logging into /manage/login on a broker's own custom domain
+  // would have silently dropped this cookie the exact same way). See
+  // cookieScopeDomain's own comment.
+  const domain = await cookieScopeDomain();
   return {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",

@@ -15,7 +15,7 @@ export async function POST() {
   // Must match the domain the cookie was set with (sessionCookieOptions)
   // -- a delete without it is a no-op against a domain-scoped cookie, since
   // browsers key cookies by (name, domain, path), not name alone.
-  const { domain, path } = sessionCookieOptions();
+  const { domain, path } = await sessionCookieOptions();
   response.cookies.delete({ name: SESSION_COOKIE_NAME, domain, path });
   return response;
 }

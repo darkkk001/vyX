@@ -4,6 +4,7 @@ import crypto from "node:crypto";
 import { cookies, headers } from "next/headers";
 import { prisma } from "@/lib/prisma";
 import { getRedis } from "@/lib/redis";
+import { cookieScopeDomain } from "@/lib/cookie-domain";
 
 export const ACCOUNT_SESSION_COOKIE_NAME = "vyx_trade_session";
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 7; // 7 days -- Redis TTL backstop, both remembered and not (see createAccountSession's own comment on why this differs from the cookie's own maxAge)
@@ -275,7 +276,7 @@ export async function completeAccountLogin(
 // "delete immediately") is what makes a cookie session-only -- the
 // browser keeps it only until it closes, which is the actual mechanism
 // behind "closing the browser logs out" when the box isn't checked.
-export function accountSessionCookieOptions(remember: boolean = true) {
+export async function accountSessionCookieOptions(remember: boolean = true) {
   // Scoped to the whole site (".vyxtrader.com"), not just the issuing
   // subdomain -- the WS Gateway lives on its own subdomain
   // (feed.<ROOT_DOMAIN>, see services/api-gateway/src/ws.ts's
@@ -285,8 +286,13 @@ export function accountSessionCookieOptions(remember: boolean = true) {
   // to its 2s HTTP poll forever. No `domain` in local dev (ROOT_DOMAIN
   // unset/localhost) -- there's only one host there, nothing to share
   // the cookie with, and "localhost" isn't a valid cookie domain value.
-  const rootDomain = (process.env.ROOT_DOMAIN ?? "localhost:3000").split(":")[0];
-  const domain = rootDomain === "localhost" ? undefined : `.${rootDomain}`;
+  //
+  // Host-aware since the 2026-09-07 outage fix -- see cookieScopeDomain's
+  // own comment. A broker's own custom domain can't share this
+  // ".vyxtrader.com" scope at all (unrelated domain, browser rejects it
+  // outright), so this only applies it when the current request is
+  // actually on *.vyxtrader.com.
+  const domain = await cookieScopeDomain();
   return {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",

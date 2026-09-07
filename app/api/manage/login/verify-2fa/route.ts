@@ -60,6 +60,6 @@ export async function POST(request: NextRequest) {
   await prisma.adminUser.update({ where: { id: admin.id }, data: { lastLoginAt: new Date() } });
 
   const response = NextResponse.json({ id: admin.id, email: admin.email, role: admin.role, brokerId: admin.brokerId });
-  response.cookies.set(SESSION_COOKIE_NAME, token, sessionCookieOptions(remember));
+  response.cookies.set(SESSION_COOKIE_NAME, token, await sessionCookieOptions(remember));
   return response;
 }

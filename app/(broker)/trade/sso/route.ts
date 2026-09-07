@@ -60,6 +60,6 @@ export async function GET(request: NextRequest) {
   });
 
   const response = NextResponse.redirect(`${origin}/trade`, { status: 303 });
-  response.cookies.set(ACCOUNT_SESSION_COOKIE_NAME, sessionToken, accountSessionCookieOptions());
+  response.cookies.set(ACCOUNT_SESSION_COOKIE_NAME, sessionToken, await accountSessionCookieOptions());
   return response;
 }

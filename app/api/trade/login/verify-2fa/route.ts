@@ -69,6 +69,6 @@ export async function POST(request: NextRequest) {
     accountNumber: account.accountNumber,
     accountMode: account.accountMode,
   });
-  response.cookies.set(ACCOUNT_SESSION_COOKIE_NAME, token, accountSessionCookieOptions(remember));
+  response.cookies.set(ACCOUNT_SESSION_COOKIE_NAME, token, await accountSessionCookieOptions(remember));
   return response;
 }

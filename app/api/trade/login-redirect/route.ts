@@ -58,6 +58,6 @@ export async function POST(request: NextRequest) {
   const token = await completeAccountLogin(account, null, { userAgent, ip });
 
   const response = NextResponse.redirect(`${origin}/trade?remember=${remember}`, { status: 303 });
-  response.cookies.set(ACCOUNT_SESSION_COOKIE_NAME, token, accountSessionCookieOptions());
+  response.cookies.set(ACCOUNT_SESSION_COOKIE_NAME, token, await accountSessionCookieOptions());
   return response;
 }
