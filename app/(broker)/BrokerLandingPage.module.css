@@ -1,0 +1,306 @@
+/* Self-contained design tokens (dark, brand-accented) so this route tree
+   doesn't need to import webtrader.css's .wt-root-scoped palette -- same
+   "own local tokens, keyed off --brand-primary" approach as
+   TradeLoginForm.module.css, just for a marketing page instead of a
+   trading screen. */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+
+.root {
+  --bg-0: #07090C;
+  --bg-1: #0B0F14;
+  --bg-2: #0E1319;
+  --border: #1E242C;
+  --text-1: #EDEFF2;
+  --text-2: #8B93A1;
+  --text-3: #5F6976;
+  --accent: var(--brand-primary, #16C784);
+
+  min-height: 100vh;
+  background: var(--bg-0);
+  color: var(--text-1);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+.header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 24px;
+  background: color-mix(in srgb, var(--bg-0) 88%, transparent);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--border);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.logo {
+  height: 30px;
+  width: auto;
+  display: block;
+}
+
+.brandName {
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.loginBtn {
+  flex-shrink: 0;
+  background: var(--accent);
+  color: #04140C;
+  border: none;
+  border-radius: 8px;
+  padding: 10px 18px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  text-decoration: none;
+  transition: filter .15s;
+  display: inline-block;
+}
+
+.loginBtn:hover {
+  filter: brightness(1.08);
+}
+
+.hero {
+  position: relative;
+  overflow: hidden;
+  padding: 88px 24px 96px;
+  text-align: center;
+}
+
+.heroMesh {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(circle at 22% 20%, color-mix(in srgb, var(--accent) 16%, transparent), transparent 45%),
+    radial-gradient(circle at 80% 65%, color-mix(in srgb, var(--accent) 22%, transparent), transparent 45%);
+  pointer-events: none;
+}
+
+.heroInner {
+  position: relative;
+  z-index: 1;
+  max-width: 720px;
+  margin: 0 auto;
+}
+
+.heroTitle {
+  font-size: clamp(32px, 5vw, 48px);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  margin: 0 0 16px;
+}
+
+.heroSubtitle {
+  font-size: 16px;
+  line-height: 1.6;
+  color: var(--text-2);
+  margin: 0 auto 32px;
+  max-width: 560px;
+}
+
+.heroActions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.heroPrimaryBtn {
+  background: var(--accent);
+  color: #04140C;
+  border: none;
+  border-radius: 9px;
+  padding: 13px 26px;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  text-decoration: none;
+  box-shadow: 0 4px 20px color-mix(in srgb, var(--accent) 35%, transparent);
+  transition: filter .15s, transform .1s;
+}
+
+.heroPrimaryBtn:hover {
+  filter: brightness(1.08);
+}
+
+.heroSecondaryBtn {
+  background: transparent;
+  color: var(--text-1);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 13px 26px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: none;
+  transition: border-color .15s, background .15s;
+}
+
+.heroSecondaryBtn:hover {
+  border-color: var(--accent);
+  background: var(--bg-1);
+}
+
+.section {
+  padding: 64px 24px;
+  border-top: 1px solid var(--border);
+}
+
+.sectionInner {
+  max-width: 1040px;
+  margin: 0 auto;
+}
+
+.sectionLabel {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin: 0 0 10px;
+  text-align: center;
+}
+
+.sectionTitle {
+  font-size: 26px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  margin: 0 0 40px;
+  text-align: center;
+}
+
+.cardGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 18px;
+}
+
+.card {
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 24px;
+}
+
+.cardIcon {
+  width: 38px;
+  height: 38px;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 16px;
+}
+
+.cardTitle {
+  font-size: 15px;
+  font-weight: 700;
+  margin: 0 0 8px;
+}
+
+.cardText {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-2);
+  margin: 0;
+}
+
+.whyList {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 20px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.whyItem {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.whyCheck {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 1px;
+}
+
+.whyText {
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--text-2);
+}
+
+.whyText strong {
+  color: var(--text-1);
+  font-weight: 600;
+}
+
+.ctaSection {
+  padding: 72px 24px;
+  text-align: center;
+  border-top: 1px solid var(--border);
+  background: var(--bg-1);
+}
+
+.ctaTitle {
+  font-size: 24px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  margin: 0 0 12px;
+}
+
+.ctaSubtitle {
+  font-size: 14px;
+  color: var(--text-2);
+  margin: 0 0 28px;
+}
+
+.footer {
+  padding: 28px 24px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.footerLink {
+  color: var(--text-3);
+  text-decoration: none;
+}
+
+.footerLink:hover {
+  color: var(--accent);
+}
