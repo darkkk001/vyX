@@ -39,6 +39,7 @@ export async function GET(request: NextRequest) {
       tier: true,
       logoUrl: true,
       primaryColor: true,
+      customDomain: true,
     },
   });
 

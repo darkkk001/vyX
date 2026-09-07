@@ -21,6 +21,7 @@ type BrokerInfo = {
   tier: string;
   logoUrl: string | null;
   primaryColor: string | null;
+  customDomain: string | null;
 };
 
 // Module-scope cache, not Next.js's fetch Data Cache (a prior attempt using
@@ -118,6 +119,29 @@ export async function middleware(request: NextRequest) {
         return NextResponse.rewrite(new URL("/broker-not-found", request.url));
       }
     }
+  }
+
+  // A broker with a customDomain configured gets ONE canonical address --
+  // their own domain, not two live URLs for the same site. If this request
+  // reached us on the *.{ROOT_DOMAIN} subdomain (subdomain is non-null --
+  // see isSubdomainOfRoot above) and that broker has a customDomain set,
+  // send it there instead of serving the subdomain directly.
+  //
+  // Can't loop: a request that already arrived on the custom domain falls
+  // into the `customDomain` lookup branch above (hostname doesn't end in
+  // `.${rootDomain}`), where `subdomain` is null, so this check is false
+  // for it regardless of what broker.customDomain says. The `!== hostname`
+  // guard is a second, belt-and-suspenders line against a misconfigured
+  // customDomain that happens to equal the current host.
+  // Brokers with no customDomain (the common case) have broker.customDomain
+  // === null, so this never fires for them -- their subdomain keeps working
+  // exactly as it does today.
+  if (subdomain && broker.customDomain && broker.customDomain !== hostname) {
+    const redirectUrl = new URL(
+      `${request.nextUrl.pathname}${request.nextUrl.search}`,
+      `https://${broker.customDomain}`,
+    );
+    return NextResponse.redirect(redirectUrl, 308);
   }
 
   const requestHeaders = new Headers(request.headers);
