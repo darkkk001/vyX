@@ -2,8 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { issuePasswordResetToken } from "@/lib/client-auth";
-import { getEmailAdapter } from "@/lib/email/adapter";
-import { requestOrigin } from "@/lib/request-origin";
+import { sendBrokerEmail } from "@/lib/email/adapter";
+import { brokerPublicOrigin, requestOrigin } from "@/lib/request-origin";
 
 // Real, email-based reset -- unlike app/api/trade/forgot-password (the
 // account-number one), which only creates a Notification for a dealer to
@@ -31,27 +31,38 @@ export async function POST(request: NextRequest) {
 
   const client = await prisma.client.findUnique({ where: { brokerId_email: { brokerId, email } } });
   let devResetUrl: string | undefined;
+  let usedMock = false;
 
   if (client && client.status === "ACTIVE") {
     const token = await issuePasswordResetToken(client.id);
-    const origin = requestOrigin(request);
+
+    const broker = await prisma.broker.findUnique({
+      where: { id: brokerId },
+      select: { name: true, subdomain: true, customDomain: true, emailEnabled: true, emailFromAddress: true, emailFromName: true },
+    });
+    const brokerName = broker?.name ?? "your broker";
+
+    // See brokerPublicOrigin's own comment (lib/request-origin.ts) --
+    // same reasoning as register/route.ts's verify link: a mailed link
+    // has to be the broker's real public domain, not this request's own.
+    const origin = broker ? brokerPublicOrigin(broker) : requestOrigin(request);
     const resetUrl = `${origin}/portal/reset-password?token=${token}`;
     devResetUrl = resetUrl;
 
-    const broker = await prisma.broker.findUnique({ where: { id: brokerId }, select: { name: true } });
-    const brokerName = broker?.name ?? "your broker";
-
-    await getEmailAdapter().send({
-      to: email,
-      subject: `Reset your password for ${brokerName}`,
-      html: `<p>Click the link below to reset your ${brokerName} account password. This link expires in 1 hour.</p><p><a href="${resetUrl}">${resetUrl}</a></p>`,
-      text: `Reset your password: ${resetUrl} (expires in 1 hour)`,
-    });
+    ({ usedMock } = await sendBrokerEmail(
+      { name: brokerName, emailEnabled: broker?.emailEnabled ?? false, emailFromAddress: broker?.emailFromAddress ?? null, emailFromName: broker?.emailFromName ?? null },
+      {
+        to: email,
+        subject: `Reset your password for ${brokerName}`,
+        html: `<p>Click the link below to reset your ${brokerName} account password. This link expires in 1 hour.</p><p><a href="${resetUrl}">${resetUrl}</a></p>`,
+        text: `Reset your password: ${resetUrl} (expires in 1 hour)`,
+      }
+    ));
   }
 
   return NextResponse.json({
     ok: true,
     message: "if an account exists for that email, a reset link has been sent",
-    ...(process.env.NODE_ENV !== "production" && devResetUrl ? { devResetUrl } : {}),
+    ...(process.env.NODE_ENV !== "production" && usedMock && devResetUrl ? { devResetUrl } : {}),
   });
 }

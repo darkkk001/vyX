@@ -28,6 +28,10 @@ export type BrokerRow = {
   supportEmail: string | null;
   logoUrl: string | null;
   primaryColor: string | null;
+  emailFromDomain: string | null;
+  emailFromAddress: string | null;
+  emailFromName: string | null;
+  emailEnabled: boolean;
 };
 
 type AdminOption = { id: string; email: string; role: string; status: string; brokerId: string | null };
@@ -178,6 +182,14 @@ export default function BrokersManager() {
   const [detailPrimaryColorBusy, setDetailPrimaryColorBusy] = useState(false);
   const [detailPrimaryColorError, setDetailPrimaryColorError] = useState<string | null>(null);
 
+  // --- Transactional email (Tenant detail modal) -- see lib/email/adapter.ts ---
+  const [emailFromDomainInput, setEmailFromDomainInput] = useState("");
+  const [emailFromAddressInput, setEmailFromAddressInput] = useState("");
+  const [emailFromNameInput, setEmailFromNameInput] = useState("");
+  const [emailEnabledInput, setEmailEnabledInput] = useState(false);
+  const [emailConfigBusy, setEmailConfigBusy] = useState(false);
+  const [emailConfigError, setEmailConfigError] = useState<string | null>(null);
+
   async function openDetail(row: BrokerRow) {
     setDetailTarget(row);
     setDetailAdmins(null);
@@ -192,6 +204,11 @@ export default function BrokersManager() {
     setDetailLogoError(null);
     setDetailPrimaryColorInput(row.primaryColor ?? "#1e8a5f");
     setDetailPrimaryColorError(null);
+    setEmailFromDomainInput(row.emailFromDomain ?? "");
+    setEmailFromAddressInput(row.emailFromAddress ?? "");
+    setEmailFromNameInput(row.emailFromName ?? "");
+    setEmailEnabledInput(row.emailEnabled);
+    setEmailConfigError(null);
     const response = await fetch("/api/admin/admins");
     if (response.ok) {
       const all = (await response.json()) as AdminOption[];
@@ -354,6 +371,35 @@ export default function BrokersManager() {
     const { primaryColor } = (await response.json()) as { primaryColor: string | null };
     setDetailTarget((prev) => (prev ? { ...prev, primaryColor } : prev));
     setDetailPrimaryColorInput(primaryColor ?? "#1e8a5f");
+    reload().catch(() => {});
+  }
+
+  async function saveEmailConfig() {
+    if (!detailTarget) return;
+    setEmailConfigBusy(true);
+    setEmailConfigError(null);
+    const response = await fetch(`/api/admin/brokers/${detailTarget.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        emailFromDomain: emailFromDomainInput.trim(),
+        emailFromAddress: emailFromAddressInput.trim(),
+        emailFromName: emailFromNameInput.trim(),
+        emailEnabled: emailEnabledInput,
+      }),
+    });
+    setEmailConfigBusy(false);
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      setEmailConfigError(body.error ?? "failed to save");
+      return;
+    }
+    const saved = (await response.json()) as { emailFromDomain: string | null; emailFromAddress: string | null; emailFromName: string | null; emailEnabled: boolean };
+    setDetailTarget((prev) => (prev ? { ...prev, ...saved } : prev));
+    setEmailFromDomainInput(saved.emailFromDomain ?? "");
+    setEmailFromAddressInput(saved.emailFromAddress ?? "");
+    setEmailFromNameInput(saved.emailFromName ?? "");
+    setEmailEnabledInput(saved.emailEnabled);
     reload().catch(() => {});
   }
 
@@ -626,6 +672,54 @@ export default function BrokersManager() {
                 </Button>
               </div>
               {supportEmailError ? <p className="mt-1.5 text-sm text-[var(--sell)]">{supportEmailError}</p> : null}
+            </ModalSection>
+
+            <ModalSection label="Transactional email">
+              <p className="mb-2 text-xs text-[var(--text-3)]">
+                Registration, email verification and password reset send from this address once enabled. The
+                address&apos;s domain must already be verified as a sender on the platform&apos;s Resend account,
+                or sends will fail -- leave disabled to keep logging these links instead of sending real email.
+              </p>
+              <ModalRow2>
+                <FormField label="From address">
+                  <Input
+                    type="email"
+                    placeholder="noreply@broker.com"
+                    value={emailFromAddressInput}
+                    onChange={(e) => setEmailFromAddressInput(e.target.value)}
+                  />
+                </FormField>
+                <FormField label="From name">
+                  <Input
+                    placeholder={detailTarget.name}
+                    value={emailFromNameInput}
+                    onChange={(e) => setEmailFromNameInput(e.target.value)}
+                  />
+                </FormField>
+              </ModalRow2>
+              <div className="mt-3">
+                <FormField label="Verified domain (informational)">
+                  <Input
+                    placeholder="broker.com"
+                    value={emailFromDomainInput}
+                    onChange={(e) => setEmailFromDomainInput(e.target.value)}
+                  />
+                </FormField>
+              </div>
+              <label className="mt-3 flex items-center gap-2 text-sm text-[var(--text-2)]">
+                <input
+                  type="checkbox"
+                  checked={emailEnabledInput}
+                  onChange={(e) => setEmailEnabledInput(e.target.checked)}
+                />
+                Send real email for this broker
+              </label>
+              <div className="mt-3">
+                <Button size="sm" variant="primary" disabled={emailConfigBusy} onClick={saveEmailConfig}>
+                  {emailConfigBusy ? "Saving..." : "Save"}
+                </Button>
+              </div>
+              {emailConfigError ? <p className="mt-1.5 text-sm text-[var(--sell)]">{emailConfigError}</p> : null}
             </ModalSection>
 
             <ModalSection label="Branding">

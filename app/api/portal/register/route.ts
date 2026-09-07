@@ -2,8 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { hashPassword, issueEmailVerificationToken } from "@/lib/client-auth";
-import { getEmailAdapter } from "@/lib/email/adapter";
-import { requestOrigin } from "@/lib/request-origin";
+import { sendBrokerEmail } from "@/lib/email/adapter";
+import { brokerPublicOrigin, requestOrigin } from "@/lib/request-origin";
 
 // Client Portal self-registration (Stage 1) -- email + password, not an
 // account number (that's Account's own, separate credential -- see
@@ -56,34 +56,45 @@ export async function POST(request: NextRequest) {
   });
 
   const token = await issueEmailVerificationToken(client.id);
-  const origin = requestOrigin(request);
-  // Points straight at the API route, not a /portal/... page -- clicking
-  // it needs no user input (unlike a password reset), so there's nothing
-  // a page would add except an extra hop. GET /api/portal/verify-email
-  // itself redirects to /portal/login?verify=... once Stage 2 builds that
-  // page; today (Stage 1, no pages yet) that last hop 404s, which is
-  // expected -- the verification itself still completes correctly before
-  // that redirect fires, and this link needs no changes once Stage 2 lands.
-  const verifyUrl = `${origin}/api/portal/verify-email?token=${token}`;
 
-  const broker = await prisma.broker.findUnique({ where: { id: brokerId }, select: { name: true } });
+  const broker = await prisma.broker.findUnique({
+    where: { id: brokerId },
+    select: { name: true, subdomain: true, customDomain: true, emailEnabled: true, emailFromAddress: true, emailFromName: true },
+  });
   const brokerName = broker?.name ?? "your broker";
 
-  await getEmailAdapter().send({
-    to: email,
-    subject: `Verify your email for ${brokerName}`,
-    html: `<p>Welcome to ${brokerName}. Click the link below to verify your email and finish setting up your account.</p><p><a href="${verifyUrl}">${verifyUrl}</a></p>`,
-    text: `Welcome to ${brokerName}. Verify your email: ${verifyUrl}`,
-  });
+  // A mailed link has to be the broker's own real public domain, not
+  // whatever origin this particular API request happened to arrive on
+  // -- see brokerPublicOrigin's own comment. Points straight at the API
+  // route, not a /portal/... page -- clicking it needs no user input
+  // (unlike a password reset), so there's nothing a page would add
+  // except an extra hop. GET /api/portal/verify-email itself redirects
+  // to /portal/login?verify=... once Stage 2 builds that page; today
+  // (Stage 1, no pages yet) that last hop 404s, which is expected -- the
+  // verification itself still completes correctly before that redirect
+  // fires, and this link needs no changes once Stage 2 lands.
+  const origin = broker ? brokerPublicOrigin(broker) : requestOrigin(request);
+  const verifyUrl = `${origin}/api/portal/verify-email?token=${token}`;
+
+  const { usedMock } = await sendBrokerEmail(
+    { name: brokerName, emailEnabled: broker?.emailEnabled ?? false, emailFromAddress: broker?.emailFromAddress ?? null, emailFromName: broker?.emailFromName ?? null },
+    {
+      to: email,
+      subject: `Verify your email for ${brokerName}`,
+      html: `<p>Welcome to ${brokerName}. Click the link below to verify your email and finish setting up your account.</p><p><a href="${verifyUrl}">${verifyUrl}</a></p>`,
+      text: `Welcome to ${brokerName}. Verify your email: ${verifyUrl}`,
+    }
+  );
 
   return NextResponse.json({
     clientId: client.id,
     email: client.email,
     // Mock-adapter-only convenience (see lib/email/adapter.ts's own
     // comment) -- outside production, hands the verify link straight
-    // back so this whole flow is testable without a real inbox. Never
-    // present once EMAIL_PROVIDER=resend is actually configured, and
-    // never present in production regardless of provider.
-    ...(process.env.NODE_ENV !== "production" ? { devVerifyUrl: verifyUrl } : {}),
+    // back so this whole flow is testable without a real inbox. Only
+    // present when this broker's send actually went through Mock (not
+    // configured for Resend, or Resend unset platform-wide), and never
+    // present in production regardless of provider.
+    ...(process.env.NODE_ENV !== "production" && usedMock ? { devVerifyUrl: verifyUrl } : {}),
   });
 }

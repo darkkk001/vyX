@@ -46,13 +46,37 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     return NextResponse.json({ error: "primaryColor must be a 6-digit hex color like #1e8a5f" }, { status: 400 });
   }
   const primaryColor = hasPrimaryColor ? (typeof body.primaryColor === "string" && body.primaryColor.trim() ? body.primaryColor.trim() : null) : undefined;
-  if (!executionEngine && !status && !hasPricingEngineEnabled && !hasSupportEmail && !hasLogoUrl && !hasPrimaryColor) {
-    return NextResponse.json({ error: "executionEngine, status, pricingEngineEnabled, supportEmail, logoUrl, or primaryColor is required" }, { status: 400 });
+
+  // Transactional email config -- see lib/email/adapter.ts's
+  // sendBrokerEmail. All four saved together from one form (BrokersManager's
+  // "Transactional email" section) rather than per-field like support
+  // email/logo/color above, since emailEnabled=true is only meaningful
+  // alongside an emailFromAddress.
+  const hasEmailFromDomain = "emailFromDomain" in (body ?? {});
+  const emailFromDomain = hasEmailFromDomain ? (typeof body.emailFromDomain === "string" && body.emailFromDomain.trim() ? body.emailFromDomain.trim().toLowerCase() : null) : undefined;
+  const hasEmailFromAddress = "emailFromAddress" in (body ?? {});
+  const emailFromAddress = hasEmailFromAddress ? (typeof body.emailFromAddress === "string" && body.emailFromAddress.trim() ? body.emailFromAddress.trim().toLowerCase() : null) : undefined;
+  const hasEmailFromName = "emailFromName" in (body ?? {});
+  const emailFromName = hasEmailFromName ? (typeof body.emailFromName === "string" && body.emailFromName.trim() ? body.emailFromName.trim() : null) : undefined;
+  const hasEmailEnabled = "emailEnabled" in (body ?? {});
+  const emailEnabled = hasEmailEnabled ? body.emailEnabled === true : undefined;
+
+  if (!executionEngine && !status && !hasPricingEngineEnabled && !hasSupportEmail && !hasLogoUrl && !hasPrimaryColor && !hasEmailFromDomain && !hasEmailFromAddress && !hasEmailFromName && !hasEmailEnabled) {
+    return NextResponse.json({ error: "executionEngine, status, pricingEngineEnabled, supportEmail, logoUrl, primaryColor, or an email config field is required" }, { status: 400 });
   }
 
   const existing = await prisma.broker.findUnique({ where: { id } });
   if (!existing) {
     return NextResponse.json({ error: "broker not found" }, { status: 404 });
+  }
+
+  // emailEnabled can only ever turn on a real send if there's a From
+  // address to send from -- check the resulting value (either freshly
+  // set in this request, or already on the row) rather than just what
+  // this request happens to include.
+  const resultingEmailFromAddress = hasEmailFromAddress ? emailFromAddress : existing.emailFromAddress;
+  if (emailEnabled === true && !resultingEmailFromAddress) {
+    return NextResponse.json({ error: "set emailFromAddress before enabling email sending" }, { status: 400 });
   }
 
   const updated = await prisma.$transaction(async (tx) => {
@@ -163,6 +187,29 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       });
     }
 
+    if (hasEmailFromDomain || hasEmailFromAddress || hasEmailFromName || hasEmailEnabled) {
+      const broker = await tx.broker.update({
+        where: { id },
+        data: {
+          ...(hasEmailFromDomain ? { emailFromDomain } : {}),
+          ...(hasEmailFromAddress ? { emailFromAddress } : {}),
+          ...(hasEmailFromName ? { emailFromName } : {}),
+          ...(hasEmailEnabled ? { emailEnabled } : {}),
+        },
+      });
+      await tx.auditLog.create({
+        data: {
+          brokerId: id,
+          actorAdminId: session!.adminId,
+          action: "BROKER_EMAIL_CONFIG_CHANGED",
+          entityType: "Broker",
+          entityId: id,
+          oldValue: { emailFromDomain: existing.emailFromDomain, emailFromAddress: existing.emailFromAddress, emailFromName: existing.emailFromName, emailEnabled: existing.emailEnabled },
+          newValue: { emailFromDomain: broker.emailFromDomain, emailFromAddress: broker.emailFromAddress, emailFromName: broker.emailFromName, emailEnabled: broker.emailEnabled },
+        },
+      });
+    }
+
     return tx.broker.findUniqueOrThrow({ where: { id } });
   });
 
@@ -176,5 +223,9 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     status: updated.status,
     trialEndsAt: updated.trialEndsAt,
     nextInvoiceAt: updated.nextInvoiceAt,
+    emailFromDomain: updated.emailFromDomain,
+    emailFromAddress: updated.emailFromAddress,
+    emailFromName: updated.emailFromName,
+    emailEnabled: updated.emailEnabled,
   });
 }

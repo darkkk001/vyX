@@ -328,6 +328,21 @@ model Broker {
   // menu item rather than guess/leak an address that isn't theirs.
   supportEmail String?
 
+  // Transactional email (registration/verification/reset) -- see
+  // lib/email/adapter.ts's sendBrokerEmail. emailEnabled must be true AND
+  // emailFromAddress set for this broker's mail to actually go through
+  // Resend; otherwise it falls back to the Mock adapter (logged only,
+  // never sent) regardless of these fields. emailFromAddress must be a
+  // sender identity verified on the platform's shared Resend account
+  // before flipping emailEnabled -- Resend itself will reject sends
+  // from an unverified domain. emailFromDomain is metadata for the
+  // backoffice UI (which domain a broker verified) and isn't read by
+  // the send path itself. emailFromName falls back to Broker.name when null.
+  emailFromDomain  String?
+  emailFromAddress String?
+  emailFromName    String?
+  emailEnabled     Boolean @default(false)
+
   // Tenant lifecycle / billing — config-only, not wired to any real
   // payment processor (see lib/billing.ts's PLAN_PRICING). trialEndsAt is
   // set when status becomes TRIAL, cleared/ignored otherwise. nextInvoiceAt

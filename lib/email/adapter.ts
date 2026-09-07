@@ -1,16 +1,16 @@
 import "server-only";
 
-// Swappable transactional email -- Stage 1 of the Client Portal build
-// needs SOMETHING here (email verification, password reset) but this
-// platform has never sent a real email anywhere (confirmed by search
-// before this file existed: no Resend/nodemailer/SMTP anywhere in the
-// codebase). Rather than block registration on setting up a real
-// provider, this ships with a Mock adapter that logs the link/code
-// server-side and returns it in the response outside production --
-// registration/verification/reset are all fully testable end-to-end
-// today. Swapping to Resend later is one env var
-// (EMAIL_PROVIDER=resend) plus RESEND_API_KEY/EMAIL_FROM -- no call site
-// anywhere else in the app needs to change, they only ever call sendMail.
+// Swappable transactional email -- Stage 1 shipped with a single global
+// Mock/Resend switch (EMAIL_PROVIDER env var). That was fine while no
+// broker had its own domain, but multi-tenant sending needs each
+// broker's mail to come from ITS OWN address (a Futurix client can't get
+// an email "from" some other broker, and vice versa) -- so the decision
+// of which adapter + which From address to use is now made PER SEND,
+// keyed off the broker row passed in, not a process-wide cached
+// singleton. RESEND_API_KEY itself stays a single global env var (one
+// shared Resend account, each broker's From address verified as a
+// sender identity/domain on that same account) -- see docs on adding a
+// broker's domain to Resend before flipping its emailEnabled on.
 
 export type MailMessage = {
   to: string;
@@ -23,25 +23,35 @@ export type MailMessage = {
   text: string;
 };
 
-export interface EmailAdapter {
-  send(message: MailMessage): Promise<void>;
+// The subset of Broker a caller needs to already have selected (or
+// fetch) to send on its behalf. Deliberately narrow so call sites that
+// already query `name` for the email body (see app/api/portal/register)
+// only need to widen that same `select`, not add a second query.
+export type BrokerEmailConfig = {
+  name: string;
+  emailEnabled: boolean;
+  emailFromAddress: string | null;
+  emailFromName: string | null;
+};
+
+interface EmailAdapter {
+  send(message: MailMessage & { from: string }): Promise<void>;
 }
 
-// Logs the message and, outside production, ALSO stashes the most recent
-// one per recipient so a route handler can hand the link straight back
-// in its own JSON response (see app/api/portal/register/route.ts) --
-// nothing else in this app needs to poll an inbox to test the flow.
-// Production still uses Mock until EMAIL_PROVIDER=resend is actually
-// set, but never echoes the content back in a response there -- logging
-// only, so a misconfigured production deploy fails loud (no email
-// arrives) rather than silently leaking a verification link into an API
-// response real traffic could see.
+// Logs the message and, outside production, ALSO stashes the most
+// recent one per recipient so a route handler can hand the link
+// straight back in its own JSON response (see
+// app/api/portal/register/route.ts) -- nothing else in this app needs
+// to poll an inbox to test the flow. A broker stays on Mock until it
+// has both emailEnabled=true AND an emailFromAddress configured; production
+// still logs-only for those brokers rather than silently leaking a
+// verification link into an API response real traffic could see.
 class MockEmailAdapter implements EmailAdapter {
   private lastByRecipient = new Map<string, MailMessage>();
 
-  async send(message: MailMessage): Promise<void> {
+  async send(message: MailMessage & { from: string }): Promise<void> {
     this.lastByRecipient.set(message.to, message);
-    console.log(`[mock-email] to=${message.to} subject="${message.subject}"\n${message.text}`);
+    console.log(`[mock-email] from=${message.from} to=${message.to} subject="${message.subject}"\n${message.text}`);
   }
 
   // Dev/test-only escape hatch -- see this class's own comment.
@@ -51,13 +61,13 @@ class MockEmailAdapter implements EmailAdapter {
 }
 
 // Resend's plain REST API via fetch -- no SDK dependency added for a
-// path that's inert until a broker/deployment actually configures it
-// (RESEND_API_KEY unset means this constructor is never reached, see
-// getEmailAdapter below). https://resend.com/docs/api-reference/emails/send-email
+// path that's inert until RESEND_API_KEY is actually configured (see
+// getResendAdapter below). `from` is passed per-send now (broker-specific),
+// not fixed at construction. https://resend.com/docs/api-reference/emails/send-email
 class ResendEmailAdapter implements EmailAdapter {
-  constructor(private apiKey: string, private from: string) {}
+  constructor(private apiKey: string) {}
 
-  async send(message: MailMessage): Promise<void> {
+  async send(message: MailMessage & { from: string }): Promise<void> {
     const response = await fetch("https://api.resend.com/emails", {
       method: "POST",
       headers: {
@@ -65,7 +75,7 @@ class ResendEmailAdapter implements EmailAdapter {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        from: this.from,
+        from: message.from,
         to: message.to,
         subject: message.subject,
         html: message.html,
@@ -79,28 +89,50 @@ class ResendEmailAdapter implements EmailAdapter {
   }
 }
 
-let cached: EmailAdapter | null = null;
+let mockAdapter: MockEmailAdapter | null = null;
+let resendAdapter: ResendEmailAdapter | null = null;
 
-// EMAIL_PROVIDER=resend + RESEND_API_KEY + EMAIL_FROM switches over;
-// anything else (unset, "mock", a typo) stays on Mock rather than
-// throwing -- a misconfigured provider name degrading to "still works,
-// just doesn't send a real email" is a far safer failure mode for an
-// auth-adjacent flow than registration/password-reset hard-erroring.
-export function getEmailAdapter(): EmailAdapter {
-  if (cached) return cached;
-
-  if (process.env.EMAIL_PROVIDER === "resend" && process.env.RESEND_API_KEY && process.env.EMAIL_FROM) {
-    cached = new ResendEmailAdapter(process.env.RESEND_API_KEY, process.env.EMAIL_FROM);
-  } else {
-    cached = new MockEmailAdapter();
-  }
-  return cached;
+function getMockAdapter(): MockEmailAdapter {
+  if (!mockAdapter) mockAdapter = new MockEmailAdapter();
+  return mockAdapter;
 }
 
-// Dev/test-only convenience -- see MockEmailAdapter's own comment. Not
-// exported as part of the EmailAdapter interface; callers that need this
-// know they're on Mock (Stage 1's entire target audience) and cast.
+// Undefined/empty RESEND_API_KEY means every broker stays on Mock
+// regardless of its own emailEnabled flag -- a broker turning email on
+// doesn't do anything until the platform's own Resend account is wired
+// up, same "missing config degrades to safe no-op" shape Stage 1 had.
+function getResendAdapter(): ResendEmailAdapter | null {
+  const apiKey = process.env.RESEND_API_KEY;
+  if (!apiKey) return null;
+  if (!resendAdapter) resendAdapter = new ResendEmailAdapter(apiKey);
+  return resendAdapter;
+}
+
+// Single entry point every send-an-email call site uses. Resolves
+// Mock-vs-Resend AND the From address from the broker passed in, not a
+// process-wide cache -- so two brokers' sends made moments apart on the
+// same server correctly use two different From addresses/providers.
+// Returns which adapter actually handled the send so callers can decide
+// whether it's safe to echo a dev link back in their own response (only
+// ever safe when Mock handled it -- see register/forgot-password routes).
+export async function sendBrokerEmail(
+  broker: BrokerEmailConfig,
+  message: MailMessage
+): Promise<{ usedMock: boolean }> {
+  const resend = broker.emailEnabled && broker.emailFromAddress ? getResendAdapter() : null;
+
+  if (resend) {
+    const fromName = broker.emailFromName || broker.name;
+    await resend.send({ ...message, from: `${fromName} <${broker.emailFromAddress}>` });
+    return { usedMock: false };
+  }
+
+  await getMockAdapter().send({ ...message, from: broker.emailFromAddress ?? "mock@localhost" });
+  return { usedMock: true };
+}
+
+// Dev/test-only convenience -- see MockEmailAdapter's own comment. Only
+// ever finds something for a send that actually went through Mock.
 export function getMockLastSentTo(to: string): MailMessage | null {
-  const adapter = getEmailAdapter();
-  return adapter instanceof MockEmailAdapter ? adapter.lastSentTo(to) : null;
+  return getMockAdapter().lastSentTo(to);
 }
