@@ -1,11 +1,11 @@
 {
-  "version": "0.1.10",
-  "notes": "Client KYC, Trading Accounts, Live Account Requests, pricing engine, groups redesign, light/dark theme",
-  "pub_date": "2026-09-07T21:37:34.728Z",
+  "version": "0.1.11",
+  "notes": "Fix theme toggle, real-time connection, window fit, and native dark titlebar",
+  "pub_date": "2026-09-07T22:07:33.450Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUc2VqVXVBOHpXRHlYSTlmNmtZRFkxQnlpbmN6OEV5aU9IWXNYb1dNUng5bitrM1VhYkdlVDNNU05kVVhzcThmS2dxRllzQ202ODFFdEVGck1wWStpSkdjWG9URUxoTWdZPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4ODE3MDQ2CWZpbGU6RnV0dXJpeCBHbG9iYWwgTWFuYWdlcl8wLjEuMTBfeDY0LXNldHVwLmV4ZQpIdHhqcTVLZTNlb3NGbEhjSEdxdUhpQjlOOVlZYUdzMkxSZjl4b1JITjhidlBPR2JCcSswWjZnS3lYV3l1YTRsb2EyQ0VSU0RuSk80b0lXZjZQbFdBUT09Cg==",
-      "url": "https://vyxtrader.com/manager-tauri-updates/futurixglobal/Futurix%20Global%20Manager_0.1.10_x64-setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUc2VqVXVBOHpXRHhzUVRpdVNzd3VEL0grUTlxeDRBOXJ1L0gycEw0d20rNjV2K0lGZEYrZFJtQUZ4bEdBTFdqUTlDZ3I4UnNlV0JNL0FaS2dQNGVRNTFVZjV5M1IzTkE4PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4ODE4ODQ0CWZpbGU6RnV0dXJpeCBHbG9iYWwgTWFuYWdlcl8wLjEuMTFfeDY0LXNldHVwLmV4ZQowOUZZSnBOVzI4cEVsQUllQ0ZuQXVodVR0VkN3WXkwSzJEWXo2V2NNUGQrTmRXU2JFYlNDaW0vMEVUSUxXU3pwK21wbWN5L2RiZlRzeFlEVXBMdUVCdz09Cg==",
+      "url": "https://vyxtrader.com/manager-tauri-updates/futurixglobal/Futurix%20Global%20Manager_0.1.11_x64-setup.exe"
     }
   }
 }
