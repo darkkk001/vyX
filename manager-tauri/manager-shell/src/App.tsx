@@ -13,6 +13,7 @@ import ClientActivityView from "@/app/manage/(shell)/accounts/[id]/ClientActivit
 import LeadsManager from "@/app/manage/(shell)/leads/LeadsManager";
 import KycRequestsManager from "@/app/manage/(shell)/kyc/KycRequestsManager";
 import ClientKycRequestsManager from "@/app/manage/(shell)/client-kyc/ClientKycRequestsManager";
+import LiveAccountRequestsManager from "@/app/manage/(shell)/live-account-requests/LiveAccountRequestsManager";
 import FundsRequestsManager from "@/app/manage/(shell)/funds/FundsRequestsManager";
 import TransfersManager from "@/app/manage/(shell)/transfers/TransfersManager";
 import WalletsManager from "@/app/manage/(shell)/wallets/WalletsManager";
@@ -130,6 +131,7 @@ export default function App() {
         { href: "/manage/leads", label: "Leads" },
         ...(isBrokerAdmin ? [{ href: "/manage/kyc", label: "KYC review" }] : []),
         ...(isBrokerAdmin ? [{ href: "/manage/client-kyc", label: "Client KYC" }] : []),
+        ...(isBrokerAdmin ? [{ href: "/manage/live-account-requests", label: "Live Account Requests" }] : []),
       ],
     },
     isBrokerAdmin
@@ -233,6 +235,12 @@ export default function App() {
         return isBrokerAdmin ? (
           <Section maxWidth="max-w-6xl" title="Client KYC" description="Client Portal identity verification and suitability questionnaire submissions. View documents before approving or rejecting.">
             <ClientKycRequestsManager />
+          </Section>
+        ) : null;
+      case "/manage/live-account-requests":
+        return isBrokerAdmin ? (
+          <Section maxWidth="max-w-6xl" title="Live Account Requests" description="Client Portal requests to open a Live trading account, gated on KYC approval. Approving creates the account and emails the client their credentials.">
+            <LiveAccountRequestsManager />
           </Section>
         ) : null;
       case "/manage/funds":

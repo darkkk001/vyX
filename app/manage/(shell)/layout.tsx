@@ -87,6 +87,7 @@ export default async function ManageShellLayout({ children }: { children: React.
         { href: "/manage/leads", label: "Leads" },
         ...(isBrokerAdmin ? [{ href: "/manage/kyc", label: "KYC review" }] : []),
         ...(isBrokerAdmin ? [{ href: "/manage/client-kyc", label: "Client KYC" }] : []),
+        ...(isBrokerAdmin ? [{ href: "/manage/live-account-requests", label: "Live Account Requests" }] : []),
       ],
     },
     ...(isBrokerAdmin

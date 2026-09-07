@@ -4,6 +4,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { hasPermission } from "@/lib/permissions";
+import { provisionAccount } from "@/lib/account-provisioning";
 
 async function requireManager() {
   const session = await getAdminSession();
@@ -11,34 +12,6 @@ async function requireManager() {
     return null;
   }
   return session!;
-}
-
-// Sequential 8-digit MT-style login id (matches the seeded demo accounts'
-// shape, e.g. "50001234"). accountNumber is globally unique (not
-// broker-scoped) so this reads the current global max, not just this
-// broker's. A race between two concurrent creates is handled by retrying
-// on the unique-constraint error in the POST handler below, same idiom as
-// app/api/trade/orders/route.ts's idempotency-key retry.
-//
-// Numeric MAX via a raw cast, not `orderBy: { accountNumber: "desc" }` --
-// accountNumber is a Prisma String column, so that `desc` sort is
-// lexicographic, not numeric. A real incident: a 7-digit, non-zero-
-// padded test accountNumber ("9000001") sorted lexicographically ABOVE
-// every real 8-digit "5......." number ('9' > '5' as the first
-// character), so `findFirst` kept returning that test row as "the
-// max" forever -- every subsequent real account creation, for every
-// broker, computed the same colliding next number and failed outright
-// once nothing was left to retry into. Casting to bigint sidesteps the
-// whole class of bug regardless of what shape any future accountNumber
-// happens to take (differing digit counts, non-zero-padded values,
-// etc.) -- correct by construction, not by convention every writer has
-// to remember to uphold.
-async function nextAccountNumber(): Promise<string> {
-  const rows = await prisma.$queryRaw<{ max: bigint | null }[]>`
-    SELECT MAX("accountNumber"::bigint) as max FROM "Account" WHERE "accountNumber" ~ '^[0-9]+$'
-  `;
-  const base = rows[0]?.max != null ? Number(rows[0].max) : 50000999;
-  return String((Number.isFinite(base) ? base : 50000999) + 1).padStart(8, "0");
 }
 
 export async function GET() {
@@ -275,93 +248,33 @@ async function createAccount(request: NextRequest, session: NonNullable<Awaited<
 
   const passwordHash = await bcrypt.hash(password, 10);
 
-  const maxAttempts = 5;
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    const accountNumber = await nextAccountNumber();
-    try {
-      const result = await prisma.$transaction(async (tx) => {
-        const account = await tx.account.create({
-          data: {
-            brokerId,
-            accountNumber,
-            email,
-            passwordHash,
-            fullName,
-            accountMode,
-            accountTypeId,
-            currency,
-            leverage,
-            groupId: group?.id ?? null,
-            country,
-            phone,
-            dateOfBirth,
-          },
-        });
+  const result = await provisionAccount({
+    brokerId,
+    fullName,
+    email,
+    passwordHash,
+    accountMode,
+    accountTypeId,
+    currency,
+    leverage,
+    groupId: group?.id ?? null,
+    initialBalance,
+    country,
+    phone,
+    dateOfBirth,
+    clientId: null,
+    createdByAdminId: session.adminId,
+  });
 
-        if (initialBalance.gt(0)) {
-          await tx.account.update({ where: { id: account.id }, data: { balance: initialBalance } });
-          await tx.transaction.create({
-            data: {
-              brokerId,
-              accountId: account.id,
-              type: "ADJUSTMENT",
-              status: "COMPLETED",
-              amount: initialBalance,
-              balanceBefore: new Prisma.Decimal(0),
-              balanceAfter: initialBalance,
-              note: "Initial balance on account creation",
-              createdByAdminId: session.adminId,
-            },
-          });
-        }
-
-        await tx.auditLog.create({
-          data: {
-            brokerId,
-            actorAdminId: session.adminId,
-            action: "ACCOUNT_CREATED",
-            entityType: "Account",
-            entityId: account.id,
-            oldValue: Prisma.JsonNull,
-            newValue: { accountNumber, email, accountMode, accountTypeId, initialBalance: initialBalance.toString() },
-          },
-        });
-
-        return account;
-      });
-
-      return NextResponse.json(
-        {
-          id: result.id,
-          accountNumber: result.accountNumber,
-          email: result.email,
-          // No password here -- the caller already has it (they just typed
-          // it into the form); echoing it back in the response just puts a
-          // live credential in the network log/devtools for no benefit.
-        },
-        { status: 201 }
-      );
-    } catch (error) {
-      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
-        // Two distinct unique constraints can fire P2002 here --
-        // accountNumber (a genuine allocation race, worth retrying with a
-        // freshly-read max) vs. the [brokerId, email, accountMode]
-        // constraint (a duplicate client, not a race -- retrying would
-        // just fail the same way every time and burn all 5 attempts
-        // before ever telling the caller why).
-        const target = error.meta?.target;
-        const fields = Array.isArray(target) ? target.map(String) : typeof target === "string" ? [target] : [];
-        const isAccountNumberRace = fields.some((f) => f.toLowerCase().includes("accountnumber"));
-        if (isAccountNumberRace && attempt < maxAttempts - 1) {
-          continue;
-        }
-        if (isAccountNumberRace) {
-          return NextResponse.json({ error: "could not allocate an account number, please try again" }, { status: 500 });
-        }
-        return NextResponse.json({ error: "an account with this email already exists for this broker" }, { status: 409 });
-      }
-      throw error;
-    }
-  }
-  return NextResponse.json({ error: "failed to allocate an account number, try again" }, { status: 500 });
+  return NextResponse.json(
+    {
+      id: result.id,
+      accountNumber: result.accountNumber,
+      email: result.email,
+      // No password here -- the caller already has it (they just typed
+      // it into the form); echoing it back in the response just puts a
+      // live credential in the network log/devtools for no benefit.
+    },
+    { status: 201 }
+  );
 }

@@ -383,3 +383,93 @@
   padding: 3px 10px;
   border-radius: 100px;
 }
+
+/* ---------- modal, same dark/accent language as the rest of the portal ---------- */
+
+.modalOverlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(3, 4, 6, .6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  z-index: 50;
+}
+
+.modalCard {
+  width: 440px;
+  max-width: 100%;
+  max-height: 85vh;
+  overflow-y: auto;
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 28px;
+  box-shadow: 0 20px 60px -20px rgba(0, 0, 0, .5);
+}
+
+.modalTitle {
+  font-size: 17px;
+  font-weight: 700;
+  margin: 0 0 16px;
+}
+
+.modalTabs {
+  display: flex;
+  gap: 6px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 3px;
+  margin-bottom: 18px;
+}
+
+.modalTab {
+  flex: 1;
+  text-align: center;
+  padding: 8px 10px;
+  border-radius: 7px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-2);
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background .12s, color .12s;
+}
+
+.modalTabActive {
+  background: var(--accent);
+  color: #04140C;
+}
+
+.credentialBox {
+  background: var(--bg-2);
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  padding: 14px;
+  margin: 12px 0;
+  font-size: 13px;
+}
+
+.credentialRow {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 0;
+}
+
+.credentialLabel {
+  color: var(--text-3);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+
+.credentialValue {
+  font-family: monospace;
+  font-size: 13px;
+  color: var(--text-1);
+}
