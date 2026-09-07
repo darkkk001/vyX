@@ -306,7 +306,7 @@ export default function SettingsManager() {
             <TableHeaderCell align="right">Spread</TableHeaderCell>
             <TableHeaderCell align="right">Commission</TableHeaderCell>
             <TableHeaderCell>Swap</TableHeaderCell>
-            <TableHeaderCell align="right">Sort</TableHeaderCell>
+            <TableHeaderCell align="right" title="The order these types appear in, here and in the Add-account picker. Purely cosmetic; doesn't affect pricing or behavior.">Display order</TableHeaderCell>
             <TableHeaderCell>Default</TableHeaderCell>
             <TableHeaderCell>Enabled</TableHeaderCell>
             <TableHeaderCell />

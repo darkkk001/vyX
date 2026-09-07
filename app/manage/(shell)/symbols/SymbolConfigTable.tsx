@@ -135,7 +135,7 @@ export default function SymbolConfigTable() {
         <TableHeaderCell className="min-w-[130px]">Symbol</TableHeaderCell>
         <TableHeaderCell className="min-w-[80px]">Enabled</TableHeaderCell>
         <TableHeaderCell className="min-w-[140px]" title="Restrict which side can trade even when enabled">Trading mode</TableHeaderCell>
-        <TableHeaderCell className="min-w-[110px]" title="Stamped onto every new position in this symbol -- record-keeping only, no real LP hedge happens">Book</TableHeaderCell>
+        <TableHeaderCell className="min-w-[110px]" title="A-Book = passed to a liquidity provider to hedge; B-Book = kept in-house, the broker takes the other side. Stamped onto every new position in this symbol as a record; no real LP hedge happens yet.">Book</TableHeaderCell>
         {NUMERIC_FIELDS.map((f) => (
           <TableHeaderCell key={f.key} title={f.title} className="whitespace-nowrap" style={{ minWidth: f.width + 24 }}>
             {f.label}

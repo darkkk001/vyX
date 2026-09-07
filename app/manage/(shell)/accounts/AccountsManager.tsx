@@ -651,6 +651,7 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
                 ]}
               />
             </FormField>
+            <p className="-mt-2.5 text-[10px] text-[var(--text-3)]">Demo is simulated practice trading; Live risks real money.</p>
             {newAccount.accountMode === "LIVE" ? (
               <p className="rounded-lg border border-[var(--warn)]/30 bg-[var(--warn-bg)] px-2.5 py-2 text-xs text-[var(--warn)]">
                 KYC required -- a brand-new Live account starts unverified. Some actions (e.g. withdrawals) will be
@@ -669,6 +670,7 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
                   .map((t) => ({ value: t.id, label: t.name, hint: t.pricingHint }))}
               />
             </FormField>
+            <p className="-mt-2.5 text-[10px] text-[var(--text-3)]">Pricing tier: sets the spread, commission, and swap this account gets.</p>
 
             {/* Group -- routing, a distinct concept from type (pricing). */}
             <FormField label="Group, routing">
@@ -681,6 +683,7 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
                 ))}
               </Select>
             </FormField>
+            <p className="-mt-2.5 text-[10px] text-[var(--text-3)]">Order routing: how this account&apos;s orders are dealt with, separate from its pricing tier.</p>
 
             {canManageFinance && !newAccount.groupId ? (
               <FormField label="Leverage">
@@ -703,8 +706,6 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
             <FormField label="Password (min 8 characters)">
               <Input type="text" mono value={newAccount.password} onChange={(e) => setNewAccount((p) => ({ ...p, password: e.target.value }))} />
             </FormField>
-
-            <p className="text-center text-[10.5px] uppercase tracking-wide text-[var(--text-3)]">Type = pricing · Group = routing</p>
 
             {addError ? <p className="text-sm text-[var(--sell)]">{addError}</p> : null}
             <ModalActions>

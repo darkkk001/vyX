@@ -119,13 +119,33 @@ const RESTRICTION_LABELS: Record<GroupRow["tradingRestriction"], string> = { BOT
 
 function routingBadge(row: GroupRow) {
   const uiType = uiTypeFor(row.groupType, row.dealingMode, row.hasMirrorRule);
-  if (uiType === "BBOOK_AUTO") return <Badge tone="info">B-Book (Auto)</Badge>;
-  if (uiType === "ABOOK_LP") return <Badge tone="accent">A-Book (LP)</Badge>;
+  if (uiType === "BBOOK_AUTO") {
+    return (
+      <span title="Kept in-house (broker takes the other side); orders auto-fill instantly, never queue for manual review.">
+        <Badge tone="info">B-Book (Auto)</Badge>
+      </span>
+    );
+  }
+  if (uiType === "ABOOK_LP") {
+    return (
+      <span title="Passed to a liquidity provider to hedge, once a real LP relationship exists. Orders auto-fill instantly.">
+        <Badge tone="accent">A-Book (LP)</Badge>
+      </span>
+    );
+  }
   const dealingLabel = row.dealingMode === "MANUAL" ? "Force" : "Dealer-managed";
+  const dealingTitle =
+    row.dealingMode === "MANUAL"
+      ? "Every order from this group always queues for a dealer to manually accept/reject, regardless of the broker-wide Dealer switch."
+      : "Orders queue for manual dealer review, unless the broker-wide Dealer switch is off, in which case they auto-fill.";
   return uiType === "REVERSE_MIRROR" ? (
-    <Badge tone="warning">Reverse ({dealingLabel})</Badge>
+    <span title={`Kept in-house (broker takes the other side), and this group is the SOURCE a reverse-mirror rule copies trades from. ${dealingTitle}`}>
+      <Badge tone="warning">Reverse ({dealingLabel})</Badge>
+    </span>
   ) : (
-    <Badge tone="success">Dealing ({dealingLabel})</Badge>
+    <span title={`Kept in-house (broker takes the other side). ${dealingTitle}`}>
+      <Badge tone="success">Dealing ({dealingLabel})</Badge>
+    </span>
   );
 }
 
@@ -508,12 +528,14 @@ function GroupFormModal({
               <SwapFreeSelect value={swapFree} onChange={setSwapFree} />
             </div>
           </FormField>
-          <Checkbox
-            label="Default group"
-            title="New accounts are placed in this group automatically when no group is chosen at creation"
-            checked={isDefault}
-            onChange={(e) => setIsDefault(e.target.checked)}
-          />
+          <div>
+            <Checkbox
+              label="Set as default group"
+              checked={isDefault}
+              onChange={(e) => setIsDefault(e.target.checked)}
+            />
+            <p className="mt-1 text-[10px] text-[var(--text-3)]">New accounts without a specified group are assigned here.</p>
+          </div>
         </div>
 
         <ModalSection label="Order routing">
