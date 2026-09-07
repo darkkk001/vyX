@@ -15,6 +15,52 @@ import type { NextRequest } from "next/server";
 
 const SUPER_ADMIN_SUBDOMAIN = "admin";
 
+// 2026-09-07 architecture decision -- application-only surfaces, modeled
+// on MT5's own split (download the terminal, enter account+password,
+// reach the broker's server -- never a browser URL for the terminal
+// itself, let alone its backoffice). Manager/Broker-Admin backoffice and
+// Super Admin must never be reachable by ANY web URL, on ANY domain (a
+// broker's own subdomain/customDomain, admin.<ROOT_DOMAIN>, or the bare
+// root) -- only through the bundled desktop apps (manager-tauri/
+// admin-tauri). Confirmed safe to block outright: both apps' own
+// tauri.conf.json ships `frontendDist: "../dist"` -- they render their
+// OWN locally-bundled UI (manager-shell/admin-shell) and never load
+// these page routes via webview at all. Every API call that UI makes
+// crosses the network through each app's own native reqwest-based
+// bridge (see e.g. admin-tauri/src-tauri/src/main.rs's ApiBridge) hitting
+// /api/manage/* or /api/admin/* directly -- NOT blocked here, on
+// purpose: manager-tauri's bridge targets that broker's own domain
+// (broker.config.json's configured host), so blocking those routes here
+// would break the very desktop app this change exists to make the sole
+// path to the backoffice.
+//
+// Manager: every /manage/* page (NOT /manage-launch, a separate,
+// unrelated desktop-app broker-picker screen -- this check only matches
+// the literal segment boundary). Super Admin: (super-admin) is a Next.js
+// route group, invisible in the URL, so its pages are these bare
+// top-level paths -- hardcoded rather than pattern-matched since there's
+// no way to ask the Edge runtime "what page would handle this path" and
+// this app's own list of Super Admin pages changes rarely (it's a whole
+// nav, not a per-feature thing) -- keep this in sync with
+// app/(super-admin)/(shell)/*'s own directory listing if a page is ever
+// added or removed there.
+const SUPER_ADMIN_PAGE_PATHS = new Set([
+  "/login",
+  "/brokers",
+  "/admins",
+  "/audit",
+  "/billing",
+  "/health",
+  "/notifications",
+  "/security",
+  "/trials",
+]);
+
+function isApplicationOnlyPage(pathname: string): boolean {
+  if (pathname === "/manage" || pathname.startsWith("/manage/")) return true;
+  return SUPER_ADMIN_PAGE_PATHS.has(pathname);
+}
+
 type BrokerInfo = {
   id: string;
   subdomain: string;
@@ -47,6 +93,16 @@ const STALE_MS = 30 * 60_000;
 const brokerCache = new Map<string, { broker: BrokerInfo; fetchedAt: number }>();
 
 export async function middleware(request: NextRequest) {
+  // Checked first, before any host/broker resolution, and unconditional
+  // across every domain -- see isApplicationOnlyPage's own comment. A
+  // real 404 (not the friendly /broker-not-found rewrite below, which is
+  // for "this domain isn't a broker we know," a different situation) --
+  // returned directly here rather than routed to a page component, so
+  // there's nothing for a client to fetch/render at all.
+  if (isApplicationOnlyPage(request.nextUrl.pathname)) {
+    return new NextResponse("Not found", { status: 404 });
+  }
+
   const host = request.headers.get("host") ?? "";
   const hostname = host.split(":")[0];
   const rootDomain = (process.env.ROOT_DOMAIN ?? "localhost:3000").split(":")[0];
