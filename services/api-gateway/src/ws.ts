@@ -19,7 +19,7 @@
 import type { IncomingMessage, Server } from "http";
 import { connect, type NatsConnection } from "nats";
 import { WebSocket, WebSocketServer } from "ws";
-import { getTraderSession } from "./auth.js";
+import { getTraderSession, getTraderSessionByTicket } from "./auth.js";
 import { getAdminSession } from "./admin-auth.js";
 import { getEnabledSymbolNames } from "./db.js";
 
@@ -109,6 +109,25 @@ export function orderAckStats(): { order_ack_ms_p50: number | null; order_ack_ms
   };
 }
 
+// Shared by both attachPriceStream and attachTradingEventStream's upgrade
+// handlers -- tries the `ticket` query param first (see
+// getTraderSessionByTicket's own comment: the only option for a browser
+// WS handshake on a broker's own custom domain, which never carries this
+// Gateway's session cookie at all), falling back to the cookie-based
+// lookup every existing client (any *.vyxtrader.com subdomain, which CAN
+// share that cookie) still relies on. Cheap either way -- a subdomain
+// client that also happens to send a ticket just resolves off that
+// instead, no double lookup.
+async function resolveTraderSession(req: IncomingMessage): Promise<import("./auth.js").AccountSessionPayload | null> {
+  const { searchParams } = new URL(req.url ?? "", "http://internal");
+  const ticket = searchParams.get("ticket");
+  if (ticket) {
+    const byTicket = await getTraderSessionByTicket(ticket);
+    if (byTicket) return byTicket;
+  }
+  return getTraderSession(req.headers.cookie);
+}
+
 export async function attachPriceStream(server: Server, natsUrl: string): Promise<void> {
   const nc: NatsConnection = await connect({ servers: natsUrl });
   const sub = nc.subscribe("price.tick.*");
@@ -153,7 +172,7 @@ export async function attachPriceStream(server: Server, natsUrl: string): Promis
     const { pathname } = new URL(req.url ?? "", "http://internal");
     if (pathname !== PRICE_STREAM_PATH) return;
 
-    getTraderSession(req.headers.cookie)
+    resolveTraderSession(req)
       .then((session) => {
         if (session) {
           wss.handleUpgrade(req, socket, head, (ws) => {
@@ -273,7 +292,7 @@ export async function attachTradingEventStream(server: Server, natsUrl: string):
     const { pathname } = new URL(req.url ?? "", "http://internal");
     if (pathname !== TRADING_STREAM_PATH) return;
 
-    getTraderSession(req.headers.cookie)
+    resolveTraderSession(req)
       .then((session) => {
         if (!session) {
           socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");

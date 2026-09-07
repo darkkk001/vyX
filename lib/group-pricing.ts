@@ -55,8 +55,19 @@ export async function resolveSymbolPricing(
   if (!params.groupId) {
     return { spreadMarkup: params.brokerSpreadMarkup, commissionPerLot: params.brokerCommissionPerLot };
   }
+  // 2026-09-07 outage fix -- explicit select, deliberately WITHOUT
+  // targetTotalSpreadPips (a pricing-engine-only column this function
+  // never reads -- see the per-field fallback comment below, this
+  // function predates that field entirely). An implicit "select every
+  // column" here coupled every grouped account's FILL -- not just its
+  // price display -- to a column that didn't exist yet in every
+  // database the moment it was added to schema.prisma, well before its
+  // migration had actually run everywhere; this is the exact same class
+  // of bug that took /api/trade/prices down, just on the money path
+  // instead of the display path.
   const override = await tx.groupSymbolConfig.findUnique({
     where: { groupId_symbolId: { groupId: params.groupId, symbolId: params.symbolId } },
+    select: { spreadMarkup: true, commissionPerLot: true },
   });
   if (!override) {
     return { spreadMarkup: params.brokerSpreadMarkup, commissionPerLot: params.brokerCommissionPerLot };

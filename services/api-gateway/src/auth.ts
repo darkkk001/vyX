@@ -30,6 +30,9 @@ export function getRedis(): Redis {
 function sessionKey(token: string) {
   return `trader_session:${token}`;
 }
+function wsTicketKey(ticket: string) {
+  return `trader_ws_ticket:${ticket}`;
+}
 
 function readCookie(cookieHeader: string | undefined, name: string): string | null {
   if (!cookieHeader) return null;
@@ -56,6 +59,34 @@ export async function getTraderSession(
 
   const raw = await getRedis().get(sessionKey(token));
   if (!raw) return null;
+
+  try {
+    return JSON.parse(raw) as AccountSessionPayload;
+  } catch {
+    return null;
+  }
+}
+
+// 2026-09-07 -- alternative to the cookie-based lookup above, for a
+// browser WS handshake that can't carry this Gateway's session cookie at
+// all: a broker's own custom domain (e.g. futurixglobal.com) is an
+// unrelated domain to feed.<ROOT_DOMAIN> this Gateway lives on, so a
+// cookie scoped to the custom domain (see the Next app's
+// cookieScopeDomain) never reaches here. The Next app mints a short-lived
+// ticket instead (POST /api/trade/ws-ticket, same-origin on whatever
+// domain the page is actually on) and the client passes it as a `ticket`
+// query param on the WS URL. Single-use -- deleted on the first (and
+// only ever) read, so a ticket that leaked into, say, a proxy access log
+// can't be replayed after the legitimate handshake already consumed it;
+// it also just expires on its own 30s after being minted if never used.
+export async function getTraderSessionByTicket(
+  ticket: string
+): Promise<AccountSessionPayload | null> {
+  const redis = getRedis();
+  const key = wsTicketKey(ticket);
+  const raw = await redis.get(key);
+  if (!raw) return null;
+  await redis.del(key);
 
   try {
     return JSON.parse(raw) as AccountSessionPayload;

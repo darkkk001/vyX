@@ -1731,10 +1731,28 @@ export default function WebTrader({
     // instead of two different ones.
     let backoffMs = RECONNECT_INITIAL_BACKOFF_MS;
 
-    function connect() {
+    async function connect() {
       if (cancelled) return;
       const base = process.env.NEXT_PUBLIC_GATEWAY_WS_URL ?? "ws://127.0.0.1:8080";
-      socket = new WebSocket(`${base}/v1/prices/stream`);
+      // 2026-09-07 -- a broker's own custom domain can't share this
+      // Gateway's session cookie at all (unrelated domain to
+      // feed.<ROOT_DOMAIN>, see lib/cookie-domain.ts's own comment), so
+      // the handshake authenticates with a short-lived ticket instead --
+      // see tradeApi.wsTicket's own comment. Failure here (no session
+      // yet, ticket endpoint down) isn't fatal: falls through with no
+      // ticket, and the Gateway's own cookie-based fallback still
+      // handles a *.vyxtrader.com connection exactly as before; on a
+      // custom domain this attempt then fails the same way it always
+      // has, and the reconnect backoff below just tries again.
+      let wsUrl = `${base}/v1/prices/stream`;
+      try {
+        const { ticket } = await tradeApi.wsTicket();
+        if (cancelled) return;
+        wsUrl += `?ticket=${encodeURIComponent(ticket)}`;
+      } catch {
+        // see comment above -- falls through to a ticketless connection
+      }
+      socket = new WebSocket(wsUrl);
       socket.onopen = () => {
         backoffMs = RECONNECT_INITIAL_BACKOFF_MS;
         // hotfix/terminal-live-bugs #3 -- app-level ping/pong over this
@@ -1858,10 +1876,21 @@ export default function WebTrader({
     let backoffMs = RECONNECT_INITIAL_BACKOFF_MS;
     let everConnected = false;
 
-    function connect() {
+    async function connect() {
       if (cancelled) return;
       const base = process.env.NEXT_PUBLIC_GATEWAY_WS_URL ?? "ws://127.0.0.1:8080";
-      socket = new WebSocket(`${base}/v1/trading/stream`);
+      // Same custom-domain ticket detour as the price-tick socket above --
+      // see that connect()'s own comment.
+      let wsUrl = `${base}/v1/trading/stream`;
+      try {
+        const { ticket } = await tradeApi.wsTicket();
+        if (cancelled) return;
+        wsUrl += `?ticket=${encodeURIComponent(ticket)}`;
+      } catch {
+        // falls through to a ticketless connection -- see the price-tick
+        // socket's own connect() comment
+      }
+      socket = new WebSocket(wsUrl);
       socket.onopen = () => {
         backoffMs = RECONNECT_INITIAL_BACKOFF_MS;
         if (everConnected) {

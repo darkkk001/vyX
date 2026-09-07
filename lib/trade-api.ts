@@ -186,6 +186,10 @@ export const tradeApi = {
   brokerBranding: () => call<ApiBrokerBranding>("/api/trade/broker-branding"),
   me: () => call<AccountInfo>("/api/trade/me"),
   prices: () => call<ApiLivePrice[]>("/api/trade/prices"),
+  // Mints a short-lived ticket the price-tick/trading-event WebSockets
+  // authenticate with instead of a cookie -- see WebTrader.tsx's own
+  // WS connect() comment and app/api/trade/ws-ticket/route.ts.
+  wsTicket: () => call<{ ticket: string }>("/api/trade/ws-ticket", { method: "POST" }),
   candles: (symbol: string, tf: ApiCandleTimeframe) =>
     call<ApiCandle[]>(`/api/trade/candles?symbol=${encodeURIComponent(symbol)}&tf=${tf}`),
   positions: () => call<ApiPosition[]>("/api/trade/positions"),

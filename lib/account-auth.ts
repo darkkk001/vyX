@@ -66,6 +66,31 @@ function sessionMetaKey(sessionId: string) {
 function sessionIndexKey(accountId: string) {
   return `trader_sessions_index:${accountId}`;
 }
+function wsTicketKey(ticket: string) {
+  return `trader_ws_ticket:${ticket}`;
+}
+
+// 2026-09-07 -- proper fix for the price-tick/trading-event WebSockets on
+// a broker's own custom domain. Both streams (services/api-gateway/src/
+// ws.ts) authenticate a browser WS handshake off the same httpOnly
+// session cookie this module issues -- fine on *.vyxtrader.com, but a
+// cookie set on futurixglobal.com can never reach feed.vyxtrader.com (an
+// entirely unrelated domain; see cookieScopeDomain's own comment on why
+// there's no `domain` attribute that could bridge the two). A short-lived,
+// single-use ticket sidesteps that instead of trying to share a cookie
+// across domains at all: POST /api/trade/ws-ticket (same-origin on
+// whichever domain the page is actually on, so cookie auth works
+// normally there) mints one of these, the client passes it as a `ticket`
+// query param on the WS URL, and the Gateway (getTraderSessionByTicket,
+// services/api-gateway/src/auth.ts) redeems it once from this same Redis
+// instead of reading a cookie it was never going to receive. 30s TTL --
+// only needs to survive the moment between minting it and the handshake
+// that consumes it, never sits around as a replayable credential.
+export async function issueWsTicket(accountId: string, brokerId: string): Promise<string> {
+  const ticket = crypto.randomBytes(24).toString("hex");
+  await getRedis().set(wsTicketKey(ticket), JSON.stringify({ accountId, brokerId }), "EX", 30);
+  return ticket;
+}
 
 export async function createAccountSession(
   payload: Omit<AccountSessionPayload, "sessionId">,

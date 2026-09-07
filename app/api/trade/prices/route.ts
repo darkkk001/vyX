@@ -72,8 +72,25 @@ export async function GET() {
   // this delta explicitly (lib/trade-api.ts's effectiveAsk), only at the
   // specific "about to open a BUY" call sites.
   const symbolIds = brokerSymbols.map((bs) => bs.symbolId);
+  // 2026-09-07 outage fix -- explicit select, deliberately WITHOUT
+  // targetTotalSpreadPips (added by the pricing_engine_nullable_widening
+  // migration). This base query backs the flag-OFF branch below, which
+  // only ever reads .spreadMarkup (same as the old, pre-pricing-engine
+  // resolveSymbolPricing this mirrors) -- an implicit "select every
+  // column" here coupled EVERY broker's price poll, flag on or off, to a
+  // column only the flag-ON branch actually needs. That's exactly what
+  // took /api/trade/prices down platform-wide: the column existed in
+  // schema.prisma (and therefore in what Prisma tried to SELECT) before
+  // that migration had actually run against every database, so this
+  // unconditional query 500'd for every broker with grouped accounts
+  // the instant the new code deployed, regardless of pricingEngineEnabled.
+  // The flag-ON branch below fetches its own full rows separately, only
+  // when it actually needs the new column.
   const overrides = account?.groupId
-    ? await prisma.groupSymbolConfig.findMany({ where: { groupId: account.groupId, symbolId: { in: symbolIds } } })
+    ? await prisma.groupSymbolConfig.findMany({
+        where: { groupId: account.groupId, symbolId: { in: symbolIds } },
+        select: { symbolId: true, spreadMarkup: true },
+      })
     : [];
   const overrideBySymbolId = new Map(overrides.map((o) => [o.symbolId, o]));
 
@@ -90,17 +107,28 @@ export async function GET() {
   let accountTypeFlat: { spreadMarkup: Prisma.Decimal | null; commissionPerLot: Prisma.Decimal | null; swapLong: Prisma.Decimal | null; swapShort: Prisma.Decimal | null; swapFree: boolean | null } | null = null;
   let accountTypeSymbolConfigBySymbolId = new Map<string, Awaited<ReturnType<typeof prisma.accountTypeSymbolConfig.findMany>>[number]>();
   let accountSymbolConfigBySymbolId = new Map<string, Awaited<ReturnType<typeof prisma.accountSymbolConfig.findMany>>[number]>();
+  // Full-shape group overrides (targetTotalSpreadPips included), fetched
+  // separately from the narrowed `overrides` above -- only reachable when
+  // pricingEngineEnabled is true, which is the one case that's supposed
+  // to require the pricing-engine migration to already be applied (see
+  // this block's own flag gate below, and the shadow-compare tool this
+  // flag is meant to be verified with before ever being flipped on).
+  let groupSymbolConfigBySymbolId = new Map<string, Awaited<ReturnType<typeof prisma.groupSymbolConfig.findMany>>[number]>();
   if (broker?.pricingEngineEnabled) {
-    const [typeFlat, typeSymbolConfigs, accountSymbolConfigs] = await Promise.all([
+    const [typeFlat, typeSymbolConfigs, accountSymbolConfigs, groupSymbolConfigsFull] = await Promise.all([
       account?.accountTypeId ? prisma.accountType.findUnique({ where: { id: account.accountTypeId } }) : Promise.resolve(null),
       account?.accountTypeId
         ? prisma.accountTypeSymbolConfig.findMany({ where: { accountTypeId: account.accountTypeId, symbolId: { in: symbolIds } } })
         : Promise.resolve([]),
       prisma.accountSymbolConfig.findMany({ where: { accountId: session.accountId, symbolId: { in: symbolIds } } }),
+      account?.groupId
+        ? prisma.groupSymbolConfig.findMany({ where: { groupId: account.groupId, symbolId: { in: symbolIds } } })
+        : Promise.resolve([]),
     ]);
     accountTypeFlat = typeFlat;
     accountTypeSymbolConfigBySymbolId = new Map(typeSymbolConfigs.map((c) => [c.symbolId, c]));
     accountSymbolConfigBySymbolId = new Map(accountSymbolConfigs.map((c) => [c.symbolId, c]));
+    groupSymbolConfigBySymbolId = new Map(groupSymbolConfigsFull.map((c) => [c.symbolId, c]));
   }
 
   const askMarkupByName = new Map<string, string>();
@@ -112,7 +140,10 @@ export async function GET() {
         accountSymbolConfig: accountSymbolConfigBySymbolId.get(bs.symbolId) ?? null,
         accountTypeSymbolConfig: accountTypeSymbolConfigBySymbolId.get(bs.symbolId) ?? null,
         accountType: accountTypeFlat,
-        groupSymbolConfig: override ?? null,
+        // Full-shape row (targetTotalSpreadPips included), not the
+        // narrowed `override` above -- see groupSymbolConfigBySymbolId's
+        // own comment.
+        groupSymbolConfig: groupSymbolConfigBySymbolId.get(bs.symbolId) ?? null,
         brokerSpreadMarkup: bs.spreadMarkup,
         brokerCommissionPerLot: bs.commissionPerLot,
         brokerSwapLong: bs.swapLong,
