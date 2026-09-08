@@ -1,0 +1,11 @@
+{
+  "version": "0.1.12",
+  "notes": "Trader terminal now loads the real live WebTrader directly - always current, never drifts from the web version",
+  "pub_date": "2026-09-08T05:55:52.701Z",
+  "platforms": {
+    "windows-x86_64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTMmJJTjZKK1lOYmhRTVIyUG8ya244NHZmYThrVTkzYklKbTNBbUZncWU5MjZRbjJQUkExZnZzdDFUY3ZWSWJiMlEwZ0traXBFY0M5bmRweDI5c0dVU0wrQXlnUEZ3cFFJPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4ODQ2OTM5CWZpbGU6RnV0dXJpeCBHbG9iYWwgVHJhZGVyXzAuMS4xMl94NjQtc2V0dXAuZXhlCmFnclByWm1rVDhMRDhCTjRMdzZIZThZMGNmcDlWL2I2aTdBcnJwNlNUTWtmUG5xZ1hRajdQQVBpNE1vSlZ2NzRzNDJIRjh4djk5MFBMSkNPSUxWUUNnPT0K",
+      "url": "https://vyxtrader.com/desktop-tauri-updates/futurixglobal/Futurix%20Global%20Trader_0.1.12_x64-setup.exe"
+    }
+  }
+}
