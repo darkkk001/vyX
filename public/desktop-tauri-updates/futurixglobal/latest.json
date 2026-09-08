@@ -1,11 +1,11 @@
 {
-  "version": "0.1.12",
-  "notes": "Trader terminal now loads the real live WebTrader directly - always current, never drifts from the web version",
-  "pub_date": "2026-09-08T05:55:52.701Z",
+  "version": "0.1.13",
+  "notes": "Fixes trader terminal opening the system browser instead of its own window on brokers with a custom domain",
+  "pub_date": "2026-09-08T06:25:47.053Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTMmJJTjZKK1lOYmhRTVIyUG8ya244NHZmYThrVTkzYklKbTNBbUZncWU5MjZRbjJQUkExZnZzdDFUY3ZWSWJiMlEwZ0traXBFY0M5bmRweDI5c0dVU0wrQXlnUEZ3cFFJPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4ODQ2OTM5CWZpbGU6RnV0dXJpeCBHbG9iYWwgVHJhZGVyXzAuMS4xMl94NjQtc2V0dXAuZXhlCmFnclByWm1rVDhMRDhCTjRMdzZIZThZMGNmcDlWL2I2aTdBcnJwNlNUTWtmUG5xZ1hRajdQQVBpNE1vSlZ2NzRzNDJIRjh4djk5MFBMSkNPSUxWUUNnPT0K",
-      "url": "https://vyxtrader.com/desktop-tauri-updates/futurixglobal/Futurix%20Global%20Trader_0.1.12_x64-setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTMmJJTjZKK1lOYmdXU1MvKy9BRC9RbTJST21nQVA0emN2WnhwaS9HWHR5NVZHY2ExODBRS0FwVERTNkFHUUxWOHZTV3pjclpBaGpjTlhLc0NJeS9EQWdoQk04QlhHbHdzPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4ODQ4NzQwCWZpbGU6RnV0dXJpeCBHbG9iYWwgVHJhZGVyXzAuMS4xM194NjQtc2V0dXAuZXhlCmNGVzhWbUR4WGNjOTJ1MnRyb2E5SFQvUklWSzJlMTVqUUcyeFhOQXlORy9BSWFacS92NmFFQVpybmRXNnFsRjJMUXhNS2FmbU5QNG4wYmh3OCt2R0RRPT0K",
+      "url": "https://vyxtrader.com/desktop-tauri-updates/futurixglobal/Futurix%20Global%20Trader_0.1.13_x64-setup.exe"
     }
   }
 }

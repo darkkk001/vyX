@@ -718,7 +718,25 @@ fn main() {
             let trade_url: tauri::Url = format!("{connect_base}/trade")
                 .parse()
                 .expect("connect_base + /trade must be a valid URL");
-            let allowed_host = trade_url.host_str().map(str::to_string);
+
+            // 2026-09-08 fix -- was a single precomputed host, which broke
+            // the moment the server's own redirect chain crossed onto a
+            // different host than connect_base's (confirmed live: Futurix
+            // has a customDomain configured, so middleware.ts's own
+            // subdomain -> customDomain 308 sent WebView2's
+            // NavigationStarting event a URL on trade.futurixglobal.com --
+            // not futurixglobal.vyxtrader.com -- which this check treated
+            // as an external link and shot out to the OS browser instead
+            // of following it in-window). None = "nothing has actually
+            // finished loading yet", meaning every navigation so far is
+            // still part of OUR OWN server's redirect chain from the
+            // initial launch URL, not something the user clicked, so it's
+            // trusted unconditionally; on_page_load below locks this to
+            // wherever that chain actually lands the moment it does, and
+            // only navigations after that point get checked against it.
+            let locked_host: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+            let nav_locked_host = locked_host.clone();
+            let load_locked_host = locked_host.clone();
 
             let nav_app_handle = app.handle().clone();
             let new_window_app_handle = app.handle().clone();
@@ -731,20 +749,27 @@ fn main() {
                 // once it detects window.vyxDesktop.isDesktop.
                 .decorations(false)
                 // Every real in-app navigation (login -> /trade, tab
-                // switches, anything the real site's own router does)
-                // stays in-window as long as it's on the broker's own real
-                // host; anything else (a support-email mailto:, a stray
-                // external link) opens in the OS browser instead of
-                // replacing the app's own UI in-place.
+                // switches, anything the real site's own router does, any
+                // redirect our own server sends before the first page has
+                // landed) stays in-window; anything else (a support-email
+                // mailto:, a stray external link) opens in the OS browser
+                // instead of replacing the app's own UI in-place.
                 .on_navigation(move |url| {
                     if url.scheme() == "tauri" || url.host_str() == Some("tauri.localhost") {
                         return true;
                     }
-                    if allowed_host.as_deref() == url.host_str() {
-                        return true;
+                    let locked = nav_locked_host.lock().unwrap().clone();
+                    match locked {
+                        None => true,
+                        Some(host) => {
+                            if url.host_str() == Some(host.as_str()) {
+                                true
+                            } else {
+                                let _ = nav_app_handle.opener().open_url(url.to_string(), None::<&str>);
+                                false
+                            }
+                        }
                     }
-                    let _ = nav_app_handle.opener().open_url(url.to_string(), None::<&str>);
-                    false
                 })
                 // Direct port of desktop/main.js's setWindowOpenHandler:
                 // any window.open()/target="_blank" opens in the OS
@@ -752,6 +777,20 @@ fn main() {
                 .on_new_window(move |url, _features| {
                     let _ = new_window_app_handle.opener().open_url(url.to_string(), None::<&str>);
                     tauri::webview::NewWindowResponse::Deny
+                })
+                // WebView2 only fires ContentLoading (Started) once
+                // redirects are already resolved, for the chain's real
+                // final document -- unlike on_navigation's
+                // NavigationStarting, which fires once per redirect hop --
+                // so this is the right moment to lock in the host that
+                // chain actually landed on.
+                .on_page_load(move |_webview, payload| {
+                    if matches!(payload.event(), tauri::webview::PageLoadEvent::Started) {
+                        let mut locked = load_locked_host.lock().unwrap();
+                        if locked.is_none() {
+                            *locked = payload.url().host_str().map(str::to_string);
+                        }
+                    }
                 })
                 .initialization_script(&init_script)
                 .build()?;
