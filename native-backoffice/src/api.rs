@@ -16,6 +16,20 @@ use eframe::egui;
 use serde::{Deserialize, Serialize};
 use std::sync::mpsc::Sender;
 
+// Minimal query-string percent-encoder -- avoids pulling in a whole URL
+// crate just for one ?q= param (reqwest's own RequestBuilder::query
+// isn't available without a feature this app doesn't otherwise need).
+fn percent_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct DashboardData {
     #[serde(rename = "totalClients")]
@@ -43,6 +57,8 @@ pub struct ActivityRow {
     pub action_label: String,
     #[serde(rename = "actorEmail")]
     pub actor_email: String,
+    #[serde(rename = "entityId", default)]
+    pub entity_id: String,
     #[serde(rename = "createdAtLabel")]
     pub created_at_label: String,
 }
@@ -492,12 +508,20 @@ pub struct ClientKycRow {
 pub struct LiveAccountRequestRow {
     pub id: String,
     pub status: String,
+    #[serde(rename = "rejectionReason")]
+    pub rejection_reason: Option<String>,
     #[serde(rename = "accountTypeName")]
     pub account_type_name: Option<String>,
+    #[serde(rename = "createdAccountNumber")]
+    pub created_account_number: Option<String>,
     #[serde(rename = "clientFullName")]
     pub client_full_name: String,
     #[serde(rename = "clientEmail")]
     pub client_email: String,
+    #[serde(rename = "clientCountry")]
+    pub client_country: Option<String>,
+    #[serde(rename = "clientPhone")]
+    pub client_phone: Option<String>,
     #[serde(rename = "createdAt")]
     pub created_at: String,
 }
@@ -577,14 +601,64 @@ pub struct ReportsSummary {
 // --- Symbols ---
 #[derive(Debug, Clone, Deserialize)]
 pub struct SymbolConfigRow {
+    #[serde(rename = "symbolId")]
+    pub symbol_id: String,
+    #[serde(rename = "brokerSymbolId")]
+    pub broker_symbol_id: Option<String>,
     #[serde(rename = "symbolName")]
     pub symbol_name: String,
     pub category: String,
+    #[serde(default)]
+    pub digits: i64,
     pub enabled: bool,
     #[serde(rename = "spreadMarkup")]
     pub spread_markup: String,
+    #[serde(rename = "minLot")]
+    pub min_lot: String,
+    #[serde(rename = "maxLot")]
+    pub max_lot: String,
+    #[serde(rename = "lotStep")]
+    pub lot_step: String,
+    #[serde(rename = "swapLong")]
+    pub swap_long: String,
+    #[serde(rename = "swapShort")]
+    pub swap_short: String,
     #[serde(rename = "commissionPerLot")]
     pub commission_per_lot: String,
+    #[serde(rename = "maxExposure")]
+    pub max_exposure: Option<String>,
+    #[serde(rename = "tradingMode")]
+    pub trading_mode: String,
+    #[serde(rename = "defaultBookType")]
+    pub default_book_type: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SymbolConfigEdit {
+    pub symbol_id: String,
+    pub enabled: bool,
+    pub trading_mode: String,
+    pub default_book_type: String,
+    pub spread_markup: String,
+    pub min_lot: String,
+    pub max_lot: String,
+    pub lot_step: String,
+    pub swap_long: String,
+    pub swap_short: String,
+    pub commission_per_lot: String,
+    pub max_exposure: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SymbolSessionRow {
+    #[serde(default)]
+    pub id: String,
+    #[serde(rename = "dayOfWeek")]
+    pub day_of_week: i64,
+    #[serde(rename = "openTime")]
+    pub open_time: String,
+    #[serde(rename = "closeTime")]
+    pub close_time: String,
 }
 
 // --- Team (admins) ---
@@ -661,14 +735,32 @@ pub struct DealRow {
 // --- Audit log ---
 #[derive(Debug, Clone, Deserialize)]
 pub struct AuditLogRow {
+    pub id: String,
     #[serde(rename = "actorEmail")]
     pub actor_email: String,
     #[serde(rename = "actionLabel")]
     pub action_label: String,
     #[serde(rename = "entityType")]
     pub entity_type: String,
+    #[serde(rename = "entityId", default)]
+    pub entity_id: String,
+    pub href: Option<String>,
+    pub order: Option<AuditOrderIdentity>,
+    #[serde(rename = "diffLines", default)]
+    pub diff_lines: Vec<String>,
     #[serde(rename = "createdAtLabel")]
     pub created_at_label: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AuditOrderIdentity {
+    #[serde(rename = "orderNumber")]
+    pub order_number: String,
+    #[serde(rename = "accountNumber")]
+    pub account_number: Option<String>,
+    pub symbol: Option<String>,
+    pub side: Option<String>,
+    pub lots: Option<String>,
 }
 
 // --- Funds requests (deposits/withdrawals) ---
@@ -679,14 +771,25 @@ pub struct FundsRequestRow {
     pub request_type: String,
     pub status: String,
     pub amount: String,
+    pub note: Option<String>,
     #[serde(rename = "accountNumber")]
     pub account_number: String,
     #[serde(rename = "accountFullName")]
     pub account_full_name: String,
+    #[serde(rename = "currentBalance")]
+    pub current_balance: Option<String>,
+    #[serde(rename = "markedByAdminId")]
+    pub marked_by_admin_id: Option<String>,
+    #[serde(rename = "markedByAdminEmail")]
+    pub marked_by_admin_email: Option<String>,
+    #[serde(rename = "createdAt", default)]
+    pub created_at: String,
 }
 
 #[derive(Debug, Deserialize)]
 struct FundsRequestsResponse {
+    #[serde(rename = "currentAdminId")]
+    current_admin_id: String,
     rows: Vec<FundsRequestRow>,
 }
 
@@ -698,8 +801,15 @@ pub struct PaymentMethodRow {
     pub enabled: bool,
     #[serde(rename = "minAmount")]
     pub min_amount: String,
+    #[serde(rename = "maxAmount")]
+    pub max_amount: Option<String>,
     #[serde(rename = "feePercent")]
     pub fee_percent: String,
+    #[serde(rename = "feeFixed")]
+    pub fee_fixed: String,
+    pub instructions: Option<String>,
+    #[serde(rename = "walletAddress")]
+    pub wallet_address: Option<String>,
 }
 
 // --- Margin ---
@@ -790,6 +900,7 @@ pub enum ApiEvent {
     AccountCreated(Result<(String, String), String>),
     AdjustBalance(Result<bool, String>),
     PendingAdjustments(Result<Vec<PendingAdjustment>, String>),
+    SymbolSessions(Result<Vec<SymbolSessionRow>, String>),
     Kyc(Result<Vec<KycRow>, String>),
     KycDocument(Result<(Vec<u8>, [usize; 2]), String>),
     ClientKyc(Result<Vec<ClientKycRow>, String>),
@@ -807,7 +918,7 @@ pub enum ApiEvent {
     Leads(Result<Vec<LeadRow>, String>),
     Deals(Result<Vec<DealRow>, String>),
     AuditLog(Result<Vec<AuditLogRow>, String>),
-    FundsRequests(Result<Vec<FundsRequestRow>, String>),
+    FundsRequests(Result<(String, Vec<FundsRequestRow>), String>),
     PaymentMethods(Result<Vec<PaymentMethodRow>, String>),
     Margin(Result<Vec<MarginRow>, String>),
     Liquidity(Result<Vec<LiquidityExposureRow>, String>),
@@ -1693,6 +1804,32 @@ impl ApiClient {
         });
     }
 
+    // The web's own export links are plain same-origin <a href> GETs --
+    // this app has no browser to click them in, so it fetches the CSV
+    // itself (through the same authenticated cookie jar) and saves it
+    // straight to the user's Downloads folder, reporting the path back
+    // via ApiEvent::ActionDone instead of a browser download prompt.
+    pub fn download_report_csv(&self, ctx: egui::Context, tx: Sender<ApiEvent>, kind: String) {
+        let client = self.client.clone();
+        let url = format!("{}/api/manage/reports/{}", self.base_url, kind);
+        spawn(async move {
+            let result = async {
+                let res = client.get(&url).send().await.map_err(|e| format!("network error: {e}"))?;
+                if !res.status().is_success() {
+                    return Err(Self::error_from_response(res).await);
+                }
+                let bytes = res.bytes().await.map_err(|e| format!("failed to read report bytes: {e}"))?;
+                let downloads = std::env::var("USERPROFILE").map(|p| format!("{p}\\Downloads")).unwrap_or_else(|_| ".".to_string());
+                let path = format!("{downloads}\\vyxtrader-{kind}-report.csv");
+                std::fs::write(&path, &bytes).map_err(|e| format!("failed to save file: {e}"))?;
+                Ok(format!("saved to {path}"))
+            }
+            .await;
+            let _ = tx.send(ApiEvent::ActionDone(result));
+            ctx.request_repaint();
+        });
+    }
+
     pub fn fetch_symbols(&self, ctx: egui::Context, tx: Sender<ApiEvent>) {
         let client = self.client.clone();
         let url = format!("{}/api/manage/symbols", self.base_url);
@@ -1706,6 +1843,79 @@ impl ApiClient {
             }
             .await;
             let _ = tx.send(ApiEvent::Symbols(result));
+            ctx.request_repaint();
+        });
+    }
+
+    // PATCH takes the whole row back, same as SymbolConfigTable.tsx's own
+    // `body: JSON.stringify(row)`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn save_symbol_config(&self, ctx: egui::Context, tx: Sender<ApiEvent>, row: SymbolConfigEdit) {
+        let client = self.client.clone();
+        let url = format!("{}/api/manage/symbols", self.base_url);
+        spawn(async move {
+            let body = serde_json::json!({
+                "symbolId": row.symbol_id,
+                "enabled": row.enabled,
+                "tradingMode": row.trading_mode,
+                "defaultBookType": row.default_book_type,
+                "spreadMarkup": row.spread_markup,
+                "minLot": row.min_lot,
+                "maxLot": row.max_lot,
+                "lotStep": row.lot_step,
+                "swapLong": row.swap_long,
+                "swapShort": row.swap_short,
+                "commissionPerLot": row.commission_per_lot,
+                "maxExposure": if row.max_exposure.trim().is_empty() { serde_json::Value::Null } else { serde_json::Value::String(row.max_exposure) },
+            });
+            let result = async {
+                let res = client.patch(&url).json(&body).send().await.map_err(|e| format!("network error: {e}"))?;
+                if !res.status().is_success() {
+                    return Err(Self::error_from_response(res).await);
+                }
+                Ok("symbol config saved".to_string())
+            }
+            .await;
+            let _ = tx.send(ApiEvent::ActionDone(result));
+            ctx.request_repaint();
+        });
+    }
+
+    pub fn fetch_symbol_sessions(&self, ctx: egui::Context, tx: Sender<ApiEvent>, broker_symbol_id: String) {
+        let client = self.client.clone();
+        let url = format!("{}/api/manage/symbols/{}/sessions", self.base_url, broker_symbol_id);
+        spawn(async move {
+            let result = async {
+                let res = client.get(&url).send().await.map_err(|e| format!("network error: {e}"))?;
+                if !res.status().is_success() {
+                    return Err(Self::error_from_response(res).await);
+                }
+                res.json::<Vec<SymbolSessionRow>>().await.map_err(|e| format!("bad response: {e}"))
+            }
+            .await;
+            let _ = tx.send(ApiEvent::SymbolSessions(result));
+            ctx.request_repaint();
+        });
+    }
+
+    pub fn save_symbol_sessions(&self, ctx: egui::Context, tx: Sender<ApiEvent>, broker_symbol_id: String, sessions: Vec<SymbolSessionRow>) {
+        let client = self.client.clone();
+        let url = format!("{}/api/manage/symbols/{}/sessions", self.base_url, broker_symbol_id);
+        spawn(async move {
+            let result = async {
+                let res = client
+                    .put(&url)
+                    .json(&serde_json::json!({ "sessions": sessions }))
+                    .send()
+                    .await
+                    .map_err(|e| format!("network error: {e}"))?;
+                if !res.status().is_success() {
+                    return Err(Self::error_from_response(res).await);
+                }
+                res.json::<Vec<SymbolSessionRow>>().await.map_err(|e| format!("bad response: {e}"))
+            }
+            .await;
+            let _ = tx.send(ApiEvent::SymbolSessions(result));
             ctx.request_repaint();
         });
     }
@@ -1771,6 +1981,28 @@ impl ApiClient {
         });
     }
 
+    pub fn create_transfer(&self, ctx: egui::Context, tx: Sender<ApiEvent>, from_account_id: String, to_account_id: String, amount: String, note: String) {
+        let client = self.client.clone();
+        let url = format!("{}/api/manage/transfers", self.base_url);
+        spawn(async move {
+            let result = async {
+                let res = client
+                    .post(&url)
+                    .json(&serde_json::json!({ "fromAccountId": from_account_id, "toAccountId": to_account_id, "amount": amount, "note": note }))
+                    .send()
+                    .await
+                    .map_err(|e| format!("network error: {e}"))?;
+                if !res.status().is_success() {
+                    return Err(Self::error_from_response(res).await);
+                }
+                Ok("transfer completed".to_string())
+            }
+            .await;
+            let _ = tx.send(ApiEvent::ActionDone(result));
+            ctx.request_repaint();
+        });
+    }
+
     pub fn fetch_ib_relationships(&self, ctx: egui::Context, tx: Sender<ApiEvent>) {
         let client = self.client.clone();
         let url = format!("{}/api/manage/ib-relationships", self.base_url);
@@ -1822,9 +2054,14 @@ impl ApiClient {
         });
     }
 
-    pub fn fetch_audit_log(&self, ctx: egui::Context, tx: Sender<ApiEvent>) {
+    pub fn fetch_audit_log(&self, ctx: egui::Context, tx: Sender<ApiEvent>, query: String) {
         let client = self.client.clone();
-        let url = format!("{}/api/manage/audit", self.base_url);
+        let q = query.trim().to_string();
+        let url = if q.is_empty() {
+            format!("{}/api/manage/audit", self.base_url)
+        } else {
+            format!("{}/api/manage/audit?q={}", self.base_url, percent_encode(&q))
+        };
         spawn(async move {
             let result = async {
                 let res = client.get(&url).send().await.map_err(|e| format!("network error: {e}"))?;
@@ -1849,7 +2086,7 @@ impl ApiClient {
                     return Err(Self::error_from_response(res).await);
                 }
                 let body: FundsRequestsResponse = res.json().await.map_err(|e| format!("bad response: {e}"))?;
-                Ok(body.rows)
+                Ok((body.current_admin_id, body.rows))
             }
             .await;
             let _ = tx.send(ApiEvent::FundsRequests(result));
@@ -1892,6 +2129,48 @@ impl ApiClient {
             }
             .await;
             let _ = tx.send(ApiEvent::PaymentMethods(result));
+            ctx.request_repaint();
+        });
+    }
+
+    // PATCH upserts by (brokerId, type) -- sends the whole row back, same
+    // as PaymentMethodsManager.tsx's own `body: JSON.stringify(row)`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn save_payment_method(
+        &self,
+        ctx: egui::Context,
+        tx: Sender<ApiEvent>,
+        method_type: String,
+        enabled: bool,
+        min_amount: String,
+        max_amount: String,
+        fee_percent: String,
+        fee_fixed: String,
+        wallet_address: String,
+        instructions: String,
+    ) {
+        let client = self.client.clone();
+        let url = format!("{}/api/manage/payment-methods", self.base_url);
+        spawn(async move {
+            let body = serde_json::json!({
+                "type": method_type,
+                "enabled": enabled,
+                "minAmount": min_amount,
+                "maxAmount": if max_amount.trim().is_empty() { serde_json::Value::Null } else { serde_json::Value::String(max_amount) },
+                "feePercent": fee_percent,
+                "feeFixed": fee_fixed,
+                "walletAddress": if wallet_address.trim().is_empty() { serde_json::Value::Null } else { serde_json::Value::String(wallet_address) },
+                "instructions": if instructions.trim().is_empty() { serde_json::Value::Null } else { serde_json::Value::String(instructions) },
+            });
+            let result = async {
+                let res = client.patch(&url).json(&body).send().await.map_err(|e| format!("network error: {e}"))?;
+                if !res.status().is_success() {
+                    return Err(Self::error_from_response(res).await);
+                }
+                Ok("payment method saved".to_string())
+            }
+            .await;
+            let _ = tx.send(ApiEvent::ActionDone(result));
             ctx.request_repaint();
         });
     }

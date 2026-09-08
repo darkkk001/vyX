@@ -181,6 +181,35 @@ enum ExposureSortMode {
     Risk,
 }
 
+// Per-row edit buffer for the Payment Methods table -- IS_CRYPTO in
+// PaymentMethodsManager.tsx decides whether walletAddress or a plain
+// bank-details hint shows, kept here as a plain fn on the type string.
+#[derive(Default, Clone)]
+struct PaymentMethodEdit {
+    enabled: bool,
+    min_amount: String,
+    max_amount: String,
+    fee_percent: String,
+    fee_fixed: String,
+    wallet_address: String,
+    instructions: String,
+}
+
+fn payment_method_label(t: &str) -> &'static str {
+    match t {
+        "USDT_TRC20" => "USDT (TRC20)",
+        "USDT_BEP20" => "USDT (BEP20)",
+        "BTC" => "Bitcoin",
+        "ETH" => "Ethereum",
+        "BANK_TRANSFER" => "Bank transfer",
+        _ => "Unknown",
+    }
+}
+
+fn payment_method_is_crypto(t: &str) -> bool {
+    t != "BANK_TRANSFER"
+}
+
 // Per-row edit buffer for the Group pricing tab -- mirrors
 // SymbolPricingEditor.tsx's own EditRow: spreadMarkup and
 // targetTotalSpreadPips are mutually exclusive, expressed here as a mode
@@ -505,6 +534,13 @@ struct BackofficeApp {
     tx: Sender<ApiEvent>,
     rx: Receiver<ApiEvent>,
     api: Option<ApiClient>,
+    // Auto-refresh replaces the old per-screen manual "Refresh" button
+    // (matches the web, which has none -- it stays current off a real
+    // SSE stream this native app has no equivalent of; polling every 5s
+    // is the closest honest substitute, not a cosmetic button removal
+    // that would otherwise leave a screen stale forever after first
+    // load, since ensure_loaded() only ever fetches a screen once).
+    last_auto_refresh: std::time::Instant,
 
     // --- auth / login screen ---
     logged_in: bool,
@@ -548,6 +584,7 @@ struct BackofficeApp {
     accounts_loading: bool,
     accounts_error: Option<String>,
     accounts_filter: String,
+    wallets_filter: String,
     show_new_account_form: bool,
     new_account: NewAccountForm,
     account_types: Vec<AccountTypeOption>,
@@ -638,6 +675,14 @@ struct BackofficeApp {
     symbols: Vec<SymbolConfigRow>,
     symbols_loading: bool,
     symbols_error: Option<String>,
+    symbol_edit: HashMap<String, api::SymbolConfigEdit>,
+    symbol_sessions_for: Option<SymbolConfigRow>,
+    symbol_sessions: Option<Vec<api::SymbolSessionRow>>,
+    symbol_sessions_loading: bool,
+    symbol_sessions_error: Option<String>,
+    symbol_session_new_day: i64,
+    symbol_session_new_open: String,
+    symbol_session_new_close: String,
 
     // --- team ---
     admins: Vec<AdminRow>,
@@ -648,6 +693,10 @@ struct BackofficeApp {
     transfers: Vec<TransferRow>,
     transfers_loading: bool,
     transfers_error: Option<String>,
+    transfer_from_id: String,
+    transfer_to_id: String,
+    transfer_amount: String,
+    transfer_note: String,
 
     // --- ib ---
     ib_relationships: Vec<IbRelationshipRow>,
@@ -668,16 +717,21 @@ struct BackofficeApp {
     audit_log: Vec<AuditLogRow>,
     audit_loading: bool,
     audit_error: Option<String>,
+    audit_query: String,
+    audit_expanded: Option<String>,
 
     // --- funds ---
     funds_requests: Vec<FundsRequestRow>,
     funds_loading: bool,
     funds_error: Option<String>,
+    current_admin_id: String,
+    funds_confirm: Option<(FundsRequestRow, &'static str)>,
 
     // --- payment methods ---
     payment_methods: Vec<PaymentMethodRow>,
     payment_methods_loading: bool,
     payment_methods_error: Option<String>,
+    payment_method_edit: HashMap<String, PaymentMethodEdit>,
 
     // --- margin ---
     margin: Vec<MarginRow>,
@@ -727,6 +781,7 @@ impl Default for BackofficeApp {
             tx,
             rx,
             api: None,
+            last_auto_refresh: std::time::Instant::now(),
             logged_in: false,
             login_busy: false,
             login_error: None,
@@ -763,6 +818,7 @@ impl Default for BackofficeApp {
             accounts_loading: false,
             accounts_error: None,
             accounts_filter: String::new(),
+            wallets_filter: String::new(),
             show_new_account_form: false,
             new_account: NewAccountForm::default(),
             account_types: Vec::new(),
@@ -831,12 +887,24 @@ impl Default for BackofficeApp {
             symbols: Vec::new(),
             symbols_loading: false,
             symbols_error: None,
+            symbol_edit: HashMap::new(),
+            symbol_sessions_for: None,
+            symbol_sessions: None,
+            symbol_sessions_loading: false,
+            symbol_sessions_error: None,
+            symbol_session_new_day: 1,
+            symbol_session_new_open: "00:00".to_string(),
+            symbol_session_new_close: "23:59".to_string(),
             admins: Vec::new(),
             admins_loading: false,
             admins_error: None,
             transfers: Vec::new(),
             transfers_loading: false,
             transfers_error: None,
+            transfer_from_id: String::new(),
+            transfer_to_id: String::new(),
+            transfer_amount: String::new(),
+            transfer_note: String::new(),
             ib_relationships: Vec::new(),
             ib_loading: false,
             ib_error: None,
@@ -849,12 +917,17 @@ impl Default for BackofficeApp {
             audit_log: Vec::new(),
             audit_loading: false,
             audit_error: None,
+            audit_query: String::new(),
+            audit_expanded: None,
             funds_requests: Vec::new(),
             funds_loading: false,
             funds_error: None,
+            current_admin_id: String::new(),
+            funds_confirm: None,
             payment_methods: Vec::new(),
             payment_methods_loading: false,
             payment_methods_error: None,
+            payment_method_edit: HashMap::new(),
             margin: Vec::new(),
             margin_loading: false,
             margin_error: None,
@@ -1165,6 +1238,13 @@ impl BackofficeApp {
                         Err(e) => self.symbols_error = Some(e),
                     }
                 }
+                ApiEvent::SymbolSessions(result) => {
+                    self.symbol_sessions_loading = false;
+                    match result {
+                        Ok(rows) => self.symbol_sessions = Some(rows),
+                        Err(e) => self.symbol_sessions_error = Some(e),
+                    }
+                }
                 ApiEvent::Admins(result) => {
                     self.admins_loading = false;
                     match result {
@@ -1210,7 +1290,10 @@ impl BackofficeApp {
                 ApiEvent::FundsRequests(result) => {
                     self.funds_loading = false;
                     match result {
-                        Ok(rows) => self.funds_requests = rows,
+                        Ok((admin_id, rows)) => {
+                            self.current_admin_id = admin_id;
+                            self.funds_requests = rows;
+                        }
                         Err(e) => self.funds_error = Some(e),
                     }
                 }
@@ -1282,6 +1365,10 @@ impl BackofficeApp {
                         self.live_account_reject = None;
                         self.position_modify = None;
                         self.position_close_confirm = None;
+                        self.transfer_amount.clear();
+                        self.transfer_note.clear();
+                        self.kyc_docs_reject = None;
+                        self.funds_confirm = None;
                         // Re-fetch whichever screen is on-screen so it
                         // reflects whatever the action just changed --
                         // simplest correct way to stay in sync without
@@ -1401,6 +1488,7 @@ impl BackofficeApp {
                 self.transfers_loading = true;
                 self.transfers_error = None;
                 api.fetch_transfers(ctx.clone(), self.tx.clone());
+                api.fetch_accounts(ctx.clone(), self.tx.clone());
             }
             // Wallets reuses accounts data (already fetched by the
             // Accounts screen) -- no separate endpoint exists, and the
@@ -1429,7 +1517,7 @@ impl BackofficeApp {
             Screen::Audit => {
                 self.audit_loading = true;
                 self.audit_error = None;
-                api.fetch_audit_log(ctx.clone(), self.tx.clone());
+                api.fetch_audit_log(ctx.clone(), self.tx.clone(), self.audit_query.clone());
             }
             // Security has no dedicated fetch -- see render_security's
             // own comment on why this pass shows account identity only.
@@ -1545,65 +1633,6 @@ impl BackofficeApp {
     }
 
     fn render_shell(&mut self, ctx: &egui::Context) {
-        egui::TopBottomPanel::top("header")
-            .frame(egui::Frame::new().fill(theme::bg_0()).inner_margin(egui::Margin::symmetric(20, 14)).stroke(egui::Stroke::NONE))
-            .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(self.screen.icon()).size(18.0).color(theme::accent()));
-                    ui.add_space(4.0);
-                    ui.label(egui::RichText::new(self.screen.label()).size(19.0).color(theme::text_1()));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.add(egui::Button::new(egui::RichText::new("Log out").color(theme::text_2())).fill(egui::Color32::TRANSPARENT).stroke(egui::Stroke::new(1.0_f32, theme::border()))).clicked() {
-                            self.logged_in = false;
-                            self.api = None;
-                            self.loaded_once.clear();
-                            self.dashboard = None;
-                            self.positions.clear();
-                            self.accounts.clear();
-                            self.broker_name = None;
-                            self.broker_logo_texture = None;
-                            theme::reset_accent();
-                            theme::apply_visuals(ctx);
-                        }
-                        ui.add_space(14.0);
-                        // Sun/moon theme toggle -- same position and
-                        // persistence (PATCH /api/manage/theme,
-                        // AdminUser.theme) as AdminShell.tsx's own header
-                        // button, just left of the avatar cluster instead
-                        // of the sidebar. Added before the nested
-                        // ui.vertical() below, not after -- a widget added
-                        // to a right_to_left layout AFTER a nested
-                        // ui.vertical()/ui.horizontal() call lands at a
-                        // stale cursor position in this egui version
-                        // (confirmed live: it rendered pinned near the
-                        // window's top-left instead of the right-aligned
-                        // cluster), so anything else in this closure has
-                        // to come before the vertical block, not after.
-                        let dark = theme::is_dark();
-                        let toggle_label = if dark { "\u{25CF}" } else { "\u{25CB}" };
-                        if ui
-                            .add(
-                                egui::Button::new(egui::RichText::new(toggle_label).size(13.0).color(theme::text_2()))
-                                    .fill(theme::bg_2())
-                                    .stroke(egui::Stroke::new(1.0_f32, theme::border())),
-                            )
-                            .clicked()
-                        {
-                            theme::toggle_mode();
-                            theme::apply_visuals(ctx);
-                            if let Some(api) = &self.api {
-                                api.set_theme(ctx.clone(), if theme::is_dark() { "dark" } else { "light" }.to_string());
-                            }
-                        }
-                        ui.add_space(14.0);
-                        ui.vertical(|ui| {
-                            ui.label(egui::RichText::new(&self.logged_in_email).size(12.5).color(theme::text_1()));
-                            ui.label(egui::RichText::new(&self.host_input).size(11.0).color(theme::text_3()));
-                        });
-                    });
-                });
-            });
-
         egui::SidePanel::left("sidebar")
             .resizable(false)
             .exact_width(230.0)
@@ -1754,17 +1783,21 @@ impl BackofficeApp {
         });
     }
 
-    fn render_dashboard(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        ui.horizontal(|ui| {
-            if ui.button("Refresh").clicked() {
-                self.fetch(ctx, Screen::Dashboard);
-            }
-            if self.dashboard_loading {
+    // Direct native port of DashboardManager.tsx -- the same 5 stat
+    // cards (with the web's own delta annotations, not 7 separate
+    // cards), evenly spanning the full available width instead of a
+    // fixed-width grid with leftover space, and "Recent activity" in its
+    // own card with row separators/hover, matching the stat cards'
+    // container style. No Refresh button -- the web has none either;
+    // this screen re-fetches whenever it's (re)opened.
+    fn render_dashboard(&mut self, ui: &mut egui::Ui, _ctx: &egui::Context) {
+        if self.dashboard_loading {
+            ui.horizontal(|ui| {
                 ui.spinner();
                 ui.label("Loading...");
-            }
-        });
-        ui.add_space(10.0);
+            });
+            ui.add_space(8.0);
+        }
 
         if let Some(err) = &self.dashboard_error {
             ui.colored_label(theme::danger(), err);
@@ -1772,41 +1805,72 @@ impl BackofficeApp {
         }
         let Some(data) = &self.dashboard else { return };
 
-        // Explicit 4-column grid rather than horizontal_wrapped -- the
-        // latter wrapped based on a max_rect wider than the window's
-        // actual visible area inside CentralPanel (confirmed live: the
-        // 7th card rendered clipped off the right edge instead of onto a
-        // second row), so wrapping wasn't actually reliable here.
-        let stats: [(&str, String); 7] = [
-            ("Total clients", data.total_clients.to_string()),
-            ("New clients (7d)", data.new_clients_7d.to_string()),
-            ("Deposits (30d)", format!("${:.2}", data.deposits_sum_30d)),
-            ("Active trades", data.active_trades.to_string()),
-            ("Active trade accounts", data.active_trade_account_count.to_string()),
-            ("Pending KYC", data.pending_kyc.to_string()),
+        let stats: [(&str, String, Option<(String, egui::Color32)>); 5] = [
+            (
+                "Total clients",
+                data.total_clients.to_string(),
+                (data.new_clients_7d > 0).then(|| (format!("+{} this week", data.new_clients_7d), theme::accent())),
+            ),
+            ("Total deposits (30d)", format!("${:.2}", data.deposits_sum_30d), None),
+            (
+                "Active trades",
+                data.active_trades.to_string(),
+                Some((format!("across {} clients", data.active_trade_account_count), theme::text_3())),
+            ),
+            (
+                "Pending KYC",
+                data.pending_kyc.to_string(),
+                (data.pending_kyc > 0).then(|| ("needs review".to_string(), theme::warning())),
+            ),
             (
                 "Pending withdrawals",
-                format!("{} (${:.2})", data.pending_withdrawal_count, data.pending_withdrawal_sum),
+                data.pending_withdrawal_count.to_string(),
+                (data.pending_withdrawal_count > 0).then(|| (format!("${:.2} total", data.pending_withdrawal_sum), theme::warning())),
             ),
         ];
-        egui::Grid::new("dashboard-stats").num_columns(4).spacing([10.0, 10.0]).show(ui, |ui| {
-            for (i, (label, value)) in stats.iter().enumerate() {
-                stat_card(ui, label, value);
-                if (i + 1) % 4 == 0 {
-                    ui.end_row();
-                }
-            }
-        });
+        responsive_stat_row(ui, &stats);
 
-        ui.add_space(20.0);
-        ui.strong("Recent activity");
-        ui.add_space(6.0);
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            for row in &data.activity {
+        ui.add_space(18.0);
+        theme::card(0).show(ui, |ui| {
+            ui.add_space(2.0);
+            ui.horizontal(|ui| {
+                ui.add_space(14.0);
+                ui.strong("Recent activity");
+            });
+            ui.add_space(8.0);
+            if data.activity.is_empty() {
                 ui.horizontal(|ui| {
-                    ui.monospace(&row.created_at_label);
-                    ui.label(&row.action_label);
-                    ui.weak(&row.actor_email);
+                    ui.add_space(14.0);
+                    ui.weak("No recent activity.");
+                });
+                ui.add_space(10.0);
+            } else {
+                egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
+                    for (i, row) in data.activity.iter().enumerate() {
+                        let _ = i;
+                        let desired = egui::vec2(ui.available_width(), 28.0);
+                        let (rect, resp) = ui.allocate_exact_size(desired, egui::Sense::hover());
+                        if resp.hovered() {
+                            ui.painter().rect_filled(rect, 0.0, theme::bg_2());
+                        }
+                        ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+                            ui.horizontal_centered(|ui| {
+                                ui.add_space(14.0);
+                                ui.label(egui::RichText::new(&row.action_label).color(theme::text_1()));
+                                ui.weak(&row.actor_email);
+                                if !row.entity_id.is_empty() {
+                                    ui.monospace(egui::RichText::new(&row.entity_id).size(10.5).color(theme::text_3()));
+                                }
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    ui.add_space(14.0);
+                                    ui.weak(&row.created_at_label);
+                                });
+                            });
+                        });
+                        ui.add_space(1.0);
+                        ui.separator();
+                        ui.add_space(1.0);
+                    }
                 });
             }
         });
@@ -1829,9 +1893,6 @@ impl BackofficeApp {
     // meaningful.
     fn render_positions(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.horizontal(|ui| {
-            if ui.button("Refresh").clicked() {
-                self.fetch(ctx, Screen::Positions);
-            }
             if self.positions_loading {
                 ui.spinner();
                 ui.label("Loading...");
@@ -2335,9 +2396,6 @@ impl BackofficeApp {
     // chrome gaps (resize/virtualize/column-visibility/bulk-select).
     fn render_accounts(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.horizontal(|ui| {
-            if ui.button("Refresh").clicked() {
-                self.fetch(ctx, Screen::Accounts);
-            }
             if ui.button(if self.show_new_account_form { "Cancel" } else { "+ New account" }).clicked() {
                 self.show_new_account_form = !self.show_new_account_form;
                 if self.show_new_account_form {
@@ -2741,9 +2799,6 @@ impl BackofficeApp {
     // tab (MirrorRulesManager) isn't ported in this pass.
     fn render_dealing(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.horizontal(|ui| {
-            if ui.button("Refresh").clicked() {
-                self.fetch(ctx, Screen::Dealing);
-            }
             if self.dealing_loading || self.dealing_desk_loading {
                 ui.spinner();
             }
@@ -3207,9 +3262,6 @@ impl BackofficeApp {
         }
 
         ui.horizontal(|ui| {
-            if ui.button("Refresh").clicked() {
-                self.fetch(ctx, Screen::Groups);
-            }
             if self.groups_loading {
                 ui.spinner();
             }
@@ -3319,9 +3371,6 @@ impl BackofficeApp {
     // can't carry this app's cookie jar), Status, Submitted, Action.
     fn render_kyc(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.horizontal(|ui| {
-            if ui.button("Refresh").clicked() {
-                self.fetch(ctx, Screen::Kyc);
-            }
             if self.kyc_loading {
                 ui.spinner();
             }
@@ -3443,9 +3492,6 @@ impl BackofficeApp {
 
     fn render_client_kyc(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.horizontal(|ui| {
-            if ui.button("Refresh").clicked() {
-                self.fetch(ctx, Screen::ClientKyc);
-            }
             if self.client_kyc_loading {
                 ui.spinner();
             }
@@ -3564,9 +3610,6 @@ impl BackofficeApp {
 
     fn render_live_account_requests(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.horizontal(|ui| {
-            if ui.button("Refresh").clicked() {
-                self.fetch(ctx, Screen::LiveAccountRequests);
-            }
             if self.live_account_requests_loading {
                 ui.spinner();
             }
@@ -3584,16 +3627,35 @@ impl BackofficeApp {
         for req in self.live_account_requests.clone() {
             theme::card(10).show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(&req.client_full_name);
-                    ui.weak(&req.client_email);
+                    ui.vertical(|ui| {
+                        ui.label(&req.client_full_name);
+                        ui.weak(format!(
+                            "{}{}{}",
+                            req.client_email,
+                            req.client_country.as_deref().map(|c| format!(", {c}")).unwrap_or_default(),
+                            req.client_phone.as_deref().map(|p| format!(", {p}")).unwrap_or_default()
+                        ));
+                    });
                     ui.monospace(req.account_type_name.as_deref().unwrap_or("-"));
                     ui.weak(req.created_at.get(0..10).unwrap_or(&req.created_at));
-                    let status_color = match req.status.as_str() {
-                        "APPROVED" => theme::accent(),
-                        "REJECTED" => theme::danger(),
-                        _ => theme::warning(),
-                    };
-                    ui.colored_label(status_color, &req.status);
+                    ui.vertical(|ui| {
+                        let status_color = match req.status.as_str() {
+                            "APPROVED" => theme::accent(),
+                            "REJECTED" => theme::danger(),
+                            _ => theme::warning(),
+                        };
+                        ui.colored_label(status_color, &req.status);
+                        if req.status == "REJECTED" {
+                            if let Some(reason) = &req.rejection_reason {
+                                ui.weak(reason);
+                            }
+                        }
+                        if req.status == "APPROVED" {
+                            if let Some(acc) = &req.created_account_number {
+                                ui.monospace(acc);
+                            }
+                        }
+                    });
                     if req.status == "PENDING" {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if theme::accent_button(ui, "Approve").clicked() {
@@ -3649,9 +3711,6 @@ impl BackofficeApp {
     fn render_notifications(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let unread_count = self.notifications.iter().filter(|n| !n.read).count();
         ui.horizontal(|ui| {
-            if ui.button("Refresh").clicked() {
-                self.fetch(ctx, Screen::Notifications);
-            }
             if self.notifications_loading {
                 ui.spinner();
             }
@@ -3788,11 +3847,8 @@ impl BackofficeApp {
         }
     }
 
-    fn render_risk_radar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+    fn render_risk_radar(&mut self, ui: &mut egui::Ui, _ctx: &egui::Context) {
         ui.horizontal(|ui| {
-            if ui.button("Refresh").clicked() {
-                self.fetch(ctx, Screen::RiskRadar);
-            }
             if self.risk_radar_loading {
                 ui.spinner();
             }
@@ -3866,9 +3922,6 @@ impl BackofficeApp {
 
     fn render_settings(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.horizontal(|ui| {
-            if ui.button("Refresh").clicked() {
-                self.fetch(ctx, Screen::Settings);
-            }
             if self.settings_loading {
                 ui.spinner();
             }
@@ -3902,9 +3955,6 @@ impl BackofficeApp {
 
     fn render_reports(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.horizontal(|ui| {
-            if ui.button("Refresh").clicked() {
-                self.fetch(ctx, Screen::Reports);
-            }
             if self.reports_loading {
                 ui.spinner();
             }
@@ -3922,70 +3972,262 @@ impl BackofficeApp {
             stat_card(ui, "Net deposits", &format!("${:.2}", r.net_deposits));
             stat_card(ui, "New clients", &r.new_clients.to_string());
         });
+
+        ui.add_space(20.0);
+        ui.strong("Export");
+        ui.weak("Saves the CSV straight to your Downloads folder (this app has no browser to click a download link in).");
+        ui.add_space(6.0);
+        let mut download: Option<&'static str> = None;
+        ui.horizontal_wrapped(|ui| {
+            for (label, kind) in [
+                ("Trading report (CSV)", "trading"),
+                ("Financial report (CSV)", "financial"),
+                ("Client report (CSV)", "client"),
+                ("IB report (CSV)", "ib"),
+                ("Risk report (CSV)", "risk"),
+                ("LP report (CSV)", "lp"),
+            ] {
+                if ui.button(label).clicked() {
+                    download = Some(kind);
+                }
+            }
+        });
+        if let Some(kind) = download {
+            if let Some(api) = &self.api {
+                api.download_report_csv(ctx.clone(), self.tx.clone(), kind.to_string());
+            }
+        }
+        if let Some(msg) = &self.action_message {
+            ui.add_space(6.0);
+            ui.colored_label(theme::accent(), msg);
+        }
     }
 
+    // Direct native port of SymbolConfigTable.tsx -- fully editable now
+    // (was read-only): enabled, trading mode, default book type, and all
+    // 8 numeric fields (spread markup, min/max lot, lot step, swap long/
+    // short, commission/lot, max exposure), each row with its own Save,
+    // plus a Sessions button opening the trading-windows modal. Not
+    // ported: the omni-search "?symbol=" scroll-to-and-highlight
+    // deep-link (this app has no comparable global search yet).
     fn render_symbols(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        ui.horizontal(|ui| {
-            if ui.button("Refresh").clicked() {
-                self.fetch(ctx, Screen::Symbols);
-            }
-            if self.symbols_loading {
-                ui.spinner();
-            }
-            ui.weak("Read-only in this pass -- per-symbol spread/commission editing lives on the Groups pricing screen.");
-        });
-        ui.add_space(8.0);
+        if self.symbols_loading {
+            ui.spinner();
+        }
         if let Some(err) = &self.symbols_error {
             ui.colored_label(theme::danger(), err);
             return;
         }
-        TableBuilder::new(ui)
-            .striped(true)
-            .resizable(true)
-            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-            .column(Column::remainder().at_least(140.0))
-            .column(Column::auto().at_least(100.0))
-            .column(Column::auto().at_least(90.0))
-            .column(Column::auto().at_least(120.0))
-            .column(Column::auto().at_least(120.0))
-            .header(28.0, |mut header| {
-                for label in ["Symbol", "Category", "Enabled", "Spread markup", "Commission / lot"] {
-                    header.col(|ui| {
-                        ui.label(egui::RichText::new(label.to_uppercase()).size(11.5).color(theme::text_3()));
-                    });
-                }
-            })
-            .body(|body| {
-                body.rows(26.0, self.symbols.len(), |mut row| {
-                    let s = &self.symbols[row.index()];
-                    row.col(|ui| {
-                        ui.monospace(&s.symbol_name);
-                    });
-                    row.col(|ui| {
-                        ui.label(&s.category);
-                    });
-                    row.col(|ui| {
-                        if s.enabled {
-                            ui.colored_label(theme::accent(), "yes");
-                        } else {
-                            ui.weak("no");
-                        }
-                    });
-                    row.col(|ui| {
-                        ui.monospace(&s.spread_markup);
-                    });
-                    row.col(|ui| {
-                        ui.monospace(&s.commission_per_lot);
+
+        let mut save_target: Option<api::SymbolConfigEdit> = None;
+        let mut open_sessions: Option<SymbolConfigRow> = None;
+
+        egui::ScrollArea::horizontal().show(ui, |ui| {
+            TableBuilder::new(ui)
+                .striped(true)
+                .resizable(true)
+                .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                .column(Column::exact(110.0))
+                .column(Column::exact(60.0))
+                .column(Column::exact(100.0))
+                .column(Column::exact(80.0))
+                .column(Column::exact(90.0))
+                .column(Column::exact(70.0))
+                .column(Column::exact(70.0))
+                .column(Column::exact(70.0))
+                .column(Column::exact(80.0))
+                .column(Column::exact(80.0))
+                .column(Column::exact(90.0))
+                .column(Column::exact(90.0))
+                .column(Column::remainder().at_least(160.0))
+                .header(26.0, |mut header| {
+                    for label in ["Symbol", "Enabled", "Trading mode", "Book", "Spread markup", "Min lot", "Max lot", "Lot step", "Swap long", "Swap short", "Commission/lot", "Max exposure", "Action"] {
+                        header.col(|ui| {
+                            ui.label(egui::RichText::new(label.to_uppercase()).size(9.5).color(theme::text_3()));
+                        });
+                    }
+                })
+                .body(|body| {
+                    body.rows(30.0, self.symbols.len(), |mut row| {
+                        let s = &self.symbols[row.index()];
+                        let edit = self.symbol_edit.entry(s.symbol_id.clone()).or_insert_with(|| api::SymbolConfigEdit {
+                            symbol_id: s.symbol_id.clone(),
+                            enabled: s.enabled,
+                            trading_mode: s.trading_mode.clone(),
+                            default_book_type: s.default_book_type.clone(),
+                            spread_markup: s.spread_markup.clone(),
+                            min_lot: s.min_lot.clone(),
+                            max_lot: s.max_lot.clone(),
+                            lot_step: s.lot_step.clone(),
+                            swap_long: s.swap_long.clone(),
+                            swap_short: s.swap_short.clone(),
+                            commission_per_lot: s.commission_per_lot.clone(),
+                            max_exposure: s.max_exposure.clone().unwrap_or_default(),
+                        });
+                        row.col(|ui| {
+                            ui.vertical(|ui| {
+                                ui.monospace(&s.symbol_name);
+                                ui.weak(&s.category);
+                            });
+                        });
+                        row.col(|ui| {
+                            ui.checkbox(&mut edit.enabled, "");
+                        });
+                        row.col(|ui| {
+                            egui::ComboBox::from_id_salt(format!("sym-mode-{}", s.symbol_id))
+                                .selected_text(match edit.trading_mode.as_str() {
+                                    "BUY_ONLY" => "Buy only",
+                                    "SELL_ONLY" => "Sell only",
+                                    _ => "Both",
+                                })
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(&mut edit.trading_mode, "BOTH".to_string(), "Both");
+                                    ui.selectable_value(&mut edit.trading_mode, "BUY_ONLY".to_string(), "Buy only");
+                                    ui.selectable_value(&mut edit.trading_mode, "SELL_ONLY".to_string(), "Sell only");
+                                });
+                        });
+                        row.col(|ui| {
+                            egui::ComboBox::from_id_salt(format!("sym-book-{}", s.symbol_id))
+                                .selected_text(if edit.default_book_type == "A_BOOK" { "A-Book" } else { "B-Book" })
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(&mut edit.default_book_type, "A_BOOK".to_string(), "A-Book");
+                                    ui.selectable_value(&mut edit.default_book_type, "B_BOOK".to_string(), "B-Book");
+                                });
+                        });
+                        row.col(|ui| {
+                            ui.add(egui::TextEdit::singleline(&mut edit.spread_markup).desired_width(70.0));
+                        });
+                        row.col(|ui| {
+                            ui.add(egui::TextEdit::singleline(&mut edit.min_lot).desired_width(60.0));
+                        });
+                        row.col(|ui| {
+                            ui.add(egui::TextEdit::singleline(&mut edit.max_lot).desired_width(60.0));
+                        });
+                        row.col(|ui| {
+                            ui.add(egui::TextEdit::singleline(&mut edit.lot_step).desired_width(60.0));
+                        });
+                        row.col(|ui| {
+                            ui.add(egui::TextEdit::singleline(&mut edit.swap_long).desired_width(70.0));
+                        });
+                        row.col(|ui| {
+                            ui.add(egui::TextEdit::singleline(&mut edit.swap_short).desired_width(70.0));
+                        });
+                        row.col(|ui| {
+                            ui.add(egui::TextEdit::singleline(&mut edit.commission_per_lot).desired_width(80.0));
+                        });
+                        row.col(|ui| {
+                            ui.add(egui::TextEdit::singleline(&mut edit.max_exposure).hint_text("no limit").desired_width(80.0));
+                        });
+                        row.col(|ui| {
+                            if theme::accent_button(ui, "Save").clicked() {
+                                save_target = Some(edit.clone());
+                            }
+                            let has_broker_symbol = s.broker_symbol_id.is_some();
+                            if ui.add_enabled(has_broker_symbol, egui::Button::new("Sessions")).clicked() {
+                                open_sessions = Some(s.clone());
+                            }
+                        });
                     });
                 });
-            });
+        });
+
+        if let Some(edit) = save_target {
+            if let Some(api) = &self.api {
+                api.save_symbol_config(ctx.clone(), self.tx.clone(), edit);
+            }
+        }
+        if let Some(row) = open_sessions {
+            self.symbol_sessions_loading = true;
+            self.symbol_sessions_error = None;
+            self.symbol_sessions = None;
+            if let Some(api) = &self.api {
+                if let Some(bsid) = &row.broker_symbol_id {
+                    api.fetch_symbol_sessions(ctx.clone(), self.tx.clone(), bsid.clone());
+                }
+            }
+            self.symbol_sessions_for = Some(row);
+        }
+
+        // --- Trading sessions modal ---
+        if let Some(row) = self.symbol_sessions_for.clone() {
+            let mut open = true;
+            let mut remove_id: Option<String> = None;
+            let mut add_clicked = false;
+            egui::Window::new(format!("Trading sessions - {}", row.symbol_name))
+                .id(egui::Id::new("symbol-sessions-window"))
+                .collapsible(false)
+                .open(&mut open)
+                .show(ctx, |ui| {
+                    ui.set_width(420.0);
+                    ui.weak("No sessions = always tradable. All times UTC.");
+                    ui.add_space(6.0);
+                    if self.symbol_sessions_loading {
+                        ui.spinner();
+                    } else if let Some(err) = &self.symbol_sessions_error {
+                        ui.colored_label(theme::danger(), err);
+                    } else if let Some(sessions) = &self.symbol_sessions {
+                        if sessions.is_empty() {
+                            ui.weak("No sessions set, always tradable.");
+                        }
+                        const DAY_LABELS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+                        for s in sessions {
+                            ui.horizontal(|ui| {
+                                ui.monospace(format!("{} {}-{}", DAY_LABELS.get(s.day_of_week as usize).unwrap_or(&"?"), s.open_time, s.close_time));
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    if ui.button("Remove").clicked() {
+                                        remove_id = Some(s.id.clone());
+                                    }
+                                });
+                            });
+                        }
+                        ui.add_space(8.0);
+                        ui.horizontal(|ui| {
+                            egui::ComboBox::from_id_salt("sess-new-day")
+                                .selected_text(DAY_LABELS[self.symbol_session_new_day as usize])
+                                .show_ui(ui, |ui| {
+                                    for (i, label) in DAY_LABELS.iter().enumerate() {
+                                        ui.selectable_value(&mut self.symbol_session_new_day, i as i64, *label);
+                                    }
+                                });
+                            ui.add(egui::TextEdit::singleline(&mut self.symbol_session_new_open).desired_width(50.0));
+                            ui.label("-");
+                            ui.add(egui::TextEdit::singleline(&mut self.symbol_session_new_close).desired_width(50.0));
+                            if ui.button("Add").clicked() {
+                                add_clicked = true;
+                            }
+                        });
+                    }
+                });
+            if let (Some(bsid), Some(sessions)) = (row.broker_symbol_id.clone(), self.symbol_sessions.clone()) {
+                if let Some(id) = remove_id {
+                    let next: Vec<api::SymbolSessionRow> = sessions.into_iter().filter(|s| s.id != id).collect();
+                    self.symbol_sessions_loading = true;
+                    if let Some(api) = &self.api {
+                        api.save_symbol_sessions(ctx.clone(), self.tx.clone(), bsid, next);
+                    }
+                } else if add_clicked {
+                    let mut next = sessions;
+                    next.push(api::SymbolSessionRow {
+                        id: String::new(),
+                        day_of_week: self.symbol_session_new_day,
+                        open_time: self.symbol_session_new_open.clone(),
+                        close_time: self.symbol_session_new_close.clone(),
+                    });
+                    self.symbol_sessions_loading = true;
+                    if let Some(api) = &self.api {
+                        api.save_symbol_sessions(ctx.clone(), self.tx.clone(), bsid, next);
+                    }
+                }
+            }
+            if !open {
+                self.symbol_sessions_for = None;
+                self.symbol_sessions = None;
+            }
+        }
     }
 
     fn render_team(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.horizontal(|ui| {
-            if ui.button("Refresh").clicked() {
-                self.fetch(ctx, Screen::Team);
-            }
             if self.admins_loading {
                 ui.spinner();
             }
@@ -4046,15 +4288,55 @@ impl BackofficeApp {
 
     fn render_transfers(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.horizontal(|ui| {
-            if ui.button("Refresh").clicked() {
-                self.fetch(ctx, Screen::Transfers);
-            }
             if self.transfers_loading {
                 ui.spinner();
             }
-            ui.weak("Read-only in this pass -- creating a transfer needs two account pickers, deferred.");
         });
         ui.add_space(8.0);
+
+        // --- Transfer form (was read-only -- POST /api/manage/transfers
+        // now actually wired) ---
+        let active_accounts: Vec<&AccountRow> = self.accounts.iter().filter(|a| a.status == "ACTIVE").collect();
+        theme::card(14).show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.vertical(|ui| {
+                    ui.label(egui::RichText::new("FROM ACCOUNT").size(10.5).color(theme::text_3()));
+                    egui::ComboBox::from_id_salt("transfer-from")
+                        .selected_text(active_accounts.iter().find(|a| a.id == self.transfer_from_id).map(|a| format!("{}, {}", a.account_number, a.full_name)).unwrap_or_else(|| "Select account".to_string()))
+                        .show_ui(ui, |ui| {
+                            for a in &active_accounts {
+                                ui.selectable_value(&mut self.transfer_from_id, a.id.clone(), format!("{}, {}", a.account_number, a.full_name));
+                            }
+                        });
+                });
+                ui.vertical(|ui| {
+                    ui.label(egui::RichText::new("TO ACCOUNT").size(10.5).color(theme::text_3()));
+                    egui::ComboBox::from_id_salt("transfer-to")
+                        .selected_text(active_accounts.iter().find(|a| a.id == self.transfer_to_id).map(|a| format!("{}, {}", a.account_number, a.full_name)).unwrap_or_else(|| "Select account".to_string()))
+                        .show_ui(ui, |ui| {
+                            for a in &active_accounts {
+                                ui.selectable_value(&mut self.transfer_to_id, a.id.clone(), format!("{}, {}", a.account_number, a.full_name));
+                            }
+                        });
+                });
+                ui.vertical(|ui| {
+                    ui.label(egui::RichText::new("AMOUNT (USD)").size(10.5).color(theme::text_3()));
+                    ui.add(egui::TextEdit::singleline(&mut self.transfer_amount).hint_text("0.00").desired_width(100.0));
+                });
+                ui.vertical(|ui| {
+                    ui.label(egui::RichText::new("NOTE (REQUIRED, LOGGED IN AUDIT TRAIL)").size(10.5).color(theme::text_3()));
+                    ui.add(egui::TextEdit::singleline(&mut self.transfer_note).hint_text("e.g. Client requested consolidation").desired_width(220.0));
+                });
+                let valid = !self.transfer_from_id.is_empty() && !self.transfer_to_id.is_empty() && !self.transfer_amount.trim().is_empty();
+                if theme::accent_button_enabled(ui, valid, "Transfer").clicked() {
+                    if let Some(api) = &self.api {
+                        api.create_transfer(ctx.clone(), self.tx.clone(), self.transfer_from_id.clone(), self.transfer_to_id.clone(), self.transfer_amount.trim().to_string(), self.transfer_note.clone());
+                    }
+                }
+            });
+        });
+        ui.add_space(10.0);
+
         if let Some(err) = &self.transfers_error {
             ui.colored_label(theme::danger(), err);
             return;
@@ -4100,45 +4382,72 @@ impl BackofficeApp {
     // Reuses self.accounts (the Accounts screen's own data, see fetch()'s
     // own comment) -- no separate endpoint exists; the real web page does
     // the same (WalletsManager.tsx fetches /api/manage/accounts too).
-    fn render_wallets(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+    // Direct native port of WalletsManager.tsx: search, a Total
+    // balance/Total credit summary line (recomputed from whichever
+    // filtered subset is on screen, same as the web), and Account/
+    // Currency/Balance/Credit/Status columns (self.accounts is the same
+    // /api/manage/accounts data the web's own WalletsManager reuses).
+    fn render_wallets(&mut self, ui: &mut egui::Ui, _ctx: &egui::Context) {
         ui.horizontal(|ui| {
-            if ui.button("Refresh").clicked() {
-                self.fetch(ctx, Screen::Wallets);
-            }
             if self.accounts_loading {
                 ui.spinner();
             }
-            ui.weak("Balance and credit per account (same data as Clients / Accounts).");
         });
         ui.add_space(8.0);
         if let Some(err) = &self.accounts_error {
             ui.colored_label(theme::danger(), err);
             return;
         }
+
+        let q = self.wallets_filter.to_lowercase();
+        let filtered: Vec<&AccountRow> = self
+            .accounts
+            .iter()
+            .filter(|a| q.is_empty() || a.account_number.to_lowercase().contains(&q) || a.full_name.to_lowercase().contains(&q))
+            .collect();
+        let total_balance: f64 = filtered.iter().filter_map(|a| a.balance.parse::<f64>().ok()).sum();
+        let total_credit: f64 = filtered.iter().filter_map(|a| a.credit.parse::<f64>().ok()).sum();
+
+        ui.horizontal(|ui| {
+            ui.add(egui::TextEdit::singleline(&mut self.wallets_filter).hint_text("Search by account number or name..."));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(
+                    egui::RichText::new(format!("Total balance: {total_balance:.2}  \u{b7}  Total credit: {total_credit:.2}"))
+                        .size(12.0)
+                        .color(theme::text_2()),
+                );
+            });
+        });
+        ui.add_space(8.0);
+
         TableBuilder::new(ui)
             .striped(true)
             .resizable(true)
             .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
             .column(Column::auto().at_least(100.0))
             .column(Column::remainder().at_least(160.0))
-            .column(Column::auto().at_least(110.0))
-            .column(Column::auto().at_least(110.0))
             .column(Column::auto().at_least(80.0))
+            .column(Column::auto().at_least(110.0))
+            .column(Column::auto().at_least(110.0))
+            .column(Column::auto().at_least(100.0))
             .header(28.0, |mut header| {
-                for label in ["Account", "Client", "Balance", "Credit", "Currency"] {
+                for label in ["Account", "Client", "Currency", "Balance", "Credit", "Status"] {
                     header.col(|ui| {
                         ui.label(egui::RichText::new(label.to_uppercase()).size(11.5).color(theme::text_3()));
                     });
                 }
             })
             .body(|body| {
-                body.rows(26.0, self.accounts.len(), |mut row| {
-                    let a = &self.accounts[row.index()];
+                body.rows(26.0, filtered.len(), |mut row| {
+                    let a = filtered[row.index()];
                     row.col(|ui| {
                         ui.monospace(&a.account_number);
                     });
                     row.col(|ui| {
                         ui.label(&a.full_name);
+                    });
+                    row.col(|ui| {
+                        ui.weak(&a.currency);
                     });
                     row.col(|ui| {
                         ui.monospace(&a.balance);
@@ -4147,17 +4456,19 @@ impl BackofficeApp {
                         ui.monospace(&a.credit);
                     });
                     row.col(|ui| {
-                        ui.weak(&a.currency);
+                        let color = match a.status.as_str() {
+                            "ACTIVE" => theme::accent(),
+                            "SUSPENDED" => theme::warning(),
+                            _ => theme::text_3(),
+                        };
+                        ui.colored_label(color, &a.status);
                     });
                 });
             });
     }
 
-    fn render_ib(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+    fn render_ib(&mut self, ui: &mut egui::Ui, _ctx: &egui::Context) {
         ui.horizontal(|ui| {
-            if ui.button("Refresh").clicked() {
-                self.fetch(ctx, Screen::Ib);
-            }
             if self.ib_loading {
                 ui.spinner();
             }
@@ -4205,11 +4516,8 @@ impl BackofficeApp {
             });
     }
 
-    fn render_leads(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+    fn render_leads(&mut self, ui: &mut egui::Ui, _ctx: &egui::Context) {
         ui.horizontal(|ui| {
-            if ui.button("Refresh").clicked() {
-                self.fetch(ctx, Screen::Leads);
-            }
             if self.leads_loading {
                 ui.spinner();
             }
@@ -4257,11 +4565,8 @@ impl BackofficeApp {
             });
     }
 
-    fn render_deals(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+    fn render_deals(&mut self, ui: &mut egui::Ui, _ctx: &egui::Context) {
         ui.horizontal(|ui| {
-            if ui.button("Refresh").clicked() {
-                self.fetch(ctx, Screen::Deals);
-            }
             if self.deals_loading {
                 ui.spinner();
             }
@@ -4329,13 +4634,30 @@ impl BackofficeApp {
             });
     }
 
+    // Direct native port of AuditLogTable.tsx: a search box (account
+    // number or order number, matches the real API's own ?q= handling --
+    // a Search button here instead of the web's 250ms debounce, since
+    // egui has no built-in timer primitive to debounce against), the
+    // Order column (symbol/side/lots/order# and the account it belongs
+    // to -- dispute-resolution evidence, shown inline rather than behind
+    // a click), a click-to-expand diff, and the entityType/entityId
+    // target. Not ported: double-click-to-navigate to the changed entity
+    // (no in-app deep-linking to an arbitrary record by id yet).
     fn render_audit(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.horizontal(|ui| {
-            if ui.button("Refresh").clicked() {
-                self.fetch(ctx, Screen::Audit);
-            }
             if self.audit_loading {
                 ui.spinner();
+            }
+        });
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            let response = ui.add(egui::TextEdit::singleline(&mut self.audit_query).hint_text("Search by order number or account number..."));
+            let search_clicked = ui.button("Search").clicked();
+            if search_clicked || (response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
+                if let Some(api) = &self.api {
+                    self.audit_loading = true;
+                    api.fetch_audit_log(ctx.clone(), self.tx.clone(), self.audit_query.clone());
+                }
             }
         });
         ui.add_space(8.0);
@@ -4343,16 +4665,69 @@ impl BackofficeApp {
             ui.colored_label(theme::danger(), err);
             return;
         }
+        if self.audit_log.is_empty() && !self.audit_loading {
+            ui.weak(if self.audit_query.trim().is_empty() { "No audit entries yet." } else { "No audit entries match that search." });
+        }
+
+        let mut toggle_expand: Option<String> = None;
         egui::ScrollArea::vertical().show(ui, |ui| {
-            for log in &self.audit_log {
-                ui.horizontal(|ui| {
-                    ui.monospace(&log.created_at_label);
-                    ui.weak(&log.entity_type);
-                    ui.label(&log.action_label);
-                    ui.weak(&log.actor_email);
+            for log in self.audit_log.clone() {
+                theme::card(8).show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.vertical(|ui| {
+                            ui.label(&log.actor_email);
+                            ui.horizontal(|ui| {
+                                ui.weak(&log.action_label);
+                                if !log.diff_lines.is_empty() {
+                                    ui.weak(if self.audit_expanded.as_deref() == Some(log.id.as_str()) { "\u{25be}" } else { "\u{25b8}" });
+                                }
+                            });
+                        });
+                        ui.vertical(|ui| {
+                            if let Some(order) = &log.order {
+                                let mut parts = Vec::new();
+                                if let Some(s) = &order.symbol {
+                                    parts.push(s.clone());
+                                }
+                                if let Some(s) = &order.side {
+                                    parts.push(s.clone());
+                                }
+                                if let Some(s) = &order.lots {
+                                    parts.push(s.clone());
+                                }
+                                ui.monospace(format!("{} \u{b7} #{}", parts.join(" "), order.order_number.get(order.order_number.len().saturating_sub(8)..).unwrap_or(&order.order_number)));
+                                if let Some(acc) = &order.account_number {
+                                    ui.weak(acc);
+                                }
+                            } else {
+                                ui.weak("-");
+                            }
+                        });
+                        ui.weak(format!("{} \u{b7} {}", log.entity_type, log.entity_id));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.weak(&log.created_at_label);
+                        });
+                    });
+                    if !log.diff_lines.is_empty() && ui.interact(ui.min_rect(), ui.id().with("row-click"), egui::Sense::click()).clicked() {
+                        toggle_expand = Some(log.id.clone());
+                    }
+                    if self.audit_expanded.as_deref() == Some(log.id.as_str()) {
+                        ui.add_space(4.0);
+                        ui.separator();
+                        for line in &log.diff_lines {
+                            ui.monospace(egui::RichText::new(line).size(11.0).color(theme::text_2()));
+                        }
+                    }
                 });
             }
         });
+        if let Some(id) = toggle_expand {
+            if self.audit_expanded.as_deref() == Some(id.as_str()) {
+                self.audit_expanded = None;
+            } else {
+                self.audit_expanded = Some(id);
+            }
+        }
     }
 
     // No dedicated endpoint for this native pass (2FA setup is a QR-code/
@@ -4370,11 +4745,15 @@ impl BackofficeApp {
         });
     }
 
+    // Direct native port of FundsRequestsManager.tsx -- the real
+    // two-person withdrawal approval flow: a first admin "Mark for
+    // approval" (withdrawals only; deposits Approve immediately), a
+    // DIFFERENT admin must "Confirm (2nd approval)" before any balance
+    // moves, and the marking admin can "Cancel mark" to back out. Every
+    // action goes through the same confirm-modal the web uses, with the
+    // web's own exact per-state copy.
     fn render_funds(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.horizontal(|ui| {
-            if ui.button("Refresh").clicked() {
-                self.fetch(ctx, Screen::Funds);
-            }
             if self.funds_loading {
                 ui.spinner();
             }
@@ -4384,74 +4763,210 @@ impl BackofficeApp {
             ui.colored_label(theme::danger(), err);
             return;
         }
-        let mut action: Option<(String, String)> = None;
+        if self.funds_requests.is_empty() && !self.funds_loading {
+            ui.weak("No funds requests.");
+        }
+
         for f in self.funds_requests.clone() {
             theme::card(10).show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.monospace(&f.account_number);
-                    ui.label(&f.account_full_name);
-                    ui.separator();
-                    ui.label(&f.request_type);
+                    ui.vertical(|ui| {
+                        ui.monospace(&f.account_number);
+                        ui.weak(&f.account_full_name);
+                    });
+                    let side_color = if f.request_type == "DEPOSIT" { theme::accent() } else { theme::danger() };
+                    ui.colored_label(side_color, &f.request_type);
                     ui.monospace(&f.amount);
-                    let status_color = match f.status.as_str() {
-                        "APPROVED" | "COMPLETED" => theme::accent(),
-                        "REJECTED" => theme::danger(),
-                        _ => theme::warning(),
-                    };
-                    ui.colored_label(status_color, &f.status);
-                    if f.status == "PENDING" {
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.button("Reject").clicked() {
-                                action = Some((f.id.clone(), "REJECT".to_string()));
+                    ui.weak(format!("balance {}", f.current_balance.as_deref().unwrap_or("-")));
+                    ui.vertical(|ui| {
+                        let status_color = match f.status.as_str() {
+                            "COMPLETED" => theme::accent(),
+                            "REJECTED" => theme::danger(),
+                            _ => theme::warning(),
+                        };
+                        ui.colored_label(status_color, &f.status);
+                        if let Some(marker) = &f.marked_by_admin_email {
+                            ui.colored_label(theme::warning(), format!("Marked by {marker}, needs 2nd approval"));
+                        }
+                    });
+                    ui.weak(&f.created_at);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if f.status == "PENDING" {
+                            if f.marked_by_admin_id.as_deref() == Some(self.current_admin_id.as_str()) {
+                                ui.weak("Awaiting another staff member");
+                                if ui.button("Cancel mark").clicked() {
+                                    self.funds_confirm = Some((f.clone(), "CANCEL_MARK"));
+                                }
+                            } else if f.marked_by_admin_id.is_some() {
+                                if ui.button("Reject").clicked() {
+                                    self.funds_confirm = Some((f.clone(), "REJECT"));
+                                }
+                                if theme::accent_button(ui, "Confirm (2nd approval)").clicked() {
+                                    self.funds_confirm = Some((f.clone(), "APPROVE"));
+                                }
+                            } else {
+                                if theme::danger_button_enabled(ui, true, "Reject").clicked() {
+                                    self.funds_confirm = Some((f.clone(), "REJECT"));
+                                }
+                                let approve_label = if f.request_type == "WITHDRAWAL" { "Mark for approval" } else { "Approve" };
+                                if theme::accent_button(ui, approve_label).clicked() {
+                                    self.funds_confirm = Some((f.clone(), "APPROVE"));
+                                }
                             }
-                            if theme::accent_button(ui, "Approve").clicked() {
-                                action = Some((f.id.clone(), "APPROVE".to_string()));
-                            }
-                        });
-                    }
+                        }
+                    });
                 });
             });
         }
-        if let Some((id, act)) = action {
-            if let Some(api) = &self.api {
-                api.funds_request_action(ctx.clone(), self.tx.clone(), id, act);
+
+        if let Some((row, action)) = self.funds_confirm.clone() {
+            let mut open = true;
+            let mut confirm = false;
+            let is_first_mark = action == "APPROVE" && row.request_type == "WITHDRAWAL" && row.marked_by_admin_id.is_none();
+            let title = match action {
+                "APPROVE" if is_first_mark => "Mark withdrawal for approval".to_string(),
+                "APPROVE" => format!("Approve {}", row.request_type.to_lowercase()),
+                "CANCEL_MARK" => "Cancel withdrawal mark".to_string(),
+                _ => format!("Reject {}", row.request_type.to_lowercase()),
+            };
+            egui::Window::new(title).id(egui::Id::new("funds-confirm-window")).collapsible(false).resizable(false).open(&mut open).show(ctx, |ui| {
+                let body = match action {
+                    "CANCEL_MARK" => "This request goes back to plain pending, either staff member can mark it again.".to_string(),
+                    "APPROVE" if is_first_mark => "This only marks the request. A different staff member must confirm before any balance moves.".to_string(),
+                    "APPROVE" => format!("This moves {} through the ledger onto {}'s balance.", row.amount, row.account_number),
+                    _ => format!("{}'s balance is left untouched.", row.account_number),
+                };
+                ui.label(body);
+                ui.add_space(6.0);
+                let btn_label = if action == "CANCEL_MARK" { "Confirm cancel" } else if action == "APPROVE" { "Confirm approval" } else { "Confirm rejection" };
+                let clicked = if action == "APPROVE" {
+                    ui.add(egui::Button::new(btn_label).fill(theme::accent())).clicked()
+                } else if action == "CANCEL_MARK" {
+                    ui.button(btn_label).clicked()
+                } else {
+                    theme::danger_button_enabled(ui, true, btn_label).clicked()
+                };
+                if clicked {
+                    confirm = true;
+                }
+            });
+            if confirm {
+                if let Some(api) = &self.api {
+                    api.funds_request_action(ctx.clone(), self.tx.clone(), row.id.clone(), action.to_string());
+                }
+                self.funds_confirm = None;
+            } else if !open {
+                self.funds_confirm = None;
             }
         }
     }
 
+    // Direct native port of PaymentMethodsManager.tsx -- fully editable
+    // now (was read-only): enabled toggle, min/max amount, fee %/fixed,
+    // wallet address (crypto types) or a bank-details hint pointing at
+    // Instructions, and Instructions, each with its own per-row Save.
     fn render_payment_methods(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.horizontal(|ui| {
-            if ui.button("Refresh").clicked() {
-                self.fetch(ctx, Screen::PaymentMethods);
-            }
             if self.payment_methods_loading {
                 ui.spinner();
             }
-            ui.weak("Read-only in this pass -- editing fees/limits deferred.");
         });
         ui.add_space(8.0);
         if let Some(err) = &self.payment_methods_error {
             ui.colored_label(theme::danger(), err);
             return;
         }
-        for m in &self.payment_methods {
-            ui.horizontal(|ui| {
-                ui.monospace(&m.method_type);
-                if m.enabled {
-                    ui.colored_label(theme::accent(), "enabled");
-                } else {
-                    ui.weak("disabled");
+
+        let mut save_target: Option<(String, PaymentMethodEdit)> = None;
+
+        TableBuilder::new(ui)
+            .striped(true)
+            .resizable(true)
+            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+            .column(Column::exact(130.0))
+            .column(Column::exact(60.0))
+            .column(Column::exact(80.0))
+            .column(Column::exact(80.0))
+            .column(Column::exact(60.0))
+            .column(Column::exact(60.0))
+            .column(Column::exact(180.0))
+            .column(Column::remainder().at_least(160.0))
+            .column(Column::exact(90.0))
+            .header(26.0, |mut header| {
+                for label in ["Method", "Enabled", "Min", "Max", "Fee %", "Fee fixed", "Wallet / bank", "Instructions", "Action"] {
+                    header.col(|ui| {
+                        ui.label(egui::RichText::new(label.to_uppercase()).size(10.0).color(theme::text_3()));
+                    });
                 }
-                ui.weak(format!("min {}, fee {}%", m.min_amount, m.fee_percent));
+            })
+            .body(|body| {
+                body.rows(30.0, self.payment_methods.len(), |mut row| {
+                    let m = &self.payment_methods[row.index()];
+                    let edit = self.payment_method_edit.entry(m.method_type.clone()).or_insert_with(|| PaymentMethodEdit {
+                        enabled: m.enabled,
+                        min_amount: m.min_amount.clone(),
+                        max_amount: m.max_amount.clone().unwrap_or_default(),
+                        fee_percent: m.fee_percent.clone(),
+                        fee_fixed: m.fee_fixed.clone(),
+                        wallet_address: m.wallet_address.clone().unwrap_or_default(),
+                        instructions: m.instructions.clone().unwrap_or_default(),
+                    });
+                    row.col(|ui| {
+                        ui.label(payment_method_label(&m.method_type));
+                    });
+                    row.col(|ui| {
+                        ui.checkbox(&mut edit.enabled, "");
+                    });
+                    row.col(|ui| {
+                        ui.add(egui::TextEdit::singleline(&mut edit.min_amount).desired_width(70.0));
+                    });
+                    row.col(|ui| {
+                        ui.add(egui::TextEdit::singleline(&mut edit.max_amount).hint_text("no limit").desired_width(70.0));
+                    });
+                    row.col(|ui| {
+                        ui.add(egui::TextEdit::singleline(&mut edit.fee_percent).desired_width(50.0));
+                    });
+                    row.col(|ui| {
+                        ui.add(egui::TextEdit::singleline(&mut edit.fee_fixed).desired_width(50.0));
+                    });
+                    row.col(|ui| {
+                        if payment_method_is_crypto(&m.method_type) {
+                            ui.add(egui::TextEdit::singleline(&mut edit.wallet_address).hint_text("broker's deposit address").desired_width(170.0));
+                        } else {
+                            ui.weak("Use Instructions for bank details");
+                        }
+                    });
+                    row.col(|ui| {
+                        ui.add(egui::TextEdit::singleline(&mut edit.instructions).hint_text("Shown to the trader").desired_width(150.0));
+                    });
+                    row.col(|ui| {
+                        if theme::accent_button(ui, "Save").clicked() {
+                            save_target = Some((m.method_type.clone(), edit.clone()));
+                        }
+                    });
+                });
             });
+
+        if let Some((method_type, edit)) = save_target {
+            if let Some(api) = &self.api {
+                api.save_payment_method(
+                    ctx.clone(),
+                    self.tx.clone(),
+                    method_type,
+                    edit.enabled,
+                    edit.min_amount,
+                    edit.max_amount,
+                    edit.fee_percent,
+                    edit.fee_fixed,
+                    edit.wallet_address,
+                    edit.instructions,
+                );
+            }
         }
     }
 
-    fn render_margin(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+    fn render_margin(&mut self, ui: &mut egui::Ui, _ctx: &egui::Context) {
         ui.horizontal(|ui| {
-            if ui.button("Refresh").clicked() {
-                self.fetch(ctx, Screen::Margin);
-            }
             if self.margin_loading {
                 ui.spinner();
             }
@@ -4512,11 +5027,8 @@ impl BackofficeApp {
             });
     }
 
-    fn render_liquidity(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+    fn render_liquidity(&mut self, ui: &mut egui::Ui, _ctx: &egui::Context) {
         ui.horizontal(|ui| {
-            if ui.button("Refresh").clicked() {
-                self.fetch(ctx, Screen::Liquidity);
-            }
             if self.liquidity_loading {
                 ui.spinner();
             }
@@ -4557,11 +5069,8 @@ impl BackofficeApp {
             });
     }
 
-    fn render_liquidity_routing(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+    fn render_liquidity_routing(&mut self, ui: &mut egui::Ui, _ctx: &egui::Context) {
         ui.horizontal(|ui| {
-            if ui.button("Refresh").clicked() {
-                self.fetch(ctx, Screen::LiquidityRouting);
-            }
             if self.lp_routing_loading {
                 ui.spinner();
             }
@@ -4606,11 +5115,8 @@ impl BackofficeApp {
             });
     }
 
-    fn render_feed_health(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+    fn render_feed_health(&mut self, ui: &mut egui::Ui, _ctx: &egui::Context) {
         ui.horizontal(|ui| {
-            if ui.button("Refresh").clicked() {
-                self.fetch(ctx, Screen::FeedHealth);
-            }
             if self.feed_health_loading {
                 ui.spinner();
             }
@@ -4647,9 +5153,6 @@ impl BackofficeApp {
 
     fn render_emergency(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.horizontal(|ui| {
-            if ui.button("Refresh").clicked() {
-                self.fetch(ctx, Screen::Emergency);
-            }
             if self.risk_loading {
                 ui.spinner();
             }
@@ -4696,9 +5199,6 @@ impl BackofficeApp {
     // reasoning).
     fn render_risk_settings(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.horizontal(|ui| {
-            if ui.button("Refresh").clicked() {
-                self.fetch(ctx, Screen::Risk);
-            }
             if self.risk_settings_loading {
                 ui.spinner();
             }
@@ -4899,6 +5399,58 @@ fn stat_card(ui: &mut egui::Ui, label: &str, value: &str) {
                 ui.label(egui::RichText::new(value).size(24.0).color(theme::text_1()));
             });
         });
+}
+
+// A row of stat cards that actually spans the panel's full width (no
+// leftover empty space on the right), unlike a plain egui::Grid whose
+// columns only ever shrink-to-fit their content. Columns = card count,
+// each card's width computed from the real available width right
+// before drawing, so it holds at any window size (wraps to a second row
+// only if the window is too narrow for one card at its minimum width).
+fn responsive_stat_row(ui: &mut egui::Ui, stats: &[(&str, String, Option<(String, egui::Color32)>)]) {
+    const GAP: f32 = 12.0;
+    const MIN_CARD_WIDTH: f32 = 200.0;
+    let available = ui.available_width();
+    let max_cols = ((available + GAP) / (MIN_CARD_WIDTH + GAP)).floor().max(1.0) as usize;
+    let cols = max_cols.min(stats.len()).max(1);
+
+    let old_spacing = ui.spacing().item_spacing.x;
+    ui.spacing_mut().item_spacing.x = GAP;
+    for chunk in stats.chunks(cols) {
+        // ui::columns splits the CURRENT available width into exactly
+        // `cols` equal columns and hands back that many child Uis --
+        // safer than hand-computing pixel widths (an earlier
+        // allocate_ui-based version visibly overflowed the window's
+        // right edge instead of respecting the sidebar's own reserved
+        // width). A short final chunk still allocates `cols` columns so
+        // its cards line up under the ones above rather than stretching
+        // to fill the row alone.
+        ui.columns(cols, |columns| {
+            for (i, col) in columns.iter_mut().enumerate() {
+                let Some((label, value, delta)) = chunk.get(i) else { continue };
+                egui::Frame::new()
+                    .fill(theme::bg_1())
+                    .stroke(egui::Stroke::new(1.0_f32, theme::border()))
+                    .corner_radius(egui::CornerRadius::same(10))
+                    .inner_margin(egui::Margin::symmetric(16, 14))
+                    .show(col, |ui| {
+                        ui.vertical(|ui| {
+                            ui.label(egui::RichText::new(label.to_uppercase()).size(11.0).color(theme::text_3()));
+                            ui.add_space(6.0);
+                            ui.label(egui::RichText::new(value.as_str()).size(24.0).color(theme::text_1()));
+                            if let Some((text, color)) = delta {
+                                ui.add_space(3.0);
+                                ui.label(egui::RichText::new(text).size(11.0).color(*color));
+                            } else {
+                                ui.add_space(ui.text_style_height(&egui::TextStyle::Small) + 3.0);
+                            }
+                        });
+                    });
+            }
+        });
+        ui.add_space(GAP);
+    }
+    ui.spacing_mut().item_spacing.x = old_spacing;
 }
 
 // Shared row renderer for both activity-feed surfaces (Live Exposure's
@@ -5128,63 +5680,152 @@ impl BackofficeApp {
 // minimize/maximize/close wired to the same ViewportCommands the OS
 // chrome would otherwise send. Rendered once per frame regardless of
 // login state, above whatever render_login/render_shell draws below it.
-fn render_titlebar(ctx: &egui::Context) {
-    egui::TopBottomPanel::top("titlebar")
-        .exact_height(34.0)
-        .frame(egui::Frame::new().fill(theme::sidebar_bg()).inner_margin(egui::Margin::symmetric(10, 0)))
-        .show(ctx, |ui| {
-            let bar_rect = ui.max_rect();
-            let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+impl BackofficeApp {
+    // Single unified top bar (2026-09-08 fix: this used to be two stacked
+    // bars -- a 34px drag/window-controls strip plus a separate "header"
+    // TopBottomPanel below it showing the screen title/email/logout/
+    // theme toggle -- which read as a broken double-header, not a real
+    // product chrome). Now one bar carries all of it: branding + screen
+    // title on the left, window controls + Log out + theme toggle +
+    // signed-in admin on the right, still draggable/double-click-to-
+    // maximize across its full width. Logged-out state (login screen)
+    // shows just the generic wordmark + window controls, same as before.
+    fn render_titlebar(&mut self, ctx: &egui::Context) {
+        egui::TopBottomPanel::top("titlebar")
+            .exact_height(44.0)
+            .frame(egui::Frame::new().fill(theme::sidebar_bg()).inner_margin(egui::Margin::symmetric(14, 0)).stroke(egui::Stroke { width: 1.0, color: theme::border() }))
+            .show(ctx, |ui| {
+                let bar_rect = ui.max_rect();
+                let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
 
-            // Drag/double-click-to-maximize sensed over the WHOLE bar
-            // first (drawn/allocated before anything else, so it sits
-            // "underneath" in z-order) -- the icon/title/buttons drawn
-            // afterward each get their own narrower interactive rect on
-            // top of it, which egui resolves to the topmost (later-drawn)
-            // widget for clicks/hover, same as eframe's own documented
-            // custom-title-bar pattern.
-            let bar_response = ui.interact(bar_rect, ui.id().with("titlebar-drag"), egui::Sense::click_and_drag());
-            if bar_response.drag_started() {
-                ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
-            }
-            if bar_response.double_clicked() {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
-            }
+                // Drag/double-click-to-maximize sensed over the WHOLE bar
+                // first (drawn/allocated before anything else, so it sits
+                // "underneath" in z-order) -- the icon/title/buttons drawn
+                // afterward each get their own narrower interactive rect on
+                // top of it, which egui resolves to the topmost (later-drawn)
+                // widget for clicks/hover, same as eframe's own documented
+                // custom-title-bar pattern.
+                let bar_response = ui.interact(bar_rect, ui.id().with("titlebar-drag"), egui::Sense::click_and_drag());
+                if bar_response.drag_started() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                }
+                if bar_response.double_clicked() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+                }
 
-            ui.horizontal_centered(|ui| {
-                ui.label(egui::RichText::new("●").size(12.0).color(theme::accent()));
-                ui.add_space(2.0);
-                ui.label(egui::RichText::new("VyXTrader Backoffice").size(12.5).color(theme::text_2()));
+                ui.horizontal_centered(|ui| {
+                    if let Some(texture) = &self.broker_logo_texture {
+                        ui.add(egui::Image::new(texture).max_height(18.0).max_width(24.0));
+                    } else {
+                        ui.label(egui::RichText::new("●").size(12.0).color(theme::accent()));
+                    }
+                    ui.add_space(4.0);
+                    let brand = self.broker_name.as_deref().unwrap_or("VyXTrader Backoffice");
+                    ui.label(egui::RichText::new(brand).size(12.5).color(theme::text_2()));
+                    if self.logged_in {
+                        ui.add_space(10.0);
+                        ui.label(egui::RichText::new("\u{2022}").color(theme::text_3()));
+                        ui.add_space(10.0);
+                        ui.label(egui::RichText::new(self.screen.icon()).size(14.0).color(theme::accent()));
+                        ui.add_space(4.0);
+                        ui.label(egui::RichText::new(self.screen.label()).size(15.5).color(theme::text_1()).strong());
+                    }
 
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let btn = |ui: &mut egui::Ui, symbol: &str, hover: egui::Color32| {
-                        let (rect, response) = ui.allocate_exact_size(egui::vec2(38.0, 34.0), egui::Sense::click());
-                        if ui.is_rect_visible(rect) {
-                            if response.hovered() {
-                                ui.painter().rect_filled(rect, 0.0, hover);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let btn = |ui: &mut egui::Ui, symbol: &str, hover: egui::Color32| {
+                            let (rect, response) = ui.allocate_exact_size(egui::vec2(38.0, 44.0), egui::Sense::click());
+                            if ui.is_rect_visible(rect) {
+                                if response.hovered() {
+                                    ui.painter().rect_filled(rect, 0.0, hover);
+                                }
+                                ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, symbol, egui::FontId::proportional(13.0), theme::text_1());
                             }
-                            ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, symbol, egui::FontId::proportional(13.0), theme::text_1());
+                            response
+                        };
+                        if btn(ui, "✕", theme::danger()).clicked() {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                         }
-                        response
-                    };
-                    if btn(ui, "✕", theme::danger()).clicked() {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                    }
-                    if btn(ui, "▢", theme::bg_2()).clicked() {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
-                    }
-                    if btn(ui, "—", theme::bg_2()).clicked() {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
-                    }
+                        if btn(ui, "▢", theme::bg_2()).clicked() {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+                        }
+                        if btn(ui, "—", theme::bg_2()).clicked() {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                        }
+
+                        if self.logged_in {
+                            ui.add_space(10.0);
+                            if ui.add(egui::Button::new(egui::RichText::new("Log out").size(12.0).color(theme::text_2())).fill(egui::Color32::TRANSPARENT).stroke(egui::Stroke::new(1.0_f32, theme::border()))).clicked() {
+                                self.logged_in = false;
+                                self.api = None;
+                                self.loaded_once.clear();
+                                self.dashboard = None;
+                                self.positions.clear();
+                                self.accounts.clear();
+                                self.broker_name = None;
+                                self.broker_logo_texture = None;
+                                theme::reset_accent();
+                                theme::apply_visuals(ctx);
+                            }
+                            ui.add_space(10.0);
+                            // Sun/moon theme toggle -- same position and
+                            // persistence (PATCH /api/manage/theme,
+                            // AdminUser.theme) as AdminShell.tsx's own
+                            // header button. Added before the nested
+                            // ui.vertical() below, not after -- a widget
+                            // added to a right_to_left layout AFTER a
+                            // nested ui.vertical()/ui.horizontal() call
+                            // lands at a stale cursor position in this
+                            // egui version (confirmed live: it rendered
+                            // pinned near the window's top-left instead of
+                            // the right-aligned cluster), so anything else
+                            // in this closure has to come before the
+                            // vertical block, not after.
+                            let dark = theme::is_dark();
+                            let toggle_label = if dark { "\u{25CF}" } else { "\u{25CB}" };
+                            if ui
+                                .add(
+                                    egui::Button::new(egui::RichText::new(toggle_label).size(12.0).color(theme::text_2()))
+                                        .fill(theme::bg_2())
+                                        .stroke(egui::Stroke::new(1.0_f32, theme::border())),
+                                )
+                                .clicked()
+                            {
+                                theme::toggle_mode();
+                                theme::apply_visuals(ctx);
+                                if let Some(api) = &self.api {
+                                    api.set_theme(ctx.clone(), if theme::is_dark() { "dark" } else { "light" }.to_string());
+                                }
+                            }
+                            ui.add_space(10.0);
+                            ui.vertical(|ui| {
+                                ui.label(egui::RichText::new(&self.logged_in_email).size(11.5).color(theme::text_1()));
+                                ui.label(egui::RichText::new(&self.host_input).size(10.0).color(theme::text_3()));
+                            });
+                        }
+                    });
                 });
             });
-        });
+    }
 }
 
 impl eframe::App for BackofficeApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain_events(ctx);
-        render_titlebar(ctx);
+
+        const AUTO_REFRESH: std::time::Duration = std::time::Duration::from_secs(5);
+        if self.logged_in {
+            let elapsed = self.last_auto_refresh.elapsed();
+            if elapsed >= AUTO_REFRESH {
+                self.last_auto_refresh = std::time::Instant::now();
+                self.fetch(ctx, self.screen);
+            }
+            // Keeps the update loop ticking on its own even with no
+            // mouse/keyboard input, so the timer above actually fires --
+            // egui otherwise only repaints in response to real events.
+            ctx.request_repaint_after(AUTO_REFRESH.saturating_sub(elapsed));
+        }
+
+        self.render_titlebar(ctx);
         if self.logged_in {
             self.render_shell(ctx);
         } else {
