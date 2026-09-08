@@ -45,6 +45,25 @@ impl Screen {
             Screen::Settings => "Settings",
         }
     }
+
+    // Plain geometric/Unicode glyphs, not an icon font -- no icon font is
+    // embedded (see theme::load_fonts's own comment on the one font this
+    // app does embed), and these render reliably across egui's font
+    // fallback chain without needing one.
+    fn icon(self) -> &'static str {
+        match self {
+            Screen::Dashboard => "▦",
+            Screen::Positions => "▲",
+            Screen::Accounts => "◉",
+            Screen::Dealing => "⇄",
+            Screen::Groups => "▤",
+            Screen::ClientKyc => "✓",
+            Screen::LiveAccountRequests => "☑",
+            Screen::Notifications => "●",
+            Screen::RiskRadar => "⚠",
+            Screen::Settings => "⚙",
+        }
+    }
 }
 
 // Shared by Dealing/Client KYC/Live Account Requests -- all three follow
@@ -55,6 +74,161 @@ impl Screen {
 struct PendingReject {
     id: String,
     reason: String,
+}
+
+// Brand palette + reusable styled widgets -- matches the real web
+// backoffice's own dark theme (app/admin-theme.css's --bg-1/--bg-2/
+// --text-1/--accent tokens) so this reads as the same product, not an
+// unrelated tech demo. Centralized here instead of inlined at each call
+// site so every screen/table/button pulls from the same small set of
+// tokens -- one color to change, not forty.
+mod theme {
+    use eframe::egui::{self, Color32};
+
+    pub const BG_0: Color32 = Color32::from_rgb(0x0a, 0x0d, 0x12); // outermost app background
+    pub const BG_1: Color32 = Color32::from_rgb(0x11, 0x15, 0x1c); // card / panel surface
+    pub const BG_2: Color32 = Color32::from_rgb(0x19, 0x1e, 0x27); // raised surface: inputs, hover, table stripe
+    pub const SIDEBAR_BG: Color32 = Color32::from_rgb(0x0d, 0x10, 0x16); // one shade darker than BG_0, separates the nav rail
+    pub const BORDER: Color32 = Color32::from_rgb(0x24, 0x2a, 0x36);
+    pub const TEXT_1: Color32 = Color32::from_rgb(0xed, 0xf0, 0xf5); // primary
+    pub const TEXT_2: Color32 = Color32::from_rgb(0xa8, 0xb2, 0xc0); // secondary
+    pub const TEXT_3: Color32 = Color32::from_rgb(0x64, 0x6f, 0x7e); // muted / placeholder
+    pub const ACCENT: Color32 = Color32::from_rgb(0x16, 0xc7, 0x84); // brand green
+    pub const ACCENT_DIM: Color32 = Color32::from_rgb(0x0f, 0x8a, 0x5c);
+    pub const DANGER: Color32 = Color32::from_rgb(0xef, 0x4a, 0x4a);
+    pub const WARNING: Color32 = Color32::from_rgb(0xe8, 0xa8, 0x38);
+
+    pub fn apply(ctx: &egui::Context) {
+        load_fonts(ctx);
+
+        let mut visuals = egui::Visuals::dark();
+        visuals.panel_fill = BG_0;
+        visuals.window_fill = BG_1;
+        visuals.extreme_bg_color = BG_2;
+        visuals.faint_bg_color = BG_2;
+        visuals.code_bg_color = BG_2;
+        visuals.override_text_color = Some(TEXT_1);
+        visuals.hyperlink_color = ACCENT;
+        visuals.selection.bg_fill = ACCENT.linear_multiply(0.35);
+        visuals.selection.stroke = egui::Stroke::new(1.0_f32, ACCENT);
+        visuals.window_stroke = egui::Stroke::new(1.0_f32, BORDER);
+
+        let radius = egui::CornerRadius::same(8);
+        visuals.window_corner_radius = radius;
+        visuals.menu_corner_radius = radius;
+
+        // Widget states: inactive (resting), hovered, active (pressed/
+        // held) -- these three drive the look of every button, text
+        // field, and selectable item in the app, so this is most of what
+        // separates "styled" from "egui's raw default."
+        visuals.widgets.noninteractive.bg_fill = BG_1;
+        visuals.widgets.noninteractive.weak_bg_fill = BG_1;
+        visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0_f32, BORDER);
+        visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0_f32, TEXT_1);
+        visuals.widgets.noninteractive.corner_radius = radius;
+
+        visuals.widgets.inactive.bg_fill = BG_2;
+        visuals.widgets.inactive.weak_bg_fill = BG_2;
+        visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0_f32, BORDER);
+        visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0_f32, TEXT_2);
+        visuals.widgets.inactive.corner_radius = radius;
+
+        visuals.widgets.hovered.bg_fill = BG_2.gamma_multiply(1.35);
+        visuals.widgets.hovered.weak_bg_fill = BG_2.gamma_multiply(1.35);
+        visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0_f32, ACCENT_DIM);
+        visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0_f32, TEXT_1);
+        visuals.widgets.hovered.corner_radius = radius;
+        visuals.widgets.hovered.expansion = 0.5;
+
+        visuals.widgets.active.bg_fill = ACCENT.linear_multiply(0.28);
+        visuals.widgets.active.weak_bg_fill = ACCENT.linear_multiply(0.28);
+        visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0_f32, ACCENT);
+        visuals.widgets.active.fg_stroke = egui::Stroke::new(1.0_f32, TEXT_1);
+        visuals.widgets.active.corner_radius = radius;
+
+        visuals.widgets.open.bg_fill = BG_2;
+        visuals.widgets.open.weak_bg_fill = BG_2;
+        visuals.widgets.open.bg_stroke = egui::Stroke::new(1.0_f32, ACCENT_DIM);
+        visuals.widgets.open.corner_radius = radius;
+
+        // set_visuals alone follows the OS theme preference -- on a
+        // light-mode system this got silently reset back to light on the
+        // real first frame (confirmed live: the whole point of this pass
+        // was fixing a UI that rendered plain/light despite this same
+        // dark-visuals code already existing). set_theme locks the
+        // preference so a light-mode Windows install can't override it,
+        // and set_visuals_of targets the Dark slot explicitly rather than
+        // "whatever ctx.theme() happens to resolve to at this exact call
+        // site," removing the ambiguity that caused it.
+        ctx.set_theme(egui::ThemePreference::Dark);
+        ctx.set_visuals_of(egui::Theme::Dark, visuals);
+
+        ctx.style_mut(|style| {
+            style.spacing.item_spacing = egui::vec2(10.0, 10.0);
+            style.spacing.button_padding = egui::vec2(14.0, 7.0);
+            style.spacing.window_margin = egui::Margin::same(12);
+            style.text_styles.insert(egui::TextStyle::Heading, egui::FontId::proportional(20.0));
+            style.text_styles.insert(egui::TextStyle::Body, egui::FontId::proportional(14.0));
+            style.text_styles.insert(egui::TextStyle::Button, egui::FontId::proportional(14.0));
+            style.text_styles.insert(egui::TextStyle::Small, egui::FontId::proportional(11.5));
+        });
+    }
+
+    // Inter (OFL-licensed, github.com/google/fonts/tree/main/ofl/inter)
+    // in place of epaint's own bundled default -- that default is
+    // intentionally utilitarian (it's a debug-tool font, not a product
+    // font) and was the single biggest thing making this app look like a
+    // dev tool rather than a real backoffice. Shipped as a variable font
+    // (Google Fonts no longer publishes static per-weight Inter files);
+    // ab_glyph rasterizes its default (Regular) instance, so this app
+    // leans on size/color for hierarchy rather than a true bold cut --
+    // see stat_card's/section headings' own use of size+ACCENT instead of
+    // weight.
+    fn load_fonts(ctx: &egui::Context) {
+        let mut fonts = egui::FontDefinitions::default();
+        fonts.font_data.insert(
+            "inter".to_owned(),
+            std::sync::Arc::new(egui::FontData::from_static(include_bytes!("../assets/Inter.ttf"))),
+        );
+        fonts.families.get_mut(&egui::FontFamily::Proportional).unwrap().insert(0, "inter".to_owned());
+        ctx.set_fonts(fonts);
+    }
+
+    // A filled, accent-colored button for the one primary action in a
+    // row/form (Sign in, Accept, Approve, Save, Create) -- everything
+    // else stays the neutral default button so the accent still reads as
+    // "the button that matters" instead of every button competing for
+    // attention.
+    pub fn accent_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
+        accent_button_enabled(ui, true, text)
+    }
+
+    pub fn accent_button_enabled(ui: &mut egui::Ui, enabled: bool, text: &str) -> egui::Response {
+        ui.add_enabled(
+            enabled,
+            egui::Button::new(egui::RichText::new(text).color(Color32::from_rgb(0x06, 0x0a, 0x08)).strong()).fill(ACCENT),
+        )
+    }
+
+    pub fn danger_button_enabled(ui: &mut egui::Ui, enabled: bool, text: &str) -> egui::Response {
+        ui.add_enabled(
+            enabled,
+            egui::Button::new(egui::RichText::new(text).color(TEXT_1))
+                .fill(DANGER.linear_multiply(0.25))
+                .stroke(egui::Stroke::new(1.0_f32, DANGER)),
+        )
+    }
+
+    // Shared card look (form panels, per-row list items) -- same
+    // fill/border/rounding as stat_card, parameterized on padding since
+    // a dense list row and a spacious form need different amounts.
+    pub fn card(margin: i8) -> egui::Frame {
+        egui::Frame::new()
+            .fill(BG_1)
+            .stroke(egui::Stroke::new(1.0_f32, BORDER))
+            .corner_radius(egui::CornerRadius::same(10))
+            .inner_margin(egui::Margin::same(margin))
+    }
 }
 
 #[derive(Default)]
@@ -438,43 +612,63 @@ impl BackofficeApp {
     }
 
     fn render_login(&mut self, ctx: &egui::Context) {
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(theme::BG_0)).show(ctx, |ui| {
             ui.vertical_centered(|ui| {
-                ui.add_space(120.0);
-                ui.heading("VyXTrader Backoffice");
-                ui.label(egui::RichText::new("native proof-of-concept").weak().italics());
-                ui.add_space(24.0);
+                ui.add_space(110.0);
+                ui.label(egui::RichText::new("●").size(28.0).color(theme::ACCENT));
+                ui.add_space(6.0);
+                ui.label(egui::RichText::new("VyXTrader").size(26.0).color(theme::TEXT_1));
+                ui.label(egui::RichText::new("BACKOFFICE").size(12.0).color(theme::TEXT_3));
+                ui.add_space(28.0);
 
-                egui::Frame::group(ui.style()).inner_margin(20.0).show(ui, |ui| {
-                    ui.set_width(360.0);
-                    ui.label("Broker host");
-                    ui.add(egui::TextEdit::singleline(&mut self.host_input).hint_text("brokername.vyxtrader.com"));
-                    ui.add_space(8.0);
-                    ui.label("Email");
-                    ui.add(egui::TextEdit::singleline(&mut self.email_input).hint_text("admin@broker.com"));
-                    ui.add_space(8.0);
-                    ui.label("Password");
-                    ui.add(egui::TextEdit::singleline(&mut self.password_input).password(true));
-                    ui.add_space(14.0);
+                egui::Frame::new()
+                    .fill(theme::BG_1)
+                    .stroke(egui::Stroke::new(1.0_f32, theme::BORDER))
+                    .corner_radius(egui::CornerRadius::same(12))
+                    .inner_margin(egui::Margin::same(24))
+                    .show(ui, |ui| {
+                        ui.set_width(360.0);
+                        ui.label(egui::RichText::new("BROKER HOST").size(11.0).color(theme::TEXT_3));
+                        ui.add_space(4.0);
+                        ui.add(egui::TextEdit::singleline(&mut self.host_input).hint_text("brokername.vyxtrader.com").desired_width(f32::INFINITY));
+                        ui.add_space(12.0);
+                        ui.label(egui::RichText::new("EMAIL").size(11.0).color(theme::TEXT_3));
+                        ui.add_space(4.0);
+                        ui.add(egui::TextEdit::singleline(&mut self.email_input).hint_text("admin@broker.com").desired_width(f32::INFINITY));
+                        ui.add_space(12.0);
+                        ui.label(egui::RichText::new("PASSWORD").size(11.0).color(theme::TEXT_3));
+                        ui.add_space(4.0);
+                        ui.add(egui::TextEdit::singleline(&mut self.password_input).password(true).desired_width(f32::INFINITY));
+                        ui.add_space(18.0);
 
-                    let can_submit = !self.login_busy
-                        && !self.host_input.trim().is_empty()
-                        && !self.email_input.trim().is_empty()
-                        && !self.password_input.is_empty();
+                        let can_submit = !self.login_busy
+                            && !self.host_input.trim().is_empty()
+                            && !self.email_input.trim().is_empty()
+                            && !self.password_input.is_empty();
 
-                    if ui.add_enabled(can_submit, egui::Button::new(if self.login_busy { "Signing in..." } else { "Sign in" })).clicked() {
-                        self.login_error = None;
-                        self.login_busy = true;
-                        let api = ApiClient::new(self.host_input.trim());
-                        self.api = Some(api.clone());
-                        api.login(ctx.clone(), self.tx.clone(), self.email_input.trim().to_string(), self.password_input.clone());
-                    }
+                        ui.scope(|ui| {
+                            ui.style_mut().spacing.button_padding = egui::vec2(0.0, 10.0);
+                            let button = egui::Button::new(
+                                egui::RichText::new(if self.login_busy { "Signing in..." } else { "Sign in" })
+                                    .color(egui::Color32::from_rgb(0x06, 0x0a, 0x08))
+                                    .strong(),
+                            )
+                            .fill(theme::ACCENT)
+                            .min_size(egui::vec2(ui.available_width(), 0.0));
+                            if ui.add_enabled(can_submit, button).clicked() {
+                                self.login_error = None;
+                                self.login_busy = true;
+                                let api = ApiClient::new(self.host_input.trim());
+                                self.api = Some(api.clone());
+                                api.login(ctx.clone(), self.tx.clone(), self.email_input.trim().to_string(), self.password_input.clone());
+                            }
+                        });
 
-                    if let Some(err) = &self.login_error {
-                        ui.add_space(10.0);
-                        ui.colored_label(egui::Color32::from_rgb(0xe5, 0x4d, 0x4d), err);
-                    }
-                });
+                        if let Some(err) = &self.login_error {
+                            ui.add_space(10.0);
+                            ui.colored_label(theme::DANGER, err);
+                        }
+                    });
 
                 ui.add_space(16.0);
                 ui.label(egui::RichText::new("2FA-enabled admin accounts aren't supported here yet -- use the web backoffice for those.").weak().small());
@@ -483,57 +677,88 @@ impl BackofficeApp {
     }
 
     fn render_shell(&mut self, ctx: &egui::Context) {
-        egui::TopBottomPanel::top("header").show(ctx, |ui| {
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                ui.heading(self.screen.label());
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("Log out").clicked() {
-                        self.logged_in = false;
-                        self.api = None;
-                        self.loaded_once.clear();
-                        self.dashboard = None;
-                        self.positions.clear();
-                        self.accounts.clear();
-                    }
-                    ui.add_space(12.0);
-                    ui.label(egui::RichText::new(format!("{} @ {}", self.logged_in_email, self.host_input)).weak());
+        egui::TopBottomPanel::top("header")
+            .frame(egui::Frame::new().fill(theme::BG_0).inner_margin(egui::Margin::symmetric(20, 14)).stroke(egui::Stroke::NONE))
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(self.screen.icon()).size(18.0).color(theme::ACCENT));
+                    ui.add_space(4.0);
+                    ui.label(egui::RichText::new(self.screen.label()).size(19.0).color(theme::TEXT_1));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.add(egui::Button::new(egui::RichText::new("Log out").color(theme::TEXT_2)).fill(egui::Color32::TRANSPARENT).stroke(egui::Stroke::new(1.0_f32, theme::BORDER))).clicked() {
+                            self.logged_in = false;
+                            self.api = None;
+                            self.loaded_once.clear();
+                            self.dashboard = None;
+                            self.positions.clear();
+                            self.accounts.clear();
+                        }
+                        ui.add_space(14.0);
+                        ui.vertical(|ui| {
+                            ui.label(egui::RichText::new(&self.logged_in_email).size(12.5).color(theme::TEXT_1));
+                            ui.label(egui::RichText::new(&self.host_input).size(11.0).color(theme::TEXT_3));
+                        });
+                    });
                 });
             });
-            ui.add_space(6.0);
-        });
 
-        egui::SidePanel::left("sidebar").resizable(false).exact_width(200.0).show(ctx, |ui| {
-            ui.add_space(10.0);
-            for screen in [
-                Screen::Dashboard,
-                Screen::Positions,
-                Screen::Accounts,
-                Screen::Dealing,
-                Screen::Groups,
-                Screen::ClientKyc,
-                Screen::LiveAccountRequests,
-                Screen::Notifications,
-                Screen::RiskRadar,
-                Screen::Settings,
-            ] {
-                let selected = self.screen == screen;
-                if ui.add(egui::Button::selectable(selected, screen.label())).clicked() {
-                    self.screen = screen;
-                    self.ensure_loaded(ctx, screen);
-                }
-            }
-        });
-
-        egui::CentralPanel::default().show(ctx, |ui| {
-            if let Some(msg) = self.action_message.clone() {
+        egui::SidePanel::left("sidebar")
+            .resizable(false)
+            .exact_width(230.0)
+            .frame(egui::Frame::new().fill(theme::SIDEBAR_BG).inner_margin(egui::Margin::symmetric(0, 16)).stroke(egui::Stroke { width: 1.0, color: theme::BORDER }))
+            .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(msg).italics());
-                    if ui.small_button("dismiss").clicked() {
-                        self.action_message = None;
-                    }
+                    ui.add_space(20.0);
+                    ui.label(egui::RichText::new("●").size(16.0).color(theme::ACCENT));
+                    ui.label(egui::RichText::new("VyXTrader").size(17.0).color(theme::TEXT_1));
                 });
-                ui.separator();
+                ui.label(egui::RichText::new("  BACKOFFICE").size(10.5).color(theme::TEXT_3));
+                ui.add_space(14.0);
+                ui.scope(|ui| {
+                    ui.style_mut().visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0_f32, theme::BORDER);
+                    ui.add(egui::Separator::default().spacing(0.0));
+                });
+                ui.add_space(10.0);
+
+                for screen in [
+                    Screen::Dashboard,
+                    Screen::Positions,
+                    Screen::Accounts,
+                    Screen::Dealing,
+                    Screen::Groups,
+                    Screen::ClientKyc,
+                    Screen::LiveAccountRequests,
+                    Screen::Notifications,
+                    Screen::RiskRadar,
+                    Screen::Settings,
+                ] {
+                    if sidebar_nav_item(ui, screen.icon(), screen.label(), self.screen == screen).clicked() {
+                        self.screen = screen;
+                        self.ensure_loaded(ctx, screen);
+                    }
+                }
+            });
+
+        egui::CentralPanel::default()
+            .frame(egui::Frame::new().fill(theme::BG_0).inner_margin(egui::Margin::symmetric(24, 20)))
+            .show(ctx, |ui| {
+            if let Some(msg) = self.action_message.clone() {
+                egui::Frame::new()
+                    .fill(theme::BG_1)
+                    .stroke(egui::Stroke::new(1.0_f32, theme::BORDER))
+                    .corner_radius(egui::CornerRadius::same(8))
+                    .inner_margin(egui::Margin::symmetric(14, 10))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(&msg).color(theme::TEXT_1));
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if ui.small_button("dismiss").clicked() {
+                                    self.action_message = None;
+                                }
+                            });
+                        });
+                    });
+                ui.add_space(14.0);
             }
             match self.screen {
                 Screen::Dashboard => self.render_dashboard(ui, ctx),
@@ -563,7 +788,7 @@ impl BackofficeApp {
         ui.add_space(10.0);
 
         if let Some(err) = &self.dashboard_error {
-            ui.colored_label(egui::Color32::from_rgb(0xe5, 0x4d, 0x4d), err);
+            ui.colored_label(theme::DANGER, err);
             return;
         }
         let Some(data) = &self.dashboard else { return };
@@ -622,7 +847,7 @@ impl BackofficeApp {
         ui.add_space(8.0);
 
         if let Some(err) = &self.positions_error {
-            ui.colored_label(egui::Color32::from_rgb(0xe5, 0x4d, 0x4d), err);
+            ui.colored_label(theme::DANGER, err);
             return;
         }
 
@@ -642,7 +867,7 @@ impl BackofficeApp {
             .header(28.0, |mut header| {
                 for label in ["Account", "Client", "Symbol", "Side", "Volume", "Open", "Current", "Floating P/L", "Opened"] {
                     header.col(|ui| {
-                        ui.strong(label);
+                        ui.label(egui::RichText::new(label.to_uppercase()).size(11.5).color(theme::TEXT_3));
                     });
                 }
             })
@@ -660,9 +885,9 @@ impl BackofficeApp {
                     });
                     row.col(|ui| {
                         let color = if p.side == "BUY" {
-                            egui::Color32::from_rgb(0x16, 0xc7, 0x84)
+                            theme::ACCENT
                         } else {
-                            egui::Color32::from_rgb(0xe5, 0x4d, 0x4d)
+                            theme::DANGER
                         };
                         ui.colored_label(color, &p.side);
                     });
@@ -678,8 +903,8 @@ impl BackofficeApp {
                     row.col(|ui| {
                         let pnl_text = p.floating_pnl.as_deref().unwrap_or("-");
                         let color = match p.floating_pnl.as_deref().and_then(|s| s.parse::<f64>().ok()) {
-                            Some(v) if v > 0.0 => egui::Color32::from_rgb(0x16, 0xc7, 0x84),
-                            Some(v) if v < 0.0 => egui::Color32::from_rgb(0xe5, 0x4d, 0x4d),
+                            Some(v) if v > 0.0 => theme::ACCENT,
+                            Some(v) if v < 0.0 => theme::DANGER,
                             _ => ui.visuals().text_color(),
                         };
                         ui.colored_label(color, pnl_text);
@@ -707,7 +932,7 @@ impl BackofficeApp {
         ui.add_space(8.0);
 
         if self.show_new_account_form {
-            egui::Frame::group(ui.style()).inner_margin(12.0).show(ui, |ui| {
+            theme::card(14).show(ui, |ui| {
                 ui.label("Full name");
                 ui.text_edit_singleline(&mut self.new_account.full_name);
                 ui.label("Email");
@@ -719,7 +944,7 @@ impl BackofficeApp {
                 let valid = !self.new_account.full_name.trim().is_empty()
                     && self.new_account.email.contains('@')
                     && self.new_account.password.len() >= 8;
-                if ui.add_enabled(valid, egui::Button::new("Create")).clicked() {
+                if theme::accent_button_enabled(ui, valid, "Create").clicked() {
                     if let Some(api) = &self.api {
                         api.create_account(
                             ctx.clone(),
@@ -741,7 +966,7 @@ impl BackofficeApp {
         }
 
         if let Some(err) = &self.accounts_error {
-            ui.colored_label(egui::Color32::from_rgb(0xe5, 0x4d, 0x4d), err);
+            ui.colored_label(theme::DANGER, err);
             return;
         }
 
@@ -777,7 +1002,7 @@ impl BackofficeApp {
             .header(28.0, |mut header| {
                 for label in ["Account", "Client", "Email", "Mode", "Balance", "Lev.", "Group", "Status", "Action"] {
                     header.col(|ui| {
-                        ui.strong(label);
+                        ui.label(egui::RichText::new(label.to_uppercase()).size(11.5).color(theme::TEXT_3));
                     });
                 }
             })
@@ -807,9 +1032,9 @@ impl BackofficeApp {
                     });
                     row.col(|ui| {
                         let color = match a.status.as_str() {
-                            "ACTIVE" => egui::Color32::from_rgb(0x16, 0xc7, 0x84),
-                            "SUSPENDED" => egui::Color32::from_rgb(0xe0, 0xa0, 0x30),
-                            _ => egui::Color32::from_rgb(0x9a, 0xa4, 0xb2),
+                            "ACTIVE" => theme::ACCENT,
+                            "SUSPENDED" => theme::WARNING,
+                            _ => theme::TEXT_3,
                         };
                         ui.colored_label(color, &a.status);
                     });
@@ -844,7 +1069,7 @@ impl BackofficeApp {
         ui.add_space(8.0);
 
         if let Some(err) = &self.dealing_error {
-            ui.colored_label(egui::Color32::from_rgb(0xe5, 0x4d, 0x4d), err);
+            ui.colored_label(theme::DANGER, err);
             return;
         }
 
@@ -852,12 +1077,12 @@ impl BackofficeApp {
         let mut confirm_reject: Option<(String, String)> = None;
 
         for order in self.dealing_queue.clone() {
-            egui::Frame::group(ui.style()).inner_margin(10.0).show(ui, |ui| {
+            theme::card(10).show(ui, |ui| {
                 ui.horizontal(|ui| {
                     let side_color = if order.side == "BUY" {
-                        egui::Color32::from_rgb(0x16, 0xc7, 0x84)
+                        theme::ACCENT
                     } else {
-                        egui::Color32::from_rgb(0xe5, 0x4d, 0x4d)
+                        theme::DANGER
                     };
                     ui.monospace(&order.account_number);
                     ui.label(&order.account_full_name);
@@ -872,11 +1097,11 @@ impl BackofficeApp {
                         ui.weak(format!("live {bid} / {ask}"));
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if theme::accent_button(ui, "Accept").clicked() {
+                            accept_id = Some(order.id.clone());
+                        }
                         if ui.button("Reject").clicked() {
                             self.dealing_reject = Some(PendingReject { id: order.id.clone(), reason: String::new() });
-                        }
-                        if ui.button("Accept").clicked() {
-                            accept_id = Some(order.id.clone());
                         }
                     });
                 });
@@ -887,7 +1112,7 @@ impl BackofficeApp {
                     ui.horizontal(|ui| {
                         ui.label("Reason (required):");
                         ui.text_edit_singleline(&mut pending.reason);
-                        if ui.add_enabled(!pending.reason.trim().is_empty(), egui::Button::new("Confirm reject")).clicked() {
+                        if theme::danger_button_enabled(ui, !pending.reason.trim().is_empty(), "Confirm reject").clicked() {
                             confirm_reject = Some((pending.id.clone(), pending.reason.clone()));
                         }
                         if ui.button("Cancel").clicked() {
@@ -929,7 +1154,7 @@ impl BackofficeApp {
             ui.add_space(8.0);
 
             if let Some(err) = &self.group_pricing_error {
-                ui.colored_label(egui::Color32::from_rgb(0xe5, 0x4d, 0x4d), err);
+                ui.colored_label(theme::DANGER, err);
                 return;
             }
 
@@ -947,7 +1172,7 @@ impl BackofficeApp {
                 .header(28.0, |mut header| {
                     for label in ["Symbol", "Spread markup (pips)", "Commission / lot", "Override?", "Action"] {
                         header.col(|ui| {
-                            ui.strong(label);
+                            ui.label(egui::RichText::new(label.to_uppercase()).size(11.5).color(theme::TEXT_3));
                         });
                     }
                 })
@@ -975,13 +1200,13 @@ impl BackofficeApp {
                         });
                         row.col(|ui| {
                             if p.has_override {
-                                ui.colored_label(egui::Color32::from_rgb(0x16, 0xc7, 0x84), "custom");
+                                ui.colored_label(theme::ACCENT, "custom");
                             } else {
                                 ui.weak("broker default");
                             }
                         });
                         row.col(|ui| {
-                            if ui.small_button("Save").clicked() {
+                            if theme::accent_button(ui, "Save").clicked() {
                                 save_target = Some((p.symbol_id.clone(), spread_input.clone(), commission_input.clone()));
                             }
                         });
@@ -1007,7 +1232,7 @@ impl BackofficeApp {
         ui.add_space(8.0);
 
         if let Some(err) = &self.groups_error {
-            ui.colored_label(egui::Color32::from_rgb(0xe5, 0x4d, 0x4d), err);
+            ui.colored_label(theme::DANGER, err);
             return;
         }
 
@@ -1024,7 +1249,7 @@ impl BackofficeApp {
             .header(28.0, |mut header| {
                 for label in ["Name", "Type", "Tier", "Leverage", "Action"] {
                     header.col(|ui| {
-                        ui.strong(label);
+                        ui.label(egui::RichText::new(label.to_uppercase()).size(11.5).color(theme::TEXT_3));
                     });
                 }
             })
@@ -1074,7 +1299,7 @@ impl BackofficeApp {
         ui.add_space(8.0);
 
         if let Some(err) = &self.client_kyc_error {
-            ui.colored_label(egui::Color32::from_rgb(0xe5, 0x4d, 0x4d), err);
+            ui.colored_label(theme::DANGER, err);
             return;
         }
 
@@ -1082,7 +1307,7 @@ impl BackofficeApp {
         let mut confirm_reject: Option<(String, String)> = None;
 
         for record in self.client_kyc.clone() {
-            egui::Frame::group(ui.style()).inner_margin(10.0).show(ui, |ui| {
+            theme::card(10).show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(&record.client_full_name);
                     ui.weak(&record.client_email);
@@ -1090,18 +1315,18 @@ impl BackofficeApp {
                     ui.monospace(&record.document_type);
                     ui.weak(record.created_at.get(0..10).unwrap_or(&record.created_at));
                     let status_color = match record.status.as_str() {
-                        "APPROVED" => egui::Color32::from_rgb(0x16, 0xc7, 0x84),
-                        "REJECTED" => egui::Color32::from_rgb(0xe5, 0x4d, 0x4d),
-                        _ => egui::Color32::from_rgb(0xe0, 0xa0, 0x30),
+                        "APPROVED" => theme::ACCENT,
+                        "REJECTED" => theme::DANGER,
+                        _ => theme::WARNING,
                     };
                     ui.colored_label(status_color, &record.status);
                     if record.status == "PENDING" {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if theme::accent_button(ui, "Approve").clicked() {
+                                approve_id = Some(record.id.clone());
+                            }
                             if ui.button("Reject").clicked() {
                                 self.kyc_reject = Some(PendingReject { id: record.id.clone(), reason: String::new() });
-                            }
-                            if ui.button("Approve").clicked() {
-                                approve_id = Some(record.id.clone());
                             }
                         });
                     }
@@ -1112,7 +1337,7 @@ impl BackofficeApp {
                     ui.horizontal(|ui| {
                         ui.label("Rejection reason (required):");
                         ui.text_edit_singleline(&mut pending.reason);
-                        if ui.add_enabled(!pending.reason.trim().is_empty(), egui::Button::new("Confirm reject")).clicked() {
+                        if theme::danger_button_enabled(ui, !pending.reason.trim().is_empty(), "Confirm reject").clicked() {
                             confirm_reject = Some((pending.id.clone(), pending.reason.clone()));
                         }
                         if ui.button("Cancel").clicked() {
@@ -1150,7 +1375,7 @@ impl BackofficeApp {
         ui.add_space(8.0);
 
         if let Some(err) = &self.live_account_requests_error {
-            ui.colored_label(egui::Color32::from_rgb(0xe5, 0x4d, 0x4d), err);
+            ui.colored_label(theme::DANGER, err);
             return;
         }
 
@@ -1158,25 +1383,25 @@ impl BackofficeApp {
         let mut confirm_reject: Option<(String, String)> = None;
 
         for req in self.live_account_requests.clone() {
-            egui::Frame::group(ui.style()).inner_margin(10.0).show(ui, |ui| {
+            theme::card(10).show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(&req.client_full_name);
                     ui.weak(&req.client_email);
                     ui.monospace(req.account_type_name.as_deref().unwrap_or("-"));
                     ui.weak(req.created_at.get(0..10).unwrap_or(&req.created_at));
                     let status_color = match req.status.as_str() {
-                        "APPROVED" => egui::Color32::from_rgb(0x16, 0xc7, 0x84),
-                        "REJECTED" => egui::Color32::from_rgb(0xe5, 0x4d, 0x4d),
-                        _ => egui::Color32::from_rgb(0xe0, 0xa0, 0x30),
+                        "APPROVED" => theme::ACCENT,
+                        "REJECTED" => theme::DANGER,
+                        _ => theme::WARNING,
                     };
                     ui.colored_label(status_color, &req.status);
                     if req.status == "PENDING" {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if theme::accent_button(ui, "Approve").clicked() {
+                                approve_id = Some(req.id.clone());
+                            }
                             if ui.button("Reject").clicked() {
                                 self.live_account_reject = Some(PendingReject { id: req.id.clone(), reason: String::new() });
-                            }
-                            if ui.button("Approve").clicked() {
-                                approve_id = Some(req.id.clone());
                             }
                         });
                     }
@@ -1187,7 +1412,7 @@ impl BackofficeApp {
                     ui.horizontal(|ui| {
                         ui.label("Rejection reason (required):");
                         ui.text_edit_singleline(&mut pending.reason);
-                        if ui.add_enabled(!pending.reason.trim().is_empty(), egui::Button::new("Confirm reject")).clicked() {
+                        if theme::danger_button_enabled(ui, !pending.reason.trim().is_empty(), "Confirm reject").clicked() {
                             confirm_reject = Some((pending.id.clone(), pending.reason.clone()));
                         }
                         if ui.button("Cancel").clicked() {
@@ -1230,7 +1455,7 @@ impl BackofficeApp {
         ui.add_space(8.0);
 
         if let Some(err) = &self.notifications_error {
-            ui.colored_label(egui::Color32::from_rgb(0xe5, 0x4d, 0x4d), err);
+            ui.colored_label(theme::DANGER, err);
             return;
         }
 
@@ -1238,7 +1463,7 @@ impl BackofficeApp {
             for n in &self.notifications {
                 ui.horizontal(|ui| {
                     if !n.read {
-                        ui.colored_label(egui::Color32::from_rgb(0x16, 0xc7, 0x84), "*");
+                        ui.colored_label(theme::ACCENT, "*");
                     } else {
                         ui.weak(" ");
                     }
@@ -1264,7 +1489,7 @@ impl BackofficeApp {
         ui.add_space(8.0);
 
         if let Some(err) = &self.risk_radar_error {
-            ui.colored_label(egui::Color32::from_rgb(0xe5, 0x4d, 0x4d), err);
+            ui.colored_label(theme::DANGER, err);
             return;
         }
 
@@ -1281,7 +1506,7 @@ impl BackofficeApp {
             .header(28.0, |mut header| {
                 for label in ["Account", "Trades (30d)", "Win rate", "Avg lot", "Profit/day", "Flags"] {
                     header.col(|ui| {
-                        ui.strong(label);
+                        ui.label(egui::RichText::new(label.to_uppercase()).size(11.5).color(theme::TEXT_3));
                     });
                 }
             })
@@ -1302,9 +1527,9 @@ impl BackofficeApp {
                     });
                     row.col(|ui| {
                         let color = if r.profit_velocity_per_day > 0.0 {
-                            egui::Color32::from_rgb(0x16, 0xc7, 0x84)
+                            theme::ACCENT
                         } else if r.profit_velocity_per_day < 0.0 {
-                            egui::Color32::from_rgb(0xe5, 0x4d, 0x4d)
+                            theme::DANGER
                         } else {
                             ui.visuals().text_color()
                         };
@@ -1313,10 +1538,10 @@ impl BackofficeApp {
                     row.col(|ui| {
                         ui.horizontal(|ui| {
                             if r.scalp_flag {
-                                ui.colored_label(egui::Color32::from_rgb(0xe0, 0xa0, 0x30), "SCALP");
+                                ui.colored_label(theme::WARNING, "SCALP");
                             }
                             if r.martingale_flag {
-                                ui.colored_label(egui::Color32::from_rgb(0xe5, 0x4d, 0x4d), "MARTINGALE");
+                                ui.colored_label(theme::DANGER, "MARTINGALE");
                             }
                             if !r.scalp_flag && !r.martingale_flag {
                                 ui.weak("-");
@@ -1339,12 +1564,12 @@ impl BackofficeApp {
         ui.add_space(8.0);
 
         if let Some(err) = &self.settings_error {
-            ui.colored_label(egui::Color32::from_rgb(0xe5, 0x4d, 0x4d), err);
+            ui.colored_label(theme::DANGER, err);
             return;
         }
         let Some(settings) = self.settings.clone() else { return };
 
-        egui::Frame::group(ui.style()).inner_margin(14.0).show(ui, |ui| {
+        theme::card(16).show(ui, |ui| {
             ui.set_width(360.0);
             ui.label(format!("Broker: {}", settings.name));
             ui.label(format!("Default currency: {} (USD only, no conversion yet)", settings.default_account_currency));
@@ -1353,7 +1578,7 @@ impl BackofficeApp {
             ui.add(egui::TextEdit::singleline(&mut self.settings_leverage_input));
             ui.add_space(10.0);
             let parsed = self.settings_leverage_input.trim().parse::<i64>().ok();
-            if ui.add_enabled(matches!(parsed, Some(n) if n > 0), egui::Button::new("Save")).clicked() {
+            if theme::accent_button_enabled(ui, matches!(parsed, Some(n) if n > 0), "Save").clicked() {
                 if let (Some(api), Some(n)) = (&self.api, parsed) {
                     api.update_default_leverage(ctx.clone(), self.tx.clone(), n);
                 }
@@ -1365,40 +1590,49 @@ impl BackofficeApp {
 }
 
 fn stat_card(ui: &mut egui::Ui, label: &str, value: &str) {
-    egui::Frame::group(ui.style()).inner_margin(14.0).show(ui, |ui| {
-        ui.set_min_width(150.0);
-        ui.vertical(|ui| {
-            ui.weak(label);
-            ui.add_space(4.0);
-            ui.heading(value);
+    egui::Frame::new()
+        .fill(theme::BG_1)
+        .stroke(egui::Stroke::new(1.0_f32, theme::BORDER))
+        .corner_radius(egui::CornerRadius::same(10))
+        .inner_margin(egui::Margin::symmetric(16, 14))
+        .show(ui, |ui| {
+            ui.set_min_width(180.0);
+            ui.vertical(|ui| {
+                ui.label(egui::RichText::new(label.to_uppercase()).size(11.0).color(theme::TEXT_3));
+                ui.add_space(6.0);
+                ui.label(egui::RichText::new(value).size(24.0).color(theme::TEXT_1));
+            });
         });
-    });
 }
 
-// Matches the real web backoffice's own dark theme (app/admin-theme.css's
-// --bg-1/--bg-2/--text-1/--accent) so this reads as the same product
-// line, not an unrelated tech demo.
-fn apply_brand_theme(ctx: &egui::Context) {
-    let mut visuals = egui::Visuals::dark();
-    let bg_1 = egui::Color32::from_rgb(0x0b, 0x0f, 0x14);
-    let bg_2 = egui::Color32::from_rgb(0x0e, 0x13, 0x19);
-    let text_1 = egui::Color32::from_rgb(0xed, 0xef, 0xf2);
-    let accent = egui::Color32::from_rgb(0x16, 0xc7, 0x84);
+// Custom-painted (not egui::Button::selectable) so the active item gets a
+// left accent bar + tinted background, matching a real product sidebar's
+// selection state rather than a plain highlighted-text list.
+fn sidebar_nav_item(ui: &mut egui::Ui, icon: &str, label: &str, selected: bool) -> egui::Response {
+    let desired_size = egui::vec2(ui.available_width(), 40.0);
+    let (rect, response) = ui.allocate_exact_size(desired_size, egui::Sense::click());
 
-    visuals.panel_fill = bg_1;
-    visuals.window_fill = bg_1;
-    visuals.extreme_bg_color = bg_2;
-    visuals.faint_bg_color = bg_2;
-    visuals.override_text_color = Some(text_1);
-    visuals.selection.bg_fill = accent;
-    visuals.widgets.hovered.bg_fill = bg_2;
-    visuals.widgets.active.bg_fill = accent.linear_multiply(0.35);
-
-    ctx.set_visuals(visuals);
-    ctx.style_mut(|style| {
-        style.spacing.item_spacing = egui::vec2(10.0, 8.0);
-        style.spacing.button_padding = egui::vec2(12.0, 6.0);
-    });
+    if ui.is_rect_visible(rect) {
+        if selected {
+            ui.painter().rect_filled(rect, 0.0, theme::ACCENT.linear_multiply(0.14));
+            let bar = egui::Rect::from_min_size(rect.min, egui::vec2(3.0, rect.height()));
+            ui.painter().rect_filled(bar, 0.0, theme::ACCENT);
+        } else if response.hovered() {
+            ui.painter().rect_filled(rect, 0.0, theme::BG_2);
+        }
+        let text_color = if selected { theme::ACCENT } else { theme::TEXT_2 };
+        let icon_pos = rect.min + egui::vec2(20.0, rect.height() / 2.0);
+        ui.painter().text(icon_pos, egui::Align2::LEFT_CENTER, icon, egui::FontId::proportional(14.0), text_color);
+        let label_pos = rect.min + egui::vec2(46.0, rect.height() / 2.0);
+        ui.painter().text(
+            label_pos,
+            egui::Align2::LEFT_CENTER,
+            label,
+            egui::FontId::proportional(13.5),
+            if selected { theme::TEXT_1 } else { theme::TEXT_2 },
+        );
+    }
+    response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 impl BackofficeApp {
@@ -1471,7 +1705,7 @@ fn main() -> eframe::Result<()> {
         "VyXTrader Backoffice (Native POC)",
         options,
         Box::new(|cc| {
-            apply_brand_theme(&cc.egui_ctx);
+            theme::apply(&cc.egui_ctx);
             let mut app = BackofficeApp::default();
             app.maybe_autologin(&cc.egui_ctx);
             Ok(Box::new(app))

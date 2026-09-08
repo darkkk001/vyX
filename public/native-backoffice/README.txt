@@ -1,4 +1,4 @@
-VyXTrader Native Backoffice -- v0.1.0 (proof-of-concept)
+VyXTrader Native Backoffice -- v0.1.1 (proof-of-concept)
 
 This is a genuinely native Windows app (egui/eframe, no webview, no
 browser) that talks directly to the same live /api/manage/* endpoints
