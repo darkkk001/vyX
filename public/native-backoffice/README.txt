@@ -1,4 +1,4 @@
-VyXTrader Native Backoffice -- v0.3.0 (all 27 core screens)
+VyXTrader Native Backoffice -- v0.4.0 (29 screens, deep web-parity pass)
 
 This is a genuinely native Windows app (egui/eframe, no webview, no
 browser) that talks directly to the same live /api/manage/* endpoints
@@ -16,50 +16,90 @@ On launch:
   1. Enter a broker's own subdomain (e.g. "futurixglobal.vyxtrader.com")
      in the "Broker host" field.
   2. Log in with a real MANAGER or BROKER_ADMIN account for that broker.
-  3. The sidebar (grouped: Overview, Trading, Clients, Finance,
-     Liquidity, Admin) reaches all 27 screens: Dashboard, Reports,
-     Notifications, Live Exposure, Dealing, Deals, Symbols, Margin,
-     Risk/Exposure, Clients/Accounts, Leads, IB, Client KYC, Live Account
-     Requests, Wallets, Transfers, Funds, Payment Methods, Liquidity,
-     Liquidity Routing, Feed Health, Groups, Team, Audit, Security,
-     Emergency, and Settings.
+  3. The sidebar now matches the real web's own navGroups exactly
+     (Overview / Clients / Finance / Trading / Liquidity / Organization,
+     same labels, same grouping) and reaches all 29 screens: Dashboard,
+     Notifications, Trading Accounts, Leads, KYC review, Client KYC,
+     Live Account Requests, Deposits & withdrawals, Payment methods,
+     Internal transfers, Wallets, IB & affiliates, Live Exposure,
+     Dealing queue, Feed health, Deals, Symbols, Client groups, Margin
+     monitoring, Risk Radar, Risk rules, Emergency controls, LPs,
+     Routing, Reports, Staff & roles, Audit log, Security, System
+     settings.
   4. The app applies the logged-in broker's own name, logo, and brand
-     color automatically (per-tenant, same as the web backoffice).
+     color automatically (per-tenant, same as the web backoffice). A
+     sun/moon toggle next to Log out switches the whole app between the
+     web's real dark and light palettes (exact hex values from
+     admin-theme.css), persisted server-side the same way the web does
+     (PATCH /api/manage/theme).
 
-What's new in v0.3.0 (native/web parity pass):
-  - "Positions" is renamed "Live Exposure" to match the web exactly
-    (the web page's own title is literally "Live Exposure"), and now
-    includes what the web's own Live Exposure has: an "Exposure by
-    symbol" table (net exposure, net-side VWAP, client floating P&L,
-    sortable by Symbol/Exposure/Risk), Symbol/Account/Group/Side/P&L
-    filters, and a live broker-wide activity feed underneath. The flat
-    "Open positions" table now also shows S/L, T/P, and has working
-    Modify (SL/TP) and Close actions -- neither existed in the native
-    app before this pass.
-  - Dealing now matches the web's real dealing desk: a Dealer ON/OFF
-    toggle at the top (same confirm-before-turning-off dialog as the
-    web), a working Requote action (previously missing -- Accept/Reject
-    only), an "Awaiting client confirmation" table for requotes not yet
-    answered, a "Resting orders" table (active LIMIT/STOP orders on
-    dealing-group accounts), and a dealing-group-scoped live activity
-    feed, filterable by account.
-  - Sidebar icons reworked -- several of the old glyphs (different
-    "square with hatch pattern" characters) were visually
-    indistinguishable from each other at sidebar size; replaced with a
-    set of genuinely different silhouettes (circle/triangle/diamond/
-    arrow/bar). Dashboard and Reports still fall back to a generic box
-    on this font -- a font-coverage gap, not a missing feature.
+What's new in v0.4.0 (deep parity pass -- read/compared every web
+screen's own component source, closed real gaps found that way):
+  - Trading Accounts: full 13-column table (was 9) -- Type and Group are
+    now inline-editable dropdowns, added Country/KYC status/Credit/Max
+    daily loss/Swap-free (tri-state)/mirrored+custom-pricing badges. "Add
+    account" now has every real field (type, currency, group, leverage,
+    starting balance, country, phone, DOB), and shows the new account
+    number/password once after creation, matching the web. Balance
+    "Adjust" now actually works (was missing entirely) with a real
+    Credit/Debit modal, and a maker-checker "Pending balance adjustments"
+    Approve/Reject queue is now shown, matching the web's own gate.
+  - Two whole screens that didn't exist in the native app at all:
+    "KYC review" (identity document submissions -- separate model/route
+    from Client KYC, with in-app Front/Back document viewing since an
+    OS-browser link can't carry this app's session cookie) and "Risk
+    rules" (the broker-wide Dealing-mode master switch, Smart Dealer
+    auto-accept/reject %, exposure/position limits, and the same
+    open-exposure/floating-P&L/accounts-at-risk stat grid the web
+    derives from Margin).
+  - Client KYC now shows the suitability questionnaire (annual income,
+    source of funds, trading experience, employment status, risk
+    tolerance) behind a "View suitability" toggle, plus phone and the
+    rejection reason on rejected rows -- all present on the web, missing
+    here before.
+  - Client groups: the list now shows every real column (margin call %,
+    stop out %, max lot, trading restriction, a computed routing badge --
+    A-Book/B-Book/Dealing/Reverse Mirror, swap-free, default), and the
+    per-symbol pricing tab is now the real 5-field editor (spread markup
+    OR target total spread, mutually exclusive via a mode toggle;
+    commission/lot; swap long; swap short), each with the same "inherits:
+    X" hint the web shows on a blank field. Was: 2 fields, no mode, no
+    swap rates.
+  - Notifications: unread count in "Mark all read (N)", accent-highlighted
+    unread cards, and real per-row actions -- "Reset password" for a
+    password-reset request (generates + shows a new password once, same
+    as the web) and "View" for every notification type the web
+    click-through-navigates for (dealing queue, KYC, leads, funds),
+    which also marks it read. Was a plain one-line list with no actions.
+  - Margin monitoring: added the Status column (OK/MARGIN CALL/STOP-OUT/
+    NO FEED) computed from each account's own real thresholds -- the
+    native app was showing a hardcoded 100%/200% guess instead of the
+    real per-account marginCallLevel/stopOutLevel the API returns.
+  - Global theme toggle (see above) and the sidebar's Notifications item
+    now shows a live unread-count badge, matching the web's own.
+
+Carried over from the previous pass (still in this build): Live
+Exposure's exposure-by-symbol table, filters, and live activity feed;
+Dealing's Dealer ON/OFF toggle, Requote, resting orders, and activity
+feed; reworked sidebar icons.
 
 2FA-enabled admin accounts are not supported yet -- use the web
 backoffice for those, or disable 2FA on the test account first.
 
-Known simplifications in this pass (each screen shows an in-app note
-where relevant): Live Exposure's IB filter and the web's maker-checker
-"pending approvals" queue for position actions aren't ported yet;
-column resize/visibility/virtualized scrolling and bulk multi-select
-(present on some web tables) aren't ported; Symbols, Transfers, and
-Payment Methods are read-only (editing lives on the web, or on the
-Groups pricing screen for per-symbol spread); Security shows account
-identity only, not full 2FA/device management; Feed Health reflects the
-Rust trading core/gateway, which are usually not deployed yet, so "not
-reachable" there is expected, not a bug.
+Known gaps in this pass (each disclosed in-app or here, not silent):
+Groups' own Create/Edit/Delete modal (routing-type selector, margin
+levels, restriction) isn't ported -- the list and pricing tab are;
+Live Exposure's IB filter and the web's maker-checker "pending
+approvals" queue for position actions aren't ported; the per-account
+drill-down detail page isn't ported (Accounts is the list only); column
+resize/visibility/virtualized scrolling and bulk multi-select (present
+on some web tables) aren't ported; Symbols, Transfers, and Payment
+Methods are read-only; Security shows account identity only; Feed
+Health reflects the Rust trading core/gateway, usually not deployed
+yet, so "not reachable" there is expected. Screens not yet re-verified
+against the web in this pass: Dashboard, Live Account Requests, Reports,
+Symbols, Team, Transfers, Wallets, IB, Leads, Deals, Audit, Security,
+Funds, Payment Methods, Liquidity, Liquidity Routing, Feed Health,
+Emergency, Risk Radar -- built in an earlier pass, functional against
+the real backend, but not yet re-diffed line-by-line against their web
+components the way the screens above were this pass.

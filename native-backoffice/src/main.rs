@@ -8,11 +8,12 @@
 mod api;
 
 use api::{
-    AccountRow, ActivityFeedRow, AdminRow, ApiClient, ApiEvent, AuditLogRow, ClientKycRow, DashboardData,
-    DealRow, DealerToggleState, DealingDeskAccount, DealingOrderRow, FeedHealthData, FundsRequestRow,
-    GroupPricingRow, GroupRow, IbRelationshipRow, LeadRow, LiquidityExposureRow, LiveAccountRequestRow,
-    LpRoutingRow, MarginRow, NewAccountBody, NotificationRow, PaymentMethodRow, PositionRow, ReportsSummary,
-    RequotedOrderRow, RestingOrderRow, RiskData, RiskRadarRow, SettingsData, SymbolConfigRow, TransferRow,
+    AccountRow, AccountTypeOption, ActivityFeedRow, AdminRow, ApiClient, ApiEvent, AuditLogRow, ClientKycRow,
+    DashboardData, DealRow, DealerToggleState, DealingDeskAccount, DealingOrderRow, FeedHealthData,
+    FundsRequestRow, GroupPricingRow, GroupRow, IbRelationshipRow, KycRow, LeadRow, LiquidityExposureRow,
+    LiveAccountRequestRow, LpRoutingRow, MarginRow, NewAccountBody, NotificationRow, PaymentMethodRow,
+    PendingAdjustment, PositionRow, ReportsSummary, RequotedOrderRow, RestingOrderRow, RiskData, RiskRadarRow,
+    SettingsData, SymbolConfigRow, TransferRow,
 };
 use eframe::egui;
 use egui_extras::{Column, TableBuilder};
@@ -26,10 +27,12 @@ enum Screen {
     Accounts,
     Dealing,
     Groups,
+    Kyc,
     ClientKyc,
     LiveAccountRequests,
     Notifications,
     RiskRadar,
+    Risk,
     Settings,
     Reports,
     Symbols,
@@ -55,31 +58,33 @@ impl Screen {
         match self {
             Screen::Dashboard => "Dashboard",
             Screen::Positions => "Live Exposure",
-            Screen::Accounts => "Clients / Accounts",
-            Screen::Dealing => "Dealing",
-            Screen::Groups => "Groups",
+            Screen::Accounts => "Trading Accounts",
+            Screen::Dealing => "Dealing queue",
+            Screen::Groups => "Client groups",
+            Screen::Kyc => "KYC review",
             Screen::ClientKyc => "Client KYC",
             Screen::LiveAccountRequests => "Live Account Requests",
             Screen::Notifications => "Notifications",
-            Screen::RiskRadar => "Risk / Exposure",
-            Screen::Settings => "Settings",
+            Screen::RiskRadar => "Risk Radar",
+            Screen::Risk => "Risk rules",
+            Screen::Settings => "System settings",
             Screen::Reports => "Reports",
             Screen::Symbols => "Symbols",
-            Screen::Team => "Team",
-            Screen::Transfers => "Transfers",
+            Screen::Team => "Staff & roles",
+            Screen::Transfers => "Internal transfers",
             Screen::Wallets => "Wallets",
-            Screen::Ib => "IB",
+            Screen::Ib => "IB & affiliates",
             Screen::Leads => "Leads",
             Screen::Deals => "Deals",
-            Screen::Audit => "Audit",
+            Screen::Audit => "Audit log",
             Screen::Security => "Security",
-            Screen::Funds => "Funds",
-            Screen::PaymentMethods => "Payment Methods",
-            Screen::Margin => "Margin",
-            Screen::Liquidity => "Liquidity",
-            Screen::LiquidityRouting => "Liquidity Routing",
-            Screen::FeedHealth => "Feed Health",
-            Screen::Emergency => "Emergency",
+            Screen::Funds => "Deposits & withdrawals",
+            Screen::PaymentMethods => "Payment methods",
+            Screen::Margin => "Margin monitoring",
+            Screen::Liquidity => "LPs",
+            Screen::LiquidityRouting => "Routing",
+            Screen::FeedHealth => "Feed health",
+            Screen::Emergency => "Emergency controls",
         }
     }
 
@@ -102,10 +107,12 @@ impl Screen {
             Screen::Accounts => "●",
             Screen::Dealing => "↔",
             Screen::Groups => "⊞",
+            Screen::Kyc => "◑",
             Screen::ClientKyc => "✓",
             Screen::LiveAccountRequests => "☑",
             Screen::Notifications => "◔",
             Screen::RiskRadar => "⚠",
+            Screen::Risk => "◈",
             Screen::Settings => "⚙",
             Screen::Reports => "▬",
             Screen::Symbols => "◆",
@@ -174,6 +181,20 @@ enum ExposureSortMode {
     Risk,
 }
 
+// Per-row edit buffer for the Group pricing tab -- mirrors
+// SymbolPricingEditor.tsx's own EditRow: spreadMarkup and
+// targetTotalSpreadPips are mutually exclusive, expressed here as a mode
+// toggle rather than two simultaneously-editable fields.
+#[derive(Default, Clone)]
+struct PricingEditRow {
+    is_target_mode: bool,
+    spread_markup: String,
+    target_total_spread_pips: String,
+    commission_per_lot: String,
+    swap_long: String,
+    swap_short: String,
+}
+
 #[derive(Default)]
 struct PendingModify {
     id: String,
@@ -193,20 +214,63 @@ struct PendingModify {
 // tokens -- one color to change, not forty.
 mod theme {
     use eframe::egui::{self, Color32};
-    use std::sync::atomic::{AtomicU8, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
-    pub const BG_0: Color32 = Color32::from_rgb(0x0a, 0x0d, 0x12); // outermost app background
-    pub const BG_1: Color32 = Color32::from_rgb(0x11, 0x15, 0x1c); // card / panel surface
-    pub const BG_2: Color32 = Color32::from_rgb(0x19, 0x1e, 0x27); // raised surface: inputs, hover, table stripe
-    pub const SIDEBAR_BG: Color32 = Color32::from_rgb(0x0d, 0x10, 0x16); // one shade darker than BG_0, separates the nav rail
-    pub const BORDER: Color32 = Color32::from_rgb(0x24, 0x2a, 0x36);
-    pub const TEXT_1: Color32 = Color32::from_rgb(0xed, 0xf0, 0xf5); // primary
-    pub const TEXT_2: Color32 = Color32::from_rgb(0xa8, 0xb2, 0xc0); // secondary
-    pub const TEXT_3: Color32 = Color32::from_rgb(0x64, 0x6f, 0x7e); // muted / placeholder
-    pub const DANGER: Color32 = Color32::from_rgb(0xef, 0x4a, 0x4a);
-    pub const WARNING: Color32 = Color32::from_rgb(0xe8, 0xa8, 0x38);
+    // Light/dark mode -- the exact two palettes from app/admin-theme.css's
+    // [data-surface] (dark) and [data-surface][data-mode="light"] (light)
+    // blocks, manager-surface accent variant. The web defaults to light
+    // and persists a toggle to AdminUser.theme (PATCH /api/manage/theme);
+    // this app keeps its own established dark-by-default first launch
+    // (matches this app's existing native-only branding pass) but the
+    // toggle itself, both full palettes, and the same persistence call are
+    // real, not cosmetic -- see render_titlebar's sun/moon button and
+    // BackofficeApp::toggle_theme.
+    static DARK_MODE: AtomicBool = AtomicBool::new(true);
 
-    const DEFAULT_ACCENT: (u8, u8, u8) = (0x16, 0xc7, 0x84); // generic VyXTrader green, shown pre-login and if a broker has no primaryColor set
+    pub fn is_dark() -> bool {
+        DARK_MODE.load(Ordering::Relaxed)
+    }
+    pub fn set_dark(dark: bool) {
+        DARK_MODE.store(dark, Ordering::Relaxed);
+    }
+
+    pub fn bg_0() -> Color32 {
+        if is_dark() { Color32::from_rgb(0x07, 0x09, 0x0c) } else { Color32::from_rgb(0xf8, 0xf9, 0xfb) }
+    }
+    pub fn bg_1() -> Color32 {
+        if is_dark() { Color32::from_rgb(0x0b, 0x0f, 0x14) } else { Color32::from_rgb(0xff, 0xff, 0xff) }
+    }
+    pub fn bg_2() -> Color32 {
+        if is_dark() { Color32::from_rgb(0x0e, 0x13, 0x19) } else { Color32::from_rgb(0xf1, 0xf3, 0xf6) }
+    }
+    // Real web markup uses --bg-1 for the sidebar <aside> too (no separate
+    // darker rail shade) -- kept as its own function so call sites read
+    // "sidebar background" rather than an unexplained bg_1() reuse.
+    pub fn sidebar_bg() -> Color32 {
+        bg_1()
+    }
+    pub fn border() -> Color32 {
+        if is_dark() { Color32::from_rgb(0x1e, 0x24, 0x2c) } else { Color32::from_rgb(0xe2, 0xe5, 0xea) }
+    }
+    pub fn text_1() -> Color32 {
+        if is_dark() { Color32::from_rgb(0xed, 0xef, 0xf2) } else { Color32::from_rgb(0x14, 0x18, 0x1f) }
+    }
+    pub fn text_2() -> Color32 {
+        if is_dark() { Color32::from_rgb(0x8b, 0x93, 0xa1) } else { Color32::from_rgb(0x4b, 0x55, 0x63) }
+    }
+    pub fn text_3() -> Color32 {
+        if is_dark() { Color32::from_rgb(0x5a, 0x64, 0x72) } else { Color32::from_rgb(0x6b, 0x72, 0x80) }
+    }
+    pub fn danger() -> Color32 {
+        Color32::from_rgb(0xea, 0x39, 0x43) // --sell, identical in both themes
+    }
+    pub fn warning() -> Color32 {
+        if is_dark() { Color32::from_rgb(0xf0, 0xb9, 0x0b) } else { Color32::from_rgb(0x8a, 0x5a, 0x05) }
+    }
+
+    const DEFAULT_ACCENT_DARK: (u8, u8, u8) = (0x16, 0xc7, 0x84); // manager dark accent (matches --buy)
+    const DEFAULT_ACCENT_LIGHT: (u8, u8, u8) = (0x0a, 0x7a, 0x4d); // manager light accent
+    const DEFAULT_ACCENT: (u8, u8, u8) = DEFAULT_ACCENT_DARK; // generic VyXTrader green, shown pre-login and if a broker has no primaryColor set
 
     // Per-tenant accent (Broker.primaryColor, fetched via /api/manage/
     // shell-info right after login -- see BackofficeApp::drain_events's
@@ -236,9 +300,26 @@ mod theme {
     }
 
     pub fn reset_accent() {
-        ACCENT_R.store(DEFAULT_ACCENT.0, Ordering::Relaxed);
-        ACCENT_G.store(DEFAULT_ACCENT.1, Ordering::Relaxed);
-        ACCENT_B.store(DEFAULT_ACCENT.2, Ordering::Relaxed);
+        let (r, g, b) = if is_dark() { DEFAULT_ACCENT_DARK } else { DEFAULT_ACCENT_LIGHT };
+        ACCENT_R.store(r, Ordering::Relaxed);
+        ACCENT_G.store(g, Ordering::Relaxed);
+        ACCENT_B.store(b, Ordering::Relaxed);
+    }
+
+    // Flips DARK_MODE and, if the accent is still at its unbranded
+    // default for the OLD mode, swaps it to the new mode's own default
+    // too -- a broker's real primaryColor (once branded) is mode-
+    // independent and left untouched either way, same as the real web
+    // (var(--accent) doesn't re-derive per theme mode there either).
+    pub fn toggle_mode() {
+        let was_dark = is_dark();
+        let old_default = if was_dark { DEFAULT_ACCENT_DARK } else { DEFAULT_ACCENT_LIGHT };
+        let current = (ACCENT_R.load(Ordering::Relaxed), ACCENT_G.load(Ordering::Relaxed), ACCENT_B.load(Ordering::Relaxed));
+        let was_unbranded = current == old_default;
+        set_dark(!was_dark);
+        if was_unbranded {
+            reset_accent();
+        }
     }
 
     // Called once at startup (fonts + visuals) and again after
@@ -258,18 +339,20 @@ mod theme {
     pub fn apply_visuals(ctx: &egui::Context) {
         let accent = accent();
         let accent_dim = accent_dim();
+        let dark = is_dark();
+        let (bg_0, bg_1, bg_2, border, text_1, text_2) = (bg_0(), bg_1(), bg_2(), border(), text_1(), text_2());
 
-        let mut visuals = egui::Visuals::dark();
-        visuals.panel_fill = BG_0;
-        visuals.window_fill = BG_1;
-        visuals.extreme_bg_color = BG_2;
-        visuals.faint_bg_color = BG_2;
-        visuals.code_bg_color = BG_2;
-        visuals.override_text_color = Some(TEXT_1);
+        let mut visuals = if dark { egui::Visuals::dark() } else { egui::Visuals::light() };
+        visuals.panel_fill = bg_0;
+        visuals.window_fill = bg_1;
+        visuals.extreme_bg_color = bg_2;
+        visuals.faint_bg_color = bg_2;
+        visuals.code_bg_color = bg_2;
+        visuals.override_text_color = Some(text_1);
         visuals.hyperlink_color = accent;
         visuals.selection.bg_fill = accent.linear_multiply(0.35);
         visuals.selection.stroke = egui::Stroke::new(1.0_f32, accent);
-        visuals.window_stroke = egui::Stroke::new(1.0_f32, BORDER);
+        visuals.window_stroke = egui::Stroke::new(1.0_f32, border);
 
         let radius = egui::CornerRadius::same(8);
         visuals.window_corner_radius = radius;
@@ -279,47 +362,48 @@ mod theme {
         // held) -- these three drive the look of every button, text
         // field, and selectable item in the app, so this is most of what
         // separates "styled" from "egui's raw default."
-        visuals.widgets.noninteractive.bg_fill = BG_1;
-        visuals.widgets.noninteractive.weak_bg_fill = BG_1;
-        visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0_f32, BORDER);
-        visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0_f32, TEXT_1);
+        visuals.widgets.noninteractive.bg_fill = bg_1;
+        visuals.widgets.noninteractive.weak_bg_fill = bg_1;
+        visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0_f32, border);
+        visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0_f32, text_1);
         visuals.widgets.noninteractive.corner_radius = radius;
 
-        visuals.widgets.inactive.bg_fill = BG_2;
-        visuals.widgets.inactive.weak_bg_fill = BG_2;
-        visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0_f32, BORDER);
-        visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0_f32, TEXT_2);
+        visuals.widgets.inactive.bg_fill = bg_2;
+        visuals.widgets.inactive.weak_bg_fill = bg_2;
+        visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0_f32, border);
+        visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0_f32, text_2);
         visuals.widgets.inactive.corner_radius = radius;
 
-        visuals.widgets.hovered.bg_fill = BG_2.gamma_multiply(1.35);
-        visuals.widgets.hovered.weak_bg_fill = BG_2.gamma_multiply(1.35);
+        let hover_bg = if dark { bg_2.gamma_multiply(1.35) } else { bg_2.gamma_multiply(0.96) };
+        visuals.widgets.hovered.bg_fill = hover_bg;
+        visuals.widgets.hovered.weak_bg_fill = hover_bg;
         visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0_f32, accent_dim);
-        visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0_f32, TEXT_1);
+        visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0_f32, text_1);
         visuals.widgets.hovered.corner_radius = radius;
         visuals.widgets.hovered.expansion = 0.5;
 
         visuals.widgets.active.bg_fill = accent.linear_multiply(0.28);
         visuals.widgets.active.weak_bg_fill = accent.linear_multiply(0.28);
         visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0_f32, accent);
-        visuals.widgets.active.fg_stroke = egui::Stroke::new(1.0_f32, TEXT_1);
+        visuals.widgets.active.fg_stroke = egui::Stroke::new(1.0_f32, text_1);
         visuals.widgets.active.corner_radius = radius;
 
-        visuals.widgets.open.bg_fill = BG_2;
-        visuals.widgets.open.weak_bg_fill = BG_2;
+        visuals.widgets.open.bg_fill = bg_2;
+        visuals.widgets.open.weak_bg_fill = bg_2;
         visuals.widgets.open.bg_stroke = egui::Stroke::new(1.0_f32, accent_dim);
         visuals.widgets.open.corner_radius = radius;
 
         // set_visuals alone follows the OS theme preference -- on a
         // light-mode system this got silently reset back to light on the
-        // real first frame (confirmed live: the whole point of this pass
-        // was fixing a UI that rendered plain/light despite this same
-        // dark-visuals code already existing). set_theme locks the
-        // preference so a light-mode Windows install can't override it,
-        // and set_visuals_of targets the Dark slot explicitly rather than
-        // "whatever ctx.theme() happens to resolve to at this exact call
-        // site," removing the ambiguity that caused it.
-        ctx.set_theme(egui::ThemePreference::Dark);
-        ctx.set_visuals_of(egui::Theme::Dark, visuals);
+        // real first frame regardless of which mode this app itself
+        // wanted. set_theme locks the preference so the OS can't override
+        // it, and set_visuals_of targets the Dark/Light slot explicitly
+        // (whichever this app's own toggle currently has selected)
+        // rather than "whatever ctx.theme() happens to resolve to."
+        let theme_pref = if dark { egui::ThemePreference::Dark } else { egui::ThemePreference::Light };
+        let theme_slot = if dark { egui::Theme::Dark } else { egui::Theme::Light };
+        ctx.set_theme(theme_pref);
+        ctx.set_visuals_of(theme_slot, visuals);
 
         ctx.style_mut(|style| {
             style.spacing.item_spacing = egui::vec2(10.0, 10.0);
@@ -371,9 +455,9 @@ mod theme {
     pub fn danger_button_enabled(ui: &mut egui::Ui, enabled: bool, text: &str) -> egui::Response {
         ui.add_enabled(
             enabled,
-            egui::Button::new(egui::RichText::new(text).color(TEXT_1))
-                .fill(DANGER.linear_multiply(0.25))
-                .stroke(egui::Stroke::new(1.0_f32, DANGER)),
+            egui::Button::new(egui::RichText::new(text).color(text_1()))
+                .fill(danger().linear_multiply(0.25))
+                .stroke(egui::Stroke::new(1.0_f32, danger())),
         )
     }
 
@@ -382,8 +466,8 @@ mod theme {
     // a dense list row and a spacious form need different amounts.
     pub fn card(margin: i8) -> egui::Frame {
         egui::Frame::new()
-            .fill(BG_1)
-            .stroke(egui::Stroke::new(1.0_f32, BORDER))
+            .fill(bg_1())
+            .stroke(egui::Stroke::new(1.0_f32, border()))
             .corner_radius(egui::CornerRadius::same(10))
             .inner_margin(egui::Margin::same(margin))
     }
@@ -395,6 +479,26 @@ struct NewAccountForm {
     email: String,
     password: String,
     is_live: bool,
+    account_type_id: String,
+    currency: String,
+    group_id: String,
+    leverage: String,
+    initial_balance: String,
+    country: String,
+    phone: String,
+    date_of_birth: String,
+}
+
+// Balance-adjust modal state -- separate from PendingModify (Live
+// Exposure's own SL/TP modal) since the fields/target/endpoint differ.
+#[derive(Default)]
+struct AdjustBalance {
+    account_id: String,
+    account_number: String,
+    is_credit: bool,
+    amount: String,
+    note: String,
+    error: Option<String>,
 }
 
 struct BackofficeApp {
@@ -446,6 +550,13 @@ struct BackofficeApp {
     accounts_filter: String,
     show_new_account_form: bool,
     new_account: NewAccountForm,
+    account_types: Vec<AccountTypeOption>,
+    can_manage_finance: bool,
+    created_account: Option<(String, String)>,
+    adjust_target: Option<AdjustBalance>,
+    pending_adjustments: Vec<PendingAdjustment>,
+    pending_adjustment_errors: HashMap<String, String>,
+    reviewing_adjustment_id: Option<String>,
 
     // --- dealing ---
     dealing_queue: Vec<DealingOrderRow>,
@@ -474,13 +585,23 @@ struct BackofficeApp {
     group_pricing_error: Option<String>,
     // symbolId -> (spreadMarkup input, commissionPerLot input), seeded
     // from the fetched row and edited in place before Save.
-    pricing_edit_buffer: HashMap<String, (String, String)>,
+    pricing_edit_buffer: HashMap<String, PricingEditRow>,
+
+    // --- KYC (identity document review, separate screen from Client KYC) ---
+    kyc: Vec<KycRow>,
+    kyc_loading: bool,
+    kyc_error: Option<String>,
+    kyc_docs_reject: Option<PendingReject>,
+    kyc_document: Option<egui::TextureHandle>,
+    kyc_document_error: Option<String>,
+    kyc_document_loading: bool,
 
     // --- client KYC ---
     client_kyc: Vec<ClientKycRow>,
     client_kyc_loading: bool,
     client_kyc_error: Option<String>,
     kyc_reject: Option<PendingReject>,
+    client_kyc_expanded: HashSet<String>,
 
     // --- live account requests ---
     live_account_requests: Vec<LiveAccountRequestRow>,
@@ -492,6 +613,10 @@ struct BackofficeApp {
     notifications: Vec<NotificationRow>,
     notifications_loading: bool,
     notifications_error: Option<String>,
+    reset_password_target: Option<NotificationRow>,
+    reset_password_result: Option<String>,
+    reset_password_error: Option<String>,
+    reset_password_busy: bool,
 
     // --- risk radar ---
     risk_radar: Vec<RiskRadarRow>,
@@ -578,6 +703,21 @@ struct BackofficeApp {
     risk: Option<RiskData>,
     risk_loading: bool,
     risk_error: Option<String>,
+
+    // --- risk rules (Broker-wide dealing mode, exposure/position limits,
+    // Smart Dealer -- separate screen from Emergency, same /api/manage/
+    // risk endpoint) ---
+    risk_settings: Option<RiskData>,
+    risk_settings_loading: bool,
+    risk_settings_error: Option<String>,
+    risk_settings_confirm_dealing: bool,
+    risk_settings_dealing_busy: bool,
+    risk_exposure_limit_input: String,
+    risk_max_positions_input: String,
+    risk_limits_saved: bool,
+    risk_smart_accept_input: String,
+    risk_smart_reject_input: String,
+    risk_smart_saved: bool,
 }
 
 impl Default for BackofficeApp {
@@ -625,6 +765,13 @@ impl Default for BackofficeApp {
             accounts_filter: String::new(),
             show_new_account_form: false,
             new_account: NewAccountForm::default(),
+            account_types: Vec::new(),
+            can_manage_finance: false,
+            created_account: None,
+            adjust_target: None,
+            pending_adjustments: Vec::new(),
+            pending_adjustment_errors: HashMap::new(),
+            reviewing_adjustment_id: None,
             dealing_queue: Vec::new(),
             dealing_requoted: Vec::new(),
             dealing_loading: false,
@@ -648,10 +795,18 @@ impl Default for BackofficeApp {
             group_pricing_loading: false,
             group_pricing_error: None,
             pricing_edit_buffer: HashMap::new(),
+            kyc: Vec::new(),
+            kyc_loading: false,
+            kyc_error: None,
+            kyc_docs_reject: None,
+            kyc_document: None,
+            kyc_document_error: None,
+            kyc_document_loading: false,
             client_kyc: Vec::new(),
             client_kyc_loading: false,
             client_kyc_error: None,
             kyc_reject: None,
+            client_kyc_expanded: HashSet::new(),
             live_account_requests: Vec::new(),
             live_account_requests_loading: false,
             live_account_requests_error: None,
@@ -659,6 +814,10 @@ impl Default for BackofficeApp {
             notifications: Vec::new(),
             notifications_loading: false,
             notifications_error: None,
+            reset_password_target: None,
+            reset_password_result: None,
+            reset_password_error: None,
+            reset_password_busy: false,
             risk_radar: Vec::new(),
             risk_radar_loading: false,
             risk_radar_error: None,
@@ -711,6 +870,17 @@ impl Default for BackofficeApp {
             risk: None,
             risk_loading: false,
             risk_error: None,
+            risk_settings: None,
+            risk_settings_loading: false,
+            risk_settings_error: None,
+            risk_settings_confirm_dealing: false,
+            risk_settings_dealing_busy: false,
+            risk_exposure_limit_input: String::new(),
+            risk_max_positions_input: String::new(),
+            risk_limits_saved: false,
+            risk_smart_accept_input: String::new(),
+            risk_smart_reject_input: String::new(),
+            risk_smart_saved: false,
         }
     }
 }
@@ -729,9 +899,16 @@ impl BackofficeApp {
                     if let Some(api) = &self.api {
                         api.fetch_shell_info(ctx.clone(), self.tx.clone());
                     }
+                    // Eager, silent load so the sidebar's unread-count
+                    // badge (matches AdminShell.tsx's own
+                    // initialUnreadNotifications) is accurate shortly
+                    // after login, not just after the user first opens
+                    // Notifications themselves.
+                    self.ensure_loaded(ctx, Screen::Notifications);
                 }
                 ApiEvent::ShellInfo(Ok(info)) => {
                     self.broker_name = Some(info.broker_name);
+                    self.can_manage_finance = info.can_manage_finance;
                     if let Some(hex) = &info.broker_primary_color {
                         if let Some(color) = parse_hex_color(hex) {
                             theme::set_accent(color);
@@ -778,6 +955,50 @@ impl BackofficeApp {
                         Ok(rows) => self.accounts = rows,
                         Err(e) => self.accounts_error = Some(e),
                     }
+                }
+                ApiEvent::PasswordReset(result) => {
+                    self.reset_password_busy = false;
+                    match result {
+                        Ok(password) => self.reset_password_result = Some(password),
+                        Err(e) => self.reset_password_error = Some(e),
+                    }
+                }
+                ApiEvent::AccountTypes(result) => {
+                    if let Ok(rows) = result {
+                        self.account_types = rows;
+                    }
+                }
+                ApiEvent::AccountCreated(result) => match result {
+                    Ok((account_number, password)) => {
+                        self.created_account = Some((account_number, password));
+                        self.fetch(ctx, Screen::Accounts);
+                    }
+                    Err(e) => self.action_message = Some(format!("failed: {e}")),
+                },
+                ApiEvent::AdjustBalance(result) => match result {
+                    Ok(pending) => {
+                        self.adjust_target = None;
+                        self.action_message = Some(if pending {
+                            "Balance adjustment submitted for approval. A different admin needs to review it before it takes effect.".to_string()
+                        } else {
+                            "balance adjusted".to_string()
+                        });
+                        self.fetch(ctx, Screen::Accounts);
+                        if let Some(api) = &self.api {
+                            api.fetch_pending_adjustments(ctx.clone(), self.tx.clone());
+                        }
+                    }
+                    Err(e) => {
+                        if let Some(target) = &mut self.adjust_target {
+                            target.error = Some(e);
+                        }
+                    }
+                },
+                ApiEvent::PendingAdjustments(result) => {
+                    if let Ok(rows) = result {
+                        self.pending_adjustments = rows;
+                    }
+                    self.reviewing_adjustment_id = None;
                 }
                 ApiEvent::DealingQueue(result) => {
                     self.dealing_loading = false;
@@ -858,16 +1079,38 @@ impl BackofficeApp {
                                 .map(|r| {
                                     (
                                         r.symbol_id.clone(),
-                                        (
-                                            r.spread_markup.clone().unwrap_or_default(),
-                                            r.commission_per_lot.clone().unwrap_or_default(),
-                                        ),
+                                        PricingEditRow {
+                                            is_target_mode: r.target_total_spread_pips.is_some(),
+                                            spread_markup: r.spread_markup.clone().unwrap_or_default(),
+                                            target_total_spread_pips: r.target_total_spread_pips.clone().unwrap_or_default(),
+                                            commission_per_lot: r.commission_per_lot.clone().unwrap_or_default(),
+                                            swap_long: r.swap_long.clone().unwrap_or_default(),
+                                            swap_short: r.swap_short.clone().unwrap_or_default(),
+                                        },
                                     )
                                 })
                                 .collect();
                             self.group_pricing = rows;
                         }
                         Err(e) => self.group_pricing_error = Some(e),
+                    }
+                }
+                ApiEvent::Kyc(result) => {
+                    self.kyc_loading = false;
+                    match result {
+                        Ok(rows) => self.kyc = rows,
+                        Err(e) => self.kyc_error = Some(e),
+                    }
+                }
+                ApiEvent::KycDocument(result) => {
+                    self.kyc_document_loading = false;
+                    match result {
+                        Ok((pixels, [w, h])) => {
+                            let color_image = egui::ColorImage::from_rgba_unmultiplied([w, h], &pixels);
+                            self.kyc_document = Some(ctx.load_texture("kyc-document", color_image, egui::TextureOptions::default()));
+                            self.kyc_document_error = None;
+                        }
+                        Err(e) => self.kyc_document_error = Some(e),
                     }
                 }
                 ApiEvent::ClientKyc(result) => {
@@ -1013,6 +1256,21 @@ impl BackofficeApp {
                         Err(e) => self.risk_error = Some(e),
                     }
                 }
+                ApiEvent::RiskSettings(result) => {
+                    self.risk_settings_loading = false;
+                    self.risk_settings_dealing_busy = false;
+                    match result {
+                        Ok(data) => {
+                            self.risk_exposure_limit_input = data.total_exposure_limit.clone().unwrap_or_default();
+                            self.risk_max_positions_input =
+                                data.max_open_positions_per_account.map(|n| n.to_string()).unwrap_or_default();
+                            self.risk_smart_accept_input = data.smart_dealer_accept_pct.clone().unwrap_or_default();
+                            self.risk_smart_reject_input = data.smart_dealer_reject_pct.clone().unwrap_or_default();
+                            self.risk_settings = Some(data);
+                        }
+                        Err(e) => self.risk_settings_error = Some(e),
+                    }
+                }
                 ApiEvent::ActionDone(result) => match result {
                     Ok(msg) => {
                         self.action_message = Some(msg);
@@ -1071,6 +1329,8 @@ impl BackofficeApp {
                 self.accounts_loading = true;
                 self.accounts_error = None;
                 api.fetch_accounts(ctx.clone(), self.tx.clone());
+                api.fetch_account_types(ctx.clone(), self.tx.clone());
+                api.fetch_pending_adjustments(ctx.clone(), self.tx.clone());
             }
             Screen::Dealing => {
                 self.dealing_loading = true;
@@ -1085,6 +1345,11 @@ impl BackofficeApp {
                 self.groups_loading = true;
                 self.groups_error = None;
                 api.fetch_groups(ctx.clone(), self.tx.clone());
+            }
+            Screen::Kyc => {
+                self.kyc_loading = true;
+                self.kyc_error = None;
+                api.fetch_kyc(ctx.clone(), self.tx.clone());
             }
             Screen::ClientKyc => {
                 self.client_kyc_loading = true;
@@ -1105,6 +1370,12 @@ impl BackofficeApp {
                 self.risk_radar_loading = true;
                 self.risk_radar_error = None;
                 api.fetch_risk_radar(ctx.clone(), self.tx.clone());
+            }
+            Screen::Risk => {
+                self.risk_settings_loading = true;
+                self.risk_settings_error = None;
+                api.fetch_risk_settings(ctx.clone(), self.tx.clone());
+                api.fetch_margin(ctx.clone(), self.tx.clone());
             }
             Screen::Settings => {
                 self.settings_loading = true;
@@ -1209,31 +1480,31 @@ impl BackofficeApp {
     }
 
     fn render_login(&mut self, ctx: &egui::Context) {
-        egui::CentralPanel::default().frame(egui::Frame::new().fill(theme::BG_0)).show(ctx, |ui| {
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(theme::bg_0())).show(ctx, |ui| {
             ui.vertical_centered(|ui| {
                 ui.add_space(110.0);
                 ui.label(egui::RichText::new("●").size(28.0).color(theme::accent()));
                 ui.add_space(6.0);
-                ui.label(egui::RichText::new("VyXTrader").size(26.0).color(theme::TEXT_1));
-                ui.label(egui::RichText::new("BACKOFFICE").size(12.0).color(theme::TEXT_3));
+                ui.label(egui::RichText::new("VyXTrader").size(26.0).color(theme::text_1()));
+                ui.label(egui::RichText::new("BACKOFFICE").size(12.0).color(theme::text_3()));
                 ui.add_space(28.0);
 
                 egui::Frame::new()
-                    .fill(theme::BG_1)
-                    .stroke(egui::Stroke::new(1.0_f32, theme::BORDER))
+                    .fill(theme::bg_1())
+                    .stroke(egui::Stroke::new(1.0_f32, theme::border()))
                     .corner_radius(egui::CornerRadius::same(12))
                     .inner_margin(egui::Margin::same(24))
                     .show(ui, |ui| {
                         ui.set_width(360.0);
-                        ui.label(egui::RichText::new("BROKER HOST").size(11.0).color(theme::TEXT_3));
+                        ui.label(egui::RichText::new("BROKER HOST").size(11.0).color(theme::text_3()));
                         ui.add_space(4.0);
                         ui.add(egui::TextEdit::singleline(&mut self.host_input).hint_text("brokername.vyxtrader.com").desired_width(f32::INFINITY));
                         ui.add_space(12.0);
-                        ui.label(egui::RichText::new("EMAIL").size(11.0).color(theme::TEXT_3));
+                        ui.label(egui::RichText::new("EMAIL").size(11.0).color(theme::text_3()));
                         ui.add_space(4.0);
                         ui.add(egui::TextEdit::singleline(&mut self.email_input).hint_text("admin@broker.com").desired_width(f32::INFINITY));
                         ui.add_space(12.0);
-                        ui.label(egui::RichText::new("PASSWORD").size(11.0).color(theme::TEXT_3));
+                        ui.label(egui::RichText::new("PASSWORD").size(11.0).color(theme::text_3()));
                         ui.add_space(4.0);
                         ui.add(egui::TextEdit::singleline(&mut self.password_input).password(true).desired_width(f32::INFINITY));
                         ui.add_space(18.0);
@@ -1263,7 +1534,7 @@ impl BackofficeApp {
 
                         if let Some(err) = &self.login_error {
                             ui.add_space(10.0);
-                            ui.colored_label(theme::DANGER, err);
+                            ui.colored_label(theme::danger(), err);
                         }
                     });
 
@@ -1275,14 +1546,14 @@ impl BackofficeApp {
 
     fn render_shell(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("header")
-            .frame(egui::Frame::new().fill(theme::BG_0).inner_margin(egui::Margin::symmetric(20, 14)).stroke(egui::Stroke::NONE))
+            .frame(egui::Frame::new().fill(theme::bg_0()).inner_margin(egui::Margin::symmetric(20, 14)).stroke(egui::Stroke::NONE))
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new(self.screen.icon()).size(18.0).color(theme::accent()));
                     ui.add_space(4.0);
-                    ui.label(egui::RichText::new(self.screen.label()).size(19.0).color(theme::TEXT_1));
+                    ui.label(egui::RichText::new(self.screen.label()).size(19.0).color(theme::text_1()));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.add(egui::Button::new(egui::RichText::new("Log out").color(theme::TEXT_2)).fill(egui::Color32::TRANSPARENT).stroke(egui::Stroke::new(1.0_f32, theme::BORDER))).clicked() {
+                        if ui.add(egui::Button::new(egui::RichText::new("Log out").color(theme::text_2())).fill(egui::Color32::TRANSPARENT).stroke(egui::Stroke::new(1.0_f32, theme::border()))).clicked() {
                             self.logged_in = false;
                             self.api = None;
                             self.loaded_once.clear();
@@ -1295,9 +1566,39 @@ impl BackofficeApp {
                             theme::apply_visuals(ctx);
                         }
                         ui.add_space(14.0);
+                        // Sun/moon theme toggle -- same position and
+                        // persistence (PATCH /api/manage/theme,
+                        // AdminUser.theme) as AdminShell.tsx's own header
+                        // button, just left of the avatar cluster instead
+                        // of the sidebar. Added before the nested
+                        // ui.vertical() below, not after -- a widget added
+                        // to a right_to_left layout AFTER a nested
+                        // ui.vertical()/ui.horizontal() call lands at a
+                        // stale cursor position in this egui version
+                        // (confirmed live: it rendered pinned near the
+                        // window's top-left instead of the right-aligned
+                        // cluster), so anything else in this closure has
+                        // to come before the vertical block, not after.
+                        let dark = theme::is_dark();
+                        let toggle_label = if dark { "\u{25CF}" } else { "\u{25CB}" };
+                        if ui
+                            .add(
+                                egui::Button::new(egui::RichText::new(toggle_label).size(13.0).color(theme::text_2()))
+                                    .fill(theme::bg_2())
+                                    .stroke(egui::Stroke::new(1.0_f32, theme::border())),
+                            )
+                            .clicked()
+                        {
+                            theme::toggle_mode();
+                            theme::apply_visuals(ctx);
+                            if let Some(api) = &self.api {
+                                api.set_theme(ctx.clone(), if theme::is_dark() { "dark" } else { "light" }.to_string());
+                            }
+                        }
+                        ui.add_space(14.0);
                         ui.vertical(|ui| {
-                            ui.label(egui::RichText::new(&self.logged_in_email).size(12.5).color(theme::TEXT_1));
-                            ui.label(egui::RichText::new(&self.host_input).size(11.0).color(theme::TEXT_3));
+                            ui.label(egui::RichText::new(&self.logged_in_email).size(12.5).color(theme::text_1()));
+                            ui.label(egui::RichText::new(&self.host_input).size(11.0).color(theme::text_3()));
                         });
                     });
                 });
@@ -1306,7 +1607,7 @@ impl BackofficeApp {
         egui::SidePanel::left("sidebar")
             .resizable(false)
             .exact_width(230.0)
-            .frame(egui::Frame::new().fill(theme::SIDEBAR_BG).inner_margin(egui::Margin::symmetric(0, 16)).stroke(egui::Stroke { width: 1.0, color: theme::BORDER }))
+            .frame(egui::Frame::new().fill(theme::sidebar_bg()).inner_margin(egui::Margin::symmetric(0, 16)).stroke(egui::Stroke { width: 1.0, color: theme::border() }))
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.add_space(20.0);
@@ -1322,42 +1623,73 @@ impl BackofficeApp {
                     }
                     let name = self.broker_name.as_deref().unwrap_or("VyXTrader");
                     let name = if name.chars().count() > 18 { format!("{}...", name.chars().take(17).collect::<String>()) } else { name.to_string() };
-                    ui.label(egui::RichText::new(name).size(17.0).color(theme::TEXT_1));
+                    ui.label(egui::RichText::new(name).size(17.0).color(theme::text_1()));
                 });
-                ui.label(egui::RichText::new("  BACKOFFICE").size(10.5).color(theme::TEXT_3));
+                ui.label(egui::RichText::new("  BACKOFFICE").size(10.5).color(theme::text_3()));
                 ui.add_space(14.0);
                 ui.scope(|ui| {
-                    ui.style_mut().visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0_f32, theme::BORDER);
+                    ui.style_mut().visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0_f32, theme::border());
                     ui.add(egui::Separator::default().spacing(0.0));
                 });
                 ui.add_space(10.0);
 
                 egui::ScrollArea::vertical().show(ui, |ui| {
+                    // Exact structure/order/labels of app/manage/(shell)/
+                    // layout.tsx's own navGroups -- "Overview", "Clients",
+                    // "Finance", "Trading", "Liquidity", "Organization",
+                    // same membership (Reports moved to Organization, not
+                    // Overview; Groups/Margin/RiskRadar/Risk/Emergency live
+                    // under Trading, not a generic "Admin" bucket). The
+                    // web hides several of these entirely for a plain
+                    // MANAGER (BROKER_ADMIN-only items) -- not replicated
+                    // here since this app doesn't yet track the signed-in
+                    // admin's own role, so every item stays visible
+                    // regardless of role; the real API still enforces the
+                    // same permission check server-side either way.
                     let groups: [(&str, &[Screen]); 6] = [
-                        ("OVERVIEW", &[Screen::Dashboard, Screen::Reports, Screen::Notifications]),
+                        ("OVERVIEW", &[Screen::Dashboard, Screen::Notifications]),
                         (
-                            "TRADING",
-                            &[Screen::Positions, Screen::Dealing, Screen::Deals, Screen::Symbols, Screen::Margin, Screen::RiskRadar],
+                            "CLIENTS",
+                            &[Screen::Accounts, Screen::Leads, Screen::Kyc, Screen::ClientKyc, Screen::LiveAccountRequests],
                         ),
-                        ("CLIENTS", &[Screen::Accounts, Screen::Leads, Screen::Ib, Screen::ClientKyc, Screen::LiveAccountRequests]),
                         (
                             "FINANCE",
-                            &[Screen::Wallets, Screen::Transfers, Screen::Funds, Screen::PaymentMethods],
+                            &[Screen::Funds, Screen::PaymentMethods, Screen::Transfers, Screen::Wallets, Screen::Ib],
                         ),
-                        ("LIQUIDITY", &[Screen::Liquidity, Screen::LiquidityRouting, Screen::FeedHealth]),
                         (
-                            "ADMIN",
-                            &[Screen::Groups, Screen::Team, Screen::Audit, Screen::Security, Screen::Emergency, Screen::Settings],
+                            "TRADING",
+                            &[
+                                Screen::Positions,
+                                Screen::Dealing,
+                                Screen::FeedHealth,
+                                Screen::Deals,
+                                Screen::Symbols,
+                                Screen::Groups,
+                                Screen::Margin,
+                                Screen::RiskRadar,
+                                Screen::Risk,
+                                Screen::Emergency,
+                            ],
+                        ),
+                        ("LIQUIDITY", &[Screen::Liquidity, Screen::LiquidityRouting]),
+                        (
+                            "ORGANIZATION",
+                            &[Screen::Reports, Screen::Team, Screen::Audit, Screen::Security, Screen::Settings],
                         ),
                     ];
                     for (label, screens) in groups {
                         ui.add_space(6.0);
                         ui.horizontal(|ui| {
                             ui.add_space(20.0);
-                            ui.label(egui::RichText::new(label).size(10.0).color(theme::TEXT_3).strong());
+                            ui.label(egui::RichText::new(label).size(10.0).color(theme::text_3()).strong());
                         });
                         for &screen in screens {
-                            if sidebar_nav_item(ui, screen.icon(), screen.label(), self.screen == screen).clicked() {
+                            let badge = if screen == Screen::Notifications {
+                                Some(self.notifications.iter().filter(|n| !n.read).count())
+                            } else {
+                                None
+                            };
+                            if sidebar_nav_item(ui, screen.icon(), screen.label(), self.screen == screen, badge).clicked() {
                                 self.screen = screen;
                                 self.ensure_loaded(ctx, screen);
                             }
@@ -1368,17 +1700,17 @@ impl BackofficeApp {
             });
 
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(theme::BG_0).inner_margin(egui::Margin::symmetric(24, 20)))
+            .frame(egui::Frame::new().fill(theme::bg_0()).inner_margin(egui::Margin::symmetric(24, 20)))
             .show(ctx, |ui| {
             if let Some(msg) = self.action_message.clone() {
                 egui::Frame::new()
-                    .fill(theme::BG_1)
-                    .stroke(egui::Stroke::new(1.0_f32, theme::BORDER))
+                    .fill(theme::bg_1())
+                    .stroke(egui::Stroke::new(1.0_f32, theme::border()))
                     .corner_radius(egui::CornerRadius::same(8))
                     .inner_margin(egui::Margin::symmetric(14, 10))
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new(&msg).color(theme::TEXT_1));
+                            ui.label(egui::RichText::new(&msg).color(theme::text_1()));
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                 if ui.small_button("dismiss").clicked() {
                                     self.action_message = None;
@@ -1394,10 +1726,12 @@ impl BackofficeApp {
                 Screen::Accounts => self.render_accounts(ui, ctx),
                 Screen::Dealing => self.render_dealing(ui, ctx),
                 Screen::Groups => self.render_groups(ui, ctx),
+                Screen::Kyc => self.render_kyc(ui, ctx),
                 Screen::ClientKyc => self.render_client_kyc(ui, ctx),
                 Screen::LiveAccountRequests => self.render_live_account_requests(ui, ctx),
                 Screen::Notifications => self.render_notifications(ui, ctx),
                 Screen::RiskRadar => self.render_risk_radar(ui, ctx),
+                Screen::Risk => self.render_risk_settings(ui, ctx),
                 Screen::Settings => self.render_settings(ui, ctx),
                 Screen::Reports => self.render_reports(ui, ctx),
                 Screen::Symbols => self.render_symbols(ui, ctx),
@@ -1433,7 +1767,7 @@ impl BackofficeApp {
         ui.add_space(10.0);
 
         if let Some(err) = &self.dashboard_error {
-            ui.colored_label(theme::DANGER, err);
+            ui.colored_label(theme::danger(), err);
             return;
         }
         let Some(data) = &self.dashboard else { return };
@@ -1507,7 +1841,7 @@ impl BackofficeApp {
         ui.add_space(8.0);
 
         if let Some(err) = &self.positions_error {
-            ui.colored_label(theme::DANGER, err);
+            ui.colored_label(theme::danger(), err);
             return;
         }
 
@@ -1698,7 +2032,7 @@ impl BackofficeApp {
                     let pnl_color = if total_floating_pnl > 0.0 {
                         theme::accent()
                     } else if total_floating_pnl < 0.0 {
-                        theme::DANGER
+                        theme::danger()
                     } else {
                         ui.visuals().text_color()
                     };
@@ -1735,7 +2069,7 @@ impl BackofficeApp {
                 .header(26.0, |mut header| {
                     for label in ["Symbol", "Positions", "Buy volume", "Sell volume", "Net exposure", "Avg open price (net)", "Client floating P&L", "Current price"] {
                         header.col(|ui| {
-                            ui.label(egui::RichText::new(label.to_uppercase()).size(11.0).color(theme::TEXT_3));
+                            ui.label(egui::RichText::new(label.to_uppercase()).size(11.0).color(theme::text_3()));
                         });
                     }
                 })
@@ -1760,7 +2094,7 @@ impl BackofficeApp {
                             } else if *net > 0.0 {
                                 theme::accent()
                             } else {
-                                theme::DANGER
+                                theme::danger()
                             };
                             ui.colored_label(color, format!("{}{:.2}", if *net > 0.0 { "+" } else { "" }, net));
                         });
@@ -1771,7 +2105,7 @@ impl BackofficeApp {
                             let color = if e.floating_pnl > 0.0 {
                                 theme::accent()
                             } else if e.floating_pnl < 0.0 {
-                                theme::DANGER
+                                theme::danger()
                             } else {
                                 ui.visuals().text_color()
                             };
@@ -1812,7 +2146,7 @@ impl BackofficeApp {
                 .header(28.0, |mut header| {
                     for label in ["Account", "Client", "Symbol", "Side", "Volume", "Open", "Current", "S/L", "T/P", "Floating P/L", "Opened", "Action"] {
                         header.col(|ui| {
-                            ui.label(egui::RichText::new(label.to_uppercase()).size(11.0).color(theme::TEXT_3));
+                            ui.label(egui::RichText::new(label.to_uppercase()).size(11.0).color(theme::text_3()));
                         });
                     }
                 })
@@ -1832,7 +2166,7 @@ impl BackofficeApp {
                             ui.monospace(&p.symbol_name);
                         });
                         row.col(|ui| {
-                            let color = if p.side == "BUY" { theme::accent() } else { theme::DANGER };
+                            let color = if p.side == "BUY" { theme::accent() } else { theme::danger() };
                             ui.colored_label(color, &p.side);
                         });
                         row.col(|ui| {
@@ -1854,7 +2188,7 @@ impl BackofficeApp {
                             let pnl_text = p.floating_pnl.as_deref().unwrap_or("-");
                             let color = match p.floating_pnl.as_deref().and_then(|s| s.parse::<f64>().ok()) {
                                 Some(v) if v > 0.0 => theme::accent(),
-                                Some(v) if v < 0.0 => theme::DANGER,
+                                Some(v) if v < 0.0 => theme::danger(),
                                 _ => ui.visuals().text_color(),
                             };
                             ui.colored_label(color, pnl_text);
@@ -1906,7 +2240,7 @@ impl BackofficeApp {
                     ui.label("Reason (required, logged in audit trail)");
                     ui.text_edit_singleline(&mut modify.reason);
                     if let Some(err) = &modify.error {
-                        ui.colored_label(theme::DANGER, err);
+                        ui.colored_label(theme::danger(), err);
                     }
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
@@ -1978,7 +2312,7 @@ impl BackofficeApp {
             });
             ui.add_space(6.0);
             if let Some(err) = &self.live_activity_error {
-                ui.colored_label(theme::DANGER, err);
+                ui.colored_label(theme::danger(), err);
             } else if self.live_activity.is_empty() {
                 ui.weak("No activity yet.");
             } else {
@@ -1989,6 +2323,16 @@ impl BackofficeApp {
         });
     }
 
+    // Direct native port of app/manage/(shell)/accounts/AccountsManager.tsx
+    // -- search, "Add account" (full form, not just name/email/password/
+    // mode), a maker-checker "Pending balance adjustments" queue, the
+    // full 13-column table (Account [+mirrored/custom-pricing badges],
+    // Mode, Type, Country, KYC, Group, Leverage, Balance, Credit, Status,
+    // Max daily loss, Swap-free, Action), and the Adjust-balance modal.
+    // Not ported: the per-account drill-down detail page
+    // (accounts/[id]/ClientActivityView.tsx) -- this screen is the list
+    // only, same as every other native screen's own disclosed table-
+    // chrome gaps (resize/virtualize/column-visibility/bulk-select).
     fn render_accounts(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.horizontal(|ui| {
             if ui.button("Refresh").clicked() {
@@ -1996,51 +2340,189 @@ impl BackofficeApp {
             }
             if ui.button(if self.show_new_account_form { "Cancel" } else { "+ New account" }).clicked() {
                 self.show_new_account_form = !self.show_new_account_form;
+                if self.show_new_account_form {
+                    self.new_account = NewAccountForm { currency: "USD".to_string(), initial_balance: "0".to_string(), ..Default::default() };
+                    self.created_account = None;
+                }
             }
             ui.add(egui::TextEdit::singleline(&mut self.accounts_filter).hint_text("Search by name, email, or account #..."));
             if self.accounts_loading {
                 ui.spinner();
             }
         });
+        ui.label(
+            egui::RichText::new(format!(
+                "{} account{}.{}",
+                self.accounts.len(),
+                if self.accounts.len() == 1 { "" } else { "s" },
+                if !self.can_manage_finance {
+                    " Leverage/status/balance changes, including a starting balance on a new account, require Broker Admin or the Account Finance permission."
+                } else {
+                    ""
+                }
+            ))
+            .size(11.5)
+            .color(theme::text_3()),
+        );
         ui.add_space(8.0);
 
         if self.show_new_account_form {
             theme::card(14).show(ui, |ui| {
-                ui.label("Full name");
-                ui.text_edit_singleline(&mut self.new_account.full_name);
-                ui.label("Email");
-                ui.text_edit_singleline(&mut self.new_account.email);
-                ui.label("Password");
-                ui.add(egui::TextEdit::singleline(&mut self.new_account.password).password(true));
-                ui.checkbox(&mut self.new_account.is_live, "Live account (unchecked = Demo)");
-                ui.add_space(8.0);
-                let valid = !self.new_account.full_name.trim().is_empty()
-                    && self.new_account.email.contains('@')
-                    && self.new_account.password.len() >= 8;
-                if theme::accent_button_enabled(ui, valid, "Create").clicked() {
-                    if let Some(api) = &self.api {
-                        api.create_account(
-                            ctx.clone(),
-                            self.tx.clone(),
-                            NewAccountBody {
-                                full_name: self.new_account.full_name.trim().to_string(),
-                                email: self.new_account.email.trim().to_string(),
-                                password: self.new_account.password.clone(),
-                                account_mode: if self.new_account.is_live { "LIVE".into() } else { "DEMO".into() },
-                            },
-                        );
+                if let Some((account_number, password)) = self.created_account.clone() {
+                    ui.label("Account created. This password is shown once, copy it now, it can't be retrieved again afterward.");
+                    ui.add_space(6.0);
+                    theme::card(10).show(ui, |ui| {
+                        ui.monospace(format!("Account: {account_number}"));
+                        ui.monospace(format!("Password: {password}"));
+                    });
+                    ui.add_space(8.0);
+                    if ui.button("Done").clicked() {
+                        self.show_new_account_form = false;
+                        self.created_account = None;
                     }
-                }
-                if !valid {
-                    ui.weak("Password must be at least 8 characters.");
+                } else {
+                    ui.label("Full name");
+                    ui.text_edit_singleline(&mut self.new_account.full_name);
+                    ui.label("Email");
+                    ui.text_edit_singleline(&mut self.new_account.email);
+                    ui.label("Password");
+                    ui.add(egui::TextEdit::singleline(&mut self.new_account.password).password(true));
+                    ui.horizontal(|ui| {
+                        ui.selectable_value(&mut self.new_account.is_live, false, "Demo");
+                        ui.selectable_value(&mut self.new_account.is_live, true, "Live");
+                    });
+                    if !self.account_types.is_empty() {
+                        ui.label("Account type");
+                        egui::ComboBox::from_id_salt("new-account-type")
+                            .selected_text(
+                                self.account_types
+                                    .iter()
+                                    .find(|t| t.id == self.new_account.account_type_id)
+                                    .map(|t| t.name.clone())
+                                    .unwrap_or_else(|| "Select...".to_string()),
+                            )
+                            .show_ui(ui, |ui| {
+                                for t in self.account_types.iter().filter(|t| t.enabled) {
+                                    ui.selectable_value(&mut self.new_account.account_type_id, t.id.clone(), &t.name);
+                                }
+                            });
+                    }
+                    ui.label("Currency");
+                    ui.text_edit_singleline(&mut self.new_account.currency);
+                    ui.label("Group (blank = ungrouped)");
+                    egui::ComboBox::from_id_salt("new-account-group")
+                        .selected_text(
+                            self.groups
+                                .iter()
+                                .find(|g| g.id == self.new_account.group_id)
+                                .map(|g| g.name.clone())
+                                .unwrap_or_else(|| "Ungrouped".to_string()),
+                        )
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut self.new_account.group_id, String::new(), "Ungrouped");
+                            for g in &self.groups {
+                                ui.selectable_value(&mut self.new_account.group_id, g.id.clone(), &g.name);
+                            }
+                        });
+                    if self.can_manage_finance {
+                        if self.new_account.group_id.is_empty() {
+                            ui.label("Leverage (e.g. 100)");
+                            ui.text_edit_singleline(&mut self.new_account.leverage);
+                        }
+                        ui.label("Starting balance");
+                        ui.text_edit_singleline(&mut self.new_account.initial_balance);
+                    }
+                    ui.label("Country");
+                    ui.text_edit_singleline(&mut self.new_account.country);
+                    ui.label("Phone");
+                    ui.text_edit_singleline(&mut self.new_account.phone);
+                    ui.label("Date of birth (YYYY-MM-DD)");
+                    ui.text_edit_singleline(&mut self.new_account.date_of_birth);
+                    ui.add_space(8.0);
+
+                    let needs_type = self.account_types.iter().any(|t| t.enabled) && self.new_account.account_type_id.is_empty();
+                    let needs_leverage = self.can_manage_finance && self.new_account.group_id.is_empty() && self.new_account.leverage.trim().is_empty();
+                    let valid = !self.new_account.full_name.trim().is_empty()
+                        && self.new_account.email.contains('@')
+                        && self.new_account.password.len() >= 8
+                        && !needs_type
+                        && !needs_leverage;
+                    if theme::accent_button_enabled(ui, valid, "Create").clicked() {
+                        if let Some(api) = &self.api {
+                            api.create_account(
+                                ctx.clone(),
+                                self.tx.clone(),
+                                NewAccountBody {
+                                    full_name: self.new_account.full_name.trim().to_string(),
+                                    email: self.new_account.email.trim().to_string(),
+                                    password: self.new_account.password.clone(),
+                                    account_mode: if self.new_account.is_live { "LIVE".into() } else { "DEMO".into() },
+                                    account_type_id: if self.new_account.account_type_id.is_empty() { None } else { Some(self.new_account.account_type_id.clone()) },
+                                    currency: if self.new_account.currency.trim().is_empty() { "USD".to_string() } else { self.new_account.currency.trim().to_string() },
+                                    group_id: if self.new_account.group_id.is_empty() { None } else { Some(self.new_account.group_id.clone()) },
+                                    leverage: if self.new_account.group_id.is_empty() { self.new_account.leverage.trim().parse::<f64>().ok() } else { None },
+                                    initial_balance: if self.new_account.initial_balance.trim().is_empty() { "0".to_string() } else { self.new_account.initial_balance.trim().to_string() },
+                                    country: if self.new_account.country.trim().is_empty() { None } else { Some(self.new_account.country.trim().to_string()) },
+                                    phone: if self.new_account.phone.trim().is_empty() { None } else { Some(self.new_account.phone.trim().to_string()) },
+                                    date_of_birth: if self.new_account.date_of_birth.trim().is_empty() { None } else { Some(self.new_account.date_of_birth.trim().to_string()) },
+                                },
+                            );
+                        }
+                    }
+                    if needs_leverage {
+                        ui.weak("Enter a leverage.");
+                    } else if self.new_account.password.len() < 8 {
+                        ui.weak("Password must be at least 8 characters.");
+                    }
                 }
             });
             ui.add_space(10.0);
         }
 
         if let Some(err) = &self.accounts_error {
-            ui.colored_label(theme::DANGER, err);
+            ui.colored_label(theme::danger(), err);
             return;
+        }
+
+        // --- Pending balance adjustments (maker-checker) ---
+        if !self.pending_adjustments.is_empty() {
+            theme::card(12).show(ui, |ui| {
+                ui.strong(format!("Pending balance adjustments ({})", self.pending_adjustments.len()));
+                ui.add_space(6.0);
+                let mut decide: Option<(String, &'static str)> = None;
+                for req in self.pending_adjustments.clone() {
+                    let amount: f64 = req.amount.parse().unwrap_or(0.0);
+                    ui.horizontal(|ui| {
+                        let tone = if amount >= 0.0 { theme::accent() } else { theme::danger() };
+                        ui.colored_label(tone, if amount >= 0.0 { "Credit" } else { "Debit" });
+                        ui.monospace(format!("{}{}", if amount >= 0.0 { "+" } else { "" }, req.amount));
+                        ui.vertical(|ui| {
+                            ui.label(format!("{}, {} (balance {})", req.account.account_number, req.account.full_name, req.account.balance));
+                            ui.weak(format!("Requested by {} \u{b7} {} \u{b7} \"{}\"", req.requested_by_name, req.created_at, req.note));
+                            if let Some(err) = self.pending_adjustment_errors.get(&req.id) {
+                                ui.colored_label(theme::danger(), err);
+                            }
+                        });
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let busy = self.reviewing_adjustment_id.as_deref() == Some(req.id.as_str());
+                            if theme::accent_button_enabled(ui, !busy, if busy { "Working..." } else { "Approve" }).clicked() {
+                                decide = Some((req.id.clone(), "approve"));
+                            }
+                            if ui.add_enabled(!busy, egui::Button::new("Reject")).clicked() {
+                                decide = Some((req.id.clone(), "reject"));
+                            }
+                        });
+                    });
+                    ui.separator();
+                }
+                if let Some((id, decision)) = decide {
+                    self.reviewing_adjustment_id = Some(id.clone());
+                    if let Some(api) = &self.api {
+                        api.review_pending_adjustment(ctx.clone(), self.tx.clone(), id, decision.to_string());
+                    }
+                }
+            });
+            ui.add_space(10.0);
         }
 
         let filter = self.accounts_filter.to_lowercase();
@@ -2058,72 +2540,194 @@ impl BackofficeApp {
             .collect();
 
         let mut pending_status_change: Option<(String, String)> = None;
+        let mut pending_group_change: Option<(String, String)> = None;
+        let mut pending_type_change: Option<(String, String)> = None;
+        let mut open_adjust: Option<AdjustBalance> = None;
 
         TableBuilder::new(ui)
             .striped(true)
             .resizable(true)
             .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
             .column(Column::auto().at_least(90.0))
-            .column(Column::remainder().at_least(160.0))
-            .column(Column::auto().at_least(180.0))
             .column(Column::auto().at_least(60.0))
-            .column(Column::auto().at_least(100.0))
-            .column(Column::auto().at_least(70.0))
             .column(Column::auto().at_least(110.0))
+            .column(Column::auto().at_least(80.0))
+            .column(Column::auto().at_least(80.0))
+            .column(Column::auto().at_least(130.0))
+            .column(Column::auto().at_least(70.0))
             .column(Column::auto().at_least(100.0))
-            .column(Column::auto().at_least(120.0))
-            .header(28.0, |mut header| {
-                for label in ["Account", "Client", "Email", "Mode", "Balance", "Lev.", "Group", "Status", "Action"] {
+            .column(Column::auto().at_least(90.0))
+            .column(Column::auto().at_least(100.0))
+            .column(Column::auto().at_least(90.0))
+            .column(Column::auto().at_least(80.0))
+            .column(Column::remainder().at_least(130.0))
+            .header(26.0, |mut header| {
+                for label in ["Account", "Mode", "Type", "Country", "KYC", "Group", "Leverage", "Balance", "Credit", "Status", "Max daily loss", "Swap-free", "Action"] {
                     header.col(|ui| {
-                        ui.label(egui::RichText::new(label.to_uppercase()).size(11.5).color(theme::TEXT_3));
+                        ui.label(egui::RichText::new(label.to_uppercase()).size(10.5).color(theme::text_3()));
                     });
                 }
             })
             .body(|body| {
-                body.rows(26.0, visible_indices.len(), |mut row| {
+                body.rows(30.0, visible_indices.len(), |mut row| {
                     let a = &self.accounts[visible_indices[row.index()]];
                     row.col(|ui| {
-                        ui.monospace(&a.account_number);
-                    });
-                    row.col(|ui| {
-                        ui.label(&a.full_name);
-                    });
-                    row.col(|ui| {
-                        ui.weak(&a.email);
+                        ui.vertical(|ui| {
+                            ui.monospace(&a.account_number);
+                            ui.weak(format!("{}, {}", a.full_name, a.email));
+                            if let Some(m) = &a.mirror {
+                                ui.colored_label(theme::accent(), format!("Mirrored: {} \u{d7}{}", if m.direction == "REVERSE" { "Reverse" } else { "Same" }, m.multiplier));
+                            }
+                            if a.has_custom_pricing {
+                                ui.colored_label(theme::warning(), "Custom pricing");
+                            }
+                        });
                     });
                     row.col(|ui| {
                         ui.label(&a.account_mode);
                     });
                     row.col(|ui| {
-                        ui.monospace(format!("{} {}", a.currency, a.balance));
+                        let current = a.account_type_name.clone().unwrap_or_else(|| "-".to_string());
+                        egui::ComboBox::from_id_salt(format!("acct-type-{}", a.id)).selected_text(current).show_ui(ui, |ui| {
+                            for t in self.account_types.iter().filter(|t| t.enabled || Some(&t.id) == a.account_type_id.as_ref()) {
+                                if ui.selectable_label(a.account_type_id.as_deref() == Some(t.id.as_str()), &t.name).clicked() {
+                                    pending_type_change = Some((a.id.clone(), t.id.clone()));
+                                }
+                            }
+                        });
+                    });
+                    row.col(|ui| {
+                        ui.weak(a.country.as_deref().unwrap_or("-"));
+                    });
+                    row.col(|ui| match a.kyc_status.as_deref() {
+                        Some("APPROVED") => {
+                            ui.colored_label(theme::accent(), "APPROVED");
+                        }
+                        Some("REJECTED") => {
+                            ui.colored_label(theme::danger(), "REJECTED");
+                        }
+                        Some(s) => {
+                            ui.colored_label(theme::warning(), s);
+                        }
+                        None => {
+                            ui.weak("NO KYC");
+                        }
+                    });
+                    row.col(|ui| {
+                        let current = a.group_name.clone().unwrap_or_else(|| "Ungrouped".to_string());
+                        egui::ComboBox::from_id_salt(format!("acct-group-{}", a.id)).selected_text(current).show_ui(ui, |ui| {
+                            if ui.selectable_label(a.group_id.is_none(), "Ungrouped").clicked() {
+                                pending_group_change = Some((a.id.clone(), String::new()));
+                            }
+                            for g in &self.groups {
+                                if ui.selectable_label(a.group_id.as_deref() == Some(g.id.as_str()), &g.name).clicked() {
+                                    pending_group_change = Some((a.id.clone(), g.id.clone()));
+                                }
+                            }
+                        });
                     });
                     row.col(|ui| {
                         ui.monospace(format!("1:{}", a.leverage));
                     });
                     row.col(|ui| {
-                        ui.weak(a.group_name.as_deref().unwrap_or("-"));
+                        ui.monospace(format!("{} {}", a.currency, a.balance));
+                    });
+                    row.col(|ui| {
+                        ui.monospace(&a.credit);
                     });
                     row.col(|ui| {
                         let color = match a.status.as_str() {
                             "ACTIVE" => theme::accent(),
-                            "SUSPENDED" => theme::WARNING,
-                            _ => theme::TEXT_3,
+                            "SUSPENDED" => theme::warning(),
+                            _ => theme::text_3(),
                         };
                         ui.colored_label(color, &a.status);
                     });
                     row.col(|ui| {
-                        let next_status = if a.status == "ACTIVE" { "SUSPENDED" } else { "ACTIVE" };
-                        let action_label = if a.status == "ACTIVE" { "Suspend" } else { "Reactivate" };
-                        if a.status != "CLOSED" && ui.small_button(action_label).clicked() {
-                            pending_status_change = Some((a.id.clone(), next_status.to_string()));
+                        ui.monospace(a.max_daily_loss.as_deref().unwrap_or("-"));
+                    });
+                    row.col(|ui| {
+                        ui.label(match a.swap_free {
+                            Some(true) => "Free",
+                            Some(false) => "Charged",
+                            None => "Inherit",
+                        });
+                    });
+                    row.col(|ui| {
+                        if self.can_manage_finance {
+                            if ui.small_button("Adjust").clicked() {
+                                open_adjust = Some(AdjustBalance { account_id: a.id.clone(), account_number: a.account_number.clone(), is_credit: true, amount: String::new(), note: String::new(), error: None });
+                            }
+                            let next_status = if a.status == "ACTIVE" { "SUSPENDED" } else { "ACTIVE" };
+                            let action_label = if a.status == "ACTIVE" { "Suspend" } else { "Reactivate" };
+                            if a.status != "CLOSED" && ui.small_button(action_label).clicked() {
+                                pending_status_change = Some((a.id.clone(), next_status.to_string()));
+                            }
                         }
                     });
                 });
             });
 
+        if let Some(target) = open_adjust {
+            self.adjust_target = Some(target);
+        }
         if let Some((account_id, status)) = pending_status_change {
             if let Some(api) = &self.api {
                 api.set_account_status(ctx.clone(), self.tx.clone(), account_id, status);
+            }
+        }
+        if let Some((account_id, group_id)) = pending_group_change {
+            if let Some(api) = &self.api {
+                let value = if group_id.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(group_id) };
+                api.patch_account(ctx.clone(), self.tx.clone(), account_id, serde_json::json!({ "groupId": value }), "account moved to a new group".to_string());
+            }
+        }
+        if let Some((account_id, type_id)) = pending_type_change {
+            if let Some(api) = &self.api {
+                api.patch_account(ctx.clone(), self.tx.clone(), account_id, serde_json::json!({ "accountTypeId": type_id }), "account type updated".to_string());
+            }
+        }
+
+        // --- Adjust balance modal ---
+        if let Some(mut adjust) = self.adjust_target.take() {
+            let mut open = true;
+            let mut submit = false;
+            egui::Window::new(format!("Adjust balance - {}", adjust.account_number))
+                .id(egui::Id::new("adjust-balance-window"))
+                .collapsible(false)
+                .resizable(false)
+                .open(&mut open)
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.selectable_value(&mut adjust.is_credit, true, "Credit (add funds)");
+                        ui.selectable_value(&mut adjust.is_credit, false, "Debit (remove funds)");
+                    });
+                    ui.label("Amount (USD)");
+                    ui.add(egui::TextEdit::singleline(&mut adjust.amount).hint_text("0.00"));
+                    ui.label("Reason (required, logged in audit trail)");
+                    ui.text_edit_multiline(&mut adjust.note);
+                    if let Some(err) = &adjust.error {
+                        ui.colored_label(theme::danger(), err);
+                    }
+                    ui.add_space(6.0);
+                    if theme::accent_button(ui, "Apply adjustment").clicked() {
+                        submit = true;
+                    }
+                });
+            if submit {
+                let magnitude: Option<f64> = adjust.amount.trim().parse().ok();
+                if magnitude.is_none_or(|m| m <= 0.0) {
+                    adjust.error = Some("Enter a valid amount".to_string());
+                    self.adjust_target = Some(adjust);
+                } else if adjust.note.trim().is_empty() {
+                    adjust.error = Some("Reason is required for the audit trail".to_string());
+                    self.adjust_target = Some(adjust);
+                } else if let Some(api) = &self.api {
+                    let signed = if adjust.is_credit { magnitude.unwrap() } else { -magnitude.unwrap() };
+                    api.adjust_balance(ctx.clone(), self.tx.clone(), adjust.account_id.clone(), signed, adjust.note.trim().to_string());
+                }
+            } else if open {
+                self.adjust_target = Some(adjust);
             }
         }
     }
@@ -2149,15 +2753,15 @@ impl BackofficeApp {
         // --- Dealer ON/OFF toggle ---
         if let Some(state) = &self.dealer_toggle {
             let dealer_on = state.dealer_on;
-            let bg = if dealer_on { theme::BG_1 } else { theme::WARNING.gamma_multiply(0.12) };
+            let bg = if dealer_on { theme::bg_1() } else { theme::warning().gamma_multiply(0.12) };
             egui::Frame::new()
                 .fill(bg)
-                .stroke(egui::Stroke::new(1.0_f32, if dealer_on { theme::BORDER } else { theme::WARNING }))
+                .stroke(egui::Stroke::new(1.0_f32, if dealer_on { theme::border() } else { theme::warning() }))
                 .corner_radius(egui::CornerRadius::same(10))
                 .inner_margin(egui::Margin::symmetric(16, 12))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        let switch_color = if dealer_on { theme::accent() } else { theme::TEXT_3 };
+                        let switch_color = if dealer_on { theme::accent() } else { theme::text_3() };
                         let (rect, resp) = ui.allocate_exact_size(egui::vec2(48.0, 26.0), egui::Sense::click());
                         ui.painter().rect_filled(rect, egui::CornerRadius::same(13), switch_color);
                         let knob_x = if dealer_on { rect.right() - 15.0 } else { rect.left() + 15.0 };
@@ -2213,7 +2817,7 @@ impl BackofficeApp {
         }
 
         if let Some(err) = &self.dealing_error {
-            ui.colored_label(theme::DANGER, err);
+            ui.colored_label(theme::danger(), err);
         }
 
         let mut accept_id: Option<String> = None;
@@ -2232,7 +2836,7 @@ impl BackofficeApp {
             for order in self.dealing_queue.clone() {
                 theme::card(10).show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        let side_color = if order.side == "BUY" { theme::accent() } else { theme::DANGER };
+                        let side_color = if order.side == "BUY" { theme::accent() } else { theme::danger() };
                         ui.monospace(&order.account_number);
                         ui.label(&order.account_full_name);
                         ui.separator();
@@ -2295,7 +2899,7 @@ impl BackofficeApp {
                             }
                         });
                         if let Some(err) = &pending.error {
-                            ui.colored_label(theme::DANGER, err);
+                            ui.colored_label(theme::danger(), err);
                         }
                         if !cancelled && confirm_requote.is_none() {
                             self.dealing_requote = Some(pending);
@@ -2318,7 +2922,7 @@ impl BackofficeApp {
             let mut withdraw_id: Option<String> = None;
             for row in &self.dealing_requoted {
                 ui.horizontal(|ui| {
-                    let side_color = if row.side == "BUY" { theme::accent() } else { theme::DANGER };
+                    let side_color = if row.side == "BUY" { theme::accent() } else { theme::danger() };
                     ui.monospace(&row.account_number);
                     ui.label(&row.account_full_name);
                     ui.separator();
@@ -2383,7 +2987,7 @@ impl BackofficeApp {
             let filter = |accid: &str| self.dealing_desk_account_filter == "ALL" || self.dealing_desk_account_filter == accid;
             let resting: Vec<&RestingOrderRow> = self.dealing_desk_resting.iter().filter(|r| filter(&r.account_id)).collect();
             if let Some(err) = &self.dealing_desk_error {
-                ui.colored_label(theme::DANGER, err);
+                ui.colored_label(theme::danger(), err);
             } else if resting.is_empty() {
                 ui.weak("No resting orders on dealing-group accounts right now.");
             } else {
@@ -2404,7 +3008,7 @@ impl BackofficeApp {
                     .header(26.0, |mut header| {
                         for label in ["Account", "Client", "Symbol", "Type", "Side", "Volume", "Price", "S/L", "T/P", "Placed"] {
                             header.col(|ui| {
-                                ui.label(egui::RichText::new(label.to_uppercase()).size(11.0).color(theme::TEXT_3));
+                                ui.label(egui::RichText::new(label.to_uppercase()).size(11.0).color(theme::text_3()));
                             });
                         }
                     })
@@ -2424,7 +3028,7 @@ impl BackofficeApp {
                                 ui.label(&r.order_type);
                             });
                             row.col(|ui| {
-                                let color = if r.side == "BUY" { theme::accent() } else { theme::DANGER };
+                                let color = if r.side == "BUY" { theme::accent() } else { theme::danger() };
                                 ui.colored_label(color, &r.side);
                             });
                             row.col(|ui| {
@@ -2469,6 +3073,17 @@ impl BackofficeApp {
         });
     }
 
+    // Direct native port of GroupsManager.tsx + its own
+    // SymbolPricingEditor.tsx mount: the group list (name, leverage,
+    // margin call %, stop out %, max lot, restriction, routing badge,
+    // swap-free, default) and, drilled into a group, the full 5-field
+    // per-symbol pricing editor (spread markup OR target total spread
+    // pips -- mutually exclusive, expressed as a mode toggle --
+    // commission/lot, swap long, swap short, each with its own "inherits:
+    // X" hint when blank). Not ported (disclosed, not silent): the
+    // Create/Edit group modal itself (name/leverage/margin levels/
+    // restriction/routing-type selector/force-dealing choice) and group
+    // delete -- this pass is the list + pricing tab only.
     fn render_groups(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         if let Some(group) = self.selected_group.clone() {
             ui.horizontal(|ui| {
@@ -2481,72 +3096,111 @@ impl BackofficeApp {
                     ui.spinner();
                 }
             });
-            ui.weak("Editing Spread markup and Commission per lot only in this pass -- swap rates and target-spread mode aren't wired here yet.");
             ui.add_space(8.0);
 
             if let Some(err) = &self.group_pricing_error {
-                ui.colored_label(theme::DANGER, err);
+                ui.colored_label(theme::danger(), err);
                 return;
             }
 
-            let mut save_target: Option<(String, String, String)> = None;
+            let mut save_target: Option<(String, PricingEditRow)> = None;
 
             TableBuilder::new(ui)
                 .striped(true)
                 .resizable(true)
                 .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                .column(Column::exact(100.0))
-                .column(Column::exact(160.0))
-                .column(Column::exact(160.0))
+                .column(Column::exact(90.0))
+                .column(Column::exact(80.0))
+                .column(Column::exact(150.0))
+                .column(Column::exact(140.0))
                 .column(Column::exact(110.0))
-                .column(Column::remainder().at_least(90.0))
-                .header(28.0, |mut header| {
-                    for label in ["Symbol", "Spread markup (pips)", "Commission / lot", "Override?", "Action"] {
+                .column(Column::exact(110.0))
+                .column(Column::exact(90.0))
+                .column(Column::remainder().at_least(70.0))
+                .header(26.0, |mut header| {
+                    for label in ["Symbol", "Mode", "Spread / Target", "Commission / lot", "Swap long", "Swap short", "Override?", "Action"] {
                         header.col(|ui| {
-                            ui.label(egui::RichText::new(label.to_uppercase()).size(11.5).color(theme::TEXT_3));
+                            ui.label(egui::RichText::new(label.to_uppercase()).size(10.5).color(theme::text_3()));
                         });
                     }
                 })
                 .body(|body| {
-                    body.rows(28.0, self.group_pricing.len(), |mut row| {
+                    body.rows(30.0, self.group_pricing.len(), |mut row| {
                         let p = &self.group_pricing[row.index()];
-                        let (spread_input, commission_input) =
-                            self.pricing_edit_buffer.entry(p.symbol_id.clone()).or_insert_with(|| {
-                                (p.spread_markup.clone().unwrap_or_default(), p.commission_per_lot.clone().unwrap_or_default())
-                            });
+                        let edit = self.pricing_edit_buffer.entry(p.symbol_id.clone()).or_insert_with(|| PricingEditRow {
+                            is_target_mode: p.target_total_spread_pips.is_some(),
+                            spread_markup: p.spread_markup.clone().unwrap_or_default(),
+                            target_total_spread_pips: p.target_total_spread_pips.clone().unwrap_or_default(),
+                            commission_per_lot: p.commission_per_lot.clone().unwrap_or_default(),
+                            swap_long: p.swap_long.clone().unwrap_or_default(),
+                            swap_short: p.swap_short.clone().unwrap_or_default(),
+                        });
                         row.col(|ui| {
                             ui.monospace(&p.symbol_name);
                         });
                         row.col(|ui| {
-                            ui.add(
-                                egui::TextEdit::singleline(spread_input)
-                                    .hint_text(format!("inherit ({})", p.default_spread_markup)),
-                            );
+                            egui::ComboBox::from_id_salt(format!("pricing-mode-{}", p.symbol_id))
+                                .selected_text(if edit.is_target_mode { "Target" } else { "Markup" })
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(&mut edit.is_target_mode, false, "Markup");
+                                    ui.selectable_value(&mut edit.is_target_mode, true, "Target");
+                                });
                         });
                         row.col(|ui| {
-                            ui.add(
-                                egui::TextEdit::singleline(commission_input)
-                                    .hint_text(format!("inherit ({})", p.default_commission_per_lot)),
-                            );
+                            if edit.is_target_mode {
+                                ui.add(egui::TextEdit::singleline(&mut edit.target_total_spread_pips).hint_text(
+                                    p.default_spread_markup.as_deref().map(|d| format!("inherits: {d}")).unwrap_or_else(|| "inherit".to_string()),
+                                ));
+                            } else {
+                                ui.add(egui::TextEdit::singleline(&mut edit.spread_markup).hint_text(
+                                    p.default_spread_markup.as_deref().map(|d| format!("inherits: {d}")).unwrap_or_else(|| "inherit".to_string()),
+                                ));
+                            }
+                        });
+                        row.col(|ui| {
+                            ui.add(egui::TextEdit::singleline(&mut edit.commission_per_lot).hint_text(
+                                p.default_commission_per_lot.as_deref().map(|d| format!("inherits: {d}")).unwrap_or_else(|| "inherit".to_string()),
+                            ));
+                        });
+                        row.col(|ui| {
+                            ui.add(egui::TextEdit::singleline(&mut edit.swap_long).hint_text(
+                                p.default_swap_long.as_deref().map(|d| format!("inherits: {d}")).unwrap_or_else(|| "inherit".to_string()),
+                            ));
+                        });
+                        row.col(|ui| {
+                            ui.add(egui::TextEdit::singleline(&mut edit.swap_short).hint_text(
+                                p.default_swap_short.as_deref().map(|d| format!("inherits: {d}")).unwrap_or_else(|| "inherit".to_string()),
+                            ));
                         });
                         row.col(|ui| {
                             if p.has_override {
                                 ui.colored_label(theme::accent(), "custom");
                             } else {
-                                ui.weak("broker default");
+                                ui.weak("default");
                             }
                         });
                         row.col(|ui| {
                             if theme::accent_button(ui, "Save").clicked() {
-                                save_target = Some((p.symbol_id.clone(), spread_input.clone(), commission_input.clone()));
+                                save_target = Some((p.symbol_id.clone(), edit.clone()));
                             }
                         });
                     });
                 });
 
-            if let Some((symbol_id, spread, commission)) = save_target {
+            if let Some((symbol_id, edit)) = save_target {
                 if let Some(api) = &self.api {
-                    api.update_group_pricing(ctx.clone(), self.tx.clone(), group.id.clone(), symbol_id, spread, commission);
+                    api.update_group_pricing(
+                        ctx.clone(),
+                        self.tx.clone(),
+                        group.id.clone(),
+                        symbol_id,
+                        if edit.is_target_mode { "target" } else { "markup" }.to_string(),
+                        edit.spread_markup,
+                        edit.target_total_spread_pips,
+                        edit.commission_per_lot,
+                        edit.swap_long,
+                        edit.swap_short,
+                    );
                 }
             }
             return;
@@ -2563,7 +3217,7 @@ impl BackofficeApp {
         ui.add_space(8.0);
 
         if let Some(err) = &self.groups_error {
-            ui.colored_label(theme::DANGER, err);
+            ui.colored_label(theme::danger(), err);
             return;
         }
 
@@ -2572,35 +3226,74 @@ impl BackofficeApp {
             .striped(true)
             .resizable(true)
             .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-            .column(Column::remainder().at_least(160.0))
+            .column(Column::remainder().at_least(140.0))
+            .column(Column::auto().at_least(80.0))
             .column(Column::auto().at_least(90.0))
+            .column(Column::auto().at_least(80.0))
+            .column(Column::auto().at_least(70.0))
             .column(Column::auto().at_least(90.0))
-            .column(Column::auto().at_least(90.0))
-            .column(Column::auto().at_least(140.0))
-            .header(28.0, |mut header| {
-                for label in ["Name", "Type", "Tier", "Leverage", "Action"] {
+            .column(Column::auto().at_least(150.0))
+            .column(Column::auto().at_least(70.0))
+            .column(Column::auto().at_least(60.0))
+            .column(Column::auto().at_least(120.0))
+            .header(26.0, |mut header| {
+                for label in ["Name", "Leverage", "Margin call %", "Stop out %", "Max lot", "Restriction", "Routing", "Swap-free", "Default", "Action"] {
                     header.col(|ui| {
-                        ui.label(egui::RichText::new(label.to_uppercase()).size(11.5).color(theme::TEXT_3));
+                        ui.label(egui::RichText::new(label.to_uppercase()).size(10.0).color(theme::text_3()));
                     });
                 }
             })
             .body(|body| {
-                body.rows(26.0, self.groups.len(), |mut row| {
+                body.rows(28.0, self.groups.len(), |mut row| {
                     let g = &self.groups[row.index()];
                     row.col(|ui| {
                         ui.label(&g.name);
-                        if g.is_default {
-                            ui.weak("(default)");
-                        }
-                    });
-                    row.col(|ui| {
-                        ui.monospace(&g.group_type);
-                    });
-                    row.col(|ui| {
-                        ui.label(&g.tier);
                     });
                     row.col(|ui| {
                         ui.monospace(format!("1:{}", g.leverage));
+                    });
+                    row.col(|ui| {
+                        ui.monospace(&g.margin_call_level);
+                    });
+                    row.col(|ui| {
+                        ui.monospace(&g.stop_out_level);
+                    });
+                    row.col(|ui| {
+                        ui.monospace(if g.max_lot_size.is_empty() { "-" } else { &g.max_lot_size });
+                    });
+                    row.col(|ui| {
+                        ui.label(match g.trading_restriction.as_str() {
+                            "BUY_ONLY" => "Buy only",
+                            "SELL_ONLY" => "Sell only",
+                            _ => "Both",
+                        });
+                    });
+                    row.col(|ui| {
+                        // routingBadge() in GroupsManager.tsx: LP -> A-Book,
+                        // groupType!=DEMO && dealingMode==AUTO -> B-Book
+                        // Auto, else Dealing (Reverse if a mirror rule
+                        // sources from this group).
+                        let (label, color) = if g.group_type == "LP" {
+                            ("A-Book (LP)", theme::accent())
+                        } else if g.group_type != "DEMO" && g.dealing_mode == "AUTO" {
+                            ("B-Book (Auto)", theme::warning())
+                        } else if g.has_mirror_rule {
+                            ("Reverse (Mirror)", theme::warning())
+                        } else {
+                            ("Dealing", theme::accent())
+                        };
+                        let suffix = if g.dealing_mode == "MANUAL" { " \u{b7} Force" } else { "" };
+                        ui.colored_label(color, format!("{label}{suffix}"));
+                    });
+                    row.col(|ui| {
+                        ui.label(match g.swap_free {
+                            Some(true) => "\u{2713}",
+                            Some(false) => "\u{2717}",
+                            None => "-",
+                        });
+                    });
+                    row.col(|ui| {
+                        ui.label(if g.is_default { "\u{2713}" } else { "-" });
                     });
                     row.col(|ui| {
                         if ui.small_button("Manage pricing").clicked() {
@@ -2618,6 +3311,136 @@ impl BackofficeApp {
         }
     }
 
+    // Direct native port of app/manage/(shell)/kyc/KycRequestsManager.tsx
+    // -- identity document submissions (KycRecord), separate model/route
+    // from Client KYC's own suitability-questionnaire flow below. Table:
+    // Account, Document type, Documents (Front/Back -- fetched through
+    // this app's own session and shown in-app, since an OS-browser link
+    // can't carry this app's cookie jar), Status, Submitted, Action.
+    fn render_kyc(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        ui.horizontal(|ui| {
+            if ui.button("Refresh").clicked() {
+                self.fetch(ctx, Screen::Kyc);
+            }
+            if self.kyc_loading {
+                ui.spinner();
+            }
+            ui.weak(format!("{} KYC submissions", self.kyc.len()));
+        });
+        ui.add_space(8.0);
+
+        if let Some(err) = &self.kyc_error {
+            ui.colored_label(theme::danger(), err);
+            return;
+        }
+
+        let mut approve_id: Option<String> = None;
+        let mut confirm_reject: Option<(String, String)> = None;
+        let mut view_document: Option<(String, &'static str)> = None;
+
+        for record in self.kyc.clone() {
+            theme::card(10).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        ui.monospace(&record.account_number);
+                        ui.weak(format!(
+                            "{}{}{}",
+                            record.account_full_name,
+                            record.account_country.as_deref().map(|c| format!(", {c}")).unwrap_or_default(),
+                            record.account_phone.as_deref().map(|p| format!(", {p}")).unwrap_or_default()
+                        ));
+                    });
+                    ui.monospace(&record.document_type);
+                    if ui.small_button("Front").clicked() {
+                        view_document = Some((record.id.clone(), "front"));
+                    }
+                    if ui.small_button("Back").clicked() {
+                        view_document = Some((record.id.clone(), "back"));
+                    }
+                    let status_color = match record.status.as_str() {
+                        "APPROVED" => theme::accent(),
+                        "REJECTED" => theme::danger(),
+                        _ => theme::warning(),
+                    };
+                    ui.colored_label(status_color, &record.status);
+                    if record.status == "REJECTED" {
+                        if let Some(reason) = &record.rejection_reason {
+                            ui.weak(reason);
+                        }
+                    }
+                    ui.weak(record.created_at.get(0..10).unwrap_or(&record.created_at));
+                    if record.status == "PENDING" {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if theme::accent_button(ui, "Approve").clicked() {
+                                approve_id = Some(record.id.clone());
+                            }
+                            if ui.button("Reject").clicked() {
+                                self.kyc_docs_reject = Some(PendingReject { id: record.id.clone(), reason: String::new() });
+                            }
+                        });
+                    }
+                });
+                if self.kyc_docs_reject.as_ref().is_some_and(|p| p.id == record.id) {
+                    let mut pending = self.kyc_docs_reject.take().unwrap();
+                    let mut cancelled = false;
+                    ui.horizontal(|ui| {
+                        ui.label("Reason (required, shown to the client):");
+                        ui.text_edit_singleline(&mut pending.reason);
+                        if theme::danger_button_enabled(ui, !pending.reason.trim().is_empty(), "Reject submission").clicked() {
+                            confirm_reject = Some((pending.id.clone(), pending.reason.clone()));
+                        }
+                        if ui.button("Cancel").clicked() {
+                            cancelled = true;
+                        }
+                    });
+                    if !cancelled && confirm_reject.is_none() {
+                        self.kyc_docs_reject = Some(pending);
+                    }
+                }
+            });
+        }
+        if self.kyc.is_empty() && !self.kyc_loading {
+            ui.weak("No KYC submissions.");
+        }
+
+        if let Some(id) = approve_id {
+            if let Some(api) = &self.api {
+                api.kyc_action(ctx.clone(), self.tx.clone(), id, "APPROVE".to_string(), None);
+            }
+        }
+        if let Some((id, reason)) = confirm_reject {
+            if let Some(api) = &self.api {
+                api.kyc_action(ctx.clone(), self.tx.clone(), id, "REJECT".to_string(), Some(reason));
+            }
+        }
+        if let Some((id, side)) = view_document {
+            self.kyc_document = None;
+            self.kyc_document_error = None;
+            self.kyc_document_loading = true;
+            if let Some(api) = &self.api {
+                api.fetch_kyc_document(ctx.clone(), self.tx.clone(), id, side.to_string());
+            }
+        }
+
+        if self.kyc_document_loading || self.kyc_document.is_some() || self.kyc_document_error.is_some() {
+            let mut open = true;
+            egui::Window::new("KYC document").id(egui::Id::new("kyc-document-window")).collapsible(false).open(&mut open).show(ctx, |ui| {
+                if self.kyc_document_loading {
+                    ui.spinner();
+                    ui.label("Loading document...");
+                } else if let Some(err) = &self.kyc_document_error {
+                    ui.colored_label(theme::danger(), err);
+                } else if let Some(texture) = &self.kyc_document {
+                    ui.add(egui::Image::new(texture).max_width(560.0).max_height(560.0));
+                }
+            });
+            if !open {
+                self.kyc_document = None;
+                self.kyc_document_error = None;
+            }
+        }
+    }
+
     fn render_client_kyc(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.horizontal(|ui| {
             if ui.button("Refresh").clicked() {
@@ -2630,38 +3453,78 @@ impl BackofficeApp {
         ui.add_space(8.0);
 
         if let Some(err) = &self.client_kyc_error {
-            ui.colored_label(theme::DANGER, err);
+            ui.colored_label(theme::danger(), err);
             return;
         }
 
         let mut approve_id: Option<String> = None;
         let mut confirm_reject: Option<(String, String)> = None;
+        let mut toggle_expand: Option<String> = None;
 
         for record in self.client_kyc.clone() {
             theme::card(10).show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(&record.client_full_name);
-                    ui.weak(&record.client_email);
-                    ui.weak(record.client_country.as_deref().unwrap_or("-"));
+                    ui.vertical(|ui| {
+                        ui.label(&record.client_full_name);
+                        ui.weak(format!(
+                            "{}{}{}",
+                            record.client_email,
+                            record.client_country.as_deref().map(|c| format!(", {c}")).unwrap_or_default(),
+                            record.client_phone.as_deref().map(|p| format!(", {p}")).unwrap_or_default()
+                        ));
+                    });
                     ui.monospace(&record.document_type);
+                    if record.has_address_proof {
+                        ui.weak("+address proof");
+                    }
                     ui.weak(record.created_at.get(0..10).unwrap_or(&record.created_at));
                     let status_color = match record.status.as_str() {
                         "APPROVED" => theme::accent(),
-                        "REJECTED" => theme::DANGER,
-                        _ => theme::WARNING,
+                        "REJECTED" => theme::danger(),
+                        _ => theme::warning(),
                     };
                     ui.colored_label(status_color, &record.status);
-                    if record.status == "PENDING" {
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if record.status == "REJECTED" {
+                        if let Some(reason) = &record.rejection_reason {
+                            ui.weak(reason);
+                        }
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if record.status == "PENDING" {
                             if theme::accent_button(ui, "Approve").clicked() {
                                 approve_id = Some(record.id.clone());
                             }
                             if ui.button("Reject").clicked() {
                                 self.kyc_reject = Some(PendingReject { id: record.id.clone(), reason: String::new() });
                             }
-                        });
-                    }
+                        }
+                        let expanded = self.client_kyc_expanded.contains(&record.id);
+                        if ui.button(if expanded { "Hide suitability" } else { "View suitability" }).clicked() {
+                            toggle_expand = Some(record.id.clone());
+                        }
+                    });
                 });
+                if self.client_kyc_expanded.contains(&record.id) {
+                    ui.add_space(6.0);
+                    ui.separator();
+                    egui::Grid::new(format!("suitability-{}", record.id)).num_columns(2).spacing([16.0, 4.0]).show(ui, |ui| {
+                        ui.weak("Annual income");
+                        ui.label(record.annual_income.as_deref().unwrap_or("-"));
+                        ui.end_row();
+                        ui.weak("Source of funds");
+                        ui.label(record.source_of_funds.as_deref().unwrap_or("-"));
+                        ui.end_row();
+                        ui.weak("Trading experience");
+                        ui.label(record.trading_experience.as_deref().unwrap_or("-"));
+                        ui.end_row();
+                        ui.weak("Employment status");
+                        ui.label(record.employment_status.as_deref().unwrap_or("-"));
+                        ui.end_row();
+                        ui.weak("Risk tolerance");
+                        ui.label(record.risk_tolerance.as_deref().unwrap_or("-"));
+                        ui.end_row();
+                    });
+                }
                 if self.kyc_reject.as_ref().is_some_and(|p| p.id == record.id) {
                     let mut pending = self.kyc_reject.take().unwrap();
                     let mut cancelled = false;
@@ -2692,6 +3555,11 @@ impl BackofficeApp {
                 api.client_kyc_action(ctx.clone(), self.tx.clone(), id, "REJECT".to_string(), Some(reason));
             }
         }
+        if let Some(id) = toggle_expand {
+            if !self.client_kyc_expanded.remove(&id) {
+                self.client_kyc_expanded.insert(id);
+            }
+        }
     }
 
     fn render_live_account_requests(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
@@ -2706,7 +3574,7 @@ impl BackofficeApp {
         ui.add_space(8.0);
 
         if let Some(err) = &self.live_account_requests_error {
-            ui.colored_label(theme::DANGER, err);
+            ui.colored_label(theme::danger(), err);
             return;
         }
 
@@ -2722,8 +3590,8 @@ impl BackofficeApp {
                     ui.weak(req.created_at.get(0..10).unwrap_or(&req.created_at));
                     let status_color = match req.status.as_str() {
                         "APPROVED" => theme::accent(),
-                        "REJECTED" => theme::DANGER,
-                        _ => theme::WARNING,
+                        "REJECTED" => theme::danger(),
+                        _ => theme::warning(),
                     };
                     ui.colored_label(status_color, &req.status);
                     if req.status == "PENDING" {
@@ -2769,42 +3637,155 @@ impl BackofficeApp {
         }
     }
 
+    // Direct native port of app/manage/(shell)/notifications/
+    // NotificationsManager.tsx -- unread-count-in-label "Mark all read"
+    // (shown only when there's something to mark), per-row card
+    // (accent-highlighted while unread), type badge + title + body +
+    // timestamp, and per-row actions: "Reset password" for
+    // PASSWORD_RESET_REQUESTED (opens a modal, generates + shows a new
+    // password once), "View" for every other type with a real
+    // SECTION_FOR_TYPE mapping (jumps to that screen AND marks read), and
+    // a plain "Mark read" otherwise.
     fn render_notifications(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let unread_count = self.notifications.iter().filter(|n| !n.read).count();
         ui.horizontal(|ui| {
             if ui.button("Refresh").clicked() {
                 self.fetch(ctx, Screen::Notifications);
             }
-            if ui.button("Mark all read").clicked() {
-                if let Some(api) = &self.api {
-                    api.mark_all_notifications_read(ctx.clone(), self.tx.clone());
-                }
-            }
             if self.notifications_loading {
                 ui.spinner();
+            }
+            if unread_count > 0 {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button(format!("Mark all read ({unread_count})")).clicked() {
+                        if let Some(api) = &self.api {
+                            api.mark_all_notifications_read(ctx.clone(), self.tx.clone());
+                        }
+                    }
+                });
             }
         });
         ui.add_space(8.0);
 
         if let Some(err) = &self.notifications_error {
-            ui.colored_label(theme::DANGER, err);
+            ui.colored_label(theme::danger(), err);
             return;
         }
 
+        if self.notifications.is_empty() && !self.notifications_loading {
+            ui.weak("No notifications yet.");
+        }
+
+        let mut mark_read: Option<String> = None;
+        let mut navigate: Option<(String, Screen)> = None;
+        let mut open_reset: Option<NotificationRow> = None;
+
         egui::ScrollArea::vertical().show(ui, |ui| {
-            for n in &self.notifications {
-                ui.horizontal(|ui| {
-                    if !n.read {
-                        ui.colored_label(theme::accent(), "*");
-                    } else {
-                        ui.weak(" ");
-                    }
-                    ui.monospace(&n.created_at);
-                    ui.weak(&n.notif_type);
-                    ui.strong(&n.title);
-                    ui.label(&n.body);
-                });
+            for n in self.notifications.clone() {
+                let (fill, stroke) = if n.read { (theme::bg_1(), theme::border()) } else { (theme::accent().linear_multiply(0.10), theme::accent()) };
+                egui::Frame::new()
+                    .fill(fill)
+                    .stroke(egui::Stroke::new(1.0_f32, stroke))
+                    .corner_radius(egui::CornerRadius::same(8))
+                    .inner_margin(egui::Margin::symmetric(14, 10))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.vertical(|ui| {
+                                ui.horizontal(|ui| {
+                                    let badge_color = if n.read { theme::text_3() } else { theme::accent() };
+                                    ui.colored_label(badge_color, n.notif_type.replace('_', " "));
+                                    ui.strong(&n.title);
+                                });
+                                ui.label(egui::RichText::new(&n.body).color(theme::text_2()));
+                                ui.label(egui::RichText::new(&n.created_at).size(11.0).color(theme::text_3()));
+                            });
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if !n.read && ui.button("Mark read").clicked() {
+                                    mark_read = Some(n.id.clone());
+                                }
+                                if n.notif_type == "PASSWORD_RESET_REQUESTED" && n.entity_id.is_some() {
+                                    if theme::accent_button(ui, "Reset password").clicked() {
+                                        open_reset = Some(n.clone());
+                                    }
+                                } else if let Some(screen) = section_for_notification_type(&n.notif_type) {
+                                    if theme::accent_button(ui, "View").clicked() {
+                                        navigate = Some((n.id.clone(), screen));
+                                    }
+                                }
+                            });
+                        });
+                    });
+                ui.add_space(6.0);
             }
         });
+
+        if let Some(id) = mark_read {
+            if let Some(api) = &self.api {
+                api.mark_notification_read(ctx.clone(), self.tx.clone(), id);
+            }
+        }
+        if let Some((id, screen)) = navigate {
+            if let Some(api) = &self.api {
+                api.mark_notification_read(ctx.clone(), self.tx.clone(), id);
+            }
+            self.screen = screen;
+            self.ensure_loaded(ctx, screen);
+        }
+        if let Some(row) = open_reset {
+            self.reset_password_target = Some(row);
+            self.reset_password_result = None;
+            self.reset_password_error = None;
+        }
+
+        // --- Reset trader password modal ---
+        if let Some(target) = self.reset_password_target.clone() {
+            let mut open = true;
+            let mut confirm = false;
+            let mut done = false;
+            egui::Window::new("Reset trader password").id(egui::Id::new("reset-password-window")).collapsible(false).resizable(false).open(&mut open).show(ctx, |ui| {
+                if let Some(password) = &self.reset_password_result {
+                    ui.colored_label(theme::accent(), "Password reset. Share this with the trader now, it will not be shown again.");
+                    ui.add_space(6.0);
+                    theme::card(10).show(ui, |ui| {
+                        ui.monospace(password);
+                    });
+                    ui.add_space(8.0);
+                    if ui.button("Done").clicked() {
+                        done = true;
+                    }
+                } else {
+                    ui.label("Generates a new random password for this account and shows it once. The trader will need to be told the new password directly (phone, secure channel); it isn't emailed automatically.");
+                    if let Some(err) = &self.reset_password_error {
+                        ui.colored_label(theme::danger(), err);
+                    }
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        let label = if self.reset_password_busy { "Working..." } else { "Generate new password" };
+                        if theme::accent_button_enabled(ui, !self.reset_password_busy, label).clicked() {
+                            confirm = true;
+                        }
+                    });
+                }
+            });
+            if confirm {
+                self.reset_password_busy = true;
+                self.reset_password_error = None;
+                if let Some(entity_id) = &target.entity_id {
+                    if let Some(api) = &self.api {
+                        api.reset_trader_password(ctx.clone(), self.tx.clone(), entity_id.clone());
+                    }
+                }
+            }
+            if done {
+                if let Some(api) = &self.api {
+                    api.mark_notification_read(ctx.clone(), self.tx.clone(), target.id.clone());
+                }
+                self.reset_password_target = None;
+                self.fetch(ctx, Screen::Notifications);
+            } else if !open {
+                self.reset_password_target = None;
+            }
+        }
     }
 
     fn render_risk_radar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
@@ -2820,7 +3801,7 @@ impl BackofficeApp {
         ui.add_space(8.0);
 
         if let Some(err) = &self.risk_radar_error {
-            ui.colored_label(theme::DANGER, err);
+            ui.colored_label(theme::danger(), err);
             return;
         }
 
@@ -2837,7 +3818,7 @@ impl BackofficeApp {
             .header(28.0, |mut header| {
                 for label in ["Account", "Trades (30d)", "Win rate", "Avg lot", "Profit/day", "Flags"] {
                     header.col(|ui| {
-                        ui.label(egui::RichText::new(label.to_uppercase()).size(11.5).color(theme::TEXT_3));
+                        ui.label(egui::RichText::new(label.to_uppercase()).size(11.5).color(theme::text_3()));
                     });
                 }
             })
@@ -2860,7 +3841,7 @@ impl BackofficeApp {
                         let color = if r.profit_velocity_per_day > 0.0 {
                             theme::accent()
                         } else if r.profit_velocity_per_day < 0.0 {
-                            theme::DANGER
+                            theme::danger()
                         } else {
                             ui.visuals().text_color()
                         };
@@ -2869,10 +3850,10 @@ impl BackofficeApp {
                     row.col(|ui| {
                         ui.horizontal(|ui| {
                             if r.scalp_flag {
-                                ui.colored_label(theme::WARNING, "SCALP");
+                                ui.colored_label(theme::warning(), "SCALP");
                             }
                             if r.martingale_flag {
-                                ui.colored_label(theme::DANGER, "MARTINGALE");
+                                ui.colored_label(theme::danger(), "MARTINGALE");
                             }
                             if !r.scalp_flag && !r.martingale_flag {
                                 ui.weak("-");
@@ -2895,7 +3876,7 @@ impl BackofficeApp {
         ui.add_space(8.0);
 
         if let Some(err) = &self.settings_error {
-            ui.colored_label(theme::DANGER, err);
+            ui.colored_label(theme::danger(), err);
             return;
         }
         let Some(settings) = self.settings.clone() else { return };
@@ -2931,7 +3912,7 @@ impl BackofficeApp {
         });
         ui.add_space(10.0);
         if let Some(err) = &self.reports_error {
-            ui.colored_label(theme::DANGER, err);
+            ui.colored_label(theme::danger(), err);
             return;
         }
         let Some(r) = &self.reports else { return };
@@ -2955,7 +3936,7 @@ impl BackofficeApp {
         });
         ui.add_space(8.0);
         if let Some(err) = &self.symbols_error {
-            ui.colored_label(theme::DANGER, err);
+            ui.colored_label(theme::danger(), err);
             return;
         }
         TableBuilder::new(ui)
@@ -2970,7 +3951,7 @@ impl BackofficeApp {
             .header(28.0, |mut header| {
                 for label in ["Symbol", "Category", "Enabled", "Spread markup", "Commission / lot"] {
                     header.col(|ui| {
-                        ui.label(egui::RichText::new(label.to_uppercase()).size(11.5).color(theme::TEXT_3));
+                        ui.label(egui::RichText::new(label.to_uppercase()).size(11.5).color(theme::text_3()));
                     });
                 }
             })
@@ -3011,7 +3992,7 @@ impl BackofficeApp {
         });
         ui.add_space(8.0);
         if let Some(err) = &self.admins_error {
-            ui.colored_label(theme::DANGER, err);
+            ui.colored_label(theme::danger(), err);
             return;
         }
         let mut pending_status: Option<(String, String)> = None;
@@ -3027,7 +4008,7 @@ impl BackofficeApp {
             .header(28.0, |mut header| {
                 for label in ["Email", "Role", "Status", "Last login", "Action"] {
                     header.col(|ui| {
-                        ui.label(egui::RichText::new(label.to_uppercase()).size(11.5).color(theme::TEXT_3));
+                        ui.label(egui::RichText::new(label.to_uppercase()).size(11.5).color(theme::text_3()));
                     });
                 }
             })
@@ -3041,7 +4022,7 @@ impl BackofficeApp {
                         ui.monospace(&a.role);
                     });
                     row.col(|ui| {
-                        let color = if a.status == "ACTIVE" { theme::accent() } else { theme::TEXT_3 };
+                        let color = if a.status == "ACTIVE" { theme::accent() } else { theme::text_3() };
                         ui.colored_label(color, &a.status);
                     });
                     row.col(|ui| {
@@ -3075,7 +4056,7 @@ impl BackofficeApp {
         });
         ui.add_space(8.0);
         if let Some(err) = &self.transfers_error {
-            ui.colored_label(theme::DANGER, err);
+            ui.colored_label(theme::danger(), err);
             return;
         }
         TableBuilder::new(ui)
@@ -3090,7 +4071,7 @@ impl BackofficeApp {
             .header(28.0, |mut header| {
                 for label in ["Account", "Type", "Amount", "Note", "Date"] {
                     header.col(|ui| {
-                        ui.label(egui::RichText::new(label.to_uppercase()).size(11.5).color(theme::TEXT_3));
+                        ui.label(egui::RichText::new(label.to_uppercase()).size(11.5).color(theme::text_3()));
                     });
                 }
             })
@@ -3131,7 +4112,7 @@ impl BackofficeApp {
         });
         ui.add_space(8.0);
         if let Some(err) = &self.accounts_error {
-            ui.colored_label(theme::DANGER, err);
+            ui.colored_label(theme::danger(), err);
             return;
         }
         TableBuilder::new(ui)
@@ -3146,7 +4127,7 @@ impl BackofficeApp {
             .header(28.0, |mut header| {
                 for label in ["Account", "Client", "Balance", "Credit", "Currency"] {
                     header.col(|ui| {
-                        ui.label(egui::RichText::new(label.to_uppercase()).size(11.5).color(theme::TEXT_3));
+                        ui.label(egui::RichText::new(label.to_uppercase()).size(11.5).color(theme::text_3()));
                     });
                 }
             })
@@ -3183,7 +4164,7 @@ impl BackofficeApp {
         });
         ui.add_space(8.0);
         if let Some(err) = &self.ib_error {
-            ui.colored_label(theme::DANGER, err);
+            ui.colored_label(theme::danger(), err);
             return;
         }
         TableBuilder::new(ui)
@@ -3198,7 +4179,7 @@ impl BackofficeApp {
             .header(28.0, |mut header| {
                 for label in ["IB Account", "IB Name", "Client Account", "Client Name", "Commission"] {
                     header.col(|ui| {
-                        ui.label(egui::RichText::new(label.to_uppercase()).size(11.5).color(theme::TEXT_3));
+                        ui.label(egui::RichText::new(label.to_uppercase()).size(11.5).color(theme::text_3()));
                     });
                 }
             })
@@ -3235,7 +4216,7 @@ impl BackofficeApp {
         });
         ui.add_space(8.0);
         if let Some(err) = &self.leads_error {
-            ui.colored_label(theme::DANGER, err);
+            ui.colored_label(theme::danger(), err);
             return;
         }
         TableBuilder::new(ui)
@@ -3250,7 +4231,7 @@ impl BackofficeApp {
             .header(28.0, |mut header| {
                 for label in ["Name", "Email", "Phone", "Source", "Status"] {
                     header.col(|ui| {
-                        ui.label(egui::RichText::new(label.to_uppercase()).size(11.5).color(theme::TEXT_3));
+                        ui.label(egui::RichText::new(label.to_uppercase()).size(11.5).color(theme::text_3()));
                     });
                 }
             })
@@ -3288,7 +4269,7 @@ impl BackofficeApp {
         });
         ui.add_space(8.0);
         if let Some(err) = &self.deals_error {
-            ui.colored_label(theme::DANGER, err);
+            ui.colored_label(theme::danger(), err);
             return;
         }
         TableBuilder::new(ui)
@@ -3306,7 +4287,7 @@ impl BackofficeApp {
             .header(28.0, |mut header| {
                 for label in ["Account", "Symbol", "Side", "Status", "Volume", "Close", "P/L", "Closed"] {
                     header.col(|ui| {
-                        ui.label(egui::RichText::new(label.to_uppercase()).size(11.5).color(theme::TEXT_3));
+                        ui.label(egui::RichText::new(label.to_uppercase()).size(11.5).color(theme::text_3()));
                     });
                 }
             })
@@ -3320,11 +4301,11 @@ impl BackofficeApp {
                         ui.monospace(&d.symbol);
                     });
                     row.col(|ui| {
-                        let color = if d.side == "BUY" { theme::accent() } else { theme::DANGER };
+                        let color = if d.side == "BUY" { theme::accent() } else { theme::danger() };
                         ui.colored_label(color, &d.side);
                     });
                     row.col(|ui| {
-                        let color = if d.status == "VOIDED" { theme::WARNING } else { theme::TEXT_2 };
+                        let color = if d.status == "VOIDED" { theme::warning() } else { theme::text_2() };
                         ui.colored_label(color, &d.status);
                     });
                     row.col(|ui| {
@@ -3336,8 +4317,8 @@ impl BackofficeApp {
                     row.col(|ui| {
                         let color = match d.realized_pnl.parse::<f64>() {
                             Ok(v) if v > 0.0 => theme::accent(),
-                            Ok(v) if v < 0.0 => theme::DANGER,
-                            _ => theme::TEXT_2,
+                            Ok(v) if v < 0.0 => theme::danger(),
+                            _ => theme::text_2(),
                         };
                         ui.colored_label(color, &d.realized_pnl);
                     });
@@ -3359,7 +4340,7 @@ impl BackofficeApp {
         });
         ui.add_space(8.0);
         if let Some(err) = &self.audit_error {
-            ui.colored_label(theme::DANGER, err);
+            ui.colored_label(theme::danger(), err);
             return;
         }
         egui::ScrollArea::vertical().show(ui, |ui| {
@@ -3382,8 +4363,8 @@ impl BackofficeApp {
     fn render_security(&mut self, ui: &mut egui::Ui) {
         theme::card(16).show(ui, |ui| {
             ui.set_width(360.0);
-            ui.label(egui::RichText::new("Signed in as").size(11.0).color(theme::TEXT_3));
-            ui.label(egui::RichText::new(&self.logged_in_email).size(16.0).color(theme::TEXT_1));
+            ui.label(egui::RichText::new("Signed in as").size(11.0).color(theme::text_3()));
+            ui.label(egui::RichText::new(&self.logged_in_email).size(16.0).color(theme::text_1()));
             ui.add_space(10.0);
             ui.weak("Two-factor setup and device management aren't implemented in this native pass yet -- use the web backoffice's Security page for those.");
         });
@@ -3400,7 +4381,7 @@ impl BackofficeApp {
         });
         ui.add_space(8.0);
         if let Some(err) = &self.funds_error {
-            ui.colored_label(theme::DANGER, err);
+            ui.colored_label(theme::danger(), err);
             return;
         }
         let mut action: Option<(String, String)> = None;
@@ -3414,8 +4395,8 @@ impl BackofficeApp {
                     ui.monospace(&f.amount);
                     let status_color = match f.status.as_str() {
                         "APPROVED" | "COMPLETED" => theme::accent(),
-                        "REJECTED" => theme::DANGER,
-                        _ => theme::WARNING,
+                        "REJECTED" => theme::danger(),
+                        _ => theme::warning(),
                     };
                     ui.colored_label(status_color, &f.status);
                     if f.status == "PENDING" {
@@ -3450,7 +4431,7 @@ impl BackofficeApp {
         });
         ui.add_space(8.0);
         if let Some(err) = &self.payment_methods_error {
-            ui.colored_label(theme::DANGER, err);
+            ui.colored_label(theme::danger(), err);
             return;
         }
         for m in &self.payment_methods {
@@ -3478,7 +4459,7 @@ impl BackofficeApp {
         });
         ui.add_space(8.0);
         if let Some(err) = &self.margin_error {
-            ui.colored_label(theme::DANGER, err);
+            ui.colored_label(theme::danger(), err);
             return;
         }
         TableBuilder::new(ui)
@@ -3489,11 +4470,12 @@ impl BackofficeApp {
             .column(Column::auto().at_least(90.0))
             .column(Column::auto().at_least(110.0))
             .column(Column::auto().at_least(110.0))
-            .column(Column::remainder().at_least(120.0))
+            .column(Column::auto().at_least(100.0))
+            .column(Column::remainder().at_least(110.0))
             .header(28.0, |mut header| {
-                for label in ["Account", "Positions", "Exposure", "Floating P/L", "Margin level"] {
+                for label in ["Account", "Positions", "Exposure", "Floating P/L", "Margin level", "Status"] {
                     header.col(|ui| {
-                        ui.label(egui::RichText::new(label.to_uppercase()).size(11.5).color(theme::TEXT_3));
+                        ui.label(egui::RichText::new(label.to_uppercase()).size(11.5).color(theme::text_3()));
                     });
                 }
             })
@@ -3513,13 +4495,18 @@ impl BackofficeApp {
                         ui.monospace(&m.floating_pnl);
                     });
                     row.col(|ui| {
-                        let text = m.margin_level.map(|v| format!("{v:.1}%")).unwrap_or_else(|| "-".to_string());
-                        let color = match m.margin_level {
-                            Some(v) if v < 100.0 => theme::DANGER,
-                            Some(v) if v < 200.0 => theme::WARNING,
-                            _ => theme::TEXT_2,
+                        ui.monospace(m.margin_level.map(|v| format!("{v:.0}%")).unwrap_or_else(|| "-".to_string()));
+                    });
+                    row.col(|ui| {
+                        // statusFor() in MarginManager.tsx: NO FEED / STOP-OUT
+                        // / MARGIN CALL / OK, in that priority order.
+                        let (label, color) = match m.margin_level {
+                            None => ("NO FEED", theme::text_3()),
+                            Some(v) if v < m.stop_out_level => ("STOP-OUT", theme::danger()),
+                            Some(v) if v < m.margin_call_level => ("MARGIN CALL", theme::warning()),
+                            _ => ("OK", theme::accent()),
                         };
-                        ui.colored_label(color, text);
+                        ui.colored_label(color, label);
                     });
                 });
             });
@@ -3537,7 +4524,7 @@ impl BackofficeApp {
         });
         ui.add_space(8.0);
         if let Some(err) = &self.liquidity_error {
-            ui.colored_label(theme::DANGER, err);
+            ui.colored_label(theme::danger(), err);
             return;
         }
         TableBuilder::new(ui)
@@ -3550,7 +4537,7 @@ impl BackofficeApp {
             .header(28.0, |mut header| {
                 for label in ["Symbol", "A-Book volume", "B-Book volume"] {
                     header.col(|ui| {
-                        ui.label(egui::RichText::new(label.to_uppercase()).size(11.5).color(theme::TEXT_3));
+                        ui.label(egui::RichText::new(label.to_uppercase()).size(11.5).color(theme::text_3()));
                     });
                 }
             })
@@ -3582,7 +4569,7 @@ impl BackofficeApp {
         });
         ui.add_space(8.0);
         if let Some(err) = &self.lp_routing_error {
-            ui.colored_label(theme::DANGER, err);
+            ui.colored_label(theme::danger(), err);
             return;
         }
         TableBuilder::new(ui)
@@ -3596,7 +4583,7 @@ impl BackofficeApp {
             .header(28.0, |mut header| {
                 for label in ["Liquidity provider", "LP Status", "Symbol", "Priority"] {
                     header.col(|ui| {
-                        ui.label(egui::RichText::new(label.to_uppercase()).size(11.5).color(theme::TEXT_3));
+                        ui.label(egui::RichText::new(label.to_uppercase()).size(11.5).color(theme::text_3()));
                     });
                 }
             })
@@ -3630,7 +4617,7 @@ impl BackofficeApp {
         });
         ui.add_space(8.0);
         if let Some(err) = &self.feed_health_error {
-            ui.colored_label(theme::DANGER, err);
+            ui.colored_label(theme::danger(), err);
             return;
         }
         let Some(data) = &self.feed_health else { return };
@@ -3639,7 +4626,7 @@ impl BackofficeApp {
             if data.feed_stats.is_some() {
                 ui.colored_label(theme::accent(), "connected");
             } else {
-                ui.colored_label(theme::TEXT_3, "not reachable");
+                ui.colored_label(theme::text_3(), "not reachable");
             }
         });
         ui.horizontal(|ui| {
@@ -3647,7 +4634,7 @@ impl BackofficeApp {
             if data.gateway_stats.is_some() {
                 ui.colored_label(theme::accent(), "connected");
             } else {
-                ui.colored_label(theme::TEXT_3, "not reachable");
+                ui.colored_label(theme::text_3(), "not reachable");
             }
         });
         ui.add_space(10.0);
@@ -3671,7 +4658,7 @@ impl BackofficeApp {
         ui.weak("The broker-wide kill switch. Existing open positions are never touched by this -- it only blocks new orders.");
         ui.add_space(10.0);
         if let Some(err) = &self.risk_error {
-            ui.colored_label(theme::DANGER, err);
+            ui.colored_label(theme::danger(), err);
             return;
         }
         let Some(risk) = &self.risk else { return };
@@ -3679,7 +4666,7 @@ impl BackofficeApp {
             ui.horizontal(|ui| {
                 ui.label("Status:");
                 if risk.trading_halted {
-                    ui.colored_label(theme::DANGER, "TRADING HALTED");
+                    ui.colored_label(theme::danger(), "TRADING HALTED");
                 } else {
                     ui.colored_label(theme::accent(), "Normal");
                 }
@@ -3698,11 +4685,195 @@ impl BackofficeApp {
             }
         });
     }
+
+    // Direct native port of app/manage/(shell)/risk/RiskSettingsManager.tsx
+    // -- broker-wide "Dealing mode" master switch (Broker.dealingModeAt,
+    // distinct from the Dealing page's own dealingDeskAutoFillAt toggle),
+    // Smart Dealer auto-accept/reject %s (shown only while dealing mode
+    // is on), exposure/position limits, and a stat grid derived
+    // client-side from the same /api/manage/margin rows the Margin page
+    // uses (matches the web's own "avoid a duplicate aggregate route"
+    // reasoning).
+    fn render_risk_settings(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        ui.horizontal(|ui| {
+            if ui.button("Refresh").clicked() {
+                self.fetch(ctx, Screen::Risk);
+            }
+            if self.risk_settings_loading {
+                ui.spinner();
+            }
+        });
+        ui.add_space(8.0);
+        if let Some(err) = &self.risk_settings_error {
+            ui.colored_label(theme::danger(), err);
+        }
+        let Some(risk) = self.risk_settings.clone() else { return };
+
+        // --- Stat grid (open exposure / floating P&L / open positions /
+        // accounts at risk), derived from self.margin exactly like the
+        // web derives it from the same GET /api/manage/margin rows. ---
+        if !self.margin.is_empty() {
+            let total_exposure: f64 = self.margin.iter().filter_map(|m| m.exposure.parse::<f64>().ok()).sum();
+            let total_floating_pnl: f64 = self.margin.iter().filter_map(|m| m.floating_pnl.parse::<f64>().ok()).sum();
+            let open_positions: i64 = self.margin.iter().map(|m| m.position_count).sum();
+            let at_stop_out = self
+                .margin
+                .iter()
+                .filter(|m| m.margin_level.is_some_and(|lvl| lvl < m.stop_out_level))
+                .count();
+            let at_margin_call = self
+                .margin
+                .iter()
+                .filter(|m| m.margin_level.is_some_and(|lvl| lvl >= m.stop_out_level && lvl < m.margin_call_level))
+                .count();
+            egui::Grid::new("risk-stats").num_columns(4).spacing([12.0, 8.0]).show(ui, |ui| {
+                stat_card(ui, "Open exposure", &format!("{total_exposure:.2} lots"));
+                stat_card(ui, "Floating P&L", &format!("{}{:.2}", if total_floating_pnl >= 0.0 { "+" } else { "" }, total_floating_pnl));
+                stat_card(ui, "Open positions", &open_positions.to_string());
+                stat_card(ui, "Accounts at risk", &(at_margin_call + at_stop_out).to_string());
+                ui.end_row();
+            });
+            ui.label(
+                egui::RichText::new(format!(
+                    "{at_stop_out} account{} below stop-out, {at_margin_call} below margin call. Stop-out is enforced automatically; this is a live snapshot, not a manual queue. Full list on Margin.",
+                    if at_stop_out == 1 { "" } else { "s" }
+                ))
+                .size(11.5)
+                .color(theme::text_3()),
+            );
+            ui.add_space(12.0);
+        }
+
+        // --- Dealing mode ---
+        theme::card(14).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                if risk.dealing_mode {
+                    ui.colored_label(theme::accent(), "DEALING MODE ON");
+                } else {
+                    ui.colored_label(theme::text_3(), "Instant execution");
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let label = if risk.dealing_mode { "Turn off" } else { "Turn on" };
+                    let clicked = if risk.dealing_mode {
+                        theme::danger_button_enabled(ui, true, label).clicked()
+                    } else {
+                        theme::accent_button(ui, label).clicked()
+                    };
+                    if clicked {
+                        self.risk_settings_confirm_dealing = true;
+                    }
+                });
+            });
+            ui.label(
+                egui::RichText::new(if risk.dealing_mode {
+                    "New MARKET orders wait for manual Accept/Reject in the Dealing queue instead of filling instantly."
+                } else {
+                    "New MARKET orders fill instantly, as normal. Limit/Stop orders also fill instantly once triggered."
+                })
+                .size(12.0)
+                .color(theme::text_3()),
+            );
+
+            if risk.dealing_mode {
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(6.0);
+                ui.label("Smart Dealer: auto-decide an order the moment it's submitted, before it ever reaches a human. Blank = fully manual (today's behavior).");
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        ui.label(egui::RichText::new("AUTO-ACCEPT WITHIN (%)").size(10.5).color(theme::text_3()));
+                        ui.add(egui::TextEdit::singleline(&mut self.risk_smart_accept_input).hint_text("off").desired_width(90.0));
+                    });
+                    ui.vertical(|ui| {
+                        ui.label(egui::RichText::new("AUTO-REJECT BEYOND (%)").size(10.5).color(theme::text_3()));
+                        ui.add(egui::TextEdit::singleline(&mut self.risk_smart_reject_input).hint_text("off").desired_width(90.0));
+                    });
+                    if ui.button("Save").clicked() {
+                        if let Some(api) = &self.api {
+                            let accept = if self.risk_smart_accept_input.trim().is_empty() { None } else { Some(self.risk_smart_accept_input.trim().to_string()) };
+                            let reject = if self.risk_smart_reject_input.trim().is_empty() { None } else { Some(self.risk_smart_reject_input.trim().to_string()) };
+                            api.save_smart_dealer(ctx.clone(), self.tx.clone(), accept, reject);
+                            self.risk_smart_saved = true;
+                        }
+                    }
+                    if self.risk_smart_saved {
+                        ui.colored_label(theme::accent(), "Saved");
+                    }
+                });
+            }
+        });
+
+        if self.risk_settings_confirm_dealing {
+            let mut open = true;
+            let mut confirm = false;
+            let title = if risk.dealing_mode { "Confirm turn off dealing mode" } else { "Confirm turn on dealing mode" };
+            egui::Window::new(title).id(egui::Id::new("confirm-dealing-mode")).collapsible(false).resizable(false).open(&mut open).show(ctx, |ui| {
+                ui.label(if risk.dealing_mode {
+                    "New MARKET orders will fill instantly again immediately."
+                } else {
+                    "New MARKET orders will queue for manual Accept/Reject in the Dealing queue until turned off. Limit/Stop orders queue the same way once their trigger price is hit."
+                });
+                ui.add_space(6.0);
+                let btn_label = if self.risk_settings_dealing_busy { "Working..." } else if risk.dealing_mode { "Confirm: turn off" } else { "Confirm: turn on" };
+                if theme::danger_button_enabled(ui, !self.risk_settings_dealing_busy, btn_label).clicked() {
+                    confirm = true;
+                }
+            });
+            if confirm {
+                self.risk_settings_confirm_dealing = false;
+                self.risk_settings_dealing_busy = true;
+                if let Some(api) = &self.api {
+                    api.set_dealing_mode(ctx.clone(), self.tx.clone(), !risk.dealing_mode);
+                }
+            } else if !open {
+                self.risk_settings_confirm_dealing = false;
+            }
+        }
+
+        ui.add_space(12.0);
+
+        // --- Exposure & position limits ---
+        theme::card(14).show(ui, |ui| {
+            ui.strong("Exposure & position limits");
+            ui.add_space(8.0);
+            ui.label(egui::RichText::new("TOTAL BROKER EXPOSURE LIMIT (LOTS, BLANK = NO LIMIT)").size(10.5).color(theme::text_3()));
+            ui.add(egui::TextEdit::singleline(&mut self.risk_exposure_limit_input).hint_text("no limit").desired_width(200.0));
+            ui.add_space(8.0);
+            ui.label(egui::RichText::new("MAX OPEN POSITIONS PER ACCOUNT (BLANK = NO LIMIT)").size(10.5).color(theme::text_3()));
+            ui.add(egui::TextEdit::singleline(&mut self.risk_max_positions_input).hint_text("no limit").desired_width(200.0));
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                if theme::accent_button(ui, "Save").clicked() {
+                    if let Some(api) = &self.api {
+                        let limit = if self.risk_exposure_limit_input.trim().is_empty() { None } else { Some(self.risk_exposure_limit_input.trim().to_string()) };
+                        let max_positions = if self.risk_max_positions_input.trim().is_empty() { None } else { self.risk_max_positions_input.trim().parse::<i64>().ok() };
+                        api.save_risk_limits(ctx.clone(), self.tx.clone(), limit, max_positions);
+                        self.risk_limits_saved = true;
+                    }
+                }
+                if self.risk_limits_saved {
+                    ui.colored_label(theme::accent(), "Saved");
+                }
+            });
+        });
+    }
 }
 
 // Broker.primaryColor's own stored format (see BrokersManager.tsx's own
 // "#f4551c"-style placeholder) -- "#rrggbb" or bare "rrggbb", both seen
 // in real broker rows this session.
+// Which screen a notification's type should jump to -- matches
+// NotificationsManager.tsx's own SECTION_FOR_TYPE map exactly.
+fn section_for_notification_type(notif_type: &str) -> Option<Screen> {
+    match notif_type {
+        "DEALING_ORDER_PENDING" | "DEALER_ACTIVITY" => Some(Screen::Dealing),
+        "KYC_SUBMITTED" => Some(Screen::Kyc),
+        "NEW_LEAD" => Some(Screen::Leads),
+        "FUNDS_REQUEST" => Some(Screen::Funds),
+        _ => None,
+    }
+}
+
 fn parse_hex_color(hex: &str) -> Option<egui::Color32> {
     let hex = hex.trim().trim_start_matches('#');
     if hex.len() != 6 {
@@ -3716,16 +4887,16 @@ fn parse_hex_color(hex: &str) -> Option<egui::Color32> {
 
 fn stat_card(ui: &mut egui::Ui, label: &str, value: &str) {
     egui::Frame::new()
-        .fill(theme::BG_1)
-        .stroke(egui::Stroke::new(1.0_f32, theme::BORDER))
+        .fill(theme::bg_1())
+        .stroke(egui::Stroke::new(1.0_f32, theme::border()))
         .corner_radius(egui::CornerRadius::same(10))
         .inner_margin(egui::Margin::symmetric(16, 14))
         .show(ui, |ui| {
             ui.set_min_width(180.0);
             ui.vertical(|ui| {
-                ui.label(egui::RichText::new(label.to_uppercase()).size(11.0).color(theme::TEXT_3));
+                ui.label(egui::RichText::new(label.to_uppercase()).size(11.0).color(theme::text_3()));
                 ui.add_space(6.0);
-                ui.label(egui::RichText::new(value).size(24.0).color(theme::TEXT_1));
+                ui.label(egui::RichText::new(value).size(24.0).color(theme::text_1()));
             });
         });
 }
@@ -3752,10 +4923,10 @@ fn activity_action_label(action: &str) -> String {
 fn activity_action_color(action: &str) -> egui::Color32 {
     match action {
         "ORDER_PLACED" => theme::accent(),
-        "ORDER_MODIFIED" | "ORDER_TRIGGERED" => theme::WARNING,
-        "ORDER_CANCELLED" => theme::DANGER,
+        "ORDER_MODIFIED" | "ORDER_TRIGGERED" => theme::warning(),
+        "ORDER_CANCELLED" => theme::danger(),
         "POSITION_OPENED" => theme::accent(),
-        _ => theme::TEXT_3,
+        _ => theme::text_3(),
     }
 }
 
@@ -3821,11 +4992,11 @@ fn render_activity_feed_rows(ui: &mut egui::Ui, rows: &[ActivityFeedRow], show_d
     for row in rows {
         ui.horizontal(|ui| {
             ui.set_min_height(22.0);
-            ui.label(egui::RichText::new(&row.at).size(11.0).color(theme::TEXT_3));
+            ui.label(egui::RichText::new(&row.at).size(11.0).color(theme::text_3()));
             ui.add_space(6.0);
             ui.monospace(egui::RichText::new(&row.account_number).size(12.0));
             if show_dealing_chip && row.is_dealing_group {
-                ui.label(egui::RichText::new("DEALING").size(9.0).color(theme::TEXT_3));
+                ui.label(egui::RichText::new("DEALING").size(9.0).color(theme::text_3()));
             }
             ui.add_space(6.0);
             ui.colored_label(activity_action_color(&row.action), activity_action_label(&row.action));
@@ -3834,7 +5005,7 @@ fn render_activity_feed_rows(ui: &mut egui::Ui, rows: &[ActivityFeedRow], show_d
                 ui.monospace(symbol);
             }
             if let Some(side) = &row.side {
-                let color = if side == "BUY" { theme::accent() } else { theme::DANGER };
+                let color = if side == "BUY" { theme::accent() } else { theme::danger() };
                 ui.colored_label(color, side);
             }
             if let Some(volume) = &row.volume {
@@ -3850,7 +5021,7 @@ fn render_activity_feed_rows(ui: &mut egui::Ui, rows: &[ActivityFeedRow], show_d
 // Custom-painted (not egui::Button::selectable) so the active item gets a
 // left accent bar + tinted background, matching a real product sidebar's
 // selection state rather than a plain highlighted-text list.
-fn sidebar_nav_item(ui: &mut egui::Ui, icon: &str, label: &str, selected: bool) -> egui::Response {
+fn sidebar_nav_item(ui: &mut egui::Ui, icon: &str, label: &str, selected: bool, badge: Option<usize>) -> egui::Response {
     let desired_size = egui::vec2(ui.available_width(), 40.0);
     let (rect, response) = ui.allocate_exact_size(desired_size, egui::Sense::click());
 
@@ -3860,9 +5031,9 @@ fn sidebar_nav_item(ui: &mut egui::Ui, icon: &str, label: &str, selected: bool) 
             let bar = egui::Rect::from_min_size(rect.min, egui::vec2(3.0, rect.height()));
             ui.painter().rect_filled(bar, 0.0, theme::accent());
         } else if response.hovered() {
-            ui.painter().rect_filled(rect, 0.0, theme::BG_2);
+            ui.painter().rect_filled(rect, 0.0, theme::bg_2());
         }
-        let text_color = if selected { theme::accent() } else { theme::TEXT_2 };
+        let text_color = if selected { theme::accent() } else { theme::text_2() };
         let icon_pos = rect.min + egui::vec2(20.0, rect.height() / 2.0);
         ui.painter().text(icon_pos, egui::Align2::LEFT_CENTER, icon, egui::FontId::proportional(14.0), text_color);
         let label_pos = rect.min + egui::vec2(46.0, rect.height() / 2.0);
@@ -3871,8 +5042,18 @@ fn sidebar_nav_item(ui: &mut egui::Ui, icon: &str, label: &str, selected: bool) 
             egui::Align2::LEFT_CENTER,
             label,
             egui::FontId::proportional(13.5),
-            if selected { theme::TEXT_1 } else { theme::TEXT_2 },
+            if selected { theme::text_1() } else { theme::text_2() },
         );
+        // Unread-count pill -- matches AdminShell.tsx's own NavGroup badge
+        // (rounded-full bg-[var(--sell)] text), shown only when > 0.
+        if let Some(count) = badge {
+            if count > 0 {
+                let text = if count > 99 { "99+".to_string() } else { count.to_string() };
+                let badge_pos = egui::pos2(rect.right() - 16.0, rect.center().y);
+                ui.painter().circle_filled(badge_pos, 9.0, theme::danger());
+                ui.painter().text(badge_pos, egui::Align2::CENTER_CENTER, text, egui::FontId::proportional(9.5), egui::Color32::WHITE);
+            }
+        }
     }
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
@@ -3909,10 +5090,12 @@ impl BackofficeApp {
             Some("dashboard") => Some(Screen::Dashboard),
             Some("dealing") => Some(Screen::Dealing),
             Some("groups") => Some(Screen::Groups),
-            Some("kyc") => Some(Screen::ClientKyc),
+            Some("kyc") => Some(Screen::Kyc),
+            Some("client-kyc") => Some(Screen::ClientKyc),
             Some("live-accounts") => Some(Screen::LiveAccountRequests),
             Some("notifications") => Some(Screen::Notifications),
-            Some("risk") => Some(Screen::RiskRadar),
+            Some("risk-radar") => Some(Screen::RiskRadar),
+            Some("risk") => Some(Screen::Risk),
             Some("settings") => Some(Screen::Settings),
             Some("reports") => Some(Screen::Reports),
             Some("symbols") => Some(Screen::Symbols),
@@ -3948,7 +5131,7 @@ impl BackofficeApp {
 fn render_titlebar(ctx: &egui::Context) {
     egui::TopBottomPanel::top("titlebar")
         .exact_height(34.0)
-        .frame(egui::Frame::new().fill(theme::SIDEBAR_BG).inner_margin(egui::Margin::symmetric(10, 0)))
+        .frame(egui::Frame::new().fill(theme::sidebar_bg()).inner_margin(egui::Margin::symmetric(10, 0)))
         .show(ctx, |ui| {
             let bar_rect = ui.max_rect();
             let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
@@ -3971,7 +5154,7 @@ fn render_titlebar(ctx: &egui::Context) {
             ui.horizontal_centered(|ui| {
                 ui.label(egui::RichText::new("●").size(12.0).color(theme::accent()));
                 ui.add_space(2.0);
-                ui.label(egui::RichText::new("VyXTrader Backoffice").size(12.5).color(theme::TEXT_2));
+                ui.label(egui::RichText::new("VyXTrader Backoffice").size(12.5).color(theme::text_2()));
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let btn = |ui: &mut egui::Ui, symbol: &str, hover: egui::Color32| {
@@ -3980,17 +5163,17 @@ fn render_titlebar(ctx: &egui::Context) {
                             if response.hovered() {
                                 ui.painter().rect_filled(rect, 0.0, hover);
                             }
-                            ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, symbol, egui::FontId::proportional(13.0), theme::TEXT_1);
+                            ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, symbol, egui::FontId::proportional(13.0), theme::text_1());
                         }
                         response
                     };
-                    if btn(ui, "✕", theme::DANGER).clicked() {
+                    if btn(ui, "✕", theme::danger()).clicked() {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
-                    if btn(ui, "▢", theme::BG_2).clicked() {
+                    if btn(ui, "▢", theme::bg_2()).clicked() {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
                     }
-                    if btn(ui, "—", theme::BG_2).clicked() {
+                    if btn(ui, "—", theme::bg_2()).clicked() {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
                     }
                 });

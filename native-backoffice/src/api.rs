@@ -57,13 +57,80 @@ pub struct AccountRow {
     pub email: String,
     #[serde(rename = "accountMode")]
     pub account_mode: String,
+    #[serde(rename = "accountTypeId")]
+    pub account_type_id: Option<String>,
+    #[serde(rename = "accountTypeName")]
+    pub account_type_name: Option<String>,
     pub currency: String,
     pub leverage: i64,
     pub balance: String,
     pub credit: String,
     pub status: String,
+    #[serde(rename = "groupId")]
+    pub group_id: Option<String>,
     #[serde(rename = "groupName")]
     pub group_name: Option<String>,
+    #[serde(rename = "maxDailyLoss")]
+    pub max_daily_loss: Option<String>,
+    // Tri-state: Some(true)=swap-free, Some(false)=charge swap, None=inherit.
+    #[serde(rename = "swapFree")]
+    pub swap_free: Option<bool>,
+    pub country: Option<String>,
+    #[serde(rename = "kycStatus")]
+    pub kyc_status: Option<String>,
+    pub mirror: Option<MirrorInfo>,
+    #[serde(rename = "hasCustomPricing", default)]
+    pub has_custom_pricing: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct MirrorInfo {
+    pub direction: String,
+    pub multiplier: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AccountTypeOption {
+    pub id: String,
+    pub name: String,
+    #[serde(rename = "pricingHint")]
+    pub pricing_hint: Option<String>,
+    #[serde(rename = "isDefault")]
+    pub is_default: bool,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PendingAdjustment {
+    pub id: String,
+    pub status: String,
+    pub amount: String,
+    pub note: String,
+    #[serde(rename = "requestedByName")]
+    pub requested_by_name: String,
+    #[serde(rename = "createdAt")]
+    pub created_at: String,
+    pub account: PendingAdjustmentAccount,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PendingAdjustmentAccount {
+    #[serde(rename = "accountNumber")]
+    pub account_number: String,
+    #[serde(rename = "fullName")]
+    pub full_name: String,
+    pub balance: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateAccountResponse {
+    #[serde(rename = "accountNumber")]
+    account_number: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ResetPasswordResponse {
+    password: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -131,6 +198,21 @@ pub struct NewAccountBody {
     pub password: String,
     #[serde(rename = "accountMode")]
     pub account_mode: String,
+    #[serde(rename = "accountTypeId", skip_serializing_if = "Option::is_none")]
+    pub account_type_id: Option<String>,
+    pub currency: String,
+    #[serde(rename = "groupId", skip_serializing_if = "Option::is_none")]
+    pub group_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub leverage: Option<f64>,
+    #[serde(rename = "initialBalance")]
+    pub initial_balance: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub country: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phone: Option<String>,
+    #[serde(rename = "dateOfBirth", skip_serializing_if = "Option::is_none")]
+    pub date_of_birth: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -302,8 +384,28 @@ pub struct GroupRow {
     pub group_type: String,
     #[serde(rename = "isDefault")]
     pub is_default: bool,
+    #[serde(rename = "marginCallLevel", default)]
+    pub margin_call_level: String,
+    #[serde(rename = "stopOutLevel", default)]
+    pub stop_out_level: String,
+    #[serde(rename = "maxLotSize", default)]
+    pub max_lot_size: String,
+    #[serde(rename = "tradingRestriction", default)]
+    pub trading_restriction: String,
+    #[serde(rename = "dealingMode", default)]
+    pub dealing_mode: String,
+    #[serde(rename = "forceDealingMode", default)]
+    pub force_dealing_mode: bool,
+    #[serde(rename = "swapFree", default)]
+    pub swap_free: Option<bool>,
+    #[serde(rename = "hasMirrorRule", default)]
+    pub has_mirror_rule: bool,
 }
 
+// Shared 5-field per-symbol pricing shape (spreadMarkup/
+// targetTotalSpreadPips are mutually exclusive per row, see
+// components/manage/SymbolPricingEditor.tsx's own comment) -- same
+// GET/PATCH shape across Group/AccountType/Account pricing editors.
 #[derive(Debug, Clone, Deserialize)]
 pub struct GroupPricingRow {
     #[serde(rename = "symbolId")]
@@ -314,27 +416,73 @@ pub struct GroupPricingRow {
     pub has_override: bool,
     #[serde(rename = "spreadMarkup")]
     pub spread_markup: Option<String>,
+    #[serde(rename = "targetTotalSpreadPips")]
+    pub target_total_spread_pips: Option<String>,
     #[serde(rename = "commissionPerLot")]
     pub commission_per_lot: Option<String>,
+    #[serde(rename = "swapLong")]
+    pub swap_long: Option<String>,
+    #[serde(rename = "swapShort")]
+    pub swap_short: Option<String>,
     #[serde(rename = "defaultSpreadMarkup")]
-    pub default_spread_markup: String,
+    pub default_spread_markup: Option<String>,
     #[serde(rename = "defaultCommissionPerLot")]
-    pub default_commission_per_lot: String,
+    pub default_commission_per_lot: Option<String>,
+    #[serde(rename = "defaultSwapLong")]
+    pub default_swap_long: Option<String>,
+    #[serde(rename = "defaultSwapShort")]
+    pub default_swap_short: Option<String>,
 }
 
 // --- Client KYC ---
+#[derive(Debug, Clone, Deserialize)]
+pub struct KycRow {
+    pub id: String,
+    pub status: String,
+    #[serde(rename = "documentType")]
+    pub document_type: String,
+    #[serde(rename = "rejectionReason")]
+    pub rejection_reason: Option<String>,
+    #[serde(rename = "accountNumber")]
+    pub account_number: String,
+    #[serde(rename = "accountFullName")]
+    pub account_full_name: String,
+    #[serde(rename = "accountCountry")]
+    pub account_country: Option<String>,
+    #[serde(rename = "accountPhone")]
+    pub account_phone: Option<String>,
+    #[serde(rename = "createdAt")]
+    pub created_at: String,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ClientKycRow {
     pub id: String,
     pub status: String,
     #[serde(rename = "documentType")]
     pub document_type: String,
+    #[serde(rename = "rejectionReason")]
+    pub rejection_reason: Option<String>,
+    #[serde(rename = "hasAddressProof", default)]
+    pub has_address_proof: bool,
+    #[serde(rename = "annualIncome")]
+    pub annual_income: Option<String>,
+    #[serde(rename = "sourceOfFunds")]
+    pub source_of_funds: Option<String>,
+    #[serde(rename = "tradingExperience")]
+    pub trading_experience: Option<String>,
+    #[serde(rename = "employmentStatus")]
+    pub employment_status: Option<String>,
+    #[serde(rename = "riskTolerance")]
+    pub risk_tolerance: Option<String>,
     #[serde(rename = "clientFullName")]
     pub client_full_name: String,
     #[serde(rename = "clientEmail")]
     pub client_email: String,
     #[serde(rename = "clientCountry")]
     pub client_country: Option<String>,
+    #[serde(rename = "clientPhone")]
+    pub client_phone: Option<String>,
     #[serde(rename = "createdAt")]
     pub created_at: String,
 }
@@ -357,16 +505,15 @@ pub struct LiveAccountRequestRow {
 // --- Notifications ---
 #[derive(Debug, Clone, Deserialize)]
 pub struct NotificationRow {
-    // Not read anywhere yet -- this pass only wired mark-all-read
-    // (main.rs's own comment on why); kept for the per-row mark-read/
-    // delete actions the real /api/manage/notifications/[id] route
-    // already supports, once that's wired here too.
-    #[allow(dead_code)]
     pub id: String,
     #[serde(rename = "type")]
     pub notif_type: String,
     pub title: String,
     pub body: String,
+    #[serde(rename = "entityType")]
+    pub entity_type: Option<String>,
+    #[serde(rename = "entityId")]
+    pub entity_id: Option<String>,
     pub read: bool,
     #[serde(rename = "createdAt")]
     pub created_at: String,
@@ -410,6 +557,8 @@ pub struct ShellInfo {
     pub broker_logo_url: Option<String>,
     #[serde(rename = "brokerPrimaryColor")]
     pub broker_primary_color: Option<String>,
+    #[serde(rename = "canManageFinance", default)]
+    pub can_manage_finance: bool,
 }
 
 // --- Reports ---
@@ -565,6 +714,10 @@ pub struct MarginRow {
     pub floating_pnl: String,
     #[serde(rename = "marginLevel")]
     pub margin_level: Option<f64>,
+    #[serde(rename = "marginCallLevel", default)]
+    pub margin_call_level: f64,
+    #[serde(rename = "stopOutLevel", default)]
+    pub stop_out_level: f64,
 }
 
 // --- Liquidity (book exposure) ---
@@ -599,12 +752,27 @@ pub struct FeedHealthData {
     pub gateway_stats: Option<serde_json::Value>,
 }
 
-// --- Emergency (broker-wide halt, a narrow slice of /api/manage/risk) ---
+// --- Broker-wide risk policy (GET/PATCH /api/manage/risk) -- backs BOTH
+// Emergency (tradingHalted only) and the separate "Risk rules" screen
+// (everything else: dealingMode, exposure/position limits, Smart
+// Dealer %s). One real endpoint, two different screens' concerns. ---
 #[derive(Debug, Clone, Deserialize)]
 pub struct RiskData {
     #[serde(rename = "tradingHalted")]
     pub trading_halted: bool,
+    #[serde(rename = "dealingMode", default)]
+    pub dealing_mode: bool,
+    #[serde(rename = "totalExposureLimit")]
+    pub total_exposure_limit: Option<String>,
+    #[serde(rename = "maxOpenPositionsPerAccount")]
+    pub max_open_positions_per_account: Option<i64>,
+    #[serde(rename = "smartDealerAcceptPct")]
+    pub smart_dealer_accept_pct: Option<String>,
+    #[serde(rename = "smartDealerRejectPct")]
+    pub smart_dealer_reject_pct: Option<String>,
 }
+
+pub type RiskSettings = RiskData;
 
 pub enum ApiEvent {
     LoginResult(Result<String, String>),
@@ -617,7 +785,15 @@ pub enum ApiEvent {
     LiveActivity(Result<Vec<ActivityFeedRow>, String>),
     Groups(Result<Vec<GroupRow>, String>),
     GroupPricing(Result<Vec<GroupPricingRow>, String>),
+    PasswordReset(Result<String, String>),
+    AccountTypes(Result<Vec<AccountTypeOption>, String>),
+    AccountCreated(Result<(String, String), String>),
+    AdjustBalance(Result<bool, String>),
+    PendingAdjustments(Result<Vec<PendingAdjustment>, String>),
+    Kyc(Result<Vec<KycRow>, String>),
+    KycDocument(Result<(Vec<u8>, [usize; 2]), String>),
     ClientKyc(Result<Vec<ClientKycRow>, String>),
+    RiskSettings(Result<RiskSettings, String>),
     LiveAccountRequests(Result<Vec<LiveAccountRequestRow>, String>),
     Notifications(Result<Vec<NotificationRow>, String>),
     RiskRadar(Result<Vec<RiskRadarRow>, String>),
@@ -807,19 +983,25 @@ impl ApiClient {
         });
     }
 
+    // Doesn't route through ApiEvent::ActionDone (which auto-refetches
+    // the current screen and clears show_new_account_form) -- the web's
+    // own post-create UI stays open showing the account number/password
+    // once, so main.rs handles the reload itself once that screen closes.
     pub fn create_account(&self, ctx: egui::Context, tx: Sender<ApiEvent>, body: NewAccountBody) {
         let client = self.client.clone();
         let url = format!("{}/api/manage/accounts", self.base_url);
+        let password = body.password.clone();
         spawn(async move {
             let result = async {
                 let res = client.post(&url).json(&body).send().await.map_err(|e| format!("network error: {e}"))?;
                 if !res.status().is_success() {
                     return Err(Self::error_from_response(res).await);
                 }
-                Ok(format!("account created for {}", body.email))
+                let created: CreateAccountResponse = res.json().await.map_err(|e| format!("bad response: {e}"))?;
+                Ok((created.account_number, password))
             }
             .await;
-            let _ = tx.send(ApiEvent::ActionDone(result));
+            let _ = tx.send(ApiEvent::AccountCreated(result));
             ctx.request_repaint();
         });
     }
@@ -839,6 +1021,107 @@ impl ApiClient {
                     return Err(Self::error_from_response(res).await);
                 }
                 Ok(format!("status set to {status}"))
+            }
+            .await;
+            let _ = tx.send(ApiEvent::ActionDone(result));
+            ctx.request_repaint();
+        });
+    }
+
+    // Generic single-field (or small multi-field) account PATCH -- backs
+    // Group/Account Type/Leverage/Max daily loss/Swap-free, matching
+    // AccountsManager.tsx's own patchAccount helper.
+    pub fn patch_account(&self, ctx: egui::Context, tx: Sender<ApiEvent>, account_id: String, body: serde_json::Value, message: String) {
+        let client = self.client.clone();
+        let url = format!("{}/api/manage/accounts/{}", self.base_url, account_id);
+        spawn(async move {
+            let result = async {
+                let res = client.patch(&url).json(&body).send().await.map_err(|e| format!("network error: {e}"))?;
+                if !res.status().is_success() {
+                    return Err(Self::error_from_response(res).await);
+                }
+                Ok(message)
+            }
+            .await;
+            let _ = tx.send(ApiEvent::ActionDone(result));
+            ctx.request_repaint();
+        });
+    }
+
+    pub fn fetch_account_types(&self, ctx: egui::Context, tx: Sender<ApiEvent>) {
+        let client = self.client.clone();
+        let url = format!("{}/api/manage/account-types", self.base_url);
+        spawn(async move {
+            let result = async {
+                let res = client.get(&url).send().await.map_err(|e| format!("network error: {e}"))?;
+                if !res.status().is_success() {
+                    return Err(Self::error_from_response(res).await);
+                }
+                res.json::<Vec<AccountTypeOption>>().await.map_err(|e| format!("bad response: {e}"))
+            }
+            .await;
+            let _ = tx.send(ApiEvent::AccountTypes(result));
+            ctx.request_repaint();
+        });
+    }
+
+    // Returns Ok(true) if the adjustment applied immediately, Ok(false)
+    // if it was filed for another admin's approval (HTTP 202, same
+    // maker-checker gate as the Dealing queue) -- main.rs branches the
+    // UI message on which happened, matching submitAdjustment's own
+    // response.status === 202 check.
+    pub fn adjust_balance(&self, ctx: egui::Context, tx: Sender<ApiEvent>, account_id: String, amount: f64, note: String) {
+        let client = self.client.clone();
+        let url = format!("{}/api/manage/accounts/{}/adjust-balance", self.base_url, account_id);
+        spawn(async move {
+            let result = async {
+                let res = client
+                    .post(&url)
+                    .json(&serde_json::json!({ "amount": amount, "note": note }))
+                    .send()
+                    .await
+                    .map_err(|e| format!("network error: {e}"))?;
+                if res.status().as_u16() == 202 {
+                    return Ok(true);
+                }
+                if !res.status().is_success() {
+                    return Err(Self::error_from_response(res).await);
+                }
+                Ok(false)
+            }
+            .await;
+            let _ = tx.send(ApiEvent::AdjustBalance(result));
+            ctx.request_repaint();
+        });
+    }
+
+    pub fn fetch_pending_adjustments(&self, ctx: egui::Context, tx: Sender<ApiEvent>) {
+        let client = self.client.clone();
+        let url = format!("{}/api/manage/balance-adjustment-requests", self.base_url);
+        spawn(async move {
+            let result = async {
+                let res = client.get(&url).send().await.map_err(|e| format!("network error: {e}"))?;
+                if !res.status().is_success() {
+                    return Err(Self::error_from_response(res).await);
+                }
+                res.json::<Vec<PendingAdjustment>>().await.map_err(|e| format!("bad response: {e}"))
+            }
+            .await;
+            let _ = tx.send(ApiEvent::PendingAdjustments(result));
+            ctx.request_repaint();
+        });
+    }
+
+    pub fn review_pending_adjustment(&self, ctx: egui::Context, tx: Sender<ApiEvent>, request_id: String, decision: String) {
+        let client = self.client.clone();
+        let url = format!("{}/api/manage/balance-adjustment-requests/{}/{}", self.base_url, request_id, decision);
+        spawn(async move {
+            let result = async {
+                let res = client.post(&url).send().await.map_err(|e| format!("network error: {e}"))?;
+                if !res.status().is_success() {
+                    return Err(Self::error_from_response(res).await);
+                }
+                Ok(format!("adjustment {decision}d"))
             }
             .await;
             let _ = tx.send(ApiEvent::ActionDone(result));
@@ -1012,14 +1295,22 @@ impl ApiClient {
 
     // Only spreadMarkup/commissionPerLot -- see main.rs's own groups
     // screen comment on why swap/targetTotalSpreadPips aren't in this pass.
+    // mode: "markup" or "target" -- mutually exclusive per row, same as
+    // SymbolPricingEditor.tsx's own per-row toggle; whichever mode isn't
+    // active is sent blank (parses server-side as null).
+    #[allow(clippy::too_many_arguments)]
     pub fn update_group_pricing(
         &self,
         ctx: egui::Context,
         tx: Sender<ApiEvent>,
         group_id: String,
         symbol_id: String,
+        mode: String,
         spread_markup: String,
+        target_total_spread_pips: String,
         commission_per_lot: String,
+        swap_long: String,
+        swap_short: String,
     ) {
         let client = self.client.clone();
         let url = format!("{}/api/manage/groups/{}/pricing", self.base_url, group_id);
@@ -1029,8 +1320,11 @@ impl ApiClient {
                     .patch(&url)
                     .json(&serde_json::json!({
                         "symbolId": symbol_id,
-                        "spreadMarkup": spread_markup,
+                        "spreadMarkup": if mode == "markup" { spread_markup } else { String::new() },
+                        "targetTotalSpreadPips": if mode == "target" { target_total_spread_pips } else { String::new() },
                         "commissionPerLot": commission_per_lot,
+                        "swapLong": swap_long,
+                        "swapShort": swap_short,
                     }))
                     .send()
                     .await
@@ -1042,6 +1336,69 @@ impl ApiClient {
             }
             .await;
             let _ = tx.send(ApiEvent::ActionDone(result));
+            ctx.request_repaint();
+        });
+    }
+
+    pub fn fetch_kyc(&self, ctx: egui::Context, tx: Sender<ApiEvent>) {
+        let client = self.client.clone();
+        let url = format!("{}/api/manage/kyc-requests", self.base_url);
+        spawn(async move {
+            let result = async {
+                let res = client.get(&url).send().await.map_err(|e| format!("network error: {e}"))?;
+                if !res.status().is_success() {
+                    return Err(Self::error_from_response(res).await);
+                }
+                res.json::<Vec<KycRow>>().await.map_err(|e| format!("bad response: {e}"))
+            }
+            .await;
+            let _ = tx.send(ApiEvent::Kyc(result));
+            ctx.request_repaint();
+        });
+    }
+
+    pub fn kyc_action(&self, ctx: egui::Context, tx: Sender<ApiEvent>, record_id: String, action: String, rejection_reason: Option<String>) {
+        let client = self.client.clone();
+        let url = format!("{}/api/manage/kyc-requests/{}", self.base_url, record_id);
+        spawn(async move {
+            let mut body = serde_json::json!({ "action": action });
+            if let Some(reason) = &rejection_reason {
+                body["rejectionReason"] = serde_json::Value::String(reason.clone());
+            }
+            let result = async {
+                let res = client.patch(&url).json(&body).send().await.map_err(|e| format!("network error: {e}"))?;
+                if !res.status().is_success() {
+                    return Err(Self::error_from_response(res).await);
+                }
+                Ok(format!("KYC {}", action.to_lowercase()))
+            }
+            .await;
+            let _ = tx.send(ApiEvent::ActionDone(result));
+            ctx.request_repaint();
+        });
+    }
+
+    // Fetches a KYC document photo through this app's own authenticated
+    // cookie jar -- an external-browser <a target="_blank"> link (the
+    // web's own approach) can't work here since the OS browser doesn't
+    // share this app's session cookie; shown instead in an in-app image
+    // preview window (main.rs's own KycDocument state).
+    pub fn fetch_kyc_document(&self, ctx: egui::Context, tx: Sender<ApiEvent>, record_id: String, side: String) {
+        let client = self.client.clone();
+        let url = format!("{}/api/manage/kyc-requests/{}/document?side={}", self.base_url, record_id, side);
+        spawn(async move {
+            let result = async {
+                let res = client.get(&url).send().await.map_err(|e| format!("network error: {e}"))?;
+                if !res.status().is_success() {
+                    return Err(format!("document request failed ({})", res.status()));
+                }
+                let bytes = res.bytes().await.map_err(|e| format!("failed to read document bytes: {e}"))?;
+                let decoded = image::load_from_memory(&bytes).map_err(|e| format!("failed to decode document image: {e}"))?.to_rgba8();
+                let size = [decoded.width() as usize, decoded.height() as usize];
+                Ok((decoded.into_raw(), size))
+            }
+            .await;
+            let _ = tx.send(ApiEvent::KycDocument(result));
             ctx.request_repaint();
         });
     }
@@ -1142,6 +1499,59 @@ impl ApiClient {
             }
             .await;
             let _ = tx.send(ApiEvent::Notifications(result));
+            ctx.request_repaint();
+        });
+    }
+
+    // Fire-and-forget, same as the web's own optimistic-save/toast-free-
+    // failure theme toggle (lib/admin-theme.tsx) -- the local UI already
+    // flipped by the time this is called, so a dropped save just means
+    // the next login falls back to whatever was last persisted.
+    pub fn set_theme(&self, ctx: egui::Context, theme: String) {
+        let client = self.client.clone();
+        let url = format!("{}/api/manage/theme", self.base_url);
+        spawn(async move {
+            let _ = client.patch(&url).json(&serde_json::json!({ "theme": theme })).send().await;
+            ctx.request_repaint();
+        });
+    }
+
+    pub fn mark_notification_read(&self, ctx: egui::Context, tx: Sender<ApiEvent>, notification_id: String) {
+        let client = self.client.clone();
+        let url = format!("{}/api/manage/notifications/{}", self.base_url, notification_id);
+        spawn(async move {
+            let result = async {
+                let res = client
+                    .patch(&url)
+                    .json(&serde_json::json!({ "read": true }))
+                    .send()
+                    .await
+                    .map_err(|e| format!("network error: {e}"))?;
+                if !res.status().is_success() {
+                    return Err(Self::error_from_response(res).await);
+                }
+                Ok("notification marked read".to_string())
+            }
+            .await;
+            let _ = tx.send(ApiEvent::ActionDone(result));
+            ctx.request_repaint();
+        });
+    }
+
+    pub fn reset_trader_password(&self, ctx: egui::Context, tx: Sender<ApiEvent>, account_id: String) {
+        let client = self.client.clone();
+        let url = format!("{}/api/manage/accounts/{}/reset-password", self.base_url, account_id);
+        spawn(async move {
+            let result = async {
+                let res = client.post(&url).send().await.map_err(|e| format!("network error: {e}"))?;
+                if !res.status().is_success() {
+                    return Err(Self::error_from_response(res).await);
+                }
+                let body: ResetPasswordResponse = res.json().await.map_err(|e| format!("bad response: {e}"))?;
+                Ok(body.password)
+            }
+            .await;
+            let _ = tx.send(ApiEvent::PasswordReset(result));
             ctx.request_repaint();
         });
     }
@@ -1567,6 +1977,87 @@ impl ApiClient {
             }
             .await;
             let _ = tx.send(ApiEvent::Risk(result));
+            ctx.request_repaint();
+        });
+    }
+
+    pub fn fetch_risk_settings(&self, ctx: egui::Context, tx: Sender<ApiEvent>) {
+        let client = self.client.clone();
+        let url = format!("{}/api/manage/risk", self.base_url);
+        spawn(async move {
+            let result = async {
+                let res = client.get(&url).send().await.map_err(|e| format!("network error: {e}"))?;
+                if !res.status().is_success() {
+                    return Err(Self::error_from_response(res).await);
+                }
+                res.json::<RiskSettings>().await.map_err(|e| format!("bad response: {e}"))
+            }
+            .await;
+            let _ = tx.send(ApiEvent::RiskSettings(result));
+            ctx.request_repaint();
+        });
+    }
+
+    pub fn set_dealing_mode(&self, ctx: egui::Context, tx: Sender<ApiEvent>, on: bool) {
+        let client = self.client.clone();
+        let url = format!("{}/api/manage/risk", self.base_url);
+        spawn(async move {
+            let result = async {
+                let res = client
+                    .patch(&url)
+                    .json(&serde_json::json!({ "dealingMode": on }))
+                    .send()
+                    .await
+                    .map_err(|e| format!("network error: {e}"))?;
+                if !res.status().is_success() {
+                    return Err(Self::error_from_response(res).await);
+                }
+                res.json::<RiskSettings>().await.map_err(|e| format!("bad response: {e}"))
+            }
+            .await;
+            let _ = tx.send(ApiEvent::RiskSettings(result));
+            ctx.request_repaint();
+        });
+    }
+
+    pub fn save_risk_limits(&self, ctx: egui::Context, tx: Sender<ApiEvent>, total_exposure_limit: Option<String>, max_open_positions: Option<i64>) {
+        let client = self.client.clone();
+        let url = format!("{}/api/manage/risk", self.base_url);
+        spawn(async move {
+            let body = serde_json::json!({
+                "totalExposureLimit": total_exposure_limit,
+                "maxOpenPositionsPerAccount": max_open_positions,
+            });
+            let result = async {
+                let res = client.patch(&url).json(&body).send().await.map_err(|e| format!("network error: {e}"))?;
+                if !res.status().is_success() {
+                    return Err(Self::error_from_response(res).await);
+                }
+                res.json::<RiskSettings>().await.map_err(|e| format!("bad response: {e}"))
+            }
+            .await;
+            let _ = tx.send(ApiEvent::RiskSettings(result));
+            ctx.request_repaint();
+        });
+    }
+
+    pub fn save_smart_dealer(&self, ctx: egui::Context, tx: Sender<ApiEvent>, accept_pct: Option<String>, reject_pct: Option<String>) {
+        let client = self.client.clone();
+        let url = format!("{}/api/manage/risk", self.base_url);
+        spawn(async move {
+            let body = serde_json::json!({
+                "smartDealerAcceptPct": accept_pct,
+                "smartDealerRejectPct": reject_pct,
+            });
+            let result = async {
+                let res = client.patch(&url).json(&body).send().await.map_err(|e| format!("network error: {e}"))?;
+                if !res.status().is_success() {
+                    return Err(Self::error_from_response(res).await);
+                }
+                res.json::<RiskSettings>().await.map_err(|e| format!("bad response: {e}"))
+            }
+            .await;
+            let _ = tx.send(ApiEvent::RiskSettings(result));
             ctx.request_repaint();
         });
     }
