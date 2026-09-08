@@ -84,6 +84,7 @@ struct PendingReject {
 // tokens -- one color to change, not forty.
 mod theme {
     use eframe::egui::{self, Color32};
+    use std::sync::atomic::{AtomicU8, Ordering};
 
     pub const BG_0: Color32 = Color32::from_rgb(0x0a, 0x0d, 0x12); // outermost app background
     pub const BG_1: Color32 = Color32::from_rgb(0x11, 0x15, 0x1c); // card / panel surface
@@ -93,13 +94,61 @@ mod theme {
     pub const TEXT_1: Color32 = Color32::from_rgb(0xed, 0xf0, 0xf5); // primary
     pub const TEXT_2: Color32 = Color32::from_rgb(0xa8, 0xb2, 0xc0); // secondary
     pub const TEXT_3: Color32 = Color32::from_rgb(0x64, 0x6f, 0x7e); // muted / placeholder
-    pub const ACCENT: Color32 = Color32::from_rgb(0x16, 0xc7, 0x84); // brand green
-    pub const ACCENT_DIM: Color32 = Color32::from_rgb(0x0f, 0x8a, 0x5c);
     pub const DANGER: Color32 = Color32::from_rgb(0xef, 0x4a, 0x4a);
     pub const WARNING: Color32 = Color32::from_rgb(0xe8, 0xa8, 0x38);
 
+    const DEFAULT_ACCENT: (u8, u8, u8) = (0x16, 0xc7, 0x84); // generic VyXTrader green, shown pre-login and if a broker has no primaryColor set
+
+    // Per-tenant accent (Broker.primaryColor, fetched via /api/manage/
+    // shell-info right after login -- see BackofficeApp::drain_events's
+    // own ShellInfo handling) -- three plain atomics rather than a
+    // Mutex<Color32>: this app is single-threaded for UI purposes (only
+    // the egui update loop ever reads these; api.rs's background tasks
+    // only ever WRITE once, via set_accent), so there's no real
+    // contention to guard against, just interior mutability for a global
+    // ctx.set_visuals() can't itself provide since it needs a fresh
+    // egui::Visuals value built from these on every theme::apply() call.
+    static ACCENT_R: AtomicU8 = AtomicU8::new(DEFAULT_ACCENT.0);
+    static ACCENT_G: AtomicU8 = AtomicU8::new(DEFAULT_ACCENT.1);
+    static ACCENT_B: AtomicU8 = AtomicU8::new(DEFAULT_ACCENT.2);
+
+    pub fn accent() -> Color32 {
+        Color32::from_rgb(ACCENT_R.load(Ordering::Relaxed), ACCENT_G.load(Ordering::Relaxed), ACCENT_B.load(Ordering::Relaxed))
+    }
+
+    pub fn accent_dim() -> Color32 {
+        accent().gamma_multiply(0.65)
+    }
+
+    pub fn set_accent(color: Color32) {
+        ACCENT_R.store(color.r(), Ordering::Relaxed);
+        ACCENT_G.store(color.g(), Ordering::Relaxed);
+        ACCENT_B.store(color.b(), Ordering::Relaxed);
+    }
+
+    pub fn reset_accent() {
+        ACCENT_R.store(DEFAULT_ACCENT.0, Ordering::Relaxed);
+        ACCENT_G.store(DEFAULT_ACCENT.1, Ordering::Relaxed);
+        ACCENT_B.store(DEFAULT_ACCENT.2, Ordering::Relaxed);
+    }
+
+    // Called once at startup (fonts + visuals) and again after
+    // apply_visuals-only whenever set_accent changes (see
+    // BackofficeApp::drain_events's ShellInfo handling) -- font loading
+    // is idempotent but not free, so the post-login re-brand only redoes
+    // the (cheap) visuals half via apply_visuals below, not this whole
+    // function.
     pub fn apply(ctx: &egui::Context) {
         load_fonts(ctx);
+        apply_visuals(ctx);
+    }
+
+    // The part of apply() that depends on accent() -- split out so
+    // re-branding to a broker's own primaryColor after login doesn't
+    // also redundantly reload the embedded font.
+    pub fn apply_visuals(ctx: &egui::Context) {
+        let accent = accent();
+        let accent_dim = accent_dim();
 
         let mut visuals = egui::Visuals::dark();
         visuals.panel_fill = BG_0;
@@ -108,9 +157,9 @@ mod theme {
         visuals.faint_bg_color = BG_2;
         visuals.code_bg_color = BG_2;
         visuals.override_text_color = Some(TEXT_1);
-        visuals.hyperlink_color = ACCENT;
-        visuals.selection.bg_fill = ACCENT.linear_multiply(0.35);
-        visuals.selection.stroke = egui::Stroke::new(1.0_f32, ACCENT);
+        visuals.hyperlink_color = accent;
+        visuals.selection.bg_fill = accent.linear_multiply(0.35);
+        visuals.selection.stroke = egui::Stroke::new(1.0_f32, accent);
         visuals.window_stroke = egui::Stroke::new(1.0_f32, BORDER);
 
         let radius = egui::CornerRadius::same(8);
@@ -135,20 +184,20 @@ mod theme {
 
         visuals.widgets.hovered.bg_fill = BG_2.gamma_multiply(1.35);
         visuals.widgets.hovered.weak_bg_fill = BG_2.gamma_multiply(1.35);
-        visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0_f32, ACCENT_DIM);
+        visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0_f32, accent_dim);
         visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0_f32, TEXT_1);
         visuals.widgets.hovered.corner_radius = radius;
         visuals.widgets.hovered.expansion = 0.5;
 
-        visuals.widgets.active.bg_fill = ACCENT.linear_multiply(0.28);
-        visuals.widgets.active.weak_bg_fill = ACCENT.linear_multiply(0.28);
-        visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0_f32, ACCENT);
+        visuals.widgets.active.bg_fill = accent.linear_multiply(0.28);
+        visuals.widgets.active.weak_bg_fill = accent.linear_multiply(0.28);
+        visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0_f32, accent);
         visuals.widgets.active.fg_stroke = egui::Stroke::new(1.0_f32, TEXT_1);
         visuals.widgets.active.corner_radius = radius;
 
         visuals.widgets.open.bg_fill = BG_2;
         visuals.widgets.open.weak_bg_fill = BG_2;
-        visuals.widgets.open.bg_stroke = egui::Stroke::new(1.0_f32, ACCENT_DIM);
+        visuals.widgets.open.bg_stroke = egui::Stroke::new(1.0_f32, accent_dim);
         visuals.widgets.open.corner_radius = radius;
 
         // set_visuals alone follows the OS theme preference -- on a
@@ -206,7 +255,7 @@ mod theme {
     pub fn accent_button_enabled(ui: &mut egui::Ui, enabled: bool, text: &str) -> egui::Response {
         ui.add_enabled(
             enabled,
-            egui::Button::new(egui::RichText::new(text).color(Color32::from_rgb(0x06, 0x0a, 0x08)).strong()).fill(ACCENT),
+            egui::Button::new(egui::RichText::new(text).color(Color32::from_rgb(0x06, 0x0a, 0x08)).strong()).fill(accent()),
         )
     }
 
@@ -257,6 +306,8 @@ struct BackofficeApp {
     screen: Screen,
     loaded_once: HashSet<Screen>,
     action_message: Option<String>,
+    broker_name: Option<String>,
+    broker_logo_texture: Option<egui::TextureHandle>,
 
     // --- dashboard ---
     dashboard: Option<DashboardData>,
@@ -343,6 +394,8 @@ impl Default for BackofficeApp {
             screen: Screen::Dashboard,
             loaded_once: HashSet::new(),
             action_message: None,
+            broker_name: None,
+            broker_logo_texture: None,
             dashboard: None,
             dashboard_loading: false,
             dashboard_error: None,
@@ -400,7 +453,34 @@ impl BackofficeApp {
                     self.password_input.clear();
                     self.ensure_loaded(ctx, Screen::Dashboard);
                     self.maybe_autonav(ctx);
+                    if let Some(api) = &self.api {
+                        api.fetch_shell_info(ctx.clone(), self.tx.clone());
+                    }
                 }
+                ApiEvent::ShellInfo(Ok(info)) => {
+                    self.broker_name = Some(info.broker_name);
+                    if let Some(hex) = &info.broker_primary_color {
+                        if let Some(color) = parse_hex_color(hex) {
+                            theme::set_accent(color);
+                            theme::apply_visuals(ctx);
+                        }
+                    }
+                    if let Some(url) = info.broker_logo_url {
+                        if let Some(api) = &self.api {
+                            api.fetch_logo(ctx.clone(), self.tx.clone(), url);
+                        }
+                    }
+                }
+                // Non-fatal -- the sidebar just falls back to the
+                // generic "VyXTrader" wordmark/green accent it already
+                // shows before this fetch completes, same as a broker
+                // with no logo/primaryColor configured at all.
+                ApiEvent::ShellInfo(Err(_)) => {}
+                ApiEvent::LogoImage(Ok((pixels, [w, h]))) => {
+                    let color_image = egui::ColorImage::from_rgba_unmultiplied([w, h], &pixels);
+                    self.broker_logo_texture = Some(ctx.load_texture("broker-logo", color_image, egui::TextureOptions::default()));
+                }
+                ApiEvent::LogoImage(Err(_)) => {}
                 ApiEvent::LoginResult(Err(e)) => {
                     self.login_busy = false;
                     self.login_error = Some(e);
@@ -615,7 +695,7 @@ impl BackofficeApp {
         egui::CentralPanel::default().frame(egui::Frame::new().fill(theme::BG_0)).show(ctx, |ui| {
             ui.vertical_centered(|ui| {
                 ui.add_space(110.0);
-                ui.label(egui::RichText::new("●").size(28.0).color(theme::ACCENT));
+                ui.label(egui::RichText::new("●").size(28.0).color(theme::accent()));
                 ui.add_space(6.0);
                 ui.label(egui::RichText::new("VyXTrader").size(26.0).color(theme::TEXT_1));
                 ui.label(egui::RichText::new("BACKOFFICE").size(12.0).color(theme::TEXT_3));
@@ -653,7 +733,7 @@ impl BackofficeApp {
                                     .color(egui::Color32::from_rgb(0x06, 0x0a, 0x08))
                                     .strong(),
                             )
-                            .fill(theme::ACCENT)
+                            .fill(theme::accent())
                             .min_size(egui::vec2(ui.available_width(), 0.0));
                             if ui.add_enabled(can_submit, button).clicked() {
                                 self.login_error = None;
@@ -681,7 +761,7 @@ impl BackofficeApp {
             .frame(egui::Frame::new().fill(theme::BG_0).inner_margin(egui::Margin::symmetric(20, 14)).stroke(egui::Stroke::NONE))
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(self.screen.icon()).size(18.0).color(theme::ACCENT));
+                    ui.label(egui::RichText::new(self.screen.icon()).size(18.0).color(theme::accent()));
                     ui.add_space(4.0);
                     ui.label(egui::RichText::new(self.screen.label()).size(19.0).color(theme::TEXT_1));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -692,6 +772,10 @@ impl BackofficeApp {
                             self.dashboard = None;
                             self.positions.clear();
                             self.accounts.clear();
+                            self.broker_name = None;
+                            self.broker_logo_texture = None;
+                            theme::reset_accent();
+                            theme::apply_visuals(ctx);
                         }
                         ui.add_space(14.0);
                         ui.vertical(|ui| {
@@ -709,8 +793,19 @@ impl BackofficeApp {
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.add_space(20.0);
-                    ui.label(egui::RichText::new("●").size(16.0).color(theme::ACCENT));
-                    ui.label(egui::RichText::new("VyXTrader").size(17.0).color(theme::TEXT_1));
+                    // Broker's own logo once fetched (see ApiEvent::
+                    // LogoImage), falling back to the generic accent dot
+                    // for a broker with none configured -- same "brand if
+                    // we can, stay generic if we can't" rule the web
+                    // backoffice's own sidebar follows.
+                    if let Some(texture) = &self.broker_logo_texture {
+                        ui.add(egui::Image::new(texture).max_height(20.0).max_width(28.0));
+                    } else {
+                        ui.label(egui::RichText::new("●").size(16.0).color(theme::accent()));
+                    }
+                    let name = self.broker_name.as_deref().unwrap_or("VyXTrader");
+                    let name = if name.chars().count() > 18 { format!("{}...", name.chars().take(17).collect::<String>()) } else { name.to_string() };
+                    ui.label(egui::RichText::new(name).size(17.0).color(theme::TEXT_1));
                 });
                 ui.label(egui::RichText::new("  BACKOFFICE").size(10.5).color(theme::TEXT_3));
                 ui.add_space(14.0);
@@ -885,7 +980,7 @@ impl BackofficeApp {
                     });
                     row.col(|ui| {
                         let color = if p.side == "BUY" {
-                            theme::ACCENT
+                            theme::accent()
                         } else {
                             theme::DANGER
                         };
@@ -903,7 +998,7 @@ impl BackofficeApp {
                     row.col(|ui| {
                         let pnl_text = p.floating_pnl.as_deref().unwrap_or("-");
                         let color = match p.floating_pnl.as_deref().and_then(|s| s.parse::<f64>().ok()) {
-                            Some(v) if v > 0.0 => theme::ACCENT,
+                            Some(v) if v > 0.0 => theme::accent(),
                             Some(v) if v < 0.0 => theme::DANGER,
                             _ => ui.visuals().text_color(),
                         };
@@ -1032,7 +1127,7 @@ impl BackofficeApp {
                     });
                     row.col(|ui| {
                         let color = match a.status.as_str() {
-                            "ACTIVE" => theme::ACCENT,
+                            "ACTIVE" => theme::accent(),
                             "SUSPENDED" => theme::WARNING,
                             _ => theme::TEXT_3,
                         };
@@ -1080,7 +1175,7 @@ impl BackofficeApp {
             theme::card(10).show(ui, |ui| {
                 ui.horizontal(|ui| {
                     let side_color = if order.side == "BUY" {
-                        theme::ACCENT
+                        theme::accent()
                     } else {
                         theme::DANGER
                     };
@@ -1200,7 +1295,7 @@ impl BackofficeApp {
                         });
                         row.col(|ui| {
                             if p.has_override {
-                                ui.colored_label(theme::ACCENT, "custom");
+                                ui.colored_label(theme::accent(), "custom");
                             } else {
                                 ui.weak("broker default");
                             }
@@ -1315,7 +1410,7 @@ impl BackofficeApp {
                     ui.monospace(&record.document_type);
                     ui.weak(record.created_at.get(0..10).unwrap_or(&record.created_at));
                     let status_color = match record.status.as_str() {
-                        "APPROVED" => theme::ACCENT,
+                        "APPROVED" => theme::accent(),
                         "REJECTED" => theme::DANGER,
                         _ => theme::WARNING,
                     };
@@ -1390,7 +1485,7 @@ impl BackofficeApp {
                     ui.monospace(req.account_type_name.as_deref().unwrap_or("-"));
                     ui.weak(req.created_at.get(0..10).unwrap_or(&req.created_at));
                     let status_color = match req.status.as_str() {
-                        "APPROVED" => theme::ACCENT,
+                        "APPROVED" => theme::accent(),
                         "REJECTED" => theme::DANGER,
                         _ => theme::WARNING,
                     };
@@ -1463,7 +1558,7 @@ impl BackofficeApp {
             for n in &self.notifications {
                 ui.horizontal(|ui| {
                     if !n.read {
-                        ui.colored_label(theme::ACCENT, "*");
+                        ui.colored_label(theme::accent(), "*");
                     } else {
                         ui.weak(" ");
                     }
@@ -1527,7 +1622,7 @@ impl BackofficeApp {
                     });
                     row.col(|ui| {
                         let color = if r.profit_velocity_per_day > 0.0 {
-                            theme::ACCENT
+                            theme::accent()
                         } else if r.profit_velocity_per_day < 0.0 {
                             theme::DANGER
                         } else {
@@ -1589,6 +1684,20 @@ impl BackofficeApp {
     }
 }
 
+// Broker.primaryColor's own stored format (see BrokersManager.tsx's own
+// "#f4551c"-style placeholder) -- "#rrggbb" or bare "rrggbb", both seen
+// in real broker rows this session.
+fn parse_hex_color(hex: &str) -> Option<egui::Color32> {
+    let hex = hex.trim().trim_start_matches('#');
+    if hex.len() != 6 {
+        return None;
+    }
+    let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+    Some(egui::Color32::from_rgb(r, g, b))
+}
+
 fn stat_card(ui: &mut egui::Ui, label: &str, value: &str) {
     egui::Frame::new()
         .fill(theme::BG_1)
@@ -1614,13 +1723,13 @@ fn sidebar_nav_item(ui: &mut egui::Ui, icon: &str, label: &str, selected: bool) 
 
     if ui.is_rect_visible(rect) {
         if selected {
-            ui.painter().rect_filled(rect, 0.0, theme::ACCENT.linear_multiply(0.14));
+            ui.painter().rect_filled(rect, 0.0, theme::accent().linear_multiply(0.14));
             let bar = egui::Rect::from_min_size(rect.min, egui::vec2(3.0, rect.height()));
-            ui.painter().rect_filled(bar, 0.0, theme::ACCENT);
+            ui.painter().rect_filled(bar, 0.0, theme::accent());
         } else if response.hovered() {
             ui.painter().rect_filled(rect, 0.0, theme::BG_2);
         }
-        let text_color = if selected { theme::ACCENT } else { theme::TEXT_2 };
+        let text_color = if selected { theme::accent() } else { theme::TEXT_2 };
         let icon_pos = rect.min + egui::vec2(20.0, rect.height() / 2.0);
         ui.painter().text(icon_pos, egui::Align2::LEFT_CENTER, icon, egui::FontId::proportional(14.0), text_color);
         let label_pos = rect.min + egui::vec2(46.0, rect.height() / 2.0);
@@ -1681,9 +1790,68 @@ impl BackofficeApp {
     }
 }
 
+// Custom-drawn since decorations(false) means there's no OS-drawn title
+// bar at all -- this is that bar's full replacement: drag-to-move, and
+// minimize/maximize/close wired to the same ViewportCommands the OS
+// chrome would otherwise send. Rendered once per frame regardless of
+// login state, above whatever render_login/render_shell draws below it.
+fn render_titlebar(ctx: &egui::Context) {
+    egui::TopBottomPanel::top("titlebar")
+        .exact_height(34.0)
+        .frame(egui::Frame::new().fill(theme::SIDEBAR_BG).inner_margin(egui::Margin::symmetric(10, 0)))
+        .show(ctx, |ui| {
+            let bar_rect = ui.max_rect();
+            let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+
+            // Drag/double-click-to-maximize sensed over the WHOLE bar
+            // first (drawn/allocated before anything else, so it sits
+            // "underneath" in z-order) -- the icon/title/buttons drawn
+            // afterward each get their own narrower interactive rect on
+            // top of it, which egui resolves to the topmost (later-drawn)
+            // widget for clicks/hover, same as eframe's own documented
+            // custom-title-bar pattern.
+            let bar_response = ui.interact(bar_rect, ui.id().with("titlebar-drag"), egui::Sense::click_and_drag());
+            if bar_response.drag_started() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+            }
+            if bar_response.double_clicked() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+            }
+
+            ui.horizontal_centered(|ui| {
+                ui.label(egui::RichText::new("●").size(12.0).color(theme::accent()));
+                ui.add_space(2.0);
+                ui.label(egui::RichText::new("VyXTrader Backoffice").size(12.5).color(theme::TEXT_2));
+
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let btn = |ui: &mut egui::Ui, symbol: &str, hover: egui::Color32| {
+                        let (rect, response) = ui.allocate_exact_size(egui::vec2(38.0, 34.0), egui::Sense::click());
+                        if ui.is_rect_visible(rect) {
+                            if response.hovered() {
+                                ui.painter().rect_filled(rect, 0.0, hover);
+                            }
+                            ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, symbol, egui::FontId::proportional(13.0), theme::TEXT_1);
+                        }
+                        response
+                    };
+                    if btn(ui, "✕", theme::DANGER).clicked() {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                    if btn(ui, "▢", theme::BG_2).clicked() {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+                    }
+                    if btn(ui, "—", theme::BG_2).clicked() {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                    }
+                });
+            });
+        });
+}
+
 impl eframe::App for BackofficeApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain_events(ctx);
+        render_titlebar(ctx);
         if self.logged_in {
             self.render_shell(ctx);
         } else {
@@ -1693,11 +1861,27 @@ impl eframe::App for BackofficeApp {
 }
 
 fn main() -> eframe::Result<()> {
+    // Same icon.ico brand mark the Tauri apps already ship (manager-tauri/
+    // src-tauri/icons/icon.ico), decoded to raw RGBA here since eframe's
+    // window icon needs pixel data, not a file reference -- see
+    // build.rs's own comment for the OTHER half of this fix (the static
+    // .exe file icon Explorer/the taskbar's pinned entry read, which is a
+    // completely separate mechanism from this runtime one).
+    let icon = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png")).expect("assets/icon.png must be a valid PNG");
+
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("VyXTrader Backoffice (Native POC)")
+            .with_title("VyXTrader Backoffice")
             .with_inner_size([1360.0, 840.0])
-            .with_min_inner_size([1024.0, 600.0]),
+            .with_min_inner_size([1024.0, 600.0])
+            .with_icon(icon)
+            // Frameless -- the OS's own title bar renders white/light
+            // regardless of ctx.set_theme (DWM chrome and egui's own
+            // dark visuals are two separate systems on Windows; the
+            // former doesn't follow the latter). titlebar() below draws
+            // a custom one instead, matching the rest of the app exactly
+            // rather than fighting Windows for a dark native one.
+            .with_decorations(false),
         ..Default::default()
     };
 

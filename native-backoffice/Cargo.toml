@@ -1,6 +1,6 @@
 [package]
 name = "vyxtrader-native-backoffice"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 description = "True-native (zero-webview) Rust backoffice proof-of-concept -- egui/eframe, MT5/DXtrade-grade, no browser/webview anywhere. Separate crate from desktop-tauri/manager-tauri/admin-tauri (those stay webview-based); this is the future replacement track. Talks to the same live /api/manage/* endpoints the real web backoffice uses (see api.rs's own comment for why -- there is no separate Rust DB layer serving this data today)."
 
@@ -10,8 +10,12 @@ path = "src/main.rs"
 
 [dependencies]
 eframe = "0.32"
-egui_extras = "0.32"
+egui_extras = { version = "0.32", features = ["image"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
 reqwest = { version = "0.13", features = ["json", "cookies"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+[target.'cfg(windows)'.build-dependencies]
+winres = "0.1"

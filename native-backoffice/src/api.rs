@@ -254,6 +254,17 @@ pub struct SettingsData {
     pub default_account_leverage: i64,
 }
 
+// --- per-tenant branding (/api/manage/shell-info) ---
+#[derive(Debug, Clone, Deserialize)]
+pub struct ShellInfo {
+    #[serde(rename = "brokerName")]
+    pub broker_name: String,
+    #[serde(rename = "brokerLogoUrl")]
+    pub broker_logo_url: Option<String>,
+    #[serde(rename = "brokerPrimaryColor")]
+    pub broker_primary_color: Option<String>,
+}
+
 pub enum ApiEvent {
     LoginResult(Result<String, String>),
     Dashboard(Result<DashboardData, String>),
@@ -267,6 +278,12 @@ pub enum ApiEvent {
     Notifications(Result<Vec<NotificationRow>, String>),
     RiskRadar(Result<Vec<RiskRadarRow>, String>),
     Settings(Result<SettingsData, String>),
+    ShellInfo(Result<ShellInfo, String>),
+    // Raw decoded RGBA pixels for the broker's logo, ready for
+    // egui::ColorImage::from_rgba_unmultiplied -- decoded here (not on
+    // the UI thread) since image decoding is exactly the kind of work
+    // this background-task/channel pattern exists to keep off it.
+    LogoImage(Result<(Vec<u8>, [usize; 2]), String>),
     // Generic "an action completed" signal (create/update account, dealing
     // accept/reject, KYC/live-account approve/reject, pricing save, mark-
     // all-read, settings save) -- the screen that triggered it just
@@ -700,6 +717,48 @@ impl ApiClient {
             }
             .await;
             let _ = tx.send(ApiEvent::ActionDone(result));
+            ctx.request_repaint();
+        });
+    }
+
+    pub fn fetch_shell_info(&self, ctx: egui::Context, tx: Sender<ApiEvent>) {
+        let client = self.client.clone();
+        let url = format!("{}/api/manage/shell-info", self.base_url);
+        spawn(async move {
+            let result = async {
+                let res = client.get(&url).send().await.map_err(|e| format!("network error: {e}"))?;
+                if !res.status().is_success() {
+                    return Err(Self::error_from_response(res).await);
+                }
+                res.json::<ShellInfo>().await.map_err(|e| format!("bad response: {e}"))
+            }
+            .await;
+            let _ = tx.send(ApiEvent::ShellInfo(result));
+            ctx.request_repaint();
+        });
+    }
+
+    // Broker.logoUrl points at Vercel Blob storage (a plain public HTTPS
+    // URL, no auth needed) -- fetched and decoded on this same background
+    // runtime rather than the UI thread, same reasoning as every other
+    // call here. Uses this client's own cookie-jar-bearing reqwest
+    // instance for consistency, though the logo URL itself doesn't
+    // actually require the session cookie.
+    pub fn fetch_logo(&self, ctx: egui::Context, tx: Sender<ApiEvent>, url: String) {
+        let client = self.client.clone();
+        spawn(async move {
+            let result = async {
+                let res = client.get(&url).send().await.map_err(|e| format!("network error: {e}"))?;
+                if !res.status().is_success() {
+                    return Err(format!("logo request failed ({})", res.status()));
+                }
+                let bytes = res.bytes().await.map_err(|e| format!("failed to read logo bytes: {e}"))?;
+                let decoded = image::load_from_memory(&bytes).map_err(|e| format!("failed to decode logo image: {e}"))?.to_rgba8();
+                let size = [decoded.width() as usize, decoded.height() as usize];
+                Ok((decoded.into_raw(), size))
+            }
+            .await;
+            let _ = tx.send(ApiEvent::LogoImage(result));
             ctx.request_repaint();
         });
     }
