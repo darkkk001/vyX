@@ -698,9 +698,31 @@ fn main() {
                 gateway_ws_base: gateway_ws_base.clone(),
             });
 
+            // 2026-09-08 -- back to loading the broker's real, live /trade
+            // page directly instead of webtrader-shell's own bundled copy
+            // (confirmed live: it had drifted from the real WebTrader --
+            // wrong layout, missing features -- exactly the risk of
+            // maintaining a second hand-wired copy of the same UI). This
+            // does NOT reopen the cookie problem this file's own header
+            // comment describes: that was specifically about LOCAL bundled
+            // content making a CROSS-ORIGIN fetch/WebSocket to a remote
+            // host, which can't carry an httpOnly cookie across that
+            // boundary. Loading the real page directly has no such
+            // boundary -- it's the same single origin a normal browser tab
+            // on that URL would be. The api_request Rust bridge (and
+            // window.vyxDesktop generally) stays exactly as it was: still
+            // injected via initialization_script below, still what
+            // lib/trade-api.ts's own isDesktop branch already prefers when
+            // present, regardless of which page loaded it -- unaffected by
+            // this change, and not something this needs to touch.
+            let trade_url: tauri::Url = format!("{connect_base}/trade")
+                .parse()
+                .expect("connect_base + /trade must be a valid URL");
+            let allowed_host = trade_url.host_str().map(str::to_string);
+
             let nav_app_handle = app.handle().clone();
             let new_window_app_handle = app.handle().clone();
-            let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+            let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(trade_url))
                 .title(&config.broker_name)
                 .inner_size(1440.0, 900.0)
                 .min_inner_size(1024.0, 640.0)
@@ -708,14 +730,17 @@ fn main() {
                 // WebTrader renders its own title bar (DesktopTitleBar.tsx)
                 // once it detects window.vyxDesktop.isDesktop.
                 .decorations(false)
-                // The window now only ever shows the bundled local shell --
-                // any navigation away from it (a support-email mailto:, a
-                // stray external link) should open in the OS browser
-                // instead, never replace the app's own UI in-place. Unlike
-                // the old remote-wrapper version of this file, no host is
-                // "allowed" in-window anymore; only local content is.
+                // Every real in-app navigation (login -> /trade, tab
+                // switches, anything the real site's own router does)
+                // stays in-window as long as it's on the broker's own real
+                // host; anything else (a support-email mailto:, a stray
+                // external link) opens in the OS browser instead of
+                // replacing the app's own UI in-place.
                 .on_navigation(move |url| {
                     if url.scheme() == "tauri" || url.host_str() == Some("tauri.localhost") {
+                        return true;
+                    }
+                    if allowed_host.as_deref() == url.host_str() {
                         return true;
                     }
                     let _ = nav_app_handle.opener().open_url(url.to_string(), None::<&str>);
