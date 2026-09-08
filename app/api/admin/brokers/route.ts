@@ -56,7 +56,6 @@ export async function GET() {
       nextInvoiceAt: b.nextInvoiceAt ? b.nextInvoiceAt.toISOString() : null,
       createdAt: b.createdAt.toISOString().slice(0, 10),
       hasSsoSecret: b.ssoSecret != null,
-      hasDesktopGateSecret: b.desktopGateSecret != null,
       supportEmail: b.supportEmail,
       logoUrl: b.logoUrl,
       primaryColor: b.primaryColor,
