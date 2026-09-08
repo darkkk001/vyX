@@ -98,10 +98,24 @@ const FRESH_MS = 30_000;
 const STALE_MS = 30 * 60_000;
 const brokerCache = new Map<string, { broker: BrokerInfo; fetchedAt: number }>();
 
+// 2026-09-08 -- friendly entry-point aliases, requested directly: a
+// broker's own staff/traders land on a clean, on-brand URL
+// (/manager/login, /traders/login) instead of the app's own internal
+// path names (/manage/login, /trade/login). Deliberately just the login
+// entry point, not every page under each tree -- once past login, the
+// app's own existing internal navigation already uses /manage/*//trade/*
+// consistently everywhere, so there's nothing else to alias. Generic
+// (not Futurix-specific) -- any broker gets these for free.
+const PATH_ALIASES: Record<string, string> = {
+  "/manager/login": "/manage/login",
+  "/traders/login": "/trade/login",
+};
+
 export async function middleware(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
-  const isManagePage = pathname === "/manage" || pathname.startsWith("/manage/");
-  const isSuperAdminPage = SUPER_ADMIN_PAGE_PATHS.has(pathname);
+  const effectivePathname = PATH_ALIASES[pathname] ?? pathname;
+  const isManagePage = effectivePathname === "/manage" || effectivePathname.startsWith("/manage/");
+  const isSuperAdminPage = SUPER_ADMIN_PAGE_PATHS.has(effectivePathname);
 
   // 2026-09-08 TEMPORARY REVERSAL, requested directly -- the native-app
   // track this gate was built for (see the architecture comment below)
@@ -286,8 +300,19 @@ export async function middleware(request: NextRequest) {
   // own requireAdmin2fa redirect, or it would loop) and the App Router
   // gives a Server Component no built-in way to read that; middleware is
   // the one place that already has request.nextUrl.pathname for free.
-  requestHeaders.set("x-pathname", request.nextUrl.pathname);
+  // effectivePathname (not the raw request path) so a page reached via a
+  // PATH_ALIASES entry sees the same value it would if visited directly.
+  requestHeaders.set("x-pathname", effectivePathname);
   requestHeaders.set("x-broker-primary-color", broker.primaryColor ?? "");
+
+  // A PATH_ALIASES match rewrites to the real page internally -- the
+  // browser's URL bar keeps showing the friendly alias (/manager/login,
+  // /traders/login) while the actual page rendered is the one at
+  // effectivePathname, exactly like the /broker-not-found rewrite above.
+  if (effectivePathname !== pathname) {
+    const rewriteUrl = new URL(`${effectivePathname}${request.nextUrl.search}`, request.url);
+    return NextResponse.rewrite(rewriteUrl, { request: { headers: requestHeaders } });
+  }
 
   return NextResponse.next({ request: { headers: requestHeaders } });
 }
