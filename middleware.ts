@@ -98,6 +98,18 @@ const FRESH_MS = 30_000;
 const STALE_MS = 30 * 60_000;
 const brokerCache = new Map<string, { broker: BrokerInfo; fetchedAt: number }>();
 
+// 2026-09-08 TEMPORARY, requested directly -- Futurix's customDomain
+// (futurixglobal.com) is correctly configured in the database and
+// already added to this Vercel project, but its DNS still points at its
+// registrar's own nameservers rather than Vercel (confirmed live: the
+// apex resolves to a non-Vercel IP), so redirecting there sends every
+// page to a domain that can't be reached at all right now. Skips the
+// customDomain redirect below for just this one broker until DNS is
+// fixed, keeping the subdomain (futurixglobal.vyxtrader.com) directly
+// usable in the meantime -- remove this once futurixglobal.com actually
+// resolves through Vercel.
+const CUSTOM_DOMAIN_REDIRECT_SKIP_SUBDOMAINS = new Set(["futurixglobal"]);
+
 // 2026-09-08 -- friendly entry-point aliases, requested directly: a
 // broker's own staff/traders land on a clean, on-brand URL
 // (/manager/login, /traders/login) instead of the app's own internal
@@ -281,7 +293,8 @@ export async function middleware(request: NextRequest) {
     subdomain &&
     broker.customDomain &&
     broker.customDomain !== hostname &&
-    !request.nextUrl.pathname.startsWith("/api/")
+    !request.nextUrl.pathname.startsWith("/api/") &&
+    !CUSTOM_DOMAIN_REDIRECT_SKIP_SUBDOMAINS.has(subdomain)
   ) {
     const redirectUrl = new URL(
       `${request.nextUrl.pathname}${request.nextUrl.search}`,
