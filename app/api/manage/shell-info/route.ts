@@ -19,7 +19,7 @@ export async function GET() {
   }
 
   const [broker, admin, unreadNotifications, canManageFinance] = await Promise.all([
-    prisma.broker.findUnique({ where: { id: session!.brokerId! }, select: { name: true, logoUrl: true } }),
+    prisma.broker.findUnique({ where: { id: session!.brokerId! }, select: { name: true, logoUrl: true, primaryColor: true } }),
     prisma.adminUser.findUnique({ where: { id: session!.adminId }, select: { email: true, theme: true } }),
     prisma.notification.count({ where: { brokerId: session!.brokerId!, readAt: null } }),
     session!.role === "BROKER_ADMIN" ? Promise.resolve(true) : hasPermission(session, "ACCOUNT_FINANCE"),
@@ -28,6 +28,7 @@ export async function GET() {
   return NextResponse.json({
     brokerName: broker?.name ?? "Backoffice",
     brokerLogoUrl: broker?.logoUrl ?? null,
+    brokerPrimaryColor: broker?.primaryColor ?? null,
     adminEmail: admin?.email ?? null,
     role: session!.role,
     unreadNotifications,
