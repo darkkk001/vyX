@@ -27,6 +27,37 @@ const PRICE_STREAM_PATH = "/v1/prices/stream";
 const TRADING_STREAM_PATH = "/v1/trading/stream";
 const ADMIN_EVENTS_STREAM_PATH = "/v1/events/stream";
 
+// 2026-09-08 outage fix -- root cause of a full live-feed outage: nats.js
+// defaults to maxReconnectAttempts=10 (node_modules/nats/lib/nats-base-
+// client/options.js's own DEFAULT_MAX_RECONNECT_ATTEMPTS). A NATS blip
+// long enough to exhaust 10 attempts made the client give up and close
+// for good -- the gateway process stayed up (still accepted WS
+// connections, still answered /internal/gateway-stats) but its `for
+// await (const msg of sub)` loops had silently ended with nothing to
+// restart them, so every stream (price ticks, trading events, admin
+// events) went permanently dark with no crash, no log line a human would
+// see, nothing -- confirmed live: natsMessagesReceivedTotal/
+// ticksForwardedTotal/tradingEventsReceivedTotal/adminEventsReceivedTotal
+// were all completely frozen across a 12-minute window while the engine
+// kept publishing 30k+ new ticks in that same window. `connect()` now
+// passes maxReconnectAttempts: -1 (unlimited) at every call site in this
+// service so a transient NATS outage of ANY length reconnects on its own
+// -- nats.js's own reconnect logic transparently re-establishes
+// subscriptions created before the drop, no resubscribe code needed here.
+// This logger is the other half of the fix: closed() resolving is now
+// impossible in normal operation (unlimited retries), so if it ever
+// fires again that's a real, unexpected event -- log it loudly instead
+// of the silence that let this outage go undetected until a trader
+// noticed stale prices.
+function logNatsConnectionLoss(streamName: string, nc: NatsConnection): void {
+  nc.closed().then((err) => {
+    console.error(
+      `[FATAL] ${streamName}: NATS connection closed permanently (reconnect attempts exhausted or an unrecoverable error), this stream is now dark until the gateway process is restarted.`,
+      err ?? "(no error object, clean close)"
+    );
+  });
+}
+
 // Per-broker enabled-symbol cache, 30s TTL -- "hot-reload on cfg change"
 // in practice means a Manager toggling a symbol's enabled flag is picked
 // up within at most 30s, not instantly; there's no push channel from the
@@ -129,7 +160,8 @@ async function resolveTraderSession(req: IncomingMessage): Promise<import("./aut
 }
 
 export async function attachPriceStream(server: Server, natsUrl: string): Promise<void> {
-  const nc: NatsConnection = await connect({ servers: natsUrl });
+  const nc: NatsConnection = await connect({ servers: natsUrl, reconnect: true, maxReconnectAttempts: -1 });
+  logNatsConnectionLoss("price stream", nc);
   const sub = nc.subscribe("price.tick.*");
 
   const wss = new WebSocketServer({ noServer: true });
@@ -260,7 +292,8 @@ export async function attachPriceStream(server: Server, natsUrl: string): Promis
 // the identical JSON shape, so this one subscription/fan-out serves
 // either origin without caring which one produced a given event.
 export async function attachTradingEventStream(server: Server, natsUrl: string): Promise<void> {
-  const nc: NatsConnection = await connect({ servers: natsUrl });
+  const nc: NatsConnection = await connect({ servers: natsUrl, reconnect: true, maxReconnectAttempts: -1 });
+  logNatsConnectionLoss("trading event stream", nc);
   // "alert.>" added Phase 1 trust pack §3 -- engine/server publishes
   // alert.triggered with the same account_id field every other subject
   // here already carries, so the forwarding loop below needs no change
@@ -355,7 +388,8 @@ export async function attachTradingEventStream(server: Server, natsUrl: string):
 // connection (a null brokerId session) rather than silently getting every
 // broker's events or none.
 export async function attachAdminEventStream(server: Server, natsUrl: string): Promise<void> {
-  const nc: NatsConnection = await connect({ servers: natsUrl });
+  const nc: NatsConnection = await connect({ servers: natsUrl, reconnect: true, maxReconnectAttempts: -1 });
+  logNatsConnectionLoss("admin event stream", nc);
   const subs = [nc.subscribe("order.>"), nc.subscribe("position.>"), nc.subscribe("dealing.>"), nc.subscribe("account.>")];
 
   const wss = new WebSocketServer({ noServer: true });

@@ -49,9 +49,23 @@ const internalEventsSc = StringCodec();
 
 function getInternalEventsConnection(): Promise<NatsConnection> {
   if (!internalEventsNc) {
-    internalEventsNc = connect({ servers: natsUrl }).catch((err) => {
+    // 2026-09-08 outage fix -- maxReconnectAttempts: -1, same reasoning as
+    // ws.ts's logNatsConnectionLoss: the nats.js default (10 attempts)
+    // meant a long-enough NATS blip made this connection give up for good,
+    // and unlike the .catch() below (which only catches a failure of the
+    // INITIAL connect), a later closed()-after-reconnects-exhausted never
+    // rejects this already-resolved promise -- nulling it out here too, so
+    // the next publish attempt opens a fresh connection instead of calling
+    // .publish() on a permanently-dead one forever.
+    internalEventsNc = connect({ servers: natsUrl, reconnect: true, maxReconnectAttempts: -1 }).catch((err) => {
       internalEventsNc = null; // let the next publish attempt retry a fresh connection
       throw err;
+    });
+    internalEventsNc.then((nc) => {
+      nc.closed().then((err) => {
+        console.error("[FATAL] internal events publisher: NATS connection closed permanently", err ?? "(no error object, clean close)");
+        internalEventsNc = null;
+      });
     });
   }
   return internalEventsNc;
