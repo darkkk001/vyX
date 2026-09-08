@@ -103,19 +103,21 @@ export async function middleware(request: NextRequest) {
   const isManagePage = pathname === "/manage" || pathname.startsWith("/manage/");
   const isSuperAdminPage = SUPER_ADMIN_PAGE_PATHS.has(pathname);
 
-  // Fast path: a plain browser (the overwhelming majority of hits on
-  // these paths) never carries this cookie at all -- reject it here,
-  // before paying for any host/broker resolution below, exactly as cheap
-  // as the unconditional 404 this replaced. A real 404 (not the friendly
-  // /broker-not-found rewrite below, which is for "this domain isn't a
-  // broker we know," a different situation) -- returned directly here
-  // rather than routed to a page component, so there's nothing for a
-  // client to fetch/render at all. Only a request that DOES carry the
-  // cookie pays the extra cost of getting its signature actually checked
-  // further down, once a broker is resolved to check it against.
-  if (isManagePage && !request.cookies.get(MANAGE_GATE_COOKIE)?.value) {
-    return new NextResponse("Not found", { status: 404 });
-  }
+  // 2026-09-08 TEMPORARY REVERSAL, requested directly -- the native-app
+  // track this gate was built for (see the architecture comment below)
+  // isn't ready yet, and Futurix needs a working backoffice on the web
+  // right now. /manage/* is unblocked for browsers again, exactly like
+  // before the 2026-09-07 lockdown -- normal broker resolution, normal
+  // page rendering, no cookie required. The gate machinery itself
+  // (MANAGE_GATE_COOKIE, lib/desktop-gate.ts, the /api/manage/
+  // desktop-gate route) is left in place, unused, so re-enabling the
+  // block later is just restoring the two checks below, not rebuilding
+  // them. Super Admin's own block (isSuperAdminPage, further down) is
+  // untouched -- only /manage/* was asked to be reopened.
+  //
+  // if (isManagePage && !request.cookies.get(MANAGE_GATE_COOKIE)?.value) {
+  //   return new NextResponse("Not found", { status: 404 });
+  // }
 
   const host = request.headers.get("host") ?? "";
   const hostname = host.split(":")[0];
@@ -153,9 +155,10 @@ export async function middleware(request: NextRequest) {
   }
 
   if (isRootOrSuperAdmin) {
-    // /manage/* has no meaning on the admin or root domain -- there's no
-    // broker to bind a manage-gate cookie to below, so this can never be
-    // legitimate regardless of what cookie a raw request presents here.
+    // /manage/* still has no meaning on the admin or root domain (no
+    // broker to resolve there) regardless of the temporary reversal
+    // above -- this was never gate-related, just "there's nothing to
+    // serve here," so it stays.
     if (isManagePage) {
       return new NextResponse("Not found", { status: 404 });
     }
@@ -216,25 +219,20 @@ export async function middleware(request: NextRequest) {
     }
   }
 
-  if (isManagePage) {
-    // The fast path at the top of this function already rejected any
-    // request with no cookie at all -- reaching here means one IS
-    // present, so this is the (rare -- only the genuine desktop app's own
-    // requests) extra cost of actually checking its signature against
-    // THIS specific resolved broker. Bound to broker.id specifically
-    // (not just "some valid manage-gate cookie") so a cookie minted for
-    // one broker's manager-tauri build can't be replayed against a
-    // different broker's domain.
-    const internalSecret = process.env.INTERNAL_SERVICE_SECRET ?? "";
-    const gateCookie = request.cookies.get(MANAGE_GATE_COOKIE)!.value;
-    const gateValid =
-      !!internalSecret && (await verifyDesktopGateToken(gateCookie, `manage:${broker.id}`, internalSecret));
-    if (!gateValid) {
-      return new NextResponse("Not found", { status: 404 });
-    }
-    // Valid -- fall through to the same custom-domain-redirect and
-    // header-attachment logic below as any other page on this broker.
-  }
+  // 2026-09-08 TEMPORARY REVERSAL -- see the top-of-function comment.
+  // /manage/* now falls straight through to the same custom-domain-
+  // redirect and header-attachment logic as any other page on this
+  // broker, same as before the 2026-09-07 lockdown.
+  //
+  // if (isManagePage) {
+  //   const internalSecret = process.env.INTERNAL_SERVICE_SECRET ?? "";
+  //   const gateCookie = request.cookies.get(MANAGE_GATE_COOKIE)!.value;
+  //   const gateValid =
+  //     !!internalSecret && (await verifyDesktopGateToken(gateCookie, `manage:${broker.id}`, internalSecret));
+  //   if (!gateValid) {
+  //     return new NextResponse("Not found", { status: 404 });
+  //   }
+  // }
 
   // A broker with a customDomain configured gets ONE canonical address --
   // their own domain, not two live URLs for the same site. If this request
