@@ -68,12 +68,23 @@ pub struct AccountRow {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct PositionRow {
+    pub id: String,
+    #[serde(rename = "accountId")]
+    pub account_id: String,
     #[serde(rename = "accountNumber")]
     pub account_number: String,
     #[serde(rename = "accountFullName")]
     pub account_full_name: String,
+    #[serde(rename = "groupId")]
+    pub group_id: Option<String>,
+    #[serde(rename = "groupName")]
+    pub group_name: Option<String>,
+    #[serde(rename = "ibAccountId")]
+    pub ib_account_id: Option<String>,
     #[serde(rename = "symbolName")]
     pub symbol_name: String,
+    #[serde(default)]
+    pub digits: i64,
     pub side: String,
     pub volume: String,
     #[serde(rename = "openPrice")]
@@ -82,6 +93,12 @@ pub struct PositionRow {
     pub current_price: Option<String>,
     #[serde(rename = "floatingPnl")]
     pub floating_pnl: Option<String>,
+    #[serde(rename = "slPrice")]
+    pub sl_price: Option<String>,
+    #[serde(rename = "tpPrice")]
+    pub tp_price: Option<String>,
+    #[serde(default)]
+    pub mirrored: bool,
     #[serde(rename = "openedAt")]
     pub opened_at: String,
 }
@@ -140,9 +157,138 @@ pub struct DealingOrderRow {
     pub live_ask: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct RequotedOrderRow {
+    pub id: String,
+    #[serde(rename = "accountNumber")]
+    pub account_number: String,
+    #[serde(rename = "accountFullName")]
+    pub account_full_name: String,
+    pub symbol: String,
+    pub side: String,
+    pub volume: String,
+    #[serde(rename = "requestedPrice")]
+    pub requested_price: Option<String>,
+    #[serde(rename = "requotedPrice")]
+    pub requoted_price: Option<String>,
+    #[serde(rename = "createdAt")]
+    pub created_at: String,
+}
+
 #[derive(Debug, Deserialize)]
 struct DealingQueueResponse {
     rows: Vec<DealingOrderRow>,
+    #[serde(rename = "requotedRows", default)]
+    requoted_rows: Vec<RequotedOrderRow>,
+}
+
+// --- Dealer ON/OFF toggle (GET/PATCH /api/manage/dealing-desk-toggle) ---
+#[derive(Debug, Clone, Deserialize)]
+pub struct DealerToggleState {
+    #[serde(rename = "dealerOn")]
+    pub dealer_on: bool,
+    #[serde(default)]
+    pub filled: usize,
+    #[serde(default)]
+    pub skipped: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct DealerToggleGetResponse {
+    #[serde(rename = "dealerOn")]
+    dealer_on: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct FlushedFill {
+    #[serde(default)]
+    status: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct DealerTogglePatchResponse {
+    #[serde(rename = "dealerOn")]
+    dealer_on: bool,
+    #[serde(default)]
+    flushed: Vec<FlushedFill>,
+}
+
+// --- Dealing desk panel: DEALING-group resting orders + scoped activity
+// feed (GET /api/manage/dealing-desk) ---
+#[derive(Debug, Clone, Deserialize)]
+pub struct DealingDeskAccount {
+    pub id: String,
+    #[serde(rename = "accountNumber")]
+    pub account_number: String,
+    #[serde(rename = "fullName")]
+    pub full_name: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RestingOrderRow {
+    #[serde(rename = "orderId")]
+    pub order_id: String,
+    #[serde(rename = "accountId")]
+    pub account_id: String,
+    #[serde(rename = "accountNumber")]
+    pub account_number: String,
+    #[serde(rename = "accountFullName")]
+    pub account_full_name: String,
+    pub symbol: String,
+    #[serde(default)]
+    pub digits: i64,
+    pub side: String,
+    pub volume: String,
+    #[serde(rename = "orderType")]
+    pub order_type: String,
+    #[serde(rename = "requestedPrice")]
+    pub requested_price: Option<String>,
+    #[serde(rename = "slPrice")]
+    pub sl_price: Option<String>,
+    #[serde(rename = "tpPrice")]
+    pub tp_price: Option<String>,
+    #[serde(rename = "createdAt")]
+    pub created_at: String,
+}
+
+// Live activity / dealer-activity feed row -- shared shape for both
+// /api/manage/live-activity (broker-wide, Live Exposure) and the
+// feedRows returned by /api/manage/dealing-desk (DEALING-group only).
+// `values` is left as a raw JSON blob (matches the web's own loosely-typed
+// Record<string, unknown>) and rendered with a small ad hoc describer
+// instead of a fully-typed struct per action.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ActivityFeedRow {
+    pub id: String,
+    pub at: String,
+    #[serde(rename = "accountId")]
+    pub account_id: String,
+    #[serde(rename = "accountNumber")]
+    pub account_number: String,
+    #[serde(rename = "accountFullName")]
+    pub account_full_name: String,
+    #[serde(rename = "isDealingGroup", default)]
+    pub is_dealing_group: bool,
+    pub action: String,
+    pub symbol: Option<String>,
+    pub side: Option<String>,
+    pub volume: Option<String>,
+    #[serde(default)]
+    pub values: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize)]
+struct DealingDeskResponse {
+    accounts: Vec<DealingDeskAccount>,
+    #[serde(rename = "restingOrders")]
+    resting_orders: Vec<RestingOrderRow>,
+    #[serde(rename = "feedRows")]
+    feed_rows: Vec<ActivityFeedRow>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LiveActivityResponse {
+    rows: Vec<ActivityFeedRow>,
 }
 
 // --- Groups ---
@@ -465,7 +611,10 @@ pub enum ApiEvent {
     Dashboard(Result<DashboardData, String>),
     Accounts(Result<Vec<AccountRow>, String>),
     Positions(Result<Vec<PositionRow>, String>),
-    DealingQueue(Result<Vec<DealingOrderRow>, String>),
+    DealingQueue(Result<(Vec<DealingOrderRow>, Vec<RequotedOrderRow>), String>),
+    DealerToggle(Result<DealerToggleState, String>),
+    DealingDesk(Result<(Vec<DealingDeskAccount>, Vec<RestingOrderRow>, Vec<ActivityFeedRow>), String>),
+    LiveActivity(Result<Vec<ActivityFeedRow>, String>),
     Groups(Result<Vec<GroupRow>, String>),
     GroupPricing(Result<Vec<GroupPricingRow>, String>),
     ClientKyc(Result<Vec<ClientKycRow>, String>),
@@ -603,6 +752,61 @@ impl ApiClient {
         });
     }
 
+    pub fn close_position(&self, ctx: egui::Context, tx: Sender<ApiEvent>, position_id: String, volume: Option<String>) {
+        let client = self.client.clone();
+        let url = format!("{}/api/manage/positions/{}/close", self.base_url, position_id);
+        spawn(async move {
+            let body = match &volume {
+                Some(v) if !v.trim().is_empty() => serde_json::json!({ "volume": v.trim() }),
+                _ => serde_json::json!({}),
+            };
+            let result = async {
+                let res = client.post(&url).json(&body).send().await.map_err(|e| format!("network error: {e}"))?;
+                if !res.status().is_success() {
+                    return Err(Self::error_from_response(res).await);
+                }
+                Ok("position closed".to_string())
+            }
+            .await;
+            let _ = tx.send(ApiEvent::ActionDone(result));
+            ctx.request_repaint();
+        });
+    }
+
+    pub fn modify_position(
+        &self,
+        ctx: egui::Context,
+        tx: Sender<ApiEvent>,
+        position_id: String,
+        sl_price: Option<String>,
+        tp_price: Option<String>,
+        reason: String,
+    ) {
+        let client = self.client.clone();
+        let url = format!("{}/api/manage/positions/{}", self.base_url, position_id);
+        spawn(async move {
+            let sl_value = match &sl_price {
+                Some(v) if !v.trim().is_empty() => serde_json::Value::String(v.trim().to_string()),
+                _ => serde_json::Value::Null,
+            };
+            let tp_value = match &tp_price {
+                Some(v) if !v.trim().is_empty() => serde_json::Value::String(v.trim().to_string()),
+                _ => serde_json::Value::Null,
+            };
+            let body = serde_json::json!({ "slPrice": sl_value, "tpPrice": tp_value, "reason": reason });
+            let result = async {
+                let res = client.patch(&url).json(&body).send().await.map_err(|e| format!("network error: {e}"))?;
+                if !res.status().is_success() {
+                    return Err(Self::error_from_response(res).await);
+                }
+                Ok("position modified".to_string())
+            }
+            .await;
+            let _ = tx.send(ApiEvent::ActionDone(result));
+            ctx.request_repaint();
+        });
+    }
+
     pub fn create_account(&self, ctx: egui::Context, tx: Sender<ApiEvent>, body: NewAccountBody) {
         let client = self.client.clone();
         let url = format!("{}/api/manage/accounts", self.base_url);
@@ -652,7 +856,7 @@ impl ApiClient {
                     return Err(Self::error_from_response(res).await);
                 }
                 let body: DealingQueueResponse = res.json().await.map_err(|e| format!("bad response: {e}"))?;
-                Ok(body.rows)
+                Ok((body.rows, body.requoted_rows))
             }
             .await;
             let _ = tx.send(ApiEvent::DealingQueue(result));
@@ -660,15 +864,25 @@ impl ApiClient {
         });
     }
 
-    // action: "ACCEPT" or "REJECT" -- REQUOTE isn't supported by this
-    // native pass (see main.rs's own dealing screen comment).
-    pub fn dealing_action(&self, ctx: egui::Context, tx: Sender<ApiEvent>, order_id: String, action: String, reason: Option<String>) {
+    // action: "ACCEPT", "REJECT", or "REQUOTE" (price required for REQUOTE).
+    pub fn dealing_action(
+        &self,
+        ctx: egui::Context,
+        tx: Sender<ApiEvent>,
+        order_id: String,
+        action: String,
+        reason: Option<String>,
+        price: Option<f64>,
+    ) {
         let client = self.client.clone();
         let url = format!("{}/api/manage/dealing-queue/{}", self.base_url, order_id);
         spawn(async move {
             let mut body = serde_json::json!({ "action": action });
             if let Some(reason) = &reason {
                 body["reason"] = serde_json::Value::String(reason.clone());
+            }
+            if let Some(price) = price {
+                body["price"] = serde_json::json!(price);
             }
             let result = async {
                 let res = client.patch(&url).json(&body).send().await.map_err(|e| format!("network error: {e}"))?;
@@ -679,6 +893,85 @@ impl ApiClient {
             }
             .await;
             let _ = tx.send(ApiEvent::ActionDone(result));
+            ctx.request_repaint();
+        });
+    }
+
+    pub fn fetch_dealer_toggle(&self, ctx: egui::Context, tx: Sender<ApiEvent>) {
+        let client = self.client.clone();
+        let url = format!("{}/api/manage/dealing-desk-toggle", self.base_url);
+        spawn(async move {
+            let result = async {
+                let res = client.get(&url).send().await.map_err(|e| format!("network error: {e}"))?;
+                if !res.status().is_success() {
+                    return Err(Self::error_from_response(res).await);
+                }
+                let body: DealerToggleGetResponse = res.json().await.map_err(|e| format!("bad response: {e}"))?;
+                Ok(DealerToggleState { dealer_on: body.dealer_on, filled: 0, skipped: 0 })
+            }
+            .await;
+            let _ = tx.send(ApiEvent::DealerToggle(result));
+            ctx.request_repaint();
+        });
+    }
+
+    pub fn set_dealer_toggle(&self, ctx: egui::Context, tx: Sender<ApiEvent>, dealer_on: bool) {
+        let client = self.client.clone();
+        let url = format!("{}/api/manage/dealing-desk-toggle", self.base_url);
+        spawn(async move {
+            let result = async {
+                let res = client
+                    .patch(&url)
+                    .json(&serde_json::json!({ "dealerOn": dealer_on }))
+                    .send()
+                    .await
+                    .map_err(|e| format!("network error: {e}"))?;
+                if !res.status().is_success() {
+                    return Err(Self::error_from_response(res).await);
+                }
+                let body: DealerTogglePatchResponse = res.json().await.map_err(|e| format!("bad response: {e}"))?;
+                let filled = body.flushed.iter().filter(|f| f.status == "filled").count();
+                let skipped = body.flushed.iter().filter(|f| f.status == "skipped").count();
+                Ok(DealerToggleState { dealer_on: body.dealer_on, filled, skipped })
+            }
+            .await;
+            let _ = tx.send(ApiEvent::DealerToggle(result));
+            ctx.request_repaint();
+        });
+    }
+
+    pub fn fetch_dealing_desk(&self, ctx: egui::Context, tx: Sender<ApiEvent>) {
+        let client = self.client.clone();
+        let url = format!("{}/api/manage/dealing-desk", self.base_url);
+        spawn(async move {
+            let result = async {
+                let res = client.get(&url).send().await.map_err(|e| format!("network error: {e}"))?;
+                if !res.status().is_success() {
+                    return Err(Self::error_from_response(res).await);
+                }
+                let body: DealingDeskResponse = res.json().await.map_err(|e| format!("bad response: {e}"))?;
+                Ok((body.accounts, body.resting_orders, body.feed_rows))
+            }
+            .await;
+            let _ = tx.send(ApiEvent::DealingDesk(result));
+            ctx.request_repaint();
+        });
+    }
+
+    pub fn fetch_live_activity(&self, ctx: egui::Context, tx: Sender<ApiEvent>) {
+        let client = self.client.clone();
+        let url = format!("{}/api/manage/live-activity", self.base_url);
+        spawn(async move {
+            let result = async {
+                let res = client.get(&url).send().await.map_err(|e| format!("network error: {e}"))?;
+                if !res.status().is_success() {
+                    return Err(Self::error_from_response(res).await);
+                }
+                let body: LiveActivityResponse = res.json().await.map_err(|e| format!("bad response: {e}"))?;
+                Ok(body.rows)
+            }
+            .await;
+            let _ = tx.send(ApiEvent::LiveActivity(result));
             ctx.request_repaint();
         });
     }

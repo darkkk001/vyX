@@ -8,10 +8,11 @@
 mod api;
 
 use api::{
-    AccountRow, AdminRow, ApiClient, ApiEvent, AuditLogRow, ClientKycRow, DashboardData, DealRow, DealingOrderRow,
-    FeedHealthData, FundsRequestRow, GroupPricingRow, GroupRow, IbRelationshipRow, LeadRow, LiquidityExposureRow,
-    LiveAccountRequestRow, LpRoutingRow, MarginRow, NewAccountBody, NotificationRow, PaymentMethodRow, PositionRow,
-    ReportsSummary, RiskData, RiskRadarRow, SettingsData, SymbolConfigRow, TransferRow,
+    AccountRow, ActivityFeedRow, AdminRow, ApiClient, ApiEvent, AuditLogRow, ClientKycRow, DashboardData,
+    DealRow, DealerToggleState, DealingDeskAccount, DealingOrderRow, FeedHealthData, FundsRequestRow,
+    GroupPricingRow, GroupRow, IbRelationshipRow, LeadRow, LiquidityExposureRow, LiveAccountRequestRow,
+    LpRoutingRow, MarginRow, NewAccountBody, NotificationRow, PaymentMethodRow, PositionRow, ReportsSummary,
+    RequotedOrderRow, RestingOrderRow, RiskData, RiskRadarRow, SettingsData, SymbolConfigRow, TransferRow,
 };
 use eframe::egui;
 use egui_extras::{Column, TableBuilder};
@@ -53,7 +54,7 @@ impl Screen {
     fn label(self) -> &'static str {
         match self {
             Screen::Dashboard => "Dashboard",
-            Screen::Positions => "Positions",
+            Screen::Positions => "Live Exposure",
             Screen::Accounts => "Clients / Accounts",
             Screen::Dealing => "Dealing",
             Screen::Groups => "Groups",
@@ -86,31 +87,39 @@ impl Screen {
     // embedded (see theme::load_fonts's own comment on the one font this
     // app does embed), and these render reliably across egui's font
     // fallback chain without needing one.
+    // Reassigned (2026-09-08) after screenshotting the original set: many
+    // of the "square with N hatch pattern" glyphs (▦/▤/▧/▥) are visually
+    // indistinguishable from one another and from a plain missing-glyph
+    // box at 16px sidebar size, which is exactly the "icons look
+    // odd/mismatched" complaint. This set favors shapes with genuinely
+    // different silhouettes (circle/triangle/diamond/bar-stack/arrow/
+    // rectangle) so adjacent items in the sidebar read as different icons
+    // at a glance, not just different Unicode code points.
     fn icon(self) -> &'static str {
         match self {
-            Screen::Dashboard => "▦",
-            Screen::Positions => "▲",
-            Screen::Accounts => "◉",
-            Screen::Dealing => "⇄",
-            Screen::Groups => "▤",
+            Screen::Dashboard => "⌂",
+            Screen::Positions => "⬈",
+            Screen::Accounts => "●",
+            Screen::Dealing => "↔",
+            Screen::Groups => "⊞",
             Screen::ClientKyc => "✓",
             Screen::LiveAccountRequests => "☑",
-            Screen::Notifications => "●",
+            Screen::Notifications => "◔",
             Screen::RiskRadar => "⚠",
             Screen::Settings => "⚙",
-            Screen::Reports => "▥",
-            Screen::Symbols => "◈",
-            Screen::Team => "◫",
+            Screen::Reports => "▬",
+            Screen::Symbols => "◆",
+            Screen::Team => "⊙",
             Screen::Transfers => "⇌",
-            Screen::Wallets => "▣",
+            Screen::Wallets => "$",
             Screen::Ib => "◐",
             Screen::Leads => "◇",
             Screen::Deals => "■",
-            Screen::Audit => "▧",
-            Screen::Security => "◆",
+            Screen::Audit => "☰",
+            Screen::Security => "⊘",
             Screen::Funds => "◎",
-            Screen::PaymentMethods => "▦",
-            Screen::Margin => "▲",
+            Screen::PaymentMethods => "▭",
+            Screen::Margin => "▽",
             Screen::Liquidity => "≋",
             Screen::LiquidityRouting => "⇉",
             Screen::FeedHealth => "◍",
@@ -123,10 +132,57 @@ impl Screen {
 // the same "Reject requires a typed reason, Approve/Accept doesn't" shape
 // in the real API, so one small inline-reason-box state does for all of
 // them instead of three near-identical structs.
+const NO_GROUP: &str = "__none__";
+
 #[derive(Default)]
 struct PendingReject {
     id: String,
     reason: String,
+}
+
+#[derive(Default)]
+struct PendingRequote {
+    id: String,
+    price: String,
+    error: Option<String>,
+}
+
+// Modify SL/TP modal state for the Live Exposure "Open positions" table --
+// matches PositionsManager.tsx's own modify modal (reason required, S/L
+// and T/P each independently clearable to blank).
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum ExposureSideFilter {
+    #[default]
+    All,
+    Buy,
+    Sell,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum ExposurePlFilter {
+    #[default]
+    All,
+    Profit,
+    Loss,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum ExposureSortMode {
+    #[default]
+    Symbol,
+    Exposure,
+    Risk,
+}
+
+#[derive(Default)]
+struct PendingModify {
+    id: String,
+    account_number: String,
+    symbol: String,
+    sl: String,
+    tp: String,
+    reason: String,
+    error: Option<String>,
 }
 
 // Brand palette + reusable styled widgets -- matches the real web
@@ -367,10 +423,21 @@ struct BackofficeApp {
     dashboard_loading: bool,
     dashboard_error: Option<String>,
 
-    // --- positions ---
+    // --- positions / "Live Exposure" ---
     positions: Vec<PositionRow>,
     positions_loading: bool,
     positions_error: Option<String>,
+    exposure_symbol_filter: String,
+    exposure_account_filter: String,
+    exposure_group_filter: String,
+    exposure_side_filter: ExposureSideFilter,
+    exposure_pl_filter: ExposurePlFilter,
+    exposure_sort_mode: ExposureSortMode,
+    position_modify: Option<PendingModify>,
+    position_close_confirm: Option<(String, String)>,
+    live_activity: Vec<ActivityFeedRow>,
+    live_activity_loading: bool,
+    live_activity_error: Option<String>,
 
     // --- accounts ---
     accounts: Vec<AccountRow>,
@@ -382,9 +449,20 @@ struct BackofficeApp {
 
     // --- dealing ---
     dealing_queue: Vec<DealingOrderRow>,
+    dealing_requoted: Vec<RequotedOrderRow>,
     dealing_loading: bool,
     dealing_error: Option<String>,
     dealing_reject: Option<PendingReject>,
+    dealing_requote: Option<PendingRequote>,
+    dealer_toggle: Option<DealerToggleState>,
+    dealer_toggle_busy: bool,
+    dealer_toggle_confirm_off: bool,
+    dealing_desk_accounts: Vec<DealingDeskAccount>,
+    dealing_desk_resting: Vec<RestingOrderRow>,
+    dealing_desk_feed: Vec<ActivityFeedRow>,
+    dealing_desk_loading: bool,
+    dealing_desk_error: Option<String>,
+    dealing_desk_account_filter: String,
 
     // --- groups (list + selected group's per-symbol pricing) ---
     groups: Vec<GroupRow>,
@@ -530,6 +608,17 @@ impl Default for BackofficeApp {
             positions: Vec::new(),
             positions_loading: false,
             positions_error: None,
+            exposure_symbol_filter: "ALL".to_string(),
+            exposure_account_filter: "ALL".to_string(),
+            exposure_group_filter: "ALL".to_string(),
+            exposure_side_filter: ExposureSideFilter::All,
+            exposure_pl_filter: ExposurePlFilter::All,
+            exposure_sort_mode: ExposureSortMode::Symbol,
+            position_modify: None,
+            position_close_confirm: None,
+            live_activity: Vec::new(),
+            live_activity_loading: false,
+            live_activity_error: None,
             accounts: Vec::new(),
             accounts_loading: false,
             accounts_error: None,
@@ -537,9 +626,20 @@ impl Default for BackofficeApp {
             show_new_account_form: false,
             new_account: NewAccountForm::default(),
             dealing_queue: Vec::new(),
+            dealing_requoted: Vec::new(),
             dealing_loading: false,
             dealing_error: None,
             dealing_reject: None,
+            dealing_requote: None,
+            dealer_toggle: None,
+            dealer_toggle_busy: false,
+            dealer_toggle_confirm_off: false,
+            dealing_desk_accounts: Vec::new(),
+            dealing_desk_resting: Vec::new(),
+            dealing_desk_feed: Vec::new(),
+            dealing_desk_loading: false,
+            dealing_desk_error: None,
+            dealing_desk_account_filter: "ALL".to_string(),
             groups: Vec::new(),
             groups_loading: false,
             groups_error: None,
@@ -682,8 +782,50 @@ impl BackofficeApp {
                 ApiEvent::DealingQueue(result) => {
                     self.dealing_loading = false;
                     match result {
-                        Ok(rows) => self.dealing_queue = rows,
+                        Ok((rows, requoted)) => {
+                            self.dealing_queue = rows;
+                            self.dealing_requoted = requoted;
+                        }
                         Err(e) => self.dealing_error = Some(e),
+                    }
+                }
+                ApiEvent::DealerToggle(result) => {
+                    self.dealer_toggle_busy = false;
+                    match result {
+                        Ok(state) => {
+                            if !state.dealer_on && (state.filled > 0 || state.skipped > 0) {
+                                self.action_message = Some(format!(
+                                    "Dealer turned off: {} order{} filled at market, {} left in the queue.",
+                                    state.filled,
+                                    if state.filled == 1 { "" } else { "s" },
+                                    state.skipped
+                                ));
+                            }
+                            self.dealer_toggle = Some(state);
+                            // A flip flushes/refills the queue server-side --
+                            // reload it so the on-screen queue/resting-orders
+                            // reflect the new state immediately.
+                            self.fetch(ctx, Screen::Dealing);
+                        }
+                        Err(e) => self.dealing_error = Some(e),
+                    }
+                }
+                ApiEvent::DealingDesk(result) => {
+                    self.dealing_desk_loading = false;
+                    match result {
+                        Ok((accounts, resting, feed)) => {
+                            self.dealing_desk_accounts = accounts;
+                            self.dealing_desk_resting = resting;
+                            self.dealing_desk_feed = feed;
+                        }
+                        Err(e) => self.dealing_desk_error = Some(e),
+                    }
+                }
+                ApiEvent::LiveActivity(result) => {
+                    self.live_activity_loading = false;
+                    match result {
+                        Ok(rows) => self.live_activity = rows,
+                        Err(e) => self.live_activity_error = Some(e),
                     }
                 }
                 ApiEvent::Groups(result) => {
@@ -877,8 +1019,11 @@ impl BackofficeApp {
                         self.show_new_account_form = false;
                         self.new_account = NewAccountForm::default();
                         self.dealing_reject = None;
+                        self.dealing_requote = None;
                         self.kyc_reject = None;
                         self.live_account_reject = None;
+                        self.position_modify = None;
+                        self.position_close_confirm = None;
                         // Re-fetch whichever screen is on-screen so it
                         // reflects whatever the action just changed --
                         // simplest correct way to stay in sync without
@@ -918,6 +1063,9 @@ impl BackofficeApp {
                 self.positions_loading = true;
                 self.positions_error = None;
                 api.fetch_positions(ctx.clone(), self.tx.clone());
+                self.live_activity_loading = true;
+                self.live_activity_error = None;
+                api.fetch_live_activity(ctx.clone(), self.tx.clone());
             }
             Screen::Accounts => {
                 self.accounts_loading = true;
@@ -928,6 +1076,10 @@ impl BackofficeApp {
                 self.dealing_loading = true;
                 self.dealing_error = None;
                 api.fetch_dealing_queue(ctx.clone(), self.tx.clone());
+                api.fetch_dealer_toggle(ctx.clone(), self.tx.clone());
+                self.dealing_desk_loading = true;
+                self.dealing_desk_error = None;
+                api.fetch_dealing_desk(ctx.clone(), self.tx.clone());
             }
             Screen::Groups => {
                 self.groups_loading = true;
@@ -1326,6 +1478,21 @@ impl BackofficeApp {
         });
     }
 
+    // "Live Exposure" -- the exact native counterpart of
+    // app/manage/(shell)/positions/PositionsManager.tsx + page.tsx's own
+    // LiveActivityFeed mount (metadata title on the web is literally
+    // "Live Exposure - Backoffice", confirmed by reading page.tsx). Three
+    // stacked sections, same order as the web: filters, "Exposure by
+    // symbol" (net exposure/VWAP/floating P&L aggregate), "Open
+    // positions" (the flat per-position list with Close/Modify), then
+    // the broker-wide live activity feed below.
+    //
+    // Not ported in this pass (disclosed, not silently dropped): the
+    // web's maker-checker "pending approvals" queue for position actions,
+    // column resize/visibility/virtualized scrolling, and a dedicated IB
+    // filter dropdown (the data has no IB account label to show, only a
+    // raw id) -- Group filter is included since group names are real and
+    // meaningful.
     fn render_positions(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.horizontal(|ui| {
             if ui.button("Refresh").clicked() {
@@ -1344,69 +1511,482 @@ impl BackofficeApp {
             return;
         }
 
-        TableBuilder::new(ui)
-            .striped(true)
-            .resizable(true)
-            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-            .column(Column::auto().at_least(100.0))
-            .column(Column::remainder().at_least(160.0))
-            .column(Column::auto().at_least(80.0))
-            .column(Column::auto().at_least(50.0))
-            .column(Column::auto().at_least(90.0))
-            .column(Column::auto().at_least(90.0))
-            .column(Column::auto().at_least(90.0))
-            .column(Column::auto().at_least(90.0))
-            .column(Column::auto().at_least(140.0))
-            .header(28.0, |mut header| {
-                for label in ["Account", "Client", "Symbol", "Side", "Volume", "Open", "Current", "Floating P/L", "Opened"] {
-                    header.col(|ui| {
-                        ui.label(egui::RichText::new(label.to_uppercase()).size(11.5).color(theme::TEXT_3));
+        // --- Filters ---
+        let mut symbols: Vec<String> = self.positions.iter().map(|p| p.symbol_name.clone()).collect();
+        symbols.sort();
+        symbols.dedup();
+        let mut accounts: Vec<(String, String)> = self
+            .positions
+            .iter()
+            .map(|p| (p.account_id.clone(), format!("{}, {}", p.account_number, p.account_full_name)))
+            .collect();
+        accounts.sort_by(|a, b| a.1.cmp(&b.1));
+        accounts.dedup_by(|a, b| a.0 == b.0);
+        let mut groups: Vec<String> = self.positions.iter().filter_map(|p| p.group_name.clone()).collect();
+        groups.sort();
+        groups.dedup();
+
+        theme::card(12).show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.label("Symbol:");
+                egui::ComboBox::from_id_salt("exposure-symbol-filter")
+                    .selected_text(if self.exposure_symbol_filter == "ALL" { "All".to_string() } else { self.exposure_symbol_filter.clone() })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut self.exposure_symbol_filter, "ALL".to_string(), "All");
+                        for s in &symbols {
+                            ui.selectable_value(&mut self.exposure_symbol_filter, s.clone(), s);
+                        }
                     });
+                ui.add_space(10.0);
+                ui.label("Account:");
+                let account_label = accounts
+                    .iter()
+                    .find(|(id, _)| id == &self.exposure_account_filter)
+                    .map(|(_, l)| l.clone())
+                    .unwrap_or_else(|| "All".to_string());
+                egui::ComboBox::from_id_salt("exposure-account-filter")
+                    .selected_text(account_label)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut self.exposure_account_filter, "ALL".to_string(), "All");
+                        for (id, label) in &accounts {
+                            ui.selectable_value(&mut self.exposure_account_filter, id.clone(), label);
+                        }
+                    });
+                ui.add_space(10.0);
+                ui.label("Group:");
+                egui::ComboBox::from_id_salt("exposure-group-filter")
+                    .selected_text(if self.exposure_group_filter == "ALL" { "All".to_string() } else { self.exposure_group_filter.clone() })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut self.exposure_group_filter, "ALL".to_string(), "All");
+                        ui.selectable_value(&mut self.exposure_group_filter, NO_GROUP.to_string(), "Ungrouped");
+                        for g in &groups {
+                            ui.selectable_value(&mut self.exposure_group_filter, g.clone(), g);
+                        }
+                    });
+                ui.add_space(10.0);
+                ui.label("Side:");
+                egui::ComboBox::from_id_salt("exposure-side-filter")
+                    .selected_text(match self.exposure_side_filter {
+                        ExposureSideFilter::All => "All",
+                        ExposureSideFilter::Buy => "Long (BUY)",
+                        ExposureSideFilter::Sell => "Short (SELL)",
+                    })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut self.exposure_side_filter, ExposureSideFilter::All, "All");
+                        ui.selectable_value(&mut self.exposure_side_filter, ExposureSideFilter::Buy, "Long (BUY)");
+                        ui.selectable_value(&mut self.exposure_side_filter, ExposureSideFilter::Sell, "Short (SELL)");
+                    });
+                ui.add_space(10.0);
+                ui.label("P&L:");
+                egui::ComboBox::from_id_salt("exposure-pl-filter")
+                    .selected_text(match self.exposure_pl_filter {
+                        ExposurePlFilter::All => "All",
+                        ExposurePlFilter::Profit => "Profit",
+                        ExposurePlFilter::Loss => "Loss",
+                    })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut self.exposure_pl_filter, ExposurePlFilter::All, "All");
+                        ui.selectable_value(&mut self.exposure_pl_filter, ExposurePlFilter::Profit, "Profit");
+                        ui.selectable_value(&mut self.exposure_pl_filter, ExposurePlFilter::Loss, "Loss");
+                    });
+                if self.exposure_symbol_filter != "ALL"
+                    || self.exposure_account_filter != "ALL"
+                    || self.exposure_group_filter != "ALL"
+                    || self.exposure_side_filter != ExposureSideFilter::All
+                    || self.exposure_pl_filter != ExposurePlFilter::All
+                {
+                    ui.add_space(10.0);
+                    if ui.button("Clear filters").clicked() {
+                        self.exposure_symbol_filter = "ALL".to_string();
+                        self.exposure_account_filter = "ALL".to_string();
+                        self.exposure_group_filter = "ALL".to_string();
+                        self.exposure_side_filter = ExposureSideFilter::All;
+                        self.exposure_pl_filter = ExposurePlFilter::All;
+                    }
+                }
+            });
+        });
+        ui.add_space(10.0);
+
+        let filtered: Vec<&PositionRow> = self
+            .positions
+            .iter()
+            .filter(|p| self.exposure_symbol_filter == "ALL" || p.symbol_name == self.exposure_symbol_filter)
+            .filter(|p| self.exposure_account_filter == "ALL" || p.account_id == self.exposure_account_filter)
+            .filter(|p| {
+                if self.exposure_group_filter == "ALL" {
+                    true
+                } else if self.exposure_group_filter == NO_GROUP {
+                    p.group_name.is_none()
+                } else {
+                    p.group_name.as_deref() == Some(self.exposure_group_filter.as_str())
                 }
             })
-            .body(|body| {
-                body.rows(26.0, self.positions.len(), |mut row| {
-                    let p = &self.positions[row.index()];
-                    row.col(|ui| {
-                        ui.monospace(&p.account_number);
-                    });
-                    row.col(|ui| {
-                        ui.label(&p.account_full_name);
-                    });
-                    row.col(|ui| {
-                        ui.monospace(&p.symbol_name);
-                    });
-                    row.col(|ui| {
-                        let color = if p.side == "BUY" {
-                            theme::accent()
-                        } else {
-                            theme::DANGER
-                        };
-                        ui.colored_label(color, &p.side);
-                    });
-                    row.col(|ui| {
-                        ui.monospace(&p.volume);
-                    });
-                    row.col(|ui| {
-                        ui.monospace(&p.open_price);
-                    });
-                    row.col(|ui| {
-                        ui.monospace(p.current_price.as_deref().unwrap_or("-"));
-                    });
-                    row.col(|ui| {
-                        let pnl_text = p.floating_pnl.as_deref().unwrap_or("-");
-                        let color = match p.floating_pnl.as_deref().and_then(|s| s.parse::<f64>().ok()) {
-                            Some(v) if v > 0.0 => theme::accent(),
-                            Some(v) if v < 0.0 => theme::DANGER,
-                            _ => ui.visuals().text_color(),
-                        };
-                        ui.colored_label(color, pnl_text);
-                    });
-                    row.col(|ui| {
-                        ui.monospace(&p.opened_at);
-                    });
+            .filter(|p| match self.exposure_side_filter {
+                ExposureSideFilter::All => true,
+                ExposureSideFilter::Buy => p.side == "BUY",
+                ExposureSideFilter::Sell => p.side == "SELL",
+            })
+            .filter(|p| {
+                let pnl = p.floating_pnl.as_deref().and_then(|s| s.parse::<f64>().ok());
+                match self.exposure_pl_filter {
+                    ExposurePlFilter::All => true,
+                    ExposurePlFilter::Profit => pnl.is_some_and(|v| v > 0.0),
+                    ExposurePlFilter::Loss => pnl.is_some_and(|v| v < 0.0),
+                }
+            })
+            .collect();
+
+        // --- Exposure by symbol (net exposure / net-side VWAP / P&L) ---
+        struct ExposureAcc {
+            symbol: String,
+            count: usize,
+            buy_volume: f64,
+            sell_volume: f64,
+            buy_notional: f64,
+            sell_notional: f64,
+            current_price: Option<String>,
+            floating_pnl: f64,
+        }
+        let mut by_symbol: HashMap<String, ExposureAcc> = HashMap::new();
+        for p in &filtered {
+            let entry = by_symbol.entry(p.symbol_name.clone()).or_insert(ExposureAcc {
+                symbol: p.symbol_name.clone(),
+                count: 0,
+                buy_volume: 0.0,
+                sell_volume: 0.0,
+                buy_notional: 0.0,
+                sell_notional: 0.0,
+                current_price: p.current_price.clone(),
+                floating_pnl: 0.0,
+            });
+            entry.count += 1;
+            let volume: f64 = p.volume.parse().unwrap_or(0.0);
+            let open_price: f64 = p.open_price.parse().unwrap_or(0.0);
+            if p.side == "BUY" {
+                entry.buy_volume += volume;
+                entry.buy_notional += volume * open_price;
+            } else {
+                entry.sell_volume += volume;
+                entry.sell_notional += volume * open_price;
+            }
+            if let Some(pnl) = p.floating_pnl.as_deref().and_then(|s| s.parse::<f64>().ok()) {
+                entry.floating_pnl += pnl;
+            }
+        }
+        let mut exposure_rows: Vec<(ExposureAcc, f64, Option<f64>)> = by_symbol
+            .into_values()
+            .map(|e| {
+                let net = e.buy_volume - e.sell_volume;
+                let buy_avg = if e.buy_volume > 0.0 { Some(e.buy_notional / e.buy_volume) } else { None };
+                let sell_avg = if e.sell_volume > 0.0 { Some(e.sell_notional / e.sell_volume) } else { None };
+                let net_avg = if net > 0.0 { buy_avg } else if net < 0.0 { sell_avg } else { None };
+                (e, net, net_avg)
+            })
+            .collect();
+        match self.exposure_sort_mode {
+            ExposureSortMode::Symbol => exposure_rows.sort_by(|a, b| a.0.symbol.cmp(&b.0.symbol)),
+            ExposureSortMode::Exposure => exposure_rows.sort_by(|a, b| b.1.abs().partial_cmp(&a.1.abs()).unwrap_or(std::cmp::Ordering::Equal)),
+            ExposureSortMode::Risk => exposure_rows.sort_by(|a, b| b.0.floating_pnl.partial_cmp(&a.0.floating_pnl).unwrap_or(std::cmp::Ordering::Equal)),
+        }
+        let total_floating_pnl: f64 = filtered.iter().filter_map(|p| p.floating_pnl.as_deref().and_then(|s| s.parse::<f64>().ok())).sum();
+
+        theme::card(12).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.strong(format!("Exposure by symbol -- {} position{} in view", filtered.len(), if filtered.len() == 1 { "" } else { "s" }));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let pnl_color = if total_floating_pnl > 0.0 {
+                        theme::accent()
+                    } else if total_floating_pnl < 0.0 {
+                        theme::DANGER
+                    } else {
+                        ui.visuals().text_color()
+                    };
+                    ui.colored_label(pnl_color, egui::RichText::new(format!("{total_floating_pnl:.2}")).monospace().size(15.0));
+                    ui.label("Total floating P&L:");
+                    ui.add_space(14.0);
+                    egui::ComboBox::from_id_salt("exposure-sort-mode")
+                        .selected_text(match self.exposure_sort_mode {
+                            ExposureSortMode::Symbol => "Symbol",
+                            ExposureSortMode::Exposure => "Exposure",
+                            ExposureSortMode::Risk => "Risk",
+                        })
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut self.exposure_sort_mode, ExposureSortMode::Symbol, "Symbol");
+                            ui.selectable_value(&mut self.exposure_sort_mode, ExposureSortMode::Exposure, "Exposure");
+                            ui.selectable_value(&mut self.exposure_sort_mode, ExposureSortMode::Risk, "Risk");
+                        });
+                    ui.label("Sort by:");
                 });
             });
+            ui.add_space(6.0);
+            TableBuilder::new(ui)
+                .striped(true)
+                .resizable(true)
+                .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                .column(Column::auto().at_least(80.0))
+                .column(Column::auto().at_least(70.0))
+                .column(Column::auto().at_least(90.0))
+                .column(Column::auto().at_least(90.0))
+                .column(Column::auto().at_least(100.0))
+                .column(Column::auto().at_least(120.0))
+                .column(Column::auto().at_least(110.0))
+                .column(Column::remainder().at_least(100.0))
+                .header(26.0, |mut header| {
+                    for label in ["Symbol", "Positions", "Buy volume", "Sell volume", "Net exposure", "Avg open price (net)", "Client floating P&L", "Current price"] {
+                        header.col(|ui| {
+                            ui.label(egui::RichText::new(label.to_uppercase()).size(11.0).color(theme::TEXT_3));
+                        });
+                    }
+                })
+                .body(|body| {
+                    body.rows(24.0, exposure_rows.len(), |mut row| {
+                        let (e, net, net_avg) = &exposure_rows[row.index()];
+                        row.col(|ui| {
+                            ui.monospace(&e.symbol);
+                        });
+                        row.col(|ui| {
+                            ui.label(e.count.to_string());
+                        });
+                        row.col(|ui| {
+                            ui.monospace(format!("{:.2}", e.buy_volume));
+                        });
+                        row.col(|ui| {
+                            ui.monospace(format!("{:.2}", e.sell_volume));
+                        });
+                        row.col(|ui| {
+                            let color = if *net == 0.0 {
+                                ui.visuals().text_color()
+                            } else if *net > 0.0 {
+                                theme::accent()
+                            } else {
+                                theme::DANGER
+                            };
+                            ui.colored_label(color, format!("{}{:.2}", if *net > 0.0 { "+" } else { "" }, net));
+                        });
+                        row.col(|ui| {
+                            ui.monospace(net_avg.map(|v| format!("{v:.5}")).unwrap_or_else(|| "-".to_string()));
+                        });
+                        row.col(|ui| {
+                            let color = if e.floating_pnl > 0.0 {
+                                theme::accent()
+                            } else if e.floating_pnl < 0.0 {
+                                theme::DANGER
+                            } else {
+                                ui.visuals().text_color()
+                            };
+                            ui.colored_label(color, format!("{:.2}", e.floating_pnl));
+                        });
+                        row.col(|ui| {
+                            ui.monospace(e.current_price.as_deref().unwrap_or("-"));
+                        });
+                    });
+                });
+        });
+        ui.add_space(10.0);
+
+        // --- Open positions (flat list, Close/Modify) ---
+        theme::card(12).show(ui, |ui| {
+            ui.strong(format!("Open positions -- {}", filtered.len()));
+            ui.add_space(6.0);
+
+            let mut modify_target: Option<PositionRow> = None;
+            let mut close_target: Option<PositionRow> = None;
+
+            TableBuilder::new(ui)
+                .striped(true)
+                .resizable(true)
+                .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                .column(Column::auto().at_least(100.0))
+                .column(Column::remainder().at_least(140.0))
+                .column(Column::auto().at_least(80.0))
+                .column(Column::auto().at_least(50.0))
+                .column(Column::auto().at_least(80.0))
+                .column(Column::auto().at_least(80.0))
+                .column(Column::auto().at_least(80.0))
+                .column(Column::auto().at_least(70.0))
+                .column(Column::auto().at_least(70.0))
+                .column(Column::auto().at_least(90.0))
+                .column(Column::auto().at_least(140.0))
+                .column(Column::auto().at_least(140.0))
+                .header(28.0, |mut header| {
+                    for label in ["Account", "Client", "Symbol", "Side", "Volume", "Open", "Current", "S/L", "T/P", "Floating P/L", "Opened", "Action"] {
+                        header.col(|ui| {
+                            ui.label(egui::RichText::new(label.to_uppercase()).size(11.0).color(theme::TEXT_3));
+                        });
+                    }
+                })
+                .body(|body| {
+                    body.rows(26.0, filtered.len(), |mut row| {
+                        let p = filtered[row.index()];
+                        row.col(|ui| {
+                            ui.monospace(&p.account_number);
+                        });
+                        row.col(|ui| {
+                            ui.label(&p.account_full_name);
+                            if p.mirrored {
+                                ui.weak("(mirrored)");
+                            }
+                        });
+                        row.col(|ui| {
+                            ui.monospace(&p.symbol_name);
+                        });
+                        row.col(|ui| {
+                            let color = if p.side == "BUY" { theme::accent() } else { theme::DANGER };
+                            ui.colored_label(color, &p.side);
+                        });
+                        row.col(|ui| {
+                            ui.monospace(&p.volume);
+                        });
+                        row.col(|ui| {
+                            ui.monospace(&p.open_price);
+                        });
+                        row.col(|ui| {
+                            ui.monospace(p.current_price.as_deref().unwrap_or("-"));
+                        });
+                        row.col(|ui| {
+                            ui.monospace(p.sl_price.as_deref().unwrap_or("-"));
+                        });
+                        row.col(|ui| {
+                            ui.monospace(p.tp_price.as_deref().unwrap_or("-"));
+                        });
+                        row.col(|ui| {
+                            let pnl_text = p.floating_pnl.as_deref().unwrap_or("-");
+                            let color = match p.floating_pnl.as_deref().and_then(|s| s.parse::<f64>().ok()) {
+                                Some(v) if v > 0.0 => theme::accent(),
+                                Some(v) if v < 0.0 => theme::DANGER,
+                                _ => ui.visuals().text_color(),
+                            };
+                            ui.colored_label(color, pnl_text);
+                        });
+                        row.col(|ui| {
+                            ui.weak(&p.opened_at);
+                        });
+                        row.col(|ui| {
+                            if ui.small_button("Modify").clicked() {
+                                modify_target = Some(p.clone());
+                            }
+                            if ui.small_button("Close").clicked() {
+                                close_target = Some(p.clone());
+                            }
+                        });
+                    });
+                });
+
+            if let Some(p) = modify_target {
+                self.position_modify = Some(PendingModify {
+                    id: p.id.clone(),
+                    account_number: p.account_number.clone(),
+                    symbol: p.symbol_name.clone(),
+                    sl: p.sl_price.clone().unwrap_or_default(),
+                    tp: p.tp_price.clone().unwrap_or_default(),
+                    reason: String::new(),
+                    error: None,
+                });
+            }
+            if let Some(p) = close_target {
+                self.position_close_confirm = Some((p.id.clone(), format!("{} {} {} {}", p.account_number, p.symbol_name, p.side, p.volume)));
+            }
+        });
+
+        // --- Modify SL/TP modal ---
+        if let Some(mut modify) = self.position_modify.take() {
+            let mut open = true;
+            let mut submit = false;
+            egui::Window::new(format!("Modify {} -- {}", modify.symbol, modify.account_number))
+                .id(egui::Id::new("modify-position-window"))
+                .collapsible(false)
+                .resizable(false)
+                .open(&mut open)
+                .show(ctx, |ui| {
+                    ui.label("S/L");
+                    ui.text_edit_singleline(&mut modify.sl);
+                    ui.label("T/P");
+                    ui.text_edit_singleline(&mut modify.tp);
+                    ui.label("Reason (required, logged in audit trail)");
+                    ui.text_edit_singleline(&mut modify.reason);
+                    if let Some(err) = &modify.error {
+                        ui.colored_label(theme::DANGER, err);
+                    }
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        if theme::accent_button(ui, "Save").clicked() {
+                            submit = true;
+                        }
+                    });
+                });
+            if submit {
+                if modify.reason.trim().is_empty() {
+                    modify.error = Some("Reason is required for the audit trail".to_string());
+                    self.position_modify = Some(modify);
+                } else if let Some(api) = &self.api {
+                    api.modify_position(
+                        ctx.clone(),
+                        self.tx.clone(),
+                        modify.id.clone(),
+                        Some(modify.sl.clone()),
+                        Some(modify.tp.clone()),
+                        modify.reason.clone(),
+                    );
+                }
+            } else if open {
+                self.position_modify = Some(modify);
+            }
+        }
+
+        // --- Close confirm modal ---
+        if let Some((id, description)) = self.position_close_confirm.clone() {
+            let mut open = true;
+            let mut confirm = false;
+            egui::Window::new("Close position?")
+                .id(egui::Id::new("close-position-window"))
+                .collapsible(false)
+                .resizable(false)
+                .open(&mut open)
+                .show(ctx, |ui| {
+                    ui.label(format!("Close the full position: {description}?"));
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        if theme::danger_button_enabled(ui, true, "Close position").clicked() {
+                            confirm = true;
+                        }
+                    });
+                });
+            if confirm {
+                if let Some(api) = &self.api {
+                    api.close_position(ctx.clone(), self.tx.clone(), id, None);
+                }
+                self.position_close_confirm = None;
+            } else if !open {
+                self.position_close_confirm = None;
+            }
+        }
+
+        ui.add_space(10.0);
+
+        // --- Live activity (broker-wide, every account -- not just
+        // DEALING-group; the Dealing page's own feed below is scoped to
+        // DEALING-group only, matching LiveActivityFeed.tsx vs.
+        // DealingDeskPanel.tsx on the web) ---
+        theme::card(12).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.strong("Live activity");
+                ui.weak("All live trading activity.");
+                if self.live_activity_loading {
+                    ui.spinner();
+                }
+            });
+            ui.add_space(6.0);
+            if let Some(err) = &self.live_activity_error {
+                ui.colored_label(theme::DANGER, err);
+            } else if self.live_activity.is_empty() {
+                ui.weak("No activity yet.");
+            } else {
+                egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
+                    render_activity_feed_rows(ui, &self.live_activity, true);
+                });
+            }
+        });
     }
 
     fn render_accounts(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
@@ -1548,87 +2128,345 @@ impl BackofficeApp {
         }
     }
 
+    // Direct native port of the web's Dealing page: DealerDeskToggle at
+    // the top, then DealingTabs' "queue" tab content stacked exactly as
+    // page.tsx composes it -- DealingQueueManager (queue table +
+    // "Awaiting client confirmation" requoted table) followed directly by
+    // DealingDeskPanel (resting orders + the DEALING-group-scoped
+    // activity feed, filterable by account). The web's separate "Mirror"
+    // tab (MirrorRulesManager) isn't ported in this pass.
     fn render_dealing(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.horizontal(|ui| {
             if ui.button("Refresh").clicked() {
                 self.fetch(ctx, Screen::Dealing);
             }
-            if self.dealing_loading {
+            if self.dealing_loading || self.dealing_desk_loading {
                 ui.spinner();
             }
-            ui.weak(format!("{} orders awaiting review", self.dealing_queue.len()));
         });
-        ui.weak("Requote isn't supported in this native pass yet -- Accept or Reject only.");
         ui.add_space(8.0);
+
+        // --- Dealer ON/OFF toggle ---
+        if let Some(state) = &self.dealer_toggle {
+            let dealer_on = state.dealer_on;
+            let bg = if dealer_on { theme::BG_1 } else { theme::WARNING.gamma_multiply(0.12) };
+            egui::Frame::new()
+                .fill(bg)
+                .stroke(egui::Stroke::new(1.0_f32, if dealer_on { theme::BORDER } else { theme::WARNING }))
+                .corner_radius(egui::CornerRadius::same(10))
+                .inner_margin(egui::Margin::symmetric(16, 12))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        let switch_color = if dealer_on { theme::accent() } else { theme::TEXT_3 };
+                        let (rect, resp) = ui.allocate_exact_size(egui::vec2(48.0, 26.0), egui::Sense::click());
+                        ui.painter().rect_filled(rect, egui::CornerRadius::same(13), switch_color);
+                        let knob_x = if dealer_on { rect.right() - 15.0 } else { rect.left() + 15.0 };
+                        ui.painter().circle_filled(egui::pos2(knob_x, rect.center().y), 9.0, egui::Color32::WHITE);
+                        if resp.clicked() && !self.dealer_toggle_busy {
+                            if dealer_on {
+                                self.dealer_toggle_confirm_off = true;
+                            } else if let Some(api) = &self.api {
+                                self.dealer_toggle_busy = true;
+                                api.set_dealer_toggle(ctx.clone(), self.tx.clone(), true);
+                            }
+                        }
+                        ui.add_space(10.0);
+                        ui.vertical(|ui| {
+                            ui.strong(if dealer_on { "Dealer ON" } else { "Dealer OFF" });
+                            ui.weak(if dealer_on {
+                                "Orders from dealing-group accounts require manual review."
+                            } else {
+                                "Orders from dealing-group accounts auto-fill at market."
+                            });
+                        });
+                    });
+                });
+
+            if self.dealer_toggle_confirm_off {
+                let mut open = true;
+                let mut confirm = false;
+                egui::Window::new("Turn dealer off?")
+                    .id(egui::Id::new("dealer-off-confirm"))
+                    .collapsible(false)
+                    .resizable(false)
+                    .open(&mut open)
+                    .show(ctx, |ui| {
+                        ui.label("Dealing-group orders will auto-fill at market instead of waiting for review. Anything currently sitting in the queue will be filled at market right now too, unless it fails a risk check, in which case it stays queued.");
+                        ui.add_space(6.0);
+                        ui.horizontal(|ui| {
+                            if theme::danger_button_enabled(ui, true, "Turn dealer off").clicked() {
+                                confirm = true;
+                            }
+                        });
+                    });
+                if confirm {
+                    self.dealer_toggle_confirm_off = false;
+                    if let Some(api) = &self.api {
+                        self.dealer_toggle_busy = true;
+                        api.set_dealer_toggle(ctx.clone(), self.tx.clone(), false);
+                    }
+                } else if !open {
+                    self.dealer_toggle_confirm_off = false;
+                }
+            }
+            ui.add_space(10.0);
+        }
 
         if let Some(err) = &self.dealing_error {
             ui.colored_label(theme::DANGER, err);
-            return;
         }
 
         let mut accept_id: Option<String> = None;
         let mut confirm_reject: Option<(String, String)> = None;
+        let mut confirm_requote: Option<(String, f64)> = None;
 
-        for order in self.dealing_queue.clone() {
-            theme::card(10).show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    let side_color = if order.side == "BUY" {
-                        theme::accent()
-                    } else {
-                        theme::DANGER
-                    };
-                    ui.monospace(&order.account_number);
-                    ui.label(&order.account_full_name);
-                    ui.separator();
-                    ui.strong(&order.symbol);
-                    ui.colored_label(side_color, &order.side);
-                    ui.label(format!("{} lots", order.volume));
-                    if let Some(req) = &order.requested_price {
-                        ui.weak(format!("requested @ {req}"));
-                    }
-                    if let (Some(bid), Some(ask)) = (&order.live_bid, &order.live_ask) {
-                        ui.weak(format!("live {bid} / {ask}"));
-                    }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if theme::accent_button(ui, "Accept").clicked() {
-                            accept_id = Some(order.id.clone());
+        theme::card(12).show(ui, |ui| {
+            ui.label(format!(
+                "{} order{} awaiting manual review, {} awaiting the client's answer to a requote. Only populated while dealing mode is on.",
+                self.dealing_queue.len(),
+                if self.dealing_queue.len() == 1 { "" } else { "s" },
+                self.dealing_requoted.len()
+            ));
+            ui.add_space(6.0);
+
+            for order in self.dealing_queue.clone() {
+                theme::card(10).show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        let side_color = if order.side == "BUY" { theme::accent() } else { theme::DANGER };
+                        ui.monospace(&order.account_number);
+                        ui.label(&order.account_full_name);
+                        ui.separator();
+                        ui.strong(&order.symbol);
+                        ui.colored_label(side_color, &order.side);
+                        ui.label(format!("{} lots", order.volume));
+                        if let Some(req) = &order.requested_price {
+                            ui.weak(format!("requested @ {req}"));
                         }
-                        if ui.button("Reject").clicked() {
-                            self.dealing_reject = Some(PendingReject { id: order.id.clone(), reason: String::new() });
+                        if let (Some(bid), Some(ask)) = (&order.live_bid, &order.live_ask) {
+                            ui.weak(format!("live {bid} / {ask}"));
+                        }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("Reject").clicked() {
+                                self.dealing_reject = Some(PendingReject { id: order.id.clone(), reason: String::new() });
+                            }
+                            if ui.button("Requote").clicked() {
+                                let live = if order.side == "BUY" { &order.live_ask } else { &order.live_bid };
+                                let price = live.clone().or_else(|| order.requested_price.clone()).unwrap_or_default();
+                                self.dealing_requote = Some(PendingRequote { id: order.id.clone(), price, error: None });
+                            }
+                            if theme::accent_button(ui, "Accept").clicked() {
+                                accept_id = Some(order.id.clone());
+                            }
+                        });
+                    });
+
+                    if self.dealing_reject.as_ref().is_some_and(|p| p.id == order.id) {
+                        let mut pending = self.dealing_reject.take().unwrap();
+                        let mut cancelled = false;
+                        ui.horizontal(|ui| {
+                            ui.label("Reason (required, logged in audit trail):");
+                            ui.text_edit_singleline(&mut pending.reason);
+                            if theme::danger_button_enabled(ui, !pending.reason.trim().is_empty(), "Confirm reject").clicked() {
+                                confirm_reject = Some((pending.id.clone(), pending.reason.clone()));
+                            }
+                            if ui.button("Cancel").clicked() {
+                                cancelled = true;
+                            }
+                        });
+                        if !cancelled && confirm_reject.is_none() {
+                            self.dealing_reject = Some(pending);
+                        }
+                    }
+
+                    if self.dealing_requote.as_ref().is_some_and(|p| p.id == order.id) {
+                        let mut pending = self.dealing_requote.take().unwrap();
+                        let mut cancelled = false;
+                        ui.horizontal(|ui| {
+                            ui.label("Requote price:");
+                            ui.text_edit_singleline(&mut pending.price);
+                            if theme::accent_button(ui, "Send requote").clicked() {
+                                match pending.price.trim().parse::<f64>() {
+                                    Ok(p) if p > 0.0 => confirm_requote = Some((pending.id.clone(), p)),
+                                    _ => pending.error = Some("Enter a valid price".to_string()),
+                                }
+                            }
+                            if ui.button("Cancel").clicked() {
+                                cancelled = true;
+                            }
+                        });
+                        if let Some(err) = &pending.error {
+                            ui.colored_label(theme::DANGER, err);
+                        }
+                        if !cancelled && confirm_requote.is_none() {
+                            self.dealing_requote = Some(pending);
+                        }
+                    }
+                });
+            }
+            if self.dealing_queue.is_empty() {
+                ui.weak("No orders awaiting review.");
+            }
+        });
+
+        ui.add_space(10.0);
+        theme::card(12).show(ui, |ui| {
+            ui.strong("Awaiting client confirmation");
+            ui.add_space(6.0);
+            if self.dealing_requoted.is_empty() {
+                ui.weak("No requotes awaiting a client response.");
+            }
+            let mut withdraw_id: Option<String> = None;
+            for row in &self.dealing_requoted {
+                ui.horizontal(|ui| {
+                    let side_color = if row.side == "BUY" { theme::accent() } else { theme::DANGER };
+                    ui.monospace(&row.account_number);
+                    ui.label(&row.account_full_name);
+                    ui.separator();
+                    ui.strong(&row.symbol);
+                    ui.colored_label(side_color, &row.side);
+                    ui.label(format!("{} lots", row.volume));
+                    ui.weak(format!("requested {}", row.requested_price.as_deref().unwrap_or("-")));
+                    ui.weak(format!("requoted to {} at {}", row.requoted_price.as_deref().unwrap_or("-"), row.created_at));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("Withdraw").clicked() {
+                            withdraw_id = Some(row.id.clone());
                         }
                     });
                 });
-
-                if self.dealing_reject.as_ref().is_some_and(|p| p.id == order.id) {
-                    let mut pending = self.dealing_reject.take().unwrap();
-                    let mut cancelled = false;
-                    ui.horizontal(|ui| {
-                        ui.label("Reason (required):");
-                        ui.text_edit_singleline(&mut pending.reason);
-                        if theme::danger_button_enabled(ui, !pending.reason.trim().is_empty(), "Confirm reject").clicked() {
-                            confirm_reject = Some((pending.id.clone(), pending.reason.clone()));
-                        }
-                        if ui.button("Cancel").clicked() {
-                            cancelled = true;
-                        }
-                    });
-                    if !cancelled && confirm_reject.is_none() {
-                        self.dealing_reject = Some(pending);
-                    }
+                ui.separator();
+            }
+            if let Some(id) = withdraw_id {
+                if let Some(api) = &self.api {
+                    api.dealing_action(ctx.clone(), self.tx.clone(), id, "REJECT".to_string(), Some("Withdrawn by dealer".to_string()), None);
                 }
-            });
-        }
+            }
+        });
 
         if let Some(id) = accept_id {
             if let Some(api) = &self.api {
-                api.dealing_action(ctx.clone(), self.tx.clone(), id, "ACCEPT".to_string(), None);
+                api.dealing_action(ctx.clone(), self.tx.clone(), id, "ACCEPT".to_string(), None, None);
             }
         }
         if let Some((id, reason)) = confirm_reject {
             if let Some(api) = &self.api {
-                api.dealing_action(ctx.clone(), self.tx.clone(), id, "REJECT".to_string(), Some(reason));
+                api.dealing_action(ctx.clone(), self.tx.clone(), id, "REJECT".to_string(), Some(reason), None);
             }
         }
+        if let Some((id, price)) = confirm_requote {
+            if let Some(api) = &self.api {
+                api.dealing_action(ctx.clone(), self.tx.clone(), id, "REQUOTE".to_string(), None, Some(price));
+            }
+        }
+
+        ui.add_space(10.0);
+
+        // --- Resting orders (DEALING-group LIMIT/STOP, persistent) ---
+        theme::card(12).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.strong("Resting orders");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let label = self
+                        .dealing_desk_accounts
+                        .iter()
+                        .find(|a| a.id == self.dealing_desk_account_filter)
+                        .map(|a| format!("{}, {}", a.account_number, a.full_name))
+                        .unwrap_or_else(|| "All dealing-group accounts".to_string());
+                    egui::ComboBox::from_id_salt("dealing-desk-account-filter").selected_text(label).show_ui(ui, |ui| {
+                        ui.selectable_value(&mut self.dealing_desk_account_filter, "ALL".to_string(), "All dealing-group accounts");
+                        for a in &self.dealing_desk_accounts {
+                            ui.selectable_value(&mut self.dealing_desk_account_filter, a.id.clone(), format!("{}, {}", a.account_number, a.full_name));
+                        }
+                    });
+                });
+            });
+            ui.add_space(6.0);
+            let filter = |accid: &str| self.dealing_desk_account_filter == "ALL" || self.dealing_desk_account_filter == accid;
+            let resting: Vec<&RestingOrderRow> = self.dealing_desk_resting.iter().filter(|r| filter(&r.account_id)).collect();
+            if let Some(err) = &self.dealing_desk_error {
+                ui.colored_label(theme::DANGER, err);
+            } else if resting.is_empty() {
+                ui.weak("No resting orders on dealing-group accounts right now.");
+            } else {
+                TableBuilder::new(ui)
+                    .striped(true)
+                    .resizable(true)
+                    .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                    .column(Column::auto().at_least(100.0))
+                    .column(Column::remainder().at_least(120.0))
+                    .column(Column::auto().at_least(70.0))
+                    .column(Column::auto().at_least(70.0))
+                    .column(Column::auto().at_least(50.0))
+                    .column(Column::auto().at_least(80.0))
+                    .column(Column::auto().at_least(80.0))
+                    .column(Column::auto().at_least(70.0))
+                    .column(Column::auto().at_least(70.0))
+                    .column(Column::auto().at_least(140.0))
+                    .header(26.0, |mut header| {
+                        for label in ["Account", "Client", "Symbol", "Type", "Side", "Volume", "Price", "S/L", "T/P", "Placed"] {
+                            header.col(|ui| {
+                                ui.label(egui::RichText::new(label.to_uppercase()).size(11.0).color(theme::TEXT_3));
+                            });
+                        }
+                    })
+                    .body(|body| {
+                        body.rows(24.0, resting.len(), |mut row| {
+                            let r = resting[row.index()];
+                            row.col(|ui| {
+                                ui.monospace(&r.account_number);
+                            });
+                            row.col(|ui| {
+                                ui.label(&r.account_full_name);
+                            });
+                            row.col(|ui| {
+                                ui.monospace(&r.symbol);
+                            });
+                            row.col(|ui| {
+                                ui.label(&r.order_type);
+                            });
+                            row.col(|ui| {
+                                let color = if r.side == "BUY" { theme::accent() } else { theme::DANGER };
+                                ui.colored_label(color, &r.side);
+                            });
+                            row.col(|ui| {
+                                ui.monospace(&r.volume);
+                            });
+                            row.col(|ui| {
+                                ui.monospace(r.requested_price.as_deref().unwrap_or("-"));
+                            });
+                            row.col(|ui| {
+                                ui.monospace(r.sl_price.as_deref().unwrap_or("-"));
+                            });
+                            row.col(|ui| {
+                                ui.monospace(r.tp_price.as_deref().unwrap_or("-"));
+                            });
+                            row.col(|ui| {
+                                ui.weak(&r.created_at);
+                            });
+                        });
+                    });
+            }
+        });
+
+        ui.add_space(10.0);
+
+        // --- Dealing-group activity feed (DEALING-only, unlike Live
+        // Exposure's broker-wide one) ---
+        theme::card(12).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.strong("Dealing-group activity feed");
+                ui.weak("Every action on a DEALING-group account, live.");
+            });
+            ui.add_space(6.0);
+            let filter = |accid: &str| self.dealing_desk_account_filter == "ALL" || self.dealing_desk_account_filter == accid;
+            let feed: Vec<ActivityFeedRow> = self.dealing_desk_feed.iter().filter(|r| filter(&r.account_id)).cloned().collect();
+            if feed.is_empty() {
+                ui.weak("No activity yet.");
+            } else {
+                egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
+                    render_activity_feed_rows(ui, &feed, false);
+                });
+            }
+        });
     }
 
     fn render_groups(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
@@ -2890,6 +3728,123 @@ fn stat_card(ui: &mut egui::Ui, label: &str, value: &str) {
                 ui.label(egui::RichText::new(value).size(24.0).color(theme::TEXT_1));
             });
         });
+}
+
+// Shared row renderer for both activity-feed surfaces (Live Exposure's
+// broker-wide feed and the Dealing page's DEALING-group-scoped feed) --
+// direct native port of components/admin/ActivityFeedRows.tsx, including
+// its action label/tone map and its per-action describeActivityValues
+// logic (read off the row's raw `values` JSON blob, same field names the
+// web reads).
+fn activity_action_label(action: &str) -> String {
+    match action {
+        "ORDER_PLACED" => "Order placed",
+        "ORDER_MODIFIED" => "SL/TP modified",
+        "ORDER_CANCELLED" => "Order cancelled",
+        "ORDER_TRIGGERED" => "Pending order triggered",
+        "POSITION_OPENED" => "Position opened",
+        "POSITION_CLOSED" => "Position closed",
+        other => return other.to_string(),
+    }
+    .to_string()
+}
+
+fn activity_action_color(action: &str) -> egui::Color32 {
+    match action {
+        "ORDER_PLACED" => theme::accent(),
+        "ORDER_MODIFIED" | "ORDER_TRIGGERED" => theme::WARNING,
+        "ORDER_CANCELLED" => theme::DANGER,
+        "POSITION_OPENED" => theme::accent(),
+        _ => theme::TEXT_3,
+    }
+}
+
+fn jstr(v: &serde_json::Value, key: &str) -> Option<String> {
+    v.get(key).and_then(|x| {
+        if x.is_null() {
+            None
+        } else if let Some(s) = x.as_str() {
+            Some(s.to_string())
+        } else {
+            Some(x.to_string())
+        }
+    })
+}
+
+fn describe_activity_values(action: &str, values: &serde_json::Value) -> String {
+    match action {
+        "ORDER_PLACED" => {
+            let mut parts = Vec::new();
+            if let Some(p) = jstr(values, "triggerPrice").or_else(|| jstr(values, "requestedPrice")) {
+                parts.push(format!("@ {p}"));
+            }
+            if let Some(sl) = jstr(values, "slPrice") {
+                parts.push(format!("SL {sl}"));
+            }
+            if let Some(tp) = jstr(values, "tpPrice") {
+                parts.push(format!("TP {tp}"));
+            }
+            parts.join(" ")
+        }
+        "ORDER_MODIFIED" => {
+            let mut parts = Vec::new();
+            let old_sl = jstr(values, "oldSlPrice");
+            let new_sl = jstr(values, "newSlPrice");
+            if old_sl != new_sl && (old_sl.is_some() || new_sl.is_some()) {
+                parts.push(format!("SL {} -> {}", old_sl.as_deref().unwrap_or("-"), new_sl.as_deref().unwrap_or("-")));
+            }
+            let old_tp = jstr(values, "oldTpPrice");
+            let new_tp = jstr(values, "newTpPrice");
+            if old_tp != new_tp && (old_tp.is_some() || new_tp.is_some()) {
+                parts.push(format!("TP {} -> {}", old_tp.as_deref().unwrap_or("-"), new_tp.as_deref().unwrap_or("-")));
+            }
+            parts.join(", ")
+        }
+        "ORDER_CANCELLED" => jstr(values, "requestedPrice").map(|p| format!("@ {p}")).unwrap_or_default(),
+        "ORDER_TRIGGERED" => format!("triggered @ {}, now in approval queue", jstr(values, "triggerPrice").unwrap_or_else(|| "-".to_string())),
+        "POSITION_OPENED" => format!("@ {}", jstr(values, "openPrice").or_else(|| jstr(values, "filledPrice")).unwrap_or_else(|| "-".to_string())),
+        "POSITION_CLOSED" => {
+            let mut parts = vec![format!("@ {}", jstr(values, "closePrice").unwrap_or_else(|| "-".to_string()))];
+            if values.get("partial").and_then(|v| v.as_bool()).unwrap_or(false) {
+                parts.push("(partial)".to_string());
+            }
+            if let Some(pnl) = jstr(values, "realizedPnl") {
+                parts.push(format!("P&L {pnl}"));
+            }
+            parts.join(" ")
+        }
+        _ => String::new(),
+    }
+}
+
+fn render_activity_feed_rows(ui: &mut egui::Ui, rows: &[ActivityFeedRow], show_dealing_chip: bool) {
+    for row in rows {
+        ui.horizontal(|ui| {
+            ui.set_min_height(22.0);
+            ui.label(egui::RichText::new(&row.at).size(11.0).color(theme::TEXT_3));
+            ui.add_space(6.0);
+            ui.monospace(egui::RichText::new(&row.account_number).size(12.0));
+            if show_dealing_chip && row.is_dealing_group {
+                ui.label(egui::RichText::new("DEALING").size(9.0).color(theme::TEXT_3));
+            }
+            ui.add_space(6.0);
+            ui.colored_label(activity_action_color(&row.action), activity_action_label(&row.action));
+            if let Some(symbol) = &row.symbol {
+                ui.add_space(6.0);
+                ui.monospace(symbol);
+            }
+            if let Some(side) = &row.side {
+                let color = if side == "BUY" { theme::accent() } else { theme::DANGER };
+                ui.colored_label(color, side);
+            }
+            if let Some(volume) = &row.volume {
+                ui.monospace(volume);
+            }
+            ui.add_space(6.0);
+            ui.weak(describe_activity_values(&row.action, &row.values));
+        });
+        ui.separator();
+    }
 }
 
 // Custom-painted (not egui::Button::selectable) so the active item gets a
