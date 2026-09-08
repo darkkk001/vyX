@@ -1,6 +1,6 @@
 [package]
 name = "vyxtrader-native-backoffice"
-version = "0.1.2"
+version = "0.2.0"
 edition = "2021"
 description = "True-native (zero-webview) Rust backoffice proof-of-concept -- egui/eframe, MT5/DXtrade-grade, no browser/webview anywhere. Separate crate from desktop-tauri/manager-tauri/admin-tauri (those stay webview-based); this is the future replacement track. Talks to the same live /api/manage/* endpoints the real web backoffice uses (see api.rs's own comment for why -- there is no separate Rust DB layer serving this data today)."
 

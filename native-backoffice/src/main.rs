@@ -8,8 +8,10 @@
 mod api;
 
 use api::{
-    AccountRow, ApiClient, ApiEvent, ClientKycRow, DashboardData, DealingOrderRow, GroupPricingRow, GroupRow,
-    LiveAccountRequestRow, NewAccountBody, NotificationRow, PositionRow, RiskRadarRow, SettingsData,
+    AccountRow, AdminRow, ApiClient, ApiEvent, AuditLogRow, ClientKycRow, DashboardData, DealRow, DealingOrderRow,
+    FeedHealthData, FundsRequestRow, GroupPricingRow, GroupRow, IbRelationshipRow, LeadRow, LiquidityExposureRow,
+    LiveAccountRequestRow, LpRoutingRow, MarginRow, NewAccountBody, NotificationRow, PaymentMethodRow, PositionRow,
+    ReportsSummary, RiskData, RiskRadarRow, SettingsData, SymbolConfigRow, TransferRow,
 };
 use eframe::egui;
 use egui_extras::{Column, TableBuilder};
@@ -28,6 +30,23 @@ enum Screen {
     Notifications,
     RiskRadar,
     Settings,
+    Reports,
+    Symbols,
+    Team,
+    Transfers,
+    Wallets,
+    Ib,
+    Leads,
+    Deals,
+    Audit,
+    Security,
+    Funds,
+    PaymentMethods,
+    Margin,
+    Liquidity,
+    LiquidityRouting,
+    FeedHealth,
+    Emergency,
 }
 
 impl Screen {
@@ -43,6 +62,23 @@ impl Screen {
             Screen::Notifications => "Notifications",
             Screen::RiskRadar => "Risk / Exposure",
             Screen::Settings => "Settings",
+            Screen::Reports => "Reports",
+            Screen::Symbols => "Symbols",
+            Screen::Team => "Team",
+            Screen::Transfers => "Transfers",
+            Screen::Wallets => "Wallets",
+            Screen::Ib => "IB",
+            Screen::Leads => "Leads",
+            Screen::Deals => "Deals",
+            Screen::Audit => "Audit",
+            Screen::Security => "Security",
+            Screen::Funds => "Funds",
+            Screen::PaymentMethods => "Payment Methods",
+            Screen::Margin => "Margin",
+            Screen::Liquidity => "Liquidity",
+            Screen::LiquidityRouting => "Liquidity Routing",
+            Screen::FeedHealth => "Feed Health",
+            Screen::Emergency => "Emergency",
         }
     }
 
@@ -62,6 +98,23 @@ impl Screen {
             Screen::Notifications => "●",
             Screen::RiskRadar => "⚠",
             Screen::Settings => "⚙",
+            Screen::Reports => "▥",
+            Screen::Symbols => "◈",
+            Screen::Team => "◫",
+            Screen::Transfers => "⇌",
+            Screen::Wallets => "▣",
+            Screen::Ib => "◐",
+            Screen::Leads => "◇",
+            Screen::Deals => "■",
+            Screen::Audit => "▧",
+            Screen::Security => "◆",
+            Screen::Funds => "◎",
+            Screen::PaymentMethods => "▦",
+            Screen::Margin => "▲",
+            Screen::Liquidity => "≋",
+            Screen::LiquidityRouting => "⇉",
+            Screen::FeedHealth => "◍",
+            Screen::Emergency => "⛔",
         }
     }
 }
@@ -372,6 +425,81 @@ struct BackofficeApp {
     settings_loading: bool,
     settings_error: Option<String>,
     settings_leverage_input: String,
+
+    // --- reports ---
+    reports: Option<ReportsSummary>,
+    reports_loading: bool,
+    reports_error: Option<String>,
+
+    // --- symbols ---
+    symbols: Vec<SymbolConfigRow>,
+    symbols_loading: bool,
+    symbols_error: Option<String>,
+
+    // --- team ---
+    admins: Vec<AdminRow>,
+    admins_loading: bool,
+    admins_error: Option<String>,
+
+    // --- transfers ---
+    transfers: Vec<TransferRow>,
+    transfers_loading: bool,
+    transfers_error: Option<String>,
+
+    // --- ib ---
+    ib_relationships: Vec<IbRelationshipRow>,
+    ib_loading: bool,
+    ib_error: Option<String>,
+
+    // --- leads ---
+    leads: Vec<LeadRow>,
+    leads_loading: bool,
+    leads_error: Option<String>,
+
+    // --- deals ---
+    deals: Vec<DealRow>,
+    deals_loading: bool,
+    deals_error: Option<String>,
+
+    // --- audit ---
+    audit_log: Vec<AuditLogRow>,
+    audit_loading: bool,
+    audit_error: Option<String>,
+
+    // --- funds ---
+    funds_requests: Vec<FundsRequestRow>,
+    funds_loading: bool,
+    funds_error: Option<String>,
+
+    // --- payment methods ---
+    payment_methods: Vec<PaymentMethodRow>,
+    payment_methods_loading: bool,
+    payment_methods_error: Option<String>,
+
+    // --- margin ---
+    margin: Vec<MarginRow>,
+    margin_loading: bool,
+    margin_error: Option<String>,
+
+    // --- liquidity ---
+    liquidity: Vec<LiquidityExposureRow>,
+    liquidity_loading: bool,
+    liquidity_error: Option<String>,
+
+    // --- liquidity routing ---
+    lp_routing: Vec<LpRoutingRow>,
+    lp_routing_loading: bool,
+    lp_routing_error: Option<String>,
+
+    // --- feed health ---
+    feed_health: Option<FeedHealthData>,
+    feed_health_loading: bool,
+    feed_health_error: Option<String>,
+
+    // --- emergency / risk ---
+    risk: Option<RiskData>,
+    risk_loading: bool,
+    risk_error: Option<String>,
 }
 
 impl Default for BackofficeApp {
@@ -438,6 +566,51 @@ impl Default for BackofficeApp {
             settings_loading: false,
             settings_error: None,
             settings_leverage_input: String::new(),
+            reports: None,
+            reports_loading: false,
+            reports_error: None,
+            symbols: Vec::new(),
+            symbols_loading: false,
+            symbols_error: None,
+            admins: Vec::new(),
+            admins_loading: false,
+            admins_error: None,
+            transfers: Vec::new(),
+            transfers_loading: false,
+            transfers_error: None,
+            ib_relationships: Vec::new(),
+            ib_loading: false,
+            ib_error: None,
+            leads: Vec::new(),
+            leads_loading: false,
+            leads_error: None,
+            deals: Vec::new(),
+            deals_loading: false,
+            deals_error: None,
+            audit_log: Vec::new(),
+            audit_loading: false,
+            audit_error: None,
+            funds_requests: Vec::new(),
+            funds_loading: false,
+            funds_error: None,
+            payment_methods: Vec::new(),
+            payment_methods_loading: false,
+            payment_methods_error: None,
+            margin: Vec::new(),
+            margin_loading: false,
+            margin_error: None,
+            liquidity: Vec::new(),
+            liquidity_loading: false,
+            liquidity_error: None,
+            lp_routing: Vec::new(),
+            lp_routing_loading: false,
+            lp_routing_error: None,
+            feed_health: None,
+            feed_health_loading: false,
+            feed_health_error: None,
+            risk: None,
+            risk_loading: false,
+            risk_error: None,
         }
     }
 }
@@ -593,6 +766,111 @@ impl BackofficeApp {
                         Err(e) => self.settings_error = Some(e),
                     }
                 }
+                ApiEvent::ReportsSummary(result) => {
+                    self.reports_loading = false;
+                    match result {
+                        Ok(data) => self.reports = Some(data),
+                        Err(e) => self.reports_error = Some(e),
+                    }
+                }
+                ApiEvent::Symbols(result) => {
+                    self.symbols_loading = false;
+                    match result {
+                        Ok(rows) => self.symbols = rows,
+                        Err(e) => self.symbols_error = Some(e),
+                    }
+                }
+                ApiEvent::Admins(result) => {
+                    self.admins_loading = false;
+                    match result {
+                        Ok(rows) => self.admins = rows,
+                        Err(e) => self.admins_error = Some(e),
+                    }
+                }
+                ApiEvent::Transfers(result) => {
+                    self.transfers_loading = false;
+                    match result {
+                        Ok(rows) => self.transfers = rows,
+                        Err(e) => self.transfers_error = Some(e),
+                    }
+                }
+                ApiEvent::IbRelationships(result) => {
+                    self.ib_loading = false;
+                    match result {
+                        Ok(rows) => self.ib_relationships = rows,
+                        Err(e) => self.ib_error = Some(e),
+                    }
+                }
+                ApiEvent::Leads(result) => {
+                    self.leads_loading = false;
+                    match result {
+                        Ok(rows) => self.leads = rows,
+                        Err(e) => self.leads_error = Some(e),
+                    }
+                }
+                ApiEvent::Deals(result) => {
+                    self.deals_loading = false;
+                    match result {
+                        Ok(rows) => self.deals = rows,
+                        Err(e) => self.deals_error = Some(e),
+                    }
+                }
+                ApiEvent::AuditLog(result) => {
+                    self.audit_loading = false;
+                    match result {
+                        Ok(rows) => self.audit_log = rows,
+                        Err(e) => self.audit_error = Some(e),
+                    }
+                }
+                ApiEvent::FundsRequests(result) => {
+                    self.funds_loading = false;
+                    match result {
+                        Ok(rows) => self.funds_requests = rows,
+                        Err(e) => self.funds_error = Some(e),
+                    }
+                }
+                ApiEvent::PaymentMethods(result) => {
+                    self.payment_methods_loading = false;
+                    match result {
+                        Ok(rows) => self.payment_methods = rows,
+                        Err(e) => self.payment_methods_error = Some(e),
+                    }
+                }
+                ApiEvent::Margin(result) => {
+                    self.margin_loading = false;
+                    match result {
+                        Ok(rows) => self.margin = rows,
+                        Err(e) => self.margin_error = Some(e),
+                    }
+                }
+                ApiEvent::Liquidity(result) => {
+                    self.liquidity_loading = false;
+                    match result {
+                        Ok(rows) => self.liquidity = rows,
+                        Err(e) => self.liquidity_error = Some(e),
+                    }
+                }
+                ApiEvent::LpRouting(result) => {
+                    self.lp_routing_loading = false;
+                    match result {
+                        Ok(rows) => self.lp_routing = rows,
+                        Err(e) => self.lp_routing_error = Some(e),
+                    }
+                }
+                ApiEvent::FeedHealth(result) => {
+                    self.feed_health_loading = false;
+                    match result {
+                        Ok(data) => self.feed_health = Some(data),
+                        Err(e) => self.feed_health_error = Some(e),
+                    }
+                }
+                ApiEvent::Risk(result) => {
+                    self.risk_loading = false;
+                    match result {
+                        Ok(data) => self.risk = Some(data),
+                        Err(e) => self.risk_error = Some(e),
+                    }
+                }
                 ApiEvent::ActionDone(result) => match result {
                     Ok(msg) => {
                         self.action_message = Some(msg);
@@ -680,6 +958,93 @@ impl BackofficeApp {
                 self.settings_loading = true;
                 self.settings_error = None;
                 api.fetch_settings(ctx.clone(), self.tx.clone());
+            }
+            Screen::Reports => {
+                self.reports_loading = true;
+                self.reports_error = None;
+                api.fetch_reports_summary(ctx.clone(), self.tx.clone());
+            }
+            Screen::Symbols => {
+                self.symbols_loading = true;
+                self.symbols_error = None;
+                api.fetch_symbols(ctx.clone(), self.tx.clone());
+            }
+            Screen::Team => {
+                self.admins_loading = true;
+                self.admins_error = None;
+                api.fetch_admins(ctx.clone(), self.tx.clone());
+            }
+            Screen::Transfers => {
+                self.transfers_loading = true;
+                self.transfers_error = None;
+                api.fetch_transfers(ctx.clone(), self.tx.clone());
+            }
+            // Wallets reuses accounts data (already fetched by the
+            // Accounts screen) -- no separate endpoint exists, and the
+            // real web page does the same (see WalletsManager.tsx's own
+            // comment). Fetch accounts if this is reached first.
+            Screen::Wallets => {
+                self.accounts_loading = true;
+                self.accounts_error = None;
+                api.fetch_accounts(ctx.clone(), self.tx.clone());
+            }
+            Screen::Ib => {
+                self.ib_loading = true;
+                self.ib_error = None;
+                api.fetch_ib_relationships(ctx.clone(), self.tx.clone());
+            }
+            Screen::Leads => {
+                self.leads_loading = true;
+                self.leads_error = None;
+                api.fetch_leads(ctx.clone(), self.tx.clone());
+            }
+            Screen::Deals => {
+                self.deals_loading = true;
+                self.deals_error = None;
+                api.fetch_deals(ctx.clone(), self.tx.clone());
+            }
+            Screen::Audit => {
+                self.audit_loading = true;
+                self.audit_error = None;
+                api.fetch_audit_log(ctx.clone(), self.tx.clone());
+            }
+            // Security has no dedicated fetch -- see render_security's
+            // own comment on why this pass shows account identity only.
+            Screen::Security => {}
+            Screen::Funds => {
+                self.funds_loading = true;
+                self.funds_error = None;
+                api.fetch_funds_requests(ctx.clone(), self.tx.clone());
+            }
+            Screen::PaymentMethods => {
+                self.payment_methods_loading = true;
+                self.payment_methods_error = None;
+                api.fetch_payment_methods(ctx.clone(), self.tx.clone());
+            }
+            Screen::Margin => {
+                self.margin_loading = true;
+                self.margin_error = None;
+                api.fetch_margin(ctx.clone(), self.tx.clone());
+            }
+            Screen::Liquidity => {
+                self.liquidity_loading = true;
+                self.liquidity_error = None;
+                api.fetch_liquidity(ctx.clone(), self.tx.clone());
+            }
+            Screen::LiquidityRouting => {
+                self.lp_routing_loading = true;
+                self.lp_routing_error = None;
+                api.fetch_lp_routing(ctx.clone(), self.tx.clone());
+            }
+            Screen::FeedHealth => {
+                self.feed_health_loading = true;
+                self.feed_health_error = None;
+                api.fetch_feed_health(ctx.clone(), self.tx.clone());
+            }
+            Screen::Emergency => {
+                self.risk_loading = true;
+                self.risk_error = None;
+                api.fetch_risk(ctx.clone(), self.tx.clone());
             }
         }
     }
@@ -815,23 +1180,39 @@ impl BackofficeApp {
                 });
                 ui.add_space(10.0);
 
-                for screen in [
-                    Screen::Dashboard,
-                    Screen::Positions,
-                    Screen::Accounts,
-                    Screen::Dealing,
-                    Screen::Groups,
-                    Screen::ClientKyc,
-                    Screen::LiveAccountRequests,
-                    Screen::Notifications,
-                    Screen::RiskRadar,
-                    Screen::Settings,
-                ] {
-                    if sidebar_nav_item(ui, screen.icon(), screen.label(), self.screen == screen).clicked() {
-                        self.screen = screen;
-                        self.ensure_loaded(ctx, screen);
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    let groups: [(&str, &[Screen]); 6] = [
+                        ("OVERVIEW", &[Screen::Dashboard, Screen::Reports, Screen::Notifications]),
+                        (
+                            "TRADING",
+                            &[Screen::Positions, Screen::Dealing, Screen::Deals, Screen::Symbols, Screen::Margin, Screen::RiskRadar],
+                        ),
+                        ("CLIENTS", &[Screen::Accounts, Screen::Leads, Screen::Ib, Screen::ClientKyc, Screen::LiveAccountRequests]),
+                        (
+                            "FINANCE",
+                            &[Screen::Wallets, Screen::Transfers, Screen::Funds, Screen::PaymentMethods],
+                        ),
+                        ("LIQUIDITY", &[Screen::Liquidity, Screen::LiquidityRouting, Screen::FeedHealth]),
+                        (
+                            "ADMIN",
+                            &[Screen::Groups, Screen::Team, Screen::Audit, Screen::Security, Screen::Emergency, Screen::Settings],
+                        ),
+                    ];
+                    for (label, screens) in groups {
+                        ui.add_space(6.0);
+                        ui.horizontal(|ui| {
+                            ui.add_space(20.0);
+                            ui.label(egui::RichText::new(label).size(10.0).color(theme::TEXT_3).strong());
+                        });
+                        for &screen in screens {
+                            if sidebar_nav_item(ui, screen.icon(), screen.label(), self.screen == screen).clicked() {
+                                self.screen = screen;
+                                self.ensure_loaded(ctx, screen);
+                            }
+                        }
                     }
-                }
+                    ui.add_space(10.0);
+                });
             });
 
         egui::CentralPanel::default()
@@ -866,6 +1247,23 @@ impl BackofficeApp {
                 Screen::Notifications => self.render_notifications(ui, ctx),
                 Screen::RiskRadar => self.render_risk_radar(ui, ctx),
                 Screen::Settings => self.render_settings(ui, ctx),
+                Screen::Reports => self.render_reports(ui, ctx),
+                Screen::Symbols => self.render_symbols(ui, ctx),
+                Screen::Team => self.render_team(ui, ctx),
+                Screen::Transfers => self.render_transfers(ui, ctx),
+                Screen::Wallets => self.render_wallets(ui, ctx),
+                Screen::Ib => self.render_ib(ui, ctx),
+                Screen::Leads => self.render_leads(ui, ctx),
+                Screen::Deals => self.render_deals(ui, ctx),
+                Screen::Audit => self.render_audit(ui, ctx),
+                Screen::Security => self.render_security(ui),
+                Screen::Funds => self.render_funds(ui, ctx),
+                Screen::PaymentMethods => self.render_payment_methods(ui, ctx),
+                Screen::Margin => self.render_margin(ui, ctx),
+                Screen::Liquidity => self.render_liquidity(ui, ctx),
+                Screen::LiquidityRouting => self.render_liquidity_routing(ui, ctx),
+                Screen::FeedHealth => self.render_feed_health(ui, ctx),
+                Screen::Emergency => self.render_emergency(ui, ctx),
             }
         });
     }
@@ -1682,6 +2080,786 @@ impl BackofficeApp {
         ui.add_space(10.0);
         ui.weak("This screen covers broker-wide defaults (app/api/manage/settings) -- symbol/spread pricing lives on the Groups screen's per-symbol editor, not here.");
     }
+
+    fn render_reports(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        ui.horizontal(|ui| {
+            if ui.button("Refresh").clicked() {
+                self.fetch(ctx, Screen::Reports);
+            }
+            if self.reports_loading {
+                ui.spinner();
+            }
+            ui.weak("Last 30 days, live accounts only.");
+        });
+        ui.add_space(10.0);
+        if let Some(err) = &self.reports_error {
+            ui.colored_label(theme::DANGER, err);
+            return;
+        }
+        let Some(r) = &self.reports else { return };
+        egui::Grid::new("reports-stats").num_columns(4).spacing([10.0, 10.0]).show(ui, |ui| {
+            stat_card(ui, "Trading volume (lots)", &format!("{:.2}", r.trading_volume));
+            stat_card(ui, "Commission revenue", &format!("${:.2}", r.commission_revenue));
+            stat_card(ui, "Net deposits", &format!("${:.2}", r.net_deposits));
+            stat_card(ui, "New clients", &r.new_clients.to_string());
+        });
+    }
+
+    fn render_symbols(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        ui.horizontal(|ui| {
+            if ui.button("Refresh").clicked() {
+                self.fetch(ctx, Screen::Symbols);
+            }
+            if self.symbols_loading {
+                ui.spinner();
+            }
+            ui.weak("Read-only in this pass -- per-symbol spread/commission editing lives on the Groups pricing screen.");
+        });
+        ui.add_space(8.0);
+        if let Some(err) = &self.symbols_error {
+            ui.colored_label(theme::DANGER, err);
+            return;
+        }
+        TableBuilder::new(ui)
+            .striped(true)
+            .resizable(true)
+            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+            .column(Column::remainder().at_least(140.0))
+            .column(Column::auto().at_least(100.0))
+            .column(Column::auto().at_least(90.0))
+            .column(Column::auto().at_least(120.0))
+            .column(Column::auto().at_least(120.0))
+            .header(28.0, |mut header| {
+                for label in ["Symbol", "Category", "Enabled", "Spread markup", "Commission / lot"] {
+                    header.col(|ui| {
+                        ui.label(egui::RichText::new(label.to_uppercase()).size(11.5).color(theme::TEXT_3));
+                    });
+                }
+            })
+            .body(|body| {
+                body.rows(26.0, self.symbols.len(), |mut row| {
+                    let s = &self.symbols[row.index()];
+                    row.col(|ui| {
+                        ui.monospace(&s.symbol_name);
+                    });
+                    row.col(|ui| {
+                        ui.label(&s.category);
+                    });
+                    row.col(|ui| {
+                        if s.enabled {
+                            ui.colored_label(theme::accent(), "yes");
+                        } else {
+                            ui.weak("no");
+                        }
+                    });
+                    row.col(|ui| {
+                        ui.monospace(&s.spread_markup);
+                    });
+                    row.col(|ui| {
+                        ui.monospace(&s.commission_per_lot);
+                    });
+                });
+            });
+    }
+
+    fn render_team(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        ui.horizontal(|ui| {
+            if ui.button("Refresh").clicked() {
+                self.fetch(ctx, Screen::Team);
+            }
+            if self.admins_loading {
+                ui.spinner();
+            }
+        });
+        ui.add_space(8.0);
+        if let Some(err) = &self.admins_error {
+            ui.colored_label(theme::DANGER, err);
+            return;
+        }
+        let mut pending_status: Option<(String, String)> = None;
+        TableBuilder::new(ui)
+            .striped(true)
+            .resizable(true)
+            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+            .column(Column::remainder().at_least(180.0))
+            .column(Column::auto().at_least(100.0))
+            .column(Column::auto().at_least(90.0))
+            .column(Column::auto().at_least(140.0))
+            .column(Column::auto().at_least(110.0))
+            .header(28.0, |mut header| {
+                for label in ["Email", "Role", "Status", "Last login", "Action"] {
+                    header.col(|ui| {
+                        ui.label(egui::RichText::new(label.to_uppercase()).size(11.5).color(theme::TEXT_3));
+                    });
+                }
+            })
+            .body(|body| {
+                body.rows(26.0, self.admins.len(), |mut row| {
+                    let a = &self.admins[row.index()];
+                    row.col(|ui| {
+                        ui.label(&a.email);
+                    });
+                    row.col(|ui| {
+                        ui.monospace(&a.role);
+                    });
+                    row.col(|ui| {
+                        let color = if a.status == "ACTIVE" { theme::accent() } else { theme::TEXT_3 };
+                        ui.colored_label(color, &a.status);
+                    });
+                    row.col(|ui| {
+                        ui.weak(a.last_login_at.as_deref().unwrap_or("never"));
+                    });
+                    row.col(|ui| {
+                        let next = if a.status == "ACTIVE" { "DISABLED" } else { "ACTIVE" };
+                        let label = if a.status == "ACTIVE" { "Disable" } else { "Activate" };
+                        if ui.small_button(label).clicked() {
+                            pending_status = Some((a.id.clone(), next.to_string()));
+                        }
+                    });
+                });
+            });
+        if let Some((id, status)) = pending_status {
+            if let Some(api) = &self.api {
+                api.set_admin_status(ctx.clone(), self.tx.clone(), id, status);
+            }
+        }
+    }
+
+    fn render_transfers(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        ui.horizontal(|ui| {
+            if ui.button("Refresh").clicked() {
+                self.fetch(ctx, Screen::Transfers);
+            }
+            if self.transfers_loading {
+                ui.spinner();
+            }
+            ui.weak("Read-only in this pass -- creating a transfer needs two account pickers, deferred.");
+        });
+        ui.add_space(8.0);
+        if let Some(err) = &self.transfers_error {
+            ui.colored_label(theme::DANGER, err);
+            return;
+        }
+        TableBuilder::new(ui)
+            .striped(true)
+            .resizable(true)
+            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+            .column(Column::auto().at_least(100.0))
+            .column(Column::auto().at_least(110.0))
+            .column(Column::auto().at_least(110.0))
+            .column(Column::remainder().at_least(160.0))
+            .column(Column::auto().at_least(140.0))
+            .header(28.0, |mut header| {
+                for label in ["Account", "Type", "Amount", "Note", "Date"] {
+                    header.col(|ui| {
+                        ui.label(egui::RichText::new(label.to_uppercase()).size(11.5).color(theme::TEXT_3));
+                    });
+                }
+            })
+            .body(|body| {
+                body.rows(26.0, self.transfers.len(), |mut row| {
+                    let t = &self.transfers[row.index()];
+                    row.col(|ui| {
+                        ui.monospace(&t.account_number);
+                    });
+                    row.col(|ui| {
+                        ui.label(&t.transfer_type);
+                    });
+                    row.col(|ui| {
+                        ui.monospace(&t.amount);
+                    });
+                    row.col(|ui| {
+                        ui.weak(t.note.as_deref().unwrap_or("-"));
+                    });
+                    row.col(|ui| {
+                        ui.weak(t.created_at.get(0..10).unwrap_or(&t.created_at));
+                    });
+                });
+            });
+    }
+
+    // Reuses self.accounts (the Accounts screen's own data, see fetch()'s
+    // own comment) -- no separate endpoint exists; the real web page does
+    // the same (WalletsManager.tsx fetches /api/manage/accounts too).
+    fn render_wallets(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        ui.horizontal(|ui| {
+            if ui.button("Refresh").clicked() {
+                self.fetch(ctx, Screen::Wallets);
+            }
+            if self.accounts_loading {
+                ui.spinner();
+            }
+            ui.weak("Balance and credit per account (same data as Clients / Accounts).");
+        });
+        ui.add_space(8.0);
+        if let Some(err) = &self.accounts_error {
+            ui.colored_label(theme::DANGER, err);
+            return;
+        }
+        TableBuilder::new(ui)
+            .striped(true)
+            .resizable(true)
+            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+            .column(Column::auto().at_least(100.0))
+            .column(Column::remainder().at_least(160.0))
+            .column(Column::auto().at_least(110.0))
+            .column(Column::auto().at_least(110.0))
+            .column(Column::auto().at_least(80.0))
+            .header(28.0, |mut header| {
+                for label in ["Account", "Client", "Balance", "Credit", "Currency"] {
+                    header.col(|ui| {
+                        ui.label(egui::RichText::new(label.to_uppercase()).size(11.5).color(theme::TEXT_3));
+                    });
+                }
+            })
+            .body(|body| {
+                body.rows(26.0, self.accounts.len(), |mut row| {
+                    let a = &self.accounts[row.index()];
+                    row.col(|ui| {
+                        ui.monospace(&a.account_number);
+                    });
+                    row.col(|ui| {
+                        ui.label(&a.full_name);
+                    });
+                    row.col(|ui| {
+                        ui.monospace(&a.balance);
+                    });
+                    row.col(|ui| {
+                        ui.monospace(&a.credit);
+                    });
+                    row.col(|ui| {
+                        ui.weak(&a.currency);
+                    });
+                });
+            });
+    }
+
+    fn render_ib(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        ui.horizontal(|ui| {
+            if ui.button("Refresh").clicked() {
+                self.fetch(ctx, Screen::Ib);
+            }
+            if self.ib_loading {
+                ui.spinner();
+            }
+        });
+        ui.add_space(8.0);
+        if let Some(err) = &self.ib_error {
+            ui.colored_label(theme::DANGER, err);
+            return;
+        }
+        TableBuilder::new(ui)
+            .striped(true)
+            .resizable(true)
+            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+            .column(Column::auto().at_least(100.0))
+            .column(Column::remainder().at_least(150.0))
+            .column(Column::auto().at_least(100.0))
+            .column(Column::remainder().at_least(150.0))
+            .column(Column::auto().at_least(120.0))
+            .header(28.0, |mut header| {
+                for label in ["IB Account", "IB Name", "Client Account", "Client Name", "Commission"] {
+                    header.col(|ui| {
+                        ui.label(egui::RichText::new(label.to_uppercase()).size(11.5).color(theme::TEXT_3));
+                    });
+                }
+            })
+            .body(|body| {
+                body.rows(26.0, self.ib_relationships.len(), |mut row| {
+                    let r = &self.ib_relationships[row.index()];
+                    row.col(|ui| {
+                        ui.monospace(&r.ib_account_number);
+                    });
+                    row.col(|ui| {
+                        ui.label(&r.ib_account_full_name);
+                    });
+                    row.col(|ui| {
+                        ui.monospace(&r.client_account_number);
+                    });
+                    row.col(|ui| {
+                        ui.label(&r.client_account_full_name);
+                    });
+                    row.col(|ui| {
+                        ui.weak(&r.commission_type);
+                    });
+                });
+            });
+    }
+
+    fn render_leads(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        ui.horizontal(|ui| {
+            if ui.button("Refresh").clicked() {
+                self.fetch(ctx, Screen::Leads);
+            }
+            if self.leads_loading {
+                ui.spinner();
+            }
+        });
+        ui.add_space(8.0);
+        if let Some(err) = &self.leads_error {
+            ui.colored_label(theme::DANGER, err);
+            return;
+        }
+        TableBuilder::new(ui)
+            .striped(true)
+            .resizable(true)
+            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+            .column(Column::remainder().at_least(150.0))
+            .column(Column::auto().at_least(160.0))
+            .column(Column::auto().at_least(110.0))
+            .column(Column::auto().at_least(100.0))
+            .column(Column::auto().at_least(100.0))
+            .header(28.0, |mut header| {
+                for label in ["Name", "Email", "Phone", "Source", "Status"] {
+                    header.col(|ui| {
+                        ui.label(egui::RichText::new(label.to_uppercase()).size(11.5).color(theme::TEXT_3));
+                    });
+                }
+            })
+            .body(|body| {
+                body.rows(26.0, self.leads.len(), |mut row| {
+                    let l = &self.leads[row.index()];
+                    row.col(|ui| {
+                        ui.label(&l.full_name);
+                    });
+                    row.col(|ui| {
+                        ui.weak(l.email.as_deref().unwrap_or("-"));
+                    });
+                    row.col(|ui| {
+                        ui.weak(l.phone.as_deref().unwrap_or("-"));
+                    });
+                    row.col(|ui| {
+                        ui.weak(l.source.as_deref().unwrap_or("-"));
+                    });
+                    row.col(|ui| {
+                        ui.label(&l.status);
+                    });
+                });
+            });
+    }
+
+    fn render_deals(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        ui.horizontal(|ui| {
+            if ui.button("Refresh").clicked() {
+                self.fetch(ctx, Screen::Deals);
+            }
+            if self.deals_loading {
+                ui.spinner();
+            }
+            ui.weak("Closed and voided positions.");
+        });
+        ui.add_space(8.0);
+        if let Some(err) = &self.deals_error {
+            ui.colored_label(theme::DANGER, err);
+            return;
+        }
+        TableBuilder::new(ui)
+            .striped(true)
+            .resizable(true)
+            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+            .column(Column::auto().at_least(100.0))
+            .column(Column::auto().at_least(90.0))
+            .column(Column::auto().at_least(70.0))
+            .column(Column::auto().at_least(90.0))
+            .column(Column::auto().at_least(90.0))
+            .column(Column::auto().at_least(90.0))
+            .column(Column::auto().at_least(100.0))
+            .column(Column::remainder().at_least(140.0))
+            .header(28.0, |mut header| {
+                for label in ["Account", "Symbol", "Side", "Status", "Volume", "Close", "P/L", "Closed"] {
+                    header.col(|ui| {
+                        ui.label(egui::RichText::new(label.to_uppercase()).size(11.5).color(theme::TEXT_3));
+                    });
+                }
+            })
+            .body(|body| {
+                body.rows(26.0, self.deals.len(), |mut row| {
+                    let d = &self.deals[row.index()];
+                    row.col(|ui| {
+                        ui.monospace(&d.account_number);
+                    });
+                    row.col(|ui| {
+                        ui.monospace(&d.symbol);
+                    });
+                    row.col(|ui| {
+                        let color = if d.side == "BUY" { theme::accent() } else { theme::DANGER };
+                        ui.colored_label(color, &d.side);
+                    });
+                    row.col(|ui| {
+                        let color = if d.status == "VOIDED" { theme::WARNING } else { theme::TEXT_2 };
+                        ui.colored_label(color, &d.status);
+                    });
+                    row.col(|ui| {
+                        ui.monospace(&d.volume);
+                    });
+                    row.col(|ui| {
+                        ui.monospace(&d.close_price);
+                    });
+                    row.col(|ui| {
+                        let color = match d.realized_pnl.parse::<f64>() {
+                            Ok(v) if v > 0.0 => theme::accent(),
+                            Ok(v) if v < 0.0 => theme::DANGER,
+                            _ => theme::TEXT_2,
+                        };
+                        ui.colored_label(color, &d.realized_pnl);
+                    });
+                    row.col(|ui| {
+                        ui.weak(&d.closed_at);
+                    });
+                });
+            });
+    }
+
+    fn render_audit(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        ui.horizontal(|ui| {
+            if ui.button("Refresh").clicked() {
+                self.fetch(ctx, Screen::Audit);
+            }
+            if self.audit_loading {
+                ui.spinner();
+            }
+        });
+        ui.add_space(8.0);
+        if let Some(err) = &self.audit_error {
+            ui.colored_label(theme::DANGER, err);
+            return;
+        }
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            for log in &self.audit_log {
+                ui.horizontal(|ui| {
+                    ui.monospace(&log.created_at_label);
+                    ui.weak(&log.entity_type);
+                    ui.label(&log.action_label);
+                    ui.weak(&log.actor_email);
+                });
+            }
+        });
+    }
+
+    // No dedicated endpoint for this native pass (2FA setup is a QR-code/
+    // TOTP flow -- real complexity, deferred) -- shows the signed-in
+    // admin's own identity, which is genuinely all this app can offer
+    // without a proper enrollment UI. Full 2FA management stays on the
+    // web backoffice for now.
+    fn render_security(&mut self, ui: &mut egui::Ui) {
+        theme::card(16).show(ui, |ui| {
+            ui.set_width(360.0);
+            ui.label(egui::RichText::new("Signed in as").size(11.0).color(theme::TEXT_3));
+            ui.label(egui::RichText::new(&self.logged_in_email).size(16.0).color(theme::TEXT_1));
+            ui.add_space(10.0);
+            ui.weak("Two-factor setup and device management aren't implemented in this native pass yet -- use the web backoffice's Security page for those.");
+        });
+    }
+
+    fn render_funds(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        ui.horizontal(|ui| {
+            if ui.button("Refresh").clicked() {
+                self.fetch(ctx, Screen::Funds);
+            }
+            if self.funds_loading {
+                ui.spinner();
+            }
+        });
+        ui.add_space(8.0);
+        if let Some(err) = &self.funds_error {
+            ui.colored_label(theme::DANGER, err);
+            return;
+        }
+        let mut action: Option<(String, String)> = None;
+        for f in self.funds_requests.clone() {
+            theme::card(10).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.monospace(&f.account_number);
+                    ui.label(&f.account_full_name);
+                    ui.separator();
+                    ui.label(&f.request_type);
+                    ui.monospace(&f.amount);
+                    let status_color = match f.status.as_str() {
+                        "APPROVED" | "COMPLETED" => theme::accent(),
+                        "REJECTED" => theme::DANGER,
+                        _ => theme::WARNING,
+                    };
+                    ui.colored_label(status_color, &f.status);
+                    if f.status == "PENDING" {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("Reject").clicked() {
+                                action = Some((f.id.clone(), "REJECT".to_string()));
+                            }
+                            if theme::accent_button(ui, "Approve").clicked() {
+                                action = Some((f.id.clone(), "APPROVE".to_string()));
+                            }
+                        });
+                    }
+                });
+            });
+        }
+        if let Some((id, act)) = action {
+            if let Some(api) = &self.api {
+                api.funds_request_action(ctx.clone(), self.tx.clone(), id, act);
+            }
+        }
+    }
+
+    fn render_payment_methods(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        ui.horizontal(|ui| {
+            if ui.button("Refresh").clicked() {
+                self.fetch(ctx, Screen::PaymentMethods);
+            }
+            if self.payment_methods_loading {
+                ui.spinner();
+            }
+            ui.weak("Read-only in this pass -- editing fees/limits deferred.");
+        });
+        ui.add_space(8.0);
+        if let Some(err) = &self.payment_methods_error {
+            ui.colored_label(theme::DANGER, err);
+            return;
+        }
+        for m in &self.payment_methods {
+            ui.horizontal(|ui| {
+                ui.monospace(&m.method_type);
+                if m.enabled {
+                    ui.colored_label(theme::accent(), "enabled");
+                } else {
+                    ui.weak("disabled");
+                }
+                ui.weak(format!("min {}, fee {}%", m.min_amount, m.fee_percent));
+            });
+        }
+    }
+
+    fn render_margin(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        ui.horizontal(|ui| {
+            if ui.button("Refresh").clicked() {
+                self.fetch(ctx, Screen::Margin);
+            }
+            if self.margin_loading {
+                ui.spinner();
+            }
+            ui.weak("Sorted by lowest margin level first.");
+        });
+        ui.add_space(8.0);
+        if let Some(err) = &self.margin_error {
+            ui.colored_label(theme::DANGER, err);
+            return;
+        }
+        TableBuilder::new(ui)
+            .striped(true)
+            .resizable(true)
+            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+            .column(Column::auto().at_least(100.0))
+            .column(Column::auto().at_least(90.0))
+            .column(Column::auto().at_least(110.0))
+            .column(Column::auto().at_least(110.0))
+            .column(Column::remainder().at_least(120.0))
+            .header(28.0, |mut header| {
+                for label in ["Account", "Positions", "Exposure", "Floating P/L", "Margin level"] {
+                    header.col(|ui| {
+                        ui.label(egui::RichText::new(label.to_uppercase()).size(11.5).color(theme::TEXT_3));
+                    });
+                }
+            })
+            .body(|body| {
+                body.rows(26.0, self.margin.len(), |mut row| {
+                    let m = &self.margin[row.index()];
+                    row.col(|ui| {
+                        ui.monospace(&m.account_number);
+                    });
+                    row.col(|ui| {
+                        ui.label(m.position_count.to_string());
+                    });
+                    row.col(|ui| {
+                        ui.monospace(&m.exposure);
+                    });
+                    row.col(|ui| {
+                        ui.monospace(&m.floating_pnl);
+                    });
+                    row.col(|ui| {
+                        let text = m.margin_level.map(|v| format!("{v:.1}%")).unwrap_or_else(|| "-".to_string());
+                        let color = match m.margin_level {
+                            Some(v) if v < 100.0 => theme::DANGER,
+                            Some(v) if v < 200.0 => theme::WARNING,
+                            _ => theme::TEXT_2,
+                        };
+                        ui.colored_label(color, text);
+                    });
+                });
+            });
+    }
+
+    fn render_liquidity(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        ui.horizontal(|ui| {
+            if ui.button("Refresh").clicked() {
+                self.fetch(ctx, Screen::Liquidity);
+            }
+            if self.liquidity_loading {
+                ui.spinner();
+            }
+            ui.weak("Open-position book exposure per symbol.");
+        });
+        ui.add_space(8.0);
+        if let Some(err) = &self.liquidity_error {
+            ui.colored_label(theme::DANGER, err);
+            return;
+        }
+        TableBuilder::new(ui)
+            .striped(true)
+            .resizable(true)
+            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+            .column(Column::remainder().at_least(100.0))
+            .column(Column::auto().at_least(120.0))
+            .column(Column::auto().at_least(120.0))
+            .header(28.0, |mut header| {
+                for label in ["Symbol", "A-Book volume", "B-Book volume"] {
+                    header.col(|ui| {
+                        ui.label(egui::RichText::new(label.to_uppercase()).size(11.5).color(theme::TEXT_3));
+                    });
+                }
+            })
+            .body(|body| {
+                body.rows(26.0, self.liquidity.len(), |mut row| {
+                    let l = &self.liquidity[row.index()];
+                    row.col(|ui| {
+                        ui.monospace(&l.symbol);
+                    });
+                    row.col(|ui| {
+                        ui.monospace(&l.a_book_volume);
+                    });
+                    row.col(|ui| {
+                        ui.monospace(&l.b_book_volume);
+                    });
+                });
+            });
+    }
+
+    fn render_liquidity_routing(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        ui.horizontal(|ui| {
+            if ui.button("Refresh").clicked() {
+                self.fetch(ctx, Screen::LiquidityRouting);
+            }
+            if self.lp_routing_loading {
+                ui.spinner();
+            }
+            ui.weak("Intended routing, not live routing -- no execution path reads this yet (matches the web page's own note).");
+        });
+        ui.add_space(8.0);
+        if let Some(err) = &self.lp_routing_error {
+            ui.colored_label(theme::DANGER, err);
+            return;
+        }
+        TableBuilder::new(ui)
+            .striped(true)
+            .resizable(true)
+            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+            .column(Column::remainder().at_least(150.0))
+            .column(Column::auto().at_least(100.0))
+            .column(Column::auto().at_least(110.0))
+            .column(Column::auto().at_least(70.0))
+            .header(28.0, |mut header| {
+                for label in ["Liquidity provider", "LP Status", "Symbol", "Priority"] {
+                    header.col(|ui| {
+                        ui.label(egui::RichText::new(label.to_uppercase()).size(11.5).color(theme::TEXT_3));
+                    });
+                }
+            })
+            .body(|body| {
+                body.rows(26.0, self.lp_routing.len(), |mut row| {
+                    let l = &self.lp_routing[row.index()];
+                    row.col(|ui| {
+                        ui.label(&l.liquidity_provider_name);
+                    });
+                    row.col(|ui| {
+                        ui.weak(&l.liquidity_provider_status);
+                    });
+                    row.col(|ui| {
+                        ui.monospace(l.symbol_name.as_deref().unwrap_or("all"));
+                    });
+                    row.col(|ui| {
+                        ui.label(l.priority.to_string());
+                    });
+                });
+            });
+    }
+
+    fn render_feed_health(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        ui.horizontal(|ui| {
+            if ui.button("Refresh").clicked() {
+                self.fetch(ctx, Screen::FeedHealth);
+            }
+            if self.feed_health_loading {
+                ui.spinner();
+            }
+        });
+        ui.add_space(8.0);
+        if let Some(err) = &self.feed_health_error {
+            ui.colored_label(theme::DANGER, err);
+            return;
+        }
+        let Some(data) = &self.feed_health else { return };
+        ui.horizontal(|ui| {
+            ui.label("Trading core feed:");
+            if data.feed_stats.is_some() {
+                ui.colored_label(theme::accent(), "connected");
+            } else {
+                ui.colored_label(theme::TEXT_3, "not reachable");
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label("Gateway:");
+            if data.gateway_stats.is_some() {
+                ui.colored_label(theme::accent(), "connected");
+            } else {
+                ui.colored_label(theme::TEXT_3, "not reachable");
+            }
+        });
+        ui.add_space(10.0);
+        ui.weak("The Rust trading core/gateway are separate always-on processes (see engine/'s own Phase-1-scaffold status) -- \"not reachable\" here usually means neither is deployed yet, not a bug.");
+        if let Some(stats) = &data.feed_stats {
+            ui.add_space(10.0);
+            ui.monospace(stats.to_string());
+        }
+    }
+
+    fn render_emergency(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        ui.horizontal(|ui| {
+            if ui.button("Refresh").clicked() {
+                self.fetch(ctx, Screen::Emergency);
+            }
+            if self.risk_loading {
+                ui.spinner();
+            }
+        });
+        ui.add_space(10.0);
+        ui.weak("The broker-wide kill switch. Existing open positions are never touched by this -- it only blocks new orders.");
+        ui.add_space(10.0);
+        if let Some(err) = &self.risk_error {
+            ui.colored_label(theme::DANGER, err);
+            return;
+        }
+        let Some(risk) = &self.risk else { return };
+        theme::card(16).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Status:");
+                if risk.trading_halted {
+                    ui.colored_label(theme::DANGER, "TRADING HALTED");
+                } else {
+                    ui.colored_label(theme::accent(), "Normal");
+                }
+            });
+            ui.add_space(10.0);
+            if risk.trading_halted {
+                if theme::accent_button(ui, "Resume trading").clicked() {
+                    if let Some(api) = &self.api {
+                        api.set_trading_halted(ctx.clone(), self.tx.clone(), false);
+                    }
+                }
+            } else if theme::danger_button_enabled(ui, true, "Halt all new trading").clicked() {
+                if let Some(api) = &self.api {
+                    api.set_trading_halted(ctx.clone(), self.tx.clone(), true);
+                }
+            }
+        });
+    }
 }
 
 // Broker.primaryColor's own stored format (see BrokersManager.tsx's own
@@ -1781,6 +2959,23 @@ impl BackofficeApp {
             Some("notifications") => Some(Screen::Notifications),
             Some("risk") => Some(Screen::RiskRadar),
             Some("settings") => Some(Screen::Settings),
+            Some("reports") => Some(Screen::Reports),
+            Some("symbols") => Some(Screen::Symbols),
+            Some("team") => Some(Screen::Team),
+            Some("transfers") => Some(Screen::Transfers),
+            Some("wallets") => Some(Screen::Wallets),
+            Some("ib") => Some(Screen::Ib),
+            Some("leads") => Some(Screen::Leads),
+            Some("deals") => Some(Screen::Deals),
+            Some("audit") => Some(Screen::Audit),
+            Some("security") => Some(Screen::Security),
+            Some("funds") => Some(Screen::Funds),
+            Some("payment-methods") => Some(Screen::PaymentMethods),
+            Some("margin") => Some(Screen::Margin),
+            Some("liquidity") => Some(Screen::Liquidity),
+            Some("liquidity-routing") => Some(Screen::LiquidityRouting),
+            Some("feed-health") => Some(Screen::FeedHealth),
+            Some("emergency") => Some(Screen::Emergency),
             _ => None,
         };
         if let Some(screen) = target {

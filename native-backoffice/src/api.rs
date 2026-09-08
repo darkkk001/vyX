@@ -60,6 +60,7 @@ pub struct AccountRow {
     pub currency: String,
     pub leverage: i64,
     pub balance: String,
+    pub credit: String,
     pub status: String,
     #[serde(rename = "groupName")]
     pub group_name: Option<String>,
@@ -265,6 +266,200 @@ pub struct ShellInfo {
     pub broker_primary_color: Option<String>,
 }
 
+// --- Reports ---
+#[derive(Debug, Clone, Deserialize)]
+pub struct ReportsSummary {
+    #[serde(rename = "tradingVolume")]
+    pub trading_volume: f64,
+    #[serde(rename = "commissionRevenue")]
+    pub commission_revenue: f64,
+    #[serde(rename = "netDeposits")]
+    pub net_deposits: f64,
+    #[serde(rename = "newClients")]
+    pub new_clients: i64,
+}
+
+// --- Symbols ---
+#[derive(Debug, Clone, Deserialize)]
+pub struct SymbolConfigRow {
+    #[serde(rename = "symbolName")]
+    pub symbol_name: String,
+    pub category: String,
+    pub enabled: bool,
+    #[serde(rename = "spreadMarkup")]
+    pub spread_markup: String,
+    #[serde(rename = "commissionPerLot")]
+    pub commission_per_lot: String,
+}
+
+// --- Team (admins) ---
+#[derive(Debug, Clone, Deserialize)]
+pub struct AdminRow {
+    pub id: String,
+    pub email: String,
+    pub role: String,
+    pub status: String,
+    #[serde(rename = "lastLoginAt")]
+    pub last_login_at: Option<String>,
+}
+
+// --- Transfers ---
+#[derive(Debug, Clone, Deserialize)]
+pub struct TransferRow {
+    #[serde(rename = "accountNumber")]
+    pub account_number: String,
+    #[serde(rename = "type")]
+    pub transfer_type: String,
+    pub amount: String,
+    pub note: Option<String>,
+    #[serde(rename = "createdAt")]
+    pub created_at: String,
+}
+
+// --- IB relationships ---
+#[derive(Debug, Clone, Deserialize)]
+pub struct IbRelationshipRow {
+    #[serde(rename = "ibAccountNumber")]
+    pub ib_account_number: String,
+    #[serde(rename = "ibAccountFullName")]
+    pub ib_account_full_name: String,
+    #[serde(rename = "clientAccountNumber")]
+    pub client_account_number: String,
+    #[serde(rename = "clientAccountFullName")]
+    pub client_account_full_name: String,
+    #[serde(rename = "commissionType")]
+    pub commission_type: String,
+}
+
+// --- Leads ---
+#[derive(Debug, Clone, Deserialize)]
+pub struct LeadRow {
+    // Not read anywhere yet -- this pass's Leads screen is list-only, no
+    // per-row action (convert-to-account, status change) wired here.
+    #[allow(dead_code)]
+    pub id: String,
+    #[serde(rename = "fullName")]
+    pub full_name: String,
+    pub email: Option<String>,
+    pub phone: Option<String>,
+    pub status: String,
+    pub source: Option<String>,
+}
+
+// --- Deals (closed/voided positions) ---
+#[derive(Debug, Clone, Deserialize)]
+pub struct DealRow {
+    #[serde(rename = "accountNumber")]
+    pub account_number: String,
+    pub symbol: String,
+    pub side: String,
+    pub status: String,
+    pub volume: String,
+    #[serde(rename = "closePrice")]
+    pub close_price: String,
+    #[serde(rename = "realizedPnl")]
+    pub realized_pnl: String,
+    #[serde(rename = "closedAt")]
+    pub closed_at: String,
+}
+
+// --- Audit log ---
+#[derive(Debug, Clone, Deserialize)]
+pub struct AuditLogRow {
+    #[serde(rename = "actorEmail")]
+    pub actor_email: String,
+    #[serde(rename = "actionLabel")]
+    pub action_label: String,
+    #[serde(rename = "entityType")]
+    pub entity_type: String,
+    #[serde(rename = "createdAtLabel")]
+    pub created_at_label: String,
+}
+
+// --- Funds requests (deposits/withdrawals) ---
+#[derive(Debug, Clone, Deserialize)]
+pub struct FundsRequestRow {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub request_type: String,
+    pub status: String,
+    pub amount: String,
+    #[serde(rename = "accountNumber")]
+    pub account_number: String,
+    #[serde(rename = "accountFullName")]
+    pub account_full_name: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct FundsRequestsResponse {
+    rows: Vec<FundsRequestRow>,
+}
+
+// --- Payment methods ---
+#[derive(Debug, Clone, Deserialize)]
+pub struct PaymentMethodRow {
+    #[serde(rename = "type")]
+    pub method_type: String,
+    pub enabled: bool,
+    #[serde(rename = "minAmount")]
+    pub min_amount: String,
+    #[serde(rename = "feePercent")]
+    pub fee_percent: String,
+}
+
+// --- Margin ---
+#[derive(Debug, Clone, Deserialize)]
+pub struct MarginRow {
+    #[serde(rename = "accountNumber")]
+    pub account_number: String,
+    #[serde(rename = "positionCount")]
+    pub position_count: i64,
+    pub exposure: String,
+    #[serde(rename = "floatingPnl")]
+    pub floating_pnl: String,
+    #[serde(rename = "marginLevel")]
+    pub margin_level: Option<f64>,
+}
+
+// --- Liquidity (book exposure) ---
+#[derive(Debug, Clone, Deserialize)]
+pub struct LiquidityExposureRow {
+    pub symbol: String,
+    #[serde(rename = "aBookVolume")]
+    pub a_book_volume: String,
+    #[serde(rename = "bBookVolume")]
+    pub b_book_volume: String,
+}
+
+// --- Liquidity routing rules ---
+#[derive(Debug, Clone, Deserialize)]
+pub struct LpRoutingRow {
+    #[serde(rename = "liquidityProviderName")]
+    pub liquidity_provider_name: String,
+    #[serde(rename = "liquidityProviderStatus")]
+    pub liquidity_provider_status: String,
+    #[serde(rename = "symbolName")]
+    pub symbol_name: Option<String>,
+    pub priority: i64,
+}
+
+// --- Feed health (proxies the Rust trading core/gateway -- usually
+// unreachable today, see engine/'s own Phase-1-scaffold status) ---
+#[derive(Debug, Clone, Deserialize)]
+pub struct FeedHealthData {
+    #[serde(rename = "feedStats")]
+    pub feed_stats: Option<serde_json::Value>,
+    #[serde(rename = "gatewayStats")]
+    pub gateway_stats: Option<serde_json::Value>,
+}
+
+// --- Emergency (broker-wide halt, a narrow slice of /api/manage/risk) ---
+#[derive(Debug, Clone, Deserialize)]
+pub struct RiskData {
+    #[serde(rename = "tradingHalted")]
+    pub trading_halted: bool,
+}
+
 pub enum ApiEvent {
     LoginResult(Result<String, String>),
     Dashboard(Result<DashboardData, String>),
@@ -279,6 +474,21 @@ pub enum ApiEvent {
     RiskRadar(Result<Vec<RiskRadarRow>, String>),
     Settings(Result<SettingsData, String>),
     ShellInfo(Result<ShellInfo, String>),
+    ReportsSummary(Result<ReportsSummary, String>),
+    Symbols(Result<Vec<SymbolConfigRow>, String>),
+    Admins(Result<Vec<AdminRow>, String>),
+    Transfers(Result<Vec<TransferRow>, String>),
+    IbRelationships(Result<Vec<IbRelationshipRow>, String>),
+    Leads(Result<Vec<LeadRow>, String>),
+    Deals(Result<Vec<DealRow>, String>),
+    AuditLog(Result<Vec<AuditLogRow>, String>),
+    FundsRequests(Result<Vec<FundsRequestRow>, String>),
+    PaymentMethods(Result<Vec<PaymentMethodRow>, String>),
+    Margin(Result<Vec<MarginRow>, String>),
+    Liquidity(Result<Vec<LiquidityExposureRow>, String>),
+    LpRouting(Result<Vec<LpRoutingRow>, String>),
+    FeedHealth(Result<FeedHealthData, String>),
+    Risk(Result<RiskData, String>),
     // Raw decoded RGBA pixels for the broker's logo, ready for
     // egui::ColorImage::from_rgba_unmultiplied -- decoded here (not on
     // the UI thread) since image decoding is exactly the kind of work
@@ -759,6 +969,333 @@ impl ApiClient {
             }
             .await;
             let _ = tx.send(ApiEvent::LogoImage(result));
+            ctx.request_repaint();
+        });
+    }
+
+    pub fn fetch_reports_summary(&self, ctx: egui::Context, tx: Sender<ApiEvent>) {
+        let client = self.client.clone();
+        let url = format!("{}/api/manage/reports/summary", self.base_url);
+        spawn(async move {
+            let result = async {
+                let res = client.get(&url).send().await.map_err(|e| format!("network error: {e}"))?;
+                if !res.status().is_success() {
+                    return Err(Self::error_from_response(res).await);
+                }
+                res.json::<ReportsSummary>().await.map_err(|e| format!("bad response: {e}"))
+            }
+            .await;
+            let _ = tx.send(ApiEvent::ReportsSummary(result));
+            ctx.request_repaint();
+        });
+    }
+
+    pub fn fetch_symbols(&self, ctx: egui::Context, tx: Sender<ApiEvent>) {
+        let client = self.client.clone();
+        let url = format!("{}/api/manage/symbols", self.base_url);
+        spawn(async move {
+            let result = async {
+                let res = client.get(&url).send().await.map_err(|e| format!("network error: {e}"))?;
+                if !res.status().is_success() {
+                    return Err(Self::error_from_response(res).await);
+                }
+                res.json::<Vec<SymbolConfigRow>>().await.map_err(|e| format!("bad response: {e}"))
+            }
+            .await;
+            let _ = tx.send(ApiEvent::Symbols(result));
+            ctx.request_repaint();
+        });
+    }
+
+    pub fn fetch_admins(&self, ctx: egui::Context, tx: Sender<ApiEvent>) {
+        #[derive(Deserialize)]
+        struct Resp {
+            rows: Vec<AdminRow>,
+        }
+        let client = self.client.clone();
+        let url = format!("{}/api/manage/admins", self.base_url);
+        spawn(async move {
+            let result = async {
+                let res = client.get(&url).send().await.map_err(|e| format!("network error: {e}"))?;
+                if !res.status().is_success() {
+                    return Err(Self::error_from_response(res).await);
+                }
+                let body: Resp = res.json().await.map_err(|e| format!("bad response: {e}"))?;
+                Ok(body.rows)
+            }
+            .await;
+            let _ = tx.send(ApiEvent::Admins(result));
+            ctx.request_repaint();
+        });
+    }
+
+    pub fn set_admin_status(&self, ctx: egui::Context, tx: Sender<ApiEvent>, admin_id: String, status: String) {
+        let client = self.client.clone();
+        let url = format!("{}/api/manage/admins/{}", self.base_url, admin_id);
+        spawn(async move {
+            let result = async {
+                let res = client
+                    .patch(&url)
+                    .json(&serde_json::json!({ "status": status }))
+                    .send()
+                    .await
+                    .map_err(|e| format!("network error: {e}"))?;
+                if !res.status().is_success() {
+                    return Err(Self::error_from_response(res).await);
+                }
+                Ok(format!("status set to {status}"))
+            }
+            .await;
+            let _ = tx.send(ApiEvent::ActionDone(result));
+            ctx.request_repaint();
+        });
+    }
+
+    pub fn fetch_transfers(&self, ctx: egui::Context, tx: Sender<ApiEvent>) {
+        let client = self.client.clone();
+        let url = format!("{}/api/manage/transfers", self.base_url);
+        spawn(async move {
+            let result = async {
+                let res = client.get(&url).send().await.map_err(|e| format!("network error: {e}"))?;
+                if !res.status().is_success() {
+                    return Err(Self::error_from_response(res).await);
+                }
+                res.json::<Vec<TransferRow>>().await.map_err(|e| format!("bad response: {e}"))
+            }
+            .await;
+            let _ = tx.send(ApiEvent::Transfers(result));
+            ctx.request_repaint();
+        });
+    }
+
+    pub fn fetch_ib_relationships(&self, ctx: egui::Context, tx: Sender<ApiEvent>) {
+        let client = self.client.clone();
+        let url = format!("{}/api/manage/ib-relationships", self.base_url);
+        spawn(async move {
+            let result = async {
+                let res = client.get(&url).send().await.map_err(|e| format!("network error: {e}"))?;
+                if !res.status().is_success() {
+                    return Err(Self::error_from_response(res).await);
+                }
+                res.json::<Vec<IbRelationshipRow>>().await.map_err(|e| format!("bad response: {e}"))
+            }
+            .await;
+            let _ = tx.send(ApiEvent::IbRelationships(result));
+            ctx.request_repaint();
+        });
+    }
+
+    pub fn fetch_leads(&self, ctx: egui::Context, tx: Sender<ApiEvent>) {
+        let client = self.client.clone();
+        let url = format!("{}/api/manage/leads", self.base_url);
+        spawn(async move {
+            let result = async {
+                let res = client.get(&url).send().await.map_err(|e| format!("network error: {e}"))?;
+                if !res.status().is_success() {
+                    return Err(Self::error_from_response(res).await);
+                }
+                res.json::<Vec<LeadRow>>().await.map_err(|e| format!("bad response: {e}"))
+            }
+            .await;
+            let _ = tx.send(ApiEvent::Leads(result));
+            ctx.request_repaint();
+        });
+    }
+
+    pub fn fetch_deals(&self, ctx: egui::Context, tx: Sender<ApiEvent>) {
+        let client = self.client.clone();
+        let url = format!("{}/api/manage/deals", self.base_url);
+        spawn(async move {
+            let result = async {
+                let res = client.get(&url).send().await.map_err(|e| format!("network error: {e}"))?;
+                if !res.status().is_success() {
+                    return Err(Self::error_from_response(res).await);
+                }
+                res.json::<Vec<DealRow>>().await.map_err(|e| format!("bad response: {e}"))
+            }
+            .await;
+            let _ = tx.send(ApiEvent::Deals(result));
+            ctx.request_repaint();
+        });
+    }
+
+    pub fn fetch_audit_log(&self, ctx: egui::Context, tx: Sender<ApiEvent>) {
+        let client = self.client.clone();
+        let url = format!("{}/api/manage/audit", self.base_url);
+        spawn(async move {
+            let result = async {
+                let res = client.get(&url).send().await.map_err(|e| format!("network error: {e}"))?;
+                if !res.status().is_success() {
+                    return Err(Self::error_from_response(res).await);
+                }
+                res.json::<Vec<AuditLogRow>>().await.map_err(|e| format!("bad response: {e}"))
+            }
+            .await;
+            let _ = tx.send(ApiEvent::AuditLog(result));
+            ctx.request_repaint();
+        });
+    }
+
+    pub fn fetch_funds_requests(&self, ctx: egui::Context, tx: Sender<ApiEvent>) {
+        let client = self.client.clone();
+        let url = format!("{}/api/manage/funds-requests", self.base_url);
+        spawn(async move {
+            let result = async {
+                let res = client.get(&url).send().await.map_err(|e| format!("network error: {e}"))?;
+                if !res.status().is_success() {
+                    return Err(Self::error_from_response(res).await);
+                }
+                let body: FundsRequestsResponse = res.json().await.map_err(|e| format!("bad response: {e}"))?;
+                Ok(body.rows)
+            }
+            .await;
+            let _ = tx.send(ApiEvent::FundsRequests(result));
+            ctx.request_repaint();
+        });
+    }
+
+    pub fn funds_request_action(&self, ctx: egui::Context, tx: Sender<ApiEvent>, request_id: String, action: String) {
+        let client = self.client.clone();
+        let url = format!("{}/api/manage/funds-requests/{}", self.base_url, request_id);
+        spawn(async move {
+            let result = async {
+                let res = client
+                    .patch(&url)
+                    .json(&serde_json::json!({ "action": action }))
+                    .send()
+                    .await
+                    .map_err(|e| format!("network error: {e}"))?;
+                if !res.status().is_success() {
+                    return Err(Self::error_from_response(res).await);
+                }
+                Ok(format!("funds request {}", action.to_lowercase()))
+            }
+            .await;
+            let _ = tx.send(ApiEvent::ActionDone(result));
+            ctx.request_repaint();
+        });
+    }
+
+    pub fn fetch_payment_methods(&self, ctx: egui::Context, tx: Sender<ApiEvent>) {
+        let client = self.client.clone();
+        let url = format!("{}/api/manage/payment-methods", self.base_url);
+        spawn(async move {
+            let result = async {
+                let res = client.get(&url).send().await.map_err(|e| format!("network error: {e}"))?;
+                if !res.status().is_success() {
+                    return Err(Self::error_from_response(res).await);
+                }
+                res.json::<Vec<PaymentMethodRow>>().await.map_err(|e| format!("bad response: {e}"))
+            }
+            .await;
+            let _ = tx.send(ApiEvent::PaymentMethods(result));
+            ctx.request_repaint();
+        });
+    }
+
+    pub fn fetch_margin(&self, ctx: egui::Context, tx: Sender<ApiEvent>) {
+        let client = self.client.clone();
+        let url = format!("{}/api/manage/margin", self.base_url);
+        spawn(async move {
+            let result = async {
+                let res = client.get(&url).send().await.map_err(|e| format!("network error: {e}"))?;
+                if !res.status().is_success() {
+                    return Err(Self::error_from_response(res).await);
+                }
+                res.json::<Vec<MarginRow>>().await.map_err(|e| format!("bad response: {e}"))
+            }
+            .await;
+            let _ = tx.send(ApiEvent::Margin(result));
+            ctx.request_repaint();
+        });
+    }
+
+    pub fn fetch_liquidity(&self, ctx: egui::Context, tx: Sender<ApiEvent>) {
+        let client = self.client.clone();
+        let url = format!("{}/api/manage/liquidity", self.base_url);
+        spawn(async move {
+            let result = async {
+                let res = client.get(&url).send().await.map_err(|e| format!("network error: {e}"))?;
+                if !res.status().is_success() {
+                    return Err(Self::error_from_response(res).await);
+                }
+                res.json::<Vec<LiquidityExposureRow>>().await.map_err(|e| format!("bad response: {e}"))
+            }
+            .await;
+            let _ = tx.send(ApiEvent::Liquidity(result));
+            ctx.request_repaint();
+        });
+    }
+
+    pub fn fetch_lp_routing(&self, ctx: egui::Context, tx: Sender<ApiEvent>) {
+        let client = self.client.clone();
+        let url = format!("{}/api/manage/lp-routing", self.base_url);
+        spawn(async move {
+            let result = async {
+                let res = client.get(&url).send().await.map_err(|e| format!("network error: {e}"))?;
+                if !res.status().is_success() {
+                    return Err(Self::error_from_response(res).await);
+                }
+                res.json::<Vec<LpRoutingRow>>().await.map_err(|e| format!("bad response: {e}"))
+            }
+            .await;
+            let _ = tx.send(ApiEvent::LpRouting(result));
+            ctx.request_repaint();
+        });
+    }
+
+    pub fn fetch_feed_health(&self, ctx: egui::Context, tx: Sender<ApiEvent>) {
+        let client = self.client.clone();
+        let url = format!("{}/api/manage/feed-health", self.base_url);
+        spawn(async move {
+            let result = async {
+                let res = client.get(&url).send().await.map_err(|e| format!("network error: {e}"))?;
+                if !res.status().is_success() {
+                    return Err(Self::error_from_response(res).await);
+                }
+                res.json::<FeedHealthData>().await.map_err(|e| format!("bad response: {e}"))
+            }
+            .await;
+            let _ = tx.send(ApiEvent::FeedHealth(result));
+            ctx.request_repaint();
+        });
+    }
+
+    pub fn fetch_risk(&self, ctx: egui::Context, tx: Sender<ApiEvent>) {
+        let client = self.client.clone();
+        let url = format!("{}/api/manage/risk", self.base_url);
+        spawn(async move {
+            let result = async {
+                let res = client.get(&url).send().await.map_err(|e| format!("network error: {e}"))?;
+                if !res.status().is_success() {
+                    return Err(Self::error_from_response(res).await);
+                }
+                res.json::<RiskData>().await.map_err(|e| format!("bad response: {e}"))
+            }
+            .await;
+            let _ = tx.send(ApiEvent::Risk(result));
+            ctx.request_repaint();
+        });
+    }
+
+    pub fn set_trading_halted(&self, ctx: egui::Context, tx: Sender<ApiEvent>, halted: bool) {
+        let client = self.client.clone();
+        let url = format!("{}/api/manage/risk", self.base_url);
+        spawn(async move {
+            let result = async {
+                let res = client
+                    .patch(&url)
+                    .json(&serde_json::json!({ "tradingHalted": halted }))
+                    .send()
+                    .await
+                    .map_err(|e| format!("network error: {e}"))?;
+                if !res.status().is_success() {
+                    return Err(Self::error_from_response(res).await);
+                }
+                Ok(if halted { "trading halted".to_string() } else { "trading resumed".to_string() })
+            }
+            .await;
+            let _ = tx.send(ApiEvent::ActionDone(result));
             ctx.request_repaint();
         });
     }
