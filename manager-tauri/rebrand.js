@@ -27,6 +27,7 @@ function arg(name) {
 
 const name = arg("name");
 const subdomain = arg("subdomain");
+const desktopGateSecret = arg("desktop-gate-secret");
 const iconPath = arg("icon");
 // Defaults to --name itself -- pass --product-name separately only when
 // the installer/Start-Menu name should differ from the in-app broker
@@ -39,14 +40,15 @@ const rootDomain = arg("root") || subdomain?.split(".").slice(-2).join(".");
 const bannerLogo = arg("banner-logo");
 const bannerBg = arg("banner-bg") || "#07090C";
 
-if (!name || !subdomain) {
-  console.error('Usage: node rebrand.js --name "AcmeFX Manager" --subdomain "acmefx.vyxtrader.com" [--product-name "AcmeFX Manager"] [--icon path/to/icon.ico] [--root vyxtrader.com] [--banner-logo path/to/logo.png] [--banner-bg "#07090C"]');
+if (!name || !subdomain || !desktopGateSecret) {
+  console.error('Usage: node rebrand.js --name "AcmeFX Manager" --subdomain "acmefx.vyxtrader.com" --desktop-gate-secret "dgs_..." [--product-name "AcmeFX Manager"] [--icon path/to/icon.ico] [--root vyxtrader.com] [--banner-logo path/to/logo.png] [--banner-bg "#07090C"]');
+  console.error('--desktop-gate-secret is this broker\'s Broker.desktopGateSecret value (Super Admin > this broker > Manager desktop app gate > Generate secret) -- without it, middleware.ts\'s /manage/* block has no way to let this build through.');
   process.exit(1);
 }
 
 fs.writeFileSync(
   path.join(__dirname, "src-tauri", "broker.config.json"),
-  JSON.stringify({ brokerName: name, subdomain, rootDomain, mode: "broker" }, null, 2) + "\n"
+  JSON.stringify({ brokerName: name, subdomain, rootDomain, mode: "broker", desktopGateSecret }, null, 2) + "\n"
 );
 console.log(`src-tauri/broker.config.json -> ${name} @ ${subdomain} (root: ${rootDomain})`);
 

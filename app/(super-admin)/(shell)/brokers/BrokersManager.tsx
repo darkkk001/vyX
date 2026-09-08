@@ -25,6 +25,7 @@ export type BrokerRow = {
   trialEndsAt: string | null;
   createdAt: string;
   hasSsoSecret: boolean;
+  hasDesktopGateSecret: boolean;
   supportEmail: string | null;
   logoUrl: string | null;
   primaryColor: string | null;
@@ -166,6 +167,12 @@ export default function BrokersManager() {
   const [ssoBusy, setSsoBusy] = useState(false);
   const [ssoError, setSsoError] = useState<string | null>(null);
 
+  // --- manager-tauri desktop gate secret (Tenant detail modal) --- same
+  // shown-once-then-gone pattern as the SSO secret above.
+  const [revealedGateSecret, setRevealedGateSecret] = useState<string | null>(null);
+  const [gateBusy, setGateBusy] = useState(false);
+  const [gateError, setGateError] = useState<string | null>(null);
+
   // --- WebTrader support email (Tenant detail modal) ---
   const [supportEmailInput, setSupportEmailInput] = useState("");
   const [supportEmailBusy, setSupportEmailBusy] = useState(false);
@@ -198,6 +205,8 @@ export default function BrokersManager() {
     setRevealedSsoSecret(null);
     setRevealedAdminPassword(null);
     setSsoError(null);
+    setRevealedGateSecret(null);
+    setGateError(null);
     setSupportEmailInput(row.supportEmail ?? "");
     setSupportEmailError(null);
     setDetailLogoUrlInput(row.logoUrl ?? "");
@@ -308,6 +317,39 @@ export default function BrokersManager() {
     }
     setRevealedSsoSecret(null);
     setDetailTarget((prev) => (prev ? { ...prev, hasSsoSecret: false } : prev));
+    reload().catch(() => {});
+  }
+
+  async function generateGateSecret() {
+    if (!detailTarget) return;
+    setGateBusy(true);
+    setGateError(null);
+    const response = await fetch(`/api/admin/brokers/${detailTarget.id}/desktop-gate-secret`, { method: "POST" });
+    setGateBusy(false);
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      setGateError(body.error ?? "failed to generate secret");
+      return;
+    }
+    const { desktopGateSecret } = (await response.json()) as { desktopGateSecret: string };
+    setRevealedGateSecret(desktopGateSecret);
+    setDetailTarget((prev) => (prev ? { ...prev, hasDesktopGateSecret: true } : prev));
+    reload().catch(() => {});
+  }
+
+  async function revokeGateSecret() {
+    if (!detailTarget) return;
+    setGateBusy(true);
+    setGateError(null);
+    const response = await fetch(`/api/admin/brokers/${detailTarget.id}/desktop-gate-secret`, { method: "DELETE" });
+    setGateBusy(false);
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      setGateError(body.error ?? "failed to revoke secret");
+      return;
+    }
+    setRevealedGateSecret(null);
+    setDetailTarget((prev) => (prev ? { ...prev, hasDesktopGateSecret: false } : prev));
     reload().catch(() => {});
   }
 
@@ -652,6 +694,38 @@ export default function BrokersManager() {
                 ) : null}
               </div>
               {ssoError ? <p className="mt-1.5 text-sm text-[var(--sell)]">{ssoError}</p> : null}
+            </ModalSection>
+
+            <ModalSection label="Manager desktop app gate">
+              <p className="mb-2 text-xs text-[var(--text-3)]">
+                Baked into this broker&apos;s manager-tauri build (rebrand.js --desktop-gate-secret) so the real backoffice
+                pages will load for that app but stay 404 for a plain browser. Shown once at generation time.
+              </p>
+              {revealedGateSecret ? (
+                <div className="mb-2 flex items-center justify-between gap-2 rounded-lg border border-[var(--accent)] bg-[var(--bg-2)] px-3 py-2">
+                  <code className="select-all break-all text-xs text-[var(--text-1)]">{revealedGateSecret}</code>
+                </div>
+              ) : detailTarget.hasDesktopGateSecret ? (
+                <div className="mb-2 flex items-center gap-2">
+                  <Badge tone="success">Secret set</Badge>
+                  <span className="text-xs text-[var(--text-3)]">Value hidden, rotate to issue a new one.</span>
+                </div>
+              ) : (
+                <div className="mb-2">
+                  <Badge tone="neutral">No secret yet</Badge>
+                </div>
+              )}
+              <div className="flex flex-wrap gap-2">
+                <Button size="sm" variant="primary" disabled={gateBusy} onClick={generateGateSecret}>
+                  {gateBusy ? "Working..." : detailTarget.hasDesktopGateSecret ? "Rotate secret" : "Generate secret"}
+                </Button>
+                {detailTarget.hasDesktopGateSecret ? (
+                  <Button size="sm" variant="danger" disabled={gateBusy} onClick={revokeGateSecret}>
+                    Revoke
+                  </Button>
+                ) : null}
+              </div>
+              {gateError ? <p className="mt-1.5 text-sm text-[var(--sell)]">{gateError}</p> : null}
             </ModalSection>
 
             <ModalSection label="WebTrader support email">

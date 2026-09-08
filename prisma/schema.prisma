@@ -365,6 +365,20 @@ model Broker {
   // time in Super Admin, never displayed again after.
   ssoSecret String? @unique
 
+  // Proves a request to /manage/* actually came from this broker's own
+  // genuine packaged manager-tauri build, not a browser -- see
+  // middleware.ts's isApplicationOnlyPage comment for why those paths are
+  // otherwise 404'd unconditionally on every domain. Baked into the build
+  // by manager-tauri/rebrand.js (reverted after building, never
+  // committed), sent once as a query param to POST /api/manage/
+  // desktop-gate, which trades it for a short-lived signed cookie -- this
+  // raw value itself never becomes a cookie or touches the Edge
+  // middleware directly. Same plaintext/shown-once/generate-in-Super-Admin
+  // convention as ssoSecret above; a different secret because the two
+  // prove different things (an external portal vouching for a trader vs.
+  // the desktop binary itself), not the same trust relationship.
+  desktopGateSecret String? @unique
+
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
 

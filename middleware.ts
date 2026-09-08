@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
+import { verifyDesktopGateToken } from "@/lib/desktop-gate";
 
 // Resolves which Broker a request belongs to, from the Host header:
 //   - subdomain:      brokername.<ROOT_DOMAIN>
@@ -15,24 +16,31 @@ import type { NextRequest } from "next/server";
 
 const SUPER_ADMIN_SUBDOMAIN = "admin";
 
-// 2026-09-07 architecture decision -- application-only surfaces, modeled
-// on MT5's own split (download the terminal, enter account+password,
-// reach the broker's server -- never a browser URL for the terminal
-// itself, let alone its backoffice). Manager/Broker-Admin backoffice and
-// Super Admin must never be reachable by ANY web URL, on ANY domain (a
-// broker's own subdomain/customDomain, admin.<ROOT_DOMAIN>, or the bare
-// root) -- only through the bundled desktop apps (manager-tauri/
-// admin-tauri). Confirmed safe to block outright: both apps' own
-// tauri.conf.json ships `frontendDist: "../dist"` -- they render their
-// OWN locally-bundled UI (manager-shell/admin-shell) and never load
-// these page routes via webview at all. Every API call that UI makes
-// crosses the network through each app's own native reqwest-based
-// bridge (see e.g. admin-tauri/src-tauri/src/main.rs's ApiBridge) hitting
-// /api/manage/* or /api/admin/* directly -- NOT blocked here, on
-// purpose: manager-tauri's bridge targets that broker's own domain
-// (broker.config.json's configured host), so blocking those routes here
-// would break the very desktop app this change exists to make the sole
-// path to the backoffice.
+// 2026-09-07 architecture decision, refined 2026-09-08 -- application-only
+// surfaces, modeled on MT5's own split (download the terminal, enter
+// account+password, reach the broker's server -- never a browser URL for
+// the terminal itself, let alone its backoffice). Manager/Broker-Admin
+// backoffice and Super Admin must never be reachable by a browser, on ANY
+// domain (a broker's own subdomain/customDomain, admin.<ROOT_DOMAIN>, or
+// the bare root) -- only through the packaged desktop apps (manager-tauri/
+// admin-tauri).
+//
+// 2026-09-08 -- manager-tauri/admin-tauri now load these pages' own real,
+// live URL directly (WebviewUrl::External), the same fix already applied
+// to desktop-tauri/the trader terminal, instead of maintaining a second
+// hand-copied UI that inevitably drifts from the real one (confirmed live
+// that it had). That means this can no longer be an unconditional block --
+// something has to let the genuine desktop app's own real page-navigation
+// requests through while still 404ing every browser. See lib/
+// desktop-gate.ts, app/api/manage/desktop-gate/route.ts and app/api/admin/
+// desktop-gate/route.ts for the full mint side of this: each app's build
+// carries its own secret (Broker.desktopGateSecret for manager-tauri,
+// SUPER_ADMIN_DESKTOP_GATE_SECRET for admin-tauri -- see rebrand.js), the
+// app trades it once for a short-lived signed cookie by navigating to that
+// route, and every request after that (real in-app navigation, exactly
+// like a normal browser tab) carries the cookie automatically. Everything
+// below only ever checks for that cookie -- a browser with no way to mint
+// one keeps getting exactly the same unconditional 404 as before.
 //
 // Manager: every /manage/* page (NOT /manage-launch, a separate,
 // unrelated desktop-app broker-picker screen -- this check only matches
@@ -44,6 +52,9 @@ const SUPER_ADMIN_SUBDOMAIN = "admin";
 // nav, not a per-feature thing) -- keep this in sync with
 // app/(super-admin)/(shell)/*'s own directory listing if a page is ever
 // added or removed there.
+const MANAGE_GATE_COOKIE = "vyx_manage_gate";
+const SUPER_ADMIN_GATE_COOKIE = "vyx_admin_gate";
+
 const SUPER_ADMIN_PAGE_PATHS = new Set([
   "/login",
   "/brokers",
@@ -55,11 +66,6 @@ const SUPER_ADMIN_PAGE_PATHS = new Set([
   "/security",
   "/trials",
 ]);
-
-function isApplicationOnlyPage(pathname: string): boolean {
-  if (pathname === "/manage" || pathname.startsWith("/manage/")) return true;
-  return SUPER_ADMIN_PAGE_PATHS.has(pathname);
-}
 
 type BrokerInfo = {
   id: string;
@@ -93,13 +99,21 @@ const STALE_MS = 30 * 60_000;
 const brokerCache = new Map<string, { broker: BrokerInfo; fetchedAt: number }>();
 
 export async function middleware(request: NextRequest) {
-  // Checked first, before any host/broker resolution, and unconditional
-  // across every domain -- see isApplicationOnlyPage's own comment. A
-  // real 404 (not the friendly /broker-not-found rewrite below, which is
-  // for "this domain isn't a broker we know," a different situation) --
-  // returned directly here rather than routed to a page component, so
-  // there's nothing for a client to fetch/render at all.
-  if (isApplicationOnlyPage(request.nextUrl.pathname)) {
+  const pathname = request.nextUrl.pathname;
+  const isManagePage = pathname === "/manage" || pathname.startsWith("/manage/");
+  const isSuperAdminPage = SUPER_ADMIN_PAGE_PATHS.has(pathname);
+
+  // Fast path: a plain browser (the overwhelming majority of hits on
+  // these paths) never carries this cookie at all -- reject it here,
+  // before paying for any host/broker resolution below, exactly as cheap
+  // as the unconditional 404 this replaced. A real 404 (not the friendly
+  // /broker-not-found rewrite below, which is for "this domain isn't a
+  // broker we know," a different situation) -- returned directly here
+  // rather than routed to a page component, so there's nothing for a
+  // client to fetch/render at all. Only a request that DOES carry the
+  // cookie pays the extra cost of getting its signature actually checked
+  // further down, once a broker is resolved to check it against.
+  if (isManagePage && !request.cookies.get(MANAGE_GATE_COOKIE)?.value) {
     return new NextResponse("Not found", { status: 404 });
   }
 
@@ -119,7 +133,32 @@ export async function middleware(request: NextRequest) {
     hostname === `www.${rootDomain}` ||
     hostname === `${SUPER_ADMIN_SUBDOMAIN}.${rootDomain}`;
 
+  if (isSuperAdminPage) {
+    // No broker involved for Super Admin -- bind the check to the actual
+    // host too (not just cookie presence), so a token can only ever pass
+    // on the one real Super Admin host it was minted for.
+    const internalSecret = process.env.INTERNAL_SERVICE_SECRET ?? "";
+    const gateCookie = request.cookies.get(SUPER_ADMIN_GATE_COOKIE)?.value;
+    const isSuperAdminHost = hostname === `${SUPER_ADMIN_SUBDOMAIN}.${rootDomain}`;
+    const gateValid =
+      isSuperAdminHost &&
+      !!gateCookie &&
+      !!internalSecret &&
+      (await verifyDesktopGateToken(gateCookie, "super-admin", internalSecret));
+    if (!gateValid) {
+      return new NextResponse("Not found", { status: 404 });
+    }
+    // Valid -- fall through exactly like a normal request; isSuperAdminHost
+    // being required above means isRootOrSuperAdmin is guaranteed true next.
+  }
+
   if (isRootOrSuperAdmin) {
+    // /manage/* has no meaning on the admin or root domain -- there's no
+    // broker to bind a manage-gate cookie to below, so this can never be
+    // legitimate regardless of what cookie a raw request presents here.
+    if (isManagePage) {
+      return new NextResponse("Not found", { status: 404 });
+    }
     return NextResponse.next();
   }
 
@@ -175,6 +214,26 @@ export async function middleware(request: NextRequest) {
         return NextResponse.rewrite(new URL("/broker-not-found", request.url));
       }
     }
+  }
+
+  if (isManagePage) {
+    // The fast path at the top of this function already rejected any
+    // request with no cookie at all -- reaching here means one IS
+    // present, so this is the (rare -- only the genuine desktop app's own
+    // requests) extra cost of actually checking its signature against
+    // THIS specific resolved broker. Bound to broker.id specifically
+    // (not just "some valid manage-gate cookie") so a cookie minted for
+    // one broker's manager-tauri build can't be replayed against a
+    // different broker's domain.
+    const internalSecret = process.env.INTERNAL_SERVICE_SECRET ?? "";
+    const gateCookie = request.cookies.get(MANAGE_GATE_COOKIE)!.value;
+    const gateValid =
+      !!internalSecret && (await verifyDesktopGateToken(gateCookie, `manage:${broker.id}`, internalSecret));
+    if (!gateValid) {
+      return new NextResponse("Not found", { status: 404 });
+    }
+    // Valid -- fall through to the same custom-domain-redirect and
+    // header-attachment logic below as any other page on this broker.
   }
 
   // A broker with a customDomain configured gets ONE canonical address --

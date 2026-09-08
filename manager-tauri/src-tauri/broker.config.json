@@ -2,5 +2,6 @@
   "brokerName": "vyX Manager",
   "subdomain": "",
   "rootDomain": "vyxtrader.com",
-  "mode": "launcher"
+  "mode": "launcher",
+  "desktopGateSecret": ""
 }
