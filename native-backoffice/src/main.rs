@@ -1159,6 +1159,11 @@ struct BackofficeApp {
     // computes.
     last_refresh_started: Option<std::time::Instant>,
     last_refresh_rtt_ms: Option<u64>,
+    // last_refresh_started is take()n the instant a response arrives (see
+    // drain_events), so it's None almost all the time -- Live Exposure's
+    // "updated Ns ago" indicator needs when the last refresh actually
+    // FINISHED, which is this field instead.
+    last_refresh_completed: Option<std::time::Instant>,
 
     // --- dashboard ---
     dashboard: Option<DashboardData>,
@@ -1422,6 +1427,7 @@ impl Default for BackofficeApp {
             global_search: String::new(),
             last_refresh_started: None,
             last_refresh_rtt_ms: None,
+            last_refresh_completed: None,
             dashboard: None,
             dashboard_loading: false,
             dashboard_error: None,
@@ -1603,6 +1609,7 @@ impl BackofficeApp {
             // event that is.
             if let Some(started) = self.last_refresh_started.take() {
                 self.last_refresh_rtt_ms = Some(started.elapsed().as_millis() as u64);
+                self.last_refresh_completed = Some(std::time::Instant::now());
             }
             match event {
                 ApiEvent::LoginResult(Ok(_role)) => {
@@ -2945,7 +2952,7 @@ impl BackofficeApp {
                 ui.label(egui::RichText::new("Broker book across all client positions.").color(theme::text_3()));
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let secs_since_refresh = self.last_refresh_started.map(|i| i.elapsed().as_secs());
+                let secs_since_refresh = self.last_refresh_completed.map(|i| i.elapsed().as_secs());
                 let (dot, text, color) = match secs_since_refresh {
                     Some(s) if s > 30 => ("\u{25cf}", format!("Feed down \u{b7} {s}s"), theme::danger()),
                     Some(s) if s > 12 => ("\u{25cf}", format!("Stale \u{b7} {s}s"), theme::warning()),
@@ -3090,7 +3097,7 @@ impl BackofficeApp {
         ui.add_space(12.0);
 
         // --- KPI row ---
-        render_positions_kpis(ui, &filtered, &self.symbols, self.risk.as_ref());
+        render_positions_kpis(ui, &filtered, &self.symbols, self.risk_settings.as_ref());
         ui.add_space(14.0);
 
         // --- Exposure by symbol (net exposure / net-side VWAP / P&L) ---
@@ -3596,7 +3603,7 @@ impl BackofficeApp {
         theme::card(12).show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.label(egui::RichText::new("Risk limits:").color(theme::text_2()));
-                match self.risk.as_ref() {
+                match self.risk_settings.as_ref() {
                     Some(risk) => {
                         match risk.total_exposure_limit.as_deref().and_then(|v| v.parse::<f64>().ok()) {
                             Some(cap) if cap > 0.0 => {
@@ -3630,9 +3637,14 @@ impl BackofficeApp {
                             }
                         }
                     }
-                    None => {
-                        ui.weak("Loading...");
-                    }
+                    None => match &self.risk_settings_error {
+                        Some(err) => {
+                            ui.colored_label(theme::danger(), permission_error_message(err, "RISK_SETTINGS"));
+                        }
+                        None => {
+                            ui.weak("Loading...");
+                        }
+                    },
                 }
                 ui.separator();
                 ui.label("Book P&L stop");
@@ -7199,11 +7211,27 @@ fn describe_activity_values(action: &str, values: &serde_json::Value) -> String 
     }
 }
 
+// Raw ISO ("2026-09-09T14:46:35.411Z") -> "HH:MM:SS" for today, "MM-DD
+// HH:MM" for older -- the bare ISO string was rendering verbatim before
+// this (Live Exposure/Dealing's live activity feeds), a real instance of
+// the redesign's own "no raw ISO timestamps" rule. Full ISO stays
+// available via the hover tooltip at the call site.
+fn format_activity_timestamp(iso: &str, today: &str) -> String {
+    let date = iso.get(0..10).unwrap_or(iso);
+    let time = iso.get(11..19).unwrap_or("");
+    if date == today {
+        time.to_string()
+    } else {
+        format!("{} {}", date.get(5..10).unwrap_or(date), time.get(0..5).unwrap_or(time))
+    }
+}
+
 fn render_activity_feed_rows(ui: &mut egui::Ui, rows: &[ActivityFeedRow], show_dealing_chip: bool) {
+    let today = date_days_ago(0);
     for row in rows {
         ui.horizontal(|ui| {
             ui.set_min_height(22.0);
-            ui.label(egui::RichText::new(&row.at).size(11.0).color(theme::text_3()));
+            ui.label(egui::RichText::new(format_activity_timestamp(&row.at, &today)).size(11.0).color(theme::text_3())).on_hover_text(&row.at);
             ui.add_space(6.0);
             ui.monospace(egui::RichText::new(&row.account_number).size(12.0));
             if show_dealing_chip && row.is_dealing_group {
