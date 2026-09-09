@@ -125,6 +125,14 @@ export async function GET() {
       // arrives (and the only one that matters if the stream never
       // connects at all).
       contractSize: p.symbol.contractSize.toString(),
+      // Live Exposure redesign (futurix-live-exposure-design.html): Swap
+      // and Book columns on the positions table, and the A-book/B-book
+      // split on the Book P&L KPI -- both already stored on Position at
+      // fill time (swap by the daily rollover job, bookType by
+      // resolveBookType), just not returned here before.
+      swap: p.swap.toFixed(2),
+      commission: p.commission.toFixed(2),
+      bookType: p.bookType,
       side: p.side,
       volume: p.volume.toString(),
       openPrice: p.openPrice.toFixed(p.symbol.digits),

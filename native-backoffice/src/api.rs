@@ -183,6 +183,8 @@ pub struct PositionRow {
     pub symbol_name: String,
     #[serde(default)]
     pub digits: i64,
+    #[serde(rename = "contractSize", default)]
+    pub contract_size: String,
     pub side: String,
     pub volume: String,
     #[serde(rename = "openPrice")]
@@ -195,6 +197,12 @@ pub struct PositionRow {
     pub sl_price: Option<String>,
     #[serde(rename = "tpPrice")]
     pub tp_price: Option<String>,
+    #[serde(default)]
+    pub swap: String,
+    #[serde(default)]
+    pub commission: String,
+    #[serde(rename = "bookType", default)]
+    pub book_type: String,
     #[serde(default)]
     pub mirrored: bool,
     #[serde(rename = "openedAt")]
