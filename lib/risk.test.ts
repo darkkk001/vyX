@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { Prisma } from "@prisma/client";
-import { checkPriceFreshness, checkSlippage, checkTradingSession, computeNextSessionOpen, evaluateLiveMarketPrice, isDefaultFxSessionClosed } from "@/lib/risk";
+import {
+  checkPriceFreshness,
+  checkSlippage,
+  checkTradingSession,
+  computeNextSessionOpen,
+  evaluateLiveMarketPrice,
+  isDefaultFxSessionClosed,
+  checkCloseOnly,
+  checkGroupTradingHalted,
+} from "@/lib/risk";
 
 // Phase 0 money-risk patch (docs/ROADMAP.md item 1) -- the exploit this
 // closes: a client could submit any price for a MARKET order and it
@@ -12,6 +21,28 @@ import { checkPriceFreshness, checkSlippage, checkTradingSession, computeNextSes
 // fill that lands too far from what the client expected rejects too
 // (checkSlippage) even though the server -- not the client -- now
 // chooses the actual fill price.
+
+// Emergency page real controls: broker-wide close-only mode and a
+// per-group full halt, closing the gap where Group.tradingRestriction
+// (BOTH/BUY_ONLY/SELL_ONLY) had no value for "stop this group entirely
+// without halting the whole broker."
+describe("checkCloseOnly", () => {
+  it("allows when closeOnlyAt is null", () => {
+    expect(checkCloseOnly({ closeOnlyAt: null })).toBeNull();
+  });
+  it("blocks when closeOnlyAt is set", () => {
+    expect(checkCloseOnly({ closeOnlyAt: new Date() })).toMatch(/close-only/i);
+  });
+});
+
+describe("checkGroupTradingHalted", () => {
+  it("allows when tradingHaltedAt is null", () => {
+    expect(checkGroupTradingHalted({ tradingHaltedAt: null })).toBeNull();
+  });
+  it("blocks when tradingHaltedAt is set", () => {
+    expect(checkGroupTradingHalted({ tradingHaltedAt: new Date() })).toMatch(/halted/i);
+  });
+});
 
 describe("checkPriceFreshness", () => {
   it("rejects a null LivePrice row (no feed) as PRICE_STALE", () => {

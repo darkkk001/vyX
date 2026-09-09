@@ -52,6 +52,7 @@ export async function GET() {
       isDefault: g.isDefault,
       maxLotSize: g.maxLotSize ? g.maxLotSize.toString() : "",
       tradingRestriction: g.tradingRestriction,
+      tradingHalted: g.tradingHaltedAt != null,
       swapFree: g.swapFree,
       forceDealingMode: g.forceDealingMode,
       groupType: g.groupType,

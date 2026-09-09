@@ -10,11 +10,13 @@ import { resolveFillPricing, logSpreadWarning } from "@/lib/pricing-engine";
 import { publishTradingEvent } from "@/lib/nats";
 import {
   checkTradingHalted,
+  checkCloseOnly,
   checkSymbolTradingMode,
   checkTradingSession,
   checkLotStep,
   checkGroupMaxLot,
   checkGroupTradingRestriction,
+  checkGroupTradingHalted,
   checkGroupAllowedSymbol,
   checkMaxOpenPositions,
   checkSymbolExposure,
@@ -259,11 +261,13 @@ export async function POST(request: NextRequest) {
   const broker = await prisma.broker.findUniqueOrThrow({ where: { id: brokerId } });
   const riskError =
     checkTradingHalted(broker) ??
+    checkCloseOnly(broker) ??
     checkSymbolTradingMode(brokerSymbol.tradingMode, side) ??
     checkTradingSession(brokerSymbol.tradingSessions, new Date(), brokerSymbol.symbol.category) ??
     checkLotStep(volume, brokerSymbol.minLot, brokerSymbol.lotStep) ??
     (account.group ? checkGroupMaxLot(volume, account.group.maxLotSize) : null) ??
     (account.group ? checkGroupTradingRestriction(account.group.tradingRestriction, side) : null) ??
+    (account.group ? checkGroupTradingHalted(account.group) : null) ??
     (account.group
       ? checkGroupAllowedSymbol(
           account.group.restrictSymbols,

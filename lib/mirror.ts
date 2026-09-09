@@ -4,7 +4,13 @@ import { openPositionFromOrder } from "@/lib/dealing";
 import { applySpreadMarkup, pipSize, resolveBookType } from "@/lib/group-pricing";
 import { resolveFillPricing, logSpreadWarning } from "@/lib/pricing-engine";
 import { checkAccountPreTradeMargin } from "@/lib/margin";
-import { checkSymbolTradingMode, checkTradingSession } from "@/lib/risk";
+import {
+  checkSymbolTradingMode,
+  checkTradingSession,
+  checkTradingHalted,
+  checkCloseOnly,
+  checkGroupTradingHalted,
+} from "@/lib/risk";
 import { getFreshPrices } from "@/lib/live-price";
 import { computeRealizedPnl } from "@/lib/trading";
 import { closePositionInTx } from "@/lib/position-close";
@@ -280,13 +286,16 @@ async function mirrorFillForRule(db: Db, rule: MirrorRule, source: MirrorSourceP
     const [targetAccount, brokerSymbol, broker] = await Promise.all([
       db.account.findUnique({
         where: { id: rule.targetAccountId },
-        include: { group: { select: { groupType: true, marginCallLevel: true } } },
+        include: { group: { select: { groupType: true, marginCallLevel: true, tradingHaltedAt: true } } },
       }),
       db.brokerSymbol.findFirst({
         where: { brokerId: rule.brokerId, symbolId: source.symbolId, enabled: true },
         include: { symbol: true, tradingSessions: true },
       }),
-      db.broker.findUniqueOrThrow({ where: { id: rule.brokerId }, select: { pricingEngineEnabled: true } }),
+      db.broker.findUniqueOrThrow({
+        where: { id: rule.brokerId },
+        select: { pricingEngineEnabled: true, tradingHaltedAt: true, closeOnlyAt: true },
+      }),
     ]);
     if (!targetAccount) {
       await recordMirrorFailure(db, rule, "target account not found");
@@ -299,7 +308,18 @@ async function mirrorFillForRule(db: Db, rule: MirrorRule, source: MirrorSourceP
 
     const mirrorSide = rule.direction === "REVERSE" ? oppositeSide(source.side) : source.side;
 
+    // Real gap closed here: a mirror-driven open used to run NEITHER
+    // checkTradingHalted nor the newer checkCloseOnly/checkGroupTradingHalted
+    // at all -- every emergency control on Emergency's own page (broker
+    // halt, close-only, per-group halt) was silently bypassed for
+    // reverse-mirror/copy-trade opens, which never go through
+    // app/api/trade/orders/route.ts. A broker declaring close-only or
+    // halting a group mid-incident needs that to actually stop every new
+    // open, not just the ones a trader submits by hand.
     const tradabilityError =
+      checkTradingHalted(broker) ??
+      checkCloseOnly(broker) ??
+      (targetAccount.group ? checkGroupTradingHalted(targetAccount.group) : null) ??
       checkSymbolTradingMode(brokerSymbol.tradingMode, mirrorSide) ??
       checkTradingSession(brokerSymbol.tradingSessions, new Date(), brokerSymbol.symbol.category);
     if (tradabilityError) {

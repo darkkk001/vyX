@@ -13,11 +13,13 @@ import { checkAccountPreTradeMargin } from "@/lib/margin";
 import { orderAuditFields } from "@/lib/order-audit";
 import {
   checkTradingHalted,
+  checkCloseOnly,
   checkSymbolTradingMode,
   checkTradingSession,
   checkLotStep,
   checkGroupMaxLot,
   checkGroupTradingRestriction,
+  checkGroupTradingHalted,
   checkGroupAllowedSymbol,
   checkMaxOpenPositions,
   checkSymbolExposure,
@@ -90,6 +92,7 @@ export async function POST(
   // nobody's watching.
   const riskError =
     checkTradingHalted(broker) ??
+    checkCloseOnly(broker) ??
     (brokerSymbol ? checkSymbolTradingMode(brokerSymbol.tradingMode, order.side) : null) ??
     (brokerSymbol ? checkTradingSession(brokerSymbol.tradingSessions, new Date(), brokerSymbol.symbol.category) : null) ??
     (brokerSymbol ? checkLotStep(order.volume, brokerSymbol.minLot, brokerSymbol.lotStep) : null) ??
@@ -97,6 +100,7 @@ export async function POST(
     (brokerSymbol ? checkPriceFreshness(livePrice) : null) ??
     (account.group ? checkGroupMaxLot(order.volume, account.group.maxLotSize) : null) ??
     (account.group ? checkGroupTradingRestriction(account.group.tradingRestriction, order.side) : null) ??
+    (account.group ? checkGroupTradingHalted(account.group) : null) ??
     (account.group
       ? checkGroupAllowedSymbol(
           account.group.restrictSymbols,

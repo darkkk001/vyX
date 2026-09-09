@@ -16,11 +16,13 @@ import { resolveWantsDealingQueue } from "@/lib/dealing-routing";
 import { orderAuditFields } from "@/lib/order-audit";
 import {
   checkTradingHalted,
+  checkCloseOnly,
   checkSymbolTradingMode,
   checkTradingSession,
   checkLotStep,
   checkGroupMaxLot,
   checkGroupTradingRestriction,
+  checkGroupTradingHalted,
   checkGroupAllowedSymbol,
   checkMaxOpenPositions,
   checkSymbolExposure,
@@ -154,11 +156,13 @@ async function handlePlaceOrder(request: NextRequest) {
   ]);
   const riskError =
     checkTradingHalted(broker) ??
+    checkCloseOnly(broker) ??
     checkSymbolTradingMode(brokerSymbol.tradingMode, side) ??
     checkTradingSession(brokerSymbol.tradingSessions, new Date(), brokerSymbol.symbol.category) ??
     checkLotStep(volume, brokerSymbol.minLot, brokerSymbol.lotStep) ??
     (account.group ? checkGroupMaxLot(volume, account.group.maxLotSize) : null) ??
     (account.group ? checkGroupTradingRestriction(account.group.tradingRestriction, side) : null) ??
+    (account.group ? checkGroupTradingHalted(account.group) : null) ??
     (account.group
       ? checkGroupAllowedSymbol(
           account.group.restrictSymbols,

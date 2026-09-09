@@ -9,11 +9,13 @@ import * as mirror from "@/lib/mirror";
 import { orderAuditFields } from "@/lib/order-audit";
 import {
   checkTradingHalted,
+  checkCloseOnly,
   checkSymbolTradingMode,
   checkTradingSession,
   checkLotStep,
   checkGroupMaxLot,
   checkGroupTradingRestriction,
+  checkGroupTradingHalted,
   checkGroupAllowedSymbol,
   checkMaxOpenPositions,
   checkSymbolExposure,
@@ -104,11 +106,13 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
   const riskError =
     checkTradingHalted(broker) ??
+    checkCloseOnly(broker) ??
     checkSymbolTradingMode(brokerSymbol.tradingMode, order.side) ??
     checkTradingSession(brokerSymbol.tradingSessions, new Date(), brokerSymbol.symbol.category) ??
     checkLotStep(order.volume, brokerSymbol.minLot, brokerSymbol.lotStep) ??
     (account.group ? checkGroupMaxLot(order.volume, account.group.maxLotSize) : null) ??
     (account.group ? checkGroupTradingRestriction(account.group.tradingRestriction, order.side) : null) ??
+    (account.group ? checkGroupTradingHalted(account.group) : null) ??
     (account.group
       ? checkGroupAllowedSymbol(
           account.group.restrictSymbols,

@@ -279,6 +279,18 @@ model Broker {
   // checkTradingHalted. The timestamp is itself the audit trail entry
   // point (when it was set); who set it lives in the paired AuditLog row.
   tradingHaltedAt            DateTime?       @db.Timestamptz(3)
+  // Non-null = new orders/positions across the broker are rejected same
+  // as tradingHaltedAt, EXCEPT closing an existing position is still
+  // allowed -- see lib/risk.ts's checkCloseOnly. Distinct from (and
+  // independent of) tradingHaltedAt: a broker can be fully halted (no
+  // closes either -- there's no "close-only" carve-out at that point,
+  // closing is just a normal action taken outside this gate) or in
+  // close-only mode (opens blocked, closes explicitly still allowed) but
+  // never needs both set -- tradingHaltedAt already implies closeOnlyAt's
+  // effect on new orders, so the emergency UI only ever sets one at a
+  // time. Same on/off-via-timestamp shape as tradingHaltedAt, for the
+  // same reason (the timestamp is the audit trail entry point).
+  closeOnlyAt                DateTime?       @db.Timestamptz(3)
   // Non-null = new MARKET orders from traders queue for a dealer
   // (MANAGER/BROKER_ADMIN) to manually Accept/Reject instead of
   // auto-filling -- see app/api/trade/orders/route.ts and
@@ -857,6 +869,15 @@ model Group {
   // Same enum/semantics as BrokerSymbol.tradingMode -- see
   // lib/risk.ts's checkGroupTradingRestriction.
   tradingRestriction TradingMode      @default(BOTH)
+  // Non-null = new orders/positions are rejected for every account in
+  // THIS group only (existing open positions untouched) -- the per-group
+  // equivalent of Broker.tradingHaltedAt, see lib/risk.ts's
+  // checkGroupTradingHalted. tradingRestriction above can only narrow to
+  // one side (BUY_ONLY/SELL_ONLY); this is the full stop TradingMode has
+  // no value for. Same on/off-via-timestamp shape as the broker-wide
+  // field, for the same reason (the timestamp is the audit trail entry
+  // point; who set it lives in the paired AuditLog row).
+  tradingHaltedAt    DateTime?        @db.Timestamptz(3)
   // Nullable tri-state (widened 2026-09-07 migration
   // pricing_engine_schema, was `@default(false)`) -- null = "not set,
   // fall through to hardcoded false" once Phase 2's swap-free resolution

@@ -492,6 +492,52 @@ describe("lib/mirror.ts onFill (live DB, rolled back)", () => {
     });
   });
 
+  // Emergency page real controls -- these two used to be a silent bypass:
+  // neither Broker.closeOnlyAt nor Group.tradingHaltedAt (nor even the
+  // pre-existing Broker.tradingHaltedAt) was ever checked on this path, so
+  // a broker admin declaring close-only or halting a group mid-incident
+  // had no effect on reverse-mirror/copy-trade opens at all.
+  it("blocks a mirror fill and records the reason when the broker is in close-only mode", async () => {
+    if (!dbReachable) return;
+    await withRollback(async (tx) => {
+      const fx = await createFixture(tx);
+      const rule = await createRule(tx, fx);
+      await tx.broker.update({ where: { id: fx.brokerId }, data: { closeOnlyAt: new Date() } });
+      const source = sourcePosition(fx);
+
+      await expect(onFill(tx, source)).resolves.toBeUndefined();
+
+      const link = await tx.mirrorLink.findUnique({ where: { sourcePositionId: source.id } });
+      expect(link).toBeNull();
+
+      const failureAudit = await tx.auditLog.findFirst({ where: { entityId: rule.id, action: "MIRROR_FAILED" } });
+      expect(failureAudit).not.toBeNull();
+      expect((failureAudit!.newValue as { reason?: string } | null)?.reason).toMatch(/close-only/i);
+    });
+  });
+
+  it("blocks a mirror fill and records the reason when the target account's group is halted", async () => {
+    if (!dbReachable) return;
+    await withRollback(async (tx) => {
+      const fx = await createFixture(tx);
+      const rule = await createRule(tx, fx);
+      const haltedGroup = await tx.group.create({
+        data: { brokerId: fx.brokerId, name: `Halted Target Group ${fx.targetAccountId}`, tradingHaltedAt: new Date() },
+      });
+      await tx.account.update({ where: { id: fx.targetAccountId }, data: { groupId: haltedGroup.id } });
+      const source = sourcePosition(fx);
+
+      await expect(onFill(tx, source)).resolves.toBeUndefined();
+
+      const link = await tx.mirrorLink.findUnique({ where: { sourcePositionId: source.id } });
+      expect(link).toBeNull();
+
+      const failureAudit = await tx.auditLog.findFirst({ where: { entityId: rule.id, action: "MIRROR_FAILED" } });
+      expect(failureAudit).not.toBeNull();
+      expect((failureAudit!.newValue as { reason?: string } | null)?.reason).toMatch(/halted/i);
+    });
+  });
+
   it("logs MIRROR_SKIPPED_RULE_DISABLED and mirrors nothing when a matching rule is manually disabled", async () => {
     if (!dbReachable) return;
     await withRollback(async (tx) => {

@@ -20,6 +20,8 @@ export async function GET() {
   return NextResponse.json({
     tradingHalted: broker.tradingHaltedAt != null,
     tradingHaltedAt: broker.tradingHaltedAt ? broker.tradingHaltedAt.toISOString() : null,
+    closeOnly: broker.closeOnlyAt != null,
+    closeOnlyAt: broker.closeOnlyAt ? broker.closeOnlyAt.toISOString() : null,
     dealingMode: broker.dealingModeAt != null,
     dealingModeAt: broker.dealingModeAt ? broker.dealingModeAt.toISOString() : null,
     totalExposureLimit: broker.totalExposureLimit ? broker.totalExposureLimit.toString() : null,
@@ -49,7 +51,7 @@ export async function PATCH(request: NextRequest) {
   // a request touching both tradingHalted and a risk field would
   // otherwise query AdminUser twice for the same Manager account.
   const permissions = await getPermissionContext(session);
-  if ("tradingHalted" in body && permissions.forbidUnless("EMERGENCY_CONTROLS")) {
+  if (("tradingHalted" in body || "closeOnly" in body) && permissions.forbidUnless("EMERGENCY_CONTROLS")) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
   const touchesRiskFields =
@@ -71,6 +73,14 @@ export async function PATCH(request: NextRequest) {
     }
     data.tradingHaltedAt = body.tradingHalted ? new Date() : null;
     auditNewValue.tradingHalted = body.tradingHalted;
+  }
+
+  if ("closeOnly" in body) {
+    if (typeof body.closeOnly !== "boolean") {
+      return NextResponse.json({ error: "closeOnly must be a boolean" }, { status: 400 });
+    }
+    data.closeOnlyAt = body.closeOnly ? new Date() : null;
+    auditNewValue.closeOnly = body.closeOnly;
   }
 
   if ("dealingMode" in body) {
@@ -172,7 +182,13 @@ export async function PATCH(request: NextRequest) {
         brokerId,
         actorAdminId: session.adminId,
         action:
-          "tradingHalted" in body ? "RISK_HALT_TOGGLED" : "dealingMode" in body ? "DEALING_MODE_TOGGLED" : "RISK_LIMITS_UPDATED",
+          "tradingHalted" in body
+            ? "RISK_HALT_TOGGLED"
+            : "closeOnly" in body
+              ? "RISK_CLOSE_ONLY_TOGGLED"
+              : "dealingMode" in body
+                ? "DEALING_MODE_TOGGLED"
+                : "RISK_LIMITS_UPDATED",
         entityType: "Broker",
         entityId: brokerId,
         newValue: auditNewValue,
@@ -184,6 +200,8 @@ export async function PATCH(request: NextRequest) {
   return NextResponse.json({
     tradingHalted: updated.tradingHaltedAt != null,
     tradingHaltedAt: updated.tradingHaltedAt ? updated.tradingHaltedAt.toISOString() : null,
+    closeOnly: updated.closeOnlyAt != null,
+    closeOnlyAt: updated.closeOnlyAt ? updated.closeOnlyAt.toISOString() : null,
     dealingMode: updated.dealingModeAt != null,
     dealingModeAt: updated.dealingModeAt ? updated.dealingModeAt.toISOString() : null,
     totalExposureLimit: updated.totalExposureLimit ? updated.totalExposureLimit.toString() : null,

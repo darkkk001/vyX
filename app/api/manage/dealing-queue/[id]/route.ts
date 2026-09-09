@@ -13,11 +13,13 @@ import { isDealingManagedAccount } from "@/lib/dealing-routing";
 import * as mirror from "@/lib/mirror";
 import {
   checkTradingHalted,
+  checkCloseOnly,
   checkSymbolTradingMode,
   checkTradingSession,
   checkLotStep,
   checkGroupMaxLot,
   checkGroupTradingRestriction,
+  checkGroupTradingHalted,
   checkGroupAllowedSymbol,
   checkMaxOpenPositions,
   checkSymbolExposure,
@@ -202,11 +204,13 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   // checks a manual position open runs (app/api/manage/positions/route.ts).
   const riskError =
     checkTradingHalted(broker) ??
+    checkCloseOnly(broker) ??
     checkSymbolTradingMode(brokerSymbol.tradingMode, order.side) ??
     checkTradingSession(brokerSymbol.tradingSessions, new Date(), order.symbol.category) ??
     checkLotStep(order.volume, brokerSymbol.minLot, brokerSymbol.lotStep) ??
     (order.account.group ? checkGroupMaxLot(order.volume, order.account.group.maxLotSize) : null) ??
     (order.account.group ? checkGroupTradingRestriction(order.account.group.tradingRestriction, order.side) : null) ??
+    (order.account.group ? checkGroupTradingHalted(order.account.group) : null) ??
     (order.account.group
       ? checkGroupAllowedSymbol(
           order.account.group.restrictSymbols,

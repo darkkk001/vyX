@@ -12,6 +12,29 @@ export function checkTradingHalted(broker: { tradingHaltedAt: Date | null }): st
   return null;
 }
 
+// Broker-wide close-only mode -- see Broker.closeOnlyAt's own schema
+// comment. Only ever checked on the OPEN side (new orders/positions);
+// there is no equivalent gate on position close/modify routes, since
+// letting existing exposure be closed down is exactly what this mode is
+// for. If tradingHaltedAt is also set, checkTradingHalted already
+// blocks everything first -- callers run both checks (this one second),
+// so a fully-halted broker never reaches this one, and close-only alone
+// blocks opens without needing tradingHaltedAt involved at all.
+export function checkCloseOnly(broker: { closeOnlyAt: Date | null }): string | null {
+  if (broker.closeOnlyAt) return "close-only mode is active for this broker: only closing existing positions is allowed";
+  return null;
+}
+
+// Per-group full halt -- see Group.tradingHaltedAt's own schema comment.
+// Group.tradingRestriction (checkGroupTradingRestriction below) can only
+// narrow to one side; this is the "stop this group entirely" gate
+// TradingMode has no value for, scoped to one group rather than the
+// whole broker like checkTradingHalted.
+export function checkGroupTradingHalted(group: { tradingHaltedAt: Date | null }): string | null {
+  if (group.tradingHaltedAt) return "trading is halted for this account's group";
+  return null;
+}
+
 // BOTH (default) never blocks. BUY_ONLY/SELL_ONLY reject the disallowed
 // side even when the symbol is otherwise enabled -- a stronger
 // restriction than `enabled`, not a replacement for it.
