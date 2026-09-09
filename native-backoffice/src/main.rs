@@ -2142,6 +2142,18 @@ impl BackofficeApp {
                 self.dealing_desk_loading = true;
                 self.dealing_desk_error = None;
                 api.fetch_dealing_desk(ctx.clone(), self.tx.clone());
+                // Redesign ticket cards (futurix-dealing-design.html) reuse
+                // Margin's/Live Exposure's/Risk radar's own already-fetched
+                // data client-side for per-ticket client equity/margin,
+                // group net exposure, and behavioural flags -- same "no
+                // duplicate endpoint" reasoning as Dashboard/Live exposure.
+                self.margin_loading = true;
+                self.margin_error = None;
+                api.fetch_margin(ctx.clone(), self.tx.clone());
+                self.positions_loading = true;
+                self.positions_error = None;
+                api.fetch_positions(ctx.clone(), self.tx.clone());
+                self.ensure_loaded(ctx, Screen::RiskRadar);
             }
             Screen::Groups => {
                 self.groups_loading = true;
@@ -4086,54 +4098,105 @@ impl BackofficeApp {
     // DealingDeskPanel (resting orders + the DEALING-group-scoped
     // activity feed, filterable by account). The web's separate "Mirror"
     // tab (MirrorRulesManager) isn't ported in this pass.
+    // Dealing redesign (futurix-dealing-design.html, PROMPT-dealing.md).
+    //
+    // The prompt's own "blocking bug" (GET /dealing/queue 403s for
+    // admin@futurixglobal.com, fix via a role->permission map + a new
+    // "dealer" role) does NOT reproduce against this codebase:
+    // dealing-queue/route.ts gates on requireAdminRole(["MANAGER",
+    // "BROKER_ADMIN"]) only, no extra permission, and BROKER_ADMIN
+    // bypasses every permission check unconditionally (lib/permissions.ts)
+    // -- confirmed live during Part 0's investigation (vercel logs showed
+    // dealing-queue never 403ing, only dealing-desk-toggle, which is
+    // RISK_SETTINGS-gated by design and already fixed). No new AdminRole
+    // enum value added on the strength of a claim that doesn't match the
+    // live behavior -- that's a real schema migration, not a UI fix.
+    //
+    // Countdown/expiry rings, per-order timeout-driven auto-reject, and
+    // "Auto with limits" (a per-lot manual/auto threshold) all need a
+    // timeout config + an expires_at concept that doesn't exist anywhere
+    // in the schema (checked: no field on Order, Group, or Broker backs
+    // any of this) -- genuinely new product behavior, not implemented
+    // here. The mode control below is real (Manual/Auto-STP, backed by
+    // the existing dealingDeskAutoFillAt toggle) with the third option
+    // shown disabled rather than faked.
     fn render_dealing(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.horizontal(|ui| {
-            if self.dealing_loading || self.dealing_desk_loading {
-                ui.spinner();
-            }
+            ui.vertical(|ui| {
+                ui.label(egui::RichText::new("Dealing").font(theme::heading_font(20.0)).color(theme::text_1()));
+                ui.label(egui::RichText::new("Manual execution desk for dealing-group accounts.").color(theme::text_3()));
+            });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if self.dealing_loading || self.dealing_desk_loading {
+                    ui.spinner();
+                }
+                let who = self.logged_in_email.split('@').next().unwrap_or("you");
+                ui.colored_label(theme::up(), format!("\u{25cf} Desk online \u{b7} {who}"));
+            });
         });
-        ui.add_space(8.0);
+        ui.add_space(10.0);
 
-        // --- Dealer ON/OFF toggle ---
-        if let Some(state) = &self.dealer_toggle {
-            let dealer_on = state.dealer_on;
-            let bg = if dealer_on { theme::bg_1() } else { theme::warning().gamma_multiply(0.12) };
-            egui::Frame::new()
-                .fill(bg)
-                .stroke(egui::Stroke::new(1.0_f32, if dealer_on { theme::border() } else { theme::warning() }))
-                .corner_radius(egui::CornerRadius::same(10))
-                .inner_margin(egui::Margin::symmetric(16, 12))
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        let switch_color = if dealer_on { theme::accent() } else { theme::text_3() };
-                        let (rect, resp) = ui.allocate_exact_size(egui::vec2(48.0, 26.0), egui::Sense::click());
-                        ui.painter().rect_filled(rect, egui::CornerRadius::same(13), switch_color);
-                        let knob_x = if dealer_on { rect.right() - 15.0 } else { rect.left() + 15.0 };
-                        ui.painter().circle_filled(egui::pos2(knob_x, rect.center().y), 9.0, egui::Color32::WHITE);
-                        if resp.clicked() && !self.dealer_toggle_busy {
-                            if dealer_on {
-                                self.dealer_toggle_confirm_off = true;
-                            } else if let Some(api) = &self.api {
-                                self.dealer_toggle_busy = true;
-                                api.set_dealer_toggle(ctx.clone(), self.tx.clone(), true);
-                            }
-                        }
-                        ui.add_space(10.0);
-                        ui.vertical(|ui| {
-                            ui.strong(if dealer_on { "Dealer ON" } else { "Dealer OFF" });
-                            ui.weak(if dealer_on {
-                                "Orders from dealing-group accounts require manual review."
-                            } else {
-                                "Orders from dealing-group accounts auto-fill at market."
+        // --- Mode control ---
+        let dealing_accounts_count = self.dealing_desk_accounts.len();
+        theme::card(14).show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                if let Some(state) = &self.dealer_toggle {
+                    let dealer_on = state.dealer_on;
+                    let mode_button = |ui: &mut egui::Ui, selected: bool, title: &str, sub: &str| -> bool {
+                        let (fill, text_color) = if selected { (theme::accent(), egui::Color32::from_rgb(0x06, 0x0a, 0x08)) } else { (theme::bg_2(), theme::text_2()) };
+                        let mut clicked = false;
+                        egui::Frame::new().fill(fill).corner_radius(egui::CornerRadius::same(8)).inner_margin(egui::Margin::symmetric(14, 8)).show(ui, |ui| {
+                            ui.vertical(|ui| {
+                                let resp = ui.add(egui::Label::new(egui::RichText::new(title).color(text_color).strong()).sense(egui::Sense::click()));
+                                ui.label(egui::RichText::new(sub).size(10.5).color(text_color.gamma_multiply(0.85)));
+                                if resp.clicked() {
+                                    clicked = true;
+                                }
                             });
                         });
-                    });
-                });
+                        clicked
+                    };
+                    // Manual = dealer_on (queue for review); Auto (STP) =
+                    // !dealer_on (dealingDeskAutoFillAt set, auto-fills at
+                    // market) -- same underlying toggle as before, just
+                    // framed as the redesign's segmented control instead
+                    // of an ON/OFF switch ("OFF = auto-fill" reads
+                    // backwards, per the prompt's own bug note).
+                    if mode_button(ui, dealer_on, "Manual", "Dealer confirms every order") && !dealer_on && !self.dealer_toggle_busy {
+                        if let Some(api) = &self.api {
+                            self.dealer_toggle_busy = true;
+                            api.set_dealer_toggle(ctx.clone(), self.tx.clone(), true);
+                        }
+                    }
+                    if mode_button(ui, !dealer_on, "Auto (STP)", "Fill at market instantly") && dealer_on && !self.dealer_toggle_busy {
+                        self.dealer_toggle_confirm_off = true;
+                    }
+                    egui::Frame::new()
+                        .fill(theme::bg_2().gamma_multiply(0.6))
+                        .corner_radius(egui::CornerRadius::same(8))
+                        .inner_margin(egui::Margin::symmetric(14, 8))
+                        .show(ui, |ui| {
+                            ui.vertical(|ui| {
+                                ui.label(egui::RichText::new("Auto with limits").color(theme::text_3()));
+                                ui.label(egui::RichText::new("Needs a per-lot threshold field (not built)").size(10.5).color(theme::text_3()));
+                            });
+                        })
+                        .response
+                        .on_hover_text("This mode needs a per-group manual-above-lots threshold, which doesn't exist in the schema yet.");
+                    ui.add_space(14.0);
+                    ui.separator();
+                    ui.label(format!("Applies to DEALING group \u{b7} {dealing_accounts_count} account{}", if dealing_accounts_count == 1 { "" } else { "s" }));
+                } else if let Some(err) = &self.dealer_toggle_error {
+                    ui.colored_label(theme::danger(), permission_error_message(err, "RISK_SETTINGS"));
+                } else {
+                    ui.weak("Loading mode...");
+                }
+            });
 
             if self.dealer_toggle_confirm_off {
                 let mut open = true;
                 let mut confirm = false;
-                egui::Window::new("Turn dealer off?")
+                egui::Window::new("Switch to Auto (STP)?")
                     .id(egui::Id::new("dealer-off-confirm"))
                     .collapsible(false)
                     .resizable(false)
@@ -4142,7 +4205,7 @@ impl BackofficeApp {
                         ui.label("Dealing-group orders will auto-fill at market instead of waiting for review. Anything currently sitting in the queue will be filled at market right now too, unless it fails a risk check, in which case it stays queued.");
                         ui.add_space(6.0);
                         ui.horizontal(|ui| {
-                            if theme::danger_button_enabled(ui, true, "Turn dealer off").clicked() {
+                            if theme::danger_button_enabled(ui, true, "Switch to Auto (STP)").clicked() {
                                 confirm = true;
                             }
                         });
@@ -4157,140 +4220,294 @@ impl BackofficeApp {
                     self.dealer_toggle_confirm_off = false;
                 }
             }
-            ui.add_space(10.0);
-        } else if let Some(err) = &self.dealer_toggle_error {
-            ui.weak(permission_error_message(err, "RISK_SETTINGS"));
-            ui.add_space(10.0);
-        }
+        });
+        ui.add_space(14.0);
 
-        if let Some(err) = &self.dealing_error {
-            ui.colored_label(theme::danger(), err);
-        }
+        // --- KPI row (real numbers only -- no response-time/P&L/accept-
+        // rate tracking exists anywhere in this app, so those 2 of the
+        // design's 6 KPI cards are left out rather than shown as fake
+        // zeros; see this fn's own doc comment). ---
+        let dealing_account_ids: std::collections::HashSet<&str> = self.dealing_desk_accounts.iter().map(|a| a.id.as_str()).collect();
+        let group_positions: Vec<&PositionRow> = self.positions.iter().filter(|p| dealing_account_ids.contains(p.account_id.as_str())).collect();
+        let group_net_raw: f64 = group_positions.iter().filter_map(|p| p.volume.parse::<f64>().ok().zip(Some(p.side.as_str()))).map(|(v, s)| if s == "BUY" { v } else { -v }).sum();
+        let group_net = if group_net_raw.abs() < 0.005 { 0.0 } else { group_net_raw };
+        let dominant_symbol = group_positions.first().map(|p| p.symbol_name.as_str()).unwrap_or("-");
+        ui.columns(4, |cols| {
+            kpi_card(&mut cols[0], "In queue", &self.dealing_queue.len().to_string(), if self.dealing_queue.is_empty() { theme::text_1() } else { theme::accent() }, "awaiting dealer", theme::text_3());
+            kpi_card(&mut cols[1], "Awaiting client", &self.dealing_requoted.len().to_string(), theme::text_1(), "requotes sent", theme::text_3());
+            kpi_card(&mut cols[2], "Resting orders", &self.dealing_desk_resting.len().to_string(), theme::text_1(), "on dealing-group accounts", theme::text_3());
+            kpi_card(&mut cols[3], "Group exposure", &format!("{group_net:+.2} lots"), theme::text_1(), &format!("{dominant_symbol} \u{b7} {} open", group_positions.len()), theme::text_3());
+        });
+        ui.add_space(14.0);
 
         let mut accept_id: Option<String> = None;
         let mut confirm_reject: Option<(String, String)> = None;
         let mut confirm_requote: Option<(String, f64)> = None;
 
-        theme::card(12).show(ui, |ui| {
-            ui.label(format!(
-                "{} order{} awaiting manual review, {} awaiting the client's answer to a requote. Only populated while dealing mode is on.",
-                self.dealing_queue.len(),
-                if self.dealing_queue.len() == 1 { "" } else { "s" },
-                self.dealing_requoted.len()
-            ));
-            ui.add_space(6.0);
-
-            for order in self.dealing_queue.clone() {
-                theme::card(10).show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        let side_color = if order.side == "BUY" { theme::accent() } else { theme::danger() };
-                        ui.monospace(&order.account_number);
-                        ui.label(&order.account_full_name);
-                        ui.separator();
-                        ui.strong(&order.symbol);
-                        ui.colored_label(side_color, &order.side);
-                        ui.label(format!("{} lots", order.volume));
-                        if let Some(req) = &order.requested_price {
-                            ui.weak(format!("requested @ {req}"));
-                        }
-                        if let (Some(bid), Some(ask)) = (&order.live_bid, &order.live_ask) {
-                            ui.weak(format!("live {bid} / {ask}"));
-                        }
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.button("Reject").clicked() {
-                                self.dealing_reject = Some(PendingReject { id: order.id.clone(), reason: String::new() });
-                            }
-                            if ui.button("Requote").clicked() {
-                                let live = if order.side == "BUY" { &order.live_ask } else { &order.live_bid };
-                                let price = live.clone().or_else(|| order.requested_price.clone()).unwrap_or_default();
-                                self.dealing_requote = Some(PendingRequote { id: order.id.clone(), price, error: None });
-                            }
-                            if theme::accent_button(ui, "Accept").clicked() {
-                                accept_id = Some(order.id.clone());
-                            }
-                        });
-                    });
-
-                    if self.dealing_reject.as_ref().is_some_and(|p| p.id == order.id) {
-                        let mut pending = self.dealing_reject.take().unwrap();
-                        let mut cancelled = false;
-                        ui.horizontal(|ui| {
-                            ui.label("Reason (required, logged in audit trail):");
-                            ui.text_edit_singleline(&mut pending.reason);
-                            if theme::danger_button_enabled(ui, !pending.reason.trim().is_empty(), "Confirm reject").clicked() {
-                                confirm_reject = Some((pending.id.clone(), pending.reason.clone()));
-                            }
-                            if ui.button("Cancel").clicked() {
-                                cancelled = true;
-                            }
-                        });
-                        if !cancelled && confirm_reject.is_none() {
-                            self.dealing_reject = Some(pending);
-                        }
-                    }
-
-                    if self.dealing_requote.as_ref().is_some_and(|p| p.id == order.id) {
-                        let mut pending = self.dealing_requote.take().unwrap();
-                        let mut cancelled = false;
-                        ui.horizontal(|ui| {
-                            ui.label("Requote price:");
-                            ui.text_edit_singleline(&mut pending.price);
-                            if theme::accent_button(ui, "Send requote").clicked() {
-                                match pending.price.trim().parse::<f64>() {
-                                    Ok(p) if p > 0.0 => confirm_requote = Some((pending.id.clone(), p)),
-                                    _ => pending.error = Some("Enter a valid price".to_string()),
-                                }
-                            }
-                            if ui.button("Cancel").clicked() {
-                                cancelled = true;
-                            }
-                        });
-                        if let Some(err) = &pending.error {
-                            ui.colored_label(theme::danger(), err);
-                        }
-                        if !cancelled && confirm_requote.is_none() {
-                            self.dealing_requote = Some(pending);
-                        }
-                    }
-                });
-            }
-            if self.dealing_queue.is_empty() {
-                ui.weak("No orders awaiting review.");
-            }
-        });
-
-        ui.add_space(10.0);
-        theme::card(12).show(ui, |ui| {
-            ui.strong("Awaiting client confirmation");
-            ui.add_space(6.0);
-            if self.dealing_requoted.is_empty() {
-                ui.weak("No requotes awaiting a client response.");
-            }
-            let mut withdraw_id: Option<String> = None;
-            for row in &self.dealing_requoted {
-                ui.horizontal(|ui| {
-                    let side_color = if row.side == "BUY" { theme::accent() } else { theme::danger() };
-                    ui.monospace(&row.account_number);
-                    ui.label(&row.account_full_name);
-                    ui.separator();
-                    ui.strong(&row.symbol);
-                    ui.colored_label(side_color, &row.side);
-                    ui.label(format!("{} lots", row.volume));
-                    ui.weak(format!("requested {}", row.requested_price.as_deref().unwrap_or("-")));
-                    ui.weak(format!("requoted to {} at {}", row.requoted_price.as_deref().unwrap_or("-"), row.created_at));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("Withdraw").clicked() {
-                            withdraw_id = Some(row.id.clone());
-                        }
-                    });
-                });
-                ui.separator();
-            }
-            if let Some(id) = withdraw_id {
-                if let Some(api) = &self.api {
-                    api.dealing_action(ctx.clone(), self.tx.clone(), id, "REJECT".to_string(), Some("Withdrawn by dealer".to_string()), None);
+        // Keyboard shortcuts apply to the oldest (first) ticket only --
+        // no per-ticket focus concept exists (that's tied to the
+        // countdown ring this pass doesn't build), but Enter/R/Esc on
+        // whichever order is first in queue is a real, useful subset of
+        // the prompt's keyboard-first requirement.
+        let oldest_id = self.dealing_queue.first().map(|o| o.id.clone());
+        if let Some(id) = &oldest_id {
+            let focus_in_text_field = ui.ctx().memory(|m| m.focused().is_some());
+            if !focus_in_text_field {
+                if ui.ctx().input(|i| i.key_pressed(egui::Key::Enter)) {
+                    accept_id = Some(id.clone());
+                } else if ui.ctx().input(|i| i.key_pressed(egui::Key::Escape)) {
+                    self.dealing_reject = Some(PendingReject { id: id.clone(), reason: String::new() });
+                } else if ui.ctx().input(|i| i.key_pressed(egui::Key::R)) {
+                    let order = &self.dealing_queue[0];
+                    let live = if order.side == "BUY" { &order.live_ask } else { &order.live_bid };
+                    let price = live.clone().or_else(|| order.requested_price.clone()).unwrap_or_default();
+                    self.dealing_requote = Some(PendingRequote { id: id.clone(), price, error: None });
                 }
             }
+        }
+
+        let avail = ui.available_width();
+        let gap = 14.0;
+        let left_w = (avail - gap) * 0.65;
+        let right_w = avail - gap - left_w;
+        ui.horizontal_top(|ui| {
+            ui.allocate_ui_with_layout(egui::vec2(left_w, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+                theme::card(12).show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.strong(format!("Awaiting dealer \u{b7} {}", self.dealing_queue.len()));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(egui::RichText::new("Oldest first \u{b7} Enter confirm \u{b7} R requote \u{b7} Esc reject").size(10.5).color(theme::text_3()));
+                        });
+                    });
+                    ui.add_space(6.0);
+
+                    if let Some(err) = &self.dealing_error {
+                        egui::Frame::new()
+                            .fill(theme::danger().gamma_multiply(0.12))
+                            .stroke(egui::Stroke::new(1.0_f32, theme::danger()))
+                            .corner_radius(egui::CornerRadius::same(8))
+                            .inner_margin(egui::Margin::symmetric(12, 8))
+                            .show(ui, |ui| {
+                                ui.label(egui::RichText::new("Queue reload failed").strong().color(theme::text_1()));
+                                ui.label(egui::RichText::new(err).color(theme::text_2()).size(12.0));
+                            });
+                        ui.add_space(8.0);
+                    }
+
+                    if self.dealing_queue.is_empty() {
+                        if self.dealing_error.is_none() {
+                            ui.add_space(24.0);
+                            ui.vertical_centered(|ui| {
+                                ui.label(egui::RichText::new("No orders awaiting dealer").strong().color(theme::text_1()));
+                            });
+                            ui.add_space(24.0);
+                        }
+                    } else {
+                        for order in self.dealing_queue.clone() {
+                            let is_oldest = oldest_id.as_deref() == Some(order.id.as_str());
+                            let margin_row = self.margin.iter().find(|m| m.account_number == order.account_number);
+                            let radar_row = self.risk_radar.iter().find(|r| r.account_number == order.account_number);
+                            let symbol_cap = self.symbols.iter().find(|s| s.symbol_name == order.symbol).and_then(|s| s.max_exposure.as_deref()).and_then(|v| v.parse::<f64>().ok());
+                            let order_volume: f64 = order.volume.parse().unwrap_or(0.0);
+                            let signed_volume = if order.side == "BUY" { order_volume } else { -order_volume };
+
+                            egui::Frame::new()
+                                .fill(theme::bg_1())
+                                .stroke(egui::Stroke::new(if is_oldest { 1.5_f32 } else { 1.0_f32 }, if is_oldest { theme::accent() } else { theme::border() }))
+                                .corner_radius(egui::CornerRadius::same(10))
+                                .inner_margin(egui::Margin::same(12))
+                                .show(ui, |ui| {
+                                    // Header
+                                    ui.horizontal(|ui| {
+                                        let side_color = if order.side == "BUY" { theme::up_soft() } else { theme::down_soft() };
+                                        let side_text_color = if order.side == "BUY" { theme::up() } else { theme::down() };
+                                        egui::Frame::new().fill(side_color).corner_radius(egui::CornerRadius::same(6)).inner_margin(egui::Margin::symmetric(10, 4)).show(ui, |ui| {
+                                            ui.label(egui::RichText::new(format!("{} {}", order.side, order.volume)).font(theme::heading_font(15.0)).color(side_text_color));
+                                        });
+                                        ui.label(egui::RichText::new(format!("{} \u{b7} {} \u{b7} {}", order.symbol, order.account_full_name, order.account_number)).strong());
+                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                            if theme::accent_button(ui, "Accept").clicked() {
+                                                accept_id = Some(order.id.clone());
+                                            }
+                                            if ui.button("Reject").clicked() {
+                                                self.dealing_reject = Some(PendingReject { id: order.id.clone(), reason: String::new() });
+                                            }
+                                            if ui.button("Requote").clicked() {
+                                                let live = if order.side == "BUY" { &order.live_ask } else { &order.live_bid };
+                                                let price = live.clone().or_else(|| order.requested_price.clone()).unwrap_or_default();
+                                                self.dealing_requote = Some(PendingRequote { id: order.id.clone(), price, error: None });
+                                            }
+                                        });
+                                    });
+                                    ui.add_space(8.0);
+
+                                    // Body: 3 columns -- Requested / Client / Desk
+                                    ui.columns(3, |cols| {
+                                        cols[0].vertical(|ui| {
+                                            ui.label(egui::RichText::new("REQUESTED").size(10.0).color(theme::text_3()));
+                                            if let Some(req) = &order.requested_price {
+                                                ui.label(egui::RichText::new(req).font(theme::heading_font(17.0)).color(theme::text_1()));
+                                            }
+                                            if let (Some(bid), Some(ask)) = (&order.live_bid, &order.live_ask) {
+                                                ui.label(egui::RichText::new(format!("Market now {bid} / {ask}")).size(11.5).color(theme::text_2()));
+                                                let req_f = order.requested_price.as_deref().and_then(|s| s.parse::<f64>().ok());
+                                                let market_f = if order.side == "BUY" { ask.parse::<f64>().ok() } else { bid.parse::<f64>().ok() };
+                                                if let (Some(req_f), Some(market_f)) = (req_f, market_f) {
+                                                    let slippage = if order.side == "BUY" { req_f - market_f } else { market_f - req_f };
+                                                    let favor = slippage >= 0.0;
+                                                    ui.colored_label(if favor { theme::up() } else { theme::down() }, format!("Slippage {slippage:+.5} {}", if favor { "in your favor" } else { "against" }));
+                                                }
+                                            }
+                                        });
+                                        cols[1].vertical(|ui| {
+                                            ui.label(egui::RichText::new("CLIENT").size(10.0).color(theme::text_3()));
+                                            match margin_row {
+                                                Some(m) => {
+                                                    ui.label(format!("Equity ${}", m.equity));
+                                                    ui.label(format!("Margin used ${}", m.used_margin));
+                                                    if let Some(current_level) = m.margin_level {
+                                                        // Not a "margin after fill" projection -- that needs the
+                                                        // symbol's contract size, which isn't in any data this
+                                                        // screen has loaded (SymbolConfigRow doesn't carry it).
+                                                        // Showing the CURRENT level honestly beats a wrong
+                                                        // projection built on a guessed contract size.
+                                                        let color = if current_level < 100.0 { theme::danger() } else if current_level < 150.0 { theme::warning() } else { theme::up() };
+                                                        ui.colored_label(color, format!("Current margin level {current_level:.0}%"));
+                                                    }
+                                                }
+                                                None => {
+                                                    ui.weak("No open positions on this account");
+                                                }
+                                            }
+                                            match radar_row {
+                                                Some(r) => {
+                                                    if let Some(wr) = r.win_rate_pct {
+                                                        ui.label(format!("30d win rate {wr:.0}%"));
+                                                    }
+                                                    if r.scalp_flag || r.martingale_flag {
+                                                        let flags = [r.scalp_flag.then_some("Fast scalper"), r.martingale_flag.then_some("Martingale")].into_iter().flatten().collect::<Vec<_>>().join(", ");
+                                                        ui.colored_label(theme::warning(), flags);
+                                                    }
+                                                }
+                                                None => {}
+                                            }
+                                        });
+                                        cols[2].vertical(|ui| {
+                                            ui.label(egui::RichText::new("DESK").size(10.0).color(theme::text_3()));
+                                            ui.label(format!("Group net {group_net:+.2} \u{2192} {:+.2}", group_net + signed_volume));
+                                            match symbol_cap {
+                                                Some(cap) if cap > 0.0 => {
+                                                    let util = ((group_net + signed_volume).abs() / cap) * 100.0;
+                                                    let color = if util >= 90.0 { theme::danger() } else if util >= 70.0 { theme::warning() } else { theme::text_2() };
+                                                    ui.colored_label(color, format!("{} cap {cap:.2} \u{b7} {util:.0}% after", order.symbol, ));
+                                                }
+                                                _ => {
+                                                    ui.weak(format!("{} cap: not configured", order.symbol));
+                                                }
+                                            }
+                                            ui.label(egui::RichText::new(format!("Placed order id {}", order.id.get(0..8).unwrap_or(&order.id))).size(10.5).color(theme::text_3()));
+                                        });
+                                    });
+
+                                    if self.dealing_reject.as_ref().is_some_and(|p| p.id == order.id) {
+                                        let mut pending = self.dealing_reject.take().unwrap();
+                                        let mut cancelled = false;
+                                        ui.horizontal(|ui| {
+                                            ui.label("Reason (required, logged in audit trail):");
+                                            ui.text_edit_singleline(&mut pending.reason);
+                                            if theme::danger_button_enabled(ui, !pending.reason.trim().is_empty(), "Confirm reject").clicked() {
+                                                confirm_reject = Some((pending.id.clone(), pending.reason.clone()));
+                                            }
+                                            if ui.button("Cancel").clicked() {
+                                                cancelled = true;
+                                            }
+                                        });
+                                        if !cancelled && confirm_reject.is_none() {
+                                            self.dealing_reject = Some(pending);
+                                        }
+                                    }
+
+                                    if self.dealing_requote.as_ref().is_some_and(|p| p.id == order.id) {
+                                        let mut pending = self.dealing_requote.take().unwrap();
+                                        let mut cancelled = false;
+                                        ui.horizontal(|ui| {
+                                            ui.label("Requote price:");
+                                            ui.text_edit_singleline(&mut pending.price);
+                                            if theme::accent_button(ui, "Send requote").clicked() {
+                                                match pending.price.trim().parse::<f64>() {
+                                                    Ok(p) if p > 0.0 => confirm_requote = Some((pending.id.clone(), p)),
+                                                    _ => pending.error = Some("Enter a valid price".to_string()),
+                                                }
+                                            }
+                                            if ui.button("Cancel").clicked() {
+                                                cancelled = true;
+                                            }
+                                        });
+                                        if let Some(err) = &pending.error {
+                                            ui.colored_label(theme::danger(), err);
+                                        }
+                                        if !cancelled && confirm_requote.is_none() {
+                                            self.dealing_requote = Some(pending);
+                                        }
+                                    }
+                                });
+                            ui.add_space(8.0);
+                        }
+                    }
+                });
+            });
+            ui.add_space(gap);
+            ui.allocate_ui_with_layout(egui::vec2(right_w, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+                theme::card(12).show(ui, |ui| {
+                    ui.strong(format!("Awaiting client \u{b7} {}", self.dealing_requoted.len()));
+                    ui.add_space(6.0);
+                    if self.dealing_requoted.is_empty() {
+                        ui.weak("No requotes awaiting a client response.");
+                    } else {
+                        let mut withdraw_id: Option<String> = None;
+                        for row in &self.dealing_requoted {
+                            let side_color = if row.side == "BUY" { theme::up() } else { theme::down() };
+                            ui.horizontal(|ui| {
+                                ui.colored_label(side_color, &row.side);
+                                ui.label(format!("{} {} \u{b7} {}", row.volume, row.symbol, row.account_number));
+                            });
+                            ui.label(
+                                egui::RichText::new(format!("Requoted {} \u{2192} {} \u{b7} sent {}", row.requested_price.as_deref().unwrap_or("-"), row.requoted_price.as_deref().unwrap_or("-"), row.created_at))
+                                    .size(11.0)
+                                    .color(theme::text_3()),
+                            );
+                            if ui.small_button("Withdraw").clicked() {
+                                withdraw_id = Some(row.id.clone());
+                            }
+                            ui.add_space(6.0);
+                            ui.separator();
+                        }
+                        if let Some(id) = withdraw_id {
+                            if let Some(api) = &self.api {
+                                api.dealing_action(ctx.clone(), self.tx.clone(), id, "REJECT".to_string(), Some("Withdrawn by dealer".to_string()), None);
+                            }
+                        }
+                    }
+                });
+                ui.add_space(gap);
+                theme::card(12).show(ui, |ui| {
+                    ui.strong("Desk activity");
+                    ui.add_space(6.0);
+                    let filter = |accid: &str| self.dealing_desk_account_filter == "ALL" || self.dealing_desk_account_filter == accid;
+                    let feed: Vec<ActivityFeedRow> = self.dealing_desk_feed.iter().filter(|r| filter(&r.account_id)).cloned().collect();
+                    if feed.is_empty() {
+                        ui.add_space(20.0);
+                        ui.vertical_centered(|ui| {
+                            ui.label(egui::RichText::new("No activity yet").strong().color(theme::text_1()));
+                        });
+                        ui.add_space(20.0);
+                    } else {
+                        egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+                            render_activity_feed_rows(ui, &feed, false);
+                        });
+                    }
+                });
+            });
         });
 
         if let Some(id) = accept_id {
@@ -4309,12 +4526,14 @@ impl BackofficeApp {
             }
         }
 
-        ui.add_space(10.0);
+        ui.add_space(14.0);
 
-        // --- Resting orders (DEALING-group LIMIT/STOP, persistent) ---
+        // --- Resting orders (DEALING-group LIMIT/STOP, persistent),
+        // sorted by distance-to-market ascending so the next order likely
+        // to trigger is on top (per spec's own default sort). ---
         theme::card(12).show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.strong("Resting orders");
+                ui.strong(format!("Resting orders \u{b7} {}", self.dealing_desk_resting.len()));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let label = self
                         .dealing_desk_accounts
@@ -4332,28 +4551,61 @@ impl BackofficeApp {
             });
             ui.add_space(6.0);
             let filter = |accid: &str| self.dealing_desk_account_filter == "ALL" || self.dealing_desk_account_filter == accid;
-            let resting: Vec<&RestingOrderRow> = self.dealing_desk_resting.iter().filter(|r| filter(&r.account_id)).collect();
+            let mut resting: Vec<(&RestingOrderRow, Option<f64>)> = self
+                .dealing_desk_resting
+                .iter()
+                .filter(|r| filter(&r.account_id))
+                .map(|r| {
+                    let price: Option<f64> = r.requested_price.as_deref().and_then(|v| v.parse().ok());
+                    let market: Option<f64> = self.positions.iter().find(|p| p.symbol_name == r.symbol).and_then(|p| p.current_price.as_deref()).and_then(|v| v.parse().ok());
+                    let distance = match (price, market) {
+                        (Some(p), Some(m)) => Some((p - m).abs()),
+                        _ => None,
+                    };
+                    (r, distance)
+                })
+                .collect();
+            resting.sort_by(|a, b| match (a.1, b.1) {
+                (Some(x), Some(y)) => x.partial_cmp(&y).unwrap_or(std::cmp::Ordering::Equal),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            });
             if let Some(err) = &self.dealing_desk_error {
-                ui.colored_label(theme::danger(), err);
+                egui::Frame::new()
+                    .fill(theme::danger().gamma_multiply(0.12))
+                    .stroke(egui::Stroke::new(1.0_f32, theme::danger()))
+                    .corner_radius(egui::CornerRadius::same(8))
+                    .inner_margin(egui::Margin::symmetric(12, 8))
+                    .show(ui, |ui| {
+                        ui.colored_label(theme::danger(), err);
+                    });
             } else if resting.is_empty() {
-                ui.weak("No resting orders on dealing-group accounts right now.");
+                ui.add_space(20.0);
+                ui.vertical_centered(|ui| {
+                    ui.label(egui::RichText::new("No resting orders").strong().color(theme::text_1()));
+                    ui.label(egui::RichText::new("Nothing is waiting to trigger on dealing-group accounts right now.").color(theme::text_3()).size(12.0));
+                });
+                ui.add_space(20.0);
             } else {
                 TableBuilder::new(ui)
                     .striped(true)
                     .resizable(true)
                     .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                    .column(Column::auto().at_least(100.0))
-                    .column(Column::remainder().at_least(120.0))
+                    .column(Column::auto().at_least(90.0))
+                    .column(Column::remainder().at_least(110.0))
                     .column(Column::auto().at_least(70.0))
                     .column(Column::auto().at_least(70.0))
                     .column(Column::auto().at_least(50.0))
+                    .column(Column::auto().at_least(70.0))
                     .column(Column::auto().at_least(80.0))
                     .column(Column::auto().at_least(80.0))
+                    .column(Column::auto().at_least(100.0))
                     .column(Column::auto().at_least(70.0))
                     .column(Column::auto().at_least(70.0))
                     .column(Column::auto().at_least(140.0))
                     .header(26.0, |mut header| {
-                        for label in ["Account", "Client", "Symbol", "Type", "Side", "Volume", "Price", "S/L", "T/P", "Placed"] {
+                        for label in ["Account", "Client", "Symbol", "Type", "Side", "Volume", "Price", "Market", "Distance", "S/L", "T/P", "Placed"] {
                             header.col(|ui| {
                                 ui.label(egui::RichText::new(label.to_uppercase()).size(11.0).color(theme::text_3()));
                             });
@@ -4361,7 +4613,7 @@ impl BackofficeApp {
                     })
                     .body(|body| {
                         body.rows(24.0, resting.len(), |mut row| {
-                            let r = resting[row.index()];
+                            let (r, distance) = resting[row.index()];
                             row.col(|ui| {
                                 ui.monospace(&r.account_number);
                             });
@@ -4375,7 +4627,7 @@ impl BackofficeApp {
                                 ui.label(&r.order_type);
                             });
                             row.col(|ui| {
-                                let color = if r.side == "BUY" { theme::accent() } else { theme::danger() };
+                                let color = if r.side == "BUY" { theme::up() } else { theme::down() };
                                 ui.colored_label(color, &r.side);
                             });
                             row.col(|ui| {
@@ -4383,6 +4635,20 @@ impl BackofficeApp {
                             });
                             row.col(|ui| {
                                 ui.monospace(r.requested_price.as_deref().unwrap_or("-"));
+                            });
+                            row.col(|ui| {
+                                let market = self.positions.iter().find(|p| p.symbol_name == r.symbol).and_then(|p| p.current_price.clone());
+                                ui.monospace(market.as_deref().unwrap_or("-"));
+                            });
+                            row.col(|ui| match distance {
+                                Some(d) => {
+                                    let close = d < 10.0;
+                                    let text = egui::RichText::new(format!("{d:.1} pts away")).color(if close { theme::warning() } else { theme::text_2() });
+                                    ui.label(if close { text.strong() } else { text });
+                                }
+                                None => {
+                                    ui.weak("-");
+                                }
                             });
                             row.col(|ui| {
                                 ui.monospace(r.sl_price.as_deref().unwrap_or("-"));
@@ -4395,27 +4661,6 @@ impl BackofficeApp {
                             });
                         });
                     });
-            }
-        });
-
-        ui.add_space(10.0);
-
-        // --- Dealing-group activity feed (DEALING-only, unlike Live
-        // Exposure's broker-wide one) ---
-        theme::card(12).show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.strong("Dealing-group activity feed");
-                ui.weak("Every action on a DEALING-group account, live.");
-            });
-            ui.add_space(6.0);
-            let filter = |accid: &str| self.dealing_desk_account_filter == "ALL" || self.dealing_desk_account_filter == accid;
-            let feed: Vec<ActivityFeedRow> = self.dealing_desk_feed.iter().filter(|r| filter(&r.account_id)).cloned().collect();
-            if feed.is_empty() {
-                ui.weak("No activity yet.");
-            } else {
-                egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
-                    render_activity_feed_rows(ui, &feed, false);
-                });
             }
         });
     }
