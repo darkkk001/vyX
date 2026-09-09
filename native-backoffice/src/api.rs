@@ -48,7 +48,20 @@ pub struct DashboardData {
     pub pending_withdrawal_count: i64,
     #[serde(rename = "pendingWithdrawalSum")]
     pub pending_withdrawal_sum: f64,
+    #[serde(rename = "netDeposits7d", default)]
+    pub net_deposits_7d: f64,
+    #[serde(rename = "netDepositsPrior7d", default)]
+    pub net_deposits_prior_7d: f64,
+    #[serde(rename = "depositsWithdrawalsByDay", default)]
+    pub deposits_withdrawals_by_day: Vec<DayBucket>,
     pub activity: Vec<ActivityRow>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DayBucket {
+    pub date: String,
+    pub deposits: f64,
+    pub withdrawals: f64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -59,6 +72,8 @@ pub struct ActivityRow {
     pub actor_email: String,
     #[serde(rename = "entityId", default)]
     pub entity_id: String,
+    #[serde(rename = "entityType", default)]
+    pub entity_type: String,
     #[serde(rename = "createdAtLabel")]
     pub created_at_label: String,
 }
@@ -817,6 +832,12 @@ pub struct PaymentMethodRow {
 pub struct MarginRow {
     #[serde(rename = "accountNumber")]
     pub account_number: String,
+    #[serde(rename = "accountFullName", default)]
+    pub account_full_name: String,
+    #[serde(default)]
+    pub equity: String,
+    #[serde(rename = "usedMargin", default)]
+    pub used_margin: String,
     #[serde(rename = "positionCount")]
     pub position_count: i64,
     pub exposure: String,

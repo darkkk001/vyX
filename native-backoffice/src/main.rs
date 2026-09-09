@@ -8,8 +8,8 @@
 mod api;
 
 use api::{
-    AccountRow, AccountTypeOption, ActivityFeedRow, AdminRow, ApiClient, ApiEvent, AuditLogRow, ClientKycRow,
-    DashboardData, DealRow, DealerToggleState, DealingDeskAccount, DealingOrderRow, FeedHealthData,
+    AccountRow, AccountTypeOption, ActivityFeedRow, ActivityRow, AdminRow, ApiClient, ApiEvent, AuditLogRow, ClientKycRow,
+    DashboardData, DayBucket, DealRow, DealerToggleState, DealingDeskAccount, DealingOrderRow, FeedHealthData,
     FundsRequestRow, GroupPricingRow, GroupRow, IbRelationshipRow, KycRow, LeadRow, LiquidityExposureRow,
     LiveAccountRequestRow, LpRoutingRow, MarginRow, NewAccountBody, NotificationRow, PaymentMethodRow,
     PendingAdjustment, PositionRow, ReportsSummary, RequotedOrderRow, RestingOrderRow, RiskData, RiskRadarRow,
@@ -1164,6 +1164,7 @@ struct BackofficeApp {
     dashboard: Option<DashboardData>,
     dashboard_loading: bool,
     dashboard_error: Option<String>,
+    dashboard_activity_tab: usize,
 
     // --- positions / "Live Exposure" ---
     positions: Vec<PositionRow>,
@@ -1418,6 +1419,7 @@ impl Default for BackofficeApp {
             dashboard: None,
             dashboard_loading: false,
             dashboard_error: None,
+            dashboard_activity_tab: 0,
             positions: Vec::new(),
             positions_loading: false,
             positions_error: None,
@@ -2062,6 +2064,34 @@ impl BackofficeApp {
                 self.dashboard_loading = true;
                 self.dashboard_error = None;
                 api.fetch_dashboard(ctx.clone(), self.tx.clone());
+                // Dashboard's Exposure-by-symbol and Risk-watch cards
+                // (futurix-dashboard-design.html) reuse Live Exposure's and
+                // Margin's own already-loaded data client-side rather than
+                // duplicating those aggregations in a new endpoint --
+                // refetched here on every Dashboard cycle so the cards stay
+                // live even if the admin never actually visits those two
+                // screens directly this session.
+                self.positions_loading = true;
+                self.positions_error = None;
+                api.fetch_positions(ctx.clone(), self.tx.clone());
+                self.margin_loading = true;
+                self.margin_error = None;
+                api.fetch_margin(ctx.clone(), self.tx.clone());
+                // "Volume (7d)" KPI reads closed trades' closedAt/volume
+                // client-side from the same Deals list the Deals screen
+                // itself uses -- real numbers, no new endpoint. Capped at
+                // "most recent 500" (Deals' own known limit, see
+                // fetch_deals' comment): if a broker closes >500 trades in
+                // 7 days this undercounts, same honest caveat Deals itself
+                // already carries.
+                self.deals_loading = true;
+                self.deals_error = None;
+                api.fetch_deals(ctx.clone(), self.tx.clone());
+                // Accounts backs "Client equity (now)" (sum of live-account
+                // balances) -- ensure_loaded, not a hard refetch every
+                // cycle: heavier than positions/margin and the KPI doesn't
+                // need second-by-second freshness the way exposure/risk do.
+                self.ensure_loaded(ctx, Screen::Accounts);
             }
             Screen::Positions => {
                 self.positions_loading = true;
@@ -2447,8 +2477,22 @@ impl BackofficeApp {
     // own card with row separators/hover, matching the stat cards'
     // container style. No Refresh button -- the web has none either;
     // this screen re-fetches whenever it's (re)opened.
-    fn render_dashboard(&mut self, ui: &mut egui::Ui, _ctx: &egui::Context) {
-        if self.dashboard_loading {
+    // Redesign pass (futurix-dashboard-design.html; README.md: "layout
+    // described in the design; follow shell rules" -- no dedicated prompt
+    // file for this page). Reuses Live Exposure's and Margin's own
+    // already-fetched data for the Exposure-by-symbol and Risk-watch
+    // cards (see fetch()'s Screen::Dashboard arm) rather than a new
+    // endpoint duplicating those aggregations; Deals' already-fetched
+    // list (capped at 500, same as the Deals page itself) backs the
+    // Volume(7d) KPI. Net deposits/deposits-vs-withdrawals are the one
+    // genuinely new piece of server data (dashboard route.ts). The design
+    // mockup's Risk-watch pill claims "Stop-out level enforced by engine:
+    // Yes * 50%" -- per Part 0.4's verified finding this is FALSE for the
+    // Rust engine (dormant scaffold, no I/O) though TRUE for the real
+    // Node/Cron enforcement (lib/risk-monitor.ts, every 1 min); this page
+    // states that correctly instead of reproducing the mockup's claim.
+    fn render_dashboard(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        if self.dashboard_loading && self.dashboard.is_none() {
             ui.horizontal(|ui| {
                 ui.spinner();
                 ui.label("Loading...");
@@ -2460,75 +2504,389 @@ impl BackofficeApp {
             ui.colored_label(theme::danger(), err);
             return;
         }
-        let Some(data) = &self.dashboard else { return };
+        let Some(data) = self.dashboard.clone() else { return };
 
-        let stats: [(&str, String, Option<(String, egui::Color32)>); 5] = [
+        // --- Greeting ---
+        let utc_hour = (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() / 3600) % 24;
+        let greeting = if utc_hour < 12 { "Good morning" } else if utc_hour < 18 { "Good afternoon" } else { "Good evening" };
+        let broker_name = self.broker_name.clone().unwrap_or_else(|| "your broker".to_string());
+        ui.label(egui::RichText::new(greeting).font(theme::heading_font(22.0)).color(theme::text_1()));
+        ui.label(egui::RichText::new(format!("Here's what needs your attention on {broker_name} today.")).color(theme::text_3()));
+        ui.add_space(14.0);
+
+        // --- Attention row ---
+        let margin_call_count = self.margin.iter().filter(|m| m.margin_level.is_some_and(|lvl| lvl <= m.margin_call_level)).count();
+        // "near stop-out": a margin-call account whose level has also
+        // dropped within 1.5x the stop-out level -- a judgment call (the
+        // mockup shows this as a sub-detail with no formula behind it).
+        let near_stop_out_count = self
+            .margin
+            .iter()
+            .filter(|m| m.margin_level.is_some_and(|lvl| lvl <= m.margin_call_level && lvl <= m.stop_out_level * 1.5))
+            .count();
+        let live_request_count = self.live_account_requests.iter().filter(|r| r.status == "PENDING").count();
+
+        let mut nav_target: Option<Screen> = None;
+        ui.columns(4, |cols| {
+            let margin_sub = if near_stop_out_count > 0 { format!("Below call level \u{b7} {near_stop_out_count} near stop-out") } else { "Below call level".to_string() };
+            if dashboard_attention_card(&mut cols[0], &margin_call_count.to_string(), "Margin calls", &margin_sub, "Review", margin_call_count > 0) {
+                nav_target = Some(Screen::Risk);
+            }
+            if dashboard_attention_card(
+                &mut cols[1],
+                &data.pending_withdrawal_count.to_string(),
+                "Withdrawals to approve",
+                &format!("${:.2} requested", data.pending_withdrawal_sum),
+                "Approve",
+                data.pending_withdrawal_count > 0,
+            ) {
+                nav_target = Some(Screen::Funds);
+            }
+            if dashboard_attention_card(&mut cols[2], &data.pending_kyc.to_string(), "KYC pending", "Awaiting review", "Verify", data.pending_kyc > 0) {
+                nav_target = Some(Screen::Kyc);
+            }
+            if dashboard_attention_card(&mut cols[3], &live_request_count.to_string(), "Live account requests", "Awaiting approval", "Open", live_request_count > 0) {
+                nav_target = Some(Screen::LiveAccountRequests);
+            }
+        });
+        if let Some(screen) = nav_target {
+            self.screen = screen;
+            self.ensure_loaded(ctx, screen);
+        }
+        ui.add_space(14.0);
+
+        // --- KPI row ---
+        let net_deposits_pct =
+            (data.net_deposits_prior_7d.abs() > 0.01).then(|| ((data.net_deposits_7d - data.net_deposits_prior_7d) / data.net_deposits_prior_7d.abs()) * 100.0);
+        // clamp_zero: currency-rounding drift on a near-empty sum (e.g. one
+        // stray "-0.00" account balance) otherwise displays as the
+        // confusing "$-0.00" rather than "$0.00".
+        let clamp_zero = |v: f64| if v.abs() < 0.005 { 0.0 } else { v };
+        let live_balances: f64 = clamp_zero(self.accounts.iter().filter(|a| a.account_mode == "LIVE").filter_map(|a| a.balance.parse::<f64>().ok()).sum());
+        let live_credit: f64 = clamp_zero(self.accounts.iter().filter(|a| a.account_mode == "LIVE").filter_map(|a| a.credit.parse::<f64>().ok()).sum());
+        let total_floating: f64 = self.positions.iter().filter_map(|p| p.floating_pnl.as_deref().and_then(|s| s.parse::<f64>().ok())).sum();
+        let client_equity = live_balances + live_credit + total_floating;
+        // Broker's own book P&L is the inverse of clients' floating P&L --
+        // exactly what the design mockup itself shows ("Book P&L +$26.56"
+        // next to "Clients -$26.56"). A simplification: this doesn't net
+        // out any A-book/hedged exposure the broker has passed to an LP,
+        // since no LP-hedge-share data is loaded on this screen.
+        let book_pnl = -total_floating;
+
+        let today = date_days_ago(0);
+        let seven_days_ago = date_days_ago(7);
+        let fourteen_days_ago = date_days_ago(14);
+        let (volume_7d, trades_7d) = self
+            .deals
+            .iter()
+            .filter(|d| d.closed_at.as_str() >= seven_days_ago.as_str())
+            .fold((0.0_f64, 0_usize), |(vol, n), d| (vol + d.volume.parse::<f64>().unwrap_or(0.0), n + 1));
+        let volume_prior_7d: f64 = self
+            .deals
+            .iter()
+            .filter(|d| d.closed_at.as_str() >= fourteen_days_ago.as_str() && d.closed_at.as_str() < seven_days_ago.as_str())
+            .filter_map(|d| d.volume.parse::<f64>().ok())
+            .sum();
+        let volume_pct = (volume_prior_7d > 0.01).then(|| ((volume_7d - volume_prior_7d) / volume_prior_7d) * 100.0);
+
+        let kpis: [(&str, String, Option<(String, egui::Color32)>); 4] = [
             (
-                "Total clients",
-                data.total_clients.to_string(),
-                (data.new_clients_7d > 0).then(|| (format!("+{} this week", data.new_clients_7d), theme::accent())),
+                "Net deposits (7d)",
+                format!("${:.2}", data.net_deposits_7d),
+                net_deposits_pct.map(|p| (format!("{}{:.0}% vs prior 7d", if p >= 0.0 { "+" } else { "" }, p), if p >= 0.0 { theme::up() } else { theme::down() })),
             ),
-            ("Total deposits (30d)", format!("${:.2}", data.deposits_sum_30d), None),
             (
-                "Active trades",
-                data.active_trades.to_string(),
-                Some((format!("across {} clients", data.active_trade_account_count), theme::text_3())),
+                "Client equity (now)",
+                format!("${client_equity:.2}"),
+                Some((format!("Balance ${live_balances:.2} \u{b7} Credit ${live_credit:.2}"), theme::text_3())),
             ),
             (
-                "Pending KYC",
-                data.pending_kyc.to_string(),
-                (data.pending_kyc > 0).then(|| ("needs review".to_string(), theme::warning())),
+                "Book P&L (floating)",
+                format!("{}${:.2}", if book_pnl >= 0.0 { "+" } else { "-" }, book_pnl.abs()),
+                Some((
+                    format!(
+                        "Clients {}${:.2} \u{b7} {} position{}",
+                        if total_floating >= 0.0 { "+" } else { "-" },
+                        total_floating.abs(),
+                        self.positions.len(),
+                        if self.positions.len() == 1 { "" } else { "s" }
+                    ),
+                    theme::text_3(),
+                )),
             ),
             (
-                "Pending withdrawals",
-                data.pending_withdrawal_count.to_string(),
-                (data.pending_withdrawal_count > 0).then(|| (format!("${:.2} total", data.pending_withdrawal_sum), theme::warning())),
+                "Volume (7d)",
+                format!("{volume_7d:.1} lots"),
+                Some(
+                    volume_pct
+                        .map(|p| (format!("{}{:.0}% \u{b7} {trades_7d} trades", if p >= 0.0 { "+" } else { "" }, p), if p >= 0.0 { theme::up() } else { theme::down() }))
+                        .unwrap_or_else(|| (format!("{trades_7d} trades"), theme::text_3())),
+                ),
             ),
         ];
-        responsive_stat_row(ui, &stats);
-
+        responsive_stat_row(ui, &kpis);
         ui.add_space(18.0);
-        theme::card(0).show(ui, |ui| {
-            ui.add_space(2.0);
-            ui.horizontal(|ui| {
-                ui.add_space(14.0);
-                ui.strong("Recent activity");
+
+        // --- Exposure by symbol + Risk watch ---
+        let avail = ui.available_width();
+        let gap = 14.0;
+        let left_w = (avail - gap) * 0.65;
+        let right_w = avail - gap - left_w;
+        ui.horizontal_top(|ui| {
+            ui.allocate_ui_with_layout(egui::vec2(left_w, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+                self.render_dashboard_exposure_card(ui);
             });
-            ui.add_space(8.0);
-            if data.activity.is_empty() {
-                ui.horizontal(|ui| {
-                    ui.add_space(14.0);
-                    ui.weak("No recent activity.");
+            ui.add_space(gap);
+            ui.allocate_ui_with_layout(egui::vec2(right_w, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+                self.render_dashboard_risk_watch_card(ui);
+            });
+        });
+        ui.add_space(14.0);
+
+        // --- Deposits vs withdrawals + Activity ---
+        ui.horizontal_top(|ui| {
+            ui.allocate_ui_with_layout(egui::vec2(left_w, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+                theme::card(14).show(ui, |ui| {
+                    ui.strong("Deposits vs withdrawals");
+                    ui.add_space(10.0);
+                    dashboard_bar_chart(ui, &data.deposits_withdrawals_by_day);
                 });
-                ui.add_space(10.0);
+            });
+            ui.add_space(gap);
+            ui.allocate_ui_with_layout(egui::vec2(right_w, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+                self.render_dashboard_activity_card(ui, &data.activity, &today);
+            });
+        });
+    }
+
+    fn render_dashboard_exposure_card(&mut self, ui: &mut egui::Ui) {
+        struct ExposureAcc {
+            symbol: String,
+            buy_volume: f64,
+            sell_volume: f64,
+            buy_notional: f64,
+            current_price: Option<String>,
+            floating_pnl: f64,
+        }
+        let mut by_symbol: HashMap<String, ExposureAcc> = HashMap::new();
+        let mut net_exposure_total = 0.0_f64;
+        let mut largest: Option<&PositionRow> = None;
+        for p in &self.positions {
+            let volume: f64 = p.volume.parse().unwrap_or(0.0);
+            net_exposure_total += if p.side == "BUY" { volume } else { -volume };
+            if largest.is_none_or(|l| volume > l.volume.parse().unwrap_or(0.0)) {
+                largest = Some(p);
+            }
+            let entry = by_symbol.entry(p.symbol_name.clone()).or_insert(ExposureAcc {
+                symbol: p.symbol_name.clone(),
+                buy_volume: 0.0,
+                sell_volume: 0.0,
+                buy_notional: 0.0,
+                current_price: p.current_price.clone(),
+                floating_pnl: 0.0,
+            });
+            let open_price: f64 = p.open_price.parse().unwrap_or(0.0);
+            if p.side == "BUY" {
+                entry.buy_volume += volume;
+                entry.buy_notional += volume * open_price;
             } else {
-                egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
-                    for (i, row) in data.activity.iter().enumerate() {
-                        let _ = i;
-                        let desired = egui::vec2(ui.available_width(), 28.0);
-                        let (rect, resp) = ui.allocate_exact_size(desired, egui::Sense::hover());
-                        if resp.hovered() {
-                            ui.painter().rect_filled(rect, 0.0, theme::bg_2());
-                        }
-                        ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
-                            ui.horizontal_centered(|ui| {
-                                ui.add_space(14.0);
-                                ui.label(egui::RichText::new(&row.action_label).color(theme::text_1()));
-                                ui.weak(&row.actor_email);
-                                if !row.entity_id.is_empty() {
-                                    ui.monospace(egui::RichText::new(&row.entity_id).size(10.5).color(theme::text_3()));
-                                }
-                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    ui.add_space(14.0);
-                                    ui.weak(&row.created_at_label);
-                                });
-                            });
-                        });
-                        ui.add_space(1.0);
-                        ui.separator();
-                        ui.add_space(1.0);
+                entry.sell_volume += volume;
+            }
+            if let Some(pnl) = p.floating_pnl.as_deref().and_then(|s| s.parse::<f64>().ok()) {
+                entry.floating_pnl += pnl;
+            }
+        }
+        let mut rows: Vec<ExposureAcc> = by_symbol.into_values().collect();
+        rows.sort_by(|a, b| (b.buy_volume + b.sell_volume).partial_cmp(&(a.buy_volume + a.sell_volume)).unwrap_or(std::cmp::Ordering::Equal));
+        let largest_label = largest.map(|l| format!("{} \u{b7} {}", l.volume, l.symbol_name)).unwrap_or_else(|| "-".to_string());
+        let position_count = self.positions.len();
+        let mut nav_to_positions = false;
+
+        theme::card(14).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.strong("Exposure by symbol");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.link("Open live exposure \u{2192}").clicked() {
+                        nav_to_positions = true;
                     }
                 });
+            });
+            ui.add_space(10.0);
+            ui.columns(3, |cols| {
+                dashboard_mini_stat(&mut cols[0], "Net exposure", &format!("{:+.2} lots", net_exposure_total));
+                dashboard_mini_stat(&mut cols[1], "Open positions", &position_count.to_string());
+                dashboard_mini_stat(&mut cols[2], "Largest single position", &largest_label);
+            });
+            ui.add_space(10.0);
+            if rows.is_empty() {
+                ui.weak("No open positions.");
+                return;
+            }
+            ui.horizontal(|ui| {
+                for (label, w) in [("Symbol", 70.0), ("Net", 70.0), ("Buy", 60.0), ("Sell", 60.0), ("Price", 80.0)] {
+                    ui.add_sized([w, 0.0], egui::Label::new(egui::RichText::new(label.to_uppercase()).size(10.5).color(theme::text_3())));
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(egui::RichText::new("CLIENT P&L").size(10.5).color(theme::text_3()));
+                });
+            });
+            ui.add_space(4.0);
+            for r in rows.iter().take(8) {
+                ui.horizontal(|ui| {
+                    ui.add_sized([70.0, 0.0], egui::Label::new(egui::RichText::new(&r.symbol).monospace()));
+                    let net = r.buy_volume - r.sell_volume;
+                    ui.add_sized([70.0, 0.0], egui::Label::new(egui::RichText::new(format!("{net:+.2}")).color(if net >= 0.0 { theme::up() } else { theme::down() })));
+                    ui.add_sized([60.0, 0.0], egui::Label::new(egui::RichText::new(format!("{:.2}", r.buy_volume)).color(theme::text_3())));
+                    ui.add_sized([60.0, 0.0], egui::Label::new(egui::RichText::new(format!("{:.2}", r.sell_volume)).color(theme::text_3())));
+                    ui.add_sized([80.0, 0.0], egui::Label::new(egui::RichText::new(r.current_price.as_deref().unwrap_or("-")).monospace()));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.colored_label(if r.floating_pnl >= 0.0 { theme::up() } else { theme::down() }, format!("{:+.2}", r.floating_pnl));
+                    });
+                });
+                ui.add_space(4.0);
+            }
+        });
+        if nav_to_positions {
+            self.screen = Screen::Positions;
+            self.ensure_loaded(ui.ctx(), Screen::Positions);
+        }
+    }
+
+    fn render_dashboard_risk_watch_card(&mut self, ui: &mut egui::Ui) {
+        let watch: Vec<&MarginRow> = self.margin.iter().filter(|m| m.margin_level.is_some()).take(4).collect();
+        let stop_out_levels: Vec<f64> = self.margin.iter().map(|m| m.stop_out_level).collect();
+        let mut nav_to_risk = false;
+        theme::card(14).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.strong("Risk watch");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.link("All accounts \u{2192}").clicked() {
+                        nav_to_risk = true;
+                    }
+                });
+            });
+            ui.add_space(10.0);
+            if watch.is_empty() {
+                ui.weak("No accounts with open positions.");
+            } else {
+                for m in &watch {
+                    let level = m.margin_level.unwrap_or(0.0);
+                    let (status, color) = if level <= m.margin_call_level {
+                        ("Margin call", theme::danger())
+                    } else if level <= m.margin_call_level * 1.5 {
+                        ("Watch", theme::warning())
+                    } else {
+                        ("OK", theme::up())
+                    };
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(format!("{} \u{b7} {}", m.account_full_name, m.account_number)).strong());
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.vertical(|ui| {
+                                ui.colored_label(color, format!("{level:.0}%"));
+                                ui.label(egui::RichText::new("margin level").size(10.0).color(theme::text_3()));
+                            });
+                        });
+                    });
+                    ui.label(egui::RichText::new(format!("Equity ${} \u{b7} Margin ${}", m.equity, m.used_margin)).size(11.0).color(theme::text_3()));
+                    let frac = (level / 300.0).clamp(0.02, 1.0) as f32;
+                    let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 6.0), egui::Sense::hover());
+                    ui.painter().rect_filled(rect, egui::CornerRadius::same(3), theme::border());
+                    let filled = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width() * frac, rect.height()));
+                    ui.painter().rect_filled(filled, egui::CornerRadius::same(3), color);
+                    if status != "OK" {
+                        ui.add_space(2.0);
+                        ui.colored_label(color, status);
+                    }
+                    ui.add_space(10.0);
+                }
+            }
+            ui.separator();
+            // Honest replacement for the design mockup's "Stop-out level
+            // enforced by engine: Yes * 50%" pill -- see this fn's own
+            // doc comment for the Part 0.4 finding this corrects.
+            let uniform_stop_out = stop_out_levels.first().filter(|first| stop_out_levels.iter().all(|v| v == *first));
+            let stop_out_text = match uniform_stop_out {
+                Some(level) => format!("Stop-out auto-enforced at {level:.0}% \u{b7} checked every 1 min"),
+                None => "Stop-out auto-enforced per group's configured level \u{b7} checked every 1 min".to_string(),
+            };
+            ui.label(egui::RichText::new(stop_out_text).size(11.0).color(theme::up()));
+        });
+        if nav_to_risk {
+            self.screen = Screen::Risk;
+            self.ensure_loaded(ui.ctx(), Screen::Risk);
+        }
+    }
+
+    fn render_dashboard_activity_card(&mut self, ui: &mut egui::Ui, activity: &[ActivityRow], today: &str) {
+        theme::card(14).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.strong("Activity");
+            });
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                for (i, label) in ["All", "Trades", "Money", "Admin", "System"].iter().enumerate() {
+                    let selected = self.dashboard_activity_tab == i;
+                    let text = if selected { egui::RichText::new(*label).color(theme::accent()).strong() } else { egui::RichText::new(*label).color(theme::text_3()) };
+                    if ui.selectable_label(selected, text).clicked() {
+                        self.dashboard_activity_tab = i;
+                    }
+                }
+            });
+            ui.add_space(8.0);
+            let filtered: Vec<&ActivityRow> = activity
+                .iter()
+                .filter(|a| match self.dashboard_activity_tab {
+                    1 => dashboard_activity_category(a) == "Trades",
+                    2 => dashboard_activity_category(a) == "Money",
+                    3 => dashboard_activity_category(a) == "Admin",
+                    4 => dashboard_activity_category(a) == "System",
+                    _ => true,
+                })
+                .collect();
+            if filtered.is_empty() {
+                ui.weak("No activity in this category.");
+                return;
+            }
+            let mut last_date: Option<&str> = None;
+            let yesterday = date_days_ago(1);
+            for row in &filtered {
+                let date = row.created_at_label.get(0..10).unwrap_or("");
+                if last_date != Some(date) {
+                    last_date = Some(date);
+                    ui.add_space(6.0);
+                    let label = if date == today {
+                        "Today".to_string()
+                    } else if date == yesterday {
+                        "Yesterday".to_string()
+                    } else {
+                        date.to_string()
+                    };
+                    ui.label(egui::RichText::new(label.to_uppercase()).size(10.5).color(theme::text_3()));
+                    ui.add_space(3.0);
+                }
+                ui.horizontal(|ui| {
+                    let dot_color = match dashboard_activity_category(row) {
+                        "Trades" => theme::up(),
+                        "Money" => theme::warning(),
+                        "System" => theme::text_3(),
+                        _ => theme::blue(),
+                    };
+                    let (rect, _) = ui.allocate_exact_size(egui::vec2(6.0, 6.0), egui::Sense::hover());
+                    ui.painter().circle_filled(rect.center(), 3.0, dot_color);
+                    ui.vertical(|ui| {
+                        ui.label(egui::RichText::new(&row.action_label).color(theme::text_1()).strong());
+                        ui.label(egui::RichText::new(&row.actor_email).size(11.0).color(theme::text_3()));
+                    });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(egui::RichText::new(row.created_at_label.get(11..16).unwrap_or("")).size(11.0).color(theme::text_3()));
+                    });
+                });
+                ui.add_space(6.0);
+            }
+            ui.separator();
+            if ui.link("View full audit log \u{2192}").clicked() {
+                self.screen = Screen::Audit;
+                self.ensure_loaded(ui.ctx(), Screen::Audit);
             }
         });
     }
@@ -6250,6 +6608,116 @@ fn responsive_stat_row(ui: &mut egui::Ui, stats: &[(&str, String, Option<(String
         ui.add_space(GAP);
     }
     ui.spacing_mut().item_spacing.x = old_spacing;
+}
+
+// Days-since-epoch -> (year, month, day), UTC. Howard Hinnant's
+// civil_from_days algorithm (public domain, chrono-equivalent, used
+// instead of pulling in the chrono crate for one field -- same tradeoff
+// chrono_like_utc_now already makes for the header clock).
+fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = (z - era * 146097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    let y = if m <= 2 { y + 1 } else { y };
+    (y, m, d)
+}
+
+// "YYYY-MM-DD" for `days` days before today (UTC) -- lexicographically
+// comparable against DealRow/ActivityRow's own "YYYY-MM-DD HH:MM:SS"
+// labels, so Dashboard's 7d/14d windowing is plain string comparison.
+fn date_days_ago(days: i64) -> String {
+    let now_secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+    let epoch_days = now_secs / 86400 - days;
+    let (y, m, d) = civil_from_days(epoch_days);
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+// Dashboard's Activity card has no server-side category (ActivityRow's
+// entityType is the closest real signal available) -- a disclosed
+// heuristic, not an authoritative classification.
+fn dashboard_activity_category(row: &ActivityRow) -> &'static str {
+    if row.actor_email == "system" {
+        return "System";
+    }
+    match row.entity_type.as_str() {
+        "Position" | "Order" | "Deal" => "Trades",
+        "Transaction" | "BalanceAdjustment" | "Wallet" => "Money",
+        _ => "Admin",
+    }
+}
+
+// One of Dashboard's four attention cards (Margin calls / Withdrawals /
+// KYC pending / Live account requests) -- returns true when clicked
+// anywhere on the card, so the caller navigates.
+fn dashboard_attention_card(ui: &mut egui::Ui, count: &str, title: &str, subtitle: &str, action_label: &str, active: bool) -> bool {
+    let mut clicked = false;
+    egui::Frame::new()
+        .fill(theme::bg_1())
+        .stroke(egui::Stroke::new(1.0_f32, if active { theme::warning().gamma_multiply(0.5) } else { theme::border() }))
+        .corner_radius(egui::CornerRadius::same(10))
+        .inner_margin(egui::Margin::symmetric(16, 14))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(count).font(theme::heading_font(22.0)).color(if active { theme::warning() } else { theme::text_3() }));
+                ui.vertical(|ui| {
+                    ui.label(egui::RichText::new(title).color(theme::text_1()).strong());
+                    ui.label(egui::RichText::new(subtitle).size(11.0).color(theme::text_3()));
+                });
+            });
+            ui.add_space(6.0);
+            if ui.link(format!("{action_label} \u{2192}")).clicked() {
+                clicked = true;
+            }
+        });
+    clicked
+}
+
+fn dashboard_mini_stat(ui: &mut egui::Ui, label: &str, value: &str) {
+    egui::Frame::new()
+        .fill(theme::bg_2())
+        .corner_radius(egui::CornerRadius::same(8))
+        .inner_margin(egui::Margin::symmetric(12, 10))
+        .show(ui, |ui| {
+            ui.vertical(|ui| {
+                ui.label(egui::RichText::new(label).size(10.5).color(theme::text_3()));
+                ui.label(egui::RichText::new(value).size(15.0).color(theme::text_1()).strong());
+            });
+        });
+}
+
+// Hand-drawn dual-series bar chart (deposits vs withdrawals, last 7
+// days) -- no plotting crate in this binary's dependencies, and 7 fixed
+// bars is well within what's reasonable to paint directly.
+fn dashboard_bar_chart(ui: &mut egui::Ui, buckets: &[DayBucket]) {
+    if buckets.is_empty() {
+        ui.weak("No deposit/withdrawal activity in the last 7 days.");
+        return;
+    }
+    let max_value = buckets.iter().flat_map(|b| [b.deposits, b.withdrawals]).fold(1.0_f64, f64::max);
+    let chart_height = 160.0_f32;
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), chart_height + 22.0), egui::Sense::hover());
+    let painter = ui.painter();
+    let n = buckets.len() as f32;
+    let group_w = rect.width() / n;
+    let bar_w = (group_w * 0.28).min(22.0);
+    for (i, b) in buckets.iter().enumerate() {
+        let cx = rect.left() + group_w * (i as f32 + 0.5);
+        let dep_h = (b.deposits / max_value) as f32 * chart_height;
+        let wd_h = (b.withdrawals / max_value) as f32 * chart_height;
+        let base_y = rect.top() + chart_height;
+        let dep_rect = egui::Rect::from_min_size(egui::pos2(cx - bar_w - 2.0, base_y - dep_h), egui::vec2(bar_w, dep_h));
+        let wd_rect = egui::Rect::from_min_size(egui::pos2(cx + 2.0, base_y - wd_h), egui::vec2(bar_w, wd_h));
+        painter.rect_filled(dep_rect, egui::CornerRadius::same(2), theme::accent());
+        painter.rect_filled(wd_rect, egui::CornerRadius::same(2), theme::text_3());
+        let label = b.date.get(5..10).unwrap_or(&b.date); // "MM-DD"
+        painter.text(egui::pos2(cx, base_y + 14.0), egui::Align2::CENTER_CENTER, label, egui::FontId::proportional(10.5), theme::text_3());
+    }
 }
 
 // Shared row renderer for both activity-feed surfaces (Live Exposure's

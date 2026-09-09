@@ -20,6 +20,7 @@ export async function GET() {
   const brokerId = session!.brokerId!;
   const now = new Date();
   const sevenDaysAgo = new Date(now.getTime() - 7 * DAY_MS);
+  const fourteenDaysAgo = new Date(now.getTime() - 14 * DAY_MS);
   const thirtyDaysAgo = new Date(now.getTime() - 30 * DAY_MS);
 
   const [
@@ -31,6 +32,7 @@ export async function GET() {
     pendingKyc,
     pendingWithdrawals,
     activity,
+    depositsWithdrawals14d,
   ] = await Promise.all([
     prisma.account.count({ where: { brokerId } }),
     prisma.account.count({ where: { brokerId, createdAt: { gte: sevenDaysAgo } } }),
@@ -66,7 +68,38 @@ export async function GET() {
       take: 15,
       include: { actorAdmin: { select: { email: true } } },
     }),
+    // Dashboard "Net deposits (7d)" trend + "Deposits vs withdrawals" chart
+    // (design ref: futurix-dashboard-design.html) both need day-bucketed
+    // COMPLETED deposit/withdrawal amounts -- one 14-day-back query so the
+    // 7d sum and the prior-7d comparator come from the same read, bucketed
+    // in JS below rather than 14 separate day-range queries.
+    prisma.transaction.findMany({
+      where: { brokerId, type: { in: ["DEPOSIT", "WITHDRAWAL"] }, status: "COMPLETED", createdAt: { gte: fourteenDaysAgo } },
+      select: { type: true, amount: true, createdAt: true },
+    }),
   ]);
+
+  const dayKey = (d: Date) => d.toISOString().slice(0, 10);
+  const byDay = new Map<string, { deposits: number; withdrawals: number }>();
+  for (let i = 6; i >= 0; i -= 1) {
+    byDay.set(dayKey(new Date(now.getTime() - i * DAY_MS)), { deposits: 0, withdrawals: 0 });
+  }
+  let netDeposits7d = 0;
+  let netDepositsPrior7d = 0;
+  for (const t of depositsWithdrawals14d) {
+    const amount = t.amount.toNumber();
+    const signed = t.type === "DEPOSIT" ? amount : -amount;
+    if (t.createdAt >= sevenDaysAgo) {
+      netDeposits7d += signed;
+      const bucket = byDay.get(dayKey(t.createdAt));
+      if (bucket) {
+        if (t.type === "DEPOSIT") bucket.deposits += amount;
+        else bucket.withdrawals += amount;
+      }
+    } else {
+      netDepositsPrior7d += signed;
+    }
+  }
 
   return NextResponse.json({
     totalClients,
@@ -77,11 +110,15 @@ export async function GET() {
     pendingKyc,
     pendingWithdrawalCount: pendingWithdrawals._count,
     pendingWithdrawalSum: pendingWithdrawals._sum.amount?.toNumber() ?? 0,
+    netDeposits7d,
+    netDepositsPrior7d,
+    depositsWithdrawalsByDay: [...byDay.entries()].map(([date, v]) => ({ date, deposits: v.deposits, withdrawals: v.withdrawals })),
     activity: activity.map((a) => ({
       id: a.id,
       actionLabel: humanizeAction(a.action),
       actorEmail: a.actorAdmin?.email ?? "system",
       entityId: a.entityId,
+      entityType: a.entityType,
       createdAtLabel: a.createdAt.toISOString().replace("T", " ").slice(0, 19),
     })),
   });
