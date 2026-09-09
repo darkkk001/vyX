@@ -790,6 +790,69 @@ mod components {
         });
     }
 
+    // Part 1.2 -- decomposed into small helpers rather than one monolithic
+    // builder: every page's filter set is a different shape (Deals has
+    // Account/Group/Symbol/Side/Type/P&L, Leads has Status/Source/Owner),
+    // so there's no single closure signature that fits all of them. These
+    // three give every page the same look (280px search, `Label: Value v`
+    // chips, right-aligned count/bulk-action/Columns) without forcing a
+    // shared shape onto filters that don't share one.
+    pub fn search_field(ui: &mut egui::Ui, value: &mut String, hint: &str) -> egui::Response {
+        ui.add_sized([280.0, 0.0], egui::TextEdit::singleline(value).hint_text(hint))
+    }
+
+    // `options` is (display label, value); returns true when the
+    // selection changed this frame so the caller can re-fetch/re-filter.
+    pub fn filter_chip<T: Copy + PartialEq>(ui: &mut egui::Ui, name: &str, options: &[(&str, T)], selected: &mut T) -> bool {
+        let mut changed = false;
+        let current_label = options.iter().find(|(_, v)| v == selected).map(|(l, _)| *l).unwrap_or("All");
+        egui::Frame::new()
+            .fill(theme::bg_2())
+            .stroke(egui::Stroke::new(1.0_f32, theme::border()))
+            .corner_radius(egui::CornerRadius::same(6))
+            .inner_margin(egui::Margin::symmetric(8, 3))
+            .show(ui, |ui| {
+                egui::ComboBox::from_id_salt(("filter_chip", name))
+                    .selected_text(format!("{name}: {current_label}"))
+                    .show_ui(ui, |ui| {
+                        for (label, value) in options {
+                            if ui.selectable_label(*selected == *value, *label).clicked() && *selected != *value {
+                                *selected = *value;
+                                changed = true;
+                            }
+                        }
+                    });
+            });
+        changed
+    }
+
+    pub struct ToolbarRightResponse {
+        pub bulk_clicked: bool,
+        pub columns_clicked: bool,
+    }
+
+    // Right cluster: selection count, the bulk-action button (spec: enabled
+    // only when selection > 0), Columns picker. `bulk_label` is None when
+    // the page has no bulk action (Columns/count still render).
+    pub fn toolbar_right(ui: &mut egui::Ui, selected_count: usize, bulk_label: Option<&str>) -> ToolbarRightResponse {
+        let mut bulk_clicked = false;
+        let mut columns_clicked = false;
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.button("Columns \u{25be}").clicked() {
+                columns_clicked = true;
+            }
+            if let Some(label) = bulk_label {
+                if theme::accent_button_enabled(ui, selected_count > 0, label).clicked() {
+                    bulk_clicked = true;
+                }
+            }
+            if selected_count > 0 {
+                ui.label(egui::RichText::new(format!("{selected_count} selected")).color(theme::text_2()).size(12.0));
+            }
+        });
+        ToolbarRightResponse { bulk_clicked, columns_clicked }
+    }
+
     // Part 1.5 -- generalizes the ad-hoc "Window + open/confirm bools"
     // pattern already repeated across most of this file's delete/reject/
     // halt confirmations into one call. `reason` is caller-owned (lives on
@@ -5238,7 +5301,7 @@ impl BackofficeApp {
                     .color(theme::text_3()),
             );
         });
-        ui.add(egui::TextEdit::singleline(&mut self.deals_filter).hint_text("Search by account number, name, or symbol..."));
+        components::search_field(ui, &mut self.deals_filter, "Search by account number, name, or symbol...");
         ui.add_space(8.0);
 
         let q = self.deals_filter.to_lowercase();
