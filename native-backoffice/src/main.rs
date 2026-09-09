@@ -698,6 +698,13 @@ struct BackofficeApp {
     dealer_toggle: Option<DealerToggleState>,
     dealer_toggle_busy: bool,
     dealer_toggle_confirm_off: bool,
+    // Deliberately separate from dealing_error: the dealer on/off switch
+    // is RISK_SETTINGS-gated (app/api/manage/dealing-desk-toggle/route.ts),
+    // narrower than what Screen::Dealing itself needs -- a MANAGER without
+    // that one permission still sees a working dealing queue, just no
+    // switch. Sharing dealing_error used to paint the whole page red
+    // ("forbidden") over a single missing permission on an unrelated card.
+    dealer_toggle_error: Option<String>,
     dealing_desk_accounts: Vec<DealingDeskAccount>,
     dealing_desk_resting: Vec<RestingOrderRow>,
     dealing_desk_feed: Vec<ActivityFeedRow>,
@@ -939,6 +946,7 @@ impl Default for BackofficeApp {
             dealer_toggle: None,
             dealer_toggle_busy: false,
             dealer_toggle_confirm_off: false,
+            dealer_toggle_error: None,
             dealing_desk_accounts: Vec::new(),
             dealing_desk_resting: Vec::new(),
             dealing_desk_feed: Vec::new(),
@@ -1240,7 +1248,7 @@ impl BackofficeApp {
                             // reflect the new state immediately.
                             self.fetch(ctx, Screen::Dealing);
                         }
-                        Err(e) => self.dealing_error = Some(e),
+                        Err(e) => self.dealer_toggle_error = Some(e),
                     }
                 }
                 ApiEvent::DealingDesk(result) => {
@@ -1565,6 +1573,7 @@ impl BackofficeApp {
                 self.dealing_loading = true;
                 self.dealing_error = None;
                 api.fetch_dealing_queue(ctx.clone(), self.tx.clone());
+                self.dealer_toggle_error = None;
                 api.fetch_dealer_toggle(ctx.clone(), self.tx.clone());
                 self.dealing_desk_loading = true;
                 self.dealing_desk_error = None;
@@ -3008,6 +3017,9 @@ impl BackofficeApp {
                 }
             }
             ui.add_space(10.0);
+        } else if let Some(err) = &self.dealer_toggle_error {
+            ui.weak(permission_error_message(err, "RISK_SETTINGS"));
+            ui.add_space(10.0);
         }
 
         if let Some(err) = &self.dealing_error {
@@ -3509,6 +3521,11 @@ impl BackofficeApp {
     // this app's own session and shown in-app, since an OS-browser link
     // can't carry this app's cookie jar), Status, Submitted, Action.
     fn render_kyc(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        if let Some(err) = &self.kyc_error {
+            ui.colored_label(theme::danger(), permission_error_message(err, "KYC_REVIEW"));
+            return;
+        }
+
         ui.horizontal(|ui| {
             if self.kyc_loading {
                 ui.spinner();
@@ -3516,11 +3533,6 @@ impl BackofficeApp {
             ui.weak(format!("{} KYC submissions", self.kyc.len()));
         });
         ui.add_space(8.0);
-
-        if let Some(err) = &self.kyc_error {
-            ui.colored_label(theme::danger(), err);
-            return;
-        }
 
         let mut approve_id: Option<String> = None;
         let mut confirm_reject: Option<(String, String)> = None;
@@ -3638,7 +3650,7 @@ impl BackofficeApp {
         ui.add_space(8.0);
 
         if let Some(err) = &self.client_kyc_error {
-            ui.colored_label(theme::danger(), err);
+            ui.colored_label(theme::danger(), permission_error_message(err, "KYC_REVIEW"));
             return;
         }
 
@@ -3756,7 +3768,7 @@ impl BackofficeApp {
         ui.add_space(8.0);
 
         if let Some(err) = &self.live_account_requests_error {
-            ui.colored_label(theme::danger(), err);
+            ui.colored_label(theme::danger(), permission_error_message(err, "KYC_REVIEW"));
             return;
         }
 
@@ -6224,6 +6236,24 @@ impl BackofficeApp {
                     });
                 });
             });
+    }
+}
+
+// The server's 403 body is always the bare JSON string "forbidden" --
+// true for both a real auth failure and a MANAGER correctly missing a
+// specific delegated permission (KYC_REVIEW, RISK_SETTINGS, ...), see
+// lib/permissions.ts's forbidUnlessBrokerAdminOrPermission. Rendering
+// that raw word gives no admin any idea whether this is expected
+// (ask a Broker Admin to delegate the permission) or a real bug. Only
+// rewrites the literal "forbidden" string -- any other error text
+// (network error, bad response, a real 500) passes through unchanged.
+fn permission_error_message(err: &str, required_permission: &str) -> String {
+    if err == "forbidden" {
+        format!(
+            "You don't have permission to view this -- it requires the {required_permission} permission. Ask a Broker Admin to grant it under Users & roles."
+        )
+    } else {
+        err.to_string()
     }
 }
 
