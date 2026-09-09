@@ -576,6 +576,452 @@ mod theme {
     }
 }
 
+// Shared building blocks (PROMPT-backoffice-15-pages.md Part 1) --
+// "build once," adopted page-by-page as Part 3 touches each screen.
+// egui is immediate-mode (no persistent widget tree, no component
+// instances to hold state across frames), so these are plain builders
+// over a Ui/Context each render call re-runs -- any state that needs to
+// survive a frame (dirty cells, which drawer tab is open, a confirm
+// dialog's typed-reason text) still lives on BackofficeApp itself, same
+// as every other piece of this app's state; these just standardize how
+// that state is *drawn*, not where it's *stored*.
+mod components {
+    use super::theme;
+    use eframe::egui;
+    use egui_extras::TableBuilder;
+
+    pub struct Column {
+        pub label: &'static str,
+        pub min_width: f32,
+        pub right_align: bool,
+    }
+
+    impl Column {
+        pub fn new(label: &'static str, min_width: f32) -> Self {
+            Self { label, min_width, right_align: false }
+        }
+        // Numeric/currency/lot columns -- tabular-nums right alignment per
+        // the token spec ("numeric columns right-aligned with
+        // tabular-nums; text left").
+        pub fn right(mut self) -> Self {
+            self.right_align = true;
+            self
+        }
+    }
+
+    enum State<'a> {
+        Loading,
+        // cached_rows: whether rows from a previous successful load are
+        // still on screen below the banner (0.2: "Rows below stay if
+        // cached" -- an error must never blank out data the user already
+        // had, only warn that it's stale).
+        Error { message: &'a str, cached_rows: bool, last_good: Option<&'a str> },
+        Empty { title: &'a str, subtitle: &'a str },
+        Ready,
+    }
+
+    // The one thing 0.2 exists to prevent: error and empty are mutually
+    // exclusive by construction here (an enum, not two separate bools a
+    // caller could both set), so a page using DataTable literally cannot
+    // reproduce the "0 KYC submissions" + "forbidden" bug fixed in Part 0
+    // -- picking Error forecloses Empty at the type level.
+    pub struct DataTable<'a> {
+        columns: Vec<Column>,
+        row_height: f32,
+        state: State<'a>,
+    }
+
+    pub struct DataTableResponse {
+        pub retry_clicked: bool,
+    }
+
+    impl<'a> DataTable<'a> {
+        pub fn new(columns: Vec<Column>) -> Self {
+            Self { columns, row_height: 28.0, state: State::Ready }
+        }
+        pub fn row_height(mut self, h: f32) -> Self {
+            self.row_height = h;
+            self
+        }
+        pub fn loading(mut self) -> Self {
+            self.state = State::Loading;
+            self
+        }
+        pub fn error(mut self, message: &'a str, cached_rows: bool, last_good: Option<&'a str>) -> Self {
+            self.state = State::Error { message, cached_rows, last_good };
+            self
+        }
+        pub fn empty(mut self, title: &'a str, subtitle: &'a str) -> Self {
+            self.state = State::Empty { title, subtitle };
+            self
+        }
+
+        // Last column stretches to fill leftover row width (egui_extras'
+        // `remainder`); every other column sizes to content with a floor
+        // (`auto().at_least(...)`) -- same split the hand-written tables
+        // this component replaces already used, just centralized so every
+        // adopting page gets a full-width last column for free instead of
+        // reproducing `Column::remainder()` itself.
+        fn column_spec(&self, i: usize) -> egui_extras::Column {
+            if i + 1 == self.columns.len() {
+                egui_extras::Column::remainder().at_least(self.columns[i].min_width)
+            } else {
+                egui_extras::Column::auto().at_least(self.columns[i].min_width)
+            }
+        }
+
+        fn header(&self, ui: &mut egui::Ui) {
+            let mut builder = TableBuilder::new(ui).striped(false).resizable(true).cell_layout(egui::Layout::left_to_right(egui::Align::Center));
+            for i in 0..self.columns.len() {
+                builder = builder.column(self.column_spec(i));
+            }
+            builder.header(24.0, |mut header| {
+                for col in &self.columns {
+                    header.col(|ui| {
+                        if col.right_align {
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                ui.label(egui::RichText::new(col.label.to_uppercase()).size(11.5).color(theme::text_3()));
+                            });
+                        } else {
+                            ui.label(egui::RichText::new(col.label.to_uppercase()).size(11.5).color(theme::text_3()));
+                        }
+                    });
+                }
+            });
+        }
+
+        // `row_count` and `add_row` describe the READY-state body only --
+        // callers still pass them even in Loading/Error/Empty states
+        // (Error with cached_rows renders the real rows below its banner)
+        // but a Loading/Empty table ignores add_row and draws its own
+        // placeholder rows instead.
+        pub fn show(self, ui: &mut egui::Ui, row_count: usize, mut add_row: impl FnMut(&mut egui_extras::TableRow, usize)) -> DataTableResponse {
+            let mut retry_clicked = false;
+            match &self.state {
+                State::Loading => {
+                    self.header(ui);
+                    for i in 0..6 {
+                        let frac = 1.0 - (i as f32 * 0.08);
+                        ui.add_space(2.0);
+                        let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width() * 0.7_f32.max(0.3).min(frac.max(0.35)), 14.0), egui::Sense::hover());
+                        ui.painter().rect_filled(rect, egui::CornerRadius::same(4), theme::border().gamma_multiply(0.6));
+                    }
+                }
+                State::Error { message, cached_rows, last_good } => {
+                    egui::Frame::new()
+                        .fill(theme::danger().gamma_multiply(0.12))
+                        .stroke(egui::Stroke::new(1.0_f32, theme::danger()))
+                        .corner_radius(egui::CornerRadius::same(8))
+                        .inner_margin(egui::Margin::symmetric(14, 10))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.vertical(|ui| {
+                                    ui.label(egui::RichText::new("Couldn't load this").strong().color(theme::text_1()));
+                                    ui.label(egui::RichText::new(*message).color(theme::text_2()).size(12.0));
+                                    if let Some(last_good) = last_good {
+                                        ui.label(egui::RichText::new(format!("Showing last known state from {last_good}")).color(theme::text_3()).size(11.0));
+                                    }
+                                });
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    if ui.button("Retry").clicked() {
+                                        retry_clicked = true;
+                                    }
+                                });
+                            });
+                        });
+                    ui.add_space(8.0);
+                    if *cached_rows && row_count > 0 {
+                        self.header(ui);
+                        let mut builder = TableBuilder::new(ui).striped(true).cell_layout(egui::Layout::left_to_right(egui::Align::Center));
+                        for i in 0..self.columns.len() {
+                            builder = builder.column(self.column_spec(i));
+                        }
+                        builder.body(|body| {
+                                body.rows(self.row_height, row_count, |mut row| {
+                                    let idx = row.index();
+                                    add_row(&mut row, idx);
+                                });
+                            });
+                    }
+                }
+                State::Empty { title, subtitle } => {
+                    self.header(ui);
+                    ui.add_space(24.0);
+                    ui.vertical_centered(|ui| {
+                        ui.label(egui::RichText::new(*title).strong().color(theme::text_1()));
+                        ui.label(egui::RichText::new(*subtitle).color(theme::text_3()).size(12.0));
+                    });
+                    ui.add_space(24.0);
+                }
+                State::Ready => {
+                    let mut builder = TableBuilder::new(ui).striped(true).resizable(true).cell_layout(egui::Layout::left_to_right(egui::Align::Center));
+                    for i in 0..self.columns.len() {
+                        builder = builder.column(self.column_spec(i));
+                    }
+                    builder
+                        .header(24.0, |mut header| {
+                            for col in &self.columns {
+                                header.col(|ui| {
+                                    ui.label(egui::RichText::new(col.label.to_uppercase()).size(11.5).color(theme::text_3()));
+                                });
+                            }
+                        })
+                        .body(|body| {
+                            body.rows(self.row_height, row_count, |mut row| {
+                                let idx = row.index();
+                                add_row(&mut row, idx);
+                            });
+                        });
+                }
+            }
+            DataTableResponse { retry_clicked }
+        }
+    }
+
+    // "Showing 1-50 of N * sorted by X" footer strip (Part 1.1). `sorted_by`
+    // is optional since not every table has a meaningful default sort.
+    pub fn table_footer(ui: &mut egui::Ui, showing: usize, total: usize, sorted_by: Option<&str>) {
+        ui.horizontal(|ui| {
+            let text = match sorted_by {
+                Some(s) => format!("Showing 1-{showing} of {total} \u{b7} sorted by {s}"),
+                None => format!("Showing 1-{showing} of {total}"),
+            };
+            ui.label(egui::RichText::new(text).size(11.0).color(theme::text_3()));
+        });
+    }
+
+    // Part 1.5 -- generalizes the ad-hoc "Window + open/confirm bools"
+    // pattern already repeated across most of this file's delete/reject/
+    // halt confirmations into one call. `reason` is caller-owned (lives on
+    // BackofficeApp, same as before) since the dialog itself has no frame-
+    // to-frame memory of its own.
+    pub struct ConfirmDialog<'a> {
+        id: &'static str,
+        title: &'a str,
+        consequence: &'a str,
+        require_reason: bool,
+        require_typed: Option<&'a str>,
+        danger: bool,
+        confirm_label: &'a str,
+    }
+
+    pub struct ConfirmDialogResponse {
+        pub confirmed: bool,
+        pub still_open: bool,
+    }
+
+    impl<'a> ConfirmDialog<'a> {
+        pub fn new(id: &'static str, title: &'a str, consequence: &'a str) -> Self {
+            Self { id, title, consequence, require_reason: false, require_typed: None, danger: true, confirm_label: "Confirm" }
+        }
+        pub fn require_reason(mut self, v: bool) -> Self {
+            self.require_reason = v;
+            self
+        }
+        // Destructive actions (Suspend, Halt trading, Close all) can ask
+        // the operator to type e.g. the account number back -- a
+        // deliberate speed bump the spec calls out by name, not just a
+        // reason text box.
+        pub fn require_typed_confirmation(mut self, expected: &'a str) -> Self {
+            self.require_typed = Some(expected);
+            self
+        }
+        pub fn danger(mut self, v: bool) -> Self {
+            self.danger = v;
+            self
+        }
+        pub fn confirm_label(mut self, label: &'a str) -> Self {
+            self.confirm_label = label;
+            self
+        }
+
+        pub fn show(self, ctx: &egui::Context, reason: &mut String, typed: &mut String) -> ConfirmDialogResponse {
+            let mut confirmed = false;
+            let mut cancelled = false;
+            let can_confirm = (!self.require_reason || !reason.trim().is_empty()) && self.require_typed.is_none_or(|expected| typed.trim() == expected);
+            egui::Window::new(self.title)
+                .id(egui::Id::new(self.id))
+                .collapsible(false)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.label(self.consequence);
+                    ui.add_space(6.0);
+                    if self.require_reason {
+                        ui.label("Reason (required, shown to the client):");
+                        ui.text_edit_singleline(reason);
+                    }
+                    if let Some(expected) = self.require_typed {
+                        ui.label(format!("Type \"{expected}\" to confirm:"));
+                        ui.text_edit_singleline(typed);
+                    }
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        let resp = if self.danger {
+                            theme::danger_button_enabled(ui, can_confirm, self.confirm_label)
+                        } else {
+                            theme::accent_button_enabled(ui, can_confirm, self.confirm_label)
+                        };
+                        if resp.clicked() {
+                            confirmed = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            cancelled = true;
+                        }
+                    });
+                });
+            ConfirmDialogResponse { confirmed, still_open: !confirmed && !cancelled }
+        }
+    }
+
+    // Part 1.3 -- right-side sticky panel. Native desktop app, no <1100px
+    // breakpoint to speak of (the window itself is the viewport), so this
+    // is always the fixed-width SidePanel form the spec describes for
+    // >=1100px; the slide-over variant is a browser responsive concern
+    // this app doesn't have.
+    pub struct DetailDrawer<'a> {
+        title: &'a str,
+        subtitle: Option<&'a str>,
+        status_pill: Option<(&'a str, egui::Color32)>,
+        tabs: &'a [&'a str],
+    }
+
+    impl<'a> DetailDrawer<'a> {
+        pub fn new(title: &'a str, tabs: &'a [&'a str]) -> Self {
+            Self { title, subtitle: None, status_pill: None, tabs }
+        }
+        pub fn subtitle(mut self, s: &'a str) -> Self {
+            self.subtitle = Some(s);
+            self
+        }
+        pub fn status_pill(mut self, label: &'a str, color: egui::Color32) -> Self {
+            self.status_pill = Some((label, color));
+            self
+        }
+
+        // `selected_tab` is caller-owned index state; `body` is called once
+        // per frame for whichever tab is currently selected. Returns
+        // whether the drawer's own close (x) was clicked.
+        pub fn show(self, ctx: &egui::Context, selected_tab: &mut usize, mut body: impl FnMut(&mut egui::Ui, usize)) -> bool {
+            let mut close_clicked = false;
+            egui::SidePanel::right("detail_drawer")
+                .exact_width(420.0)
+                .resizable(false)
+                .frame(egui::Frame::new().fill(theme::bg_1()).stroke(egui::Stroke::new(1.0_f32, theme::border())).inner_margin(egui::Margin::same(16)))
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(self.title).font(theme::heading_font(16.0)).color(theme::text_1()));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("\u{2715}").clicked() {
+                                close_clicked = true;
+                            }
+                        });
+                    });
+                    ui.horizontal(|ui| {
+                        if let Some((label, color)) = self.status_pill {
+                            egui::Frame::new()
+                                .fill(color.gamma_multiply(0.16))
+                                .corner_radius(egui::CornerRadius::same(20))
+                                .inner_margin(egui::Margin::symmetric(8, 2))
+                                .show(ui, |ui| {
+                                    ui.label(egui::RichText::new(label).size(11.0).color(color));
+                                });
+                        }
+                    });
+                    if let Some(sub) = self.subtitle {
+                        ui.label(egui::RichText::new(sub).color(theme::text_3()).size(12.0));
+                    }
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        for (i, tab) in self.tabs.iter().enumerate() {
+                            let selected = *selected_tab == i;
+                            let text = if selected {
+                                egui::RichText::new(*tab).color(theme::accent()).strong()
+                            } else {
+                                egui::RichText::new(*tab).color(theme::text_3())
+                            };
+                            if ui.selectable_label(selected, text).clicked() {
+                                *selected_tab = i;
+                            }
+                        }
+                    });
+                    ui.separator();
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        body(ui, *selected_tab);
+                    });
+                });
+            close_clicked
+        }
+    }
+
+    // Part 1.4 -- the dirty-tracking + sticky save bar half of EditableGrid.
+    // Deliberately doesn't try to own cell rendering too: Symbols' and
+    // Groups-pricing's grids have very different column shapes, so the
+    // reusable part is "track which cells changed and show one save bar,"
+    // not a generic spreadsheet widget. A page using this calls `mark_dirty`
+    // from its own per-cell input handling and reads `is_dirty` to decide
+    // whether to draw a cell with the accent dirty-border.
+    #[derive(Default)]
+    pub struct EditableGridState {
+        dirty: std::collections::HashSet<(String, &'static str)>,
+        first_change_summary: Option<String>,
+    }
+
+    impl EditableGridState {
+        pub fn mark_dirty(&mut self, row_id: &str, field: &'static str, summary: impl FnOnce() -> String) {
+            let key = (row_id.to_string(), field);
+            if !self.dirty.contains(&key) {
+                if self.first_change_summary.is_none() {
+                    self.first_change_summary = Some(summary());
+                }
+                self.dirty.insert(key);
+            }
+        }
+        pub fn is_dirty(&self, row_id: &str, field: &'static str) -> bool {
+            self.dirty.contains(&(row_id.to_string(), field))
+        }
+        pub fn count(&self) -> usize {
+            self.dirty.len()
+        }
+        pub fn clear(&mut self) {
+            self.dirty.clear();
+            self.first_change_summary = None;
+        }
+
+        // Renders the sticky bottom bar when there are unsaved changes.
+        // Returns (discard_clicked, save_clicked); Ctrl+S also triggers
+        // save_clicked (spec: "Ctrl+S saves").
+        pub fn save_bar(&self, ui: &mut egui::Ui, saving: bool) -> (bool, bool) {
+            if self.dirty.is_empty() {
+                return (false, false);
+            }
+            let ctrl_s = ui.ctx().input(|i| i.key_pressed(egui::Key::S) && i.modifiers.ctrl);
+            let mut discard = false;
+            let mut save = ctrl_s;
+            egui::Frame::new()
+                .fill(theme::bg_2())
+                .stroke(egui::Stroke::new(1.0_f32, theme::accent()))
+                .corner_radius(egui::CornerRadius::same(8))
+                .inner_margin(egui::Margin::symmetric(14, 10))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        let n = self.dirty.len();
+                        let summary = self.first_change_summary.as_deref().unwrap_or("");
+                        ui.label(egui::RichText::new(format!("{n} unsaved change{} \u{b7} {summary}", if n == 1 { "" } else { "s" })).color(theme::text_1()));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if theme::accent_button_enabled(ui, !saving, "Save changes").clicked() {
+                                save = true;
+                            }
+                            if ui.add_enabled(!saving, egui::Button::new("Discard")).clicked() {
+                                discard = true;
+                            }
+                        });
+                    });
+                });
+            (discard, save)
+        }
+    }
+}
+
 #[derive(Default)]
 struct NewAccountForm {
     full_name: String,
@@ -4775,19 +5221,23 @@ impl BackofficeApp {
     // adjustments). Not ported: the Replay button (DealingReplayPanel is
     // a tick-by-tick fill replay viewer -- real complexity, low value
     // for a first native pass, deferred).
+    // Part 1 adoption: first page migrated from the raw TableBuilder +
+    // ad-hoc Window pattern to components::DataTable + ConfirmDialog
+    // (PROMPT-backoffice-15-pages.md Part 1). Deliberately not doing every
+    // page in this pass -- Part 3 works through the rest one at a time so
+    // each gets its own real design-vs-implementation check, not a
+    // mechanical find/replace.
     fn render_deals(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        if self.deals_loading {
-            ui.spinner();
-        }
-        if let Some(err) = &self.deals_error {
-            ui.colored_label(theme::danger(), err);
-            return;
-        }
-        ui.label(
-            egui::RichText::new(format!("{} closed trade{} (most recent 500).", self.deals.len(), if self.deals.len() == 1 { "" } else { "s" }))
-                .size(11.5)
-                .color(theme::text_3()),
-        );
+        ui.horizontal(|ui| {
+            if self.deals_loading {
+                ui.spinner();
+            }
+            ui.label(
+                egui::RichText::new(format!("{} closed trade{} (most recent 500).", self.deals.len(), if self.deals.len() == 1 { "" } else { "s" }))
+                    .size(11.5)
+                    .color(theme::text_3()),
+            );
+        });
         ui.add(egui::TextEdit::singleline(&mut self.deals_filter).hint_text("Search by account number, name, or symbol..."));
         ui.add_space(8.0);
 
@@ -4799,114 +5249,122 @@ impl BackofficeApp {
             .collect();
 
         let mut delete_target: Option<DealRow> = None;
-
-        TableBuilder::new(ui)
-            .striped(true)
-            .resizable(true)
-            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-            .column(Column::auto().at_least(100.0))
-            .column(Column::auto().at_least(80.0))
-            .column(Column::auto().at_least(70.0))
-            .column(Column::auto().at_least(80.0))
-            .column(Column::auto().at_least(80.0))
-            .column(Column::auto().at_least(80.0))
-            .column(Column::auto().at_least(80.0))
-            .column(Column::auto().at_least(70.0))
-            .column(Column::auto().at_least(90.0))
-            .column(Column::auto().at_least(140.0))
-            .column(Column::remainder().at_least(80.0))
-            .header(26.0, |mut header| {
-                for label in ["Account", "Symbol", "Side", "Volume", "Open", "Close", "Commission", "Swap", "P/L", "Closed", "Action"] {
-                    header.col(|ui| {
-                        ui.label(egui::RichText::new(label.to_uppercase()).size(10.5).color(theme::text_3()));
-                    });
-                }
-            })
-            .body(|body| {
-                body.rows(28.0, filtered.len(), |mut row| {
-                    let d = filtered[row.index()];
-                    row.col(|ui| {
-                        ui.vertical(|ui| {
-                            ui.monospace(&d.account_number);
-                            ui.weak(&d.account_full_name);
-                        });
-                    });
-                    row.col(|ui| {
-                        ui.monospace(&d.symbol);
-                    });
-                    row.col(|ui| {
-                        let color = if d.side == "BUY" { theme::accent() } else { theme::danger() };
-                        ui.colored_label(color, &d.side);
-                        if d.status == "VOIDED" {
-                            ui.colored_label(theme::warning(), "VOIDED");
-                        }
-                    });
-                    row.col(|ui| {
-                        ui.monospace(&d.volume);
-                    });
-                    row.col(|ui| {
-                        ui.monospace(&d.open_price);
-                    });
-                    row.col(|ui| {
-                        ui.monospace(&d.close_price);
-                    });
-                    row.col(|ui| {
-                        ui.monospace(&d.commission);
-                    });
-                    row.col(|ui| {
-                        ui.monospace(&d.swap);
-                    });
-                    row.col(|ui| {
-                        let color = match d.realized_pnl.parse::<f64>() {
-                            Ok(v) if v > 0.0 => theme::accent(),
-                            Ok(v) if v < 0.0 => theme::danger(),
-                            _ => theme::text_2(),
-                        };
-                        ui.colored_label(color, &d.realized_pnl);
-                    });
-                    row.col(|ui| {
-                        ui.weak(&d.closed_at);
-                    });
-                    row.col(|ui| {
-                        if ui.small_button("Delete").clicked() {
-                            delete_target = Some(d.clone());
-                        }
-                    });
+        let columns = vec![
+            components::Column::new("Account", 100.0),
+            components::Column::new("Symbol", 80.0),
+            components::Column::new("Side", 70.0),
+            components::Column::new("Volume", 80.0).right(),
+            components::Column::new("Open", 80.0).right(),
+            components::Column::new("Close", 80.0).right(),
+            components::Column::new("Commission", 80.0).right(),
+            components::Column::new("Swap", 70.0).right(),
+            components::Column::new("P/L", 90.0).right(),
+            components::Column::new("Closed", 140.0),
+            components::Column::new("Action", 80.0),
+        ];
+        let mut table = components::DataTable::new(columns);
+        table = if self.deals_loading && self.deals.is_empty() {
+            table.loading()
+        } else if let Some(err) = &self.deals_error {
+            table.error(err, !self.deals.is_empty(), None)
+        } else if filtered.is_empty() {
+            if self.deals_filter.is_empty() {
+                table.empty("No closed trades yet", "Deals appear here once a position closes.")
+            } else {
+                table.empty("No matches", "Nothing in the last 500 closed trades matches this search.")
+            }
+        } else {
+            table
+        };
+        let resp = table.show(ui, filtered.len(), |row, idx| {
+            let d = filtered[idx];
+            row.col(|ui| {
+                ui.vertical(|ui| {
+                    ui.monospace(&d.account_number);
+                    ui.weak(&d.account_full_name);
                 });
             });
+            row.col(|ui| {
+                ui.monospace(&d.symbol);
+            });
+            row.col(|ui| {
+                let color = if d.side == "BUY" { theme::accent() } else { theme::danger() };
+                ui.colored_label(color, &d.side);
+                if d.status == "VOIDED" {
+                    ui.colored_label(theme::warning(), "VOIDED");
+                }
+            });
+            row.col(|ui| {
+                ui.monospace(&d.volume);
+            });
+            row.col(|ui| {
+                ui.monospace(&d.open_price);
+            });
+            row.col(|ui| {
+                ui.monospace(&d.close_price);
+            });
+            row.col(|ui| {
+                ui.monospace(&d.commission);
+            });
+            row.col(|ui| {
+                ui.monospace(&d.swap);
+            });
+            row.col(|ui| {
+                let color = match d.realized_pnl.parse::<f64>() {
+                    Ok(v) if v > 0.0 => theme::up(),
+                    Ok(v) if v < 0.0 => theme::down(),
+                    _ => theme::text_2(),
+                };
+                ui.colored_label(color, &d.realized_pnl);
+            });
+            row.col(|ui| {
+                ui.weak(&d.closed_at);
+            });
+            row.col(|ui| {
+                if ui.add(egui::Button::new(egui::RichText::new("Delete").color(theme::down())).stroke(egui::Stroke::new(1.0_f32, theme::border()))).clicked() {
+                    delete_target = Some(d.clone());
+                }
+            });
+        });
+        let retry_clicked = resp.retry_clicked;
+        let filtered_count = filtered.len();
+        let total_count = self.deals.len();
+        if !filtered.is_empty() {
+            components::table_footer(ui, filtered_count, total_count, Some("Closed"));
+        }
+        if retry_clicked {
+            self.fetch(ctx, Screen::Deals);
+        }
 
         if let Some(d) = delete_target {
             self.deal_delete_confirm = Some((d, String::new(), None));
         }
 
         if let Some((deal, reason, error)) = self.deal_delete_confirm.clone() {
-            let mut open = true;
-            let mut confirm = false;
             let mut new_reason = reason.clone();
-            egui::Window::new("Confirm delete deal").id(egui::Id::new("deal-delete-window")).collapsible(false).resizable(false).open(&mut open).show(ctx, |ui| {
-                ui.label(format!(
+            let mut typed = String::new();
+            if let Some(err) = &error {
+                ui.colored_label(theme::danger(), err);
+            }
+            let dialog_resp = components::ConfirmDialog::new(
+                "deal-delete-window",
+                "Confirm delete deal",
+                &format!(
                     "Removes {}'s {} {} deal from the trader-visible statement/history entirely. The row itself isn't erased; it's recoverable from the audit log. A reason is required.",
                     deal.account_number, deal.symbol, deal.side
-                ));
-                ui.add_space(6.0);
-                ui.label("Reason (required)");
-                ui.add(egui::TextEdit::singleline(&mut new_reason).hint_text("Why this row is being removed from the trader's history"));
-                if let Some(err) = &error {
-                    ui.colored_label(theme::danger(), err);
-                }
-                ui.add_space(6.0);
-                if theme::danger_button_enabled(ui, !new_reason.trim().is_empty(), "Confirm delete").clicked() {
-                    confirm = true;
-                }
-            });
+                ),
+            )
+            .require_reason(true)
+            .confirm_label("Confirm delete")
+            .show(ctx, &mut new_reason, &mut typed);
             if new_reason != reason {
                 self.deal_delete_confirm = Some((deal.clone(), new_reason.clone(), error.clone()));
             }
-            if confirm {
+            if dialog_resp.confirmed {
                 if let Some(api) = &self.api {
                     api.delete_deal(ctx.clone(), self.tx.clone(), deal.id.clone(), new_reason.trim().to_string());
                 }
-            } else if !open {
+            } else if !dialog_resp.still_open {
                 self.deal_delete_confirm = None;
             }
         }
