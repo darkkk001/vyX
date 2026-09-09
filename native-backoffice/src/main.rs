@@ -6695,11 +6695,11 @@ fn dashboard_mini_stat(ui: &mut egui::Ui, label: &str, value: &str) {
 // days) -- no plotting crate in this binary's dependencies, and 7 fixed
 // bars is well within what's reasonable to paint directly.
 fn dashboard_bar_chart(ui: &mut egui::Ui, buckets: &[DayBucket]) {
-    if buckets.is_empty() {
+    let max_value = buckets.iter().flat_map(|b| [b.deposits, b.withdrawals]).fold(0.0_f64, f64::max);
+    if buckets.is_empty() || max_value <= 0.0 {
         ui.weak("No deposit/withdrawal activity in the last 7 days.");
         return;
     }
-    let max_value = buckets.iter().flat_map(|b| [b.deposits, b.withdrawals]).fold(1.0_f64, f64::max);
     let chart_height = 160.0_f32;
     let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), chart_height + 22.0), egui::Sense::hover());
     let painter = ui.painter();
