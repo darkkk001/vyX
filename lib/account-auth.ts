@@ -277,6 +277,18 @@ export async function completeAccountLogin(
 ): Promise<string> {
   const token = await createAccountSession({ accountId: account.id, brokerId: account.brokerId }, meta, remember);
 
+  // Same-IP multi-account detection (Risk Radar) -- a durable,
+  // queryable record of this login's IP, separate from the Redis
+  // session metadata above (which expires with the session and was
+  // never designed to be queried by IP across accounts). Best-effort,
+  // same as the metadata write inside createAccountSession itself: a
+  // failure here must never block a legitimate login.
+  if (meta.ip) {
+    void prisma.loginEvent
+      .create({ data: { brokerId: account.brokerId, accountId: account.id, ipAddress: meta.ip, userAgent: meta.userAgent } })
+      .catch((err) => console.error("LoginEvent write failed", err));
+  }
+
   if (previousSession && previousSession.accountId !== account.id) {
     await prisma.auditLog.create({
       data: {

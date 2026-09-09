@@ -93,6 +93,18 @@ async function handlePlaceOrder(request: NextRequest) {
   // docs/webtrader-stm-architecture-review.md §4.6 and
   // components/webtrader/SmartTradeManager.tsx's smartExecute.
   const source = body?.source === "hotkey" ? "hotkey" : null;
+  // Order-origin tracking -- a HEADER, deliberately not another body
+  // field, to keep this fully separate from the `source` variable just
+  // above (an unrelated, pre-existing "was this a hotkey" tag with the
+  // same short name by coincidence). Any value the client sends that
+  // isn't a real OrderSource enum member falls back to WEB, same as no
+  // header at all -- covers the real WebTrader (which will never send
+  // this) and any client that hasn't been taught to send it yet.
+  const clientPlatformHeader = request.headers.get("x-client-platform");
+  const orderSource: "WEB" | "DESKTOP_NATIVE" | "MOBILE" | "API" | "EA" | "ADMIN" =
+    clientPlatformHeader === "DESKTOP_NATIVE" || clientPlatformHeader === "MOBILE" || clientPlatformHeader === "API"
+      ? clientPlatformHeader
+      : "WEB";
 
   if (!symbolName || !side || !type || !idempotencyKey) {
     return NextResponse.json(
@@ -264,6 +276,7 @@ async function handlePlaceOrder(request: NextRequest) {
           tpPrice,
           idempotencyKey,
           status: "PENDING",
+          source: orderSource,
         },
       });
       // Broker feedback items 14+15 -- placement itself is a lifecycle
@@ -533,6 +546,7 @@ async function handlePlaceOrder(request: NextRequest) {
             status: "FILLED",
             filledPrice: fillPrice,
             filledAt: new Date(),
+            source: orderSource,
           },
         });
         const position = await tx.position.create({
@@ -615,6 +629,7 @@ async function handlePlaceOrder(request: NextRequest) {
         tpPrice,
         idempotencyKey,
         status: "PENDING",
+        source: orderSource,
       },
     });
     // Broker feedback items 14+15 -- a resting LIMIT/STOP order (the

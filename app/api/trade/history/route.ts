@@ -36,7 +36,10 @@ export async function GET(request: NextRequest) {
         : {}),
       ...(symbolName ? { symbol: { name: symbolName } } : {}),
     },
-    include: { symbol: { select: { name: true, digits: true } } },
+    include: {
+      symbol: { select: { name: true, digits: true } },
+      originOrder: { select: { source: true } },
+    },
     orderBy: { closedAt: "desc" },
   });
   return NextResponse.json(trades);

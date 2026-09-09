@@ -10,7 +10,15 @@ export async function GET() {
 
   const positions = await prisma.position.findMany({
     where: { accountId: session.accountId, status: "OPEN", deletedAt: null },
-    include: { symbol: { select: { name: true, digits: true, contractSize: true } } },
+    include: {
+      symbol: { select: { name: true, digits: true, contractSize: true } },
+      // Order-origin tracking -- surfaces which client actually placed
+      // this position's originating order (native terminal hover/
+      // backoffice column), joined through the strict 1:1 originOrderId
+      // relation rather than duplicating a source field onto Position
+      // itself.
+      originOrder: { select: { source: true } },
+    },
     orderBy: { openedAt: "desc" },
   });
   return NextResponse.json(positions);

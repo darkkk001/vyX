@@ -51,6 +51,7 @@ export type PositionRow = {
   slPrice: string | null;
   tpPrice: string | null;
   isManualOrigin: boolean;
+  source: "WEB" | "DESKTOP_NATIVE" | "MOBILE" | "API" | "EA" | "ADMIN";
   mirrored: boolean;
   openedAt: string;
 };
@@ -78,6 +79,7 @@ const POSITION_COLUMNS: ColumnDef[] = [
   { key: "account", label: "Account" },
   { key: "symbol", label: "Symbol" },
   { key: "side", label: "Side" },
+  { key: "source", label: "Source" },
   { key: "volume", label: "Volume", align: "right" },
   { key: "openPrice", label: "Open price", align: "right" },
   { key: "currentPrice", label: "Current price", align: "right" },
@@ -87,10 +89,21 @@ const POSITION_COLUMNS: ColumnDef[] = [
   { key: "opened", label: "Opened", alwaysVisible: true },
 ];
 
+// Order-origin tracking -- friendly labels for PositionRow["source"].
+const SOURCE_LABELS: Record<PositionRow["source"], string> = {
+  WEB: "Web",
+  DESKTOP_NATIVE: "Desktop",
+  MOBILE: "Mobile",
+  API: "API",
+  EA: "EA/Mirror",
+  ADMIN: "Admin",
+};
+
 const POSITION_COLUMN_DEFAULT_WIDTHS: Record<string, number> = {
   account: 170,
   symbol: 90,
   side: 70,
+  source: 90,
   volume: 90,
   openPrice: 100,
   currentPrice: 110,
@@ -108,6 +121,8 @@ function getPositionSortValue(row: PositionRow, key: string): string | number | 
       return row.symbolName;
     case "side":
       return row.side;
+    case "source":
+      return SOURCE_LABELS[row.source] ?? row.source;
     case "volume":
       return Number(row.volume);
     case "openPrice":
@@ -792,6 +807,15 @@ export default function PositionsManager() {
         {(colVisible.side ?? true) ? (
           <TableCell style={{ width: colWidths.side }}>
             <Badge tone={p.side === "BUY" ? "success" : "danger"}>{p.side}</Badge>
+          </TableCell>
+        ) : null}
+        {(colVisible.source ?? true) ? (
+          <TableCell
+            className="text-xs text-[var(--text-3)]"
+            style={{ width: colWidths.source }}
+            title="Which surface placed this position's originating order (MT5-style order-origin tracking)."
+          >
+            {SOURCE_LABELS[p.source] ?? p.source}
           </TableCell>
         ) : null}
         {(colVisible.volume ?? true) ? (

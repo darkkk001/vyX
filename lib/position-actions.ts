@@ -212,6 +212,10 @@ export async function executeReverseCloseReopen(
       requestedPrice: openPrice,
       idempotencyKey: `manual_${randomUUID()}`,
       status: "FILLED",
+      // Order-origin tracking -- an admin/dealer action on the client's
+      // behalf, not the client's own order; mislabeling this WEB would
+      // be actively wrong for an audit trail, not just imprecise.
+      source: "ADMIN",
       filledPrice: openPrice,
       filledAt: new Date(),
     },

@@ -136,6 +136,32 @@ enum OrderSide {
   SELL
 }
 
+// Order-origin tracking (order-source-tracking pass) -- which surface
+// actually placed this order, MT5-parity ("placed manually" / "via
+// mobile" / by an EA an MT5 position tooltip shows). WEB is the
+// default/fallback for any request that doesn't send a recognized
+// X-Client-Platform header -- covers every historical row (the only
+// client that has ever existed) and any future client that hasn't been
+// taught to send the header yet, rather than leaving it null/unknown.
+// ADMIN is a backoffice/dealer action taken on a client's behalf
+// (lib/position-actions.ts's reverse-position, app/api/manage/
+// positions/route.ts's manual open) -- deliberately distinct from WEB
+// since mislabeling a dealer's own action as the client's own order
+// would be actively wrong for an audit trail, not just imprecise. EA
+// covers both a real Expert Advisor/API integration AND this broker's
+// own server-generated mirror fills (lib/mirror.ts) -- both are
+// automated, non-human-clicked order placement from the client's own
+// perspective, matching how the user described this bucket ("EA/
+// automated system").
+enum OrderSource {
+  WEB
+  DESKTOP_NATIVE
+  MOBILE
+  API
+  EA
+  ADMIN
+}
+
 enum OrderType {
   MARKET
   LIMIT
@@ -376,6 +402,7 @@ model Broker {
   orders                 Order[]
   positions              Position[]
   auditLogs              AuditLog[]
+  loginEvents            LoginEvent[]
   groups                 Group[]
   leads                  Lead[]
   notifications          Notification[]
@@ -614,6 +641,7 @@ model Account {
   transactions Transaction[]
   orders       Order[]
   positions    Position[]
+  loginEvents  LoginEvent[]
 
   ibLinkAsIb     IbRelationship[] @relation("IbAccount")
   ibLinkAsClient IbRelationship?  @relation("ClientAccount")
@@ -1588,6 +1616,7 @@ model Order {
   // app/api/trade/orders/[id]/requote-response.
   requotedPrice   Decimal?    @db.Decimal(18, 5)
   idempotencyKey  String // client-supplied, unique per account
+  source          OrderSource @default(WEB)
 
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
@@ -1930,6 +1959,39 @@ model AuditLog {
 
   @@index([brokerId])
   @@index([entityType, entityId])
+}
+
+// Durable per-login IP record (Risk Radar same-IP-multi-account pass).
+// Login IP was already captured (app/api/trade/login/route.ts's own
+// x-forwarded-for read) but only ever written into Redis session
+// metadata, which expires with the session's own TTL -- there was no
+// durable, indexed, cross-account-queryable record of "which accounts
+// have logged in from which IPs" anywhere, which is what a same-IP
+// multi-account query actually needs (Redis session keys aren't
+// enumerable by IP at all). This table exists purely for that kind of
+// compliance/risk query; it is NOT the session store (Redis stays
+// exactly as-is for that) and carries no auth-relevant data itself.
+// One row per successful login (not deduped) -- a repeat-offender
+// pattern (the same two accounts sharing an IP night after night) is
+// itself a signal the detection query can weigh, which a dedup-to-
+// latest-only table would throw away.
+model LoginEvent {
+  id        String   @id @default(cuid())
+  brokerId  String
+  broker    Broker   @relation(fields: [brokerId], references: [id])
+  accountId String
+  account   Account  @relation(fields: [accountId], references: [id])
+  ipAddress String
+  userAgent String?
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  // The same-IP query groups by (brokerId, ipAddress) over a rolling
+  // window -- never across brokers, since two different brokers'
+  // clients sharing an IP (a household with accounts at two different
+  // brokers, a corporate NAT) is not collusion, just a coincidence this
+  // query has no business flagging.
+  @@index([brokerId, ipAddress, createdAt])
+  @@index([accountId, createdAt])
 }
 
 // Free-source economic calendar cache (VYX-CALENDAR-FALLBACK-V0) --

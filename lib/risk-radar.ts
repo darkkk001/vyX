@@ -23,6 +23,7 @@ export type RiskRadarRow = {
   profitVelocityPerDay: number;
   scalpFlag: boolean;
   martingaleFlag: boolean;
+  latencyArbFlag: boolean;
   // Always false today -- see this file's own top-of-function comment on
   // why (no historical economic-calendar data source exists in this
   // codebase; /api/trade/news is forward-looking only, and Finnhub's
@@ -58,12 +59,39 @@ export function computeMartingaleFlag(positionsOrderedByClose: RiskRadarPosition
   return hits >= MARTINGALE_MIN_HITS;
 }
 
+// Latency-arbitrage detection -- a trader exploiting feed latency looks
+// different from an ordinary scalper: scalpFlag above only measures the
+// AVERAGE hold time across every trade, which can't tell "consistently
+// quick, evenly-distributed outcomes" apart from "a small burst of
+// extremely fast trades that win far more often than this account's own
+// normal trading does" -- the latter is the actual tell (catching a
+// stale-quote window reliably wins; normal fast scalping doesn't win at
+// anywhere near that rate). Needs no new schema/data source -- built
+// from the exact same closed-position fields (openedAt/closedAt/
+// realizedPnl) every other flag here already loads.
+const LATENCY_ARB_MAX_HOLD_SECONDS = 3;
+const LATENCY_ARB_MIN_FAST_TRADES = 10;
+const LATENCY_ARB_WIN_RATE_DELTA_PCT = 25;
+
+export function computeLatencyArbFlag(positions: RiskRadarPosition[]): boolean {
+  const overallWins = positions.filter((p) => (p.realizedPnl ?? 0) > 0).length;
+  const overallWinRate = positions.length > 0 ? (overallWins / positions.length) * 100 : 0;
+
+  const fastTrades = positions.filter((p) => (p.closedAt.getTime() - p.openedAt.getTime()) / 1000 <= LATENCY_ARB_MAX_HOLD_SECONDS);
+  if (fastTrades.length < LATENCY_ARB_MIN_FAST_TRADES) return false;
+
+  const fastWins = fastTrades.filter((p) => (p.realizedPnl ?? 0) > 0).length;
+  const fastWinRate = (fastWins / fastTrades.length) * 100;
+
+  return fastWinRate >= overallWinRate + LATENCY_ARB_WIN_RATE_DELTA_PCT;
+}
+
 export function computeRiskRadarRow(accountId: string, accountNumber: string, positions: RiskRadarPosition[]): RiskRadarRow {
   const trades30d = positions.length;
   if (trades30d === 0) {
     return {
       accountId, accountNumber, trades30d: 0, winRatePct: null, avgHoldMinutes: null, avgLot: null,
-      profitVelocityPerDay: 0, scalpFlag: false, martingaleFlag: false, newsTraderFlag: false,
+      profitVelocityPerDay: 0, scalpFlag: false, martingaleFlag: false, latencyArbFlag: false, newsTraderFlag: false,
     };
   }
 
@@ -84,6 +112,7 @@ export function computeRiskRadarRow(accountId: string, accountNumber: string, po
     profitVelocityPerDay: totalPnl / WINDOW_DAYS,
     scalpFlag: totalHoldMinutes / trades30d < SCALP_THRESHOLD_MINUTES,
     martingaleFlag: computeMartingaleFlag(orderedByClose),
+    latencyArbFlag: computeLatencyArbFlag(positions),
     newsTraderFlag: false,
   };
 }
@@ -118,4 +147,59 @@ export async function computeRiskRadar(prisma: PrismaClient, brokerId: string): 
   return accounts
     .map((a) => computeRiskRadarRow(a.id, a.accountNumber, byAccount.get(a.id) ?? []))
     .filter((r) => r.trades30d > 0);
+}
+
+// Same-IP multi-account detection -- a cross-account query (unlike every
+// flag above, which is scoped to one account at a time), so it lives as
+// its own function rather than folded into computeRiskRadarRow. Reads
+// LoginEvent (durable per-login IP record -- see that model's own doc
+// comment on why Redis session metadata alone couldn't answer this).
+// Deliberately a REVIEW list, not an auto-flag on the account itself:
+// shared IPs have real innocent causes (family wifi, corporate NAT,
+// this broker's own QA/test accounts sharing one machine), so a human
+// still needs to look at each cluster.
+const SAME_IP_WINDOW_DAYS = 30;
+
+export type SameIpAccount = { accountId: string; accountNumber: string; fullName: string; email: string };
+export type SameIpCluster = { ipAddress: string; accounts: SameIpAccount[] };
+
+export async function computeSameIpClusters(prisma: PrismaClient, brokerId: string): Promise<SameIpCluster[]> {
+  const since = new Date(Date.now() - SAME_IP_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+
+  const events = await prisma.loginEvent.findMany({
+    where: { brokerId, createdAt: { gte: since } },
+    select: {
+      ipAddress: true,
+      account: { select: { id: true, accountNumber: true, fullName: true, email: true } },
+    },
+  });
+
+  const byIp = new Map<string, Map<string, SameIpAccount>>();
+  for (const e of events) {
+    let accountsForIp = byIp.get(e.ipAddress);
+    if (!accountsForIp) {
+      accountsForIp = new Map();
+      byIp.set(e.ipAddress, accountsForIp);
+    }
+    accountsForIp.set(e.account.id, {
+      accountId: e.account.id,
+      accountNumber: e.account.accountNumber,
+      fullName: e.account.fullName,
+      email: e.account.email,
+    });
+  }
+
+  const clusters: SameIpCluster[] = [];
+  for (const [ipAddress, accountsMap] of byIp) {
+    const accounts = [...accountsMap.values()];
+    if (accounts.length < 2) continue;
+    // Exclude a legitimate linked demo/live pair (or more) under ONE
+    // owner -- only a genuine cross-owner share (>= 2 distinct emails)
+    // is worth a human's review time.
+    const distinctEmails = new Set(accounts.map((a) => a.email));
+    if (distinctEmails.size < 2) continue;
+    clusters.push({ ipAddress, accounts });
+  }
+
+  return clusters.sort((a, b) => b.accounts.length - a.accounts.length);
 }

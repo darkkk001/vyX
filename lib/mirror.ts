@@ -388,6 +388,11 @@ async function mirrorFillForRule(db: Db, rule: MirrorRule, source: MirrorSourceP
           side: mirrorSide,
           type: "MARKET",
           volume,
+          // Order-origin tracking -- a mirror fill is server-generated,
+          // automated order placement from the target account's own
+          // perspective (nobody at that account clicked anything), the
+          // same bucket the user described as "EA/automated system".
+          source: "EA",
           // Deterministic, not random -- a retried/duplicate onFill call
           // for the same (rule, source position) collides on this same
           // key (Order's own accountId+idempotencyKey unique constraint)

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { computeRiskRadarRow, computeMartingaleFlag, type RiskRadarPosition } from "@/lib/risk-radar";
+import { computeRiskRadarRow, computeMartingaleFlag, computeLatencyArbFlag, type RiskRadarPosition } from "@/lib/risk-radar";
 
 const mkPos = (overrides: Partial<RiskRadarPosition>): RiskRadarPosition => ({
   accountId: "acc1",
@@ -82,5 +82,44 @@ describe("computeMartingaleFlag", () => {
       mkPos({ volume: 0.9, realizedPnl: 10, closedAt: new Date("2026-09-01T12:00:00Z") }),
     ];
     expect(computeMartingaleFlag(positions)).toBe(false);
+  });
+});
+
+describe("computeLatencyArbFlag", () => {
+  const fastWin = (i: number) =>
+    mkPos({
+      realizedPnl: 5,
+      openedAt: new Date(2026, 8, 1, 10, 0, i * 2),
+      closedAt: new Date(2026, 8, 1, 10, 0, i * 2 + 1), // 1s hold
+    });
+  const normalTrade = (i: number, pnl: number) =>
+    mkPos({
+      realizedPnl: pnl,
+      openedAt: new Date(2026, 8, 1, 12, i, 0),
+      closedAt: new Date(2026, 8, 1, 12, i + 20, 0), // 20min hold
+    });
+
+  it("flags a burst of sub-3s trades winning far more than the account's own normal rate", () => {
+    // 10 fast trades, all wins; 10 normal trades, 50% win rate --
+    // overall win rate 75%, fast-trade win rate 100% (>= 75+25 is false,
+    // so widen the gap: make normal trades mostly losers instead).
+    const fast = Array.from({ length: 10 }, (_, i) => fastWin(i));
+    const normal = Array.from({ length: 10 }, (_, i) => normalTrade(i, i < 2 ? 5 : -5)); // 20% win rate
+    const positions = [...fast, ...normal];
+    // overall win rate = 12/20 = 60%; fast win rate = 100% -- delta 40 >= 25
+    expect(computeLatencyArbFlag(positions)).toBe(true);
+  });
+
+  it("does not flag when there are too few fast trades", () => {
+    const fast = Array.from({ length: 3 }, (_, i) => fastWin(i)); // below MIN_FAST_TRADES
+    const normal = Array.from({ length: 10 }, (_, i) => normalTrade(i, -5));
+    expect(computeLatencyArbFlag([...fast, ...normal])).toBe(false);
+  });
+
+  it("does not flag fast trades whose win rate is in line with the account's overall rate", () => {
+    const fast = Array.from({ length: 10 }, (_, i) => fastWin(i)); // 100% win
+    const normal = Array.from({ length: 10 }, (_, i) => normalTrade(i, 5)); // 100% win too
+    // overall win rate 100%, fast win rate 100% -- no delta at all
+    expect(computeLatencyArbFlag([...fast, ...normal])).toBe(false);
   });
 });

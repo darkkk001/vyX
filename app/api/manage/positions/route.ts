@@ -62,7 +62,7 @@ export async function GET() {
           },
         },
         symbol: { select: { name: true, digits: true, contractSize: true } },
-        originOrder: { select: { idempotencyKey: true } },
+        originOrder: { select: { idempotencyKey: true, source: true } },
       },
       orderBy: { openedAt: "desc" },
     }),
@@ -132,7 +132,12 @@ export async function GET() {
       floatingPnl: floatingPnl ? floatingPnl.toFixed(2) : null,
       slPrice: p.slPrice ? p.slPrice.toFixed(p.symbol.digits) : null,
       tpPrice: p.tpPrice ? p.tpPrice.toFixed(p.symbol.digits) : null,
-      isManualOrigin: p.originOrder.idempotencyKey.startsWith("manual_"),
+      // Order-origin tracking replaces this idempotencyKey-prefix guess
+      // with the real field now that one exists -- ADMIN is the exact
+      // source value lib/position-actions.ts/this route's own manual-
+      // open branch both stamp, so this is no longer a heuristic.
+      isManualOrigin: p.originOrder.source === "ADMIN",
+      source: p.originOrder.source,
       mirrored: mirroredAccountIds.has(p.accountId) || (p.account.groupId != null && mirroredGroupIds.has(p.account.groupId)),
       openedAt: p.openedAt.toISOString().replace("T", " ").slice(0, 19),
     };
@@ -322,6 +327,9 @@ export async function POST(request: NextRequest) {
         tpPrice,
         idempotencyKey: `manual_${randomUUID()}`,
         status: "FILLED",
+        // Order-origin tracking -- an admin manually opening a position
+        // for a client from the backoffice, not the client's own order.
+        source: "ADMIN",
         filledPrice: fillPrice,
         filledAt: new Date(),
       },
