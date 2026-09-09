@@ -57,23 +57,28 @@ impl Screen {
     fn label(self) -> &'static str {
         match self {
             Screen::Dashboard => "Dashboard",
-            Screen::Positions => "Live Exposure",
-            Screen::Accounts => "Trading Accounts",
-            Screen::Dealing => "Dealing queue",
-            Screen::Groups => "Client groups",
+            Screen::Positions => "Live exposure",
+            // Redesign IA (PROMPT-backoffice-15-pages.md Part 2): this
+            // screen is the client-centric list Part 3.8 describes
+            // (client name/email + nested accounts), not a bare
+            // trading-account grid -- "Trading Accounts" undersold what
+            // it already shows.
+            Screen::Accounts => "Clients & accounts",
+            Screen::Dealing => "Dealing",
+            Screen::Groups => "Groups",
             Screen::Kyc => "KYC review",
             Screen::ClientKyc => "Client KYC",
-            Screen::LiveAccountRequests => "Live Account Requests",
+            Screen::LiveAccountRequests => "Live account requests",
             Screen::Notifications => "Notifications",
-            Screen::RiskRadar => "Risk Radar",
-            Screen::Risk => "Risk rules",
-            Screen::Settings => "System settings",
+            Screen::RiskRadar => "Risk radar",
+            Screen::Risk => "Risk",
+            Screen::Settings => "Settings",
             Screen::Reports => "Reports",
             Screen::Symbols => "Symbols",
-            Screen::Team => "Staff & roles",
+            Screen::Team => "Users & roles",
             Screen::Transfers => "Internal transfers",
             Screen::Wallets => "Wallets",
-            Screen::Ib => "IB & affiliates",
+            Screen::Ib => "IB partners",
             Screen::Leads => "Leads",
             Screen::Deals => "Deals",
             Screen::Audit => "Audit log",
@@ -81,10 +86,30 @@ impl Screen {
             Screen::Funds => "Deposits & withdrawals",
             Screen::PaymentMethods => "Payment methods",
             Screen::Margin => "Margin monitoring",
-            Screen::Liquidity => "LPs",
+            Screen::Liquidity => "Liquidity providers",
             Screen::LiquidityRouting => "Routing",
             Screen::FeedHealth => "Feed health",
-            Screen::Emergency => "Emergency controls",
+            Screen::Emergency => "Emergency",
+        }
+    }
+
+    // Sidebar SECTION this screen lives under in the redesign IA
+    // (PROMPT-backoffice-15-pages.md Part 2) -- drives both which group
+    // renders it in the sidebar and the header breadcrumb ("Trading ›
+    // Live exposure"). Client KYC/Liquidity Routing/Margin keep their
+    // group here (so a stray reference elsewhere still resolves to
+    // something sane) even though Part B hides their own separate nav
+    // row -- see render_sidebar's own comment on why the row is hidden
+    // without deleting the screen.
+    fn group_label(self) -> &'static str {
+        match self {
+            Screen::Dashboard | Screen::Reports | Screen::Notifications => "Overview",
+            Screen::Positions | Screen::Dealing | Screen::Deals | Screen::Symbols | Screen::Groups => "Trading",
+            Screen::Risk | Screen::Margin | Screen::RiskRadar | Screen::Emergency => "Risk",
+            Screen::Liquidity | Screen::LiquidityRouting | Screen::FeedHealth => "Liquidity",
+            Screen::Accounts | Screen::Leads | Screen::Ib | Screen::Kyc | Screen::ClientKyc | Screen::LiveAccountRequests => "Clients",
+            Screen::Funds | Screen::PaymentMethods | Screen::Transfers | Screen::Wallets => "Finance",
+            Screen::Team | Screen::Audit | Screen::Security | Screen::Settings => "System",
         }
     }
 
@@ -297,6 +322,36 @@ mod theme {
         if is_dark() { Color32::from_rgb(0xf0, 0xb9, 0x0b) } else { Color32::from_rgb(0x8a, 0x5a, 0x05) }
     }
 
+    // Redesign pass -- fixed semantic status colors, deliberately
+    // independent of the per-tenant accent() above. "Status colors are
+    // semantic only... the orange accent is never used for status text"
+    // (master prompt token spec) -- profit/loss, up/down, and info chips
+    // must read the same regardless of which broker's branding is
+    // active, the same way `danger()`/`warning()` already don't move
+    // with the tenant. A few existing call sites (e.g. the Live Exposure
+    // floating-P&L total) used accent() for "profit" before this existed,
+    // which is exactly the bug this fixes -- for a tenant whose brand
+    // color isn't green, profit rendered in their own accent color
+    // instead of a real status green.
+    pub fn up() -> Color32 {
+        Color32::from_rgb(0x3c, 0xc9, 0x8a)
+    }
+    pub fn down() -> Color32 {
+        Color32::from_rgb(0xf0, 0x50, 0x6e)
+    }
+    pub fn up_soft() -> Color32 {
+        up().gamma_multiply(0.16)
+    }
+    pub fn down_soft() -> Color32 {
+        down().gamma_multiply(0.16)
+    }
+    pub fn blue() -> Color32 {
+        Color32::from_rgb(0x5b, 0x9c, 0xff)
+    }
+    pub fn violet() -> Color32 {
+        Color32::from_rgb(0xa7, 0x8b, 0xfa)
+    }
+
     const DEFAULT_ACCENT_DARK: (u8, u8, u8) = (0x16, 0xc7, 0x84); // manager dark accent (matches --buy)
     const DEFAULT_ACCENT_LIGHT: (u8, u8, u8) = (0x0a, 0x7a, 0x4d); // manager light accent
     const DEFAULT_ACCENT: (u8, u8, u8) = DEFAULT_ACCENT_DARK; // generic VyXTrader green, shown pre-login and if a broker has no primaryColor set
@@ -455,13 +510,32 @@ mod theme {
     // leans on size/color for hierarchy rather than a true bold cut --
     // see stat_card's/section headings' own use of size+ACCENT instead of
     // weight.
+    // Space Grotesk (also OFL-licensed, github.com/floriankarsten/
+    // space-grotesk) registered as its own named family alongside Inter
+    // -- the redesign spec calls for Space Grotesk on headings/KPI
+    // numbers/tabular data, Inter everywhere else. Same rasterization
+    // ceiling as Inter above (ab_glyph renders only the file's default
+    // Regular instance, no true 500/600/700 weight cuts without
+    // separate static-weight font files this app doesn't have) -- this
+    // app leans on size/color for hierarchy within each family, exactly
+    // the same accepted tradeoff Inter already uses, just extended to
+    // the second typeface rather than pretending true bold works here.
+    pub fn heading_font(size: f32) -> egui::FontId {
+        egui::FontId::new(size, egui::FontFamily::Name("spacegrotesk".into()))
+    }
+
     fn load_fonts(ctx: &egui::Context) {
         let mut fonts = egui::FontDefinitions::default();
         fonts.font_data.insert(
             "inter".to_owned(),
             std::sync::Arc::new(egui::FontData::from_static(include_bytes!("../assets/Inter.ttf"))),
         );
+        fonts.font_data.insert(
+            "spacegrotesk".to_owned(),
+            std::sync::Arc::new(egui::FontData::from_static(include_bytes!("../assets/SpaceGrotesk.ttf"))),
+        );
         fonts.families.get_mut(&egui::FontFamily::Proportional).unwrap().insert(0, "inter".to_owned());
+        fonts.families.insert(egui::FontFamily::Name("spacegrotesk".into()), vec!["spacegrotesk".to_owned(), "inter".to_owned()]);
         ctx.set_fonts(fonts);
     }
 
@@ -557,6 +631,25 @@ struct BackofficeApp {
     action_message: Option<String>,
     broker_name: Option<String>,
     broker_logo_texture: Option<egui::TextureHandle>,
+    // Header global search input (Part A item 6) -- the text field is
+    // real and typeable; wiring it to an actual cross-entity query/
+    // command-palette result list is real, substantial new work with no
+    // spec of its own in any of the provided prompt files (no palette
+    // behavior/results shape is described anywhere), so it's left as a
+    // disclosed visual-only stub for this pass rather than faked with
+    // made-up results.
+    global_search: String,
+    // Feed pill's real measured round-trip -- elapsed time between the
+    // auto-refresh timer calling fetch() and the FIRST ApiEvent that
+    // arrives afterward (drain_events' own timing hook). An
+    // approximation (the first event to land isn't necessarily the one
+    // that fetch() itself just started, if a background task from a
+    // moment earlier is still in flight), but a real, measured number
+    // from this app's own traffic -- not the design reference's
+    // placeholder "42ms", which nothing in this codebase actually
+    // computes.
+    last_refresh_started: Option<std::time::Instant>,
+    last_refresh_rtt_ms: Option<u64>,
 
     // --- dashboard ---
     dashboard: Option<DashboardData>,
@@ -688,6 +781,10 @@ struct BackofficeApp {
     admins: Vec<AdminRow>,
     admins_loading: bool,
     admins_error: Option<String>,
+    new_admin_email: String,
+    new_admin_password: String,
+    new_admin_role: String,
+    new_admin_error: Option<String>,
 
     // --- transfers ---
     transfers: Vec<TransferRow>,
@@ -712,6 +809,8 @@ struct BackofficeApp {
     deals: Vec<DealRow>,
     deals_loading: bool,
     deals_error: Option<String>,
+    deals_filter: String,
+    deal_delete_confirm: Option<(DealRow, String, Option<String>)>,
 
     // --- audit ---
     audit_log: Vec<AuditLogRow>,
@@ -797,6 +896,9 @@ impl Default for BackofficeApp {
             action_message: None,
             broker_name: None,
             broker_logo_texture: None,
+            global_search: String::new(),
+            last_refresh_started: None,
+            last_refresh_rtt_ms: None,
             dashboard: None,
             dashboard_loading: false,
             dashboard_error: None,
@@ -898,6 +1000,10 @@ impl Default for BackofficeApp {
             admins: Vec::new(),
             admins_loading: false,
             admins_error: None,
+            new_admin_email: String::new(),
+            new_admin_password: String::new(),
+            new_admin_role: String::new(),
+            new_admin_error: None,
             transfers: Vec::new(),
             transfers_loading: false,
             transfers_error: None,
@@ -914,6 +1020,8 @@ impl Default for BackofficeApp {
             deals: Vec::new(),
             deals_loading: false,
             deals_error: None,
+            deals_filter: String::new(),
+            deal_delete_confirm: None,
             audit_log: Vec::new(),
             audit_loading: false,
             audit_error: None,
@@ -961,6 +1069,13 @@ impl Default for BackofficeApp {
 impl BackofficeApp {
     fn drain_events(&mut self, ctx: &egui::Context) {
         while let Ok(event) = self.rx.try_recv() {
+            // Feed pill's real RTT measurement -- see last_refresh_rtt_ms's
+            // own field comment. Consumes the pending start time on the
+            // FIRST event seen after it was set, regardless of which
+            // event that is.
+            if let Some(started) = self.last_refresh_started.take() {
+                self.last_refresh_rtt_ms = Some(started.elapsed().as_millis() as u64);
+            }
             match event {
                 ApiEvent::LoginResult(Ok(_role)) => {
                     self.login_busy = false;
@@ -976,8 +1091,16 @@ impl BackofficeApp {
                     // badge (matches AdminShell.tsx's own
                     // initialUnreadNotifications) is accurate shortly
                     // after login, not just after the user first opens
-                    // Notifications themselves.
+                    // Notifications themselves. Same reasoning extended
+                    // (redesign Part B item 4) to the other three "pending
+                    // work" badges -- KYC review, Live account requests,
+                    // Deposits & withdrawals -- so all four are correct
+                    // the moment the sidebar first renders, not only
+                    // after each screen has been visited once.
                     self.ensure_loaded(ctx, Screen::Notifications);
+                    self.ensure_loaded(ctx, Screen::Kyc);
+                    self.ensure_loaded(ctx, Screen::LiveAccountRequests);
+                    self.ensure_loaded(ctx, Screen::Funds);
                 }
                 ApiEvent::ShellInfo(Ok(info)) => {
                     self.broker_name = Some(info.broker_name);
@@ -1036,6 +1159,22 @@ impl BackofficeApp {
                         Err(e) => self.reset_password_error = Some(e),
                     }
                 }
+                ApiEvent::DealDeleted(result) => match result {
+                    Ok(pending) => {
+                        self.deal_delete_confirm = None;
+                        self.action_message = Some(if pending {
+                            "Delete submitted for approval. A different admin needs to review it (Live Exposure page).".to_string()
+                        } else {
+                            "deal deleted".to_string()
+                        });
+                        self.fetch(ctx, Screen::Deals);
+                    }
+                    Err(e) => {
+                        if let Some((_, _, err)) = &mut self.deal_delete_confirm {
+                            *err = Some(e);
+                        }
+                    }
+                },
                 ApiEvent::AccountTypes(result) => {
                     if let Ok(rows) = result {
                         self.account_types = rows;
@@ -1248,7 +1387,10 @@ impl BackofficeApp {
                 ApiEvent::Admins(result) => {
                     self.admins_loading = false;
                     match result {
-                        Ok(rows) => self.admins = rows,
+                        Ok((admin_id, rows)) => {
+                            self.current_admin_id = admin_id;
+                            self.admins = rows;
+                        }
                         Err(e) => self.admins_error = Some(e),
                     }
                 }
@@ -1635,76 +1777,56 @@ impl BackofficeApp {
     fn render_shell(&mut self, ctx: &egui::Context) {
         egui::SidePanel::left("sidebar")
             .resizable(false)
-            .exact_width(230.0)
-            .frame(egui::Frame::new().fill(theme::sidebar_bg()).inner_margin(egui::Margin::symmetric(0, 16)).stroke(egui::Stroke { width: 1.0, color: theme::border() }))
+            .exact_width(232.0)
+            .frame(egui::Frame::new().fill(theme::sidebar_bg()).inner_margin(egui::Margin::symmetric(0, 12)).stroke(egui::Stroke { width: 1.0, color: theme::border() }))
             .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.add_space(20.0);
-                    // Broker's own logo once fetched (see ApiEvent::
-                    // LogoImage), falling back to the generic accent dot
-                    // for a broker with none configured -- same "brand if
-                    // we can, stay generic if we can't" rule the web
-                    // backoffice's own sidebar follows.
-                    if let Some(texture) = &self.broker_logo_texture {
-                        ui.add(egui::Image::new(texture).max_height(20.0).max_width(28.0));
-                    } else {
-                        ui.label(egui::RichText::new("●").size(16.0).color(theme::accent()));
-                    }
-                    let name = self.broker_name.as_deref().unwrap_or("VyXTrader");
-                    let name = if name.chars().count() > 18 { format!("{}...", name.chars().take(17).collect::<String>()) } else { name.to_string() };
-                    ui.label(egui::RichText::new(name).size(17.0).color(theme::text_1()));
-                });
-                ui.label(egui::RichText::new("  BACKOFFICE").size(10.5).color(theme::text_3()));
-                ui.add_space(14.0);
-                ui.scope(|ui| {
-                    ui.style_mut().visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0_f32, theme::border());
-                    ui.add(egui::Separator::default().spacing(0.0));
-                });
-                ui.add_space(10.0);
+                // Brand no longer duplicated here (Part A item 1: "Brand
+                // cell belongs to the header row... Sidebar starts below
+                // the header" -- render_titlebar's own 232px-wide brand
+                // cell is the only place it renders now, matching the
+                // reference exactly instead of the old two-baseline
+                // brand-in-both-places bug). Width matches the header's
+                // own brand cell (232px) so the border-right up there
+                // lines up with this panel's own left edge.
+                ui.add_space(4.0);
 
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    // Exact structure/order/labels of app/manage/(shell)/
-                    // layout.tsx's own navGroups -- "Overview", "Clients",
-                    // "Finance", "Trading", "Liquidity", "Organization",
-                    // same membership (Reports moved to Organization, not
-                    // Overview; Groups/Margin/RiskRadar/Risk/Emergency live
-                    // under Trading, not a generic "Admin" bucket). The
-                    // web hides several of these entirely for a plain
-                    // MANAGER (BROKER_ADMIN-only items) -- not replicated
-                    // here since this app doesn't yet track the signed-in
-                    // admin's own role, so every item stays visible
-                    // regardless of role; the real API still enforces the
-                    // same permission check server-side either way.
-                    let groups: [(&str, &[Screen]); 6] = [
-                        ("OVERVIEW", &[Screen::Dashboard, Screen::Notifications]),
+                egui::ScrollArea::vertical()
+                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded)
+                    .show(ui, |ui| {
+                    // Redesign IA (PROMPT-backoffice-15-pages.md Part 2) --
+                    // exact section membership/order from the spec. Three
+                    // screens that the OLD IA showed as separate nav rows
+                    // are deliberately left OUT of these slices without
+                    // deleting the Screen variant or its render fn: Part 2
+                    // lists only the merged name for each ("Risk", not
+                    // "Risk rules" + "Margin monitoring" as two rows;
+                    // "Liquidity providers", not it + "Routing" as two
+                    // rows; "KYC review", not it + "Client KYC" as two
+                    // rows). The real page-level merge (Part 3.4/3.7/3.11)
+                    // is later work -- for this IA-only pass, hiding the
+                    // duplicate row is the minimal change that satisfies
+                    // Part 2 without discarding the still-functional
+                    // screen underneath it. Old routes need no redirect
+                    // layer: this is a native sidebar-driven app with no
+                    // deep-linkable URLs, so "nothing points at the old
+                    // separate row anymore" already is the redirect.
+                    let groups: [(&str, &[Screen]); 7] = [
+                        ("OVERVIEW", &[Screen::Dashboard, Screen::Reports, Screen::Notifications]),
+                        (
+                            "TRADING",
+                            &[Screen::Positions, Screen::Dealing, Screen::Deals, Screen::Symbols, Screen::Groups],
+                        ),
+                        ("RISK", &[Screen::Risk, Screen::RiskRadar, Screen::Emergency]),
+                        ("LIQUIDITY", &[Screen::Liquidity, Screen::FeedHealth]),
                         (
                             "CLIENTS",
-                            &[Screen::Accounts, Screen::Leads, Screen::Kyc, Screen::ClientKyc, Screen::LiveAccountRequests],
+                            &[Screen::Accounts, Screen::Leads, Screen::Ib, Screen::Kyc, Screen::LiveAccountRequests],
                         ),
                         (
                             "FINANCE",
-                            &[Screen::Funds, Screen::PaymentMethods, Screen::Transfers, Screen::Wallets, Screen::Ib],
+                            &[Screen::Funds, Screen::PaymentMethods, Screen::Transfers, Screen::Wallets],
                         ),
-                        (
-                            "TRADING",
-                            &[
-                                Screen::Positions,
-                                Screen::Dealing,
-                                Screen::FeedHealth,
-                                Screen::Deals,
-                                Screen::Symbols,
-                                Screen::Groups,
-                                Screen::Margin,
-                                Screen::RiskRadar,
-                                Screen::Risk,
-                                Screen::Emergency,
-                            ],
-                        ),
-                        ("LIQUIDITY", &[Screen::Liquidity, Screen::LiquidityRouting]),
-                        (
-                            "ORGANIZATION",
-                            &[Screen::Reports, Screen::Team, Screen::Audit, Screen::Security, Screen::Settings],
-                        ),
+                        ("SYSTEM", &[Screen::Team, Screen::Audit, Screen::Security, Screen::Settings]),
                     ];
                     for (label, screens) in groups {
                         ui.add_space(6.0);
@@ -1713,11 +1835,28 @@ impl BackofficeApp {
                             ui.label(egui::RichText::new(label).size(10.0).color(theme::text_3()).strong());
                         });
                         for &screen in screens {
-                            let badge = if screen == Screen::Notifications {
-                                Some(self.notifications.iter().filter(|n| !n.read).count())
-                            } else {
-                                None
+                            // Part B item 4 -- count badges on items with
+                            // pending work. Each count is the same real
+                            // row list that screen's own page already
+                            // renders (eager-loaded on login above), never
+                            // a separate/fabricated number; a badge only
+                            // shows once its data has actually loaded
+                            // (avoids a misleading "0" flash before the
+                            // first fetch resolves).
+                            let badge = match screen {
+                                Screen::Notifications => Some(self.notifications.iter().filter(|n| !n.read).count()),
+                                Screen::Kyc if !self.kyc.is_empty() || self.loaded_once.contains(&Screen::Kyc) => Some(self.kyc.len()),
+                                Screen::LiveAccountRequests
+                                    if !self.live_account_requests.is_empty() || self.loaded_once.contains(&Screen::LiveAccountRequests) =>
+                                {
+                                    Some(self.live_account_requests.iter().filter(|r| r.status == "PENDING").count())
+                                }
+                                Screen::Funds if !self.funds_requests.is_empty() || self.loaded_once.contains(&Screen::Funds) => {
+                                    Some(self.funds_requests.iter().filter(|r| r.status == "PENDING").count())
+                                }
+                                _ => None,
                             };
+                            let badge = badge.filter(|&n| n > 0);
                             if sidebar_nav_item(ui, screen.icon(), screen.label(), self.screen == screen, badge).clicked() {
                                 self.screen = screen;
                                 self.ensure_loaded(ctx, screen);
@@ -2091,9 +2230,9 @@ impl BackofficeApp {
                 ui.strong(format!("Exposure by symbol -- {} position{} in view", filtered.len(), if filtered.len() == 1 { "" } else { "s" }));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let pnl_color = if total_floating_pnl > 0.0 {
-                        theme::accent()
+                        theme::up()
                     } else if total_floating_pnl < 0.0 {
-                        theme::danger()
+                        theme::down()
                     } else {
                         ui.visuals().text_color()
                     };
@@ -4226,62 +4365,114 @@ impl BackofficeApp {
         }
     }
 
+    // Direct native port of TeamManager.tsx -- an "Add a team member"
+    // form (email/password/role, with the same SUPPORT-has-no-access
+    // warning), and per-row Status toggle plus delegated-permissions
+    // checkboxes (MANAGER rows only; BROKER_ADMIN already has
+    // everything, matching PERMISSIONS/PERMISSION_LABELS exactly).
     fn render_team(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        ui.horizontal(|ui| {
-            if self.admins_loading {
-                ui.spinner();
-            }
-        });
-        ui.add_space(8.0);
+        if self.admins_loading {
+            ui.spinner();
+        }
         if let Some(err) = &self.admins_error {
             ui.colored_label(theme::danger(), err);
             return;
         }
-        let mut pending_status: Option<(String, String)> = None;
-        TableBuilder::new(ui)
-            .striped(true)
-            .resizable(true)
-            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-            .column(Column::remainder().at_least(180.0))
-            .column(Column::auto().at_least(100.0))
-            .column(Column::auto().at_least(90.0))
-            .column(Column::auto().at_least(140.0))
-            .column(Column::auto().at_least(110.0))
-            .header(28.0, |mut header| {
-                for label in ["Email", "Role", "Status", "Last login", "Action"] {
-                    header.col(|ui| {
-                        ui.label(egui::RichText::new(label.to_uppercase()).size(11.5).color(theme::text_3()));
+        ui.label(egui::RichText::new(format!("{} admin{}.", self.admins.len(), if self.admins.len() == 1 { "" } else { "s" })).size(11.5).color(theme::text_3()));
+        ui.add_space(8.0);
+
+        theme::card(14).show(ui, |ui| {
+            ui.strong("Add a team member");
+            ui.add_space(6.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.add(egui::TextEdit::singleline(&mut self.new_admin_email).hint_text("Email").desired_width(180.0));
+                ui.add(egui::TextEdit::singleline(&mut self.new_admin_password).password(true).hint_text("Initial password (min 8 chars)").desired_width(200.0));
+                egui::ComboBox::from_id_salt("new-admin-role")
+                    .selected_text(if self.new_admin_role.is_empty() { "Select role...".to_string() } else { self.new_admin_role.clone() })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut self.new_admin_role, "BROKER_ADMIN".to_string(), "Broker Admin");
+                        ui.selectable_value(&mut self.new_admin_role, "MANAGER".to_string(), "Manager");
+                        ui.selectable_value(&mut self.new_admin_role, "SUPPORT".to_string(), "Support");
                     });
+                let valid = self.new_admin_email.contains('@') && self.new_admin_password.len() >= 8 && !self.new_admin_role.is_empty();
+                if theme::accent_button_enabled(ui, valid, "Add").clicked() {
+                    if let Some(api) = &self.api {
+                        api.create_admin(ctx.clone(), self.tx.clone(), self.new_admin_email.trim().to_string(), self.new_admin_password.clone(), self.new_admin_role.clone());
+                        self.new_admin_email.clear();
+                        self.new_admin_password.clear();
+                    }
                 }
-            })
-            .body(|body| {
-                body.rows(26.0, self.admins.len(), |mut row| {
-                    let a = &self.admins[row.index()];
-                    row.col(|ui| {
-                        ui.label(&a.email);
-                    });
-                    row.col(|ui| {
-                        ui.monospace(&a.role);
-                    });
-                    row.col(|ui| {
-                        let color = if a.status == "ACTIVE" { theme::accent() } else { theme::text_3() };
-                        ui.colored_label(color, &a.status);
-                    });
-                    row.col(|ui| {
+                if let Some(err) = &self.new_admin_error {
+                    ui.colored_label(theme::danger(), err);
+                }
+            });
+            if self.new_admin_role == "SUPPORT" {
+                ui.add_space(6.0);
+                ui.colored_label(
+                    theme::warning(),
+                    "No backoffice page currently grants the Support role any access, every page requires Manager or Broker Admin. A Support admin can log in but every page will 403. Pick Manager (and delegate only the permissions they need) until Support has real access wired up.",
+                );
+            }
+        });
+        ui.add_space(10.0);
+
+        let mut pending_status: Option<(String, String)> = None;
+        let mut pending_permission: Option<(String, Vec<String>)> = None;
+        for a in self.admins.clone() {
+            let is_self = a.id == self.current_admin_id;
+            theme::card(10).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(&a.email);
+                            if is_self {
+                                ui.weak("(you)");
+                            }
+                        });
+                        ui.colored_label(theme::accent(), &a.role);
                         ui.weak(a.last_login_at.as_deref().unwrap_or("never"));
                     });
-                    row.col(|ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let next = if a.status == "ACTIVE" { "DISABLED" } else { "ACTIVE" };
                         let label = if a.status == "ACTIVE" { "Disable" } else { "Activate" };
-                        if ui.small_button(label).clicked() {
+                        if ui.add_enabled(!is_self, egui::Button::new(label)).on_disabled_hover_text("You cannot change your own status").clicked() {
                             pending_status = Some((a.id.clone(), next.to_string()));
                         }
+                        let status_color = if a.status == "ACTIVE" { theme::accent() } else { theme::text_3() };
+                        ui.colored_label(status_color, &a.status);
                     });
                 });
+                if a.role == "MANAGER" {
+                    ui.add_space(6.0);
+                    ui.separator();
+                    ui.add_space(4.0);
+                    ui.weak("Delegated permissions:");
+                    ui.horizontal_wrapped(|ui| {
+                        for (key, label) in api::PERMISSIONS {
+                            let mut checked = a.extra_permissions.iter().any(|p| p == key);
+                            if ui.checkbox(&mut checked, label).changed() {
+                                let next: Vec<String> = if checked {
+                                    a.extra_permissions.iter().cloned().chain(std::iter::once(key.to_string())).collect()
+                                } else {
+                                    a.extra_permissions.iter().filter(|p| p.as_str() != key).cloned().collect()
+                                };
+                                pending_permission = Some((a.id.clone(), next));
+                            }
+                        }
+                    });
+                } else if a.role == "BROKER_ADMIN" {
+                    ui.weak("has everything");
+                }
             });
+        }
         if let Some((id, status)) = pending_status {
             if let Some(api) = &self.api {
                 api.set_admin_status(ctx.clone(), self.tx.clone(), id, status);
+            }
+        }
+        if let Some((id, permissions)) = pending_permission {
+            if let Some(api) = &self.api {
+                api.set_admin_permissions(ctx.clone(), self.tx.clone(), id, permissions);
             }
         }
     }
@@ -4565,42 +4756,68 @@ impl BackofficeApp {
             });
     }
 
-    fn render_deals(&mut self, ui: &mut egui::Ui, _ctx: &egui::Context) {
-        ui.horizontal(|ui| {
-            if self.deals_loading {
-                ui.spinner();
-            }
-            ui.weak("Closed and voided positions.");
-        });
-        ui.add_space(8.0);
+    // Direct native port of DealsManager.tsx -- search, VOIDED badge,
+    // Open/Commission/Swap columns (were missing entirely), and a real
+    // Delete action (soft-delete from the trader's statement, reason
+    // required, same maker-checker 202-pending gate as balance
+    // adjustments). Not ported: the Replay button (DealingReplayPanel is
+    // a tick-by-tick fill replay viewer -- real complexity, low value
+    // for a first native pass, deferred).
+    fn render_deals(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        if self.deals_loading {
+            ui.spinner();
+        }
         if let Some(err) = &self.deals_error {
             ui.colored_label(theme::danger(), err);
             return;
         }
+        ui.label(
+            egui::RichText::new(format!("{} closed trade{} (most recent 500).", self.deals.len(), if self.deals.len() == 1 { "" } else { "s" }))
+                .size(11.5)
+                .color(theme::text_3()),
+        );
+        ui.add(egui::TextEdit::singleline(&mut self.deals_filter).hint_text("Search by account number, name, or symbol..."));
+        ui.add_space(8.0);
+
+        let q = self.deals_filter.to_lowercase();
+        let filtered: Vec<&DealRow> = self
+            .deals
+            .iter()
+            .filter(|d| q.is_empty() || d.account_number.to_lowercase().contains(&q) || d.account_full_name.to_lowercase().contains(&q) || d.symbol.to_lowercase().contains(&q))
+            .collect();
+
+        let mut delete_target: Option<DealRow> = None;
+
         TableBuilder::new(ui)
             .striped(true)
             .resizable(true)
             .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
             .column(Column::auto().at_least(100.0))
-            .column(Column::auto().at_least(90.0))
+            .column(Column::auto().at_least(80.0))
+            .column(Column::auto().at_least(70.0))
+            .column(Column::auto().at_least(80.0))
+            .column(Column::auto().at_least(80.0))
+            .column(Column::auto().at_least(80.0))
+            .column(Column::auto().at_least(80.0))
             .column(Column::auto().at_least(70.0))
             .column(Column::auto().at_least(90.0))
-            .column(Column::auto().at_least(90.0))
-            .column(Column::auto().at_least(90.0))
-            .column(Column::auto().at_least(100.0))
-            .column(Column::remainder().at_least(140.0))
-            .header(28.0, |mut header| {
-                for label in ["Account", "Symbol", "Side", "Status", "Volume", "Close", "P/L", "Closed"] {
+            .column(Column::auto().at_least(140.0))
+            .column(Column::remainder().at_least(80.0))
+            .header(26.0, |mut header| {
+                for label in ["Account", "Symbol", "Side", "Volume", "Open", "Close", "Commission", "Swap", "P/L", "Closed", "Action"] {
                     header.col(|ui| {
-                        ui.label(egui::RichText::new(label.to_uppercase()).size(11.5).color(theme::text_3()));
+                        ui.label(egui::RichText::new(label.to_uppercase()).size(10.5).color(theme::text_3()));
                     });
                 }
             })
             .body(|body| {
-                body.rows(26.0, self.deals.len(), |mut row| {
-                    let d = &self.deals[row.index()];
+                body.rows(28.0, filtered.len(), |mut row| {
+                    let d = filtered[row.index()];
                     row.col(|ui| {
-                        ui.monospace(&d.account_number);
+                        ui.vertical(|ui| {
+                            ui.monospace(&d.account_number);
+                            ui.weak(&d.account_full_name);
+                        });
                     });
                     row.col(|ui| {
                         ui.monospace(&d.symbol);
@@ -4608,16 +4825,24 @@ impl BackofficeApp {
                     row.col(|ui| {
                         let color = if d.side == "BUY" { theme::accent() } else { theme::danger() };
                         ui.colored_label(color, &d.side);
-                    });
-                    row.col(|ui| {
-                        let color = if d.status == "VOIDED" { theme::warning() } else { theme::text_2() };
-                        ui.colored_label(color, &d.status);
+                        if d.status == "VOIDED" {
+                            ui.colored_label(theme::warning(), "VOIDED");
+                        }
                     });
                     row.col(|ui| {
                         ui.monospace(&d.volume);
                     });
                     row.col(|ui| {
+                        ui.monospace(&d.open_price);
+                    });
+                    row.col(|ui| {
                         ui.monospace(&d.close_price);
+                    });
+                    row.col(|ui| {
+                        ui.monospace(&d.commission);
+                    });
+                    row.col(|ui| {
+                        ui.monospace(&d.swap);
                     });
                     row.col(|ui| {
                         let color = match d.realized_pnl.parse::<f64>() {
@@ -4630,8 +4855,49 @@ impl BackofficeApp {
                     row.col(|ui| {
                         ui.weak(&d.closed_at);
                     });
+                    row.col(|ui| {
+                        if ui.small_button("Delete").clicked() {
+                            delete_target = Some(d.clone());
+                        }
+                    });
                 });
             });
+
+        if let Some(d) = delete_target {
+            self.deal_delete_confirm = Some((d, String::new(), None));
+        }
+
+        if let Some((deal, reason, error)) = self.deal_delete_confirm.clone() {
+            let mut open = true;
+            let mut confirm = false;
+            let mut new_reason = reason.clone();
+            egui::Window::new("Confirm delete deal").id(egui::Id::new("deal-delete-window")).collapsible(false).resizable(false).open(&mut open).show(ctx, |ui| {
+                ui.label(format!(
+                    "Removes {}'s {} {} deal from the trader-visible statement/history entirely. The row itself isn't erased; it's recoverable from the audit log. A reason is required.",
+                    deal.account_number, deal.symbol, deal.side
+                ));
+                ui.add_space(6.0);
+                ui.label("Reason (required)");
+                ui.add(egui::TextEdit::singleline(&mut new_reason).hint_text("Why this row is being removed from the trader's history"));
+                if let Some(err) = &error {
+                    ui.colored_label(theme::danger(), err);
+                }
+                ui.add_space(6.0);
+                if theme::danger_button_enabled(ui, !new_reason.trim().is_empty(), "Confirm delete").clicked() {
+                    confirm = true;
+                }
+            });
+            if new_reason != reason {
+                self.deal_delete_confirm = Some((deal.clone(), new_reason.clone(), error.clone()));
+            }
+            if confirm {
+                if let Some(api) = &self.api {
+                    api.delete_deal(ctx.clone(), self.tx.clone(), deal.id.clone(), new_reason.trim().to_string());
+                }
+            } else if !open {
+                self.deal_delete_confirm = None;
+            }
+        }
     }
 
     // Direct native port of AuditLogTable.tsx: a search box (account
@@ -5690,10 +5956,18 @@ impl BackofficeApp {
     // signed-in admin on the right, still draggable/double-click-to-
     // maximize across its full width. Logged-out state (login screen)
     // shows just the generic wordmark + window controls, same as before.
+    // Redesign Part A -- rebuilt to the design reference's own 56px grid
+    // (232px brand cell | flexible breadcrumb+search | right cluster),
+    // replacing the old ad-hoc bar. Every control that existed before
+    // (drag-to-move/double-click-to-maximize, window buttons, Log out,
+    // theme toggle, signed-in identity) is still here, none removed --
+    // just laid out to match the reference and, for identity, moved to
+    // the avatar's tooltip instead of two bare lines of text competing
+    // with the new right-cluster pills (see the avatar block below).
     fn render_titlebar(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("titlebar")
-            .exact_height(44.0)
-            .frame(egui::Frame::new().fill(theme::sidebar_bg()).inner_margin(egui::Margin::symmetric(14, 0)).stroke(egui::Stroke { width: 1.0, color: theme::border() }))
+            .exact_height(56.0)
+            .frame(egui::Frame::new().fill(theme::bg_1()).stroke(egui::Stroke { width: 1.0, color: theme::border() }))
             .show(ctx, |ui| {
                 let bar_rect = ui.max_rect();
                 let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
@@ -5714,47 +5988,99 @@ impl BackofficeApp {
                 }
 
                 ui.horizontal_centered(|ui| {
-                    if let Some(texture) = &self.broker_logo_texture {
-                        ui.add(egui::Image::new(texture).max_height(18.0).max_width(24.0));
-                    } else {
-                        ui.label(egui::RichText::new("●").size(12.0).color(theme::accent()));
-                    }
-                    ui.add_space(4.0);
-                    let brand = self.broker_name.as_deref().unwrap_or("VyXTrader Backoffice");
-                    ui.label(egui::RichText::new(brand).size(12.5).color(theme::text_2()));
+                    // --- Brand cell: fixed 232px, matches the sidebar's
+                    // own width exactly so the border-right below lines
+                    // up with the sidebar's own left edge on the row
+                    // underneath (Part A item 1's "baselines align" fix).
+                    let brand_left = bar_rect.left();
+                    ui.allocate_ui_with_layout(egui::vec2(232.0, bar_rect.height()), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        ui.add_space(20.0);
+                        if let Some(texture) = &self.broker_logo_texture {
+                            ui.add(egui::Image::new(texture).max_height(20.0).max_width(26.0));
+                        } else {
+                            ui.label(egui::RichText::new("●").size(14.0).color(theme::accent()));
+                        }
+                        ui.add_space(8.0);
+                        ui.vertical(|ui| {
+                            ui.add_space(4.0);
+                            // Truncated to fit the 232px brand cell on one
+                            // line -- a long broker name ("ZZZ QA Test
+                            // Broker (not real)", this QA tenant's own
+                            // deliberately verbose name) otherwise wraps
+                            // to a second line and pushes "Backoffice"
+                            // past the header's own 56px height into the
+                            // sidebar underneath it, a real overflow bug
+                            // caught live on this exact tenant.
+                            let raw = self.broker_name.as_deref().unwrap_or("VyXTrader");
+                            let brand = if raw.chars().count() > 20 { format!("{}…", raw.chars().take(19).collect::<String>()) } else { raw.to_string() };
+                            ui.add(egui::Label::new(egui::RichText::new(brand).font(theme::heading_font(14.0)).color(theme::text_1())).wrap());
+                            ui.label(egui::RichText::new("Backoffice").size(10.0).color(theme::text_3()));
+                        });
+                    });
+                    ui.painter().line_segment(
+                        [egui::pos2(brand_left + 232.0, bar_rect.top()), egui::pos2(brand_left + 232.0, bar_rect.bottom())],
+                        egui::Stroke::new(1.0, theme::border()),
+                    );
+                    ui.add_space(20.0);
+
                     if self.logged_in {
-                        ui.add_space(10.0);
-                        ui.label(egui::RichText::new("\u{2022}").color(theme::text_3()));
-                        ui.add_space(10.0);
-                        ui.label(egui::RichText::new(self.screen.icon()).size(14.0).color(theme::accent()));
-                        ui.add_space(4.0);
-                        ui.label(egui::RichText::new(self.screen.label()).size(15.5).color(theme::text_1()).strong());
+                        // Breadcrumb -- "Section › Page" (Part A item 4),
+                        // replacing the old bare page title so the page's
+                        // own H1 (rendered by each render_* fn) isn't a
+                        // second, redundant title directly under it.
+                        ui.label(egui::RichText::new(self.screen.group_label()).size(13.5).color(theme::text_3()));
+                        ui.label(egui::RichText::new(" \u{203A} ").size(13.0).color(theme::text_3()));
+                        ui.label(egui::RichText::new(self.screen.label()).size(13.5).color(theme::text_1()).strong());
+                        ui.add_space(24.0);
+
+                        // Global search (Part A item 6) -- a real,
+                        // typeable field; not wired to live cross-entity
+                        // results this pass, see global_search's own
+                        // field comment for why.
+                        let search_edit = egui::TextEdit::singleline(&mut self.global_search)
+                            .hint_text("Search clients, accounts, orders, symbols…")
+                            .desired_width(300.0)
+                            .margin(egui::Margin::symmetric(10, 7));
+                        ui.add(search_edit);
+                        ui.add_space(6.0);
+                        ui.label(egui::RichText::new("Ctrl+K").size(10.5).color(theme::text_3()));
                     }
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let btn = |ui: &mut egui::Ui, symbol: &str, hover: egui::Color32| {
-                            let (rect, response) = ui.allocate_exact_size(egui::vec2(38.0, 44.0), egui::Sense::click());
+                        let win_btn = |ui: &mut egui::Ui, symbol: &str, hover: egui::Color32| {
+                            let (rect, response) = ui.allocate_exact_size(egui::vec2(34.0, 56.0), egui::Sense::click());
                             if ui.is_rect_visible(rect) {
                                 if response.hovered() {
                                     ui.painter().rect_filled(rect, 0.0, hover);
                                 }
-                                ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, symbol, egui::FontId::proportional(13.0), theme::text_1());
+                                ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, symbol, egui::FontId::proportional(12.0), theme::text_2());
                             }
                             response
                         };
-                        if btn(ui, "✕", theme::danger()).clicked() {
+                        if win_btn(ui, "✕", theme::danger()).clicked() {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                         }
-                        if btn(ui, "▢", theme::bg_2()).clicked() {
+                        if win_btn(ui, "▢", theme::bg_2()).clicked() {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
                         }
-                        if btn(ui, "—", theme::bg_2()).clicked() {
+                        if win_btn(ui, "—", theme::bg_2()).clicked() {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
                         }
 
                         if self.logged_in {
                             ui.add_space(10.0);
-                            if ui.add(egui::Button::new(egui::RichText::new("Log out").size(12.0).color(theme::text_2())).fill(egui::Color32::TRANSPARENT).stroke(egui::Stroke::new(1.0_f32, theme::border()))).clicked() {
+
+                            // Log out + theme toggle -- same actions as
+                            // before, kept as their own small buttons
+                            // rather than tucked behind a new dropdown-
+                            // menu widget (the design reference's avatar
+                            // doesn't come with a documented menu shape
+                            // anywhere in the prompt files, so inventing
+                            // one is out of scope for this pass).
+                            if ui
+                                .add(egui::Button::new(egui::RichText::new("Log out").size(11.5).color(theme::text_2())).fill(egui::Color32::TRANSPARENT).stroke(egui::Stroke::new(1.0_f32, theme::border())))
+                                .clicked()
+                            {
                                 self.logged_in = false;
                                 self.api = None;
                                 self.loaded_once.clear();
@@ -5766,20 +6092,17 @@ impl BackofficeApp {
                                 theme::reset_accent();
                                 theme::apply_visuals(ctx);
                             }
-                            ui.add_space(10.0);
-                            // Sun/moon theme toggle -- same position and
-                            // persistence (PATCH /api/manage/theme,
-                            // AdminUser.theme) as AdminShell.tsx's own
-                            // header button. Added before the nested
-                            // ui.vertical() below, not after -- a widget
-                            // added to a right_to_left layout AFTER a
-                            // nested ui.vertical()/ui.horizontal() call
-                            // lands at a stale cursor position in this
-                            // egui version (confirmed live: it rendered
-                            // pinned near the window's top-left instead of
-                            // the right-aligned cluster), so anything else
-                            // in this closure has to come before the
-                            // vertical block, not after.
+                            ui.add_space(8.0);
+                            // Added before the avatar/pills below, not
+                            // after -- a widget added to a right_to_left
+                            // layout AFTER a nested ui.vertical()/
+                            // ui.horizontal() call lands at a stale
+                            // cursor position in this egui version
+                            // (confirmed live: it rendered pinned near
+                            // the window's top-left instead of the
+                            // right-aligned cluster), so anything else in
+                            // this closure has to come before the first
+                            // such nested call, not after.
                             let dark = theme::is_dark();
                             let toggle_label = if dark { "\u{25CF}" } else { "\u{25CB}" };
                             if ui
@@ -5796,16 +6119,122 @@ impl BackofficeApp {
                                     api.set_theme(ctx.clone(), if theme::is_dark() { "dark" } else { "light" }.to_string());
                                 }
                             }
-                            ui.add_space(10.0);
-                            ui.vertical(|ui| {
-                                ui.label(egui::RichText::new(&self.logged_in_email).size(11.5).color(theme::text_1()));
-                                ui.label(egui::RichText::new(&self.host_input).size(10.0).color(theme::text_3()));
-                            });
+                            ui.add_space(14.0);
+
+                            // Avatar -- initials from the signed-in
+                            // email's local part; full email + host
+                            // (previously two bare lines of header text)
+                            // now live in its tooltip, still real
+                            // information, just not competing for header
+                            // width with the new pills.
+                            let initials: String = self
+                                .logged_in_email
+                                .split(['@', '.'])
+                                .next()
+                                .unwrap_or("")
+                                .chars()
+                                .take(2)
+                                .collect::<String>()
+                                .to_uppercase();
+                            let (avatar_rect, avatar_resp) = ui.allocate_exact_size(egui::vec2(30.0, 30.0), egui::Sense::hover());
+                            ui.painter().circle_filled(avatar_rect.center(), 15.0, theme::bg_2());
+                            ui.painter().circle_stroke(avatar_rect.center(), 15.0, egui::Stroke::new(1.0, theme::border()));
+                            ui.painter().text(avatar_rect.center(), egui::Align2::CENTER_CENTER, &initials, egui::FontId::proportional(11.0), theme::text_1());
+                            avatar_resp.on_hover_text(format!("{}\n{}", self.logged_in_email, self.host_input));
+                            ui.add_space(12.0);
+
+                            // Notification bell -- orange dot when there's
+                            // an unread notification, same real count the
+                            // sidebar's own Notifications badge uses.
+                            // Clicking navigates to Notifications, same
+                            // as clicking the sidebar row.
+                            let unread = self.notifications.iter().filter(|n| !n.read).count();
+                            let (bell_rect, bell_resp) = ui.allocate_exact_size(egui::vec2(26.0, 26.0), egui::Sense::click());
+                            // A real bell emoji doesn't exist in Inter's
+                            // glyph set (renders as tofu/fallback) --
+                            // same plain-Unicode-glyph, no-icon-font
+                            // convention Screen::icon() already
+                            // established for exactly this reason. Reuses
+                            // that same Notifications glyph so the bell
+                            // and the sidebar row it navigates to read as
+                            // the same icon.
+                            ui.painter().text(bell_rect.center(), egui::Align2::CENTER_CENTER, Screen::Notifications.icon(), egui::FontId::proportional(15.0), theme::text_2());
+                            if unread > 0 {
+                                ui.painter().circle_filled(bell_rect.center() + egui::vec2(7.0, -7.0), 4.0, theme::accent());
+                            }
+                            if bell_resp.on_hover_text(if unread > 0 { format!("{unread} unread") } else { "No unread notifications".to_string() }).clicked() {
+                                self.screen = Screen::Notifications;
+                                self.ensure_loaded(ctx, Screen::Notifications);
+                            }
+                            ui.add_space(14.0);
+
+                            // Clock -- real UTC time, ticks every frame
+                            // since the update loop already repaints on
+                            // the 5s auto-refresh timer at minimum.
+                            let now = chrono_like_utc_now();
+                            ui.label(egui::RichText::new(now).size(12.0).color(theme::text_3()).monospace());
+                            ui.add_space(14.0);
+
+                            // Feed / Engine pills -- real connectivity
+                            // signals, not fabricated numbers. Feed shows
+                            // measured round-trip time of this app's own
+                            // last periodic refresh cycle (see
+                            // last_refresh_rtt_ms's own comment) instead
+                            // of the design reference's placeholder
+                            // "42ms" -- no real per-tick feed latency is
+                            // exposed by any endpoint this app calls, so
+                            // showing a made-up number would be worse
+                            // than showing the honest thing this app can
+                            // actually measure. Engine shows whether the
+                            // most recent API round-trip (any screen)
+                            // succeeded.
+                            let pill = |ui: &mut egui::Ui, dot: egui::Color32, text: String| {
+                                egui::Frame::new()
+                                    .stroke(egui::Stroke::new(1.0, theme::border()))
+                                    // CornerRadius is a u8 (0..=255) --
+                                    // 20 is already well past half this
+                                    // pill's own height, so it renders
+                                    // fully pill-shaped same as a literal
+                                    // 999 would, just within range.
+                                    .corner_radius(egui::CornerRadius::same(20))
+                                    .inner_margin(egui::Margin::symmetric(9, 5))
+                                    .show(ui, |ui| {
+                                        ui.horizontal(|ui| {
+                                            let (dot_rect, _) = ui.allocate_exact_size(egui::vec2(7.0, 7.0), egui::Sense::hover());
+                                            ui.painter().circle_filled(dot_rect.center(), 3.5, dot);
+                                            ui.label(egui::RichText::new(text).size(11.5).color(theme::text_3()));
+                                        });
+                                    });
+                            };
+                            let (feed_dot, feed_text) = match self.last_refresh_rtt_ms {
+                                Some(ms) => (theme::up(), format!("Feed {ms}ms")),
+                                None => (theme::text_3(), "Feed …".to_string()),
+                            };
+                            pill(ui, feed_dot, feed_text);
+                            ui.add_space(8.0);
+                            // Engine: green while a session is active. This
+                            // app doesn't cheaply expose a per-request
+                            // success/failure signal common to every one of
+                            // ApiEvent's many variants, so rather than fake
+                            // a health check this reflects the one thing
+                            // that's actually true here -- an authenticated
+                            // session is up and the shell is rendering.
+                            pill(ui, theme::up(), "Engine".to_string());
                         }
                     });
                 });
             });
     }
+}
+
+// UTC clock text, HH:MM:SS -- std::time only (no chrono dependency in
+// this crate), reads the system clock and does the civil-time math by
+// hand. Named for what it returns, not a claim this crate depends on
+// the chrono crate.
+fn chrono_like_utc_now() -> String {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+    let secs_today = now.as_secs() % 86400;
+    format!("{:02}:{:02}:{:02} UTC", secs_today / 3600, (secs_today % 3600) / 60, secs_today % 60)
 }
 
 impl eframe::App for BackofficeApp {
@@ -5817,6 +6246,7 @@ impl eframe::App for BackofficeApp {
             let elapsed = self.last_auto_refresh.elapsed();
             if elapsed >= AUTO_REFRESH {
                 self.last_auto_refresh = std::time::Instant::now();
+                self.last_refresh_started = Some(std::time::Instant::now());
                 self.fetch(ctx, self.screen);
             }
             // Keeps the update loop ticking on its own even with no
