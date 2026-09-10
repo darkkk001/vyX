@@ -26,7 +26,11 @@ export async function GET() {
       // configured level (Group.marginCallLevel). Null group = ungrouped
       // account, same 100 fallback Group.marginCallLevel's own schema
       // default already uses everywhere else (lib/margin.ts, lib/risk-monitor.ts).
-      group: { select: { marginCallLevel: true } },
+      // `name` added alongside it for the native terminal's own account-
+      // strip pill (v2 redesign's "Standard · 1:500" -- Group.name IS
+      // "Standard" for a broker's default group, but this must read the
+      // real value, never assume every broker names it that).
+      group: { select: { marginCallLevel: true, name: true } },
     },
   });
 
@@ -35,5 +39,5 @@ export async function GET() {
   }
 
   const { group, ...rest } = account;
-  return NextResponse.json({ ...rest, marginCallLevel: (group?.marginCallLevel ?? 100).toString() });
+  return NextResponse.json({ ...rest, marginCallLevel: (group?.marginCallLevel ?? 100).toString(), groupName: group?.name ?? null });
 }
