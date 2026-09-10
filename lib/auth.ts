@@ -184,15 +184,42 @@ export async function revokeSessionById(adminId: string, sessionId: string): Pro
 export async function getAdminSession(): Promise<AdminSessionPayload | null> {
   const cookieStore = await cookies();
   const token = cookieStore.get(SESSION_COOKIE_NAME)?.value;
-  if (!token) return null;
+  if (!token) return null; // no cookie at all -- a real "not logged in", nothing to log
 
   const session = await verifySessionToken(token);
-  if (!session) return null;
+  if (!session) {
+    // Cookie present but Redis has nothing for it (expired/logged-out-
+    // elsewhere/wrong environment's session store) -- every caller today
+    // treats this identically to "not logged in" (null), which is
+    // correct; logged because a client reporting "403 forbidden" when
+    // this is what actually happened is exactly the 401-vs-403
+    // conflation this diagnostic exists to catch.
+    console.error("[auth] getAdminSession: session token not found in Redis", {
+      pathname: (await headers()).get("x-pathname"),
+    });
+    return null;
+  }
 
   if (session.brokerId !== null) {
     const headerList = await headers();
     const requestBrokerId = headerList.get("x-broker-id");
-    if (!requestBrokerId || requestBrokerId !== session.brokerId) return null;
+    if (!requestBrokerId || requestBrokerId !== session.brokerId) {
+      // Valid session, WRONG TENANT for this request -- the case that
+      // most easily gets misread as a permission problem ("I'm a Broker
+      // Admin, why am I forbidden?") when it's actually an auth/routing
+      // mismatch: this admin's session was minted under one brokerId,
+      // but middleware.ts resolved a different (or no) x-broker-id for
+      // the host this particular request actually hit. Logged with both
+      // ids specifically so that distinction is visible without needing
+      // to reproduce with a debugger attached.
+      console.error("[auth] getAdminSession: x-broker-id mismatch, rejecting session", {
+        pathname: headerList.get("x-pathname"),
+        sessionBrokerId: session.brokerId,
+        requestBrokerId: requestBrokerId ?? null,
+        adminId: session.adminId,
+      });
+      return null;
+    }
   }
 
   return session;

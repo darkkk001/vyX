@@ -33,6 +33,26 @@ export type PermissionContext = {
   forbidUnless: (permission: Permission) => boolean; // true = should be rejected
 };
 
+// {route, required, granted} diagnostic for a route about to 403 --
+// `route` is caller-supplied (the route.ts's own file path/name, since
+// there's no framework-given way to ask "what route handler is this")
+// so a 403 in logs says exactly which permission was missing on which
+// endpoint, instead of a bare "forbidden" a developer has to go
+// spelunking for. `granted` distinguishes the three real cases: a
+// BROKER_ADMIN's implicit all-access, a MANAGER's actual extraPermissions
+// list (however small), and "no session at all" (getAdminSession()
+// already logs its own reason for that one in lib/auth.ts -- this adds
+// the route-level context on top).
+function logForbidden(route: string | undefined, required: Permission, session: AdminSessionPayload | null, granted: "ALL (BROKER_ADMIN)" | Permission[] | "NONE (no session)") {
+  console.error("[permissions] forbidUnless: rejecting", {
+    route: route ?? "(unspecified, pass routeName to getPermissionContext to identify it)",
+    required,
+    role: session?.role ?? null,
+    adminId: session?.adminId ?? null,
+    granted,
+  });
+}
+
 // Several routes (funds-requests, risk, kyc-requests, admins, ...) check
 // more than one permission per request -- e.g. risk/route.ts's PATCH
 // checks EMERGENCY_CONTROLS and RISK_SETTINGS independently depending on
@@ -43,18 +63,32 @@ export type PermissionContext = {
 // per-click delay Manager-role admins were seeing. This fetches the
 // account once (still nothing for BROKER_ADMIN, which never needed the
 // query) and answers every subsequent check from that one result.
-export async function getPermissionContext(session: AdminSessionPayload | null): Promise<PermissionContext> {
+export async function getPermissionContext(session: AdminSessionPayload | null, routeName?: string): Promise<PermissionContext> {
   if (!session || !session.brokerId) {
-    return { forbidUnless: () => true };
+    // getAdminSession() already logged WHY session is null (no cookie,
+    // expired Redis entry, or an x-broker-id/tenant mismatch) -- see
+    // lib/auth.ts. This case is the one most likely to be misread as "my
+    // permissions are wrong" when it's actually "you're not authenticated
+    // for this request at all" -- logged here too so the route context
+    // (which auth.ts doesn't have) is visible in the same place a caller
+    // would go looking for "why did this 403."
+    return { forbidUnless: (permission) => { logForbidden(routeName, permission, session, "NONE (no session)"); return true; } };
   }
   if (session.role === "BROKER_ADMIN") {
     return { forbidUnless: () => false };
   }
   if (session.role !== "MANAGER") {
-    return { forbidUnless: () => true };
+    return { forbidUnless: (permission) => { logForbidden(routeName, permission, session, "NONE (no session)"); return true; } };
   }
   const admin = await prisma.adminUser.findUnique({ where: { id: session.adminId }, select: { status: true, extraPermissions: true } });
-  const granted = new Set(admin && admin.status === "ACTIVE" ? admin.extraPermissions : []);
-  return { forbidUnless: (permission) => !granted.has(permission) };
+  const grantedList = admin && admin.status === "ACTIVE" ? admin.extraPermissions : [];
+  const granted = new Set(grantedList);
+  return {
+    forbidUnless: (permission) => {
+      const denied = !granted.has(permission);
+      if (denied) logForbidden(routeName, permission, session, grantedList as Permission[]);
+      return denied;
+    },
+  };
 }
 

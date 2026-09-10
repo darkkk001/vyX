@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession } from "@/lib/auth";
-import { getPermissionContext } from "@/lib/permissions";
+import { getPermissionContext, PERMISSION_LABELS } from "@/lib/permissions";
 import { getFreshPrice } from "@/lib/live-price";
 import { openPositionFromOrder } from "@/lib/dealing";
 import { resolveWantsDealingQueue } from "@/lib/dealing-routing";
@@ -37,9 +37,9 @@ import {
 // behavior toggles (Group.dealingMode, Broker.dealingModeAt) already use.
 export async function GET() {
   const session = await getAdminSession();
-  const permissions = await getPermissionContext(session);
+  const permissions = await getPermissionContext(session, "manage/dealing-desk-toggle");
   if (permissions.forbidUnless("RISK_SETTINGS")) {
-    return NextResponse.json({ error: "forbidden" }, { status: 403 });
+    return NextResponse.json({ error: "forbidden", permission: "RISK_SETTINGS", permissionLabel: PERMISSION_LABELS.RISK_SETTINGS }, { status: 403 });
   }
   const broker = await prisma.broker.findUniqueOrThrow({ where: { id: session!.brokerId! } });
   return NextResponse.json({
@@ -50,9 +50,9 @@ export async function GET() {
 
 export async function PATCH(request: NextRequest) {
   const session = await getAdminSession();
-  const permissions = await getPermissionContext(session);
+  const permissions = await getPermissionContext(session, "manage/dealing-desk-toggle");
   if (permissions.forbidUnless("RISK_SETTINGS")) {
-    return NextResponse.json({ error: "forbidden" }, { status: 403 });
+    return NextResponse.json({ error: "forbidden", permission: "RISK_SETTINGS", permissionLabel: PERMISSION_LABELS.RISK_SETTINGS }, { status: 403 });
   }
   const brokerId = session!.brokerId!;
 

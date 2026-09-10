@@ -11,7 +11,7 @@ import { getPermissionContext } from "@/lib/permissions";
 // enforced on the live trading path.
 export async function GET() {
   const session = await getAdminSession();
-  const permissions = await getPermissionContext(session);
+  const permissions = await getPermissionContext(session, "manage/risk GET");
   if (permissions.forbidUnless("RISK_SETTINGS") && permissions.forbidUnless("EMERGENCY_CONTROLS")) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
@@ -50,7 +50,7 @@ export async function PATCH(request: NextRequest) {
   // fetch (not two separate forbidUnlessBrokerAdminOrPermission calls) --
   // a request touching both tradingHalted and a risk field would
   // otherwise query AdminUser twice for the same Manager account.
-  const permissions = await getPermissionContext(session);
+  const permissions = await getPermissionContext(session, "manage/risk PATCH");
   if (("tradingHalted" in body || "closeOnly" in body) && permissions.forbidUnless("EMERGENCY_CONTROLS")) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
