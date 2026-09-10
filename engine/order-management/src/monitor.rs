@@ -27,7 +27,7 @@
 
 use crate::calc::{close_price_for, equity, floating_pnl, load_account_state, used_margin, AccountState};
 use crate::db;
-use margin::{evaluate, MarginThresholds, MonitorAction};
+use margin::{evaluate, MonitorAction};
 use protocol::TradingEvent;
 use rust_decimal::Decimal;
 use std::sync::Arc;
@@ -187,7 +187,7 @@ async fn evaluate_account(
     pool: &PgPool,
     nats: &async_nats::Client,
     account_id: &str,
-    thresholds: MarginThresholds,
+    by_group: &margin::ThresholdsByGroup,
 ) -> Result<(), sqlx::Error> {
     let Some(mut state) = load_account_state(pool, account_id).await? else {
         return Ok(());
@@ -195,6 +195,19 @@ async fn evaluate_account(
     if state.positions.is_empty() {
         return Ok(());
     }
+
+    // Risk item 2: resolve THIS account's own real thresholds -- its
+    // group's broker-configured marginCallLevel/stopOutLevel, or the
+    // documented ungrouped-account default. A group referenced by this
+    // account but missing from `by_group` (a stale/partial load) skips
+    // evaluation entirely rather than falling back to a guess -- the
+    // account is picked up again on the next pass once the load
+    // succeeds, rather than evaluated once against the wrong number.
+    let group_id = db::get_account_group_id(pool, account_id).await?;
+    let Some(thresholds) = margin::resolve_thresholds(group_id.as_deref(), by_group) else {
+        tracing::warn!(account_id, ?group_id, "margin monitor: group thresholds not loaded yet, skipping this pass");
+        return Ok(());
+    };
 
     // SL/TP resolves first: it's the trader's own chosen exit, independent
     // of margin level, and closing these here means the margin/stop-out
@@ -253,7 +266,7 @@ async fn publish_best_effort(nats: &async_nats::Client, event: &TradingEvent) {
 /// One full pass over every account with an open position. Errors for one
 /// account are logged and don't stop the rest — a bug in one account's
 /// data shouldn't leave every other account unmonitored.
-pub async fn run_once(pool: &PgPool, nats: &async_nats::Client, thresholds: MarginThresholds) {
+pub async fn run_once(pool: &PgPool, nats: &async_nats::Client) {
     let account_ids = match db::get_account_ids_with_open_positions(pool).await {
         Ok(ids) => ids,
         Err(err) => {
@@ -262,8 +275,20 @@ pub async fn run_once(pool: &PgPool, nats: &async_nats::Client, thresholds: Marg
         }
     };
 
+    // Risk item 2 (hot reload): re-loaded fresh on every pass, not cached
+    // across passes -- a group edit takes effect within one poll cycle /
+    // one price tick, whichever trigger fires next, with no separate
+    // "group changed" event needed. Cheap: one row per group.
+    let by_group = match db::load_group_thresholds(pool).await {
+        Ok(m) => m,
+        Err(err) => {
+            tracing::error!(?err, "margin monitor: failed to load group thresholds, skipping this pass entirely");
+            return;
+        }
+    };
+
     for account_id in account_ids {
-        if let Err(err) = evaluate_account(pool, nats, &account_id, thresholds).await {
+        if let Err(err) = evaluate_account(pool, nats, &account_id, &by_group).await {
             tracing::error!(?err, account_id, "margin monitor: failed to evaluate account");
         }
     }
@@ -288,22 +313,22 @@ pub fn new_run_guard() -> RunGuard {
 /// concurrency — see db.rs), it's purely to avoid wasted overlapping
 /// full-account-table scans when ticks arrive faster than a pass
 /// completes.
-pub async fn run_once_guarded(pool: &PgPool, nats: &async_nats::Client, thresholds: MarginThresholds, guard: &RunGuard) {
+pub async fn run_once_guarded(pool: &PgPool, nats: &async_nats::Client, guard: &RunGuard) {
     let Ok(_permit) = guard.try_lock() else {
         return;
     };
-    run_once(pool, nats, thresholds).await;
+    run_once(pool, nats).await;
 }
 
 /// Spawns the polling-timer trigger as a background task — the safety
 /// net described in the module doc comment, not the primary trigger path
 /// once a tick-driven subscription is also running alongside it.
-pub fn spawn(pool: PgPool, nats: async_nats::Client, thresholds: MarginThresholds, interval: std::time::Duration, guard: RunGuard) {
+pub fn spawn(pool: PgPool, nats: async_nats::Client, interval: std::time::Duration, guard: RunGuard) {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(interval);
         loop {
             ticker.tick().await;
-            run_once_guarded(&pool, &nats, thresholds, &guard).await;
+            run_once_guarded(&pool, &nats, &guard).await;
         }
     });
 }

@@ -5,6 +5,15 @@ which has the full surface-by-surface feature detail this document assumes as re
 No marketing tone. Every claim cites a file. Opinions in §3–§6 are explicitly opinions,
 not measured facts — labeled as such.
 
+**2026-09-10 note:** §1's "which path is live" claim below was re-verified, not
+changed — still true as written. The Rust engine's own margin-monitor got a real
+fix that day (per-account group thresholds instead of a hardcoded default; see
+`docs/risk-engine.md` §5's 2026-09-10 entry) and its own risk-team is working on
+a persistent (non-serverless) monitor for the currently-live Next.js path too —
+neither of those makes the Rust engine's order-acceptance path live. **The one
+system that executes a real trader's real order today is the Next.js/Prisma path
+described immediately below.**
+
 ---
 
 ## 1. Where We Stand

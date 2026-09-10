@@ -847,13 +847,21 @@ model Lead {
   @@index([brokerId])
 }
 
-// Settings template accounts can be assigned to (per-broker). Deliberately
-// NOT yet read by the Rust engine's margin/order path -- see
-// docs/risk-engine.md's implementation-status note. Assigning an account
-// to a group copies `leverage` onto Account.leverage once, at assignment
+// Settings template accounts can be assigned to (per-broker).
+// marginCallLevel/stopOutLevel ARE now read by the Rust engine's own
+// margin monitor (engine/order-management/src/db.rs's
+// load_group_thresholds, resolved per-account via
+// margin::resolve_thresholds -- see docs/risk-engine.md's
+// implementation-status note) -- as of the 2026-09-10 risk-item-2 fix,
+// this replaced a hardcoded MarginThresholds::default() (100%/50%)
+// applied to every account regardless of group. That engine's own
+// order-acceptance path is still NOT the live one for real money,
+// though (see docs/STATE-OF-PROJECT.md §1) -- this fix matters once it
+// is, and is the guard that refuses to let that happen for a group
+// whose thresholds failed to load. Assigning an account to a group
+// still copies `leverage` onto Account.leverage once, at assignment
 // time (see app/api/manage/accounts/[id]/route.ts) -- Account.leverage
-// stays the one value every trading code path already reads;
-// marginCallLevel/stopOutLevel are stored/displayed only for now.
+// stays the one value every trading code path already reads.
 model Group {
   id                 String           @id @default(cuid())
   brokerId           String

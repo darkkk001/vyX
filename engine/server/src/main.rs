@@ -77,6 +77,83 @@ struct AppState {
     // comment. Separate from alert_cache since it's pure bookkeeping, not
     // part of the actual in-memory alert book.
     alert_metrics: Arc<market_data::alerts::AlertMetrics>,
+    // Risk item 2's startup/live-order guard -- refreshed on the same
+    // cadence as the margin monitor (see spawn_thresholds_guard below),
+    // checked by place_market_order/place_pending_order before either
+    // ever reaches order_management. Starts `ok: false` (fails closed,
+    // not open) until the first successful load proves every group in
+    // use actually has real thresholds loaded.
+    thresholds_guard: Arc<std::sync::RwLock<ThresholdsGuardState>>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ThresholdsGuardState {
+    ok: bool,
+    missing_group_id: Option<String>,
+    last_error: Option<String>,
+}
+
+/// One-shot refresh of the guard state -- loads every group's real
+/// thresholds and every group id an account actually references, and
+/// flags the first one found missing (see margin::missing_group_thresholds).
+/// Called once at startup (synchronously, before the HTTP listener binds
+/// -- see main()) and then repeatedly by spawn_thresholds_guard below.
+async fn refresh_thresholds_guard(pool: &PgPool, guard: &std::sync::RwLock<ThresholdsGuardState>) {
+    let by_group = match order_management::db::load_group_thresholds(pool).await {
+        Ok(m) => m,
+        Err(err) => {
+            tracing::error!(?err, "thresholds guard: failed to load group thresholds");
+            *guard.write().unwrap() = ThresholdsGuardState { ok: false, missing_group_id: None, last_error: Some(err.to_string()) };
+            return;
+        }
+    };
+    let known_group_ids = match order_management::db::get_distinct_account_group_ids(pool).await {
+        Ok(ids) => ids,
+        Err(err) => {
+            tracing::error!(?err, "thresholds guard: failed to list account group ids");
+            *guard.write().unwrap() = ThresholdsGuardState { ok: false, missing_group_id: None, last_error: Some(err.to_string()) };
+            return;
+        }
+    };
+    let missing = margin::missing_group_thresholds(&known_group_ids, &by_group).map(|s| s.to_string());
+    if let Some(ref id) = missing {
+        tracing::error!(missing_group_id = %id, "thresholds guard: a group with real accounts has no loaded thresholds -- refusing live orders");
+    }
+    *guard.write().unwrap() = ThresholdsGuardState { ok: missing.is_none(), missing_group_id: missing, last_error: None };
+}
+
+/// Keeps the guard current on the same interval the margin monitor
+/// itself reloads on (MARGIN_MONITOR_INTERVAL_SECS) -- a newly-added
+/// group with a real account and no thresholds set trips the guard
+/// within one interval, not just at boot.
+fn spawn_thresholds_guard(pool: PgPool, guard: Arc<std::sync::RwLock<ThresholdsGuardState>>, interval: std::time::Duration) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(interval);
+        loop {
+            ticker.tick().await;
+            refresh_thresholds_guard(&pool, &guard).await;
+        }
+    });
+}
+
+/// The actual live-order guard (risk item 2's "engine refuses to accept
+/// live orders if any group has no thresholds loaded") -- called first
+/// thing in both place_market_order and place_pending_order, before
+/// either does any other work. 503 (not 4xx): this is "the engine isn't
+/// ready to accept this class of request right now," the same shape as
+/// a dependency being down, not a problem with the specific request.
+fn reject_if_thresholds_not_loaded(state: &AppState) -> Result<(), (StatusCode, String)> {
+    let guard = state.thresholds_guard.read().unwrap();
+    if guard.ok {
+        return Ok(());
+    }
+    let reason = match (&guard.missing_group_id, &guard.last_error) {
+        (Some(id), _) => format!("group {id} has no loaded margin thresholds"),
+        (None, Some(err)) => format!("thresholds not loaded yet: {err}"),
+        (None, None) => "thresholds not loaded yet".to_string(),
+    };
+    tracing::warn!(reason = %reason, "order rejected: thresholds guard not ok");
+    Err((StatusCode::SERVICE_UNAVAILABLE, format!("risk thresholds unavailable: {reason}")))
 }
 
 // Applied via .layer() to every order/position route (main() below) --
@@ -194,6 +271,8 @@ async fn place_market_order(
     State(state): State<Arc<AppState>>,
     Json(body): Json<PlaceMarketOrderBody>,
 ) -> Result<Json<PlaceMarketOrderResponse>, (StatusCode, String)> {
+    reject_if_thresholds_not_loaded(&state)?;
+
     if !verify_account_belongs_to_broker(&state.pool, &body.account_id, &body.broker_id)
         .await
         .map_err(|err| {
@@ -266,6 +345,8 @@ async fn place_pending_order(
     State(state): State<Arc<AppState>>,
     Json(body): Json<PlacePendingOrderBody>,
 ) -> Result<Json<PlacePendingOrderResponse>, (StatusCode, String)> {
+    reject_if_thresholds_not_loaded(&state)?;
+
     if !verify_account_belongs_to_broker(&state.pool, &body.account_id, &body.broker_id)
         .await
         .map_err(|err| {
@@ -820,7 +901,6 @@ async fn alert_stats(State(state): State<Arc<AppState>>) -> Json<market_data::al
 async fn spawn_tick_driven_triggers(
     pool: PgPool,
     nats: async_nats::Client,
-    thresholds: margin::MarginThresholds,
     guard: order_management::monitor::RunGuard,
 ) -> Result<(), async_nats::SubscribeError> {
     let mut sub = nats.subscribe("price.tick.*").await?;
@@ -838,7 +918,7 @@ async fn spawn_tick_driven_triggers(
 
             let (pool1, nats1, guard1) = (pool.clone(), nats.clone(), guard.clone());
             tokio::spawn(async move {
-                order_management::monitor::run_once_guarded(&pool1, &nats1, thresholds, &guard1).await;
+                order_management::monitor::run_once_guarded(&pool1, &nats1, &guard1).await;
             });
             let (pool2, nats2) = (pool.clone(), nats.clone());
             tokio::spawn(async move {
@@ -971,17 +1051,24 @@ async fn main() {
         .and_then(|v| v.parse().ok())
         .unwrap_or(5);
     let monitor_guard = order_management::monitor::new_run_guard();
-    let monitor_thresholds = margin::MarginThresholds::default();
     order_management::monitor::spawn(
         pool.clone(),
         nats.clone(),
-        monitor_thresholds,
         std::time::Duration::from_secs(monitor_interval_secs),
         monitor_guard.clone(),
     );
-    spawn_tick_driven_triggers(pool.clone(), nats.clone(), monitor_thresholds, monitor_guard)
+    spawn_tick_driven_triggers(pool.clone(), nats.clone(), monitor_guard)
         .await
         .expect("failed to subscribe tick-driven triggers to price.tick.*");
+
+    // Risk item 2's startup/live-order guard -- synchronous initial load
+    // BEFORE the HTTP listener binds (fails closed: place_market_order/
+    // place_pending_order refuse everything until this first load
+    // proves every group in use has real thresholds), then kept current
+    // on the same interval as the monitor itself.
+    let thresholds_guard = Arc::new(std::sync::RwLock::new(ThresholdsGuardState::default()));
+    refresh_thresholds_guard(&pool, &thresholds_guard).await;
+    spawn_thresholds_guard(pool.clone(), thresholds_guard.clone(), std::time::Duration::from_secs(monitor_interval_secs));
 
     // Daily swap rollover — see order_management::swap's module doc. Not
     // tick-driven like the monitor: it only needs to notice a calendar
@@ -1066,6 +1153,7 @@ async fn main() {
         gap_fill: gap_fill_tracker,
         alert_cache,
         alert_metrics,
+        thresholds_guard,
     });
 
     // Order/position/stats routes require x-internal-secret

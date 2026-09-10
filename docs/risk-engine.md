@@ -147,3 +147,33 @@ fallback) actually fires this within about a second of the tick arriving
 (round-trip latency to a remote Postgres, not a same-region deployment —
 see `deployment.md`'s "network-adjacent to Postgres and NATS for
 latency" note, this is exactly why that matters).
+
+**2026-09-10 — real per-group thresholds, not a compiled-in default.**
+`order_management::monitor` evaluated every account against
+`margin::MarginThresholds::default()` (100% call / 50% stop-out)
+regardless of the account's own group — `Group.marginCallLevel`/
+`stopOutLevel` were stored and shown in the backoffice UI but never
+actually read by this engine. Fixed: `db::load_group_thresholds` loads
+every group's real configured values (re-run once per monitor pass —
+cheap, one row per group — so a group edit takes effect within one poll
+cycle / one price tick with no separate "group changed" event needed);
+`margin::resolve_thresholds` picks the right one per account (a group's
+real values, the documented default for a genuinely ungrouped account,
+or `None` if that account's group hasn't loaded yet — never a silent
+guess). A new guard (`margin::missing_group_thresholds`,
+`engine/server`'s `refresh_thresholds_guard`/`reject_if_thresholds_not_loaded`)
+makes `place_market_order`/`place_pending_order` refuse every request
+with `503` until every group referenced by a real account has loaded
+thresholds — fails closed at boot, not open. This does NOT make the
+Rust order-acceptance path live for real money; see
+`STATE-OF-PROJECT.md` §1 for which path actually is. It matters for
+whenever that changes, and for the monitor's own stop-out/margin-call
+evaluation regardless (that part already ran continuously, just with
+the wrong per-account threshold before this fix). Verified: `cargo test
+--workspace` (146 tests, including 6 new pure unit tests for the
+resolution/guard logic — no live DB needed, same as every other test in
+this workspace) and `cargo check --workspace`, both clean. NOT verified
+against the live production Postgres from this pass (no DB credentials
+available in the environment this fix was written in) — the actual
+`"Group"`/`"Account"` query shapes should be smoke-tested against a
+real connection before this is relied on operationally.

@@ -660,6 +660,55 @@ pub async fn get_account_funds(pool: &PgPool, account_id: &str) -> Result<Option
     Ok(row.map(|(balance, credit, leverage)| AccountFunds { balance, credit, leverage }))
 }
 
+/// This account's group, if any -- `NULL` is a real, valid state (see
+/// Prisma schema's own comment on `Account.groupId`: any account created
+/// before Group existed, or never assigned one), not an error. Used by
+/// the monitor to look up which entry of a loaded `ThresholdsByGroup`
+/// (see margin::resolve_thresholds) this specific account should
+/// evaluate against.
+pub async fn get_account_group_id(pool: &PgPool, account_id: &str) -> Result<Option<String>, sqlx::Error> {
+    let row = sqlx::query_as::<_, (Option<String>,)>(r#"SELECT "groupId" FROM "Account" WHERE id = $1"#)
+        .bind(account_id)
+        .fetch_optional(pool)
+        .await?;
+    Ok(row.and_then(|(group_id,)| group_id))
+}
+
+/// Every group's own real, broker-configured `marginCallLevel`/
+/// `stopOutLevel` (risk item 2 -- previously nothing ever read these two
+/// columns from anywhere in this crate; every account evaluated against
+/// margin::MarginThresholds::default() instead, regardless of what a
+/// broker admin actually set per group). Cheap enough (one row per
+/// group, brokers have few) to re-run on every monitor pass rather than
+/// needing a separate "group changed" event for hot-reload -- a group
+/// edit takes effect within one poll cycle / one price tick, whichever
+/// comes first.
+pub async fn load_group_thresholds(pool: &PgPool) -> Result<margin::ThresholdsByGroup, sqlx::Error> {
+    let rows = sqlx::query_as::<_, (String, Decimal, Decimal)>(
+        r#"SELECT id, "marginCallLevel", "stopOutLevel" FROM "Group""#,
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, call_level, stop_out_level)| (id, margin::MarginThresholds { call_level, stop_out_level }))
+        .collect())
+}
+
+/// Every DISTINCT group id currently referenced by at least one account
+/// -- the "known_group_ids" the startup/live-order guard
+/// (margin::missing_group_thresholds) checks a freshly loaded
+/// ThresholdsByGroup against. Deliberately NOT "every group that
+/// exists" -- an unused group with no accounts in it can't cause a real
+/// account to evaluate with the wrong thresholds, so it shouldn't be
+/// able to block order acceptance either.
+pub async fn get_distinct_account_group_ids(pool: &PgPool) -> Result<Vec<String>, sqlx::Error> {
+    let rows = sqlx::query_as::<_, (String,)>(r#"SELECT DISTINCT "groupId" FROM "Account" WHERE "groupId" IS NOT NULL"#)
+        .fetch_all(pool)
+        .await?;
+    Ok(rows.into_iter().map(|(id,)| id).collect())
+}
+
 /// Sum of every ledger entry recorded for this account so far. Account.balance
 /// is Prisma-owned and this crate never writes to it (see above) — realized
 /// P&L from a force-close still needs to count toward the account's true
