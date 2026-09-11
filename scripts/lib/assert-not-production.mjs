@@ -28,7 +28,18 @@
 // database; the accidental case this guard exists for in the first place
 // (nobody realizes .env still points at prod, so nobody thinks to set or
 // unset anything) stays caught by the content check below, unchanged.
+import { testDbVerdict } from "./db-host-policy.mjs";
+
 export async function assertNotProductionDatabase(prisma) {
+  // Host rule first (db-host-policy.mjs): the production Neon endpoint is refused even with
+  // ALLOW_TEST_DB_WRITES=true -- that flag only ever meant "this dev branch happens to contain
+  // a copy of the futurixglobal row", never "write to production".
+  for (const name of ["DATABASE_URL", "DIRECT_URL"]) {
+    const v = testDbVerdict(process.env[name]);
+    if (!v.ok) {
+      throw new Error(`Refusing to run: ${name} host '${v.host}' -- ${v.reason}.`);
+    }
+  }
   if (process.env.ALLOW_TEST_DB_WRITES === "true") {
     return;
   }

@@ -80,6 +80,14 @@ traced to `route.test.ts`'s fixture helper running against a production
   database — `migrate resolve` only edits the `_prisma_migrations` ledger;
   it does not run anything, so marking a migration "applied" that wasn't
   hides exactly the kind of drift that caused the incident above.
+- Hard host rule (2026-09-11): `vitest.setup.db-guard.ts` runs before EVERY test file and refuses
+  the run unless DATABASE_URL/DIRECT_URL (process env or `.env`, the way Prisma reads it) is
+  localhost or a host listed in `TEST_DB_ALLOWED_HOSTS`; hosts in `PRODUCTION_DB_HOST_MARKERS` /
+  `PRODUCTION_DB_HOSTS` are refused unconditionally. Same rule runs first inside
+  `assertNotProductionDatabase()`. Rule: `scripts/lib/db-host-policy.mjs`. The local `.env` as of
+  2026-09-11 points at the Neon DEV branch `ep-old-night-b1tiwh7m` (cloned from production
+  ~2026-09-07, no production traffic in it); production's endpoint id is only in Vercel -- paste it
+  into `PRODUCTION_DB_HOST_MARKERS` once read from the Neon console.
 - Every QA/seed/test script (`scripts/*`, `prisma/seed.ts`, any
   `*.test.ts` that writes real DB rows) must call
   `scripts/lib/assert-not-production.mjs`'s `assertNotProductionDatabase()`

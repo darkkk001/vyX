@@ -10,6 +10,8 @@ const rootDir = import.meta.dirname;
 export default defineConfig({
   test: {
     environment: "node",
+    // Hard production guard for every test file, host-based (scripts/lib/db-host-policy.mjs).
+    setupFiles: ["./vitest.setup.db-guard.ts"],
     include: ["**/*.test.ts"],
     exclude: ["node_modules/**", "services/**", "engine/**", "desktop-tauri/**", "manager-tauri/**", "admin-tauri/**"],
     // Default 5s is tight for lib/mirror.test.ts's live-DB-gated tests
