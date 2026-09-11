@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
-  authenticateAccount,
+  authenticateAccountDetailed,
+  inactiveAccountMessage,
   completeAccountLogin,
   getAccountSession,
   ACCOUNT_SESSION_COOKIE_NAME,
@@ -52,10 +53,16 @@ export async function POST(request: NextRequest) {
   // Constant-shape response whether the account doesn't exist, belongs to a
   // different broker, is inactive, or the password is wrong — avoid leaking
   // any of it.
-  const account = await authenticateAccount(brokerId, accountNumber, password);
-  if (!account) {
+  const auth = await authenticateAccountDetailed(brokerId, accountNumber, password);
+  if (auth.kind === "invalid") {
     return NextResponse.json({ error: "invalid credentials" }, { status: 401 });
   }
+  // Password was right but the account is SUSPENDED / CLOSED -- say so
+  // (403, not 401) so the trader stops retyping a password that is fine.
+  if (auth.kind === "inactive") {
+    return NextResponse.json({ error: inactiveAccountMessage(auth.status), code: `ACCOUNT_${auth.status}` }, { status: 403 });
+  }
+  const account = auth.account;
 
   // Checked only after a correct password -- the trader has already
   // proven they own this account, so telling them its real type here

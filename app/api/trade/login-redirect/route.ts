@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
-  authenticateAccount,
+  authenticateAccountDetailed,
   completeAccountLogin,
   ACCOUNT_SESSION_COOKIE_NAME,
   accountSessionCookieOptions,
@@ -37,11 +37,14 @@ export async function POST(request: NextRequest) {
     return NextResponse.redirect(`${origin}/trade/login${qs}`, { status: 303 });
   }
 
-  const account = await authenticateAccount(brokerId, accountNumber, password);
-  if (!account) {
-    const qs = accountNumber ? `?error=1&account=${encodeURIComponent(accountNumber)}` : "?error=1";
+  const auth = await authenticateAccountDetailed(brokerId, accountNumber, password);
+  if (auth.kind !== "ok") {
+    // error=2 -> the login page shows the suspended/closed sentence instead of "wrong password"
+    const reason = auth.kind === "inactive" ? `&error=2&status=${auth.status}` : "&error=1";
+    const qs = `?${accountNumber ? `account=${encodeURIComponent(accountNumber)}` : ""}${reason}`.replace("?&", "?");
     return NextResponse.redirect(`${origin}/trade/login${qs}`, { status: 303 });
   }
+  const account = auth.account;
 
   // Same 2FA gate as app/api/trade/login, adapted for this route's
   // redirect (not JSON) shape -- hands off to the login page's own 2FA

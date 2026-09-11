@@ -43,7 +43,13 @@ function NextTradeLoginFormInner({
       brokerLogoUrl={brokerLogoUrl}
       supportEmail={supportEmail}
       initialAccountNumber={searchParams.get("account") ?? ""}
-      initialError={searchParams.get("error") ? "Invalid account number or password" : null}
+      initialError={
+        searchParams.get("error") === "2"
+          ? `This account is ${searchParams.get("status") === "CLOSED" ? "closed" : "suspended"}. Contact your broker's support.`
+          : searchParams.get("error")
+            ? "Invalid account number or password"
+            : null
+      }
       initialPendingToken={searchParams.get("pendingToken")}
       initialRemember={searchParams.get("remember") !== "0"}
       onAuthenticated={(remember) => {

@@ -250,15 +250,42 @@ export async function authenticateAccount(
   accountNumber: string,
   password: string
 ) {
-  if (!accountNumber || !password) return null;
+  const r = await authenticateAccountDetailed(brokerId, accountNumber, password);
+  return r.kind === "ok" ? r.account : null;
+}
+
+// Same check, but tells a SUSPENDED / CLOSED account apart from a wrong
+// password -- only AFTER the password matched, so an attacker guessing
+// account numbers still sees the constant-shape "invalid credentials";
+// the trader who proved they own the account gets the real reason and a
+// pointer to support instead of retyping a password that is not the
+// problem (2026-09-11, Futurix live testing).
+export type AuthenticateResult =
+  | { kind: "ok"; account: NonNullable<Awaited<ReturnType<typeof prisma.account.findUnique>>> }
+  | { kind: "invalid" }
+  | { kind: "inactive"; status: "SUSPENDED" | "CLOSED" };
+
+export async function authenticateAccountDetailed(
+  brokerId: string,
+  accountNumber: string,
+  password: string
+): Promise<AuthenticateResult> {
+  if (!accountNumber || !password) return { kind: "invalid" };
 
   const account = await prisma.account.findUnique({ where: { accountNumber } });
-  if (!account || account.brokerId !== brokerId || account.status !== "ACTIVE") return null;
+  if (!account || account.brokerId !== brokerId) return { kind: "invalid" };
 
   const passwordMatches = await bcrypt.compare(password, account.passwordHash);
-  if (!passwordMatches) return null;
+  if (!passwordMatches) return { kind: "invalid" };
 
-  return account;
+  if (account.status !== "ACTIVE") return { kind: "inactive", status: account.status };
+  return { kind: "ok", account };
+}
+
+export function inactiveAccountMessage(status: "SUSPENDED" | "CLOSED"): string {
+  return status === "SUSPENDED"
+    ? "This account is suspended. Contact your broker's support."
+    : "This account is closed. Contact your broker's support.";
 }
 
 // Shared tail of both login paths that can actually complete a session
@@ -283,10 +310,18 @@ export async function completeAccountLogin(
   // never designed to be queried by IP across accounts). Best-effort,
   // same as the metadata write inside createAccountSession itself: a
   // failure here must never block a legitimate login.
+  // Awaited, not fire-and-forget: a `void` promise here never completed on
+  // Vercel serverless (the function froze right after the response went
+  // out) -- LoginEvent had 0 rows after weeks of logins (found 2026-09-11).
+  // Still best-effort in the sense that a failure is logged, not thrown.
   if (meta.ip) {
-    void prisma.loginEvent
-      .create({ data: { brokerId: account.brokerId, accountId: account.id, ipAddress: meta.ip, userAgent: meta.userAgent } })
-      .catch((err) => console.error("LoginEvent write failed", err));
+    try {
+      await prisma.loginEvent.create({
+        data: { brokerId: account.brokerId, accountId: account.id, ipAddress: meta.ip, userAgent: meta.userAgent },
+      });
+    } catch (err) {
+      console.error("LoginEvent write failed", err);
+    }
   }
 
   if (previousSession && previousSession.accountId !== account.id) {
