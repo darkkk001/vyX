@@ -29,10 +29,21 @@ export type NotificationRow = {
 const SECTION_FOR_TYPE: Record<string, string> = {
   DEALING_ORDER_PENDING: "/manage/dealing",
   KYC_SUBMITTED: "/manage/kyc",
+  CLIENT_KYC_SUBMITTED: "/manage/client-kyc",
+  LIVE_ACCOUNT_REQUESTED: "/manage/live-account-requests",
   NEW_LEAD: "/manage/leads",
   FUNDS_REQUEST: "/manage/funds",
   DEALER_ACTIVITY: "/manage/dealing",
 };
+
+// Deep link: the section page opens with that row expanded/highlighted (?focus=<entityId>).
+// 2026-09-11: a CLIENT_KYC_SUBMITTED notification had no action at all -- staff could only
+// mark it read and then had to find the client by hand on another page.
+function sectionHref(row: { type: string; entityId: string | null }): string | null {
+  const base = SECTION_FOR_TYPE[row.type];
+  if (!base) return null;
+  return row.entityId ? `${base}?focus=${encodeURIComponent(row.entityId)}` : base;
+}
 
 // Self-fetches from the already-existing /api/manage/notifications GET
 // (returns this exact shape, unmodified) instead of receiving rows as a
@@ -160,16 +171,16 @@ export default function NotificationsManager({
                   <Button size="sm" variant="primary" onClick={() => openReset(row)}>
                     Reset password
                   </Button>
-                ) : SECTION_FOR_TYPE[row.type] ? (
+                ) : sectionHref(row) ? (
                   <Button
                     size="sm"
                     variant="primary"
                     onClick={() => {
                       if (!row.read) markRead(row.id).catch(() => {});
-                      onNavigateToSection(SECTION_FOR_TYPE[row.type]);
+                      onNavigateToSection(sectionHref(row)!);
                     }}
                   >
-                    View
+                    {row.type === "CLIENT_KYC_SUBMITTED" || row.type === "KYC_SUBMITTED" ? "Review KYC" : "View"}
                   </Button>
                 ) : null}
                 {!row.read ? (

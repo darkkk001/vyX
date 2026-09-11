@@ -56,7 +56,11 @@ export async function GET() {
       select: { accountId: true },
       distinct: ["accountId"],
     }),
-    prisma.kycRecord.count({ where: { status: "PENDING", account: { brokerId } } }),
+    // both KYC queues: in-app (KycRecord) + Client Portal (ClientKycRecord)
+    Promise.all([
+      prisma.kycRecord.count({ where: { status: "PENDING", account: { brokerId } } }),
+      prisma.clientKycRecord.count({ where: { status: "PENDING", client: { brokerId } } }),
+    ]).then(([a, b]) => a + b),
     prisma.transaction.aggregate({
       where: { brokerId, type: "WITHDRAWAL", status: "PENDING" },
       _sum: { amount: true },

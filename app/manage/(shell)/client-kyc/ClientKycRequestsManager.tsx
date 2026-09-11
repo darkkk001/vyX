@@ -40,6 +40,17 @@ export default function ClientKycRequestsManager() {
   const [rejectTarget, setRejectTarget] = useState<ClientKycRequestRow | null>(null);
   const [rejectReason, setRejectReason] = useState("");
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  // ?focus=<ClientKycRecord id> from a notification deep link: expand that row and scroll to it
+  const [focusId] = useState<string | null>(() =>
+    typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("focus")
+  );
+  useEffect(() => {
+    if (!focusId || !rows) return;
+    if (rows.some((r) => r.id === focusId)) {
+      setExpandedId(focusId);
+      requestAnimationFrame(() => document.getElementById(`kyc-${focusId}`)?.scrollIntoView({ block: "center", behavior: "smooth" }));
+    }
+  }, [focusId, rows]);
 
   function load() {
     return fetch("/api/manage/client-kyc-requests")
@@ -91,7 +102,7 @@ export default function ClientKycRequestsManager() {
           ) : (
             rows.map((row) => (
               <Fragment key={row.id}>
-                <TableRow>
+                <TableRow id={`kyc-${row.id}`} className={focusId === row.id ? "bg-[var(--accent-soft,rgba(244,85,28,0.10))]" : ""}>
                   <TableCell primary>
                     {row.clientFullName}
                     <div className="text-xs font-normal text-[var(--text-3)]">
