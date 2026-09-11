@@ -1634,6 +1634,9 @@ model Order {
   requestedPrice  Decimal?    @db.Decimal(18, 5) // null for MARKET
   slPrice         Decimal?    @db.Decimal(18, 5)
   tpPrice         Decimal?    @db.Decimal(18, 5)
+  // Numeric ticket shown to traders (MT-style), assigned by the DB from a server-wide
+  // sequence -- see prisma/migrations/20260911200000_numeric_ticket. Never the cuid.
+  ticket          Int         @unique @default(dbgenerated("nextval('\"order_ticket_seq\"')"))
   status          OrderStatus @default(PENDING)
   filledPrice     Decimal?    @db.Decimal(18, 5)
   filledAt        DateTime?   @db.Timestamptz(3)
@@ -1667,6 +1670,9 @@ model Position {
   symbol          Symbol         @relation(fields: [symbolId], references: [id])
   originOrderId   String         @unique
   originOrder     Order          @relation(fields: [originOrderId], references: [id])
+  // = the opening order's ticket (MT5 "position id"), set by a BEFORE INSERT trigger; the
+  // sequence default only exists so Prisma never has to supply a value.
+  ticket          Int            @unique @default(dbgenerated("nextval('\"order_ticket_seq\"')"))
   side            OrderSide
   volume          Decimal        @db.Decimal(10, 2)
   openPrice       Decimal        @db.Decimal(18, 5)
