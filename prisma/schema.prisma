@@ -1670,9 +1670,11 @@ model Position {
   symbol          Symbol         @relation(fields: [symbolId], references: [id])
   originOrderId   String         @unique
   originOrder     Order          @relation(fields: [originOrderId], references: [id])
-  // = the opening order's ticket (MT5 "position id"), set by a BEFORE INSERT trigger; the
-  // sequence default only exists so Prisma never has to supply a value.
-  ticket          Int            @unique @default(dbgenerated("nextval('\"order_ticket_seq\"')"))
+  // = the opening order's ticket (MT5 "position id"), set by a BEFORE INSERT trigger. No
+  // column DEFAULT on purpose (20260914100000_position_ticket_no_default): a nextval default
+  // here burned a second sequence value per order+position pair, so tickets stepped by 2.
+  // dbgenerated() only tells Prisma the DB supplies the value.
+  ticket          Int            @unique @default(dbgenerated())
   side            OrderSide
   volume          Decimal        @db.Decimal(10, 2)
   openPrice       Decimal        @db.Decimal(18, 5)
