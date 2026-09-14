@@ -21,6 +21,8 @@ serde_json.workspace = true
 # DB-level one) -- a plain UUID v4 string is a valid id, same convention
 # order-management's own db.rs already uses for its ledger_entries table.
 uuid = { version = "1", features = ["v4"] }
+# risk_hook: fires the web app's SL/TP evaluation on the tick that touches a level
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 
 [dev-dependencies]
 rust_decimal_macros = "1"

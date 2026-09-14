@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { evaluateAccountRisk } from "@/lib/risk-monitor";
+import { evaluateAccountRisk, evaluateRiskForSymbol } from "@/lib/risk-monitor";
 
 // 2026-09-05 P0 fix -- the reliable floor beneath the tick-ingest trigger
 // (lib/price-feed.ts's ingestTicks -> evaluateRiskForSymbol), which is
@@ -38,6 +38,24 @@ export async function GET(request: NextRequest) {
   const provided = auth?.startsWith("Bearer ") ? auth.slice(7) : null;
   if (!expectedSecret || provided !== expectedSecret) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  }
+
+  // Engine risk hook (engine/market-data/src/risk_hook.rs): the tick that touches an open
+  // SL / TP fires this route for THAT symbol only -- evaluate its accounts now, not on the
+  // next minute. Same evaluation the cron runs, scoped.
+  const symbolsParam = request.nextUrl.searchParams.get("symbols");
+  if (symbolsParam) {
+    const symbols = symbolsParam.split(",").map((s) => s.trim()).filter(Boolean).slice(0, 20);
+    let errors = 0;
+    for (const symbol of symbols) {
+      try {
+        await evaluateRiskForSymbol(symbol);
+      } catch (err) {
+        errors++;
+        console.error("margin-monitor: symbol evaluation failed", symbol, err);
+      }
+    }
+    return NextResponse.json({ symbolsEvaluated: symbols.length, errors });
   }
 
   // Cheapest possible check first, index-backed: if nothing is open

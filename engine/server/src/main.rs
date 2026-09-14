@@ -1107,6 +1107,13 @@ async fn main() {
     // comment -- one shared value, not per-symbol, since every symbol
     // this crate ingests comes from the same MT5 terminal today.
     let broker_offset_tracker = Arc::new(market_data::broker_offset::BrokerOffsetTracker::new());
+    // SL / TP execution trigger: the web app's minute cron was the only thing evaluating open
+    // positions once the feed moved here (see market_data::risk_hook) -- with VYX_RISK_HOOK_URL /
+    // VYX_RISK_HOOK_SECRET set, the tick that touches a level fires the evaluation at once.
+    let risk_hook = market_data::risk_hook::RiskHook::from_env();
+    if let Some(hook) = &risk_hook {
+        hook.spawn_reload_loop(pool.clone(), std::time::Duration::from_secs(5));
+    }
     market_data::ingest::spawn_periodic_flush(
         pool.clone(),
         tick_cache.clone(),
@@ -1115,6 +1122,7 @@ async fn main() {
         feed_stats_registry.clone(),
         gap_fill_tracker.clone(),
         broker_offset_tracker.clone(),
+        risk_hook,
     );
 
     // Nightly Candle retention -- Contabo DB hygiene audit (M1 was 68% of

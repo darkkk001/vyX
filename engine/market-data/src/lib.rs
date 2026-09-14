@@ -15,6 +15,7 @@ pub mod db;
 pub mod gap_fill;
 pub mod ingest;
 pub mod retention;
+pub mod risk_hook;
 pub mod stats;
 pub mod symbol_activity;
 

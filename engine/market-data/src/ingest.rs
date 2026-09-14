@@ -177,6 +177,7 @@ pub fn spawn_periodic_flush(
     stats: Arc<FeedStats>,
     gap_fill: Arc<GapFillTracker>,
     broker_offset: Arc<BrokerOffsetTracker>,
+    risk_hook: Option<Arc<crate::risk_hook::RiskHook>>,
 ) {
     {
         let pool = pool.clone();
@@ -190,7 +191,14 @@ pub fn spawn_periodic_flush(
                 if dirty.is_empty() {
                     continue;
                 }
-                flush_live_prices(&pool, &cache, &dirty, &stats).await;
+                let ok = flush_live_prices(&pool, &cache, &dirty, &stats).await;
+                // the row is written: if one of these ticks touches an open SL / TP, have the web app
+                // evaluate that symbol NOW (see risk_hook.rs) instead of at the next minute cron
+                if ok {
+                    if let Some(hook) = &risk_hook {
+                        hook.after_flush(&dirty);
+                    }
+                }
             }
         });
     }
@@ -289,7 +297,7 @@ fn spawn_gap_sweep(pool: PgPool, stats: Arc<FeedStats>, gap_fill: Arc<GapFillTra
 // ingest" behavior from the Contabo audit -- ingest_ticks above never
 // calls this function at all, so a slow/wedged flush can't backpressure
 // the hot path regardless.
-async fn flush_live_prices(pool: &PgPool, cache: &TickCache, ticks: &[Tick], stats: &Arc<FeedStats>) {
+async fn flush_live_prices(pool: &PgPool, cache: &TickCache, ticks: &[Tick], stats: &Arc<FeedStats>) -> bool {
     let started = Instant::now();
     // Re-resolved here (not carried from ingest_ticks' own call) since
     // take_dirty_live_prices only returns the Tick itself, not the
@@ -315,13 +323,14 @@ async fn flush_live_prices(pool: &PgPool, cache: &TickCache, ticks: &[Tick], sta
     let lag_ms = started.elapsed().as_millis() as i64;
 
     match result {
-        Ok(Ok(())) => stats.record_db_write(true, lag_ms),
+        Ok(Ok(())) => { stats.record_db_write(true, lag_ms); true }
         Ok(Err(err)) => {
             stats.record_db_write(false, lag_ms);
             re_mark_live_price_dirty(cache, ticks);
             if stats.should_log_live_price_failure() {
                 tracing::warn!(?err, lag_ms, "live-price flush failed (rate-limited to 1 line/30s -- see /internal/feed-stats for the real db_fail count)");
             }
+            false
         }
         Err(_) => {
             stats.record_db_write(false, lag_ms);
@@ -329,6 +338,7 @@ async fn flush_live_prices(pool: &PgPool, cache: &TickCache, ticks: &[Tick], sta
             if stats.should_log_live_price_failure() {
                 tracing::warn!(timeout_ms = DB_FLUSH_TIMEOUT.as_millis() as i64, "live-price flush timed out (rate-limited to 1 line/30s)");
             }
+            false
         }
     }
 }
