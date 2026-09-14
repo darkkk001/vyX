@@ -63,12 +63,19 @@ export interface OpenPositionsSummary {
   floatingPnl: Decimal;
 }
 
-// Used margin AND floating P&L across the account's open Rust-owned
-// positions (engine/migrations' `positions` table, lowercase/snake_case
-// — a separate table family from Prisma's PascalCase `Position`, per
-// docs/database.md §3), in one query since both need the same
-// per-position join to "Symbol" (contract size) and "LivePrice" (current
-// bid/ask). LEFT JOIN on LivePrice rather than INNER: a position whose
+// Used margin AND floating P&L across ALL of the account's open positions:
+// the Rust-owned ones (engine/migrations' `positions` table,
+// lowercase/snake_case) AND the legacy Prisma `"Position"` rows (the table
+// every broker still trades on today per docs/decisions.md ADR-003).
+// Until 2026-09-15 only `positions` was read, so for a legacy-path trader
+// this returned 0 / 0 and the gateway's pre-trade margin check ran blind
+// to every open position -- the same dual-table gap engine/market-data's
+// risk_hook closes by reading `"Position"` JOIN `"Symbol"` by symbolId.
+// Both tables share the account id (Prisma's Account.id), side, volume,
+// open price and status semantics; only the naming and the symbol key
+// differ (name vs Symbol.id), so the two SELECTs UNION into one row shape.
+// Prices come from the market-data pool (LivePrice, S4); "Symbol" for the
+// contract size stays on the trade database. LEFT JOIN on LivePrice rather than INNER: a position whose
 // symbol currently has no live tick (shouldn't normally happen, per
 // docs/market-data.md, but isn't impossible) still counts toward used
 // margin at its own open price — silently dropping it would understate
@@ -108,7 +115,12 @@ export async function getOpenPositionsSummary(
     `SELECT p.side::text AS side, p.volume, p.open_price, s."contractSize" AS contract_size, p.symbol
      FROM positions p
      JOIN "Symbol" s ON s.name = p.symbol
-     WHERE p.account_id = $1 AND p.status = 'OPEN'`,
+     WHERE p.account_id = $1 AND p.status = 'OPEN'
+     UNION ALL
+     SELECT q.side::text AS side, q.volume, q."openPrice" AS open_price, s."contractSize" AS contract_size, s.name AS symbol
+     FROM "Position" q
+     JOIN "Symbol" s ON s.id = q."symbolId"
+     WHERE q."accountId" = $1 AND q.status = 'OPEN'`,
     [accountId]
   );
   const symbols = [...new Set(positions.map((r) => r.symbol as string))];
