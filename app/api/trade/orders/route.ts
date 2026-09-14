@@ -32,6 +32,7 @@ import {
   evaluateLiveMarketPrice,
   checkPriceFreshness,
   checkSlippage,
+  computeNextSessionOpen,
 } from "@/lib/risk";
 
 async function logHotkeyOrder(brokerId: string, orderId: string) {
@@ -176,6 +177,12 @@ async function handlePlaceOrder(request: NextRequest) {
     (await checkBrokerExposure(prisma, session.brokerId, volume, broker.totalExposureLimit)) ??
     (await checkMaxDailyLoss(prisma, session.accountId, account.maxDailyLoss));
   if (riskError) {
+    // MARKET_CLOSED carries the next session open, exactly like the close / modify routes, so the
+    // terminal can say "XAUUSD market is closed, opens Monday 22:00 UTC" instead of a bare code.
+    if (riskError === "MARKET_CLOSED") {
+      const nextOpenAt = computeNextSessionOpen(brokerSymbol.tradingSessions, new Date());
+      return NextResponse.json({ error: riskError, symbol: symbolName, nextOpenAt: nextOpenAt.toISOString() }, { status: 400 });
+    }
     return NextResponse.json({ error: riskError }, { status: 400 });
   }
 
@@ -219,7 +226,10 @@ async function handlePlaceOrder(request: NextRequest) {
     livePrice = await getLivePriceRow(symbolName);
     const priceError = evaluateLiveMarketPrice(livePrice, symbolName, price) ?? checkPriceFreshness(livePrice);
     if (priceError) {
-      return NextResponse.json({ error: priceError }, { status: 400 });
+      // NO_LIVE_FEED here means the schedule says OPEN but no tick reached the engine for 15 s (a real
+      // feed gap, or a session config that does not know about a break) -- the last tick time lets
+      // the terminal say so instead of "no live feed" on what the trader sees as a closed market.
+      return NextResponse.json({ error: priceError, symbol: symbolName, lastTickAt: livePrice?.tickAt?.toISOString() ?? null }, { status: 400 });
     }
   } else {
     // Security/correctness fix (2026-09-05 audit finding) -- a "BUY LIMIT"

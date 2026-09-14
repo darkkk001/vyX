@@ -19,7 +19,13 @@ export async function GET() {
 
   const brokerSymbols = await prisma.brokerSymbol.findMany({
     where: { brokerId: session.brokerId, enabled: true },
-    include: { symbol: { select: { id: true, name: true, category: true, digits: true, contractSize: true } } },
+    include: {
+      symbol: { select: { id: true, name: true, category: true, digits: true, contractSize: true } },
+      // the trading schedule the server itself gates orders on (lib/risk.ts checkTradingSession) --
+      // the desktop terminal evaluates the same rule locally so a closed market reads "market closed",
+      // never "no live feed", before a request is even sent
+      tradingSessions: { select: { dayOfWeek: true, openTime: true, closeTime: true }, orderBy: [{ dayOfWeek: "asc" }, { openTime: "asc" }] },
+    },
     orderBy: { symbol: { name: "asc" } },
   });
 
@@ -28,6 +34,7 @@ export async function GET() {
       id: bs.symbol.id,
       name: bs.symbol.name,
       category: bs.symbol.category,
+      tradingSessions: bs.tradingSessions,
       digits: bs.symbol.digits,
       contractSize: bs.symbol.contractSize.toString(),
       // Chart interaction pack -- client-side preview only for the
