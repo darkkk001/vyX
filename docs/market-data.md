@@ -272,3 +272,25 @@ whatever pooled connection the Next.js app keeps using for its own reads/
 writes. Same schema, same tables (`LivePrice`/`Candle`) — this is a
 connection-routing change for the engine's writer specifically, not a
 schema migration or a change to what any other consumer reads.
+
+## 8. Neon → VPS market-data store (2026-09-14, staged)
+
+Why: the engine's Candle / LivePrice flushes were the only 24/7 writer on
+Neon, keeping the production endpoint awake (~$200/month). Trade data
+(accounts, orders, positions, ledger, alerts, notifications) stays on
+Neon; only the two market-data tables move to a PostgreSQL on the Contabo
+box the engine already runs on.
+
+| stage | what | status |
+|---|---|---|
+| **S1** engine | `market_data::sink` — second pool `MARKET_DATA_DATABASE_URL`, `MARKET_DATA_WRITE = neon \| both \| local`, every writer (tick flushes, gap sweep, `/internal/history`, retention) goes through `ingest::write_to_targets`; `GET /internal/candles`, `GET /internal/prices[/{symbol}]`; per-sink counters in feed-stats | **done** — dual-write proven against two real Postgres 16 databases (`ingest::dual_write_tests`, plus a full local engine boot: 3 ticks → identical rows on both sides, backfill → both, `/internal/candles` served from the local store) |
+| **S2** VPS | install PostgreSQL, `deploy/market_data.sql`, restore the Neon dump, `MARKET_DATA_WRITE=both`, restart — `deploy/market-data-vps-runbook.md` | next |
+| S3 web, one symbol | `lib/market-data-client.ts`; `/api/trade/candles` reads the engine for `MARKET_DATA_VPS_SYMBOLS` only | |
+| S4 web, all | `/prices`, order routes, `lib/live-price.ts`, `lib/risk.ts`, `lib/mirror.ts`, replay, gateway `db.ts` | |
+| S5 | `MARKET_DATA_WRITE=local` — Neon stops being written, endpoint suspends | |
+| S6 | drop `Candle` / `LivePrice` from Neon, cap CU, delete `production_old` | |
+
+Schema on the VPS = the Prisma models byte for byte (`deploy/market_data.sql`)
+so the engine's upserts, `pg_dump --data-only` and the JSON shapes need no
+translation. Reads go to the local store as soon as it is configured; writes
+follow the flag; every flag is reversible until S6.

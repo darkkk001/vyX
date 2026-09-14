@@ -9,7 +9,7 @@
 //! yet — see ../../docs/trading-engine.md's implementation-status note.
 
 use axum::{
-    extract::{Path, Request, State},
+    extract::{Path, Query, Request, State},
     http::{HeaderMap, StatusCode},
     middleware::{self, Next},
     response::Response,
@@ -20,6 +20,7 @@ use chrono::{TimeZone, Utc};
 use futures_util::StreamExt;
 use market_data::cache::TickCache;
 use market_data::gap_fill::GapFillTracker;
+use market_data::sink::MarketDataPools;
 use market_data::stats::{FeedStats, FeedStatsSnapshot};
 use market_data::symbol_activity::SymbolActivity;
 use market_data::{timeframe_from_str, CandleUpdate};
@@ -36,6 +37,10 @@ use std::sync::Arc;
 
 struct AppState {
     pool: PgPool,
+    // Where Candle / LivePrice rows are written and read -- Neon, the VPS
+    // Postgres, or both during the migration soak (market_data::sink).
+    // `pool` above stays the trade-data (Neon) pool for orders/positions.
+    market_pools: Arc<MarketDataPools>,
     nats: async_nats::Client,
     price_feed_secret: String,
     // Distinct from price_feed_secret -- gates the 4 order routes instead
@@ -777,23 +782,28 @@ async fn ingest_history(
     }
     let upserted = authoritative.len();
 
-    let mut tx = state.pool.begin().await.map_err(|err| {
-        tracing::warn!(?err, "ingest_history: failed to open transaction");
-        (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
-    })?;
-    market_data::db::upsert_candles_batch(&mut tx, &gap_fills).await.map_err(|err| {
-        tracing::warn!(?err, symbol = %body.symbol, "ingest_history: gap-fill batch upsert failed");
-        (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
-    })?;
-    market_data::db::upsert_candles_authoritative_batch(&mut tx, &authoritative).await.map_err(|err| {
-        tracing::warn!(?err, symbol = %body.symbol, "ingest_history: authoritative batch upsert failed");
-        (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
-    })?;
-
-    tx.commit().await.map_err(|err| {
-        tracing::warn!(?err, "ingest_history: commit failed");
-        (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
-    })?;
+    // Every persistence target of the current MARKET_DATA_WRITE mode gets
+    // the same backfill in its own transaction (market_data::sink) -- the
+    // EA retries a failed request, and both upserts are idempotent, so a
+    // target that already took it is simply re-applied.
+    for (sink, pool) in state.market_pools.targets() {
+        let mut tx = pool.begin().await.map_err(|err| {
+            tracing::warn!(?err, sink = sink.as_str(), "ingest_history: failed to open transaction");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
+        })?;
+        market_data::db::upsert_candles_batch(&mut tx, &gap_fills).await.map_err(|err| {
+            tracing::warn!(?err, symbol = %body.symbol, sink = sink.as_str(), "ingest_history: gap-fill batch upsert failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
+        })?;
+        market_data::db::upsert_candles_authoritative_batch(&mut tx, &authoritative).await.map_err(|err| {
+            tracing::warn!(?err, symbol = %body.symbol, sink = sink.as_str(), "ingest_history: authoritative batch upsert failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
+        })?;
+        tx.commit().await.map_err(|err| {
+            tracing::warn!(?err, sink = sink.as_str(), "ingest_history: commit failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
+        })?;
+    }
 
     Ok(Json(HistoryResponse { ok: true, upserted, skipped_unrecognized_timeframe: false }))
 }
@@ -816,6 +826,11 @@ struct FeedStatsResponse {
     stats: FeedStatsSnapshot,
     queue_len: usize,
     per_symbol: Vec<PerSymbolStat>,
+    // Neon→VPS migration (market_data::sink): which store(s) the flushes
+    // write to and which one /internal/candles reads -- the S2 soak
+    // checks these together with local_db_ok / local_db_fail.
+    market_data_write: &'static str,
+    market_data_reader: &'static str,
 }
 
 // Second follow-up on the Contabo audit: per-symbol freshness (was
@@ -852,7 +867,145 @@ async fn feed_stats(State(state): State<Arc<AppState>>) -> Json<FeedStatsRespons
         stats: state.feed_stats.snapshot(),
         queue_len: state.tick_cache.snapshot().len(),
         per_symbol,
+        market_data_write: state.market_pools.mode().as_str(),
+        market_data_reader: state.market_pools.reader_name(),
     })
+}
+
+// ---------------------------------------------------------------------------
+// Neon→VPS candle migration, S1 -- the two read endpoints the web app's
+// /api/trade/candles, /api/trade/prices and the order routes switch to in
+// S3/S4 (lib/market-data-client.ts). Both sit behind the same
+// x-internal-secret as the order routes. JSON shapes mirror what Prisma
+// serialised for the same rows (Decimal -> string, DateTime -> ISO 8601
+// with milliseconds) so the web routes can pass the body through
+// unchanged and every client (desktop terminal, web terminal, mobile)
+// keeps parsing exactly what it parses today.
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct CandlesQuery {
+    symbol: String,
+    tf: String,
+    // newest N buckets (the web route's `take: 300`); capped at 5000
+    limit: Option<usize>,
+    // exclusive upper bound on bucketStart, ms since epoch -- paging
+    // further back for a future "load more history" (not used by S3)
+    before: Option<i64>,
+}
+
+#[derive(Serialize)]
+struct CandleRow {
+    symbol: String,
+    timeframe: String,
+    #[serde(rename = "bucketStart")]
+    bucket_start: String,
+    open: String,
+    high: String,
+    low: String,
+    close: String,
+    #[serde(rename = "updatedAt")]
+    updated_at: String,
+}
+
+fn iso_ms(t: chrono::DateTime<Utc>) -> String {
+    t.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()
+}
+
+fn decimal_json(d: Decimal) -> String {
+    d.normalize().to_string()
+}
+
+async fn internal_candles(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<CandlesQuery>,
+) -> Result<Json<Vec<CandleRow>>, (StatusCode, Json<serde_json::Value>)> {
+    let Some(tf) = timeframe_from_str(&q.tf) else {
+        return Err((StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": "symbol and a valid tf are required" }))));
+    };
+    let limit = q.limit.unwrap_or(300).clamp(1, 5000) as i64;
+    let before = q.before.and_then(|ms| Utc.timestamp_millis_opt(ms).single());
+    let rows = market_data::db::fetch_candles(state.market_pools.reader(), &q.symbol, tf, limit, before).await;
+    match rows {
+        Ok(rows) => Ok(Json(
+            rows.into_iter()
+                .map(|c| CandleRow {
+                    symbol: c.symbol,
+                    timeframe: c.timeframe,
+                    bucket_start: iso_ms(c.bucket_start),
+                    open: decimal_json(c.open),
+                    high: decimal_json(c.high),
+                    low: decimal_json(c.low),
+                    close: decimal_json(c.close),
+                    updated_at: iso_ms(c.updated_at),
+                })
+                .collect(),
+        )),
+        Err(err) => {
+            tracing::warn!(?err, symbol = %q.symbol, tf = %q.tf, reader = state.market_pools.reader_name(), "internal_candles: query failed");
+            Err((StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({ "error": "market data unavailable" }))))
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct PriceRow {
+    symbol: String,
+    bid: String,
+    ask: String,
+    // the tick's own time (EA time_msc, UTC) -- what LivePrice.tickAt holds
+    #[serde(rename = "tickAt")]
+    tick_at: String,
+    // when this engine last received a tick for the symbol
+    #[serde(rename = "updatedAt")]
+    updated_at: String,
+    #[serde(rename = "ageMs")]
+    age_ms: i64,
+}
+
+fn price_row(tick: Tick, age_ms: i64, now: chrono::DateTime<Utc>) -> PriceRow {
+    let received_at = now - chrono::Duration::milliseconds(age_ms.max(0));
+    let tick_at = tick
+        .tick_ms
+        .and_then(chrono::DateTime::from_timestamp_millis)
+        .unwrap_or(received_at);
+    PriceRow {
+        symbol: tick.symbol,
+        bid: decimal_json(tick.bid),
+        ask: decimal_json(tick.ask),
+        tick_at: iso_ms(tick_at),
+        updated_at: iso_ms(received_at),
+        age_ms,
+    }
+}
+
+/// Every symbol's latest tick straight from memory (TickCache) -- no
+/// Postgres on this path at all, which is the point: the order routes
+/// price off the live tick instead of the flushed DB row.
+async fn internal_prices(State(state): State<Arc<AppState>>) -> Json<Vec<PriceRow>> {
+    let now = Utc::now();
+    let mut rows: Vec<PriceRow> = state
+        .tick_cache
+        .snapshot_with_age(now)
+        .into_iter()
+        .map(|(tick, age_ms)| price_row(tick, age_ms, now))
+        .collect();
+    rows.sort_by(|a, b| a.symbol.cmp(&b.symbol));
+    Json(rows)
+}
+
+async fn internal_price(
+    State(state): State<Arc<AppState>>,
+    Path(symbol): Path<String>,
+) -> Result<Json<PriceRow>, (StatusCode, Json<serde_json::Value>)> {
+    let now = Utc::now();
+    state
+        .tick_cache
+        .snapshot_with_age(now)
+        .into_iter()
+        .find(|(tick, _)| tick.symbol == symbol)
+        .map(|(tick, age_ms)| Json(price_row(tick, age_ms, now)))
+        .ok_or_else(|| (StatusCode::NOT_FOUND, Json(serde_json::json!({ "error": "no price for symbol" }))))
 }
 
 /// Alert-pipeline health snapshot -- same shared-secret guard and
@@ -1031,6 +1184,9 @@ async fn main() {
     let pool = db::connect_pool(&database_url, db_pool_max_connections)
         .await
         .expect("failed to connect to Postgres");
+    // Neon→VPS candle migration: MARKET_DATA_DATABASE_URL / MARKET_DATA_WRITE
+    // (market_data::sink) -- unset = exactly today's behaviour (Neon only).
+    let market_pools = Arc::new(MarketDataPools::from_env(pool.clone(), db_pool_max_connections).await);
     // Created here (moved ahead of the other feed_stats_registry uses
     // below) so events::connect can wire its slow-consumer event_callback
     // into the same counters /internal/feed-stats already reads.
@@ -1115,7 +1271,7 @@ async fn main() {
         hook.spawn_reload_loop(pool.clone(), std::time::Duration::from_secs(5));
     }
     market_data::ingest::spawn_periodic_flush(
-        pool.clone(),
+        market_pools.clone(),
         tick_cache.clone(),
         std::time::Duration::from_millis(live_price_flush_interval_ms),
         std::time::Duration::from_millis(candle_flush_interval_ms),
@@ -1130,7 +1286,7 @@ async fn main() {
     // why this runs in bounded batches rather than one DELETE, and for
     // the CANDLE_M1_RETENTION_DAYS/CANDLE_M5_RETENTION_DAYS env vars this
     // reads (defaults 30/180).
-    market_data::retention::spawn_candle_retention(pool.clone());
+    market_data::retention::spawn_candle_retention(market_pools.clone());
 
     // Phase 1 trust pack §3 -- see market_data::alerts's own module doc.
     // Loaded once here (every currently ACTIVE alert), then kept current
@@ -1152,6 +1308,7 @@ async fn main() {
 
     let state = Arc::new(AppState {
         pool,
+        market_pools,
         nats,
         price_feed_secret,
         internal_service_secret,
@@ -1177,6 +1334,9 @@ async fn main() {
         .route("/v1/positions/{position_id}/close", post(close_position))
         .route("/internal/feed-stats", get(feed_stats))
         .route("/internal/alert-stats", get(alert_stats))
+        .route("/internal/candles", get(internal_candles))
+        .route("/internal/prices", get(internal_prices))
+        .route("/internal/prices/{symbol}", get(internal_price))
         .layer(middleware::from_fn_with_state(state.clone(), require_internal_secret));
 
     let app = Router::new()

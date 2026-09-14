@@ -47,6 +47,12 @@ pub struct FeedStats {
     db_write_success_total: AtomicU64,
     db_write_failure_total: AtomicU64,
     last_db_lag_ms: AtomicI64,
+    // The VPS market-data store (sink::MarketDataPools, MARKET_DATA_WRITE
+    // = both | local) -- its own trio so a failing local disk is visible
+    // next to a healthy Neon during the dual-write soak, and vice versa.
+    local_db_write_success_total: AtomicU64,
+    local_db_write_failure_total: AtomicU64,
+    last_local_db_lag_ms: AtomicI64,
     live_price_failure_last_logged_ms: AtomicI64,
     candle_failure_last_logged_ms: AtomicI64,
     // Most recently reported EA clock-sync handshake (GET /internal/time,
@@ -106,6 +112,9 @@ impl FeedStats {
             db_write_success_total: AtomicU64::new(0),
             db_write_failure_total: AtomicU64::new(0),
             last_db_lag_ms: AtomicI64::new(0),
+            local_db_write_success_total: AtomicU64::new(0),
+            local_db_write_failure_total: AtomicU64::new(0),
+            last_local_db_lag_ms: AtomicI64::new(0),
             live_price_failure_last_logged_ms: AtomicI64::new(0),
             candle_failure_last_logged_ms: AtomicI64::new(0),
             has_clock_info: AtomicBool::new(false),
@@ -206,6 +215,24 @@ impl FeedStats {
         self.last_db_lag_ms.store(lag_ms, Ordering::Relaxed);
     }
 
+    /// Same accounting as record_db_write, for the local (VPS) sink.
+    pub fn record_local_db_write(&self, ok: bool, lag_ms: i64) {
+        if ok {
+            self.local_db_write_success_total.fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.local_db_write_failure_total.fetch_add(1, Ordering::Relaxed);
+        }
+        self.last_local_db_lag_ms.store(lag_ms, Ordering::Relaxed);
+    }
+
+    /// Routes a write result to the counter trio of the sink it hit.
+    pub fn record_sink_write(&self, sink: crate::sink::SinkName, ok: bool, lag_ms: i64) {
+        match sink {
+            crate::sink::SinkName::Neon => self.record_db_write(ok, lag_ms),
+            crate::sink::SinkName::Local => self.record_local_db_write(ok, lag_ms),
+        }
+    }
+
     pub fn should_log_live_price_failure(&self) -> bool {
         Self::gate(&self.live_price_failure_last_logged_ms)
     }
@@ -258,6 +285,9 @@ impl FeedStats {
             db_ok: self.db_write_success_total.load(Ordering::Relaxed),
             db_fail: self.db_write_failure_total.load(Ordering::Relaxed),
             db_lag_ms: self.last_db_lag_ms.load(Ordering::Relaxed),
+            local_db_ok: self.local_db_write_success_total.load(Ordering::Relaxed),
+            local_db_fail: self.local_db_write_failure_total.load(Ordering::Relaxed),
+            local_db_lag_ms: self.last_local_db_lag_ms.load(Ordering::Relaxed),
             mono_to_utc_offset_ms: self
                 .has_clock_info
                 .load(Ordering::Relaxed)
@@ -301,6 +331,11 @@ pub struct FeedStatsSnapshot {
     pub db_ok: u64,
     pub db_fail: u64,
     pub db_lag_ms: i64,
+    // The VPS market-data store's own trio (0 / 0 / 0 while no
+    // MARKET_DATA_DATABASE_URL is configured) -- see sink.rs.
+    pub local_db_ok: u64,
+    pub local_db_fail: u64,
+    pub local_db_lag_ms: i64,
     // From the EA's clock-sync handshake (GET /internal/time) -- None
     // until at least one tick has reported it (proxy-mode EAs never will,
     // direct-mode EAs report it after their first successful sync).

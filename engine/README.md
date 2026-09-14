@@ -31,6 +31,24 @@ anything in this directory — see ADR-003 in `../docs/decisions.md`.
 | `execution` | Fill pricing (internal/B-book strategy) |
 | `ledger` | Balance-affecting entries (deposits, P&L, commission, swap) |
 
+## Market-data store (Neon → VPS migration, S1)
+
+Two optional env vars on `trading-core-server` (see
+`market-data/src/sink.rs`); a box that sets neither behaves exactly as
+before (every Candle / LivePrice write goes to `DATABASE_URL`, i.e. Neon):
+
+| var | values | effect |
+|---|---|---|
+| `MARKET_DATA_DATABASE_URL` | Postgres URL | the local market-data store (`deploy/market_data.sql`); also becomes the reader for `GET /internal/candles` as soon as it is set |
+| `MARKET_DATA_WRITE` | `neon` (default) · `both` · `local` | which store(s) every flush / gap-fill / `/internal/history` backfill / retention pass writes to |
+
+`GET /internal/feed-stats` reports `market_data_write`, `market_data_reader`
+and a second counter trio `local_db_ok` / `local_db_fail` / `local_db_lag_ms`
+next to the Neon `db_*` trio. New read endpoints (same `x-internal-secret`
+as the order routes): `GET /internal/candles?symbol=X&tf=H1[&limit=300&before=<ms>]`
+(Prisma-shaped rows, oldest first), `GET /internal/prices` and
+`GET /internal/prices/{symbol}` (the in-memory tick, no DB).
+
 ## Building
 
 ```

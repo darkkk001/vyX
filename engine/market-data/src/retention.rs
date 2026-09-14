@@ -104,7 +104,7 @@ pub async fn run_retention_pass(pool: &PgPool, timeframe: &str, retention_days: 
 /// the same reason (a broker that genuinely needs longer M1 history for
 /// some analytics use case shouldn't need a code change to get it), even
 /// though only M1's was explicitly asked for.
-pub fn spawn_candle_retention(pool: PgPool) {
+pub fn spawn_candle_retention(pools: std::sync::Arc<crate::sink::MarketDataPools>) {
     let m1_retention_days = retention_days_from_env("CANDLE_M1_RETENTION_DAYS", 30);
     let m5_retention_days = retention_days_from_env("CANDLE_M5_RETENTION_DAYS", 180);
 
@@ -126,8 +126,13 @@ pub fn spawn_candle_retention(pool: PgPool) {
         loop {
             let sleep_for = duration_until_next_run(Utc::now(), 0, 10);
             tokio::time::sleep(sleep_for).await;
-            run_retention_pass(&pool, "M1", m1_retention_days).await;
-            run_retention_pass(&pool, "M5", m5_retention_days).await;
+            // every write target of the current MARKET_DATA_WRITE mode
+            // (Neon and / or the VPS store) keeps the same retention
+            for (sink, pool) in pools.targets() {
+                tracing::info!(sink = sink.as_str(), "candle retention pass");
+                run_retention_pass(pool, "M1", m1_retention_days).await;
+                run_retention_pass(pool, "M5", m5_retention_days).await;
+            }
         }
     });
 }

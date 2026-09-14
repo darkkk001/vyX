@@ -18,7 +18,7 @@ use sqlx::PgPool;
 /// Matches the Postgres `CandleTimeframe` enum's exact values (Prisma
 /// generated them from `docs/database.md`'s schema) — note `Mn1` maps to
 /// the string `"MN1"`, not `"Mn1"`.
-fn timeframe_to_str(tf: Timeframe) -> &'static str {
+pub fn timeframe_to_str(tf: Timeframe) -> &'static str {
     match tf {
         Timeframe::M1 => "M1",
         Timeframe::M5 => "M5",
@@ -225,6 +225,53 @@ pub async fn get_live_price(
     .fetch_optional(pool)
     .await?;
     Ok(row)
+}
+
+/// One stored candle as `GET /internal/candles` hands it to the web app
+/// (engine/server maps it to the Prisma-shaped JSON).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredCandle {
+    pub symbol: String,
+    pub timeframe: String,
+    pub bucket_start: DateTime<Utc>,
+    pub open: Decimal,
+    pub high: Decimal,
+    pub low: Decimal,
+    pub close: Decimal,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// The newest `limit` buckets of one symbol/timeframe, oldest first --
+/// exactly the query app/api/trade/candles/route.ts ran through Prisma
+/// (`orderBy bucketStart desc, take 300`, then reversed). `before`
+/// (exclusive) pages further back. Runs against whichever pool
+/// sink::MarketDataPools::reader hands out.
+pub async fn fetch_candles(
+    pool: &PgPool,
+    symbol: &str,
+    timeframe: Timeframe,
+    limit: i64,
+    before: Option<DateTime<Utc>>,
+) -> Result<Vec<StoredCandle>, sqlx::Error> {
+    type Row = (String, String, DateTime<Utc>, Decimal, Decimal, Decimal, Decimal, DateTime<Utc>);
+    let mut rows: Vec<Row> = sqlx::query_as(
+        r#"SELECT symbol, timeframe::text, "bucketStart", open, high, low, close, "updatedAt"
+           FROM "Candle"
+           WHERE symbol = $1 AND timeframe = $2::"CandleTimeframe" AND ($3::timestamptz IS NULL OR "bucketStart" < $3)
+           ORDER BY "bucketStart" DESC
+           LIMIT $4"#,
+    )
+    .bind(symbol)
+    .bind(timeframe_to_str(timeframe))
+    .bind(before)
+    .bind(limit.clamp(1, 5000))
+    .fetch_all(pool)
+    .await?;
+    rows.reverse();
+    Ok(rows
+        .into_iter()
+        .map(|(symbol, timeframe, bucket_start, open, high, low, close, updated_at)| StoredCandle { symbol, timeframe, bucket_start, open, high, low, close, updated_at })
+        .collect())
 }
 
 /// Boot-time (and post-hot-reload-gap resync) load for

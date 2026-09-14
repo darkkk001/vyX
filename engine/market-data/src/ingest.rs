@@ -15,8 +15,10 @@ use crate::{
     symbol_activity::SymbolActivity,
 };
 use chrono::{DateTime, Utc};
+use crate::sink::{MarketDataPools, SinkName};
 use protocol::Tick;
 use sqlx::PgPool;
+use std::future::Future;
 use std::sync::Arc;
 use std::time::{Duration as StdDuration, Instant};
 
@@ -170,7 +172,7 @@ pub async fn ingest_ticks(
 /// most of them identical repeats of the last-written value) — dirty
 /// tracking brings this down to roughly the real tick rate.
 pub fn spawn_periodic_flush(
-    pool: PgPool,
+    pools: Arc<MarketDataPools>,
     cache: Arc<TickCache>,
     live_price_interval: StdDuration,
     candle_interval: StdDuration,
@@ -180,7 +182,7 @@ pub fn spawn_periodic_flush(
     risk_hook: Option<Arc<crate::risk_hook::RiskHook>>,
 ) {
     {
-        let pool = pool.clone();
+        let pools = pools.clone();
         let cache = cache.clone();
         let stats = stats.clone();
         tokio::spawn(async move {
@@ -191,7 +193,7 @@ pub fn spawn_periodic_flush(
                 if dirty.is_empty() {
                     continue;
                 }
-                let ok = flush_live_prices(&pool, &cache, &dirty, &stats).await;
+                let ok = flush_live_prices(&pools, &cache, &dirty, &stats).await;
                 // the row is written: if one of these ticks touches an open SL / TP, have the web app
                 // evaluate that symbol NOW (see risk_hook.rs) instead of at the next minute cron
                 if ok {
@@ -204,7 +206,7 @@ pub fn spawn_periodic_flush(
     }
 
     {
-        let pool = pool.clone();
+        let pools = pools.clone();
         let stats = stats.clone();
         let gap_fill = gap_fill.clone();
         let broker_offset = broker_offset.clone();
@@ -216,12 +218,59 @@ pub fn spawn_periodic_flush(
                 if dirty.is_empty() {
                     continue;
                 }
-                flush_candles(&pool, &cache, &dirty, &stats, &gap_fill, &broker_offset).await;
+                flush_candles(&pools, &cache, &dirty, &stats, &gap_fill, &broker_offset).await;
             }
         });
     }
 
-    spawn_gap_sweep(pool, stats, gap_fill, broker_offset);
+    spawn_gap_sweep(pools, stats, gap_fill, broker_offset);
+}
+
+/// Runs one write (its own transaction, its own DB_FLUSH_TIMEOUT) against
+/// every persistence target of the current MARKET_DATA_WRITE mode, one
+/// after the other (Neon first, then local -- ~30 ms + ~2 ms, so
+/// sequential costs nothing measurable and keeps the per-sink counters
+/// unambiguous). Returns true only when every target succeeded; the
+/// per-sink counters and the rate-limited log line name the side that
+/// failed. See sink.rs for why re-applying a batch that already landed on
+/// one side is harmless.
+pub async fn write_to_targets<F, Fut>(pools: &MarketDataPools, stats: &FeedStats, what: &'static str, write: F) -> bool
+where
+    F: Fn(PgPool) -> Fut,
+    Fut: Future<Output = Result<(), sqlx::Error>>,
+{
+    let mut all_ok = true;
+    for (sink, pool) in pools.targets() {
+        let started = Instant::now();
+        let result = tokio::time::timeout(DB_FLUSH_TIMEOUT, write(pool.clone())).await;
+        let lag_ms = started.elapsed().as_millis() as i64;
+        match result {
+            Ok(Ok(())) => stats.record_sink_write(sink, true, lag_ms),
+            Ok(Err(err)) => {
+                stats.record_sink_write(sink, false, lag_ms);
+                all_ok = false;
+                if sink == SinkName::Local || stats_should_log(stats, what) {
+                    tracing::warn!(?err, lag_ms, sink = sink.as_str(), "{what} flush failed (rate-limited to 1 line/30s -- see /internal/feed-stats for the real counters)");
+                }
+            }
+            Err(_) => {
+                stats.record_sink_write(sink, false, lag_ms);
+                all_ok = false;
+                if sink == SinkName::Local || stats_should_log(stats, what) {
+                    tracing::warn!(timeout_ms = DB_FLUSH_TIMEOUT.as_millis() as i64, sink = sink.as_str(), "{what} flush timed out (rate-limited to 1 line/30s)");
+                }
+            }
+        }
+    }
+    all_ok
+}
+
+fn stats_should_log(stats: &FeedStats, what: &str) -> bool {
+    if what == "live-price" {
+        stats.should_log_live_price_failure()
+    } else {
+        stats.should_log_candle_failure()
+    }
 }
 
 // hotfix/terminal-live-bugs round 5 -- "flat-fill written promptly, not
@@ -238,7 +287,7 @@ pub fn spawn_periodic_flush(
 // which is the exception, not the steady state).
 const GAP_SWEEP_INTERVAL: StdDuration = StdDuration::from_secs(10);
 
-fn spawn_gap_sweep(pool: PgPool, stats: Arc<FeedStats>, gap_fill: Arc<GapFillTracker>, broker_offset: Arc<BrokerOffsetTracker>) {
+fn spawn_gap_sweep(pools: Arc<MarketDataPools>, stats: Arc<FeedStats>, gap_fill: Arc<GapFillTracker>, broker_offset: Arc<BrokerOffsetTracker>) {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(GAP_SWEEP_INTERVAL);
         loop {
@@ -247,39 +296,25 @@ fn spawn_gap_sweep(pool: PgPool, stats: Arc<FeedStats>, gap_fill: Arc<GapFillTra
             if fills.is_empty() {
                 continue;
             }
-            let started = Instant::now();
-            let result = tokio::time::timeout(DB_FLUSH_TIMEOUT, async {
-                let mut tx = pool.begin().await?;
-                db::upsert_candles_batch(&mut tx, &fills).await?;
-                tx.commit().await
+            // Not re-queued like flush_candles' own failure path --
+            // GapFillTracker already advanced past these buckets
+            // (sweep_stale_buckets' own doc comment), so a dropped write
+            // here just means these specific rows stay missing until the
+            // next sweep produces DIFFERENT (later) buckets; it can't retry
+            // the exact same ones without also re-deriving them from
+            // tracker state this module doesn't expose.
+            let fills = Arc::new(fills);
+            let ok = write_to_targets(&pools, &stats, "gap-sweep", |pool| {
+                let fills = fills.clone();
+                async move {
+                    let mut tx = pool.begin().await?;
+                    db::upsert_candles_batch(&mut tx, &fills).await?;
+                    tx.commit().await
+                }
             })
             .await;
-            let lag_ms = started.elapsed().as_millis() as i64;
-            match result {
-                Ok(Ok(())) => stats.record_db_write(true, lag_ms),
-                Ok(Err(err)) => {
-                    stats.record_db_write(false, lag_ms);
-                    stats.record_candle_write_failure();
-                    // Not re-queued like flush_candles' own failure path --
-                    // GapFillTracker already advanced past these buckets
-                    // (sweep_stale_buckets' own doc comment), so a dropped
-                    // write here just means these specific rows stay
-                    // missing until the next sweep produces DIFFERENT
-                    // (later) buckets; it can't retry the exact same ones
-                    // without also re-deriving them from tracker state this
-                    // module doesn't expose. Logged same as every other
-                    // flush failure, rate-limited the same way.
-                    if stats.should_log_candle_failure() {
-                        tracing::warn!(?err, lag_ms, fills = fills.len(), "gap-sweep flush failed (rate-limited to 1 line/30s)");
-                    }
-                }
-                Err(_) => {
-                    stats.record_db_write(false, lag_ms);
-                    stats.record_candle_write_failure();
-                    if stats.should_log_candle_failure() {
-                        tracing::warn!(timeout_ms = DB_FLUSH_TIMEOUT.as_millis() as i64, fills = fills.len(), "gap-sweep flush timed out (rate-limited to 1 line/30s)");
-                    }
-                }
+            if !ok {
+                stats.record_candle_write_failure();
             }
         }
     });
@@ -297,8 +332,7 @@ fn spawn_gap_sweep(pool: PgPool, stats: Arc<FeedStats>, gap_fill: Arc<GapFillTra
 // ingest" behavior from the Contabo audit -- ingest_ticks above never
 // calls this function at all, so a slow/wedged flush can't backpressure
 // the hot path regardless.
-async fn flush_live_prices(pool: &PgPool, cache: &TickCache, ticks: &[Tick], stats: &Arc<FeedStats>) -> bool {
-    let started = Instant::now();
+async fn flush_live_prices(pools: &MarketDataPools, cache: &TickCache, ticks: &[Tick], stats: &Arc<FeedStats>) -> bool {
     // Re-resolved here (not carried from ingest_ticks' own call) since
     // take_dirty_live_prices only returns the Tick itself, not the
     // DateTime ingest_ticks resolved for it -- tick_ms lives on the Tick,
@@ -308,39 +342,25 @@ async fn flush_live_prices(pool: &PgPool, cache: &TickCache, ticks: &[Tick], sta
     // what this is a fallback FOR: an EA build with no staleness fix at
     // all) for one that doesn't.
     let flush_now = Utc::now();
-    let result = tokio::time::timeout(DB_FLUSH_TIMEOUT, async {
-        let mut tx = pool.begin().await?;
-        // One batched round trip for the whole flush, not one per symbol
-        // -- see db::upsert_live_prices_batch's own comment.
-        let symbols: Vec<String> = ticks.iter().map(|t| t.symbol.clone()).collect();
-        let bids: Vec<_> = ticks.iter().map(|t| t.bid).collect();
-        let asks: Vec<_> = ticks.iter().map(|t| t.ask).collect();
-        let tick_ats: Vec<DateTime<Utc>> = ticks.iter().map(|t| resolve_tick_time(t, flush_now)).collect();
-        db::upsert_live_prices_batch(&mut tx, &symbols, &bids, &asks, &tick_ats).await?;
-        tx.commit().await
+    // One batched round trip per target for the whole flush, not one per
+    // symbol -- see db::upsert_live_prices_batch's own comment.
+    let symbols: Arc<Vec<String>> = Arc::new(ticks.iter().map(|t| t.symbol.clone()).collect());
+    let bids: Arc<Vec<_>> = Arc::new(ticks.iter().map(|t| t.bid).collect());
+    let asks: Arc<Vec<_>> = Arc::new(ticks.iter().map(|t| t.ask).collect());
+    let tick_ats: Arc<Vec<DateTime<Utc>>> = Arc::new(ticks.iter().map(|t| resolve_tick_time(t, flush_now)).collect());
+    let ok = write_to_targets(pools, stats, "live-price", |pool| {
+        let (symbols, bids, asks, tick_ats) = (symbols.clone(), bids.clone(), asks.clone(), tick_ats.clone());
+        async move {
+            let mut tx = pool.begin().await?;
+            db::upsert_live_prices_batch(&mut tx, &symbols, &bids, &asks, &tick_ats).await?;
+            tx.commit().await
+        }
     })
     .await;
-    let lag_ms = started.elapsed().as_millis() as i64;
-
-    match result {
-        Ok(Ok(())) => { stats.record_db_write(true, lag_ms); true }
-        Ok(Err(err)) => {
-            stats.record_db_write(false, lag_ms);
-            re_mark_live_price_dirty(cache, ticks);
-            if stats.should_log_live_price_failure() {
-                tracing::warn!(?err, lag_ms, "live-price flush failed (rate-limited to 1 line/30s -- see /internal/feed-stats for the real db_fail count)");
-            }
-            false
-        }
-        Err(_) => {
-            stats.record_db_write(false, lag_ms);
-            re_mark_live_price_dirty(cache, ticks);
-            if stats.should_log_live_price_failure() {
-                tracing::warn!(timeout_ms = DB_FLUSH_TIMEOUT.as_millis() as i64, "live-price flush timed out (rate-limited to 1 line/30s)");
-            }
-            false
-        }
+    if !ok {
+        re_mark_live_price_dirty(cache, ticks);
     }
+    ok
 }
 
 fn re_mark_live_price_dirty(cache: &TickCache, ticks: &[Tick]) {
@@ -350,18 +370,18 @@ fn re_mark_live_price_dirty(cache: &TickCache, ticks: &[Tick]) {
 
 // Same claim/retry-on-failure shape as flush_live_prices, via
 // cache::TickCache::mark_candle_dirty.
-async fn flush_candles(pool: &PgPool, cache: &TickCache, ticks: &[Tick], stats: &Arc<FeedStats>, gap_fill: &GapFillTracker, broker_offset: &BrokerOffsetTracker) {
+async fn flush_candles(pools: &MarketDataPools, cache: &TickCache, ticks: &[Tick], stats: &Arc<FeedStats>, gap_fill: &GapFillTracker, broker_offset: &BrokerOffsetTracker) {
     let now = Utc::now();
-    let started = Instant::now();
-    let result = tokio::time::timeout(DB_FLUSH_TIMEOUT, async {
-        // One batched round trip for the whole flush instead of one per
-        // (tick x timeframe x gap-fill) -- see db::upsert_candles_batch's
-        // own comment. Gap-fills and real updates share the same merge
-        // (GREATEST/LEAST) semantics, so they collect into one Vec and go
-        // in a single UNNEST insert; order within the batch doesn't
-        // matter the way it did as sequential single-row writes (a gap
-        // fill and the update whose gap it closes never touch the same
-        // bucket, so there's no same-batch ordering to preserve).
+    // One batched round trip per target for the whole flush instead of
+    // one per (tick x timeframe x gap-fill) -- see
+    // db::upsert_candles_batch's own comment. Gap-fills and real updates
+    // share the same merge (GREATEST/LEAST) semantics, so they collect
+    // into one Vec and go in a single UNNEST insert; order within the
+    // batch doesn't matter the way it did as sequential single-row writes
+    // (a gap fill and the update whose gap it closes never touch the same
+    // bucket, so there's no same-batch ordering to preserve). The batch is
+    // built once, outside any DB timeout, then applied to every target.
+    let all_updates = {
         let mut all_updates = Vec::new();
         for tick in ticks {
             // Records this tick's own broker_offset_sec if it has one
@@ -415,31 +435,20 @@ async fn flush_candles(pool: &PgPool, cache: &TickCache, ticks: &[Tick], stats: 
                 all_updates.push(update);
             }
         }
-        let mut tx = pool.begin().await?;
-        db::upsert_candles_batch(&mut tx, &all_updates).await?;
-        tx.commit().await
+        Arc::new(all_updates)
+    };
+    let ok = write_to_targets(pools, stats, "candle", |pool| {
+        let all_updates = all_updates.clone();
+        async move {
+            let mut tx = pool.begin().await?;
+            db::upsert_candles_batch(&mut tx, &all_updates).await?;
+            tx.commit().await
+        }
     })
     .await;
-    let lag_ms = started.elapsed().as_millis() as i64;
-
-    match result {
-        Ok(Ok(())) => stats.record_db_write(true, lag_ms),
-        Ok(Err(err)) => {
-            stats.record_db_write(false, lag_ms);
-            stats.record_candle_write_failure();
-            re_mark_candle_dirty(cache, ticks);
-            if stats.should_log_candle_failure() {
-                tracing::warn!(?err, lag_ms, "candle flush failed (rate-limited to 1 line/30s -- see /internal/feed-stats for the real db_fail count)");
-            }
-        }
-        Err(_) => {
-            stats.record_db_write(false, lag_ms);
-            stats.record_candle_write_failure();
-            re_mark_candle_dirty(cache, ticks);
-            if stats.should_log_candle_failure() {
-                tracing::warn!(timeout_ms = DB_FLUSH_TIMEOUT.as_millis() as i64, "candle flush timed out (rate-limited to 1 line/30s)");
-            }
-        }
+    if !ok {
+        stats.record_candle_write_failure();
+        re_mark_candle_dirty(cache, ticks);
     }
 }
 
@@ -576,5 +585,96 @@ mod tests {
 
         let tick_time = resolve_tick_time(&tick, saturday);
         assert!(market_open(&tick.symbol, tick_time), "BTCUSD trades all weekend -- its tick must still be treated as market-open");
+    }
+}
+
+#[cfg(test)]
+mod dual_write_tests {
+    //! Real-Postgres check of the S1 dual-write path: skipped (not failed)
+    //! unless MARKET_DATA_TEST_NEON_URL and MARKET_DATA_TEST_LOCAL_URL both
+    //! point at databases carrying deploy/market_data.sql's schema.
+    use super::*;
+    use crate::sink::{MarketDataPools, WriteMode};
+    use crate::Timeframe;
+    use rust_decimal::Decimal;
+    use rust_decimal_macros::dec;
+    use sqlx::postgres::PgPoolOptions;
+
+    async fn pools() -> Option<(PgPool, PgPool)> {
+        let (Ok(neon), Ok(local)) = (std::env::var("MARKET_DATA_TEST_NEON_URL"), std::env::var("MARKET_DATA_TEST_LOCAL_URL")) else {
+            eprintln!("skipping: MARKET_DATA_TEST_NEON_URL / MARKET_DATA_TEST_LOCAL_URL not set");
+            return None;
+        };
+        Some((PgPool::connect(&neon).await.ok()?, PgPool::connect(&local).await.ok()?))
+    }
+
+    async fn count(pool: &PgPool, table: &str, symbol: &str) -> i64 {
+        let q = format!(r#"SELECT count(*) FROM "{table}" WHERE symbol = $1"#);
+        sqlx::query_scalar(&q).bind(symbol).fetch_one(pool).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn both_mode_lands_the_same_rows_on_neon_and_local_and_local_mode_leaves_neon_alone() {
+        let Some((neon, local)) = pools().await else { return };
+        let symbol = format!("TESTDUAL{}", Utc::now().timestamp_millis() % 1_000_000);
+        for p in [&neon, &local] {
+            sqlx::query(r#"DELETE FROM "Candle" WHERE symbol LIKE 'TESTDUAL%'"#).execute(p).await.unwrap();
+            sqlx::query(r#"DELETE FROM "LivePrice" WHERE symbol LIKE 'TESTDUAL%'"#).execute(p).await.unwrap();
+        }
+        let stats = Arc::new(FeedStats::new());
+        let cache = TickCache::new();
+        let gap_fill = GapFillTracker::new();
+        let broker_offset = BrokerOffsetTracker::new();
+        let tick = Tick { symbol: symbol.clone(), bid: dec!(4500.10), ask: dec!(4500.30), t0: None, clock_offset_ms: None, rtt_ms: None, tick_ms: Some(Utc::now().timestamp_millis() - 200), broker_offset_sec: None };
+        cache.set(&tick, Utc::now());
+
+        // both: every row on both sides, both counter trios advance
+        let both = MarketDataPools::new(neon.clone(), Some(local.clone()), WriteMode::Both);
+        assert!(flush_live_prices(&both, &cache, &[tick.clone()], &stats).await);
+        flush_candles(&both, &cache, &[tick.clone()], &stats, &gap_fill, &broker_offset).await;
+        let snap = stats.snapshot();
+        assert_eq!((snap.db_ok, snap.db_fail), (2, 0), "neon: one live-price + one candle flush");
+        assert_eq!((snap.local_db_ok, snap.local_db_fail), (2, 0), "local: one live-price + one candle flush");
+        assert_eq!(count(&neon, "LivePrice", &symbol).await, 1);
+        assert_eq!(count(&local, "LivePrice", &symbol).await, 1);
+        let neon_candles = count(&neon, "Candle", &symbol).await;
+        assert!(neon_candles >= 1, "a live tick writes one bucket per timeframe");
+        assert_eq!(count(&local, "Candle", &symbol).await, neon_candles);
+        let (nb, lb): ((Decimal,), (Decimal,)) = (
+            sqlx::query_as(r#"SELECT bid FROM "LivePrice" WHERE symbol = $1"#).bind(&symbol).fetch_one(&neon).await.unwrap(),
+            sqlx::query_as(r#"SELECT bid FROM "LivePrice" WHERE symbol = $1"#).bind(&symbol).fetch_one(&local).await.unwrap(),
+        );
+        assert_eq!(nb, lb);
+        // the reader is the local store, and returns the Prisma-shaped row order (oldest first)
+        let rows = db::fetch_candles(both.reader(), &symbol, Timeframe::M1, 300, None).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].close, dec!(4500.10));
+
+        // local: a second tick reaches the local store only
+        let tick2 = Tick { bid: dec!(4501.00), ask: dec!(4501.20), ..tick.clone() };
+        cache.set(&tick2, Utc::now());
+        let local_only = MarketDataPools::new(neon.clone(), Some(local.clone()), WriteMode::Local);
+        assert!(flush_live_prices(&local_only, &cache, &[tick2.clone()], &stats).await);
+        let (nb2,): (Decimal,) = sqlx::query_as(r#"SELECT bid FROM "LivePrice" WHERE symbol = $1"#).bind(&symbol).fetch_one(&neon).await.unwrap();
+        let (lb2,): (Decimal,) = sqlx::query_as(r#"SELECT bid FROM "LivePrice" WHERE symbol = $1"#).bind(&symbol).fetch_one(&local).await.unwrap();
+        assert_eq!(nb2, dec!(4500.10), "neon untouched in local mode");
+        assert_eq!(lb2, dec!(4501.00));
+        let snap = stats.snapshot();
+        assert_eq!((snap.db_ok, snap.db_fail), (2, 0), "neon counters did not move");
+        assert_eq!((snap.local_db_ok, snap.local_db_fail), (3, 0));
+
+        // a broken local target fails the flush (re-mark for retry) while neon still lands
+        let broken = PgPoolOptions::new().acquire_timeout(StdDuration::from_millis(300)).connect_lazy("postgres://nobody:x@127.0.0.1:1/none").unwrap();
+        let half = MarketDataPools::new(neon.clone(), Some(broken), WriteMode::Both);
+        assert!(!flush_live_prices(&half, &cache, &[tick2.clone()], &stats).await);
+        let snap = stats.snapshot();
+        assert_eq!((snap.db_ok, snap.db_fail), (3, 0));
+        assert_eq!((snap.local_db_ok, snap.local_db_fail), (3, 1));
+        assert_eq!(cache.take_dirty_live_prices().len(), 1, "the failed batch is dirty again for the next cycle");
+
+        for p in [&neon, &local] {
+            sqlx::query(r#"DELETE FROM "Candle" WHERE symbol = $1"#).bind(&symbol).execute(p).await.unwrap();
+            sqlx::query(r#"DELETE FROM "LivePrice" WHERE symbol = $1"#).bind(&symbol).execute(p).await.unwrap();
+        }
     }
 }
