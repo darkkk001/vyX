@@ -5,6 +5,7 @@
 import { Prisma, PrismaClient } from "@prisma/client";
 import { resolveSymbolPricing, pipSize } from "@/lib/group-pricing";
 import { resolveSymbolPricingV2, resolveEffectiveSpreadMarkup } from "@/lib/pricing-engine";
+import { getLivePriceRows } from "@/lib/live-price";
 
 // Phase 2 pricing engine, Stage 3 -- shadow comparison. READ-ONLY: no
 // write anywhere in this file. Computes, for every (account, tradable
@@ -105,7 +106,7 @@ export async function runShadowPricingComparison(db: PrismaClient, brokerId: str
   ]);
 
   const symbolNames = brokerSymbols.map((bs) => bs.symbol.name);
-  const livePriceMap = new Map((await db.livePrice.findMany({ where: { symbol: { in: symbolNames } } })).map((lp) => [lp.symbol, lp]));
+  const livePriceMap = await getLivePriceRows(symbolNames, db);
 
   const groupOverrideMap = new Map(groupSymbolConfigs.map((g) => [`${g.groupId}:${g.symbolId}`, g]));
   const openPositionSet = new Set(openPositions.map((p) => `${p.accountId}:${p.symbolId}`));

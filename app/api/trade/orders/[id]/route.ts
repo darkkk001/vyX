@@ -8,6 +8,7 @@ import { orderAuditFields } from "@/lib/order-audit";
 import { recordDealerActivity } from "@/lib/dealer-activity";
 import { isDealingManagedAccount } from "@/lib/dealing-routing";
 import { checkTradingSession, computeNextSessionOpen } from "@/lib/risk";
+import { getLivePriceRow } from "@/lib/live-price";
 
 // Edit a resting PENDING order's own entry price and/or its SL/TP -- the
 // chart's draggable entry-price line (LIMIT/STOP only) and, since broker
@@ -86,7 +87,7 @@ export async function PATCH(
     // supplied `currentPrice` below (which only ever feeds the stopLevel-
     // distance check) -- the server, never the client, is the price
     // authority for anything that actually rejects a request.
-    const livePrice = await prisma.livePrice.findUnique({ where: { symbol: order.symbol.name } });
+    const livePrice = await getLivePriceRow(order.symbol.name);
     if (livePrice) {
       const marketRef = order.side === "BUY" ? livePrice.ask : livePrice.bid;
       const directionError = validatePendingOrderDirection({

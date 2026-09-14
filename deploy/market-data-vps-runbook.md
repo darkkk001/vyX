@@ -193,3 +193,32 @@ What I (main-repo session) do in parallel once step 5 is green: S3 —
 `lib/market-data-client.ts` + `/api/trade/candles` reading the engine for
 the symbols in `MARKET_DATA_VPS_SYMBOLS` (you set that var in Vercel, starting
 with `EURUSD`). Neon keeps every write until S5.
+
+---
+
+## S4 on the VPS — gateway reads LivePrice from the local store
+
+The gateway's positions summary (`services/api-gateway/src/db.ts`) is the one
+VPS-side reader of `LivePrice`. Once the web app is on `MARKET_DATA_PRICES=vps`:
+
+```powershell
+cd C:yxtraderepo
+git pull                                              # must contain "web: live prices from the engine (S4)"
+cd servicespi-gateway
+npm ci; npm run build
+Copy-Item C:yxtrader\scripts\start-gateway.cmd C:yxtraderackup\start-gateway.cmd.pre-s4
+notepad C:yxtrader\scripts\start-gateway.cmd    # add, next to DATABASE_URL:
+#   set MARKET_DATA_DATABASE_URL=postgres://engine:<engine role password>@127.0.0.1:5432/market_data
+nssm restart vyxtrader-gateway
+Invoke-WebRequest https://feed.vyxtrader.com/health -UseBasicParsing | Select-Object StatusCode   # 200
+```
+
+Verify: the terminal's account panel (equity / floating P&L, which come from
+this query) still moves with the price on an open position. Rollback:
+remove the line, restart the gateway.
+
+S5 (`MARKET_DATA_WRITE=local` in start-engine.cmd, restart engine) is safe
+only after: `x-market-data-source: vps` on `/api/trade/prices` AND on
+`/api/trade/candles` for every symbol, a real market order filled on zzzqa
+with the flag on, and this gateway step done. Until then Neon's LivePrice is
+still read by something.

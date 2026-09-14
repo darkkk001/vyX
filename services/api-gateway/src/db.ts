@@ -18,6 +18,15 @@ import { randomUUID } from "node:crypto";
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 
+// Neon -> VPS market-data migration (docs/market-data.md §8, S4): LivePrice
+// lives on the VPS Postgres once MARKET_DATA_DATABASE_URL is set (the same
+// value the engine's start-engine.cmd carries -- this service runs on the
+// same box). Unset = read LivePrice from DATABASE_URL (Neon) exactly as
+// before. Only the price lookup moves; positions / accounts stay on Neon.
+const marketDataPool = process.env.MARKET_DATA_DATABASE_URL
+  ? new Pool({ connectionString: process.env.MARKET_DATA_DATABASE_URL })
+  : pool;
+
 export interface AccountRow {
   balance: Decimal;
   credit: Decimal;
@@ -92,15 +101,27 @@ export async function getOpenPositionsSummary(
   accountId: string,
   leverage: number
 ): Promise<OpenPositionsSummary> {
-  const { rows } = await pool.query(
-    `SELECT p.side::text AS side, p.volume, p.open_price, s."contractSize" AS contract_size,
-            lp.bid, lp.ask
+  // Two queries instead of the former LEFT JOIN: positions come from Neon,
+  // the fresh prices from marketDataPool (the VPS store after S4) -- the
+  // two tables no longer have to share a database.
+  const { rows: positions } = await pool.query(
+    `SELECT p.side::text AS side, p.volume, p.open_price, s."contractSize" AS contract_size, p.symbol
      FROM positions p
      JOIN "Symbol" s ON s.name = p.symbol
-     LEFT JOIN "LivePrice" lp ON lp.symbol = p.symbol AND lp."tickAt" > now() - interval '15 seconds'
      WHERE p.account_id = $1 AND p.status = 'OPEN'`,
     [accountId]
   );
+  const symbols = [...new Set(positions.map((r) => r.symbol as string))];
+  const priceBySymbol = new Map<string, { bid: string; ask: string }>();
+  if (symbols.length > 0) {
+    const { rows: prices } = await marketDataPool.query(
+      `SELECT symbol, bid, ask FROM "LivePrice"
+       WHERE symbol = ANY($1) AND "tickAt" > now() - interval '15 seconds'`,
+      [symbols]
+    );
+    for (const pr of prices) priceBySymbol.set(pr.symbol, { bid: pr.bid, ask: pr.ask });
+  }
+  const rows = positions.map((r) => ({ ...r, bid: priceBySymbol.get(r.symbol)?.bid ?? null, ask: priceBySymbol.get(r.symbol)?.ask ?? null }));
 
   let usedMargin = new Decimal(0);
   let floatingPnl = new Decimal(0);

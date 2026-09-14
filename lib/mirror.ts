@@ -16,6 +16,7 @@ import { computeRealizedPnl } from "@/lib/trading";
 import { closePositionInTx } from "@/lib/position-close";
 import { createNotification } from "@/lib/notifications";
 import { publishTradingEvent } from "@/lib/nats";
+import { getLivePriceRow } from "@/lib/live-price";
 
 // docs/briefs/VYX-MIRROR-V0-BRIEF.md -- v0 hooks the legacy order-fill and
 // position-close paths directly (see the two call sites: app/api/trade/
@@ -349,7 +350,7 @@ async function mirrorFillForRule(db: Db, rule: MirrorRule, source: MirrorSourceP
     if (rule.fillPriceMode === "SOURCE_PRICE") {
       fillPrice = source.openPrice;
     } else {
-      const livePrice = await db.livePrice.findUnique({ where: { symbol: source.symbolName } });
+      const livePrice = await getLivePriceRow(source.symbolName, db);
       if (!livePrice) {
         await recordMirrorFailure(db, rule, "no live price for symbol (market closed?)");
         return;
@@ -508,7 +509,7 @@ export async function onClose(db: Db, closeEvent: MirrorSourceClose): Promise<vo
     if (rule.fillPriceMode === "SOURCE_PRICE" && closeEvent.closePrice != null) {
       closePrice = closeEvent.closePrice;
     } else {
-      const livePrice = await db.livePrice.findUnique({ where: { symbol: targetPosition.symbol.name } });
+      const livePrice = await getLivePriceRow(targetPosition.symbol.name, db);
       if (!livePrice) {
         await recordMirrorFailure(db, rule, "no live price to close mirrored position (market closed?)");
         return;

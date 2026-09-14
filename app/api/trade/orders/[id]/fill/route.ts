@@ -11,6 +11,7 @@ import { resolveBookType, applySpreadMarkup, pipSize, chargeCommission } from "@
 import { resolveFillPricing, logSpreadWarning } from "@/lib/pricing-engine";
 import { checkAccountPreTradeMargin } from "@/lib/margin";
 import { orderAuditFields } from "@/lib/order-audit";
+import { getLivePriceRow } from "@/lib/live-price";
 import {
   checkTradingHalted,
   checkCloseOnly,
@@ -78,9 +79,7 @@ export async function POST(
   // route filled pending-order triggers at the client's own
   // trigger-detected price, same exploit class POST /api/trade/orders had
   // for MARKET orders.
-  const livePrice = brokerSymbol
-    ? await prisma.livePrice.findUnique({ where: { symbol: brokerSymbol.symbol.name } })
-    : null;
+  const livePrice = brokerSymbol ? await getLivePriceRow(brokerSymbol.symbol.name) : null;
 
   // Same risk battery POST /api/trade/orders and the dealing-queue Accept
   // route both run before opening a position -- this fill path (a

@@ -1,6 +1,7 @@
 import { Prisma, PrismaClient, TradingMode, SymbolCategory } from "@prisma/client";
 import type { OrderSide } from "@/lib/trading";
 import { pipSize } from "@/lib/group-pricing";
+import { getLivePriceRow } from "@/lib/live-price";
 
 type Db = PrismaClient | Prisma.TransactionClient;
 
@@ -343,7 +344,9 @@ export async function checkLiveMarketPrice(
   symbolName: string,
   clientPrice: Prisma.Decimal | string
 ): Promise<string | null> {
-  const livePrice = await db.livePrice.findUnique({ where: { symbol: symbolName } });
+  // lib/live-price (S4): the engine's tick when MARKET_DATA_PRICES=vps, else
+  // the caller's own client (its transaction) on Neon, as before.
+  const livePrice = await getLivePriceRow(symbolName, db);
   return evaluateLiveMarketPrice(livePrice, symbolName, clientPrice);
 }
 

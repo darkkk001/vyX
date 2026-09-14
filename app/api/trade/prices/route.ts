@@ -5,6 +5,7 @@ import { getAccountSession } from "@/lib/account-auth";
 import { checkTradingSession } from "@/lib/risk";
 import { pipSize } from "@/lib/group-pricing";
 import { resolvePricingV2, resolveEffectiveSpreadMarkup } from "@/lib/pricing-engine";
+import { getLivePriceRowsWithSource } from "@/lib/live-price";
 
 // Polled by the WebTrader client every couple seconds to blend real MT5
 // ticks (see /api/internal/price-feed) into the otherwise-simulated market
@@ -48,10 +49,9 @@ export async function GET() {
     brokerSymbols.map((bs) => [bs.symbol.name, checkTradingSession(bs.tradingSessions, now, bs.symbol.category) != null])
   );
 
-  const prices = await prisma.livePrice.findMany({
-    where: { symbol: { in: brokerSymbols.map((bs) => bs.symbol.name) } },
-  });
-  const priceByName = new Map(prices.map((p) => [p.symbol, p]));
+  // S4 (docs/market-data.md §8): the engine's tick cache when
+  // MARKET_DATA_PRICES=vps, Neon's LivePrice otherwise / on failure.
+  const { rows: priceByName, source: priceSource } = await getLivePriceRowsWithSource(brokerSymbols.map((bs) => bs.symbol.name));
 
   // Resolve each symbol's effective spread markup for THIS account (group
   // override, falling back to the broker default) -- the same precedence
@@ -165,11 +165,11 @@ export async function GET() {
     askMarkupByName.set(bs.symbol.name, markupPips.mul(pipSize(bs.symbol.digits)).toString());
   }
   return NextResponse.json(
-    prices.map((p) => ({
+    [...priceByName.values()].map((p) => ({
       ...p,
       marketClosed: closedByName.get(p.symbol) ?? false,
       askMarkup: askMarkupByName.get(p.symbol) ?? "0",
     })),
-    { headers: { "Cache-Control": "no-store" } }
+    { headers: { "Cache-Control": "no-store", "x-market-data-source": priceSource } }
   );
 }

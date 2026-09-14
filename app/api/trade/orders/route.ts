@@ -14,6 +14,7 @@ import { recordDealerActivity } from "@/lib/dealer-activity";
 import * as mirror from "@/lib/mirror";
 import { resolveWantsDealingQueue } from "@/lib/dealing-routing";
 import { orderAuditFields } from "@/lib/order-audit";
+import { getLivePriceRow } from "@/lib/live-price";
 import {
   checkTradingHalted,
   checkCloseOnly,
@@ -210,9 +211,12 @@ async function handlePlaceOrder(request: NextRequest) {
   // own comment) is a different, narrower thing that IS worth checking
   // right now, at placement -- it's a static fact about the order that
   // will never become more or less true while it rests, unlike staleness.
-  let livePrice: Awaited<ReturnType<typeof prisma.livePrice.findUnique>> = null;
+  // S4 (docs/market-data.md §8): getLivePriceRow reads the engine's own tick
+  // when MARKET_DATA_PRICES=vps (the in-memory tick, not the flushed row --
+  // the PRICE_STALE-on-fast-clicks lag goes away), Neon otherwise / on failure.
+  let livePrice: Awaited<ReturnType<typeof getLivePriceRow>> = null;
   if (type === "MARKET") {
-    livePrice = await prisma.livePrice.findUnique({ where: { symbol: symbolName } });
+    livePrice = await getLivePriceRow(symbolName);
     const priceError = evaluateLiveMarketPrice(livePrice, symbolName, price) ?? checkPriceFreshness(livePrice);
     if (priceError) {
       return NextResponse.json({ error: priceError }, { status: 400 });
@@ -225,7 +229,7 @@ async function handlePlaceOrder(request: NextRequest) {
     // against" tolerance the rest of this route already extends to a
     // brand-new/never-ticked symbol, rather than blocking every pending
     // order until a feed exists.
-    const pendingLivePrice = await prisma.livePrice.findUnique({ where: { symbol: symbolName } });
+    const pendingLivePrice = await getLivePriceRow(symbolName);
     if (pendingLivePrice) {
       const marketRef = side === "BUY" ? pendingLivePrice.ask : pendingLivePrice.bid;
       const directionError = validatePendingOrderDirection({ type, side, entryPrice: price, marketPrice: marketRef });
