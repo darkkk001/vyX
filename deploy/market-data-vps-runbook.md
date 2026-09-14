@@ -129,7 +129,13 @@ notepad C:\vyxtrader\scripts\start-engine.cmd
 ```
 set MARKET_DATA_DATABASE_URL=postgres://engine:<engine role password>@127.0.0.1:5432/market_data
 set MARKET_DATA_WRITE=both
+set MARKET_DATA_READ_SECRET=<the dedicated read-only secret Vercel holds as MARKET_DATA_READ_SECRET>
 ```
+
+(`MARKET_DATA_READ_SECRET` is optional defense-in-depth: with it, the engine
+itself accepts `X-Market-Data-Secret` on `/internal/candles` and
+`/internal/prices` and nothing else -- so the web app never needs
+`INTERNAL_SERVICE_SECRET` even if Caddy's own header check is bypassed.)
 
 Then restart only the engine (the gateway keeps serving):
 

@@ -49,6 +49,12 @@ struct AppState {
     // server's own module doc, it's designed to be reachable only from
     // the Gateway, never directly from a browser.
     internal_service_secret: String,
+    // Neon→VPS migration: a DEDICATED read-only secret for the two
+    // market-data read routes (/internal/candles, /internal/prices), so
+    // the web app never has to hold INTERNAL_SERVICE_SECRET (which also
+    // unlocks the order routes). Optional -- when unset, only the internal
+    // secret opens those routes (see require_market_data_read_secret).
+    market_data_read_secret: Option<String>,
     // The "RUST MEMORY... current prices" layer — see
     // market_data::cache::TickCache's own doc comment for why this
     // exists. Populated by ingest_price_feed, read by
@@ -178,6 +184,29 @@ async fn require_internal_secret(
         .get("x-internal-secret")
         .and_then(|v| v.to_str().ok());
     if provided != Some(state.internal_service_secret.as_str()) {
+        return Err((StatusCode::UNAUTHORIZED, "unauthorized".to_string()));
+    }
+    Ok(next.run(req).await)
+}
+
+/// The market-data READ routes accept either the internal secret
+/// (`x-internal-secret`, what the gateway holds) or the dedicated
+/// read-only one (`x-market-data-secret` = MARKET_DATA_READ_SECRET, what the
+/// web app's lib/market-data-client.ts sends). The read secret opens
+/// nothing else on this server.
+async fn require_market_data_read_secret(
+    State(state): State<Arc<AppState>>,
+    req: Request,
+    next: Next,
+) -> Result<Response, (StatusCode, String)> {
+    let internal_provided: Option<String> = req.headers().get("x-internal-secret").and_then(|v| v.to_str().ok()).map(str::to_owned);
+    let read_provided: Option<String> = req.headers().get("x-market-data-secret").and_then(|v| v.to_str().ok()).map(str::to_owned);
+    let internal_ok = internal_provided.as_deref() == Some(state.internal_service_secret.as_str());
+    let read_ok = match (&state.market_data_read_secret, read_provided) {
+        (Some(expected), Some(provided)) => !expected.is_empty() && provided == *expected,
+        _ => false,
+    };
+    if !internal_ok && !read_ok {
         return Err((StatusCode::UNAUTHORIZED, "unauthorized".to_string()));
     }
     Ok(next.run(req).await)
@@ -1174,6 +1203,10 @@ async fn main() {
     let price_feed_secret = std::env::var("PRICE_FEED_SECRET").expect("PRICE_FEED_SECRET must be set");
     let internal_service_secret =
         std::env::var("INTERNAL_SERVICE_SECRET").expect("INTERNAL_SERVICE_SECRET must be set");
+    let market_data_read_secret = std::env::var("MARKET_DATA_READ_SECRET").ok().filter(|s| !s.trim().is_empty());
+    if market_data_read_secret.is_none() {
+        tracing::info!("MARKET_DATA_READ_SECRET not set -- /internal/candles and /internal/prices accept the internal secret only");
+    }
     // sqlx's own default (10) was silently the concurrency ceiling for
     // order placement -- see db::connect_pool's doc comment.
     let db_pool_max_connections: u32 = std::env::var("DATABASE_POOL_MAX_CONNECTIONS")
@@ -1312,6 +1345,7 @@ async fn main() {
         nats,
         price_feed_secret,
         internal_service_secret,
+        market_data_read_secret,
         tick_cache,
         feed_stats: feed_stats_registry,
         symbol_activity: symbol_activity_registry,
@@ -1334,10 +1368,16 @@ async fn main() {
         .route("/v1/positions/{position_id}/close", post(close_position))
         .route("/internal/feed-stats", get(feed_stats))
         .route("/internal/alert-stats", get(alert_stats))
+        .layer(middleware::from_fn_with_state(state.clone(), require_internal_secret));
+
+    // Market-data READ routes: internal secret OR the dedicated read-only
+    // secret (require_market_data_read_secret) -- the web app's candle /
+    // price reads in the Neon→VPS migration hold only the latter.
+    let market_data_routes = Router::new()
         .route("/internal/candles", get(internal_candles))
         .route("/internal/prices", get(internal_prices))
         .route("/internal/prices/{symbol}", get(internal_price))
-        .layer(middleware::from_fn_with_state(state.clone(), require_internal_secret));
+        .layer(middleware::from_fn_with_state(state.clone(), require_market_data_read_secret));
 
     let app = Router::new()
         .route("/health", get(health))
@@ -1345,6 +1385,7 @@ async fn main() {
         .route("/internal/price-feed", post(ingest_price_feed))
         .route("/internal/history", post(ingest_history))
         .merge(order_routes)
+        .merge(market_data_routes)
         .with_state(state);
 
     // Defaults to loopback-only now -- this server was only ever meant to

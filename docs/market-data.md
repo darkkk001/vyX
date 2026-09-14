@@ -285,7 +285,7 @@ box the engine already runs on.
 |---|---|---|
 | **S1** engine | `market_data::sink` — second pool `MARKET_DATA_DATABASE_URL`, `MARKET_DATA_WRITE = neon \| both \| local`, every writer (tick flushes, gap sweep, `/internal/history`, retention) goes through `ingest::write_to_targets`; `GET /internal/candles`, `GET /internal/prices[/{symbol}]`; per-sink counters in feed-stats | **done** — dual-write proven against two real Postgres 16 databases (`ingest::dual_write_tests`, plus a full local engine boot: 3 ticks → identical rows on both sides, backfill → both, `/internal/candles` served from the local store) |
 | **S2** VPS | install PostgreSQL, `deploy/market_data.sql`, restore the Neon dump, `MARKET_DATA_WRITE=both`, restart — `deploy/market-data-vps-runbook.md` | next |
-| S3 web, one symbol | `lib/market-data-client.ts`; `/api/trade/candles` reads the engine for `MARKET_DATA_VPS_SYMBOLS` only | |
+| **S3** web, one symbol | `lib/market-data-client.ts` (X-Market-Data-Secret, 2 s timeout, engine wire row → Prisma `Candle` row, null = Neon); `/api/trade/candles` reads the engine for `MARKET_DATA_VPS_SYMBOLS` only, answers `x-market-data-source: vps | neon-fallback | neon` | **code done** — dormant until `MARKET_DATA_URL` / `MARKET_DATA_READ_SECRET` / `MARKET_DATA_VPS_SYMBOLS` are set in Vercel |
 | S4 web, all | `/prices`, order routes, `lib/live-price.ts`, `lib/risk.ts`, `lib/mirror.ts`, replay, gateway `db.ts` | |
 | S5 | `MARKET_DATA_WRITE=local` — Neon stops being written, endpoint suspends | |
 | S6 | drop `Candle` / `LivePrice` from Neon, cap CU, delete `production_old` | |

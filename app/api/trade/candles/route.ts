@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
+import { fetchVpsCandles, isVpsSymbol } from "@/lib/market-data-client";
 
 const TIMEFRAMES = new Set(["M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1", "MN1", "Y1"]);
 type Timeframe = "M1" | "M5" | "M15" | "M30" | "H1" | "H4" | "D1" | "W1" | "MN1" | "Y1";
@@ -34,6 +35,20 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "symbol and a valid tf are required" }, { status: 400 });
   }
 
+  // Neon -> VPS market-data migration (docs/market-data.md §8): symbols
+  // listed in MARKET_DATA_VPS_SYMBOLS read the engine's own store through
+  // lib/market-data-client; everything else, and any VPS miss (timeout,
+  // error, empty), keeps reading Neon exactly as before. The response
+  // header says which store answered so the switch can be verified per
+  // symbol with one curl.
+  const vpsSymbol = isVpsSymbol(symbol);
+  if (vpsSymbol) {
+    const vps = await fetchVpsCandles(symbol, timeframe, 300);
+    if (vps) {
+      return NextResponse.json(vps, { headers: { "x-market-data-source": "vps" } });
+    }
+  }
+
   const candles = await prisma.candle.findMany({
     where: { symbol, timeframe: timeframe as Timeframe },
     orderBy: { bucketStart: "desc" },
@@ -41,5 +56,5 @@ export async function GET(request: NextRequest) {
   });
   candles.reverse();
 
-  return NextResponse.json(candles);
+  return NextResponse.json(candles, { headers: { "x-market-data-source": vpsSymbol ? "neon-fallback" : "neon" } });
 }
