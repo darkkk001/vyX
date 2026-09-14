@@ -6,7 +6,7 @@
     },
     {
       "path": "/api/internal/margin-monitor",
-      "schedule": "* * * * *"
+      "schedule": "*/5 * * * *"
     }
   ]
 }
