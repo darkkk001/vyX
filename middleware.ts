@@ -188,7 +188,13 @@ export async function middleware(request: NextRequest) {
     if (isManagePage) {
       return new NextResponse("Not found", { status: 404 });
     }
-    return NextResponse.next();
+    // The Super Admin shell layout and getAdminSession's 2FA-enrollment gate
+    // both read x-pathname to know the current page; the broker-resolution
+    // path below sets it, but this branch returns first, so set it here too or
+    // the forced-2FA redirect (matching on /security) would loop.
+    const adminHeaders = new Headers(request.headers);
+    adminHeaders.set("x-pathname", effectivePathname);
+    return NextResponse.next({ request: { headers: adminHeaders } });
   }
 
   const isSubdomainOfRoot = hostname.endsWith(`.${rootDomain}`);

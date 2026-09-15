@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getAdminSession } from "@/lib/auth";
+import { getAdminSession, revokeAllAdminSessions } from "@/lib/auth";
 
 async function requireSuperAdmin() {
   const session = await getAdminSession();
@@ -46,6 +46,13 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     });
     return admin;
   });
+
+  // Kill every live session the moment the account is disabled (2026-09-15
+  // audit, item 3b) -- otherwise a disabled (or compromised-then-disabled)
+  // admin keeps working until their Redis token's 7/30-day TTL expires.
+  if (updated.status === "DISABLED") {
+    await revokeAllAdminSessions(id);
+  }
 
   return NextResponse.json({ id: updated.id, status: updated.status });
 }

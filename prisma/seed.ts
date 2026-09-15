@@ -1,8 +1,18 @@
 import { PrismaClient } from "@prisma/client";
 import bcrypt from "bcryptjs";
+import crypto from "node:crypto";
 import { assertNotProductionDatabase } from "../scripts/lib/assert-not-production.mjs";
 
 const prisma = new PrismaClient();
+
+// Local/demo seed only (assertNotProductionDatabase guards this against the
+// real DB): every seeded password is randomly generated per run and printed
+// once at the end -- never a constant checked into the repo (2026-09-15
+// super-admin audit, item 2; the old hardcoded "ChangeMe123!" was publicly
+// readable here and still worked on the seeded super-admin account).
+function randomPassword(): string {
+  return crypto.randomBytes(12).toString("base64url") + "aA1!";
+}
 
 // Not locked to a single "zzzqa"-style test broker -- this seed's actual
 // job is provisioning the fixed demo tenants (AcmeFX, Nova Markets)
@@ -13,7 +23,8 @@ const prisma = new PrismaClient();
 async function main() {
   await assertNotProductionDatabase(prisma);
 
-  const superAdminPassword = await bcrypt.hash("ChangeMe123!", 10);
+  const superAdminPlain = randomPassword();
+  const superAdminPassword = await bcrypt.hash(superAdminPlain, 10);
   await prisma.adminUser.upsert({
     where: { email: "super@vyxtrader.com" },
     update: {},
@@ -49,7 +60,8 @@ async function main() {
     },
   });
 
-  const brokerAdminPassword = await bcrypt.hash("ChangeMe123!", 10);
+  const brokerAdminPlain = randomPassword();
+  const brokerAdminPassword = await bcrypt.hash(brokerAdminPlain, 10);
   await prisma.adminUser.upsert({
     where: { email: "admin@acmefx.com" },
     update: {},
@@ -73,7 +85,8 @@ async function main() {
 
   // Manager (dealing desk) demo login -- app/manage/*, see
   // app/manage/symbols/page.tsx.
-  const managerPassword = await bcrypt.hash("ChangeMe123!", 10);
+  const managerPlain = randomPassword();
+  const managerPassword = await bcrypt.hash(managerPlain, 10);
   await prisma.adminUser.upsert({
     where: { email: "manager@acmefx.com" },
     update: {},
@@ -161,9 +174,11 @@ async function main() {
   });
 
   console.log("Seeded:", { acmeFx: acmeFx.subdomain, novaMarkets: novaMarkets.subdomain });
-  console.log("Super admin login: super@vyxtrader.com / ChangeMe123!");
+  console.log("One-time seeded passwords (this run only; not stored in the repo):");
+  console.log(`Super admin login: super@vyxtrader.com / ${superAdminPlain}`);
+  console.log(`Broker admin logins: admin@acmefx.com, admin@novamarkets.com / ${brokerAdminPlain}`);
+  console.log(`Manager login (acmefx.<domain>/manage/login): manager@acmefx.com / ${managerPlain}`);
   console.log("Demo trading logins: 50001234 / Demo1234! (AcmeFX), 50005678 / Demo1234! (Nova Markets)");
-  console.log("Manager login (acmefx.<domain>/manage/login): manager@acmefx.com / ChangeMe123!");
 }
 
 main()

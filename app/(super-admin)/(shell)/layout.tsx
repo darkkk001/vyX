@@ -1,4 +1,5 @@
 import { redirect } from "next/navigation";
+import { headers } from "next/headers";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { NextAdminShell } from "@/components/admin/NextAdminShell";
@@ -18,9 +19,18 @@ export default async function SuperAdminShellLayout({ children }: { children: Re
   }
 
   const [admin, unreadNotifications] = await Promise.all([
-    prisma.adminUser.findUnique({ where: { id: session!.adminId }, select: { email: true } }),
+    prisma.adminUser.findUnique({ where: { id: session!.adminId }, select: { email: true, twoFactorEnabled: true } }),
     prisma.notification.count({ where: { type: "ADMIN_PASSWORD_RESET_REQUESTED", readAt: null } }),
   ]);
+
+  // The platform-owner login is the highest-value credential on the whole
+  // system (2026-09-15 audit, item 3a): 2FA is mandatory, not optional. Until
+  // it's enrolled, every page bounces to /security; /security itself is exempt
+  // or this would loop. (middleware.ts sets x-pathname on the super-admin host.)
+  const pathname = (await headers()).get("x-pathname") ?? "";
+  if (!admin?.twoFactorEnabled && pathname !== "/security") {
+    redirect("/security?setupRequired=1");
+  }
 
   const navGroups: AdminNavGroup[] = [
     {

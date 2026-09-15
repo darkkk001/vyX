@@ -4,11 +4,28 @@ import crypto from "node:crypto";
 import { cookies, headers } from "next/headers";
 import type { AdminRole } from "@prisma/client";
 import { getRedis } from "@/lib/redis";
+import { prisma } from "@/lib/prisma";
 import { cookieScopeDomain } from "@/lib/cookie-domain";
 
 export const SESSION_COOKIE_NAME = "vyx_admin_session";
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 7; // 7 days -- Redis TTL backstop, same as lib/account-auth.ts's own
 const REMEMBER_TTL_SECONDS = 60 * 60 * 24 * 30; // 30 days -- manage/login's "remember" checkbox
+
+// A SUPER_ADMIN that hasn't enrolled 2FA yet (2026-09-15 audit, item 3a) is
+// confined to exactly the endpoints needed to enroll (and to log out) on the
+// API side; every other /api/admin/* call is treated as unauthenticated until
+// it enrols. Page navigation is steered to /security by the super-admin shell
+// layout instead, so this only needs the API surface.
+const SUPER_ADMIN_ENROLLMENT_API_ALLOWLIST = new Set([
+  "/api/admin/two-factor/setup",
+  "/api/admin/two-factor/confirm",
+  "/api/admin/two-factor/status",
+  "/api/admin/two-factor/disable",
+  "/api/admin/shell-info",
+  "/api/admin/sessions",
+  "/api/admin/theme",
+  "/api/admin/logout",
+]);
 
 export type AdminSessionPayload = {
   adminId: string;
@@ -173,6 +190,28 @@ export async function revokeSessionById(adminId: string, sessionId: string): Pro
   return true;
 }
 
+// Revokes EVERY session an admin has (2026-09-15 audit, item 3b): called when
+// an admin is disabled so their Redis tokens die at that moment instead of
+// staying valid for their 7/30-day TTL, and best-effort from getAdminSession
+// when it notices a now-disabled account. Walks the same index listAdminSessions
+// reads; sessions minted without metadata aren't indexed, same as that reader.
+export async function revokeAllAdminSessions(adminId: string): Promise<number> {
+  const redis = getRedis();
+  const sessionIds = await redis.smembers(sessionIndexKey(adminId));
+  let revoked = 0;
+  for (const sessionId of sessionIds) {
+    const token = await redis.get(sessionIdKey(sessionId));
+    await Promise.all([
+      token ? redis.del(sessionKey(token)) : Promise.resolve(0),
+      redis.del(sessionIdKey(sessionId)),
+      redis.del(sessionMetaKey(sessionId)),
+    ]);
+    if (token) revoked++;
+  }
+  await redis.del(sessionIndexKey(adminId));
+  return revoked;
+}
+
 // Server Components / route handlers: read the current admin session, if
 // any. For a broker-scoped admin (brokerId set — BROKER_ADMIN/SUPPORT/
 // MANAGER), cross-checks it against the broker middleware.ts resolved for
@@ -225,6 +264,34 @@ export async function getAdminSession(): Promise<AdminSessionPayload | null> {
         requestBrokerId: requestBrokerId ?? null,
         adminId: session.adminId,
       });
+      return null;
+    }
+  }
+
+  // Live account state, re-read every request (2026-09-15 audit, item 3b): a
+  // disabled admin -- or one whose role was changed underneath its session --
+  // is cut off on the very next request, instead of the Redis token staying
+  // usable for its 7/30-day TTL. One indexed primary-key read; admin/backoffice
+  // traffic is low enough for this to be cheap.
+  const liveAdmin = await prisma.adminUser.findUnique({
+    where: { id: session.adminId },
+    select: { status: true, role: true, twoFactorEnabled: true },
+  });
+  if (!liveAdmin || liveAdmin.status !== "ACTIVE" || liveAdmin.role !== session.role) {
+    if (liveAdmin && liveAdmin.status !== "ACTIVE") {
+      // best-effort: clear the now-dead sessions so they stop lingering
+      await revokeAllAdminSessions(session.adminId).catch(() => {});
+    }
+    return null;
+  }
+
+  // SUPER_ADMIN must have 2FA enrolled (item 3a). Until it does, a password-only
+  // session may hit only the enrollment endpoints (and its own logout) on the
+  // API side -- everything else reads as unauthenticated; the shell layout steers
+  // page navigation to /security.
+  if (liveAdmin.role === "SUPER_ADMIN" && !liveAdmin.twoFactorEnabled) {
+    const path = (await headers()).get("x-pathname") ?? "";
+    if (path.startsWith("/api/") && !SUPER_ADMIN_ENROLLMENT_API_ALLOWLIST.has(path)) {
       return null;
     }
   }
