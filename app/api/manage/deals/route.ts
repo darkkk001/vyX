@@ -34,6 +34,7 @@ export async function GET() {
   return NextResponse.json(
     positions.map((p) => ({
       id: p.id,
+      ticket: p.ticket,
       accountNumber: p.account.accountNumber,
       accountFullName: p.account.fullName,
       symbol: p.symbol.name,

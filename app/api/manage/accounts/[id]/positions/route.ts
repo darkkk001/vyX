@@ -50,6 +50,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     accountId: account.id,
     brokerId: account.brokerId,
     positions: positions.map((p) => ({
+      ticket: p.ticket,
       id: p.id,
       symbol: p.symbol.name,
       side: p.side,

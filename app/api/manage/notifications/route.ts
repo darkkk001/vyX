@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { resolveEntityLabels } from "@/lib/entity-labels";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 
 async function requireManager() {
@@ -22,6 +23,7 @@ export async function GET() {
     take: 100,
   });
 
+  const entityLabels = await resolveEntityLabels(session.brokerId!, notifications.map((n) => ({ entityType: n.entityType, entityId: n.entityId })));
   return NextResponse.json(
     notifications.map((n) => ({
       id: n.id,
@@ -30,6 +32,7 @@ export async function GET() {
       body: n.body,
       entityType: n.entityType,
       entityId: n.entityId,
+      entityLabel: entityLabels.get(n.entityId ?? "") ?? "",
       read: n.readAt != null,
       createdAt: n.createdAt.toISOString(),
     }))

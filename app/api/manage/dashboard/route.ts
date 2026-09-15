@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { resolveEntityLabels } from "@/lib/entity-labels";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { humanizeAction, excludeSuperAdminActor } from "@/lib/audit-labels";
 
@@ -105,6 +106,7 @@ export async function GET() {
     }
   }
 
+  const entityLabels = await resolveEntityLabels(brokerId, activity.map((a) => ({ entityType: a.entityType, entityId: a.entityId })));
   return NextResponse.json({
     totalClients,
     newClients7d,
@@ -123,6 +125,8 @@ export async function GET() {
       actorEmail: a.actorAdmin?.email ?? "system",
       entityId: a.entityId,
       entityType: a.entityType,
+      // readable identity (ticket / account number / name) -- never a cuid on a screen
+      entityLabel: entityLabels.get(a.entityId ?? "") ?? "",
       createdAtLabel: a.createdAt.toISOString().replace("T", " ").slice(0, 19),
     })),
   });

@@ -111,6 +111,7 @@ export async function GET() {
       : null;
     return {
       id: p.id,
+      ticket: p.ticket,
       accountId: p.accountId,
       accountNumber: p.account.accountNumber,
       accountFullName: p.account.fullName,

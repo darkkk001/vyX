@@ -14,12 +14,15 @@ function asPlainObject(v: Prisma.JsonValue | null): Record<string, unknown> {
 // choice. Spread into every order/position AuditLog's oldValue/newValue
 // alongside whatever fields are specific to that event.
 export function orderAuditFields(
-  order: { id: string; side: string; type: string; volume: Prisma.Decimal | string },
+  order: { id: string; ticket?: number | null; side: string; type: string; volume: Prisma.Decimal | string },
   symbol: string,
   accountNumber: string
 ) {
   return {
     orderNumber: order.id,
+    // the MT-style numeric ticket (2026-09-11 sequence) -- what a broker actually reads; the id above
+    // stays for the audit search
+    ...(order.ticket != null ? { ticket: order.ticket } : {}),
     accountNumber,
     symbol,
     side: order.side,

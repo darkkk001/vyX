@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { resolveEntityLabels } from "@/lib/entity-labels";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { humanizeAction, auditEntityHref, excludeSuperAdminActor, summarizeAuditDiff, extractOrderIdentity } from "@/lib/audit-labels";
 
@@ -44,6 +45,7 @@ export async function GET(request: NextRequest) {
     include: { actorAdmin: { select: { email: true } } },
   });
 
+  const entityLabels = await resolveEntityLabels(session!.brokerId!, logs.map((l) => ({ entityType: l.entityType, entityId: l.entityId })));
   return NextResponse.json(
     logs.map((log) => ({
       id: log.id,
@@ -51,6 +53,7 @@ export async function GET(request: NextRequest) {
       actionLabel: humanizeAction(log.action),
       entityType: log.entityType,
       entityId: log.entityId,
+      entityLabel: entityLabels.get(log.entityId ?? "") ?? "",
       href: auditEntityHref(log.entityType, log.entityId),
       order: extractOrderIdentity(log.oldValue, log.newValue),
       diffLines: summarizeAuditDiff(log.oldValue, log.newValue),

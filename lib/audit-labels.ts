@@ -182,6 +182,7 @@ const ORDER_IDENTITY_FIELDS = new Set(["orderNumber", "accountNumber", "symbol",
 
 export type OrderAuditIdentity = {
   orderNumber: string;
+  ticket: number | null;
   accountNumber: string | null;
   symbol: string | null;
   side: string | null;
@@ -204,8 +205,10 @@ export function extractOrderIdentity(oldValue: Prisma.JsonValue | null, newValue
     const v = after[key] ?? before[key];
     return typeof v === "string" ? v : null;
   };
+  const ticketRaw = after.ticket ?? before.ticket;
   return {
     orderNumber,
+    ticket: typeof ticketRaw === "number" ? ticketRaw : null,
     accountNumber: pick("accountNumber"),
     symbol: pick("symbol"),
     side: pick("side"),
