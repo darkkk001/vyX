@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { timingSafeEqual } from "crypto";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession } from "@/lib/auth";
 import { getClientBuild, listClientBuilds, registerClientBuild, setClientBuildStatus } from "@/lib/client-builds";
@@ -9,9 +10,9 @@ import { getClientBuild, listClientBuilds, registerClientBuild, setClientBuildSt
 //   POST {buildId, slug, app, version, note?}   -> register (ACTIVE)
 //   PATCH {buildId, status: ACTIVE|REVOKED, note?} -> the kill switch / reinstatement
 async function authorized(request: NextRequest): Promise<boolean> {
-  const secret = process.env.CLIENT_BUILD_REGISTRY_SECRET ?? "";
-  const provided = request.headers.get("x-registry-secret") ?? "";
-  if (secret && provided && provided === secret) return true;
+  const secret = (process.env.CLIENT_BUILD_REGISTRY_SECRET ?? "").trim();   // trimmed: a value pasted with a trailing newline must still match
+  const provided = (request.headers.get("x-registry-secret") ?? "").trim();
+  if (secret && provided && provided.length === secret.length && timingSafeEqual(Buffer.from(provided), Buffer.from(secret))) return true;
   const session = await getAdminSession();
   return !!session && session.role === "SUPER_ADMIN";
 }
