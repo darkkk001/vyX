@@ -60,7 +60,8 @@ export async function POST(request: NextRequest) {
 
   await deletePending2faChallenge(pendingToken);
 
-  const userAgent = request.headers.get("user-agent");
+  const clientBuild = (request.headers.get("x-client-build") ?? "").trim();   // build watermark, see /api/trade/login
+  const userAgent = [request.headers.get("user-agent"), clientBuild ? `VyxBuild/${clientBuild}` : ""].filter(Boolean).join(" ") || null;
   const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? null;
   const token = await completeAccountLogin(account, previousSession, { userAgent, ip }, remember);
 

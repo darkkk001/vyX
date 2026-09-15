@@ -90,7 +90,10 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ requiresTwoFactor: true, pendingToken });
   }
 
-  const userAgent = request.headers.get("user-agent");
+  // the per-broker build watermark (X-Client-Build, native apps only) rides along in the recorded user agent:
+  // every session / login event names the exact installer it came from, so a leaked build is traceable
+  const clientBuild = (request.headers.get("x-client-build") ?? "").trim();
+  const userAgent = [request.headers.get("user-agent"), clientBuild ? `VyxBuild/${clientBuild}` : ""].filter(Boolean).join(" ") || null;
   const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? null;
   const token = await completeAccountLogin(account, previousSession, { userAgent, ip }, remember);
 
