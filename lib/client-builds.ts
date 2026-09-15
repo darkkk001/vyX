@@ -79,7 +79,13 @@ export async function checkClientBuild(brokerId: string | null, brokerSubdomain:
   const platform = h.get("x-client-platform");
   const buildId = (h.get("x-client-build") ?? "").trim();
   if (platform !== "DESKTOP_NATIVE") return { ok: true, buildId: null };
-  if (!buildId) return { ok: false, reason: "missing", buildId };
+  // CLIENT_BUILD_ENFORCE=1 makes an identity mandatory; until then (the roll-out window while the
+  // installed 1.0.31 terminal / 1.0.0 backoffice carry none) a header-less native client is allowed and logged
+  if (!buildId) {
+    if (process.env.CLIENT_BUILD_ENFORCE === "1") return { ok: false, reason: "missing", buildId };
+    console.warn("[client-builds] native client without X-Client-Build (grace mode)", { brokerSubdomain });
+    return { ok: true, buildId: null };
+  }
   if (buildId === "dev" || buildId.startsWith("dev-")) {
     const allowed = (process.env.CLIENT_BUILD_DEV_TENANTS ?? "zzzqa").split(",").map((s) => s.trim()).filter(Boolean);
     return brokerSubdomain && allowed.includes(brokerSubdomain) ? { ok: true, buildId } : { ok: false, reason: "wrong-tenant", buildId };
