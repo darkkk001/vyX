@@ -1,1 +1,31 @@
-{"Assets":[{"PackageId":"FuturixBackofficeNative","Version":"1.0.3","Type":"Full","FileName":"FuturixBackofficeNative-1.0.3-full.nupkg","SHA1":"663750B0B40B5F33F7FEF47EFC20F9FC03CC71C9","SHA256":"75B03AF5C9585D3A02922F043630ACD025C136F44F992A6E2EC5C5E5675064D1","Size":24773023},{"PackageId":"FuturixBackofficeNative","Version":"1.0.3","Type":"Delta","FileName":"FuturixBackofficeNative-1.0.3-delta.nupkg","SHA1":"46AC61C5A5E6465F969EAF5BDBA27A1D36302CA9","SHA256":"7EBF821FDC80E9FB8F26A83044D87693CFA2755A89BC057A212C3D9D46FCC187","Size":10881440},{"PackageId":"FuturixBackofficeNative","Version":"1.0.2","Type":"Full","FileName":"FuturixBackofficeNative-1.0.2-full.nupkg","SHA1":"8E4F8F46233FDCFBF933FA109B2204F2199DD9A8","SHA256":"46E8D5946676BBC2F72B7D20FE724B852A11E5075AC0DCFE6637A048B204294B","Size":24222012},{"PackageId":"FuturixBackofficeNative","Version":"1.0.2","Type":"Delta","FileName":"FuturixBackofficeNative-1.0.2-delta.nupkg","SHA1":"44400F392D96063557F40027D7EEC7F05F0D0DAF","SHA256":"67A15C438788E36351CD2D80321C87FE590F8E3D6F9D148D98752A8266D7C377","Size":4028473},{"PackageId":"FuturixBackofficeNative","Version":"1.0.1","Type":"Full","FileName":"FuturixBackofficeNative-1.0.1-full.nupkg","SHA1":"C382392ABD989FAA60B540E2A91B7BFF1ED66F0D","SHA256":"7C809B2C1C8EF843D6A5BED639A8BA90705E0164F6CDCCAF0A2DFBFCA47CC046","Size":24221959},{"PackageId":"FuturixBackofficeNative","Version":"1.0.1","Type":"Delta","FileName":"FuturixBackofficeNative-1.0.1-delta.nupkg","SHA1":"3D6000869D7FC35499D43BE95296BF18F335C714","SHA256":"F3C6AC118074049513F4157ED96D809E2AA047C822A4D6C6FD9DC4CFE82893DC","Size":14860230},{"PackageId":"FuturixBackofficeNative","Version":"1.0.0","Type":"Full","FileName":"FuturixBackofficeNative-1.0.0-full.nupkg","SHA1":"067FFF379BE40124DF56EA816FB0D2FFD21B3278","SHA256":"A43A6374663C7232F4A1E7DBCC83AB15288C4E3AACE7367511D2E3C70AE3AEA3","Size":46129749}]}
+{
+  "Assets": [
+    {
+      "PackageId": "FuturixBackofficeNative",
+      "Version": "1.0.4",
+      "Type": "Full",
+      "FileName": "FuturixBackofficeNative-1.0.4-full.nupkg",
+      "SHA1": "A188E828C2D50D90A91477DF0C762E7BC40662DE",
+      "SHA256": "97A249C0F99E9DA736BCEFD167E435CC6183B47E5BC37C05260CF21CD7161779",
+      "Size": 24773273
+    },
+    {
+      "PackageId": "FuturixBackofficeNative",
+      "Version": "1.0.4",
+      "Type": "Delta",
+      "FileName": "FuturixBackofficeNative-1.0.4-delta.nupkg",
+      "SHA1": "6969D542FBCBBDE192FC861100B5E76F7F0D03B2",
+      "SHA256": "F4A5466123E391FB1A48F5B1BBDEE778ADA2E43F5E6F58A9ED6A3DEFED43F8A3",
+      "Size": 8882148
+    },
+    {
+      "PackageId": "FuturixBackofficeNative",
+      "Version": "1.0.0",
+      "Type": "Full",
+      "FileName": "FuturixBackofficeNative-1.0.0-full.nupkg",
+      "SHA1": "067FFF379BE40124DF56EA816FB0D2FFD21B3278",
+      "SHA256": "A43A6374663C7232F4A1E7DBCC83AB15288C4E3AACE7367511D2E3C70AE3AEA3",
+      "Size": 46129749
+    }
+  ]
+}
