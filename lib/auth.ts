@@ -1,4 +1,5 @@
 import "server-only";
+import { checkClientBuild } from "@/lib/client-builds";
 import crypto from "node:crypto";
 import { cookies, headers } from "next/headers";
 import type { AdminRole } from "@prisma/client";
@@ -200,6 +201,12 @@ export async function getAdminSession(): Promise<AdminSessionPayload | null> {
     return null;
   }
 
+  // native-client build binding (lib/client-builds.ts): a revoked / foreign / unregistered build gets no session
+  {
+    const h = await headers();
+    const verdict = await checkClientBuild(session.brokerId, h.get("x-broker-slug"));
+    if (!verdict.ok) { console.error("[auth] getAdminSession: client build rejected", verdict); return null; }
+  }
   if (session.brokerId !== null) {
     const headerList = await headers();
     const requestBrokerId = headerList.get("x-broker-id");

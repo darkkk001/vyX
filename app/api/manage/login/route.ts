@@ -3,6 +3,7 @@ import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
 import { createSessionToken, SESSION_COOKIE_NAME, sessionCookieOptions } from "@/lib/auth";
 import { checkRateLimit } from "@/lib/rate-limit";
+import { checkClientBuild, clientBuildErrorMessage } from "@/lib/client-builds";
 import { issuePendingAdmin2faChallenge } from "@/lib/totp";
 
 // Manager's own login route, not app/api/admin/login/route.ts — that one
@@ -25,6 +26,9 @@ export async function POST(request: NextRequest) {
   }
 
   const requestBrokerId = request.headers.get("x-broker-id");
+  // native-client build binding: refused before any credential is looked at
+  const buildVerdict = await checkClientBuild(requestBrokerId, request.headers.get("x-broker-slug"));
+  if (!buildVerdict.ok) return NextResponse.json({ error: clientBuildErrorMessage(buildVerdict) }, { status: 426 });
 
   // Same throttle as the trade-login route (5/min per broker+identifier) --
   // the people who can adjust balances and approve withdrawals had a

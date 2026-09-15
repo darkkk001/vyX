@@ -8,6 +8,7 @@ import {
   accountSessionCookieOptions,
 } from "@/lib/account-auth";
 import { checkRateLimit } from "@/lib/rate-limit";
+import { checkClientBuild, clientBuildErrorMessage } from "@/lib/client-builds";
 import { issuePending2faChallenge } from "@/lib/totp";
 
 // Login is by accountNumber (MT-style numeric login), not email, since one
@@ -37,6 +38,9 @@ export async function POST(request: NextRequest) {
   // stuffing against one account without needing to trust a client IP
   // header. Checked before the DB lookup so a locked-out account doesn't
   // even cost a bcrypt compare.
+  // native-client build binding: refused before any credential is looked at
+  const buildVerdict = await checkClientBuild(brokerId, request.headers.get("x-broker-slug"));
+  if (!buildVerdict.ok) return NextResponse.json({ error: clientBuildErrorMessage(buildVerdict) }, { status: 426 });
   const { allowed } = await checkRateLimit(`login:${brokerId}:${accountNumber}`, 5, 60);
   if (!allowed) {
     return NextResponse.json({ error: "too many attempts, try again shortly" }, { status: 429 });

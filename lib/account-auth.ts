@@ -2,6 +2,7 @@ import "server-only";
 import bcrypt from "bcryptjs";
 import crypto from "node:crypto";
 import { cookies, headers } from "next/headers";
+import { checkClientBuild } from "@/lib/client-builds";
 import { prisma } from "@/lib/prisma";
 import { getRedis } from "@/lib/redis";
 import { cookieScopeDomain } from "@/lib/cookie-domain";
@@ -238,6 +239,10 @@ export async function getAccountSession(): Promise<AccountSessionPayload | null>
   const headerList = await headers();
   const requestBrokerId = headerList.get("x-broker-id");
   if (!requestBrokerId || requestBrokerId !== session.brokerId) return null;
+
+  // native-client build binding (lib/client-builds.ts): a revoked / foreign / unregistered build gets no session
+  const verdict = await checkClientBuild(session.brokerId, headerList.get("x-broker-slug"));
+  if (!verdict.ok) return null;
 
   return session;
 }
