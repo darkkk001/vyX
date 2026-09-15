@@ -1,0 +1,31 @@
+{
+  "Assets": [
+    {
+      "PackageId": "FuturixTraderNative",
+      "Version": "1.0.31",
+      "Type": "Full",
+      "FileName": "FuturixTraderNative-1.0.31-full.nupkg",
+      "SHA1": "82FA5BA6F87B74BCAC715DCB3D426452D38C2A88",
+      "SHA256": "A5AD10D8B1D3A2FD8075AED09512BC2E2B65B31743D3263D11C5F89C7FC36C45",
+      "Size": 46269637
+    },
+    {
+      "PackageId": "FuturixTraderNative",
+      "Version": "1.0.31",
+      "Type": "Delta",
+      "FileName": "FuturixTraderNative-1.0.31-delta.nupkg",
+      "SHA1": "1C01D9F6E15C075BA17D19139448F516C03285DF",
+      "SHA256": "99EE78BA4CB141B3D6163404A543961779E1E23C0AB2C3C5659881B00DD878CD",
+      "Size": 202859
+    },
+    {
+      "PackageId": "FuturixTraderNative",
+      "Version": "1.0.30",
+      "Type": "Full",
+      "FileName": "FuturixTraderNative-1.0.30-full.nupkg",
+      "SHA1": "E013653124433D68D250932E74DA0B04779C7D86",
+      "SHA256": "19B25C49841F41FBAD1E71BB615C7C91A837F4DF2E24BB52354CB5803B4BAD55",
+      "Size": 46266169
+    }
+  ]
+}
