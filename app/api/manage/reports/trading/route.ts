@@ -14,7 +14,8 @@ export async function GET() {
   const thirtyDaysAgo = new Date(Date.now() - 30 * DAY_MS);
 
   const positions = await prisma.position.findMany({
-    where: { brokerId, status: "CLOSED", closedAt: { gte: thirtyDaysAgo } },
+    // LIVE accounts only, to reconcile with the summary tiles (which are LIVE-only); demo trades were inflating the table
+    where: { brokerId, status: "CLOSED", closedAt: { gte: thirtyDaysAgo }, account: { accountMode: "LIVE" } },
     include: { account: { select: { accountNumber: true } }, symbol: { select: { name: true } } },
     orderBy: { closedAt: "desc" },
   });

@@ -14,7 +14,8 @@ export async function GET() {
   const thirtyDaysAgo = new Date(Date.now() - 30 * DAY_MS);
 
   const transactions = await prisma.transaction.findMany({
-    where: { brokerId, createdAt: { gte: thirtyDaysAgo } },
+    // LIVE accounts only, to reconcile with the summary tiles (which are LIVE-only); demo movements were inflating the table
+    where: { brokerId, createdAt: { gte: thirtyDaysAgo }, account: { accountMode: "LIVE" } },
     include: { account: { select: { accountNumber: true } } },
     orderBy: { createdAt: "desc" },
   });
