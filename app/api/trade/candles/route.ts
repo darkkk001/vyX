@@ -1,27 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
-import { fetchVpsCandles, isVpsSymbol } from "@/lib/market-data-client";
-
-const TIMEFRAMES = new Set(["M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1", "MN1", "Y1"]);
-type Timeframe = "M1" | "M5" | "M15" | "M30" | "H1" | "H4" | "D1" | "W1" | "MN1" | "Y1";
+import { CANDLE_TIMEFRAMES, fetchCandleHistory, type CandleTimeframe } from "@/lib/candles";
 
 // Real OHLC history for the WebTrader chart, built from the same MT5 EA
 // ticks that feed LivePrice (see lib/price-feed.ts). Returned oldest-first
 // so the client can push straight into its candle array. A symbol with no
-// feed history yet just returns an empty array — the client falls back to
+// feed history yet just returns an empty array -- the client falls back to
 // its synthetic seed in that case.
 //
-// 2026-09-08 -- W1/MN1/Y1 used to be sparse to near-empty for a long time
-// after a feed first went live (a weekly/monthly/yearly candle needs that
-// much real elapsed time to exist at all via the live tick path alone).
-// Two fixes, together: the EA's own history backfill now covers W1/MN1
-// too (mt5-ea/VyXTraderPriceFeed.mq5's HistoryBackfillPeriods -- Y1 has
-// no native MT5 period, CopyRates can't fetch one, ever), and
-// scripts/backfill-higher-timeframe-candles.ts rolls up existing D1
-// history into real W1/MN1/Y1 bars retroactively, immediately, for
-// history that already exists server-side regardless of any given
-// broker's EA version.
+// The VPS/Neon read itself lives in lib/candles.ts (fetchCandleHistory),
+// shared with the admin-authed backoffice route (app/api/manage/candles)
+// so the two can never drift; this route only adds the account session.
 export async function GET(request: NextRequest) {
   const session = await getAccountSession();
   if (!session) {
@@ -31,30 +20,10 @@ export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const symbol = searchParams.get("symbol");
   const timeframe = searchParams.get("tf");
-  if (!symbol || !timeframe || !TIMEFRAMES.has(timeframe)) {
+  if (!symbol || !timeframe || !CANDLE_TIMEFRAMES.has(timeframe)) {
     return NextResponse.json({ error: "symbol and a valid tf are required" }, { status: 400 });
   }
 
-  // Neon -> VPS market-data migration (docs/market-data.md §8): symbols
-  // listed in MARKET_DATA_VPS_SYMBOLS read the engine's own store through
-  // lib/market-data-client; everything else, and any VPS miss (timeout,
-  // error, empty), keeps reading Neon exactly as before. The response
-  // header says which store answered so the switch can be verified per
-  // symbol with one curl.
-  const vpsSymbol = isVpsSymbol(symbol);
-  if (vpsSymbol) {
-    const vps = await fetchVpsCandles(symbol, timeframe, 300);
-    if (vps) {
-      return NextResponse.json(vps, { headers: { "x-market-data-source": "vps" } });
-    }
-  }
-
-  const candles = await prisma.candle.findMany({
-    where: { symbol, timeframe: timeframe as Timeframe },
-    orderBy: { bucketStart: "desc" },
-    take: 300,
-  });
-  candles.reverse();
-
-  return NextResponse.json(candles, { headers: { "x-market-data-source": vpsSymbol ? "neon-fallback" : "neon" } });
+  const { candles, source } = await fetchCandleHistory(symbol, timeframe as CandleTimeframe, 300);
+  return NextResponse.json(candles, { headers: { "x-market-data-source": source } });
 }
