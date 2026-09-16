@@ -74,7 +74,7 @@ input int    ClockSyncIntervalSec = 60;
 // HISTORY_BACKFILL_SHALLOW_BAR_COUNT-bar steady-state cycles every
 // HistoryBackfillIntervalSec after that -- outage repair only, since the
 // live tick feed already keeps recent history current on its own.
-input int    HistoryBackfillIntervalSec = 900;
+input int    HistoryBackfillIntervalSec = 300;
 // Manual escape hatch: forces the full staged deep pass to run again on
 // the next reinit (any Properties change reinitializes a running EA in
 // MT5, not just a literal remove-and-reattach) even though it already
@@ -190,6 +190,16 @@ void RefreshBrokerOffset()
 // backfill (deep or shallow) most recently finished.
 uint lastHistoryBackfillMs = 0;
 
+// fix/candle-gaps -- engine-restart recovery. An engine-only restart (MT5
+// stays up) drops direct pushes while it's down; the engine's own flat-fill
+// (d9b02ca) keeps the series contiguous, but those FLAT bars would then wait
+// up to HistoryBackfillIntervalSec for the next shallow pass to become real
+// OHLC. This detects the recover edge -- a run of failed direct pushes then
+// a success -- and asks OnTimer to run a shallow backfill at once instead.
+int  gSendFailStreak          = 0;
+bool gRecoveryBackfillPending = false;
+const int RECOVERY_BACKFILL_FAIL_THRESHOLD = 2; // 2 consecutive failed direct pushes = a real outage, not a one-off blip
+
 // Every engine-configured timeframe (engine/market-data/src/lib.rs's
 // TIMEFRAMES) that MT5's own CopyRates can actually serve. That's
 // everything except Y1 -- MT5 has no native PERIOD_Y1 at all, so a
@@ -252,7 +262,14 @@ int HistoryBackfillBarCounts[]          = { 1500,      1500,      1500,      150
 // Steady-state-only (see above) -- outage repair, not a full refill: the
 // live tick feed already keeps recent history current, this just catches
 // whatever gap happened while this EA/terminal wasn't running.
-const int HISTORY_BACKFILL_SHALLOW_BAR_COUNT = 200;
+//
+// fix/candle-gaps: per-timeframe now (was a flat 200), so the SHORT-window
+// timeframes get deep enough coverage to self-heal a long outage without
+// bloating the (blocking) shallow pass on the higher ones. 600 M1 bars =
+// a 10-hour outage self-heals with real OHLC; M5 400 (~33h), M15 300
+// (~75h); M30..MN1 already span days-to-years at 200. Index-aligned with
+// HistoryBackfillPeriods / HistoryBackfillPeriodNames -- keep in order.
+int HistoryBackfillShallowCounts[] = { 600, 400, 300, 200, 200, 200, 200, 200, 200 };
 // Split from the tick-push timeout below on purpose -- a history backfill
 // runs on the same OnTimer callback as tick pushes (MQL5 has one thread
 // per EA, no async WebRequest), so whatever this is set to is how long a
@@ -583,7 +600,7 @@ void SendViaProxy(string ticksJson)
 // this transport is untested against the same network path and should
 // be watched (via the Print() below) after first enabling it, same as
 // any new production transport would be.
-void SendDirect(string ticksJson)
+bool SendDirect(string ticksJson)
 {
    string url = DirectServerUrl + "/internal/price-feed";
    string headers = "Content-Type: application/json\r\nx-price-feed-secret: " + ApiSecret + "\r\n";
@@ -607,11 +624,14 @@ void SendDirect(string ticksJson)
          Print("VyXTraderPriceFeed (direct): add ", DirectServerUrl, " under Tools > Options > Expert Advisors > Allow WebRequest for listed URL, then re-attach this EA");
       else
          Print("VyXTraderPriceFeed (direct): WebRequest failed, error ", err);
+      return false;
    }
    else if (res != 200)
    {
       Print("VyXTraderPriceFeed (direct): server responded ", res, " — ", CharArrayToString(result));
+      return false;
    }
+   return true;
 }
 
 // POST one symbol+timeframe's last barCount bars to engine/server's
@@ -791,7 +811,7 @@ void RunShallowHistoryBackfill()
       if (StringLen(brokerSymbol) == 0) continue;
       string canonicalSymbol = CanonicalFor(brokerSymbol);
       for (int p = 0; p < ArraySize(HistoryBackfillPeriods); p++)
-         SendHistoryBars(canonicalSymbol, brokerSymbol, HistoryBackfillPeriods[p], HistoryBackfillPeriodNames[p], HISTORY_BACKFILL_SHALLOW_BAR_COUNT);
+         SendHistoryBars(canonicalSymbol, brokerSymbol, HistoryBackfillPeriods[p], HistoryBackfillPeriodNames[p], HistoryBackfillShallowCounts[p]);
    }
 
    lastHistoryBackfillMs = GetTickCount();
@@ -909,7 +929,21 @@ void BuildAndSend()
          Print("VyXTraderPriceFeed: UseDirectMode is on but DirectServerUrl is empty, skipping push");
          return;
       }
-      SendDirect(json);
+      // fix/candle-gaps -- watch for the engine-restart recover edge (see
+      // gRecoveryBackfillPending's own comment): a run of failed direct
+      // pushes then a success means the engine was down and is back, so ask
+      // OnTimer to repair the outage gap with a prompt shallow backfill.
+      bool sendOk = SendDirect(json);
+      if (sendOk)
+      {
+         if (gSendFailStreak >= RECOVERY_BACKFILL_FAIL_THRESHOLD)
+            gRecoveryBackfillPending = true;
+         gSendFailStreak = 0;
+      }
+      else
+      {
+         gSendFailStreak++;
+      }
    }
    else
    {
@@ -931,6 +965,18 @@ void OnTimer()
       if (GetTickCount() - lastDeepBackfillStepMs >= (uint)DEEP_BACKFILL_STAGE_SPACING_MS)
          StepDeepBackfill();
       return;
+   }
+
+   // fix/candle-gaps -- the engine just recovered from an outage (see
+   // BuildAndSend): repair its gap NOW rather than waiting for the interval
+   // below. Runs here on OnTimer, not OnTick, because the backfill
+   // WebRequests block the EA thread.
+   if (gRecoveryBackfillPending)
+   {
+      gRecoveryBackfillPending = false;
+      Print("VyXTraderPriceFeed: direct feed recovered after an outage -- running a shallow backfill to fill the gap with real OHLC");
+      RunShallowHistoryBackfill();
+      return; // RunShallowHistoryBackfill reset lastHistoryBackfillMs; skip the interval check this cycle
    }
 
    // fix/realtime-sync §4 -- "every 15 min" half of the backfill schedule.
