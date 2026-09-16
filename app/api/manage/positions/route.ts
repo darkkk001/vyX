@@ -136,6 +136,10 @@ export async function GET() {
       swap: p.swap.toFixed(2),
       commission: p.commission.toFixed(2),
       bookType: p.bookType,
+      // Dealer coverage -- true once BOOK NOW has hedged this B-book
+      // position (app/api/manage/positions/[id]/book). The Smart Dealer
+      // Manager excludes covered positions from its unbooked list.
+      covered: p.covered,
       side: p.side,
       volume: p.volume.toString(),
       openPrice: p.openPrice.toFixed(p.symbol.digits),

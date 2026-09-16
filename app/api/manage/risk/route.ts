@@ -28,6 +28,7 @@ export async function GET() {
     maxOpenPositionsPerAccount: broker.maxOpenPositionsPerAccount,
     smartDealerAcceptPct: broker.smartDealerAcceptPct ? broker.smartDealerAcceptPct.toString() : null,
     smartDealerRejectPct: broker.smartDealerRejectPct ? broker.smartDealerRejectPct.toString() : null,
+    defaultMaxSlippagePips: broker.defaultMaxSlippagePips ? broker.defaultMaxSlippagePips.toString() : null,
   });
 }
 
@@ -59,7 +60,8 @@ export async function PATCH(request: NextRequest) {
     "totalExposureLimit" in body ||
     "maxOpenPositionsPerAccount" in body ||
     "smartDealerAcceptPct" in body ||
-    "smartDealerRejectPct" in body;
+    "smartDealerRejectPct" in body ||
+    "defaultMaxSlippagePips" in body;
   if (touchesRiskFields && permissions.forbidUnless("RISK_SETTINGS")) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
@@ -152,6 +154,18 @@ export async function PATCH(request: NextRequest) {
     auditNewValue.smartDealerRejectPct = pct ? pct.toString() : null;
   }
 
+  if ("defaultMaxSlippagePips" in body) {
+    // Same positive-Decimal-or-blank shape as the pct fields (parsePct
+    // returns null for blank, undefined for invalid, a positive Decimal
+    // otherwise). Read back at app/api/trade/orders/route.ts's checkSlippage.
+    const pips = parsePct(body.defaultMaxSlippagePips);
+    if (pips === undefined) {
+      return NextResponse.json({ error: "defaultMaxSlippagePips must be a positive number or blank" }, { status: 400 });
+    }
+    data.defaultMaxSlippagePips = pips;
+    auditNewValue.defaultMaxSlippagePips = pips ? pips.toString() : null;
+  }
+
   {
     // Whichever of the pair isn't in this request keeps its current
     // (already-saved) value -- fetch it so accept-vs-reject ordering is
@@ -208,5 +222,6 @@ export async function PATCH(request: NextRequest) {
     maxOpenPositionsPerAccount: updated.maxOpenPositionsPerAccount,
     smartDealerAcceptPct: updated.smartDealerAcceptPct ? updated.smartDealerAcceptPct.toString() : null,
     smartDealerRejectPct: updated.smartDealerRejectPct ? updated.smartDealerRejectPct.toString() : null,
+    defaultMaxSlippagePips: updated.defaultMaxSlippagePips ? updated.defaultMaxSlippagePips.toString() : null,
   });
 }

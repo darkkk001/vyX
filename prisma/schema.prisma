@@ -222,6 +222,13 @@ enum GroupType {
   LP
   DEALING
   DEMO
+  // System group for a broker's dealer coverage (B-book hedge) account --
+  // see Broker.coverageAccount. Books A_BOOK (resolveBookType) because a
+  // coverage position IS the broker's real market-facing exposure, the
+  // offsetting leg of a booked client position. Raw pricing (zero spread
+  // markup, zero commission) is enforced when the coverage group is
+  // provisioned, not by this enum -- see lib/coverage.ts.
+  COVERAGE
 }
 
 // Forward-compatible subset of the Auto Dealing design in
@@ -326,6 +333,12 @@ model Broker {
   // smartDealerAcceptPct -- if the requested price is this far (or
   // further) from live, the order is auto-REJECTED instead of queued.
   smartDealerRejectPct       Decimal?        @db.Decimal(6, 3)
+  // Broker-wide default slippage tolerance (pips) used to auto-fill the
+  // maxSlippagePips guard when a trade request omits its own value. Null =
+  // fall back to the hardcoded DEFAULT_MAX_SLIPPAGE_PIPS in lib/risk.ts.
+  // Read at app/api/trade/orders/route.ts's checkSlippage call; edited via
+  // app/api/manage/risk (the dealer settings gear).
+  defaultMaxSlippagePips     Decimal?        @db.Decimal(8, 2)
   // Sum of open volume (lots) across every symbol for this broker. Null
   // = no limit -- see lib/risk.ts's checkBrokerExposure.
   totalExposureLimit         Decimal?        @db.Decimal(18, 2)
@@ -428,6 +441,17 @@ model Broker {
   paymentMethods            PaymentMethod[]
   clients                   Client[]
   liveAccountRequests       LiveAccountRequest[]
+
+  // Dealer coverage (B-book hedging) -- the single system Account this
+  // broker mirrors offsetting legs onto when a dealer clicks BOOK NOW on a
+  // B-book position (see app/api/manage/positions/[id]/book). Null until
+  // the first BOOK NOW auto-provisions it (lib/coverage.ts's
+  // ensureCoverageAccount) or an admin provisions it explicitly. The
+  // account lives in a groupType=COVERAGE group (raw/zero-spread, zero
+  // commission -- the hedge must reflect the real market, not re-charge
+  // the broker's own markup). @unique: one coverage account per broker.
+  coverageAccountId String?  @unique
+  coverageAccount   Account? @relation("BrokerCoverageAccount", fields: [coverageAccountId], references: [id])
 }
 
 model AdminUser {
@@ -569,6 +593,11 @@ model Account {
   // @@unique([brokerId, email, accountMode]) below.
   clientId String?
   client   Client? @relation(fields: [clientId], references: [id])
+
+  // Back-relation for Broker.coverageAccount -- non-null only on the one
+  // system account a broker uses as its dealer coverage (B-book hedge)
+  // account. A normal client account never sets this.
+  coverageForBroker Broker? @relation("BrokerCoverageAccount")
 
   // Per-account swap-free OVERRIDE -- the 3rd of 3 swap-free levels
   // (AccountType.swapFree, Group.swapFree, this one), for a specific
@@ -1717,6 +1746,21 @@ model Position {
 
   openedAt DateTime  @default(now()) @db.Timestamptz(3)
   closedAt DateTime? @db.Timestamptz(3)
+
+  // Dealer coverage (BOOK NOW) -- true once a dealer has booked this
+  // B-book client position by mirroring its offsetting leg onto the
+  // broker's coverage account (see app/api/manage/positions/[id]/book).
+  // The client position itself is untouched (still OPEN, still the
+  // client's); this flag only records that the broker has hedged it, so a
+  // booked position drops out of the Smart Dealer Manager's unbooked list.
+  covered            Boolean    @default(false)
+  coveredAt          DateTime?  @db.Timestamptz(3)
+  // The mirror Position created on the coverage account for this booking
+  // (self-relation) -- the actual hedge leg, kept for unwind/audit. Null
+  // on a non-booked position and on the coverage leg itself.
+  coveragePositionId String?    @unique
+  coveragePosition   Position?  @relation("PositionCoverage", fields: [coveragePositionId], references: [id])
+  coveredClientPos   Position[] @relation("PositionCoverage")
 
   actionRequests PositionActionRequest[]
 

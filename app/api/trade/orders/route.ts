@@ -522,7 +522,12 @@ async function handlePlaceOrder(request: NextRequest) {
       const slippageError = checkSlippage({
         clientReferencePrice: price,
         serverFillPrice: fillPrice,
-        maxSlippagePips,
+        // Client-supplied tolerance wins; otherwise fall back to the
+        // broker-wide default (app/api/manage/risk), then to lib/risk.ts's
+        // hardcoded DEFAULT_MAX_SLIPPAGE_PIPS when neither is set.
+        maxSlippagePips:
+          maxSlippagePips ??
+          (broker.defaultMaxSlippagePips != null ? broker.defaultMaxSlippagePips.toString() : null),
         digits: brokerSymbol.symbol.digits,
       });
       if (slippageError) {

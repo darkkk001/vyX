@@ -1,4 +1,5 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 
@@ -6,12 +7,40 @@ import { getAdminSession, requireAdminRole } from "@/lib/auth";
 // to do inline -- exposed as JSON so DealsManager can fetch it itself
 // (both the website and a bundled manager-shell desktop app use this
 // one path now).
-export async function GET() {
+//
+// Optional query filters (all broker-scoped, all narrowing): from / to
+// (ISO date or datetime; range on closedAt -- `to` is inclusive of the
+// whole day when only a date is given), accountId, groupId. Used by the
+// backoffice dealing-group HISTORY view's date-range picker.
+export async function GET(request: NextRequest) {
   const session = await getAdminSession();
   if (!requireAdminRole(session, ["MANAGER", "BROKER_ADMIN"]) || !session!.brokerId) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
   const brokerId = session!.brokerId!;
+
+  const sp = request.nextUrl.searchParams;
+  const accountId = sp.get("accountId")?.trim() || null;
+  const groupId = sp.get("groupId")?.trim() || null;
+
+  // Range on closedAt. A bare "YYYY-MM-DD" for `to` means "through the end
+  // of that day" -- widen to the next midnight so the whole day is included
+  // rather than only trades closed at exactly 00:00:00.
+  const closedAt: Prisma.DateTimeFilter = {};
+  const fromRaw = sp.get("from")?.trim();
+  if (fromRaw) {
+    const d = new Date(fromRaw);
+    if (!Number.isNaN(d.getTime())) closedAt.gte = d;
+  }
+  const toRaw = sp.get("to")?.trim();
+  if (toRaw) {
+    const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(toRaw);
+    const d = new Date(toRaw);
+    if (!Number.isNaN(d.getTime())) {
+      if (dateOnly) d.setUTCDate(d.getUTCDate() + 1);
+      closedAt.lt = d;
+    }
+  }
 
   // VYX-POSITION-TOOLS-V0 -- VOIDED rows belong here too (the brief's
   // "visible to admins" for Void has nowhere else to land: the Live
@@ -22,7 +51,14 @@ export async function GET() {
   // means the audit log, not this list; see POSITION_DELETED's own
   // AuditLog entry for the full record.
   const positions = await prisma.position.findMany({
-    where: { brokerId, status: { in: ["CLOSED", "VOIDED"] }, deletedAt: null },
+    where: {
+      brokerId,
+      status: { in: ["CLOSED", "VOIDED"] },
+      deletedAt: null,
+      ...(accountId ? { accountId } : {}),
+      ...(groupId ? { account: { groupId } } : {}),
+      ...(closedAt.gte || closedAt.lt ? { closedAt } : {}),
+    },
     include: {
       account: { select: { accountNumber: true, fullName: true } },
       symbol: { select: { name: true, digits: true } },

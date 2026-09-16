@@ -9,7 +9,11 @@ type Tx = Prisma.TransactionClient;
 // BrokerSymbol.defaultBookType directly instead, unchanged from before
 // this feature existed.
 export function resolveBookType(groupType: GroupType): BookType {
-  return groupType === "LP" ? "A_BOOK" : "B_BOOK";
+  // LP hedges a real LP; COVERAGE is the broker's own B-book hedge account
+  // (the offsetting leg of a booked client position) -- both are real
+  // market-facing exposure, so both book A_BOOK. Everything else stays
+  // B_BOOK (the broker's own book).
+  return groupType === "LP" || groupType === "COVERAGE" ? "A_BOOK" : "B_BOOK";
 }
 
 // 1 pip in price units for a symbol with this many decimal digits -- same
