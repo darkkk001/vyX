@@ -978,6 +978,13 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [symbol, timeframe]);
 
+  // fix/chart-gaps: the last bar timestamp actually fed to the chart. The live path can push MORE
+  // than one bar into the `candles` array in a single tick (market-simulator's gap-fill on a
+  // rollover), but klinecharts' updateData only ever appends ONE bar -- so when the newest bar jumps
+  // by >1 period we resync the whole contiguous array via applyNewData instead of dropping the
+  // in-between bars, which otherwise surfaced as a ~N-candle "gap" on this index-based chart.
+  const lastFedTsRef = useRef<number | null>(null);
+
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart || candles.length === 0) return;
@@ -985,6 +992,7 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
       chart.applyNewData(
         candles.map((c) => ({ timestamp: c.t, open: c.o, high: c.h, low: c.l, close: c.c, volume: 0 }))
       );
+      lastFedTsRef.current = candles[candles.length - 1].t;
     } catch {
       // ignore — next data update will retry
     }
@@ -1040,7 +1048,17 @@ const KLineChartPanel = forwardRef<KLineChartHandle, Props>(function KLineChartP
     }
 
     try {
-      chart.updateData({ timestamp: latestBar.t, open: latestBar.o, high: latestBar.h, low: latestBar.l, close: latestBar.c, volume: 0 });
+      // fix/chart-gaps: if the newest bar is more than one period past the last bar we fed, the live
+      // path appended several bars at once (gap-fill on a rollover) -- a single updateData would append
+      // only this one and skip the rest, leaving a gap. Resync the whole contiguous array instead.
+      const period = candles.length >= 2 ? candles[candles.length - 1].t - candles[candles.length - 2].t : 0;
+      const lastFed = lastFedTsRef.current;
+      if (lastFed != null && period > 0 && latestBar.t - lastFed > period) {
+        chart.applyNewData(candles.map((c) => ({ timestamp: c.t, open: c.o, high: c.h, low: c.l, close: c.c, volume: 0 })));
+      } else {
+        chart.updateData({ timestamp: latestBar.t, open: latestBar.o, high: latestBar.h, low: latestBar.l, close: latestBar.c, volume: 0 });
+      }
+      lastFedTsRef.current = latestBar.t;
     } catch {
       // ignore — next tick will retry
     }
