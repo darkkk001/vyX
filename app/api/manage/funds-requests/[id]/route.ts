@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession } from "@/lib/auth";
 import { forbidUnlessBrokerAdminOrPermission } from "@/lib/permissions";
+import { publishTradingEvent } from "@/lib/nats";
 import {
   resolveFundsApprovalStep,
   markFundsRequestForApproval,
@@ -99,5 +100,9 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   if (!approved.ok) {
     return NextResponse.json({ error: approved.error }, { status: 409 });
   }
+  // deposit/withdrawal completed: nudge the trader's terminal to refresh balance + Balance history
+  await publishTradingEvent("BalanceChanged", { account_id: existing.accountId, broker_id: brokerId, transaction_id: approved.transactionId }).catch(
+    (err) => console.error("[funds-requests] BalanceChanged publish failed", err)
+  );
   return NextResponse.json({ id: approved.transactionId, status: "COMPLETED", balanceAfter: approved.balanceAfter.toString() });
 }

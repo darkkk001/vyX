@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { approveBalanceAdjustmentRequest } from "@/lib/balance-adjustment";
+import { publishTradingEvent } from "@/lib/nats";
 
 // The checker half of the maker-checker gate: any admin who can act on
 // balance adjustments EXCEPT the one who requested it (see
@@ -25,6 +26,10 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   if (!result.ok) {
     return NextResponse.json({ error: result.error }, { status: 409 });
   }
+
+  await publishTradingEvent("BalanceChanged", { account_id: result.accountId, broker_id: brokerId, transaction_id: result.transactionId }).catch(
+    (err) => console.error("[approve-balance-adjustment] BalanceChanged publish failed", err)
+  );
 
   return NextResponse.json({ requestId: result.requestId, transactionId: result.transactionId, balance: result.balanceAfter.toString() });
 }

@@ -8,7 +8,10 @@ import { humanizeAction, excludeSuperAdminActor } from "@/lib/audit-labels";
 // own comment): the search result links here with ?highlight=<id>, and
 // this is what ClientActivityView.tsx scrolls to/highlights. Optional
 // since an admin-action row has no single record it maps to as cleanly.
-type TimelineRow = { time: string; kind: string; tone: "success" | "danger" | "warning" | "neutral" | "info" | "accent"; summary: string; entityId?: string };
+type TimelineRow = { time: string; kind: string; tone: "success" | "danger" | "warning" | "neutral" | "info" | "accent"; summary: string; entityId?: string;
+  // structured fields for the Ledger rows (the backoffice renders them as a table: TYPE/AMOUNT/REASON/STATUS,
+  // with ADJUSTMENT shown as Credit/Debit by the amount sign — the DB type stays ADJUSTMENT).
+  txType?: string; amount?: string; note?: string; status?: string };
 
 // Same query app/manage/(shell)/accounts/[id]/page.tsx's Server Component
 // used to do inline (account header fields + a merged AuditLog/
@@ -53,6 +56,10 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
       tone: t.amount.isNegative() ? "danger" : "success",
       summary: `${t.type}, ${t.amount.toString()} (${t.status})${t.note ? ` (${t.note})` : ""}`,
       entityId: t.id,
+      txType: t.type,
+      amount: t.amount.toString(),
+      note: t.note ?? "",
+      status: t.status,
     })),
     ...orders.map((o): TimelineRow => ({
       time: o.createdAt.toISOString(),

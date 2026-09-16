@@ -3,6 +3,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession } from "@/lib/auth";
 import { forbidUnlessBrokerAdminOrPermission } from "@/lib/permissions";
+import { publishTradingEvent } from "@/lib/nats";
 import {
   validateBalanceAdjustment,
   applyBalanceAdjustment,
@@ -73,6 +74,11 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
   const result = await prisma.$transaction((tx) =>
     applyBalanceAdjustment(tx, { accountId: id, brokerId, amount, note, adminId: session!.adminId })
+  );
+
+  // after commit: let the trader's terminal refresh its balance + Balance-history tab live
+  await publishTradingEvent("BalanceChanged", { account_id: id, broker_id: brokerId, transaction_id: result.transactionId }).catch(
+    (err) => console.error("[adjust-balance] BalanceChanged publish failed", err)
   );
 
   return NextResponse.json({
