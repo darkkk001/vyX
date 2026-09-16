@@ -3,6 +3,8 @@ import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { generateTemporaryPassword } from "@/lib/passwords";
+import { sendBrokerEmail } from "@/lib/email/adapter";
+import { renderBrokerEmail } from "@/lib/email/template";
 
 async function requireManager() {
   const session = await getAdminSession();
@@ -12,11 +14,13 @@ async function requireManager() {
   return session!;
 }
 
-// Generates a new random password for a trader's account and returns it
-// once (never stored in plaintext, never echoed again after this
-// response -- see lib/passwords.ts). The other end of the in-app
-// "Forgot password?" flow (app/api/trade/forgot-password), reached from
-// the Notification it created (app/manage/(shell)/notifications).
+// Resets a trading account's password. If the account has an email on file AND the
+// broker's mail is configured (emailEnabled + a verified From), the new temporary
+// password is emailed to the client and the admin is told it was sent ({emailed}).
+// Otherwise the password is handed back to the admin to relay manually ({password}),
+// with {emailFallback} when an email existed but the broker's mail isn't set up.
+// The password is generated once, never stored in plaintext, never echoed again after
+// this response (see lib/passwords.ts). Always audited (ACCOUNT_PASSWORD_RESET).
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await requireManager();
   if (!session) {
@@ -47,5 +51,39 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     }),
   ]);
 
-  return NextResponse.json({ password });
+  const email = (account.email ?? "").trim();
+  const broker = await prisma.broker.findUnique({
+    where: { id: brokerId },
+    select: { name: true, logoUrl: true, primaryColor: true, supportEmail: true, emailEnabled: true, emailFromAddress: true, emailFromName: true },
+  });
+  const emailConfigured = !!(broker?.emailEnabled && broker?.emailFromAddress);
+
+  if (email && emailConfigured) {
+    const brokerName = broker!.name ?? "your broker";
+    const { html, text } = renderBrokerEmail(
+      { name: brokerName, logoUrl: broker!.logoUrl ?? null, primaryColor: broker!.primaryColor ?? null, supportEmail: broker!.supportEmail ?? null },
+      {
+        preheader: `Your ${brokerName} trading account password was reset.`,
+        heading: "Your password was reset",
+        bodyLines: [
+          `The password for your trading account ${account.accountNumber} was reset by ${brokerName}.`,
+          `Your temporary password is: ${password}`,
+          `Please sign in and change it as soon as you can.`,
+        ],
+        extraNote: "If you did not expect this, contact support.",
+      }
+    );
+    try {
+      await sendBrokerEmail(
+        { name: brokerName, emailEnabled: broker!.emailEnabled, emailFromAddress: broker!.emailFromAddress, emailFromName: broker!.emailFromName },
+        { to: email, subject: `Your password was reset for ${brokerName}`, html, text }
+      );
+      return NextResponse.json({ emailed: true, to: email });
+    } catch (err) {
+      console.error("[reset-password] email send failed, returning password to admin", err);
+      return NextResponse.json({ password, emailFallback: true });
+    }
+  }
+
+  return NextResponse.json({ password, emailFallback: !!email && !emailConfigured });
 }
