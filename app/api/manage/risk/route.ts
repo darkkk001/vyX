@@ -17,6 +17,13 @@ export async function GET() {
   }
 
   const broker = await prisma.broker.findUniqueOrThrow({ where: { id: session!.brokerId! } });
+  // Dealer coverage account (auto-provisioned on the first BOOK NOW -- see
+  // lib/coverage.ts). Surface its account number so the backoffice dealing
+  // screen can point its coverage journal/NET at the real system account
+  // without a separate lookup.
+  const coverageAccount = broker.coverageAccountId
+    ? await prisma.account.findUnique({ where: { id: broker.coverageAccountId }, select: { accountNumber: true } })
+    : null;
   return NextResponse.json({
     tradingHalted: broker.tradingHaltedAt != null,
     tradingHaltedAt: broker.tradingHaltedAt ? broker.tradingHaltedAt.toISOString() : null,
@@ -29,6 +36,8 @@ export async function GET() {
     smartDealerAcceptPct: broker.smartDealerAcceptPct ? broker.smartDealerAcceptPct.toString() : null,
     smartDealerRejectPct: broker.smartDealerRejectPct ? broker.smartDealerRejectPct.toString() : null,
     defaultMaxSlippagePips: broker.defaultMaxSlippagePips ? broker.defaultMaxSlippagePips.toString() : null,
+    coverageAccountId: broker.coverageAccountId ?? null,
+    coverageAccountNumber: coverageAccount?.accountNumber ?? null,
   });
 }
 
