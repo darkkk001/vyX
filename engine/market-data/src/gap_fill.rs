@@ -13,6 +13,7 @@
 use crate::{fixed_ms, CandleUpdate, Timeframe};
 use chrono::{DateTime, Datelike, Duration, NaiveDate, Timelike, Utc, Weekday};
 use rust_decimal::Decimal;
+use sqlx::PgPool;
 use std::collections::HashMap;
 use std::sync::Mutex;
 
@@ -155,25 +156,63 @@ impl GapFillTracker {
         Self { last: Mutex::new(HashMap::new()) }
     }
 
-    /// Call once per real CandleUpdate before persisting it. Returns any
-    /// synthetic flat-fill bars for buckets skipped since the last one
-    /// recorded for this exact (symbol, timeframe) -- empty on the very
-    /// first tick ever seen for a pair (nothing to compare against) or
-    /// for a non-fixed-duration timeframe (W1/Mn1/Y1 -- gaps at that
-    /// scale aren't worth this). Always records `update`'s own bucket as
-    /// the new last-known one, whether or not any fills were produced.
-    pub fn fill_gaps_and_record(&self, update: &CandleUpdate) -> Vec<CandleUpdate> {
+    fn guard(&self) -> std::sync::MutexGuard<'_, HashMap<(String, Timeframe), LastBucket>> {
+        match self.last.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
+    /// fix/candle-gaps §3 -- seed the tracker's last-known bucket per
+    /// (symbol, timeframe) from an explicit list (the DB rows, in
+    /// `seed_from_db`, or test fixtures). Only the fixed-duration
+    /// timeframes this tracker actually gap-fills are kept. Returns how
+    /// many baselines were installed.
+    pub fn seed(&self, entries: &[(String, Timeframe, DateTime<Utc>, Decimal)]) -> usize {
+        let mut guard = self.guard();
+        let mut n = 0;
+        for (symbol, tf, start, close) in entries {
+            if fixed_ms(*tf).is_none() {
+                continue;
+            }
+            guard.insert((symbol.clone(), *tf), LastBucket { start: *start, close: *close });
+            n += 1;
+        }
+        n
+    }
+
+    /// fix/candle-gaps §3 -- boot-time seed from the reader store, so the
+    /// FIRST tick after a restart flat-fills the whole downtime gap
+    /// instead of starting from an empty map (which produced no fills at
+    /// all -- the bug that left the restart hole on the chart). Fail-soft
+    /// at the caller: a DB error here just means the pre-fix empty-tracker
+    /// behavior for this boot, never a failure to start the feed.
+    pub async fn seed_from_db(&self, pool: &PgPool) -> Result<usize, sqlx::Error> {
+        let rows = crate::db::fetch_last_buckets(pool).await?;
+        let entries: Vec<(String, Timeframe, DateTime<Utc>, Decimal)> = rows
+            .into_iter()
+            .filter_map(|r| crate::timeframe_from_str(&r.timeframe).map(|tf| (r.symbol, tf, r.bucket_start, r.close)))
+            .collect();
+        Ok(self.seed(&entries))
+    }
+
+    /// PURE (fix/candle-gaps §1). The synthetic flat-fill bars for every
+    /// market-open bucket skipped since the last one recorded for this
+    /// exact (symbol, timeframe) -- WITHOUT advancing the tracker. The
+    /// advance is now a separate, commit-gated step (`record_committed`),
+    /// so a flush whose DB write fails leaves the pointer where it was and
+    /// the very next flush re-derives (and re-fills) the same buckets
+    /// rather than silently skipping past a bucket that never persisted
+    /// (the exact defect that lost a bucket on every Postgres stall).
+    /// Empty on the first tick ever for a pair (no baseline) or a
+    /// non-fixed timeframe (W1/Mn1/Y1).
+    pub fn fills_for(&self, update: &CandleUpdate) -> Vec<CandleUpdate> {
         let mut fills = Vec::new();
         let Some(step_ms) = fixed_ms(update.timeframe) else {
             return fills;
         };
-
-        let mut guard = match self.last.lock() {
-            Ok(g) => g,
-            Err(poisoned) => poisoned.into_inner(),
-        };
+        let guard = self.guard();
         let key = (update.symbol.clone(), update.timeframe);
-
         if let Some(prev) = guard.get(&key) {
             let mut cursor = prev.start + Duration::milliseconds(step_ms);
             let carry_close = prev.close;
@@ -194,36 +233,69 @@ impl GapFillTracker {
                 count += 1;
             }
         }
-
-        guard.insert(key, LastBucket { start: update.bucket_start, close: update.close });
         fills
     }
 
-    /// hotfix/terminal-live-bugs round 5 -- "flat-fill written promptly,
-    /// not lazily." fill_gaps_and_record above only ever runs when a real
-    /// tick arrives, so a genuinely quiet symbol (or one whose tick rate
-    /// is slower than a bucket period) could sit with an incomplete
-    /// series for however long until the next real tick happens to land
-    /// -- a client fetching history in that window sees the hole. Called
-    /// on its own timer (see ingest::spawn_periodic_flush's sweep loop),
-    /// not from the tick path, so it needs its own read of "now" rather
-    /// than a tick's own bucket.
-    ///
-    /// Deliberately does NOT claim the bucket containing `now` itself --
-    /// that one is still open and a real tick landing in it a moment
-    /// later must still be the one to own it, not a synthetic sweep
-    /// value. Only fully-closed buckets strictly before `now`'s own
-    /// bucket are ever filled or recorded as the new "last known" point,
-    /// so a subsequent real tick's own fill_gaps_and_record call sees a
-    /// consistent, non-overlapping continuation.
-    pub fn sweep_stale_buckets(&self, now: DateTime<Utc>, broker_offset_sec: i64) -> Vec<CandleUpdate> {
-        let mut fills = Vec::new();
-        let mut guard = match self.last.lock() {
-            Ok(g) => g,
-            Err(poisoned) => poisoned.into_inner(),
-        };
+    /// fix/candle-gaps §1 -- advance the last-durably-stored pointer to the
+    /// greatest bucket per (symbol, timeframe) in a batch the DB has just
+    /// CONFIRMED committed. Monotonic (only ever moves a pointer forward),
+    /// so the concurrent flush and sweep tasks -- which each read a
+    /// lock-consistent baseline, write, then call this -- can never make
+    /// the tracker regress; whichever commits the later bucket wins and the
+    /// other's overlapping rows were idempotent upserts. `committed` is
+    /// expected already de-duplicated by bucket (ingest::merge_dedup).
+    pub fn record_committed(&self, committed: &[CandleUpdate]) {
+        if committed.is_empty() {
+            return;
+        }
+        let mut guard = self.guard();
+        let mut maxes: HashMap<(String, Timeframe), (DateTime<Utc>, Decimal)> = HashMap::new();
+        for u in committed {
+            if fixed_ms(u.timeframe).is_none() {
+                continue;
+            }
+            let k = (u.symbol.clone(), u.timeframe);
+            match maxes.get(&k) {
+                Some((s, _)) if *s >= u.bucket_start => {}
+                _ => {
+                    maxes.insert(k, (u.bucket_start, u.close));
+                }
+            }
+        }
+        for ((symbol, tf), (start, close)) in maxes {
+            advance_one(&mut guard, symbol, tf, start, close);
+        }
+    }
 
-        for ((symbol, timeframe), last) in guard.iter_mut() {
+    /// Test / convenience wrapper preserving the original atomic
+    /// compute-and-record semantics (this module's own unit tests, and any
+    /// caller not gating the advance on a DB commit). The production flush
+    /// path (ingest::flush_candles) uses the `fills_for` + `record_committed`
+    /// split so the advance is commit-gated.
+    pub fn fill_gaps_and_record(&self, update: &CandleUpdate) -> Vec<CandleUpdate> {
+        let fills = self.fills_for(update);
+        let mut committed = fills.clone();
+        committed.push(update.clone());
+        self.record_committed(&committed);
+        fills
+    }
+
+    /// PURE (fix/candle-gaps §1) -- the timer-driven counterpart to
+    /// `fills_for`: the flat-fills for every fully-closed bucket strictly
+    /// before `now`'s own bucket, for every tracked (symbol, timeframe),
+    /// PLUS the per-key advance target each implies, WITHOUT mutating.
+    /// Same "does not claim the currently-open bucket" rule as before -- a
+    /// real tick landing in it a moment later must still own it. The
+    /// caller writes the fills and, only on a confirmed commit, calls
+    /// `apply_advances(&plan.advances)`, so a failed sweep write leaves the
+    /// pointers put and the next sweep retries the same buckets (the old
+    /// sweep advanced FIRST, which is exactly why a dropped sweep write
+    /// left a permanent hole).
+    pub fn plan_sweep(&self, now: DateTime<Utc>, broker_offset_sec: i64) -> SweepPlan {
+        let mut fills = Vec::new();
+        let mut advances = Vec::new();
+        let guard = self.guard();
+        for ((symbol, timeframe), last) in guard.iter() {
             let Some(step_ms) = fixed_ms(*timeframe) else {
                 continue;
             };
@@ -233,7 +305,6 @@ impl GapFillTracker {
             let carry_close = last.close;
             let mut count = 0usize;
             let mut advanced_to = last.start;
-
             while cursor < now_bucket && count < MAX_GAP_FILLS_PER_TICK {
                 if market_open(symbol, cursor) {
                     fills.push(CandleUpdate {
@@ -250,13 +321,67 @@ impl GapFillTracker {
                 cursor += step;
                 count += 1;
             }
-
             if advanced_to > last.start {
-                last.start = advanced_to; // close stays carry_close -- nothing real happened
+                advances.push((symbol.clone(), *timeframe, advanced_to, carry_close));
             }
         }
+        SweepPlan { fills, advances }
+    }
 
-        fills
+    /// fix/candle-gaps §1 -- commits the advances a `plan_sweep` implied,
+    /// monotonically, only after that sweep's own DB write is confirmed.
+    /// Close stays the carry close (nothing real happened across a swept
+    /// region).
+    pub fn apply_advances(&self, advances: &[(String, Timeframe, DateTime<Utc>, Decimal)]) {
+        if advances.is_empty() {
+            return;
+        }
+        let mut guard = self.guard();
+        for (symbol, tf, start, close) in advances {
+            advance_one(&mut guard, symbol.clone(), *tf, *start, *close);
+        }
+    }
+
+    /// Test / convenience wrapper preserving the original atomic
+    /// compute-and-advance sweep semantics for this module's own unit
+    /// tests. Production (ingest::spawn_gap_sweep) uses plan_sweep +
+    /// apply_advances so the advance is commit-gated.
+    pub fn sweep_stale_buckets(&self, now: DateTime<Utc>, broker_offset_sec: i64) -> Vec<CandleUpdate> {
+        let plan = self.plan_sweep(now, broker_offset_sec);
+        self.apply_advances(&plan.advances);
+        plan.fills
+    }
+}
+
+/// The output of `GapFillTracker::plan_sweep`: the flat-fill bars to write
+/// and, separately, the per-(symbol, timeframe) pointer advances to commit
+/// only once those writes are confirmed (fix/candle-gaps §1).
+pub struct SweepPlan {
+    pub fills: Vec<CandleUpdate>,
+    pub advances: Vec<(String, Timeframe, DateTime<Utc>, Decimal)>,
+}
+
+/// Monotonic per-key advance shared by `record_committed` and
+/// `apply_advances`: never moves a pointer backward (so concurrent flush /
+/// sweep commits can't make the tracker regress); on the same bucket it
+/// only refreshes the carry close (a later flush of a still-open bucket
+/// carries a newer close). Non-fixed timeframes are never tracked.
+fn advance_one(guard: &mut HashMap<(String, Timeframe), LastBucket>, symbol: String, tf: Timeframe, start: DateTime<Utc>, close: Decimal) {
+    if fixed_ms(tf).is_none() {
+        return;
+    }
+    match guard.get_mut(&(symbol.clone(), tf)) {
+        Some(cur) if start > cur.start => {
+            cur.start = start;
+            cur.close = close;
+        }
+        Some(cur) if start == cur.start => {
+            cur.close = close;
+        }
+        Some(_) => {}
+        None => {
+            guard.insert((symbol, tf), LastBucket { start, close });
+        }
     }
 }
 
@@ -582,5 +707,75 @@ mod tests {
         // history for a symbol/timeframe with no baseline.
         let fills = tracker.sweep_stale_buckets(Utc::now(), 0);
         assert!(fills.is_empty());
+    }
+
+    // fix/candle-gaps §1 -- the commit-gated split. These prove the exact
+    // property the old side-effecting fill_gaps_and_record broke: a flush
+    // whose DB write fails must NOT advance the pointer, so the missed
+    // bucket comes back on the next flush instead of being skipped forever.
+
+    #[test]
+    fn a_failed_flush_does_not_advance_the_pointer_so_the_next_flush_refills_the_missed_bucket() {
+        let t = GapFillTracker::new();
+        let base = Utc.with_ymd_and_hms(2026, 8, 12, 10, 0, 0).unwrap(); // Wednesday
+        // Cycle A: 10:00 commits -- the baseline.
+        t.record_committed(&[update("XAUUSD", Timeframe::M1, base, dec!(2400))]);
+        // Cycle B: a real 10:01 tick. fills_for is computed (empty -- 10:01
+        // is adjacent to 10:00) but its write FAILS, so record_committed is
+        // deliberately NOT called. The pointer must stay at 10:00.
+        let _b = t.fills_for(&update("XAUUSD", Timeframe::M1, base + Duration::minutes(1), dec!(2401)));
+        // Cycle C at 10:02, after the minute rolled over and 10:01 never
+        // persisted: the pointer is still 10:00, so 10:01 is re-derived.
+        let c = t.fills_for(&update("XAUUSD", Timeframe::M1, base + Duration::minutes(2), dec!(2402)));
+        assert_eq!(c.len(), 1, "the un-committed 10:01 bucket must be re-filled, not skipped");
+        assert_eq!(c[0].bucket_start, base + Duration::minutes(1));
+    }
+
+    #[test]
+    fn record_committed_is_monotonic_and_never_regresses_the_pointer() {
+        let t = GapFillTracker::new();
+        let base = Utc.with_ymd_and_hms(2026, 8, 12, 10, 0, 0).unwrap();
+        t.record_committed(&[update("XAUUSD", Timeframe::M1, base + Duration::minutes(5), dec!(2405))]);
+        // A late/stale commit for an earlier bucket (e.g. a slow sweep that
+        // planned from an old baseline) must not move the pointer back.
+        t.record_committed(&[update("XAUUSD", Timeframe::M1, base + Duration::minutes(2), dec!(2402))]);
+        let fills = t.fills_for(&update("XAUUSD", Timeframe::M1, base + Duration::minutes(8), dec!(2408)));
+        assert_eq!(fills.len(), 2, "must fill from 10:05 (the max committed), not the stale 10:02");
+        assert_eq!(fills[0].bucket_start, base + Duration::minutes(6));
+    }
+
+    #[test]
+    fn a_seeded_tracker_flat_fills_the_restart_gap_on_the_first_tick() {
+        // fix/candle-gaps §3 -- after a restart the tracker is seeded from
+        // the DB's last bucket; the first tick well after the downtime must
+        // flat-fill every market-open bucket in between rather than produce
+        // nothing (the empty-tracker behavior that left the restart hole).
+        let t = GapFillTracker::new();
+        let last_before_restart = Utc.with_ymd_and_hms(2026, 8, 12, 10, 0, 0).unwrap(); // Wednesday
+        assert_eq!(t.seed(&[("XAUUSD".to_string(), Timeframe::M1, last_before_restart, dec!(2400))]), 1);
+        let first = update("XAUUSD", Timeframe::M1, last_before_restart + Duration::minutes(4), dec!(2405));
+        let fills = t.fills_for(&first);
+        assert_eq!(fills.len(), 3, "10:01 / 10:02 / 10:03 must be flat-filled across the restart gap");
+        assert_eq!(fills[0].bucket_start, last_before_restart + Duration::minutes(1));
+        for f in &fills {
+            assert_eq!(f.close, dec!(2400), "the restart gap carries the last pre-restart close");
+        }
+    }
+
+    #[test]
+    fn plan_sweep_does_not_mutate_until_apply_advances_is_called() {
+        // The pure/commit split for the sweep path: planning twice from the
+        // same baseline yields the same fills (nothing advanced); only
+        // apply_advances moves the pointer.
+        let t = GapFillTracker::new();
+        let base = Utc.with_ymd_and_hms(2026, 8, 12, 10, 0, 0).unwrap();
+        t.record_committed(&[update("XAUUSD", Timeframe::M1, base, dec!(2400))]);
+        let now = base + Duration::seconds(210); // 10:03:30 -- 10:01/10:02 closed
+        let plan_a = t.plan_sweep(now, 0);
+        let plan_b = t.plan_sweep(now, 0);
+        assert_eq!(plan_a.fills.len(), 2);
+        assert_eq!(plan_b.fills.len(), 2, "plan_sweep must not advance the pointer -- a failed sweep write retries the same buckets");
+        t.apply_advances(&plan_a.advances);
+        assert!(t.plan_sweep(now, 0).fills.is_empty(), "after apply_advances the swept buckets are behind the pointer");
     }
 }

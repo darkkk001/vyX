@@ -1303,6 +1303,16 @@ async fn main() {
     if let Some(hook) = &risk_hook {
         hook.spawn_reload_loop(pool.clone(), std::time::Duration::from_secs(5));
     }
+    // fix/candle-gaps §3: resume the gap-fill tracker from what actually
+    // persisted, so the first tick after this restart flat-fills the
+    // downtime gap instead of starting from an empty map (which produced no
+    // fills and left the restart hole on the chart). Reader store = what
+    // the app serves. Fail-soft: a load error just means the pre-fix
+    // empty-tracker behavior for this boot, never a failed start.
+    match gap_fill_tracker.seed_from_db(market_pools.reader()).await {
+        Ok(n) => tracing::info!(seeded = n, "gap-fill tracker seeded from the reader store"),
+        Err(err) => tracing::warn!(?err, "gap-fill tracker seed failed -- starting empty (restart gap will need the EA backfill)"),
+    }
     market_data::ingest::spawn_periodic_flush(
         market_pools.clone(),
         tick_cache.clone(),

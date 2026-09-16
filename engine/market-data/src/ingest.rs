@@ -13,11 +13,13 @@ use crate::{
     gap_fill::{market_open, GapFillTracker},
     stats::FeedStats,
     symbol_activity::SymbolActivity,
+    CandleUpdate, Timeframe,
 };
 use chrono::{DateTime, Utc};
 use crate::sink::{MarketDataPools, SinkName};
 use protocol::Tick;
 use sqlx::PgPool;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::sync::Arc;
 use std::time::{Duration as StdDuration, Instant};
@@ -212,13 +214,17 @@ pub fn spawn_periodic_flush(
         let broker_offset = broker_offset.clone();
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(candle_interval);
+            // fix/candle-gaps §2 -- rows a previous cycle failed to commit,
+            // carried into the next flush so the missed bucket is retried
+            // with its real values (bounded; see flush_candles).
+            let mut pending: Vec<CandleUpdate> = Vec::new();
             loop {
                 ticker.tick().await;
                 let dirty = cache.take_dirty_candles();
-                if dirty.is_empty() {
+                if dirty.is_empty() && pending.is_empty() {
                     continue;
                 }
-                flush_candles(&pools, &cache, &dirty, &stats, &gap_fill, &broker_offset).await;
+                flush_candles(&pools, &cache, &dirty, &stats, &gap_fill, &broker_offset, &mut pending).await;
             }
         });
     }
@@ -287,23 +293,36 @@ fn stats_should_log(stats: &FeedStats, what: &str) -> bool {
 // which is the exception, not the steady state).
 const GAP_SWEEP_INTERVAL: StdDuration = StdDuration::from_secs(10);
 
+// fix/candle-gaps §2 -- cap on how many un-acked candle rows the pending
+// retry buffer carries into the next flush during a sustained DB outage.
+// ~30 symbols x 7 fixed timeframes ~= 210 rows per stalled bucket, so 5000
+// covers a couple dozen consecutive stalled M1 buckets before the oldest
+// are dropped -- and a dropped one is NOT lost: the gap-fill pointer never
+// advanced past it (§1), so the next successful flush flat-fills it and the
+// EA backfill later restores its real OHLC. It degrades to flat, never to
+// missing.
+const MAX_PENDING_RETRY: usize = 5000;
+
 fn spawn_gap_sweep(pools: Arc<MarketDataPools>, stats: Arc<FeedStats>, gap_fill: Arc<GapFillTracker>, broker_offset: Arc<BrokerOffsetTracker>) {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(GAP_SWEEP_INTERVAL);
         loop {
             ticker.tick().await;
-            let fills = gap_fill.sweep_stale_buckets(Utc::now(), broker_offset.current());
-            if fills.is_empty() {
+            // fix/candle-gaps §1: plan (pure) -> write -> advance the
+            // pointers ONLY on a confirmed commit. A failed sweep write now
+            // leaves the pointers put, so the next sweep retries the same
+            // buckets instead of skipping past them -- the old sweep
+            // advanced FIRST, which is exactly why a dropped sweep write
+            // left a permanent hole (see this function's own prior comment).
+            let plan = gap_fill.plan_sweep(Utc::now(), broker_offset.current());
+            if plan.fills.is_empty() {
+                // No rows to write, but a swept-through closed region (a
+                // weekend) still advances the scan pointer so the next sweep
+                // doesn't re-scan it every cycle.
+                gap_fill.apply_advances(&plan.advances);
                 continue;
             }
-            // Not re-queued like flush_candles' own failure path --
-            // GapFillTracker already advanced past these buckets
-            // (sweep_stale_buckets' own doc comment), so a dropped write
-            // here just means these specific rows stay missing until the
-            // next sweep produces DIFFERENT (later) buckets; it can't retry
-            // the exact same ones without also re-deriving them from
-            // tracker state this module doesn't expose.
-            let fills = Arc::new(fills);
+            let fills = Arc::new(plan.fills);
             let ok = write_to_targets(&pools, &stats, "gap-sweep", |pool| {
                 let fills = fills.clone();
                 async move {
@@ -313,7 +332,9 @@ fn spawn_gap_sweep(pools: Arc<MarketDataPools>, stats: Arc<FeedStats>, gap_fill:
                 }
             })
             .await;
-            if !ok {
+            if ok {
+                gap_fill.apply_advances(&plan.advances);
+            } else {
                 stats.record_candle_write_failure();
             }
         }
@@ -368,21 +389,31 @@ fn re_mark_live_price_dirty(cache: &TickCache, ticks: &[Tick]) {
     cache.mark_live_price_dirty(&symbols);
 }
 
-// Same claim/retry-on-failure shape as flush_live_prices, via
-// cache::TickCache::mark_candle_dirty.
-async fn flush_candles(pools: &MarketDataPools, cache: &TickCache, ticks: &[Tick], stats: &Arc<FeedStats>, gap_fill: &GapFillTracker, broker_offset: &BrokerOffsetTracker) {
+// fix/candle-gaps §1+§2. Same claim/retry-on-failure shape as
+// flush_live_prices (cache::TickCache::mark_candle_dirty), plus two
+// integrity fixes over the old "advance the gap-fill pointer while merely
+// BUILDING the batch" behavior that lost a bucket on every DB stall:
+//   §1  the gap-fill pointer advances (gap_fill.record_committed) ONLY
+//       after write_to_targets confirms the batch committed -- a failed /
+//       timed-out write leaves it put, so the next flush re-derives and
+//       re-fills the bucket that didn't persist instead of skipping it.
+//   §2  `pending` carries the exact rows a failed write didn't land into
+//       the NEXT flush (ahead of that flush's own updates), so the missed
+//       bucket is retried with the real values it held, not just flat.
+async fn flush_candles(pools: &MarketDataPools, cache: &TickCache, ticks: &[Tick], stats: &Arc<FeedStats>, gap_fill: &GapFillTracker, broker_offset: &BrokerOffsetTracker, pending: &mut Vec<CandleUpdate>) {
     let now = Utc::now();
     // One batched round trip per target for the whole flush instead of
     // one per (tick x timeframe x gap-fill) -- see
-    // db::upsert_candles_batch's own comment. Gap-fills and real updates
-    // share the same merge (GREATEST/LEAST) semantics, so they collect
-    // into one Vec and go in a single UNNEST insert; order within the
-    // batch doesn't matter the way it did as sequential single-row writes
-    // (a gap fill and the update whose gap it closes never touch the same
-    // bucket, so there's no same-batch ordering to preserve). The batch is
-    // built once, outside any DB timeout, then applied to every target.
+    // db::upsert_candles_batch's own comment. Rows a previous cycle failed
+    // to commit go in FIRST (oldest observations), so merge_dedup's "last
+    // write wins the close" fold keeps time order for a bucket a
+    // within-minute stall touched more than once. The batch is built once,
+    // outside any DB timeout, deduped, then applied to every target.
+    let carried = std::mem::take(pending);
+    let carried_keys: HashSet<(String, Timeframe, i64)> =
+        carried.iter().map(|u| (u.symbol.clone(), u.timeframe, u.bucket_start.timestamp_millis())).collect();
     let all_updates = {
-        let mut all_updates = Vec::new();
+        let mut all_updates: Vec<CandleUpdate> = carried;
         for tick in ticks {
             // Records this tick's own broker_offset_sec if it has one
             // (see BrokerOffsetTracker's own doc comment) and returns the
@@ -429,14 +460,27 @@ async fn flush_candles(pools: &MarketDataPools, cache: &TickCache, ticks: &[Tick
                 // since the last one actually written for this
                 // symbol+timeframe (a quiet period, or the engine having
                 // been down), so the chart's categorical time axis never
-                // shows a gap for anything other than a real market
-                // close.
-                all_updates.extend(gap_fill.fill_gaps_and_record(&update));
+                // shows a gap for anything other than a real market close.
+                // fix/candle-gaps §1: fills_for is now PURE (no advance) --
+                // the advance is gap_fill.record_committed below, gated on
+                // the write. §2: a carried (real) row for a bucket must
+                // never be overwritten by this cycle's synthetic flat-fill
+                // for the same bucket -- skip the flat, keep the real.
+                for fill in gap_fill.fills_for(&update) {
+                    let k = (fill.symbol.clone(), fill.timeframe, fill.bucket_start.timestamp_millis());
+                    if !carried_keys.contains(&k) {
+                        all_updates.push(fill);
+                    }
+                }
                 all_updates.push(update);
             }
         }
-        Arc::new(all_updates)
+        merge_dedup(all_updates)
     };
+    if all_updates.is_empty() {
+        return;
+    }
+    let all_updates = Arc::new(all_updates);
     let ok = write_to_targets(pools, stats, "candle", |pool| {
         let all_updates = all_updates.clone();
         async move {
@@ -446,10 +490,56 @@ async fn flush_candles(pools: &MarketDataPools, cache: &TickCache, ticks: &[Tick
         }
     })
     .await;
-    if !ok {
+    if ok {
+        // fix/candle-gaps §1 -- advance the pointer ONLY now the DB has it.
+        gap_fill.record_committed(&all_updates);
+    } else {
         stats.record_candle_write_failure();
         re_mark_candle_dirty(cache, ticks);
+        // fix/candle-gaps §2 -- retain the exact rows that didn't land for
+        // the next cycle, bounded so a long outage can't grow this without
+        // limit (past the cap, §1's flat-fill + the EA backfill still close
+        // the hole -- it degrades to flat, never to missing).
+        let mut lost = Arc::try_unwrap(all_updates).unwrap_or_else(|a| (*a).clone());
+        if lost.len() > MAX_PENDING_RETRY {
+            lost.sort_by_key(|u| u.bucket_start);
+            let drop = lost.len() - MAX_PENDING_RETRY;
+            lost.drain(0..drop);
+        }
+        *pending = lost;
     }
+}
+
+/// fix/candle-gaps §2 -- folds duplicate (symbol, timeframe, bucketStart)
+/// rows in a candle batch into one, reproducing exactly what sequential
+/// upserts would do (open = first seen, high = max, low = min, close =
+/// last seen). A single `INSERT ... ON CONFLICT` cannot touch the same
+/// conflict key twice (Postgres errors "cannot affect row a second time"),
+/// which the §2 pending-retry could otherwise trigger by carrying a bucket
+/// this cycle also produces. Stable: distinct keys keep first-seen order.
+fn merge_dedup(batch: Vec<CandleUpdate>) -> Vec<CandleUpdate> {
+    if batch.len() < 2 {
+        return batch;
+    }
+    let mut index: HashMap<(String, Timeframe, i64), usize> = HashMap::new();
+    let mut out: Vec<CandleUpdate> = Vec::with_capacity(batch.len());
+    for u in batch {
+        let key = (u.symbol.clone(), u.timeframe, u.bucket_start.timestamp_millis());
+        if let Some(&i) = index.get(&key) {
+            let e = &mut out[i];
+            if u.high > e.high {
+                e.high = u.high;
+            }
+            if u.low < e.low {
+                e.low = u.low;
+            }
+            e.close = u.close;
+        } else {
+            index.insert(key, out.len());
+            out.push(u);
+        }
+    }
+    out
 }
 
 fn re_mark_candle_dirty(cache: &TickCache, ticks: &[Tick]) {
@@ -586,6 +676,50 @@ mod tests {
         let tick_time = resolve_tick_time(&tick, saturday);
         assert!(market_open(&tick.symbol, tick_time), "BTCUSD trades all weekend -- its tick must still be treated as market-open");
     }
+
+    // fix/candle-gaps §2 -- merge_dedup must reproduce sequential-upsert
+    // OHLC (open = first, high = max, low = min, close = last) so the
+    // pending-retry can safely carry a bucket this cycle also produces
+    // without tripping Postgres's "cannot affect row a second time".
+    #[test]
+    fn merge_dedup_folds_duplicate_buckets_like_sequential_upserts() {
+        let base = Utc.with_ymd_and_hms(2026, 8, 12, 10, 0, 0).unwrap();
+        let mk = |open: rust_decimal::Decimal, high: rust_decimal::Decimal, low: rust_decimal::Decimal, close: rust_decimal::Decimal| CandleUpdate {
+            symbol: "XAUUSD".to_string(),
+            timeframe: Timeframe::M1,
+            bucket_start: base,
+            open,
+            high,
+            low,
+            close,
+        };
+        let out = merge_dedup(vec![
+            mk(dec!(2400), dec!(2401), dec!(2400), dec!(2401)),
+            mk(dec!(2401), dec!(2402), dec!(2399), dec!(2399)),
+        ]);
+        assert_eq!(out.len(), 1, "the same bucket must collapse to one row");
+        assert_eq!(out[0].open, dec!(2400), "open = first seen");
+        assert_eq!(out[0].high, dec!(2402), "high = max across the fold");
+        assert_eq!(out[0].low, dec!(2399), "low = min across the fold");
+        assert_eq!(out[0].close, dec!(2399), "close = last seen");
+    }
+
+    #[test]
+    fn merge_dedup_keeps_distinct_buckets_in_first_seen_order() {
+        let base = Utc.with_ymd_and_hms(2026, 8, 12, 10, 0, 0).unwrap();
+        let mk = |m: i64| CandleUpdate {
+            symbol: "XAUUSD".to_string(),
+            timeframe: Timeframe::M1,
+            bucket_start: base + Duration::minutes(m),
+            open: dec!(2400),
+            high: dec!(2400),
+            low: dec!(2400),
+            close: dec!(2400),
+        };
+        let out = merge_dedup(vec![mk(2), mk(0), mk(1)]);
+        let starts: Vec<_> = out.iter().map(|u| u.bucket_start).collect();
+        assert_eq!(starts, vec![base + Duration::minutes(2), base, base + Duration::minutes(1)]);
+    }
 }
 
 #[cfg(test)]
@@ -596,6 +730,7 @@ mod dual_write_tests {
     use super::*;
     use crate::sink::{MarketDataPools, WriteMode};
     use crate::Timeframe;
+    use chrono::{Duration, TimeZone};
     use rust_decimal::Decimal;
     use rust_decimal_macros::dec;
     use sqlx::postgres::PgPoolOptions;
@@ -631,7 +766,7 @@ mod dual_write_tests {
         // both: every row on both sides, both counter trios advance
         let both = MarketDataPools::new(neon.clone(), Some(local.clone()), WriteMode::Both);
         assert!(flush_live_prices(&both, &cache, &[tick.clone()], &stats).await);
-        flush_candles(&both, &cache, &[tick.clone()], &stats, &gap_fill, &broker_offset).await;
+        flush_candles(&both, &cache, &[tick.clone()], &stats, &gap_fill, &broker_offset, &mut Vec::new()).await;
         let snap = stats.snapshot();
         assert_eq!((snap.db_ok, snap.db_fail), (2, 0), "neon: one live-price + one candle flush");
         assert_eq!((snap.local_db_ok, snap.local_db_fail), (2, 0), "local: one live-price + one candle flush");
@@ -675,6 +810,74 @@ mod dual_write_tests {
         for p in [&neon, &local] {
             sqlx::query(r#"DELETE FROM "Candle" WHERE symbol = $1"#).bind(&symbol).execute(p).await.unwrap();
             sqlx::query(r#"DELETE FROM "LivePrice" WHERE symbol = $1"#).bind(&symbol).execute(p).await.unwrap();
+        }
+    }
+
+    // fix/candle-gaps §1+§2 -- the real-Postgres proof that a dropped
+    // candle write leaves NO missing M1 bucket. Replays what flush_candles
+    // does across a stall at the gap_fill + upsert level (deterministic
+    // buckets, not wall-clock minutes): a baseline commits, the next
+    // bucket's write is dropped (buffered, pointer NOT advanced), then a
+    // recovery flush carries it -> the served store has a contiguous
+    // series and the recovered bucket keeps its REAL value, not a flat fill.
+    #[tokio::test]
+    async fn a_dropped_candle_write_is_recovered_with_no_missing_m1_bucket() {
+        let Some((neon, local)) = pools().await else { return };
+        let symbol = format!("TESTGAP{}", Utc::now().timestamp_millis() % 1_000_000);
+        for p in [&neon, &local] {
+            sqlx::query(r#"DELETE FROM "Candle" WHERE symbol = $1"#).bind(&symbol).execute(p).await.unwrap();
+        }
+        let gap = GapFillTracker::new();
+        let base = Utc.with_ymd_and_hms(2026, 8, 12, 10, 0, 0).unwrap(); // Wednesday
+        let real = |m: i64, px: Decimal| CandleUpdate { symbol: symbol.clone(), timeframe: Timeframe::M1, bucket_start: base + Duration::minutes(m), open: px, high: px, low: px, close: px };
+
+        // 10:00 baseline lands and is recorded.
+        let baseline = vec![real(0, dec!(2400))];
+        {
+            let mut tx = local.begin().await.unwrap();
+            db::upsert_candles_batch(&mut tx, &baseline).await.unwrap();
+            tx.commit().await.unwrap();
+        }
+        gap.record_committed(&baseline);
+
+        // 10:01 flush is DROPPED: fills computed (empty -- adjacent), the
+        // write fails, so record_committed is NOT called and the row is
+        // buffered as pending. The pointer stays at 10:00.
+        assert!(gap.fills_for(&real(1, dec!(2401))).is_empty());
+        let pending = vec![real(1, dec!(2401))];
+
+        // 10:02 recovery flush: carried 10:01 first; fills_for(10:02) from
+        // the un-advanced 10:00 pointer WOULD flat-fill 10:01, but it's in
+        // carried_keys so the flat is skipped; then push real 10:02.
+        let mut batch = pending.clone();
+        let carried_keys: HashSet<_> = pending.iter().map(|u| u.bucket_start).collect();
+        for fill in gap.fills_for(&real(2, dec!(2402))) {
+            if !carried_keys.contains(&fill.bucket_start) {
+                batch.push(fill);
+            }
+        }
+        batch.push(real(2, dec!(2402)));
+        let batch = merge_dedup(batch);
+        {
+            let mut tx = local.begin().await.unwrap();
+            db::upsert_candles_batch(&mut tx, &batch).await.unwrap();
+            tx.commit().await.unwrap();
+        }
+        gap.record_committed(&batch);
+
+        // The served store: 10:00 / 10:01 / 10:02, contiguous, no hole --
+        // and 10:01 carries its real 2401 close, not a flat 2400.
+        let rows = db::fetch_candles(&local, &symbol, Timeframe::M1, 300, None).await.unwrap();
+        let starts: Vec<_> = rows.iter().map(|r| r.bucket_start).collect();
+        assert_eq!(
+            starts,
+            vec![base, base + Duration::minutes(1), base + Duration::minutes(2)],
+            "no missing M1 bucket after the dropped write"
+        );
+        assert_eq!(rows[1].close, dec!(2401), "the recovered bucket keeps its real value, not a flat fill");
+
+        for p in [&neon, &local] {
+            sqlx::query(r#"DELETE FROM "Candle" WHERE symbol = $1"#).bind(&symbol).execute(p).await.unwrap();
         }
     }
 }

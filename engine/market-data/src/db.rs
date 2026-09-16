@@ -274,6 +274,39 @@ pub async fn fetch_candles(
         .collect())
 }
 
+/// One (symbol, timeframe) baseline for the gap-fill tracker's boot seed
+/// (fix/candle-gaps §3) -- the newest stored bucket and its close.
+#[derive(Debug, Clone)]
+pub struct LastBucketRow {
+    pub symbol: String,
+    pub timeframe: String,
+    pub bucket_start: DateTime<Utc>,
+    pub close: Decimal,
+}
+
+/// The newest persisted bucket per (symbol, timeframe), for the fixed-
+/// duration timeframes the gap-fill tracker synthesizes (M1..D1 -- W1/Mn1/
+/// Y1 aren't gap-filled, see gap_fill.rs). Read once at boot from the
+/// reader store so GapFillTracker resumes from what actually persisted
+/// rather than an empty map (which left the whole restart gap unfilled --
+/// fix/candle-gaps §3). `DISTINCT ON` walks the (symbol, timeframe,
+/// "bucketStart" DESC) order the primary key already provides, so this is
+/// an index scan, not a full-table aggregate.
+pub async fn fetch_last_buckets(pool: &PgPool) -> Result<Vec<LastBucketRow>, sqlx::Error> {
+    let rows: Vec<(String, String, DateTime<Utc>, Decimal)> = sqlx::query_as(
+        r#"SELECT DISTINCT ON (symbol, timeframe) symbol, timeframe::text, "bucketStart", close
+           FROM "Candle"
+           WHERE timeframe IN ('M1','M5','M15','M30','H1','H4','D1')
+           ORDER BY symbol, timeframe, "bucketStart" DESC"#,
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(symbol, timeframe, bucket_start, close)| LastBucketRow { symbol, timeframe, bucket_start, close })
+        .collect())
+}
+
 /// Boot-time (and post-hot-reload-gap resync) load for
 /// alerts::AlertCache::load -- every currently ACTIVE alert, across
 /// every broker (the cache itself doesn't filter by broker; nothing
