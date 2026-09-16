@@ -393,6 +393,11 @@ export function checkSlippage(params: {
   maxSlippagePips: Prisma.Decimal | number | string | null | undefined;
   digits: number;
 }): string | null {
+  // Explicit client opt-out -- the native terminal's "M" / unlimited SLIPPAGE MAX
+  // sends the literal "unlimited": the client accepts any fill price, so never reject.
+  // This deliberately does NOT fall back to the broker default (that fallback is only
+  // for a client that sent no preference at all, e.g. today's WebTrader).
+  if (params.maxSlippagePips === "unlimited") return null;
   const maxPips =
     params.maxSlippagePips != null ? new Prisma.Decimal(params.maxSlippagePips) : DEFAULT_MAX_SLIPPAGE_PIPS;
   const tolerance = maxPips.mul(pipSize(params.digits));
