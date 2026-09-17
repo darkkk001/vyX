@@ -51,7 +51,7 @@ export async function PATCH(
   // gives, not a false report that the feed itself is broken.
   const sessionError = checkTradingSession(brokerSymbol?.tradingSessions ?? [], new Date(), brokerSymbol?.symbol.category ?? "FOREX");
   if (sessionError) {
-    const nextOpenAt = computeNextSessionOpen(brokerSymbol?.tradingSessions ?? [], new Date());
+    const nextOpenAt = computeNextSessionOpen(brokerSymbol?.tradingSessions ?? [], new Date(), brokerSymbol?.symbol.category ?? "FOREX");
     return NextResponse.json({ error: sessionError, nextOpenAt: nextOpenAt.toISOString() }, { status: 400 });
   }
 

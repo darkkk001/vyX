@@ -1071,6 +1071,15 @@ export default function WebTrader({
       );
       return;
     }
+    if (err instanceof ApiError && err.message === "INSUFFICIENT_BALANCE") {
+      const info = err.body as { required?: string; balance?: string } | null;
+      pushToast(
+        info?.required && info?.balance
+          ? `Insufficient balance, required $${info.required}, balance $${info.balance}`
+          : "Insufficient balance, order not placed"
+      );
+      return;
+    }
     pushToast(err instanceof Error ? err.message : "order failed");
   }, [pushToast, activeSymbol]);
 

@@ -135,14 +135,17 @@ async function handlePlaceOrder(request: NextRequest) {
   }
 
   let volume: Prisma.Decimal;
+  // Every volume rejection carries code INVALID_VOLUME beside its sentence (2026-09-18): the
+  // sentence is what the trader reads, the code is what the terminal keys its invalid-volume
+  // sound on (it used to expect a bare INVALID_VOLUME error that nothing ever sent).
   try {
     volume = new Prisma.Decimal(String(body?.volume ?? ""));
   } catch {
-    return NextResponse.json({ error: "invalid volume" }, { status: 400 });
+    return NextResponse.json({ error: "invalid volume", code: "INVALID_VOLUME" }, { status: 400 });
   }
   if (volume.lt(brokerSymbol.minLot) || volume.gt(brokerSymbol.maxLot)) {
     return NextResponse.json(
-      { error: `volume must be between ${brokerSymbol.minLot} and ${brokerSymbol.maxLot}` },
+      { error: `volume must be between ${brokerSymbol.minLot} and ${brokerSymbol.maxLot}`, code: "INVALID_VOLUME" },
       { status: 400 }
     );
   }
@@ -200,10 +203,12 @@ async function handlePlaceOrder(request: NextRequest) {
     // MARKET_CLOSED carries the next session open, exactly like the close / modify routes, so the
     // terminal can say "XAUUSD market is closed, opens Monday 22:00 UTC" instead of a bare code.
     if (riskError === "MARKET_CLOSED") {
-      const nextOpenAt = computeNextSessionOpen(brokerSymbol.tradingSessions, new Date());
+      const nextOpenAt = computeNextSessionOpen(brokerSymbol.tradingSessions, new Date(), brokerSymbol.symbol.category);
       return NextResponse.json({ error: riskError, symbol: symbolName, nextOpenAt: nextOpenAt.toISOString() }, { status: 400 });
     }
-    return NextResponse.json({ error: riskError }, { status: 400 });
+    // the lot-step / group-max-lot rules are volume rejections too: same code for the sound
+    const volumeCode = riskError.startsWith("volume ") ? { code: "INVALID_VOLUME" } : {};
+    return NextResponse.json({ error: riskError, ...volumeCode }, { status: 400 });
   }
 
   if (!price) {

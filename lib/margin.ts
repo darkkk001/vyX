@@ -139,7 +139,11 @@ export function checkPreTradeMargin(params: {
   return null;
 }
 
-export type PreTradeMarginRejection = { error: string; required: string; available: string };
+// error: "INSUFFICIENT_BALANCE" when the account's balance itself cannot cover the new order's
+// margin (nothing / not enough deposited -- the shortfall exists even with no other position
+// open), "INSUFFICIENT_MARGIN" when the balance could but the margin already tied up in open
+// positions (or the floating loss on them) leaves too little free. The client names them apart.
+export type PreTradeMarginRejection = { error: "INSUFFICIENT_BALANCE" | "INSUFFICIENT_MARGIN"; required: string; available: string; balance: string };
 
 // DB-touching wrapper around checkPreTradeMargin above -- computes this
 // one account's current equity/used-margin (same per-position formulas
@@ -199,5 +203,11 @@ export async function checkAccountPreTradeMargin(
   const requiredMargin = requiredMarginFor(params.newOrderVolume, params.newOrderContractSize, params.newOrderFillPrice, params.leverage);
   const rejectCode = checkPreTradeMargin({ equity, usedMargin, requiredMargin, marginCallLevel: params.marginCallLevel });
   if (!rejectCode) return null;
-  return { error: rejectCode, required: requiredMargin.toFixed(2), available: equity.sub(usedMargin).toFixed(2) };
+  const balanceShort = account.balance.lte(0) || account.balance.lt(requiredMargin);
+  return {
+    error: balanceShort ? "INSUFFICIENT_BALANCE" : "INSUFFICIENT_MARGIN",
+    required: requiredMargin.toFixed(2),
+    available: equity.sub(usedMargin).toFixed(2),
+    balance: account.balance.toFixed(2),
+  };
 }

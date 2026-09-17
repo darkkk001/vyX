@@ -69,7 +69,7 @@ export async function closeBulkForAccount(
   const nextOpenBySymbolName = new Map<string, string>();
   for (const bs of brokerSymbols) {
     if (checkTradingSession(bs.tradingSessions, now, bs.symbol.category) != null) {
-      nextOpenBySymbolName.set(bs.symbol.name, computeNextSessionOpen(bs.tradingSessions, now).toISOString());
+      nextOpenBySymbolName.set(bs.symbol.name, computeNextSessionOpen(bs.tradingSessions, now, bs.symbol.category).toISOString());
     }
   }
 

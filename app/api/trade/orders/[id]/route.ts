@@ -74,7 +74,7 @@ export async function PATCH(
   // MARKET_CLOSED + next-open-time answer as place/close/SL-TP-modify.
   const sessionError = checkTradingSession(brokerSymbol?.tradingSessions ?? [], new Date(), order.symbol.category);
   if (sessionError) {
-    const nextOpenAt = computeNextSessionOpen(brokerSymbol?.tradingSessions ?? [], new Date());
+    const nextOpenAt = computeNextSessionOpen(brokerSymbol?.tradingSessions ?? [], new Date(), order.symbol.category);
     return NextResponse.json({ error: sessionError, nextOpenAt: nextOpenAt.toISOString() }, { status: 400 });
   }
 

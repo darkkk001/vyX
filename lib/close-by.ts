@@ -83,7 +83,7 @@ export async function closePositionsByEachOther(
   });
   const sessionError = checkTradingSession(brokerSymbol?.tradingSessions ?? [], new Date(), a.symbol.category);
   if (sessionError) {
-    const nextOpenAt = computeNextSessionOpen(brokerSymbol?.tradingSessions ?? [], new Date());
+    const nextOpenAt = computeNextSessionOpen(brokerSymbol?.tradingSessions ?? [], new Date(), a.symbol.category);
     return { ok: false, error: sessionError, nextOpenAt: nextOpenAt.toISOString() };
   }
 

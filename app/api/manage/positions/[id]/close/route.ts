@@ -68,7 +68,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   });
   const sessionError = checkTradingSession(brokerSymbol?.tradingSessions ?? [], new Date(), position.symbol.category);
   if (sessionError) {
-    const nextOpenAt = computeNextSessionOpen(brokerSymbol?.tradingSessions ?? [], new Date());
+    const nextOpenAt = computeNextSessionOpen(brokerSymbol?.tradingSessions ?? [], new Date(), position.symbol.category);
     return NextResponse.json({ error: sessionError, nextOpenAt: nextOpenAt.toISOString() }, { status: 400 });
   }
 

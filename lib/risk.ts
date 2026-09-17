@@ -113,6 +113,43 @@ function isContinuouslyTraded(category: SymbolCategory): boolean {
   return category === "CRYPTO";
 }
 
+// ---- daily settlement break (2026-09-18) ----
+// The metals (gold / silver / platinum / palladium) take a ~1-hour daily
+// settlement break at 17:00 New York, Mon-Thu, exactly as
+// engine/market-data/src/gap_fill.rs's has_daily_break / in_daily_break
+// model it for candles. Until now only the engine knew: this route saw
+// "no ticks for 15 s" during the break and answered NO_LIVE_FEED /
+// PRICE_STALE, so a trader placing a gold order at 22:30 UTC was told
+// the FEED was down when the MARKET was closed. The anchor is NY 17:00,
+// which is 21:00 UTC in summer (EDT) and 22:00 UTC in winter (EST) --
+// the same ny_close_hour_utc the engine computes from US DST dates
+// (2nd Sunday of March 07:00 UTC -> 1st Sunday of November 06:00 UTC).
+// Applies to the DEFAULT rule only: a broker's own configured
+// TradingSession rows always win, break included.
+function nthSundayOfMonthUtc(year: number, month0: number, n: number): Date {
+  const first = new Date(Date.UTC(year, month0, 1));
+  const firstSunday = 1 + ((7 - first.getUTCDay()) % 7);
+  return new Date(Date.UTC(year, month0, firstSunday + (n - 1) * 7));
+}
+export function usEasternIsDst(now: Date): boolean {
+  const y = now.getUTCFullYear();
+  const start = nthSundayOfMonthUtc(y, 2, 2).getTime() + 7 * 3_600_000; // 2nd Sunday of March, 02:00 EST = 07:00 UTC
+  const end = nthSundayOfMonthUtc(y, 10, 1).getTime() + 6 * 3_600_000; // 1st Sunday of November, 02:00 EDT = 06:00 UTC
+  const t = now.getTime();
+  return t >= start && t < end;
+}
+export function nyCloseHourUtc(now: Date): number {
+  return usEasternIsDst(now) ? 21 : 22;
+}
+export function hasDailyBreak(category: SymbolCategory): boolean {
+  return category === "METALS";
+}
+export function isInDailyBreak(now: Date, category: SymbolCategory): boolean {
+  if (!hasDailyBreak(category)) return false;
+  const day = now.getUTCDay();
+  return day >= 1 && day <= 4 && now.getUTCHours() === nyCloseHourUtc(now);
+}
+
 // The standard global FX/metals weekend close every major venue observes,
 // used as the DEFAULT session when a BrokerSymbol has no admin-configured
 // TradingSession rows -- see that model's own schema comment ("zero rows
@@ -159,7 +196,7 @@ export function checkTradingSession(
   if (isContinuouslyTraded(category)) return null;
 
   if (sessions.length === 0) {
-    return isDefaultFxSessionClosed(now) ? "MARKET_CLOSED" : null;
+    return isDefaultFxSessionClosed(now) || isInDailyBreak(now, category) ? "MARKET_CLOSED" : null;
   }
 
   const day = now.getUTCDay();
@@ -192,9 +229,17 @@ export function checkTradingSession(
 // plain forward scan.
 export function computeNextSessionOpen(
   sessions: { dayOfWeek: number; openTime: string; closeTime: string }[],
-  now: Date
+  now: Date,
+  category?: SymbolCategory
 ): Date {
   if (sessions.length === 0) {
+    // a metals daily break reopens at the top of the next hour (18:00 New York)
+    if (category && isInDailyBreak(now, category) && !isDefaultFxSessionClosed(now)) {
+      const reopen = new Date(now);
+      reopen.setUTCMinutes(0, 0, 0);
+      reopen.setUTCHours(reopen.getUTCHours() + 1);
+      return reopen;
+    }
     const result = new Date(now);
     result.setUTCHours(22, 0, 0, 0);
     const daysToSunday = (7 - result.getUTCDay()) % 7;

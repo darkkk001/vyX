@@ -7,6 +7,9 @@ import {
   computeNextSessionOpen,
   evaluateLiveMarketPrice,
   isDefaultFxSessionClosed,
+  isInDailyBreak,
+  nyCloseHourUtc,
+  usEasternIsDst,
   checkCloseOnly,
   checkGroupTradingHalted,
 } from "@/lib/risk";
@@ -123,6 +126,45 @@ describe("checkTradingSession", () => {
   });
   it("still rejects a non-CRYPTO category (e.g. INDICES) under the default weekend closure", () => {
     expect(checkTradingSession([], new Date(Date.UTC(2026, 8, 5, 12, 0)), "INDICES")).toBe("MARKET_CLOSED");
+  });
+});
+
+// The metals daily settlement break (2026-09-18): 17:00 -> 18:00 New York, Mon-Thu, the same
+// rule engine/market-data/src/gap_fill.rs applies to candles. Before this the order route saw a
+// tick gap during the break and answered NO_LIVE_FEED / PRICE_STALE -- a trader placing a gold
+// order at 22:30 UTC in September was told the feed was down, not that the market was closed.
+describe("metals daily break", () => {
+  it("knows US DST (NY 17:00 = 21:00 UTC in summer, 22:00 UTC in winter)", () => {
+    expect(usEasternIsDst(new Date(Date.UTC(2026, 8, 16, 12, 0)))).toBe(true); // 16 Sep 2026
+    expect(usEasternIsDst(new Date(Date.UTC(2026, 0, 14, 12, 0)))).toBe(false); // 14 Jan 2026
+    expect(usEasternIsDst(new Date(Date.UTC(2026, 2, 8, 6, 59)))).toBe(false); // 2nd Sunday of March, just before 07:00 UTC
+    expect(usEasternIsDst(new Date(Date.UTC(2026, 2, 8, 7, 0)))).toBe(true);
+    expect(usEasternIsDst(new Date(Date.UTC(2026, 10, 1, 5, 59)))).toBe(true); // 1st Sunday of November, just before 06:00 UTC
+    expect(usEasternIsDst(new Date(Date.UTC(2026, 10, 1, 6, 0)))).toBe(false);
+    expect(nyCloseHourUtc(new Date(Date.UTC(2026, 8, 16, 12, 0)))).toBe(21);
+    expect(nyCloseHourUtc(new Date(Date.UTC(2026, 0, 14, 12, 0)))).toBe(22);
+  });
+  it("closes METALS Mon-Thu during the NY-17:00 hour only", () => {
+    const wedSummerBreak = new Date(Date.UTC(2026, 8, 16, 21, 30)); // Wed 16 Sep, 21:30 UTC (EDT)
+    expect(isInDailyBreak(wedSummerBreak, "METALS")).toBe(true);
+    expect(checkTradingSession([], wedSummerBreak, "METALS")).toBe("MARKET_CLOSED");
+    expect(checkTradingSession([], new Date(Date.UTC(2026, 8, 16, 22, 30)), "METALS")).toBeNull(); // 22:30 UTC: reopened
+    expect(checkTradingSession([], new Date(Date.UTC(2026, 8, 16, 20, 59)), "METALS")).toBeNull();
+    expect(checkTradingSession([], new Date(Date.UTC(2026, 0, 14, 22, 30)), "METALS")).toBe("MARKET_CLOSED"); // winter: 22:00 UTC hour
+    expect(checkTradingSession([], new Date(Date.UTC(2026, 0, 14, 21, 30)), "METALS")).toBeNull();
+    // FX has no daily break; crypto never closes; a configured session wins over the default rule
+    expect(checkTradingSession([], wedSummerBreak, "FOREX")).toBeNull();
+    expect(checkTradingSession([], wedSummerBreak, "CRYPTO")).toBeNull();
+    expect(checkTradingSession([{ dayOfWeek: 3, openTime: "00:00", closeTime: "23:59" }], wedSummerBreak, "METALS")).toBeNull();
+    // Friday's NY-17:00 hour is the weekend close, not a break; Sunday's is the reopen
+    expect(isInDailyBreak(new Date(Date.UTC(2026, 8, 18, 21, 30)), "METALS")).toBe(false);
+  });
+  it("reopens at the top of the next hour, not next Sunday", () => {
+    const reopen = computeNextSessionOpen([], new Date(Date.UTC(2026, 8, 16, 21, 30)), "METALS");
+    expect(reopen.toISOString()).toBe("2026-09-16T22:00:00.000Z");
+    // the weekend still reopens Sunday
+    const sunday = computeNextSessionOpen([], new Date(Date.UTC(2026, 8, 18, 22, 30)), "METALS");
+    expect(sunday.getUTCDay()).toBe(0);
   });
 });
 

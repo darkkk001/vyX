@@ -158,7 +158,7 @@ export async function executeReverseCloseReopen(
   });
   const sessionError = checkTradingSession(brokerSymbol?.tradingSessions ?? [], new Date(), position.symbol.category);
   if (sessionError) {
-    const nextOpenAt = computeNextSessionOpen(brokerSymbol?.tradingSessions ?? [], new Date());
+    const nextOpenAt = computeNextSessionOpen(brokerSymbol?.tradingSessions ?? [], new Date(), position.symbol.category);
     throw new PositionActionError(`Market closed for ${position.symbol.name}, opens ${nextOpenAt.toISOString()}`);
   }
 
