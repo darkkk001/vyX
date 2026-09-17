@@ -8,8 +8,8 @@
 use crate::{
     alerts::{AlertCache, TriggeredAlert},
     broker_offset::BrokerOffsetTracker,
-    cache::TickCache,
-    candle_updates_for_tick, db,
+    cache::{CandleSample, TickCache},
+    candle_updates_for_tick_ohlc, db,
     gap_fill::{market_open, GapFillTracker},
     stats::FeedStats,
     symbol_activity::SymbolActivity,
@@ -400,7 +400,7 @@ fn re_mark_live_price_dirty(cache: &TickCache, ticks: &[Tick]) {
 //   §2  `pending` carries the exact rows a failed write didn't land into
 //       the NEXT flush (ahead of that flush's own updates), so the missed
 //       bucket is retried with the real values it held, not just flat.
-async fn flush_candles(pools: &MarketDataPools, cache: &TickCache, ticks: &[Tick], stats: &Arc<FeedStats>, gap_fill: &GapFillTracker, broker_offset: &BrokerOffsetTracker, pending: &mut Vec<CandleUpdate>) {
+async fn flush_candles(pools: &MarketDataPools, cache: &TickCache, samples: &[CandleSample], stats: &Arc<FeedStats>, gap_fill: &GapFillTracker, broker_offset: &BrokerOffsetTracker, pending: &mut Vec<CandleUpdate>) {
     let now = Utc::now();
     // One batched round trip per target for the whole flush instead of
     // one per (tick x timeframe x gap-fill) -- see
@@ -414,7 +414,8 @@ async fn flush_candles(pools: &MarketDataPools, cache: &TickCache, ticks: &[Tick
         carried.iter().map(|u| (u.symbol.clone(), u.timeframe, u.bucket_start.timestamp_millis())).collect();
     let all_updates = {
         let mut all_updates: Vec<CandleUpdate> = carried;
-        for tick in ticks {
+        for sample in samples {
+            let tick = &sample.tick;
             // Records this tick's own broker_offset_sec if it has one
             // (see BrokerOffsetTracker's own doc comment) and returns the
             // value to bucket THIS tick's own candles against -- a batch
@@ -466,7 +467,7 @@ async fn flush_candles(pools: &MarketDataPools, cache: &TickCache, ticks: &[Tick
             // returns `now` for a tick with no embedded time, so a normal
             // live tick is unaffected; only lagged/backfilled ticks move to
             // their correct bucket.
-            for update in candle_updates_for_tick(tick, tick_time, offset_sec) {
+            for update in candle_updates_for_tick_ohlc(tick, tick_time, offset_sec, sample.open, sample.high, sample.low) {
                 // fix/realtime-sync §4 -- flat-fills every bucket skipped
                 // since the last one actually written for this
                 // symbol+timeframe (a quiet period, or the engine having
@@ -506,7 +507,7 @@ async fn flush_candles(pools: &MarketDataPools, cache: &TickCache, ticks: &[Tick
         gap_fill.record_committed(&all_updates);
     } else {
         stats.record_candle_write_failure();
-        re_mark_candle_dirty(cache, ticks);
+        re_mark_candle_dirty(cache, samples);
         // fix/candle-gaps §2 -- retain the exact rows that didn't land for
         // the next cycle, bounded so a long outage can't grow this without
         // limit (past the cap, §1's flat-fill + the EA backfill still close
@@ -553,8 +554,8 @@ fn merge_dedup(batch: Vec<CandleUpdate>) -> Vec<CandleUpdate> {
     out
 }
 
-fn re_mark_candle_dirty(cache: &TickCache, ticks: &[Tick]) {
-    let symbols: Vec<String> = ticks.iter().map(|t| t.symbol.clone()).collect();
+fn re_mark_candle_dirty(cache: &TickCache, samples: &[CandleSample]) {
+    let symbols: Vec<String> = samples.iter().map(|s| s.tick.symbol.clone()).collect();
     cache.mark_candle_dirty(&symbols);
 }
 
@@ -777,7 +778,7 @@ mod dual_write_tests {
         // both: every row on both sides, both counter trios advance
         let both = MarketDataPools::new(neon.clone(), Some(local.clone()), WriteMode::Both);
         assert!(flush_live_prices(&both, &cache, &[tick.clone()], &stats).await);
-        flush_candles(&both, &cache, &[tick.clone()], &stats, &gap_fill, &broker_offset, &mut Vec::new()).await;
+        flush_candles(&both, &cache, &[CandleSample { tick: tick.clone(), open: tick.bid, high: tick.bid, low: tick.bid }], &stats, &gap_fill, &broker_offset, &mut Vec::new()).await;
         let snap = stats.snapshot();
         assert_eq!((snap.db_ok, snap.db_fail), (2, 0), "neon: one live-price + one candle flush");
         assert_eq!((snap.local_db_ok, snap.local_db_fail), (2, 0), "local: one live-price + one candle flush");
