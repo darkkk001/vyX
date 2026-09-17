@@ -149,13 +149,33 @@ async function handlePlaceOrder(request: NextRequest) {
 
   // Risk checks -- see lib/risk.ts. Cheap/synchronous first, then the
   // query-backed ones, all before any order/position is created.
-  const [broker, account] = await Promise.all([
-    prisma.broker.findUniqueOrThrow({ where: { id: session.brokerId } }),
-    prisma.account.findUniqueOrThrow({
-      where: { id: session.accountId },
-      include: { group: { include: { allowedSymbols: { select: { symbolId: true } } } } },
-    }),
-  ]);
+  // This Broker load selects every Broker column, so it is the first thing
+  // to fail if the running code is ahead of the database's schema (a
+  // migration not yet applied to the DB THIS deployment actually points at
+  // -- Prisma P2022 "column does not exist"). Guard it explicitly: a raw
+  // throw here would surface to the trader as an opaque 500 on the money
+  // path; a handled 503 says what's wrong and is safe to retry once the DB
+  // is migrated. Same guard covers the account load's own P2021/P2022.
+  let broker: Prisma.BrokerGetPayload<object>;
+  let account: Prisma.AccountGetPayload<{ include: { group: { include: { allowedSymbols: { select: { symbolId: true } } } } } }>;
+  try {
+    [broker, account] = await Promise.all([
+      prisma.broker.findUniqueOrThrow({ where: { id: session.brokerId } }),
+      prisma.account.findUniqueOrThrow({
+        where: { id: session.accountId },
+        include: { group: { include: { allowedSymbols: { select: { symbolId: true } } } } },
+      }),
+    ]);
+  } catch (err) {
+    if (err instanceof Prisma.PrismaClientKnownRequestError && (err.code === "P2022" || err.code === "P2021")) {
+      console.error("trade/orders: schema drift on broker/account load", err.code, err.meta);
+      return NextResponse.json(
+        { error: "trading is temporarily unavailable (the database is being updated); please try again shortly" },
+        { status: 503 }
+      );
+    }
+    throw err;
+  }
   const riskError =
     checkTradingHalted(broker) ??
     checkCloseOnly(broker) ??
