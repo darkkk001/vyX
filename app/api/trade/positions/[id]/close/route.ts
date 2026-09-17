@@ -7,6 +7,8 @@ import { publishTradingEvent } from "@/lib/nats";
 import { recordDealerActivity } from "@/lib/dealer-activity";
 import { isDealingManagedAccount } from "@/lib/dealing-routing";
 import { checkLiveMarketPrice, checkLotStep, checkTradingSession, computeNextSessionOpen } from "@/lib/risk";
+import { getFreshPrice } from "@/lib/live-price";
+import { unwindCoverageForClose } from "@/lib/coverage";
 import * as mirror from "@/lib/mirror";
 
 // Closing (fully or partially) is the one place a trade changes the
@@ -117,8 +119,14 @@ export async function POST(
     }
     closeVolume = requested;
   }
-  const outcome = await prisma.$transaction((tx) =>
-    closePositionInTx(tx, {
+  // Coverage unwind (BOOK NOW): if this booked B-book position was hedged, close the
+  // same lots of its coverage mirror in the same transaction so the hedge never outlives
+  // the client position. The coverage leg is the same symbol -- close it at the server's
+  // fresh live bid/ask (side-correct), read best-effort before the transaction.
+  const coverageLive = position.coveragePositionId ? await getFreshPrice(position.symbol.name) : null;
+
+  const outcome = await prisma.$transaction(async (tx) => {
+    const res = await closePositionInTx(tx, {
       position: {
         id: position.id,
         accountId: session.accountId,
@@ -130,8 +138,17 @@ export async function POST(
       },
       closePrice,
       closeVolume,
-    })
-  );
+    });
+    const coverageUnwind = res.closed && position.coveragePositionId && coverageLive
+      ? await unwindCoverageForClose(tx, {
+          brokerId: session.brokerId,
+          coveragePositionId: position.coveragePositionId,
+          closeVolume,
+          livePrice: coverageLive,
+        })
+      : null;
+    return { ...res, coverageUnwind };
+  });
 
   if (!outcome.closed) {
     // Lost a race with a concurrent close (another tab, or the risk
@@ -169,6 +186,9 @@ export async function POST(
     closePrice: new Prisma.Decimal(closePrice),
   }).catch((err) => console.error("mirror.onClose failed", err));
   await publishTradingEvent("PositionClosed", { position_id: position.id, account_id: session.accountId, broker_id: session.brokerId });
+  if (outcome.coverageUnwind && !outcome.coverageUnwind.partial) {
+    await publishTradingEvent("PositionClosed", { position_id: outcome.coverageUnwind.coveragePositionId, account_id: "", broker_id: session.brokerId }).catch((err) => console.error("publish coverage PositionClosed failed", err));
+  }
   const brokerForActivity = await prisma.broker.findUnique({ where: { id: session.brokerId }, select: { dealingModeAt: true, dealingDeskAutoFillAt: true } });
   await recordDealerActivity(prisma, {
     brokerId: session.brokerId,
@@ -187,5 +207,5 @@ export async function POST(
     values: { closePrice, partial: outcome.partial, realizedPnl: outcome.realizedPnl.toString() },
     positionId: position.id,
   });
-  return NextResponse.json({ position: outcome.position, transaction: outcome.transaction, partial: outcome.partial });
+  return NextResponse.json({ position: outcome.position, transaction: outcome.transaction, partial: outcome.partial, coverageUnwind: outcome.coverageUnwind });
 }

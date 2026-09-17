@@ -9,6 +9,7 @@ import * as mirror from "@/lib/mirror";
 import { publishTradingEvent } from "@/lib/nats";
 import { recordDealerActivity } from "@/lib/dealer-activity";
 import { isDealingManagedAccount } from "@/lib/dealing-routing";
+import { unwindCoverageForClose } from "@/lib/coverage";
 
 async function requireManager() {
   const session = await getAdminSession();
@@ -173,7 +174,21 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       },
     });
 
-    return { position: updatedPosition, transaction, partial: isPartial };
+    // Coverage unwind: if this booked B-book position was hedged (BOOK NOW linked a
+    // coverage mirror), close the same lots of that mirror on the coverage account in
+    // this same transaction so the hedge never outlives the client position. Proportional
+    // for a partial close. See lib/coverage.ts.
+    const coverageUnwind = position.coveragePositionId
+      ? await unwindCoverageForClose(tx, {
+          brokerId,
+          coveragePositionId: position.coveragePositionId,
+          closeVolume,
+          livePrice: price,
+          closedByAdminId: session.adminId,
+        })
+      : null;
+
+    return { position: updatedPosition, transaction, partial: isPartial, coverageUnwind };
   });
 
   // docs/briefs/VYX-MIRROR-V0-BRIEF.md -- mirror hook gap fix: a
@@ -192,6 +207,11 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   // bug. Without it, a dealer-initiated close never appeared on the
   // backoffice Positions/Exposure views until a manual refresh.
   await publishTradingEvent("PositionClosed", { position_id: position.id, account_id: position.accountId, broker_id: brokerId });
+  // Surface the coverage unwind on the exposure/positions views too (only when the
+  // coverage leg fully closed; a partial reduction stays open).
+  if (result.coverageUnwind && !result.coverageUnwind.partial) {
+    await publishTradingEvent("PositionClosed", { position_id: result.coverageUnwind.coveragePositionId, account_id: "", broker_id: brokerId }).catch((err) => console.error("publish coverage PositionClosed failed", err));
+  }
   const brokerForActivity = await prisma.broker.findUnique({ where: { id: brokerId }, select: { dealingModeAt: true, dealingDeskAutoFillAt: true } });
   await recordDealerActivity(prisma, {
     brokerId,
@@ -216,5 +236,6 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     partial: result.partial,
     closePrice: closePrice.toString(),
     realizedPnl: realizedPnl.toString(),
+    coverageUnwind: result.coverageUnwind,
   });
 }

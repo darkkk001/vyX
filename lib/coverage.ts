@@ -4,6 +4,7 @@ import { Prisma } from "@prisma/client";
 import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
 import { provisionAccount } from "@/lib/account-provisioning";
+import { computeRealizedPnl } from "@/lib/trading";
 
 // Dealer coverage (B-book hedging). A broker hedges a client's B-book
 // position by clicking BOOK NOW (app/api/manage/positions/[id]/book),
@@ -141,4 +142,72 @@ export async function ensureCoverageAccount(
   });
 
   return { accountId: account.id, groupId: group.id };
+}
+
+// Unwinds the coverage mirror linked to a client position that is being closed,
+// INSIDE the caller's $transaction so the client close and the coverage unwind commit
+// atomically. `livePrice` is the same fresh bid/ask the client close already read (the
+// coverage leg is the same symbol). Closes the coverage leg by the same lots as the
+// client close (partial closes reduce it proportionally, capped at its remaining
+// volume), realizing the coverage leg's P&L on the coverage account (balance + a
+// TRADE_PNL row), exactly like a normal close. Returns null when there is nothing to
+// unwind (no link, already closed). The coverage leg carries no coveragePositionId of
+// its own, so this never recurses.
+export async function unwindCoverageForClose(
+  tx: Prisma.TransactionClient,
+  params: {
+    brokerId: string;
+    coveragePositionId: string;
+    closeVolume: Prisma.Decimal;
+    livePrice: { bid: Prisma.Decimal; ask: Prisma.Decimal };
+    closedByAdminId?: string | null;
+  }
+): Promise<{ coveragePositionId: string; closedVolume: string; realizedPnl: string; partial: boolean } | null> {
+  const cov = await tx.position.findUnique({
+    where: { id: params.coveragePositionId },
+    include: { symbol: { select: { name: true, contractSize: true } } },
+  });
+  if (!cov || cov.status !== "OPEN") return null;
+
+  const closeVol = params.closeVolume.gt(cov.volume) ? cov.volume : params.closeVolume;
+  const closePrice = cov.side === "BUY" ? params.livePrice.bid : params.livePrice.ask;
+  const realizedPnl = computeRealizedPnl({
+    side: cov.side,
+    openPrice: cov.openPrice,
+    closePrice,
+    volume: closeVol,
+    contractSize: cov.symbol.contractSize,
+  });
+  const partial = closeVol.lt(cov.volume);
+
+  const account = await tx.account.findUniqueOrThrow({ where: { id: cov.accountId } });
+  const balanceBefore = account.balance;
+  const balanceAfter = balanceBefore.add(realizedPnl);
+  await tx.account.update({ where: { id: cov.accountId }, data: { balance: balanceAfter } });
+
+  await tx.position.update({
+    where: { id: cov.id },
+    data: partial
+      ? { volume: cov.volume.sub(closeVol) }
+      : { status: "CLOSED", closePrice, realizedPnl, closedAt: new Date(), closedByAdminId: params.closedByAdminId ?? null },
+  });
+
+  await tx.transaction.create({
+    data: {
+      brokerId: params.brokerId,
+      accountId: cov.accountId,
+      type: "TRADE_PNL",
+      status: "COMPLETED",
+      amount: realizedPnl,
+      balanceBefore,
+      balanceAfter,
+      referenceType: "Position",
+      referenceId: cov.id,
+      note: partial
+        ? `Coverage unwind (partial): ${closeVol} lots @ ${closePrice}`
+        : `Coverage unwind @ ${closePrice}`,
+    },
+  });
+
+  return { coveragePositionId: cov.id, closedVolume: closeVol.toString(), realizedPnl: realizedPnl.toString(), partial };
 }
