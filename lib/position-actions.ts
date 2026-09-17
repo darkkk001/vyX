@@ -3,6 +3,7 @@ import { Prisma, PositionActionType, type Position, type OrderSide } from "@pris
 import { getFreshPrice } from "@/lib/live-price";
 import { checkTradingSession, computeNextSessionOpen } from "@/lib/risk";
 import { computeRealizedPnl } from "@/lib/trading";
+import { unwindCoverageForClose } from "@/lib/coverage";
 import { randomUUID } from "node:crypto";
 
 type Tx = Prisma.TransactionClient;
@@ -200,6 +201,19 @@ export async function executeReverseCloseReopen(
       note: `Reversed (close & reopen) by admin @ ${closePrice}`,
     },
   });
+
+  // Coverage unwind -- reverse-close-reopen fully closes the client position, so a booked
+  // B-book position's coverage mirror must unwind here too (same closePrice, same side). The
+  // reopened leg is a fresh position with no coverage link until it's booked again.
+  if (position.coveragePositionId) {
+    await unwindCoverageForClose(tx, {
+      brokerId: params.brokerId,
+      coveragePositionId: position.coveragePositionId,
+      closeVolume: position.volume,
+      closePrice,
+      closedByAdminId: params.adminId,
+    });
+  }
 
   const newOrder = await tx.order.create({
     data: {

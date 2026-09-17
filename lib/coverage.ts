@@ -159,7 +159,11 @@ export async function unwindCoverageForClose(
     brokerId: string;
     coveragePositionId: string;
     closeVolume: Prisma.Decimal;
-    livePrice: { bid: Prisma.Decimal; ask: Prisma.Decimal };
+    // The coverage leg is the SAME symbol and SAME side as the client position (BOOK NOW mirrors
+    // the side), so it closes at the same price the client close used -- pass that closePrice
+    // straight through; no separate bid/ask needed. Works for every close path (manual, SL/TP,
+    // stop-out, mirror, bulk), each of which already has a single closePrice.
+    closePrice: Prisma.Decimal | number | string;
     closedByAdminId?: string | null;
   }
 ): Promise<{ coveragePositionId: string; closedVolume: string; realizedPnl: string; partial: boolean } | null> {
@@ -170,7 +174,7 @@ export async function unwindCoverageForClose(
   if (!cov || cov.status !== "OPEN") return null;
 
   const closeVol = params.closeVolume.gt(cov.volume) ? cov.volume : params.closeVolume;
-  const closePrice = cov.side === "BUY" ? params.livePrice.bid : params.livePrice.ask;
+  const closePrice = new Prisma.Decimal(params.closePrice);
   const realizedPnl = computeRealizedPnl({
     side: cov.side,
     openPrice: cov.openPrice,

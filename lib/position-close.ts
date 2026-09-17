@@ -1,6 +1,9 @@
 import "server-only";
 import { Prisma } from "@prisma/client";
 import { computeRealizedPnl } from "@/lib/trading";
+import { unwindCoverageForClose } from "@/lib/coverage";
+
+export type CoverageUnwindResult = { coveragePositionId: string; closedVolume: string; realizedPnl: string; partial: boolean };
 
 export type ClosePositionInput = {
   id: string;
@@ -13,7 +16,11 @@ export type ClosePositionInput = {
 };
 
 export type ClosePositionOutcome =
-  | { closed: true; position: unknown; transaction: unknown; partial: boolean; realizedPnl: Prisma.Decimal }
+  // coverageUnwind: non-null when this position was a booked B-book leg (Position.coveragePositionId)
+  // and its coverage mirror was auto-closed in the same transaction. Every close path (trade close,
+  // bulk-close, close-by, mirror, and the risk monitor's SL/TP + stop-out) goes through here, so the
+  // coverage leg can never be orphaned regardless of which one fired.
+  | { closed: true; position: unknown; transaction: unknown; partial: boolean; realizedPnl: Prisma.Decimal; coverageUnwind: CoverageUnwindResult | null }
   | { closed: false }; // lost a race: another call already closed/reduced this position first
 
 // The one place a trade changes the account balance. Shared by the
@@ -155,5 +162,19 @@ export async function closePositionInTx(
 
   const updatedPosition = await tx.position.findUniqueOrThrow({ where: { id: position.id } });
 
-  return { closed: true, position: updatedPosition, transaction, partial: isPartial, realizedPnl };
+  // Coverage unwind -- if this is a booked B-book position (BOOK NOW linked a coverage mirror),
+  // close the same lots of that mirror on the coverage account in this same transaction so the
+  // hedge never outlives the client leg. Proportional for a partial close. The coverage leg is the
+  // same symbol + side, so it closes at this same closePrice. This is the single chokepoint every
+  // close path shares, so SL/TP, stop-out, mirror and bulk closes all unwind coverage too.
+  const coverageUnwind = updatedPosition.coveragePositionId
+    ? await unwindCoverageForClose(tx, {
+        brokerId: position.brokerId,
+        coveragePositionId: updatedPosition.coveragePositionId,
+        closeVolume,
+        closePrice,
+      })
+    : null;
+
+  return { closed: true, position: updatedPosition, transaction, partial: isPartial, realizedPnl, coverageUnwind };
 }

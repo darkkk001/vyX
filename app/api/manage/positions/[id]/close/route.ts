@@ -183,7 +183,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
           brokerId,
           coveragePositionId: position.coveragePositionId,
           closeVolume,
-          livePrice: price,
+          closePrice,
           closedByAdminId: session.adminId,
         })
       : null;
