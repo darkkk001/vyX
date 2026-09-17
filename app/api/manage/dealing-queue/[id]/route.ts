@@ -63,6 +63,12 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   if (!action) {
     return NextResponse.json({ error: "action must be ACCEPT, REQUOTE, or REJECT" }, { status: 400 });
   }
+  // ACCEPT fill basis: "REQUESTED" (default -- fill at exactly the client's
+  // requested price, this route's original behavior) or "MARKET" (fill at
+  // the current live price, the dealer's "accept at market" option). Ignored
+  // for REQUOTE/REJECT. Backward-compatible: an older client that sends no
+  // fillMode gets REQUESTED, unchanged.
+  const fillMode = body?.fillMode === "MARKET" ? "MARKET" : "REQUESTED";
 
   const order = await prisma.order.findUnique({
     where: { id },
@@ -245,7 +251,15 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     liveBaseSpreadPips: null,
   });
   logSpreadWarning({ accountId: order.accountId, symbolId: order.symbolId, brokerId }, pricing.warning);
-  const markedUpFillPrice = applySpreadMarkup({ side: order.side, price: order.requestedPrice, spreadMarkup: pricing.spreadMarkup, digits: order.symbol.digits });
+  // REQUESTED = the client's own price (requestedPrice, guarded non-null above);
+  // MARKET = the live price this route already read at click (liveRefAtClick,
+  // side-correct: ask for BUY, bid for SELL). Broker spread markup then applies
+  // on top of whichever base, same as every other fill site.
+  const acceptBase = fillMode === "MARKET" ? liveRefAtClick : order.requestedPrice;
+  if (acceptBase == null) {
+    return NextResponse.json({ error: "no live price available to accept at market" }, { status: 409 });
+  }
+  const markedUpFillPrice = applySpreadMarkup({ side: order.side, price: acceptBase, spreadMarkup: pricing.spreadMarkup, digits: order.symbol.digits });
   const bookType = order.account.group ? resolveBookType(order.account.group.groupType) : brokerSymbol.defaultBookType;
 
   try {
@@ -266,7 +280,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
           entityType: "Position",
           entityId: position.id,
           oldValue: { ...orderAuditFields(order, order.symbol.name, order.account.accountNumber), status: "PENDING", requestedPrice: order.requestedPrice?.toString() ?? null },
-          newValue: { status: "FILLED", filledPrice: markedUpFillPrice.toString(), liveAtClick: liveRefAtClick?.toString() ?? null },
+          newValue: { status: "FILLED", fillMode, filledPrice: markedUpFillPrice.toString(), acceptBase: acceptBase.toString(), liveAtClick: liveRefAtClick?.toString() ?? null },
         },
       });
 
