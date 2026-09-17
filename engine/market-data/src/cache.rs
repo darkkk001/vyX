@@ -13,10 +13,32 @@ use std::sync::RwLock;
 
 use chrono::{DateTime, Duration, Utc};
 use protocol::Tick;
+use rust_decimal::Decimal;
+
+/// One symbol's candle observation for a flush cycle: the latest tick (its bid is the
+/// bucket close, and it carries the symbol + tick_ms the flush buckets against) plus the
+/// TRUE open/high/low accumulated across EVERY tick since the last flush -- not just the
+/// single latest tick. This is what fixes the live-forming bar: an intra-second spike that
+/// happened and reversed between two flushes is captured in high/low here, then widened
+/// into the bucket by the DB's GREATEST/LEAST upsert, instead of being lost because only
+/// the last tick was point-sampled.
+pub struct CandleSample {
+    pub tick: Tick,
+    pub open: Decimal,
+    pub high: Decimal,
+    pub low: Decimal,
+}
 
 struct TickEntry {
     tick: Tick,
     at: DateTime<Utc>,
+    // Candle OHLC accumulated across ticks since the last `take_dirty_candles`. close is
+    // always `tick.bid` (the latest); open is the first tick of the current accumulation
+    // window; high/low are the running extremes. The window resets (open/high/low re-seed
+    // from the next tick) once the accumulation has been taken -- see `set` / `take_dirty_candles`.
+    candle_open: Decimal,
+    candle_high: Decimal,
+    candle_low: Decimal,
     // Independent per-consumer dirty bits, not one shared flag: LivePrice
     // and Candle flush on different cadences (ingest::spawn_periodic_flush),
     // so a LivePrice flush clearing a single shared flag would make the
@@ -50,10 +72,44 @@ impl TickCache {
             Ok(g) => g,
             Err(poisoned) => poisoned.into_inner(),
         };
-        guard.insert(
-            tick.symbol.clone(),
-            TickEntry { tick: tick.clone(), at, live_price_dirty: true, candle_dirty: true },
-        );
+        match guard.get_mut(&tick.symbol) {
+            Some(e) => {
+                // Accumulate the candle OHLC across this window. If candle_dirty is already
+                // set, we're mid-window -> widen high/low; if it was just taken (false), this
+                // tick starts a fresh window -> re-seed open/high/low from it. close is the
+                // latest tick's bid, carried in `e.tick`.
+                if e.candle_dirty {
+                    if tick.bid > e.candle_high {
+                        e.candle_high = tick.bid;
+                    }
+                    if tick.bid < e.candle_low {
+                        e.candle_low = tick.bid;
+                    }
+                } else {
+                    e.candle_open = tick.bid;
+                    e.candle_high = tick.bid;
+                    e.candle_low = tick.bid;
+                }
+                e.tick = tick.clone();
+                e.at = at;
+                e.live_price_dirty = true;
+                e.candle_dirty = true;
+            }
+            None => {
+                guard.insert(
+                    tick.symbol.clone(),
+                    TickEntry {
+                        tick: tick.clone(),
+                        at,
+                        candle_open: tick.bid,
+                        candle_high: tick.bid,
+                        candle_low: tick.bid,
+                        live_price_dirty: true,
+                        candle_dirty: true,
+                    },
+                );
+            }
+        }
     }
 
     // Same 15s staleness rule `db::get_live_price`'s SQL already enforces
@@ -143,9 +199,12 @@ impl TickCache {
         }
     }
 
-    /// Same claim-and-clear shape as `take_dirty_live_prices`, for the
-    /// independent Candle dirty bit.
-    pub fn take_dirty_candles(&self) -> Vec<Tick> {
+    /// Same claim-and-clear shape as `take_dirty_live_prices`, for the independent Candle
+    /// dirty bit -- but returns the accumulated OHLC (CandleSample), not just the latest
+    /// tick, so the flush writes the true intra-window high/low, not a point sample.
+    /// Clearing candle_dirty also ends the accumulation window: the next `set` for this
+    /// symbol re-seeds open/high/low.
+    pub fn take_dirty_candles(&self) -> Vec<CandleSample> {
         let mut guard = match self.inner.write() {
             Ok(g) => g,
             Err(poisoned) => poisoned.into_inner(),
@@ -155,7 +214,7 @@ impl TickCache {
             .filter(|e| e.candle_dirty)
             .map(|e| {
                 e.candle_dirty = false;
-                e.tick.clone()
+                CandleSample { tick: e.tick.clone(), open: e.candle_open, high: e.candle_high, low: e.candle_low }
             })
             .collect()
     }
@@ -214,6 +273,40 @@ mod tests {
         cache.set(&tick("EURUSD"), Utc::now() - Duration::seconds(30));
         cache.set(&tick("EURUSD"), Utc::now());
         assert!(cache.get_if_fresh("EURUSD", Duration::seconds(15)).is_some());
+    }
+
+    #[test]
+    fn take_dirty_candles_captures_the_intra_window_high_low_not_just_the_last_tick() {
+        // The live-forming-bar fix: a fast spike that happens and reverses between two flushes
+        // must be captured in high/low, not lost to point-sampling only the latest tick.
+        let cache = TickCache::new();
+        let mk = |bid: i64| { let mut t = tick("XAUUSD"); t.bid = Decimal::from(bid); t };
+        let now = Utc::now();
+        cache.set(&mk(100), now); // open
+        cache.set(&mk(110), now); // spike high -- point-sampling would lose this
+        cache.set(&mk(95), now);  // dip low
+        cache.set(&mk(101), now); // close (latest)
+        let s = cache.take_dirty_candles();
+        assert_eq!(s.len(), 1);
+        assert_eq!(s[0].open, Decimal::from(100));
+        assert_eq!(s[0].high, Decimal::from(110), "intra-window spike high must be captured");
+        assert_eq!(s[0].low, Decimal::from(95), "intra-window dip low must be captured");
+        assert_eq!(s[0].tick.bid, Decimal::from(101), "close is the latest tick");
+    }
+
+    #[test]
+    fn a_new_window_after_a_take_re_seeds_open_high_low() {
+        let cache = TickCache::new();
+        let mk = |bid: i64| { let mut t = tick("XAUUSD"); t.bid = Decimal::from(bid); t };
+        cache.set(&mk(100), Utc::now());
+        cache.set(&mk(110), Utc::now());
+        let _ = cache.take_dirty_candles(); // ends the window
+        cache.set(&mk(102), Utc::now());
+        cache.set(&mk(103), Utc::now());
+        let s = cache.take_dirty_candles();
+        assert_eq!(s[0].open, Decimal::from(102), "a fresh window re-seeds open from its first tick");
+        assert_eq!(s[0].high, Decimal::from(103), "a fresh window must not carry the previous window's high");
+        assert_eq!(s[0].low, Decimal::from(102));
     }
 
     #[test]

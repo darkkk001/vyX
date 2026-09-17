@@ -230,15 +230,33 @@ pub struct CandleUpdate {
 /// for why Market Data Core is the sole writer of these tables regardless
 /// of which layer issues the actual SQL.
 pub fn candle_updates_for_tick(tick: &Tick, now: DateTime<Utc>, broker_offset_sec: i64) -> Vec<CandleUpdate> {
+    // Point sample (open=high=low=close=bid) -- used by paths that carry a single tick, e.g.
+    // the restart/deep-backfill replay. The live flush path uses the OHLC-accumulating variant.
+    candle_updates_for_tick_ohlc(tick, now, broker_offset_sec, tick.bid, tick.bid, tick.bid)
+}
+
+/// Like `candle_updates_for_tick` but with the TRUE open/high/low accumulated across every
+/// tick since the last flush (close is still the latest `tick.bid`). This is what makes the
+/// live-forming bar correct in real time: an intra-window spike is carried in `high`/`low`
+/// here and widened into the bucket by the DB upsert's GREATEST/LEAST, instead of being lost
+/// to point-sampling only the last tick. See cache::TickCache's candle accumulation.
+pub fn candle_updates_for_tick_ohlc(
+    tick: &Tick,
+    now: DateTime<Utc>,
+    broker_offset_sec: i64,
+    open: rust_decimal::Decimal,
+    high: rust_decimal::Decimal,
+    low: rust_decimal::Decimal,
+) -> Vec<CandleUpdate> {
     TIMEFRAMES
         .iter()
         .map(|&tf| CandleUpdate {
             symbol: tick.symbol.clone(),
             timeframe: tf,
             bucket_start: bucket_start(tf, now, broker_offset_sec),
-            open: tick.bid,
-            high: tick.bid,
-            low: tick.bid,
+            open,
+            high,
+            low,
             close: tick.bid,
         })
         .collect()
