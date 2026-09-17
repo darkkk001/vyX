@@ -58,38 +58,72 @@ fn us_eastern_is_dst(t: DateTime<Utc>) -> bool {
 // across a real Sat/Sun close (08-29 -> 08-30), so whatever built this
 // exclusion never actually reached the Contabo binary (see the round-2
 // deploy notes: this needs a real `cargo build --release -p server` +
-// service restart, not just a git pull). While fixing that, this used to
-// hardcode the Friday boundary at hour>=21 (real FX close is NY 17:00,
-// 21:00 UTC in winter/EST, 22:00 UTC in summer/EDT) -- deliberately
-// picking the earlier, always-safe-in-one-direction bound rather than
-// tracking the actual DST transition date, accepting "at most skips
-// flat-filling one real trading hour during EDT months" as the cost.
-//
-// 2026-09-08 fix -- that cost stopped being acceptable the moment this
-// same function started gating the REAL-tick write path too (ingest.rs's
-// flush_candles, market_open), not just this module's own synthetic
-// fill: during EDT (roughly mid-March to early November -- in effect
-// most of the year), the old hardcoded 21:00 boundary wrongly called a
-// full, genuinely-open trading hour "closed" every single Friday,
-// silently dropping every real M1/M5/... tick between 21:00 and the
-// actual 22:00 EDT close -- a full hour of missing candles on the chart,
-// confirmed against a live Pepperstone comparison showing no such gap.
-// Computing the real boundary from us_eastern_is_dst above instead of
-// guessing removes the tradeoff entirely: correct in both directions,
-// both seasons, both callers (this module's synthetic fill AND
-// ingest.rs's real-tick gate now agree with the calendar, not a
+// service restart, not just a git pull). The boundary is NY 17:00; in UTC
+// that is 22:00 in winter/EST (UTC-5) and 21:00 in summer/EDT (UTC-4) --
+// see ny_close_hour_utc below, which computes it from us_eastern_is_dst so
+// it is correct in both seasons and both callers (this module's synthetic
+// fill AND ingest.rs's real-tick gate agree with the calendar, not a
 // hand-picked constant).
+//
+// 2026-09-17 fix -- the DST direction here had been INVERTED (summer
+// mapped to 22:00, winter to 21:00, the opposite of the real UTC offsets),
+// an hour wrong every week in both seasons; corrected in ny_close_hour_utc,
+// with the tests re-pinned to the real forex close (Fri 5pm ET = 22:00 UTC
+// EST / 21:00 UTC EDT).
+// UTC hour of 17:00 America/New_York on date `t` -- the anchor shared by
+// the FX weekly close/reopen AND the daily metals settlement break. EDT
+// (summer) is UTC-4 so 17:00 -> 21:00 UTC; EST (winter) is UTC-5 so
+// 17:00 -> 22:00 UTC. (Confirmed against the industry-standard forex close:
+// Friday 5pm ET = 22:00 UTC in EST / 21:00 UTC in EDT.)
+//
+// 2026-09-17 fix -- this was inverted (`if dst { 22 } else { 21 }`), which
+// mapped summer to 22:00 and winter to 21:00, an hour wrong in BOTH
+// seasons: it manufactured an extra closed-hour candle on one side of the
+// weekend and dropped a real trading hour on the other, every week. The
+// matching tests encoded the same inversion and so passed while wrong.
+fn ny_close_hour_utc(t: DateTime<Utc>) -> u32 {
+    if us_eastern_is_dst(t) {
+        21
+    } else {
+        22
+    }
+}
+
 fn market_closed(t: DateTime<Utc>) -> bool {
-    // NY FX close/reopen is 17:00 America/New_York -- 21:00 UTC in EST,
-    // 22:00 UTC in EDT. Both the Friday close and the Sunday reopen are
-    // the same NY-17:00 anchor, one week apart, so both move together.
-    let close_hour = if us_eastern_is_dst(t) { 22 } else { 21 };
+    // Both the Friday close and the Sunday reopen are the same NY-17:00
+    // anchor, one week apart, so both move together with DST.
+    let close_hour = ny_close_hour_utc(t);
     match t.weekday() {
         Weekday::Sat => true,
         Weekday::Fri => t.hour() >= close_hour,
         Weekday::Sun => t.hour() < close_hour,
         _ => false,
     }
+}
+
+// Instruments that take a ~1-hour daily settlement break at 17:00 New York
+// (metals: gold/silver/platinum/palladium), unlike spot FX which is
+// continuous 24/5. Static match, same "no per-symbol session lookup in
+// this crate yet" constraint as is_continuously_traded -- keep in sync
+// until the real TradingSession-config lookup lands (Phase 3). Indices can
+// be added here once listed.
+fn has_daily_break(symbol: &str) -> bool {
+    matches!(symbol, "XAUUSD" | "XAGUSD" | "XPTUSD" | "XPDUSD")
+}
+
+// The daily settlement break window for has_daily_break symbols: 17:00 ->
+// 18:00 New York, i.e. the single UTC hour beginning at the same NY-17:00
+// anchor the weekend close uses (so it tracks DST identically). Weekdays
+// Mon-Thu only -- Friday 17:00 onward and the whole weekend are already
+// closed by market_closed. Without this, the nightly gold break was
+// flat-filled (and stale heartbeat resends written) as real candles --
+// exactly the "candles during a market-closed period" symptom on XAUUSD.
+fn in_daily_break(t: DateTime<Utc>) -> bool {
+    let break_hour = ny_close_hour_utc(t);
+    matches!(
+        t.weekday(),
+        Weekday::Mon | Weekday::Tue | Weekday::Wed | Weekday::Thu
+    ) && t.hour() == break_hour
 }
 
 // hotfix/terminal-live-bugs round 2 -- market_closed() above is a FX/
@@ -130,7 +164,16 @@ fn is_continuously_traded(symbol: &str) -> bool {
 // stay private -- this is the one function anything outside this module
 // should ever call.
 pub(crate) fn market_open(symbol: &str, t: DateTime<Utc>) -> bool {
-    is_continuously_traded(symbol) || !market_closed(t)
+    if is_continuously_traded(symbol) {
+        return true;
+    }
+    if market_closed(t) {
+        return false;
+    }
+    // An otherwise-open weekday minute is still closed if this instrument
+    // is in its daily settlement break (metals). Spot FX has no break and
+    // is unaffected.
+    !(has_daily_break(symbol) && in_daily_break(t))
 }
 
 // Caps how many flat-fill bars a single tick can generate -- protects
@@ -437,18 +480,16 @@ mod tests {
 
     #[test]
     fn sunday_reopen_boundary_shifts_with_dst_the_same_way_friday_close_does() {
-        // Winter: reopen is 21:00 UTC (EST). Anchor at Sat 20:00 so the
-        // very next hour is the first one this test can observe.
+        // Winter/EST: NY 17:00 = 22:00 UTC, so the weekly reopen is 22:00 UTC.
+        // Sun 21:00 stays closed and Sun 22:00 is the first open bucket.
         let tracker = GapFillTracker::new();
         let sat_2000 = Utc.with_ymd_and_hms(2026, 1, 17, 20, 0, 0).unwrap(); // Saturday
-        let sun_2200 = Utc.with_ymd_and_hms(2026, 1, 18, 22, 0, 0).unwrap(); // Sunday
+        let mon_0000 = Utc.with_ymd_and_hms(2026, 1, 19, 0, 0, 0).unwrap(); // Monday
         tracker.fill_gaps_and_record(&update("EURUSD", Timeframe::H1, sat_2000, dec!(1.1)));
-        let fills = tracker.fill_gaps_and_record(&update("EURUSD", Timeframe::H1, sun_2200, dec!(1.1)));
-        // Sat 21:00..23:00 stay closed (Saturday is always closed); Sun
-        // 21:00 must now be filled (winter reopen), Sun 20:00 stays closed.
+        let fills = tracker.fill_gaps_and_record(&update("EURUSD", Timeframe::H1, mon_0000, dec!(1.1)));
         let fill_starts: Vec<DateTime<Utc>> = fills.iter().map(|f| f.bucket_start).collect();
-        assert!(fill_starts.contains(&Utc.with_ymd_and_hms(2026, 1, 18, 21, 0, 0).unwrap()), "Sun 21:00 UTC should be open in winter/EST, got: {:?}", fill_starts);
-        assert!(!fill_starts.contains(&Utc.with_ymd_and_hms(2026, 1, 18, 20, 0, 0).unwrap()), "Sun 20:00 UTC should still be closed, got: {:?}", fill_starts);
+        assert!(fill_starts.contains(&Utc.with_ymd_and_hms(2026, 1, 18, 22, 0, 0).unwrap()), "Sun 22:00 UTC should be open in winter/EST, got: {:?}", fill_starts);
+        assert!(!fill_starts.contains(&Utc.with_ymd_and_hms(2026, 1, 18, 21, 0, 0).unwrap()), "Sun 21:00 UTC should still be closed in winter/EST, got: {:?}", fill_starts);
     }
 
     #[test]
@@ -491,10 +532,10 @@ mod tests {
     #[test]
     fn the_weekend_is_never_flat_filled() {
         let tracker = GapFillTracker::new();
-        // Friday 21:00 UTC -> Monday 01:00 UTC, H1 timeframe: real market
-        // close is Friday 21:00 through Sunday 21:00 inclusive (excluded
-        // below); the market is genuinely open again Sunday 22:00 UTC, so
-        // Sun 22:00 / Sun 23:00 / Mon 00:00 are real fills, not weekend.
+        // Friday 21:00 UTC -> Monday 01:00 UTC, H1, in summer/EDT: real FX
+        // close is NY 17:00 = 21:00 UTC, so Fri 21:00 through the weekend is
+        // shut and the market reopens Sunday 21:00 UTC -- Sun 21:00 / 22:00 /
+        // 23:00 / Mon 00:00 are the real fills, nothing during the weekend.
         let fri = Utc.with_ymd_and_hms(2026, 8, 14, 21, 0, 0).unwrap(); // Friday
         let mon = Utc.with_ymd_and_hms(2026, 8, 17, 1, 0, 0).unwrap(); // Monday
         tracker.fill_gaps_and_record(&update("EURUSD", Timeframe::H1, fri, dec!(1.1)));
@@ -507,47 +548,65 @@ mod tests {
         assert_eq!(
             fill_starts,
             vec![
-                Utc.with_ymd_and_hms(2026, 8, 16, 22, 0, 0).unwrap(), // Sunday 22:00 -- market reopens
+                Utc.with_ymd_and_hms(2026, 8, 16, 21, 0, 0).unwrap(), // Sunday 21:00 -- summer/EDT reopen
+                Utc.with_ymd_and_hms(2026, 8, 16, 22, 0, 0).unwrap(),
                 Utc.with_ymd_and_hms(2026, 8, 16, 23, 0, 0).unwrap(),
                 Utc.with_ymd_and_hms(2026, 8, 17, 0, 0, 0).unwrap(),
             ]
         );
     }
 
-    // 2026-09-08 -- replaces the old, DST-imprecise version of this test
-    // (hardcoded Fri 21:00 UTC always closed, regardless of season). Real
-    // FX close is NY 17:00 -- 21:00 UTC in EST/winter, 22:00 UTC in
-    // EDT/summer -- so which of those two hours is "still open" now
-    // genuinely depends on the date, and this pins BOTH seasons instead
-    // of one hardcoded assumption. This exact boundary is what silently
-    // dropped a full hour of real, live M1 ticks every DST-season Friday
-    // once it started gating ingest.rs's real-tick path too (market_open)
-    // -- see this test module's neighboring market_open tests and
-    // ingest.rs's own comment on the fix.
+    // Pins BOTH seasons of the Friday close boundary to the real forex
+    // close (NY 17:00): 22:00 UTC in EST/winter, 21:00 UTC in EDT/summer.
+    // So the 21:00-22:00 UTC hour is STILL OPEN in winter (close is an hour
+    // later, at 22:00) and ALREADY CLOSED in summer (21:00 is the close).
+    // 2026-09-17: these two tests previously asserted the inverted seasons
+    // (matching the inverted close_hour) and so passed while wrong.
     #[test]
-    fn friday_21_to_22_utc_is_still_closed_in_winter_est() {
-        // 2026-01-16 -- January, well outside DST -- real close is 21:00 UTC.
+    fn friday_21_to_22_utc_is_still_open_in_winter_est() {
+        // 2026-01-16 -- January/EST -- real close is NY 17:00 = 22:00 UTC, so
+        // the 21:00 bucket is still a live trading hour and must be filled.
         let tracker = GapFillTracker::new();
         let fri_2000 = Utc.with_ymd_and_hms(2026, 1, 16, 20, 0, 0).unwrap();
         let fri_2200 = Utc.with_ymd_and_hms(2026, 1, 16, 22, 0, 0).unwrap();
         tracker.fill_gaps_and_record(&update("EURUSD", Timeframe::H1, fri_2000, dec!(1.1)));
         let fills = tracker.fill_gaps_and_record(&update("EURUSD", Timeframe::H1, fri_2200, dec!(1.1)));
-        assert!(fills.is_empty(), "Fri 21:00 UTC in EST/winter should be excluded as closed, got: {:?}", fills);
+        assert_eq!(fills.len(), 1, "Fri 21:00 UTC in EST/winter is real market-open time, should be filled, got: {:?}", fills);
+        assert_eq!(fills[0].bucket_start, Utc.with_ymd_and_hms(2026, 1, 16, 21, 0, 0).unwrap());
     }
 
     #[test]
-    fn friday_21_to_22_utc_is_genuinely_open_in_summer_edt() {
-        // 2026-08-14 -- August, deep in DST -- real close is 22:00 UTC, so
-        // the 21:00 bucket is a real, live trading hour and must produce a
-        // real fill, not be silently dropped the way the old hardcoded
-        // boundary did.
+    fn friday_21_to_22_utc_is_closed_in_summer_edt() {
+        // 2026-08-14 -- August/EDT -- real close is NY 17:00 = 21:00 UTC, so
+        // the 21:00 bucket is already the weekend close and must be excluded.
         let tracker = GapFillTracker::new();
         let fri_2000 = Utc.with_ymd_and_hms(2026, 8, 14, 20, 0, 0).unwrap();
         let fri_2200 = Utc.with_ymd_and_hms(2026, 8, 14, 22, 0, 0).unwrap();
         tracker.fill_gaps_and_record(&update("EURUSD", Timeframe::H1, fri_2000, dec!(1.1)));
         let fills = tracker.fill_gaps_and_record(&update("EURUSD", Timeframe::H1, fri_2200, dec!(1.1)));
-        assert_eq!(fills.len(), 1, "Fri 21:00 UTC in EDT/summer is real market-open time, should be filled, got: {:?}", fills);
-        assert_eq!(fills[0].bucket_start, Utc.with_ymd_and_hms(2026, 8, 14, 21, 0, 0).unwrap());
+        assert!(fills.is_empty(), "Fri 21:00 UTC in EDT/summer is the weekend close, should be excluded, got: {:?}", fills);
+    }
+
+    #[test]
+    fn metals_daily_break_is_excluded_for_xau_but_not_fx() {
+        // Gold takes a ~1h daily settlement break at 17:00 New York -- 22:00
+        // UTC in winter/EST, 21:00 UTC in summer/EDT. XAUUSD must NOT flat-
+        // fill (or write) that hour; spot FX (EURUSD) has no break.
+        let wed_2200_winter = Utc.with_ymd_and_hms(2026, 1, 14, 22, 0, 0).unwrap(); // Wed, EST
+        assert!(!market_open("XAUUSD", wed_2200_winter), "XAU should be in its daily break at 22:00 UTC winter");
+        assert!(market_open("EURUSD", wed_2200_winter), "EURUSD has no daily break and stays open (winter)");
+        let wed_2100_summer = Utc.with_ymd_and_hms(2026, 8, 12, 21, 0, 0).unwrap(); // Wed, EDT
+        assert!(!market_open("XAUUSD", wed_2100_summer), "XAU should be in its daily break at 21:00 UTC summer");
+        assert!(market_open("EURUSD", wed_2100_summer), "EURUSD has no daily break and stays open (summer)");
+
+        // and the synthetic flat-fill path skips the XAU break bucket
+        let tracker = GapFillTracker::new();
+        let wed_2100 = Utc.with_ymd_and_hms(2026, 1, 14, 21, 0, 0).unwrap();
+        let wed_2300 = Utc.with_ymd_and_hms(2026, 1, 14, 23, 0, 0).unwrap();
+        tracker.fill_gaps_and_record(&update("XAUUSD", Timeframe::H1, wed_2100, dec!(2000)));
+        let fills = tracker.fill_gaps_and_record(&update("XAUUSD", Timeframe::H1, wed_2300, dec!(2000)));
+        let starts: Vec<DateTime<Utc>> = fills.iter().map(|f| f.bucket_start).collect();
+        assert!(!starts.contains(&wed_2200_winter), "XAU daily break 22:00 UTC (winter) should be excluded, got: {:?}", starts);
     }
 
     #[test]

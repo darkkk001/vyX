@@ -455,7 +455,18 @@ async fn flush_candles(pools: &MarketDataPools, cache: &TickCache, ticks: &[Tick
                 continue;
             }
 
-            for update in candle_updates_for_tick(tick, now, offset_sec) {
+            // fix/candle-merge -- bucket by the tick's OWN represented time,
+            // the same value the session gate above uses, NOT this flush
+            // cycle's wall clock `now`. Under Postgres flush lag (this file's
+            // own 4-37s upsert notes) a batch resuming at, say, 10:01:00.2
+            // would otherwise stamp a tick genuinely from 10:00:59.8 into the
+            // 10:01 bucket, leaking one minute's range into the next and
+            // leaving 10:00 to be flat-filled -- two real M1 candles rendering
+            // as one fat candle + a flat doji. resolve_tick_time already
+            // returns `now` for a tick with no embedded time, so a normal
+            // live tick is unaffected; only lagged/backfilled ticks move to
+            // their correct bucket.
+            for update in candle_updates_for_tick(tick, tick_time, offset_sec) {
                 // fix/realtime-sync §4 -- flat-fills every bucket skipped
                 // since the last one actually written for this
                 // symbol+timeframe (a quiet period, or the engine having
