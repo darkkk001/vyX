@@ -147,7 +147,14 @@ const AUDIT_ACTION_MAP: Record<string, DealerActivityAction> = {
   ORDER_TRIGGERED_AND_FILLED: "POSITION_OPENED",
   DEALING_ORDER_AUTO_ACCEPTED: "POSITION_OPENED",
   DEALING_ORDER_ACCEPTED: "POSITION_OPENED",
-  MANUAL_POSITION_CLOSE: "POSITION_CLOSED",
+  // POSITION_CLOSED is deliberately NOT sourced from AuditLog any more.
+  // Only the manager's manual close ever wrote an audit row that mapped
+  // here (MANUAL_POSITION_CLOSE); a trader's own close (STM_BULK_CLOSE,
+  // no realizedPnl in its JSON) and every engine close (SL / TP / stop-
+  // out) wrote nothing usable, so the cold-load feed showed a closed
+  // position's realized P&L only for the rarest close path. Closes now
+  // come from the Position table itself (the `closed` query below),
+  // which every close path writes.
 };
 
 export type DealerActivityFeedRow = {
@@ -179,16 +186,57 @@ export async function getDealerActivityFeedRows(
   // per row. Over-fetches slightly when dealingOnly is true (a row that
   // turns out non-dealing is dropped after the join), acceptable at this
   // volume (`take: limit` rows, not the whole table).
-  const [rows, broker] = await Promise.all([
+  const [rows, broker, closed] = await Promise.all([
     prisma.auditLog.findMany({
       where: { brokerId, action: { in: Object.keys(AUDIT_ACTION_MAP) } },
       orderBy: { createdAt: "desc" },
       take: limit,
     }),
     prisma.broker.findUnique({ where: { id: brokerId }, select: { dealingModeAt: true, dealingDeskAutoFillAt: true } }),
+    // Closed positions straight from the Position table -- the one record
+    // every close path writes (engine SL / TP / stop-out, the trader's own
+    // close, the manager's manual close), each with its realized P&L.
+    prisma.position.findMany({
+      where: { account: { brokerId }, status: "CLOSED", closedAt: { not: null } },
+      orderBy: { closedAt: "desc" },
+      take: limit,
+      select: {
+        id: true,
+        closedAt: true,
+        side: true,
+        volume: true,
+        closePrice: true,
+        realizedPnl: true,
+        symbol: { select: { name: true } },
+        account: { select: { id: true, accountNumber: true, fullName: true, group: { select: { groupType: true, dealingMode: true, forceDealingMode: true } } } },
+      },
+    }),
   ]);
   const brokerDealingModeOn = !!broker?.dealingModeAt;
   const dealingDeskAutoFillOn = !!broker?.dealingDeskAutoFillAt;
+
+  const closedRows = closed
+    .map((p): DealerActivityFeedRow | null => {
+      const isDealingGroup = isDealingManagedAccount({ group: p.account.group, brokerDealingModeOn, dealingDeskAutoFillOn });
+      if (opts.dealingOnly && !isDealingGroup) return null;
+      return {
+        id: `pos:${p.id}`,
+        at: p.closedAt!.toISOString(),
+        accountId: p.account.id,
+        accountNumber: p.account.accountNumber,
+        accountFullName: p.account.fullName,
+        isDealingGroup,
+        action: "POSITION_CLOSED",
+        symbol: p.symbol.name,
+        side: p.side,
+        volume: p.volume.toString(),
+        values: {
+          closePrice: p.closePrice?.toString(),
+          realizedPnl: p.realizedPnl?.toString(),
+        },
+      };
+    })
+    .filter((r): r is DealerActivityFeedRow => r !== null);
 
   const accountNumbers = [
     ...new Set(
@@ -205,7 +253,7 @@ export async function getDealerActivityFeedRows(
     : [];
   const accountByNumber = new Map(accounts.map((a) => [a.accountNumber, a]));
 
-  return rows
+  const auditRows = rows
     .map((r): DealerActivityFeedRow | null => {
       const before = asObj(r.oldValue);
       const after = asObj(r.newValue);
@@ -248,6 +296,9 @@ export async function getDealerActivityFeedRows(
       };
     })
     .filter((r): r is DealerActivityFeedRow => r !== null);
+
+  // One feed, newest first, capped at `limit` across both sources.
+  return [...auditRows, ...closedRows].sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0)).slice(0, limit);
 }
 
 export type RestingOrderRow = {
