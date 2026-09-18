@@ -7,7 +7,7 @@
 //| LivePrice table this EA feeds.                                    |
 //+------------------------------------------------------------------+
 #property strict
-#property version   "1.39"
+#property version   "1.40"
 
 input string ServerUrl            = "https://www.vyxtrader.com/api/internal/price-feed";
 // No default -- this file is committed to a public-ish repo. A real
@@ -83,6 +83,46 @@ input int    HistoryBackfillIntervalSec = 300;
 // (including an unrelated properties tweak, or a terminal restart) forces
 // another ~6-minutes-of-requests deep pass, not just the one you meant.
 input bool   ForceDeepBackfill    = false;
+// Full-history mode (fix/deep-backfill-full-history, v1.40). The quick
+// deep pass above sends one HistoryBackfillBarCounts[]-sized request per
+// symbol x timeframe -- for M1 that is ~1 day, M5 ~5 days, M15 ~15 days --
+// which is the right size for a fresh install but cannot repair a store
+// whose ENTIRE tick-built history is wrong (b0d3967: until 2026-09-18
+// every stored bar was a ~1 Hz point sample of flush-window opens --
+// understated high/low, wrong close -- for every bar the EA's own
+// backfill had not yet overwritten, i.e. everything older than the quick
+// pass reaches). With this true AND ForceDeepBackfill true, the deep pass
+// instead pages each symbol x timeframe BACKWARDS from now in
+// HistoryBackfillBarCounts[]-sized CopyRates chunks until it reaches
+// DeepBackfillFromDate or the broker has no older bars, one request per
+// timer step exactly like the quick pass (see StepDeepBackfill), so a
+// 3-hour pass still never freezes the tick push for longer than one
+// request. Every page goes through the same /internal/history
+// authoritative overwrite, so the result is the broker's own OHLC for
+// every bucket from that date to now, on every timeframe.
+//
+// Deliberately gated on ForceDeepBackfill too: a fresh install (no
+// DeepBackfillDone global variable yet) still gets the quick pass, so
+// leaving this true in a saved Inputs set can never turn an ordinary
+// reattach into hours of requests. The full pass is a one-off repair you
+// ask for explicitly; set both back to false when it has logged
+// "deep pass complete".
+input bool   DeepBackfillFullHistory = false;
+// UTC. Default = the day this store first received a bar (052de3a,
+// 2026-08-12, the first EA build). Going further back than the store's
+// oldest row is harmless (the engine just gains history it never had) but
+// costs requests; note the engine's nightly M1/M5 retention
+// (engine/market-data/src/retention.rs, 30/180 days) trims whatever M1
+// lands older than that the following night regardless.
+input datetime DeepBackfillFromDate  = D'2026.08.12 00:00';
+// Floor between one full-history page and the next, replacing
+// DEEP_BACKFILL_STAGE_SPACING_MS's 2s for the full pass only. Each page
+// request blocks the tick push for its own duration (measured 1.3-10s),
+// so at 2s spacing a multi-hour pass would keep the live feed frozen
+// ~80% of the time; 5s makes it ~50% and costs ~40% more wall-clock.
+// On a weekend (no ticks to starve) drop it to 500 and let it run flat
+// out.
+input int    DeepBackfillFullSpacingMs = 5000;
 
 // Where the list of symbols to push comes from (second Contabo-audit
 // follow-up). MARKET_WATCH auto-discovers whatever's selected in this
@@ -316,6 +356,35 @@ int  DeepBackfillTotalSteps = 0;
 uint DeepBackfillStartMs    = 0;
 uint lastDeepBackfillStepMs = 0;
 
+// Full-history pass state (v1.40, see DeepBackfillFullHistory). The flat
+// step cursor above still walks the symbol x timeframe grid; within one
+// cell, DeepBackfillPage walks CopyRates backwards (start_pos = page x
+// page size) and the cell only advances when a page proves there is
+// nothing older worth sending (see StepDeepBackfill). Written once per
+// finished pass into DEEP_BACKFILL_FULL_DONE_GVAR (the UTC time it
+// completed), next to the plain done flag, so the Experts log / Global
+// Variables window can show WHEN the store was last fully repaired.
+const string DEEP_BACKFILL_FULL_DONE_GVAR = "VyXTraderPriceFeed_DeepBackfillFullDoneUtc";
+// A page that comes back short is retried this many timer steps before
+// the cell is declared finished: CopyRates for history the terminal has
+// not loaded yet returns fewer bars (or -1 / error 4401) and starts a
+// background download, so the same start_pos asked again a few seconds
+// later returns the real page. 5 x DeepBackfillFullSpacingMs (25s at the
+// default) is plenty for a download that is going to succeed at all; a
+// broker that genuinely has no older bars just costs these few extra
+// idempotent requests per symbol x timeframe.
+const int DEEP_BACKFILL_PAGE_RETRIES = 5;
+bool DeepBackfillFull          = false;
+long DeepBackfillFromUtc       = 0;
+int  DeepBackfillPage          = 0;
+int  DeepBackfillPageRetries   = 0;
+int  DeepBackfillCellPages     = 0;   // pages sent for the current symbol x timeframe (summary line)
+long DeepBackfillCellBars      = 0;
+long DeepBackfillCellOldestUtc = 0;
+int  DeepBackfillRequests      = 0;   // whole-pass totals for the final summary
+int  DeepBackfillFailed        = 0;
+long DeepBackfillBars          = 0;
+
 // Refreshed by RefreshActiveSymbols() -- the actual broker-native symbol
 // names read via SymbolInfoTick each push, regardless of SymbolSource.
 string ActiveBrokerSymbols[];
@@ -510,6 +579,12 @@ int OnInit()
    // immediate shallow outage-repair pass, same as every version before
    // this one always did.
    bool deepAlreadyDone = GlobalVariableCheck(DEEP_BACKFILL_DONE_GVAR) && GlobalVariableGet(DEEP_BACKFILL_DONE_GVAR) > 0;
+   // v1.40 -- the full-history pass needs BOTH inputs (see
+   // DeepBackfillFullHistory's own comment for why a fresh install still
+   // gets the quick pass); say so once rather than silently running the
+   // quick one when someone set only half of it.
+   if (DeepBackfillFullHistory && !ForceDeepBackfill)
+      Print("VyXTraderPriceFeed (history backfill): DeepBackfillFullHistory=true is ignored without ForceDeepBackfill=true -- set both to run the full-history pass");
    if (ForceDeepBackfill || !deepAlreadyDone)
       StartDeepBackfill();
    else
@@ -646,41 +721,66 @@ bool SendDirect(string ticksJson)
    return true;
 }
 
-// POST one symbol+timeframe's last barCount bars to engine/server's
-// /internal/history (fix/realtime-sync §4). Same auth header convention
-// as SendDirect. Blocking, like every WebRequest call in this file --
-// MQL5 has no async HTTP -- so every call here pauses this EA's own tick
-// pushes for however long this one request takes (measured ~1.3-10s
-// depending on barCount, see the WebRequest call below). Callers control
-// how many of these happen back to back: RunShallowHistoryBackfill loops
-// every symbol x timeframe unstaged (cheap at
-// HISTORY_BACKFILL_SHALLOW_BAR_COUNT), while StepDeepBackfill (v1.35)
-// calls this at most once per DEEP_BACKFILL_STAGE_SPACING_MS specifically
-// so the deep pass's much larger HistoryBackfillBarCounts never compound
-// into one long freeze.
-void SendHistoryBars(string canonicalSymbol, string brokerSymbol, ENUM_TIMEFRAMES period, string timeframeName, int barCount)
+// One /internal/history request's outcome, for the full-history pager
+// (StepDeepBackfill) to decide whether there is an older page worth
+// asking for. The quick pass and the shallow cycles ignore it.
+struct HistoryPageResult
 {
+   int  copied;     // bars CopyRates returned at this start_pos (<= 0: none loaded there yet, or none exist)
+   int  sent;       // bars in the request after the DeepBackfillFromDate trim (0 = no request was made)
+   long oldestUtc;  // UTC epoch seconds of the oldest bar CopyRates returned, 0 if none
+   bool failed;     // a request was made and did not return 200
+};
+
+// POST one symbol+timeframe's bars to engine/server's /internal/history
+// (fix/realtime-sync §4): `barCount` bars starting `startPos` bars back
+// from the newest (CopyRates' own start_pos/count -- 0/N is "the last N
+// bars", the only shape this took before v1.40's full-history pager),
+// dropping any bar older than `minUtcSec` (0 = keep all). Same auth
+// header convention as SendDirect. Blocking, like every WebRequest call
+// in this file -- MQL5 has no async HTTP -- so every call here pauses
+// this EA's own tick pushes for however long this one request takes
+// (measured ~1.3-10s depending on barCount, see the WebRequest call
+// below). Callers control how many of these happen back to back:
+// RunShallowHistoryBackfill loops every symbol x timeframe unstaged
+// (cheap at HISTORY_BACKFILL_SHALLOW_BAR_COUNT), while StepDeepBackfill
+// (v1.35) calls this at most once per stage spacing specifically so the
+// deep pass's much larger HistoryBackfillBarCounts never compound into
+// one long freeze.
+void SendHistoryPage(string canonicalSymbol, string brokerSymbol, ENUM_TIMEFRAMES period, string timeframeName, int startPos, int barCount, long minUtcSec, HistoryPageResult &out)
+{
+   out.copied = 0; out.sent = 0; out.oldestUtc = 0; out.failed = false;
+
    MqlRates rates[];
    ArraySetAsSeries(rates, true);
-   int copied = CopyRates(brokerSymbol, period, 0, barCount, rates);
-   if (copied <= 0) return; // no history available yet for this symbol/period -- nothing to send
+   int copied = CopyRates(brokerSymbol, period, startPos, barCount, rates);
+   out.copied = copied;
+   if (copied <= 0) return; // no history available (yet) for this symbol/period at this position -- nothing to send
+
+   // rates[] is a series: [0] newest, [copied-1] oldest.
+   out.oldestUtc = (long)rates[copied - 1].time - BrokerOffsetSec;
 
    string bars = "[";
+   int sent = 0;
    for (int i = 0; i < copied; i++)
    {
-      if (i > 0) bars += ",";
       // -BrokerOffsetSec converts the trade server's local bar time to
       // UTC, which is what Candle.bucketStart is defined as everywhere
       // else in this system (the live tick path, the gap-fill tracker,
       // candle-gaps.ts's market-hours math). Sending it unconverted is
       // the bug this whole hotfix exists for -- see BrokerOffsetSec.
-      long bucketStartMs = ((long)rates[i].time - BrokerOffsetSec) * 1000;
+      long bucketStartSec = (long)rates[i].time - BrokerOffsetSec;
+      if (minUtcSec > 0 && bucketStartSec < minUtcSec) continue; // older than the full-history floor -- the pager stops after this page anyway
+      if (sent > 0) bars += ",";
       bars += StringFormat(
          "{\"bucket_start_ms\":%I64d,\"open\":%.5f,\"high\":%.5f,\"low\":%.5f,\"close\":%.5f}",
-         bucketStartMs, rates[i].open, rates[i].high, rates[i].low, rates[i].close
+         bucketStartSec * 1000, rates[i].open, rates[i].high, rates[i].low, rates[i].close
       );
+      sent++;
    }
    bars += "]";
+   out.sent = sent;
+   if (sent == 0) return; // every bar in this page predates minUtcSec
 
    // server_offset_sec travels with the payload so the engine can assert
    // the conversion actually happened rather than trusting it: a bar
@@ -712,17 +812,22 @@ void SendHistoryBars(string canonicalSymbol, string brokerSymbol, ENUM_TIMEFRAME
    long beforeUs = (long)GetMicrosecondCount();
    int res = WebRequest("POST", url, headers, HISTORY_WEBREQUEST_TIMEOUT_MS, body, result, resultHeaders);
    long elapsedMs = ((long)GetMicrosecondCount() - beforeUs) / 1000;
+   // "page N" only during the full-history pass so the quick/shallow
+   // lines read exactly as they always have.
+   string where = DeepBackfillFull ? StringFormat(" page %d (pos %d)", startPos / MathMax(barCount, 1), startPos) : "";
    if (res == -1)
    {
+      out.failed = true;
       int err = GetLastError();
       if (err == 4060)
          Print("VyXTraderPriceFeed (history backfill): add ", DirectServerUrl, " under Tools > Options > Expert Advisors > Allow WebRequest for listed URL");
       else
-         Print("VyXTraderPriceFeed (history backfill): WebRequest failed for ", canonicalSymbol, " ", timeframeName, " after ", elapsedMs, "ms, error ", err);
+         Print("VyXTraderPriceFeed (history backfill): WebRequest failed for ", canonicalSymbol, " ", timeframeName, where, " after ", elapsedMs, "ms, error ", err);
    }
    else if (res != 200)
    {
-      Print("VyXTraderPriceFeed (history backfill): server responded ", res, " for ", canonicalSymbol, " ", timeframeName, " after ", elapsedMs, "ms — ", CharArrayToString(result));
+      out.failed = true;
+      Print("VyXTraderPriceFeed (history backfill): server responded ", res, " for ", canonicalSymbol, " ", timeframeName, where, " after ", elapsedMs, "ms — ", CharArrayToString(result));
    }
    else
    {
@@ -730,8 +835,18 @@ void SendHistoryBars(string canonicalSymbol, string brokerSymbol, ENUM_TIMEFRAME
       // durations are the only evidence that the per-timeframe counts
       // above are still inside budget, and a backfill cycle is 60 lines
       // every 15 minutes, not per-tick spam.
-      Print("VyXTraderPriceFeed (history backfill): ", canonicalSymbol, " ", timeframeName, " ", copied, " bars in ", elapsedMs, "ms");
+      Print("VyXTraderPriceFeed (history backfill): ", canonicalSymbol, " ", timeframeName, where, " ", sent, " bars in ", elapsedMs, "ms",
+            where == "" ? "" : ", oldest " + TimeToString((datetime)out.oldestUtc, TIME_DATE | TIME_MINUTES) + " UTC");
    }
+}
+
+// The pre-v1.40 shape: the last `barCount` bars, no floor. Quick deep
+// pass and shallow cycles call this; only the full-history pager needs
+// SendHistoryPage's extra arguments and result.
+void SendHistoryBars(string canonicalSymbol, string brokerSymbol, ENUM_TIMEFRAMES period, string timeframeName, int barCount)
+{
+   HistoryPageResult ignored;
+   SendHistoryPage(canonicalSymbol, brokerSymbol, period, timeframeName, 0, barCount, 0, ignored);
 }
 
 // Kicks off the staged deep pass (OnInit only, when it hasn't completed
@@ -757,6 +872,37 @@ void StartDeepBackfill()
    DeepBackfillStartMs = GetTickCount();
    lastDeepBackfillStepMs = 0; // fire the first step on the very next OnTimer, no initial 2s wait
    DeepBackfillActive = true;
+
+   // v1.40 -- full-history mode (see DeepBackfillFullHistory). Same cursor,
+   // same per-step pacing; the difference is inside StepDeepBackfill.
+   DeepBackfillFull = (ForceDeepBackfill && DeepBackfillFullHistory);
+   DeepBackfillFromUtc = (long)DeepBackfillFromDate;
+   DeepBackfillPage = 0;
+   DeepBackfillPageRetries = 0;
+   DeepBackfillCellPages = 0;
+   DeepBackfillCellBars = 0;
+   DeepBackfillCellOldestUtc = 0;
+   DeepBackfillRequests = 0;
+   DeepBackfillFailed = 0;
+   DeepBackfillBars = 0;
+   if (DeepBackfillFull)
+   {
+      // The plan, up front, so the Experts log shows what was asked for and
+      // roughly how long to expect before the first page line appears.
+      // Pages are an estimate from the M1 span (the dominant cost): a
+      // 5-day trading week is ~7,200 M1 bars, so weeks x 7200 / 1500.
+      long spanSec = (long)TimeGMT() - DeepBackfillFromUtc;
+      double weeks = spanSec / (7.0 * 86400.0);
+      int m1Pages = (int)MathCeil(weeks * 7200.0 / HistoryBackfillBarCounts[0]);
+      long maxBars = TerminalInfoInteger(TERMINAL_MAXBARS);
+      Print("VyXTraderPriceFeed (history backfill): FULL-HISTORY deep pass from ",
+            TimeToString((datetime)DeepBackfillFromUtc, TIME_DATE | TIME_MINUTES), " UTC (",
+            DoubleToString(weeks, 1), " weeks): ", ArraySize(ActiveBrokerSymbols), " symbols x ",
+            ArraySize(HistoryBackfillPeriods), " timeframes, ~", m1Pages, " M1 pages of ",
+            HistoryBackfillBarCounts[0], " bars per symbol, ", DeepBackfillFullSpacingMs,
+            "ms between pages; terminal max bars per chart = ", maxBars,
+            (maxBars > 0 && maxBars < weeks * 7200.0) ? " -- TOO LOW for the M1 span, raise Tools > Options > Charts > Max bars in chart" : "");
+   }
 }
 
 void FinishDeepBackfill()
@@ -764,8 +910,25 @@ void FinishDeepBackfill()
    DeepBackfillActive = false;
    lastHistoryBackfillMs = GetTickCount(); // steady-state interval starts counting from now, not from before the deep pass
    double elapsedSec = (GetTickCount() - DeepBackfillStartMs) / 1000.0;
-   Print("VyXTraderPriceFeed (history backfill): deep pass complete in ", DoubleToString(elapsedSec, 1), "s");
+   if (DeepBackfillFull)
+   {
+      Print("VyXTraderPriceFeed (history backfill): FULL-HISTORY deep pass complete in ", DoubleToString(elapsedSec, 1),
+            "s -- ", DeepBackfillRequests, " requests (", DeepBackfillFailed, " failed), ", DeepBackfillBars,
+            " bars sent, from ", TimeToString((datetime)DeepBackfillFromUtc, TIME_DATE | TIME_MINUTES), " UTC");
+      // Evidence of WHEN the store was last fully repaired, readable from
+      // the terminal's Global Variables window (F3) without the log.
+      GlobalVariableSet(DEEP_BACKFILL_FULL_DONE_GVAR, (double)(long)TimeGMT());
+      DeepBackfillFull = false;
+   }
+   else
+   {
+      Print("VyXTraderPriceFeed (history backfill): deep pass complete in ", DoubleToString(elapsedSec, 1), "s");
+   }
    GlobalVariableSet(DEEP_BACKFILL_DONE_GVAR, 1);
+   // MQL5 cannot reset an input from code (see ForceDeepBackfill's own
+   // comment) -- every future reinit repeats this pass until someone does.
+   if (ForceDeepBackfill)
+      Print("VyXTraderPriceFeed (history backfill): ForceDeepBackfill is still true -- set it (and DeepBackfillFullHistory) back to false in the Inputs tab, or the next reinit runs this whole pass again");
 }
 
 // One symbol x timeframe request per call, called from OnTimer at most
@@ -793,13 +956,101 @@ void StepDeepBackfill()
    if (StringLen(brokerSymbol) > 0)
    {
       string canonicalSymbol = CanonicalFor(brokerSymbol);
-      SendHistoryBars(canonicalSymbol, brokerSymbol, HistoryBackfillPeriods[tfIdx], HistoryBackfillPeriodNames[tfIdx], HistoryBackfillBarCounts[tfIdx]);
+      if (DeepBackfillFull)
+      {
+         // v1.40 full-history mode: one PAGE per step, same cell until it
+         // is exhausted. See StepDeepBackfillFullPage for the stop rules.
+         if (!StepDeepBackfillFullPage(canonicalSymbol, brokerSymbol, tfIdx))
+         {
+            lastDeepBackfillStepMs = GetTickCount();
+            return; // more pages in this symbol x timeframe -- the cursor stays put
+         }
+      }
+      else
+      {
+         SendHistoryBars(canonicalSymbol, brokerSymbol, HistoryBackfillPeriods[tfIdx], HistoryBackfillPeriodNames[tfIdx], HistoryBackfillBarCounts[tfIdx]);
+      }
    }
 
    lastDeepBackfillStepMs = GetTickCount();
    DeepBackfillStep++;
    if (DeepBackfillStep >= DeepBackfillTotalSteps)
       FinishDeepBackfill();
+}
+
+// One page of the full-history pass for the current symbol x timeframe.
+// Returns true when this cell is finished (the cursor may advance), false
+// when the same cell has another page (or a retry) pending.
+//
+// Stop rules for a cell, in order:
+//   * the page's oldest bar is at/before DeepBackfillFromDate -- reached
+//     the floor (for pages after the first, the trim inside
+//     SendHistoryPage already dropped anything older; page 0 is sent whole,
+//     see below);
+//   * a short page (fewer bars than asked, including 0) while the terminal
+//     reports the series synchronized -- the broker has no older bars;
+//   * a short page while NOT synchronized (the terminal is still pulling
+//     that history from the broker), or a failed request: retry the same
+//     page next step, up to DEEP_BACKFILL_PAGE_RETRIES, then give up on
+//     the cell and say so. Re-sending a page is idempotent (authoritative
+//     upsert), so a retry can only ever cost a request, never a wrong row.
+bool StepDeepBackfillFullPage(string canonicalSymbol, string brokerSymbol, int tfIdx)
+{
+   ENUM_TIMEFRAMES period = HistoryBackfillPeriods[tfIdx];
+   string tfName = HistoryBackfillPeriodNames[tfIdx];
+   int pageSize = HistoryBackfillBarCounts[tfIdx];
+
+   // Page 0 is exactly the request the quick pass makes (the newest
+   // HistoryBackfillBarCounts[] bars) and is never trimmed to the floor, so
+   // a full pass is always a superset of a quick one -- D1/W1/MN1, whose
+   // single 200-bar page reaches 200 days / ~4 years / ~16 years, keep that
+   // depth instead of being cut to the few weeks since DeepBackfillFromDate.
+   // Only the deeper pages honour the floor.
+   HistoryPageResult r;
+   SendHistoryPage(canonicalSymbol, brokerSymbol, period, tfName, DeepBackfillPage * pageSize, pageSize, DeepBackfillPage == 0 ? 0 : DeepBackfillFromUtc, r);
+   if (r.sent > 0)
+   {
+      DeepBackfillRequests++;
+      if (r.failed) DeepBackfillFailed++;
+      else { DeepBackfillBars += r.sent; DeepBackfillCellBars += r.sent; DeepBackfillCellPages++; }
+   }
+   if (r.oldestUtc > 0 && (DeepBackfillCellOldestUtc == 0 || r.oldestUtc < DeepBackfillCellOldestUtc))
+      DeepBackfillCellOldestUtc = r.oldestUtc;
+
+   bool reachedFloor = (r.copied > 0 && r.oldestUtc <= DeepBackfillFromUtc);
+   bool shortPage    = (r.copied < pageSize);
+   bool synced       = (bool)SeriesInfoInteger(brokerSymbol, period, SERIES_SYNCHRONIZED);
+   bool needRetry    = r.failed || (shortPage && !synced && !reachedFloor);
+
+   if (needRetry && DeepBackfillPageRetries < DEEP_BACKFILL_PAGE_RETRIES)
+   {
+      DeepBackfillPageRetries++;
+      Print("VyXTraderPriceFeed (history backfill): ", canonicalSymbol, " ", tfName, " page ", DeepBackfillPage,
+            r.failed ? " failed" : " short (terminal still loading history)", " -- retry ", DeepBackfillPageRetries, "/", DEEP_BACKFILL_PAGE_RETRIES);
+      return false; // same page again next step
+   }
+   if (needRetry)
+      Print("VyXTraderPriceFeed (history backfill): ", canonicalSymbol, " ", tfName, " page ", DeepBackfillPage,
+            " gave up after ", DEEP_BACKFILL_PAGE_RETRIES, " retries -- older history for this timeframe was not sent; rerun the pass later");
+
+   bool cellDone = needRetry || reachedFloor || shortPage;
+   if (!cellDone)
+   {
+      DeepBackfillPage++;
+      DeepBackfillPageRetries = 0;
+      return false;
+   }
+
+   Print("VyXTraderPriceFeed (history backfill): ", canonicalSymbol, " ", tfName, " full history done -- ",
+         DeepBackfillCellPages, " pages, ", DeepBackfillCellBars, " bars, oldest ",
+         DeepBackfillCellOldestUtc > 0 ? TimeToString((datetime)DeepBackfillCellOldestUtc, TIME_DATE | TIME_MINUTES) + " UTC" : "(none)",
+         reachedFloor ? " (reached DeepBackfillFromDate)" : " (broker has no older bars)");
+   DeepBackfillPage = 0;
+   DeepBackfillPageRetries = 0;
+   DeepBackfillCellPages = 0;
+   DeepBackfillCellBars = 0;
+   DeepBackfillCellOldestUtc = 0;
+   return true;
 }
 
 // Unstaged, flat HISTORY_BACKFILL_SHALLOW_BAR_COUNT across every active
@@ -974,7 +1225,11 @@ void OnTimer()
    // lastHistoryBackfillMs.
    if (DeepBackfillActive)
    {
-      if (GetTickCount() - lastDeepBackfillStepMs >= (uint)DEEP_BACKFILL_STAGE_SPACING_MS)
+      // v1.40: the full-history pass paces itself off its own input (see
+      // DeepBackfillFullSpacingMs) -- a multi-hour pass at the quick pass's
+      // 2s would keep the tick push frozen most of the time.
+      int spacingMs = DeepBackfillFull ? MathMax(DeepBackfillFullSpacingMs, 0) : DEEP_BACKFILL_STAGE_SPACING_MS;
+      if (GetTickCount() - lastDeepBackfillStepMs >= (uint)spacingMs)
          StepDeepBackfill();
       return;
    }
