@@ -8,6 +8,7 @@ import { computeRealizedPnl } from "@/lib/trading";
 import * as mirror from "@/lib/mirror";
 import { publishTradingEvent } from "@/lib/nats";
 import { recordDealerActivity } from "@/lib/dealer-activity";
+import { cancelPendingClose } from "@/lib/queued-close";
 import { isDealingManagedAccount } from "@/lib/dealing-routing";
 
 async function requireManager() {
@@ -191,6 +192,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   // all before, on top of lib/nats.ts's own (separately fixed) transport
   // bug. Without it, a dealer-initiated close never appeared on the
   // backoffice Positions/Exposure views until a manual refresh.
+  // Closes respect DEALER mode: an admin's manual close bypasses the queue; a close the client had
+  // queued for this position is moot once it is fully closed (a partial keeps it, and its lock).
+  if (!isPartial) await cancelPendingClose(prisma, position.id, "position closed by admin").catch((err) => console.error("cancelPendingClose failed", err));
   await publishTradingEvent("PositionClosed", { position_id: position.id, account_id: position.accountId, broker_id: brokerId });
   const brokerForActivity = await prisma.broker.findUnique({ where: { id: brokerId }, select: { dealingModeAt: true, dealingDeskAutoFillAt: true } });
   await recordDealerActivity(prisma, {

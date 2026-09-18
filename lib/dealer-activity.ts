@@ -121,6 +121,60 @@ export async function recordDealerActivity(
   }
 }
 
+// Closes respect DEALER mode (docs/CLOSES-RESPECT-DEALER-MODE.md, #5): EVERY close on a
+// dealing-group account -- the client's own, bulk, close-by, the dealer's accept, the risk
+// monitor's SL / TP / stop-out (which bypass the queue), the mirror -- must reach the dealer
+// activity feed LIVE. The history side is covered by getDealerActivityFeedRows reading the
+// Position table (any close path writes it); this is the real-time half, called by each close
+// site after its transaction committed. Loads what the feed row needs from the position itself
+// so a caller that only holds an id (the risk monitor, the mirror) can still emit it.
+export type CloseReason = "MANUAL" | "STOP_LOSS" | "TAKE_PROFIT" | "STOP_OUT" | "MIRROR" | "ADMIN";
+
+export async function emitPositionClosedActivity(
+  db: PrismaClient | Prisma.TransactionClient,
+  p: { positionId: string; closePrice: Prisma.Decimal | string; closeVolume: Prisma.Decimal; partial: boolean; realizedPnl: Prisma.Decimal; closeReason: CloseReason; origin: string }
+): Promise<void> {
+  try {
+    const position = await db.position.findUnique({
+      where: { id: p.positionId },
+      select: {
+        brokerId: true, accountId: true, side: true,
+        symbol: { select: { name: true } },
+        account: { select: { accountNumber: true, fullName: true, group: { select: { groupType: true, dealingMode: true, forceDealingMode: true } } } },
+        broker: { select: { dealingModeAt: true, dealingDeskAutoFillAt: true } },
+      },
+    });
+    if (!position) return;
+    await recordDealerActivity(db, {
+      brokerId: position.brokerId,
+      accountId: position.accountId,
+      accountNumber: position.account.accountNumber,
+      accountFullName: position.account.fullName,
+      isDealingGroup: isDealingManagedAccount({ group: position.account.group, brokerDealingModeOn: !!position.broker.dealingModeAt, dealingDeskAutoFillOn: !!position.broker.dealingDeskAutoFillAt }),
+      action: "POSITION_CLOSED",
+      symbol: position.symbol.name,
+      side: position.side,
+      volume: p.closeVolume.toString(),
+      values: { closePrice: p.closePrice.toString(), partial: p.partial, realizedPnl: p.realizedPnl.toString(), closeReason: p.closeReason, origin: p.origin },
+      positionId: p.positionId,
+    });
+  } catch (err) {
+    console.error("emitPositionClosedActivity failed", p.positionId, err);   // the feed must never fail a close
+  }
+}
+
+/// The close reason of a closed position, read back from its TRADE_PNL ledger note (the one
+/// place every close path already records what it was) -- for the feed's history rows.
+export function closeReasonFromNote(note: string | null | undefined): CloseReason {
+  const n = (note ?? "").toLowerCase();
+  if (n.startsWith("stop loss")) return "STOP_LOSS";
+  if (n.startsWith("take profit")) return "TAKE_PROFIT";
+  if (n.startsWith("stop-out")) return "STOP_OUT";
+  if (n.startsWith("mirror close")) return "MIRROR";
+  if (n.startsWith("admin close") || n.startsWith("manual close")) return "ADMIN";
+  return "MANUAL";
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // Shared cold-load query -- backs GET /api/manage/dealing-desk (DEALING-
 // group accounts only, plus the resting-orders list -- the Dealing page's
@@ -151,6 +205,8 @@ const AUDIT_ACTION_MAP: Record<string, DealerActivityAction> = {
   ORDER_TRIGGERED_AND_FILLED: "POSITION_OPENED",
   DEALING_ORDER_AUTO_ACCEPTED: "POSITION_OPENED",
   DEALING_ORDER_ACCEPTED: "POSITION_OPENED",
+  // a client close routed to the dealer queue (lib/queued-close.ts)
+  DEALING_CLOSE_QUEUED: "CLOSE_REQUESTED",
   // POSITION_CLOSED is deliberately NOT sourced from AuditLog any more.
   // Only the manager's manual close ever wrote an audit row that mapped
   // here (MANUAL_POSITION_CLOSE); a trader's own close (STM_BULK_CLOSE,
@@ -219,6 +275,16 @@ export async function getDealerActivityFeedRows(
   const brokerDealingModeOn = !!broker?.dealingModeAt;
   const dealingDeskAutoFillOn = !!broker?.dealingDeskAutoFillAt;
 
+  // the close reason lives on the TRADE_PNL ledger row every close path writes
+  const pnlRows = closed.length
+    ? await prisma.transaction.findMany({
+        where: { type: "TRADE_PNL", referenceType: "Position", referenceId: { in: closed.map((p) => p.id) } },
+        select: { referenceId: true, note: true },
+        orderBy: { createdAt: "desc" },
+      })
+    : [];
+  const noteByPosition = new Map<string, string | null>();
+  for (const r of pnlRows) if (r.referenceId && !noteByPosition.has(r.referenceId)) noteByPosition.set(r.referenceId, r.note);
   const closedRows = closed
     .map((p): DealerActivityFeedRow | null => {
       const isDealingGroup = isDealingManagedAccount({ group: p.account.group, brokerDealingModeOn, dealingDeskAutoFillOn });
@@ -237,6 +303,7 @@ export async function getDealerActivityFeedRows(
         values: {
           closePrice: p.closePrice?.toString(),
           realizedPnl: p.realizedPnl?.toString(),
+          closeReason: closeReasonFromNote(noteByPosition.get(p.id)),
         },
       };
     })
@@ -286,6 +353,9 @@ export async function getDealerActivityFeedRows(
         volume: (after.lots ?? before.lots) as string | undefined,
         values: {
           requestedPrice: after.requestedPrice ?? before.requestedPrice,
+          closesTicket: after.closesTicket,
+          closeVolume: after.closeVolume,
+          partial: after.closeVolume != null && after.positionVolume != null ? String(after.closeVolume) !== String(after.positionVolume) : undefined,
           triggerPrice: after.triggerPrice,
           filledPrice: after.filledPrice,
           slPrice: after.slPrice,

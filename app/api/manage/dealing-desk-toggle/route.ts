@@ -11,6 +11,7 @@ import { orderAuditFields } from "@/lib/order-audit";
 import { recordDealerActivity } from "@/lib/dealer-activity";
 import { publishTradingEvent } from "@/lib/nats";
 import * as mirror from "@/lib/mirror";
+import { executeQueuedCloseInTx, afterQueuedCloseExecuted } from "@/lib/queued-close";
 import {
   checkTradingHalted,
   checkCloseOnly,
@@ -140,6 +141,45 @@ async function flushDealingQueueToMarket(
     const livePrice = brokerSymbol ? await getFreshPrice(brokerSymbol.symbol.name) : null;
     if (!brokerSymbol || !livePrice) {
       results.push({ orderId: order.id, accountNumber: order.account.accountNumber, status: "skipped", reason: "no live price" });
+      continue;
+    }
+
+    if (order.closesPositionId) {
+      // Closes respect DEALER mode: a queued CLOSE the desk no longer wants to review executes at
+      // the live close-side price (a BUY position closes at bid) -- "don't leave them stuck"
+      // applies to a close exactly as to an open. Only the halt / session gate applies.
+      const closeGate = checkTradingHalted(broker) ?? checkTradingSession(brokerSymbol.tradingSessions, new Date(), order.symbol.category);
+      if (closeGate) { results.push({ orderId: order.id, accountNumber: order.account.accountNumber, status: "skipped", reason: closeGate }); continue; }
+      const closePrice = order.side === "BUY" ? livePrice.bid : livePrice.ask;
+      const before = await prisma.position.findUnique({ where: { id: order.closesPositionId }, select: { volume: true } });
+      try {
+        const result = await prisma.$transaction(async (tx) => {
+          const r = await executeQueuedCloseInTx(tx, { order, fromStatus: "PENDING", closePrice, note: "Dealer desk turned off: queued close executed at market" });
+          if (r.kind === "closed") {
+            await tx.auditLog.create({
+              data: {
+                brokerId,
+                action: "DEALING_DESK_AUTO_FLUSHED_CLOSE",
+                entityType: "Position",
+                entityId: order.closesPositionId!,
+                oldValue: { ...orderAuditFields(order, order.symbol.name, order.account.accountNumber), status: "PENDING", requestedPrice: order.requestedPrice?.toString() ?? null },
+                newValue: { status: "FILLED", closePrice: closePrice.toString(), closeVolume: r.closeVolume.toString(), partial: r.outcome.partial, realizedPnl: r.outcome.realizedPnl.toString(), reason: "dealer_desk_turned_off" },
+              },
+            });
+          }
+          return r;
+        });
+        if (result.kind === "raced") { results.push({ orderId: order.id, accountNumber: order.account.accountNumber, status: "skipped", reason: "already actioned" }); continue; }
+        if (result.kind === "position_gone") { results.push({ orderId: order.id, accountNumber: order.account.accountNumber, status: "skipped", reason: "position already closed" }); continue; }
+        await afterQueuedCloseExecuted(prisma, {
+          brokerId, accountId: order.accountId, accountNumber: order.account.accountNumber, accountFullName: order.account.fullName,
+          symbolName: order.symbol.name, side: order.side, positionId: order.closesPositionId, positionVolumeBefore: before?.volume ?? order.volume, result, origin: "dealer_desk_auto_flush",
+        });
+        results.push({ orderId: order.id, accountNumber: order.account.accountNumber, status: "filled" });
+      } catch (err) {
+        console.error("dealing-desk-toggle: auto-flush of a queued close failed", order.id, err);
+        results.push({ orderId: order.id, accountNumber: order.account.accountNumber, status: "skipped", reason: "internal error" });
+      }
       continue;
     }
 

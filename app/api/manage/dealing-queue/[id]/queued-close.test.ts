@@ -113,6 +113,7 @@ afterAll(async () => {
     await prisma.position.deleteMany({ where });
     await prisma.order.deleteMany({ where });
     await prisma.account.deleteMany({ where });
+    await prisma.group.deleteMany({ where }).catch(() => {});
     await prisma.brokerSymbol.deleteMany({ where });
     await prisma.adminUser.deleteMany({ where });
     await prisma.broker.deleteMany({ where: { id: { in: createdBrokerIds } } });
@@ -271,6 +272,74 @@ describe("closes respect DEALER mode (live DB)", () => {
     expect(ob.closeVolume?.toString()).toBe("0.4");
     expect((await prisma.position.findUniqueOrThrow({ where: { id: a.id } })).closePendingOrderId).toBe(oa.id);
     expect((await prisma.position.findUniqueOrThrow({ where: { id: b.id } })).closePendingOrderId).toBe(ob.id);
+  });
+
+  it("SL / TP closes a locked position immediately and retires the queued close (stage 4)", async () => {
+    if (!dbReachable) return;
+    const fx = await createFixture();
+    const pos = await openPosition(fx, { openPrice: "90.00", tp: "100.00" });
+    await refreshPrice(fx, "99.00", "99.10");
+    const q = await clientClose(fx, pos.id, { closePrice: "99.00" });
+    expect(q.status).toBe(202);
+    // the market runs through the take profit while the close waits for the dealer
+    await refreshPrice(fx, "100.50", "100.60");
+    const { evaluateAccountRisk } = await import("@/lib/risk-monitor");
+    const r = await evaluateAccountRisk(fx.accountId);
+    expect(r.slTpClosed).toContain(pos.id);
+    const p = await prisma.position.findUniqueOrThrow({ where: { id: pos.id } });
+    expect(p.status).toBe("CLOSED");
+    expect(p.closePrice?.toString()).toBe("100.5");
+    expect(p.closePendingOrderId).toBeNull();
+    const order = await prisma.order.findUniqueOrThrow({ where: { id: q.json.order.id } });
+    expect(order.status).toBe("CANCELLED");
+    expect(order.rejectionReason).toBe("position closed by take profit");
+    // the dealer acting on the stale queue row now gets a clean 409, nothing double-closes
+    const late = await dealer(fx, order.id, { action: "ACCEPT" });
+    expect(late.status).toBe(409);
+    expect((await prisma.account.findUniqueOrThrow({ where: { id: fx.accountId } })).balance.toString()).toBe("10010.5");
+  });
+
+  it("dealer ACCEPT on a close whose position was closed meanwhile cancels the order, never double-closes", async () => {
+    if (!dbReachable) return;
+    const fx = await createFixture();
+    const pos = await openPosition(fx, { openPrice: "90.00" });
+    await refreshPrice(fx);
+    const q = await clientClose(fx, pos.id, { closePrice: "100.00" });
+    // something else closes it first (an admin / another path) without going through cancelPendingClose
+    await prisma.position.update({ where: { id: pos.id }, data: { status: "CLOSED", closePrice: D("95.00"), realizedPnl: D("5"), closedAt: new Date() } });
+    const { status, json } = await dealer(fx, q.json.order.id, { action: "ACCEPT" });
+    expect(status).toBe(409);
+    expect(String(json.error)).toContain("already closed");
+    const order = await prisma.order.findUniqueOrThrow({ where: { id: q.json.order.id } });
+    expect(order.status).toBe("CANCELLED");
+    expect((await prisma.position.findUniqueOrThrow({ where: { id: pos.id } })).closePendingOrderId).toBeNull();
+    expect(await prisma.transaction.count({ where: { accountId: fx.accountId } })).toBe(0);
+  });
+
+  it("desk OFF flushes a queued close: executed at the live close-side price, lock released (stage 8)", async () => {
+    if (!dbReachable) return;
+    // a DEALING-type group at INHERIT: queues while the desk is on, auto-fills once the desk is off
+    const fx = await createFixture({ dealerOn: false });
+    const group = await prisma.group.create({ data: { brokerId: fx.brokerId, name: "Dealing", groupType: "DEALING" } });
+    await prisma.account.update({ where: { id: fx.accountId }, data: { groupId: group.id } });
+    const pos = await openPosition(fx, { openPrice: "90.00", volume: "1.00" });
+    await refreshPrice(fx, "100.00", "100.10");
+    const q = await clientClose(fx, pos.id, { closePrice: "100.00" });
+    expect(q.status).toBe(202);
+    await refreshPrice(fx, "102.00", "102.10");
+    const { getAdminSession } = await import("@/lib/auth");
+    vi.mocked(getAdminSession).mockResolvedValue({ adminId: fx.adminId, role: "BROKER_ADMIN", brokerId: fx.brokerId } as never);
+    const { PATCH: toggle } = await import("@/app/api/manage/dealing-desk-toggle/route");
+    const res = await toggle(new NextRequest("https://test.local/api/manage/dealing-desk-toggle", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ dealerOn: false }) }));
+    expect(res.status).toBe(200);
+    const flushed = (await res.json()).flushed as { orderId: string; status: string; reason?: string }[];
+    expect(flushed.find((f) => f.orderId === q.json.order.id)?.status).toBe("filled");
+    const p = await prisma.position.findUniqueOrThrow({ where: { id: pos.id } });
+    expect(p.status).toBe("CLOSED");
+    expect(p.closePrice?.toString()).toBe("102"); // bid for a BUY, the live price at flush time
+    expect(p.closePendingOrderId).toBeNull();
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: q.json.order.id } })).status).toBe("FILLED");
+    expect(await prisma.auditLog.count({ where: { brokerId: fx.brokerId, action: "DEALING_DESK_AUTO_FLUSHED_CLOSE" } })).toBe(1);
   });
 
   it("with dealer mode OFF the same close executes immediately, as before", async () => {

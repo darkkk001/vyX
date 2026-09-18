@@ -14,6 +14,8 @@ import {
 import { getFreshPrices } from "@/lib/live-price";
 import { computeRealizedPnl } from "@/lib/trading";
 import { closePositionInTx } from "@/lib/position-close";
+import { emitPositionClosedActivity } from "@/lib/dealer-activity";
+import { cancelPendingClose } from "@/lib/queued-close";
 import { createNotification } from "@/lib/notifications";
 import { publishTradingEvent } from "@/lib/nats";
 import { getLivePriceRow } from "@/lib/live-price";
@@ -517,7 +519,7 @@ export async function onClose(db: Db, closeEvent: MirrorSourceClose): Promise<vo
       closePrice = targetPosition.side === "BUY" ? livePrice.bid : livePrice.ask;
     }
 
-    await withTx(db, (tx) =>
+    const mirrorOutcome = await withTx(db, (tx) =>
       closePositionInTx(tx, {
         position: {
           id: targetPosition.id,
@@ -533,6 +535,9 @@ export async function onClose(db: Db, closeEvent: MirrorSourceClose): Promise<vo
         note: `Mirror close (rule ${rule.id}, source position ${closeEvent.positionId}, mode ${rule.fillPriceMode})`,
       })
     );
+    // Closes respect DEALER mode: a mirrored close bypasses the dealer; a close the target's
+    // client had queued is moot once the position is gone (a partial keeps it, and its lock).
+    if (mirrorOutcome.closed && !mirrorOutcome.partial) await cancelPendingClose(db, targetPosition.id, "position closed by mirror").catch((err) => console.error("cancelPendingClose failed", err));
 
     await db.auditLog.create({
       data: {
@@ -552,6 +557,7 @@ export async function onClose(db: Db, closeEvent: MirrorSourceClose): Promise<vo
       account_id: targetPosition.accountId,
       broker_id: targetPosition.brokerId,
     }).catch((err) => console.error("mirror onClose: publishTradingEvent failed", err));
+    if (mirrorOutcome.closed) await emitPositionClosedActivity(db, { positionId: targetPosition.id, closePrice, closeVolume, partial: mirrorOutcome.partial, realizedPnl: mirrorOutcome.realizedPnl, closeReason: "MIRROR", origin: `mirror_rule_${rule.id}` });
   } catch (err) {
     await recordMirrorFailure(db, rule, err instanceof Error ? err.message : "unknown error").catch(() => {});
   }

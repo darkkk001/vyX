@@ -5,6 +5,8 @@ import { getFreshPrices } from "@/lib/live-price";
 import { checkTradingSession } from "@/lib/risk";
 import { computeRealizedPnl, closePriceFor } from "@/lib/trading";
 import { closePositionInTx } from "@/lib/position-close";
+import { cancelPendingClose } from "@/lib/queued-close";
+import { emitPositionClosedActivity } from "@/lib/dealer-activity";
 import { publishTradingEvent } from "@/lib/nats";
 import { createNotification } from "@/lib/notifications";
 import { liveUsedMarginFor } from "@/lib/margin";
@@ -143,11 +145,15 @@ export async function evaluateAccountRisk(accountId: string): Promise<RiskMonito
     );
     if (outcome.closed) {
       slTpClosed.push(p.id);
+      // Closes respect DEALER mode: SL / TP bypass the dealer, so a close the client had queued for
+      // this position is now moot -- retire it and release the lock (the client sees a cancel).
+      await cancelPendingClose(prisma, p.id, reason === "stop_loss" ? "position closed by stop loss" : "position closed by take profit").catch((err) => console.error("cancelPendingClose failed", err));
       // docs/briefs/VYX-MIRROR-V0-BRIEF.md -- mirror hook gap fix: an
       // automatic SL/TP close is a real close, same as a trader's own
       // manual one -- this whole module never called it at all before.
       await mirror.onClose(prisma, { positionId: p.id, brokerId: p.brokerId, closedLots: p.volume, sourceVolumeBeforeClose: p.volume, closePrice: cp }).catch((err) => console.error("mirror.onClose failed", err));
       await publishTradingEvent("PositionClosed", { position_id: p.id, account_id: accountId, broker_id: p.brokerId, reason });
+      await emitPositionClosedActivity(prisma, { positionId: p.id, closePrice: cp, closeVolume: p.volume, partial: false, realizedPnl: outcome.realizedPnl, closeReason: reason === "stop_loss" ? "STOP_LOSS" : "TAKE_PROFIT", origin: "risk_monitor" });
     }
   }
 
@@ -204,10 +210,12 @@ export async function evaluateAccountRisk(accountId: string): Promise<RiskMonito
     );
     stopOutClosed.push(worst.position.id);
     if (outcome.closed) {
+      await cancelPendingClose(prisma, worst.position.id, "position closed by stop-out").catch((err) => console.error("cancelPendingClose failed", err));
       // docs/briefs/VYX-MIRROR-V0-BRIEF.md -- mirror hook gap fix: an
       // automatic stop-out close is a real close, same as SL/TP above.
       await mirror.onClose(prisma, { positionId: worst.position.id, brokerId: worst.position.brokerId, closedLots: worst.position.volume, sourceVolumeBeforeClose: worst.position.volume, closePrice: worst.closePrice }).catch((err) => console.error("mirror.onClose failed", err));
       await publishTradingEvent("PositionClosed", { position_id: worst.position.id, account_id: accountId, broker_id: worst.position.brokerId, reason: "stop_out" });
+      await emitPositionClosedActivity(prisma, { positionId: worst.position.id, closePrice: worst.closePrice, closeVolume: worst.position.volume, partial: false, realizedPnl: outcome.realizedPnl, closeReason: "STOP_OUT", origin: "risk_monitor" });
     }
     // If outcome.closed is false, a concurrent evaluation (or the trader)
     // already closed this exact position first -- it's dropped from

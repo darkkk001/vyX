@@ -5,6 +5,7 @@ import { closePositionInTx } from "@/lib/position-close";
 import { publishTradingEvent } from "@/lib/nats";
 import { checkTradingSession, computeNextSessionOpen } from "@/lib/risk";
 import * as mirror from "@/lib/mirror";
+import { emitPositionClosedActivity } from "@/lib/dealer-activity";
 
 type Db = PrismaClient | Prisma.TransactionClient;
 
@@ -145,6 +146,8 @@ export async function closePositionsByEachOther(
   await mirror
     .onClose(db, { positionId: b.id, brokerId: params.brokerId, closedLots: closeVolume, sourceVolumeBeforeClose: b.volume, closePrice })
     .catch((err) => console.error("mirror.onClose failed (close-by leg B)", err));
+  await emitPositionClosedActivity(db, { positionId: a.id, closePrice, closeVolume, partial: closeVolume.lt(a.volume), realizedPnl: outcome.outcomeA.realizedPnl, closeReason: "MANUAL", origin: "close_by" });
+  await emitPositionClosedActivity(db, { positionId: b.id, closePrice, closeVolume, partial: closeVolume.lt(b.volume), realizedPnl: outcome.outcomeB.realizedPnl, closeReason: "MANUAL", origin: "close_by" });
 
   // One event for the pair, not two -- same "one event for a whole bulk
   // close" convention lib/bulk-close.ts already established.
