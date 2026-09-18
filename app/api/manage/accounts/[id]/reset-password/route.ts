@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
+import { revokeAllAccountSessions } from "@/lib/account-auth";
 import { generateTemporaryPassword } from "@/lib/passwords";
 import { sendBrokerEmail } from "@/lib/email/adapter";
 import { renderBrokerEmail } from "@/lib/email/template";
@@ -21,6 +22,9 @@ async function requireManager() {
 // with {emailFallback} when an email existed but the broker's mail isn't set up.
 // The password is generated once, never stored in plaintext, never echoed again after
 // this response (see lib/passwords.ts). Always audited (ACCOUNT_PASSWORD_RESET).
+// Every existing session of the account is revoked with it: this is the
+// broker's "this account is compromised" action, and until 2026-09-18 an
+// attacker holding a session cookie simply kept trading through it.
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await requireManager();
   if (!session) {
@@ -50,6 +54,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       },
     }),
   ]);
+  await revokeAllAccountSessions(account.id);
 
   const email = (account.email ?? "").trim();
   const broker = await prisma.broker.findUnique({

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { consumePasswordResetToken, hashPassword } from "@/lib/client-auth";
+import { consumePasswordResetToken, hashPassword, revokeAllClientSessions } from "@/lib/client-auth";
 
 // Consumes the token POST /api/portal/forgot-password minted (single-use,
 // 1h TTL) and sets a new password. Does NOT log the client in -- same as
@@ -25,6 +25,10 @@ export async function POST(request: NextRequest) {
 
   const passwordHash = await hashPassword(password);
   await prisma.client.update({ where: { id: clientId }, data: { passwordHash } });
+  // A reset is the takeover remediation: every existing session dies with
+  // the old credential (pentest 2026-09-18 #2). Nothing to keep -- this
+  // flow never logs the client in.
+  await revokeAllClientSessions(clientId);
 
   return NextResponse.json({ ok: true });
 }

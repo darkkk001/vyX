@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
-import { getAdminSession, requireAdminRole } from "@/lib/auth";
+import { getAdminSession, requireAdminRole, revokeAllAdminSessions } from "@/lib/auth";
 import { generateTemporaryPassword } from "@/lib/passwords";
 
 // Mirrors app/api/manage/accounts/[id]/reset-password -- the other end
@@ -36,6 +36,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       },
     }),
   ]);
+  // Same rule as disabling an admin (760bb8c): the old credential's sessions
+  // die now, not at their 7/30-day TTL (pentest 2026-09-18 #2).
+  await revokeAllAdminSessions(admin.id);
 
   return NextResponse.json({ password });
 }

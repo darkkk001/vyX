@@ -22,10 +22,21 @@ const REMEMBER_TTL_SECONDS = 60 * 60 * 24 * 30; // 30 days
 export type ClientSessionPayload = {
   clientId: string;
   brokerId: string;
+  // Cosmetic per-session id (same reasoning as lib/account-auth.ts's
+  // sessionId: the token is the credential and is never listed or handed
+  // back). Present on every session minted since revoke-all shipped; a
+  // session from before simply isn't in the index and ages out on its TTL.
+  sessionId?: string;
 };
 
 function sessionKey(token: string) {
   return `client_session:${token}`;
+}
+function sessionIdKey(sessionId: string) {
+  return `client_session_id:${sessionId}`;
+}
+function sessionIndexKey(clientId: string) {
+  return `client_sessions_index:${clientId}`;
 }
 function emailVerifyKey(token: string) {
   return `client_email_verify:${token}`;
@@ -72,12 +83,20 @@ export async function hashPassword(password: string): Promise<string> {
 }
 
 export async function createClientSession(
-  payload: ClientSessionPayload,
+  payload: Omit<ClientSessionPayload, "sessionId">,
   remember: boolean = true
 ): Promise<string> {
   const token = crypto.randomBytes(32).toString("hex");
+  const sessionId = crypto.randomBytes(16).toString("hex");
   const ttlSeconds = remember ? REMEMBER_TTL_SECONDS : SESSION_TTL_SECONDS;
-  await getRedis().set(sessionKey(token), JSON.stringify(payload), "EX", ttlSeconds);
+  const redis = getRedis();
+  await redis.set(sessionKey(token), JSON.stringify({ ...payload, sessionId } satisfies ClientSessionPayload), "EX", ttlSeconds);
+  // Indexed under the client so revokeAllClientSessions can find it when
+  // the credential changes (pentest 2026-09-18 finding #2).
+  await Promise.all([
+    redis.set(sessionIdKey(sessionId), token, "EX", ttlSeconds),
+    redis.sadd(sessionIndexKey(payload.clientId), sessionId),
+  ]);
   return token;
 }
 
@@ -93,6 +112,28 @@ export async function verifyClientSessionToken(token: string): Promise<ClientSes
 
 export async function revokeClientSession(token: string): Promise<void> {
   await getRedis().del(sessionKey(token));
+}
+
+// Revokes EVERY session a client has -- called after every passwordHash
+// write (self-service change-password keeps the caller's own session via
+// `exceptSessionId`; the forgot-password reset revokes all, the client is
+// asked to sign in again with the new credential). Mirrors
+// lib/account-auth.ts's revokeAllAccountSessions.
+export async function revokeAllClientSessions(clientId: string, exceptSessionId?: string): Promise<number> {
+  const redis = getRedis();
+  const sessionIds = await redis.smembers(sessionIndexKey(clientId));
+  let revoked = 0;
+  for (const sessionId of sessionIds) {
+    if (exceptSessionId && sessionId === exceptSessionId) continue;
+    const token = await redis.get(sessionIdKey(sessionId));
+    await Promise.all([
+      token ? redis.del(sessionKey(token)) : Promise.resolve(0),
+      redis.del(sessionIdKey(sessionId)),
+      redis.srem(sessionIndexKey(clientId), sessionId),
+    ]);
+    if (token) revoked++;
+  }
+  return revoked;
 }
 
 // Server Components / route handlers: read the current client session, if

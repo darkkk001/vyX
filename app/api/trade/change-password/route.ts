@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
-import { getAccountSession } from "@/lib/account-auth";
+import { getAccountSession, revokeAllAccountSessions } from "@/lib/account-auth";
 
 export async function POST(request: NextRequest) {
   const session = await getAccountSession();
@@ -32,6 +32,10 @@ export async function POST(request: NextRequest) {
     where: { id: account.id },
     data: { passwordHash: newPasswordHash },
   });
+  // A changed password must evict every OTHER session (pentest 2026-09-18
+  // #2: before this, a stolen cookie survived the victim's password change
+  // for its full TTL). The session that made the change stays signed in.
+  await revokeAllAccountSessions(account.id, session.sessionId);
 
   return NextResponse.json({ ok: true });
 }

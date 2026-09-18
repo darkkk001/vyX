@@ -114,18 +114,21 @@ export async function createAccountSession(
     ttlSeconds
   );
 
-  // Metadata is best-effort/display-only (see the routes that read it) --
-  // if this second write is slow/fails, the session itself (written
-  // above) is still valid; the trader just won't see this device listed
-  // until their next login.
-  if (meta) {
-    const metadata: SessionMetadata = { userAgent: meta.userAgent, ip: meta.ip, createdAt: new Date().toISOString() };
-    await Promise.all([
-      redis.set(sessionIdKey(sessionId), token, "EX", ttlSeconds),
-      redis.set(sessionMetaKey(sessionId), JSON.stringify(metadata), "EX", ttlSeconds),
-      redis.sadd(sessionIndexKey(payload.accountId), sessionId),
-    ]);
-  }
+  // Every session is indexed under its account, always -- not only when the
+  // caller had device metadata to show. The index is what
+  // revokeAllAccountSessions walks when the credential changes (pentest
+  // 2026-09-18: a password change/reset left every existing session alive
+  // for its full TTL because sessions minted without metadata were never
+  // indexed and nothing called a revoke-all anyway), so an un-indexed
+  // session would be exactly the one an attacker keeps. Metadata stays
+  // best-effort/display-only: a session without a user agent/ip is listed
+  // as an unknown device rather than hidden.
+  const metadata: SessionMetadata = { userAgent: meta?.userAgent ?? null, ip: meta?.ip ?? null, createdAt: new Date().toISOString() };
+  await Promise.all([
+    redis.set(sessionIdKey(sessionId), token, "EX", ttlSeconds),
+    redis.set(sessionMetaKey(sessionId), JSON.stringify(metadata), "EX", ttlSeconds),
+    redis.sadd(sessionIndexKey(payload.accountId), sessionId),
+  ]);
 
   return token;
 }
@@ -151,6 +154,32 @@ export async function verifyAccountSessionToken(
 // (see its own comment).
 export async function revokeAccountSession(token: string): Promise<void> {
   await getRedis().del(sessionKey(token));
+}
+
+// Revokes EVERY session an account has -- the credential-change backstop
+// (pentest 2026-09-18 finding #2). Called after every passwordHash write:
+// a trader's own change-password (keeping the session that made the change,
+// `exceptSessionId`), an admin-initiated reset, and any future forced
+// logout. Same walk as revokeAllAdminSessions in lib/auth.ts; every session
+// is indexed since createAccountSession started indexing unconditionally,
+// and a pre-existing un-indexed one (older than that change) ages out on
+// its own 7/30-day TTL.
+export async function revokeAllAccountSessions(accountId: string, exceptSessionId?: string): Promise<number> {
+  const redis = getRedis();
+  const sessionIds = await redis.smembers(sessionIndexKey(accountId));
+  let revoked = 0;
+  for (const sessionId of sessionIds) {
+    if (exceptSessionId && sessionId === exceptSessionId) continue;
+    const token = await redis.get(sessionIdKey(sessionId));
+    await Promise.all([
+      token ? redis.del(sessionKey(token)) : Promise.resolve(0),
+      redis.del(sessionIdKey(sessionId)),
+      redis.del(sessionMetaKey(sessionId)),
+      redis.srem(sessionIndexKey(accountId), sessionId),
+    ]);
+    if (token) revoked++;
+  }
+  return revoked;
 }
 
 export type SessionListEntry = SessionMetadata & { sessionId: string; current: boolean };
