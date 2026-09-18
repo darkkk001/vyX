@@ -1,6 +1,9 @@
 # Deep backfill — repair ALL stored candle history from Pepperstone (VPS runbook)
 
-Branch `fix/deep-backfill-full-history` (on top of `b0d3967`). Everything below
+Branch `fix/candle-open-and-deep-backfill` (= `fix/candle-open-seed` 762215d +
+`fix/deep-backfill-full-history` a8a74fe merged at c4e1df6, on top of `b0d3967`).
+The same checkout + engine build + EA v1.40 also ship the forming-candle OPEN fix
+(§2a below), so this is ONE deploy for both chart issues. Everything below
 runs **on the Contabo box** (`C:\vyxtrader\repo`, engine service
 `vyxtrader-engine`, market store Postgres 16 at `127.0.0.1:5432/market_data`,
 Pepperstone MT5 in `C:\MT5-Pepperstone`, UTC+3) unless a step says otherwise.
@@ -45,7 +48,7 @@ in force since 2026-09-15, so the VPS store is the only candle store written.
 $env:Path += ";C:\Program Files\PostgreSQL\16\bin"
 cd C:\vyxtrader\repo
 git fetch --all
-git checkout fix/deep-backfill-full-history      # or main once merged
+git checkout fix/candle-open-and-deep-backfill  # or main once merged
 git log --oneline -1                              # note the hash
 
 # engine-role URL exactly as in C:\vyxtrader\scripts\start-engine.cmd's MARKET_DATA_DATABASE_URL
@@ -104,6 +107,46 @@ DELETE when clean).
 
 Rollback: stop the service, copy `trading-core-server.pre.exe` back over the
 release exe, `nssm start vyxtrader-engine`.
+
+## 2a. Forming-candle OPEN fix — what the same deploy changes (no extra steps)
+
+`fix/candle-open-seed` (762215d) is in this branch. Root cause, data-proven
+with DB-backed tests: the EA reads `SymbolInfoTick` once per
+`PushMinIntervalMs` (50 ms) and pushes only the LATEST tick of each window, so
+the first tick the engine ever receives after a minute boundary is not the tick
+MT5 opened the bar with; the engine's insert-only "open = first tick seen" then
+disagreed with Pepperstone's chart for the life of the bar (or until the 300 s
+backfill overwrote it). A second, rarer cause: the 10 s gap sweep could
+flat-fill a minute (open = previous close) before that minute's last-second
+ticks flushed, and the flat open won the insert.
+
+Fix: EA v1.40 appends `"bars":[{"tf","t","o","h","l"}, ...]` (bar 0 of
+M1..MN1 from `CopyRates`) to every tick push; the engine
+(`market_data::apply_broker_bars`) seeds each bucket's open from the broker's
+own bar and widens high/low to it, only when the bar's time equals the bucket
+it computes for the tick, and the DB upsert lets an authoritative open replace
+a sampled or flat-filled one. Old EA payloads still parse (field optional).
+
+Verify after §2 + §4 step 2 (EA recompiled and re-attached):
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8081/internal/feed-stats -Headers $H |   # $H from §2
+  Select-Object broker_bars_applied_total, broker_bars_mismatch_total
+```
+
+* `broker_bars_applied_total` must climb steadily while ticks flow (about 9
+  per flushed sample). **0 with ticks flowing = the old EA is still attached.**
+* `broker_bars_mismatch_total` stays flat (a few per day is normal: the EA read
+  bar 0 a tick after `SymbolInfoTick`); a steady climb means a grid
+  disagreement and the engine log names the first offender (W1 is the likely
+  one if Pepperstone dates weekly bars off Monday 00:00 server time).
+* Then, within ~1 s of any new M1 bar opening (do NOT wait for the 300 s
+  backfill), compare the newest row's `open` with MT5's Data Window (Ctrl+D)
+  bar 0 for XAUUSD on M1, M5, H1, H4 and D1 — identical to 5 dp:
+  `psql "$env:MARKET_DATA_DATABASE_URL" -c "select timeframe,"bucketStart",open,high,low,close from "Candle" where symbol='XAUUSD' and timeframe in ('M1','M5','H1','H4','D1') and "bucketStart" = (select max("bucketStart") from "Candle" c2 where c2.symbol='XAUUSD' and c2.timeframe="Candle".timeframe) order by timeframe"`
+* Terminal (Avalonia) users need the matching terminal build for a candle the
+  terminal rolled itself mid-session (E:\vyxtrader `fix/chart-open-reconcile`);
+  the stored/served bar is right regardless.
 
 ## 3. Off-grid cleanup — verify (or run by hand)
 
@@ -272,7 +315,7 @@ Invoke-Command -Session $s -ScriptBlock {
   $env:Path += ";C:\Program Files\PostgreSQL\16\bin;C:\Users\<user>\.cargo\bin"
   $env:MARKET_DATA_DATABASE_URL = "postgres://engine:<pw>@127.0.0.1:5432/market_data"
   mkdir C:\vyxtrader\backup\deep-backfill -Force | Out-Null
-  cd C:\vyxtrader\repo; git fetch --all; git checkout fix/deep-backfill-full-history; git log --oneline -1
+  cd C:\vyxtrader\repo; git fetch --all; git checkout fix/candle-open-and-deep-backfill; git log --oneline -1
   foreach ($sym in "XAUUSD","EURUSD") { node scripts\candle-integrity-report.mjs $sym --days=45 > "C:\vyxtrader\backup\deep-backfill\before-$sym.txt" }
   pg_dump -U postgres -h 127.0.0.1 -Fc market_data > C:\vyxtrader\backup\deep-backfill\market_data-pre.dump   # needs PGPASSWORD
   Copy-Item engine\target\release\trading-core-server.exe C:\vyxtrader\backup\deep-backfill\trading-core-server.pre.exe
