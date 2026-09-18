@@ -793,10 +793,26 @@ async fn ingest_history(
     let mut gap_fills: Vec<CandleUpdate> = Vec::new();
     let mut authoritative: Vec<CandleUpdate> = Vec::with_capacity(bars.len());
 
+    // A bar off the timeframe's grid (see market_data::bucket_is_aligned --
+    // the EA's second-resolution offset straddling a second boundary is the
+    // known way to get one) must not become a row: it would sit one second
+    // beside the real bucket as a phantom bar, and the authoritative
+    // overwrite this endpoint exists for would never reach the real row.
+    // Skipped per bar, counted, and warned once per request with the first
+    // offender so the misconfigured sender is visible in the log rather
+    // than in the chart. The rest of the request still lands.
+    let mut misaligned = 0usize;
+    let mut first_misaligned_ms: Option<i64> = None;
+
     for bar in &bars {
         let Some(bucket_start) = Utc.timestamp_millis_opt(bar.bucket_start_ms).single() else {
             continue; // malformed timestamp -- skip just this bar
         };
+        if !market_data::bucket_is_aligned(timeframe, bar.bucket_start_ms) {
+            misaligned += 1;
+            first_misaligned_ms.get_or_insert(bar.bucket_start_ms);
+            continue;
+        }
         let update = CandleUpdate {
             symbol: body.symbol.clone(),
             timeframe,
@@ -808,6 +824,17 @@ async fn ingest_history(
         };
         gap_fills.extend(state.gap_fill.fill_gaps_and_record(&update));
         authoritative.push(update);
+    }
+    if misaligned > 0 {
+        tracing::warn!(
+            symbol = %body.symbol,
+            timeframe = %body.timeframe,
+            misaligned,
+            of = bars.len(),
+            first_bucket_start_ms = first_misaligned_ms.unwrap_or_default(),
+            server_offset_sec = body.server_offset_sec.unwrap_or(0),
+            "history bars off the timeframe grid -- skipped, not stored. The sender's UTC offset is not a whole number of minutes (EA < v1.39 could straddle a second boundary computing it)"
+        );
     }
     let upserted = authoritative.len();
 

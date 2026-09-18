@@ -7,7 +7,7 @@
 //| LivePrice table this EA feeds.                                    |
 //+------------------------------------------------------------------+
 #property strict
-#property version   "1.38"
+#property version   "1.39"
 
 input string ServerUrl            = "https://www.vyxtrader.com/api/internal/price-feed";
 // No default -- this file is committed to a public-ish repo. A real
@@ -178,7 +178,19 @@ void RefreshBrokerOffset()
    // TimeTradeServer() is the broker's clock, TimeGMT() the terminal
    // host's idea of UTC. Both are datetime (seconds); their difference is
    // the offset to subtract from every CopyRates timestamp.
-   BrokerOffsetSec = (long)TimeTradeServer() - (long)TimeGMT();
+   //
+   // Rounded to the whole minute: the two reads are one after the other,
+   // so a second boundary falling between them yields 10799/10801 instead
+   // of 10800 -- and that value then stays in force until the next clock
+   // sync. Every bar of every history pass in between would be sent at
+   // hh:mm:01 / hh:mm:59, i.e. one second beside the real bucket, and the
+   // engine (which now also refuses off-grid bars, see
+   // market_data::bucket_is_aligned) would never get the overwrite this
+   // backfill exists for. No real broker offset has a seconds component
+   // (whole hours, at worst :30), so rounding loses nothing.
+   long raw = (long)TimeTradeServer() - (long)TimeGMT();
+   long sign = raw < 0 ? -1 : 1;
+   BrokerOffsetSec = sign * (((sign * raw) + 30) / 60) * 60;
 }
 
 // Steady-state shallow-backfill state. lastHistoryBackfillMs == 0 means

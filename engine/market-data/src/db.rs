@@ -87,12 +87,20 @@ pub async fn upsert_live_prices_batch(
 /// one row at a time -- same reasoning as upsert_live_prices_batch above).
 /// `open` is only set on insert (never touched by the `DO UPDATE`),
 /// `high`/`low` widen via GREATEST/LEAST, `close` always takes the latest
-/// tick. Every current producer of `CandleUpdate` destined for this
-/// function (candle_updates_for_tick, gap_fill::fill_gaps_and_record) sets
-/// open == high == low == close already -- a single point-in-time
-/// observation, not a bar -- so this binds `open` for all three of
-/// high/low/close, matching the single-row version's own binding exactly
-/// rather than trusting fields nothing currently varies.
+/// tick.
+///
+/// All four fields are bound from the update -- each to its own column.
+/// This used to bind `open` for high/low/close too, on the (then true)
+/// grounds that every producer sent a single point sample with
+/// open == high == low == close. That stopped being true when the live
+/// flush started carrying the tick cache's accumulated intra-window OHLC
+/// (cache::CandleSample -> lib::candle_updates_for_tick_ohlc): the
+/// accumulated high/low and the latest-tick close were silently discarded
+/// here and every flush wrote the window's OPEN price as high, low AND
+/// close, so the stored bar was a ~1 Hz point sample of window opens --
+/// understated wicks, wrong close -- until the EA backfill replaced it.
+/// Flat producers (gap fills) still send o == h == l == c and are
+/// unaffected by binding per field.
 pub async fn upsert_candles_batch(
     tx: &mut sqlx::PgTransaction<'_>,
     updates: &[CandleUpdate],
@@ -103,14 +111,17 @@ pub async fn upsert_candles_batch(
     let symbols: Vec<&str> = updates.iter().map(|u| u.symbol.as_str()).collect();
     let timeframes: Vec<&str> = updates.iter().map(|u| timeframe_to_str(u.timeframe)).collect();
     let bucket_starts: Vec<chrono::DateTime<chrono::Utc>> = updates.iter().map(|u| u.bucket_start).collect();
-    let prices: Vec<Decimal> = updates.iter().map(|u| u.open).collect();
+    let opens: Vec<Decimal> = updates.iter().map(|u| u.open).collect();
+    let highs: Vec<Decimal> = updates.iter().map(|u| u.high).collect();
+    let lows: Vec<Decimal> = updates.iter().map(|u| u.low).collect();
+    let closes: Vec<Decimal> = updates.iter().map(|u| u.close).collect();
 
     sqlx::query(
         r#"
         INSERT INTO "Candle" (symbol, timeframe, "bucketStart", open, high, low, close, "updatedAt")
-        SELECT symbol, timeframe::"CandleTimeframe", bucket_start, price, price, price, price, now()
-        FROM UNNEST($1::text[], $2::text[], $3::timestamptz[], $4::numeric[])
-            AS t(symbol, timeframe, bucket_start, price)
+        SELECT symbol, timeframe::"CandleTimeframe", bucket_start, open, high, low, close, now()
+        FROM UNNEST($1::text[], $2::text[], $3::timestamptz[], $4::numeric[], $5::numeric[], $6::numeric[], $7::numeric[])
+            AS t(symbol, timeframe, bucket_start, open, high, low, close)
         ON CONFLICT (symbol, timeframe, "bucketStart") DO UPDATE SET
             high = GREATEST("Candle".high, EXCLUDED.high),
             low = LEAST("Candle".low, EXCLUDED.low),
@@ -121,7 +132,10 @@ pub async fn upsert_candles_batch(
     .bind(&symbols)
     .bind(&timeframes)
     .bind(&bucket_starts)
-    .bind(&prices)
+    .bind(&opens)
+    .bind(&highs)
+    .bind(&lows)
+    .bind(&closes)
     .execute(&mut **tx)
     .await?;
     Ok(())

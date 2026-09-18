@@ -401,7 +401,6 @@ fn re_mark_live_price_dirty(cache: &TickCache, ticks: &[Tick]) {
 //       the NEXT flush (ahead of that flush's own updates), so the missed
 //       bucket is retried with the real values it held, not just flat.
 async fn flush_candles(pools: &MarketDataPools, cache: &TickCache, samples: &[CandleSample], stats: &Arc<FeedStats>, gap_fill: &GapFillTracker, broker_offset: &BrokerOffsetTracker, pending: &mut Vec<CandleUpdate>) {
-    let now = Utc::now();
     // One batched round trip per target for the whole flush instead of
     // one per (tick x timeframe x gap-fill) -- see
     // db::upsert_candles_batch's own comment. Rows a previous cycle failed
@@ -451,7 +450,7 @@ async fn flush_candles(pools: &MarketDataPools, cache: &TickCache, samples: &[Ca
             // interval/dirty-tracking) that never goes through this loop,
             // so the watchlist's last-known price still updates from a
             // closed-market tick; only the candle write is skipped.
-            let tick_time = resolve_tick_time(tick, now);
+            let tick_time = sample.at;
             if !market_open(&tick.symbol, tick_time) {
                 continue;
             }
@@ -463,10 +462,21 @@ async fn flush_candles(pools: &MarketDataPools, cache: &TickCache, samples: &[Ca
             // would otherwise stamp a tick genuinely from 10:00:59.8 into the
             // 10:01 bucket, leaking one minute's range into the next and
             // leaving 10:00 to be flat-filled -- two real M1 candles rendering
-            // as one fat candle + a flat doji. resolve_tick_time already
-            // returns `now` for a tick with no embedded time, so a normal
-            // live tick is unaffected; only lagged/backfilled ticks move to
-            // their correct bucket.
+            // as one fat candle + a flat doji.
+            //
+            // `sample.at` is that time as resolved when the tick was INGESTED
+            // (resolve_tick_time in ingest_ticks -- tick_ms, else arrival
+            // time), not re-resolved here: a tick with no tick_ms would
+            // otherwise fall back to this flush's `now`, up to a flush
+            // interval later than it really arrived, and cross a minute it
+            // never belonged to. And since the cache closes a segment on
+            // every UTC-minute rollover (cache::TickCache::set), the
+            // open/high/low carried on this sample are guaranteed to be from
+            // the same minute as `sample.at` -- a window straddling a minute
+            // boundary arrives here as two samples, one per minute, instead
+            // of the whole window being stamped into the LAST tick's minute
+            // (which left the previous minute's bar without its final ticks
+            // -- its true high/low -- and gave the next bar a wrong open).
             for update in candle_updates_for_tick_ohlc(tick, tick_time, offset_sec, sample.open, sample.high, sample.low) {
                 // fix/realtime-sync §4 -- flat-fills every bucket skipped
                 // since the last one actually written for this
@@ -778,7 +788,7 @@ mod dual_write_tests {
         // both: every row on both sides, both counter trios advance
         let both = MarketDataPools::new(neon.clone(), Some(local.clone()), WriteMode::Both);
         assert!(flush_live_prices(&both, &cache, &[tick.clone()], &stats).await);
-        flush_candles(&both, &cache, &[CandleSample { tick: tick.clone(), open: tick.bid, high: tick.bid, low: tick.bid }], &stats, &gap_fill, &broker_offset, &mut Vec::new()).await;
+        flush_candles(&both, &cache, &[CandleSample { tick: tick.clone(), at: Utc::now(), open: tick.bid, high: tick.bid, low: tick.bid }], &stats, &gap_fill, &broker_offset, &mut Vec::new()).await;
         let snap = stats.snapshot();
         assert_eq!((snap.db_ok, snap.db_fail), (2, 0), "neon: one live-price + one candle flush");
         assert_eq!((snap.local_db_ok, snap.local_db_fail), (2, 0), "local: one live-price + one candle flush");
@@ -887,6 +897,85 @@ mod dual_write_tests {
             "no missing M1 bucket after the dropped write"
         );
         assert_eq!(rows[1].close, dec!(2401), "the recovered bucket keeps its real value, not a flat fill");
+
+        for p in [&neon, &local] {
+            sqlx::query(r#"DELETE FROM "Candle" WHERE symbol = $1"#).bind(&symbol).execute(p).await.unwrap();
+        }
+    }
+
+    async fn m1_row(pool: &PgPool, symbol: &str, bucket: DateTime<Utc>) -> Option<(Decimal, Decimal, Decimal, Decimal)> {
+        sqlx::query_as(r#"SELECT open, high, low, close FROM "Candle" WHERE symbol = $1 AND timeframe = 'M1' AND "bucketStart" = $2"#)
+            .bind(symbol)
+            .bind(bucket)
+            .fetch_optional(pool)
+            .await
+            .unwrap()
+    }
+
+    /// The bug behind "stored OHLC != broker": upsert_candles_batch used to
+    /// bind `open` as open, high, low AND close, so the accumulated
+    /// intra-window high/low (and the latest-tick close) never reached the
+    /// row. Two flushes into one bucket must leave open = first, high = max
+    /// of both, low = min of both, close = last.
+    #[tokio::test]
+    async fn upsert_candles_batch_stores_each_ohlc_field_and_widens_across_flushes() {
+        let Some((neon, local)) = pools().await else { return };
+        let symbol = format!("TESTOHLC{}", Utc::now().timestamp_millis() % 1_000_000);
+        let bucket = Utc.with_ymd_and_hms(2026, 8, 12, 10, 0, 0).unwrap();
+        let upd = |o: Decimal, h: Decimal, l: Decimal, c: Decimal| CandleUpdate { symbol: symbol.clone(), timeframe: Timeframe::M1, bucket_start: bucket, open: o, high: h, low: l, close: c };
+        for batch in [vec![upd(dec!(100), dec!(110), dec!(95), dec!(101))], vec![upd(dec!(101), dec!(105), dec!(90), dec!(99))]] {
+            let mut tx = local.begin().await.unwrap();
+            db::upsert_candles_batch(&mut tx, &batch).await.unwrap();
+            tx.commit().await.unwrap();
+        }
+        assert_eq!(m1_row(&local, &symbol, bucket).await, Some((dec!(100), dec!(110), dec!(90), dec!(99))), "open = first flush's open, high/low = widest of both, close = latest");
+        for p in [&neon, &local] {
+            sqlx::query(r#"DELETE FROM "Candle" WHERE symbol = $1"#).bind(&symbol).execute(p).await.unwrap();
+        }
+    }
+
+    /// End to end through the real hot path (cache.set -> take_dirty_candles
+    /// -> flush_candles -> Postgres): one flush window whose ticks straddle
+    /// a minute boundary. The spike/dip in 12:00's last second must land in
+    /// the 12:00 row and 12:01 must open at its own first tick -- neither
+    /// happened before: the window was bucketed by its last tick (12:01) and
+    /// the DB only ever received the window's open price.
+    #[tokio::test]
+    async fn a_flush_window_straddling_a_minute_writes_each_minutes_true_ohlc_to_its_own_row() {
+        let Some((neon, local)) = pools().await else { return };
+        let symbol = format!("TESTSTRD{}", Utc::now().timestamp_millis() % 1_000_000);
+        for p in [&neon, &local] {
+            sqlx::query(r#"DELETE FROM "Candle" WHERE symbol = $1"#).bind(&symbol).execute(p).await.unwrap();
+        }
+        let stats = Arc::new(FeedStats::new());
+        let cache = TickCache::new();
+        let gap_fill = GapFillTracker::new();
+        let broker_offset = BrokerOffsetTracker::new();
+        let m0 = Utc.with_ymd_and_hms(2026, 8, 12, 12, 0, 0).unwrap(); // Wednesday, market open
+        let m1 = m0 + Duration::minutes(1);
+        let tick_at = |bid: Decimal, ms: i64| Tick { symbol: symbol.clone(), bid, ask: bid + dec!(0.2), t0: None, clock_offset_ms: None, rtt_ms: None, tick_ms: Some(m0.timestamp_millis() + ms), broker_offset_sec: Some(0) };
+        // Exactly what ingest_ticks does per tick: resolve the represented time, then cache.set.
+        let now = Utc::now();
+        for (bid, ms) in [(dec!(2400.0), 58_500), (dec!(2410.0), 59_200), (dec!(2395.0), 59_800), (dec!(2402.0), 60_100), (dec!(2403.0), 60_400)] {
+            let t = tick_at(bid, ms);
+            cache.set(&t, resolve_tick_time(&t, now));
+        }
+        let samples = cache.take_dirty_candles();
+        assert_eq!(samples.len(), 2, "the straddling window yields one sample per minute");
+        let target = MarketDataPools::new(neon.clone(), Some(local.clone()), WriteMode::Local);
+        flush_candles(&target, &cache, &samples, &stats, &gap_fill, &broker_offset, &mut Vec::new()).await;
+        assert_eq!(stats.snapshot().local_db_fail, 0);
+
+        assert_eq!(m1_row(&local, &symbol, m0).await, Some((dec!(2400.0), dec!(2410.0), dec!(2395.0), dec!(2395.0))), "12:00 keeps its own open and its last-second spike/dip, closing on its last tick");
+        assert_eq!(m1_row(&local, &symbol, m1).await, Some((dec!(2402.0), dec!(2403.0), dec!(2402.0), dec!(2403.0))), "12:01 opens at its own first tick and carries none of 12:00's range");
+
+        // A later flush in 12:01 widens that row only (GREATEST/LEAST) and never touches 12:00.
+        let t = tick_at(dec!(2390.0), 61_000);
+        cache.set(&t, resolve_tick_time(&t, now));
+        let samples = cache.take_dirty_candles();
+        flush_candles(&target, &cache, &samples, &stats, &gap_fill, &broker_offset, &mut Vec::new()).await;
+        assert_eq!(m1_row(&local, &symbol, m1).await, Some((dec!(2402.0), dec!(2403.0), dec!(2390.0), dec!(2390.0))));
+        assert_eq!(m1_row(&local, &symbol, m0).await, Some((dec!(2400.0), dec!(2410.0), dec!(2395.0), dec!(2395.0))), "a closed minute is never rewritten by the next minute's ticks");
 
         for p in [&neon, &local] {
             sqlx::query(r#"DELETE FROM "Candle" WHERE symbol = $1"#).bind(&symbol).execute(p).await.unwrap();

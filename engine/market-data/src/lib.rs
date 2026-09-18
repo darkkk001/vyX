@@ -73,6 +73,37 @@ pub fn timeframe_from_str(s: &str) -> Option<Timeframe> {
     }
 }
 
+/// Whether a bucketStart handed to us by an external sender (the EA's
+/// CopyRates backfill, /internal/history) lands on this timeframe's grid.
+/// Every bucket this engine ever writes starts on a whole UTC minute, and
+/// M1..H1 additionally on a whole multiple of their own span from the
+/// epoch (`bucket_start` floors exactly that way); H4/D1 are shifted by the
+/// broker offset (whole hours, at worst :30) and W1/Mn1/Y1 are calendar
+/// buckets, so for those only the whole-minute rule can be checked here.
+///
+/// Why this exists: the EA derives its UTC conversion as
+/// `TimeTradeServer() - TimeGMT()`, two second-resolution clocks read one
+/// after the other. A second boundary between the two reads makes that
+/// 10799 or 10801 instead of 10800, and every bar in that pass then
+/// arrives at hh:mm:01 (or :59). Upserted as-is, those are 600 brand-new
+/// rows one second off the grid -- the authoritative overwrite that is
+/// supposed to correct the real hh:mm:00 rows never touches them, the
+/// chart gets phantom bars, and nothing in the logs says so. The EA now
+/// rounds its offset to the minute as well (mt5-ea/VyXTraderPriceFeed.mq5
+/// RefreshBrokerOffset); this is the engine-side guarantee that a
+/// misaligned bar can never land regardless of what any sender does.
+pub fn bucket_is_aligned(tf: Timeframe, bucket_start_ms: i64) -> bool {
+    if bucket_start_ms.rem_euclid(60_000) != 0 {
+        return false;
+    }
+    match tf {
+        Timeframe::M1 | Timeframe::M5 | Timeframe::M15 | Timeframe::M30 | Timeframe::H1 => {
+            bucket_start_ms.rem_euclid(fixed_ms(tf).expect("fixed timeframe")) == 0
+        }
+        _ => true,
+    }
+}
+
 /// Fixed-millisecond spacing for M1..D1. W1/Mn1/Y1 need real calendar math
 /// (see `bucket_start`) — ported 1:1 from lib/price-feed.ts's FIXED_MS.
 /// `pub(crate)` for gap_fill.rs's own use -- gaps are only worth
@@ -264,6 +295,31 @@ pub fn candle_updates_for_tick_ohlc(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_bar_one_second_off_the_minute_grid_is_rejected_for_every_timeframe() {
+        let on_grid = super::bucket_start(super::Timeframe::M1, chrono::Utc::now(), 0).timestamp_millis();
+        for tf in super::TIMEFRAMES {
+            assert!(!super::bucket_is_aligned(tf, on_grid + 1_000), "{tf:?}: hh:mm:01 must never be a bucket start");
+            assert!(!super::bucket_is_aligned(tf, on_grid - 1_000), "{tf:?}: hh:mm:59 must never be a bucket start");
+        }
+    }
+
+    #[test]
+    fn fixed_timeframes_require_their_own_grid_and_offset_shifted_ones_only_the_minute() {
+        use super::{bucket_is_aligned, Timeframe};
+        let h = 3_600_000;
+        assert!(bucket_is_aligned(Timeframe::M1, h + 60_000));
+        assert!(bucket_is_aligned(Timeframe::M5, h + 300_000));
+        assert!(!bucket_is_aligned(Timeframe::M5, h + 60_000), "an M1-aligned start is not an M5 bucket");
+        assert!(bucket_is_aligned(Timeframe::H1, 5 * h));
+        assert!(!bucket_is_aligned(Timeframe::H1, 5 * h + 1_800_000));
+        // H4/D1 buckets shift by the broker offset (e.g. UTC+3 -> D1 opens 21:00 UTC), so
+        // only the whole-minute rule is asserted for them.
+        assert!(bucket_is_aligned(Timeframe::H4, 21 * h));
+        assert!(bucket_is_aligned(Timeframe::D1, 21 * h + 1_800_000));
+        assert!(bucket_is_aligned(Timeframe::W1, 21 * h));
+    }
+
     use super::*;
     use chrono::Weekday;
 
