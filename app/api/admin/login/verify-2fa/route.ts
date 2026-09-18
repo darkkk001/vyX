@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { createSessionToken, SESSION_COOKIE_NAME, sessionCookieOptions } from "@/lib/auth";
-import { checkRateLimit } from "@/lib/rate-limit";
+import { checkRateLimit, clearFailures, isLockedOut, recordFailure } from "@/lib/rate-limit";
 import { peekPendingAdmin2faChallenge, deletePendingAdmin2faChallenge, verifyAdminTwoFactorCode } from "@/lib/totp";
 
 // The second step for a 2FA-enabled Super Admin, once app/api/admin/login's
@@ -25,6 +25,12 @@ export async function POST(request: NextRequest) {
   }
 
   const pending = await peekPendingAdmin2faChallenge(pendingToken);
+  // Per-ADMIN lockout on wrong codes across pending tokens (pentest
+  // 2026-09-18 #4) -- see app/api/trade/login/verify-2fa for the reasoning.
+  const lockoutKey = pending ? `admin-verify-2fa-acct:${pending.adminId}` : null;
+  if (lockoutKey && (await isLockedOut(lockoutKey, 5))) {
+    return NextResponse.json({ error: "too many attempts, try again shortly" }, { status: 429 });
+  }
   if (!pending) {
     return NextResponse.json({ error: "login expired, please sign in again" }, { status: 401 });
   }
@@ -36,10 +42,11 @@ export async function POST(request: NextRequest) {
   }
 
   if (!(await verifyAdminTwoFactorCode(admin, { code, backupCode }))) {
+    await recordFailure(lockoutKey!, 900);
     return NextResponse.json({ error: "invalid code" }, { status: 401 });
   }
 
-  await deletePendingAdmin2faChallenge(pendingToken);
+  await Promise.all([deletePendingAdmin2faChallenge(pendingToken), clearFailures(lockoutKey!)]);
 
   const userAgent = request.headers.get("user-agent");
   const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? null;

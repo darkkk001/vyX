@@ -6,7 +6,7 @@ import {
   ACCOUNT_SESSION_COOKIE_NAME,
   accountSessionCookieOptions,
 } from "@/lib/account-auth";
-import { checkRateLimit } from "@/lib/rate-limit";
+import { checkRateLimit, clearFailures, isLockedOut, recordFailure } from "@/lib/rate-limit";
 import { peekPending2faChallenge, deletePending2faChallenge, verifyTotp } from "@/lib/totp";
 
 // The second step for a 2FA-enabled account, once app/api/trade/login's
@@ -42,6 +42,16 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "login expired, please sign in again" }, { status: 401 });
   }
 
+  // Per-ACCOUNT lockout on wrong codes, across pending tokens (pentest
+  // 2026-09-18 #4): the per-token throttle above resets with every fresh
+  // login, so on its own it never locked the account. 5 wrong codes in 15
+  // minutes locks the second factor for that account; a correct code
+  // clears the count.
+  const lockoutKey = `verify-2fa-acct:${pending.accountId}`;
+  if (await isLockedOut(lockoutKey, 5)) {
+    return NextResponse.json({ error: "too many attempts, try again shortly" }, { status: 429 });
+  }
+
   // Read any existing session before this one lands -- same Account
   // Selector switch-detection app/api/trade/login's own non-2FA branch
   // does, just deferred here until the 2FA-gated login actually
@@ -55,10 +65,11 @@ export async function POST(request: NextRequest) {
   }
 
   if (!verifyTotp(account.twoFactorSecret, code)) {
+    await recordFailure(lockoutKey, 900);
     return NextResponse.json({ error: "invalid code" }, { status: 401 });
   }
 
-  await deletePending2faChallenge(pendingToken);
+  await Promise.all([deletePending2faChallenge(pendingToken), clearFailures(lockoutKey)]);
 
   const clientBuild = (request.headers.get("x-client-build") ?? "").trim();   // build watermark, see /api/trade/login
   const userAgent = [request.headers.get("user-agent"), clientBuild ? `VyxBuild/${clientBuild}` : ""].filter(Boolean).join(" ") || null;
