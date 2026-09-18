@@ -23,3 +23,8 @@ async-nats.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
+# Constant-time shared-secret compares for the x-internal-secret /
+# x-market-data-secret / x-price-feed-secret guards (pentest 2026-09-18
+# item 13). Already in Cargo.lock transitively (rustls/ring), so no new
+# dependency tree.
+subtle = "2"

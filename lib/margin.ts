@@ -130,6 +130,11 @@ export function checkPreTradeMargin(params: {
   requiredMargin: Prisma.Decimal;
   marginCallLevel: Prisma.Decimal;
 }): string | null {
+  // Non-finite anywhere is a rejection, never a pass (pentest 2026-09-18 #7:
+  // a NaN required margin made `projectedLevel.lt(level)` false).
+  if (!params.requiredMargin.isFinite() || !params.usedMargin.isFinite() || !params.equity.isFinite()) {
+    return "INSUFFICIENT_MARGIN";
+  }
   const projectedUsedMargin = params.usedMargin.add(params.requiredMargin);
   if (projectedUsedMargin.isZero()) return null;
   const projectedLevel = params.equity.div(projectedUsedMargin).mul(100);

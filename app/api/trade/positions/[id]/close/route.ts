@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { toFiniteDecimal, isFiniteDecimalString } from "@/lib/decimal-input";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
@@ -55,6 +56,12 @@ export async function POST(
   // the native terminal sends its SLIPPAGE MAX ("unlimited" for "M"),
   // WebTrader sends nothing and gets the broker default.
   const maxSlippagePips = body?.maxSlippagePips != null ? String(body.maxSlippagePips) : null;
+  if (!isFiniteDecimalString(clientReferencePrice)) {
+    return NextResponse.json({ error: "invalid closePrice" }, { status: 400 });
+  }
+  if (maxSlippagePips != null && maxSlippagePips !== "unlimited" && !isFiniteDecimalString(maxSlippagePips)) {
+    return NextResponse.json({ error: "invalid maxSlippagePips" }, { status: 400 });
+  }
   // Informational only, doesn't change validation/execution -- flags this
   // close for the STM_BULK_CLOSE audit trail. See
   // components/webtrader/SmartTradeManager.tsx's runBulk/partialCloseOne/
@@ -118,10 +125,8 @@ export async function POST(
 
   let closeVolume = position.volume;
   if (body?.volume != null) {
-    let requested: Prisma.Decimal;
-    try {
-      requested = new Prisma.Decimal(String(body.volume));
-    } catch {
+    const requested = toFiniteDecimal(body.volume);
+    if (!requested) {
       return NextResponse.json({ error: "invalid volume" }, { status: 400 });
     }
     if (requested.lte(0) || requested.gt(position.volume)) {

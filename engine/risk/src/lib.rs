@@ -28,6 +28,14 @@ pub enum RiskRejectReason {
     MaxOpenPositionsExceeded { current: i64, max: i32 },
     #[error("{0}")]
     InvalidStopLevels(String),
+    /// `Account.leverage` (or the copy of it a caller hands in) is zero.
+    /// Pentest 2026-09-18 item 9: this used to reach `required_margin`
+    /// unchecked and rust_decimal's division-by-zero panic killed the
+    /// whole handler task. The admin PATCH route guards `leverage <= 0`,
+    /// but a group copy-down or a direct DB write can still land a 0, so
+    /// it is rejected here as data, never trusted.
+    #[error("account leverage must be at least 1 (got {leverage})")]
+    InvalidLeverage { leverage: u32 },
 }
 
 /// Side-aware SL/TP validation against a reference price — direct Rust
@@ -72,8 +80,22 @@ pub fn validate_sl_tp(
 
 /// Standard forex margin formula, per ../../docs/risk-engine.md §2.1.3:
 /// volume * contract_size * price / leverage.
-pub fn required_margin(volume: Decimal, contract_size: Decimal, price: Decimal, leverage: u32) -> Decimal {
-    volume * contract_size * price / Decimal::from(leverage)
+///
+/// `leverage == 0` is a hard `Err(InvalidLeverage)`, never a panic: the
+/// divisor comes from account data (pentest 2026-09-18 item 9), and a
+/// panic here takes the calling task -- an order handler or the margin
+/// monitor pass -- down with it. Callers map the error to an order
+/// rejection (or skip the account) rather than unwrapping.
+pub fn required_margin(
+    volume: Decimal,
+    contract_size: Decimal,
+    price: Decimal,
+    leverage: u32,
+) -> Result<Decimal, RiskRejectReason> {
+    if leverage == 0 {
+        return Err(RiskRejectReason::InvalidLeverage { leverage });
+    }
+    Ok(volume * contract_size * price / Decimal::from(leverage))
 }
 
 /// Margin level = equity / used_margin * 100, per ../../docs/risk-engine.md
@@ -191,8 +213,18 @@ mod tests {
     #[test]
     fn required_margin_standard_lot_1_to_100() {
         // 1 lot EURUSD (contract size 100,000) at 1.10000, 1:100 leverage.
-        let m = required_margin(dec!(1), dec!(100000), dec!(1.10000), 100);
+        let m = required_margin(dec!(1), dec!(100000), dec!(1.10000), 100).unwrap();
         assert_eq!(m, dec!(1100.00000));
+    }
+
+    /// Pentest 2026-09-18 item 9: a zero divisor is data, not a bug to
+    /// crash on -- it must come back as a typed rejection so the caller
+    /// (an HTTP handler task, the margin monitor) keeps running.
+    #[test]
+    fn required_margin_leverage_zero_is_an_error_not_a_panic() {
+        let result = required_margin(dec!(1), dec!(100000), dec!(1.10000), 0);
+        assert_eq!(result, Err(RiskRejectReason::InvalidLeverage { leverage: 0 }));
+        assert!(required_margin(dec!(1), dec!(100000), dec!(1.10000), 1).is_ok());
     }
 
     #[test]

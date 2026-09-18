@@ -6,9 +6,20 @@
 //! — see that field's schema comment for the unit convention) as a
 //! `SWAP` ledger entry.
 //!
-//! Wednesday charges 3x, the common industry convention for rolling a
-//! position through the weekend (Fri/Sat/Sun nights collapsed into one
-//! charge) — a broker-level override for this isn't built, matching the
+//! Calendar rule (wrong-field audit 2026-09-18 item 2.5 pinned it down):
+//! - one charge per position per calendar day, claimed per position
+//!   (`db::claim_position_for_swap`) so a re-run the same day is a no-op;
+//! - the first charge is the first rollover AFTER the day the position
+//!   was opened -- `db::insert_position` seeds `last_swap_at` and the due
+//!   predicate falls back to `created_at`, so a position never pays on
+//!   the poll after it opens;
+//! - Wednesday charges 3x, the common industry convention for rolling a
+//!   position through the weekend (Fri/Sat/Sun nights collapsed into one
+//!   charge);
+//! - Saturday and Sunday charge nothing at all (`is_rollover_day`) --
+//!   without that skip the Wednesday triple PLUS two weekend charges made
+//!   nine charges a week instead of seven.
+//! A broker-level override for any of this isn't built, matching the
 //! project's own "don't build config nobody asked for yet" bias; flagged
 //! here as a deliberate simplification, not hidden.
 //!
@@ -33,6 +44,16 @@ pub fn swap_multiplier(iso_weekday: i32) -> Decimal {
     }
 }
 
+/// Whether a rollover run on this ISO weekday (Monday=1..Sunday=7)
+/// charges anything: Saturday (6) and Sunday (7) are skipped outright --
+/// the weekend's holding cost is what Wednesday's 3x already covers. A
+/// weekend run leaves every position unclaimed, so Monday's run picks
+/// them all up as normal. Out-of-range values (a schema-level surprise)
+/// count as a charging day, matching `swap_multiplier`'s safe fallback.
+pub fn is_rollover_day(iso_weekday: i32) -> bool {
+    !matches!(iso_weekday, 6 | 7)
+}
+
 /// `rate` is `BrokerSymbol.swapLong` or `swapShort` depending on the
 /// position's side — account currency per lot per day. Sign comes
 /// straight from `rate` (a broker can configure a credit, not just a
@@ -54,6 +75,10 @@ pub async fn run_once(pool: &PgPool) {
             return;
         }
     };
+    if !is_rollover_day(iso_weekday) {
+        tracing::debug!(iso_weekday, "swap rollover: weekend, nothing charged");
+        return;
+    }
     let multiplier = swap_multiplier(iso_weekday);
 
     let due = match db::get_positions_due_for_swap(pool).await {
@@ -136,6 +161,25 @@ mod tests {
     fn unexpected_weekday_value_falls_back_to_1x() {
         assert_eq!(swap_multiplier(0), dec!(1));
         assert_eq!(swap_multiplier(99), dec!(1));
+    }
+
+    /// Wrong-field audit 2026-09-18 item 2.5: Mon-Fri charge (Wed x3),
+    /// Sat/Sun charge nothing -- seven charges a week, not nine.
+    #[test]
+    fn weekend_is_skipped_and_the_week_totals_seven_charges() {
+        assert!(!is_rollover_day(6));
+        assert!(!is_rollover_day(7));
+        let charges_per_week: Decimal = (1..=7)
+            .filter(|d| is_rollover_day(*d))
+            .map(swap_multiplier)
+            .sum();
+        assert_eq!(charges_per_week, dec!(7));
+    }
+
+    #[test]
+    fn unexpected_weekday_value_still_charges() {
+        assert!(is_rollover_day(0));
+        assert!(is_rollover_day(99));
     }
 
     #[test]

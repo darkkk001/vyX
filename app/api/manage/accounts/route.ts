@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { toFiniteDecimal, isFiniteDecimalString } from "@/lib/decimal-input";
 import bcrypt from "bcryptjs";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
@@ -234,11 +235,11 @@ async function createAccount(request: NextRequest, session: NonNullable<Awaited<
 
   let initialBalance: Prisma.Decimal;
   if (canSetFinancials) {
-    try {
-      initialBalance = new Prisma.Decimal(String(body?.initialBalance ?? "0"));
-    } catch {
+    const parsed = toFiniteDecimal(body?.initialBalance ?? "0");
+    if (!parsed) {
       return NextResponse.json({ error: "invalid initialBalance" }, { status: 400 });
     }
+    initialBalance = parsed;
     if (initialBalance.lt(0)) {
       return NextResponse.json({ error: "initialBalance must not be negative" }, { status: 400 });
     }

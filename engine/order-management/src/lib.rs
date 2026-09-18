@@ -11,22 +11,15 @@ pub mod db;
 pub mod events;
 pub mod monitor;
 pub mod pending_orders;
+pub mod prices;
 pub mod pricing;
 pub mod swap;
 
-use chrono::Duration as ChronoDuration;
 use crate::calc::{close_price_for, floating_pnl};
-use market_data::cache::TickCache;
+pub use crate::prices::PriceSource;
 use protocol::{Fill, OrderSide, OrderStatus, OrderType, RiskRejection, Tick, TradingEvent};
 use rust_decimal::Decimal;
 use sqlx::PgPool;
-
-// Same 15s staleness window market_data::db::get_live_price's own SQL
-// enforces -- kept as one function so the in-memory cache and the
-// Postgres fallback can never silently drift apart.
-fn tick_freshness() -> ChronoDuration {
-    ChronoDuration::seconds(15)
-}
 
 /// Returns whether `to` is a legal next state from `from`, per the
 /// diagram in ../../docs/architecture.md §5 / ../../docs/trading-engine.md
@@ -84,9 +77,9 @@ pub fn transition(from: OrderStatus, to: OrderStatus) -> Result<OrderStatus, Tra
 /// ("current best bid/ask from the Market Data Core... never the
 /// client-supplied price," where "client" there means whoever calls this
 /// function, not just the end user's browser). `place_market_order` now
-/// fetches it itself via `market_data::db::get_live_price` — one fewer
-/// hop between "the price OMS fills at" and "the price Market Data Core
-/// actually has right now."
+/// fetches it itself via `prices::PriceSource` — one fewer hop between
+/// "the price OMS fills at" and "the price Market Data Core actually has
+/// right now."
 pub struct PlaceMarketOrderRequest {
     pub broker_id: String,
     pub account_id: String,
@@ -138,7 +131,7 @@ pub enum PlaceOrderError {
 pub async fn place_market_order(
     pool: &PgPool,
     nats: &async_nats::Client,
-    cache: &TickCache,
+    prices: &PriceSource,
     req: PlaceMarketOrderRequest,
 ) -> Result<PlaceMarketOrderOutcome, PlaceOrderError> {
     let mut tx = pool.begin().await?;
@@ -160,22 +153,14 @@ pub async fn place_market_order(
     .await?;
 
     // Market Data Core's own current view, not a value the caller handed
-    // in — see PlaceMarketOrderRequest's doc comment. Read the in-memory
-    // TickCache first (no DB round trip on the common, hot path — the
-    // spec's "Rust in-memory state... avoid unnecessary DB round trips"
-    // rule); Postgres is only a fallback for a symbol that hasn't ticked
-    // in-process yet (e.g. right after a server restart). Read against
-    // `pool` directly (not `tx`) in the fallback case: it's a
-    // point-in-time read of a table this crate doesn't own (ADR-002), not
-    // something that needs snapshot consistency with the order-row insert
-    // above.
-    let current_tick = match cache.get_if_fresh(&req.symbol, tick_freshness()) {
-        Some(tick) => Some(tick),
-        None => market_data::db::get_live_price(pool, &req.symbol)
-            .await?
-            .map(|(bid, ask)| Tick { symbol: req.symbol.clone(), bid, ask, t0: None, clock_offset_ms: None, rtt_ms: None, tick_ms: None, broker_offset_sec: None }),
-    };
-    let current_tick = match current_tick {
+    // in — see PlaceMarketOrderRequest's doc comment. PriceSource reads
+    // the in-memory TickCache first (no DB round trip on the common, hot
+    // path — the spec's "Rust in-memory state... avoid unnecessary DB
+    // round trips" rule) and only falls back to the market-data reader
+    // store for a symbol that hasn't ticked in-process yet (e.g. right
+    // after a server restart). That fallback is a point-in-time read of a
+    // store this crate doesn't own (ADR-002), outside `tx` by design.
+    let current_tick = match prices.current_tick(&req.symbol).await? {
         Some(tick) => tick,
         None => {
             let reason = reject_order(tx, nats, &order_id, &req.account_id,format!("no live price for {}", req.symbol)).await?;
@@ -202,8 +187,11 @@ pub async fn place_market_order(
         }
     }
 
-    let required = risk::required_margin(req.volume, req.contract_size, current_tick.bid, req.leverage);
-    if let Err(reject_reason) = risk::check_free_margin(req.equity, req.used_margin, required) {
+    // `leverage` is body-supplied (a copy of Account.leverage); a 0 is a
+    // typed rejection, never a divide-by-zero panic (pentest item 9).
+    let margin_check = risk::required_margin(req.volume, req.contract_size, current_tick.bid, req.leverage)
+        .and_then(|required| risk::check_free_margin(req.equity, req.used_margin, required));
+    if let Err(reject_reason) = margin_check {
         let reason = reject_order(tx, nats, &order_id, &req.account_id,reject_reason.to_string()).await?;
         return Ok(PlaceMarketOrderOutcome::Rejected { order_id, reason });
     }
@@ -323,12 +311,20 @@ pub enum PlacePendingOrderOutcome {
 /// `engine/server` should only route LIMIT/STOP here) — rejected the
 /// same way rather than panicking, since it's still safe to handle as an
 /// ordinary rejection.
+///
+/// A requested price of zero or below is rejected before any side check
+/// (pentest 2026-09-18 item 11): "below the market" is trivially true of
+/// 0 or -5 for a BUY LIMIT / SELL STOP, so they used to be accepted and
+/// rested forever, waiting to trigger on any erroneous <= 0 tick.
 fn validate_pending_price_side(
     side: OrderSide,
     order_type: OrderType,
     requested_price: Decimal,
     current: &Tick,
 ) -> Result<(), String> {
+    if requested_price <= Decimal::ZERO {
+        return Err(format!("pending order price {requested_price} must be greater than zero"));
+    }
     match (side, order_type) {
         (OrderSide::Buy, OrderType::Limit) if requested_price >= current.ask => {
             Err(format!("BUY LIMIT price {requested_price} must be below the current ask {}", current.ask))
@@ -354,7 +350,7 @@ fn validate_pending_price_side(
 pub async fn place_pending_order(
     pool: &PgPool,
     nats: &async_nats::Client,
-    cache: &TickCache,
+    prices: &PriceSource,
     req: PlacePendingOrderRequest,
 ) -> Result<PlacePendingOrderOutcome, PlaceOrderError> {
     let mut tx = pool.begin().await?;
@@ -375,16 +371,10 @@ pub async fn place_pending_order(
     )
     .await?;
 
-    // Same cache-first, DB-fallback rule as place_market_order — used
-    // here only to validate the pending price is on the correct side of
-    // today's market, not to fill anything yet.
-    let current_tick = match cache.get_if_fresh(&req.symbol, tick_freshness()) {
-        Some(tick) => Some(tick),
-        None => market_data::db::get_live_price(pool, &req.symbol)
-            .await?
-            .map(|(bid, ask)| Tick { symbol: req.symbol.clone(), bid, ask, t0: None, clock_offset_ms: None, rtt_ms: None, tick_ms: None, broker_offset_sec: None }),
-    };
-    let current_tick = match current_tick {
+    // Same cache-first, store-fallback rule as place_market_order
+    // (prices.rs) — used here only to validate the pending price is on
+    // the correct side of today's market, not to fill anything yet.
+    let current_tick = match prices.current_tick(&req.symbol).await? {
         Some(tick) => tick,
         None => {
             let reason = reject_order(tx, nats, &order_id, &req.account_id,format!("no live price for {}", req.symbol)).await?;
@@ -534,6 +524,12 @@ pub enum ModifyPositionOutcome {
     ValidationFailed {
         reason: String,
     },
+    /// No fresh (<= 15 s) price for the position's symbol in Market Data
+    /// Core, so the new SL/TP cannot be validated against the real
+    /// market. Nothing was written.
+    PriceStale {
+        symbol: String,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -546,18 +542,22 @@ pub enum ModifyPositionError {
 /// Next.js path's `PATCH /api/trade/positions/[id]`, not the
 /// order-level `ModifyOrder` in docs/trading-engine.md's original
 /// target spec (nothing in the live app has ever needed that; this
-/// mirrors what traders actually do today). `current_price` is
-/// caller-supplied (the Gateway's own Market Data Core read) rather
-/// than fetched here, same reasoning as `PlaceMarketOrderRequest` not
-/// including a tick -- kept out here deliberately so this function
-/// doesn't gain its own Market Data Core dependency for one read the
-/// caller already has to make anyway to show the trader a current price.
+/// mirrors what traders actually do today).
+///
+/// The reference price the new levels are validated against is Market
+/// Data Core's own current close price for this side (bid for a BUY, ask
+/// for a SELL -- the same price `monitor::sl_tp_trigger` will later fire
+/// on), read through `prices`. It used to be a body-supplied
+/// `current_price`, which let a caller lie the reference upward and
+/// persist a BUY stop-loss above the real market (pentest 2026-09-18
+/// item 5/8). A stale/missing price is `PriceStale`, not a fallback to
+/// anything the caller sent.
 pub async fn modify_position_sl_tp(
     pool: &PgPool,
+    prices: &PriceSource,
     nats: &async_nats::Client,
     account_id: &str,
     position_id: &str,
-    current_price: Decimal,
     sl_price: Option<Decimal>,
     tp_price: Option<Decimal>,
 ) -> Result<ModifyPositionOutcome, ModifyPositionError> {
@@ -571,7 +571,11 @@ pub async fn modify_position_sl_tp(
         return Ok(ModifyPositionOutcome::InvalidStatus { status: position.status });
     }
 
-    if let Err(reason) = risk::validate_sl_tp(position.side, current_price, sl_price, tp_price) {
+    let Some(tick) = prices.current_tick(&position.symbol).await? else {
+        return Ok(ModifyPositionOutcome::PriceStale { symbol: position.symbol });
+    };
+    let reference_price = close_price_for(position.side, tick.bid, tick.ask);
+    if let Err(reason) = risk::validate_sl_tp(position.side, reference_price, sl_price, tp_price) {
         return Ok(ModifyPositionOutcome::ValidationFailed { reason: reason.to_string() });
     }
 
@@ -604,6 +608,13 @@ pub enum ClosePositionOutcome {
     /// position is genuinely closed, just not by this call, so nothing
     /// here to credit or publish again.
     AlreadyClosed,
+    /// No fresh (<= 15 s) price for the position's symbol in Market Data
+    /// Core -- there is no honest price to close at, so nothing was
+    /// closed or credited. The caller renders this as PRICE_STALE (the
+    /// web app's own code for the same condition) and the trader retries.
+    PriceStale {
+        symbol: String,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -617,18 +628,20 @@ pub enum ClosePositionError {
 /// (stop-out, SL/TP), reusing the same idempotent
 /// `db::close_position_with_ledger_entry` so a manual close racing an
 /// automatic one is a benign no-op rather than a double-close (see that
-/// function's doc comment for why). `bid`/`ask` are caller-supplied (the
-/// Gateway's own Market Data Core read), same convention as
-/// `modify_position_sl_tp`'s `current_price` — this function doesn't gain
-/// its own Market Data Core dependency for a read the caller already has
-/// to make anyway to show the trader a current price.
+/// function's doc comment for why).
+///
+/// The close price is Market Data Core's own (bid for a BUY, ask for a
+/// SELL, via `prices` -- exactly as `place_market_order` prices a fill),
+/// never a value from the request. It used to take `bid`/`ask` from the
+/// body, which let any holder of the internal secret realize P&L at an
+/// arbitrary price (pentest 2026-09-18 item 8; the same bug the web
+/// close route had, item 1).
 pub async fn close_position(
     pool: &PgPool,
+    prices: &PriceSource,
     nats: &async_nats::Client,
     account_id: &str,
     position_id: &str,
-    bid: Decimal,
-    ask: Decimal,
 ) -> Result<ClosePositionOutcome, ClosePositionError> {
     let Some(position) = db::get_position(pool, position_id).await? else {
         return Ok(ClosePositionOutcome::NotFound);
@@ -640,7 +653,10 @@ pub async fn close_position(
         return Ok(ClosePositionOutcome::InvalidStatus { status: position.status });
     }
 
-    let close_price = close_price_for(position.side, bid, ask);
+    let Some(tick) = prices.current_tick(&position.symbol).await? else {
+        return Ok(ClosePositionOutcome::PriceStale { symbol: position.symbol });
+    };
+    let close_price = close_price_for(position.side, tick.bid, tick.ask);
     let realized_pnl = floating_pnl(position.side, position.open_price, close_price, position.contract_size, position.volume);
 
     let mut tx = pool.begin().await?;
@@ -757,6 +773,25 @@ mod tests {
         #[test]
         fn market_order_type_always_rejected() {
             assert!(validate_pending_price_side(OrderSide::Buy, OrderType::Market, dec!(1.00000), &tick()).is_err());
+        }
+
+        /// Pentest 2026-09-18 item 11: zero / negative is "below the
+        /// market" for a BUY LIMIT or SELL STOP, so it used to pass the
+        /// side check. Rejected for every side/type now.
+        #[test]
+        fn zero_or_negative_price_is_rejected_for_every_side_and_type() {
+            for price in [dec!(0), dec!(-0.00001), dec!(-5)] {
+                for (side, order_type) in [
+                    (OrderSide::Buy, OrderType::Limit),
+                    (OrderSide::Buy, OrderType::Stop),
+                    (OrderSide::Sell, OrderType::Limit),
+                    (OrderSide::Sell, OrderType::Stop),
+                ] {
+                    let result = validate_pending_price_side(side, order_type, price, &tick());
+                    assert!(result.is_err(), "{side:?} {order_type:?} at {price} must be rejected");
+                    assert!(result.unwrap_err().contains("greater than zero"));
+                }
+            }
         }
     }
 }

@@ -24,9 +24,15 @@
 //! db.rs's `get_ledger_sum` doc comment for why realized P&L from a
 //! force-close is tracked as a ledger delta rather than a direct balance
 //! write.
+//!
+//! Prices come from `prices::PriceSource` (in-process TickCache, then the
+//! market-data reader store), never from the trade pool -- see prices.rs
+//! for the 2026-09-18 audit finding that made every evaluation here run
+//! with no price at all.
 
 use crate::calc::{close_price_for, equity, floating_pnl, load_account_state, used_margin, AccountState};
 use crate::db;
+use crate::prices::PriceSource;
 use margin::{evaluate, MonitorAction};
 use protocol::TradingEvent;
 use rust_decimal::Decimal;
@@ -185,11 +191,12 @@ async fn force_close_worst(
 
 async fn evaluate_account(
     pool: &PgPool,
+    prices: &PriceSource,
     nats: &async_nats::Client,
     account_id: &str,
     by_group: &margin::ThresholdsByGroup,
 ) -> Result<(), sqlx::Error> {
-    let Some(mut state) = load_account_state(pool, account_id).await? else {
+    let Some(mut state) = load_account_state(pool, prices, account_id).await? else {
         return Ok(());
     };
     if state.positions.is_empty() {
@@ -223,11 +230,21 @@ async fn evaluate_account(
     // exactly one position, so this can't loop longer than that.
     let max_iterations = state.positions.len();
     for _ in 0..max_iterations {
-        let action = evaluate(equity(&state), used_margin(&state), thresholds);
+        // Unreachable through load_account_state (leverage is clamped to
+        // >= 1 there), but a typed skip beats a panic that would take the
+        // whole monitor pass down with it (pentest 2026-09-18 item 9).
+        let used = match used_margin(&state) {
+            Ok(used) => used,
+            Err(reason) => {
+                tracing::error!(account_id, %reason, "margin monitor: cannot compute used margin, skipping account");
+                break;
+            }
+        };
+        let action = evaluate(equity(&state), used, thresholds);
         match action {
             MonitorAction::Ok => break,
             MonitorAction::MarginCall => {
-                let level = risk::margin_level(equity(&state), used_margin(&state)).unwrap_or(Decimal::ZERO);
+                let level = risk::margin_level(equity(&state), used).unwrap_or(Decimal::ZERO);
                 publish_best_effort(
                     nats,
                     &TradingEvent::MarginCall { account_id: account_id.to_string(), margin_level: level },
@@ -266,7 +283,7 @@ async fn publish_best_effort(nats: &async_nats::Client, event: &TradingEvent) {
 /// One full pass over every account with an open position. Errors for one
 /// account are logged and don't stop the rest — a bug in one account's
 /// data shouldn't leave every other account unmonitored.
-pub async fn run_once(pool: &PgPool, nats: &async_nats::Client) {
+pub async fn run_once(pool: &PgPool, prices: &PriceSource, nats: &async_nats::Client) {
     let account_ids = match db::get_account_ids_with_open_positions(pool).await {
         Ok(ids) => ids,
         Err(err) => {
@@ -288,7 +305,7 @@ pub async fn run_once(pool: &PgPool, nats: &async_nats::Client) {
     };
 
     for account_id in account_ids {
-        if let Err(err) = evaluate_account(pool, nats, &account_id, &by_group).await {
+        if let Err(err) = evaluate_account(pool, prices, nats, &account_id, &by_group).await {
             tracing::error!(?err, account_id, "margin monitor: failed to evaluate account");
         }
     }
@@ -313,22 +330,22 @@ pub fn new_run_guard() -> RunGuard {
 /// concurrency — see db.rs), it's purely to avoid wasted overlapping
 /// full-account-table scans when ticks arrive faster than a pass
 /// completes.
-pub async fn run_once_guarded(pool: &PgPool, nats: &async_nats::Client, guard: &RunGuard) {
+pub async fn run_once_guarded(pool: &PgPool, prices: &PriceSource, nats: &async_nats::Client, guard: &RunGuard) {
     let Ok(_permit) = guard.try_lock() else {
         return;
     };
-    run_once(pool, nats).await;
+    run_once(pool, prices, nats).await;
 }
 
 /// Spawns the polling-timer trigger as a background task — the safety
 /// net described in the module doc comment, not the primary trigger path
 /// once a tick-driven subscription is also running alongside it.
-pub fn spawn(pool: PgPool, nats: async_nats::Client, interval: std::time::Duration, guard: RunGuard) {
+pub fn spawn(pool: PgPool, prices: PriceSource, nats: async_nats::Client, interval: std::time::Duration, guard: RunGuard) {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(interval);
         loop {
             ticker.tick().await;
-            run_once_guarded(&pool, &nats, &guard).await;
+            run_once_guarded(&pool, &prices, &nats, &guard).await;
         }
     });
 }

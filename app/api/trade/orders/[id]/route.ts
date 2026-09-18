@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { toFiniteDecimal, isFiniteDecimalString } from "@/lib/decimal-input";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
@@ -38,6 +39,11 @@ export async function PATCH(
   const slPrice = body?.slPrice !== undefined ? (body.slPrice == null ? null : String(body.slPrice)) : undefined;
   const tpPrice = body?.tpPrice !== undefined ? (body.tpPrice == null ? null : String(body.tpPrice)) : undefined;
 
+  for (const [name, value] of [["currentPrice", currentPrice], ["requestedPrice", requestedPrice], ["slPrice", slPrice], ["tpPrice", tpPrice]] as const) {
+    if (value != null && !isFiniteDecimalString(value)) {
+      return NextResponse.json({ error: `invalid ${name}` }, { status: 400 });
+    }
+  }
   if (requestedPrice === undefined && slPrice === undefined && tpPrice === undefined) {
     return NextResponse.json({ error: "at least one of requestedPrice, slPrice, or tpPrice is required" }, { status: 400 });
   }

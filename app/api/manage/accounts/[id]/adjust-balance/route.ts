@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { toFiniteDecimal, isFiniteDecimalString } from "@/lib/decimal-input";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession } from "@/lib/auth";
@@ -30,6 +31,8 @@ import {
 // real money moving with no underlying trade to double-check against.
 // BROKER_ADMIN still executes immediately, same "trusted to execute
 // solo" rule.
+const MAX_SINGLE_ADJUSTMENT = new Prisma.Decimal(10_000_000);
+
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await getAdminSession();
   if (await forbidUnlessBrokerAdminOrPermission(session, "ACCOUNT_FINANCE")) {
@@ -44,14 +47,18 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   }
 
   const body = await request.json().catch(() => null);
-  let amount: Prisma.Decimal;
-  try {
-    amount = new Prisma.Decimal(String(body?.amount ?? ""));
-  } catch {
+  const amount = toFiniteDecimal(body?.amount);
+  if (!amount) {
     return NextResponse.json({ error: "invalid amount" }, { status: 400 });
   }
   if (amount.isZero()) {
     return NextResponse.json({ error: "amount must not be zero" }, { status: 400 });
+  }
+  // A single adjustment is capped (pentest 2026-09-18 #12: nothing but the
+  // numeric(18,4) column width bounded it). Larger legitimate moves are
+  // split, and each one is its own audit row.
+  if (amount.abs().gt(MAX_SINGLE_ADJUSTMENT)) {
+    return NextResponse.json({ error: `a single adjustment may not exceed ${MAX_SINGLE_ADJUSTMENT.toString()}` }, { status: 400 });
   }
   const note = typeof body?.note === "string" ? body.note.trim().slice(0, 500) : "";
 

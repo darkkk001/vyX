@@ -216,6 +216,12 @@ pub struct NewPosition {
     pub tp_price: Option<Decimal>,
 }
 
+/// `last_swap_at` is seeded to the open instant, not left NULL: the swap
+/// rollover's due-filter (`SWAP_DUE_CONDITION`) is "last accounted-for
+/// calendar day < today", so a position opened at 14:00 is first charged
+/// by the rollover after the NEXT day boundary -- not by the very next
+/// 5-minute poll, which is what NULL used to mean (wrong-field audit
+/// 2026-09-18 item 2.5: a two-minute scalp paid a full day's swap).
 pub async fn insert_position(
     tx: &mut sqlx::PgTransaction<'_>,
     position: &NewPosition,
@@ -225,8 +231,8 @@ pub async fn insert_position(
         r#"
         INSERT INTO positions
             (id, broker_id, account_id, symbol, origin_order_id, side, volume,
-             open_price, sl_price, tp_price, status)
-        VALUES ($1, $2, $3, $4, $5, $6::order_side, $7, $8, $9, $10, 'OPEN')
+             open_price, sl_price, tp_price, status, last_swap_at)
+        VALUES ($1, $2, $3, $4, $5, $6::order_side, $7, $8, $9, $10, 'OPEN', now())
         "#,
     )
     .bind(&id)
@@ -248,6 +254,7 @@ pub async fn insert_position(
 pub struct PositionRow {
     pub id: String,
     pub account_id: String,
+    pub symbol: String,
     pub side: OrderSide,
     pub status: PositionStatus,
     pub sl_price: Option<Decimal>,
@@ -258,17 +265,18 @@ pub struct PositionRow {
 }
 
 /// Single-position lookup by id, for the modify-SL/TP and manual-close
-/// paths' ownership/status checks — narrower than
-/// `get_open_positions_with_market` (account-scoped, no live-price join),
-/// which exists for a different caller (the margin monitor) with a
-/// different shape need. The `Symbol` join (same as
-/// `get_open_positions_with_market`'s) exists only so `close_position`
-/// has `contract_size` for its own P&L calc — `modify_position_sl_tp`
-/// simply ignores the extra fields.
+/// paths' ownership/status checks — narrower than `get_open_positions`
+/// (account-scoped), which exists for a different caller (the margin
+/// monitor) with a different shape need. The `Symbol` join (same as
+/// `get_open_positions`'s) exists only so `close_position` has
+/// `contract_size` for its own P&L calc — `modify_position_sl_tp` simply
+/// ignores the extra fields. `symbol` rides along because both callers
+/// now read the current price themselves (prices.rs) instead of taking
+/// one from the request body (pentest 2026-09-18 item 8).
 pub async fn get_position(pool: &PgPool, position_id: &str) -> Result<Option<PositionRow>, sqlx::Error> {
     #[allow(clippy::type_complexity)]
-    let row = sqlx::query_as::<_, (String, String, String, String, Option<Decimal>, Option<Decimal>, Decimal, Decimal, Decimal)>(
-        r#"SELECT p.id, p.account_id, p.side::text, p.status::text, p.sl_price, p.tp_price,
+    let row = sqlx::query_as::<_, (String, String, String, String, String, Option<Decimal>, Option<Decimal>, Decimal, Decimal, Decimal)>(
+        r#"SELECT p.id, p.account_id, p.symbol, p.side::text, p.status::text, p.sl_price, p.tp_price,
                   p.volume, p.open_price, s."contractSize"
            FROM positions p
            JOIN "Symbol" s ON s.name = p.symbol
@@ -278,9 +286,10 @@ pub async fn get_position(pool: &PgPool, position_id: &str) -> Result<Option<Pos
     .fetch_optional(pool)
     .await?;
 
-    Ok(row.map(|(id, account_id, side, status, sl_price, tp_price, volume, open_price, contract_size)| PositionRow {
+    Ok(row.map(|(id, account_id, symbol, side, status, sl_price, tp_price, volume, open_price, contract_size)| PositionRow {
         id,
         account_id,
+        symbol,
         side: side_from_str(&side),
         status: position_status_from_str(&status),
         sl_price,
@@ -492,8 +501,8 @@ pub struct SymbolExposure {
     pub open_position_count: i64,
 }
 
-/// Narrower than `get_open_positions_with_market`/`load_account_state`
-/// (no Symbol/LivePrice join) — §2.1 step 5's checks only need two
+/// Narrower than `get_open_positions`/`load_account_state`
+/// (no Symbol join, no price lookup) — §2.1 step 5's checks only need two
 /// aggregates over this account's open positions, not per-position P&L
 /// inputs. Used by `place_market_order`, which (unlike the pending-order
 /// trigger path) doesn't already have an `AccountState` loaded.
@@ -513,6 +522,16 @@ pub async fn get_symbol_exposure(
     Ok(SymbolExposure { open_volume, open_position_count })
 }
 
+/// `get_exposure_and_max_positions`'s SQL, a named constant so a unit
+/// test can pin the `status = 'OPEN'` filter on BOTH aggregates
+/// (wrong-field audit 2026-09-18 item 2.4: the SUM subquery had lost it,
+/// so an account's entire closed history counted against `maxExposure`
+/// and produced spurious "exposure limit exceeded" rejections).
+pub(crate) const EXPOSURE_AND_MAX_POSITIONS_SQL: &str = r#"SELECT
+             (SELECT COALESCE(SUM(volume) FILTER (WHERE symbol = $3), 0) FROM positions WHERE account_id = $2 AND status = 'OPEN'),
+             (SELECT COUNT(*) FROM positions WHERE account_id = $2 AND status = 'OPEN'),
+             (SELECT "maxOpenPositionsPerAccount" FROM "Broker" WHERE id = $1)"#;
+
 /// `get_symbol_exposure` + `get_broker_max_open_positions` in one round
 /// trip via two independent subqueries -- both are §2.1 step 5 checks
 /// read together by `place_market_order`, with no dependency between
@@ -525,12 +544,8 @@ pub async fn get_exposure_and_max_positions(
     account_id: &str,
     symbol: &str,
 ) -> Result<(SymbolExposure, Option<i32>), sqlx::Error> {
-    let (open_volume, open_position_count, max_open_positions): (Decimal, i64, Option<i32>) = sqlx::query_as(
-        r#"SELECT
-             (SELECT COALESCE(SUM(volume) FILTER (WHERE symbol = $3), 0) FROM positions WHERE account_id = $2),
-             (SELECT COUNT(*) FROM positions WHERE account_id = $2 AND status = 'OPEN'),
-             (SELECT "maxOpenPositionsPerAccount" FROM "Broker" WHERE id = $1)"#,
-    )
+    let (open_volume, open_position_count, max_open_positions): (Decimal, i64, Option<i32>) =
+        sqlx::query_as(EXPOSURE_AND_MAX_POSITIONS_SQL)
     .bind(broker_id)
     .bind(account_id)
     .bind(symbol)
@@ -747,18 +762,26 @@ pub struct PositionForSwap {
     pub volume: Decimal,
 }
 
+/// The one "due for today's rollover" predicate, shared by the candidate
+/// list and the per-position claim so they can never disagree. A position
+/// is due when the last calendar day it was accounted for -- its last
+/// charge, or its open day for a row that predates `insert_position`
+/// seeding `last_swap_at` -- is before today. Falling back to `created_at`
+/// (never to "NULL means due now") is what stops a just-opened position
+/// being charged on the next poll (wrong-field audit 2026-09-18 item 2.5).
+pub(crate) const SWAP_DUE_CONDITION: &str =
+    "status = 'OPEN' AND COALESCE(last_swap_at, created_at)::date < CURRENT_DATE";
+
 /// Candidates for today's rollover — every OPEN position not yet charged
-/// today. Compares against Postgres's own `CURRENT_DATE` (not a
-/// Rust-side date), same reasoning as the staleness checks in
-/// `market_data::db::get_live_price`: one clock, no skew between what
-/// this query considers "today" and what `claim_position_for_swap`'s
+/// today (`SWAP_DUE_CONDITION`). Compares against Postgres's own
+/// `CURRENT_DATE` (not a Rust-side date), same reasoning as the staleness
+/// checks in `market_data::db::get_live_price`: one clock, no skew between
+/// what this query considers "today" and what `claim_position_for_swap`'s
 /// `now()` writes.
 pub async fn get_positions_due_for_swap(pool: &PgPool) -> Result<Vec<PositionForSwap>, sqlx::Error> {
-    let rows: Vec<(String, String, String, String, String, Decimal)> = sqlx::query_as(
-        r#"SELECT id, broker_id, account_id, symbol, side::text, volume
-           FROM positions
-           WHERE status = 'OPEN' AND (last_swap_at IS NULL OR last_swap_at::date < CURRENT_DATE)"#,
-    )
+    let rows: Vec<(String, String, String, String, String, Decimal)> = sqlx::query_as(&format!(
+        "SELECT id, broker_id, account_id, symbol, side::text, volume FROM positions WHERE {SWAP_DUE_CONDITION}"
+    ))
     .fetch_all(pool)
     .await?;
     Ok(rows
@@ -780,11 +803,9 @@ pub async fn get_positions_due_for_swap(pool: &PgPool) -> Result<Vec<PositionFor
 /// that raced onto someone else's list (or already got charged between
 /// that read and this claim) is a clean no-op here, not a double charge.
 pub async fn claim_position_for_swap(tx: &mut sqlx::PgTransaction<'_>, position_id: &str) -> Result<bool, sqlx::Error> {
-    let result = sqlx::query(
-        r#"UPDATE positions SET last_swap_at = now()
-           WHERE id = $1 AND status = 'OPEN'
-             AND (last_swap_at IS NULL OR last_swap_at::date < CURRENT_DATE)"#,
-    )
+    let result = sqlx::query(&format!(
+        "UPDATE positions SET last_swap_at = now() WHERE id = $1 AND {SWAP_DUE_CONDITION}"
+    ))
     .bind(position_id)
     .execute(&mut **tx)
     .await?;
@@ -852,71 +873,88 @@ pub struct OpenPositionWithMarket {
     pub tp_price: Option<Decimal>,
 }
 
-/// LEFT JOIN on LivePrice, same reasoning as
-/// services/api-gateway/src/db.ts's getOpenPositionsSummary: a position
-/// whose symbol has no current tick still counts toward margin at its
-/// open price (dropping it would understate risk) but can't contribute a
-/// floating P&L figure — callers treat `bid`/`ask: None` as "skip this
-/// one for P&L, not for margin." `sl_price`/`tp_price` ride along so
-/// monitor.rs can check both margin AND per-position SL/TP triggers from
-/// this one query, rather than a second round-trip.
+/// Every OPEN position of one account, from the trade pool, with
+/// `bid`/`ask` left `None` -- prices are NOT joined here any more.
+/// `calc::load_account_state` attaches them from `prices::PriceSource`
+/// (in-process TickCache, then the market-data reader store on `"tickAt"`).
 ///
-/// The join condition also requires the tick be fresh (updated in the
-/// last 15s, same threshold as `market_data::db::get_live_price` and
-/// `WebTrader.tsx`'s chart) — without this, a dead feed leaves `lp.bid`/
-/// `lp.ask` frozen at their last real values forever, and every consumer
-/// here (SL/TP triggers, stop-out's worst-position pick, floating P&L)
-/// would keep evaluating against a wrong, unmoving price with no signal
-/// anything was stale. A stale tick now behaves exactly like no tick at
-/// all — `bid`/`ask: None` — which every consumer already handles
-/// correctly per the paragraph above.
-pub async fn get_open_positions_with_market(
+/// Wrong-field audit 2026-09-18 item 1.2: this used to `LEFT JOIN
+/// "LivePrice" ... "updatedAt" > now() - 15s` on the SAME pool the
+/// positions come from. Two wrong fields in one line -- wrong pool (the
+/// trade pool stopped receiving LivePrice writes when MARKET_DATA_WRITE
+/// went `local`, so the join was NULL for every row) and wrong column
+/// (`"updatedAt"` is bumped by every EA heartbeat even while the price is
+/// frozen; only `"tickAt"` says whether the price itself is fresh). The
+/// contract for consumers is unchanged: `bid`/`ask: None` means "skip
+/// this one for P&L and SL/TP, still count it for margin at its open
+/// price" (dropping it would understate risk). `sl_price`/`tp_price` ride
+/// along so monitor.rs can check both margin AND per-position SL/TP
+/// triggers from this one query, rather than a second round-trip.
+pub async fn get_open_positions(
     pool: &PgPool,
     account_id: &str,
 ) -> Result<Vec<OpenPositionWithMarket>, sqlx::Error> {
     #[allow(clippy::type_complexity)]
-    let rows: Vec<(
-        String,
-        String,
-        String,
-        Decimal,
-        Decimal,
-        Decimal,
-        Option<Decimal>,
-        Option<Decimal>,
-        Option<Decimal>,
-        Option<Decimal>,
-    )> = sqlx::query_as(
-        r#"SELECT p.id, p.symbol, p.side::text, p.volume, p.open_price, s."contractSize",
-                  lp.bid, lp.ask, p.sl_price, p.tp_price
-           FROM positions p
-           JOIN "Symbol" s ON s.name = p.symbol
-           LEFT JOIN "LivePrice" lp ON lp.symbol = p.symbol AND lp."updatedAt" > now() - interval '15 seconds'
-           WHERE p.account_id = $1 AND p.status = 'OPEN'"#,
-    )
-    .bind(account_id)
-    .fetch_all(pool)
-    .await?;
+    let rows: Vec<(String, String, String, Decimal, Decimal, Decimal, Option<Decimal>, Option<Decimal>)> =
+        sqlx::query_as(
+            r#"SELECT p.id, p.symbol, p.side::text, p.volume, p.open_price, s."contractSize",
+                      p.sl_price, p.tp_price
+               FROM positions p
+               JOIN "Symbol" s ON s.name = p.symbol
+               WHERE p.account_id = $1 AND p.status = 'OPEN'"#,
+        )
+        .bind(account_id)
+        .fetch_all(pool)
+        .await?;
 
     Ok(rows
         .into_iter()
-        .map(
-            |(id, symbol, side, volume, open_price, contract_size, bid, ask, sl_price, tp_price)| {
-                OpenPositionWithMarket {
-                    id,
-                    symbol,
-                    side: side_from_str(&side),
-                    volume,
-                    open_price,
-                    contract_size,
-                    bid,
-                    ask,
-                    sl_price,
-                    tp_price,
-                }
-            },
-        )
+        .map(|(id, symbol, side, volume, open_price, contract_size, sl_price, tp_price)| OpenPositionWithMarket {
+            id,
+            symbol,
+            side: side_from_str(&side),
+            volume,
+            open_price,
+            contract_size,
+            bid: None,
+            ask: None,
+            sl_price,
+            tp_price,
+        })
         .collect())
+}
+
+#[cfg(test)]
+mod sql_shape_tests {
+    use super::*;
+
+    /// Wrong-field audit 2026-09-18 item 2.4: the exposure SUM must be
+    /// scoped to OPEN positions exactly like the COUNT beside it, or an
+    /// account's closed history counts against `maxExposure`.
+    #[test]
+    fn exposure_sum_and_count_are_both_scoped_to_open_positions() {
+        let sum_subquery = EXPOSURE_AND_MAX_POSITIONS_SQL
+            .lines()
+            .find(|l| l.contains("SUM(volume)"))
+            .expect("exposure SUM subquery present");
+        assert!(sum_subquery.contains("account_id = $2 AND status = 'OPEN'"), "SUM subquery lost its OPEN filter: {sum_subquery}");
+        let count_subquery = EXPOSURE_AND_MAX_POSITIONS_SQL
+            .lines()
+            .find(|l| l.contains("COUNT(*)"))
+            .expect("open-position COUNT subquery present");
+        assert!(count_subquery.contains("account_id = $2 AND status = 'OPEN'"), "COUNT subquery lost its OPEN filter: {count_subquery}");
+    }
+
+    /// Wrong-field audit 2026-09-18 item 2.5: a NULL `last_swap_at` must
+    /// never mean "due right now" -- the open day stands in for it, so a
+    /// position is first charged by the rollover after the NEXT day
+    /// boundary and never intraday.
+    #[test]
+    fn swap_due_condition_never_treats_a_fresh_position_as_due() {
+        assert!(!SWAP_DUE_CONDITION.contains("last_swap_at IS NULL"), "{SWAP_DUE_CONDITION}");
+        assert!(SWAP_DUE_CONDITION.contains("COALESCE(last_swap_at, created_at)::date < CURRENT_DATE"), "{SWAP_DUE_CONDITION}");
+        assert!(SWAP_DUE_CONDITION.contains("status = 'OPEN'"), "{SWAP_DUE_CONDITION}");
+    }
 }
 
 /// Force-closes one position (stop-out) and records the realized P&L as a

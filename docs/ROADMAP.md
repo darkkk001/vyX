@@ -111,6 +111,17 @@ client equity-curve on CLI page (design exists from the mockups), dealing queue 
 timer, IB commission accrual job (computed-on-read → accrued ledger rows), report
 scheduler (email the CSVs), audit log diff viewer.
 
+Two items surfaced 2026-09-10 while restyling the Qt backoffice's dealing-mode-switch
+dialog (a spec draft assumed both existed; neither does today):
+- Engine-side dealing queue timeout: `dealing_timeout_s` (default 60), auto-rejects a
+  manual-queue order that's sat unhandled that long, with a client-visible rejection
+  reason and a resolve notification back to the dealing desk. Today a queued order only
+  ever resolves via an explicit dealer Accept/Requote/Reject — no timeout exists.
+- "No dealer online" amber banner on Dealing when mode = Manual and no admin/manager
+  session has been active in the last 5 minutes — today there's no concept of dealer
+  presence at all (any Manager/Broker Admin with desk access can act as dealer), so a
+  manual-mode queue can silently pile up with nobody watching it.
+
 Design language: apply the institutional theme (command bar, panel codes, density)
 from the mockup files as the Pro skin; current UI becomes Basic. Do this AFTER Phase 3
 so we're not restyling a path scheduled for deletion.

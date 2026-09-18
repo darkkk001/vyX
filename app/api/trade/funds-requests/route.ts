@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { toFiniteDecimal, isFiniteDecimalString } from "@/lib/decimal-input";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
@@ -63,10 +64,8 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "type must be DEPOSIT or WITHDRAWAL" }, { status: 400 });
   }
 
-  let requestedAmount: Prisma.Decimal;
-  try {
-    requestedAmount = new Prisma.Decimal(String(body?.amount ?? ""));
-  } catch {
+  const requestedAmount = toFiniteDecimal(body?.amount);
+  if (!requestedAmount) {
     return NextResponse.json({ error: "invalid amount" }, { status: 400 });
   }
   if (!requestedAmount.gt(0)) {

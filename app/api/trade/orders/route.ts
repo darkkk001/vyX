@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { toFiniteDecimal, isFiniteDecimalString } from "@/lib/decimal-input";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
@@ -90,6 +91,18 @@ async function handlePlaceOrder(request: NextRequest) {
   // Optional -- see lib/risk.ts's checkSlippage. WebTrader doesn't send
   // this today, so every order falls back to the default tolerance.
   const maxSlippagePips = body?.maxSlippagePips != null ? String(body.maxSlippagePips) : null;
+  // Every client number is a finite decimal or the request is a clean 400
+  // (lib/decimal-input.ts) -- never a NaN that passes every gate, never a
+  // parse throw that 500s. maxSlippagePips additionally allows the literal
+  // "unlimited" opt-out checkSlippage documents.
+  for (const [name, value] of [["price", price], ["slPrice", slPrice], ["tpPrice", tpPrice]] as const) {
+    if (value != null && !isFiniteDecimalString(value)) {
+      return NextResponse.json({ error: `invalid ${name}` }, { status: 400 });
+    }
+  }
+  if (maxSlippagePips != null && maxSlippagePips !== "unlimited" && !isFiniteDecimalString(maxSlippagePips)) {
+    return NextResponse.json({ error: "invalid maxSlippagePips" }, { status: 400 });
+  }
   // Optional, client-asserted, informational only -- doesn't change
   // validation/risk/execution at all (every branch below runs identically
   // regardless), just which of this route's several success points also
@@ -138,10 +151,12 @@ async function handlePlaceOrder(request: NextRequest) {
   // Every volume rejection carries code INVALID_VOLUME beside its sentence (2026-09-18): the
   // sentence is what the trader reads, the code is what the terminal keys its invalid-volume
   // sound on (it used to expect a bare INVALID_VOLUME error that nothing ever sent).
-  try {
-    volume = new Prisma.Decimal(String(body?.volume ?? ""));
-  } catch {
-    return NextResponse.json({ error: "invalid volume", code: "INVALID_VOLUME" }, { status: 400 });
+  {
+    const parsed = toFiniteDecimal(body?.volume);
+    if (!parsed) {
+      return NextResponse.json({ error: "invalid volume", code: "INVALID_VOLUME" }, { status: 400 });
+    }
+    volume = parsed;
   }
   if (volume.lt(brokerSymbol.minLot) || volume.gt(brokerSymbol.maxLot)) {
     return NextResponse.json(

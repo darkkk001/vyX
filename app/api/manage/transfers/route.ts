@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { toFiniteDecimal, isFiniteDecimalString } from "@/lib/decimal-input";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession } from "@/lib/auth";
@@ -62,10 +63,8 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "note is required for the audit trail" }, { status: 400 });
   }
 
-  let amount: Prisma.Decimal;
-  try {
-    amount = new Prisma.Decimal(String(body?.amount ?? ""));
-  } catch {
+  const amount = toFiniteDecimal(body?.amount);
+  if (!amount) {
     return NextResponse.json({ error: "invalid amount" }, { status: 400 });
   }
   if (!amount.gt(0)) {

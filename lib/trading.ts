@@ -1,4 +1,5 @@
 import { Prisma } from "@prisma/client";
+import { toFiniteDecimal } from "@/lib/decimal-input";
 
 export type OrderSide = "BUY" | "SELL";
 
@@ -21,20 +22,23 @@ export function validateSlTp(params: {
   digits?: number;
   stopLevel?: number;
 }): string | null {
-  const ref = new Prisma.Decimal(params.referencePrice);
+  const ref = toFiniteDecimal(params.referencePrice);
+  if (!ref || ref.lte(0)) return "reference price is invalid";
   const minDistance =
     params.stopLevel && params.stopLevel > 0 && params.digits != null
       ? new Prisma.Decimal(10).pow(-params.digits).mul(params.stopLevel)
       : null;
 
   if (params.slPrice != null) {
-    const sl = new Prisma.Decimal(params.slPrice);
+    const sl = toFiniteDecimal(params.slPrice);
+    if (!sl || sl.lte(0)) return "SL price is invalid";
     if (params.side === "BUY" && sl.gte(ref)) return "SL must be below the reference price for a BUY";
     if (params.side === "SELL" && sl.lte(ref)) return "SL must be above the reference price for a SELL";
     if (minDistance && ref.sub(sl).abs().lt(minDistance)) return `SL must be at least ${minDistance} away from the current price`;
   }
   if (params.tpPrice != null) {
-    const tp = new Prisma.Decimal(params.tpPrice);
+    const tp = toFiniteDecimal(params.tpPrice);
+    if (!tp || tp.lte(0)) return "TP price is invalid";
     if (params.side === "BUY" && tp.lte(ref)) return "TP must be above the reference price for a BUY";
     if (params.side === "SELL" && tp.gte(ref)) return "TP must be below the reference price for a SELL";
     if (minDistance && tp.sub(ref).abs().lt(minDistance)) return `TP must be at least ${minDistance} away from the current price`;
@@ -56,8 +60,9 @@ export function validatePendingPriceDistance(params: {
   stopLevel: number;
 }): string | null {
   if (!params.stopLevel || params.stopLevel <= 0) return null;
-  const entry = new Prisma.Decimal(params.entryPrice);
-  const market = new Prisma.Decimal(params.marketPrice);
+  const entry = toFiniteDecimal(params.entryPrice);
+  const market = toFiniteDecimal(params.marketPrice);
+  if (!entry || !market) return "entry price is invalid";
   const minDistance = new Prisma.Decimal(10).pow(-params.digits).mul(params.stopLevel);
   if (entry.sub(market).abs().lt(minDistance)) {
     return `Price must be at least ${minDistance} away from the current market price`;
@@ -80,8 +85,11 @@ export function validatePendingOrderDirection(params: {
   entryPrice: Prisma.Decimal | number | string;
   marketPrice: Prisma.Decimal | number | string;
 }): string | null {
-  const entry = new Prisma.Decimal(params.entryPrice);
-  const market = new Prisma.Decimal(params.marketPrice);
+  const entry = toFiniteDecimal(params.entryPrice);
+  const market = toFiniteDecimal(params.marketPrice);
+  // A pending entry at <= 0 or a non-number never rests (pentest 2026-09-18
+  // #7/#11: NaN passed both direction checks; 0 "was below market").
+  if (!entry || entry.lte(0) || !market) return "entry price is invalid";
   const sideLabel = params.side === "BUY" ? "Buy" : "Sell";
   const typeLabel = params.type === "LIMIT" ? "Limit" : "Stop";
   // BUY LIMIT (buy cheaper later) and SELL STOP (sell on a breakdown)

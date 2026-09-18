@@ -693,7 +693,23 @@ pub struct AdminRow {
     pub status: String,
     #[serde(rename = "lastLoginAt")]
     pub last_login_at: Option<String>,
+    #[serde(rename = "extraPermissions", default)]
+    pub extra_permissions: Vec<String>,
 }
+
+// Matches lib/permission-labels.ts's own PERMISSIONS/PERMISSION_LABELS
+// exactly -- delegatable BROKER_ADMIN-only capabilities for a MANAGER,
+// a small fixed list, not a join table.
+pub const PERMISSIONS: [(&str, &str); 8] = [
+    ("KYC_REVIEW", "KYC review"),
+    ("RISK_SETTINGS", "Risk settings"),
+    ("EMERGENCY_CONTROLS", "Emergency controls"),
+    ("INTERNAL_TRANSFERS", "Internal transfers"),
+    ("FUNDS_APPROVAL", "Funds approval"),
+    ("IB_PAYOUTS", "IB payouts"),
+    ("ACCOUNT_FINANCE", "Account finance (add/adjust/leverage/status)"),
+    ("MIRROR_MANAGE", "Reverse mirror rules (create/edit/kill switch)"),
+];
 
 // --- Transfers ---
 #[derive(Debug, Clone, Deserialize)]
@@ -741,14 +757,23 @@ pub struct LeadRow {
 // --- Deals (closed/voided positions) ---
 #[derive(Debug, Clone, Deserialize)]
 pub struct DealRow {
+    pub id: String,
     #[serde(rename = "accountNumber")]
     pub account_number: String,
+    #[serde(rename = "accountFullName")]
+    pub account_full_name: String,
     pub symbol: String,
+    #[serde(default)]
+    pub digits: i64,
     pub side: String,
     pub status: String,
     pub volume: String,
+    #[serde(rename = "openPrice")]
+    pub open_price: String,
     #[serde(rename = "closePrice")]
     pub close_price: String,
+    pub commission: String,
+    pub swap: String,
     #[serde(rename = "realizedPnl")]
     pub realized_pnl: String,
     #[serde(rename = "closedAt")]
@@ -925,6 +950,7 @@ pub enum ApiEvent {
     Groups(Result<Vec<GroupRow>, String>),
     GroupPricing(Result<Vec<GroupPricingRow>, String>),
     PasswordReset(Result<String, String>),
+    DealDeleted(Result<bool, String>),
     AccountTypes(Result<Vec<AccountTypeOption>, String>),
     AccountCreated(Result<(String, String), String>),
     AdjustBalance(Result<bool, String>),
@@ -941,7 +967,7 @@ pub enum ApiEvent {
     ShellInfo(Result<ShellInfo, String>),
     ReportsSummary(Result<ReportsSummary, String>),
     Symbols(Result<Vec<SymbolConfigRow>, String>),
-    Admins(Result<Vec<AdminRow>, String>),
+    Admins(Result<(String, Vec<AdminRow>), String>),
     Transfers(Result<Vec<TransferRow>, String>),
     IbRelationships(Result<Vec<IbRelationshipRow>, String>),
     Leads(Result<Vec<LeadRow>, String>),
@@ -1952,6 +1978,8 @@ impl ApiClient {
     pub fn fetch_admins(&self, ctx: egui::Context, tx: Sender<ApiEvent>) {
         #[derive(Deserialize)]
         struct Resp {
+            #[serde(rename = "currentAdminId")]
+            current_admin_id: String,
             rows: Vec<AdminRow>,
         }
         let client = self.client.clone();
@@ -1963,10 +1991,54 @@ impl ApiClient {
                     return Err(Self::error_from_response(res).await);
                 }
                 let body: Resp = res.json().await.map_err(|e| format!("bad response: {e}"))?;
-                Ok(body.rows)
+                Ok((body.current_admin_id, body.rows))
             }
             .await;
             let _ = tx.send(ApiEvent::Admins(result));
+            ctx.request_repaint();
+        });
+    }
+
+    pub fn create_admin(&self, ctx: egui::Context, tx: Sender<ApiEvent>, email: String, password: String, role: String) {
+        let client = self.client.clone();
+        let url = format!("{}/api/manage/admins", self.base_url);
+        spawn(async move {
+            let result = async {
+                let res = client
+                    .post(&url)
+                    .json(&serde_json::json!({ "email": email, "password": password, "role": role }))
+                    .send()
+                    .await
+                    .map_err(|e| format!("network error: {e}"))?;
+                if !res.status().is_success() {
+                    return Err(Self::error_from_response(res).await);
+                }
+                Ok(format!("admin created for {email}"))
+            }
+            .await;
+            let _ = tx.send(ApiEvent::ActionDone(result));
+            ctx.request_repaint();
+        });
+    }
+
+    pub fn set_admin_permissions(&self, ctx: egui::Context, tx: Sender<ApiEvent>, admin_id: String, extra_permissions: Vec<String>) {
+        let client = self.client.clone();
+        let url = format!("{}/api/manage/admins/{}", self.base_url, admin_id);
+        spawn(async move {
+            let result = async {
+                let res = client
+                    .patch(&url)
+                    .json(&serde_json::json!({ "extraPermissions": extra_permissions }))
+                    .send()
+                    .await
+                    .map_err(|e| format!("network error: {e}"))?;
+                if !res.status().is_success() {
+                    return Err(Self::error_from_response(res).await);
+                }
+                Ok("permissions updated".to_string())
+            }
+            .await;
+            let _ = tx.send(ApiEvent::ActionDone(result));
             ctx.request_repaint();
         });
     }
@@ -2079,6 +2151,36 @@ impl ApiClient {
             }
             .await;
             let _ = tx.send(ApiEvent::Deals(result));
+            ctx.request_repaint();
+        });
+    }
+
+    // Removes a closed deal from the trader's visible statement/history
+    // (VYX-POSITION-TOOLS-V0's soft-delete -- the row itself isn't
+    // erased, recoverable from audit). Same maker-checker gate as
+    // adjust_balance -- a 202 means it was filed for another admin's
+    // approval instead of applying immediately.
+    pub fn delete_deal(&self, ctx: egui::Context, tx: Sender<ApiEvent>, position_id: String, reason: String) {
+        let client = self.client.clone();
+        let url = format!("{}/api/manage/positions/{}/delete", self.base_url, position_id);
+        spawn(async move {
+            let result = async {
+                let res = client
+                    .post(&url)
+                    .json(&serde_json::json!({ "reason": reason }))
+                    .send()
+                    .await
+                    .map_err(|e| format!("network error: {e}"))?;
+                if res.status().as_u16() == 202 {
+                    return Ok(true);
+                }
+                if !res.status().is_success() {
+                    return Err(Self::error_from_response(res).await);
+                }
+                Ok(false)
+            }
+            .await;
+            let _ = tx.send(ApiEvent::DealDeleted(result));
             ctx.request_repaint();
         });
     }

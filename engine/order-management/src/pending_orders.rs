@@ -16,6 +16,7 @@
 //! time it triggers, it's rejected here instead of opening a position.
 
 use crate::calc::{self, load_account_state};
+use crate::prices::PriceSource;
 use crate::{db, publish_best_effort, reject_order, PlaceOrderError};
 use protocol::{Fill, OrderSide, OrderType, Tick, TradingEvent};
 use rust_decimal::Decimal;
@@ -36,8 +37,11 @@ fn is_triggered(order: &db::PendingOrder, tick: &Tick) -> bool {
 /// One pass over every ACCEPTED LIMIT/STOP order for `tick.symbol`,
 /// firing any whose trigger price has been crossed. Errors for one order
 /// are logged and don't stop the rest — same "one bad row doesn't take
-/// down the whole scan" rule as `monitor::run_once`.
-pub async fn check_symbol_for_triggers(pool: &sqlx::PgPool, nats: &async_nats::Client, tick: &Tick) {
+/// down the whole scan" rule as `monitor::run_once`. `tick` itself is the
+/// trigger/fill price for THIS symbol; `prices` supplies every other
+/// symbol the account holds, for the trigger-time margin check
+/// (see prices.rs).
+pub async fn check_symbol_for_triggers(pool: &sqlx::PgPool, prices: &PriceSource, nats: &async_nats::Client, tick: &Tick) {
     let pending = match db::get_pending_orders_for_symbol(pool, &tick.symbol).await {
         Ok(orders) => orders,
         Err(err) => {
@@ -50,7 +54,7 @@ pub async fn check_symbol_for_triggers(pool: &sqlx::PgPool, nats: &async_nats::C
         if !is_triggered(&order, tick) {
             continue;
         }
-        if let Err(err) = trigger_order(pool, nats, &order, tick).await {
+        if let Err(err) = trigger_order(pool, prices, nats, &order, tick).await {
             tracing::error!(?err, order_id = %order.id, "pending-order trigger: failed to process triggered order");
         }
     }
@@ -58,6 +62,7 @@ pub async fn check_symbol_for_triggers(pool: &sqlx::PgPool, nats: &async_nats::C
 
 async fn trigger_order(
     pool: &sqlx::PgPool,
+    prices: &PriceSource,
     nats: &async_nats::Client,
     order: &db::PendingOrder,
     tick: &Tick,
@@ -72,7 +77,7 @@ async fn trigger_order(
         return Ok(());
     }
 
-    let Some(state) = load_account_state(pool, &order.account_id).await? else {
+    let Some(state) = load_account_state(pool, prices, &order.account_id).await? else {
         reject_order(tx, nats, &order.id, &order.account_id,"account not found".to_string()).await?;
         return Ok(());
     };
@@ -87,8 +92,10 @@ async fn trigger_order(
     // placement time (see module doc comment). Lot size and
     // symbol-enabled were already checked at placement (lib.rs's
     // place_pending_order) and don't need rechecking here.
-    let required = risk::required_margin(order.volume, contract_size, tick.bid, state.leverage);
-    if let Err(reject_reason) = risk::check_free_margin(calc::equity(&state), calc::used_margin(&state), required) {
+    let margin_check = risk::required_margin(order.volume, contract_size, tick.bid, state.leverage)
+        .and_then(|required| calc::used_margin(&state).map(|used| (required, used)))
+        .and_then(|(required, used)| risk::check_free_margin(calc::equity(&state), used, required));
+    if let Err(reject_reason) = margin_check {
         reject_order(tx, nats, &order.id, &order.account_id,reject_reason.to_string()).await?;
         return Ok(());
     }

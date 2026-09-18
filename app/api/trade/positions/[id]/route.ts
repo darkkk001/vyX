@@ -1,14 +1,23 @@
 import { NextRequest, NextResponse } from "next/server";
+import { toFiniteDecimal, isFiniteDecimalString } from "@/lib/decimal-input";
 import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
 import { validateSlTp } from "@/lib/trading";
-import { checkTradingSession, computeNextSessionOpen } from "@/lib/risk";
+import { checkPriceFreshness, checkTradingSession, computeNextSessionOpen } from "@/lib/risk";
+import { getLivePriceRow } from "@/lib/live-price";
+import { closePriceFor } from "@/lib/trading";
 import { publishTradingEvent } from "@/lib/nats";
 import { recordDealerActivity } from "@/lib/dealer-activity";
 import { isDealingManagedAccount } from "@/lib/dealing-routing";
 
-// Inline SL/TP edit on an open position — side-aware validated against the
-// client-reported current price, same rule as order placement.
+// Inline SL/TP edit on an open position -- side-aware validated against the
+// SERVER's own live price (pentest 2026-09-18 #5: validating against the
+// client-reported currentPrice let a client put a BUY's SL above the market
+// by lying about the price; the SL never fills at its own level, the risk
+// monitor closes at the real market, so no money moved -- but the stop-level
+// and side rules were bypassable). The reference is closePriceFor(side): the
+// price the SL/TP actually triggers on (bid for a BUY, ask for a SELL). The
+// client's currentPrice is still required as a sanity/audit value only.
 export async function PATCH(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -26,6 +35,11 @@ export async function PATCH(
 
   if (!currentPrice) {
     return NextResponse.json({ error: "currentPrice is required" }, { status: 400 });
+  }
+  for (const [name, value] of [["currentPrice", currentPrice], ["slPrice", slPrice], ["tpPrice", tpPrice]] as const) {
+    if (value != null && !isFiniteDecimalString(value)) {
+      return NextResponse.json({ error: `invalid ${name}` }, { status: 400 });
+    }
   }
 
   const position = await prisma.position.findUnique({ where: { id } });
@@ -63,9 +77,20 @@ export async function PATCH(
     prisma.broker.findUnique({ where: { id: session.brokerId }, select: { dealingModeAt: true, dealingDeskAutoFillAt: true } }),
   ]);
 
+  // The server's price, never the client's, is what a rejection is based on
+  // (same rule as app/api/trade/orders/[id]'s entry-price direction check).
+  // A missing/stale feed refuses the edit rather than falling back to the
+  // client's number.
+  const livePrice = await getLivePriceRow(brokerSymbol?.symbol.name ?? "");
+  const freshnessError = checkPriceFreshness(livePrice);
+  if (freshnessError || !livePrice) {
+    return NextResponse.json({ error: "NO_LIVE_FEED", symbol: brokerSymbol?.symbol.name ?? null, lastTickAt: livePrice?.tickAt?.toISOString() ?? null }, { status: 400 });
+  }
+  const referencePrice = closePriceFor(position.side, livePrice.bid, livePrice.ask);
+
   const validationError = validateSlTp({
     side: position.side,
-    referencePrice: currentPrice,
+    referencePrice,
     slPrice: slPrice === undefined ? position.slPrice : slPrice,
     tpPrice: tpPrice === undefined ? position.tpPrice : tpPrice,
     digits: brokerSymbol?.symbol.digits,

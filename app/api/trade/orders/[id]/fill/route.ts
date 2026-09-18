@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { toFiniteDecimal, isFiniteDecimalString } from "@/lib/decimal-input";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
@@ -51,6 +52,9 @@ export async function POST(
   const requestedFillPrice = body?.price != null ? String(body.price) : null;
   if (!requestedFillPrice) {
     return NextResponse.json({ error: "price is required" }, { status: 400 });
+  }
+  if (!isFiniteDecimalString(requestedFillPrice)) {
+    return NextResponse.json({ error: "invalid price" }, { status: 400 });
   }
 
   const order = await prisma.order.findUnique({ where: { id }, include: { symbol: { select: { name: true } } } });

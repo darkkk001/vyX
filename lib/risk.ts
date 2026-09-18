@@ -1,6 +1,7 @@
 import { Prisma, PrismaClient, TradingMode, SymbolCategory } from "@prisma/client";
 import type { OrderSide } from "@/lib/trading";
 import { pipSize } from "@/lib/group-pricing";
+import { toFiniteDecimal } from "@/lib/decimal-input";
 import { getLivePriceRow } from "@/lib/live-price";
 
 type Db = PrismaClient | Prisma.TransactionClient;
@@ -50,7 +51,7 @@ export function checkSymbolTradingMode(tradingMode: TradingMode, side: OrderSide
 // route, not here). Group.maxLotSize is a per-order cap, not cumulative.
 export function checkGroupMaxLot(volume: Prisma.Decimal, groupMaxLot: Prisma.Decimal | null): string | null {
   if (groupMaxLot == null) return null;
-  if (volume.gt(groupMaxLot)) {
+  if (!volume.isFinite() || volume.gt(groupMaxLot)) {
     return `volume exceeds this account's group max lot size of ${groupMaxLot}`;
   }
   return null;
@@ -86,6 +87,7 @@ export function checkGroupAllowedSymbol(
 // just within the min/max range, which both live order routes already
 // check separately). Decimal math throughout -- never Number/float.
 export function checkLotStep(volume: Prisma.Decimal, minLot: Prisma.Decimal, lotStep: Prisma.Decimal): string | null {
+  if (!volume.isFinite() || volume.lte(0)) return "volume must be a positive number";
   if (lotStep.lte(0)) return null; // misconfigured lotStep -- don't hard-block trading over it
   const remainder = volume.sub(minLot).mod(lotStep);
   if (!remainder.isZero()) {
@@ -375,7 +377,10 @@ export function evaluateLiveMarketPrice(
   if (!livePrice || Date.now() - livePrice.tickAt.getTime() > LIVE_PRICE_MAX_AGE_MS) {
     return "NO_LIVE_FEED";
   }
-  const price = new Prisma.Decimal(clientPrice);
+  const price = toFiniteDecimal(clientPrice);
+  if (!price) {
+    return `price is invalid for ${symbolName}`;
+  }
   const mid = livePrice.bid.add(livePrice.ask).div(2);
   const diffPct = price.sub(mid).abs().div(mid).mul(100);
   if (diffPct.gt(PRICE_DEVIATION_TOLERANCE_PCT)) {
@@ -443,10 +448,17 @@ export function checkSlippage(params: {
   // This deliberately does NOT fall back to the broker default (that fallback is only
   // for a client that sent no preference at all, e.g. today's WebTrader).
   if (params.maxSlippagePips === "unlimited") return null;
-  const maxPips =
-    params.maxSlippagePips != null ? new Prisma.Decimal(params.maxSlippagePips) : DEFAULT_MAX_SLIPPAGE_PIPS;
+  // Fail closed on anything that is not a finite number (pentest 2026-09-18
+  // #6: a NaN/Infinity tolerance made `deviation.gt(tolerance)` false forever,
+  // i.e. the gate silently off; " 5"/"5abc" threw out of the route). The
+  // routes validate first (lib/decimal-input.ts); this is the backstop.
+  const maxPips = params.maxSlippagePips != null ? toFiniteDecimal(params.maxSlippagePips) : DEFAULT_MAX_SLIPPAGE_PIPS;
+  const reference = toFiniteDecimal(params.clientReferencePrice);
+  if (!maxPips || maxPips.lt(0) || !reference || !params.serverFillPrice.isFinite()) {
+    return "SLIPPAGE_EXCEEDED";
+  }
   const tolerance = maxPips.mul(pipSize(params.digits));
-  const deviation = params.serverFillPrice.sub(new Prisma.Decimal(params.clientReferencePrice)).abs();
+  const deviation = params.serverFillPrice.sub(reference).abs();
   if (deviation.gt(tolerance)) {
     return "SLIPPAGE_EXCEEDED";
   }

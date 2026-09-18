@@ -27,13 +27,14 @@ use market_data::{timeframe_from_str, CandleUpdate};
 use order_management::{
     db, events, CancelOrderOutcome, ClosePositionOutcome, ModifyPositionOutcome,
     PlaceMarketOrderOutcome, PlaceMarketOrderRequest, PlacePendingOrderOutcome,
-    PlacePendingOrderRequest,
+    PlacePendingOrderRequest, PriceSource,
 };
 use protocol::{OrderSide, OrderType, Tick};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use std::sync::Arc;
+use subtle::ConstantTimeEq;
 
 struct AppState {
     pool: PgPool,
@@ -41,6 +42,12 @@ struct AppState {
     // Postgres, or both during the migration soak (market_data::sink).
     // `pool` above stays the trade-data (Neon) pool for orders/positions.
     market_pools: Arc<MarketDataPools>,
+    // The one price source every money path reads (order placement,
+    // close, SL/TP modify, and -- via the spawned monitor / trigger tasks
+    // -- SL/TP, stop-out and pending-order evaluation): tick_cache first,
+    // then market_pools.reader() on "tickAt". See
+    // order_management::prices for the 2026-09-18 audit finding.
+    prices: PriceSource,
     nats: async_nats::Client,
     price_feed_secret: String,
     // Distinct from price_feed_secret -- gates the 4 order routes instead
@@ -167,6 +174,22 @@ fn reject_if_thresholds_not_loaded(state: &AppState) -> Result<(), (StatusCode, 
     Err((StatusCode::SERVICE_UNAVAILABLE, format!("risk thresholds unavailable: {reason}")))
 }
 
+/// Constant-time shared-secret check for every header-borne secret this
+/// server accepts (pentest 2026-09-18 item 13: the guards compared with
+/// `!=`, which short-circuits on the first differing byte and so leaks
+/// how many leading bytes matched). `subtle`'s slice `ct_eq` returns
+/// false without a byte loop when the lengths differ (the length of a
+/// deployment secret is not the secret) and otherwise XOR-accumulates
+/// over every byte. A missing header or an empty configured secret never
+/// matches -- the guards stay fail-closed.
+fn secret_matches(provided: Option<&str>, expected: &str) -> bool {
+    let Some(provided) = provided else { return false };
+    if expected.is_empty() {
+        return false;
+    }
+    bool::from(provided.as_bytes().ct_eq(expected.as_bytes()))
+}
+
 // Applied via .layer() to every order/position route (main() below) --
 // centralized in one place rather than a per-handler header check (like
 // ingest_price_feed's inline check) specifically so a future new route
@@ -183,7 +206,7 @@ async fn require_internal_secret(
         .headers()
         .get("x-internal-secret")
         .and_then(|v| v.to_str().ok());
-    if provided != Some(state.internal_service_secret.as_str()) {
+    if !secret_matches(provided, &state.internal_service_secret) {
         return Err((StatusCode::UNAUTHORIZED, "unauthorized".to_string()));
     }
     Ok(next.run(req).await)
@@ -201,10 +224,10 @@ async fn require_market_data_read_secret(
 ) -> Result<Response, (StatusCode, String)> {
     let internal_provided: Option<String> = req.headers().get("x-internal-secret").and_then(|v| v.to_str().ok()).map(str::to_owned);
     let read_provided: Option<String> = req.headers().get("x-market-data-secret").and_then(|v| v.to_str().ok()).map(str::to_owned);
-    let internal_ok = internal_provided.as_deref() == Some(state.internal_service_secret.as_str());
-    let read_ok = match (&state.market_data_read_secret, read_provided) {
-        (Some(expected), Some(provided)) => !expected.is_empty() && provided == *expected,
-        _ => false,
+    let internal_ok = secret_matches(internal_provided.as_deref(), &state.internal_service_secret);
+    let read_ok = match &state.market_data_read_secret {
+        Some(expected) => secret_matches(read_provided.as_deref(), expected),
+        None => false,
     };
     if !internal_ok && !read_ok {
         return Err((StatusCode::UNAUTHORIZED, "unauthorized".to_string()));
@@ -331,7 +354,7 @@ async fn place_market_order(
         leverage: body.leverage,
     };
 
-    let outcome = order_management::place_market_order(&state.pool, &state.nats, &state.tick_cache, req)
+    let outcome = order_management::place_market_order(&state.pool, &state.nats, &state.prices, req)
         .await
         .map_err(|err| {
             tracing::error!(?err, "place_market_order failed");
@@ -403,7 +426,7 @@ async fn place_pending_order(
         tp_price: body.tp_price,
     };
 
-    let outcome = order_management::place_pending_order(&state.pool, &state.nats, &state.tick_cache, req)
+    let outcome = order_management::place_pending_order(&state.pool, &state.nats, &state.prices, req)
         .await
         .map_err(|err| {
             tracing::error!(?err, "place_pending_order failed");
@@ -452,12 +475,36 @@ async fn cancel_order(
     }
 }
 
+/// JSON error body for the position routes -- `{"error": ...}` is the
+/// shape the web app's own trade routes use and the shape the gateway's
+/// parseUpstreamJson passes through unchanged, so a client sees the same
+/// contract whichever engine served it.
+type ApiError = (StatusCode, Json<serde_json::Value>);
+
+fn api_error(status: StatusCode, message: impl Into<String>) -> ApiError {
+    (status, Json(serde_json::json!({ "error": message.into() })))
+}
+
+/// No fresh price (<= 15 s) for the position's symbol: same code and
+/// status the web app's close/open routes return for the same condition
+/// (`lib/risk.ts checkPriceFreshness` -> 400 `PRICE_STALE`), so every
+/// client already renders it.
+fn price_stale(symbol: &str) -> ApiError {
+    (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": "PRICE_STALE", "symbol": symbol })))
+}
+
 #[derive(Debug, Deserialize)]
 struct ModifyPositionBody {
     account_id: String,
-    current_price: Decimal,
     sl_price: Option<Decimal>,
     tp_price: Option<Decimal>,
+    // No `current_price` any more (pentest 2026-09-18 items 5/8): the
+    // reference price is Market Data Core's own, read in
+    // order_management::modify_position_sl_tp. serde ignores unknown
+    // fields by default, so a caller still sending it is accepted and the
+    // value simply never reaches anything -- remove that tolerance (add
+    // `#[serde(deny_unknown_fields)]`) once every gateway build has
+    // stopped sending it.
 }
 
 #[derive(Debug, Serialize)]
@@ -478,40 +525,45 @@ async fn modify_position(
     State(state): State<Arc<AppState>>,
     Path(position_id): Path<String>,
     Json(body): Json<ModifyPositionBody>,
-) -> Result<Json<ModifyPositionResponse>, (StatusCode, String)> {
+) -> Result<Json<ModifyPositionResponse>, ApiError> {
     let outcome = order_management::modify_position_sl_tp(
         &state.pool,
+        &state.prices,
         &state.nats,
         &body.account_id,
         &position_id,
-        body.current_price,
         body.sl_price,
         body.tp_price,
     )
     .await
     .map_err(|err| {
         tracing::error!(?err, "modify_position_sl_tp failed");
-        (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
+        api_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
     })?;
 
     match outcome {
         ModifyPositionOutcome::Updated { sl_price, tp_price } => {
             Ok(Json(ModifyPositionResponse::Updated { sl_price, tp_price }))
         }
-        ModifyPositionOutcome::NotFound => Err((StatusCode::NOT_FOUND, "position not found".to_string())),
-        ModifyPositionOutcome::InvalidStatus { status } => Err((
+        ModifyPositionOutcome::NotFound => Err(api_error(StatusCode::NOT_FOUND, "position not found")),
+        ModifyPositionOutcome::InvalidStatus { status } => Err(api_error(
             StatusCode::CONFLICT,
             format!("position is not open (status: {status:?})"),
         )),
-        ModifyPositionOutcome::ValidationFailed { reason } => Err((StatusCode::BAD_REQUEST, reason)),
+        ModifyPositionOutcome::ValidationFailed { reason } => Err(api_error(StatusCode::BAD_REQUEST, reason)),
+        ModifyPositionOutcome::PriceStale { symbol } => Err(price_stale(&symbol)),
     }
 }
 
 #[derive(Debug, Deserialize)]
 struct ClosePositionBody {
     account_id: String,
-    bid: Decimal,
-    ask: Decimal,
+    // No `bid`/`ask` any more (pentest 2026-09-18 item 8): the close
+    // price is Market Data Core's own, read in
+    // order_management::close_position, exactly as place_market_order
+    // prices a fill. Same unknown-field tolerance note as
+    // ModifyPositionBody -- a caller still sending them is accepted and
+    // the values never reach anything.
 }
 
 #[derive(Debug, Serialize)]
@@ -522,42 +574,38 @@ enum ClosePositionResponse {
 
 /// Manually closes an open position — the trader-initiated counterpart to
 /// the margin monitor's automatic force-closes, see
-/// order_management::close_position's doc comment. `bid`/`ask` are the
-/// caller's own current-price read (same convention as `modify_position`'s
-/// `current_price`), since this route doesn't have its own Market Data
-/// Core dependency.
+/// order_management::close_position's doc comment. The close price is the
+/// engine's own fresh read (state.prices); a stale/missing one is a 400
+/// `PRICE_STALE`, never a fallback to anything in the request.
 async fn close_position(
     State(state): State<Arc<AppState>>,
     Path(position_id): Path<String>,
     Json(body): Json<ClosePositionBody>,
-) -> Result<Json<ClosePositionResponse>, (StatusCode, String)> {
+) -> Result<Json<ClosePositionResponse>, ApiError> {
     let outcome = order_management::close_position(
         &state.pool,
+        &state.prices,
         &state.nats,
         &body.account_id,
         &position_id,
-        body.bid,
-        body.ask,
     )
     .await
     .map_err(|err| {
         tracing::error!(?err, "close_position failed");
-        (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
+        api_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
     })?;
 
     match outcome {
         ClosePositionOutcome::Closed { close_price, realized_pnl } => {
             Ok(Json(ClosePositionResponse::Closed { close_price, realized_pnl }))
         }
-        ClosePositionOutcome::NotFound => Err((StatusCode::NOT_FOUND, "position not found".to_string())),
-        ClosePositionOutcome::InvalidStatus { status } => Err((
+        ClosePositionOutcome::NotFound => Err(api_error(StatusCode::NOT_FOUND, "position not found")),
+        ClosePositionOutcome::InvalidStatus { status } => Err(api_error(
             StatusCode::CONFLICT,
             format!("position is not open (status: {status:?})"),
         )),
-        ClosePositionOutcome::AlreadyClosed => Err((
-            StatusCode::CONFLICT,
-            "position was already closed".to_string(),
-        )),
+        ClosePositionOutcome::AlreadyClosed => Err(api_error(StatusCode::CONFLICT, "position was already closed")),
+        ClosePositionOutcome::PriceStale { symbol } => Err(price_stale(&symbol)),
     }
 }
 
@@ -600,7 +648,7 @@ async fn ingest_price_feed(
     let provided = headers
         .get("x-price-feed-secret")
         .and_then(|v| v.to_str().ok());
-    if provided != Some(state.price_feed_secret.as_str()) {
+    if !secret_matches(provided, &state.price_feed_secret) {
         return Err((StatusCode::UNAUTHORIZED, "unauthorized".to_string()));
     }
 
@@ -749,7 +797,7 @@ async fn ingest_history(
     Json(body): Json<HistoryBody>,
 ) -> Result<Json<HistoryResponse>, (StatusCode, String)> {
     let provided = headers.get("x-price-feed-secret").and_then(|v| v.to_str().ok());
-    if provided != Some(state.price_feed_secret.as_str()) {
+    if !secret_matches(provided, &state.price_feed_secret) {
         return Err((StatusCode::UNAUTHORIZED, "unauthorized".to_string()));
     }
 
@@ -1109,6 +1157,7 @@ async fn alert_stats(State(state): State<Arc<AppState>>) -> Json<market_data::al
 /// risk, only a throughput one this already tolerated by design.
 async fn spawn_tick_driven_triggers(
     pool: PgPool,
+    prices: PriceSource,
     nats: async_nats::Client,
     guard: order_management::monitor::RunGuard,
 ) -> Result<(), async_nats::SubscribeError> {
@@ -1125,13 +1174,13 @@ async fn spawn_tick_driven_triggers(
             };
             tracing::debug!(symbol = %tick.symbol, "tick-driven triggers: tick received");
 
-            let (pool1, nats1, guard1) = (pool.clone(), nats.clone(), guard.clone());
+            let (pool1, prices1, nats1, guard1) = (pool.clone(), prices.clone(), nats.clone(), guard.clone());
             tokio::spawn(async move {
-                order_management::monitor::run_once_guarded(&pool1, &nats1, &guard1).await;
+                order_management::monitor::run_once_guarded(&pool1, &prices1, &nats1, &guard1).await;
             });
-            let (pool2, nats2) = (pool.clone(), nats.clone());
+            let (pool2, prices2, nats2) = (pool.clone(), prices.clone(), nats.clone());
             tokio::spawn(async move {
-                order_management::pending_orders::check_symbol_for_triggers(&pool2, &nats2, &tick).await;
+                order_management::pending_orders::check_symbol_for_triggers(&pool2, &prices2, &nats2, &tick).await;
             });
         }
         tracing::warn!("tick-driven triggers: price.tick.* subscription ended");
@@ -1255,6 +1304,13 @@ async fn main() {
         .await
         .expect("failed to connect to NATS");
 
+    // The in-memory tick cache (populated by ingest_price_feed) and, built
+    // on it, the single price source every money path reads -- created
+    // BEFORE the monitor / trigger tasks below so they hold the same
+    // cache the ingest route writes into, not a second empty one.
+    let tick_cache = Arc::new(TickCache::new());
+    let prices = PriceSource::new(tick_cache.clone(), market_pools.reader().clone());
+
     // Margin monitor — see order_management::monitor's module doc. Two
     // trigger sources sharing one guard so they never run concurrently:
     // the polling timer below (a safety net for quiet periods) and the
@@ -1269,11 +1325,12 @@ async fn main() {
     let monitor_guard = order_management::monitor::new_run_guard();
     order_management::monitor::spawn(
         pool.clone(),
+        prices.clone(),
         nats.clone(),
         std::time::Duration::from_secs(monitor_interval_secs),
         monitor_guard.clone(),
     );
-    spawn_tick_driven_triggers(pool.clone(), nats.clone(), monitor_guard)
+    spawn_tick_driven_triggers(pool.clone(), prices.clone(), nats.clone(), monitor_guard)
         .await
         .expect("failed to subscribe tick-driven triggers to price.tick.*");
 
@@ -1298,7 +1355,6 @@ async fn main() {
         .unwrap_or(300);
     order_management::swap::spawn(pool.clone(), std::time::Duration::from_secs(swap_poll_interval_secs));
 
-    let tick_cache = Arc::new(TickCache::new());
     let symbol_activity_registry = Arc::new(SymbolActivity::new());
 
     // Periodic Postgres flush of the in-memory tick cache -- see
@@ -1379,6 +1435,7 @@ async fn main() {
     let state = Arc::new(AppState {
         pool,
         market_pools,
+        prices,
         nats,
         price_feed_secret,
         internal_service_secret,
@@ -1436,4 +1493,56 @@ async fn main() {
         .expect("failed to bind port");
     tracing::info!("trading-core-server listening on {bind_addr}:{port}");
     axum::serve(listener, app).await.expect("server error");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Pentest 2026-09-18 item 13: the secret guards must be fail-closed
+    /// (missing header, empty configured secret) and must not accept a
+    /// prefix, a suffix or a case variant -- the constant-time compare
+    /// must still be an exact compare.
+    #[test]
+    fn secret_matches_is_exact_and_fail_closed() {
+        assert!(secret_matches(Some("s3cret-value"), "s3cret-value"));
+        assert!(!secret_matches(None, "s3cret-value"));
+        assert!(!secret_matches(Some(""), "s3cret-value"));
+        assert!(!secret_matches(Some("s3cret-value"), ""));
+        assert!(!secret_matches(Some(""), ""));
+        assert!(!secret_matches(Some("s3cret-valu"), "s3cret-value"));
+        assert!(!secret_matches(Some("s3cret-value!"), "s3cret-value"));
+        assert!(!secret_matches(Some("S3cret-value"), "s3cret-value"));
+        assert!(!secret_matches(Some("x3cret-value"), "s3cret-value"));
+    }
+
+    /// The two position routes' error bodies: PRICE_STALE carries the
+    /// symbol and the web app's exact error code / status, and every
+    /// other error is `{"error": ...}`.
+    #[test]
+    fn position_route_error_bodies() {
+        let (status, Json(body)) = price_stale("XAUUSD");
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"], "PRICE_STALE");
+        assert_eq!(body["symbol"], "XAUUSD");
+
+        let (status, Json(body)) = api_error(StatusCode::NOT_FOUND, "position not found");
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body["error"], "position not found");
+    }
+
+    /// Pentest item 8: a caller still sending the old body-supplied prices
+    /// is accepted (serde ignores unknown fields) but the value has nowhere
+    /// to go -- the structs simply have no such field.
+    #[test]
+    fn close_and_modify_bodies_have_no_price_fields() {
+        let close: ClosePositionBody =
+            serde_json::from_str(r#"{"account_id":"a1","bid":"1","ask":"9999"}"#).unwrap();
+        assert_eq!(close.account_id, "a1");
+        let modify: ModifyPositionBody =
+            serde_json::from_str(r#"{"account_id":"a1","current_price":"9999","sl_price":"5"}"#).unwrap();
+        assert_eq!(modify.account_id, "a1");
+        assert_eq!(modify.sl_price, Some(Decimal::from(5)));
+        assert_eq!(modify.tp_price, None);
+    }
 }
