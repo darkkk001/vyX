@@ -1,8 +1,11 @@
 # Closes respect DEALER mode — implementation plan
 
-_Written 2026-09-16. Status: **planned, not built.** Trace + plan reviewed with the policy
-decisions below. This is its own version/release (web + engine + DB migration, plus small
-terminal and backoffice bits)._
+_Written 2026-09-16. Status: **BUILT 2026-09-18, held for release** — web commits 9317be1 (stages
+1-3), 3cc56ae (4 / 7 / 8); platform repo f5c8a9a (terminal, stage 5), b3cd68c (backoffice, stage 6).
+Code index: `lib/queued-close.ts` (queue / execute / cancel), migration
+`20260918100000_queued_close_orders` (apply with `migrate deploy` BEFORE the web deploy), tests
+`app/api/manage/dealing-queue/[id]/queued-close.test.ts`. SL / TP / stop-out run in
+`lib/risk-monitor.ts` (the engine only hooks it), so "engine" in the plan meant that file._
 
 ## Problem
 
