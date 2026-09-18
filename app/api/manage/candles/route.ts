@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
-import { CANDLE_TIMEFRAMES, fetchCandleHistory, type CandleTimeframe } from "@/lib/candles";
+import { CANDLE_TIMEFRAMES, candleLimitFrom, fetchCandleHistory, type CandleTimeframe } from "@/lib/candles";
 
 // Admin-authed OHLC history for the backoffice Dealing chart (panel 4 of
 // the dealer workstation). Same global market data the account-authed
@@ -25,6 +25,6 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "symbol and a valid tf are required" }, { status: 400 });
   }
 
-  const { candles, source } = await fetchCandleHistory(symbol, timeframe as CandleTimeframe, 300);
+  const { candles, source } = await fetchCandleHistory(symbol, timeframe as CandleTimeframe, candleLimitFrom(searchParams.get("limit")));
   return NextResponse.json(candles, { headers: { "x-market-data-source": source } });
 }

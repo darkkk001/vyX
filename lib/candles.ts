@@ -10,6 +10,18 @@ import { fetchVpsCandles, isVpsSymbol } from "@/lib/market-data-client";
 export const CANDLE_TIMEFRAMES = new Set(["M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1", "MN1", "Y1"]);
 export type CandleTimeframe = "M1" | "M5" | "M15" | "M30" | "H1" | "H4" | "D1" | "W1" | "MN1" | "Y1";
 
+// The newest-N window a candle route serves. 300 is what the charts load;
+// the native terminal's forming-candle reconcile (E:\vyxtrader
+// fix/chart-open-reconcile) asks for `?limit=3` after every bucket rollover,
+// so honouring a smaller limit turns that from a ~30 KB fetch into a 3-row
+// one. Anything missing, non-numeric or larger still gets the full window.
+export const CANDLE_LIMIT_DEFAULT = 300;
+export function candleLimitFrom(raw: string | null): number {
+  const n = raw === null ? NaN : Number(raw);
+  if (!Number.isInteger(n) || n < 1) return CANDLE_LIMIT_DEFAULT;
+  return Math.min(n, CANDLE_LIMIT_DEFAULT);
+}
+
 export type CandleSource = "vps" | "neon" | "neon-fallback";
 
 /**

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAccountSession } from "@/lib/account-auth";
-import { CANDLE_TIMEFRAMES, fetchCandleHistory, type CandleTimeframe } from "@/lib/candles";
+import { CANDLE_TIMEFRAMES, candleLimitFrom, fetchCandleHistory, type CandleTimeframe } from "@/lib/candles";
 
 // Real OHLC history for the WebTrader chart, built from the same MT5 EA
 // ticks that feed LivePrice (see lib/price-feed.ts). Returned oldest-first
@@ -24,6 +24,6 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "symbol and a valid tf are required" }, { status: 400 });
   }
 
-  const { candles, source } = await fetchCandleHistory(symbol, timeframe as CandleTimeframe, 300);
+  const { candles, source } = await fetchCandleHistory(symbol, timeframe as CandleTimeframe, candleLimitFrom(searchParams.get("limit")));
   return NextResponse.json(candles, { headers: { "x-market-data-source": source } });
 }
