@@ -1,11 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
+import { forbidUnlessBrokerAdminOrPermission } from "@/lib/permissions";
 import { approveBalanceAdjustmentRequest } from "@/lib/balance-adjustment";
 import { publishTradingEvent } from "@/lib/nats";
 
-// The checker half of the maker-checker gate: any admin who can act on
-// balance adjustments EXCEPT the one who requested it (see
+// The checker half of the maker-checker gate: an admin holding the same
+// finance authority the maker needed (BROKER_ADMIN, or a MANAGER with
+// ACCOUNT_FINANCE) EXCEPT the one who requested it (see
 // approveBalanceAdjustmentRequest's own different-admin check) approves,
 // which is the moment the balance actually changes -- a PENDING request
 // has no effect on the account at all until this. Same shape as
@@ -13,6 +15,13 @@ import { publishTradingEvent } from "@/lib/nats";
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await getAdminSession();
   if (!requireAdminRole(session, ["MANAGER", "BROKER_ADMIN"]) || !session!.brokerId) {
+    return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  }
+  // Pentest 2026-09-18 #3: the checker used to need only the MANAGER role,
+  // so a manager with no finance permission at all could release a pending
+  // adjustment it could never have filed -- four-eyes was one finance
+  // signature plus anyone. Real four-eyes is two finance signatures.
+  if (await forbidUnlessBrokerAdminOrPermission(session, "ACCOUNT_FINANCE")) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
   const brokerId = session!.brokerId!;
