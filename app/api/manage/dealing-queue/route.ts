@@ -34,6 +34,7 @@ export async function GET() {
       include: {
         account: { select: { accountNumber: true, fullName: true } },
         symbol: { select: { name: true, digits: true } },
+        closesPosition: { select: { ticket: true, volume: true, openPrice: true } },
       },
       orderBy: { createdAt: "asc" },
     }),
@@ -42,6 +43,7 @@ export async function GET() {
       include: {
         account: { select: { accountNumber: true, fullName: true } },
         symbol: { select: { name: true, digits: true } },
+        closesPosition: { select: { ticket: true, volume: true, openPrice: true } },
       },
       orderBy: { createdAt: "asc" },
     }),
@@ -64,6 +66,13 @@ export async function GET() {
         createdAt: o.createdAt.toISOString(),
         liveBid: live ? live.bid.toString() : null,
         liveAsk: live ? live.ask.toString() : null,
+        // Closes respect DEALER mode: a queued CLOSE of position #closesTicket (volume = the lots to
+        // close; partial when less than the position's volume). kind OPEN = a new position.
+        kind: o.closesPositionId ? "CLOSE" : "OPEN",
+        closesPositionId: o.closesPositionId,
+        closesTicket: o.closesPosition?.ticket ?? null,
+        positionVolume: o.closesPosition?.volume.toString() ?? null,
+        positionOpenPrice: o.closesPosition?.openPrice.toString() ?? null,
       };
     }),
     requotedRows: requoted.map((o) => ({
@@ -77,6 +86,11 @@ export async function GET() {
       requestedPrice: o.requestedPrice ? o.requestedPrice.toString() : null,
       requotedPrice: o.requotedPrice ? o.requotedPrice.toString() : null,
       createdAt: o.createdAt.toISOString(),
+      kind: o.closesPositionId ? "CLOSE" : "OPEN",
+      closesPositionId: o.closesPositionId,
+      closesTicket: o.closesPosition?.ticket ?? null,
+      positionVolume: o.closesPosition?.volume.toString() ?? null,
+      positionOpenPrice: o.closesPosition?.openPrice.toString() ?? null,
     })),
   });
 }

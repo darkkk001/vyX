@@ -46,29 +46,32 @@ export type CloseByResult =
     }
   | { ok: false; error: string; nextOpenAt?: string };
 
-export async function closePositionsByEachOther(
+/// Validate a close-by pair (same account, both open, same symbol, opposite sides, market open,
+/// live price) and resolve the netted volume + mid close price -- shared by the executing path
+/// below and the dealer-queue path (app/api/trade/positions/close-by on a dealer-managed
+/// account queues BOTH legs instead of closing them).
+export async function resolveCloseByPair(
   db: Db,
   params: { accountId: string; brokerId: string; positionId: string; againstPositionId: string }
-): Promise<CloseByResult> {
+) {
   if (params.positionId === params.againstPositionId) {
-    return { ok: false, error: "cannot close a position against itself" };
+    return { ok: false as const, error: "cannot close a position against itself" };
   }
-
   const [a, b] = await Promise.all([
-    db.position.findUnique({ where: { id: params.positionId }, include: { symbol: { select: { name: true, category: true, contractSize: true } } } }),
-    db.position.findUnique({ where: { id: params.againstPositionId }, include: { symbol: { select: { name: true, contractSize: true } } } }),
+    db.position.findUnique({ where: { id: params.positionId }, include: { symbol: { select: { id: true, name: true, digits: true, category: true, contractSize: true } } } }),
+    db.position.findUnique({ where: { id: params.againstPositionId }, include: { symbol: { select: { id: true, name: true, digits: true, category: true, contractSize: true } } } }),
   ]);
   if (!a || !b || a.accountId !== params.accountId || b.accountId !== params.accountId) {
-    return { ok: false, error: "position not found" };
+    return { ok: false as const, error: "position not found" };
   }
   if (a.status !== "OPEN" || b.status !== "OPEN") {
-    return { ok: false, error: "both positions must be open" };
+    return { ok: false as const, error: "both positions must be open" };
   }
   if (a.symbolId !== b.symbolId) {
-    return { ok: false, error: "positions must be on the same symbol" };
+    return { ok: false as const, error: "positions must be on the same symbol" };
   }
   if (a.side === b.side) {
-    return { ok: false, error: "positions must be on opposite sides to close by each other" };
+    return { ok: false as const, error: "positions must be on opposite sides to close by each other" };
   }
 
   // Fix (2026-09-05 audit finding): this function only ever checked
@@ -84,16 +87,26 @@ export async function closePositionsByEachOther(
   const sessionError = checkTradingSession(brokerSymbol?.tradingSessions ?? [], new Date(), a.symbol.category);
   if (sessionError) {
     const nextOpenAt = computeNextSessionOpen(brokerSymbol?.tradingSessions ?? [], new Date(), a.symbol.category);
-    return { ok: false, error: sessionError, nextOpenAt: nextOpenAt.toISOString() };
+    return { ok: false as const, error: sessionError, nextOpenAt: nextOpenAt.toISOString() };
   }
 
   const priceMap = await getFreshPrices([a.symbol.name]);
   const live = priceMap.get(a.symbol.name);
   if (!live) {
-    return { ok: false, error: "no live price for this symbol" };
+    return { ok: false as const, error: "no live price for this symbol" };
   }
   const closePrice = live.bid.add(live.ask).div(2);
   const closeVolume = a.volume.lte(b.volume) ? a.volume : b.volume;
+  return { ok: true as const, a, b, live, closePrice, closeVolume };
+}
+
+export async function closePositionsByEachOther(
+  db: Db,
+  params: { accountId: string; brokerId: string; positionId: string; againstPositionId: string }
+): Promise<CloseByResult> {
+  const pair = await resolveCloseByPair(db, params);
+  if (!pair.ok) return pair;
+  const { a, b, closePrice, closeVolume } = pair;
 
   const outcome = await withTx(db, async (tx) => {
     const outcomeA = await closePositionInTx(tx, {

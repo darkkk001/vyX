@@ -18,6 +18,9 @@ export async function GET() {
       // relation rather than duplicating a source field onto Position
       // itself.
       originOrder: { select: { source: true } },
+      // Closes respect DEALER mode: the queued close awaiting the dealer (the terminal locks the
+      // row and shows "close awaiting dealer" with a cancel), null otherwise.
+      closePendingOrder: { select: { id: true, ticket: true, status: true, closeVolume: true, requotedPrice: true, createdAt: true } },
     },
     orderBy: { openedAt: "desc" },
   });

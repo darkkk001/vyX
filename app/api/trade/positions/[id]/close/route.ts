@@ -8,6 +8,8 @@ import { recordDealerActivity } from "@/lib/dealer-activity";
 import { isDealingManagedAccount } from "@/lib/dealing-routing";
 import { checkLiveMarketPrice, checkLotStep, checkTradingSession, computeNextSessionOpen } from "@/lib/risk";
 import * as mirror from "@/lib/mirror";
+import { getLivePriceRow } from "@/lib/live-price";
+import { accountWantsDealingQueue, afterCloseQueued, queueCloseInTx, ClosePendingError } from "@/lib/queued-close";
 
 // Closing (fully or partially) is the one place a trade changes the
 // account balance. Realized P&L is computed server-side and applied
@@ -40,7 +42,7 @@ export async function POST(
   const position = await prisma.position.findUnique({
     where: { id },
     include: {
-      symbol: { select: { id: true, name: true, category: true, contractSize: true } },
+      symbol: { select: { id: true, name: true, category: true, contractSize: true, digits: true } },
       account: { select: { accountNumber: true, fullName: true, group: { select: { groupType: true, dealingMode: true, forceDealingMode: true } } } },
     },
   });
@@ -49,6 +51,12 @@ export async function POST(
   }
   if (position.status !== "OPEN") {
     return NextResponse.json({ error: "position is not open" }, { status: 409 });
+  }
+  // Closes respect DEALER mode (docs/CLOSES-RESPECT-DEALER-MODE.md): a close already awaiting
+  // the dealer locks the position -- a second one is refused with the pending order, so the
+  // client can show / cancel it rather than pile up requests.
+  if (position.closePendingOrderId) {
+    return NextResponse.json({ error: "CLOSE_PENDING", orderId: position.closePendingOrderId }, { status: 409 });
   }
 
   // Real bug fixed here (2026-09-05): this route never checked whether the
@@ -117,6 +125,58 @@ export async function POST(
     }
     closeVolume = requested;
   }
+  // Closes respect DEALER mode: the same gate the open path applies (resolveWantsDealingQueue)
+  // -- when the account is dealer-managed the close is QUEUED (a MARKET order that closes this
+  // position, full or partial), the position is locked, and the dealer decides; nothing is
+  // executed here. Automatic closes (SL / TP / stop-out) never come through this route.
+  const routing = await accountWantsDealingQueue(prisma, session.brokerId, position.account.group);
+  if (routing.wantsQueue) {
+    const clientPlatformHeader = request.headers.get("x-client-platform");
+    const orderSource: "WEB" | "DESKTOP_NATIVE" | "MOBILE" | "API" =
+      clientPlatformHeader === "DESKTOP_NATIVE" || clientPlatformHeader === "MOBILE" || clientPlatformHeader === "API" ? clientPlatformHeader : "WEB";
+    const idempotencyKey = typeof body?.idempotencyKey === "string" && body.idempotencyKey.length > 0 ? body.idempotencyKey : `close:${position.id}:${Date.now()}`;
+    let queued;
+    try {
+      queued = await prisma.$transaction((tx) =>
+        queueCloseInTx(tx, {
+          brokerId: session.brokerId,
+          accountId: session.accountId,
+          position: { id: position.id, symbolId: position.symbol.id, side: position.side, volume: position.volume, ticket: position.ticket, closePendingOrderId: position.closePendingOrderId },
+          closeVolume,
+          requestedPrice: closePrice,
+          idempotencyKey,
+          source: orderSource,
+          symbolName: position.symbol.name,
+          accountNumber: position.account.accountNumber,
+          note: source === "stm_bulk" ? "STM bulk close" : "Client close",
+        })
+      );
+    } catch (err) {
+      if (err instanceof ClosePendingError) return NextResponse.json({ error: "CLOSE_PENDING", orderId: err.orderId }, { status: 409 });
+      if (err instanceof Error && err.message === "RACED") return NextResponse.json({ error: "position was already closed" }, { status: 409 });
+      throw err;
+    }
+    const live = await getLivePriceRow(position.symbol.name);
+    await afterCloseQueued(prisma, {
+      order: queued,
+      brokerId: session.brokerId,
+      accountId: session.accountId,
+      accountNumber: position.account.accountNumber,
+      accountFullName: position.account.fullName,
+      symbolName: position.symbol.name,
+      digits: position.symbol.digits,
+      side: position.side,
+      closeVolume,
+      positionId: position.id,
+      positionTicket: position.ticket,
+      positionVolume: position.volume,
+      liveBid: live?.bid,
+      liveAsk: live?.ask,
+    });
+    // 202: accepted for dealer review, nothing closed yet -- the client keeps the position, locked
+    return NextResponse.json({ queued: true, order: queued, positionId: position.id, closeVolume: closeVolume.toString() }, { status: 202 });
+  }
+
   const outcome = await prisma.$transaction((tx) =>
     closePositionInTx(tx, {
       position: {
@@ -169,7 +229,6 @@ export async function POST(
     closePrice: new Prisma.Decimal(closePrice),
   }).catch((err) => console.error("mirror.onClose failed", err));
   await publishTradingEvent("PositionClosed", { position_id: position.id, account_id: session.accountId, broker_id: session.brokerId });
-  const brokerForActivity = await prisma.broker.findUnique({ where: { id: session.brokerId }, select: { dealingModeAt: true, dealingDeskAutoFillAt: true } });
   await recordDealerActivity(prisma, {
     brokerId: session.brokerId,
     accountId: session.accountId,
@@ -177,14 +236,14 @@ export async function POST(
     accountFullName: position.account.fullName,
     isDealingGroup: isDealingManagedAccount({
       group: position.account.group,
-      brokerDealingModeOn: !!brokerForActivity?.dealingModeAt,
-      dealingDeskAutoFillOn: !!brokerForActivity?.dealingDeskAutoFillAt,
+      brokerDealingModeOn: routing.brokerDealingModeOn,
+      dealingDeskAutoFillOn: routing.dealingDeskAutoFillOn,
     }),
     action: "POSITION_CLOSED",
     symbol: position.symbol.name,
     side: position.side,
     volume: closeVolume.toString(),
-    values: { closePrice, partial: outcome.partial, realizedPnl: outcome.realizedPnl.toString() },
+    values: { closePrice, partial: outcome.partial, realizedPnl: outcome.realizedPnl.toString(), closeReason: "MANUAL", origin: source === "stm_bulk" ? "client_stm" : "client_close" },
     positionId: position.id,
   });
   return NextResponse.json({ position: outcome.position, transaction: outcome.transaction, partial: outcome.partial });

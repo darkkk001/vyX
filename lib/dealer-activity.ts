@@ -25,7 +25,9 @@ export type DealerActivityAction =
   | "ORDER_CANCELLED"
   | "ORDER_TRIGGERED"
   | "POSITION_OPENED"
-  | "POSITION_CLOSED";
+  | "POSITION_CLOSED"
+  // a client's manual close routed to the dealer queue (docs/CLOSES-RESPECT-DEALER-MODE.md)
+  | "CLOSE_REQUESTED";
 
 // Per the feature spec: a dealer gets an actual notification (bell badge)
 // for the things they're responsible for reacting to -- placing a pending
@@ -35,7 +37,7 @@ export type DealerActivityAction =
 // account is usually itself the direct result of one of the three actions
 // above, or of the dealer's own queue action) -- still shown in the feed,
 // just not double-counted on the bell.
-const NOTIFY_ACTIONS = new Set<DealerActivityAction>(["ORDER_PLACED", "ORDER_MODIFIED", "ORDER_TRIGGERED"]);
+const NOTIFY_ACTIONS = new Set<DealerActivityAction>(["ORDER_PLACED", "ORDER_MODIFIED", "ORDER_TRIGGERED", "CLOSE_REQUESTED"]);
 
 function titleFor(action: DealerActivityAction): string {
   switch (action) {
@@ -45,6 +47,8 @@ function titleFor(action: DealerActivityAction): string {
       return "Dealing-group account modified SL/TP";
     case "ORDER_TRIGGERED":
       return "Dealing-group pending order triggered";
+    case "CLOSE_REQUESTED":
+      return "Dealing-group close awaiting dealer review";
     default:
       return "Dealing-group account activity";
   }

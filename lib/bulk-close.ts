@@ -23,6 +23,10 @@ export type BulkClosePositionResult = {
   realizedPnl: string | null;
   error: string | null;
   nextOpenAt?: string;
+  // Closes respect DEALER mode: the position was not closed, a close Order awaiting the dealer was
+  // queued instead (app/api/trade/positions/close-bulk on a dealer-managed account).
+  queued?: boolean;
+  orderId?: string;
 };
 
 type Db = PrismaClient | Prisma.TransactionClient;
@@ -39,17 +43,21 @@ async function withTx<T>(db: Db, fn: (tx: Prisma.TransactionClient) => Promise<T
   return fn(db as Prisma.TransactionClient);
 }
 
-export async function closeBulkForAccount(
+/// Which open positions a bulk close touches, with the one fresh price per symbol every close in
+/// the batch fills at and the closed-market symbols' next open -- shared by the executing path
+/// below and the dealer-queue path (app/api/trade/positions/close-bulk on a dealer-managed
+/// account queues one close Order per target instead of closing).
+export async function selectBulkCloseTargets(
   db: Db,
   params: { accountId: string; brokerId: string; scope: BulkCloseScope; symbol?: string }
-): Promise<BulkClosePositionResult[]> {
+) {
   const { accountId, brokerId, scope, symbol } = params;
 
   const openPositions = await db.position.findMany({
     where: { accountId, status: "OPEN" },
-    include: { symbol: { select: { name: true, contractSize: true } } },
+    include: { symbol: { select: { id: true, name: true, digits: true, contractSize: true } } },
   });
-  if (openPositions.length === 0) return [];
+  if (openPositions.length === 0) return { matching: [] as typeof openPositions, priceBySymbol: new Map<string, { bid: Prisma.Decimal; ask: Prisma.Decimal }>(), nextOpenBySymbolName: new Map<string, string>() };
 
   // Fix (2026-09-05 audit finding): a closed-market symbol used to fall
   // straight through to "no live price" below, identical to a genuine
@@ -106,6 +114,15 @@ export async function closeBulkForAccount(
     return scope === "PROFIT" ? pnl.gte(0) : pnl.lt(0);
   });
 
+  return { matching, priceBySymbol, nextOpenBySymbolName };
+}
+
+export async function closeBulkForAccount(
+  db: Db,
+  params: { accountId: string; brokerId: string; scope: BulkCloseScope; symbol?: string }
+): Promise<BulkClosePositionResult[]> {
+  const { brokerId, accountId, scope } = params;
+  const { matching, priceBySymbol, nextOpenBySymbolName } = await selectBulkCloseTargets(db, params);
   if (matching.length === 0) return [];
 
   const results: BulkClosePositionResult[] = [];

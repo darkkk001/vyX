@@ -231,6 +231,10 @@ export async function DELETE(
     where: { id },
     data: { status: "CANCELLED" },
   });
+  // a queued CLOSE (docs/CLOSES-RESPECT-DEALER-MODE.md): withdrawing it releases the position's lock
+  if (order.closesPositionId) {
+    await prisma.position.updateMany({ where: { id: order.closesPositionId, closePendingOrderId: id }, data: { closePendingOrderId: null } });
+  }
   // Queued-order UX -- a trader withdrawing a dealing-group MARKET order
   // before the desk reviews it is a real, money-relevant action (the
   // dealer might already be looking at it) that had no audit trail at

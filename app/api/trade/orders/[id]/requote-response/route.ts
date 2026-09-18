@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
 import { openPositionFromOrder } from "@/lib/dealing";
+import { executeQueuedCloseInTx, afterQueuedCloseExecuted } from "@/lib/queued-close";
 import { resolveBookType, applySpreadMarkup } from "@/lib/group-pricing";
 import { resolveFillPricing, logSpreadWarning } from "@/lib/pricing-engine";
 import { publishTradingEvent } from "@/lib/nats";
@@ -44,7 +45,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
   const order = await prisma.order.findUnique({
     where: { id },
-    include: { symbol: { select: { name: true } }, account: { select: { accountNumber: true } } },
+    include: { symbol: { select: { name: true } }, account: { select: { accountNumber: true, fullName: true } } },
   });
   if (!order || order.accountId !== session.accountId) {
     return NextResponse.json({ error: "order not found" }, { status: 404 });
@@ -61,6 +62,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
           data: { status: "CANCELLED" },
         });
         if (result.count === 0) throw new Error("RACED");
+        // a declined CLOSE requote leaves the position open and unlocked (docs/CLOSES-RESPECT-DEALER-MODE.md)
+        if (order.closesPositionId) await tx.position.updateMany({ where: { id: order.closesPositionId, closePendingOrderId: id }, data: { closePendingOrderId: null } });
         await tx.auditLog.create({
           data: {
             brokerId: order.brokerId,
@@ -102,6 +105,49 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   ]);
   if (account.status !== "ACTIVE") {
     return NextResponse.json({ error: "account is not active" }, { status: 400 });
+  }
+
+  if (order.closesPositionId) {
+    // Accepting a requote on a queued CLOSE: close the position at the dealer's offered price
+    // (no markup; the market must be open and trading not halted -- the open-side battery does
+    // not apply to a close).
+    const closeRiskError = checkTradingHalted(broker) ?? checkTradingSession(brokerSymbol.tradingSessions, new Date(), brokerSymbol.symbol.category);
+    if (closeRiskError) {
+      return NextResponse.json({ error: closeRiskError }, { status: 400 });
+    }
+    const closePrice = order.requotedPrice!;
+    const before = await prisma.position.findUnique({ where: { id: order.closesPositionId }, select: { volume: true, ticket: true } });
+    const result = await prisma.$transaction(async (tx) => {
+      const r = await executeQueuedCloseInTx(tx, { order, fromStatus: "REQUOTED", closePrice, note: "Dealer close (requote accepted by client)" });
+      if (r.kind === "closed") {
+        await tx.auditLog.create({
+          data: {
+            brokerId: order.brokerId,
+            action: "DEALING_CLOSE_REQUOTE_ACCEPTED",
+            entityType: "Position",
+            entityId: order.closesPositionId!,
+            oldValue: { ...orderAuditFields(order, order.symbol.name, order.account.accountNumber), status: "REQUOTED", requotedPrice: closePrice.toString(), closesTicket: before?.ticket ?? null },
+            newValue: { status: "FILLED", closePrice: closePrice.toString(), closeVolume: r.closeVolume.toString(), partial: r.outcome.partial, realizedPnl: r.outcome.realizedPnl.toString() },
+          },
+        });
+      }
+      return r;
+    });
+    if (result.kind === "raced") return NextResponse.json({ error: "order was already actioned" }, { status: 409 });
+    if (result.kind === "position_gone") return NextResponse.json({ error: "position was already closed; the close request is cancelled" }, { status: 409 });
+    await afterQueuedCloseExecuted(prisma, {
+      brokerId: order.brokerId,
+      accountId: session.accountId,
+      accountNumber: order.account.accountNumber,
+      accountFullName: order.account.fullName,
+      symbolName: brokerSymbol.symbol.name,
+      side: order.side,
+      positionId: order.closesPositionId,
+      positionVolumeBefore: before?.volume ?? order.volume,
+      result,
+      origin: "client_requote_accept",
+    });
+    return NextResponse.json({ id: order.id, status: "FILLED", positionId: order.closesPositionId, closed: true, partial: result.outcome.partial, closePrice: closePrice.toString() });
   }
 
   const riskError =

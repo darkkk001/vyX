@@ -11,6 +11,7 @@ import { publishTradingEvent } from "@/lib/nats";
 import { recordDealerActivity } from "@/lib/dealer-activity";
 import { isDealingManagedAccount } from "@/lib/dealing-routing";
 import * as mirror from "@/lib/mirror";
+import { executeQueuedCloseInTx, afterQueuedCloseExecuted } from "@/lib/queued-close";
 import {
   checkTradingHalted,
   checkCloseOnly,
@@ -72,7 +73,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
   const order = await prisma.order.findUnique({
     where: { id },
-    include: { account: { include: { group: { include: { allowedSymbols: { select: { symbolId: true } } } } } }, symbol: true },
+    include: { account: { include: { group: { include: { allowedSymbols: { select: { symbolId: true } } } } } }, symbol: true, closesPosition: { select: { id: true, ticket: true, volume: true, status: true } } },
   });
   if (!order || order.brokerId !== brokerId) {
     return NextResponse.json({ error: "order not found" }, { status: 404 });
@@ -87,7 +88,10 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   // a live price is never required to REJECT or (for the reasons in this
   // route's own module comment) to ACCEPT.
   const liveAtClick = await getFreshPrice(order.symbol.name);
-  const liveRefAtClick = liveAtClick ? (order.side === "BUY" ? liveAtClick.ask : liveAtClick.bid) : null;
+  // an OPEN fills at ask (BUY) / bid (SELL); a queued CLOSE (closesPositionId set, docs/CLOSES-
+  // RESPECT-DEALER-MODE.md) settles on the other side: a BUY position closes at bid, a SELL at ask
+  const isClose = order.closesPositionId != null;
+  const liveRefAtClick = liveAtClick ? ((order.side === "BUY") !== isClose ? liveAtClick.ask : liveAtClick.bid) : null;
 
   if (action === "REJECT") {
     const reason = typeof body?.reason === "string" ? body.reason.trim() : "";
@@ -101,11 +105,13 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         data: { status: "REJECTED", rejectionReason: reason },
       });
       if (result.count === 0) throw new Error("RACED");
+      // a rejected CLOSE leaves the position open and unlocked
+      if (order.closesPositionId) await tx.position.updateMany({ where: { id: order.closesPositionId, closePendingOrderId: id }, data: { closePendingOrderId: null } });
       await tx.auditLog.create({
         data: {
           brokerId,
           actorAdminId: session.adminId,
-          action: "DEALING_ORDER_REJECTED",
+          action: isClose ? "DEALING_CLOSE_REJECTED" : "DEALING_ORDER_REJECTED",
           entityType: "Order",
           entityId: id,
           oldValue: { ...orderAuditFields(order, order.symbol.name, order.account.accountNumber), status: priorStatus, requestedPrice: order.requestedPrice?.toString() ?? null },
@@ -160,7 +166,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         data: {
           brokerId,
           actorAdminId: session.adminId,
-          action: "DEALING_ORDER_REQUOTED",
+          action: isClose ? "DEALING_CLOSE_REQUOTED" : "DEALING_ORDER_REQUOTED",
           entityType: "Order",
           entityId: id,
           oldValue: { ...orderAuditFields(order, order.symbol.name, order.account.accountNumber), status: "PENDING", requestedPrice: order.requestedPrice?.toString() ?? null },
@@ -206,6 +212,58 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   }
 
   const broker = await prisma.broker.findUniqueOrThrow({ where: { id: brokerId } });
+
+  if (isClose) {
+    // ACCEPT on a queued CLOSE: close the position at the dealer's price -- the client's own
+    // requested close price (REQUESTED) or the live close-side price at click (MARKET) -- with no
+    // spread markup (a close realizes at the price, the way every other close path does). The
+    // open-side risk battery (max positions, exposure, lot rules) does not apply to a close; the
+    // market must be open and trading not halted for this broker. Close-only mode allows closes.
+    const closeRiskError = checkTradingHalted(broker) ?? checkTradingSession(brokerSymbol.tradingSessions, new Date(), order.symbol.category);
+    if (closeRiskError) {
+      return NextResponse.json({ error: closeRiskError }, { status: 400 });
+    }
+    const closePrice = fillMode === "MARKET" ? liveRefAtClick : order.requestedPrice;
+    if (closePrice == null) {
+      return NextResponse.json({ error: "no live price available to close at market" }, { status: 409 });
+    }
+    const positionVolumeBefore = order.closesPosition?.volume ?? order.volume;
+    const result = await prisma.$transaction(async (tx) => {
+      const r = await executeQueuedCloseInTx(tx, { order, fromStatus: "PENDING", closePrice, note: `Dealer close (${fillMode === "MARKET" ? "at market" : "at requested price"})` });
+      if (r.kind === "closed") {
+        await tx.auditLog.create({
+          data: {
+            brokerId,
+            actorAdminId: session.adminId,
+            action: "DEALING_CLOSE_ACCEPTED",
+            entityType: "Position",
+            entityId: order.closesPositionId!,
+            oldValue: { ...orderAuditFields(order, order.symbol.name, order.account.accountNumber), status: "PENDING", requestedPrice: order.requestedPrice?.toString() ?? null, closesTicket: order.closesPosition?.ticket ?? null },
+            newValue: { status: "FILLED", fillMode, closePrice: closePrice.toString(), closeVolume: r.closeVolume.toString(), partial: r.outcome.partial, realizedPnl: r.outcome.realizedPnl.toString(), liveAtClick: liveRefAtClick?.toString() ?? null },
+          },
+        });
+      }
+      return r;
+    });
+    if (result.kind === "raced") return NextResponse.json({ error: "order was already actioned" }, { status: 409 });
+    if (result.kind === "position_gone") {
+      await publishTradingEvent("OrderCancelled", { order_id: order.id, account_id: order.accountId, broker_id: brokerId, reason: "position already closed" });
+      return NextResponse.json({ error: "position was already closed (by SL / TP / stop-out or another close); the close request is cancelled" }, { status: 409 });
+    }
+    await afterQueuedCloseExecuted(prisma, {
+      brokerId,
+      accountId: order.accountId,
+      accountNumber: order.account.accountNumber,
+      accountFullName: order.account.fullName,
+      symbolName: order.symbol.name,
+      side: order.side,
+      positionId: order.closesPositionId!,
+      positionVolumeBefore,
+      result,
+      origin: "dealer_accept",
+    });
+    return NextResponse.json({ id: order.id, status: "FILLED", positionId: order.closesPositionId, closed: true, partial: result.outcome.partial, closePrice: closePrice.toString(), realizedPnl: result.outcome.realizedPnl.toString() });
+  }
   // State may have changed since the trader submitted -- re-run the same
   // checks a manual position open runs (app/api/manage/positions/route.ts).
   const riskError =

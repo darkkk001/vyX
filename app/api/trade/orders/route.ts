@@ -745,7 +745,7 @@ export async function GET(request: NextRequest) {
       accountId: session.accountId,
       ...(showAll ? {} : { status: { in: ["PENDING", "REQUOTED"] } }),
     },
-    include: { symbol: { select: { name: true, digits: true } } },
+    include: { symbol: { select: { name: true, digits: true } }, closesPosition: { select: { ticket: true } } },
     orderBy: { createdAt: "desc" },
   });
   return NextResponse.json(orders);

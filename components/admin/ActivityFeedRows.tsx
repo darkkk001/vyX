@@ -26,6 +26,7 @@ export const ACTIVITY_ACTION_LABEL: Record<DealerActivityAction, string> = {
   ORDER_TRIGGERED: "Pending order triggered",
   POSITION_OPENED: "Position opened",
   POSITION_CLOSED: "Position closed",
+  CLOSE_REQUESTED: "Close awaiting dealer",
 };
 
 // The only color per row now lives here, on the action label itself
@@ -39,6 +40,7 @@ export const ACTIVITY_ACTION_TONE: Record<DealerActivityAction, "accent" | "warn
   ORDER_TRIGGERED: "warning",
   POSITION_OPENED: "success",
   POSITION_CLOSED: "neutral",
+  CLOSE_REQUESTED: "accent",
 };
 
 function fmt(v: unknown): string | null {
@@ -80,6 +82,13 @@ export function describeActivityValues(row: ActivityFeedRow): string {
       const parts = [`@ ${fmt(v.closePrice) ?? "-"}`];
       if (v.partial) parts.push("(partial)");
       if (fmt(v.realizedPnl)) parts.push(`P&L ${v.realizedPnl}`);
+      if (fmt(v.closeReason) && v.closeReason !== "MANUAL") parts.push(String(v.closeReason).toLowerCase().replace(/_/g, " "));
+      return parts.join(" ");
+    }
+    case "CLOSE_REQUESTED": {
+      const parts = [`@ ${fmt(v.requestedPrice) ?? "-"}`];
+      if (fmt(v.closesTicket)) parts.push(`#${v.closesTicket}`);
+      if (v.partial) parts.push("(partial)");
       return parts.join(" ");
     }
     default:

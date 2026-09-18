@@ -1679,14 +1679,29 @@ model Order {
   idempotencyKey  String // client-supplied, unique per account
   source          OrderSource @default(WEB)
 
+  // Queued CLOSE (docs/CLOSES-RESPECT-DEALER-MODE.md, 2026-09-18): when set, this MARKET order
+  // is a client's request to CLOSE closesPosition -- fully, or closeVolume lots of it -- that
+  // was routed to the dealer queue because the account is dealer-managed, exactly as an open
+  // is. Null = an open. `closesPositionId != null` is the open-vs-close discriminator (type
+  // stays MARKET so the one queue + accept / requote / reject handlers + desk-toggle re-eval
+  // catch it). side = the position's own side (what the dealer sees); requestedPrice = the
+  // close price the client saw; filledPrice = the actual close price on ACCEPT.
+  closesPositionId String?
+  closesPosition   Position?   @relation("OrderCloses", fields: [closesPositionId], references: [id])
+  closeVolume      Decimal?    @db.Decimal(10, 2)
+
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
 
   position Position?
+  // Back-relation for Position.closePendingOrder (the lock) -- set only while this close order
+  // is awaiting the dealer.
+  closePendingOn Position? @relation("PositionClosePending")
 
   @@unique([accountId, idempotencyKey])
   @@index([brokerId])
   @@index([accountId])
+  @@index([closesPositionId])
 }
 
 model Position {
@@ -1760,6 +1775,15 @@ model Position {
   // on a non-booked position and on the coverage leg itself.
   coveragePositionId String?    @unique
   coveragePosition   Position?  @relation("PositionCoverage", fields: [coveragePositionId], references: [id])
+  // Queued-close lock (docs/CLOSES-RESPECT-DEALER-MODE.md): the PENDING / REQUOTED close Order
+  // the dealer has not acted on yet. While set the trader's row is locked ("close awaiting
+  // dealer"), a second close is refused, and the risk monitor's SL / TP / stop-out -- which
+  // still executes immediately -- cancels this order when it closes the position first.
+  // Cleared on accept (position closed) / reject / client cancel / desk auto-flush.
+  closePendingOrderId String?  @unique
+  closePendingOrder   Order?   @relation("PositionClosePending", fields: [closePendingOrderId], references: [id])
+  // Every close order ever raised against this position (history; the live one is closePendingOrder).
+  closeOrders         Order[]  @relation("OrderCloses")
   coveredClientPos   Position[] @relation("PositionCoverage")
 
   actionRequests PositionActionRequest[]
