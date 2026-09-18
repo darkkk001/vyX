@@ -101,9 +101,35 @@ pub async fn upsert_live_prices_batch(
 /// understated wicks, wrong close -- until the EA backfill replaced it.
 /// Flat producers (gap fills) still send o == h == l == c and are
 /// unaffected by binding per field.
+///
+/// fix/candle-open-seed -- `open` is insert-only ONLY for a row seeded from
+/// this engine's own sampled ticks. An update carrying the broker's own bar
+/// open (`CandleUpdate::open_authoritative`, from `Tick::bars`) goes through
+/// a second statement whose DO UPDATE replaces `open` too: the stored open
+/// was seeded by whichever write created the row -- the first (coalesced,
+/// up-to-50ms-late) tick the EA happened to push, or a gap-sweep flat fill
+/// that beat the minute's first real tick to the insert -- and insert-only
+/// then kept that wrong open for the bar's whole life. Two statements, not
+/// one with a CASE: `ON CONFLICT DO UPDATE` can only see the row and
+/// EXCLUDED, not a per-row flag from the UNNEST source. merge_dedup keeps
+/// keys unique across a batch, so the two partitions never touch the same
+/// row in one transaction. A batch with no authoritative row still issues
+/// exactly one statement (see the query-count test).
 pub async fn upsert_candles_batch(
     tx: &mut sqlx::PgTransaction<'_>,
     updates: &[CandleUpdate],
+) -> Result<(), sqlx::Error> {
+    if updates.is_empty() {
+        return Ok(());
+    }
+    let (seeded, authoritative): (Vec<&CandleUpdate>, Vec<&CandleUpdate>) = updates.iter().partition(|u| !u.open_authoritative);
+    upsert_candles_open_insert_only(tx, &seeded).await?;
+    upsert_candles_open_replacing(tx, &authoritative).await
+}
+
+async fn upsert_candles_open_insert_only(
+    tx: &mut sqlx::PgTransaction<'_>,
+    updates: &[&CandleUpdate],
 ) -> Result<(), sqlx::Error> {
     if updates.is_empty() {
         return Ok(());
@@ -123,6 +149,53 @@ pub async fn upsert_candles_batch(
         FROM UNNEST($1::text[], $2::text[], $3::timestamptz[], $4::numeric[], $5::numeric[], $6::numeric[], $7::numeric[])
             AS t(symbol, timeframe, bucket_start, open, high, low, close)
         ON CONFLICT (symbol, timeframe, "bucketStart") DO UPDATE SET
+            high = GREATEST("Candle".high, EXCLUDED.high),
+            low = LEAST("Candle".low, EXCLUDED.low),
+            close = EXCLUDED.close,
+            "updatedAt" = now()
+        "#,
+    )
+    .bind(&symbols)
+    .bind(&timeframes)
+    .bind(&bucket_starts)
+    .bind(&opens)
+    .bind(&highs)
+    .bind(&lows)
+    .bind(&closes)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+/// The `open_authoritative` half of `upsert_candles_batch`: identical to the
+/// insert-only statement except `open = EXCLUDED.open`. High/low still only
+/// widen (the broker's bar-0 high/low are at least as wide as anything this
+/// engine sampled, never narrower, so GREATEST/LEAST is the right merge --
+/// a wholesale replace is `upsert_candles_authoritative_batch`'s job, for
+/// the backfill that owns the whole bar).
+async fn upsert_candles_open_replacing(
+    tx: &mut sqlx::PgTransaction<'_>,
+    updates: &[&CandleUpdate],
+) -> Result<(), sqlx::Error> {
+    if updates.is_empty() {
+        return Ok(());
+    }
+    let symbols: Vec<&str> = updates.iter().map(|u| u.symbol.as_str()).collect();
+    let timeframes: Vec<&str> = updates.iter().map(|u| timeframe_to_str(u.timeframe)).collect();
+    let bucket_starts: Vec<chrono::DateTime<chrono::Utc>> = updates.iter().map(|u| u.bucket_start).collect();
+    let opens: Vec<Decimal> = updates.iter().map(|u| u.open).collect();
+    let highs: Vec<Decimal> = updates.iter().map(|u| u.high).collect();
+    let lows: Vec<Decimal> = updates.iter().map(|u| u.low).collect();
+    let closes: Vec<Decimal> = updates.iter().map(|u| u.close).collect();
+
+    sqlx::query(
+        r#"
+        INSERT INTO "Candle" (symbol, timeframe, "bucketStart", open, high, low, close, "updatedAt")
+        SELECT symbol, timeframe::"CandleTimeframe", bucket_start, open, high, low, close, now()
+        FROM UNNEST($1::text[], $2::text[], $3::timestamptz[], $4::numeric[], $5::numeric[], $6::numeric[], $7::numeric[])
+            AS t(symbol, timeframe, bucket_start, open, high, low, close)
+        ON CONFLICT (symbol, timeframe, "bucketStart") DO UPDATE SET
+            open = EXCLUDED.open,
             high = GREATEST("Candle".high, EXCLUDED.high),
             low = LEAST("Candle".low, EXCLUDED.low),
             close = EXCLUDED.close,
@@ -483,12 +556,20 @@ mod tests {
                 high: Decimal::ONE,
                 low: Decimal::ONE,
                 close: Decimal::ONE,
+                open_authoritative: false,
             })
             .collect();
 
         let (n, result) = count_sqlx_queries(upsert_candles_batch(&mut tx, &candle_updates)).await;
         result.expect("upsert_candles_batch should succeed");
         assert_eq!(n, 1, "upsert_candles_batch must issue exactly one query for 50 rows, got {n}");
+
+        // fix/candle-open-seed -- a batch that is ALL broker-seeded opens is
+        // still one statement; only a mixed batch pays for two.
+        let all_authoritative: Vec<CandleUpdate> = candle_updates.iter().cloned().map(|mut u| { u.open_authoritative = true; u }).collect();
+        let (n, result) = count_sqlx_queries(upsert_candles_batch(&mut tx, &all_authoritative)).await;
+        result.expect("upsert_candles_batch (authoritative) should succeed");
+        assert_eq!(n, 1, "an all-authoritative batch must issue exactly one query, got {n}");
 
         let (n, result) = count_sqlx_queries(upsert_candles_authoritative_batch(&mut tx, &candle_updates)).await;
         result.expect("upsert_candles_authoritative_batch should succeed");

@@ -7,7 +7,7 @@
 //| LivePrice table this EA feeds.                                    |
 //+------------------------------------------------------------------+
 #property strict
-#property version   "1.39"
+#property version   "1.40"
 
 input string ServerUrl            = "https://www.vyxtrader.com/api/internal/price-feed";
 // No default -- this file is committed to a public-ish repo. A real
@@ -646,6 +646,47 @@ bool SendDirect(string ticksJson)
    return true;
 }
 
+// fix/candle-open-seed (v1.40) -- the broker's OWN forming bar per
+// timeframe, as of the tick being pushed, for the engine to seed each
+// bucket's open (and widen high/low) from instead of from the first tick
+// it happens to receive. BuildAndSend below reads SymbolInfoTick once per
+// PushMinIntervalMs and only ever sees the LATEST tick of that window --
+// so the first tick the engine gets after a minute boundary is not the
+// tick MT5 opened the bar with, and the engine's insert-only "open = first
+// tick seen" disagreed with this terminal's chart by however far the price
+// moved inside that window (worse across the blocking history
+// WebRequests, when nothing is pushed for seconds). This terminal already
+// holds the true bar: CopyRates(sym, period, 0, 1) is bar 0 -- the same
+// series the shallow backfill sends as authoritative every 300s, just read
+// on every push so the forming candle is right NOW, not at the next pass.
+//
+// One object per HistoryBackfillPeriods entry (M1..MN1 -- everything the
+// engine buckets except Y1, which MT5 has no period for), each with the
+// bar's open time converted to UTC ms exactly as SendHistoryBars converts
+// MqlRates.time (the engine only applies a bar whose time equals the
+// bucket it computes for the tick itself, and counts a mismatch in
+// /internal/feed-stats' broker_bars_mismatch_total). A period whose
+// timeseries this terminal hasn't built yet (CopyRates < 1, or a zeroed
+// bar) is simply left out of that push; the engine falls back to its
+// sampled open for that timeframe until the next push carries it.
+// Close is deliberately not sent -- the tick's own bid IS bar 0's close.
+// Terse keys (tf/t/o/h/l): this rides on every tick, nine times over.
+string BrokerBarsJson(string brokerSymbol)
+{
+   string out = "";
+   MqlRates r[];
+   for (int p = 0; p < ArraySize(HistoryBackfillPeriods); p++)
+   {
+      if (CopyRates(brokerSymbol, HistoryBackfillPeriods[p], 0, 1, r) < 1) continue;
+      if (r[0].open <= 0 || r[0].low <= 0 || r[0].high < r[0].low) continue;
+      if (StringLen(out) > 0) out += ",";
+      out += StringFormat("{\"tf\":\"%s\",\"t\":%I64d,\"o\":%.5f,\"h\":%.5f,\"l\":%.5f}",
+                          HistoryBackfillPeriodNames[p], ((long)r[0].time - BrokerOffsetSec) * 1000,
+                          r[0].open, r[0].high, r[0].low);
+   }
+   return out;
+}
+
 // POST one symbol+timeframe's last barCount bars to engine/server's
 // /internal/history (fix/realtime-sync §4). Same auth header convention
 // as SendDirect. Blocking, like every WebRequest call in this file --
@@ -925,6 +966,13 @@ void BuildAndSend()
       // offset as a measured one in /internal/feed-stats.
       if (HasClockSync)
          json += StringFormat(",\"clock_offset_ms\":%I64d,\"rtt_ms\":%I64d", ClockOffsetMs, LastRttMs);
+      // fix/candle-open-seed (v1.40) -- this terminal's own forming bars,
+      // read in the same pass as the tick (see BrokerBarsJson). Omitted
+      // entirely (not sent as []) when nothing could be read, matching
+      // protocol::Tick's serde default on the engine side.
+      string bars = BrokerBarsJson(brokerSymbol);
+      if (StringLen(bars) > 0)
+         json += ",\"bars\":[" + bars + "]";
       json += "}";
       first = false;
    }

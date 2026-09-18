@@ -7,6 +7,7 @@
 
 use crate::{
     alerts::{AlertCache, TriggeredAlert},
+    apply_broker_bars,
     broker_offset::BrokerOffsetTracker,
     cache::{CandleSample, TickCache},
     candle_updates_for_tick_ohlc, db,
@@ -477,7 +478,19 @@ async fn flush_candles(pools: &MarketDataPools, cache: &TickCache, samples: &[Ca
             // of the whole window being stamped into the LAST tick's minute
             // (which left the previous minute's bar without its final ticks
             // -- its true high/low -- and gave the next bar a wrong open).
-            for update in candle_updates_for_tick_ohlc(tick, tick_time, offset_sec, sample.open, sample.high, sample.low) {
+            //
+            // fix/candle-open-seed -- then overlay the broker's own forming
+            // bars carried on the tick (Tick::bars): the bucket's open
+            // becomes the broker's real open (flagged so the upsert replaces
+            // it) and high/low widen to the broker's, per timeframe. The
+            // sampled values above are only what an EA build without the
+            // field (or a Y1 bucket, which MT5 has no period for) gets. See
+            // apply_broker_bars for why a bar that doesn't line up with this
+            // engine's own bucket is counted and skipped, never applied.
+            let mut updates = candle_updates_for_tick_ohlc(tick, tick_time, offset_sec, sample.open, sample.high, sample.low);
+            let outcome = apply_broker_bars(&mut updates, &tick.bars);
+            stats.record_broker_bars(&tick.symbol, outcome, &tick.bars, &updates);
+            for update in updates {
                 // fix/realtime-sync §4 -- flat-fills every bucket skipped
                 // since the last one actually written for this
                 // symbol+timeframe (a quiet period, or the engine having
@@ -556,6 +569,14 @@ fn merge_dedup(batch: Vec<CandleUpdate>) -> Vec<CandleUpdate> {
                 e.low = u.low;
             }
             e.close = u.close;
+            // fix/candle-open-seed -- a broker-seeded open beats a sampled one
+            // whichever order they were folded in; a later broker value wins
+            // over an earlier broker value (same bar, MT5 does not change its
+            // open, so they are equal in practice).
+            if u.open_authoritative {
+                e.open = u.open;
+                e.open_authoritative = true;
+            }
         } else {
             index.insert(key, out.len());
             out.push(u);
@@ -599,7 +620,7 @@ mod tests {
     use rust_decimal_macros::dec;
 
     fn tick_with_ms(tick_ms: Option<i64>) -> Tick {
-        Tick { symbol: "XAUUSD".into(), bid: dec!(2400.00), ask: dec!(2400.20), t0: None, clock_offset_ms: None, rtt_ms: None, tick_ms, broker_offset_sec: None }
+        Tick { symbol: "XAUUSD".into(), bid: dec!(2400.00), ask: dec!(2400.20), t0: None, clock_offset_ms: None, rtt_ms: None, tick_ms, broker_offset_sec: None, bars: Vec::new() }
     }
 
     // tick_ms round-trips through i64 milliseconds, which truncates
@@ -668,7 +689,7 @@ mod tests {
     // written), and a crypto tick at the identical wall-clock moment must
     // still resolve to "open" (so it keeps writing normally).
     fn tick_with_ms_for(symbol: &str, tick_ms: Option<i64>) -> Tick {
-        Tick { symbol: symbol.into(), bid: dec!(1.1000), ask: dec!(1.1002), t0: None, clock_offset_ms: None, rtt_ms: None, tick_ms, broker_offset_sec: None }
+        Tick { symbol: symbol.into(), bid: dec!(1.1000), ask: dec!(1.1002), t0: None, clock_offset_ms: None, rtt_ms: None, tick_ms, broker_offset_sec: None, bars: Vec::new() }
     }
 
     #[test]
@@ -714,6 +735,7 @@ mod tests {
             high,
             low,
             close,
+            open_authoritative: false,
         };
         let out = merge_dedup(vec![
             mk(dec!(2400), dec!(2401), dec!(2400), dec!(2401)),
@@ -724,6 +746,28 @@ mod tests {
         assert_eq!(out[0].high, dec!(2402), "high = max across the fold");
         assert_eq!(out[0].low, dec!(2399), "low = min across the fold");
         assert_eq!(out[0].close, dec!(2399), "close = last seen");
+    }
+
+    // fix/candle-open-seed -- a broker-seeded open must survive the fold in
+    // either order: a carried (pending) sampled row ahead of this cycle's
+    // broker-seeded one, or the reverse.
+    #[test]
+    fn merge_dedup_keeps_the_broker_seeded_open_whichever_side_of_the_fold_it_is_on() {
+        let base = Utc.with_ymd_and_hms(2026, 8, 12, 10, 0, 0).unwrap();
+        let mk = |open: rust_decimal::Decimal, authoritative: bool| CandleUpdate {
+            symbol: "XAUUSD".to_string(),
+            timeframe: Timeframe::M1,
+            bucket_start: base,
+            open,
+            high: dec!(2401),
+            low: dec!(2399),
+            close: dec!(2400),
+            open_authoritative: authoritative,
+        };
+        let out = merge_dedup(vec![mk(dec!(2400.5), false), mk(dec!(2400.0), true)]);
+        assert_eq!((out[0].open, out[0].open_authoritative), (dec!(2400.0), true), "broker open folded in after a sampled one wins");
+        let out = merge_dedup(vec![mk(dec!(2400.0), true), mk(dec!(2400.5), false)]);
+        assert_eq!((out[0].open, out[0].open_authoritative), (dec!(2400.0), true), "a sampled open folded in after a broker one does not demote it");
     }
 
     #[test]
@@ -737,6 +781,7 @@ mod tests {
             high: dec!(2400),
             low: dec!(2400),
             close: dec!(2400),
+            open_authoritative: false,
         };
         let out = merge_dedup(vec![mk(2), mk(0), mk(1)]);
         let starts: Vec<_> = out.iter().map(|u| u.bucket_start).collect();
@@ -782,7 +827,7 @@ mod dual_write_tests {
         let cache = TickCache::new();
         let gap_fill = GapFillTracker::new();
         let broker_offset = BrokerOffsetTracker::new();
-        let tick = Tick { symbol: symbol.clone(), bid: dec!(4500.10), ask: dec!(4500.30), t0: None, clock_offset_ms: None, rtt_ms: None, tick_ms: Some(Utc::now().timestamp_millis() - 200), broker_offset_sec: None };
+        let tick = Tick { symbol: symbol.clone(), bid: dec!(4500.10), ask: dec!(4500.30), t0: None, clock_offset_ms: None, rtt_ms: None, tick_ms: Some(Utc::now().timestamp_millis() - 200), broker_offset_sec: None, bars: Vec::new() };
         cache.set(&tick, Utc::now());
 
         // both: every row on both sides, both counter trios advance
@@ -851,7 +896,7 @@ mod dual_write_tests {
         }
         let gap = GapFillTracker::new();
         let base = Utc.with_ymd_and_hms(2026, 8, 12, 10, 0, 0).unwrap(); // Wednesday
-        let real = |m: i64, px: Decimal| CandleUpdate { symbol: symbol.clone(), timeframe: Timeframe::M1, bucket_start: base + Duration::minutes(m), open: px, high: px, low: px, close: px };
+        let real = |m: i64, px: Decimal| CandleUpdate { symbol: symbol.clone(), timeframe: Timeframe::M1, bucket_start: base + Duration::minutes(m), open: px, high: px, low: px, close: px, open_authoritative: false };
 
         // 10:00 baseline lands and is recorded.
         let baseline = vec![real(0, dec!(2400))];
@@ -922,7 +967,7 @@ mod dual_write_tests {
         let Some((neon, local)) = pools().await else { return };
         let symbol = format!("TESTOHLC{}", Utc::now().timestamp_millis() % 1_000_000);
         let bucket = Utc.with_ymd_and_hms(2026, 8, 12, 10, 0, 0).unwrap();
-        let upd = |o: Decimal, h: Decimal, l: Decimal, c: Decimal| CandleUpdate { symbol: symbol.clone(), timeframe: Timeframe::M1, bucket_start: bucket, open: o, high: h, low: l, close: c };
+        let upd = |o: Decimal, h: Decimal, l: Decimal, c: Decimal| CandleUpdate { symbol: symbol.clone(), timeframe: Timeframe::M1, bucket_start: bucket, open: o, high: h, low: l, close: c, open_authoritative: false };
         for batch in [vec![upd(dec!(100), dec!(110), dec!(95), dec!(101))], vec![upd(dec!(101), dec!(105), dec!(90), dec!(99))]] {
             let mut tx = local.begin().await.unwrap();
             db::upsert_candles_batch(&mut tx, &batch).await.unwrap();
@@ -953,7 +998,7 @@ mod dual_write_tests {
         let broker_offset = BrokerOffsetTracker::new();
         let m0 = Utc.with_ymd_and_hms(2026, 8, 12, 12, 0, 0).unwrap(); // Wednesday, market open
         let m1 = m0 + Duration::minutes(1);
-        let tick_at = |bid: Decimal, ms: i64| Tick { symbol: symbol.clone(), bid, ask: bid + dec!(0.2), t0: None, clock_offset_ms: None, rtt_ms: None, tick_ms: Some(m0.timestamp_millis() + ms), broker_offset_sec: Some(0) };
+        let tick_at = |bid: Decimal, ms: i64| Tick { symbol: symbol.clone(), bid, ask: bid + dec!(0.2), t0: None, clock_offset_ms: None, rtt_ms: None, tick_ms: Some(m0.timestamp_millis() + ms), broker_offset_sec: Some(0), bars: Vec::new() };
         // Exactly what ingest_ticks does per tick: resolve the represented time, then cache.set.
         let now = Utc::now();
         for (bid, ms) in [(dec!(2400.0), 58_500), (dec!(2410.0), 59_200), (dec!(2395.0), 59_800), (dec!(2402.0), 60_100), (dec!(2403.0), 60_400)] {
@@ -979,6 +1024,161 @@ mod dual_write_tests {
 
         for p in [&neon, &local] {
             sqlx::query(r#"DELETE FROM "Candle" WHERE symbol = $1"#).bind(&symbol).execute(p).await.unwrap();
+        }
+    }
+
+    async fn row(pool: &PgPool, symbol: &str, tf: &str, bucket: DateTime<Utc>) -> Option<(Decimal, Decimal, Decimal, Decimal)> {
+        sqlx::query_as(r#"SELECT open, high, low, close FROM "Candle" WHERE symbol = $1 AND timeframe = $2::"CandleTimeframe" AND "bucketStart" = $3"#)
+            .bind(symbol)
+            .bind(tf)
+            .bind(bucket)
+            .fetch_optional(pool)
+            .await
+            .unwrap()
+    }
+
+    fn broker_bar(tf: &str, t: DateTime<Utc>, o: Decimal, h: Decimal, l: Decimal) -> protocol::BrokerBar {
+        protocol::BrokerBar { tf: tf.to_string(), t: t.timestamp_millis(), o, h, l }
+    }
+
+    /// fix/candle-open-seed -- the bug behind "the forming candle's open is
+    /// not Pepperstone's": the EA polls SymbolInfoTick every 50ms and only
+    /// pushes the LATEST tick of each window, so the first tick this engine
+    /// receives in a new minute is not the tick MT5 opened the bar with. Here
+    /// MT5's 12:01 bar opened at 2402.0 (a tick at 12:01:00.010 the EA never
+    /// pushed); the first push the engine sees is the 12:01:00.040 tick at
+    /// 2402.5, carrying the broker's own bar-0 snapshot. The stored open must
+    /// be the broker's 2402.0, not the sampled 2402.5 -- for M1 AND for the
+    /// M5 bucket the minute sits in (whose open is a minute older still).
+    #[tokio::test]
+    async fn the_forming_bars_open_is_the_brokers_bar_open_not_the_first_tick_the_engine_sampled() {
+        let Some((neon, local)) = pools().await else { return };
+        let symbol = format!("TESTOPEN{}", Utc::now().timestamp_millis() % 1_000_000);
+        for p in [&neon, &local] {
+            sqlx::query(r#"DELETE FROM "Candle" WHERE symbol = $1"#).bind(&symbol).execute(p).await.unwrap();
+        }
+        let stats = Arc::new(FeedStats::new());
+        let cache = TickCache::new();
+        let gap_fill = GapFillTracker::new();
+        let broker_offset = BrokerOffsetTracker::new();
+        let m5 = Utc.with_ymd_and_hms(2026, 8, 12, 12, 0, 0).unwrap(); // Wednesday, market open
+        let m1 = m5 + Duration::minutes(1);
+        let target = MarketDataPools::new(neon.clone(), Some(local.clone()), WriteMode::Local);
+        let now = Utc::now();
+
+        // What the v1.40 EA pushes: the sampled tick plus MT5's own forming bars as of that tick.
+        let bars = vec![
+            broker_bar("M1", m1, dec!(2402.0), dec!(2402.5), dec!(2401.8)),
+            broker_bar("M5", m5, dec!(2399.7), dec!(2402.6), dec!(2398.9)),
+        ];
+        let tick_at = |bid: Decimal, ms: i64, bars: Vec<protocol::BrokerBar>| Tick { symbol: symbol.clone(), bid, ask: bid + dec!(0.2), t0: None, clock_offset_ms: None, rtt_ms: None, tick_ms: Some(m1.timestamp_millis() + ms), broker_offset_sec: Some(0), bars };
+        let t = tick_at(dec!(2402.5), 40, bars.clone());
+        cache.set(&t, resolve_tick_time(&t, now));
+        let samples = cache.take_dirty_candles();
+        flush_candles(&target, &cache, &samples, &stats, &gap_fill, &broker_offset, &mut Vec::new()).await;
+        assert_eq!(stats.snapshot().local_db_fail, 0);
+
+        assert_eq!(row(&local, &symbol, "M1", m1).await, Some((dec!(2402.0), dec!(2402.5), dec!(2401.8), dec!(2402.5))), "M1 opens at the broker's bar open (2402.0), not the first sampled tick (2402.5); high/low are the broker's");
+        assert_eq!(row(&local, &symbol, "M5", m5).await, Some((dec!(2399.7), dec!(2402.6), dec!(2398.9), dec!(2402.5))), "M5 opens at the broker's M5 bar open, which this engine never saw a tick for");
+
+        // A later flush in the same minute widens high/close and leaves the broker's open alone.
+        let later = vec![
+            broker_bar("M1", m1, dec!(2402.0), dec!(2403.0), dec!(2401.8)),
+            broker_bar("M5", m5, dec!(2399.7), dec!(2403.0), dec!(2398.9)),
+        ];
+        let t = tick_at(dec!(2403.0), 5_000, later);
+        cache.set(&t, resolve_tick_time(&t, now));
+        let samples = cache.take_dirty_candles();
+        flush_candles(&target, &cache, &samples, &stats, &gap_fill, &broker_offset, &mut Vec::new()).await;
+        assert_eq!(row(&local, &symbol, "M1", m1).await, Some((dec!(2402.0), dec!(2403.0), dec!(2401.8), dec!(2403.0))));
+        assert_eq!(row(&local, &symbol, "M5", m5).await, Some((dec!(2399.7), dec!(2403.0), dec!(2398.9), dec!(2403.0))));
+
+        // The 300s shallow backfill then rewrites the forming bar wholesale
+        // (ingest_history -> upsert_candles_authoritative_batch) with a
+        // slightly wider range MT5 saw between pushes. Neither a following
+        // live flush WITH broker bars nor one WITHOUT (an old EA) may
+        // re-diverge that open, and the widened range must survive.
+        let backfilled = CandleUpdate { symbol: symbol.clone(), timeframe: Timeframe::M1, bucket_start: m1, open: dec!(2402.0), high: dec!(2403.2), low: dec!(2401.7), close: dec!(2403.0), open_authoritative: true };
+        {
+            let mut tx = local.begin().await.unwrap();
+            db::upsert_candles_authoritative_batch(&mut tx, &[backfilled]).await.unwrap();
+            tx.commit().await.unwrap();
+        }
+        for (bid, ms, bars) in [
+            (dec!(2403.1), 20_000, vec![broker_bar("M1", m1, dec!(2402.0), dec!(2403.2), dec!(2401.7))]),
+            (dec!(2402.9), 25_000, vec![]),
+        ] {
+            let t = tick_at(bid, ms, bars);
+            cache.set(&t, resolve_tick_time(&t, now));
+            let samples = cache.take_dirty_candles();
+            flush_candles(&target, &cache, &samples, &stats, &gap_fill, &broker_offset, &mut Vec::new()).await;
+            let (o, h, l, c) = row(&local, &symbol, "M1", m1).await.unwrap();
+            assert_eq!((o, h, l, c), (dec!(2402.0), dec!(2403.2), dec!(2401.7), bid), "after the authoritative backfill the open and widened range hold across live flushes with and without bars");
+        }
+
+        for p in [&neon, &local] {
+            sqlx::query(r#"DELETE FROM "Candle" WHERE symbol = $1"#).bind(&symbol).execute(p).await.unwrap();
+        }
+    }
+
+    /// fix/candle-open-seed, second seeding path -- the 10s gap sweep
+    /// (ingest::spawn_gap_sweep -> GapFillTracker::plan_sweep) flat-fills
+    /// every bucket strictly before `now`'s, so a minute whose only real
+    /// ticks arrived in its last second and had not flushed yet when the
+    /// sweep ran just after the boundary gets INSERTED as a flat bar (open =
+    /// previous close) first. With insert-only open, the minute's real flush
+    /// a moment later could never correct it. A tick carrying the broker's
+    /// bar must win that race; a tick without one (an EA before v1.40) still
+    /// loses it -- that is the pre-existing fallback, repaired only by the
+    /// 300s backfill, and is asserted here so the difference is explicit.
+    #[tokio::test]
+    async fn a_gap_sweep_flat_fill_that_beats_the_minutes_first_tick_does_not_own_the_open() {
+        let Some((neon, local)) = pools().await else { return };
+        let stamp = Utc::now().timestamp_millis() % 1_000_000;
+        let with_bars = format!("TESTSWEEPA{stamp}");
+        let without_bars = format!("TESTSWEEPB{stamp}");
+        for p in [&neon, &local] {
+            sqlx::query(r#"DELETE FROM "Candle" WHERE symbol LIKE 'TESTSWEEP%'"#).execute(p).await.unwrap();
+        }
+        let stats = Arc::new(FeedStats::new());
+        let cache = TickCache::new();
+        let gap_fill = GapFillTracker::new();
+        let broker_offset = BrokerOffsetTracker::new();
+        let m0 = Utc.with_ymd_and_hms(2026, 8, 12, 12, 0, 0).unwrap(); // Wednesday
+        let m1 = m0 + Duration::minutes(1);
+        let target = MarketDataPools::new(neon.clone(), Some(local.clone()), WriteMode::Local);
+
+        // 12:00 committed for both symbols, close 2400 (the sweep's carry close).
+        gap_fill.seed(&[(with_bars.clone(), Timeframe::M1, m0, dec!(2400.0)), (without_bars.clone(), Timeframe::M1, m0, dec!(2400.0))]);
+
+        // Sweep at 12:02:00.2: 12:01 is "fully closed" and not yet in the DB -> flat-filled at 2400, exactly as spawn_gap_sweep does.
+        let plan = gap_fill.plan_sweep(m0 + Duration::milliseconds(120_200), 0);
+        let m1_fills: Vec<_> = plan.fills.iter().filter(|f| f.bucket_start == m1).collect();
+        assert_eq!(m1_fills.len(), 2, "the sweep flat-fills 12:01 for both symbols");
+        {
+            let mut tx = local.begin().await.unwrap();
+            db::upsert_candles_batch(&mut tx, &plan.fills).await.unwrap();
+            tx.commit().await.unwrap();
+        }
+        gap_fill.apply_advances(&plan.advances);
+        assert_eq!(m1_row(&local, &with_bars, m1).await, Some((dec!(2400.0), dec!(2400.0), dec!(2400.0), dec!(2400.0))), "flat fill landed first");
+
+        // 12:01's real ticks (first at 12:01:59.5, broker bar open 2402.0) flush a moment after the sweep.
+        let now = Utc::now();
+        let mk = |sym: &str, bars: Vec<protocol::BrokerBar>| Tick { symbol: sym.to_string(), bid: dec!(2402.3), ask: dec!(2402.5), t0: None, clock_offset_ms: None, rtt_ms: None, tick_ms: Some(m1.timestamp_millis() + 59_500), broker_offset_sec: Some(0), bars };
+        let a = mk(&with_bars, vec![broker_bar("M1", m1, dec!(2402.0), dec!(2402.4), dec!(2401.9))]);
+        let b = mk(&without_bars, vec![]);
+        cache.set(&a, resolve_tick_time(&a, now));
+        cache.set(&b, resolve_tick_time(&b, now));
+        let samples = cache.take_dirty_candles();
+        flush_candles(&target, &cache, &samples, &stats, &gap_fill, &broker_offset, &mut Vec::new()).await;
+        assert_eq!(stats.snapshot().local_db_fail, 0);
+
+        assert_eq!(m1_row(&local, &with_bars, m1).await, Some((dec!(2402.0), dec!(2402.4), dec!(2400.0), dec!(2402.3))), "the broker's open replaces the flat fill's (the flat 2400 low is the sweep's, widened only by the backfill -- unchanged)");
+        assert_eq!(m1_row(&local, &without_bars, m1).await, Some((dec!(2400.0), dec!(2402.3), dec!(2400.0), dec!(2402.3))), "without a broker bar the flat fill keeps the open until the backfill: the documented old-EA fallback");
+
+        for p in [&neon, &local] {
+            sqlx::query(r#"DELETE FROM "Candle" WHERE symbol LIKE 'TESTSWEEP%'"#).execute(p).await.unwrap();
         }
     }
 }

@@ -96,6 +96,18 @@ pub struct FeedStats {
     // side of the same signal, fired once rather than per-tick.
     offset_fallback_ticks_total: AtomicU64,
     warned_offset_fallback: AtomicBool,
+    // fix/candle-open-seed -- Tick::bars bookkeeping (see
+    // lib::apply_broker_bars). `applied` climbs by up to nine per flushed
+    // sample on a v1.40+ EA and stays 0 on an older one (the sampled-open
+    // fallback); `mismatch` counts bars whose open time did not equal the
+    // bucket this engine computed for the same tick -- a handful per day is
+    // the EA reading its timeseries a tick after SymbolInfoTick, a steady
+    // climb is a real disagreement about the grid (a wrong BrokerOffsetSec,
+    // a W1/MN1 anchored on a different day) and the log line below names
+    // the first offender once.
+    broker_bars_applied_total: AtomicU64,
+    broker_bars_mismatch_total: AtomicU64,
+    warned_broker_bar_mismatch: AtomicBool,
 }
 
 impl FeedStats {
@@ -123,6 +135,39 @@ impl FeedStats {
             nats_slow_consumer_total: AtomicU64::new(0),
             offset_fallback_ticks_total: AtomicU64::new(0),
             warned_offset_fallback: AtomicBool::new(false),
+            broker_bars_applied_total: AtomicU64::new(0),
+            broker_bars_mismatch_total: AtomicU64::new(0),
+            warned_broker_bar_mismatch: AtomicBool::new(false),
+        }
+    }
+
+    /// fix/candle-open-seed -- see the two counters' own comment. Takes the
+    /// bars and the (already bucketed) updates only to name the first
+    /// mismatch in the one-time log line; the hot path pays two relaxed
+    /// atomics and nothing else once that line has fired.
+    pub fn record_broker_bars(&self, symbol: &str, outcome: crate::BrokerBarsOutcome, bars: &[protocol::BrokerBar], updates: &[crate::CandleUpdate]) {
+        if outcome.applied > 0 {
+            self.broker_bars_applied_total.fetch_add(outcome.applied as u64, Ordering::Relaxed);
+        }
+        if outcome.mismatched == 0 {
+            return;
+        }
+        self.broker_bars_mismatch_total.fetch_add(outcome.mismatched as u64, Ordering::Relaxed);
+        if self
+            .warned_broker_bar_mismatch
+            .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+        {
+            let first = bars.iter().find_map(|b| {
+                let tf = crate::timeframe_from_str(&b.tf)?;
+                let u = updates.iter().find(|u| u.timeframe == tf)?;
+                (u.bucket_start.timestamp_millis() != b.t).then(|| (b.tf.clone(), b.t, u.bucket_start.timestamp_millis()))
+            });
+            tracing::warn!(
+                symbol,
+                first_mismatch = ?first,
+                "a tick's broker bar (Tick::bars) did not line up with this engine's own bucket for the same tick -- that bar is ignored and the sampled open used instead; a climbing broker_bars_mismatch_total in /internal/feed-stats means the EA's BrokerOffsetSec or bar anchoring disagrees with market_data::bucket_start (warned once)"
+            );
         }
     }
 
@@ -298,6 +343,8 @@ impl FeedStats {
                 .then(|| self.last_rtt_ms.load(Ordering::Relaxed)),
             nats_slow_consumer_total: self.nats_slow_consumer_total.load(Ordering::Relaxed),
             offset_fallback_ticks_total: self.offset_fallback_ticks_total.load(Ordering::Relaxed),
+            broker_bars_applied_total: self.broker_bars_applied_total.load(Ordering::Relaxed),
+            broker_bars_mismatch_total: self.broker_bars_mismatch_total.load(Ordering::Relaxed),
         }
     }
 }
@@ -349,6 +396,12 @@ pub struct FeedStatsSnapshot {
     // and climbing value means at least one tick source is falling back
     // to naive-UTC-midnight D1 bucketing right now.
     pub offset_fallback_ticks_total: u64,
+    // fix/candle-open-seed -- see FeedStats' own comment on these. Healthy
+    // on a v1.40+ EA: applied climbing steadily, mismatch flat (or a few per
+    // day). applied == 0 with ticks flowing means the EA predates Tick::bars
+    // and every forming candle's open is still the sampled first tick.
+    pub broker_bars_applied_total: u64,
+    pub broker_bars_mismatch_total: u64,
 }
 
 #[cfg(test)]
@@ -414,6 +467,22 @@ mod tests {
         stats.record_nats_slow_consumer();
         stats.record_nats_slow_consumer();
         assert_eq!(stats.snapshot().nats_slow_consumer_total, 2);
+    }
+
+    // fix/candle-open-seed -- the two Tick::bars counters, and the once-only
+    // mismatch warning (the flag flips on the first mismatch and never again).
+    #[test]
+    fn broker_bar_counters_accumulate_and_the_mismatch_warning_fires_once() {
+        let stats = FeedStats::new();
+        let snap = stats.snapshot();
+        assert_eq!((snap.broker_bars_applied_total, snap.broker_bars_mismatch_total), (0, 0));
+        stats.record_broker_bars("XAUUSD", crate::BrokerBarsOutcome { applied: 9, mismatched: 0 }, &[], &[]);
+        assert!(!stats.warned_broker_bar_mismatch.load(Ordering::Relaxed), "no mismatch, no warning");
+        stats.record_broker_bars("XAUUSD", crate::BrokerBarsOutcome { applied: 8, mismatched: 1 }, &[], &[]);
+        assert!(stats.warned_broker_bar_mismatch.load(Ordering::Relaxed));
+        stats.record_broker_bars("XAUUSD", crate::BrokerBarsOutcome { applied: 0, mismatched: 2 }, &[], &[]);
+        let snap = stats.snapshot();
+        assert_eq!((snap.broker_bars_applied_total, snap.broker_bars_mismatch_total), (17, 3));
     }
 
     #[test]

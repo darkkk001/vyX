@@ -72,6 +72,7 @@ mod tests {
             rtt_ms: None,
             tick_ms: None,
             broker_offset_sec: offset,
+            bars: Vec::new(),
         }
     }
 

@@ -6,7 +6,7 @@
 //! ../../docs/market-data.md §2).
 
 use chrono::{DateTime, Datelike, TimeZone, Utc};
-use protocol::Tick;
+use protocol::{BrokerBar, Tick};
 
 pub mod alerts;
 pub mod broker_offset;
@@ -252,6 +252,14 @@ pub struct CandleUpdate {
     pub high: rust_decimal::Decimal,
     pub low: rust_decimal::Decimal,
     pub close: rust_decimal::Decimal,
+    /// fix/candle-open-seed -- true when `open` is the broker's own bar open
+    /// for this bucket (`Tick::bars`, matched by `apply_broker_bars`), not
+    /// merely the first tick this engine happened to receive. The upsert
+    /// then REPLACES the stored open (db::upsert_candles_batch's second
+    /// statement) instead of the insert-only rule that let whichever write
+    /// created the row -- a 50ms-late sampled tick, or a gap-sweep flat fill
+    /// racing the first real tick -- fix the open for the bar's whole life.
+    pub open_authoritative: bool,
 }
 
 /// Given a tick and "now", produces the candle upsert for every timeframe.
@@ -289,8 +297,74 @@ pub fn candle_updates_for_tick_ohlc(
             high,
             low,
             close: tick.bid,
+            open_authoritative: false,
         })
         .collect()
+}
+
+/// What `apply_broker_bars` did with one tick's `Tick::bars` -- counted into
+/// FeedStats by the flush so a sender whose bars never line up with this
+/// engine's buckets (a wrong BrokerOffsetSec, a W1/MN1 anchored on a
+/// different day) is visible in /internal/feed-stats instead of silently
+/// falling back to the sampled open.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct BrokerBarsOutcome {
+    pub applied: u32,
+    pub mismatched: u32,
+}
+
+/// fix/candle-open-seed -- overlays the broker's own forming bars (`Tick::bars`,
+/// read by the EA from MT5's timeseries in the same pass as the tick) onto the
+/// per-timeframe updates `candle_updates_for_tick_ohlc` built from this
+/// engine's sampled ticks.
+///
+/// Why: the EA polls SymbolInfoTick every PushMinIntervalMs (50ms) and only
+/// sees the latest tick of each window, so the first tick this engine gets
+/// after a bar boundary is not the bar's first tick -- the bucket's insert-
+/// only open was seeded from a price up to a window late, and the forming
+/// candle's open disagreed with the broker's chart until the 300s
+/// /internal/history backfill happened to overwrite it. The broker's
+/// timeseries already holds the true open (and true high/low, which the same
+/// sampling understates), so for each bar whose timeframe this engine buckets
+/// AND whose open time equals the bucket this engine computed for the tick:
+///   open  = bar.o, flagged `open_authoritative` (the upsert replaces it),
+///   high  = max(sampled high, bar.h), low = min(sampled low, bar.l).
+/// Close stays the tick's bid -- it IS the latest price either way.
+///
+/// A bar whose `t` differs from this engine's bucket is NOT applied (and is
+/// counted): the two disagreeing is exactly the signal that the sender's UTC
+/// conversion or bar anchoring differs from `bucket_start`, and writing the
+/// broker's value into the wrong bucket would be worse than the sampled open.
+/// Y1 (no MT5 period) and any unknown timeframe name are left untouched.
+/// Empty `bars` (an EA build before v1.40) is a no-op: today's behavior.
+pub fn apply_broker_bars(updates: &mut [CandleUpdate], bars: &[BrokerBar]) -> BrokerBarsOutcome {
+    let mut outcome = BrokerBarsOutcome::default();
+    for bar in bars {
+        let Some(tf) = timeframe_from_str(&bar.tf) else {
+            continue;
+        };
+        let Some(update) = updates.iter_mut().find(|u| u.timeframe == tf) else {
+            continue;
+        };
+        // A bar the broker has not actually formed yet (CopyRates returning a
+        // zeroed struct) or an inverted range can't be a real bar; treat it
+        // like a mismatch rather than seeding a zero open.
+        let plausible = bar.o > rust_decimal::Decimal::ZERO && bar.l > rust_decimal::Decimal::ZERO && bar.h >= bar.l;
+        if !plausible || update.bucket_start.timestamp_millis() != bar.t {
+            outcome.mismatched += 1;
+            continue;
+        }
+        update.open = bar.o;
+        update.open_authoritative = true;
+        if bar.h > update.high {
+            update.high = bar.h;
+        }
+        if bar.l < update.low {
+            update.low = bar.l;
+        }
+        outcome.applied += 1;
+    }
+    outcome
 }
 
 #[cfg(test)]
@@ -322,6 +396,111 @@ mod tests {
 
     use super::*;
     use chrono::Weekday;
+
+    // fix/candle-open-seed -- apply_broker_bars: the broker's bar-0 snapshot
+    // overlays the sampled update only where its open time IS the bucket this
+    // engine computed for the same tick.
+    fn bars_tick(bid: rust_decimal::Decimal, bars: Vec<BrokerBar>) -> Tick {
+        Tick { symbol: "XAUUSD".into(), bid, ask: bid + rust_decimal_macros::dec!(0.2), t0: None, clock_offset_ms: None, rtt_ms: None, tick_ms: None, broker_offset_sec: Some(10_800), bars }
+    }
+
+    fn bar(tf: &str, t: DateTime<Utc>, o: &str, h: &str, l: &str) -> BrokerBar {
+        BrokerBar { tf: tf.into(), t: t.timestamp_millis(), o: o.parse().unwrap(), h: h.parse().unwrap(), l: l.parse().unwrap() }
+    }
+
+    fn by_tf(updates: &[CandleUpdate], tf: Timeframe) -> &CandleUpdate {
+        updates.iter().find(|u| u.timeframe == tf).unwrap()
+    }
+
+    #[test]
+    fn a_matching_broker_bar_replaces_the_sampled_open_and_only_widens_high_low() {
+        use rust_decimal_macros::dec;
+        let at = Utc.with_ymd_and_hms(2026, 8, 12, 12, 1, 0).unwrap() + chrono::Duration::milliseconds(40);
+        let m1 = Utc.with_ymd_and_hms(2026, 8, 12, 12, 1, 0).unwrap();
+        // The sampled window: first pushed tick 2402.5 (MT5 actually opened at 2402.0, 40ms earlier).
+        let tick = bars_tick(dec!(2402.5), vec![bar("M1", m1, "2402.0", "2402.5", "2401.8")]);
+        let mut updates = candle_updates_for_tick_ohlc(&tick, at, 10_800, dec!(2402.5), dec!(2402.7), dec!(2402.5));
+        let outcome = apply_broker_bars(&mut updates, &tick.bars);
+        assert_eq!(outcome, BrokerBarsOutcome { applied: 1, mismatched: 0 });
+        let u = by_tf(&updates, Timeframe::M1);
+        assert_eq!((u.open, u.high, u.low, u.close), (dec!(2402.0), dec!(2402.7), dec!(2401.8), dec!(2402.5)), "open = broker's; high keeps the wider sampled 2402.7; low takes the broker's 2401.8; close is the tick");
+        assert!(u.open_authoritative);
+        // Nothing else was touched: M5 keeps the sampled open, un-flagged.
+        let m5 = by_tf(&updates, Timeframe::M5);
+        assert_eq!(m5.open, dec!(2402.5));
+        assert!(!m5.open_authoritative);
+    }
+
+    #[test]
+    fn a_broker_bar_whose_time_is_not_this_engines_bucket_is_counted_and_ignored() {
+        use rust_decimal_macros::dec;
+        let at = Utc.with_ymd_and_hms(2026, 8, 12, 12, 1, 0).unwrap() + chrono::Duration::milliseconds(40);
+        let stale_m1 = Utc.with_ymd_and_hms(2026, 8, 12, 12, 0, 0).unwrap(); // the EA read bar 0 before its 12:01 tick was applied
+        let tick = bars_tick(dec!(2402.5), vec![bar("M1", stale_m1, "2399.0", "2402.6", "2398.0")]);
+        let mut updates = candle_updates_for_tick_ohlc(&tick, at, 10_800, dec!(2402.5), dec!(2402.5), dec!(2402.5));
+        let outcome = apply_broker_bars(&mut updates, &tick.bars);
+        assert_eq!(outcome, BrokerBarsOutcome { applied: 0, mismatched: 1 });
+        let u = by_tf(&updates, Timeframe::M1);
+        assert_eq!((u.open, u.high, u.low), (dec!(2402.5), dec!(2402.5), dec!(2402.5)), "a 12:00 bar must never be written into the 12:01 bucket");
+        assert!(!u.open_authoritative);
+    }
+
+    #[test]
+    fn an_unknown_timeframe_a_zero_bar_and_the_y1_bucket_are_left_alone() {
+        use rust_decimal_macros::dec;
+        let at = Utc.with_ymd_and_hms(2026, 8, 12, 12, 1, 0).unwrap();
+        let tick = bars_tick(dec!(2402.5), vec![
+            bar("M2", at, "1", "1", "1"),          // not a timeframe this engine buckets
+            bar("M1", at, "0", "0", "0"),          // CopyRates returned a zeroed struct
+            bar("M5", at, "2402.0", "2401.0", "2402.5"), // inverted range (h < l), and 12:01 is not an M5 bucket either
+        ]);
+        let mut updates = candle_updates_for_tick_ohlc(&tick, at, 10_800, dec!(2402.5), dec!(2402.5), dec!(2402.5));
+        let outcome = apply_broker_bars(&mut updates, &tick.bars);
+        assert_eq!(outcome, BrokerBarsOutcome { applied: 0, mismatched: 2 }, "the zero bar and the inverted/misaligned M5 count; the unknown name is silently skipped");
+        assert!(updates.iter().all(|u| !u.open_authoritative && u.open == dec!(2402.5)));
+        assert_eq!(by_tf(&updates, Timeframe::Y1).open, dec!(2402.5), "Y1 has no MT5 period: always the sampled open");
+    }
+
+    #[test]
+    fn a_full_pepperstone_utc_plus_3_snapshot_lines_up_with_every_bucket_this_engine_computes() {
+        use rust_decimal_macros::dec;
+        // 2026-08-12 (Wed) 22:30:15 UTC = 01:30:15 server (UTC+3). MT5's own bar-0
+        // open times (server) -> UTC: M1 01:30 -> 22:30; M5 01:30 -> 22:30;
+        // M15 01:30 -> 22:30; M30 01:30 -> 22:30; H1 01:00 -> 22:00; H4 00:00
+        // -> 21:00; D1 Thu 13 00:00 -> Wed 12 21:00; W1 Mon 10 00:00 -> Sun 9
+        // 21:00; MN1 Aug 1 00:00 -> Jul 31 21:00. Exactly what the EA sends as
+        // (MqlRates.time - BrokerOffsetSec) * 1000, and exactly what
+        // bucket_start must agree with for every bar to be applied.
+        let at = Utc.with_ymd_and_hms(2026, 8, 12, 22, 30, 15).unwrap();
+        let utc = |d: u32, h: u32, m: u32| Utc.with_ymd_and_hms(2026, 8, d, h, m, 0).unwrap();
+        let bars = vec![
+            bar("M1", utc(12, 22, 30), "1", "2", "1"),
+            bar("M5", utc(12, 22, 30), "1", "2", "1"),
+            bar("M15", utc(12, 22, 30), "1", "2", "1"),
+            bar("M30", utc(12, 22, 30), "1", "2", "1"),
+            bar("H1", utc(12, 22, 0), "1", "2", "1"),
+            bar("H4", utc(12, 21, 0), "1", "2", "1"),
+            bar("D1", utc(12, 21, 0), "1", "2", "1"),
+            bar("W1", utc(9, 21, 0), "1", "2", "1"),
+            bar("MN1", Utc.with_ymd_and_hms(2026, 7, 31, 21, 0, 0).unwrap(), "1", "2", "1"),
+        ];
+        let tick = bars_tick(dec!(1.5), bars);
+        let mut updates = candle_updates_for_tick_ohlc(&tick, at, 10_800, dec!(1.5), dec!(1.5), dec!(1.5));
+        let outcome = apply_broker_bars(&mut updates, &tick.bars);
+        assert_eq!(outcome, BrokerBarsOutcome { applied: 9, mismatched: 0 }, "every MT5-served timeframe lines up with this engine's broker-offset bucketing");
+        assert_eq!(updates.iter().filter(|u| u.open_authoritative).count(), 9);
+        assert!(!by_tf(&updates, Timeframe::Y1).open_authoritative);
+    }
+
+    #[test]
+    fn no_bars_is_a_no_op_the_old_ea_fallback() {
+        use rust_decimal_macros::dec;
+        let at = Utc.with_ymd_and_hms(2026, 8, 12, 12, 1, 0).unwrap();
+        let tick = bars_tick(dec!(2402.5), vec![]);
+        let mut updates = candle_updates_for_tick_ohlc(&tick, at, 0, dec!(2402.5), dec!(2402.5), dec!(2402.5));
+        assert_eq!(apply_broker_bars(&mut updates, &tick.bars), BrokerBarsOutcome::default());
+        assert!(updates.iter().all(|u| !u.open_authoritative));
+    }
 
     #[test]
     fn m1_floors_to_the_minute() {
@@ -372,7 +551,7 @@ mod tests {
     fn candle_updates_for_tick_covers_every_timeframe() {
         use rust_decimal_macros::dec;
 
-        let tick = Tick { symbol: "EURUSD".into(), bid: dec!(1.10000), ask: dec!(1.10020), t0: None, clock_offset_ms: None, rtt_ms: None, tick_ms: None, broker_offset_sec: None };
+        let tick = Tick { symbol: "EURUSD".into(), bid: dec!(1.10000), ask: dec!(1.10020), t0: None, clock_offset_ms: None, rtt_ms: None, tick_ms: None, broker_offset_sec: None, bars: Vec::new() };
         let now = Utc.with_ymd_and_hms(2026, 8, 13, 10, 30, 45).unwrap();
         let updates = candle_updates_for_tick(&tick, now, 0);
 
@@ -390,7 +569,7 @@ mod tests {
     fn candle_updates_for_tick_bucket_starts_match_bucket_start_directly() {
         use rust_decimal_macros::dec;
 
-        let tick = Tick { symbol: "EURUSD".into(), bid: dec!(1.10000), ask: dec!(1.10020), t0: None, clock_offset_ms: None, rtt_ms: None, tick_ms: None, broker_offset_sec: None };
+        let tick = Tick { symbol: "EURUSD".into(), bid: dec!(1.10000), ask: dec!(1.10020), t0: None, clock_offset_ms: None, rtt_ms: None, tick_ms: None, broker_offset_sec: None, bars: Vec::new() };
         let now = Utc.with_ymd_and_hms(2026, 8, 13, 10, 30, 45).unwrap();
         let updates = candle_updates_for_tick(&tick, now, 0);
 

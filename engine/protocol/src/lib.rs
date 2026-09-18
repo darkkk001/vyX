@@ -104,6 +104,47 @@ pub struct Tick {
     // today's behavior, if none has ever arrived).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub broker_offset_sec: Option<i64>,
+    // fix/candle-open-seed -- the broker's OWN currently-forming bar, per
+    // timeframe, as of this tick (mt5-ea/VyXTraderPriceFeed.mq5's
+    // CopyRates(sym, period, 0, 1) read in the same pass as SymbolInfoTick).
+    // The EA polls SymbolInfoTick every PushMinIntervalMs and only ever sees
+    // the LATEST tick of that window, so the first tick the engine receives
+    // after a bar boundary is not the bar's true first tick -- the engine's
+    // "open = first tick seen" was therefore a 50ms-late sample, not the
+    // price MT5 opened the bar at, and every forming candle's open disagreed
+    // with the broker's chart by whatever the price moved in that window.
+    // MT5 already knows the real open (and the real high/low, which the same
+    // sampling understates); carrying them here lets market_data seed the
+    // bucket's open from the broker's value (authoritative, like the
+    // /internal/history backfill) and widen high/low to the broker's, on
+    // every flush, instead of only when the 300s backfill happens to run.
+    //
+    // One entry per timeframe MT5 can serve (M1..MN1; Y1 has no MT5 period).
+    // Empty for an EA build that predates the field (serde default) -- the
+    // engine then falls back to the sampled open exactly as before, so an
+    // un-upgraded EA gets today's behavior, never a failure. Serialized as-is
+    // onto NATS/the price WebSocket, so a client rolling its own forming
+    // candle from ticks can seed that candle's open from the broker too.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bars: Vec<BrokerBar>,
+}
+
+/// One timeframe's forming bar on the broker's own chart -- see
+/// `Tick::bars`. Field names are deliberately terse: this travels on every
+/// tick, nine times over, to the engine AND to every WebSocket client.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrokerBar {
+    /// Timeframe name as market_data::timeframe_from_str reads it
+    /// ("M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1", "MN1").
+    pub tf: String,
+    /// The bar's open time as UTC epoch ms (the EA converts MqlRates.time
+    /// from broker-server time with the same BrokerOffsetSec it applies to
+    /// tick_ms). The engine only applies a bar whose `t` equals the bucket
+    /// it computes for the tick itself -- a mismatch is counted, not used.
+    pub t: i64,
+    pub o: Decimal,
+    pub h: Decimal,
+    pub l: Decimal,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

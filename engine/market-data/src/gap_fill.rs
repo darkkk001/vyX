@@ -270,6 +270,7 @@ impl GapFillTracker {
                         high: carry_close,
                         low: carry_close,
                         close: carry_close,
+                        open_authoritative: false,
                     });
                 }
                 cursor += Duration::milliseconds(step_ms);
@@ -358,6 +359,7 @@ impl GapFillTracker {
                         high: carry_close,
                         low: carry_close,
                         close: carry_close,
+                        open_authoritative: false,
                     });
                 }
                 advanced_to = cursor;
@@ -441,7 +443,7 @@ mod tests {
     use rust_decimal_macros::dec;
 
     fn update(symbol: &str, tf: Timeframe, bucket_start: DateTime<Utc>, close: Decimal) -> CandleUpdate {
-        CandleUpdate { symbol: symbol.to_string(), timeframe: tf, bucket_start, open: close, high: close, low: close, close }
+        CandleUpdate { symbol: symbol.to_string(), timeframe: tf, bucket_start, open: close, high: close, low: close, close, open_authoritative: false }
     }
 
     #[test]

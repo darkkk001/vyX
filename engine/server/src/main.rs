@@ -821,6 +821,9 @@ async fn ingest_history(
             high: bar.high,
             low: bar.low,
             close: bar.close,
+            // Written via upsert_candles_authoritative_batch below, which
+            // replaces every field regardless of this flag.
+            open_authoritative: true,
         };
         gap_fills.extend(state.gap_fill.fill_gaps_and_record(&update));
         authoritative.push(update);
