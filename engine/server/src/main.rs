@@ -1360,6 +1360,11 @@ async fn main() {
     // the CANDLE_M1_RETENTION_DAYS/CANDLE_M5_RETENTION_DAYS env vars this
     // reads (defaults 30/180).
     market_data::retention::spawn_candle_retention(market_pools.clone());
+    // fix/deep-backfill-full-history -- one-off cleanup of the phantom
+    // hh:mm:01 rows pre-v1.39 EA backfills left beside the real buckets
+    // (see market_data::retention::sweep_offgrid_candles). Idempotent and
+    // a no-op DELETE-wise on a clean store, so it simply runs every boot.
+    market_data::retention::spawn_offgrid_sweep(market_pools.clone());
 
     // Phase 1 trust pack §3 -- see market_data::alerts's own module doc.
     // Loaded once here (every currently ACTIVE alert), then kept current
