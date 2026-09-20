@@ -289,7 +289,7 @@ async function mirrorFillForRule(db: Db, rule: MirrorRule, source: MirrorSourceP
     const [targetAccount, brokerSymbol, broker] = await Promise.all([
       db.account.findUnique({
         where: { id: rule.targetAccountId },
-        include: { group: { select: { groupType: true, marginCallLevel: true, tradingHaltedAt: true } } },
+        include: { group: { select: { category: true, marginCallLevel: true, tradingHaltedAt: true } } },
       }),
       db.brokerSymbol.findFirst({
         where: { brokerId: rule.brokerId, symbolId: source.symbolId, enabled: true },
@@ -400,7 +400,7 @@ async function mirrorFillForRule(db: Db, rule: MirrorRule, source: MirrorSourceP
       return;
     }
 
-    const bookType = targetAccount.group ? resolveBookType(targetAccount.group.groupType) : brokerSymbol.defaultBookType;
+    const bookType = targetAccount.group ? resolveBookType(targetAccount.group.category) : brokerSymbol.defaultBookType;
 
     const created = await withTx(db, async (tx) => {
       const order = await tx.order.create({

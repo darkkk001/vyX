@@ -223,7 +223,7 @@ async function flushDealingQueueToMarket(
     logSpreadWarning({ accountId: order.accountId, symbolId: order.symbolId, brokerId }, pricing.warning);
     const liveRef = order.side === "BUY" ? livePrice.ask : livePrice.bid;
     const fillPrice = applySpreadMarkup({ side: order.side, price: liveRef, spreadMarkup: pricing.spreadMarkup, digits: order.symbol.digits });
-    const bookType = order.account.group ? resolveBookType(order.account.group.groupType) : brokerSymbol.defaultBookType;
+    const bookType = order.account.group ? resolveBookType(order.account.group.category) : brokerSymbol.defaultBookType;
 
     try {
       const position = await prisma.$transaction(async (tx) => {

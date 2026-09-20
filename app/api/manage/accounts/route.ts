@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { hasPermission } from "@/lib/permissions";
 import { provisionAccount } from "@/lib/account-provisioning";
+import { AccountStructureError } from "@/lib/account-structure";
 
 async function requireManager() {
   const session = await getAdminSession();
@@ -248,23 +249,35 @@ async function createAccount(request: NextRequest, session: NonNullable<Awaited<
 
   const passwordHash = await bcrypt.hash(password, 10);
 
-  const result = await provisionAccount({
-    brokerId,
-    fullName,
-    email,
-    passwordHash,
-    accountMode,
-    accountTypeId,
-    currency,
-    leverage,
-    groupId: group?.id ?? null,
-    initialBalance,
-    country,
-    phone,
-    dateOfBirth,
-    clientId: null,
-    createdByAdminId: session.adminId,
-  });
+  // provisionAccount runs assertAccountStructure for every creation path
+  // (mode vs the group's restriction, and the type-vs-group routing
+  // match) -- turn its refusal into this route's own 400 rather than
+  // letting it surface as a 500.
+  let result: Awaited<ReturnType<typeof provisionAccount>>;
+  try {
+    result = await provisionAccount({
+      brokerId,
+      fullName,
+      email,
+      passwordHash,
+      accountMode,
+      accountTypeId,
+      currency,
+      leverage,
+      groupId: group?.id ?? null,
+      initialBalance,
+      country,
+      phone,
+      dateOfBirth,
+      clientId: null,
+      createdByAdminId: session.adminId,
+    });
+  } catch (error) {
+    if (error instanceof AccountStructureError) {
+      return NextResponse.json({ error: error.message, code: error.code }, { status: 400 });
+    }
+    throw error;
+  }
 
   return NextResponse.json(
     {

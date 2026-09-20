@@ -1,19 +1,26 @@
-import { Prisma, GroupType, BookType } from "@prisma/client";
+import { Prisma, RoutingCategory, BookType } from "@prisma/client";
 import type { OrderSide } from "@/lib/trading";
 
 type Tx = Prisma.TransactionClient;
 
-// See GroupType's own schema comment -- LP hedges a real LP (once one
-// exists), everything else stays in the broker's own book. Ungrouped
+// See RoutingCategory's own schema comment. Takes the ROUTING axis and
+// only that -- an account's mode (LIVE/DEMO) never reaches here, because
+// where the risk goes is not a function of whose money it is. Ungrouped
 // accounts never call this -- callers fall back to
 // BrokerSymbol.defaultBookType directly instead, unchanged from before
 // this feature existed.
-export function resolveBookType(groupType: GroupType): BookType {
-  // LP hedges a real LP; COVERAGE is the broker's own B-book hedge account
-  // (the offsetting leg of a booked client position) -- both are real
-  // market-facing exposure, so both book A_BOOK. Everything else stays
-  // B_BOOK (the broker's own book).
-  return groupType === "LP" || groupType === "COVERAGE" ? "A_BOOK" : "B_BOOK";
+//
+// Stage 1 of docs/ACCOUNT-STRUCTURE-MIGRATION.md changed this function's
+// INPUT, not its output: A_BOOK/COVERAGE book A exactly as LP/COVERAGE did
+// before, and every other category books B exactly as DEALING/DEMO did.
+// Every existing row maps to the same BookType it did before the
+// migration -- that equivalence is asserted in lib/group-pricing.test.ts.
+export function resolveBookType(category: RoutingCategory): BookType {
+  // A_BOOK bridges to a real liquidity provider; COVERAGE is the broker's
+  // own B-book hedge account (the offsetting leg of a booked client
+  // position) -- both are real market-facing exposure, so both book
+  // A_BOOK. B_BOOK / DEALING / REVERSAL all stay in the broker's own book.
+  return category === "A_BOOK" || category === "COVERAGE" ? "A_BOOK" : "B_BOOK";
 }
 
 // 1 pip in price units for a symbol with this many decimal digits -- same

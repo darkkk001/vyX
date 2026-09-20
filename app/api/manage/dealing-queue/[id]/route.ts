@@ -318,7 +318,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     return NextResponse.json({ error: "no live price available to accept at market" }, { status: 409 });
   }
   const markedUpFillPrice = applySpreadMarkup({ side: order.side, price: acceptBase, spreadMarkup: pricing.spreadMarkup, digits: order.symbol.digits });
-  const bookType = order.account.group ? resolveBookType(order.account.group.groupType) : brokerSymbol.defaultBookType;
+  const bookType = order.account.group ? resolveBookType(order.account.group.category) : brokerSymbol.defaultBookType;
 
   try {
     const result = await prisma.$transaction(async (tx) => {

@@ -1,6 +1,7 @@
 import "server-only";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { assertAccountStructure } from "@/lib/account-structure";
 
 // Extracted out of app/api/manage/accounts/route.ts's own createAccount
 // (Manager's Add Account form) -- same numeric-safe sequential account
@@ -45,11 +46,36 @@ export type ProvisionAccountParams = {
   // own self-service Demo creation -- AuditLog.actorAdminId is nullable
   // for exactly this case.
   createdByAdminId: string | null;
+  // Only lib/coverage.ts sets this, and only for the broker's own hedge
+  // account -- the one account allowed into a COVERAGE group. Every other
+  // caller leaves it unset and is refused there.
+  allowCoverage?: boolean;
 };
 
 const MAX_ATTEMPTS = 5;
 
 export async function provisionAccount(params: ProvisionAccountParams) {
+  // Every account in this app is created through this function (Manager's
+  // Add Account, the Client Portal's demo self-signup, live-account-request
+  // approval, coverage provisioning), which makes it the one place the
+  // mode-vs-group rules have to hold. Throws AccountStructureError; the
+  // routes turn that into their own 400. See lib/account-structure.ts for
+  // what is and is not a violation -- notably a DEMO account in a B_BOOK or
+  // DEALING group is fine, and is exactly what the portal signup creates.
+  // The account TYPE is deliberately not checked: it is the client-facing
+  // spread tier and carries no routing, so any type is valid with any group.
+  const group = params.groupId
+    ? await prisma.group.findUnique({
+        where: { id: params.groupId },
+        select: { id: true, category: true, modeRestriction: true },
+      })
+    : null;
+  assertAccountStructure({
+    accountMode: params.accountMode,
+    group,
+    allowCoverage: params.allowCoverage === true,
+  });
+
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     const accountNumber = await allocateAccountNumber();
     try {

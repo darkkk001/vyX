@@ -6,6 +6,7 @@ import { forbidUnlessBrokerAdminOrPermission } from "@/lib/permissions";
 import { generateTemporaryPassword } from "@/lib/passwords";
 import { hashPassword } from "@/lib/client-auth";
 import { provisionAccount } from "@/lib/account-provisioning";
+import { AccountStructureError } from "@/lib/account-structure";
 import { stashRevealedCredentials } from "@/lib/live-account-credentials";
 import { sendBrokerEmail } from "@/lib/email/adapter";
 import { renderBrokerEmail } from "@/lib/email/template";
@@ -85,23 +86,35 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   const password = generateTemporaryPassword();
   const passwordHash = await hashPassword(password);
 
-  const account = await provisionAccount({
-    brokerId,
-    fullName: client.fullName,
-    email: client.email,
-    passwordHash,
-    accountMode: "LIVE",
-    accountTypeId: existing.accountTypeId,
-    currency: broker.defaultAccountCurrency,
-    leverage: defaultGroup?.leverage ?? broker.defaultAccountLeverage,
-    groupId: defaultGroup?.id ?? null,
-    initialBalance: new Prisma.Decimal(0),
-    country: client.country,
-    phone: client.phone,
-    dateOfBirth: client.dateOfBirth,
-    clientId: client.id,
-    createdByAdminId: session!.adminId,
-  });
+  // provisionAccount runs assertAccountStructure for every creation path
+  // (mode vs the group's restriction, and the type-vs-group routing
+  // match) -- turn its refusal into this route's own 400 rather than
+  // letting it surface as a 500.
+  let account: Awaited<ReturnType<typeof provisionAccount>>;
+  try {
+    account = await provisionAccount({
+      brokerId,
+      fullName: client.fullName,
+      email: client.email,
+      passwordHash,
+      accountMode: "LIVE",
+      accountTypeId: existing.accountTypeId,
+      currency: broker.defaultAccountCurrency,
+      leverage: defaultGroup?.leverage ?? broker.defaultAccountLeverage,
+      groupId: defaultGroup?.id ?? null,
+      initialBalance: new Prisma.Decimal(0),
+      country: client.country,
+      phone: client.phone,
+      dateOfBirth: client.dateOfBirth,
+      clientId: client.id,
+      createdByAdminId: session!.adminId,
+    });
+  } catch (error) {
+    if (error instanceof AccountStructureError) {
+      return NextResponse.json({ error: error.message, code: error.code }, { status: 400 });
+    }
+    throw error;
+  }
 
   const updated = await prisma.$transaction(async (tx) => {
     const r = await tx.liveAccountRequest.update({

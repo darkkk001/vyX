@@ -26,7 +26,7 @@ export const COVERAGE_GROUP_NAME = "Dealer Coverage (system)";
 
 async function ensureCoverageGroup(brokerId: string): Promise<{ id: string; leverage: number }> {
   const existing = await prisma.group.findFirst({
-    where: { brokerId, groupType: "COVERAGE" },
+    where: { brokerId, category: "COVERAGE" },
     select: { id: true, leverage: true },
   });
   if (existing) return existing;
@@ -35,6 +35,11 @@ async function ensureCoverageGroup(brokerId: string): Promise<{ id: string; leve
       data: {
         brokerId,
         name: COVERAGE_GROUP_NAME,
+        // Both axes, explicitly: COVERAGE routing (books A_BOOK -- a
+        // coverage position is the broker's real market-facing exposure)
+        // and live money only. groupType stays as this release's shadow.
+        category: "COVERAGE",
+        modeRestriction: "LIVE_ONLY",
         groupType: "COVERAGE",
         // High leverage: the coverage account is the broker's own hedge
         // book, never margin-called the way a client is -- a low cap would
@@ -49,7 +54,7 @@ async function ensureCoverageGroup(brokerId: string): Promise<{ id: string; leve
     // Lost a create race on the unique [brokerId, name] -- re-read the
     // winner.
     const found = await prisma.group.findFirst({
-      where: { brokerId, groupType: "COVERAGE" },
+      where: { brokerId, category: "COVERAGE" },
       select: { id: true, leverage: true },
     });
     if (found) return found;
@@ -95,6 +100,8 @@ export async function ensureCoverageAccount(
     passwordHash,
     accountMode: "LIVE",
     accountTypeId: null,
+    // The one caller permitted into a COVERAGE group.
+    allowCoverage: true,
     currency: "USD",
     leverage: group.leverage,
     groupId: group.id,

@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import { Prisma, GroupType, GroupTier, GroupDealingMode } from "@prisma/client";
+import { Prisma, GroupTier, GroupDealingMode } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
+import { resolveGroupRouting, legacyGroupTypeFor } from "@/lib/group-routing";
 
-const GROUP_TYPES: GroupType[] = ["LP", "DEALING", "DEMO"];
 const GROUP_TIERS: GroupTier[] = ["STANDARD", "PRO", "ECN", "ZERO"];
 const GROUP_DEALING_MODES: GroupDealingMode[] = ["INHERIT", "AUTO", "MANUAL"];
 
@@ -55,7 +55,12 @@ export async function GET() {
       tradingHalted: g.tradingHaltedAt != null,
       swapFree: g.swapFree,
       forceDealingMode: g.forceDealingMode,
-      groupType: g.groupType,
+      category: g.category,
+      modeRestriction: g.modeRestriction,
+      // Derived, not the stored shadow column, so a 1.0.9 backoffice sees
+      // the same thing a 1.0.10 one does even for a group whose category
+      // was last written by the new UI.
+      groupType: legacyGroupTypeFor(g),
       dealingMode: g.dealingMode,
       tier: g.tier,
       hasMirrorRule: mirrorSourceGroupIds.has(g.id),
@@ -113,9 +118,18 @@ export async function POST(request: NextRequest) {
   // the hardcoded false floor" (nothing below Group in the chain).
   const swapFree: boolean | null = body?.swapFree === null ? null : body?.swapFree === true;
   const forceDealingMode = body?.forceDealingMode === true;
-  const groupType = GROUP_TYPES.includes(body?.groupType) ? (body.groupType as GroupType) : "DEALING";
   const dealingMode = GROUP_DEALING_MODES.includes(body?.dealingMode) ? (body.dealingMode as GroupDealingMode) : "INHERIT";
   const tier = GROUP_TIERS.includes(body?.tier) ? (body.tier as GroupTier) : "STANDARD";
+  // Two axes since Stage 1 of docs/ACCOUNT-STRUCTURE-MIGRATION.md (§0.1):
+  // `category` is ROUTING (where the order goes, who holds the risk) and
+  // `modeRestriction` is which account MODES may sit in this group. A body
+  // carrying only the legacy `groupType` is backoffice 1.0.9 and goes
+  // through the shim in lib/group-routing.ts. groupType itself is still
+  // written, as this release's shadow column for rollback and for the
+  // dealing-desk readers that have not moved yet.
+  const routing = resolveGroupRouting(body, dealingMode);
+  const { category, modeRestriction } = routing;
+  const groupType = legacyGroupTypeFor(routing);
 
   try {
     const group = await prisma.$transaction(async (tx) => {
@@ -125,7 +139,7 @@ export async function POST(request: NextRequest) {
         await tx.group.updateMany({ where: { brokerId, isDefault: true }, data: { isDefault: false } });
       }
       const created = await tx.group.create({
-        data: { brokerId, name, leverage, marginCallLevel, stopOutLevel, isDefault, maxLotSize, tradingRestriction, swapFree, forceDealingMode, groupType, dealingMode, tier },
+        data: { brokerId, name, leverage, marginCallLevel, stopOutLevel, isDefault, maxLotSize, tradingRestriction, swapFree, forceDealingMode, category, modeRestriction, groupType, dealingMode, tier },
       });
       await tx.auditLog.create({
         data: {
@@ -144,6 +158,8 @@ export async function POST(request: NextRequest) {
             tradingRestriction,
             swapFree,
             forceDealingMode,
+            category,
+            modeRestriction,
             groupType,
             dealingMode,
             tier,
@@ -165,6 +181,8 @@ export async function POST(request: NextRequest) {
         tradingRestriction: group.tradingRestriction,
         swapFree: group.swapFree,
         forceDealingMode: group.forceDealingMode,
+        category: group.category,
+        modeRestriction: group.modeRestriction,
         groupType: group.groupType,
         dealingMode: group.dealingMode,
         tier: group.tier,

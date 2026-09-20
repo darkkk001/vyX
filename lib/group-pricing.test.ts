@@ -13,10 +13,36 @@ import { resolveBookType, pipSize, applySpreadMarkup, resolveSymbolPricing, char
 const D = (v: string | number) => new Prisma.Decimal(v);
 
 describe("resolveBookType", () => {
-  it("routes an LP group to A_BOOK, everything else to B_BOOK", () => {
-    expect(resolveBookType("LP")).toBe("A_BOOK");
+  it("routes A_BOOK and COVERAGE to the A book, every other category to B", () => {
+    expect(resolveBookType("A_BOOK")).toBe("A_BOOK");
+    expect(resolveBookType("COVERAGE")).toBe("A_BOOK");
+    expect(resolveBookType("B_BOOK")).toBe("B_BOOK");
     expect(resolveBookType("DEALING")).toBe("B_BOOK");
-    expect(resolveBookType("DEMO")).toBe("B_BOOK");
+    expect(resolveBookType("REVERSAL")).toBe("B_BOOK");
+  });
+
+  // The 20260921100000_routing_category migration changed this function's
+  // INPUT from GroupType to RoutingCategory. Every row it backfills has to
+  // keep booking where it booked before, or Stage 1 silently re-routes live
+  // risk. This is that equivalence, written out per legacy value.
+  it("books every pre-migration groupType exactly where it booked before", () => {
+    const legacyToCategory = {
+      LP: "A_BOOK",
+      COVERAGE: "COVERAGE",
+      // DEALING backfills to B_BOOK (dealingMode AUTO), DEALING or
+      // REVERSAL (mirror source) -- all three book B, as DEALING did.
+      DEALING: ["B_BOOK", "DEALING", "REVERSAL"],
+      // DEMO was never routing: it backfills to B_BOOK + DEMO_ONLY, and
+      // B_BOOK books B exactly as DEMO did.
+      DEMO: "B_BOOK",
+    } as const;
+
+    expect(resolveBookType(legacyToCategory.LP)).toBe("A_BOOK"); // was A_BOOK
+    expect(resolveBookType(legacyToCategory.COVERAGE)).toBe("A_BOOK"); // was A_BOOK
+    for (const c of legacyToCategory.DEALING) {
+      expect(resolveBookType(c)).toBe("B_BOOK"); // was B_BOOK
+    }
+    expect(resolveBookType(legacyToCategory.DEMO)).toBe("B_BOOK"); // was B_BOOK
   });
 });
 

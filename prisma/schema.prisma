@@ -231,6 +231,57 @@ enum GroupType {
   COVERAGE
 }
 
+// How an order from this group goes out and who ends up holding the risk
+// -- the ROUTING axis, and only that (docs/ACCOUNT-STRUCTURE-MIGRATION.md
+// §0.1). Deliberately has no DEMO value: real-vs-practice money is the
+// separate MODE axis and already lives on Account.accountMode. The two
+// multiply -- a LIVE account can be A-booked, B-booked or dealer-managed,
+// and so can a DEMO one (a demo that routes like the live product is the
+// only demo worth practising on). Replaces GroupType, which conflated the
+// two; GroupType is kept as a shadow column for one release (rollback)
+// and dropped in Stage 5 of the migration plan.
+// The ROUTING axis: broker-side only, and invisible to the client. A
+// "Standard" client cannot tell from anything they see whether their
+// orders are bridged, held, or dealt.
+enum RoutingCategory {
+  // Bridged out to a liquidity provider. The bridge itself (MT4 / MT5 /
+  // cTrader / FIX API and that protocol's own connection fields) is
+  // configured per group in the Liquidity tab, which lists A_BOOK groups
+  // and only those -- nothing else is bridged, so nothing else appears
+  // there. resolveBookType -> A_BOOK.
+  A_BOOK
+  // Not bridged: auto-filled, the broker covers and holds the risk. The
+  // DEFAULT for any new group, live or demo -- the safe one, with no
+  // external dependency until the broker deliberately sets up a bridge.
+  B_BOOK
+  // A dealer manages the flow (auto or manual accept, per dealingMode).
+  // Dealer mode off behaves like B_BOOK -- see Group.dealingMode.
+  DEALING
+  // OPTIONAL, not every broker has one: the reverse-copy source book that
+  // lib/mirror.ts mirrors into a target account. Auto-fill, books B.
+  REVERSAL
+  // System: the broker's own dealer-coverage (hedge) account -- see
+  // Broker.coverageAccount and lib/coverage.ts. Books A_BOOK because a
+  // coverage position IS real market-facing exposure. Never offered in a
+  // client-facing picker.
+  COVERAGE
+}
+
+// Which account MODE may sit in a group -- a guard, not a category (see
+// RoutingCategory's comment for why the two are separate). ANY is the
+// default and the normal case: a B-book or dealing group happily holds
+// LIVE and DEMO accounts side by side, which is exactly what the portal's
+// demo self-signup already creates (it drops every self-made DEMO account
+// into the broker's isDefault group). DEMO_ONLY is what a group named
+// "Demo" always actually meant. A_BOOK and COVERAGE groups behave as
+// LIVE_ONLY whatever this column says -- enforced in
+// lib/account-structure.ts, not written into the data.
+enum GroupModeRestriction {
+  ANY
+  LIVE_ONLY
+  DEMO_ONLY
+}
+
 // Forward-compatible subset of the Auto Dealing design in
 // REALTIME-SYNC-AND-DEALING-BRIEF §9 -- enum names kept consistent with it
 // deliberately. Group.dealingMode overrides whether this group's MARKET
@@ -419,22 +470,22 @@ model Broker {
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
 
-  adminUsers             AdminUser[]
-  accounts               Account[]
-  transactions           Transaction[]
-  brokerSymbols          BrokerSymbol[]
-  ibRelationships        IbRelationship[]
-  orders                 Order[]
-  positions              Position[]
-  auditLogs              AuditLog[]
-  loginEvents            LoginEvent[]
-  groups                 Group[]
-  leads                  Lead[]
-  notifications          Notification[]
-  liquidityProviders     LiquidityProvider[]
-  lpRoutingRules         LpRoutingRule[]
-  mirrorRules            MirrorRule[]
-  priceAlerts            PriceAlert[]
+  adminUsers                AdminUser[]
+  accounts                  Account[]
+  transactions              Transaction[]
+  brokerSymbols             BrokerSymbol[]
+  ibRelationships           IbRelationship[]
+  orders                    Order[]
+  positions                 Position[]
+  auditLogs                 AuditLog[]
+  loginEvents               LoginEvent[]
+  groups                    Group[]
+  leads                     Lead[]
+  notifications             Notification[]
+  liquidityProviders        LiquidityProvider[]
+  lpRoutingRules            LpRoutingRule[]
+  mirrorRules               MirrorRule[]
+  priceAlerts               PriceAlert[]
   positionActionRequests    PositionActionRequest[]
   balanceAdjustmentRequests BalanceAdjustmentRequest[]
   accountTypes              AccountType[]
@@ -494,21 +545,21 @@ model AdminUser {
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
 
-  reviewedKyc              KycRecord[]             @relation("KycReviewedBy")
-  createdTxns              Transaction[]           @relation("TransactionCreatedBy")
-  reviewedTxns             Transaction[]           @relation("TransactionReviewedBy")
-  markedTxns               Transaction[]           @relation("TransactionMarkedBy")
-  auditLogs                AuditLog[]              @relation("AuditLogActor")
-  closedPosition           Position[]              @relation("PositionClosedBy")
-  deletedPositions         Position[]              @relation("PositionDeletedBy")
+  reviewedKyc                 KycRecord[]                @relation("KycReviewedBy")
+  createdTxns                 Transaction[]              @relation("TransactionCreatedBy")
+  reviewedTxns                Transaction[]              @relation("TransactionReviewedBy")
+  markedTxns                  Transaction[]              @relation("TransactionMarkedBy")
+  auditLogs                   AuditLog[]                 @relation("AuditLogActor")
+  closedPosition              Position[]                 @relation("PositionClosedBy")
+  deletedPositions            Position[]                 @relation("PositionDeletedBy")
   requestedPositionActions    PositionActionRequest[]    @relation("PositionActionRequestedBy")
   reviewedPositionActions     PositionActionRequest[]    @relation("PositionActionReviewedBy")
   requestedBalanceAdjustments BalanceAdjustmentRequest[] @relation("BalanceAdjustmentRequestedBy")
   reviewedBalanceAdjustments  BalanceAdjustmentRequest[] @relation("BalanceAdjustmentReviewedBy")
   createdMirrorRules          MirrorRule[]
   backupCodes                 AdminBackupCode[]
-  reviewedClientKyc           ClientKycRecord[]       @relation("ClientKycReviewedBy")
-  reviewedLiveAccountRequests LiveAccountRequest[]    @relation("LiveAccountRequestReviewedBy")
+  reviewedClientKyc           ClientKycRecord[]          @relation("ClientKycReviewedBy")
+  reviewedLiveAccountRequests LiveAccountRequest[]       @relation("LiveAccountRequestReviewedBy")
 
   @@index([brokerId])
 }
@@ -736,17 +787,17 @@ model Account {
 // UI says so wherever a type is picked so nobody mistakes this for
 // already being load-bearing on a broker that hasn't been cut over.
 model AccountType {
-  id               String  @id @default(cuid())
+  id               String   @id @default(cuid())
   brokerId         String
-  broker           Broker  @relation(fields: [brokerId], references: [id])
+  broker           Broker   @relation(fields: [brokerId], references: [id])
   name             String
   description      String?
   // One-line "what this tier means" shown next to the option in the
   // Add-account picker and the Settings CRUD table -- e.g. "Spread-only,
   // no commission". Purely a label (see this model's own doc comment).
   pricingHint      String?
-  sortOrder        Int     @default(0)
-  isDefault        Boolean @default(false)
+  sortOrder        Int      @default(0)
+  isDefault        Boolean  @default(false)
   // Type-WIDE default pricing (originally 2026-09-05, widened to nullable
   // 2026-09-07 migration pricing_engine_schema) -- the fallback used for
   // any symbol this type has no AccountTypeSymbolConfig row for. Null =
@@ -780,7 +831,7 @@ model AccountType {
   // of the Add-account picker and can't be assigned to another account
   // -- same "hide from new use, keep old references intact" shape as
   // BrokerSymbol.enabled. See app/api/manage/account-types/[id]/route.ts.
-  enabled          Boolean @default(true)
+  enabled          Boolean  @default(true)
 
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
@@ -892,20 +943,20 @@ model Lead {
 // time (see app/api/manage/accounts/[id]/route.ts) -- Account.leverage
 // stays the one value every trading code path already reads.
 model Group {
-  id                 String           @id @default(cuid())
+  id                 String               @id @default(cuid())
   brokerId           String
-  broker             Broker           @relation(fields: [brokerId], references: [id])
+  broker             Broker               @relation(fields: [brokerId], references: [id])
   name               String
-  leverage           Int              @default(100)
-  marginCallLevel    Decimal          @default(100) @db.Decimal(6, 2)
-  stopOutLevel       Decimal          @default(50) @db.Decimal(6, 2)
-  isDefault          Boolean          @default(false)
+  leverage           Int                  @default(100)
+  marginCallLevel    Decimal              @default(100) @db.Decimal(6, 2)
+  stopOutLevel       Decimal              @default(50) @db.Decimal(6, 2)
+  isDefault          Boolean              @default(false)
   // Null = no override, falls through to the existing per-symbol
   // minLot/maxLot check unchanged -- see lib/risk.ts's checkGroupMaxLot.
-  maxLotSize         Decimal?         @db.Decimal(10, 2)
+  maxLotSize         Decimal?             @db.Decimal(10, 2)
   // Same enum/semantics as BrokerSymbol.tradingMode -- see
   // lib/risk.ts's checkGroupTradingRestriction.
-  tradingRestriction TradingMode      @default(BOTH)
+  tradingRestriction TradingMode          @default(BOTH)
   // Non-null = new orders/positions are rejected for every account in
   // THIS group only (existing open positions untouched) -- the per-group
   // equivalent of Broker.tradingHaltedAt, see lib/risk.ts's
@@ -914,7 +965,7 @@ model Group {
   // no value for. Same on/off-via-timestamp shape as the broker-wide
   // field, for the same reason (the timestamp is the audit trail entry
   // point; who set it lives in the paired AuditLog row).
-  tradingHaltedAt    DateTime?        @db.Timestamptz(3)
+  tradingHaltedAt    DateTime?            @db.Timestamptz(3)
   // Nullable tri-state (widened 2026-09-07 migration
   // pricing_engine_schema, was `@default(false)`) -- null = "not set,
   // fall through to hardcoded false" once Phase 2's swap-free resolution
@@ -928,20 +979,31 @@ model Group {
   // behavior before this field existed (zero change for existing
   // groups/accounts). true restricts trading to only the symbols with a
   // GroupSymbol row below -- see lib/risk.ts's checkGroupAllowedSymbol.
-  restrictSymbols    Boolean          @default(false)
+  restrictSymbols    Boolean              @default(false)
   // Independent of Broker.dealingModeAt -- either one alone is enough to
   // route a MARKET order from an account in this group to the dealing
   // queue instead of auto-filling. false (default) = zero change for
   // every existing group; this only ever ADDS accounts to dealing
   // review, never removes them from the broker-wide setting. See
   // app/api/trade/orders/route.ts's dealing-mode branch.
-  forceDealingMode   Boolean          @default(false)
+  forceDealingMode   Boolean              @default(false)
   // See GroupType's own doc comment -- book routing for this group's
   // accounts. Defaults to DEALING (B_BOOK), the same book every account
   // already fills into today via BrokerSymbol.defaultBookType's own
   // default -- zero behavior change for existing groups until a broker
   // deliberately sets one to LP or DEMO.
-  groupType          GroupType        @default(DEALING)
+  groupType          GroupType            @default(DEALING)
+  // The ROUTING axis (see RoutingCategory). Backfilled from groupType +
+  // dealingMode + MirrorRule by the 20260921 migration; groupType stays
+  // beside it, unread, purely as this release's rollback. Defaults to
+  // B_BOOK: a new group holds its own risk until someone deliberately
+  // bridges or deals it, and that is also what groupType's own DEALING
+  // default already resolved to (resolveBookType(DEALING) == B_BOOK), so
+  // no existing behaviour changes.
+  category           RoutingCategory      @default(B_BOOK)
+  // The MODE guard (see GroupModeRestriction). Not a category: mode is
+  // Account.accountMode and always has been.
+  modeRestriction    GroupModeRestriction @default(ANY)
   // Overrides whether this group's MARKET orders reach the manual dealing
   // queue -- independent of groupType, forceDealingMode, and
   // Broker.dealingModeAt, all three of which stay meaningful for every
@@ -955,11 +1017,11 @@ model Group {
   // accounting. MANUAL = always queue for this group, even if nothing
   // else would have. See app/api/trade/orders/route.ts's routing check
   // and docs/mirror.md.
-  dealingMode        GroupDealingMode @default(INHERIT)
+  dealingMode        GroupDealingMode     @default(INHERIT)
   // See GroupTier's own doc comment -- classification only, doesn't
   // affect pricing by itself. Defaults to STANDARD, same "config now"
   // zero-change-for-existing-groups convention as groupType above.
-  tier               GroupTier        @default(STANDARD)
+  tier               GroupTier            @default(STANDARD)
 
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
@@ -997,12 +1059,12 @@ model Group {
 // as-is (no data rewrite), so this migration itself changes no live fill;
 // it only makes future null writes possible.
 model GroupSymbolConfig {
-  id               String  @id @default(cuid())
-  groupId          String
-  group            Group   @relation(fields: [groupId], references: [id], onDelete: Cascade)
-  symbolId         String
-  symbol           Symbol  @relation(fields: [symbolId], references: [id])
-  spreadMarkup     Decimal? @db.Decimal(10, 4) // pips added on top of raw spread, same convention as BrokerSymbol.spreadMarkup. Mutually exclusive with targetTotalSpreadPips (app-level validation, not a DB constraint -- see docs/pricing-engine.md)
+  id                    String   @id @default(cuid())
+  groupId               String
+  group                 Group    @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  symbolId              String
+  symbol                Symbol   @relation(fields: [symbolId], references: [id])
+  spreadMarkup          Decimal? @db.Decimal(10, 4) // pips added on top of raw spread, same convention as BrokerSymbol.spreadMarkup. Mutually exclusive with targetTotalSpreadPips (app-level validation, not a DB constraint -- see docs/pricing-engine.md)
   // Client-visible TOTAL spread this group should show for the symbol --
   // an alternate mode to spreadMarkup (at most one of the two set per
   // row, enforced at the application layer where both are written, same
@@ -1012,9 +1074,9 @@ model GroupSymbolConfig {
   // as max(targetTotalSpreadPips - liveBaseSpreadPips, 0) using whichever
   // live tick the call site already has (see docs/pricing-engine.md §5).
   targetTotalSpreadPips Decimal? @db.Decimal(10, 4)
-  commissionPerLot Decimal? @db.Decimal(10, 2) // flat fee per lot, charged once when a position opens
-  swapLong         Decimal? @db.Decimal(10, 4)
-  swapShort        Decimal? @db.Decimal(10, 4)
+  commissionPerLot      Decimal? @db.Decimal(10, 2) // flat fee per lot, charged once when a position opens
+  swapLong              Decimal? @db.Decimal(10, 4)
+  swapShort             Decimal? @db.Decimal(10, 4)
 
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
@@ -1141,8 +1203,8 @@ model Client {
   brokerId String
   broker   Broker @relation(fields: [brokerId], references: [id])
 
-  email        String
-  passwordHash String
+  email           String
+  passwordHash    String
   // Null until the verification email's link is clicked
   // (POST /api/portal/register mints a Redis-backed token, GET
   // /api/portal/verify-email consumes it and sets this). Login is
@@ -1687,13 +1749,13 @@ model Order {
   // catch it). side = the position's own side (what the dealer sees); requestedPrice = the
   // close price the client saw; filledPrice = the actual close price on ACCEPT.
   closesPositionId String?
-  closesPosition   Position?   @relation("OrderCloses", fields: [closesPositionId], references: [id])
-  closeVolume      Decimal?    @db.Decimal(10, 2)
+  closesPosition   Position? @relation("OrderCloses", fields: [closesPositionId], references: [id])
+  closeVolume      Decimal?  @db.Decimal(10, 2)
 
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
 
-  position Position?
+  position       Position?
   // Back-relation for Position.closePendingOrder (the lock) -- set only while this close order
   // is awaiting the dealer.
   closePendingOn Position? @relation("PositionClosePending")
@@ -1768,23 +1830,23 @@ model Position {
   // The client position itself is untouched (still OPEN, still the
   // client's); this flag only records that the broker has hedged it, so a
   // booked position drops out of the Smart Dealer Manager's unbooked list.
-  covered            Boolean    @default(false)
-  coveredAt          DateTime?  @db.Timestamptz(3)
+  covered             Boolean    @default(false)
+  coveredAt           DateTime?  @db.Timestamptz(3)
   // The mirror Position created on the coverage account for this booking
   // (self-relation) -- the actual hedge leg, kept for unwind/audit. Null
   // on a non-booked position and on the coverage leg itself.
-  coveragePositionId String?    @unique
-  coveragePosition   Position?  @relation("PositionCoverage", fields: [coveragePositionId], references: [id])
+  coveragePositionId  String?    @unique
+  coveragePosition    Position?  @relation("PositionCoverage", fields: [coveragePositionId], references: [id])
   // Queued-close lock (docs/CLOSES-RESPECT-DEALER-MODE.md): the PENDING / REQUOTED close Order
   // the dealer has not acted on yet. While set the trader's row is locked ("close awaiting
   // dealer"), a second close is refused, and the risk monitor's SL / TP / stop-out -- which
   // still executes immediately -- cancels this order when it closes the position first.
   // Cleared on accept (position closed) / reject / client cancel / desk auto-flush.
-  closePendingOrderId String?  @unique
-  closePendingOrder   Order?   @relation("PositionClosePending", fields: [closePendingOrderId], references: [id])
+  closePendingOrderId String?    @unique
+  closePendingOrder   Order?     @relation("PositionClosePending", fields: [closePendingOrderId], references: [id])
   // Every close order ever raised against this position (history; the live one is closePendingOrder).
-  closeOrders         Order[]  @relation("OrderCloses")
-  coveredClientPos   Position[] @relation("PositionCoverage")
+  closeOrders         Order[]    @relation("OrderCloses")
+  coveredClientPos    Position[] @relation("PositionCoverage")
 
   actionRequests PositionActionRequest[]
 
@@ -1875,7 +1937,7 @@ model BalanceAdjustmentRequest {
   // validateBalanceAdjustment) -- an unexplained balance correction is
   // exactly what a dispute needs a reason on record for, same reasoning
   // as the direct-execute path this replaces for MANAGER.
-  note String
+  note      String
 
   status BalanceAdjustmentRequestStatus @default(PENDING)
 

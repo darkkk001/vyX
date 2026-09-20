@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import { Prisma, GroupType, GroupTier, GroupDealingMode } from "@prisma/client";
+import { Prisma, GroupTier, GroupDealingMode } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
+import { resolveGroupRouting, legacyGroupTypeFor } from "@/lib/group-routing";
 
-const GROUP_TYPES: GroupType[] = ["LP", "DEALING", "DEMO"];
 const GROUP_TIERS: GroupTier[] = ["STANDARD", "PRO", "ECN", "ZERO"];
 const GROUP_DEALING_MODES: GroupDealingMode[] = ["INHERIT", "AUTO", "MANUAL"];
 
@@ -73,9 +73,24 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   // keep existing" case to handle here, unlike a true partial PATCH.
   const swapFree: boolean | null = body?.swapFree === null ? null : body?.swapFree === true;
   const forceDealingMode = body?.forceDealingMode === true;
-  const groupType = GROUP_TYPES.includes(body?.groupType) ? (body.groupType as GroupType) : "DEALING";
   const dealingMode = GROUP_DEALING_MODES.includes(body?.dealingMode) ? (body.dealingMode as GroupDealingMode) : "INHERIT";
   const tier = GROUP_TIERS.includes(body?.tier) ? (body.tier as GroupTier) : "STANDARD";
+  // Two axes since Stage 1 of docs/ACCOUNT-STRUCTURE-MIGRATION.md (§0.1):
+  // `category` is ROUTING (where the order goes, who holds the risk) and
+  // `modeRestriction` is which account MODES may sit in this group. A body
+  // carrying only the legacy `groupType` is backoffice 1.0.9 and goes
+  // through the shim in lib/group-routing.ts. groupType itself is still
+  // written, as this release's shadow column for rollback and for the
+  // dealing-desk readers that have not moved yet.
+  // `existing` is passed so a 1.0.9 client resending `groupType: "DEALING"`
+  // cannot silently downgrade a REVERSAL or COVERAGE group it has no way
+  // to express.
+  const routing = resolveGroupRouting(body, dealingMode, {
+    category: existing.category,
+    modeRestriction: existing.modeRestriction,
+  });
+  const { category, modeRestriction } = routing;
+  const groupType = legacyGroupTypeFor(routing);
 
   try {
     const group = await prisma.$transaction(async (tx) => {
@@ -84,7 +99,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       }
       const updated = await tx.group.update({
         where: { id },
-        data: { name, leverage, marginCallLevel, stopOutLevel, isDefault, maxLotSize, tradingRestriction, swapFree, forceDealingMode, groupType, dealingMode, tier },
+        data: { name, leverage, marginCallLevel, stopOutLevel, isDefault, maxLotSize, tradingRestriction, swapFree, forceDealingMode, category, modeRestriction, groupType, dealingMode, tier },
       });
       await tx.auditLog.create({
         data: {
@@ -103,6 +118,8 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
             tradingRestriction: existing.tradingRestriction,
             swapFree: existing.swapFree,
             forceDealingMode: existing.forceDealingMode,
+            category: existing.category,
+            modeRestriction: existing.modeRestriction,
             groupType: existing.groupType,
             dealingMode: existing.dealingMode,
             tier: existing.tier,
@@ -117,6 +134,8 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
             tradingRestriction,
             swapFree,
             forceDealingMode,
+            category,
+            modeRestriction,
             groupType,
             dealingMode,
             tier,
@@ -144,7 +163,9 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       tradingRestriction: group.tradingRestriction,
       swapFree: group.swapFree,
       forceDealingMode: group.forceDealingMode,
-      groupType: group.groupType,
+      category: group.category,
+      modeRestriction: group.modeRestriction,
+      groupType: legacyGroupTypeFor(group),
       dealingMode: group.dealingMode,
       tier: group.tier,
       hasMirrorRule,

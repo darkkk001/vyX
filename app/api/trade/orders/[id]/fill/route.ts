@@ -266,7 +266,7 @@ export async function POST(
       return NextResponse.json(marginError, { status: 400 });
     }
   }
-  const bookType = account.group ? resolveBookType(account.group.groupType) : (brokerSymbol?.defaultBookType ?? "B_BOOK");
+  const bookType = account.group ? resolveBookType(account.group.category) : (brokerSymbol?.defaultBookType ?? "B_BOOK");
 
   const result = await prisma.$transaction(async (tx) => {
     await tx.order.update({ where: { id: order.id }, data: { status: "ACCEPTED" } });

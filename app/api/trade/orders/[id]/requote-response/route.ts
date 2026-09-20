@@ -196,7 +196,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   });
   logSpreadWarning({ accountId: account.id, symbolId: order.symbolId, brokerId: order.brokerId }, pricing.warning);
   const fillPrice = applySpreadMarkup({ side: order.side, price: order.requotedPrice!, spreadMarkup: pricing.spreadMarkup, digits: brokerSymbol.symbol.digits });
-  const bookType = account.group ? resolveBookType(account.group.groupType) : brokerSymbol.defaultBookType;
+  const bookType = account.group ? resolveBookType(account.group.category) : brokerSymbol.defaultBookType;
 
   try {
     const position = await prisma.$transaction(async (tx) => {

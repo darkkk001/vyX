@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { Prisma } from "@prisma/client";
+import { Prisma, RoutingCategory, GroupModeRestriction } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { checkAccountStructure } from "@/lib/account-structure";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { hasPermission } from "@/lib/permissions";
 
@@ -57,13 +58,13 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     );
   }
 
-  let group: { id: string; leverage: number } | null = null;
+  let group: { id: string; leverage: number; category: RoutingCategory; modeRestriction: GroupModeRestriction } | null = null;
   if (hasGroupChange && body.groupId != null) {
     const found = await prisma.group.findUnique({ where: { id: body.groupId } });
     if (!found || found.brokerId !== brokerId) {
       return NextResponse.json({ error: "group not found" }, { status: 404 });
     }
-    group = { id: found.id, leverage: found.leverage };
+    group = { id: found.id, leverage: found.leverage, category: found.category, modeRestriction: found.modeRestriction };
   }
 
   let accountTypeId: string | null = null;
@@ -79,6 +80,18 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       return NextResponse.json({ error: "account type not found" }, { status: 404 });
     }
     accountTypeId = found.id;
+  }
+
+  // A group change has to hold against the account's MODE, which this
+  // request cannot change. Mass-assignment is covered by the same check --
+  // a body naming the broker's COVERAGE group is refused here, not merely
+  // hidden in the UI. The account TYPE needs no check: it is the
+  // client-facing spread tier and carries no routing.
+  if (hasGroupChange && group) {
+    const violation = checkAccountStructure({ accountMode: account.accountMode, group });
+    if (violation) {
+      return NextResponse.json({ error: violation.message, code: violation.code }, { status: 400 });
+    }
   }
 
   let leverage: number | undefined;
