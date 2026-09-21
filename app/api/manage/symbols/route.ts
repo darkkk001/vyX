@@ -141,6 +141,12 @@ export async function PATCH(request: NextRequest) {
   const maxExposure = maxExposureRaw == null || maxExposureRaw === "" ? null : parseDecimal(maxExposureRaw);
   const enabled = typeof body?.enabled === "boolean" ? body.enabled : null;
   const tradingMode = TRADING_MODES.includes(body?.tradingMode as TradingMode) ? (body!.tradingMode as TradingMode) : null;
+  // OPTIONAL as of Stage 4 piece 5. Routing is decided by the account's group
+  // (Group.category), never per symbol, so backoffice 1.0.10 stopped sending
+  // this. A 1.0.9 still in the field DOES send it and is still honoured --
+  // the column survives until Stage 5 precisely so a rollback has its value.
+  // null here means "not sent", which is not the same as invalid: it leaves
+  // the stored value alone rather than rewriting it.
   const defaultBookType = BOOK_TYPES.includes(body?.defaultBookType as BookType) ? (body!.defaultBookType as BookType) : null;
 
   if (
@@ -152,10 +158,9 @@ export async function PATCH(request: NextRequest) {
     !swapShort ||
     !commissionPerLot ||
     enabled === null ||
-    tradingMode === null ||
-    defaultBookType === null
+    tradingMode === null
   ) {
-    return NextResponse.json({ error: "all fields must be valid numbers/booleans/tradingMode/defaultBookType" }, { status: 400 });
+    return NextResponse.json({ error: "all fields must be valid numbers/booleans/tradingMode" }, { status: 400 });
   }
   if (maxExposureRaw != null && maxExposureRaw !== "" && !maxExposure) {
     return NextResponse.json({ error: "maxExposure must be a valid number or empty" }, { status: 400 });
@@ -208,7 +213,11 @@ export async function PATCH(request: NextRequest) {
     commissionPerLot,
     maxExposure,
     tradingMode,
-    defaultBookType,
+    // Omitted entirely when not sent: Prisma leaves the stored column untouched
+    // on update, and applies the schema default (B_BOOK) on create. Writing a
+    // fallback here instead would silently re-book an A_BOOK symbol the first
+    // time a 1.0.10 saved any unrelated field on it.
+    ...(defaultBookType === null ? {} : { defaultBookType }),
   };
 
   const updated = await prisma.brokerSymbol.upsert({
