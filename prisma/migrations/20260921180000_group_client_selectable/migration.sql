@@ -22,13 +22,18 @@
 ALTER TABLE "Group" ADD COLUMN "isClientSelectable" BOOLEAN NOT NULL DEFAULT false;
 
 -- ==================== 2. backfill ====================
+-- A_BOOK is included on purpose: it is a CLIENT book, just one whose risk is
+-- bridged to a liquidity provider instead of held. The two excluded categories
+-- are the ones that are not about clients at all -- COVERAGE is the broker's
+-- own hedge account and REVERSAL is the reverse-mirror source book.
+--
 -- Deliberately keyed on category ONLY, not on tradingHaltedAt. A halt is a
 -- temporary runtime state that the portal query filters on separately; baking
 -- it into a config column would leave a group permanently unselectable after
 -- the broker un-halts it, which is a bug that would surface weeks later.
 UPDATE "Group"
    SET "isClientSelectable" = true
- WHERE "category" IN ('B_BOOK', 'DEALING');
+ WHERE "category" IN ('A_BOOK', 'B_BOOK', 'DEALING');
 
 -- ==================== 3. before/after ====================
 DO $$
@@ -55,9 +60,9 @@ BEGIN
   -- selectable, a client could open an account in the broker's own hedge book
   -- or the reverse-mirror source group.
   PERFORM 1 FROM "Group"
-   WHERE "isClientSelectable" AND "category" IN ('COVERAGE', 'REVERSAL', 'A_BOOK');
+   WHERE "isClientSelectable" AND "category" IN ('COVERAGE', 'REVERSAL');
   IF FOUND THEN
-    RAISE EXCEPTION 'aborting: a COVERAGE/REVERSAL/A_BOOK group was marked client-selectable';
+    RAISE EXCEPTION 'aborting: a COVERAGE or REVERSAL group was marked client-selectable';
   END IF;
-  RAISE NOTICE 'verified: no COVERAGE, REVERSAL or A_BOOK group is client-selectable';
+  RAISE NOTICE 'verified: no COVERAGE or REVERSAL group is client-selectable';
 END $$;

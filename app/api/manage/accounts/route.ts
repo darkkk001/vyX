@@ -6,6 +6,7 @@ import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { hasPermission } from "@/lib/permissions";
 import { provisionAccount } from "@/lib/account-provisioning";
 import { isCountryCode } from "@/lib/countries";
+import { checkAccountStructure } from "@/lib/account-structure";
 import { AccountStructureError } from "@/lib/account-structure";
 
 async function requireManager() {
@@ -224,6 +225,34 @@ async function createAccount(request: NextRequest, session: NonNullable<Awaited<
     const found = await prisma.group.findUnique({ where: { id: body.groupId } });
     if (!found || found.brokerId !== brokerId) {
       return NextResponse.json({ error: "group not found" }, { status: 404 });
+    }
+  // isClientSelectable is enforced HERE, not only in the backoffice picker.
+  // Hiding a group in a dropdown is not a control: the picker is one client of
+  // this API, an older backoffice still lists every group, and curl lists
+  // none of them. Placing a client in the REVERSAL book silently mirrors
+  // their trades into the broker's master account, and assertAccountStructure
+  // does NOT cover that case -- it blocks COVERAGE
+  // (COVERAGE_GROUP_RESERVED) and mode mismatches, nothing else.
+  //
+  // Deliberately at the ROUTE layer, not inside provisionAccount: lib/coverage.ts
+  // provisions the broker's own hedge account into the COVERAGE group through
+  // that same function and must keep working.
+  //
+  // A broker who genuinely wants clients in a given book publishes it by
+  // marking the group client-selectable, which is their own config and is
+  // audited -- rather than this being bypassable by hand-crafting a request.
+    // Structural rules first, so their specific code survives: provisionAccount
+    // runs the same check and would raise COVERAGE_GROUP_RESERVED or
+    // DEMO_IN_LIVE_MONEY_GROUP, which say far more than "not available".
+    const structural = checkAccountStructure({ accountMode, group: found, allowCoverage: false });
+    if (structural) {
+      return NextResponse.json({ error: structural.message, code: structural.code }, { status: 400 });
+    }
+    if (!found.isClientSelectable) {
+      return NextResponse.json(
+        { error: "that group is not available for client accounts", code: "GROUP_NOT_CLIENT_SELECTABLE" },
+        { status: 400 }
+      );
     }
     group = { id: found.id, leverage: found.leverage };
   } else {

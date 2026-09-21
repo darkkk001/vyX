@@ -74,6 +74,15 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     if (!found || found.brokerId !== brokerId) {
       return NextResponse.json({ error: "group not found" }, { status: 404 });
     }
+    // Same rule as account creation -- moving an existing client into the
+    // reverse-mirror book is the same act as opening them there. The structural
+    // check downstream still owns the more specific refusals.
+    if (!found.isClientSelectable && found.category !== "COVERAGE") {
+      return NextResponse.json(
+        { error: "that group is not available for client accounts", code: "GROUP_NOT_CLIENT_SELECTABLE" },
+        { status: 400 }
+      );
+    }
     group = { id: found.id, leverage: found.leverage, category: found.category, modeRestriction: found.modeRestriction };
   }
 
