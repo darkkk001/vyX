@@ -179,17 +179,46 @@ describe("chargeCommission (live DB, rolled back)", () => {
     });
   }
 
+  /** A real Position to charge against. Every caller of chargeCommission passes a position it
+   *  has just created in the same transaction (manage/positions:368, trade/orders:614), so a
+   *  fixture using a made-up id was testing a shape that never occurs. */
+  async function makePosition(tx: Prisma.TransactionClient, account: { id: string; brokerId: string }) {
+    const suffix = randomUUID().replace(/-/g, "").slice(0, 10);
+    const symbol = await tx.symbol.create({
+      data: { name: `CT${suffix.slice(0, 6).toUpperCase()}`, baseCurrency: "USD", quoteCurrency: "USD", digits: 2, contractSize: D("100"), category: "METALS" },
+    });
+    const order = await tx.order.create({
+      data: {
+        brokerId: account.brokerId, accountId: account.id, symbolId: symbol.id,
+        side: "BUY", type: "MARKET", status: "FILLED", volume: D("2"), requestedPrice: D("100"), idempotencyKey: `ct-${suffix}`,
+      },
+    });
+    return tx.position.create({
+      data: {
+        brokerId: account.brokerId, accountId: account.id, symbolId: symbol.id,
+        originOrderId: order.id, side: "BUY", volume: D("2"), openPrice: D("100"),
+      },
+    });
+  }
+
   it("debits balance and writes a COMMISSION transaction for a nonzero rate", async () => {
     if (!dbReachable) return;
     await withRollback(async (tx) => {
       const account = await makeAccount(tx, "10000");
+      const position = await makePosition(tx, account);
       await chargeCommission(tx, {
         brokerId: account.brokerId,
         accountId: account.id,
-        positionId: "pos-1",
+        positionId: position.id,
         commissionPerLot: D("7"),
         volume: D("2"),
       });
+
+      // The whole point of docs/WRONG-FIELD-AUDIT §2.1: the money left the balance and the
+      // ledger recorded it, but Position.commission stayed 0, so IB payouts and every
+      // commission report read zero on a position that HAD been charged.
+      const charged = await tx.position.findUniqueOrThrow({ where: { id: position.id } });
+      expect(charged.commission.toString()).toBe("14");
 
       const after = await tx.account.findUniqueOrThrow({ where: { id: account.id } });
       expect(after.balance.toString()).toBe("9986"); // 10000 - 7*2
@@ -206,10 +235,11 @@ describe("chargeCommission (live DB, rolled back)", () => {
     if (!dbReachable) return;
     await withRollback(async (tx) => {
       const account = await makeAccount(tx, "10000");
+      const zeroPosition = await makePosition(tx, account);
       await chargeCommission(tx, {
         brokerId: account.brokerId,
         accountId: account.id,
-        positionId: "pos-1",
+        positionId: zeroPosition.id,
         commissionPerLot: D("0"),
         volume: D("2"),
       });

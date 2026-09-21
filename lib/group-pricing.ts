@@ -130,4 +130,22 @@ export async function chargeCommission(
       note: `Commission: ${params.volume} lots @ ${params.commissionPerLot}/lot`,
     },
   });
+
+  // The position carries the charge too, not just the ledger. Without this the
+  // money left the balance and Position.commission stayed at its 0 default, so
+  // every reader of that column reported nothing had been charged:
+  //   lib/commission.ts (IB PERCENTAGE payout = rate x SUM(commission)) paid 0,
+  //   manage/reports/summary and reports/trading showed 0 revenue,
+  //   manage/positions and the deals screens showed 0,
+  //   and WebTrader showed 0.00 on a position whose balance HAD been debited.
+  // The Rust engine's own path already does this (order-management/db.rs:334);
+  // this is the TypeScript path catching up. See docs/WRONG-FIELD-AUDIT §2.1.
+  //
+  // increment, not set: a position can be charged more than once in principle
+  // (the column is cumulative, same as the ledger), and increment is also
+  // safe against a retry landing twice as a set would not be.
+  await tx.position.update({
+    where: { id: params.positionId },
+    data: { commission: { increment: amount } },
+  });
 }
