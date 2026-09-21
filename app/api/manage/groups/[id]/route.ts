@@ -214,7 +214,8 @@ export async function DELETE(_request: NextRequest, { params }: { params: Promis
   if (accountCount > 0) {
     return NextResponse.json(
       {
-        error: `Cannot delete: ${accountCount} account${accountCount === 1 ? " is" : "s are"} assigned to this group. Reassign them first.`,
+        error: `Cannot delete: ${accountCount} account${accountCount === 1 ? " is" : "s are"} still in this group. Move its accounts first.`,
+        code: "GROUP_IN_USE",
       },
       { status: 409 }
     );

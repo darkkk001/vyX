@@ -42,6 +42,19 @@ export async function GET() {
     ).map((r) => r.sourceId)
   );
 
+  // Per-group override counts for the Groups screen's PRICING column: 0 means
+  // the group inherits the symbol's broker pricing ("Source"), anything else
+  // is a real override the broker set. One grouped count, not N queries.
+  const overrideCounts = new Map(
+    (
+      await prisma.groupSymbolConfig.groupBy({
+        by: ["groupId"],
+        where: { groupId: { in: groups.map((g) => g.id) } },
+        _count: { _all: true },
+      })
+    ).map((r) => [r.groupId, r._count._all])
+  );
+
   return NextResponse.json(
     groups.map((g) => ({
       id: g.id,
@@ -57,6 +70,7 @@ export async function GET() {
       forceDealingMode: g.forceDealingMode,
       category: g.category,
       modeRestriction: g.modeRestriction,
+      symbolConfigCount: overrideCounts.get(g.id) ?? 0,
       // Derived, not the stored shadow column, so a 1.0.9 backoffice sees
       // the same thing a 1.0.10 one does even for a group whose category
       // was last written by the new UI.
