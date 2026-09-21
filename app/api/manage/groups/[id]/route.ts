@@ -220,6 +220,13 @@ export async function DELETE(_request: NextRequest, { params }: { params: Promis
     );
   }
 
+  // The accountCount check above is the normal path, but it is a
+  // check-then-act: an account can be assigned to this group between the
+  // count and the delete. Since Stage 3b made Account.groupId NOT NULL, the
+  // FK's ON DELETE SET NULL can no longer fire, so that race surfaces as a
+  // constraint violation rather than a silent ungrouping. Catch it and answer
+  // with the same 409 the counted path gives, instead of a 500.
+  try {
   await prisma.$transaction(async (tx) => {
     // GroupSymbol/GroupSymbolConfig both cascade on Group (see their own
     // onDelete: Cascade), so this alone is enough -- no orphaned rows.
@@ -234,13 +241,23 @@ export async function DELETE(_request: NextRequest, { params }: { params: Promis
         oldValue: {
           name: existing.name,
           leverage: existing.leverage,
-          groupType: existing.groupType,
+          category: existing.category,
+          modeRestriction: existing.modeRestriction,
           dealingMode: existing.dealingMode,
-          tier: existing.tier,
+          groupType: existing.groupType,
         },
       },
     });
   });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && (error.code === "P2003" || error.code === "P2014")) {
+      return NextResponse.json(
+        { error: "Cannot delete: an account was assigned to this group while it was being deleted. Reassign it first.", code: "GROUP_IN_USE" },
+        { status: 409 }
+      );
+    }
+    throw error;
+  }
 
   return NextResponse.json({ ok: true });
 }
