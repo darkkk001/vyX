@@ -73,15 +73,47 @@ interface SymbolFilterCacheEntry {
 const SYMBOL_FILTER_TTL_MS = 30_000;
 const symbolFilterCache = new Map<string, SymbolFilterCacheEntry>();
 
-async function getEnabledSymbolsCached(brokerId: string): Promise<Set<string>> {
+// Hot-path read: NEVER awaits a database call and NEVER throws.
+//
+// 2026-09-21 outage class: the tick fan-out used to `await
+// getEnabledSymbolsCached(brokerId)` once per client PER TICK. On a cache
+// miss that is a live DB query inside the fan-out, so (a) N connected
+// clients meant N queries per tick and a TTL expiry serialised the whole
+// broadcast behind a Neon round trip, and (b) a single transient DB error
+// threw straight out of the `for await`, ending the NATS subscription for
+// the rest of the process's life with nothing to restart it. The feed went
+// silently dark -- health stayed 200, the engine kept publishing, and not
+// one tick reached a client until someone restarted the gateway by hand.
+//
+// So the hot path now only ever reads what is already in memory. A miss or
+// an expired entry returns the stale set (or, with nothing cached at all,
+// null so the caller can decide) and schedules the refresh off to one side.
+function getEnabledSymbolsHot(brokerId: string): Set<string> | null {
   const cached = symbolFilterCache.get(brokerId);
-  if (cached && Date.now() - cached.fetchedAt < SYMBOL_FILTER_TTL_MS) {
-    return cached.symbols;
+  if (!cached) {
+    void refreshSymbolFilter(brokerId);
+    return null;
   }
-  const names = await getEnabledSymbolNames(brokerId);
-  const symbols = new Set(names);
-  symbolFilterCache.set(brokerId, { symbols, fetchedAt: Date.now() });
-  return symbols;
+  if (Date.now() - cached.fetchedAt >= SYMBOL_FILTER_TTL_MS) {
+    void refreshSymbolFilter(brokerId); // serve stale now, fresh next tick
+  }
+  return cached.symbols;
+}
+
+// Off-hot-path refresh. At most one in flight per broker; a failure leaves
+// the previous entry in place (stale beats dark) and is logged, not thrown.
+const symbolFilterRefreshing = new Set<string>();
+async function refreshSymbolFilter(brokerId: string): Promise<void> {
+  if (symbolFilterRefreshing.has(brokerId)) return;
+  symbolFilterRefreshing.add(brokerId);
+  try {
+    const names = await getEnabledSymbolNames(brokerId);
+    symbolFilterCache.set(brokerId, { symbols: new Set(names), fetchedAt: Date.now() });
+  } catch (err) {
+    console.error(`price stream: enabled-symbol refresh failed for broker ${brokerId} (keeping the previous set)`, err);
+  } finally {
+    symbolFilterRefreshing.delete(brokerId);
+  }
 }
 
 // Phase 4 of the tick-pipeline audit -- exported so index.ts's stats
@@ -95,6 +127,12 @@ export const gatewayStats = {
   wsDisconnectionsTotal: 0,
   ticksForwardedTotal: 0,
   natsMessagesReceivedTotal: 0,
+  // Watchdog surface (2026-09-21): a dead fan-out used to be invisible from
+  // outside -- these make "NATS is delivering but nothing is going out" a
+  // readable condition rather than something a trader reports.
+  priceSubscriptionRestartsTotal: 0,
+  lastNatsMessageAtMs: 0,
+  lastTickForwardedAtMs: 0,
   tradingWsConnectionsTotal: 0,
   tradingWsDisconnectionsTotal: 0,
   tradingEventsForwardedTotal: 0,
@@ -167,13 +205,17 @@ export async function attachPriceStream(server: Server, natsUrl: string): Promis
   const wss = new WebSocketServer({ noServer: true });
   // ws -> that connection's own broker id, so a forwarded tick can be
   // checked against that specific broker's enabled-symbol set (see
-  // getEnabledSymbolsCached above) -- was a bare Set<WebSocket> before
+  // getEnabledSymbolsHot above) -- was a bare Set<WebSocket> before
   // the per-tenant filtering this map exists for.
   const clients = new Map<WebSocket, string>();
 
   function registerClient(ws: WebSocket, brokerId: string) {
     clients.set(ws, brokerId);
     gatewayStats.wsConnectionsTotal += 1;
+    // Pre-warm this broker's enabled-symbol set off the hot path, so the
+    // first ticks after a connection are filtered against the real set
+    // rather than skipped while a lazy load happens.
+    void refreshSymbolFilter(brokerId);
     // hotfix/terminal-live-bugs #3 -- app-level ping/pong so the client can
     // measure real RTT to this gateway over the connection it already has
     // for ticks, instead of timing an unrelated HTTP request to Vercel
@@ -247,29 +289,108 @@ export async function attachPriceStream(server: Server, natsUrl: string): Promis
   // broker's traders are kept to that broker's own enabled symbols --
   // every tick is parsed for its `symbol` once, then checked per client
   // against that client's own broker's cached enabled-symbol set.
-  (async () => {
-    for await (const msg of sub) {
-      gatewayStats.natsMessagesReceivedTotal += 1;
-      const text = Buffer.from(msg.data).toString("utf-8");
-      let symbol: string | undefined;
+  // One pass over one tick. Entirely synchronous and fully guarded: nothing
+  // in here can reject, so nothing in here can end the subscription.
+  function fanOutTick(text: string, symbol: string): void {
+    for (const [client, brokerId] of clients) {
+      if (client.readyState !== WebSocket.OPEN) continue;
+      // In-memory only. Unknown broker (nothing cached yet) = forward
+      // nothing for it this tick; the refresh it just scheduled means the
+      // next tick has the real set. Failing OPEN here would leak another
+      // broker's symbols, so the closed direction is the safe one.
+      const enabled = getEnabledSymbolsHot(brokerId);
+      if (!enabled || !enabled.has(symbol)) continue;
       try {
-        symbol = JSON.parse(text)?.symbol;
-      } catch {
-        continue; // malformed tick -- nothing to filter or forward
-      }
-      if (!symbol) continue;
-
-      for (const [client, brokerId] of clients) {
-        if (client.readyState !== WebSocket.OPEN) continue;
-        const enabled = await getEnabledSymbolsCached(brokerId);
-        if (!enabled.has(symbol)) continue;
         client.send(text);
         gatewayStats.ticksForwardedTotal += 1;
+        gatewayStats.lastTickForwardedAtMs = Date.now();
+      } catch (err) {
+        // A single bad socket must not cost every other client its tick.
+        console.error("price stream: send failed for one client, dropping it", err);
+        try { client.terminate(); } catch { /* already gone */ }
+        clients.delete(client);
       }
     }
-  })().catch((err) => {
-    console.error("price stream: NATS subscription loop ended", err);
-  });
+  }
+
+  // The subscription runs under a supervisor. Any exit -- a thrown error, or
+  // the iterator simply completing because NATS tore the subscription down --
+  // resubscribes with backoff instead of leaving the feed dark forever.
+  let currentSub = sub;
+  let stopped = false;
+  let consecutiveFailures = 0;
+
+  async function runSubscription(): Promise<void> {
+    for await (const msg of currentSub) {
+      gatewayStats.natsMessagesReceivedTotal += 1;
+      gatewayStats.lastNatsMessageAtMs = Date.now();
+      // Per-message guard: one malformed payload, one bad client, one
+      // anything cannot end the loop.
+      try {
+        const text = Buffer.from(msg.data).toString("utf-8");
+        let symbol: string | undefined;
+        try {
+          symbol = JSON.parse(text)?.symbol;
+        } catch {
+          continue; // malformed tick -- nothing to filter or forward
+        }
+        if (!symbol) continue;
+        fanOutTick(text, symbol);
+      } catch (err) {
+        console.error("price stream: failed to handle one tick (skipping it, subscription stays up)", err);
+      }
+    }
+  }
+
+  async function superviseSubscription(): Promise<void> {
+    while (!stopped) {
+      try {
+        await runSubscription();
+        // Clean exit still means no more ticks -- treat it as a failure.
+        console.error("price stream: NATS subscription ended cleanly, resubscribing");
+      } catch (err) {
+        console.error("price stream: NATS subscription loop ended", err);
+      }
+      if (stopped) break;
+
+      const wait = Math.min(1000 * 2 ** Math.min(consecutiveFailures, 4), 15_000);
+      consecutiveFailures += 1;
+      gatewayStats.priceSubscriptionRestartsTotal += 1;
+      console.error(`price stream: resubscribing to price.tick.* in ${wait}ms (restart #${gatewayStats.priceSubscriptionRestartsTotal})`);
+      await new Promise((r) => setTimeout(r, wait));
+      try {
+        currentSub = nc.subscribe("price.tick.*");
+        consecutiveFailures = 0;
+        console.error("price stream: resubscribed to price.tick.*");
+      } catch (err) {
+        console.error("price stream: resubscribe failed, will retry", err);
+      }
+    }
+  }
+
+  void superviseSubscription();
+
+  // Watchdog: NATS is delivering but nothing has gone out to anyone for
+  // WATCHDOG_STALL_MS while clients are connected. That is the signature of
+  // a fan-out that has stopped doing its job, and it is exactly the state
+  // that previously went unnoticed until a trader complained. Force a
+  // resubscribe rather than only logging.
+  const WATCHDOG_INTERVAL_MS = 15_000;
+  const WATCHDOG_STALL_MS = 30_000;
+  const watchdog = setInterval(() => {
+    if (clients.size === 0) return;
+    const now = Date.now();
+    const natsRecent = now - gatewayStats.lastNatsMessageAtMs < WATCHDOG_STALL_MS;
+    const forwardedStale = now - gatewayStats.lastTickForwardedAtMs > WATCHDOG_STALL_MS;
+    if (natsRecent && forwardedStale) {
+      console.error(
+        `[ALERT] price stream: ${clients.size} client(s) connected and NATS is delivering, but no tick has been forwarded for ` +
+          `${Math.round((now - gatewayStats.lastTickForwardedAtMs) / 1000)}s. Forcing a resubscribe.`
+      );
+      try { currentSub.unsubscribe(); } catch { /* the supervisor picks it up either way */ }
+    }
+  }, WATCHDOG_INTERVAL_MS);
+  watchdog.unref?.();
 }
 
 // Order/position/account event fan-out — docs/webtrader-stm-architecture-
