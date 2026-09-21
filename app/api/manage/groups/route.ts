@@ -63,6 +63,10 @@ export async function GET() {
       marginCallLevel: g.marginCallLevel.toString(),
       stopOutLevel: g.stopOutLevel.toString(),
       isDefault: g.isDefault,
+      // Whether a CLIENT may be placed in this group. The backoffice
+      // add-account picker filters on it so a broker admin cannot drop a
+      // client into the COVERAGE hedge book or the REVERSAL source group.
+      isClientSelectable: g.isClientSelectable,
       maxLotSize: g.maxLotSize ? g.maxLotSize.toString() : "",
       tradingRestriction: g.tradingRestriction,
       tradingHalted: g.tradingHaltedAt != null,

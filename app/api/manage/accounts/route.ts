@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { hasPermission } from "@/lib/permissions";
 import { provisionAccount } from "@/lib/account-provisioning";
+import { isCountryCode } from "@/lib/countries";
 import { AccountStructureError } from "@/lib/account-structure";
 
 async function requireManager() {
@@ -185,7 +186,14 @@ async function createAccount(request: NextRequest, session: NonNullable<Awaited<
       { status: 400 }
     );
   }
-  const country = typeof body?.country === "string" && body.country.trim() ? body.country.trim() : null;
+  // Was stored raw, so "Pakistan", "XX" and "12345" all persisted into a field
+  // KYC and compliance read. Still optional; still null when omitted -- but if
+  // something IS supplied it has to be a real ISO 3166-1 alpha-2 code.
+  const countryRaw = typeof body?.country === "string" ? body.country.trim().toUpperCase() : "";
+  if (countryRaw && !isCountryCode(countryRaw)) {
+    return NextResponse.json({ error: "country must be a two-letter ISO 3166-1 country code" }, { status: 400 });
+  }
+  const country = countryRaw || null;
   const phone = typeof body?.phone === "string" && body.phone.trim() ? body.phone.trim() : null;
   let dateOfBirth: Date | null = null;
   if (typeof body?.dateOfBirth === "string" && body.dateOfBirth.trim()) {

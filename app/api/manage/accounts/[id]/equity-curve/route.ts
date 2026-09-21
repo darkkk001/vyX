@@ -8,7 +8,12 @@ import { getAdminSession, requireAdminRole } from "@/lib/auth";
 // (lib/position-close.ts) -- capped with the current balance. This is a balance
 // curve, honestly labelled: a live-floating equity curve would need periodic
 // floating-P&L snapshots, which this codebase does not store.
-export async function GET(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+/** Ranges the client detail offers. Capped at 365: this walks every Transaction
+ *  row in the window, and a multi-year account would be a slow unbounded scan. */
+const MAX_DAYS = 365;
+const DEFAULT_DAYS = 90;
+
+export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await getAdminSession();
   if (!requireAdminRole(session, ["MANAGER", "BROKER_ADMIN"]) || !session!.brokerId) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
@@ -21,7 +26,13 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
     return NextResponse.json({ error: "not found" }, { status: 404 });
   }
 
-  const since = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
+  // ?days=7|30|90|<n>. Anything unparseable falls back to the previous fixed
+  // 90 days rather than erroring, so an older backoffice that sends no
+  // parameter at all keeps its exact current behaviour.
+  const raw = Number(new URL(request.url).searchParams.get("days"));
+  const days = Number.isFinite(raw) && raw >= 1 ? Math.min(Math.trunc(raw), MAX_DAYS) : DEFAULT_DAYS;
+
+  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
   const txs = await prisma.transaction.findMany({
     where: { accountId: id, createdAt: { gte: since } },
     orderBy: { createdAt: "asc" },
@@ -31,5 +42,7 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
   const points = txs.map((t) => ({ t: t.createdAt.toISOString(), balance: t.balanceAfter.toString() }));
   points.push({ t: new Date().toISOString(), balance: account.balance.toString() });
 
-  return NextResponse.json({ kind: "balance", points });
+  // days is echoed back so the caller can label the chart with the window the
+  // server actually applied, not the one it asked for (they differ at the cap).
+  return NextResponse.json({ kind: "balance", days, points });
 }
