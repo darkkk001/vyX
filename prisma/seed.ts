@@ -1,5 +1,6 @@
 import { PrismaClient } from "@prisma/client";
 import bcrypt from "bcryptjs";
+import { provisionStarterState } from "../lib/starter-state";
 import crypto from "node:crypto";
 import { assertNotProductionDatabase } from "../scripts/lib/assert-not-production.mjs";
 
@@ -60,18 +61,20 @@ async function main() {
     },
   });
 
-  // Stage 3b: Account.groupId is NOT NULL, so a seeded broker needs a default
-  // group before it can have accounts. This is the same starter-group gap that
-  // Stage 4 piece 6 closes for real broker provisioning.
-  const acmeFxGroup = await prisma.group.upsert({
+  // Starter groups + the 16-symbol platform-default set, through the SAME
+  // function POST /api/admin/brokers uses. Previously the seed created groups
+  // and symbols by hand while the real provisioning API created neither, so
+  // the two drifted; lib/starter-state.ts is now the single definition.
+  for (const broker of [acmeFx, novaMarkets]) {
+    await provisionStarterState(prisma, broker.id);
+  }
+
+  // The Standard group is what the demo accounts below are opened in.
+  const acmeFxGroup = await prisma.group.findUniqueOrThrow({
     where: { brokerId_name: { brokerId: acmeFx.id, name: "Standard" } },
-    update: {},
-    create: { brokerId: acmeFx.id, name: "Standard", category: "B_BOOK", isDefault: true, leverage: 100, dealingMode: "AUTO" },
   });
-  const novaMarketsGroup = await prisma.group.upsert({
+  const novaMarketsGroup = await prisma.group.findUniqueOrThrow({
     where: { brokerId_name: { brokerId: novaMarkets.id, name: "Standard" } },
-    update: {},
-    create: { brokerId: novaMarkets.id, name: "Standard", category: "B_BOOK", isDefault: true, leverage: 100, dealingMode: "AUTO" },
   });
 
   const brokerAdminPlain = randomPassword();
@@ -112,48 +115,10 @@ async function main() {
     },
   });
 
-  const symbolDefs = [
-    { name: "EURUSD", baseCurrency: "EUR", quoteCurrency: "USD", digits: 5, contractSize: "100000", category: "FOREX" },
-    { name: "GBPUSD", baseCurrency: "GBP", quoteCurrency: "USD", digits: 5, contractSize: "100000", category: "FOREX" },
-    { name: "USDJPY", baseCurrency: "USD", quoteCurrency: "JPY", digits: 3, contractSize: "100000", category: "FOREX" },
-    { name: "AUDUSD", baseCurrency: "AUD", quoteCurrency: "USD", digits: 5, contractSize: "100000", category: "FOREX" },
-    { name: "XAUUSD", baseCurrency: "XAU", quoteCurrency: "USD", digits: 2, contractSize: "100", category: "METALS" },
-    { name: "XAGUSD", baseCurrency: "XAG", quoteCurrency: "USD", digits: 3, contractSize: "5000", category: "METALS" },
-    { name: "BTCUSD", baseCurrency: "BTC", quoteCurrency: "USD", digits: 1, contractSize: "1", category: "CRYPTO" },
-    { name: "ETHUSD", baseCurrency: "ETH", quoteCurrency: "USD", digits: 2, contractSize: "1", category: "CRYPTO" },
-    { name: "US30", baseCurrency: "USD", quoteCurrency: "USD", digits: 1, contractSize: "1", category: "INDICES" },
-    { name: "NAS100", baseCurrency: "USD", quoteCurrency: "USD", digits: 1, contractSize: "1", category: "INDICES" },
-  ] as const;
-
-  const symbols = await Promise.all(
-    symbolDefs.map((def) =>
-      prisma.symbol.upsert({
-        where: { name: def.name },
-        update: {},
-        create: def,
-      })
-    )
-  );
-
-  for (const broker of [acmeFx, novaMarkets]) {
-    for (const symbol of symbols) {
-      await prisma.brokerSymbol.upsert({
-        where: { brokerId_symbolId: { brokerId: broker.id, symbolId: symbol.id } },
-        update: {},
-        create: {
-          brokerId: broker.id,
-          symbolId: symbol.id,
-          spreadMarkup: 0,
-          minLot: "0.01",
-          maxLot: "100",
-          lotStep: "0.01",
-          swapLong: "-1.20",
-          swapShort: "0.35",
-          enabled: true,
-        },
-      });
-    }
-  }
+  // Symbols and BrokerSymbol rows are provisioned by provisionStarterState
+  // above -- the curated 16-symbol set both production brokers actually run.
+  // The hand-written 10-symbol list that used to live here included USDJPY,
+  // which no broker enables because the feed does not carry it.
 
   const demoPassword = await bcrypt.hash("Demo1234!", 10);
   await prisma.account.upsert({

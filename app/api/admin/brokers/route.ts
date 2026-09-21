@@ -3,6 +3,7 @@ import { Prisma } from "@prisma/client";
 import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession } from "@/lib/auth";
+import { provisionStarterState } from "@/lib/starter-state";
 
 const RESERVED_SUBDOMAINS = new Set(["admin", "www", "api"]);
 const SUBDOMAIN_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
@@ -129,6 +130,25 @@ export async function POST(request: NextRequest) {
           entityId: createdBroker.id,
           oldValue: Prisma.JsonNull,
           newValue: { name: createdBroker.name, subdomain: createdBroker.subdomain, tier: createdBroker.tier, status: createdBroker.status },
+        },
+      });
+
+      // A broker with no groups and no symbols cannot create a single
+      // account -- provisionAccount resolves the isDefault group, finds none
+      // and throws NO_GROUP_AVAILABLE. Provisioned INSIDE this transaction so
+      // a tenant is never left half-built: either the broker exists with its
+      // starter groups and symbols, or it does not exist at all.
+      const starter = await provisionStarterState(tx, createdBroker.id);
+
+      await tx.auditLog.create({
+        data: {
+          brokerId: createdBroker.id,
+          actorAdminId: session.adminId,
+          action: "BROKER_STARTER_STATE_PROVISIONED",
+          entityType: "Broker",
+          entityId: createdBroker.id,
+          oldValue: Prisma.JsonNull,
+          newValue: { ...starter },
         },
       });
 

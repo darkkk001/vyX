@@ -10,18 +10,18 @@ import { getClientSession } from "@/lib/client-auth";
 // type" is really choosing a group -- but only from the ones meant for them.
 //
 // EXCLUDED, and why each matters:
-//   COVERAGE  the broker's own hedge account lives here (lib/coverage.ts).
-//             lib/account-structure.ts already refuses a client account in
-//             one; this stops it ever being offered in the first place.
-//   REVERSAL  the reverse-copy source book. A client landing in it would be
-//             mirrored into the broker's master account.
-//   A_BOOK / LIVE_ONLY / DEMO_ONLY  filtered per the requested mode, the same
-//             rule lib/account-structure.ts enforces on the write.
+//   isClientSelectable=false  the broker has not published this group. It
+//             defaults to false and the 20260921180000 migration set it true
+//             only for B_BOOK/DEALING, so the COVERAGE group (the broker's own
+//             hedge account, lib/coverage.ts), the REVERSAL source book (a
+//             client landing there would be mirrored into the master account)
+//             and the A_BOOK LP group are all excluded.
+//   mode      LIVE_ONLY / DEMO_ONLY groups are filtered per the requested
+//             mode, the same rule lib/account-structure.ts enforces on write.
 //
 // Routing itself is never returned. A client must not be able to tell whether
 // they are A-booked, B-booked or dealt, which is the whole point of keeping
 // routing on the group and off the client-facing label.
-const CLIENT_ELIGIBLE = ["B_BOOK", "DEALING"] as const;
 
 export async function GET(request: Request) {
   const session = await getClientSession();
@@ -34,7 +34,7 @@ export async function GET(request: Request) {
   const groups = await prisma.group.findMany({
     where: {
       brokerId: session.brokerId,
-      category: { in: [...CLIENT_ELIGIBLE] },
+      isClientSelectable: true,
       modeRestriction: mode === "DEMO" ? { in: ["ANY", "DEMO_ONLY"] } : { in: ["ANY", "LIVE_ONLY"] },
       tradingHaltedAt: null,
     },

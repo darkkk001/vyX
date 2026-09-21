@@ -1008,6 +1008,21 @@ model Group {
   // The MODE guard (see GroupModeRestriction). Not a category: mode is
   // Account.accountMode and always has been.
   modeRestriction    GroupModeRestriction @default(ANY)
+  // Whether a CLIENT may choose this group when opening an account.
+  //
+  // Separate from category on purpose. category answers "where does the risk
+  // go", which is broker-side and must never be shown to a client;
+  // isClientSelectable answers "may a client pick this", which is a product
+  // decision the broker makes per group. Inferring one from the other was the
+  // first cut of app/api/portal/groups and it was wrong in both directions: a
+  // broker may run two B_BOOK groups and offer only one, and a COVERAGE or
+  // REVERSAL group must never be offered no matter how it is routed.
+  //
+  // Defaults to FALSE so the failure mode is a group a client cannot see,
+  // never a client landing in the broker's own hedge or reverse-mirror book.
+  // The 20260921180000 migration backfills true for exactly the groups the
+  // old category-based filter already allowed, so nothing visible changes.
+  isClientSelectable Boolean              @default(false)
   // Overrides whether this group's MARKET orders reach the manual dealing
   // queue -- independent of groupType, forceDealingMode, and
   // Broker.dealingModeAt, all three of which stay meaningful for every
