@@ -60,6 +60,20 @@ async function main() {
     },
   });
 
+  // Stage 3b: Account.groupId is NOT NULL, so a seeded broker needs a default
+  // group before it can have accounts. This is the same starter-group gap that
+  // Stage 4 piece 6 closes for real broker provisioning.
+  const acmeFxGroup = await prisma.group.upsert({
+    where: { brokerId_name: { brokerId: acmeFx.id, name: "Standard" } },
+    update: {},
+    create: { brokerId: acmeFx.id, name: "Standard", category: "B_BOOK", isDefault: true, leverage: 100, dealingMode: "AUTO" },
+  });
+  const novaMarketsGroup = await prisma.group.upsert({
+    where: { brokerId_name: { brokerId: novaMarkets.id, name: "Standard" } },
+    update: {},
+    create: { brokerId: novaMarkets.id, name: "Standard", category: "B_BOOK", isDefault: true, leverage: 100, dealingMode: "AUTO" },
+  });
+
   const brokerAdminPlain = randomPassword();
   const brokerAdminPassword = await bcrypt.hash(brokerAdminPlain, 10);
   await prisma.adminUser.upsert({
@@ -147,6 +161,7 @@ async function main() {
     update: {},
     create: {
       brokerId: acmeFx.id,
+      groupId: acmeFxGroup.id,
       accountNumber: "50001234",
       email: "demo@acmefx.com",
       passwordHash: demoPassword,
@@ -162,6 +177,7 @@ async function main() {
     update: {},
     create: {
       brokerId: novaMarkets.id,
+      groupId: novaMarketsGroup.id,
       accountNumber: "50005678",
       email: "demo@novamarkets.com",
       passwordHash: demoPassword,

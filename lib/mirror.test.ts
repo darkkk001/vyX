@@ -236,8 +236,12 @@ async function createFixture(
       balance: D(10000),
     },
   });
+  const targetGroup = await tx.group.create({
+    data: { brokerId: broker.id, name: `Mirror Target Group ${suffix}`, dealingMode: "AUTO" },
+  });
   const targetAccount = await tx.account.create({
     data: {
+      groupId: targetGroup.id,
       brokerId: broker.id,
       accountNumber: `8${suffix.slice(0, 7)}`,
       email: `mirror-target-${suffix}@test.local`,

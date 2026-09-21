@@ -165,8 +165,9 @@ describe("chargeCommission (live DB, rolled back)", () => {
   async function makeAccount(tx: Prisma.TransactionClient, balance: string) {
     const suffix = randomUUID().replace(/-/g, "").slice(0, 10);
     const broker = await tx.broker.create({ data: { name: `Commission Test ${suffix}`, subdomain: `commtest-${suffix}` } });
+    const _g0 = await tx.group.create({ data: { brokerId: broker.id, name: `TG-${Math.random().toString(36).slice(2, 10)}`, dealingMode: "AUTO" } });
     return tx.account.create({
-      data: {
+      data: { groupId: _g0.id,
         brokerId: broker.id,
         accountNumber: `8${suffix.slice(0, 7)}`,
         email: `comm-${suffix}@test.local`,

@@ -3,6 +3,7 @@ import { Prisma, PositionActionType, type Position, type OrderSide } from "@pris
 import { getFreshPrice } from "@/lib/live-price";
 import { checkTradingSession, computeNextSessionOpen } from "@/lib/risk";
 import { computeRealizedPnl } from "@/lib/trading";
+import { resolveBookType } from "@/lib/group-pricing";
 import { randomUUID } from "node:crypto";
 
 type Tx = Prisma.TransactionClient;
@@ -177,7 +178,10 @@ export async function executeReverseCloseReopen(
     contractSize: position.symbol.contractSize,
   });
 
-  const account = await tx.account.findUniqueOrThrow({ where: { id: position.accountId } });
+  const account = await tx.account.findUniqueOrThrow({
+    where: { id: position.accountId },
+    include: { group: { select: { category: true } } },
+  });
   const balanceBefore = account.balance;
   const balanceAfter = balanceBefore.add(realizedPnl);
 
@@ -229,7 +233,10 @@ export async function executeReverseCloseReopen(
       side: newSide,
       volume: position.volume,
       openPrice,
-      bookType: brokerSymbol?.defaultBookType ?? "B_BOOK",
+      // Stage 3b: the reversed leg books where the ACCOUNT's group routes, not
+      // where the symbol's (now unused) default said. This previously stamped
+      // B_BOOK onto a reversal opened on an A_BOOK or COVERAGE account.
+      bookType: resolveBookType(account.group.category),
     },
   });
 

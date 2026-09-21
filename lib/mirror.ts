@@ -400,7 +400,7 @@ async function mirrorFillForRule(db: Db, rule: MirrorRule, source: MirrorSourceP
       return;
     }
 
-    const bookType = targetAccount.group ? resolveBookType(targetAccount.group.category) : brokerSymbol.defaultBookType;
+    const bookType = resolveBookType(targetAccount.group.category);
 
     const created = await withTx(db, async (tx) => {
       const order = await tx.order.create({

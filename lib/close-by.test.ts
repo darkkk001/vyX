@@ -62,8 +62,9 @@ async function createFixture(tx: Prisma.TransactionClient): Promise<Fixture> {
   const alwaysOpen = { create: Array.from({ length: 7 }, (_, dayOfWeek) => ({ dayOfWeek, openTime: "00:00", closeTime: "23:59" })) };
   await tx.brokerSymbol.create({ data: { brokerId: broker.id, symbolId: xau.id, minLot: D(0.01), maxLot: D(1000), lotStep: D(0.01), tradingMode: "BOTH", tradingSessions: alwaysOpen } });
   await tx.brokerSymbol.create({ data: { brokerId: broker.id, symbolId: eur.id, minLot: D(0.01), maxLot: D(1000), lotStep: D(0.01), tradingMode: "BOTH", tradingSessions: alwaysOpen } });
+  const _g0 = await tx.group.create({ data: { brokerId: broker.id, name: `TG-${Math.random().toString(36).slice(2, 10)}`, dealingMode: "AUTO" } });
   const account = await tx.account.create({
-    data: {
+    data: { groupId: _g0.id,
       brokerId: broker.id,
       accountNumber: `7${suffix.slice(0, 7)}`,
       email: `cb-client-${suffix}@test.local`,

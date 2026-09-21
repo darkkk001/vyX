@@ -362,7 +362,7 @@ export async function POST(request: NextRequest) {
         openPrice: fillPrice,
         slPrice,
         tpPrice,
-        bookType: account.group ? resolveBookType(account.group.category) : brokerSymbol.defaultBookType,
+        bookType: resolveBookType(account.group.category),
       },
     });
     await chargeCommission(tx, { brokerId, accountId, positionId: position.id, commissionPerLot: pricing.commissionPerLot, volume });

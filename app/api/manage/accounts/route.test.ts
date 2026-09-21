@@ -41,7 +41,7 @@ beforeAll(async () => {
   await assertNotProductionDatabase(prisma);
 });
 
-type Fixture = { brokerId: string; adminId: string };
+type Fixture = { brokerId: string; adminId: string; groupId: string };
 const createdBrokerIds: string[] = [];
 const createdAccountIds: string[] = [];
 
@@ -52,7 +52,13 @@ async function createFixture(): Promise<Fixture> {
   const admin = await prisma.adminUser.create({
     data: { brokerId: broker.id, email: `acc-admin-${suffix}@test.local`, passwordHash: "x", role: "BROKER_ADMIN" },
   });
-  return { brokerId: broker.id, adminId: admin.id };
+  // Stage 3b: accounts require a group, and POST resolves the broker's
+  // isDefault group when the caller does not name one, so every fixture
+  // broker needs one. Stage 4 piece 6 does the same for real brokers.
+  const group = await prisma.group.create({
+    data: { brokerId: broker.id, name: `Standard ${suffix}`, isDefault: true, dealingMode: "AUTO" },
+  });
+  return { brokerId: broker.id, adminId: admin.id, groupId: group.id };
 }
 
 async function post(fx: Fixture, body: Record<string, unknown>) {
@@ -81,6 +87,7 @@ afterAll(async () => {
     await prisma.auditLog.deleteMany({ where });
     await prisma.accountType.deleteMany({ where });
     await prisma.adminUser.deleteMany({ where });
+    await prisma.group.deleteMany({ where: { brokerId: { in: createdBrokerIds } } }).catch(() => {});
     await prisma.broker.deleteMany({ where: { id: { in: createdBrokerIds } } });
   }
   await prisma.$disconnect();
@@ -96,7 +103,7 @@ describe("POST /api/manage/accounts -- account number allocation (live DB)", () 
     const adversarialNumber = "9999999"; // 7 digits, starts with 9
     const fx = await createFixture();
     const account = await prisma.account.create({
-      data: {
+      data: { groupId: fx.groupId,
         brokerId: fx.brokerId,
         accountNumber: adversarialNumber,
         email: `adversarial-${randomUUID()}@test.local`,

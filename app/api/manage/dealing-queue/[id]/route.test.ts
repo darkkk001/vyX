@@ -60,8 +60,9 @@ async function createFixture(): Promise<Fixture> {
     data: { brokerId: broker.id, symbolId: symbol.id, minLot: D(0.01), maxLot: D(100), lotStep: D(0.01), tradingMode: "BOTH" },
   });
   await prisma.livePrice.create({ data: { symbol: symbol.name, bid: D("100.00"), ask: D("100.10") } });
+  const _g0 = await prisma.group.create({ data: { brokerId: broker.id, name: `TG-${Math.random().toString(36).slice(2, 10)}`, dealingMode: "AUTO" } });
   const account = await prisma.account.create({
-    data: {
+    data: { groupId: _g0.id,
       brokerId: broker.id,
       accountNumber: `7${suffix.slice(0, 7)}`,
       email: `dq-client-${suffix}@test.local`,
@@ -117,6 +118,7 @@ afterAll(async () => {
     await prisma.account.deleteMany({ where });
     await prisma.brokerSymbol.deleteMany({ where });
     await prisma.adminUser.deleteMany({ where });
+    await prisma.group.deleteMany({ where: { brokerId: { in: createdBrokerIds } } }).catch(() => {});
     await prisma.broker.deleteMany({ where: { id: { in: createdBrokerIds } } });
   }
   await prisma.livePrice.deleteMany({ where: { symbol: { startsWith: "DQ" } } }).catch(() => {});

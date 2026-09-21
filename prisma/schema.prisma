@@ -609,11 +609,15 @@ model Account {
   // lib/risk.ts's checkMaxDailyLoss. Existing open positions are
   // untouched; this only blocks new trading for the rest of the day.
   maxDailyLoss  Decimal?      @db.Decimal(18, 2)
-  // Null = ungrouped (every account before this feature existed, and any
-  // new one until an admin assigns it) -- see Group's own comment for
-  // what assigning a group actually does today.
-  groupId       String?
-  group         Group?        @relation(fields: [groupId], references: [id])
+  // Required since Stage 3b. Every account belongs to a group, which is what
+  // lets the routing call sites read account.group.category directly instead
+  // of falling back to BrokerSymbol.defaultBookType per symbol. A broker with
+  // no default group therefore cannot have an account created for it --
+  // lib/account-provisioning.ts turns that into a readable error rather than
+  // a constraint violation, and Stage 4 piece 6 removes the situation by
+  // provisioning starter groups with the broker.
+  groupId       String
+  group         Group         @relation(fields: [groupId], references: [id])
   // Which pricing tier (Standard/Pro/Zero, or whatever a broker has
   // renamed/added under Settings -> Account Types) this account is
   // classified under -- see AccountType's own doc comment. Null = every

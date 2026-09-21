@@ -85,6 +85,13 @@ async function main() {
     { accountNumber: "00090001", email: "qa-client-1@zzzqa.test", fullName: "QA Test Client One" },
     { accountNumber: "00090002", email: "qa-client-2@zzzqa.test", fullName: "QA Test Client Two" },
   ];
+  // Stage 3b: accounts require a group.
+  const qaGroup = await prisma.group.upsert({
+    where: { brokerId_name: { brokerId: broker.id, name: "Standard-USD" } },
+    update: {},
+    create: { brokerId: broker.id, name: "Standard-USD", category: "B_BOOK", isDefault: true, leverage: 100, dealingMode: "AUTO" },
+  });
+
   const accounts = [];
   for (const a of accountDefs) {
     const account = await prisma.account.upsert({
@@ -92,6 +99,7 @@ async function main() {
       update: {},
       create: {
         brokerId: broker.id,
+        groupId: qaGroup.id,
         accountNumber: a.accountNumber,
         email: a.email,
         passwordHash: accountPassword,

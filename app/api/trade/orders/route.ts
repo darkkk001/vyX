@@ -374,7 +374,7 @@ async function handlePlaceOrder(request: NextRequest) {
           });
           logSpreadWarning({ accountId: account.id, symbolId: brokerSymbol.symbolId, brokerId: session.brokerId }, pricing.warning);
           const fillPrice = applySpreadMarkup({ side, price: liveRef, spreadMarkup: pricing.spreadMarkup, digits: brokerSymbol.symbol.digits });
-          const bookType = account.group ? resolveBookType(account.group.category) : brokerSymbol.defaultBookType;
+          const bookType = resolveBookType(account.group.category);
           // Phase 0 money-risk patch (docs/ROADMAP.md item 2) -- an
           // auto-accept that would open a position the account can't
           // actually margin doesn't get to skip the gate just because
@@ -577,7 +577,7 @@ async function handlePlaceOrder(request: NextRequest) {
       if (marginError) {
         return NextResponse.json(marginError, { status: 400 });
       }
-      const bookType = account.group ? resolveBookType(account.group.category) : brokerSymbol.defaultBookType;
+      const bookType = resolveBookType(account.group.category);
       const result = await prisma.$transaction(async (tx) => {
         const order = await tx.order.create({
           data: {

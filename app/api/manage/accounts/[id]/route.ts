@@ -58,6 +58,16 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     );
   }
 
+  // Stage 3b: Account.groupId is NOT NULL, so an account can no longer be
+  // returned to the ungrouped state. Reject it explicitly rather than let it
+  // surface as a constraint violation.
+  if (hasGroupChange && body.groupId == null) {
+    return NextResponse.json(
+      { error: "an account must belong to a group; pick a different group instead of clearing it", code: "GROUP_REQUIRED" },
+      { status: 400 }
+    );
+  }
+
   let group: { id: string; leverage: number; category: RoutingCategory; modeRestriction: GroupModeRestriction } | null = null;
   if (hasGroupChange && body.groupId != null) {
     const found = await prisma.group.findUnique({ where: { id: body.groupId } });
@@ -128,7 +138,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
   const updated = await prisma.$transaction(async (tx) => {
     const data: {
-      groupId?: string | null;
+      groupId?: string;
       accountTypeId?: string | null;
       leverage?: number;
       status?: typeof status;
@@ -138,7 +148,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     const auditEntries: { action: string; oldValue: Prisma.InputJsonValue; newValue: Prisma.InputJsonValue }[] = [];
 
     if (hasGroupChange) {
-      data.groupId = group?.id ?? null;
+      data.groupId = group!.id;
       // Assigning a group copies its leverage onto the account once, at
       // assignment time -- see Group's own schema comment. Unassigning
       // (groupId: null) doesn't reset leverage; there's nothing to reset

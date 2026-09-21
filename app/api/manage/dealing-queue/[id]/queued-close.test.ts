@@ -46,8 +46,16 @@ async function createFixture(opts?: { dealerOn?: boolean }): Promise<Fixture> {
   const symbol = await prisma.symbol.create({ data: { name: `QC${suffix.toUpperCase()}`, baseCurrency: "TST", quoteCurrency: "USD", category: "CRYPTO", digits: 2, contractSize: D(1) } });
   await prisma.brokerSymbol.create({ data: { brokerId: broker.id, symbolId: symbol.id, minLot: D(0.01), maxLot: D(100), lotStep: D(0.01), tradingMode: "BOTH" } });
   await prisma.livePrice.create({ data: { symbol: symbol.name, bid: D("100.00"), ask: D("100.10"), tickAt: new Date() } });
+  // Queueing in these tests is driven by the BROKER switch (dealingModeAt),
+  // per createFixture's own comment, so the group must not itself be
+  // dealing-typed: resolveWantsDealingQueue still ORs in
+  // groupType === "DEALING" (the Stage 1 shadow column), which would make
+  // every case queue regardless of the switch. See STAGE3B note in the PR.
+  const _g0 = await prisma.group.create({
+    data: { brokerId: broker.id, name: `TG-${Math.random().toString(36).slice(2, 10)}`, groupType: "DEMO" },
+  });
   const account = await prisma.account.create({
-    data: { brokerId: broker.id, accountNumber: `8${suffix.slice(0, 7)}`, email: `qc-client-${suffix}@test.local`, passwordHash: "x", fullName: "Queued Close Client", accountMode: "LIVE", balance: D(10000) },
+    data: { groupId: _g0.id, brokerId: broker.id, accountNumber: `8${suffix.slice(0, 7)}`, email: `qc-client-${suffix}@test.local`, passwordHash: "x", fullName: "Queued Close Client", accountMode: "LIVE", balance: D(10000) },
   });
   return { brokerId: broker.id, adminId: admin.id, accountId: account.id, symbolId: symbol.id, symbolName: symbol.name };
 }
@@ -116,6 +124,7 @@ afterAll(async () => {
     await prisma.group.deleteMany({ where }).catch(() => {});
     await prisma.brokerSymbol.deleteMany({ where });
     await prisma.adminUser.deleteMany({ where });
+    await prisma.group.deleteMany({ where: { brokerId: { in: createdBrokerIds } } }).catch(() => {});
     await prisma.broker.deleteMany({ where: { id: { in: createdBrokerIds } } });
   }
   await prisma.livePrice.deleteMany({ where: { symbol: { startsWith: "QC" } } }).catch(() => {});

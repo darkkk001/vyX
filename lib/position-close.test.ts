@@ -44,8 +44,9 @@ async function createFixture(tx: Prisma.TransactionClient, balance = "100000"): 
   const suffix = randomUUID().replace(/-/g, "").slice(0, 10);
   const broker = await tx.broker.create({ data: { name: `Position Close Test ${suffix}`, subdomain: `pctest-${suffix}` } });
   const symbol = await tx.symbol.findUniqueOrThrow({ where: { name: "XAUUSD" } });
+  const _g0 = await tx.group.create({ data: { brokerId: broker.id, name: `TG-${Math.random().toString(36).slice(2, 10)}`, dealingMode: "AUTO" } });
   const account = await tx.account.create({
-    data: {
+    data: { groupId: _g0.id,
       brokerId: broker.id,
       accountNumber: `9${suffix.slice(0, 7)}`,
       email: `pc-client-${suffix}@test.local`,

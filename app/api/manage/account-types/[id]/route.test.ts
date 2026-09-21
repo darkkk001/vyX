@@ -54,6 +54,7 @@ afterAll(async () => {
     await prisma.account.deleteMany({ where });
     await prisma.accountType.deleteMany({ where });
     await prisma.adminUser.deleteMany({ where });
+    await prisma.group.deleteMany({ where: { brokerId: { in: createdBrokerIds } } }).catch(() => {});
     await prisma.broker.deleteMany({ where: { id: { in: createdBrokerIds } } });
   }
   await prisma.$disconnect();
@@ -114,8 +115,9 @@ describe("PATCH /api/manage/account-types/[id] (live DB)", () => {
     if (!dbReachable) return;
     const fx = await createFixture();
     const type = await prisma.accountType.create({ data: { brokerId: fx.brokerId, name: "Standard", isDefault: true } });
+    const _g0 = await prisma.group.create({ data: { brokerId: fx.brokerId, name: `TG-${Math.random().toString(36).slice(2, 10)}`, dealingMode: "AUTO" } });
     await prisma.account.create({
-      data: {
+      data: { groupId: _g0.id,
         brokerId: fx.brokerId,
         accountNumber: `8${randomUUID().replace(/-/g, "").slice(0, 7)}`,
         email: `at-client-${randomUUID()}@test.local`,

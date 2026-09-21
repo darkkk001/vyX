@@ -41,8 +41,9 @@ async function createFixture(pricingEngineEnabled: boolean) {
   });
   await prisma.livePrice.create({ data: { symbol: symbol.name, bid: D("99.90"), ask: D("100.10") } });
   const accountType = await prisma.accountType.create({ data: { brokerId: broker.id, name: "PX Type", spreadMarkup: D("0.05") } });
+  const _g0 = await prisma.group.create({ data: { brokerId: broker.id, name: `TG-${Math.random().toString(36).slice(2, 10)}`, dealingMode: "AUTO" } });
   const account = await prisma.account.create({
-    data: {
+    data: { groupId: _g0.id,
       brokerId: broker.id,
       accountNumber: `6${suffix.slice(0, 7)}`,
       email: `px-${suffix}@test.local`,
@@ -62,6 +63,7 @@ afterAll(async () => {
     await prisma.account.deleteMany({ where });
     await prisma.accountType.deleteMany({ where });
     await prisma.brokerSymbol.deleteMany({ where });
+    await prisma.group.deleteMany({ where: { brokerId: { in: createdBrokerIds } } }).catch(() => {});
     await prisma.broker.deleteMany({ where: { id: { in: createdBrokerIds } } });
   }
   await prisma.livePrice.deleteMany({ where: { symbol: { startsWith: "PX" } } }).catch(() => {});

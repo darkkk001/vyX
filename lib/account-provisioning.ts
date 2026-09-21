@@ -1,7 +1,7 @@
 import "server-only";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { assertAccountStructure } from "@/lib/account-structure";
+import { assertAccountStructure, AccountStructureError } from "@/lib/account-structure";
 
 // Extracted out of app/api/manage/accounts/route.ts's own createAccount
 // (Manager's Add Account form) -- same numeric-safe sequential account
@@ -33,6 +33,9 @@ export type ProvisionAccountParams = {
   accountTypeId: string | null;
   currency: string;
   leverage: number;
+  // Callers may still pass null (they resolve the broker's default group and
+  // it may be missing); provisionAccount rejects that with NO_GROUP_AVAILABLE
+  // rather than letting it reach the NOT NULL column.
   groupId: string | null;
   initialBalance: Prisma.Decimal;
   country: string | null;
@@ -64,12 +67,22 @@ export async function provisionAccount(params: ProvisionAccountParams) {
   // DEALING group is fine, and is exactly what the portal signup creates.
   // The account TYPE is deliberately not checked: it is the client-facing
   // spread tier and carries no routing, so any type is valid with any group.
-  const group = params.groupId
-    ? await prisma.group.findUnique({
-        where: { id: params.groupId },
-        select: { id: true, category: true, modeRestriction: true },
-      })
-    : null;
+  // Stage 3b made Account.groupId NOT NULL, so a null here is a constraint
+  // violation rather than an ungrouped account. Every caller resolves the
+  // broker's isDefault group when none was chosen, so null means that broker
+  // has no default group at all, which is true of any broker created through
+  // POST /api/admin/brokers (it provisions no groups; Stage 4 piece 6 fixes
+  // that). Fail with something a human can act on, not a raw 23502.
+  if (!params.groupId) {
+    throw new AccountStructureError({
+      code: "NO_GROUP_AVAILABLE",
+      message: "this broker has no default group, so an account cannot be created yet; create a group and mark it default first",
+    });
+  }
+  const group = await prisma.group.findUnique({
+    where: { id: params.groupId },
+    select: { id: true, category: true, modeRestriction: true },
+  });
   assertAccountStructure({
     accountMode: params.accountMode,
     group,
@@ -91,7 +104,7 @@ export async function provisionAccount(params: ProvisionAccountParams) {
             accountTypeId: params.accountTypeId,
             currency: params.currency,
             leverage: params.leverage,
-            groupId: params.groupId,
+            groupId: params.groupId!,  // non-null: guarded at the top of this function
             country: params.country,
             phone: params.phone,
             dateOfBirth: params.dateOfBirth,

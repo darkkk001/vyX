@@ -77,7 +77,7 @@ afterAll(async () => {
   await prisma.$disconnect();
 });
 
-type Fixture = { brokerId: string; accountId: string; groupId: string | null; symbolId: string };
+type Fixture = { brokerId: string; accountId: string; groupId: string; symbolId: string };
 
 async function createFixture(
   tx: Prisma.TransactionClient,
@@ -98,15 +98,15 @@ async function createFixture(
     },
   });
 
-  let groupId: string | null = null;
-  if (params.withGroup) {
-    const group = await tx.group.create({ data: { brokerId: broker.id, name: "Swap Test Group", leverage: 100 } });
-    groupId = group.id;
-    if (params.groupSwapLong !== undefined) {
-      await tx.groupSymbolConfig.create({
-        data: { groupId, symbolId: symbol.id, swapLong: D(params.groupSwapLong), swapShort: D(params.groupSwapShort ?? "0") },
-      });
-    }
+  // Stage 3b: every account has a group, so the group is always created. What
+  // `withGroup` now varies is whether that group carries a swap OVERRIDE,
+  // which is the thing these tests are actually about.
+  const group = await tx.group.create({ data: { brokerId: broker.id, name: `Swap Test Group ${suffix}`, leverage: 100, dealingMode: "AUTO" } });
+  const groupId: string = group.id;
+  if (params.withGroup && params.groupSwapLong !== undefined) {
+    await tx.groupSymbolConfig.create({
+      data: { groupId, symbolId: symbol.id, swapLong: D(params.groupSwapLong), swapShort: D(params.groupSwapShort ?? "0") },
+    });
   }
 
   const account = await tx.account.create({
