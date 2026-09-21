@@ -1032,6 +1032,10 @@ model Group {
 
   @@unique([brokerId, name])
   @@index([brokerId])
+  // Created by 20260921100000_routing_category. Declared here too so the
+  // schema matches the database -- without it prisma migrate diff wants to
+  // drop the index it just created.
+  @@index([brokerId, category])
 }
 
 // Per-group override of one symbol's pricing, entered manually by a
