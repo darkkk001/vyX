@@ -25,7 +25,7 @@ export async function GET() {
     prisma.account.findMany({
       where: { brokerId: session.brokerId! },
       include: {
-        group: { select: { id: true, name: true } },
+        group: { select: { id: true, name: true, category: true } },
         ibLinkAsClient: { select: { id: true } },
         kycRecord: { select: { status: true } },
         accountType: { select: { id: true, name: true } },
@@ -75,6 +75,10 @@ export async function GET() {
         status: a.status,
         groupId: a.groupId,
         groupName: a.group?.name ?? null,
+        // The ROUTING axis, for the backoffice clients table. Broker-side
+        // only -- this endpoint is admin-authenticated; the client-facing
+        // portal deliberately never returns it (app/api/portal/groups).
+        groupCategory: a.group?.category ?? null,
         hasIbLink: !!a.ibLinkAsClient,
         maxDailyLoss: a.maxDailyLoss ? a.maxDailyLoss.toString() : null,
         swapFree: a.swapFree,
