@@ -727,6 +727,9 @@ async function handlePlaceOrder(request: NextRequest) {
   }
 }
 
+/** Newest orders returned for `?status=all` (the ORDERS tab). */
+const ORDERS_ALL_TAKE = 500;
+
 // Default: only PENDING/REQUOTED (what's actually still resting/awaiting
 // a response) -- the "Pending Orders" tab. ?status=all drops that filter
 // for full order-lifecycle visibility (also FILLED/REJECTED/CANCELLED) --
@@ -740,6 +743,12 @@ export async function GET(request: NextRequest) {
 
   const showAll = new URL(request.url).searchParams.get("status") === "all";
 
+  // ?status=all is the ORDERS tab, fetched on every terminal login. Unbounded, it
+  // shipped the account's whole order lifetime each time (an active account
+  // reaches thousands in weeks). The tab shows the newest first, so the last
+  // ORDERS_ALL_TAKE are what it needs; older rows will come through a
+  // paged "load more" later. The pending view is naturally small and stays
+  // unbounded. (2026-09-22)
   const orders = await prisma.order.findMany({
     where: {
       accountId: session.accountId,
@@ -747,6 +756,7 @@ export async function GET(request: NextRequest) {
     },
     include: { symbol: { select: { name: true, digits: true } }, closesPosition: { select: { ticket: true } } },
     orderBy: { createdAt: "desc" },
+    ...(showAll ? { take: ORDERS_ALL_TAKE } : {}),
   });
   return NextResponse.json(orders);
 }
