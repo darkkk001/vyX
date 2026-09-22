@@ -6,6 +6,7 @@ import { getFreshPrice } from "@/lib/live-price";
 import { checkTradingSession, computeNextSessionOpen } from "@/lib/risk";
 import { computeRealizedPnl } from "@/lib/trading";
 import * as mirror from "@/lib/mirror";
+import * as coverage from "@/lib/coverage";
 import { publishTradingEvent } from "@/lib/nats";
 import { recordDealerActivity } from "@/lib/dealer-activity";
 import { cancelPendingClose } from "@/lib/queued-close";
@@ -188,6 +189,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     sourceVolumeBeforeClose: position.volume,
     closePrice,
   }).catch((err) => console.error("mirror.onClose failed", err));
+  // coverage follow-through (lib/coverage.ts onClose): a client leg closes its hedge; a hedge leg
+  // closed by hand releases the client position back to the Smart Dealer Manager
+  await coverage.onClose(prisma, { positionId: position.id, brokerId, closedLots: closeVolume, sourceVolumeBeforeClose: position.volume, reason: "manual" }).catch((err) => console.error("coverage.onClose failed", err));
   // Realtime-sync gap fix -- this route never published a live event at
   // all before, on top of lib/nats.ts's own (separately fixed) transport
   // bug. Without it, a dealer-initiated close never appeared on the

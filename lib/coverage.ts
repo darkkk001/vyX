@@ -2,8 +2,15 @@ import "server-only";
 import { randomBytes } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import bcrypt from "bcryptjs";
+import type { PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { provisionAccount } from "@/lib/account-provisioning";
+import { getLivePriceRow } from "@/lib/live-price";
+import { closePositionInTx } from "@/lib/position-close";
+import { computeProportionalCloseVolume } from "@/lib/mirror";
+import { createNotification } from "@/lib/notifications";
+import { publishTradingEvent } from "@/lib/nats";
+import { emitPositionClosedActivity } from "@/lib/dealer-activity";
 
 // Dealer coverage (B-book hedging). A broker hedges a client's B-book
 // position by clicking BOOK NOW (app/api/manage/positions/[id]/book),
@@ -148,4 +155,175 @@ export async function ensureCoverageAccount(
   });
 
   return { accountId: account.id, groupId: group.id };
+}
+
+// ---------------------------------------------------------------------------
+// Coverage follow-through (2026-09-22). BOOK NOW stamps
+// Position.coveragePositionId on the client position, and until now nothing
+// ever read it: a client closing a booked position left the hedge leg open
+// on the coverage account (an orphan the dealer had to notice and close by
+// hand), and a hedge leg closing on its own (stop-out, manual) left the
+// client position flagged `covered` with no hedge behind it. onClose is
+// called after EVERY committed close in this codebase, right beside
+// mirror.onClose, and does the follow-through for both directions:
+//
+//   client leg closed  -> close the linked coverage leg (proportionally on a
+//                         partial) at the live market, zero commission.
+//   coverage leg closed -> release the client position (covered = false,
+//                          link cleared) so it is back in the Smart Dealer
+//                          Manager's unbooked list, and tell the dealer why.
+//
+// Idempotent: a leg already closed (the dealer closed coverage before the
+// client did) is a no-op -- there is nothing left to follow.
+// ---------------------------------------------------------------------------
+
+export type CoverageCloseEvent = {
+  positionId: string;
+  brokerId: string;
+  closedLots: Prisma.Decimal;
+  sourceVolumeBeforeClose: Prisma.Decimal;
+  // why the leg closed, for the dealer-facing wording; "manual" covers the
+  // trader's / dealer's own close, "stop_out" / "sl_tp" the risk monitor
+  reason?: "manual" | "stop_out" | "sl_tp" | "void" | "reverse";
+  marginLevel?: string;
+};
+
+type Db = PrismaClient | Prisma.TransactionClient;
+
+export async function onClose(db: Db, ev: CoverageCloseEvent): Promise<void> {
+  const closed = await db.position.findUnique({
+    where: { id: ev.positionId },
+    select: {
+      id: true,
+      ticket: true,
+      accountId: true,
+      side: true,
+      volume: true,
+      status: true,
+      coveragePositionId: true,
+      symbol: { select: { name: true } },
+      account: { select: { accountNumber: true } },
+      // the client position this leg hedges (self-relation back side; unique in practice, a list in the schema)
+      coveredClientPos: { select: { id: true, ticket: true, status: true, accountId: true, account: { select: { accountNumber: true } } }, take: 1 },
+    },
+  });
+  if (!closed) return;
+
+  // (a) a coverage leg closed -> release the client position it was hedging
+  if (closed.coveredClientPos.length > 0) {
+    const client = closed.coveredClientPos[0];
+    if (client.status === "OPEN") {
+      await db.position.updateMany({ where: { id: client.id, coveragePositionId: closed.id }, data: { covered: false, coveragePositionId: null } });
+      await db.auditLog.create({
+        data: {
+          brokerId: ev.brokerId,
+          action: "POSITION_COVERAGE_RELEASED",
+          entityType: "Position",
+          entityId: client.id,
+          oldValue: { coveragePositionId: closed.id, coverageTicket: closed.ticket },
+          newValue: { covered: false, reason: ev.reason ?? "manual" },
+        },
+      });
+      const why =
+        ev.reason === "stop_out"
+          ? `stopped out${ev.marginLevel ? ` at margin level ${ev.marginLevel}%` : ""}: the coverage account ran out of balance`
+          : ev.reason === "sl_tp"
+            ? "closed by its own SL / TP"
+            : "closed";
+      // the dealer must know the client leg is exposed again: bell + feed
+      await createNotification(db, {
+        brokerId: ev.brokerId,
+        type: ev.reason === "stop_out" ? "COVERAGE_STOP_OUT" : "COVERAGE_RELEASED",
+        title: ev.reason === "stop_out" ? `Coverage stop-out: position #${closed.ticket} closed` : `Coverage leg #${closed.ticket} closed: client position unhedged`,
+        body: `Coverage ${closed.symbol.name} ${closed.side} ${closed.volume.toString()} (#${closed.ticket}) ${why}. Client ${client.account.accountNumber} #${client.ticket} ${closed.symbol.name} is UNHEDGED and back in the Smart Dealer Manager${ev.reason === "stop_out" ? ". Fund the coverage account before booking it again" : ""}.`,
+        entityType: "Position",
+        entityId: client.id,
+      });
+    }
+    return;
+  }
+
+  // (b) a client leg closed -> follow with the coverage leg
+  if (!closed.coveragePositionId) return;
+  const leg = await db.position.findUnique({
+    where: { id: closed.coveragePositionId },
+    include: { symbol: { select: { name: true, contractSize: true, digits: true } } },
+  });
+  if (!leg || leg.status !== "OPEN") return; // the dealer already closed coverage -- nothing to follow
+
+  const closeVolume = computeProportionalCloseVolume(ev.closedLots, ev.sourceVolumeBeforeClose, leg.volume);
+  // the tx-aware reader (like mirror.onClose): the latest known price for the leg's symbol
+  const live = await getLivePriceRow(leg.symbol.name, db);
+  if (!live) {
+    await createNotification(db, {
+      brokerId: ev.brokerId,
+      type: "COVERAGE_CLOSE_FAILED",
+      title: `Coverage leg #${leg.ticket} NOT closed: no live price`,
+      body: `Client ${closed.account.accountNumber} #${closed.ticket} closed ${ev.closedLots.toString()} ${leg.symbol.name}, but the coverage leg #${leg.ticket} could not be closed (no live ${leg.symbol.name} price). Close it from the Coverage Account panel.`,
+      entityType: "Position",
+      entityId: leg.id,
+    });
+    return;
+  }
+  const closePrice = leg.side === "BUY" ? live.bid : live.ask;
+  const runInTx = (fn: (tx: Prisma.TransactionClient) => Promise<Awaited<ReturnType<typeof closePositionInTx>>>) =>
+    "$transaction" in db ? (db as PrismaClient).$transaction(fn) : fn(db as Prisma.TransactionClient);
+  const outcome = await runInTx((tx) =>
+    closePositionInTx(tx, {
+      position: {
+        id: leg.id,
+        accountId: leg.accountId,
+        brokerId: leg.brokerId,
+        side: leg.side,
+        openPrice: leg.openPrice,
+        volume: leg.volume,
+        symbol: { contractSize: leg.symbol.contractSize },
+      },
+      closePrice,
+      closeVolume,
+      note: `Coverage auto-close: client #${closed.ticket} closed ${ev.closedLots.toString()} of ${ev.sourceVolumeBeforeClose.toString()}`,
+    })
+  );
+  if (!outcome.closed) return;
+  await db.auditLog.create({
+    data: {
+      brokerId: ev.brokerId,
+      action: "POSITION_COVERAGE_AUTO_CLOSED",
+      entityType: "Position",
+      entityId: leg.id,
+      oldValue: { clientPositionId: closed.id, clientTicket: closed.ticket, clientClosedLots: ev.closedLots.toString() },
+      newValue: { coverageClosedLots: closeVolume.toString(), closePrice: closePrice.toString(), realizedPnl: outcome.realizedPnl.toString(), partial: outcome.partial },
+    },
+  });
+  await publishTradingEvent("PositionClosed", { position_id: leg.id, account_id: leg.accountId, broker_id: leg.brokerId, reason: "coverage_auto" }).catch((err) =>
+    console.error("coverage onClose: publishTradingEvent failed", err)
+  );
+  await emitPositionClosedActivity(db, { positionId: leg.id, closePrice, closeVolume, partial: outcome.partial, realizedPnl: outcome.realizedPnl, closeReason: "ADMIN", origin: `coverage_auto_close:${closed.id}` });
+}
+
+// Stop-out / margin-call wording for the dealer (2026-09-22): the risk
+// monitor closes and warns without ever telling the desk. A stop-out on the
+// coverage account is the broker's own hedge evaporating, so it gets its
+// own title; a client stop-out is a plain staff notification.
+export async function notifyStopOut(
+  db: Db,
+  p: { brokerId: string; accountId: string; accountNumber: string; positionId: string; ticket: number; symbol: string; side: string; volume: string; marginLevel: string; stopOutLevel: string }
+): Promise<void> {
+  const broker = await db.broker.findUnique({ where: { id: p.brokerId }, select: { coverageAccountId: true } });
+  const isCoverage = broker?.coverageAccountId === p.accountId;
+  await createNotification(db, {
+    brokerId: p.brokerId,
+    type: isCoverage ? "COVERAGE_STOP_OUT" : "STOP_OUT",
+    title: isCoverage ? `Coverage stop-out: position #${p.ticket} closed` : `Stop-out: ${p.accountNumber} #${p.ticket} closed`,
+    body: isCoverage
+      ? `The coverage account (${p.accountNumber}) hit stop-out at margin level ${p.marginLevel}% (limit ${p.stopOutLevel}%): ${p.symbol} ${p.side} ${p.volume} #${p.ticket} was force-closed. The coverage account has run out of balance. Fund it before booking again.`
+      : `Account ${p.accountNumber} hit stop-out at margin level ${p.marginLevel}% (limit ${p.stopOutLevel}%): ${p.symbol} ${p.side} ${p.volume} #${p.ticket} was force-closed.`,
+    entityType: "Position",
+    entityId: p.positionId,
+  });
+}
+
+export async function isCoverageAccount(db: Db, brokerId: string, accountId: string): Promise<boolean> {
+  const broker = await db.broker.findUnique({ where: { id: brokerId }, select: { coverageAccountId: true } });
+  return broker?.coverageAccountId === accountId;
 }

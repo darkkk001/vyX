@@ -140,6 +140,9 @@ export async function GET() {
       // position (app/api/manage/positions/[id]/book). The Smart Dealer
       // Manager excludes covered positions from its unbooked list.
       covered: p.covered,
+      // the hedge leg on the coverage account (BOOK NOW), so the dealing screen can pair a client
+      // position with its coverage P&L; null on an unbooked position and on the leg itself
+      coveragePositionId: p.coveragePositionId,
       side: p.side,
       volume: p.volume.toString(),
       openPrice: p.openPrice.toFixed(p.symbol.digits),

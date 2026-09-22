@@ -5,6 +5,7 @@ import { closePositionInTx } from "@/lib/position-close";
 import { publishTradingEvent } from "@/lib/nats";
 import { checkTradingSession, computeNextSessionOpen } from "@/lib/risk";
 import * as mirror from "@/lib/mirror";
+import * as coverage from "@/lib/coverage";
 import { emitPositionClosedActivity } from "@/lib/dealer-activity";
 
 type Db = PrismaClient | Prisma.TransactionClient;
@@ -146,6 +147,8 @@ export async function closePositionsByEachOther(
   await mirror
     .onClose(db, { positionId: b.id, brokerId: params.brokerId, closedLots: closeVolume, sourceVolumeBeforeClose: b.volume, closePrice })
     .catch((err) => console.error("mirror.onClose failed (close-by leg B)", err));
+  await coverage.onClose(db, { positionId: a.id, brokerId: params.brokerId, closedLots: closeVolume, sourceVolumeBeforeClose: a.volume, reason: "manual" }).catch((err) => console.error("coverage.onClose failed (close-by leg A)", err));
+  await coverage.onClose(db, { positionId: b.id, brokerId: params.brokerId, closedLots: closeVolume, sourceVolumeBeforeClose: b.volume, reason: "manual" }).catch((err) => console.error("coverage.onClose failed (close-by leg B)", err));
   await emitPositionClosedActivity(db, { positionId: a.id, closePrice, closeVolume, partial: closeVolume.lt(a.volume), realizedPnl: outcome.outcomeA.realizedPnl, closeReason: "MANUAL", origin: "close_by" });
   await emitPositionClosedActivity(db, { positionId: b.id, closePrice, closeVolume, partial: closeVolume.lt(b.volume), realizedPnl: outcome.outcomeB.realizedPnl, closeReason: "MANUAL", origin: "close_by" });
 

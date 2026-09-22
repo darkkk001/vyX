@@ -7,6 +7,7 @@ import { publishTradingEvent } from "@/lib/nats";
 import { recordDealerActivity } from "@/lib/dealer-activity";
 import { orderAuditFields } from "@/lib/order-audit";
 import * as mirror from "@/lib/mirror";
+import * as coverage from "@/lib/coverage";
 
 // Closes respect DEALER mode (docs/CLOSES-RESPECT-DEALER-MODE.md, 2026-09-18).
 //
@@ -252,6 +253,7 @@ export async function afterQueuedCloseExecuted(
   await mirror
     .onClose(db, { positionId: p.positionId, brokerId: p.brokerId, closedLots: p.result.closeVolume, sourceVolumeBeforeClose: p.positionVolumeBefore, closePrice: p.result.closePrice })
     .catch((err) => console.error("mirror.onClose failed", err));
+  await coverage.onClose(db, { positionId: p.positionId, brokerId: p.brokerId, closedLots: p.result.closeVolume, sourceVolumeBeforeClose: p.positionVolumeBefore, reason: "manual" }).catch((err) => console.error("coverage.onClose failed", err));
   await publishTradingEvent("PositionClosed", { position_id: p.positionId, account_id: p.accountId, broker_id: p.brokerId, reason: "manual" });
   await recordDealerActivity(db, {
     brokerId: p.brokerId,

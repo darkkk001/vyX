@@ -11,6 +11,7 @@ import { publishTradingEvent } from "@/lib/nats";
 import { createNotification } from "@/lib/notifications";
 import { liveUsedMarginFor } from "@/lib/margin";
 import * as mirror from "@/lib/mirror";
+import * as coverage from "@/lib/coverage";
 
 // The legacy Next.js trading path (the one actually carrying every
 // broker's live traffic today, per docs/decisions.md ADR-003) has never
@@ -43,6 +44,8 @@ type OpenPositionWithMarket = {
   slPrice: Prisma.Decimal | null;
   tpPrice: Prisma.Decimal | null;
   contractSize: Prisma.Decimal;
+  ticket: number;
+  symbol: string;
   bid: Prisma.Decimal | null; // null = no fresh (<=15s old) price for this symbol right now
   ask: Prisma.Decimal | null;
 };
@@ -90,6 +93,8 @@ async function loadOpenPositionsWithMarket(accountId: string): Promise<OpenPosit
       slPrice: p.slPrice,
       tpPrice: p.tpPrice,
       contractSize: p.symbol.contractSize,
+      ticket: p.ticket,
+      symbol: p.symbol.name,
       bid: live?.bid ?? null,
       ask: live?.ask ?? null,
     };
@@ -152,6 +157,7 @@ export async function evaluateAccountRisk(accountId: string): Promise<RiskMonito
       // automatic SL/TP close is a real close, same as a trader's own
       // manual one -- this whole module never called it at all before.
       await mirror.onClose(prisma, { positionId: p.id, brokerId: p.brokerId, closedLots: p.volume, sourceVolumeBeforeClose: p.volume, closePrice: cp }).catch((err) => console.error("mirror.onClose failed", err));
+      await coverage.onClose(prisma, { positionId: p.id, brokerId: p.brokerId, closedLots: p.volume, sourceVolumeBeforeClose: p.volume, reason: "sl_tp" }).catch((err) => console.error("coverage.onClose failed", err));
       await publishTradingEvent("PositionClosed", { position_id: p.id, account_id: accountId, broker_id: p.brokerId, reason });
       await emitPositionClosedActivity(prisma, { positionId: p.id, closePrice: cp, closeVolume: p.volume, partial: false, realizedPnl: outcome.realizedPnl, closeReason: reason === "stop_loss" ? "STOP_LOSS" : "TAKE_PROFIT", origin: "risk_monitor" });
     }
@@ -214,6 +220,13 @@ export async function evaluateAccountRisk(accountId: string): Promise<RiskMonito
       // docs/briefs/VYX-MIRROR-V0-BRIEF.md -- mirror hook gap fix: an
       // automatic stop-out close is a real close, same as SL/TP above.
       await mirror.onClose(prisma, { positionId: worst.position.id, brokerId: worst.position.brokerId, closedLots: worst.position.volume, sourceVolumeBeforeClose: worst.position.volume, closePrice: worst.closePrice }).catch((err) => console.error("mirror.onClose failed", err));
+      // 2026-09-22: a stop-out used to close in silence -- no notification at all (pass 3's margin-call
+      // warning only looks at what is LEFT open, so an account stopped out of its only position never
+      // warned anyone). The dealer now gets a bell for every stop-out; a coverage-account stop-out
+      // (the broker's own hedge evaporating) carries its own title, and coverage.onClose releases the
+      // client position the leg was hedging.
+      await coverage.notifyStopOut(prisma, { brokerId: worst.position.brokerId, accountId, accountNumber: freshAccount.accountNumber, positionId: worst.position.id, ticket: worst.position.ticket, symbol: worst.position.symbol, side: worst.position.side, volume: worst.position.volume.toString(), marginLevel: marginLevel.toFixed(2), stopOutLevel: stopOutLevel.toString() }).catch((err) => console.error("coverage.notifyStopOut failed", err));
+      await coverage.onClose(prisma, { positionId: worst.position.id, brokerId: worst.position.brokerId, closedLots: worst.position.volume, sourceVolumeBeforeClose: worst.position.volume, reason: "stop_out", marginLevel: marginLevel.toFixed(2) }).catch((err) => console.error("coverage.onClose failed", err));
       await publishTradingEvent("PositionClosed", { position_id: worst.position.id, account_id: accountId, broker_id: worst.position.brokerId, reason: "stop_out" });
       await emitPositionClosedActivity(prisma, { positionId: worst.position.id, closePrice: worst.closePrice, closeVolume: worst.position.volume, partial: false, realizedPnl: outcome.realizedPnl, closeReason: "STOP_OUT", origin: "risk_monitor" });
     }

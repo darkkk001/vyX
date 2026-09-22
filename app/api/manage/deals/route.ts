@@ -84,6 +84,10 @@ export async function GET(request: NextRequest) {
       swap: p.swap.toFixed(2),
       realizedPnl: p.realizedPnl ? p.realizedPnl.toFixed(2) : "-",
       closedAt: p.closedAt ? p.closedAt.toISOString().replace("T", " ").slice(0, 19) : "-",
+      // dealer coverage (2026-09-22): a booked client trade keeps its hedge-leg id after closing so the
+      // Smart Dealer Manager can show the closing side with both P&Ls
+      covered: p.covered,
+      coveragePositionId: p.coveragePositionId,
     }))
   );
 }

@@ -9,6 +9,7 @@ import { isDealingManagedAccount } from "@/lib/dealing-routing";
 import { checkLotStep, checkPriceFreshness, checkSlippage, checkTradingSession, computeNextSessionOpen, evaluateLiveMarketPrice } from "@/lib/risk";
 import { closePriceFor } from "@/lib/trading";
 import * as mirror from "@/lib/mirror";
+import * as coverage from "@/lib/coverage";
 import { getLivePriceRow } from "@/lib/live-price";
 import { accountWantsDealingQueue, afterCloseQueued, queueCloseInTx, ClosePendingError } from "@/lib/queued-close";
 
@@ -273,6 +274,8 @@ export async function POST(
     sourceVolumeBeforeClose: position.volume,
     closePrice,
   }).catch((err) => console.error("mirror.onClose failed", err));
+  // coverage follow-through (lib/coverage.ts onClose): a booked position's hedge leg closes with it
+  await coverage.onClose(prisma, { positionId: position.id, brokerId: session.brokerId, closedLots: closeVolume, sourceVolumeBeforeClose: position.volume, reason: "manual" }).catch((err) => console.error("coverage.onClose failed", err));
   await publishTradingEvent("PositionClosed", { position_id: position.id, account_id: session.accountId, broker_id: session.brokerId });
   await recordDealerActivity(prisma, {
     brokerId: session.brokerId,

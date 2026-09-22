@@ -6,6 +6,7 @@ import { closePositionInTx } from "@/lib/position-close";
 import { publishTradingEvent } from "@/lib/nats";
 import { checkTradingSession, computeNextSessionOpen } from "@/lib/risk";
 import * as mirror from "@/lib/mirror";
+import * as coverage from "@/lib/coverage";
 import { emitPositionClosedActivity } from "@/lib/dealer-activity";
 
 // Replaces N sequential single-close HTTP round trips (WebTrader.tsx's
@@ -190,6 +191,7 @@ export async function closeBulkForAccount(
         closePrice: closePriceByPositionId.get(source.id),
       })
       .catch((err) => console.error("mirror.onClose failed", err));
+    await coverage.onClose(db, { positionId: source.id, brokerId, closedLots: source.volume, sourceVolumeBeforeClose: source.volume, reason: "manual" }).catch((err) => console.error("coverage.onClose failed", err));
     await emitPositionClosedActivity(db, { positionId: source.id, closePrice: closePriceByPositionId.get(source.id)!, closeVolume: source.volume, partial: false, realizedPnl: new Prisma.Decimal(r.realizedPnl!), closeReason: "MANUAL", origin: `bulk_close_${scope.toLowerCase()}` });
   }
 

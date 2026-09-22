@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import * as mirror from "@/lib/mirror";
+import * as coverage from "@/lib/coverage";
 import { publishTradingEvent } from "@/lib/nats";
 import { PositionActionError, executeVoid, requestPositionAction, positionActionNeedsApproval } from "@/lib/position-actions";
 
@@ -59,6 +60,7 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
     closedLots: result.position.volume,
     sourceVolumeBeforeClose: result.position.volume,
   }).catch((err) => console.error("mirror.onClose failed", err));
+  await coverage.onClose(prisma, { positionId: id, brokerId, closedLots: result.position.volume, sourceVolumeBeforeClose: result.position.volume, reason: "void" }).catch((err) => console.error("coverage.onClose failed", err));
   await publishTradingEvent("PositionClosed", { position_id: id, account_id: result.accountId, broker_id: brokerId });
 
   return NextResponse.json({
