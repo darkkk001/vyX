@@ -1323,37 +1323,66 @@ async fn main() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(5);
-    let monitor_guard = order_management::monitor::new_run_guard();
-    order_management::monitor::spawn(
-        pool.clone(),
-        nats.clone(),
-        std::time::Duration::from_secs(monitor_interval_secs),
-        monitor_guard.clone(),
-    );
-    spawn_tick_driven_triggers(pool.clone(), nats.clone(), monitor_guard)
-        .await
-        .expect("failed to subscribe tick-driven triggers to price.tick.*");
-
-    // Risk item 2's startup/live-order guard -- synchronous initial load
-    // BEFORE the HTTP listener binds (fails closed: place_market_order/
-    // place_pending_order refuse everything until this first load
-    // proves every group in use has real thresholds), then kept current
-    // on the same interval as the monitor itself.
+    // ORDER MANAGEMENT ON/OFF (2026-09-23). Everything in this block -- the margin/stop-out
+    // monitor, the per-tick triggers, the thresholds guard and the swap roller -- works against
+    // the engine's OWN lowercase tables (`positions`, `orders`, `ledger_entries`). In production
+    // today those tables are empty and the code paths that fill them are unreachable: nothing
+    // calls the gateway's /v1/orders or /v1/positions routes (the terminal's ApiClient and the
+    // webtrader both post to /api/trade/orders, which writes Prisma's "Position" / "Order"), so
+    // these loops poll for work that cannot arrive. Measured on prod: ~880 queries a minute
+    // against the trading database, which by itself stopped a scale-to-zero Postgres ever idling.
+    //
+    // Default OFF therefore, ON only when someone sets the flag deliberately -- which is what the
+    // Rust cutover does once db.rs reads and writes the real Prisma schema. This is dead in
+    // production, not wrong: nothing is deleted and one env var brings all of it back.
+    //
+    // Deliberately NOT gated, because they are live and load-bearing: the price-feed ingest,
+    // candles / prices serving, the alert cache, the NATS tick fan-out, and market_data::risk_hook
+    // (which reads the real "Position" / "Symbol" and drives the web's own margin monitor).
+    let order_management_on = std::env::var("ENGINE_ORDER_MANAGEMENT")
+        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "on" | "yes"))
+        .unwrap_or(false);
+    // Left at its default (empty) when the subsystem is off, so the order routes keep failing
+    // closed: with no monitor running they must refuse, never fill against an unwatched book.
     let thresholds_guard = Arc::new(std::sync::RwLock::new(ThresholdsGuardState::default()));
-    refresh_thresholds_guard(&pool, &thresholds_guard).await;
-    spawn_thresholds_guard(pool.clone(), thresholds_guard.clone(), std::time::Duration::from_secs(monitor_interval_secs));
+    if order_management_on {
+        tracing::warn!(
+            monitor_interval_secs,
+            "order management ENABLED: margin monitor, per-tick triggers, thresholds guard and swap roller running against the engine's own tables"
+        );
+        let monitor_guard = order_management::monitor::new_run_guard();
+        order_management::monitor::spawn(
+            pool.clone(),
+            nats.clone(),
+            std::time::Duration::from_secs(monitor_interval_secs),
+            monitor_guard.clone(),
+        );
+        spawn_tick_driven_triggers(pool.clone(), nats.clone(), monitor_guard)
+            .await
+            .expect("failed to subscribe tick-driven triggers to price.tick.*");
 
-    // Daily swap rollover — see order_management::swap's module doc. Not
-    // tick-driven like the monitor: it only needs to notice a calendar
-    // day has turned over, so a short poll interval (default 5 min) just
-    // means rollover starts promptly after midnight rather than needing
-    // exact-instant scheduling; the claim's date guard makes polling more
-    // often than that harmless.
-    let swap_poll_interval_secs: u64 = std::env::var("SWAP_ROLLOVER_POLL_INTERVAL_SECS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(300);
-    order_management::swap::spawn(pool.clone(), std::time::Duration::from_secs(swap_poll_interval_secs));
+        // Risk item 2's startup/live-order guard -- synchronous initial load BEFORE the HTTP
+        // listener binds (fails closed: place_market_order / place_pending_order refuse
+        // everything until this first load proves every group in use has real thresholds),
+        // then kept current on the same interval as the monitor itself.
+        refresh_thresholds_guard(&pool, &thresholds_guard).await;
+        spawn_thresholds_guard(pool.clone(), thresholds_guard.clone(), std::time::Duration::from_secs(monitor_interval_secs));
+
+        // Daily swap rollover — see order_management::swap's module doc. Not tick-driven like
+        // the monitor: it only needs to notice a calendar day has turned over, so a short poll
+        // interval (default 5 min) just means rollover starts promptly after midnight rather
+        // than needing exact-instant scheduling; the claim's date guard makes polling more
+        // often than that harmless.
+        let swap_poll_interval_secs: u64 = std::env::var("SWAP_ROLLOVER_POLL_INTERVAL_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(300);
+        order_management::swap::spawn(pool.clone(), std::time::Duration::from_secs(swap_poll_interval_secs));
+    } else {
+        tracing::info!(
+            "order management OFF (ENGINE_ORDER_MANAGEMENT unset): margin monitor, per-tick triggers, thresholds guard and swap roller are not running. The web path owns stop-out; market data, alerts and the risk hook are unaffected. Set ENGINE_ORDER_MANAGEMENT=1 to restore."
+        );
+    }
 
     let tick_cache = Arc::new(TickCache::new());
     let symbol_activity_registry = Arc::new(SymbolActivity::new());
