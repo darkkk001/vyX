@@ -1110,6 +1110,25 @@ async fn alert_stats(State(state): State<Arc<AppState>>) -> Json<market_data::al
 /// (`run_once_guarded`'s try_lock coalescing, `check_symbol_for_triggers`'s
 /// atomic per-order claim), so spawning them is not a new correctness
 /// risk, only a throughput one this already tolerated by design.
+/// Minimum gap between two tick-driven passes (2026-09-23). Ticks arrive tens of times a second, and
+/// both passes below are full DB round trips, so before this every tick meant another query: measured
+/// at ~2000 transactions a minute against the trading DB with an idle book, which also kept a
+/// scale-to-zero Postgres awake permanently.
+///
+/// This is a COALESCER, not a cache: it never holds stale state and never skips work that is still
+/// outstanding, it only stops the same pass being re-run many times inside one second. The worst case
+/// is that a stop-out or a pending-order trigger is noticed up to one second later than it would have
+/// been, against a 5 s polling loop (`monitor::spawn`) that remains the floor underneath it either
+/// way. Same shape, and the same one-second default, as market_data::risk_hook's own per-symbol
+/// limiter. Override with TICK_TRIGGER_MIN_INTERVAL_MS (0 disables the coalescing entirely).
+fn tick_trigger_min_interval() -> std::time::Duration {
+    let ms: u64 = std::env::var("TICK_TRIGGER_MIN_INTERVAL_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1_000);
+    std::time::Duration::from_millis(ms)
+}
+
 async fn spawn_tick_driven_triggers(
     pool: PgPool,
     nats: async_nats::Client,
@@ -1117,6 +1136,12 @@ async fn spawn_tick_driven_triggers(
 ) -> Result<(), async_nats::SubscribeError> {
     let mut sub = nats.subscribe("price.tick.*").await?;
     tracing::info!("tick-driven triggers: subscribed to price.tick.*");
+    let min_gap = tick_trigger_min_interval();
+    tracing::info!(min_gap_ms = min_gap.as_millis() as u64, "tick-driven triggers: per-pass coalescing window");
+    // last monitor pass (global) and last trigger check per symbol
+    let last_monitor: Arc<std::sync::Mutex<Option<std::time::Instant>>> = Arc::new(std::sync::Mutex::new(None));
+    let last_symbol: Arc<std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>> =
+        Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
     tokio::spawn(async move {
         while let Some(msg) = sub.next().await {
             let tick: Tick = match serde_json::from_slice(&msg.payload) {
@@ -1128,14 +1153,43 @@ async fn spawn_tick_driven_triggers(
             };
             tracing::debug!(symbol = %tick.symbol, "tick-driven triggers: tick received");
 
-            let (pool1, nats1, guard1) = (pool.clone(), nats.clone(), guard.clone());
-            tokio::spawn(async move {
-                order_management::monitor::run_once_guarded(&pool1, &nats1, &guard1).await;
-            });
-            let (pool2, nats2) = (pool.clone(), nats.clone());
-            tokio::spawn(async move {
-                order_management::pending_orders::check_symbol_for_triggers(&pool2, &nats2, &tick).await;
-            });
+            let now = std::time::Instant::now();
+            // (a) margin / stop-out pass: global, at most once per window
+            let run_monitor = {
+                let mut last = last_monitor.lock().unwrap();
+                match *last {
+                    Some(t) if now.duration_since(t) < min_gap => false,
+                    _ => {
+                        *last = Some(now);
+                        true
+                    }
+                }
+            };
+            if run_monitor {
+                let (pool1, nats1, guard1) = (pool.clone(), nats.clone(), guard.clone());
+                tokio::spawn(async move {
+                    order_management::monitor::run_once_guarded(&pool1, &nats1, &guard1).await;
+                });
+            }
+            // (b) pending-order triggers: per symbol, at most once per window. Per symbol because a
+            // trigger only ever concerns the symbol that moved, so one busy symbol must not starve
+            // the check of a quiet one.
+            let run_symbol = {
+                let mut last = last_symbol.lock().unwrap();
+                match last.get(&tick.symbol) {
+                    Some(t) if now.duration_since(*t) < min_gap => false,
+                    _ => {
+                        last.insert(tick.symbol.clone(), now);
+                        true
+                    }
+                }
+            };
+            if run_symbol {
+                let (pool2, nats2) = (pool.clone(), nats.clone());
+                tokio::spawn(async move {
+                    order_management::pending_orders::check_symbol_for_triggers(&pool2, &nats2, &tick).await;
+                });
+            }
         }
         tracing::warn!("tick-driven triggers: price.tick.* subscription ended");
     });

@@ -70,7 +70,12 @@ interface SymbolFilterCacheEntry {
   symbols: Set<string>;
   fetchedAt: number;
 }
-const SYMBOL_FILTER_TTL_MS = 30_000;
+// 10 minutes, not 30 s (2026-09-23). The enabled-symbol set changes only when an admin enables or
+// disables a symbol, never as a market event, but this refresh fired every 30 s for every broker with
+// a client connected, which on a scale-to-zero Postgres meant it could never idle. The read stays
+// stale-then-refresh off the hot path, so a change is picked up within one window and a slow DB never
+// blocks a tick either way.
+const SYMBOL_FILTER_TTL_MS = 600_000;
 const symbolFilterCache = new Map<string, SymbolFilterCacheEntry>();
 
 // Hot-path read: NEVER awaits a database call and NEVER throws.
