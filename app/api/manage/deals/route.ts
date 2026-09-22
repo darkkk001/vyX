@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { isDealingManagedAccount } from "@/lib/dealing-routing";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 
 // Same query app/manage/(shell)/deals/page.tsx's Server Component used
@@ -51,7 +50,6 @@ export async function GET(request: NextRequest) {
   // list -- "recoverable from the audit view" (the brief's own words)
   // means the audit log, not this list; see POSITION_DELETED's own
   // AuditLog entry for the full record.
-  const broker = await prisma.broker.findUnique({ where: { id: brokerId }, select: { dealingModeAt: true, dealingDeskAutoFillAt: true } });
   const positions = await prisma.position.findMany({
     where: {
       brokerId,
@@ -62,9 +60,11 @@ export async function GET(request: NextRequest) {
       ...(closedAt.gte || closedAt.lt ? { closedAt } : {}),
     },
     include: {
-      // group: whether this account's closes are dealer-reviewed, so a booked trade's still-open
-      // coverage leg reads as "awaiting dealer" rather than an orphan (lib/coverage.ts onClose)
-      account: { select: { accountNumber: true, fullName: true, group: { select: { dealingMode: true, forceDealingMode: true, groupType: true } } } },
+      account: { select: { accountNumber: true, fullName: true } },
+      // the hedge leg this trade was booked against: whether the platform opened it (auto-hedge) or
+      // the dealer did (BOOK NOW) decides who closes it, so it decides how a still-open leg reads
+      // in the Smart Dealer Manager -- AWAITING DEALER vs a real ORPHAN (lib/coverage.ts onClose)
+      coveragePosition: { select: { autoHedged: true, status: true } },
       symbol: { select: { name: true, digits: true } },
     },
     orderBy: { closedAt: "desc" },
@@ -92,12 +92,9 @@ export async function GET(request: NextRequest) {
       // Smart Dealer Manager can show the closing side with both P&Ls
       covered: p.covered,
       coveragePositionId: p.coveragePositionId,
-      // true when the desk (not the platform) closes this trade's hedge leg
-      coverageDealerReviewed: isDealingManagedAccount({
-        group: p.account.group,
-        brokerDealingModeOn: !!broker?.dealingModeAt,
-        dealingDeskAutoFillOn: !!broker?.dealingDeskAutoFillAt,
-      }),
+      // true when the platform opened the hedge (and so closes it itself); false = the dealer booked
+      // it by hand and the dealer closes it
+      coverageAutoHedged: p.coveragePosition?.autoHedged ?? false,
     }))
   );
 }

@@ -12,6 +12,7 @@ import { recordOrderAckLatency } from "@/lib/order-latency";
 import { publishTradingEvent } from "@/lib/nats";
 import { recordDealerActivity } from "@/lib/dealer-activity";
 import * as mirror from "@/lib/mirror";
+import * as coverage from "@/lib/coverage";
 import { resolveWantsDealingQueue } from "@/lib/dealing-routing";
 import { orderAuditFields } from "@/lib/order-audit";
 import { getLivePriceRow } from "@/lib/live-price";
@@ -411,6 +412,8 @@ async function handlePlaceOrder(request: NextRequest) {
             // hook -- this was the exact "mirror hook gap" this call was
             // missing.
             await mirror.onFillPosition(prisma, position, brokerSymbol.symbol.name).catch((err) => console.error("mirror.onFill failed", err));
+            // auto-hedge (lib/coverage.ts): a no-op unless the desk is in auto-fill with auto-hedge on
+            await coverage.onFillAutoHedge(prisma, { positionId: position.id, brokerId: session.brokerId });
             await publishTradingEvent("OrderFilled", {
               order_id: order.id,
               account_id: session.accountId,
@@ -635,6 +638,8 @@ async function handlePlaceOrder(request: NextRequest) {
       // but the extra catch here is a deliberate second guarantee for a
       // money-moving hook on the highest-volume order path in the app.
       await mirror.onFillPosition(prisma, result.position, brokerSymbol.symbol.name).catch((err) => console.error("mirror.onFill failed", err));
+      // auto-hedge (lib/coverage.ts): a no-op unless the desk is in auto-fill with auto-hedge on
+      await coverage.onFillAutoHedge(prisma, { positionId: result.position.id, brokerId: session.brokerId });
       if (source === "hotkey") await logHotkeyOrder(session.brokerId, result.order.id);
       await publishTradingEvent("OrderFilled", {
         order_id: result.order.id,

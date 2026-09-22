@@ -11,7 +11,6 @@ import { computeProportionalCloseVolume } from "@/lib/mirror";
 import { createNotification } from "@/lib/notifications";
 import { publishTradingEvent } from "@/lib/nats";
 import { emitPositionClosedActivity } from "@/lib/dealer-activity";
-import { isDealingManagedAccount } from "@/lib/dealing-routing";
 import { computeRealizedPnl } from "@/lib/trading";
 
 // Dealer coverage (B-book hedging). A broker hedges a client's B-book
@@ -252,28 +251,27 @@ export async function onClose(db: Db, ev: CoverageCloseEvent): Promise<void> {
   const leg = await db.position.findUnique({
     where: { id: closed.coveragePositionId },
     include: { symbol: { select: { name: true, contractSize: true, digits: true } } },
-  });
+  });   // leg.autoHedged decides who closes it, below
   if (!leg || leg.status !== "OPEN") return; // the dealer already closed coverage -- nothing to follow
 
   const closeVolume = computeProportionalCloseVolume(ev.closedLots, ev.sourceVolumeBeforeClose, leg.volume);
   // the tx-aware reader (like mirror.onClose): the latest known price for the leg's symbol
   const live = await getLivePriceRow(leg.symbol.name, db);
 
-  // Coverage CLOSE respects dealer mode (2026-09-22), the same way the OPEN side does. When this
-  // client's account is dealer-reviewed, the desk decides every fill: auto-closing the hedge behind
-  // the dealer's back is exactly the decision they are there to make (they may want to keep the leg
-  // on, or close it at a different moment). So the leg STAYS OPEN and the dealer is told the client
-  // has gone and what the leg is worth right now; they close it with UNBOOK / CLOSE in the Smart
-  // Dealer Manager. Only in auto-fill (dealer review off) does the leg follow the client
-  // automatically, matched to the client's close.
-  // Deliberately evaluated on the CLIENT's account, not the coverage account: the coverage account
-  // is a system account in its own COVERAGE group and is never itself dealer-reviewed.
-  const dealerReviewed = isDealingManagedAccount({
-    group: closed.account.group,
-    brokerDealingModeOn: !!closed.broker.dealingModeAt,
-    dealingDeskAutoFillOn: !!closed.broker.dealingDeskAutoFillAt,
-  });
-  if (dealerReviewed) {
+  // WHO CLOSES THE LEG (2026-09-23) -- decided by who OPENED it, not by the desk's state right now:
+  //   auto-hedged leg (the platform opened it, Position.autoHedged) -> it follows the client's close
+  //                                                                    automatically, matched.
+  //   dealer-booked leg (BOOK NOW)                                  -> the dealer closes it, from the
+  //                                                                    Smart Dealer Manager.
+  // This is what "symmetric with opening" means: whoever opened the hedge closes it. 1.0.14 keyed this
+  // off whether the CLIENT was dealer-reviewed at the moment of the close, which broke symmetry the
+  // moment the desk toggle moved between the open and the close (a leg the platform had opened could
+  // end up waiting for a dealer, and one the dealer had booked could vanish under them).
+  //
+  // Note this branch is only reached when a leg EXISTS (the coveragePositionId check above). An
+  // UNBOOKED position's close never gets here: it is governed solely by the dealer-review queue on the
+  // close itself (lib/queued-close.ts), which is a separate switch and untouched by any of this.
+  if (!leg.autoHedged) {
     const legPnl = live
       ? computeRealizedPnl({
           side: leg.side,
@@ -291,14 +289,14 @@ export async function onClose(db: Db, ev: CoverageCloseEvent): Promise<void> {
         entityType: "Position",
         entityId: leg.id,
         oldValue: { clientPositionId: closed.id, clientTicket: closed.ticket, clientClosedLots: ev.closedLots.toString() },
-        newValue: { legTicket: leg.ticket, legPnl: legPnl?.toString() ?? null, reason: ev.reason ?? "manual" },
+        newValue: { legTicket: leg.ticket, legPnl: legPnl?.toString() ?? null, reason: ev.reason ?? "manual", legOrigin: "dealer_booked" },
       },
     });
     await createNotification(db, {
       brokerId: ev.brokerId,
       type: "COVERAGE_CLOSE_AWAITING_DEALER",
       title: `Client closed #${closed.ticket}: coverage leg #${leg.ticket} is yours to close`,
-      body: `Client ${closed.account.accountNumber} closed ${ev.closedLots.toString()} ${leg.symbol.name} (#${closed.ticket}). Dealer review is on, so the coverage leg #${leg.ticket} (${leg.side} ${leg.volume.toString()}) was left OPEN and is at ${at} against that order. Close it from the Smart Dealer Manager when you are ready.`,
+      body: `Client ${closed.account.accountNumber} closed ${ev.closedLots.toString()} ${leg.symbol.name} (#${closed.ticket}). You booked that hedge by hand, so the coverage leg #${leg.ticket} (${leg.side} ${leg.volume.toString()}) was left OPEN and is at ${at} against that order. Close it from the Smart Dealer Manager when you are ready.`,
       entityType: "Position",
       entityId: leg.id,
     });
@@ -332,7 +330,7 @@ export async function onClose(db: Db, ev: CoverageCloseEvent): Promise<void> {
       },
       closePrice,
       closeVolume,
-      note: `Coverage auto-close (auto-fill): client #${closed.ticket} closed ${ev.closedLots.toString()} of ${ev.sourceVolumeBeforeClose.toString()}`,
+      note: `Coverage auto-close (auto-hedged leg): client #${closed.ticket} closed ${ev.closedLots.toString()} of ${ev.sourceVolumeBeforeClose.toString()}`,
     })
   );
   if (!outcome.closed) return;
@@ -377,4 +375,157 @@ export async function notifyStopOut(
 export async function isCoverageAccount(db: Db, brokerId: string, accountId: string): Promise<boolean> {
   const broker = await db.broker.findUnique({ where: { id: brokerId }, select: { coverageAccountId: true } });
   return broker?.coverageAccountId === accountId;
+}
+
+// ---------------------------------------------------------------------------
+// AUTO-HEDGE (2026-09-23). The desk's "nobody is booking by hand" mode: while the
+// broker is in auto-fill AND auto-hedge is on, every DEALING-group fill is mirrored
+// onto the coverage account at the SAME price in the same breath, and that leg
+// closes with the client's close (onClose above, via Position.autoHedged).
+//
+// The two desk modes are mutually exclusive by construction:
+//   review ON  -> the dealer accepts each order and books the hedge with BOOK NOW.
+//                 autoFillOn is false here, so this function returns immediately.
+//   review OFF -> orders auto-fill; with auto-hedge on the platform books the hedge.
+// so a position can never be hedged twice, once by each.
+//
+// Called from every fill site beside mirror.onFill*, and it decides for itself
+// whether it applies: a caller never has to know the desk's state.
+//
+// Same price as the client's fill, deliberately: the point of hedging in the same
+// moment is that the two legs offset exactly. Re-reading a live price here would
+// book the hedge a tick away from the trade it covers and leak that difference on
+// every single trade. (BOOK NOW, minutes or hours later, correctly uses the live
+// price -- there is no "same moment" to match by then.)
+//
+// Never throws: a hedge failure must not roll back or block the client's own fill,
+// the same rule mirror.onFill follows. A failure is audited and notified so the desk
+// can book it by hand rather than silently carrying unhedged risk.
+// ---------------------------------------------------------------------------
+export async function onFillAutoHedge(
+  db: Db,
+  ev: { positionId: string; brokerId: string; adminId?: string | null }
+): Promise<void> {
+  const broker = await db.broker.findUnique({
+    where: { id: ev.brokerId },
+    select: { autoHedgeAt: true, dealingDeskAutoFillAt: true, coverageAccountId: true },
+  });
+  // off, or the desk is in review (where the dealer books by hand)
+  if (!broker?.autoHedgeAt || !broker.dealingDeskAutoFillAt) return;
+
+  const position = await db.position.findUnique({
+    where: { id: ev.positionId },
+    include: {
+      symbol: { select: { name: true, digits: true } },
+      account: { select: { accountNumber: true, group: { select: { groupType: true } } } },
+    },
+  });
+  if (!position || position.status !== "OPEN" || position.covered || position.deletedAt) return;
+  // only the desk's own book: a DEALING-type group is the dealing desk's classification, and it is
+  // the right signal HERE (unlike dealer-awareness, which asks whether review is on) precisely
+  // because auto-fill has already turned review off for exactly these groups.
+  if (position.account.group?.groupType !== "DEALING") return;
+  // a coverage leg is A_BOOK and lives on the coverage account: never hedge the hedge
+  if (position.bookType !== "B_BOOK") return;
+  if (broker.coverageAccountId && position.accountId === broker.coverageAccountId) return;
+
+  try {
+    // Steady state: the pointer is already set, so resolve it through `db` -- ensureCoverageAccount
+    // provisions through the global prisma client, which a caller running inside a transaction (and
+    // any test that rolls one back) cannot see. Provisioning itself stays in that one place.
+    let coverageAccountId = broker.coverageAccountId;
+    if (coverageAccountId) {
+      const acct = await db.account.findUnique({ where: { id: coverageAccountId }, select: { id: true } });
+      if (!acct) coverageAccountId = null;   // dangling pointer: re-provision below
+    }
+    if (!coverageAccountId) coverageAccountId = (await ensureCoverageAccount(ev.brokerId, ev.adminId ?? null)).accountId;
+    const coverage = { accountId: coverageAccountId };
+    if (position.accountId === coverage.accountId) return;
+    const fillPrice = position.openPrice;
+
+    const runInTx = <T>(fn: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> =>
+      "$transaction" in db ? (db as PrismaClient).$transaction(fn) : fn(db as Prisma.TransactionClient);
+
+    const made = await runInTx(async (tx) => {
+      // re-check inside the transaction: two fills of the same position can't both hedge it
+      const fresh = await tx.position.findUnique({ where: { id: position.id }, select: { covered: true, status: true } });
+      if (!fresh || fresh.covered || fresh.status !== "OPEN") return null;
+      const order = await tx.order.create({
+        data: {
+          brokerId: ev.brokerId,
+          accountId: coverage.accountId,
+          symbolId: position.symbolId,
+          side: position.side,
+          type: "MARKET",
+          volume: position.volume,
+          requestedPrice: fillPrice,
+          idempotencyKey: `coverage_autohedge_${position.id}`,
+          status: "FILLED",
+          source: "ADMIN",
+          filledPrice: fillPrice,
+          filledAt: new Date(),
+        },
+      });
+      const legPosition = await tx.position.create({
+        data: {
+          brokerId: ev.brokerId,
+          accountId: coverage.accountId,
+          symbolId: position.symbolId,
+          originOrderId: order.id,
+          // SAME side as the client, like BOOK NOW: a B-book broker holds the opposite of its
+          // client, so matching the client's side on the coverage account nets the book flat.
+          side: position.side,
+          volume: position.volume,
+          openPrice: fillPrice,
+          bookType: "A_BOOK",
+          autoHedged: true,
+        },
+      });
+      await tx.position.update({
+        where: { id: position.id },
+        data: { covered: true, coveredAt: new Date(), coveragePositionId: legPosition.id },
+      });
+      await tx.auditLog.create({
+        data: {
+          brokerId: ev.brokerId,
+          action: "POSITION_COVERAGE_AUTO_HEDGED",
+          entityType: "Position",
+          entityId: position.id,
+          newValue: {
+            clientPositionId: position.id,
+            clientTicket: position.ticket,
+            coveragePositionId: legPosition.id,
+            coverageTicket: legPosition.ticket,
+            coverageAccountId: coverage.accountId,
+            symbol: position.symbol.name,
+            side: position.side,
+            volume: position.volume.toString(),
+            bookPrice: fillPrice.toString(),
+          },
+        },
+      });
+      return { order, legPosition, coverageAccountId: coverage.accountId };
+    });
+    if (!made) return;
+
+    await publishTradingEvent("OrderFilled", {
+      order_id: made.order.id,
+      account_id: made.coverageAccountId,
+      broker_id: ev.brokerId,
+      price: fillPrice.toString(),
+      volume: position.volume.toString(),
+      remaining_volume: "0",
+    }).catch((err) => console.error("auto-hedge: publishTradingEvent failed", err));
+  } catch (err) {
+    console.error("auto-hedge failed", err);
+    // the client's trade stands; the desk is told it is carrying this one unhedged
+    await createNotification(db, {
+      brokerId: ev.brokerId,
+      type: "COVERAGE_AUTO_HEDGE_FAILED",
+      title: `Auto-hedge failed: #${position.ticket} is UNHEDGED`,
+      body: `Auto-hedge could not open the coverage leg for ${position.account.accountNumber} ${position.symbol.name} ${position.side} ${position.volume.toString()} (#${position.ticket}). The client's trade is open and unhedged. Book it by hand from the Smart Dealer Manager.`,
+      entityType: "Position",
+      entityId: position.id,
+    }).catch(() => {});
+  }
 }

@@ -7,6 +7,7 @@ import { resolveBookType, applySpreadMarkup } from "@/lib/group-pricing";
 import { resolveFillPricing, logSpreadWarning } from "@/lib/pricing-engine";
 import { publishTradingEvent } from "@/lib/nats";
 import * as mirror from "@/lib/mirror";
+import * as coverage from "@/lib/coverage";
 import { orderAuditFields } from "@/lib/order-audit";
 import {
   checkTradingHalted,
@@ -223,6 +224,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // docs/briefs/VYX-MIRROR-V0-BRIEF.md -- mirror hook gap fix: accepting
     // a requote is a real fill, same as any other fill path.
     await mirror.onFillPosition(prisma, position, brokerSymbol.symbol.name).catch((err) => console.error("mirror.onFill failed", err));
+    // auto-hedge (lib/coverage.ts): a no-op unless the desk is in auto-fill with auto-hedge on
+    await coverage.onFillAutoHedge(prisma, { positionId: position.id, brokerId: session.brokerId });
     await publishTradingEvent("OrderFilled", {
       order_id: order.id,
       account_id: session.accountId,

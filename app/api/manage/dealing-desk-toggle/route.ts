@@ -46,6 +46,9 @@ export async function GET() {
   return NextResponse.json({
     dealerOn: broker.dealingDeskAutoFillAt == null,
     dealingDeskAutoFillAt: broker.dealingDeskAutoFillAt ? broker.dealingDeskAutoFillAt.toISOString() : null,
+    // auto-hedge (2026-09-23): only acts while the desk is in auto-fill, i.e. while dealerOn is false
+    autoHedge: broker.autoHedgeAt != null,
+    autoHedgeAt: broker.autoHedgeAt ? broker.autoHedgeAt.toISOString() : null,
   });
 }
 
@@ -58,24 +61,33 @@ export async function PATCH(request: NextRequest) {
   const brokerId = session!.brokerId!;
 
   const body = await request.json().catch(() => null);
-  if (typeof body?.dealerOn !== "boolean") {
-    return NextResponse.json({ error: "dealerOn must be a boolean" }, { status: 400 });
+  // Either switch may be sent on its own: {dealerOn} flips manual review, {autoHedge} flips automatic
+  // cover. Sending neither is a bad request.
+  const hasDealerOn = typeof body?.dealerOn === "boolean";
+  const hasAutoHedge = typeof body?.autoHedge === "boolean";
+  if (!hasDealerOn && !hasAutoHedge) {
+    return NextResponse.json({ error: "dealerOn and/or autoHedge must be a boolean" }, { status: 400 });
   }
-  const dealerOn: boolean = body.dealerOn;
+  const current = await prisma.broker.findUniqueOrThrow({ where: { id: brokerId }, select: { dealingDeskAutoFillAt: true } });
+  const dealerOn: boolean = hasDealerOn ? body.dealerOn : current.dealingDeskAutoFillAt == null;
+  const autoHedge: boolean | null = hasAutoHedge ? body.autoHedge : null;
 
   const broker = await prisma.$transaction(async (tx) => {
     const updated = await tx.broker.update({
       where: { id: brokerId },
-      data: { dealingDeskAutoFillAt: dealerOn ? null : new Date() },
+      data: {
+        ...(hasDealerOn ? { dealingDeskAutoFillAt: dealerOn ? null : new Date() } : {}),
+        ...(autoHedge !== null ? { autoHedgeAt: autoHedge ? new Date() : null } : {}),
+      },
     });
     await tx.auditLog.create({
       data: {
         brokerId,
         actorAdminId: session!.adminId,
-        action: "DEALING_DESK_TOGGLED",
+        action: autoHedge !== null && !hasDealerOn ? "AUTO_HEDGE_TOGGLED" : "DEALING_DESK_TOGGLED",
         entityType: "Broker",
         entityId: brokerId,
-        newValue: { dealerOn },
+        newValue: { ...(hasDealerOn ? { dealerOn } : {}), ...(autoHedge !== null ? { autoHedge } : {}) },
       },
     });
     return updated;
@@ -86,13 +98,15 @@ export async function PATCH(request: NextRequest) {
   // only future orders are affected, which the routing check above
   // already handles with zero extra code.
   let flushed: { orderId: string; accountNumber: string; status: "filled" | "skipped"; reason?: string }[] = [];
-  if (!dealerOn) {
+  if (hasDealerOn && !dealerOn) {
     flushed = await flushDealingQueueToMarket(brokerId);
   }
 
   return NextResponse.json({
     dealerOn: broker.dealingDeskAutoFillAt == null,
     dealingDeskAutoFillAt: broker.dealingDeskAutoFillAt ? broker.dealingDeskAutoFillAt.toISOString() : null,
+    autoHedge: broker.autoHedgeAt != null,
+    autoHedgeAt: broker.autoHedgeAt ? broker.autoHedgeAt.toISOString() : null,
     flushed,
   });
 }

@@ -5,6 +5,7 @@ import { getAccountSession } from "@/lib/account-auth";
 import { publishTradingEvent } from "@/lib/nats";
 import { createNotification } from "@/lib/notifications";
 import * as mirror from "@/lib/mirror";
+import * as coverage from "@/lib/coverage";
 import { resolveWantsDealingQueue } from "@/lib/dealing-routing";
 import { recordDealerActivity } from "@/lib/dealer-activity";
 import { resolveBookType, applySpreadMarkup, pipSize, chargeCommission } from "@/lib/group-pricing";
@@ -318,6 +319,8 @@ export async function POST(
   // LIMIT/STOP order's trigger firing is a real fill, same as any other
   // fill path.
   await mirror.onFillPosition(prisma, result.position, order.symbol.name).catch((err) => console.error("mirror.onFill failed", err));
+  // auto-hedge (lib/coverage.ts): a no-op unless the desk is in auto-fill with auto-hedge on
+  await coverage.onFillAutoHedge(prisma, { positionId: result.position.id, brokerId: order.brokerId });
   await publishTradingEvent("OrderFilled", {
     order_id: order.id,
     account_id: order.accountId,
