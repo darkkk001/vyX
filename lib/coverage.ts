@@ -11,6 +11,8 @@ import { computeProportionalCloseVolume } from "@/lib/mirror";
 import { createNotification } from "@/lib/notifications";
 import { publishTradingEvent } from "@/lib/nats";
 import { emitPositionClosedActivity } from "@/lib/dealer-activity";
+import { isDealingManagedAccount } from "@/lib/dealing-routing";
+import { computeRealizedPnl } from "@/lib/trading";
 
 // Dealer coverage (B-book hedging). A broker hedges a client's B-book
 // position by clicking BOOK NOW (app/api/manage/positions/[id]/book),
@@ -202,7 +204,9 @@ export async function onClose(db: Db, ev: CoverageCloseEvent): Promise<void> {
       status: true,
       coveragePositionId: true,
       symbol: { select: { name: true } },
-      account: { select: { accountNumber: true } },
+      // account group + broker desk flags: whether THIS client's closes are dealer-reviewed
+      account: { select: { accountNumber: true, group: { select: { dealingMode: true, forceDealingMode: true, groupType: true } } } },
+      broker: { select: { dealingModeAt: true, dealingDeskAutoFillAt: true } },
       // the client position this leg hedges (self-relation back side; unique in practice, a list in the schema)
       coveredClientPos: { select: { id: true, ticket: true, status: true, accountId: true, account: { select: { accountNumber: true } } }, take: 1 },
     },
@@ -254,6 +258,53 @@ export async function onClose(db: Db, ev: CoverageCloseEvent): Promise<void> {
   const closeVolume = computeProportionalCloseVolume(ev.closedLots, ev.sourceVolumeBeforeClose, leg.volume);
   // the tx-aware reader (like mirror.onClose): the latest known price for the leg's symbol
   const live = await getLivePriceRow(leg.symbol.name, db);
+
+  // Coverage CLOSE respects dealer mode (2026-09-22), the same way the OPEN side does. When this
+  // client's account is dealer-reviewed, the desk decides every fill: auto-closing the hedge behind
+  // the dealer's back is exactly the decision they are there to make (they may want to keep the leg
+  // on, or close it at a different moment). So the leg STAYS OPEN and the dealer is told the client
+  // has gone and what the leg is worth right now; they close it with UNBOOK / CLOSE in the Smart
+  // Dealer Manager. Only in auto-fill (dealer review off) does the leg follow the client
+  // automatically, matched to the client's close.
+  // Deliberately evaluated on the CLIENT's account, not the coverage account: the coverage account
+  // is a system account in its own COVERAGE group and is never itself dealer-reviewed.
+  const dealerReviewed = isDealingManagedAccount({
+    group: closed.account.group,
+    brokerDealingModeOn: !!closed.broker.dealingModeAt,
+    dealingDeskAutoFillOn: !!closed.broker.dealingDeskAutoFillAt,
+  });
+  if (dealerReviewed) {
+    const legPnl = live
+      ? computeRealizedPnl({
+          side: leg.side,
+          openPrice: leg.openPrice,
+          closePrice: leg.side === "BUY" ? live.bid : live.ask,
+          volume: leg.volume,
+          contractSize: leg.symbol.contractSize,
+        })
+      : null;
+    const at = legPnl ? `${legPnl.gte(0) ? "+" : ""}${legPnl.toFixed(2)}` : "unpriced";
+    await db.auditLog.create({
+      data: {
+        brokerId: ev.brokerId,
+        action: "POSITION_COVERAGE_CLOSE_AWAITING_DEALER",
+        entityType: "Position",
+        entityId: leg.id,
+        oldValue: { clientPositionId: closed.id, clientTicket: closed.ticket, clientClosedLots: ev.closedLots.toString() },
+        newValue: { legTicket: leg.ticket, legPnl: legPnl?.toString() ?? null, reason: ev.reason ?? "manual" },
+      },
+    });
+    await createNotification(db, {
+      brokerId: ev.brokerId,
+      type: "COVERAGE_CLOSE_AWAITING_DEALER",
+      title: `Client closed #${closed.ticket}: coverage leg #${leg.ticket} is yours to close`,
+      body: `Client ${closed.account.accountNumber} closed ${ev.closedLots.toString()} ${leg.symbol.name} (#${closed.ticket}). Dealer review is on, so the coverage leg #${leg.ticket} (${leg.side} ${leg.volume.toString()}) was left OPEN and is at ${at} against that order. Close it from the Smart Dealer Manager when you are ready.`,
+      entityType: "Position",
+      entityId: leg.id,
+    });
+    return;
+  }
+
   if (!live) {
     await createNotification(db, {
       brokerId: ev.brokerId,
@@ -281,7 +332,7 @@ export async function onClose(db: Db, ev: CoverageCloseEvent): Promise<void> {
       },
       closePrice,
       closeVolume,
-      note: `Coverage auto-close: client #${closed.ticket} closed ${ev.closedLots.toString()} of ${ev.sourceVolumeBeforeClose.toString()}`,
+      note: `Coverage auto-close (auto-fill): client #${closed.ticket} closed ${ev.closedLots.toString()} of ${ev.sourceVolumeBeforeClose.toString()}`,
     })
   );
   if (!outcome.closed) return;

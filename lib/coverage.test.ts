@@ -62,17 +62,19 @@ async function withRollback(fn: (tx: Prisma.TransactionClient) => Promise<void>)
   }
 }
 
-type Fixture = { brokerId: string; symbolId: string; symbolName: string; clientAccountId: string; clientAccountNumber: string; coverageAccountId: string; coverageAccountNumber: string };
+type Fixture = { brokerId: string; symbolId: string; symbolName: string; clientGroupId: string; clientAccountId: string; clientAccountNumber: string; coverageAccountId: string; coverageAccountNumber: string };
 
 // broker + symbol (bid 1.10000 / ask 1.10020) + a B-book client account + the broker's coverage
 // account (pointer stamped on the broker, the way ensureCoverageAccount does it)
-async function createFixture(tx: Prisma.TransactionClient): Promise<Fixture> {
+async function createFixture(tx: Prisma.TransactionClient, opts?: { dealerReviewed?: boolean }): Promise<Fixture> {
   const suffix = randomUUID().replace(/-/g, "").slice(0, 10);
   const broker = await tx.broker.create({ data: { name: `Coverage Test Broker ${suffix}`, subdomain: `covtest-${suffix}` } });
   const symbol = await tx.symbol.create({ data: { name: `TC${suffix.toUpperCase()}`, baseCurrency: "TST", quoteCurrency: "USD", category: "FOREX" } });
   await tx.brokerSymbol.create({ data: { brokerId: broker.id, symbolId: symbol.id, minLot: D(0.01), maxLot: D(100), lotStep: D(0.01), tradingMode: "BOTH" } });
   await tx.livePrice.create({ data: { symbol: symbol.name, bid: D("1.10000"), ask: D("1.10020") } });
-  const group = await tx.group.create({ data: { brokerId: broker.id, name: `Cov Client Group ${suffix}` } });
+  // dealingMode AUTO = this client's closes are NOT dealer-reviewed (auto-fill): the coverage leg
+  // follows the client automatically. MANUAL (opts.dealerReviewed) = the desk closes it by hand.
+  const group = await tx.group.create({ data: { brokerId: broker.id, name: `Cov Client Group ${suffix}`, dealingMode: opts?.dealerReviewed ? "MANUAL" : "AUTO" } });
   const client = await tx.account.create({
     data: { brokerId: broker.id, accountNumber: `7${suffix.slice(0, 7)}`, email: `cov-client-${suffix}@test.local`, passwordHash: "x", fullName: "Cov Client", accountMode: "LIVE", groupId: group.id, balance: D(10000) },
   });
@@ -81,7 +83,7 @@ async function createFixture(tx: Prisma.TransactionClient): Promise<Fixture> {
     data: { brokerId: broker.id, accountNumber: `6${suffix.slice(0, 7)}`, email: `cov-acct-${suffix}@test.local`, passwordHash: "x", fullName: "Dealer Coverage", accountMode: "LIVE", groupId: covGroup.id, balance: D(0) },
   });
   await tx.broker.update({ where: { id: broker.id }, data: { coverageAccountId: coverage.id } });
-  return { brokerId: broker.id, symbolId: symbol.id, symbolName: symbol.name, clientAccountId: client.id, clientAccountNumber: client.accountNumber, coverageAccountId: coverage.id, coverageAccountNumber: coverage.accountNumber };
+  return { brokerId: broker.id, symbolId: symbol.id, symbolName: symbol.name, clientGroupId: group.id, clientAccountId: client.id, clientAccountNumber: client.accountNumber, coverageAccountId: coverage.id, coverageAccountNumber: coverage.accountNumber };
 }
 
 async function createPosition(tx: Prisma.TransactionClient, fx: Fixture, p: { accountId: string; side: "BUY" | "SELL"; volume: string; openPrice: string; bookType?: "A_BOOK" | "B_BOOK"; status?: "OPEN" | "CLOSED" }) {
@@ -236,6 +238,75 @@ describe("lib/coverage.ts notifyStopOut (live DB, rolled back)", () => {
       expect(cov?.body).toContain("run out of balance");
       const cli = await tx.notification.findFirst({ where: { brokerId: fx.brokerId, type: "STOP_OUT" } });
       expect(cli?.title).toBe(`Stop-out: ${fx.clientAccountNumber} #4243 closed`);
+    });
+  });
+});
+
+describe("lib/coverage.ts onClose -- coverage close respects dealer mode (live DB, rolled back)", () => {
+  it("leaves the coverage leg OPEN and tells the dealer when the client's account is dealer-reviewed", async () => {
+    if (!dbReachable) return;
+    await withRollback(async (tx) => {
+      const fx = await createFixture(tx, { dealerReviewed: true });
+      const client = await createPosition(tx, fx, { accountId: fx.clientAccountId, side: "BUY", volume: "1", openPrice: "1.10020" });
+      const leg = await book(tx, fx, client.id, "BUY", "1");
+      await tx.position.update({ where: { id: client.id }, data: { status: "CLOSED", closePrice: D("1.10000"), closedAt: new Date() } });
+
+      await onClose(tx, { positionId: client.id, brokerId: fx.brokerId, closedLots: D(1), sourceVolumeBeforeClose: D(1), reason: "manual" });
+
+      // the hedge is still the dealer's to close
+      const legAfter = await tx.position.findUniqueOrThrow({ where: { id: leg.id } });
+      expect(legAfter.status).toBe("OPEN");
+      expect(legAfter.volume.toString()).toBe("1");
+      expect(legAfter.closePrice).toBeNull();
+      // nothing was realised on the coverage account
+      expect(await tx.transaction.count({ where: { referenceId: leg.id, type: "TRADE_PNL" } })).toBe(0);
+      // and the desk was told, with the leg's live P&L against that order
+      const n = await tx.notification.findFirstOrThrow({ where: { brokerId: fx.brokerId, type: "COVERAGE_CLOSE_AWAITING_DEALER" } });
+      expect(n.title).toContain(`Client closed #${client.ticket}`);
+      expect(n.body).toContain(`coverage leg #${leg.ticket}`);
+      expect(n.body).toMatch(/is at [+-]?\d+\.\d{2} against that order/);
+      const audit = await tx.auditLog.findFirst({ where: { entityId: leg.id, action: "POSITION_COVERAGE_CLOSE_AWAITING_DEALER" } });
+      expect(audit).not.toBeNull();
+      // explicitly NOT the auto-close path
+      expect(await tx.auditLog.count({ where: { entityId: leg.id, action: "POSITION_COVERAGE_AUTO_CLOSED" } })).toBe(0);
+    });
+  });
+
+  it("auto-closes the leg when the client's account is in auto-fill (dealer review off)", async () => {
+    if (!dbReachable) return;
+    await withRollback(async (tx) => {
+      const fx = await createFixture(tx, { dealerReviewed: false });
+      const client = await createPosition(tx, fx, { accountId: fx.clientAccountId, side: "BUY", volume: "1", openPrice: "1.10020" });
+      const leg = await book(tx, fx, client.id, "BUY", "1");
+      await tx.position.update({ where: { id: client.id }, data: { status: "CLOSED", closePrice: D("1.10000"), closedAt: new Date() } });
+
+      await onClose(tx, { positionId: client.id, brokerId: fx.brokerId, closedLots: D(1), sourceVolumeBeforeClose: D(1), reason: "manual" });
+
+      const legAfter = await tx.position.findUniqueOrThrow({ where: { id: leg.id } });
+      expect(legAfter.status).toBe("CLOSED");
+      const audit = await tx.auditLog.findFirst({ where: { entityId: leg.id, action: "POSITION_COVERAGE_AUTO_CLOSED" } });
+      expect(audit).not.toBeNull();
+      expect(await tx.notification.count({ where: { brokerId: fx.brokerId, type: "COVERAGE_CLOSE_AWAITING_DEALER" } })).toBe(0);
+      const trx = await tx.transaction.findFirstOrThrow({ where: { referenceId: leg.id, type: "TRADE_PNL" } });
+      expect(trx.note).toMatch(/auto-fill/);
+    });
+  });
+
+  it("a broker-wide dealing mode also holds the leg, even on an INHERIT group", async () => {
+    if (!dbReachable) return;
+    await withRollback(async (tx) => {
+      const fx = await createFixture(tx);
+      // group left at the fixture's AUTO -> flip it to INHERIT and turn the broker-wide switch on
+      await tx.group.update({ where: { id: fx.clientGroupId }, data: { dealingMode: "INHERIT" } });
+      await tx.broker.update({ where: { id: fx.brokerId }, data: { dealingModeAt: new Date() } });
+      const client = await createPosition(tx, fx, { accountId: fx.clientAccountId, side: "SELL", volume: "1", openPrice: "1.10000" });
+      const leg = await book(tx, fx, client.id, "SELL", "1");
+      await tx.position.update({ where: { id: client.id }, data: { status: "CLOSED", closePrice: D("1.10020"), closedAt: new Date() } });
+
+      await onClose(tx, { positionId: client.id, brokerId: fx.brokerId, closedLots: D(1), sourceVolumeBeforeClose: D(1), reason: "manual" });
+
+      expect((await tx.position.findUniqueOrThrow({ where: { id: leg.id } })).status).toBe("OPEN");
+      expect(await tx.notification.count({ where: { brokerId: fx.brokerId, type: "COVERAGE_CLOSE_AWAITING_DEALER" } })).toBe(1);
     });
   });
 });
