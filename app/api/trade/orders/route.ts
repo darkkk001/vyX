@@ -25,6 +25,7 @@ import {
   checkGroupMaxLot,
   checkGroupTradingRestriction,
   checkGroupTradingHalted,
+  checkGroupCloseOnly,
   checkGroupAllowedSymbol,
   checkMaxOpenPositions,
   checkSymbolExposure,
@@ -189,6 +190,7 @@ async function handlePlaceOrder(request: NextRequest) {
     (account.group ? checkGroupMaxLot(volume, account.group.maxLotSize) : null) ??
     (account.group ? checkGroupTradingRestriction(account.group.tradingRestriction, side) : null) ??
     (account.group ? checkGroupTradingHalted(account.group) : null) ??
+    (account.group ? checkGroupCloseOnly(account.group) : null) ??
     (account.group
       ? checkGroupAllowedSymbol(
           account.group.restrictSymbols,

@@ -25,26 +25,35 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     return NextResponse.json({ error: "group not found" }, { status: 404 });
   }
 
+  // Either switch, on its own: {halted} is the full stop, {closeOnly} lets this
+  // group close but not open (2026-09-23, so the dealing desk's own emergency
+  // controls can be scoped to its group instead of the whole broker).
   const body = await request.json().catch(() => null);
-  if (typeof body?.halted !== "boolean") {
-    return NextResponse.json({ error: "halted must be a boolean" }, { status: 400 });
+  const hasHalted = typeof body?.halted === "boolean";
+  const hasCloseOnly = typeof body?.closeOnly === "boolean";
+  if (!hasHalted && !hasCloseOnly) {
+    return NextResponse.json({ error: "halted and/or closeOnly must be a boolean" }, { status: 400 });
   }
-  const halted: boolean = body.halted;
+  const halted: boolean = hasHalted ? body.halted : existing.tradingHaltedAt != null;
+  const closeOnly: boolean = hasCloseOnly ? body.closeOnly : existing.closeOnlyAt != null;
 
   const group = await prisma.$transaction(async (tx) => {
     const updated = await tx.group.update({
       where: { id },
-      data: { tradingHaltedAt: halted ? new Date() : null },
+      data: {
+        ...(hasHalted ? { tradingHaltedAt: halted ? new Date() : null } : {}),
+        ...(hasCloseOnly ? { closeOnlyAt: closeOnly ? new Date() : null } : {}),
+      },
     });
     await tx.auditLog.create({
       data: {
         brokerId,
         actorAdminId: session!.adminId,
-        action: "GROUP_HALT_TOGGLED",
+        action: hasHalted ? "GROUP_HALT_TOGGLED" : "GROUP_CLOSE_ONLY_TOGGLED",
         entityType: "Group",
         entityId: id,
-        oldValue: { tradingHalted: existing.tradingHaltedAt != null },
-        newValue: { tradingHalted: halted },
+        oldValue: { tradingHalted: existing.tradingHaltedAt != null, closeOnly: existing.closeOnlyAt != null },
+        newValue: { ...(hasHalted ? { tradingHalted: halted } : {}), ...(hasCloseOnly ? { closeOnly } : {}) },
       },
     });
     return updated;
@@ -54,5 +63,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     id: group.id,
     tradingHalted: group.tradingHaltedAt != null,
     tradingHaltedAt: group.tradingHaltedAt ? group.tradingHaltedAt.toISOString() : null,
+    closeOnly: group.closeOnlyAt != null,
+    closeOnlyAt: group.closeOnlyAt ? group.closeOnlyAt.toISOString() : null,
   });
 }

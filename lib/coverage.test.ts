@@ -66,7 +66,7 @@ type Fixture = { brokerId: string; symbolId: string; symbolName: string; clientG
 
 // broker + symbol (bid 1.10000 / ask 1.10020) + a B-book client account + the broker's coverage
 // account (pointer stamped on the broker, the way ensureCoverageAccount does it)
-async function createFixture(tx: Prisma.TransactionClient, opts?: { dealerReviewed?: boolean; groupType?: string; autoFill?: boolean; autoHedge?: boolean }): Promise<Fixture> {
+async function createFixture(tx: Prisma.TransactionClient, opts?: { dealerReviewed?: boolean; groupType?: "LP" | "DEALING" | "DEMO" | "COVERAGE"; autoFill?: boolean; autoHedge?: boolean }): Promise<Fixture> {
   const suffix = randomUUID().replace(/-/g, "").slice(0, 10);
   const broker = await tx.broker.create({ data: { name: `Coverage Test Broker ${suffix}`, subdomain: `covtest-${suffix}` } });
   const symbol = await tx.symbol.create({ data: { name: `TC${suffix.toUpperCase()}`, baseCurrency: "TST", quoteCurrency: "USD", category: "FOREX" } });

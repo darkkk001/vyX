@@ -18,6 +18,7 @@ import {
   checkGroupMaxLot,
   checkGroupTradingRestriction,
   checkGroupTradingHalted,
+  checkGroupCloseOnly,
   checkGroupAllowedSymbol,
   checkMaxOpenPositions,
   checkSymbolExposure,
@@ -160,6 +161,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     (account.group ? checkGroupMaxLot(order.volume, account.group.maxLotSize) : null) ??
     (account.group ? checkGroupTradingRestriction(account.group.tradingRestriction, order.side) : null) ??
     (account.group ? checkGroupTradingHalted(account.group) : null) ??
+    (account.group ? checkGroupCloseOnly(account.group) : null) ??
     (account.group
       ? checkGroupAllowedSymbol(
           account.group.restrictSymbols,

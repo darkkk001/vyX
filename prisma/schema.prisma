@@ -977,6 +977,14 @@ model Group {
   // field, for the same reason (the timestamp is the audit trail entry
   // point; who set it lives in the paired AuditLog row).
   tradingHaltedAt    DateTime?            @db.Timestamptz(3)
+  // Non-null = accounts in THIS group may only CLOSE, not open (existing
+  // positions untouched, closes still allowed) -- the per-group equivalent
+  // of Broker.closeOnlyAt, see lib/risk.ts's checkGroupCloseOnly. Weaker
+  // than tradingHaltedAt above, which refuses closes' hedge legs too; a
+  // group never needs both, exactly as the broker-wide pair never does.
+  // Added 2026-09-23 so the dealing desk's own emergency controls can be
+  // scoped to the dealing group instead of stopping the whole broker.
+  closeOnlyAt        DateTime?            @db.Timestamptz(3)
   // Nullable tri-state (widened 2026-09-07 migration
   // pricing_engine_schema, was `@default(false)`) -- null = "not set,
   // fall through to hardcoded false" once Phase 2's swap-free resolution

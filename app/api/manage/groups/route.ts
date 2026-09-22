@@ -70,6 +70,8 @@ export async function GET() {
       maxLotSize: g.maxLotSize ? g.maxLotSize.toString() : "",
       tradingRestriction: g.tradingRestriction,
       tradingHalted: g.tradingHaltedAt != null,
+      // per-group close-only (2026-09-23): the dealing desk scopes its own emergency controls with it
+      closeOnly: g.closeOnlyAt != null,
       swapFree: g.swapFree,
       forceDealingMode: g.forceDealingMode,
       category: g.category,

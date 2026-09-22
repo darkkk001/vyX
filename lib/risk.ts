@@ -36,6 +36,16 @@ export function checkGroupTradingHalted(group: { tradingHaltedAt: Date | null })
   return null;
 }
 
+// Per-group close-only -- see Group.closeOnlyAt's own schema comment. The
+// per-group twin of checkCloseOnly above: opening is refused for this group
+// only, closing an existing position is still allowed. Checked beside
+// checkGroupTradingHalted at every order-open gate; a group with both set is
+// simply halted (the stronger gate returns first), same as the broker pair.
+export function checkGroupCloseOnly(group: { closeOnlyAt: Date | null }): string | null {
+  if (group.closeOnlyAt) return "close-only mode is active for this account's group: only closing existing positions is allowed";
+  return null;
+}
+
 // BOTH (default) never blocks. BUY_ONLY/SELL_ONLY reject the disallowed
 // side even when the symbol is otherwise enabled -- a stronger
 // restriction than `enabled`, not a replacement for it.

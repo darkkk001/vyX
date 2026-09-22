@@ -10,6 +10,7 @@ import {
   checkTradingHalted,
   checkCloseOnly,
   checkGroupTradingHalted,
+  checkGroupCloseOnly,
 } from "@/lib/risk";
 import { getFreshPrices } from "@/lib/live-price";
 import { computeRealizedPnl } from "@/lib/trading";
@@ -289,7 +290,7 @@ async function mirrorFillForRule(db: Db, rule: MirrorRule, source: MirrorSourceP
     const [targetAccount, brokerSymbol, broker] = await Promise.all([
       db.account.findUnique({
         where: { id: rule.targetAccountId },
-        include: { group: { select: { category: true, marginCallLevel: true, tradingHaltedAt: true } } },
+        include: { group: { select: { category: true, marginCallLevel: true, tradingHaltedAt: true, closeOnlyAt: true } } },
       }),
       db.brokerSymbol.findFirst({
         where: { brokerId: rule.brokerId, symbolId: source.symbolId, enabled: true },
@@ -323,6 +324,7 @@ async function mirrorFillForRule(db: Db, rule: MirrorRule, source: MirrorSourceP
       checkTradingHalted(broker) ??
       checkCloseOnly(broker) ??
       (targetAccount.group ? checkGroupTradingHalted(targetAccount.group) : null) ??
+      (targetAccount.group ? checkGroupCloseOnly(targetAccount.group) : null) ??
       checkSymbolTradingMode(brokerSymbol.tradingMode, mirrorSide) ??
       checkTradingSession(brokerSymbol.tradingSessions, new Date(), brokerSymbol.symbol.category);
     if (tradabilityError) {
