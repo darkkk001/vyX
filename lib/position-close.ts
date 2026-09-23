@@ -54,13 +54,18 @@ export async function closePositionInTx(
     contractSize: position.symbol.contractSize,
   });
 
+  // The guard is status AND the volume the caller read (2026-09-23). Status alone let a caller holding a
+  // stale volume apply after a concurrent partial close had already reduced the position: both partials
+  // wrote volume = their own stale read minus their lots and both were credited, and a stale FULL close
+  // paid out lots that were already closed. Matching the volume makes either one a benign {closed:false}.
+  const guard = { id: position.id, status: "OPEN" as const, volume: position.volume };
   const positionUpdate = isPartial
     ? await tx.position.updateMany({
-        where: { id: position.id, status: "OPEN" },
+        where: guard,
         data: { volume: position.volume.sub(closeVolume) },
       })
     : await tx.position.updateMany({
-        where: { id: position.id, status: "OPEN" },
+        where: guard,
         data: {
           status: "CLOSED",
           closePrice: new Prisma.Decimal(closePrice),

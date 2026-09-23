@@ -200,6 +200,45 @@ describe("closePositionInTx (live DB, rolled back)", () => {
     });
   });
 
+  // 2026-09-23: the guard only checked status, so a caller holding a STALE volume could still apply.
+  // Two partial closes racing on the same position both passed (status stayed OPEN), each wrote
+  // volume = its own stale read minus its lots, and each was credited: lots closed twice, money paid twice.
+  it("a partial close from a stale read (another partial already reduced the position) is a benign no-op", async () => {
+    if (!dbReachable) return;
+    await withRollback(async (tx) => {
+      const fx = await createFixture(tx);
+      const pos = await createOpenPosition(tx, fx, { side: "BUY", volume: "1.00", openPrice: "4000.00" });
+      const stale = { id: pos.id, accountId: fx.accountId, brokerId: fx.brokerId, side: "BUY" as const, openPrice: D("4000.00"), volume: D("1.00"), symbol: contractSizeArg };
+
+      const first = await closePositionInTx(tx, { position: stale, closePrice: "4010.00", closeVolume: D("0.40") });
+      expect(first.closed).toBe(true);
+      // the second caller read volume 1.00 before the first one landed
+      const second = await closePositionInTx(tx, { position: stale, closePrice: "4010.00", closeVolume: D("0.40") });
+      expect(second.closed).toBe(false);
+
+      const after = await tx.position.findUniqueOrThrow({ where: { id: pos.id } });
+      expect(after.volume.toString()).toBe("0.6");
+      expect(await tx.transaction.count({ where: { accountId: fx.accountId, type: "TRADE_PNL" } })).toBe(1);
+      const acct = await tx.account.findUniqueOrThrow({ where: { id: fx.accountId } });
+      expect(acct.balance.toString()).toBe("100400"); // 0.4 lot x 100 x 10, once
+    });
+  });
+
+  it("a full close from a stale read (a partial already reduced the position) does not pay out the stale volume", async () => {
+    if (!dbReachable) return;
+    await withRollback(async (tx) => {
+      const fx = await createFixture(tx);
+      const pos = await createOpenPosition(tx, fx, { side: "BUY", volume: "1.00", openPrice: "4000.00" });
+      const stale = { id: pos.id, accountId: fx.accountId, brokerId: fx.brokerId, side: "BUY" as const, openPrice: D("4000.00"), volume: D("1.00"), symbol: contractSizeArg };
+
+      await closePositionInTx(tx, { position: stale, closePrice: "4010.00", closeVolume: D("0.40") });
+      const full = await closePositionInTx(tx, { position: stale, closePrice: "4010.00" }); // would pay 1.00 lot
+      expect(full.closed).toBe(false);
+      const acct = await tx.account.findUniqueOrThrow({ where: { id: fx.accountId } });
+      expect(acct.balance.toString()).toBe("100400");
+    });
+  });
+
   it("uses the caller's supplied note verbatim when given, otherwise defaults based on partial/full", async () => {
     if (!dbReachable) return;
     await withRollback(async (tx) => {

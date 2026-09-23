@@ -4,6 +4,7 @@ import { getFreshPrice } from "@/lib/live-price";
 import { checkTradingSession, computeNextSessionOpen } from "@/lib/risk";
 import { computeRealizedPnl } from "@/lib/trading";
 import { resolveBookType } from "@/lib/group-pricing";
+import { closePositionInTx } from "@/lib/position-close";
 import { randomUUID } from "node:crypto";
 
 type Tx = Prisma.TransactionClient;
@@ -53,6 +54,69 @@ async function loadOpenPosition(tx: Tx, brokerId: string, positionId: string) {
   if (!position || position.brokerId !== brokerId) throw new PositionActionError("position not found");
   if (position.status !== "OPEN") throw new PositionActionError("position is not open");
   return position;
+}
+
+// ---------- Admin close (app/api/manage/positions/[id]/close) ----------
+// The dealer's manual close, full or partial. Until 2026-09-23 the route wrote this with a bare
+// update-by-id: no status guard (a double click, or the risk monitor closing the same position a moment
+// earlier, credited the account twice) and no negative-balance protection (a deep loss closed by a dealer
+// drove the balance below zero). It now goes through closePositionInTx like every other close; this adds
+// only what is specific to an admin close. `position` is the route's own pre-transaction read: if the row
+// changed since (closed, or reduced by another close), the guard refuses and nothing is written.
+export type AdminCloseResult =
+  | { closed: true; partial: boolean; realizedPnl: Prisma.Decimal; position: unknown }
+  | { closed: false };
+
+export async function executeAdminCloseInTx(
+  tx: Tx,
+  params: {
+    brokerId: string;
+    adminId: string;
+    position: {
+      id: string;
+      accountId: string;
+      side: OrderSide;
+      openPrice: Prisma.Decimal;
+      volume: Prisma.Decimal;
+      symbol: { name: string; contractSize: Prisma.Decimal };
+      account: { accountNumber: string };
+    };
+    closePrice: Prisma.Decimal;
+    closeVolume: Prisma.Decimal;
+  }
+): Promise<AdminCloseResult> {
+  const { brokerId, adminId, position, closePrice, closeVolume } = params;
+  const isPartial = closeVolume.lt(position.volume);
+  const outcome = await closePositionInTx(tx, {
+    position: { id: position.id, accountId: position.accountId, brokerId, side: position.side, openPrice: position.openPrice, volume: position.volume, symbol: { contractSize: position.symbol.contractSize } },
+    closePrice,
+    closeVolume,
+    note: isPartial ? `Manual partial close by admin: ${closeVolume} lots @ ${closePrice}` : `Manual close by admin @ ${closePrice}`,
+  });
+  if (!outcome.closed) return { closed: false };
+
+  const updated = isPartial
+    ? outcome.position
+    : await tx.position.update({ where: { id: position.id }, data: { closedByAdminId: adminId } });
+  await tx.auditLog.create({
+    data: {
+      brokerId,
+      actorAdminId: adminId,
+      action: "MANUAL_POSITION_CLOSE",
+      entityType: "Position",
+      entityId: position.id,
+      oldValue: { status: "OPEN", volume: position.volume.toString() },
+      newValue: {
+        accountNumber: position.account.accountNumber,
+        symbol: position.symbol.name,
+        closeVolume: closeVolume.toString(),
+        closePrice: closePrice.toString(),
+        realizedPnl: outcome.realizedPnl.toString(),
+        partial: isPartial,
+      },
+    },
+  });
+  return { closed: true, partial: isPartial, realizedPnl: outcome.realizedPnl, position: updated };
 }
 
 // ---------- Reverse: in-place flip (new default) ----------
@@ -170,40 +234,22 @@ export async function executeReverseCloseReopen(
   const newSide: OrderSide = position.side === "BUY" ? "SELL" : "BUY";
   const openPrice = newSide === "BUY" ? price.ask : price.bid;
 
-  const realizedPnl = computeRealizedPnl({
-    side: position.side,
-    openPrice: position.openPrice,
-    closePrice,
-    volume: position.volume,
-    contractSize: position.symbol.contractSize,
-  });
-
   const account = await tx.account.findUniqueOrThrow({
     where: { id: position.accountId },
     include: { group: { select: { category: true } } },
   });
-  const balanceBefore = account.balance;
-  const balanceAfter = balanceBefore.add(realizedPnl);
 
-  await tx.position.update({
-    where: { id: position.id },
-    data: { status: "CLOSED", closePrice, realizedPnl, closedAt: new Date(), closedByAdminId: params.adminId },
+  // The close leg goes through closePositionInTx (2026-09-23): it used to be a bare update-by-id plus its
+  // own balance write, so it had no status guard (a concurrent close could be paid twice) and no
+  // negative-balance protection (a deep loss left the balance below zero).
+  const closed = await closePositionInTx(tx, {
+    position: { id: position.id, accountId: position.accountId, brokerId: params.brokerId, side: position.side, openPrice: position.openPrice, volume: position.volume, symbol: { contractSize: position.symbol.contractSize } },
+    closePrice,
+    note: `Reversed (close & reopen) by admin @ ${closePrice}`,
   });
-  await tx.account.update({ where: { id: position.accountId }, data: { balance: balanceAfter } });
-  await tx.transaction.create({
-    data: {
-      brokerId: params.brokerId,
-      accountId: position.accountId,
-      type: "TRADE_PNL",
-      status: "COMPLETED",
-      amount: realizedPnl,
-      balanceBefore,
-      balanceAfter,
-      referenceType: "Position",
-      referenceId: position.id,
-      note: `Reversed (close & reopen) by admin @ ${closePrice}`,
-    },
-  });
+  if (!closed.closed) throw new PositionActionError("position was closed or changed by another action, refresh and try again");
+  const realizedPnl = closed.realizedPnl;
+  await tx.position.update({ where: { id: position.id }, data: { closedByAdminId: params.adminId } });
 
   const newOrder = await tx.order.create({
     data: {
@@ -299,6 +345,15 @@ export type VoidResult = {
 export async function executeVoid(tx: Tx, params: { brokerId: string; positionId: string; adminId: string }): Promise<VoidResult> {
   const position = await loadOpenPosition(tx, params.brokerId, params.positionId);
 
+  // Claim the position BEFORE any money moves (2026-09-23): the status flip is conditioned on the row
+  // still being exactly what was read (OPEN, same volume), so a concurrent void or close makes this one
+  // stop here instead of reversing the commission/swap a second time.
+  const claim = await tx.position.updateMany({
+    where: { id: position.id, status: "OPEN", volume: position.volume },
+    data: { status: "VOIDED", closedAt: new Date(), closedByAdminId: params.adminId },
+  });
+  if (claim.count === 0) throw new PositionActionError("position was closed or changed by another action, refresh and try again");
+
   const positionTxns = await tx.transaction.aggregate({
     where: { accountId: position.accountId, referenceType: "Position", referenceId: position.id, status: "COMPLETED" },
     _sum: { amount: true },
@@ -333,9 +388,8 @@ export async function executeVoid(tx: Tx, params: { brokerId: string; positionId
     });
   }
 
-  const updated = await tx.position.update({
-    where: { id: position.id },
-    data: { status: "VOIDED", closedAt: new Date(), closedByAdminId: params.adminId },
+  const updated = await tx.position.findUniqueOrThrow({
+    where: { id: position.id }, // claimed (VOIDED) above
   });
 
   await tx.auditLog.create({

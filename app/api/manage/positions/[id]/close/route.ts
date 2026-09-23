@@ -4,7 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { getFreshPrice } from "@/lib/live-price";
 import { checkTradingSession, computeNextSessionOpen } from "@/lib/risk";
-import { computeRealizedPnl } from "@/lib/trading";
+import { executeAdminCloseInTx } from "@/lib/position-actions";
 import * as mirror from "@/lib/mirror";
 import * as coverage from "@/lib/coverage";
 import { publishTradingEvent } from "@/lib/nats";
@@ -102,81 +102,16 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   // for an open SELL -- what closing it right now would actually fill at.
   const closePrice = position.side === "BUY" ? price.bid : price.ask;
 
-  const realizedPnl = computeRealizedPnl({
-    side: position.side,
-    openPrice: position.openPrice,
-    closePrice,
-    volume: closeVolume,
-    contractSize: position.symbol.contractSize,
-  });
-
-  const result = await prisma.$transaction(async (tx) => {
-    const account = await tx.account.findUniqueOrThrow({ where: { id: position.accountId } });
-    const balanceBefore = account.balance;
-    const balanceAfter = balanceBefore.add(realizedPnl);
-
-    const updatedPosition = isPartial
-      ? await tx.position.update({
-          where: { id: position.id },
-          data: { volume: position.volume.sub(closeVolume) },
-        })
-      : await tx.position.update({
-          where: { id: position.id },
-          data: {
-            status: "CLOSED",
-            closePrice,
-            realizedPnl,
-            closedAt: new Date(),
-            closedByAdminId: session.adminId,
-          },
-        });
-
-    await tx.account.update({
-      where: { id: position.accountId },
-      data: { balance: balanceAfter },
-    });
-
-    const transaction = await tx.transaction.create({
-      data: {
-        brokerId,
-        accountId: position.accountId,
-        type: "TRADE_PNL",
-        status: "COMPLETED",
-        amount: realizedPnl,
-        balanceBefore,
-        balanceAfter,
-        referenceType: "Position",
-        referenceId: position.id,
-        note: isPartial
-          ? `Manual partial close by admin: ${closeVolume} lots @ ${closePrice}`
-          : `Manual close by admin @ ${closePrice}`,
-      },
-    });
-
-    await tx.auditLog.create({
-      data: {
-        brokerId,
-        actorAdminId: session.adminId,
-        action: "MANUAL_POSITION_CLOSE",
-        entityType: "Position",
-        entityId: position.id,
-        oldValue: {
-          status: "OPEN",
-          volume: position.volume.toString(),
-        },
-        newValue: {
-          accountNumber: position.account.accountNumber,
-          symbol: position.symbol.name,
-          closeVolume: closeVolume.toString(),
-          closePrice: closePrice.toString(),
-          realizedPnl: realizedPnl.toString(),
-          partial: isPartial,
-        },
-      },
-    });
-
-    return { position: updatedPosition, transaction, partial: isPartial };
-  });
+  // The close itself is lib/position-actions.ts executeAdminCloseInTx -> closePositionInTx (2026-09-23):
+  // status + volume guard against a double close, negative-balance protection, the TRADE_PNL row, the
+  // closing admin and the MANUAL_POSITION_CLOSE audit, all in one transaction.
+  const result = await prisma.$transaction((tx) =>
+    executeAdminCloseInTx(tx, { brokerId, adminId: session.adminId, position, closePrice, closeVolume })
+  );
+  if (!result.closed) {
+    return NextResponse.json({ error: "position was closed or changed by another action, refresh and try again" }, { status: 409 });
+  }
+  const realizedPnl = result.realizedPnl;
 
   // docs/briefs/VYX-MIRROR-V0-BRIEF.md -- mirror hook gap fix: a
   // dealer-initiated close is a real close, same as the trader's own
@@ -220,7 +155,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   });
 
   return NextResponse.json({
-    positionId: result.position.id,
+    positionId: position.id,
     partial: result.partial,
     closePrice: closePrice.toString(),
     realizedPnl: realizedPnl.toString(),
