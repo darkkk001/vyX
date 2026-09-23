@@ -37,22 +37,31 @@ pub struct AccountState {
     pub positions: Vec<db::OpenPositionWithMarket>,
 }
 
+/// Canonical used margin (Stage 2 F2, lib/margin.ts liveUsedMarginFor): at the LIVE close-side price
+/// (BUY bid, SELL ask), converted to the account currency, over positions with a usable price only. A
+/// position without one is in neither the used margin nor the equity.
 pub fn used_margin(state: &AccountState) -> Decimal {
     state
         .positions
         .iter()
-        .map(|p| risk::required_margin(p.volume, p.contract_size, p.open_price, state.leverage))
+        .filter_map(|p| {
+            let (bid, ask) = (p.bid?, p.ask?);
+            Some(risk::required_margin(p.volume, p.contract_size, close_price_for(p.side, bid, ask), state.leverage) * p.fx_rate)
+        })
         .sum()
+}
+
+/// One position's floating P&L in the ACCOUNT currency at its close-side price; None without a usable price.
+pub fn floating_pnl_account(p: &db::OpenPositionWithMarket) -> Option<Decimal> {
+    let (bid, ask) = (p.bid?, p.ask?);
+    Some(floating_pnl(p.side, p.open_price, close_price_for(p.side, bid, ask), p.contract_size, p.volume) * p.fx_rate)
 }
 
 pub fn equity(state: &AccountState) -> Decimal {
     let floating: Decimal = state
         .positions
         .iter()
-        .filter_map(|p| {
-            let (bid, ask) = (p.bid?, p.ask?);
-            Some(floating_pnl(p.side, p.open_price, close_price_for(p.side, bid, ask), p.contract_size, p.volume))
-        })
+        .filter_map(floating_pnl_account)
         .sum();
     state.effective_balance + state.credit + floating
 }

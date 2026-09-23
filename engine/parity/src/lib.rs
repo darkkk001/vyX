@@ -218,6 +218,7 @@ fn account_state(sc: &Scenario, acct: &AccountCfg) -> AccountState {
                 ask: px.map(|x| x.ask),
                 sl_price: p.sl_price,
                 tp_price: p.tp_price,
+                fx_rate: Decimal::ONE, // Stage 0 pure-calc mode predates conversion (the gate is run-db.sh)
             }
         })
         .collect();

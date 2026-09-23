@@ -1,20 +1,7 @@
 {
   "name": "08-no-fresh-price",
   "why": "EURUSD price is 60s old. Web excludes p2 from equity AND margin (500%, no action). Rust excludes it from equity but still counts its margin at open price (1000/2400 = 41.7%) -> stop-out closes the only priced position p1 (P&L 0), then gets stuck on unpriced p2.",
-  "knownDivergence": [
-    {
-      "id": "unpriced-position-margin",
-      "fields": [
-        "marginLevelBefore",
-        "closedPositionIds",
-        "closeReasons",
-        "finalBalance",
-        "transactions",
-        "marginCallNotified"
-      ],
-      "note": "calc.rs used_margin() sums every open position, priced or not; web skips positions with no fresh price in both sums."
-    }
-  ],
+  "knownDivergence": [],
   "broker": {
     "negativeBalanceProtection": true
   },

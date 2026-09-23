@@ -103,7 +103,8 @@ async fn close_sl_tp_triggered(
             let reason = sl_tp_trigger(p)?;
             let (bid, ask) = (p.bid?, p.ask?);
             let close_price = close_price_for(p.side, bid, ask);
-            let pnl = floating_pnl(p.side, p.open_price, close_price, p.contract_size, p.volume);
+            // booked exactly as the web books it: quote P&L x rate, 4 dp when converted (fx.rs convert_pnl)
+            let pnl = crate::fx::convert_pnl(floating_pnl(p.side, p.open_price, close_price, p.contract_size, p.volume), p.fx_rate);
             Some((i, reason, close_price, pnl))
         })
         .collect();
@@ -171,15 +172,19 @@ async fn force_close_worst(
         .enumerate()
         .filter_map(|(i, p)| {
             let (bid, ask) = (p.bid?, p.ask?);
-            let pnl = floating_pnl(p.side, p.open_price, close_price_for(p.side, bid, ask), p.contract_size, p.volume);
-            Some((i, pnl, close_price_for(p.side, bid, ask)))
+            // the worst is chosen in the ACCOUNT currency (a JPY loss and a USD loss compare as money)
+            Some((i, crate::calc::floating_pnl_account(p)?, close_price_for(p.side, bid, ask)))
         })
         .min_by(|a, b| a.1.cmp(&b.1));
 
-    let Some((idx, pnl, close_price)) = worst else {
+    let Some((idx, _, close_price)) = worst else {
         return Ok(CloseAttempt::NoCloseablePosition);
     };
     let position = state.positions.remove(idx);
+    let pnl = crate::fx::convert_pnl(
+        floating_pnl(position.side, position.open_price, close_price, position.contract_size, position.volume),
+        position.fx_rate,
+    );
 
     let mut tx = pool.begin().await?;
     let closed = book::close_position_in_tx(&mut tx, &position.id, position.volume, close_price, pnl, note).await?;
@@ -402,6 +407,7 @@ mod tests {
             ask: Some(ask),
             sl_price,
             tp_price,
+            fx_rate: Decimal::ONE,
         }
     }
 

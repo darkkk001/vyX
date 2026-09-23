@@ -10,6 +10,7 @@ pub mod book;
 pub mod calc;
 pub mod db;
 pub mod events;
+pub mod fx;
 pub mod monitor;
 pub mod pending_orders;
 pub mod pricing;

@@ -1,6 +1,6 @@
 {
-  "name": "12-heartbeat-stale-tick",
-  "why": "LivePrice tickAt is 60s old but updatedAt is 1s old (the MT5 EA heartbeat resends an unchanged price). Both engines gate on tickAt (Stage 2 F4): no usable price, no action.",
+  "name": "13-zero-used-margin",
+  "why": "Two open positions, neither with a usable price (one tick 60 s old, one symbol never quoted), and a NEGATIVE balance. Used margin is 0, so the level is null: never a margin call, never a stop-out, however bad the equity looks.",
   "knownDivergence": [],
   "broker": {
     "negativeBalanceProtection": true
@@ -16,7 +16,7 @@
     {
       "key": "a1",
       "group": "std",
-      "balance": "1000",
+      "balance": "-50",
       "credit": "0",
       "leverage": 100
     }
@@ -26,6 +26,12 @@
       "name": "XAUUSD",
       "contractSize": "100",
       "digits": 2,
+      "quoteCurrency": "USD"
+    },
+    {
+      "name": "XAGUSD",
+      "contractSize": "5000",
+      "digits": 3,
       "quoteCurrency": "USD"
     }
   ],
@@ -39,13 +45,23 @@
       "openPrice": "2000",
       "slPrice": null,
       "tpPrice": null
+    },
+    {
+      "key": "p2",
+      "account": "a1",
+      "symbol": "XAGUSD",
+      "side": "SELL",
+      "volume": "1",
+      "openPrice": "30",
+      "slPrice": null,
+      "tpPrice": null
     }
   ],
   "prices": [
     {
       "symbol": "XAUUSD",
-      "bid": "1992",
-      "ask": "1992.5",
+      "bid": "1900",
+      "ask": "1900.5",
       "ageSeconds": 60,
       "updatedAgeSeconds": 1
     }

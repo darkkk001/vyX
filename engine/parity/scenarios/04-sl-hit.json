@@ -1,15 +1,7 @@
 {
   "name": "04-sl-hit",
   "why": "BUY with SL 1990, bid 1989.5 crosses it: closes at bid for -1050 independent of margin (account is healthy).",
-  "knownDivergence": [
-    {
-      "id": "used-margin-open-vs-live",
-      "fields": [
-        "marginLevelBefore"
-      ],
-      "note": "Rust prices used margin at OPEN price (calc.rs used_margin), web at LIVE close-side price (lib/margin.ts liveUsedMarginFor); the level number differs, the decision does not."
-    }
-  ],
+  "knownDivergence": [],
   "broker": {
     "negativeBalanceProtection": true
   },

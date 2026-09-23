@@ -48,12 +48,14 @@ pub async fn open_positions_with_market(
     account_id: &str,
 ) -> Result<Vec<OpenPositionWithMarket>, sqlx::Error> {
     #[allow(clippy::type_complexity)]
-    let rows: Vec<(String, String, String, Decimal, Decimal, Decimal, Option<Decimal>, Option<Decimal>, Option<Decimal>, Option<Decimal>, String, String)> =
+    let rows: Vec<(String, String, String, Decimal, Decimal, Decimal, Option<Decimal>, Option<Decimal>, Option<Decimal>, Option<Decimal>, String, String, String, String)> =
         sqlx::query_as(
             r#"SELECT p.id, s.name, p.side::text, p.volume, p."openPrice", s."contractSize",
-                      lp.bid, lp.ask, p."slPrice", p."tpPrice", s.category::text, p."brokerId"
+                      lp.bid, lp.ask, p."slPrice", p."tpPrice", s.category::text, p."brokerId",
+                      s."quoteCurrency", a.currency
                FROM "Position" p
                JOIN "Symbol" s ON s.id = p."symbolId"
+               JOIN "Account" a ON a.id = p."accountId"
                LEFT JOIN "LivePrice" lp ON lp.symbol = s.name AND lp."tickAt" > now() - interval '15 seconds'
                WHERE p."accountId" = $1 AND p.status = 'OPEN'
                ORDER BY p."openedAt", p.id"#,
@@ -88,10 +90,35 @@ pub async fn open_positions_with_market(
     }
     let now = chrono::Utc::now();
 
+    // quote -> account conversion (Stage 2 F2, fx.rs = lib/fx.ts): every symbol a needed conversion may read,
+    // latest quote whatever its age, in one query; nothing is read when every pair is same-currency.
+    let mut fx_symbols: Vec<String> = Vec::new();
+    for r in &rows {
+        for s in crate::fx::conversion_symbols_for(&r.12, &r.13) {
+            if !fx_symbols.contains(&s) {
+                fx_symbols.push(s);
+            }
+        }
+    }
+    let fx_quotes: std::collections::HashMap<String, crate::fx::Quote> = if fx_symbols.is_empty() {
+        std::collections::HashMap::new()
+    } else {
+        let q: Vec<(String, Decimal, Decimal)> = sqlx::query_as(r#"SELECT symbol, bid, ask FROM "LivePrice" WHERE symbol = ANY($1)"#)
+            .bind(&fx_symbols)
+            .fetch_all(pool)
+            .await?;
+        q.into_iter().map(|(s, b, a)| (s, (b, a))).collect()
+    };
+
     Ok(rows
         .into_iter()
-        .map(|(id, symbol, side, volume, open_price, contract_size, bid, ask, sl_price, tp_price, category, _)| {
+        .map(|(id, symbol, side, volume, open_price, contract_size, bid, ask, sl_price, tp_price, category, _, quote_ccy, account_ccy)| {
             let closed = sessions.get(&symbol).is_some_and(|windows| crate::session::is_market_closed(windows, now, &category));
+            let rate = crate::fx::conversion_rate(&quote_ccy, &account_ccy, |s| fx_quotes.get(s).copied());
+            if rate.is_none() {
+                tracing::error!(position_id = %id, %symbol, %quote_ccy, %account_ccy, "no conversion rate: position treated as unpriced");
+            }
+            let usable = !closed && rate.is_some();
             OpenPositionWithMarket {
                 id,
                 symbol,
@@ -99,10 +126,11 @@ pub async fn open_positions_with_market(
                 volume,
                 open_price,
                 contract_size,
-                bid: if closed { None } else { bid },
-                ask: if closed { None } else { ask },
+                bid: if usable { bid } else { None },
+                ask: if usable { ask } else { None },
                 sl_price,
                 tp_price,
+                fx_rate: rate.unwrap_or(Decimal::ONE),
             }
         })
         .collect())

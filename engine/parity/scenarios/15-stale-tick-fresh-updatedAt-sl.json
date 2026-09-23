@@ -1,16 +1,7 @@
 {
   "name": "15-stale-tick-fresh-updatedAt-sl",
   "why": "The SL (1995) is crossed by a quote whose tickAt is 60 s old while updatedAt is 1 s old (EA heartbeat on a frozen feed). No usable price on either engine: the SL must NOT fire.",
-  "knownDivergence": [
-    {
-      "id": "unpriced-position-margin",
-      "fields": [
-        "marginLevelBefore",
-        "marginCallNotified"
-      ],
-      "note": "Until Stage 2 F2 the engine still counts a position without a usable price in used margin (at its open price), which also puts it in margin call; the web counts it nowhere. The close decision already matches (F4)."
-    }
-  ],
+  "knownDivergence": [],
   "broker": {
     "negativeBalanceProtection": true
   },

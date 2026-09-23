@@ -1,15 +1,7 @@
 {
   "name": "03-stop-out-two-sequential-closes",
   "why": "Level ~5%: close p1 (-800) -> still 13% -> close p2 (-50) -> 123%, stop. Proves worst-first ordering and the recompute after each close.",
-  "knownDivergence": [
-    {
-      "id": "used-margin-open-vs-live",
-      "fields": [
-        "marginLevelBefore"
-      ],
-      "note": "Rust prices used margin at OPEN price (calc.rs used_margin), web at LIVE close-side price (lib/margin.ts liveUsedMarginFor); the level number differs, the decision does not."
-    }
-  ],
+  "knownDivergence": [],
   "broker": {
     "negativeBalanceProtection": true
   },

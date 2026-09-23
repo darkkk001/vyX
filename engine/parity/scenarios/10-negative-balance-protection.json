@@ -1,15 +1,7 @@
 {
   "name": "10-negative-balance-protection",
   "why": "balance 500, loss -1000 -> stop-out drives the balance to -500. Broker has negativeBalanceProtection=true: web floors the balance at 0 and books a +500 NEGATIVE_BALANCE_PROTECTION write-off.",
-  "knownDivergence": [
-    {
-      "id": "used-margin-open-vs-live",
-      "fields": [
-        "marginLevelBefore"
-      ],
-      "note": "Rust prices used margin at OPEN price (calc.rs used_margin), web at LIVE close-side price (lib/margin.ts liveUsedMarginFor); the level number differs, the decision does not."
-    }
-  ],
+  "knownDivergence": [],
   "broker": {
     "negativeBalanceProtection": true
   },

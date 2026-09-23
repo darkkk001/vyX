@@ -1,16 +1,7 @@
 {
   "name": "16-dst-boundary-tickat",
   "why": "tickAt exactly 3600 s old with updatedAt fresh: the autumn DST window where the EA's broker offset is an hour out for up to one clock sync. The quote would stop the account out; neither engine may use it.",
-  "knownDivergence": [
-    {
-      "id": "unpriced-position-margin",
-      "fields": [
-        "marginLevelBefore",
-        "marginCallNotified"
-      ],
-      "note": "Until Stage 2 F2 the engine still counts a position without a usable price in used margin (at its open price), which also puts it in margin call; the web counts it nowhere. The close decision already matches (F4)."
-    }
-  ],
+  "knownDivergence": [],
   "broker": {
     "negativeBalanceProtection": true
   },

@@ -1,16 +1,7 @@
 {
   "name": "18-session-closed-now",
   "why": "XAUUSD (METALS) with a configured trading session only on another weekday, so the market is closed now; the tick is fresh and would stop the account out. A closed session means no usable price on both engines.",
-  "knownDivergence": [
-    {
-      "id": "unpriced-position-margin",
-      "fields": [
-        "marginLevelBefore",
-        "marginCallNotified"
-      ],
-      "note": "Until Stage 2 F2 the engine still counts a position without a usable price in used margin (at its open price), which also puts it in margin call; the web counts it nowhere. The close decision already matches (F4)."
-    }
-  ],
+  "knownDivergence": [],
   "broker": {
     "negativeBalanceProtection": true
   },

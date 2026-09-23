@@ -1,15 +1,7 @@
 {
   "name": "11-custom-group-thresholds",
   "why": "Two identical accounts at ~70%: a1 in group 150/80 is stopped out; a2 in the default 100/50 group only gets a margin call. Proves per-group thresholds are read.",
-  "knownDivergence": [
-    {
-      "id": "used-margin-open-vs-live",
-      "fields": [
-        "marginLevelBefore"
-      ],
-      "note": "Rust prices used margin at OPEN price (calc.rs used_margin), web at LIVE close-side price (lib/margin.ts liveUsedMarginFor); the level number differs, the decision does not."
-    }
-  ],
+  "knownDivergence": [],
   "broker": {
     "negativeBalanceProtection": true
   },

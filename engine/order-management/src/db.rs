@@ -850,6 +850,9 @@ pub struct OpenPositionWithMarket {
     pub ask: Option<Decimal>,
     pub sl_price: Option<Decimal>,
     pub tp_price: Option<Decimal>,
+    /// quote currency -> account currency (fx.rs, Stage 2 F2). 1 for the same currency. A position whose
+    /// rate cannot be resolved is given bid/ask None instead (unpriced), never a guessed rate.
+    pub fx_rate: Decimal,
 }
 
 /// LEFT JOIN on LivePrice, same reasoning as
@@ -913,6 +916,7 @@ pub async fn get_open_positions_with_market(
                     ask,
                     sl_price,
                     tp_price,
+                    fx_rate: Decimal::ONE, // legacy order-path table: no conversion
                 }
             },
         )
