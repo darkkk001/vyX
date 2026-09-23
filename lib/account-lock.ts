@@ -17,6 +17,13 @@ export async function lockAccountBalance(tx: Tx, accountId: string): Promise<Pri
   return new Prisma.Decimal(rows[0].balance);
 }
 
+/** Locks one account's row and returns its balance AND credit (a close may consume credit: Stage 2 F1). */
+export async function lockAccountFunds(tx: Tx, accountId: string): Promise<{ balance: Prisma.Decimal; credit: Prisma.Decimal }> {
+  const rows = await tx.$queryRaw<{ balance: Prisma.Decimal; credit: Prisma.Decimal }[]>`SELECT balance, credit FROM "Account" WHERE id = ${accountId} FOR UPDATE`;
+  if (rows.length === 0) throw new Error(`account ${accountId} not found`);
+  return { balance: new Prisma.Decimal(rows[0].balance), credit: new Prisma.Decimal(rows[0].credit) };
+}
+
 /** Locks several accounts in ONE fixed (id) order, so two transfers between the same pair in opposite
  *  directions cannot deadlock, and returns each balance. */
 export async function lockAccountBalances(tx: Tx, accountIds: string[]): Promise<Map<string, Prisma.Decimal>> {

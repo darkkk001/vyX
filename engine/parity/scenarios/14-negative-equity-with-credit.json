@@ -1,0 +1,69 @@
+{
+  "name": "14-negative-equity-with-credit",
+  "why": "Credit Model A (Stage 2 F1). Both accounts hold 0.1 lot XAUUSD bought at 2000, now 1988 (-120) with ~200 of margin: stopped out. a1 (balance 100, credit 50): the -120 takes the balance to -20, credit pays 20 -> balance 0, credit 30, no write-off. a2 (balance 100, credit 10): credit pays 10, NBP writes off the last 10 -> balance 0, credit 0.",
+  "knownDivergence": [],
+  "broker": {
+    "negativeBalanceProtection": true
+  },
+  "groups": [
+    {
+      "key": "std",
+      "marginCallLevel": "100",
+      "stopOutLevel": "50"
+    }
+  ],
+  "accounts": [
+    {
+      "key": "a1",
+      "group": "std",
+      "balance": "100",
+      "credit": "50",
+      "leverage": 100
+    },
+    {
+      "key": "a2",
+      "group": "std",
+      "balance": "100",
+      "credit": "10",
+      "leverage": 100
+    }
+  ],
+  "symbols": [
+    {
+      "name": "XAUUSD",
+      "contractSize": "100",
+      "digits": 2,
+      "quoteCurrency": "USD"
+    }
+  ],
+  "positions": [
+    {
+      "key": "p1",
+      "account": "a1",
+      "symbol": "XAUUSD",
+      "side": "BUY",
+      "volume": "0.1",
+      "openPrice": "2000",
+      "slPrice": null,
+      "tpPrice": null
+    },
+    {
+      "key": "p2",
+      "account": "a2",
+      "symbol": "XAUUSD",
+      "side": "BUY",
+      "volume": "0.1",
+      "openPrice": "2000",
+      "slPrice": null,
+      "tpPrice": null
+    }
+  ],
+  "prices": [
+    {
+      "symbol": "XAUUSD",
+      "bid": "1988",
+      "ask": "1988.5",
+      "ageSeconds": 1
+    }
+  ]
+}

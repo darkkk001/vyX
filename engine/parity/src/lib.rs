@@ -188,6 +188,7 @@ pub struct AccountOutcome {
     pub closed_position_ids: Vec<String>,
     pub close_reasons: Vec<String>,
     pub final_balance: String,
+    pub final_credit: String,
     pub transactions: Vec<Txn>,
     pub margin_call_notified: bool,
 }
@@ -336,6 +337,7 @@ pub fn evaluate_account(sc: &Scenario, acct: &AccountCfg, by_group: &ThresholdsB
         closed_position_ids: closed,
         close_reasons: reasons,
         final_balance: money(final_balance),
+        final_credit: money(acct.credit), // Stage 0 pure mode does not model credit consumption
         transactions: txns,
         margin_call_notified: margin_call,
     }

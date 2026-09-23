@@ -1,20 +1,7 @@
 {
   "name": "06-credit-decides-stop-out",
-  "why": "balance 1000 + credit 1000, loss -800. Web (no credit): 200/1992 = 10% -> stop-out. Rust (credit counted): 1200/2000 = 60% -> margin call only.",
-  "knownDivergence": [
-    {
-      "id": "credit-in-equity",
-      "fields": [
-        "marginLevelBefore",
-        "closedPositionIds",
-        "closeReasons",
-        "finalBalance",
-        "transactions",
-        "marginCallNotified"
-      ],
-      "note": "calc.rs equity() adds state.credit; web equity is balance + floating only."
-    }
-  ],
+  "why": "balance 1000 + credit 1000, loss -800. Web (no credit): 200/1992 = 10% -> stop-out. Rust (credit counted): 1200/2000 = 60% -> margin call only. Stage 2 F1 (credit Model A): credit is in equity on BOTH engines, so the level is ~60% and this is a margin call, not a stop-out.",
+  "knownDivergence": [],
   "broker": {
     "negativeBalanceProtection": true
   },

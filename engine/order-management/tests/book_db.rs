@@ -134,7 +134,7 @@ async fn negative_balance_protection_floors_at_zero_and_books_the_write_off() {
 
     let out = book::close_position_in_tx(&mut tx, &pos, dec!(1), dec!(3995), dec!(-500), "Stop-out (automatic): margin level 9.99% below 50%")
         .await.unwrap().expect("closed");
-    assert_eq!((out.raw_balance_after, out.final_balance, out.write_off), (dec!(-450), dec!(0), Some(dec!(450))));
+    assert_eq!((out.raw_balance_after, out.final_balance, out.write_off, out.credit_used), (dec!(-450), dec!(0), Some(dec!(450)), None));
     assert_eq!(balance(&mut *tx, &fx.account).await, dec!(0));
     let rows: Vec<(String, Decimal, Decimal, Decimal)> = sqlx::query_as(
         r#"SELECT type::text, amount, "balanceBefore", "balanceAfter" FROM "Transaction" WHERE "accountId" = $1 ORDER BY type::text DESC"#,
@@ -146,6 +146,32 @@ async fn negative_balance_protection_floors_at_zero_and_books_the_write_off() {
     let (audits,): (i64,) = sqlx::query_as(r#"SELECT count(*) FROM "AuditLog" WHERE "entityId" = $1 AND action = 'NEGATIVE_BALANCE_PROTECTION_APPLIED'"#)
         .bind(&fx.account).fetch_one(&mut *tx).await.unwrap();
     assert_eq!(audits, 1);
+    tx.rollback().await.unwrap();
+}
+
+/// Stage 2 F1 (credit Model A, = lib/position-close.ts): balance first, then credit, then NBP.
+#[tokio::test]
+async fn a_loss_beyond_the_balance_is_paid_from_credit_then_written_off() {
+    let Some(pool) = pool().await else { return };
+    let mut tx = pool.begin().await.unwrap();
+    let fx = fixture(&mut *tx, dec!(100), true).await;
+    sqlx::query(r#"UPDATE "Account" SET credit = 50 WHERE id = $1"#).bind(&fx.account).execute(&mut *tx).await.unwrap();
+    let covered = open_position(&mut *tx, &fx, "BUY", dec!(1), dec!(4000)).await;
+    let out = book::close_position_in_tx(&mut tx, &covered, dec!(1), dec!(3998.8), dec!(-120), "x").await.unwrap().expect("closed");
+    assert_eq!((out.final_balance, out.final_credit, out.credit_used, out.write_off), (dec!(0), dec!(30), Some(dec!(20)), None));
+
+    // the remaining 30 of credit is short of the next -50: it is used up and NBP writes off the last 20
+    let short = open_position(&mut *tx, &fx, "BUY", dec!(1), dec!(4000)).await;
+    let out = book::close_position_in_tx(&mut tx, &short, dec!(1), dec!(3999.5), dec!(-50), "x").await.unwrap().expect("closed");
+    assert_eq!((out.final_balance, out.final_credit, out.credit_used, out.write_off), (dec!(0), dec!(0), Some(dec!(30)), Some(dec!(20))));
+
+    let rows: Vec<(String, Decimal, Decimal, Decimal)> = sqlx::query_as(
+        r#"SELECT type::text, amount, "balanceBefore", "balanceAfter" FROM "Transaction" WHERE "accountId" = $1 AND type = 'CREDIT' ORDER BY amount"#,
+    ).bind(&fx.account).fetch_all(&mut *tx).await.unwrap();
+    assert_eq!(rows, vec![("CREDIT".into(), dec!(20), dec!(-20), dec!(0)), ("CREDIT".into(), dec!(30), dec!(-50), dec!(-20))]);
+    let (audits,): (i64,) = sqlx::query_as(r#"SELECT count(*) FROM "AuditLog" WHERE "entityId" = $1 AND action = 'CREDIT_CONSUMED_BY_LOSS'"#)
+        .bind(&fx.account).fetch_one(&mut *tx).await.unwrap();
+    assert_eq!(audits, 2);
     tx.rollback().await.unwrap();
 }
 

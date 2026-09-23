@@ -20,7 +20,7 @@ const rustDirArg = process.argv.indexOf("--rust-dir");
 const rustDir = path.join(root, "engine", "parity", "out", rustDirArg > 0 ? process.argv[rustDirArg + 1] : "rust");
 const markdown = process.argv.includes("--markdown");
 
-const FIELDS = ["marginLevelBefore", "closedPositionIds", "closeReasons", "finalBalance", "transactions", "marginCallNotified"];
+const FIELDS = ["marginLevelBefore", "closedPositionIds", "closeReasons", "finalBalance", "finalCredit", "transactions", "marginCallNotified"];
 const LEVEL_TOL = 1e-9; // both sides compute in exact decimal; only representation may differ
 const MONEY_TOL = 1e-4; // DB columns are Decimal(18,4)
 
@@ -36,6 +36,8 @@ function fieldDiff(field, a, b) {
     }
     case "finalBalance":
       return Math.abs(num(a) - num(b)) <= MONEY_TOL ? null : `balance ts=${Number(a)} rust=${Number(b)}`;
+    case "finalCredit": // Stage 2 F1: a loss beyond the balance consumes credit
+      return Math.abs(num(a) - num(b)) <= MONEY_TOL ? null : `credit ts=${Number(a)} rust=${Number(b)}`;
     case "transactions": {
       const same = a.length === b.length && a.every((x, i) => x.type === b[i].type && Math.abs(num(x.amount) - num(b[i].amount)) <= MONEY_TOL);
       return same ? null : `txns ts=[${fmtTx(a)}] rust=[${fmtTx(b)}]`;

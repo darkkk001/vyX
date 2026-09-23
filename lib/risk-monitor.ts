@@ -139,8 +139,10 @@ type AccountMeasure = {
   worst: { position: OpenPositionWithMarket; pnl: Prisma.Decimal; closePrice: Prisma.Decimal } | null;
 };
 
-function measureAccount(account: { balance: Prisma.Decimal; leverage: number }, positions: OpenPositionWithMarket[]): AccountMeasure {
-  let equity = account.balance;
+// Stage 2 F1 (credit Model A): equity = balance + CREDIT + floating P&L of priced positions. BEHAVIOR CHANGE
+// (2026-09-24): credit used to be ignored here, so an account holding credit was stopped out on its balance alone.
+function measureAccount(account: { balance: Prisma.Decimal; credit: Prisma.Decimal; leverage: number }, positions: OpenPositionWithMarket[]): AccountMeasure {
+  let equity = account.balance.add(account.credit);
   let usedMargin = new Prisma.Decimal(0);
   let worst: AccountMeasure["worst"] = null;
   for (const p of positions) {

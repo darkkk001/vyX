@@ -34,7 +34,7 @@ pub async fn evaluate(pool: &PgPool, sc: &Scenario) -> Result<BTreeMap<String, A
             .map_err(|e| format!("{}/{}: {e}", sc.name, acct.key))?
             .ok_or_else(|| format!("{}/{}: evaluate_account did not evaluate (no positions / thresholds not loaded)", sc.name, acct.key))?;
 
-        let (balance,): (Decimal,) = sqlx::query_as(r#"SELECT balance FROM "Account" WHERE id = $1"#)
+        let (balance, credit): (Decimal, Decimal) = sqlx::query_as(r#"SELECT balance, credit FROM "Account" WHERE id = $1"#)
             .bind(&acct.key)
             .fetch_one(pool)
             .await
@@ -50,7 +50,8 @@ pub async fn evaluate(pool: &PgPool, sc: &Scenario) -> Result<BTreeMap<String, A
         let closed_ids: Vec<String> = report.closed.iter().map(|(id, _)| id.clone()).collect();
         let rank = |(kind, _, reference): &(String, Decimal, Option<String>)| {
             let i = reference.as_ref().and_then(|r| closed_ids.iter().position(|c| c == r)).unwrap_or(1_000_000);
-            i * 10 + usize::from(kind != "TRADE_PNL")
+            // rows of one close share one createdAt (one transaction): order them by kind, the order a close writes them
+            i * 10 + match kind.as_str() { "TRADE_PNL" => 0, "CREDIT" => 1, _ => 2 }
         };
         let mut ordered = rows.clone();
         ordered.sort_by_key(|r| rank(r));
@@ -62,6 +63,7 @@ pub async fn evaluate(pool: &PgPool, sc: &Scenario) -> Result<BTreeMap<String, A
                 closed_position_ids: closed_ids,
                 close_reasons: report.closed.iter().map(|(_, r)| r.to_string()).collect(),
                 final_balance: money(balance),
+                final_credit: money(credit),
                 transactions: ordered.into_iter().map(|(kind, amount, _)| Txn { kind, amount: money(amount) }).collect(),
                 margin_call_notified: report.margin_call,
             },

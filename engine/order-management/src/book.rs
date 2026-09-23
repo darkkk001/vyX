@@ -163,6 +163,10 @@ pub struct CloseOutcome {
     pub final_balance: Decimal,
     /// Some(amount) when negative-balance protection absorbed the part below zero
     pub write_off: Option<Decimal>,
+    /// Some(amount) when credit paid part of a loss beyond the balance (Stage 2 F1)
+    pub credit_used: Option<Decimal>,
+    /// what Account.credit now holds
+    pub final_credit: Decimal,
 }
 
 /// Closes one position in full at `close_price`, crediting `realized_pnl` (account currency), inside the
@@ -192,27 +196,40 @@ pub async fn close_position_in_tx(
         return Ok(None);
     };
 
-    let (balance_before,): (Decimal,) = sqlx::query_as(r#"SELECT balance FROM "Account" WHERE id = $1 FOR UPDATE"#)
+    let (balance_before, credit_before): (Decimal, Decimal) = sqlx::query_as(r#"SELECT balance, credit FROM "Account" WHERE id = $1 FOR UPDATE"#)
         .bind(&account_id)
         .fetch_one(&mut **tx)
         .await?;
     let raw_balance_after = balance_before + realized_pnl;
 
-    let mut final_balance = raw_balance_after;
+    // Stage 2 F1 (credit Model A, = lib/position-close.ts): a loss that takes the BALANCE below zero is paid
+    // from CREDIT next, up to the shortfall; only what credit cannot cover reaches negative-balance protection.
+    let mut after_credit = raw_balance_after;
+    let mut final_credit = credit_before;
+    let mut credit_used = None;
+    if raw_balance_after < Decimal::ZERO && credit_before > Decimal::ZERO {
+        let used = credit_before.min(-raw_balance_after);
+        after_credit = raw_balance_after + used;
+        final_credit = credit_before - used;
+        credit_used = Some(used);
+    }
+
+    let mut final_balance = after_credit;
     let mut write_off = None;
-    if raw_balance_after < Decimal::ZERO {
+    if after_credit < Decimal::ZERO {
         let (protect,): (bool,) = sqlx::query_as(r#"SELECT "negativeBalanceProtection" FROM "Broker" WHERE id = $1"#)
             .bind(&broker_id)
             .fetch_one(&mut **tx)
             .await?;
         if protect {
-            write_off = Some(-raw_balance_after);
+            write_off = Some(-after_credit);
             final_balance = Decimal::ZERO;
         }
     }
 
-    sqlx::query(r#"UPDATE "Account" SET balance = $1, "updatedAt" = now() WHERE id = $2"#)
+    sqlx::query(r#"UPDATE "Account" SET balance = $1, credit = $2, "updatedAt" = now() WHERE id = $3"#)
         .bind(final_balance)
+        .bind(final_credit)
         .bind(&account_id)
         .execute(&mut **tx)
         .await?;
@@ -233,6 +250,40 @@ pub async fn close_position_in_tx(
     .execute(&mut **tx)
     .await?;
 
+    if let Some(used) = credit_used {
+        sqlx::query(
+            r#"INSERT INTO "Transaction"
+                 (id, "brokerId", "accountId", type, status, amount, "balanceBefore", "balanceAfter", "referenceType", "referenceId", note, "updatedAt")
+               VALUES ($1, $2, $3, 'CREDIT', 'COMPLETED', $4, $5, $6, 'Position', $7, $8, now())"#,
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(&broker_id)
+        .bind(&account_id)
+        .bind(used)
+        .bind(raw_balance_after)
+        .bind(after_credit)
+        .bind(position_id)
+        .bind(format!("Credit applied to a loss: {:.2} (credit {:.2} -> {:.2})", used, credit_before, final_credit))
+        .execute(&mut **tx)
+        .await?;
+        let detail = serde_json::json!({
+            "positionId": position_id,
+            "creditUsed": format!("{:.2}", used),
+            "creditBefore": format!("{:.2}", credit_before),
+            "creditAfter": format!("{:.2}", final_credit),
+        });
+        sqlx::query(
+            r#"INSERT INTO "AuditLog" (id, "brokerId", action, "entityType", "entityId", "newValue")
+               VALUES ($1, $2, 'CREDIT_CONSUMED_BY_LOSS', 'Account', $3, $4::jsonb)"#,
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(&broker_id)
+        .bind(&account_id)
+        .bind(detail.to_string())
+        .execute(&mut **tx)
+        .await?;
+    }
+
     if let Some(amount) = write_off {
         sqlx::query(
             r#"INSERT INTO "Transaction"
@@ -243,7 +294,7 @@ pub async fn close_position_in_tx(
         .bind(&broker_id)
         .bind(&account_id)
         .bind(amount)
-        .bind(raw_balance_after)
+        .bind(after_credit)
         .bind(final_balance)
         .bind(position_id)
         .bind(format!("Negative-balance protection: broker absorbed ${:.2} beyond zero", amount))
@@ -266,5 +317,5 @@ pub async fn close_position_in_tx(
         .await?;
     }
 
-    Ok(Some(CloseOutcome { realized_pnl, raw_balance_after, final_balance, write_off }))
+    Ok(Some(CloseOutcome { realized_pnl, raw_balance_after, final_balance, write_off, credit_used, final_credit }))
 }

@@ -19,7 +19,7 @@ export async function GET() {
     accountNumber: s.accountNumber,
     openPositions: String(s.positionCount),
     exposure: s.exposure.toFixed(2),
-    floatingPnl: (s.equity - s.balance).toFixed(2),
+    floatingPnl: s.floatingPnl.toFixed(2), // equity - balance would include credit (Stage 2 F1)
     marginLevel: s.marginLevel != null ? s.marginLevel.toFixed(1) : "",
     marginCallLevel: s.marginCallLevel.toFixed(1),
     stopOutLevel: s.stopOutLevel.toFixed(1),

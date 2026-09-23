@@ -61,6 +61,7 @@ type AccountOutcome = {
   closedPositionIds: string[];
   closeReasons: string[];
   finalBalance: string;
+  finalCredit: string;
   transactions: { type: string; amount: string }[];
   marginCallNotified: boolean;
 };
@@ -176,7 +177,9 @@ async function main() {
       });
       const rank = (t: (typeof txs)[number]) => {
         const i = closed.indexOf(t.referenceId ?? "");
-        return (i < 0 ? 1e6 : i) * 10 + (t.type === "TRADE_PNL" ? 0 : 1);
+        // rows of one close share one createdAt (one transaction): order them by kind, the order a close writes them
+        const kind = t.type === "TRADE_PNL" ? 0 : t.type === "CREDIT" ? 1 : 2;
+        return (i < 0 ? 1e6 : i) * 10 + kind;
       };
       const ordered = [...txs].sort((x, y) => rank(x) - rank(y));
       const acc = await prisma.account.findUniqueOrThrow({ where: { id: a.key } });
@@ -185,6 +188,7 @@ async function main() {
         closedPositionIds: closed,
         closeReasons: reasons,
         finalBalance: acc.balance.toString(),
+        finalCredit: acc.credit.toString(),
         transactions: ordered.map((t) => ({ type: t.type, amount: t.amount.toString() })),
         marginCallNotified: acc.marginCallNotifiedAt != null,
       };

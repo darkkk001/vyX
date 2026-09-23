@@ -2182,7 +2182,8 @@ export default function WebTrader({
       return sum + (m.def.contractSize * parseFloat(p.volume) * price) / account.leverage;
     }, 0);
   }, [positions, market, account]);
-  const equity = account ? parseFloat(account.balance) + floatingPnl : 0;
+  // Stage 2 F1 (credit Model A): equity = balance + credit + floating, the same figure the server's risk monitor uses
+  const equity = account ? parseFloat(account.balance) + parseFloat(account.credit ?? "0") + floatingPnl : 0;
   const freeMargin = equity - usedMargin;
   const marginLevel = usedMargin > 0 ? (equity / usedMargin) * 100 : Infinity;
 

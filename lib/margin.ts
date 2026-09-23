@@ -8,6 +8,8 @@ export type AccountMarginSnapshot = {
   accountId: string;
   accountNumber: string;
   balance: number;
+  credit: number;
+  floatingPnl: number;
   equity: number;
   usedMargin: number;
   exposure: number;
@@ -21,16 +23,18 @@ export type AccountMarginSnapshot = {
 // the Risk report CSV (app/api/manage/reports/risk/route.ts), and the
 // Margin monitoring page (app/manage/(shell)/margin/page.tsx) -- was
 // duplicated across the first two in Phase A, factored out here rather
-// than adding a third copy. Margin level = equity / usedMargin * 100,
-// same formula components/webtrader/WebTrader.tsx's client-side
-// marginLevel already uses, computed broker-wide here instead of for one
-// logged-in trader.
+// than adding a third copy. Margin level = equity / usedMargin * 100.
+//
+// Stage 2 (docs/RUST-CUTOVER-PLAN.md): equity = balance + CREDIT + floating (F1, credit Model A; credit was
+// left out before), and every figure is summed in Decimal, turned into a number only in the returned
+// snapshot (it used to add JS numbers). floatingPnl is returned on its own, because equity - balance is no
+// longer the floating P&L once credit is in equity.
 export async function computeAccountMarginSnapshots(prisma: PrismaClient, brokerId: string): Promise<AccountMarginSnapshot[]> {
   const positions = await prisma.position.findMany({
     where: { brokerId, status: "OPEN" },
     include: {
       account: {
-        select: { id: true, accountNumber: true, balance: true, leverage: true, currency: true, group: { select: { marginCallLevel: true, stopOutLevel: true } } },
+        select: { id: true, accountNumber: true, balance: true, credit: true, leverage: true, currency: true, group: { select: { marginCallLevel: true, stopOutLevel: true } } },
       },
       symbol: { select: { name: true, contractSize: true, quoteCurrency: true } },
     },
@@ -41,40 +45,52 @@ export async function computeAccountMarginSnapshots(prisma: PrismaClient, broker
     loadFxLookup(prisma, positions.map((p) => [p.symbol.quoteCurrency, p.account.currency] as const)),
   ]);
 
-  const byAccount = new Map<string, AccountMarginSnapshot>();
+  type Acc = { accountId: string; accountNumber: string; balance: Prisma.Decimal; credit: Prisma.Decimal; floating: Prisma.Decimal; usedMargin: Prisma.Decimal; exposure: Prisma.Decimal; positionCount: number; marginCallLevel: Prisma.Decimal; stopOutLevel: Prisma.Decimal };
+  const byAccount = new Map<string, Acc>();
   for (const p of positions) {
-    const snap = byAccount.get(p.account.id) ?? {
+    const acc = byAccount.get(p.account.id) ?? {
       accountId: p.account.id,
       accountNumber: p.account.accountNumber,
-      balance: p.account.balance.toNumber(),
-      equity: p.account.balance.toNumber(),
-      usedMargin: 0,
-      exposure: 0,
+      balance: p.account.balance,
+      credit: p.account.credit,
+      floating: new Prisma.Decimal(0),
+      usedMargin: new Prisma.Decimal(0),
+      exposure: new Prisma.Decimal(0),
       positionCount: 0,
-      marginCallLevel: p.account.group?.marginCallLevel.toNumber() ?? 100,
-      stopOutLevel: p.account.group?.stopOutLevel.toNumber() ?? 50,
-      marginLevel: null,
+      marginCallLevel: p.account.group?.marginCallLevel ?? new Prisma.Decimal(100),
+      stopOutLevel: p.account.group?.stopOutLevel ?? new Prisma.Decimal(50),
     };
-    snap.exposure += p.volume.toNumber();
-    snap.positionCount += 1;
+    acc.exposure = acc.exposure.add(p.volume);
+    acc.positionCount += 1;
 
     const live = priceBySymbol.get(p.symbol.name);
     // quote -> account currency (lib/fx.ts); no rate = counted like no price, never as if it were 1
     const rate = conversionRate(p.symbol.quoteCurrency, p.account.currency, fx);
     if (live && rate) {
       const currentPrice = closePriceFor(p.side, live.bid, live.ask);
-      snap.equity += computeRealizedPnl({ side: p.side, openPrice: p.openPrice, closePrice: currentPrice, volume: p.volume, contractSize: p.symbol.contractSize }).mul(rate).toNumber();
-      snap.usedMargin += liveUsedMarginFor({ side: p.side, volume: p.volume, contractSize: p.symbol.contractSize, bid: live.bid, ask: live.ask, leverage: p.account.leverage }).mul(rate).toNumber();
+      acc.floating = acc.floating.add(computeRealizedPnl({ side: p.side, openPrice: p.openPrice, closePrice: currentPrice, volume: p.volume, contractSize: p.symbol.contractSize }).mul(rate));
+      acc.usedMargin = acc.usedMargin.add(liveUsedMarginFor({ side: p.side, volume: p.volume, contractSize: p.symbol.contractSize, bid: live.bid, ask: live.ask, leverage: p.account.leverage }).mul(rate));
     }
-
-    byAccount.set(p.account.id, snap);
+    byAccount.set(p.account.id, acc);
   }
 
-  for (const snap of byAccount.values()) {
-    snap.marginLevel = snap.usedMargin > 0 ? (snap.equity / snap.usedMargin) * 100 : null;
-  }
-
-  return [...byAccount.values()];
+  return [...byAccount.values()].map((a) => {
+    const equity = a.balance.add(a.credit).add(a.floating);
+    return {
+      accountId: a.accountId,
+      accountNumber: a.accountNumber,
+      balance: a.balance.toNumber(),
+      credit: a.credit.toNumber(),
+      floatingPnl: a.floating.toNumber(),
+      equity: equity.toNumber(),
+      usedMargin: a.usedMargin.toNumber(),
+      exposure: a.exposure.toNumber(),
+      positionCount: a.positionCount,
+      marginCallLevel: a.marginCallLevel.toNumber(),
+      stopOutLevel: a.stopOutLevel.toNumber(),
+      marginLevel: a.usedMargin.gt(0) ? equity.div(a.usedMargin).mul(100).toNumber() : null,
+    };
+  });
 }
 
 // Phase 0 money-risk patch (docs/ROADMAP.md item 2) -- standard forex
@@ -181,7 +197,7 @@ export async function checkAccountPreTradeMargin(
   }
 ): Promise<PreTradeMarginRejection | null> {
   const [account, positions] = await Promise.all([
-    prisma.account.findUniqueOrThrow({ where: { id: params.accountId }, select: { balance: true, currency: true } }),
+    prisma.account.findUniqueOrThrow({ where: { id: params.accountId }, select: { balance: true, credit: true, currency: true } }),
     prisma.position.findMany({
       where: { accountId: params.accountId, status: "OPEN" },
       select: { side: true, volume: true, openPrice: true, symbol: { select: { name: true, contractSize: true, quoteCurrency: true } } },
@@ -206,7 +222,9 @@ export async function checkAccountPreTradeMargin(
   // falling back to openPrice only for a symbol with no fresh live price
   // right now (the same "can't get worse than before" fallback, never
   // silently dropping a position's margin contribution during a feed gap).
-  let equity = account.balance;
+  // Stage 2 F1 (credit Model A): the client can trade on credit, so it counts toward the equity this order is
+  // checked against (BEHAVIOR CHANGE 2026-09-24; it used to start from the balance alone).
+  let equity = account.balance.add(account.credit);
   let usedMargin = new Prisma.Decimal(0);
   for (const [i, p] of positions.entries()) {
     const rate = positionRates[i]!;
@@ -225,7 +243,10 @@ export async function checkAccountPreTradeMargin(
   const requiredMargin = requiredMarginFor(params.newOrderVolume, params.newOrderContractSize, params.newOrderFillPrice, params.leverage).mul(newOrderRate);
   const rejectCode = checkPreTradeMargin({ equity, usedMargin, requiredMargin, marginCallLevel: params.marginCallLevel });
   if (!rejectCode) return null;
-  const balanceShort = account.balance.lte(0) || account.balance.lt(requiredMargin);
+  // "INSUFFICIENT_BALANCE" = the funds (balance + credit) could not carry this order's margin even with nothing
+  // else open; otherwise open positions are what leave too little free
+  const funds = account.balance.add(account.credit);
+  const balanceShort = funds.lte(0) || funds.lt(requiredMargin);
   return {
     error: balanceShort ? "INSUFFICIENT_BALANCE" : "INSUFFICIENT_MARGIN",
     required: requiredMargin.toFixed(2),

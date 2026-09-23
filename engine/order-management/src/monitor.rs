@@ -125,7 +125,8 @@ async fn close_sl_tp_triggered(
         let Some(outcome) = closed_now else {
             continue; // already closed by a concurrent pass — nothing to credit or publish
         };
-        state.effective_balance = outcome.final_balance; // after any negative-balance floor
+        state.effective_balance = outcome.final_balance; // after any credit use and negative-balance floor
+        state.credit = outcome.final_credit;
         closed.push((position.id.clone(), match reason {
             SlTpReason::StopLoss => "stop_loss",
             SlTpReason::TakeProfit => "take_profit",
@@ -194,7 +195,8 @@ async fn force_close_worst(
         return Ok(CloseAttempt::AlreadyClosedConcurrently);
     };
 
-    state.effective_balance = outcome.final_balance; // after any negative-balance floor
+    state.effective_balance = outcome.final_balance; // after any credit use and negative-balance floor
+    state.credit = outcome.final_credit;
     Ok(CloseAttempt::Closed(position.id))
 }
 

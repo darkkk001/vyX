@@ -2,7 +2,7 @@ import "server-only";
 import { Prisma } from "@prisma/client";
 import { computeRealizedPnl } from "@/lib/trading";
 import { quoteToAccountRate } from "@/lib/fx";
-import { lockAccountBalance } from "@/lib/account-lock";
+import { lockAccountFunds } from "@/lib/account-lock";
 
 export type ClosePositionInput = {
   id: string;
@@ -99,8 +99,23 @@ export async function closePositionInTx(
   // same balance, and the second write erased the first close's P&L while both TRADE_PNL rows were
   // written: measured 10 concurrent closes of +1,000 landing +3,000 to +4,000. FOR UPDATE makes the second
   // close wait for the first to commit and read its result.
-  const balanceBefore = await lockAccountBalance(tx, position.accountId);
+  const funds = await lockAccountFunds(tx, position.accountId);
+  const balanceBefore = funds.balance;
   const rawBalanceAfter = balanceBefore.add(realizedPnl); // the true, uncapped result of this trade -- always what the TRADE_PNL row below records
+
+  // Stage 2 F1 (credit Model A, docs/RUST-CUTOVER-PLAN.md): credit counts in equity, so a loss that takes the
+  // BALANCE below zero is paid from CREDIT next, up to the shortfall; only what credit cannot cover reaches
+  // negative-balance protection below. Balance 100, credit 50, loss 120 -> balance 0, credit 30, no write-off.
+  // Recorded as a CREDIT Transaction whose amount is what it added to the balance (balanceAfter =
+  // balanceBefore + amount, like every other row), plus a CREDIT_CONSUMED_BY_LOSS AuditLog.
+  let afterCredit = rawBalanceAfter;
+  let creditAfter = funds.credit;
+  let creditUsed: Prisma.Decimal | null = null;
+  if (rawBalanceAfter.isNegative() && funds.credit.gt(0)) {
+    creditUsed = Prisma.Decimal.min(funds.credit, rawBalanceAfter.neg());
+    afterCredit = rawBalanceAfter.add(creditUsed);
+    creditAfter = funds.credit.sub(creditUsed);
+  }
 
   // 2026-09-05 P0 fix: negative-balance protection. Before this, a
   // stop-out (or any close) that lost more than the account's own
@@ -114,19 +129,19 @@ export async function closePositionInTx(
   // plus an AuditLog entry, rather than either silently capping the
   // TRADE_PNL row itself (which would misstate the real trade P&L) or
   // leaving the client ledger negative.
-  let finalBalance = rawBalanceAfter;
+  let finalBalance = afterCredit;
   let writeOffAmount: Prisma.Decimal | null = null;
-  if (rawBalanceAfter.isNegative()) {
+  if (afterCredit.isNegative()) {
     const broker = await tx.broker.findUniqueOrThrow({ where: { id: position.brokerId }, select: { negativeBalanceProtection: true } });
     if (broker.negativeBalanceProtection) {
-      writeOffAmount = rawBalanceAfter.neg();
+      writeOffAmount = afterCredit.neg();
       finalBalance = new Prisma.Decimal(0);
     }
   }
 
   await tx.account.update({
     where: { id: position.accountId },
-    data: { balance: finalBalance },
+    data: creditUsed ? { balance: finalBalance, credit: creditAfter } : { balance: finalBalance },
   });
 
   const transaction = await tx.transaction.create({
@@ -144,6 +159,32 @@ export async function closePositionInTx(
     },
   });
 
+  if (creditUsed) {
+    await tx.transaction.create({
+      data: {
+        brokerId: position.brokerId,
+        accountId: position.accountId,
+        type: "CREDIT",
+        status: "COMPLETED",
+        amount: creditUsed,
+        balanceBefore: rawBalanceAfter,
+        balanceAfter: afterCredit,
+        referenceType: "Position",
+        referenceId: position.id,
+        note: `Credit applied to a loss: ${creditUsed.toFixed(2)} (credit ${funds.credit.toFixed(2)} -> ${creditAfter.toFixed(2)})`,
+      },
+    });
+    await tx.auditLog.create({
+      data: {
+        brokerId: position.brokerId,
+        action: "CREDIT_CONSUMED_BY_LOSS",
+        entityType: "Account",
+        entityId: position.accountId,
+        newValue: { positionId: position.id, creditUsed: creditUsed.toFixed(2), creditBefore: funds.credit.toFixed(2), creditAfter: creditAfter.toFixed(2) },
+      },
+    });
+  }
+
   if (writeOffAmount) {
     await tx.transaction.create({
       data: {
@@ -152,7 +193,7 @@ export async function closePositionInTx(
         type: "NEGATIVE_BALANCE_PROTECTION",
         status: "COMPLETED",
         amount: writeOffAmount,
-        balanceBefore: rawBalanceAfter,
+        balanceBefore: afterCredit,
         balanceAfter: finalBalance,
         referenceType: "Position",
         referenceId: position.id,

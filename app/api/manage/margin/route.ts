@@ -32,7 +32,7 @@ export async function GET() {
       usedMargin: s.usedMargin.toFixed(2),
       positionCount: s.positionCount,
       exposure: s.exposure.toFixed(2),
-      floatingPnl: (s.equity - s.balance).toFixed(2),
+      floatingPnl: s.floatingPnl.toFixed(2), // equity - balance would include credit (Stage 2 F1)
       marginLevel: s.marginLevel,
       marginCallLevel: s.marginCallLevel,
       stopOutLevel: s.stopOutLevel,

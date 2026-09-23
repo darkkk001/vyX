@@ -200,6 +200,68 @@ describe("closePositionInTx (live DB, rolled back)", () => {
     });
   });
 
+  // Stage 2 F1 (credit Model A): a loss beyond the balance is paid from credit next, and only what credit
+  // cannot cover reaches negative-balance protection.
+  it("a loss beyond the balance is paid from credit: balance 100 + credit 50, loss 120 -> balance 0, credit 30, no write-off", async () => {
+    if (!dbReachable) return;
+    await withRollback(async (tx) => {
+      const fx = await createFixture(tx, "100");
+      await tx.account.update({ where: { id: fx.accountId }, data: { credit: D("50") } });
+      const pos = await createOpenPosition(tx, fx, { side: "BUY", volume: "1.00", openPrice: "4000.00" });
+      const r = await closePositionInTx(tx, {
+        position: { id: pos.id, accountId: fx.accountId, brokerId: fx.brokerId, side: "BUY", openPrice: D("4000.00"), volume: D("1.00"), symbol: contractSizeArg },
+        closePrice: "3998.80", // -1.2 x 100 = -120
+      });
+      expect(r.closed).toBe(true);
+      const acct = await tx.account.findUniqueOrThrow({ where: { id: fx.accountId } });
+      expect([acct.balance.toString(), acct.credit.toString()]).toEqual(["0", "30"]);
+      // sorted here, not by orderBy: a Postgres enum sorts in declaration order
+      const rows = (await tx.transaction.findMany({ where: { accountId: fx.accountId } })).sort((a, b) => a.type.localeCompare(b.type));
+      expect(rows.map((t) => [t.type, t.amount.toString(), t.balanceBefore.toString(), t.balanceAfter.toString()])).toEqual([
+        ["CREDIT", "20", "-20", "0"],
+        ["TRADE_PNL", "-120", "100", "-20"],
+      ]);
+      expect(await tx.auditLog.count({ where: { entityId: fx.accountId, action: "CREDIT_CONSUMED_BY_LOSS" } })).toBe(1);
+    });
+  });
+
+  it("credit short of the loss: credit is used up, negative-balance protection writes off the rest", async () => {
+    if (!dbReachable) return;
+    await withRollback(async (tx) => {
+      const fx = await createFixture(tx, "100");
+      await tx.account.update({ where: { id: fx.accountId }, data: { credit: D("10") } });
+      const pos = await createOpenPosition(tx, fx, { side: "BUY", volume: "1.00", openPrice: "4000.00" });
+      await closePositionInTx(tx, {
+        position: { id: pos.id, accountId: fx.accountId, brokerId: fx.brokerId, side: "BUY", openPrice: D("4000.00"), volume: D("1.00"), symbol: contractSizeArg },
+        closePrice: "3998.80",
+      });
+      const acct = await tx.account.findUniqueOrThrow({ where: { id: fx.accountId } });
+      expect([acct.balance.toString(), acct.credit.toString()]).toEqual(["0", "0"]);
+      // sorted here, not by orderBy: a Postgres enum sorts in declaration order
+      const rows = (await tx.transaction.findMany({ where: { accountId: fx.accountId } })).sort((a, b) => a.type.localeCompare(b.type));
+      expect(rows.map((t) => [t.type, t.amount.toString(), t.balanceBefore.toString(), t.balanceAfter.toString()])).toEqual([
+        ["CREDIT", "10", "-20", "-10"],
+        ["NEGATIVE_BALANCE_PROTECTION", "10", "-10", "0"],
+        ["TRADE_PNL", "-120", "100", "-20"],
+      ]);
+    });
+  });
+
+  it("a profitable close never touches credit", async () => {
+    if (!dbReachable) return;
+    await withRollback(async (tx) => {
+      const fx = await createFixture(tx, "100");
+      await tx.account.update({ where: { id: fx.accountId }, data: { credit: D("50") } });
+      const pos = await createOpenPosition(tx, fx, { side: "BUY", volume: "1.00", openPrice: "4000.00" });
+      await closePositionInTx(tx, {
+        position: { id: pos.id, accountId: fx.accountId, brokerId: fx.brokerId, side: "BUY", openPrice: D("4000.00"), volume: D("1.00"), symbol: contractSizeArg },
+        closePrice: "4001.00",
+      });
+      const acct = await tx.account.findUniqueOrThrow({ where: { id: fx.accountId } });
+      expect([acct.balance.toString(), acct.credit.toString()]).toEqual(["200", "50"]);
+    });
+  });
+
   // 2026-09-23: the guard only checked status, so a caller holding a STALE volume could still apply.
   // Two partial closes racing on the same position both passed (status stayed OPEN), each wrote
   // volume = its own stale read minus its lots, and each was credited: lots closed twice, money paid twice.
