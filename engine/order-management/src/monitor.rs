@@ -410,28 +410,62 @@ async fn publish_best_effort(nats: Option<&async_nats::Client>, event: &TradingE
     }
 }
 
-/// One full pass over every account with an open position. Errors for one
-/// account are logged and don't stop the rest — a bug in one account's
-/// data shouldn't leave every other account unmonitored.
+/// One full pass over every account with an open position (a fresh cursor: no resume point). Errors for one
+/// account are logged and don't stop the rest — a bug in one account's data shouldn't leave every other account
+/// unmonitored. Production goes through `run_once_guarded`, whose guard keeps the cursor between passes.
 pub async fn run_once(pool: &PgPool, nats: &async_nats::Client) {
-    run_pass(pool, Some(nats)).await;
+    run_pass(pool, Some(nats), &mut PassCursor::default()).await;
 }
 
-/// What one full pass did (Stage 4: the load harness drives passes through this, the production entry point).
+/// What one pass did (Stage 4: the load harness drives passes through this, the production entry point).
 #[derive(Debug, Clone, Default)]
 pub struct PassReport {
     /// accounts evaluated (not deferred), in pass order
     pub evaluated: Vec<String>,
     /// accounts deferred to a later pass (a pending follow-up touches them)
     pub deferred: Vec<String>,
+    /// Stage 4 (R): the pass stopped at this account, to resume there once its follow-ups ran
+    pub stopped_at: Option<String>,
     /// positions closed by this pass
     pub closed: usize,
     pub errors: usize,
 }
 
-/// One pass over every account with an open position, in accountId order. `nats` is optional so the harness can
-/// run it without a broker.
-pub async fn run_pass(pool: &PgPool, nats: Option<&async_nats::Client>) -> PassReport {
+/// At most this many resume points in one walk through the account list (the loop guard, with `stopped_at`).
+pub const MAX_CASCADE_STOPS: usize = 32;
+
+/// Stage 4 (R), the resume point: where the next pass continues, kept between passes by the run guard.
+///
+/// The web evaluates accounts one after the other and runs each close's follow-ups (mirror, coverage) before it
+/// moves on, so an account later in its pass always sees what an earlier account's closes did to it -- through any
+/// number of hops (a client's stop-out closes a master's mirror target, the master's own stop-out then closes
+/// another master's target...). The engine queues those follow-ups, so a pass that reaches an account a pending
+/// follow-up will still touch (EvalReport.deferred) STOPS there; the next pass resumes AT that account, after the
+/// dispatcher ran the follow-up, and carries on through the rest of the list. That is the web's order, hop by hop;
+/// deferring only that account and carrying on (Stage 4.5) let a later account act before an earlier account's
+/// cascade reached it.
+///
+/// Loop guard: a pass never stops twice at the same account within one walk through the list (`stopped_at`), nor
+/// more than MAX_CASCADE_STOPS times. A follow-up that cannot finish (the web down, a circular mirror left by bad
+/// data) therefore holds back at most one pass of the accounts after it; the account itself is only evaluated once
+/// nothing fresh is pending for it, or after FOLLOW_UP_DEFER_SECS (the safety release).
+#[derive(Debug, Clone, Default)]
+pub struct PassCursor {
+    resume_at: Option<String>,
+    stopped_at: std::collections::HashSet<String>,
+    stops: usize,
+}
+
+impl PassCursor {
+    /// where the next pass will start (None = from the top)
+    pub fn resume_at(&self) -> Option<&str> {
+        self.resume_at.as_deref()
+    }
+}
+
+/// One pass over every account with an open position, in accountId order, from the cursor's resume point. `nats` is
+/// optional so the harness can run it without a broker.
+pub async fn run_pass(pool: &PgPool, nats: Option<&async_nats::Client>, cursor: &mut PassCursor) -> PassReport {
     let mut report = PassReport::default();
     let account_ids = match book::account_ids_with_open_positions(pool).await {
         Ok(ids) => ids,
@@ -441,14 +475,25 @@ pub async fn run_pass(pool: &PgPool, nats: Option<&async_nats::Client>) -> PassR
             return report;
         }
     };
+    // ids come in byte order (COLLATE "C"), the order of Rust's String comparison
+    let start = cursor.resume_at.take().map(|r| account_ids.partition_point(|id| id.as_str() < r.as_str())).unwrap_or(0);
 
     // thresholds are read per account inside evaluate_account (Stage 2 F3), not cached per pass
-    for account_id in account_ids {
-        match evaluate_account(pool, nats, &account_id).await {
-            Ok(Some(r)) if r.deferred => report.deferred.push(account_id),
+    for account_id in &account_ids[start..] {
+        match evaluate_account(pool, nats, account_id).await {
+            Ok(Some(r)) if r.deferred => {
+                report.deferred.push(account_id.clone());
+                if cursor.stops < MAX_CASCADE_STOPS && cursor.stopped_at.insert(account_id.clone()) {
+                    cursor.stops += 1;
+                    cursor.resume_at = Some(account_id.clone());
+                    report.stopped_at = Some(account_id.clone());
+                    return report;
+                }
+                // loop guard: already stopped here in this walk -- carry on without it (Stage 4.5 behaviour)
+            }
             Ok(r) => {
                 report.closed += r.map(|r| r.closed.len()).unwrap_or(0);
-                report.evaluated.push(account_id);
+                report.evaluated.push(account_id.clone());
             }
             Err(err) => {
                 report.errors += 1;
@@ -456,33 +501,36 @@ pub async fn run_pass(pool: &PgPool, nats: Option<&async_nats::Client>) -> PassR
             }
         }
     }
+    // the walk reached the end of the list: the next pass starts a new one from the top
+    cursor.stopped_at.clear();
+    cursor.stops = 0;
     report
 }
 
 /// Shared across every trigger source (the polling timer and, in
 /// `engine/server`, the NATS tick subscription) so at most one
-/// evaluation pass runs at a time — see the module doc comment. A plain
-/// `Mutex<()>` used only via `try_lock`: this is a coalescing/skip guard,
-/// not a queue, so a burst of ticks while a pass is already running just
-/// gets dropped rather than piling up (the in-flight pass, or the next
-/// trigger after it finishes, covers the account either way).
-pub type RunGuard = Arc<Mutex<()>>;
+/// evaluation pass runs at a time — see the module doc comment. Used only
+/// via `try_lock`: this is a coalescing/skip guard, not a queue, so a burst
+/// of ticks while a pass is already running just gets dropped rather than
+/// piling up (the in-flight pass, or the next trigger after it finishes,
+/// covers the account either way). It also holds the pass cursor (Stage 4
+/// resume point) from one pass to the next.
+pub type RunGuard = Arc<Mutex<PassCursor>>;
 
 pub fn new_run_guard() -> RunGuard {
-    Arc::new(Mutex::new(()))
+    Arc::new(Mutex::new(PassCursor::default()))
 }
 
 /// Runs one evaluation pass if no other pass is currently running via
 /// this guard; otherwise a no-op. Correctness doesn't depend on this
-/// guard (`close_position_with_ledger_entry` is idempotent under real
-/// concurrency — see db.rs), it's purely to avoid wasted overlapping
-/// full-account-table scans when ticks arrive faster than a pass
-/// completes.
+/// guard (closes are guarded, see book.rs), it's purely to avoid wasted
+/// overlapping full-account-table scans when ticks arrive faster than a
+/// pass completes -- and it carries the resume point.
 pub async fn run_once_guarded(pool: &PgPool, nats: &async_nats::Client, guard: &RunGuard) {
-    let Ok(_permit) = guard.try_lock() else {
+    let Ok(mut cursor) = guard.try_lock() else {
         return;
     };
-    run_once(pool, nats).await;
+    run_pass(pool, Some(nats), &mut cursor).await;
 }
 
 /// Spawns the polling-timer trigger as a background task — the safety

@@ -97,29 +97,34 @@ pub async fn run(walkers: usize) -> Result<LoadReport, String> {
     let start = Instant::now();
     let mut report = LoadReport { walkers, ..Default::default() };
     let mut first_deferred: BTreeMap<String, Instant> = BTreeMap::new();
+    // each walker keeps its own resume point between its passes, as the run guard does in production
+    let mut cursors: Vec<monitor::PassCursor> = (0..walkers).map(|_| monitor::PassCursor::default()).collect();
 
     for round in 0..MAX_ROUNDS {
         report.rounds = round + 1;
-        let handles: Vec<_> = (0..walkers)
-            .map(|_| {
+        let handles: Vec<_> = cursors
+            .drain(..)
+            .map(|mut cursor| {
                 let pool = pool.clone();
                 tokio::spawn(async move {
                     let t = Instant::now();
-                    let r = monitor::run_pass(&pool, None).await;
-                    (r, t.elapsed().as_millis())
+                    let r = monitor::run_pass(&pool, None, &mut cursor).await;
+                    (r, t.elapsed().as_millis(), cursor)
                 })
             })
             .collect();
         let mut round_closed = 0;
-        let mut round_deferred = 0;
+        let mut round_deferred: std::collections::BTreeSet<String> = Default::default();
+        let mut resuming = false;
         for h in handles {
-            let (r, ms) = h.await.map_err(|e| e.to_string())?;
+            let (r, ms, cursor) = h.await.map_err(|e| e.to_string())?;
+            resuming |= cursor.resume_at().is_some();
+            cursors.push(cursor);
             report.pass_ms.push(ms);
             round_closed += r.closed;
-            round_deferred += r.deferred.len();
             report.errors += r.errors;
             for a in &r.deferred {
-                report.deferrals.entry(a.clone()).or_default().passes_deferred += 1;
+                round_deferred.insert(a.clone());
                 first_deferred.entry(a.clone()).or_insert_with(Instant::now);
             }
             for a in &r.evaluated {
@@ -132,17 +137,27 @@ pub async fn run(walkers: usize) -> Result<LoadReport, String> {
             }
         }
         report.closed += round_closed;
-        let (pending,): (i64,) = sqlx::query_as(r#"SELECT count(*) FROM "PostCloseEffect" WHERE status = 'PENDING'"#)
-            .fetch_one(&pool)
-            .await
-            .map_err(|e| e.to_string())?;
-        if round_closed == 0 && round_deferred == 0 && pending == 0 {
+        // deferral counted once per round (not per walker): the number of dispatcher drains an account waited
+        for a in &round_deferred {
+            report.deferrals.entry(a.clone()).or_default().passes_deferred += 1;
+        }
+        // production paces passes (tick / timer) and the dispatcher's fast path drains in between: do the same --
+        // the next round starts once no follow-up is pending (bounded), so a deferral costs one drain, not a spin
+        let mut pending: i64 = 0;
+        for _ in 0..600 {
+            (pending,) = sqlx::query_as(r#"SELECT count(*) FROM "PostCloseEffect" WHERE status = 'PENDING'"#)
+                .fetch_one(&pool)
+                .await
+                .map_err(|e| e.to_string())?;
+            if pending == 0 {
+                break;
+            }
+            outbox::wake();
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        if round_closed == 0 && round_deferred.is_empty() && pending == 0 && !resuming {
             report.settled = true;
             break;
-        }
-        if round_closed == 0 && round_deferred == 0 {
-            // only follow-ups left: let the dispatcher finish them before the next round
-            tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
     // the last follow-ups (a round can end with rows still in flight)
