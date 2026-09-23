@@ -1,0 +1,97 @@
+{
+  "name": "22-mirror-coverage-order-master-first",
+  "why": "Stage 4.5 ordering, the other way round: master and cover are evaluated BEFORE the client. On the web they stop out their own t1 / leg1 at market (t1 at ask 1.10020 = -10020, leg1 at bid 1.10000 = -10020, NBP floors both at 0) with STOP_OUT / COVERAGE_STOP_OUT notices, and leg1's close RELEASES the still-open client p1 with a COVERAGE_STOP_OUT notice to the desk. The client's later stop-out then finds t1 closed (mirror no-op) and p1 unhedged. The engine must reach the same end: nothing is pending when master and cover are evaluated, and the client waits until leg1's follow-up released p1.",
+  "knownDivergence": [],
+  "dbOnly": true,
+  "broker": {
+    "negativeBalanceProtection": true
+  },
+  "groups": [
+    {
+      "key": "std",
+      "marginCallLevel": "100",
+      "stopOutLevel": "50"
+    }
+  ],
+  "accounts": [
+    {
+      "key": "master",
+      "group": "std",
+      "balance": "5000",
+      "credit": "0",
+      "leverage": 100
+    },
+    {
+      "key": "cover",
+      "group": "std",
+      "balance": "5000",
+      "credit": "0",
+      "leverage": 100,
+      "coverage": true
+    },
+    {
+      "key": "client",
+      "group": "std",
+      "balance": "100",
+      "credit": "0",
+      "leverage": 100
+    }
+  ],
+  "symbols": [
+    {
+      "name": "EURUSD",
+      "contractSize": "100000",
+      "digits": 5,
+      "quoteCurrency": "USD"
+    }
+  ],
+  "positions": [
+    {
+      "key": "leg1",
+      "account": "cover",
+      "symbol": "EURUSD",
+      "side": "BUY",
+      "volume": "1",
+      "openPrice": "1.20020",
+      "autoHedged": true
+    },
+    {
+      "key": "p1",
+      "account": "client",
+      "symbol": "EURUSD",
+      "side": "BUY",
+      "volume": "1",
+      "openPrice": "1.20000",
+      "coverageLeg": "leg1"
+    },
+    {
+      "key": "t1",
+      "account": "master",
+      "symbol": "EURUSD",
+      "side": "SELL",
+      "volume": "1",
+      "openPrice": "1.00000"
+    }
+  ],
+  "mirrors": [
+    {
+      "key": "m1",
+      "master": "master",
+      "fillPriceMode": "SOURCE_PRICE",
+      "links": [
+        {
+          "source": "p1",
+          "target": "t1"
+        }
+      ]
+    }
+  ],
+  "prices": [
+    {
+      "symbol": "EURUSD",
+      "bid": "1.10000",
+      "ask": "1.10020",
+      "ageSeconds": 1
+    }
+  ]
+}

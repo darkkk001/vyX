@@ -472,12 +472,154 @@ never compared note text, so it had not shown.
 4. On the VPS engine: `VYX_POST_CLOSE_URL=https://<web>/api/internal/post-close` + `VYX_POST_CLOSE_SECRET`
    (same value). Only takes effect with ENGINE_ORDER_MANAGEMENT=1 (still OFF).
 
-### Stage 4: synthetic load, scratch only (2-3 days)
+### Stage 4: synthetic load, scratch only — PLAN, AWAITING APPROVAL (2026-09-24)
 
-100 / 500 / 1000 accounts across symbols (including JPY-quoted and credit accounts), mirror rules and
-hedges, one price shock through stop-out. Web and engine run the same seed separately.
-- **Gate:** identical closed sets, balances, Transactions and side-effect counts; zero double closes in
-  a concurrent run; latency recorded.
+**Goal.** At 100 / 500 / 1000 accounts, one price shock through stop-out. We need proof of three things:
+1. The engine (monitor + outbox + lib/post-close.ts) leaves EXACTLY the web's final state.
+2. It does so under concurrency and injected faults, with zero double closes or duplicate follow-ups.
+3. Its latency and DB transaction count, measured.
+
+Production is never touched. Everything runs on `127.0.0.1:5499`, in two NEW throwaway databases (`vyx_load_web`,
+`vyx_load_engine`). The orchestrator refuses any other host or database name.
+
+#### 4.1 The synthetic book (deterministic: one integer seed → byte-identical seed in both databases)
+
+`scripts/load/generate.ts --seed S --accounts N` writes one JSON world. Every id and ticket is derived from the
+seed, so the two databases can be compared id by id.
+
+| Dimension | Mix (of N accounts) |
+|---|---|
+| Groups | 4 groups: stop-out/margin-call 50/100, 30/80, 20/50, and one with no group (defaults) |
+| Account currency | 85 % USD, 10 % EUR, 5 % JPY-quoted exposure (USDJPY, conversion via fx.ts both sides) |
+| Credit | 20 % carry credit (Model A: in equity, consumed before NBP) |
+| Brokers | 2 brokers, NBP on / off |
+| Positions | 1 to 6 per account on XAUUSD / EURUSD / USDJPY / GBPUSD (+ a cross for EUR accounts), deliberate ties in floating P&L (tests the "worst first" tie-break), some SL/TP |
+| Outcome after the shock | ~35 % stop-out (some multi-close, some down to zero with NBP), ~15 % margin call only, ~15 % SL/TP hits, ~5 % priced on a session-CLOSED symbol, ~5 % on a stale (no tick) symbol, rest untouched |
+| Mirror | ~10 % of clients' positions mirrored to 2 master accounts (SOURCE_PRICE and MARKET) |
+| Coverage | ~20 % of positions hedged on each broker's coverage account (auto-hedged and dealer-booked mix); the coverage account itself is sized to be stopped out in one variant |
+| Queued closes | ~5 % of positions carry a pending queued close |
+
+- **Sessions.** Seeded explicitly: 24/7 except one symbol hard-closed. The result never depends on the weekday
+  or the hour the run happens (the weekend flakiness in memory).
+- **Freshness clock.** The shock writes every LivePrice with `tickAt = now()`. A small re-stamper keeps the SAME
+  prices fresh (every 2 s) in both databases for the whole run: a 1000-account pass can outlast the 15 s
+  freshness window, and the stale symbol stays stale on purpose.
+
+#### 4.2 The two runs
+
+- **Web (reference).** `vyx_load_web` is seeded, shocked, then `evaluateAccountRisk` runs for every account once,
+  sequentially. This is today's production path, with the side effects inline.
+- **Engine.** `vyx_load_engine`, same seed, same shock. A new mode `parity --load` runs
+  `monitor::evaluate_account` with **K concurrent evaluators over an overlapping account list** (every account is
+  hit by at least 2 workers at once: the tick path + the timer in production). Meanwhile **M concurrent outbox
+  runners** (lib/post-close.ts, in-process) drain the rows. Injected faults:
+  - 5 % of step boundaries throw a 500;
+  - 2 % of runs "crash" (the lease is held, then left to lapse).
+- **Settle.** Both sides get repeated passes until one changes nothing (cap 3), plus a full drain. The number of
+  passes needed is recorded.
+- **Replay.** Then one extra engine pass + drain over the settled state. It must write NOTHING new.
+
+#### 4.3 What is compared (the canonical snapshot, both databases)
+
+- Per position: status, close price, realizedPnl, close reason (from the TRADE_PNL note, as in parity).
+- Per account: balance, credit, marginCallNotified, and the TRADE_PNL / CREDIT / NBP rows (type + amount, in
+  close order).
+- Side effects, as counts per (type or action, entityId):
+  - Notification: STOP_OUT, COVERAGE_STOP_OUT, COVERAGE_RELEASED, MARGIN_CALL, COVERAGE_CLOSE_FAILED,
+    AWAITING_DEALER.
+  - AuditLog: MIRROR_CLOSED, POSITION_COVERAGE_*, DEALING_CLOSE_SUPERSEDED, CREDIT_CONSUMED_BY_LOSS,
+    NEGATIVE_BALANCE_PROTECTION_APPLIED.
+  - The state of every mirror target, coverage leg and queued order.
+
+Not compared, by design:
+- event publishes (at-least-once);
+- activity `origin` (`risk_monitor` vs `risk_monitor_engine`);
+- timestamps / createdAt.
+
+#### 4.4 Gate
+
+1. **Identical snapshots** at N = 100, 500 and 1000, each for 3 seeds. Any difference is a FAIL, reported as
+   scenario + account + field, and nothing is waved through without a written, approved classification.
+2. **Exactly-once under load** (engine database):
+   - at most one TRADE_PNL per closed position and no position closed twice;
+   - every PostCloseEffect row DONE (none DEAD), each step listed once in its `doneSteps`;
+   - notification / audit counts equal to the web's, whatever the faults.
+3. **Replay writes nothing:** row counts of every table unchanged by the extra pass + drain.
+4. **Latency and cost, recorded (not gated):**
+   - evaluate_account p50/p95/p99;
+   - full-pass wall time;
+   - close-commit → row DONE p50/p95;
+   - Postgres transactions per pass (`pg_stat_database.xact_commit` delta), the number that drives Neon compute
+     (the compute-leak memory).
+5. **No regression:** parity 20/20 + the Stage 3 gate still green.
+
+#### 4.5 Risks this is designed to expose (not assumed away)
+
+- **Ordering** (mirror / coverage follow-ups vs a later account's own evaluation): RESOLVED in Stage 4.5 below. The
+  generator still seeds both orders (client first, master / coverage account first) at scale, and the snapshots
+  must MATCH.
+- **Concurrent stale state.** A worker whose account state predates another worker's close sees a rosier equity:
+  it should UNDER-close, and the next pass completes the job. The load test measures whether that holds, and
+  whether it ever over-closes (credit / NBP interplay).
+- **Tie-break.** "Worst position first" on equal P&L: both sides must pick the first in (openedAt, id) order.
+- **Freshness drift** on long passes: handled by the re-stamper, and asserted (no account unpriced by accident).
+
+#### 4.6 Deliverables and effort (~2-3 days)
+
+- `scripts/load/{generate.ts, seed.ts, shock.ts, run-web.ts, drain.ts, snapshot.ts, diff.mjs, run.sh}`, with a
+  scratch guard in run.sh AND in every script.
+- `parity --load` (engine concurrent evaluator + latency JSON).
+- A results table in this doc per N / seed.
+- **Optional HTTP smoke:** `next start` pointed at `vyx_load_engine` + the real engine dispatcher against it, for a
+  few hundred rows. It runs the true route + bearer + backoff over HTTP.
+  - The .env points at PROD. The run passes DATABASE_URL / DIRECT_URL explicitly and first proves via a probe row
+    that it writes to scratch.
+  - Recommended but separable.
+
+### Stage 4.5: mirror / coverage ordering aligned with the web — DONE 2026-09-24
+
+**Decision (user, 2026-09-24).** The web is canonical and is not changed: it runs mirror / coverage right after
+each close, inside its pass. The engine aligns on ORDERING, not timing: follow-ups are still enqueued in the close's
+transaction and dispatched by the outbox (exactly-once), never inline or synchronous.
+
+**Rule (engine BEHAVIOR CHANGE).** `monitor::evaluate_account` first asks `book::pending_follow_up_owns`. An account
+waits for the next pass (`EvalReport.deferred`) while a PENDING POSITION_CLOSED row, queued under
+FOLLOW_UP_DEFER_SECS (30 s) ago, is still going to touch one of its OPEN positions:
+- close a mirror target (`mirror` step not done);
+- close an auto-hedged coverage leg (`coverage` step not done; dealer-booked legs are left open on the web too);
+- release a client position whose coverage leg was the one closed (`coverage` step not done).
+
+The web did all of these before it reached that account; the engine now evaluates the account after them too.
+Past 30 s the account is evaluated anyway, so a stuck outbox (dispatcher down) can never keep an account from
+its own stop-out. Cost: one indexed EXISTS query per evaluated account.
+
+**Harness.**
+- `run-db.sh` now drains the engine's outbox after each cycle, through the real dispatcher (`outbox::drain_once`)
+  into the real route (`scripts/parity/post-close-server.ts`, scratch DB only, stopped on exit). Every account is
+  still evaluated exactly once, in scenario order, like the web's pass.
+- DB-mode outputs now also carry `sideEffects` (every Notification / AuditLog count per type / action, entity and
+  audience) and `positions` (every position's end state). `diff.mjs` compares both.
+- New db-only scenarios:
+  - `21-mirror-coverage-order-client-first`: the seeded divergence case;
+  - `22-mirror-coverage-order-master-first`: the reverse order, which must not change.
+
+**Evidence.**
+- The deferral switched off for one run (not committed): 20 MATCH, 2 FAIL.
+  - 21: master's t1 was stopped out at ask 1.10020 (-10020, NBP 5020) where the web mirror-closed it at the source
+    price 1.1 (-10000, NBP 5000). This also left MIRROR_CLOSED / POSITION_COVERAGE_AUTO_CLOSED missing and STOP_OUT /
+    COVERAGE_STOP_OUT extra.
+  - 22: the release of the client position and its COVERAGE_STOP_OUT notice were missing.
+- With it: **22/22 MATCH**, including the new side-effect and position comparison on all 20 earlier scenarios. Their
+  STOP_OUT / MARGIN_CALL notices now come from the outbox and equal the web's inline ones.
+- Engine `cargo test --workspace` **241 pass** (+1: defers only while the step is pending, never past 30 s, never
+  for a dealer-booked leg).
+- Stage 3 gate 26/26.
+- TS 963 pass; the 13 pre-existing failures are unchanged.
+- The pure-calc Stage 0 run skips the 2 db-only scenarios. Its 9 FAILs are identical at HEAD: the pure model
+  predates Stage 2, and DB mode is the gate.
+
+**Not yet built:** the Stage 4 load harness (4.1-4.6 above is still a plan awaiting approval). This ordering case
+goes into its generator; at that scale it must MATCH as here.
 
 ### Stage 5: shadow (2-3 days build, 1-2 weeks soak)
 

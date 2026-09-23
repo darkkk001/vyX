@@ -227,6 +227,9 @@ pub struct EvalReport {
     pub closed: Vec<(String, &'static str)>,
     /// the pass ended in margin call (not stop-out)
     pub margin_call: bool,
+    /// Stage 4.5: not evaluated in this pass -- a pending post-close follow-up (a mirror close, a coverage leg
+    /// close) will close one of its positions first; the next pass evaluates it, as the web does after it
+    pub deferred: bool,
 }
 
 /// One account, one pass. `None` = not evaluated (no account / no open position / its group's thresholds
@@ -236,6 +239,13 @@ pub async fn evaluate_account(
     nats: Option<&async_nats::Client>,
     account_id: &str,
 ) -> Result<Option<EvalReport>, sqlx::Error> {
+    // Stage 4.5 BEHAVIOR CHANGE (engine): the web runs mirror / coverage follow-ups inside its pass, right after the
+    // close that triggers them, so an account holding a mirror target or an auto-hedged leg is evaluated only AFTER
+    // that position was closed for it. The engine queues those follow-ups (outbox); until one has run, the account
+    // it touches waits for the next pass instead of stopping out a position the follow-up is about to close.
+    if book::pending_follow_up_owns(pool, account_id).await? {
+        return Ok(Some(EvalReport { deferred: true, ..EvalReport::default() }));
+    }
     let Some(mut state) = load_book_state(pool, account_id).await? else {
         return Ok(None);
     };

@@ -301,6 +301,43 @@ async fn margin_call_edge_notifies_once_per_episode() {
     assert!(all.iter().all(|(k, p)| k == "MARGIN_CALL" && *p == serde_json::json!({ "marginLevel": "90.91", "marginCallLevel": "100" })));
 }
 
+/// Stage 4.5: an account waits for a pending follow-up that will close its auto-hedged leg -- only while that
+/// step is not done, only for FOLLOW_UP_DEFER_SECS, and never for a dealer-booked leg (the web leaves those open).
+#[tokio::test]
+async fn a_pending_follow_up_defers_the_account_it_will_touch_but_never_for_long() {
+    let Some(pool) = pool().await else { return };
+    let mut conn = pool.acquire().await.unwrap();
+    let fx = fixture(&mut conn, dec!(1000), true).await;
+    let leg = open_position(&mut conn, &fx, "BUY", dec!(1), dec!(4000)).await;
+    let source = open_position(&mut conn, &fx, "BUY", dec!(1), dec!(4000)).await;
+    drop(conn);
+    sqlx::query(r#"UPDATE "Position" SET "autoHedged" = true WHERE id = $1"#).bind(&leg).execute(&pool).await.unwrap();
+    sqlx::query(r#"UPDATE "Position" SET status = 'CLOSED', "coveragePositionId" = $2 WHERE id = $1"#).bind(&source).bind(&leg).execute(&pool).await.unwrap();
+    let row = Uuid::new_v4().to_string();
+    sqlx::query(
+        r#"INSERT INTO "PostCloseEffect" (id, kind, "dedupeKey", "brokerId", "accountId", "positionId", reason, payload)
+           VALUES ($1, 'POSITION_CLOSED', $1, $2, $3, $4, 'stop_out', '{}'::jsonb)"#,
+    ).bind(&row).bind(&fx.broker).bind(&fx.account).bind(&source).execute(&pool).await.unwrap();
+
+    let owns = || book::pending_follow_up_owns(&pool, &fx.account);
+    let fresh = owns().await.unwrap();
+    sqlx::query(r#"UPDATE "PostCloseEffect" SET "doneSteps" = ARRAY['coverage'] WHERE id = $1"#).bind(&row).execute(&pool).await.unwrap();
+    let coverage_done = owns().await.unwrap();
+    sqlx::query(r#"UPDATE "PostCloseEffect" SET "doneSteps" = ARRAY[]::text[], "createdAt" = now() - interval '31 seconds' WHERE id = $1"#).bind(&row).execute(&pool).await.unwrap();
+    let too_old = owns().await.unwrap();
+    sqlx::query(r#"UPDATE "PostCloseEffect" SET "createdAt" = now() WHERE id = $1"#).bind(&row).execute(&pool).await.unwrap();
+    sqlx::query(r#"UPDATE "Position" SET "autoHedged" = false WHERE id = $1"#).bind(&leg).execute(&pool).await.unwrap();
+    let dealer_booked = owns().await.unwrap();
+
+    sqlx::query(r#"DELETE FROM "PostCloseEffect" WHERE id = $1"#).bind(&row).execute(&pool).await.unwrap();
+    sqlx::query(r#"UPDATE "Position" SET "coveragePositionId" = NULL WHERE "brokerId" = $1"#).bind(&fx.broker).execute(&pool).await.unwrap();
+    cleanup(&pool, &fx.broker).await;
+    assert!(fresh, "a fresh pending leg close defers the leg's account");
+    assert!(!coverage_done, "once the coverage step ran, nothing is owed");
+    assert!(!too_old, "past FOLLOW_UP_DEFER_SECS the account is evaluated anyway (a stuck outbox never blocks a stop-out)");
+    assert!(!dealer_booked, "a dealer-booked leg is not waited for");
+}
+
 async fn cleanup(pool: &PgPool, broker: &str) {
     for sql in [
         r#"DELETE FROM "AuditLog" WHERE "brokerId" = $1"#,

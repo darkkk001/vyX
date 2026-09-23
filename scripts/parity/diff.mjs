@@ -60,6 +60,10 @@ for (const file of fs.readdirSync(scenarioDir).filter((f) => f.endsWith(".json")
   };
   const ts = read(tsDir);
   const rust = read(rustDir);
+  if (sc.dbOnly && !rustDir.endsWith("rust-db")) {
+    rows.push({ name: sc.name, status: "SKIP", details: ["db-only scenario (compared by run-db.sh)"] });
+    continue;
+  }
   if (!ts || !rust) {
     failures++;
     rows.push({ name: sc.name, status: "FAIL", details: [`missing output: ${!ts ? "ts " : ""}${!rust ? "rust" : ""}`.trim()] });
@@ -85,6 +89,28 @@ for (const file of fs.readdirSync(scenarioDir).filter((f) => f.endsWith(".json")
         details.push(`${prefix}${d} [${cover.id}]`);
       } else {
         unexpected.push(`${prefix}${d}`);
+      }
+    }
+  }
+  // Stage 4.5 (DB mode): every Notification / AuditLog count and every position's end state (mirror targets,
+  // coverage legs) must match too. Only compared when both sides carry them (the pure-calc run does not).
+  if (ts.sideEffects && rust.sideEffects) {
+    const keys = [...new Set([...Object.keys(ts.sideEffects), ...Object.keys(rust.sideEffects)])].sort();
+    for (const k of keys) {
+      if ((ts.sideEffects[k] ?? 0) !== (rust.sideEffects[k] ?? 0)) unexpected.push(`effect ${k} ts=${ts.sideEffects[k] ?? 0} rust=${rust.sideEffects[k] ?? 0}`);
+    }
+  }
+  if (ts.positions && rust.positions) {
+    const same = (x, y) => (x == null || y == null ? x === y : Math.abs(Number(x) - Number(y)) <= MONEY_TOL);
+    for (const id of [...new Set([...Object.keys(ts.positions), ...Object.keys(rust.positions)])].sort()) {
+      const a = ts.positions[id];
+      const b = rust.positions[id];
+      if (!a || !b) {
+        unexpected.push(`position ${id} missing in ${!a ? "ts" : "rust"}`);
+        continue;
+      }
+      if (a.status !== b.status || !same(a.volume, b.volume) || !same(a.closePrice, b.closePrice) || !same(a.realizedPnl, b.realizedPnl)) {
+        unexpected.push(`position ${id} ts=${a.status}@${a.closePrice ?? "-"}/${a.realizedPnl ?? "-"} rust=${b.status}@${b.closePrice ?? "-"}/${b.realizedPnl ?? "-"}`);
       }
     }
   }
@@ -114,5 +140,5 @@ if (markdown) {
   for (const r of rows) console.log(`${r.name.padEnd(w1)} | ${r.status.padEnd(w2)} | ${r.details.join("; ") || "-"}`);
 }
 const count = (s) => rows.filter((r) => r.status === s).length;
-console.log(`\n${rows.length} scenarios: ${count("MATCH")} MATCH, ${count("EXPECTED-DIVERGENCE")} EXPECTED-DIVERGENCE, ${count("FAIL")} FAIL`);
+console.log(`\n${rows.length} scenarios: ${count("MATCH")} MATCH, ${count("EXPECTED-DIVERGENCE")} EXPECTED-DIVERGENCE, ${count("FAIL")} FAIL${count("SKIP") ? `, ${count("SKIP")} SKIP` : ""}`);
 process.exit(failures ? 1 : 0);

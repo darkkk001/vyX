@@ -58,9 +58,13 @@ fn main() {
                 continue;
             }
         };
+        if sc.db_only && runtime.is_none() {
+            println!("[parity:rust] {}: skipped (db-only scenario)", sc.name);
+            continue;
+        }
         let out = match (&runtime, &pool) {
             (Some(rt), Some(pool)) => match rt.block_on(parity::db_mode::evaluate(pool, &sc)) {
-                Ok(accounts) => parity::ScenarioOutcome { scenario: sc.name.clone(), engine: "rust-db", accounts },
+                Ok(out) => out,
                 Err(e) => {
                     eprintln!("[parity:rust-db] {e}");
                     failed = true;

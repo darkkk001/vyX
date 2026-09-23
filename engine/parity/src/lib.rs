@@ -39,6 +39,11 @@ pub struct Scenario {
     pub positions: Vec<PositionCfg>,
     #[serde(default)]
     pub prices: Vec<PriceCfg>,
+    /// needs the database (mirror rules, coverage legs, the post-close follow-up): skipped by the pure-calc run.
+    /// The seeding for those lives in scripts/parity/run-ts.ts only (`mirrors`, `coverage`, `coverageLeg`,
+    /// `autoHedged`), which is why this struct does not carry them.
+    #[serde(default)]
+    pub db_only: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -193,11 +198,26 @@ pub struct AccountOutcome {
     pub margin_call_notified: bool,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PositionState {
+    pub status: String,
+    pub volume: String,
+    pub close_price: Option<String>,
+    pub realized_pnl: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ScenarioOutcome {
     pub scenario: String,
     pub engine: &'static str,
     pub accounts: BTreeMap<String, AccountOutcome>,
+    /// DB mode only (Stage 4.5): Notification / AuditLog counts and every position's final state
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub side_effects: Option<BTreeMap<String, i64>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub positions: Option<BTreeMap<String, PositionState>>,
 }
 
 fn account_state(sc: &Scenario, acct: &AccountCfg) -> AccountState {
@@ -351,7 +371,7 @@ pub fn evaluate(sc: &Scenario) -> ScenarioOutcome {
         .map(|g| (g.key.clone(), MarginThresholds { call_level: g.margin_call_level, stop_out_level: g.stop_out_level }))
         .collect();
     let accounts = sc.accounts.iter().map(|a| (a.key.clone(), evaluate_account(sc, a, &by_group))).collect();
-    ScenarioOutcome { scenario: sc.name.clone(), engine: "rust", accounts }
+    ScenarioOutcome { scenario: sc.name.clone(), engine: "rust", accounts, side_effects: None, positions: None }
 }
 
 #[cfg(test)]

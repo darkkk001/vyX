@@ -50,11 +50,19 @@ type Scenario = {
   knownDivergence: { id: string; fields: string[]; note?: string }[];
   broker: { negativeBalanceProtection: boolean };
   groups: { key: string; marginCallLevel: Dec; stopOutLevel: Dec }[];
-  accounts: { key: string; group: string; balance: Dec; credit: Dec; leverage: number }[];
+  // coverage: this account is the broker's coverage account (Broker.coverageAccountId), Stage 4.5
+  accounts: { key: string; group: string; balance: Dec; credit: Dec; leverage: number; coverage?: boolean }[];
   symbols: { name: string; contractSize: Dec; digits: number; quoteCurrency: string; category?: string; sessionClosedNow?: boolean }[];
-  positions: { key: string; account: string; symbol: string; side: "BUY" | "SELL"; volume: Dec; openPrice: Dec; slPrice?: Dec | null; tpPrice?: Dec | null }[];
+  // coverageLeg: this (client) position is hedged by that leg (covered + coveragePositionId); autoHedged: this
+  // leg was opened by auto-hedge, so the platform closes it when the client closes (lib/coverage.ts onClose)
+  positions: { key: string; account: string; symbol: string; side: "BUY" | "SELL"; volume: Dec; openPrice: Dec; slPrice?: Dec | null; tpPrice?: Dec | null; coverageLeg?: string; autoHedged?: boolean }[];
   prices: { symbol: string; bid: Dec; ask: Dec; ageSeconds: number; updatedAgeSeconds?: number }[];
+  // Stage 4.5: mirror rules onto a master account, with their source -> target position links
+  mirrors?: { key: string; master: string; fillPriceMode?: "SOURCE_PRICE" | "MARKET"; links: { source: string; target: string }[] }[];
+  dbOnly?: boolean;
 };
+
+type PositionState = { status: string; volume: string; closePrice: string | null; realizedPnl: string | null };
 
 type AccountOutcome = {
   marginLevelBefore: string | null;
@@ -147,6 +155,25 @@ async function main() {
         },
       });
     }
+    // Stage 4.5: coverage legs and mirror rules (lib/coverage.ts / lib/mirror.ts follow them on every close)
+    for (const p of sc.positions) {
+      if (p.autoHedged) await prisma.position.update({ where: { id: p.key }, data: { autoHedged: true } });
+      if (p.coverageLeg) await prisma.position.update({ where: { id: p.key }, data: { covered: true, coveredAt: new Date(), coveragePositionId: p.coverageLeg } });
+    }
+    const coverageAccount = sc.accounts.find((a) => a.coverage);
+    if (coverageAccount) await prisma.broker.update({ where: { id: broker.id }, data: { coverageAccountId: coverageAccount.key } });
+    if (sc.mirrors?.length) {
+      const admin = await prisma.adminUser.create({ data: { brokerId: broker.id, email: `parity-admin-${sc.name}@parity.local`.slice(0, 80), passwordHash: "x", role: "BROKER_ADMIN" } });
+      for (const m of sc.mirrors) {
+        const firstSource = sc.positions.find((p) => p.key === m.links[0]?.source);
+        const sourceGroup = groupIds.get(sc.accounts.find((a) => a.key === firstSource?.account)?.group ?? sc.groups[0].key)!;
+        const rule = await prisma.mirrorRule.create({
+          data: { id: m.key, brokerId: broker.id, sourceType: "GROUP", sourceId: sourceGroup, targetAccountId: m.master, direction: "REVERSE", multiplier: D(1), enabled: true, fillPriceMode: m.fillPriceMode ?? "SOURCE_PRICE", createdById: admin.id },
+        });
+        for (const l of m.links) await prisma.mirrorLink.create({ data: { ruleId: rule.id, sourcePositionId: l.source, targetPositionId: l.target } });
+      }
+    }
+
     for (const px of sc.prices) {
       // Raw insert: LivePrice.updatedAt is @updatedAt, so set both timestamps off Postgres's own
       // clock (the one getFreshPrices compares against).
@@ -193,7 +220,18 @@ async function main() {
         marginCallNotified: acc.marginCallNotifiedAt != null,
       };
     }
-    const out = { scenario: sc.name, engine: "ts", accounts };
+    // Stage 4.5: side effects and every position's end state, the same queries as engine/parity/src/db_mode.rs
+    const effectRows = await prisma.$queryRaw<{ k: string; n: bigint }[]>`
+      SELECT 'notification:' || type || ':' || coalesce("entityId", '-') || ':' || CASE WHEN "accountId" IS NULL THEN 'staff' ELSE 'trader' END AS k, count(*) AS n FROM "Notification" GROUP BY 1
+      UNION ALL
+      SELECT 'audit:' || action || ':' || coalesce("entityId", '-') AS k, count(*) AS n FROM "AuditLog" GROUP BY 1`;
+    const sideEffects: Record<string, number> = {};
+    for (const r of [...effectRows].sort((x, y) => (x.k < y.k ? -1 : 1))) sideEffects[r.k] = Number(r.n);
+    const positions: Record<string, PositionState> = {};
+    for (const p of await prisma.position.findMany({ orderBy: { id: "asc" } })) {
+      positions[p.id] = { status: p.status, volume: p.volume.toString(), closePrice: p.closePrice?.toString() ?? null, realizedPnl: p.realizedPnl?.toString() ?? null };
+    }
+    const out = { scenario: sc.name, engine: "ts", accounts, sideEffects, positions };
     fs.writeFileSync(path.join(outDir, `${sc.name}.json`), JSON.stringify(out, null, 2) + "\n");
     console.log(`[parity:ts] ${sc.name}: ${Object.entries(accounts).map(([k, v]) => `${k} closed=[${v.closedPositionIds.join(",")}] balance=${v.finalBalance} mc=${v.marginCallNotified}`).join("; ")}`);
   }

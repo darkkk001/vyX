@@ -342,6 +342,51 @@ pub async fn close_position_in_tx(
     }))
 }
 
+/// How long a pending follow-up may hold back the evaluation of the account it will touch (see
+/// `pending_follow_up_owns`). Past this the account is evaluated anyway: a stuck outbox (dispatcher down, web
+/// unreachable) must never keep an account from its own stop-out.
+pub const FOLLOW_UP_DEFER_SECS: i32 = 30;
+
+/// Stage 4.5 (ordering = the web's): true when a PENDING post-close follow-up, queued under
+/// FOLLOW_UP_DEFER_SECS ago, is still going to touch one of this account's OPEN positions:
+/// - close a mirror target (its `mirror` step not yet done);
+/// - close an auto-hedged coverage leg (its `coverage` step not yet done; a dealer-booked leg is left open for the
+///   desk on the web too, so it is not waited for);
+/// - release a client position its coverage leg was hedging, when that LEG was the one closed (its `coverage`
+///   step not yet done): the web releases it, and tells the desk, while the client position is still open.
+/// The web runs all of these inside its pass, right after the close that triggers them, so by the time it
+/// evaluates this account they have happened; the monitor waits for them the same way.
+pub async fn pending_follow_up_owns(pool: &PgPool, account_id: &str) -> Result<bool, sqlx::Error> {
+    let (owed,): (bool,) = sqlx::query_as(
+        r#"SELECT EXISTS (
+             SELECT 1 FROM "PostCloseEffect" e
+             JOIN "MirrorLink" ml ON ml."sourcePositionId" = e."positionId"
+             JOIN "Position" t ON t.id = ml."targetPositionId"
+             WHERE e.status = 'PENDING' AND e.kind = 'POSITION_CLOSED' AND NOT ('mirror' = ANY(e."doneSteps"))
+               AND e."createdAt" > now() - ($2::int * interval '1 second')
+               AND t."accountId" = $1 AND t.status = 'OPEN'
+           ) OR EXISTS (
+             SELECT 1 FROM "PostCloseEffect" e
+             JOIN "Position" s ON s.id = e."positionId"
+             JOIN "Position" leg ON leg.id = s."coveragePositionId"
+             WHERE e.status = 'PENDING' AND e.kind = 'POSITION_CLOSED' AND NOT ('coverage' = ANY(e."doneSteps"))
+               AND e."createdAt" > now() - ($2::int * interval '1 second')
+               AND leg."accountId" = $1 AND leg.status = 'OPEN' AND leg."autoHedged"
+           ) OR EXISTS (
+             SELECT 1 FROM "PostCloseEffect" e
+             JOIN "Position" client ON client."coveragePositionId" = e."positionId"
+             WHERE e.status = 'PENDING' AND e.kind = 'POSITION_CLOSED' AND NOT ('coverage' = ANY(e."doneSteps"))
+               AND e."createdAt" > now() - ($2::int * interval '1 second')
+               AND client."accountId" = $1 AND client.status = 'OPEN'
+           )"#,
+    )
+    .bind(account_id)
+    .bind(FOLLOW_UP_DEFER_SECS)
+    .fetch_one(pool)
+    .await?;
+    Ok(owed)
+}
+
 /// Why the monitor closed a position, as the post-close outbox row records it ("reason").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CloseReason {

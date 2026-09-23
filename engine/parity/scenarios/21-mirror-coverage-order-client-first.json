@@ -1,0 +1,97 @@
+{
+  "name": "21-mirror-coverage-order-client-first",
+  "why": "Stage 4.5 ordering. Client (evaluated FIRST) is stopped out of p1 (BUY 1 @1.20000, bid 1.10000: equity -9900 on 1100 margin, -900%). p1 is mirrored (SOURCE_PRICE) onto master's t1 (SELL 1 @1.00000) and hedged by the auto-hedged leg1 (BUY 1 @1.20020) on the coverage account. Web: mirror + coverage run inside the pass, so t1 closes at the SOURCE price 1.10000 (-10000, 'Mirror close') and leg1 at bid 1.10000 (-10020, 'Coverage auto-close') BEFORE master and cover are evaluated; both then have nothing open. The engine used to evaluate master / cover before its outbox ran and stop them out itself (t1 at ask 1.10020 = -10020, 'Stop-out'): the divergence. Now the engine defers an account a pending follow-up will touch, so both match.",
+  "knownDivergence": [],
+  "dbOnly": true,
+  "broker": {
+    "negativeBalanceProtection": true
+  },
+  "groups": [
+    {
+      "key": "std",
+      "marginCallLevel": "100",
+      "stopOutLevel": "50"
+    }
+  ],
+  "accounts": [
+    {
+      "key": "client",
+      "group": "std",
+      "balance": "100",
+      "credit": "0",
+      "leverage": 100
+    },
+    {
+      "key": "master",
+      "group": "std",
+      "balance": "5000",
+      "credit": "0",
+      "leverage": 100
+    },
+    {
+      "key": "cover",
+      "group": "std",
+      "balance": "5000",
+      "credit": "0",
+      "leverage": 100,
+      "coverage": true
+    }
+  ],
+  "symbols": [
+    {
+      "name": "EURUSD",
+      "contractSize": "100000",
+      "digits": 5,
+      "quoteCurrency": "USD"
+    }
+  ],
+  "positions": [
+    {
+      "key": "leg1",
+      "account": "cover",
+      "symbol": "EURUSD",
+      "side": "BUY",
+      "volume": "1",
+      "openPrice": "1.20020",
+      "autoHedged": true
+    },
+    {
+      "key": "p1",
+      "account": "client",
+      "symbol": "EURUSD",
+      "side": "BUY",
+      "volume": "1",
+      "openPrice": "1.20000",
+      "coverageLeg": "leg1"
+    },
+    {
+      "key": "t1",
+      "account": "master",
+      "symbol": "EURUSD",
+      "side": "SELL",
+      "volume": "1",
+      "openPrice": "1.00000"
+    }
+  ],
+  "mirrors": [
+    {
+      "key": "m1",
+      "master": "master",
+      "fillPriceMode": "SOURCE_PRICE",
+      "links": [
+        {
+          "source": "p1",
+          "target": "t1"
+        }
+      ]
+    }
+  ],
+  "prices": [
+    {
+      "symbol": "EURUSD",
+      "bid": "1.10000",
+      "ask": "1.10020",
+      "ageSeconds": 1
+    }
+  ]
+}
