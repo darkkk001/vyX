@@ -7,7 +7,7 @@
 //| LivePrice table this EA feeds.                                    |
 //+------------------------------------------------------------------+
 #property strict
-#property version   "1.40"
+#property version   "1.41"
 
 input string ServerUrl            = "https://www.vyxtrader.com/api/internal/price-feed";
 // No default -- this file is committed to a public-ish repo. A real
@@ -123,6 +123,12 @@ input datetime DeepBackfillFromDate  = D'2026.08.12 00:00';
 // On a weekend (no ticks to starve) drop it to 500 and let it run flat
 // out.
 input int    DeepBackfillFullSpacingMs = 5000;
+// v1.41 -- narrow a full-history pass to a few cells instead of the whole symbol x timeframe grid, to
+// repair one gap (e.g. XAUUSD M15) without re-sending everything. Comma-separated; blank = all.
+// Symbols are the CANONICAL names (what the platform stores, after SymbolMap), timeframes are
+// M1,M5,M15,M30,H1,H4,D1,W1,MN1. Only the full-history pass honours them.
+input string DeepBackfillSymbols    = "";
+input string DeepBackfillTimeframes = "";
 
 // Where the list of symbols to push comes from (second Contabo-audit
 // follow-up). MARKET_WATCH auto-discovers whatever's selected in this
@@ -373,7 +379,13 @@ const string DEEP_BACKFILL_FULL_DONE_GVAR = "VyXTraderPriceFeed_DeepBackfillFull
 // default) is plenty for a download that is going to succeed at all; a
 // broker that genuinely has no older bars just costs these few extra
 // idempotent requests per symbol x timeframe.
-const int DEEP_BACKFILL_PAGE_RETRIES = 5;
+//
+// v1.41: 12 retries, at least DEEP_BACKFILL_RETRY_MIN_MS apart whatever the page spacing is. v1.40 retried
+// on the page spacing itself, so at the 500 ms weekend setting its five retries were over in 2.5 s --
+// far too soon for the terminal to have built the older M15 series -- and the cell then ended early.
+const int  DEEP_BACKFILL_PAGE_RETRIES = 12;
+const uint DEEP_BACKFILL_RETRY_MIN_MS = 5000;
+uint DeepBackfillRetryAtMs     = 0;
 bool DeepBackfillFull          = false;
 long DeepBackfillFromUtc       = 0;
 int  DeepBackfillPage          = 0;
@@ -942,7 +954,10 @@ void StartDeepBackfill()
             ArraySize(HistoryBackfillPeriods), " timeframes, ~", m1Pages, " M1 pages of ",
             HistoryBackfillBarCounts[0], " bars per symbol, ", DeepBackfillFullSpacingMs,
             "ms between pages; terminal max bars per chart = ", maxBars,
-            (maxBars > 0 && maxBars < weeks * 7200.0) ? " -- TOO LOW for the M1 span, raise Tools > Options > Charts > Max bars in chart" : "");
+            (maxBars > 0 && maxBars < weeks * 7200.0) ? " -- TOO LOW for the M1 span, raise Tools > Options > Charts > Max bars in chart" : "",
+            StringLen(DeepBackfillSymbols) + StringLen(DeepBackfillTimeframes) > 0
+               ? "; ONLY symbols [" + (StringLen(DeepBackfillSymbols) > 0 ? DeepBackfillSymbols : "all") + "] x timeframes [" + (StringLen(DeepBackfillTimeframes) > 0 ? DeepBackfillTimeframes : "all") + "]"
+               : "");
    }
 }
 
@@ -977,8 +992,45 @@ void FinishDeepBackfill()
 // comment. The longest continuous freeze the deep pass can cause is a
 // single SendHistoryBars call (measured ~1.3-10s), never the whole grid
 // back to back the way a flat loop would.
+// True when `csv` is blank or lists `item` (case-insensitive) -- DeepBackfillSymbols / DeepBackfillTimeframes.
+bool CsvContains(string csv, string item)
+{
+   string parts[];
+   int n = SplitCsv(csv, parts);
+   if (n == 0) return true;
+   string want = item;
+   StringToUpper(want);
+   for (int i = 0; i < n; i++)
+   {
+      string p = parts[i];
+      StringToUpper(p);
+      if (p == want) return true;
+   }
+   return false;
+}
+
+// v1.41: whether the full-history pass works on this grid cell (DeepBackfillSymbols / DeepBackfillTimeframes).
+bool DeepBackfillCellSelected(int step)
+{
+   if (!DeepBackfillFull) return true;
+   int tfCount = ArraySize(HistoryBackfillPeriods);
+   int symIdx = step / tfCount;
+   if (symIdx >= ArraySize(ActiveBrokerSymbols)) return true; // out of range: let StepDeepBackfill finish
+   return CsvContains(DeepBackfillSymbols, CanonicalFor(ActiveBrokerSymbols[symIdx]))
+       && CsvContains(DeepBackfillTimeframes, HistoryBackfillPeriodNames[step % tfCount]);
+}
+
 void StepDeepBackfill()
 {
+   // skip the cells a narrowed full pass does not cover, without a request or a spacing wait each
+   while (DeepBackfillStep < DeepBackfillTotalSteps && !DeepBackfillCellSelected(DeepBackfillStep))
+      DeepBackfillStep++;
+   if (DeepBackfillStep >= DeepBackfillTotalSteps)
+   {
+      FinishDeepBackfill();
+      return;
+   }
+
    int tfCount = ArraySize(HistoryBackfillPeriods);
    int symCount = ArraySize(ActiveBrokerSymbols);
    int symIdx = DeepBackfillStep / tfCount;
@@ -1041,6 +1093,10 @@ bool StepDeepBackfillFullPage(string canonicalSymbol, string brokerSymbol, int t
    string tfName = HistoryBackfillPeriodNames[tfIdx];
    int pageSize = HistoryBackfillBarCounts[tfIdx];
 
+   // A retry waits for the terminal's background download, not just for the page spacing (v1.41).
+   if (DeepBackfillPageRetries > 0 && GetTickCount() - DeepBackfillRetryAtMs < DEEP_BACKFILL_RETRY_MIN_MS)
+      return false; // same page, not yet -- no request this step
+
    // Page 0 is exactly the request the quick pass makes (the newest
    // HistoryBackfillBarCounts[] bars) and is never trimmed to the floor, so
    // a full pass is always a superset of a quick one -- D1/W1/MN1, whose
@@ -1059,20 +1115,43 @@ bool StepDeepBackfillFullPage(string canonicalSymbol, string brokerSymbol, int t
       DeepBackfillCellOldestUtc = r.oldestUtc;
 
    bool reachedFloor = (r.copied > 0 && r.oldestUtc <= DeepBackfillFromUtc);
+   bool copyError    = (r.copied < 0); // CopyRates -1 (e.g. 4401 history not loaded): a failure, never "no older bars"
    bool shortPage    = (r.copied < pageSize);
    bool synced       = (bool)SeriesInfoInteger(brokerSymbol, period, SERIES_SYNCHRONIZED);
-   bool needRetry    = r.failed || (shortPage && !synced && !reachedFloor);
+
+   // v1.41 -- a short page is the END of history only when that is proven, not merely because the series
+   // reports SERIES_SYNCHRONIZED. v1.40 stopped on "short + synced", but the terminal builds a higher
+   // timeframe's series lazily: CopyRates returns only the bars built so far (or -1) while the flag can
+   // already be true, so XAUUSD M15 ended after ~16 days as "broker has no older bars" while M30 and H1
+   // went back months. Proven = the terminal holds no bars past this page AND the oldest bar we got is
+   // (within two bars of) the server's own first date for this series.
+   int  terminalBars  = Bars(brokerSymbol, period);
+   bool terminalMore  = terminalBars > DeepBackfillPage * pageSize + MathMax(r.copied, 0);
+   long serverFirst   = (long)SeriesInfoInteger(brokerSymbol, period, SERIES_SERVER_FIRSTDATE); // broker time
+   long oldestBroker  = r.oldestUtc > 0 ? r.oldestUtc + BrokerOffsetSec : 0;
+   bool serverOlder   = serverFirst > 0 && (oldestBroker == 0 || oldestBroker - serverFirst > 2 * PeriodSeconds(period));
+   bool provenEnd     = synced && !terminalMore && !serverOlder;
+   bool needRetry     = r.failed || copyError || (shortPage && !reachedFloor && !provenEnd);
 
    if (needRetry && DeepBackfillPageRetries < DEEP_BACKFILL_PAGE_RETRIES)
    {
       DeepBackfillPageRetries++;
+      DeepBackfillRetryAtMs = GetTickCount();
       Print("VyXTraderPriceFeed (history backfill): ", canonicalSymbol, " ", tfName, " page ", DeepBackfillPage,
-            r.failed ? " failed" : " short (terminal still loading history)", " -- retry ", DeepBackfillPageRetries, "/", DEEP_BACKFILL_PAGE_RETRIES);
-      return false; // same page again next step
+            r.failed ? " failed" : copyError ? StringFormat(" CopyRates error %d", GetLastError()) : " short (terminal still loading history)",
+            " -- retry ", DeepBackfillPageRetries, "/", DEEP_BACKFILL_PAGE_RETRIES,
+            " [got ", r.copied, "/", pageSize, ", terminal bars ", terminalBars, ", server first ",
+            serverFirst > 0 ? TimeToString((datetime)serverFirst, TIME_DATE | TIME_MINUTES) : "?", " broker time]");
+      return false; // same page again once DEEP_BACKFILL_RETRY_MIN_MS has passed
    }
    if (needRetry)
+   {
+      long maxBars = TerminalInfoInteger(TERMINAL_MAXBARS);
       Print("VyXTraderPriceFeed (history backfill): ", canonicalSymbol, " ", tfName, " page ", DeepBackfillPage,
-            " gave up after ", DEEP_BACKFILL_PAGE_RETRIES, " retries -- older history for this timeframe was not sent; rerun the pass later");
+            " gave up after ", DEEP_BACKFILL_PAGE_RETRIES, " retries -- older history for this timeframe was NOT sent (terminal bars ",
+            terminalBars, ", max bars per chart ", maxBars, (maxBars > 0 && terminalBars >= maxBars) ? " -- the limit, raise it" : "",
+            "); rerun with DeepBackfillSymbols=", canonicalSymbol, " DeepBackfillTimeframes=", tfName);
+   }
 
    bool cellDone = needRetry || reachedFloor || shortPage;
    if (!cellDone)
@@ -1085,7 +1164,7 @@ bool StepDeepBackfillFullPage(string canonicalSymbol, string brokerSymbol, int t
    Print("VyXTraderPriceFeed (history backfill): ", canonicalSymbol, " ", tfName, " full history done -- ",
          DeepBackfillCellPages, " pages, ", DeepBackfillCellBars, " bars, oldest ",
          DeepBackfillCellOldestUtc > 0 ? TimeToString((datetime)DeepBackfillCellOldestUtc, TIME_DATE | TIME_MINUTES) + " UTC" : "(none)",
-         reachedFloor ? " (reached DeepBackfillFromDate)" : " (broker has no older bars)");
+         reachedFloor ? " (reached DeepBackfillFromDate)" : needRetry ? " (INCOMPLETE, see the line above)" : " (broker has no older bars)");
    DeepBackfillPage = 0;
    DeepBackfillPageRetries = 0;
    DeepBackfillCellPages = 0;
