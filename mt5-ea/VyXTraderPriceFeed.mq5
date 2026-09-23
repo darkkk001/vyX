@@ -7,7 +7,7 @@
 //| LivePrice table this EA feeds.                                    |
 //+------------------------------------------------------------------+
 #property strict
-#property version   "1.43"
+#property version   "1.44"
 
 input string ServerUrl            = "https://www.vyxtrader.com/api/internal/price-feed";
 // No default -- this file is committed to a public-ish repo. A real
@@ -975,12 +975,32 @@ void SendHistoryPage(string canonicalSymbol, string brokerSymbol, ENUM_TIMEFRAME
    }
    else
    {
-      // Logged on success too, unlike every other call in this file: these
-      // durations are the only evidence that the per-timeframe counts
-      // above are still inside budget, and a backfill cycle is 60 lines
-      // every 15 minutes, not per-tick spam.
-      Print("VyXTraderPriceFeed (history backfill): ", canonicalSymbol, " ", timeframeName, where, " ", sent, " bars in ", elapsedMs, "ms",
-            where == "" ? "" : ", oldest " + TimeToString((datetime)out.oldestUtc, TIME_DATE | TIME_MINUTES) + " UTC");
+      // v1.44 -- a 200 is not proof anything was stored. The engine answers 200
+      // {"ok":true,"upserted":0,"skipped_unrecognized_timeframe":true} for a timeframe
+      // its build does not know (an engine older than 2026-09-08 did not know M15),
+      // and this line used to call that a success: a whole M15 pass "succeeded"
+      // while nothing reached the store. The engine's own count is logged now, and
+      // a skipped timeframe is a loud warning and a failed page.
+      string reply = CharArrayToString(result);
+      int upserted = -1;
+      int k = StringFind(reply, "\"upserted\":");
+      if (k >= 0) upserted = (int)StringToInteger(StringSubstr(reply, k + 11));
+      if (StringFind(reply, "\"skipped_unrecognized_timeframe\":true") >= 0)
+      {
+         out.failed = true;
+         Print("VyXTraderPriceFeed (history backfill): ENGINE SKIPPED ", canonicalSymbol, " ", timeframeName, where,
+               " -- its build does not recognise timeframe ", timeframeName, ", nothing was stored. Deploy a current engine, then rerun this timeframe.");
+      }
+      else
+      {
+         // Logged on success too, unlike every other call in this file: these
+         // durations are the only evidence that the per-timeframe counts
+         // above are still inside budget, and a backfill cycle is 60 lines
+         // every 15 minutes, not per-tick spam.
+         Print("VyXTraderPriceFeed (history backfill): ", canonicalSymbol, " ", timeframeName, where, " ", sent, " bars in ", elapsedMs, "ms",
+               upserted >= 0 ? StringFormat(", engine stored %d", upserted) : "",
+               where == "" ? "" : ", oldest " + TimeToString((datetime)out.oldestUtc, TIME_DATE | TIME_MINUTES) + " UTC");
+      }
    }
 }
 
