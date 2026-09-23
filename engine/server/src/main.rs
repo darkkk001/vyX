@@ -1411,10 +1411,20 @@ async fn main() {
     let broker_offset_tracker = Arc::new(market_data::broker_offset::BrokerOffsetTracker::new());
     // SL / TP execution trigger: the web app's minute cron was the only thing evaluating open
     // positions once the feed moved here (see market_data::risk_hook) -- with VYX_RISK_HOOK_URL /
-    // VYX_RISK_HOOK_SECRET set, the tick that touches a level fires the evaluation at once.
+    // VYX_RISK_HOOK_SECRET set, the tick that touches a level fires the evaluation at once, and
+    // the full-book backstop (stop-out on positions with no SL / TP) runs every minute from here.
     let risk_hook = market_data::risk_hook::RiskHook::from_env();
     if let Some(hook) = &risk_hook {
         hook.spawn_reload_loop(pool.clone(), std::time::Duration::from_secs(5));
+        match market_data::risk_hook::RiskHook::backstop_interval_from_env() {
+            Some(every) => {
+                tracing::info!(every_secs = every.as_secs(), "risk hook backstop enabled: full margin-monitor pass on a timer");
+                hook.spawn_backstop_loop(every);
+            }
+            None => tracing::warn!("risk hook backstop OFF (VYX_RISK_HOOK_BACKSTOP_SECS=0): stop-out on positions without SL/TP relies on an external cron"),
+        }
+    } else {
+        tracing::warn!("risk hook OFF (VYX_RISK_HOOK_URL / VYX_RISK_HOOK_SECRET unset): no engine-driven SL/TP or stop-out evaluation");
     }
     // fix/candle-gaps §3: resume the gap-fill tracker from what actually
     // persisted, so the first tick after this restart flat-fills the

@@ -17,10 +17,18 @@
 //! margin-monitor route, bearer CRON_SECRET) so the web app evaluates that
 //! symbol's accounts NOW, against the row this very flush just wrote.
 //! Rate-limited per symbol (one call per second) so a price sitting on a
-//! level cannot flood Vercel; the minute cron stays as the backstop.
+//! level cannot flood Vercel.
 //!
 //! Configured by `VYX_RISK_HOOK_URL` (e.g. https://vyxtrader.com/api/internal/margin-monitor)
 //! and `VYX_RISK_HOOK_SECRET` (= the web app's CRON_SECRET); unset = off.
+//!
+//! Full-book backstop (2026-09-23). The level check above only ever fires for a position
+//! with an SL or TP; it computes no margin, so a stop-out on a position without levels
+//! (the one that matters most) was caught only by the Vercel cron. The backstop calls the
+//! same route WITHOUT `symbols` every `VYX_RISK_HOOK_BACKSTOP_SECS` (default 60, 0 = off):
+//! the route's full pass (every account with an open position: SL / TP, stop-out, margin
+//! call), so real-time protection no longer depends on a Vercel cron existing at all.
+//! Idle cost is one index-backed `count` on the route side when nothing is open.
 
 use rust_decimal::Decimal;
 use sqlx::PgPool;
@@ -127,6 +135,45 @@ impl RiskHook {
         });
     }
 
+    /// `VYX_RISK_HOOK_BACKSTOP_SECS` (default 60); None when set to 0 (backstop off).
+    pub fn backstop_interval_from_env() -> Option<Duration> {
+        let secs = std::env::var("VYX_RISK_HOOK_BACKSTOP_SECS").ok().and_then(|v| v.trim().parse::<u64>().ok()).unwrap_or(60);
+        (secs > 0).then(|| Duration::from_secs(secs))
+    }
+
+    /// One full pass: the route without `symbols` evaluates every account holding an open position.
+    /// Returns whether the route accepted it.
+    pub async fn fire_full_pass(&self) -> bool {
+        match self.client.get(&self.url).bearer_auth(&self.secret).send().await {
+            Ok(resp) if resp.status().is_success() => {
+                tracing::debug!("risk hook backstop: full pass ok");
+                true
+            }
+            Ok(resp) => {
+                tracing::warn!(status = %resp.status(), "risk hook backstop rejected");
+                false
+            }
+            Err(err) => {
+                tracing::warn!(error = %err, "risk hook backstop failed");
+                false
+            }
+        }
+    }
+
+    /// The full-book backstop (see the module doc): a full pass every `every`, the first at start.
+    /// Passes are awaited one after another, so a slow route delays the next instead of piling up.
+    pub fn spawn_backstop_loop(self: &Arc<Self>, every: Duration) {
+        let hook = Arc::clone(self);
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(every);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                ticker.tick().await;
+                hook.fire_full_pass().await;
+            }
+        });
+    }
+
     /// Keep the levels current: every `every` (and the caller may reload on NATS position events).
     pub fn spawn_reload_loop(self: &Arc<Self>, pool: PgPool, every: Duration) {
         let hook = Arc::clone(self);
@@ -136,5 +183,118 @@ impl RiskHook {
                 tokio::time::sleep(every).await;
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+    use tokio::sync::mpsc;
+
+    /// A one-route HTTP server that records each request's first line + authorization header
+    /// and answers `status`.
+    async fn mock_route(status: u16) -> (String, mpsc::UnboundedReceiver<(String, String)>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/api/internal/margin-monitor", listener.local_addr().unwrap());
+        let (tx, rx) = mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else { return };
+                let tx = tx.clone();
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 4096];
+                    let n = sock.read(&mut buf).await.unwrap_or(0);
+                    let req = String::from_utf8_lossy(&buf[..n]).to_string();
+                    let line = req.lines().next().unwrap_or("").to_string();
+                    let auth = req
+                        .lines()
+                        .find_map(|l| l.to_ascii_lowercase().starts_with("authorization:").then(|| l[14..].trim().to_string()))
+                        .unwrap_or_default();
+                    let _ = tx.send((line, auth));
+                    let body = "{}";
+                    let resp = format!("HTTP/1.1 {status} X\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
+                    let _ = sock.write_all(resp.as_bytes()).await;
+                });
+            }
+        });
+        (url, rx)
+    }
+
+    fn hook(url: String) -> Arc<RiskHook> {
+        Arc::new(RiskHook {
+            url,
+            secret: "s3cret".into(),
+            client: reqwest::Client::builder().timeout(Duration::from_secs(5)).build().unwrap(),
+            levels: Mutex::new(HashMap::new()),
+            last_fired: Mutex::new(HashMap::new()),
+        })
+    }
+
+    #[tokio::test]
+    async fn full_pass_calls_the_route_without_symbols_with_the_bearer_secret() {
+        let (url, mut rx) = mock_route(200).await;
+        assert!(hook(url).fire_full_pass().await);
+        let (line, auth) = rx.recv().await.unwrap();
+        // no ?symbols= -> the route's full-book branch (every account with an open position)
+        assert_eq!(line, "GET /api/internal/margin-monitor HTTP/1.1");
+        assert_eq!(auth, "Bearer s3cret");
+    }
+
+    #[tokio::test]
+    async fn a_rejected_or_unreachable_full_pass_reports_false_and_does_not_panic() {
+        let (url, _rx) = mock_route(401).await;
+        assert!(!hook(url).fire_full_pass().await);
+        assert!(!hook("http://127.0.0.1:1/api/internal/margin-monitor".into()).fire_full_pass().await);
+    }
+
+    #[tokio::test]
+    async fn the_backstop_loop_fires_at_start_and_then_on_every_interval_without_a_cron() {
+        let (url, mut rx) = mock_route(200).await;
+        let started = Instant::now();
+        hook(url).spawn_backstop_loop(Duration::from_millis(300));
+        for _ in 0..3 {
+            let (line, _) = tokio::time::timeout(Duration::from_secs(3), rx.recv()).await.expect("backstop pass").unwrap();
+            assert!(!line.contains("symbols"), "{line}");
+        }
+        // first pass immediately, then one per 300 ms: three passes take ~600 ms, not three at once
+        let took = started.elapsed();
+        assert!(took >= Duration::from_millis(550) && took < Duration::from_secs(3), "{took:?}");
+    }
+
+    #[tokio::test]
+    async fn a_failing_route_does_not_stop_the_backstop_loop() {
+        let (url, mut rx) = mock_route(500).await;
+        hook(url).spawn_backstop_loop(Duration::from_millis(100));
+        for _ in 0..3 {
+            tokio::time::timeout(Duration::from_secs(3), rx.recv()).await.expect("loop kept running").unwrap();
+        }
+    }
+
+    /// Manual e2e: a real margin-monitor route (local `next dev` on a scratch DB) and nothing but the
+    /// backstop loop driving it -- no cron, no tick. Run with VYX_RISK_HOOK_URL / VYX_RISK_HOOK_SECRET
+    /// set and `-- --ignored`; the caller checks the DB afterwards.
+    #[tokio::test]
+    #[ignore]
+    async fn e2e_backstop_drives_a_real_margin_monitor_route() {
+        let hook = RiskHook::from_env().expect("VYX_RISK_HOOK_URL / VYX_RISK_HOOK_SECRET");
+        hook.spawn_backstop_loop(Duration::from_secs(5));
+        tokio::time::sleep(Duration::from_secs(12)).await;
+        // the route still accepts the backstop's auth after the loop's own passes
+        assert!(hook.fire_full_pass().await);
+    }
+
+    #[test]
+    fn backstop_interval_env_defaults_to_60s_and_zero_turns_it_off() {
+        std::env::remove_var("VYX_RISK_HOOK_BACKSTOP_SECS");
+        assert_eq!(RiskHook::backstop_interval_from_env(), Some(Duration::from_secs(60)));
+        std::env::set_var("VYX_RISK_HOOK_BACKSTOP_SECS", "0");
+        assert_eq!(RiskHook::backstop_interval_from_env(), None);
+        std::env::set_var("VYX_RISK_HOOK_BACKSTOP_SECS", "15");
+        assert_eq!(RiskHook::backstop_interval_from_env(), Some(Duration::from_secs(15)));
+        std::env::set_var("VYX_RISK_HOOK_BACKSTOP_SECS", "junk");
+        assert_eq!(RiskHook::backstop_interval_from_env(), Some(Duration::from_secs(60)));
+        std::env::remove_var("VYX_RISK_HOOK_BACKSTOP_SECS");
     }
 }
