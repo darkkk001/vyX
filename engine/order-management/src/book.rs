@@ -477,6 +477,15 @@ pub enum MarginCallEdge {
     Out,
 }
 
+/// Whether the account's margin-call edge is currently set ("Account"."marginCallNotifiedAt").
+pub async fn margin_call_notified(pool: &PgPool, account_id: &str) -> Result<bool, sqlx::Error> {
+    let row: Option<(bool,)> = sqlx::query_as(r#"SELECT "marginCallNotifiedAt" IS NOT NULL FROM "Account" WHERE id = $1"#)
+        .bind(account_id)
+        .fetch_optional(pool)
+        .await?;
+    Ok(row.map(|(b,)| b).unwrap_or(false))
+}
+
 /// The margin-call notice, edge-triggered on "Account"."marginCallNotifiedAt" exactly as the web does it: entering
 /// margin call with the column empty sets it and queues ONE "MARGIN_CALL" outbox row (the web's route writes the
 /// trader's and the staff's notification), in one transaction; staying in does nothing; leaving clears the column

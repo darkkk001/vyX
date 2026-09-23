@@ -279,13 +279,31 @@ pub async fn evaluate_account(
     // of margin level, and closing these here means the margin/stop-out
     // loop below only ever considers positions that are still actually
     // open.
+    let before_sl_tp = state.positions.len();
     report.closed = close_sl_tp_triggered(pool, nats, account_id, &mut state).await?;
 
+    // Stage 4 BEHAVIOR CHANGE (engine): after ANY close attempt (ours, or one a concurrent pass got to first) the
+    // account and its positions are read again from the database before the next decision, exactly as
+    // lib/risk-monitor.ts re-reads them on every stop-out iteration. The in-memory state used to be patched instead,
+    // which goes wrong when another pass closed a position of this account meanwhile: its realized P&L (and any
+    // credit use or negative-balance write-off) is in the balance, not in our copy -- the load harness caught a
+    // profitable position being stopped out on that stale, too-low equity.
+    let mut dirty = state.positions.len() != before_sl_tp;
     let mut closed_ids = Vec::new();
     // Bounded by the account's own position count — each iteration closes
     // exactly one position, so this can't loop longer than that (0 when SL/TP closed everything).
     let max_iterations = state.positions.len();
     for _ in 0..max_iterations {
+        if dirty {
+            match load_book_state(pool, account_id).await? {
+                Some(fresh) => state = fresh,
+                None => break,
+            }
+            dirty = false;
+            if state.positions.is_empty() {
+                break;
+            }
+        }
         let action = evaluate(equity(&state), used_margin(&state), thresholds);
         match action {
             MonitorAction::Ok => break,
@@ -313,8 +331,12 @@ pub async fn evaluate_account(
                     CloseAttempt::Closed(closed_id) => {
                         report.closed.push((closed_id.clone(), "stop_out"));
                         closed_ids.push(closed_id);
+                        dirty = true;
                     }
-                    CloseAttempt::AlreadyClosedConcurrently => continue,
+                    CloseAttempt::AlreadyClosedConcurrently => {
+                        dirty = true;
+                        continue;
+                    }
                     CloseAttempt::NoCloseablePosition => {
                         tracing::warn!(account_id, "stop-out triggered but no closeable position has a live price");
                         break;
@@ -334,25 +356,51 @@ pub async fn evaluate_account(
 
     // Stage 3: the standing margin-call notice, lib/risk-monitor.ts pass 3 -- measured on what is still open after
     // this pass, edge-triggered on "Account"."marginCallNotifiedAt" (one notice per episode). An account left with
-    // open positions but no usable price has no level: nothing changes, as on the web.
-    let edge = if state.positions.is_empty() {
-        Some(book::MarginCallEdge::Out)
-    } else {
-        risk::margin_level(equity(&state), used_margin(&state)).map(|level| {
-            if level <= thresholds.call_level {
-                book::MarginCallEdge::In { margin_level: level, call_level: thresholds.call_level }
-            } else {
-                book::MarginCallEdge::Out
-            }
-        })
+    // open positions but no usable price has no level: nothing changes, as on the web. Re-read after any close, as
+    // the web's pass 3 does.
+    if dirty {
+        if let Some(fresh) = load_book_state(pool, account_id).await? {
+            state = fresh;
+        }
+    }
+    // Only a TRANSITION of the edge writes anything, and a transition is decided on a fresh read: a concurrent pass
+    // may have changed this account since our copy was taken, and clearing the edge on stale numbers would make the
+    // next pass notify the same episode twice (caught by the load harness with 2 walkers). Steady state costs one
+    // cheap read of the column instead of an UPDATE per account per pass.
+    let notified = book::margin_call_notified(pool, account_id).await?;
+    let mut edge = margin_call_edge(&state, thresholds);
+    let transition = |e: Option<book::MarginCallEdge>| match e {
+        Some(book::MarginCallEdge::In { .. }) => !notified,
+        Some(book::MarginCallEdge::Out) => notified,
+        None => false,
     };
-    if let Some(edge) = edge {
-        if book::apply_margin_call_edge(pool, account_id, edge).await? {
+    if transition(edge) {
+        if let Some(fresh) = load_book_state(pool, account_id).await? {
+            state = fresh;
+            edge = margin_call_edge(&state, thresholds);
+        }
+    }
+    if let Some(e) = edge.filter(|e| transition(Some(*e))) {
+        if book::apply_margin_call_edge(pool, account_id, e).await? {
             crate::outbox::wake();
         }
     }
 
     Ok(Some(report))
+}
+
+/// Where the account stands against its margin-call level (None: open positions but no level, nothing changes).
+fn margin_call_edge(state: &AccountState, thresholds: margin::MarginThresholds) -> Option<book::MarginCallEdge> {
+    if state.positions.is_empty() {
+        return Some(book::MarginCallEdge::Out);
+    }
+    risk::margin_level(equity(state), used_margin(state)).map(|level| {
+        if level <= thresholds.call_level {
+            book::MarginCallEdge::In { margin_level: level, call_level: thresholds.call_level }
+        } else {
+            book::MarginCallEdge::Out
+        }
+    })
 }
 
 async fn publish_best_effort(nats: Option<&async_nats::Client>, event: &TradingEvent) {
