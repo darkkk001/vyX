@@ -241,6 +241,54 @@ describe("lib/coverage.ts onClose -- coverage leg closed (live DB, rolled back)"
       expect(await tx.notification.count({ where: { brokerId: fx.brokerId } })).toBe(0);
     });
   });
+
+  it("dealer closes the leg FIRST, then the client closes: the client is released and its close leaves no ghost leg work", async () => {
+    if (!dbReachable) return;
+    await withRollback(async (tx) => {
+      const fx = await createFixture(tx);
+      const client = await createPosition(tx, fx, { accountId: fx.clientAccountId, side: "BUY", volume: "1", openPrice: "1.10020" });
+      const leg = await book(tx, fx, client.id, "BUY", "1");
+      // 1) the dealer closes the whole leg by hand
+      await tx.position.update({ where: { id: leg.id }, data: { status: "CLOSED", closePrice: D("1.10000"), closedAt: new Date() } });
+      await onClose(tx, { positionId: leg.id, brokerId: fx.brokerId, closedLots: D(1), sourceVolumeBeforeClose: D(1), reason: "manual" });
+      const released = await tx.position.findUniqueOrThrow({ where: { id: client.id } });
+      expect(released.covered).toBe(false);
+      expect(released.coveragePositionId).toBeNull();
+      // 2) then the client closes (dealer accepts): nothing may happen to the already-closed leg
+      await tx.position.update({ where: { id: client.id }, data: { status: "CLOSED", closePrice: D("1.10050"), closedAt: new Date() } });
+      const auditBefore = await tx.auditLog.count({ where: { brokerId: fx.brokerId } });
+      await onClose(tx, { positionId: client.id, brokerId: fx.brokerId, closedLots: D(1), sourceVolumeBeforeClose: D(1), reason: "manual" });
+      expect(await tx.auditLog.count({ where: { brokerId: fx.brokerId } })).toBe(auditBefore);
+      expect(await tx.notification.count({ where: { brokerId: fx.brokerId, type: "COVERAGE_CLOSE_AWAITING_DEALER" } })).toBe(0);
+      const legAfter = await tx.position.findUniqueOrThrow({ where: { id: leg.id } });
+      expect(legAfter.status).toBe("CLOSED");
+      expect(legAfter.volume.toString()).toBe("1");
+    });
+  });
+
+  it("a PARTIAL close of the leg keeps the client covered by what is left (no orphaned remainder)", async () => {
+    if (!dbReachable) return;
+    await withRollback(async (tx) => {
+      const fx = await createFixture(tx);
+      const client = await createPosition(tx, fx, { accountId: fx.clientAccountId, side: "BUY", volume: "1", openPrice: "1.10020" });
+      const leg = await book(tx, fx, client.id, "BUY", "1");
+      // the dealer closes 0.4 of the 1.0 leg (Live Exposure's partial close): 0.6 stays OPEN
+      await tx.position.update({ where: { id: leg.id }, data: { volume: D("0.6") } });
+      await onClose(tx, { positionId: leg.id, brokerId: fx.brokerId, closedLots: D("0.4"), sourceVolumeBeforeClose: D(1), reason: "manual" });
+
+      const clientAfter = await tx.position.findUniqueOrThrow({ where: { id: client.id } });
+      expect(clientAfter.covered).toBe(true);
+      expect(clientAfter.coveragePositionId).toBe(leg.id);
+      expect(await tx.notification.count({ where: { brokerId: fx.brokerId, type: "COVERAGE_RELEASED" } })).toBe(0);
+      expect(await tx.auditLog.count({ where: { entityId: client.id, action: "POSITION_COVERAGE_RELEASED" } })).toBe(0);
+      expect(await tx.auditLog.count({ where: { entityId: leg.id, action: "POSITION_COVERAGE_REDUCED" } })).toBe(1);
+
+      // the client's later close still reaches the 0.6 remainder (dealer-booked: left for the desk, notified)
+      await tx.position.update({ where: { id: client.id }, data: { status: "CLOSED", closePrice: D("1.10050"), closedAt: new Date() } });
+      await onClose(tx, { positionId: client.id, brokerId: fx.brokerId, closedLots: D(1), sourceVolumeBeforeClose: D(1), reason: "manual" });
+      expect(await tx.notification.count({ where: { brokerId: fx.brokerId, type: "COVERAGE_CLOSE_AWAITING_DEALER" } })).toBe(1);
+    });
+  });
 });
 
 describe("lib/coverage.ts notifyStopOut (live DB, rolled back)", () => {

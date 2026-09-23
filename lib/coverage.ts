@@ -215,6 +215,23 @@ export async function onClose(db: Db, ev: CoverageCloseEvent): Promise<void> {
   // (a) a coverage leg closed -> release the client position it was hedging
   if (closed.coveredClientPos.length > 0) {
     const client = closed.coveredClientPos[0];
+    // A PARTIAL close of the leg (Live Exposure can close part of any position) leaves the rest of it OPEN and
+    // still hedging this client. Releasing here orphaned that remainder (2026-09-23): the client showed as
+    // UNBOOKED, could be booked a second time (over-hedged), and its later close never reached the leftover leg.
+    // The link stays; the client's own close follows the smaller leg proportionally, as it always has.
+    if (closed.status === "OPEN") {
+      await db.auditLog.create({
+        data: {
+          brokerId: ev.brokerId,
+          action: "POSITION_COVERAGE_REDUCED",
+          entityType: "Position",
+          entityId: closed.id,
+          oldValue: { legVolume: ev.sourceVolumeBeforeClose.toString() },
+          newValue: { legVolume: closed.volume.toString(), closedLots: ev.closedLots.toString(), clientPositionId: client.id, reason: ev.reason ?? "manual" },
+        },
+      });
+      return;
+    }
     if (client.status === "OPEN") {
       await db.position.updateMany({ where: { id: client.id, coveragePositionId: closed.id }, data: { covered: false, coveragePositionId: null } });
       await db.auditLog.create({
