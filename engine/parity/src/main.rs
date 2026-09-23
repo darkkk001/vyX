@@ -10,6 +10,25 @@ fn main() {
     let scenario_dir = root.join("scenarios");
     // `-- --db <scenario>`: Stage 1 DB mode (see db_mode.rs); otherwise the pure-calc Stage 0 run
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // `-- --evaluate-accounts <id,id,...>`: Stage 3 gate (lib/post-close.test.ts) -- one real monitor pass per
+    // account on whatever the caller seeded into the harness DB; the closes and their outbox rows stay behind.
+    if args.first().map(String::as_str) == Some("--evaluate-accounts") {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let pool = rt.block_on(parity::db_mode::connect()).unwrap_or_else(|e| {
+            eprintln!("[parity:evaluate] {e}");
+            std::process::exit(2)
+        });
+        for id in args.get(1).map(String::as_str).unwrap_or("").split(',').filter(|s| !s.is_empty()) {
+            match rt.block_on(order_management::monitor::evaluate_account(&pool, None, id)) {
+                Ok(report) => println!("[parity:evaluate] {id}: {report:?}"),
+                Err(e) => {
+                    eprintln!("[parity:evaluate] {id}: {e}");
+                    std::process::exit(1)
+                }
+            }
+        }
+        return;
+    }
     let db_mode = args.first().map(String::as_str) == Some("--db");
     let filter = if db_mode { args.get(1).cloned() } else { args.first().cloned() };
     let out_dir = root.join("out").join(if db_mode { "rust-db" } else { "rust" });

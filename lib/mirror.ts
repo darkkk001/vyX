@@ -18,7 +18,7 @@ import { closePositionInTx } from "@/lib/position-close";
 import { emitPositionClosedActivity } from "@/lib/dealer-activity";
 import { cancelPendingClose } from "@/lib/queued-close";
 import { createNotification } from "@/lib/notifications";
-import { publishTradingEvent } from "@/lib/nats";
+import { deferTradingEvents, publishTradingEvent } from "@/lib/nats";
 import { getLivePriceRow } from "@/lib/live-price";
 
 // docs/briefs/VYX-MIRROR-V0-BRIEF.md -- v0 hooks the legacy order-fill and
@@ -485,8 +485,15 @@ async function mirrorFillForRule(db: Db, rule: MirrorRule, source: MirrorSourceP
 /// it has committed (full or partial). No-op if the source position was
 /// never mirrored -- the common case for most positions. Idempotent: a
 /// retried/duplicate onClose call finds the target position already
-/// CLOSED and returns without touching it again.
-export async function onClose(db: Db, closeEvent: MirrorSourceClose): Promise<void> {
+/// CLOSED and returns without touching it again. That holds for a FULL close only:
+/// a retried PARTIAL would close the same proportion again, which is why the
+/// engine's outbox (lib/post-close.ts) runs this inside a step that commits once.
+///
+/// opts.rethrow (Rust cutover Stage 3): an unexpected error is thrown back instead
+/// of being recorded as MIRROR_FAILED, so the outbox retries the step and the
+/// coverage step after it waits. A known outcome (no link, target already closed,
+/// no live price) is final either way.
+export async function onClose(db: Db, closeEvent: MirrorSourceClose, opts?: { rethrow?: boolean }): Promise<void> {
   const link = await db.mirrorLink.findUnique({ where: { sourcePositionId: closeEvent.positionId } });
   if (!link) return;
 
@@ -522,36 +529,41 @@ export async function onClose(db: Db, closeEvent: MirrorSourceClose): Promise<vo
       closePrice = targetPosition.side === "BUY" ? livePrice.bid : livePrice.ask;
     }
 
-    const mirrorOutcome = await withTx(db, (tx) =>
-      closePositionInTx(tx, {
-        position: {
-          id: targetPosition.id,
-          accountId: targetPosition.accountId,
-          brokerId: targetPosition.brokerId,
-          side: targetPosition.side,
-          openPrice: targetPosition.openPrice,
-          volume: targetPosition.volume,
-          symbol: { contractSize: targetPosition.symbol.contractSize },
-        },
-        closePrice,
-        closeVolume,
-        note: `Mirror close (rule ${rule.id}, source position ${closeEvent.positionId}, mode ${rule.fillPriceMode})`,
+    // Stage 3 BEHAVIOR CHANGE (2026-09-24): the target's close, its queued-close cancel and the
+    // MIRROR_CLOSED audit commit together (the cancel and the audit used to follow the close, and
+    // were lost on a crash in between). Events raised in here go out once it has committed.
+    const mirrorOutcome = await deferTradingEvents(() =>
+      withTx(db, async (tx) => {
+        const outcome = await closePositionInTx(tx, {
+          position: {
+            id: targetPosition.id,
+            accountId: targetPosition.accountId,
+            brokerId: targetPosition.brokerId,
+            side: targetPosition.side,
+            openPrice: targetPosition.openPrice,
+            volume: targetPosition.volume,
+            symbol: { contractSize: targetPosition.symbol.contractSize },
+          },
+          closePrice,
+          closeVolume,
+          note: `Mirror close (rule ${rule.id}, source position ${closeEvent.positionId}, mode ${rule.fillPriceMode})`,
+        });
+        // Closes respect DEALER mode: a mirrored close bypasses the dealer; a close the target's
+        // client had queued is moot once the position is gone (a partial keeps it, and its lock).
+        if (outcome.closed && !outcome.partial) await cancelPendingClose(tx, targetPosition.id, "position closed by mirror");
+        await tx.auditLog.create({
+          data: {
+            brokerId: rule.brokerId,
+            action: "MIRROR_CLOSED",
+            entityType: "Position",
+            entityId: targetPosition.id,
+            oldValue: { sourcePositionId: closeEvent.positionId, sourceClosedLots: closeEvent.closedLots.toString(), sourceClosePrice: closeEvent.closePrice?.toString() ?? null },
+            newValue: { targetClosedLots: closeVolume.toString(), closePrice: closePrice.toString(), fillPriceMode: rule.fillPriceMode },
+          },
+        });
+        return outcome;
       })
     );
-    // Closes respect DEALER mode: a mirrored close bypasses the dealer; a close the target's
-    // client had queued is moot once the position is gone (a partial keeps it, and its lock).
-    if (mirrorOutcome.closed && !mirrorOutcome.partial) await cancelPendingClose(db, targetPosition.id, "position closed by mirror").catch((err) => console.error("cancelPendingClose failed", err));
-
-    await db.auditLog.create({
-      data: {
-        brokerId: rule.brokerId,
-        action: "MIRROR_CLOSED",
-        entityType: "Position",
-        entityId: targetPosition.id,
-        oldValue: { sourcePositionId: closeEvent.positionId, sourceClosedLots: closeEvent.closedLots.toString(), sourceClosePrice: closeEvent.closePrice?.toString() ?? null },
-        newValue: { targetClosedLots: closeVolume.toString(), closePrice: closePrice.toString(), fillPriceMode: rule.fillPriceMode },
-      },
-    });
 
     // Same realtime-sync gap as onFill's own publish above -- a mirrored
     // close never published a live event either, before now.
@@ -562,6 +574,7 @@ export async function onClose(db: Db, closeEvent: MirrorSourceClose): Promise<vo
     }).catch((err) => console.error("mirror onClose: publishTradingEvent failed", err));
     if (mirrorOutcome.closed) await emitPositionClosedActivity(db, { positionId: targetPosition.id, closePrice, closeVolume, partial: mirrorOutcome.partial, realizedPnl: mirrorOutcome.realizedPnl, closeReason: "MIRROR", origin: `mirror_rule_${rule.id}` });
   } catch (err) {
+    if (opts?.rethrow) throw err;
     await recordMirrorFailure(db, rule, err instanceof Error ? err.message : "unknown error").catch(() => {});
   }
 }

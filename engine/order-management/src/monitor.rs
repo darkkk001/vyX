@@ -122,11 +122,20 @@ async fn close_sl_tp_triggered(
         };
         let mut tx = pool.begin().await?;
         let closed_now = book::close_position_in_tx(&mut tx, &position.id, position.volume, close_price, pnl, note).await?;
+        if let Some(outcome) = &closed_now {
+            // Stage 3: the web's post-close follow-up, queued in the close's own transaction
+            let why = match reason {
+                SlTpReason::StopLoss => book::CloseReason::StopLoss,
+                SlTpReason::TakeProfit => book::CloseReason::TakeProfit,
+            };
+            book::enqueue_post_close(&mut tx, &position.id, outcome, why, position.volume, close_price).await?;
+        }
         tx.commit().await?;
 
         let Some(outcome) = closed_now else {
             continue; // already closed by a concurrent pass — nothing to credit or publish
         };
+        crate::outbox::wake();
         state.effective_balance = outcome.final_balance; // after any credit use and negative-balance floor
         state.credit = outcome.final_credit;
         closed.push((position.id.clone(), match reason {
@@ -168,6 +177,7 @@ async fn force_close_worst(
     pool: &PgPool,
     state: &mut AccountState,
     note: &str,
+    reason: book::CloseReason,
 ) -> Result<CloseAttempt, sqlx::Error> {
     let worst = state
         .positions
@@ -191,11 +201,16 @@ async fn force_close_worst(
 
     let mut tx = pool.begin().await?;
     let closed = book::close_position_in_tx(&mut tx, &position.id, position.volume, close_price, pnl, note).await?;
+    if let Some(outcome) = &closed {
+        // Stage 3: the web's post-close follow-up (incl. the stop-out notice), queued in the close's own transaction
+        book::enqueue_post_close(&mut tx, &position.id, outcome, reason, position.volume, close_price).await?;
+    }
     tx.commit().await?;
 
     let Some(outcome) = closed else {
         return Ok(CloseAttempt::AlreadyClosedConcurrently);
     };
+    crate::outbox::wake();
 
     state.effective_balance = outcome.final_balance; // after any credit use and negative-balance floor
     state.credit = outcome.final_credit;
@@ -250,13 +265,10 @@ pub async fn evaluate_account(
     // loop below only ever considers positions that are still actually
     // open.
     report.closed = close_sl_tp_triggered(pool, nats, account_id, &mut state).await?;
-    if state.positions.is_empty() {
-        return Ok(Some(report));
-    }
 
     let mut closed_ids = Vec::new();
     // Bounded by the account's own position count — each iteration closes
-    // exactly one position, so this can't loop longer than that.
+    // exactly one position, so this can't loop longer than that (0 when SL/TP closed everything).
     let max_iterations = state.positions.len();
     for _ in 0..max_iterations {
         let action = evaluate(equity(&state), used_margin(&state), thresholds);
@@ -277,11 +289,12 @@ pub async fn evaluate_account(
                 // the web's note text exactly (lib/risk-monitor.ts), so both paths leave identical Transaction rows
                 let Some(level) = risk::margin_level(equity(&state), used_margin(&state)) else { break };
                 let note = format!(
-                    "Stop-out (automatic): margin level {:.2}% at or below {}%",
-                    level,
+                    "Stop-out (automatic): margin level {}% at or below {}%",
+                    book::fixed2(level),
                     thresholds.stop_out_level.normalize()
                 );
-                match force_close_worst(pool, &mut state, &note).await? {
+                let reason = book::CloseReason::StopOut { margin_level: level, stop_out_level: thresholds.stop_out_level };
+                match force_close_worst(pool, &mut state, &note, reason).await? {
                     CloseAttempt::Closed(closed_id) => {
                         report.closed.push((closed_id.clone(), "stop_out"));
                         closed_ids.push(closed_id);
@@ -302,6 +315,26 @@ pub async fn evaluate_account(
             &TradingEvent::StopOut { account_id: account_id.to_string(), closed_position_ids: closed_ids },
         )
         .await;
+    }
+
+    // Stage 3: the standing margin-call notice, lib/risk-monitor.ts pass 3 -- measured on what is still open after
+    // this pass, edge-triggered on "Account"."marginCallNotifiedAt" (one notice per episode). An account left with
+    // open positions but no usable price has no level: nothing changes, as on the web.
+    let edge = if state.positions.is_empty() {
+        Some(book::MarginCallEdge::Out)
+    } else {
+        risk::margin_level(equity(&state), used_margin(&state)).map(|level| {
+            if level <= thresholds.call_level {
+                book::MarginCallEdge::In { margin_level: level, call_level: thresholds.call_level }
+            } else {
+                book::MarginCallEdge::Out
+            }
+        })
+    };
+    if let Some(edge) = edge {
+        if book::apply_margin_call_edge(pool, account_id, edge).await? {
+            crate::outbox::wake();
+        }
     }
 
     Ok(Some(report))

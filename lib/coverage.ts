@@ -191,7 +191,11 @@ export type CoverageCloseEvent = {
 
 type Db = PrismaClient | Prisma.TransactionClient;
 
-export async function onClose(db: Db, ev: CoverageCloseEvent): Promise<void> {
+/** Thrown by onClose (only with opts.retryWithoutPrice) when an auto-hedged leg must close but its symbol has
+ *  no live price: the caller should retry later, not treat it as done. */
+export class CoverageRetryLater extends Error {}
+
+export async function onClose(db: Db, ev: CoverageCloseEvent, opts?: { retryWithoutPrice?: boolean }): Promise<void> {
   const closed = await db.position.findUnique({
     where: { id: ev.positionId },
     select: {
@@ -321,6 +325,10 @@ export async function onClose(db: Db, ev: CoverageCloseEvent): Promise<void> {
   }
 
   if (!live) {
+    // Stage 3 (engine outbox, lib/post-close.ts): try again shortly instead of alerting at once; the price is
+    // usually back within a minute and then the leg closes as it should. The caller stops asking after a few
+    // tries, and this alert goes out then.
+    if (opts?.retryWithoutPrice) throw new CoverageRetryLater(`no live ${leg.symbol.name} price to close coverage leg #${leg.ticket}`);
     await createNotification(db, {
       brokerId: ev.brokerId,
       type: "COVERAGE_CLOSE_FAILED",
@@ -334,8 +342,10 @@ export async function onClose(db: Db, ev: CoverageCloseEvent): Promise<void> {
   const closePrice = leg.side === "BUY" ? live.bid : live.ask;
   const runInTx = (fn: (tx: Prisma.TransactionClient) => Promise<Awaited<ReturnType<typeof closePositionInTx>>>) =>
     "$transaction" in db ? (db as PrismaClient).$transaction(fn) : fn(db as Prisma.TransactionClient);
-  const outcome = await runInTx((tx) =>
-    closePositionInTx(tx, {
+  // Stage 3 BEHAVIOR CHANGE (2026-09-24): the leg's close and its POSITION_COVERAGE_AUTO_CLOSED audit commit
+  // together (the audit used to follow the close, and was lost on a crash in between).
+  const outcome = await runInTx(async (tx) => {
+    const o = await closePositionInTx(tx, {
       position: {
         id: leg.id,
         accountId: leg.accountId,
@@ -348,19 +358,22 @@ export async function onClose(db: Db, ev: CoverageCloseEvent): Promise<void> {
       closePrice,
       closeVolume,
       note: `Coverage auto-close (auto-hedged leg): client #${closed.ticket} closed ${ev.closedLots.toString()} of ${ev.sourceVolumeBeforeClose.toString()}`,
-    })
-  );
-  if (!outcome.closed) return;
-  await db.auditLog.create({
-    data: {
-      brokerId: ev.brokerId,
-      action: "POSITION_COVERAGE_AUTO_CLOSED",
-      entityType: "Position",
-      entityId: leg.id,
-      oldValue: { clientPositionId: closed.id, clientTicket: closed.ticket, clientClosedLots: ev.closedLots.toString() },
-      newValue: { coverageClosedLots: closeVolume.toString(), closePrice: closePrice.toString(), realizedPnl: outcome.realizedPnl.toString(), partial: outcome.partial },
-    },
+    });
+    if (o.closed) {
+      await tx.auditLog.create({
+        data: {
+          brokerId: ev.brokerId,
+          action: "POSITION_COVERAGE_AUTO_CLOSED",
+          entityType: "Position",
+          entityId: leg.id,
+          oldValue: { clientPositionId: closed.id, clientTicket: closed.ticket, clientClosedLots: ev.closedLots.toString() },
+          newValue: { coverageClosedLots: closeVolume.toString(), closePrice: closePrice.toString(), realizedPnl: o.realizedPnl.toString(), partial: o.partial },
+        },
+      });
+    }
+    return o;
   });
+  if (!outcome.closed) return;
   await publishTradingEvent("PositionClosed", { position_id: leg.id, account_id: leg.accountId, broker_id: leg.brokerId, reason: "coverage_auto" }).catch((err) =>
     console.error("coverage onClose: publishTradingEvent failed", err)
   );

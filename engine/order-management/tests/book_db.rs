@@ -239,6 +239,68 @@ async fn concurrent_closes_on_one_account_never_lose_a_pnl() {
     assert_eq!(final_balance, dec!(110000));
 }
 
+/// Stage 3: the close and its post-close outbox row are one transaction -- both or neither -- and one close can
+/// only ever queue one row.
+#[tokio::test]
+async fn a_close_and_its_outbox_row_commit_or_roll_back_together() {
+    let Some(pool) = pool().await else { return };
+    let mut tx = pool.begin().await.unwrap();
+    let fx = fixture(&mut *tx, dec!(50), true).await;
+    let pos = open_position(&mut *tx, &fx, "BUY", dec!(1), dec!(4000)).await;
+    let out = book::close_position_in_tx(&mut tx, &pos, dec!(1), dec!(3995), dec!(-500.0000), "x").await.unwrap().expect("closed");
+    assert_eq!((out.account_id.as_str(), out.broker_id.as_str()), (fx.account.as_str(), fx.broker.as_str()));
+    let reason = book::CloseReason::StopOut { margin_level: dec!(9.9909), stop_out_level: dec!(50.00) };
+    book::enqueue_post_close(&mut tx, &pos, &out, reason, dec!(1.00), dec!(3995.00)).await.unwrap();
+    book::enqueue_post_close(&mut tx, &pos, &out, reason, dec!(1.00), dec!(3995.00)).await.unwrap(); // a replay: no second row
+
+    let (txn,): (String,) = sqlx::query_as(r#"SELECT id FROM "Transaction" WHERE "referenceId" = $1 AND type = 'TRADE_PNL'"#)
+        .bind(&pos).fetch_one(&mut *tx).await.unwrap();
+    assert_eq!(txn, out.trade_txn_id);
+    let rows: Vec<(String, String, String, String, serde_json::Value)> = sqlx::query_as(
+        r#"SELECT kind, "dedupeKey", reason, status, payload FROM "PostCloseEffect" WHERE "positionId" = $1"#,
+    ).bind(&pos).fetch_all(&mut *tx).await.unwrap();
+    assert_eq!(rows.len(), 1);
+    let (kind, key, why, status, payload) = rows[0].clone();
+    assert_eq!((kind.as_str(), why.as_str(), status.as_str()), ("POSITION_CLOSED", "stop_out", "PENDING"));
+    assert_eq!(key, format!("close:{pos}:{txn}"));
+    assert_eq!(payload, serde_json::json!({
+        "closedLots": "1", "sourceVolumeBeforeClose": "1", "closePrice": "3995", "realizedPnl": "-500",
+        "marginLevel": "9.99", "stopOutLevel": "50",
+    }));
+    tx.rollback().await.unwrap();
+
+    let (n,): (i64,) = sqlx::query_as(r#"SELECT count(*) FROM "PostCloseEffect" WHERE "positionId" = $1"#).bind(&pos).fetch_one(&pool).await.unwrap();
+    assert_eq!(n, 0, "a rolled-back close leaves no follow-up behind");
+}
+
+/// Stage 3: the margin-call edge on "Account"."marginCallNotifiedAt" -- one notice per episode.
+#[tokio::test]
+async fn margin_call_edge_notifies_once_per_episode() {
+    let Some(pool) = pool().await else { return };
+    let mut conn = pool.acquire().await.unwrap();
+    let fx = fixture(&mut conn, dec!(1000), true).await;
+    drop(conn);
+    let into = book::MarginCallEdge::In { margin_level: dec!(90.9090), call_level: dec!(100.00) };
+    let rows = |pool: PgPool, account: String| async move {
+        let r: Vec<(String, serde_json::Value)> = sqlx::query_as(r#"SELECT kind, payload FROM "PostCloseEffect" WHERE "accountId" = $1 ORDER BY "createdAt""#)
+            .bind(&account).fetch_all(&pool).await.unwrap();
+        r
+    };
+    assert!(book::apply_margin_call_edge(&pool, &fx.account, into).await.unwrap());
+    assert!(!book::apply_margin_call_edge(&pool, &fx.account, into).await.unwrap(), "still in: no second notice");
+    assert_eq!(rows(pool.clone(), fx.account.clone()).await.len(), 1);
+    assert!(!book::apply_margin_call_edge(&pool, &fx.account, book::MarginCallEdge::Out).await.unwrap());
+    let (set,): (bool,) = sqlx::query_as(r#"SELECT "marginCallNotifiedAt" IS NOT NULL FROM "Account" WHERE id = $1"#).bind(&fx.account).fetch_one(&pool).await.unwrap();
+    assert!(!set, "recovery clears the edge");
+    tokio::time::sleep(std::time::Duration::from_millis(5)).await; // a new episode, a new millisecond
+    assert!(book::apply_margin_call_edge(&pool, &fx.account, into).await.unwrap(), "a new episode notifies again");
+    let all = rows(pool.clone(), fx.account.clone()).await;
+    sqlx::query(r#"DELETE FROM "PostCloseEffect" WHERE "accountId" = $1"#).bind(&fx.account).execute(&pool).await.unwrap();
+    cleanup(&pool, &fx.broker).await;
+    assert_eq!(all.len(), 2);
+    assert!(all.iter().all(|(k, p)| k == "MARGIN_CALL" && *p == serde_json::json!({ "marginLevel": "90.91", "marginCallLevel": "100" })));
+}
+
 async fn cleanup(pool: &PgPool, broker: &str) {
     for sql in [
         r#"DELETE FROM "AuditLog" WHERE "brokerId" = $1"#,

@@ -268,19 +268,209 @@ F4 freshness + sessions (turns FAIL 12 into MATCH) -> F2 live margin + fx -> F3 
 - `17-jpy-quoted-stop-out`: USDJPY on a USD account through F2's conversion.
 - `18-metals-daily-break`: XAUUSD inside the NY-close hour -> no usable price.
 
-### Stage 3: post-close side effects via an outbox (3-5 days)
+### Stage 3: post-close side effects via an outbox — APPROVED + IMPLEMENTED 2026-09-24 (gate green, see 3.7)
 
-The web runs, after every automatic close: `cancelPendingClose`, `mirror.onClose`,
-`coverage.notifyStopOut` (stop-out), `coverage.onClose`, `publishTradingEvent`,
-`emitPositionClosedActivity`. They are TypeScript on Prisma and Vercel cannot subscribe to NATS.
-- The engine's close writes a `PostCloseEffect` row (positionId, reason, dedupe key) in the SAME
-  transaction; a dispatcher calls `POST /api/internal/post-close` (bearer secret), which runs that
-  sequence and marks the row done; failures retry with backoff.
-- Mirror / coverage closes are already retry-safe (guarded close); notifications and activity need the
-  dedupe key.
-- **Gate:** on scratch, a stop-out that has a mirror target, an auto-hedged leg and a queued close ends
-  with the mirror closed, the leg closed, the queue entry cancelled and exactly one notification, also
-  when the route returns 500 once.
+The web runs these after every automatic close: `cancelPendingClose`, `mirror.onClose`,
+`coverage.notifyStopOut` (stop-out only), `coverage.onClose`, `publishTradingEvent` and
+`emitPositionClosedActivity`. They are TypeScript on Prisma, all `.catch`-swallowed, and Vercel cannot
+subscribe to NATS. Negative-balance protection, credit consumption and TRADE_PNL are **not** on this list.
+They already run inside the close transaction on both sides (`closePositionInTx` and
+`book::close_position_in_tx`), so they stay there.
+
+#### 3.1 Scope of each side effect (from the code, 2026-09-24)
+
+| # | Effect | What it writes | Replay today | Needs |
+|---|---|---|---|---|
+| E1 | `cancelPendingClose(pos)` | Order→CANCELLED (guarded `status IN (PENDING,REQUOTED)`), clears `closePendingOrderId`, `DEALING_CLOSE_SUPERSEDED` audit, `OrderCancelled` event | **Safe.** On a second run `closePendingOrderId` is already null, so it returns early and writes nothing. A crash between the cancel and the audit loses that audit, which is acceptable. The dealer's accept on an already-closed position already returns 409 and cancels (dealing-queue route :252), so the window before the dispatcher runs is safe too. | nothing |
+| E2 | `mirror.onClose` | target close via `closePositionInTx`, then target `cancelPendingClose`, `MIRROR_CLOSED` audit, publish, activity; `recordMirrorFailure` on error | **Full close: safe.** The target is no longer OPEN, so the call is a no-op. **Partial close: NOT safe.** The retry re-reads the target's (smaller) volume and closes the same proportion again. A crash after the target close skips the audit, publish and activity on retry. | step marker in the SAME tx as the target close |
+| E3 | `coverage.notifyStopOut` | 1 `Notification` (STOP_OUT / COVERAGE_STOP_OUT) | **Not safe.** A plain `notification.create`, so every retry adds a duplicate alert. | dedupe |
+| E4a | `coverage.onClose`, a coverage LEG closed | releases the client (guarded `updateMany`), `POSITION_COVERAGE_RELEASED` audit, `COVERAGE_RELEASED` / `COVERAGE_STOP_OUT` notification | **Release: safe.** Once the client is released `coveredClientPos` is empty, so a retry is a no-op. The flip side: a crash after the release but before the notification loses the notification for good. | release + audit + notification in ONE tx with the step marker |
+| E4b | `coverage.onClose`, a CLIENT closed, auto-hedged leg | leg close via `closePositionInTx`, `POSITION_COVERAGE_AUTO_CLOSED` audit, publish, activity | Same shape as E2: a full close is safe and a partial close closes the leg twice. | step marker in the SAME tx as the leg close |
+| E4c | `coverage.onClose`, a CLIENT closed, dealer-booked leg | `AWAITING_DEALER` audit + notification | **Not safe:** every retry writes both again. | dedupe |
+| E4d | `coverage.onClose`, a CLIENT closed, no live price | `COVERAGE_CLOSE_FAILED` notification | **Not safe:** a duplicate on every retry. A retry after the price returns WOULD close the leg, which is the correct outcome, but the stale "NOT closed" alert is left behind. | dedupe, and retry this sub-case (see 3.4) |
+| E5 | `publishTradingEvent("PositionClosed")` | NATS via the gateway relay, no DB write | At-least-once, harmless: clients refetch on this event. | nothing (last step) |
+| E6 | `emitPositionClosedActivity` | `DealerActivity` event only. `POSITION_CLOSED` is not in `NOTIFY_ACTIONS`, so there is no DB row. | At-least-once, harmless (a feed line can repeat on a crash-retry). | nothing (last step) |
+| E7 | margin call, pass 3 | `Account.marginCallNotifiedAt` edge + 2 `createNotification` (trader + staff) | Rust only publishes `MarginCall` today: **no edge column, no notification.** | same outbox, kind `MARGIN_CALL`, edge set in the Rust tx |
+
+**Two findings from reading the code:**
+- **(a) Partial-close double-close.** A partial source close retried inside E2 or E4b closes the target again. The Rust monitor only does full closes, so this can't hit Stage 3's own traffic. The fix is still in scope: the same route would be unsafe the day a partial close goes through it.
+- **(b) The Rust margin call is a new gap, not only a missing side effect.** Without the `marginCallNotifiedAt` edge, the engine has nothing to edge-trigger from.
+
+#### 3.2 Idempotency model: step markers, committed with the write
+
+Dedupe columns on `Notification`/`AuditLog` would each fix only one table. Instead, the outbox row carries
+`doneSteps text[]`. **Every step that writes to the DB commits its writes AND
+`array_append(doneSteps, '<step>')` in one transaction**, and the step first checks that its name is not
+already in `doneSteps`. Each DB write therefore happens exactly once, whatever happens to the process.
+Only E5/E6 (external events) are at-least-once, and they run last.
+
+How each step gets its marker:
+- **E2 and E4b** need a small refactor (no behaviour change). `mirror.onClose` and `coverage.onClose`
+  take an optional `markStep(tx)` callback, and the target/leg `closePositionInTx` plus its audit
+  run inside it in ONE `$transaction`. This also fixes finding (a): once the close commits, the marker
+  commits with it, so the retry skips it.
+  - **BEHAVIOR CHANGE (small, TS paths too):** the `MIRROR_CLOSED` and `POSITION_COVERAGE_AUTO_CLOSED`
+    audits move inside the close transaction. Today they sit after it and are lost on a crash.
+- **E3, E4a, E4c, E4d:** notification + audit + marker in one tx.
+- **E1:** already idempotent, so it only needs a marker for bookkeeping.
+
+#### 3.3 Schema (one migration, `migrate deploy` only, scratch first)
+
+```prisma
+model PostCloseEffect {
+  id            String    @id @default(cuid())
+  kind          String    // "POSITION_CLOSED" | "MARGIN_CALL"
+  dedupeKey     String    @unique  // "close:<positionId>:<closeTxnId>" | "mc:<accountId>:<edgeAt ms>"
+  brokerId      String
+  accountId     String
+  positionId    String?
+  reason        String?   // "sl" | "tp" | "stop_out"
+  payload       Json      // closedLots, sourceVolumeBeforeClose, closePrice, realizedPnl, marginLevel, stopOutLevel (Decimal as string)
+  status        String    @default("PENDING")   // PENDING | DONE | DEAD
+  doneSteps     String[]  @default([])
+  attempts      Int       @default(0)
+  nextAttemptAt DateTime  @default(now()) @db.Timestamptz(3)
+  leaseUntil    DateTime? @db.Timestamptz(3)
+  lastError     String?
+  createdAt     DateTime  @default(now()) @db.Timestamptz(3)
+  doneAt        DateTime? @db.Timestamptz(3)
+  @@index([status, nextAttemptAt])
+}
+```
+
+- **Where rows are written.** The INSERT goes inside `book::close_position_in_tx`, and only when the
+  close actually happened (the `Some(CloseOutcome)` branch). The `dedupeKey` uses the TRADE_PNL
+  transaction id, so one close gives exactly one row, even if two monitor passes race.
+- **Payload.** It captures the values before the close (`sourceVolumeBeforeClose`, `closedLots`),
+  because the route can no longer read them from the position.
+- **MARGIN_CALL rows.** Rust sets `Account.marginCallNotifiedAt` in the same tx as the MARGIN_CALL row,
+  using the same edge rule as TS pass 3: set on entry, cleared on recovery.
+- **The TS web path is unchanged.** It keeps running the effects inline, with no outbox. Only
+  engine-originated closes use the outbox.
+
+#### 3.4 Dispatcher
+
+- **Runs in the engine** (VPS), and is woken three ways:
+  - **Fast path:** a `tokio::Notify` fires right after the monitor's tx commits, so a normal close
+    reaches the route in about 100 ms.
+  - **Sweep:** every 15 s. `SELECT … WHERE status='PENDING' AND nextAttemptAt<=now() ORDER BY createdAt
+    LIMIT 20 FOR UPDATE SKIP LOCKED`, then set `leaseUntil=now()+60s` before the HTTP call.
+  - **Neon cost.** The engine already hits Neon every second (coalesced margin pass), so a 15 s
+    indexed query adds no compute hours. See the Neon compute-leak memory.
+- **HTTP.** `POST https://<web>/api/internal/post-close {id}` with `Authorization: Bearer
+  $VYX_POST_CLOSE_SECRET`. A new secret, not CRON_SECRET. The route compares with
+  `crypto.timingSafeEqual`. The existing margin-monitor `!==` is fixed in the same commit
+  (BEHAVIOR CHANGE: none).
+- **Backoff.** 2 s, 10 s, 30 s, 2 m, 10 m, then every 30 m. After 24 h or 50 attempts: `DEAD`, plus an
+  `OUTBOX_DEAD` staff notification. A dead row is never silent.
+- **The route claims the row itself:** `UPDATE … SET leaseUntil=now()+60s, attempts=attempts+1 WHERE
+  id=$1 AND status='PENDING' AND (leaseUntil IS NULL OR leaseUntil<now() OR <caller holds it>)`. Two
+  dispatchers, or a dispatcher plus the backstop, can then never run the same row at once.
+- **Backstop.** If the engine is down, the Vercel margin-monitor cron also drains `PENDING` rows older
+  than 2 min, calling the same `runPostClose(id)` in-process. The Vercel cron stays on until Stage 6
+  anyway.
+- **No-price sub-case (E4d).** The step does NOT mark done and does not send a notification on the first
+  failure. It reschedules instead, and only after 3 tries (about 1 min) does it write
+  `COVERAGE_CLOSE_FAILED` and mark done. This is a small improvement over today, which alerts
+  instantly and never retries.
+
+#### 3.5 Order inside the route (the same order as `lib/risk-monitor.ts` today)
+
+`POSITION_CLOSED`, in this order:
+1. E1 cancelPendingClose
+2. E2 mirror.onClose
+3. E3 notifyStopOut (stop_out only)
+4. E4 coverage.onClose (reason `sl_tp` / `stop_out`, marginLevel)
+5. E5 publish PositionClosed
+6. E6 activity (`origin:"risk_monitor_engine"`, closeReason SL/TP/STOP_OUT)
+
+`MARGIN_CALL`: 2 notifications, 1 step.
+
+- **Failure handling.** A step that throws stops the run (later steps don't run), and the row goes back
+  to PENDING with backoff. Earlier done steps are skipped next time.
+  - **BEHAVIOR CHANGE vs the inline web path:** today a failing mirror is swallowed and coverage still
+    runs. Here coverage waits for the mirror retry.
+  - **Exception:** a mirror failure that `recordMirrorFailure` already recorded (rule disabled, no
+    price) counts as done. It is a business outcome, not an error.
+- **Rust events.** Rust keeps publishing `StopLossHit` / `TakeProfitHit` / `StopOut` immediately. E5
+  adds the web-shaped `PositionClosed` that clients key on.
+
+#### 3.6 Gate (scratch only, `vyx_rust_harness`)
+
+1. **The core scenario.** A stop-out on an account whose position has a mirror target, an auto-hedged
+   coverage leg and a queued close, with the Rust monitor closing it. It must end with the mirror
+   target CLOSED, the leg CLOSED, the queue order CANCELLED, and exactly ONE of each notification and
+   audit. That holds in each of these runs:
+   - (i) clean;
+   - (ii) the route returns 500 once at each step boundary (fault-injection env on scratch);
+   - (iii) the process is killed between E2's tx and E3;
+   - (iv) two dispatchers run concurrently.
+2. **Partial-close replay.** A 0.5-of-1.0 source close, replayed 3 times, closes the target exactly once.
+3. **Margin call.** Entry fires 2 notifications once, and the edge column is set. Recovery clears it.
+   Re-entry fires again.
+4. **Dead row.** The route returns 500 permanently: the row goes DEAD and exactly 1 `OUTBOX_DEAD` is sent.
+5. **No regression.** Full TS suite + engine suite + parity 20/20 unchanged. The TS inline path uses the
+   refactored `mirror`/`coverage` (markStep undefined) and gets identical results.
+
+**Prod rollout:** the migration goes to ep-flat-boat and the route is deployed, both inert, because
+ENGINE_ORDER_MANAGEMENT stays OFF, so no engine writes rows. It first carries traffic in Stage 5 shadow.
+
+#### 3.7 Implementation (2026-09-24, all four behaviour changes approved)
+
+| Piece | Where |
+|---|---|
+| Table + migration | `prisma/schema.prisma` PostCloseEffect, `prisma/migrations/20260924120000_post_close_outbox` (additive, empty) |
+| Row written in the close tx | `book::enqueue_post_close` (called by `monitor.rs` SL/TP + stop-out inside the close's own tx), `book::apply_margin_call_edge` (MARGIN_CALL kind + the `marginCallNotifiedAt` edge = TS pass 3) |
+| Dispatcher | `engine/order-management/src/outbox.rs`: `wake()` fast path + 15 s sweep, backoff 2/10/30/120/600 s then 30 min, DEAD at 50 attempts or 24 h with one OUTBOX_DEAD; spawned in `engine/server` only under ENGINE_ORDER_MANAGEMENT and only with `VYX_POST_CLOSE_URL` + `VYX_POST_CLOSE_SECRET` |
+| Runner | `lib/post-close.ts` runPostClose (lease 60 s, steps `cancel_pending_close → mirror → notify_stop_out → coverage → activity`, then publish `pendingEvents`), recordPostCloseFailure (same backoff/DEAD rule as outbox.rs), drainPostCloseBackstop |
+| Route | `app/api/internal/post-close` (bearer `POST_CLOSE_SECRET`, `lib/internal-auth.ts` constant-time); 200 done/gone/busy, 503 retry, 500 error |
+| Backstop | `app/api/internal/margin-monitor` drains rows older than 2 min (one indexed query when empty); its CRON_SECRET check is now constant-time too |
+| Event buffer | `lib/nats.ts` withTradingEventBuffer / deferTradingEvents: a step's events are stored with its writes and published after commit |
+
+BEHAVIOR CHANGES shipped (approved): (1) MIRROR_CLOSED (+ the target's queued-close cancel) and
+POSITION_COVERAGE_AUTO_CLOSED commit in the close's own transaction, on every path; (2) outbox only: mirror
+`rethrow` makes an unexpected mirror error retry the step and the coverage step waits; (3) outbox only: no live
+price for an auto-hedged leg retries 3 runs (~1 min) before COVERAGE_CLOSE_FAILED; (4) outbox only: step markers
+make a partial replay close the target once. The web's own inline paths (lib/risk-monitor.ts etc.) are otherwise
+unchanged.
+
+**Found by the gate, fixed:** rust_decimal `format!("{:.2}")` TRUNCATES (90.909 → "90.90") where the web's
+`toFixed(2)` rounds ("90.91"). It was also in the Stage 2 stop-out note ("margin level X%"), the credit / NBP notes
+and their audit JSON: all now go through `book::fixed2` (half away from zero = decimal.js ROUND_HALF_UP). Parity
+never compared note text, so it had not shown.
+
+**Gate results (scratch only):**
+- `lib/post-close.test.ts` on `vyx_rust_harness` with `POST_CLOSE_GATE=1`: **26/26**. The real engine monitor
+  (`parity --evaluate-accounts`) stops out a client with a mirror target, an auto-hedged leg and a queued close,
+  then: (i) clean; (ii) a 500 at each of the 11 step boundaries, then a retry; (iii) a crash after the mirror step
+  (lease holds → busy → lapses → done); (iv) 2 dispatchers (one done, one turned away), plus 3 runners with the
+  lease bypassed. Every write happened **exactly once**. Also covered:
+  - partial 0.5/1.0 replayed through a crash, a 500 and 3 more runs: target at 0.5, one MIRROR_CLOSED;
+  - margin call set / stay / clear / fire again: 2 rows, 4 notifications;
+  - DEAD at attempt 50 and at 24 h, each with exactly one OUTBOX_DEAD;
+  - the backoff table;
+  - the no-price path (retry ×3, then one COVERAGE_CLOSE_FAILED; or the leg closes once the price is back);
+  - the cron backstop;
+  - the route (401/400/200 done/200 gone/503).
+- Engine: `cargo test --workspace` **240 pass**, including:
+  - `book_db` (+2: close and its outbox row commit or roll back together; margin-call edge once per episode);
+  - `outbox_db` (a mock route: 200 settles; a 500 backs off and is not re-sent early; no answer is a failure;
+    backoff table; DEAD once; `wake()` delivers within 3 s with the sweep an hour away);
+  - `fixed2`.
+- Parity `run-db.sh`: **20/20 MATCH**. `marginCallNotified` is now read from the engine's `marginCallNotifiedAt`
+  edge itself, so pass 3 is under parity too.
+- TS suite on `vyx_test`: 963 pass / 13 fail. The 13 are pre-existing and fail identically at HEAD with these
+  changes stashed:
+  - `lib/market-simulator.test.ts` (11);
+  - `portal/me PATCH`, which has no handler: the `tsc` error of the same name;
+  - the maker-checker pentest.
+
+**Deploy (inert until Stage 5):**
+1. Apply the migration to ep-flat-boat with `migrate deploy`.
+2. Push the web. The route and backstop do nothing while the table is empty.
+3. Set `POST_CLOSE_SECRET` on Vercel only when the engine side is switched on.
+4. On the VPS engine: `VYX_POST_CLOSE_URL=https://<web>/api/internal/post-close` + `VYX_POST_CLOSE_SECRET`
+   (same value). Only takes effect with ENGINE_ORDER_MANAGEMENT=1 (still OFF).
 
 ### Stage 4: synthetic load, scratch only (2-3 days)
 

@@ -1361,6 +1361,20 @@ async fn main() {
             .await
             .expect("failed to subscribe tick-driven triggers to price.tick.*");
 
+        // Rust cutover Stage 3: the monitor's closes queue the web's post-close follow-up (mirror, coverage,
+        // stop-out / margin-call notices, the dealing queue) as "PostCloseEffect" rows; this hands them to the
+        // web's /api/internal/post-close. Without the two env vars the rows still queue, and the web's
+        // margin-monitor cron runs them after 2 minutes (a backstop, far slower: set both).
+        match order_management::outbox::DispatcherConfig::from_env() {
+            Some(cfg) => {
+                tracing::info!(url = %cfg.url, sweep_secs = cfg.sweep_interval.as_secs(), "post-close outbox dispatcher running");
+                order_management::outbox::spawn(pool.clone(), cfg);
+            }
+            None => tracing::warn!(
+                "post-close outbox dispatcher NOT running (VYX_POST_CLOSE_URL / VYX_POST_CLOSE_SECRET unset): engine closes queue their follow-up for the web cron backstop only"
+            ),
+        }
+
         // Risk item 2's startup/live-order guard -- synchronous initial load BEFORE the HTTP
         // listener binds (fails closed: place_market_order / place_pending_order refuse
         // everything until this first load proves every group in use has real thresholds),

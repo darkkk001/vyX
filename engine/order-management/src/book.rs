@@ -22,6 +22,13 @@ use rust_decimal::Decimal;
 use sqlx::PgPool;
 use uuid::Uuid;
 
+/// A decimal as the web prints it with `Prisma.Decimal.toFixed(2)`: rounded half away from zero, 2 places.
+/// NOT `format!("{:.2}")`, which TRUNCATES a rust_decimal (90.909 -> "90.90" where the web says "90.91"); found by
+/// the Stage 3 gate, 2026-09-24. Every note / notice / audit text the web also writes goes through this.
+pub fn fixed2(d: Decimal) -> String {
+    format!("{:.2}", d.round_dp_with_strategy(2, rust_decimal::RoundingStrategy::MidpointAwayFromZero))
+}
+
 fn side_from_prisma(s: &str) -> protocol::OrderSide {
     match s {
         "SELL" => protocol::OrderSide::Sell,
@@ -167,6 +174,10 @@ pub struct CloseOutcome {
     pub credit_used: Option<Decimal>,
     /// what Account.credit now holds
     pub final_credit: Decimal,
+    pub account_id: String,
+    pub broker_id: String,
+    /// the TRADE_PNL "Transaction" row this close wrote (one per close: the outbox dedupe key uses it)
+    pub trade_txn_id: String,
 }
 
 /// Closes one position in full at `close_price`, crediting `realized_pnl` (account currency), inside the
@@ -234,12 +245,13 @@ pub async fn close_position_in_tx(
         .execute(&mut **tx)
         .await?;
 
+    let trade_txn_id = Uuid::new_v4().to_string();
     sqlx::query(
         r#"INSERT INTO "Transaction"
              (id, "brokerId", "accountId", type, status, amount, "balanceBefore", "balanceAfter", "referenceType", "referenceId", note, "updatedAt")
            VALUES ($1, $2, $3, 'TRADE_PNL', 'COMPLETED', $4, $5, $6, 'Position', $7, $8, now())"#,
     )
-    .bind(Uuid::new_v4().to_string())
+    .bind(&trade_txn_id)
     .bind(&broker_id)
     .bind(&account_id)
     .bind(realized_pnl)
@@ -263,14 +275,14 @@ pub async fn close_position_in_tx(
         .bind(raw_balance_after)
         .bind(after_credit)
         .bind(position_id)
-        .bind(format!("Credit applied to a loss: {:.2} (credit {:.2} -> {:.2})", used, credit_before, final_credit))
+        .bind(format!("Credit applied to a loss: {} (credit {} -> {})", fixed2(used), fixed2(credit_before), fixed2(final_credit)))
         .execute(&mut **tx)
         .await?;
         let detail = serde_json::json!({
             "positionId": position_id,
-            "creditUsed": format!("{:.2}", used),
-            "creditBefore": format!("{:.2}", credit_before),
-            "creditAfter": format!("{:.2}", final_credit),
+            "creditUsed": fixed2(used),
+            "creditBefore": fixed2(credit_before),
+            "creditAfter": fixed2(final_credit),
         });
         sqlx::query(
             r#"INSERT INTO "AuditLog" (id, "brokerId", action, "entityType", "entityId", "newValue")
@@ -297,13 +309,13 @@ pub async fn close_position_in_tx(
         .bind(after_credit)
         .bind(final_balance)
         .bind(position_id)
-        .bind(format!("Negative-balance protection: broker absorbed ${:.2} beyond zero", amount))
+        .bind(format!("Negative-balance protection: broker absorbed ${} beyond zero", fixed2(amount)))
         .execute(&mut **tx)
         .await?;
         let detail = serde_json::json!({
             "positionId": position_id,
-            "writeOffAmount": format!("{:.2}", amount),
-            "rawBalanceAfter": format!("{:.2}", raw_balance_after),
+            "writeOffAmount": fixed2(amount),
+            "rawBalanceAfter": fixed2(raw_balance_after),
         });
         sqlx::query(
             r#"INSERT INTO "AuditLog" (id, "brokerId", action, "entityType", "entityId", "newValue")
@@ -317,5 +329,150 @@ pub async fn close_position_in_tx(
         .await?;
     }
 
-    Ok(Some(CloseOutcome { realized_pnl, raw_balance_after, final_balance, write_off, credit_used, final_credit }))
+    Ok(Some(CloseOutcome {
+        realized_pnl,
+        raw_balance_after,
+        final_balance,
+        write_off,
+        credit_used,
+        final_credit,
+        account_id,
+        broker_id,
+        trade_txn_id,
+    }))
+}
+
+/// Why the monitor closed a position, as the post-close outbox row records it ("reason").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CloseReason {
+    StopLoss,
+    TakeProfit,
+    /// the margin level that triggered it and the account's stop-out level (the dealer's notice quotes both)
+    StopOut { margin_level: Decimal, stop_out_level: Decimal },
+}
+
+impl CloseReason {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            CloseReason::StopLoss => "stop_loss",
+            CloseReason::TakeProfit => "take_profit",
+            CloseReason::StopOut { .. } => "stop_out",
+        }
+    }
+}
+
+/// Rust cutover Stage 3: queues what the web must do after this close (queued-close cancel, mirror, stop-out
+/// notice, coverage, events: lib/post-close.ts) as a "PostCloseEffect" row, inside the SAME transaction as the
+/// close, so a committed close always has its follow-up recorded and a rolled-back one never does. One row per
+/// close (dedupe key = the close's TRADE_PNL row). `volume_before` is the position's volume when it was closed:
+/// the web can no longer read it from the row once the close has committed.
+pub async fn enqueue_post_close(
+    tx: &mut sqlx::PgTransaction<'_>,
+    position_id: &str,
+    outcome: &CloseOutcome,
+    reason: CloseReason,
+    volume_before: Decimal,
+    close_price: Decimal,
+) -> Result<(), sqlx::Error> {
+    let mut payload = serde_json::json!({
+        "closedLots": volume_before.normalize().to_string(),
+        "sourceVolumeBeforeClose": volume_before.normalize().to_string(),
+        "closePrice": close_price.normalize().to_string(),
+        "realizedPnl": outcome.realized_pnl.normalize().to_string(),
+    });
+    if let CloseReason::StopOut { margin_level, stop_out_level } = reason {
+        // the same text lib/risk-monitor.ts passes: level to 2 dp, the threshold as configured
+        payload["marginLevel"] = serde_json::Value::String(fixed2(margin_level));
+        payload["stopOutLevel"] = serde_json::Value::String(stop_out_level.normalize().to_string());
+    }
+    sqlx::query(
+        r#"INSERT INTO "PostCloseEffect" (id, kind, "dedupeKey", "brokerId", "accountId", "positionId", reason, payload)
+           VALUES ($1, 'POSITION_CLOSED', $2, $3, $4, $5, $6, $7::jsonb)
+           ON CONFLICT ("dedupeKey") DO NOTHING"#,
+    )
+    .bind(Uuid::new_v4().to_string())
+    .bind(format!("close:{}:{}", position_id, outcome.trade_txn_id))
+    .bind(&outcome.broker_id)
+    .bind(&outcome.account_id)
+    .bind(position_id)
+    .bind(reason.as_str())
+    .bind(payload.to_string())
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+/// Where an account stands against its margin-call level after a pass (lib/risk-monitor.ts pass 3).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MarginCallEdge {
+    /// at or below the margin-call level
+    In { margin_level: Decimal, call_level: Decimal },
+    /// above it again, or nothing left open
+    Out,
+}
+
+/// The margin-call notice, edge-triggered on "Account"."marginCallNotifiedAt" exactly as the web does it: entering
+/// margin call with the column empty sets it and queues ONE "MARGIN_CALL" outbox row (the web's route writes the
+/// trader's and the staff's notification), in one transaction; staying in does nothing; leaving clears the column
+/// so the next episode notifies again. Returns true when this call queued a notice.
+pub async fn apply_margin_call_edge(pool: &PgPool, account_id: &str, edge: MarginCallEdge) -> Result<bool, sqlx::Error> {
+    match edge {
+        MarginCallEdge::Out => {
+            sqlx::query(r#"UPDATE "Account" SET "marginCallNotifiedAt" = NULL WHERE id = $1 AND "marginCallNotifiedAt" IS NOT NULL"#)
+                .bind(account_id)
+                .execute(pool)
+                .await?;
+            Ok(false)
+        }
+        MarginCallEdge::In { margin_level, call_level } => {
+            let mut tx = pool.begin().await?;
+            let entered: Option<(String, i64)> = sqlx::query_as(
+                r#"UPDATE "Account" SET "marginCallNotifiedAt" = now()
+                   WHERE id = $1 AND "marginCallNotifiedAt" IS NULL
+                   RETURNING "brokerId", (extract(epoch from "marginCallNotifiedAt") * 1000)::bigint"#,
+            )
+            .bind(account_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+            let Some((broker_id, edge_ms)) = entered else {
+                tx.rollback().await?;
+                return Ok(false); // already notified for this episode
+            };
+            let payload = serde_json::json!({
+                "marginLevel": fixed2(margin_level),
+                "marginCallLevel": call_level.normalize().to_string(),
+            });
+            sqlx::query(
+                r#"INSERT INTO "PostCloseEffect" (id, kind, "dedupeKey", "brokerId", "accountId", payload)
+                   VALUES ($1, 'MARGIN_CALL', $2, $3, $4, $5::jsonb)
+                   ON CONFLICT ("dedupeKey") DO NOTHING"#,
+            )
+            .bind(Uuid::new_v4().to_string())
+            .bind(format!("mc:{}:{}", account_id, edge_ms))
+            .bind(&broker_id)
+            .bind(account_id)
+            .bind(payload.to_string())
+            .execute(&mut *tx)
+            .await?;
+            tx.commit().await?;
+            Ok(true)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fixed2;
+    use rust_decimal_macros::dec;
+
+    /// = Prisma.Decimal.toFixed(2) (decimal.js ROUND_HALF_UP: half away from zero)
+    #[test]
+    fn fixed2_rounds_like_the_web() {
+        assert_eq!(fixed2(dec!(90.9090909)), "90.91");
+        assert_eq!(fixed2(dec!(-900)), "-900.00");
+        assert_eq!(fixed2(dec!(0.125)), "0.13");
+        assert_eq!(fixed2(dec!(-0.125)), "-0.13");
+        assert_eq!(fixed2(dec!(12.344)), "12.34");
+        assert_eq!(fixed2(dec!(49.995)), "50.00");
+    }
 }

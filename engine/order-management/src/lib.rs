@@ -12,6 +12,7 @@ pub mod db;
 pub mod events;
 pub mod fx;
 pub mod monitor;
+pub mod outbox;
 pub mod pending_orders;
 pub mod pricing;
 pub mod session;

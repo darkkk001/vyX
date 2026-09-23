@@ -1,4 +1,5 @@
 import "server-only";
+import { AsyncLocalStorage } from "node:async_hooks";
 
 // Publish-only relay for the legacy Next.js trade routes — see
 // docs/webtrader-stm-architecture-review.md §4.3 (sequencing item 4).
@@ -56,6 +57,28 @@ const SUBJECTS: Record<string, string> = {
 
 export type TradingEventType = keyof typeof SUBJECTS;
 
+export type BufferedTradingEvent = { type: TradingEventType; payload: Record<string, unknown> & { broker_id: string } };
+
+// Rust cutover Stage 3 (lib/post-close.ts): while `fn` runs, every publishTradingEvent call is collected into
+// `buffer` instead of being sent. The outbox runner records a step's events in the SAME transaction as the
+// step's writes and publishes them only once that transaction has committed, so an event can never announce a
+// write that rolled back, and a crash between commit and publish just publishes again (at-least-once).
+const eventBuffer = new AsyncLocalStorage<BufferedTradingEvent[]>();
+
+export function withTradingEventBuffer<T>(buffer: BufferedTradingEvent[], fn: () => Promise<T>): Promise<T> {
+  return eventBuffer.run(buffer, fn);
+}
+
+/** Runs `fn` (typically a transaction) and publishes the events it raised only after it resolved; nothing is
+ *  published when it throws. Inside an outer buffer (the outbox runner) the events simply join that buffer. */
+export async function deferTradingEvents<T>(fn: () => Promise<T>): Promise<T> {
+  if (eventBuffer.getStore()) return fn();
+  const buffer: BufferedTradingEvent[] = [];
+  const result = await eventBuffer.run(buffer, fn);
+  for (const e of buffer) await publishTradingEvent(e.type, e.payload);
+  return result;
+}
+
 const GATEWAY_URL = process.env.GATEWAY_URL ?? "http://127.0.0.1:8080";
 const INTERNAL_SERVICE_SECRET = process.env.INTERNAL_SERVICE_SECRET ?? "";
 
@@ -70,6 +93,11 @@ export async function publishTradingEvent(
   type: TradingEventType,
   payload: Record<string, unknown> & { broker_id: string }
 ): Promise<void> {
+  const buffer = eventBuffer.getStore();
+  if (buffer) {
+    buffer.push({ type, payload });
+    return;
+  }
   try {
     // Bounded, not truly fire-and-forget -- a slow/unreachable gateway
     // must never add meaningful latency to (or fail) the caller's own

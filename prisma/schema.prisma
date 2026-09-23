@@ -2314,3 +2314,36 @@ model LpRoutingRule {
   @@index([brokerId])
   @@index([liquidityProviderId])
 }
+
+// Rust cutover Stage 3 (docs/RUST-CUTOVER-PLAN.md): the transactional outbox for what the web does AFTER an
+// automatic close. The engine's monitor writes one row in the SAME transaction as the close (or as the
+// margin-call edge on "Account"."marginCallNotifiedAt"); a dispatcher POSTs it to /api/internal/post-close,
+// which runs lib/post-close.ts. Only engine-originated closes use it: the web's own paths run the same
+// effects inline, as before.
+//
+// Exactly-once: each step commits its writes together with its own name appended to doneSteps (a step already
+// listed is skipped), so a retry after a 500 or a crash never repeats a DB write. The step's trading events are
+// collected into pendingEvents in that same transaction and published by the last step (at-least-once).
+model PostCloseEffect {
+  id            String    @id @default(cuid())
+  kind          String // "POSITION_CLOSED" | "MARGIN_CALL"
+  dedupeKey     String    @unique // "close:<positionId>:<TRADE_PNL txn id>" | "mc:<accountId>:<edge epoch ms>"
+  brokerId      String
+  accountId     String
+  positionId    String?
+  reason        String? // "stop_loss" | "take_profit" | "stop_out" (POSITION_CLOSED)
+  // Decimal values as strings: closedLots, sourceVolumeBeforeClose, closePrice, realizedPnl; stop_out adds
+  // marginLevel (2 dp) + stopOutLevel; MARGIN_CALL carries marginLevel (2 dp) + marginCallLevel
+  payload       Json
+  status        String    @default("PENDING") // PENDING | DONE | DEAD
+  doneSteps     String[]  @default([])
+  pendingEvents Json      @default("[]")
+  attempts      Int       @default(0)
+  nextAttemptAt DateTime  @default(now()) @db.Timestamptz(3)
+  leaseUntil    DateTime? @db.Timestamptz(3)
+  lastError     String?
+  createdAt     DateTime  @default(now()) @db.Timestamptz(3)
+  doneAt        DateTime? @db.Timestamptz(3)
+
+  @@index([status, nextAttemptAt])
+}

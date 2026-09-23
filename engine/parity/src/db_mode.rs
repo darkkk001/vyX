@@ -34,7 +34,8 @@ pub async fn evaluate(pool: &PgPool, sc: &Scenario) -> Result<BTreeMap<String, A
             .map_err(|e| format!("{}/{}: {e}", sc.name, acct.key))?
             .ok_or_else(|| format!("{}/{}: evaluate_account did not evaluate (no positions / thresholds not loaded)", sc.name, acct.key))?;
 
-        let (balance, credit): (Decimal, Decimal) = sqlx::query_as(r#"SELECT balance, credit FROM "Account" WHERE id = $1"#)
+        let (balance, credit, margin_call_notified): (Decimal, Decimal, bool) =
+            sqlx::query_as(r#"SELECT balance, credit, "marginCallNotifiedAt" IS NOT NULL FROM "Account" WHERE id = $1"#)
             .bind(&acct.key)
             .fetch_one(pool)
             .await
@@ -65,7 +66,8 @@ pub async fn evaluate(pool: &PgPool, sc: &Scenario) -> Result<BTreeMap<String, A
                 final_balance: money(balance),
                 final_credit: money(credit),
                 transactions: ordered.into_iter().map(|(kind, amount, _)| Txn { kind, amount: money(amount) }).collect(),
-                margin_call_notified: report.margin_call,
+                // Stage 3: the edge column itself, as the TS runner reads it (report.margin_call before)
+                margin_call_notified,
             },
         );
     }

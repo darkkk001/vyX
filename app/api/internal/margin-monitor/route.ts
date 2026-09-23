@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { evaluateAccountRisk, evaluateRiskForSymbol } from "@/lib/risk-monitor";
+import { bearerMatches } from "@/lib/internal-auth";
+import { drainPostCloseBackstop } from "@/lib/post-close";
 
 // 2026-09-05 P0 fix -- the reliable floor beneath the tick-ingest trigger
 // (lib/price-feed.ts's ingestTicks -> evaluateRiskForSymbol), which is
@@ -33,10 +35,8 @@ import { evaluateAccountRisk, evaluateRiskForSymbol } from "@/lib/risk-monitor";
 export const maxDuration = 15;
 
 export async function GET(request: NextRequest) {
-  const expectedSecret = process.env.CRON_SECRET ?? "";
-  const auth = request.headers.get("authorization");
-  const provided = auth?.startsWith("Bearer ") ? auth.slice(7) : null;
-  if (!expectedSecret || provided !== expectedSecret) {
+  // constant-time compare (2026-09-24; was a plain !==)
+  if (!bearerMatches(request.headers.get("authorization"), process.env.CRON_SECRET)) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
 
@@ -62,9 +62,16 @@ export async function GET(request: NextRequest) {
   // anywhere on the platform, there is nothing to protect this minute --
   // bail out immediately rather than even fetching the distinct account
   // list.
+  // Rust cutover Stage 3 backstop: post-close outbox rows the engine's dispatcher has not finished within 2
+  // minutes (engine down, or the route unreachable from the VPS) run here. One indexed query when there are none.
+  const outbox = await drainPostCloseBackstop().catch((err) => {
+    console.error("margin-monitor: post-close backstop failed", err);
+    return { ran: 0, failed: 0 };
+  });
+
   const openCount = await prisma.position.count({ where: { status: "OPEN" } });
   if (openCount === 0) {
-    return NextResponse.json({ accountsEvaluated: 0, errors: 0 });
+    return NextResponse.json({ accountsEvaluated: 0, errors: 0, outbox });
   }
 
   const openAccounts = await prisma.position.findMany({
@@ -83,5 +90,5 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  return NextResponse.json({ accountsEvaluated: openAccounts.length, errors });
+  return NextResponse.json({ accountsEvaluated: openAccounts.length, errors, outbox });
 }
