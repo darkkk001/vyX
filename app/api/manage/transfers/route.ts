@@ -3,6 +3,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession } from "@/lib/auth";
 import { forbidUnlessBrokerAdminOrPermission } from "@/lib/permissions";
+import { lockAccountBalances } from "@/lib/account-lock";
 
 async function requireBrokerAdmin() {
   const session = await getAdminSession();
@@ -93,11 +94,12 @@ export async function POST(request: NextRequest) {
   }
 
   const result = await prisma.$transaction(async (tx) => {
-    const fresh = await tx.account.findUniqueOrThrow({ where: { id: fromAccountId } });
-    if (fresh.balance.lt(amount)) {
+    // both rows locked up front, in id order (lib/account-lock.ts): no lost update, no A->B / B->A deadlock
+    const locked = await lockAccountBalances(tx, [fromAccountId, toAccountId]);
+    if (locked.get(fromAccountId)!.lt(amount)) {
       throw new Error("INSUFFICIENT_BALANCE");
     }
-    const fromBalanceBefore = fresh.balance;
+    const fromBalanceBefore = locked.get(fromAccountId)!;
     const fromBalanceAfter = fromBalanceBefore.sub(amount);
     await tx.account.update({ where: { id: fromAccountId }, data: { balance: fromBalanceAfter } });
     const outTxn = await tx.transaction.create({
@@ -108,8 +110,7 @@ export async function POST(request: NextRequest) {
       },
     });
 
-    const toFresh = await tx.account.findUniqueOrThrow({ where: { id: toAccountId } });
-    const toBalanceBefore = toFresh.balance;
+    const toBalanceBefore = locked.get(toAccountId)!;
     const toBalanceAfter = toBalanceBefore.add(amount);
     await tx.account.update({ where: { id: toAccountId }, data: { balance: toBalanceAfter } });
     const inTxn = await tx.transaction.create({

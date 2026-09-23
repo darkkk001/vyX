@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { getAdminSession } from "@/lib/auth";
 import { forbidUnlessBrokerAdminOrPermission } from "@/lib/permissions";
 import { computePendingCommission } from "@/lib/commission";
+import { lockAccountBalance } from "@/lib/account-lock";
 
 // Two things this route can do to a relationship, both BROKER_ADMIN by
 // default, delegatable via IB_PAYOUTS (see lib/permissions.ts):
@@ -37,8 +38,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
           throw new Error("NOTHING_PENDING");
         }
 
-        const ibAccount = await tx.account.findUniqueOrThrow({ where: { id: existing.ibAccountId } });
-        const balanceBefore = ibAccount.balance;
+        const balanceBefore = await lockAccountBalance(tx, existing.ibAccountId); // row lock: lib/account-lock.ts
         const balanceAfter = balanceBefore.add(pending);
 
         await tx.account.update({ where: { id: existing.ibAccountId }, data: { balance: balanceAfter } });

@@ -1,6 +1,7 @@
 import "server-only";
 import { Prisma, PrismaClient } from "@prisma/client";
 import { resolvePricingV2 } from "@/lib/pricing-engine";
+import { lockAccountBalance } from "@/lib/account-lock";
 
 // Interim daily swap (overnight holding fee) rollover for every broker
 // still on the legacy Prisma trading path -- which is every broker today,
@@ -269,8 +270,7 @@ export async function runSwapRollover(
       if (claimedCount === 0) return;
 
       if (!accountTotal.isZero()) {
-        const account = await tx.account.findUniqueOrThrow({ where: { id: accountId } });
-        const balanceBefore = account.balance;
+        const balanceBefore = await lockAccountBalance(tx, accountId); // row lock: lib/account-lock.ts
         const balanceAfter = balanceBefore.add(accountTotal);
         await tx.account.update({ where: { id: accountId }, data: { balance: balanceAfter } });
         await tx.transaction.create({

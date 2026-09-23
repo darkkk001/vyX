@@ -6,6 +6,7 @@ import { computeRealizedPnl } from "@/lib/trading";
 import { resolveBookType } from "@/lib/group-pricing";
 import { closePositionInTx } from "@/lib/position-close";
 import { randomUUID } from "node:crypto";
+import { lockAccountBalance } from "@/lib/account-lock";
 
 type Tx = Prisma.TransactionClient;
 
@@ -366,8 +367,7 @@ export async function executeVoid(tx: Tx, params: { brokerId: string; positionId
   // its own sign.
   const reversalAmount = bookedAgainstPosition.neg().sub(position.swap);
 
-  const account = await tx.account.findUniqueOrThrow({ where: { id: position.accountId } });
-  const balanceBefore = account.balance;
+  const balanceBefore = await lockAccountBalance(tx, position.accountId); // row lock: lib/account-lock.ts
   const balanceAfter = balanceBefore.add(reversalAmount);
 
   if (!reversalAmount.isZero()) {

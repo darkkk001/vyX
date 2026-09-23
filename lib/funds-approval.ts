@@ -1,6 +1,7 @@
 import "server-only";
 import { Prisma } from "@prisma/client";
 import { nextPspStatusOnMark, nextPspStatusOnApprove } from "@/lib/psp/adapter";
+import { lockAccountBalance } from "@/lib/account-lock";
 
 type Tx = Prisma.TransactionClient;
 
@@ -123,8 +124,7 @@ export async function approveFundsRequest(
     type: "DEPOSIT" | "WITHDRAWAL";
   }
 ): Promise<ApproveResult> {
-  const account = await tx.account.findUniqueOrThrow({ where: { id: params.accountId } });
-  const balanceBefore = account.balance;
+  const balanceBefore = await lockAccountBalance(tx, params.accountId); // row lock: lib/account-lock.ts
   const balanceAfter = balanceBefore.add(params.amount); // amount already signed (negative for withdrawal)
 
   if (balanceAfter.lt(0)) {

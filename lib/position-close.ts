@@ -2,6 +2,7 @@ import "server-only";
 import { Prisma } from "@prisma/client";
 import { computeRealizedPnl } from "@/lib/trading";
 import { quoteToAccountRate } from "@/lib/fx";
+import { lockAccountBalance } from "@/lib/account-lock";
 
 export type ClosePositionInput = {
   id: string;
@@ -93,8 +94,12 @@ export async function closePositionInTx(
     return { closed: false };
   }
 
-  const account = await tx.account.findUniqueOrThrow({ where: { id: position.accountId } });
-  const balanceBefore = account.balance;
+  // Lock the balance row before reading it (2026-09-23). A plain read let two closes of DIFFERENT positions
+  // on the same account (stop-out vs the trader's own close, two SL/TPs, a bulk close vs a dealer) read the
+  // same balance, and the second write erased the first close's P&L while both TRADE_PNL rows were
+  // written: measured 10 concurrent closes of +1,000 landing +3,000 to +4,000. FOR UPDATE makes the second
+  // close wait for the first to commit and read its result.
+  const balanceBefore = await lockAccountBalance(tx, position.accountId);
   const rawBalanceAfter = balanceBefore.add(realizedPnl); // the true, uncapped result of this trade -- always what the TRADE_PNL row below records
 
   // 2026-09-05 P0 fix: negative-balance protection. Before this, a

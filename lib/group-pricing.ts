@@ -1,5 +1,6 @@
 import { Prisma, RoutingCategory, BookType } from "@prisma/client";
 import type { OrderSide } from "@/lib/trading";
+import { lockAccountBalance } from "@/lib/account-lock";
 
 type Tx = Prisma.TransactionClient;
 
@@ -111,8 +112,7 @@ export async function chargeCommission(
   const amount = params.commissionPerLot.mul(params.volume);
   if (amount.lte(0)) return;
 
-  const account = await tx.account.findUniqueOrThrow({ where: { id: params.accountId } });
-  const balanceBefore = account.balance;
+  const balanceBefore = await lockAccountBalance(tx, params.accountId); // row lock: lib/account-lock.ts
   const balanceAfter = balanceBefore.sub(amount);
 
   await tx.account.update({ where: { id: params.accountId }, data: { balance: balanceAfter } });

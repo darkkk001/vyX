@@ -1,5 +1,6 @@
 import "server-only";
 import { Prisma } from "@prisma/client";
+import { lockAccountBalance } from "@/lib/account-lock";
 
 type Tx = Prisma.TransactionClient;
 
@@ -46,8 +47,7 @@ export async function applyBalanceAdjustment(
   tx: Tx,
   params: { accountId: string; brokerId: string; amount: Prisma.Decimal; note: string; adminId: string }
 ): Promise<{ transactionId: string; balanceAfter: Prisma.Decimal }> {
-  const fresh = await tx.account.findUniqueOrThrow({ where: { id: params.accountId } });
-  const balanceBefore = fresh.balance;
+  const balanceBefore = await lockAccountBalance(tx, params.accountId); // row lock: lib/account-lock.ts
   const balanceAfter = balanceBefore.add(params.amount);
 
   await tx.account.update({ where: { id: params.accountId }, data: { balance: balanceAfter } });
