@@ -1,11 +1,13 @@
 # Deep backfill — repair ALL stored candle history from Pepperstone (VPS runbook)
 
-Branch `fix/candle-open-and-deep-backfill` (= `fix/candle-open-seed` 762215d +
-`fix/deep-backfill-full-history` a8a74fe merged at c4e1df6, on top of `b0d3967`).
+Originally written for branch `fix/candle-open-and-deep-backfill` (c0406db =
+`fix/candle-open-seed` 762215d + `fix/deep-backfill-full-history` a8a74fe).
+That branch is now fully contained in `main`; **deploy `main`, not the branch**
+(see "Pre-flight" below for why and what that adds).
 The same checkout + engine build + EA v1.40 also ship the forming-candle OPEN fix
 (§2a below), so this is ONE deploy for both chart issues. Everything below
 runs **on the Contabo box** (`C:\vyxtrader\repo`, engine service
-`vyxtrader-engine`, market store Postgres 16 at `127.0.0.1:5432/market_data`,
+`vyxtrader-engine`, market store PostgreSQL 18 at `127.0.0.1:5432/market_data`,
 Pepperstone MT5 in `C:\MT5-Pepperstone`, UTC+3) unless a step says otherwise.
 §7 is the same engine-side sequence over WinRM for a session that has
 credentials.
@@ -42,14 +44,62 @@ timeframe. This runbook:
 Nothing here touches Neon or the trade DB. `MARKET_DATA_WRITE=local` has been
 in force since 2026-09-15, so the VPS store is the only candle store written.
 
+## Pre-flight (added 2026-09-23, after the Neon migration + EA secret rotation)
+
+Do not start until every line here is true.
+
+1. **The live feed is healthy first.** If the terminal is in a
+   Connected -> "Reconnecting (attempt 0)" loop (no ticks reaching clients),
+   diagnose that before restarting the engine: read
+   `http://127.0.0.1:8080/internal/gateway-stats` twice 10 s apart and note
+   `natsMessagesReceivedTotal` / `ticksForwardedTotal`. An engine restart in
+   the middle of an unexplained outage destroys the evidence and makes the
+   before/after numbers meaningless.
+2. **Which commit is the box running now?** `git -C C:\vyxtrader\repo log --oneline -1`
+   and the exe's timestamp. Never check out anything older than that.
+   `fix/candle-open-and-deep-backfill` (c0406db) is BEHIND `main`; checking
+   it out on a box that already runs a later build is a silent engine
+   downgrade.
+3. **`main` carries three engine commits the branch does not**, all from
+   2026-09-23, each driven by an env var. Decide them in `start-engine.cmd`
+   BEFORE the build:
+   * `eef0b35` — engine order management (margin monitor, per-tick triggers,
+     thresholds guard, swap roller on the engine's own lowercase tables)
+     now defaults **OFF**. Production stop-out is `lib/risk-monitor.ts`, and
+     those tables are empty, so leaving `ENGINE_ORDER_MANAGEMENT` unset is the
+     intended production state. Startup logs which mode it is in.
+   * `24ef4e3` — risk-hook backstop calls the web risk route every
+     `VYX_RISK_HOOK_BACKSTOP_SECS` (default **60**, `0` = off). It is only
+     correct if `VYX_RISK_HOOK_URL` points at the CURRENT Vercel deployment
+     and `VYX_RISK_HOOK_SECRET` == that deployment's `CRON_SECRET` (after the
+     migration both may have changed: a mismatch = a 401 every 60 s and NO
+     backstop). Until that is verified, set `VYX_RISK_HOOK_BACKSTOP_SECS=0`
+     and keep the Vercel margin-monitor cron.
+   * `2560176` — per-tick margin/trigger passes coalesced to 1/s
+     (`TICK_TRIGGER_MIN_INTERVAL_MS`, default 1000). No action; it only takes
+     load off the trade DB. (Its gateway half, `ws.ts` TTL, needs a separate
+     gateway rebuild and is optional for this runbook.)
+4. **EA secret after rotation.** The EA's `ApiSecret` input (Properties >
+   Inputs) must equal `PRICE_FEED_SECRET` in `start-engine.cmd`, and the
+   engine only reads that file on start. After §2's restart confirm
+   `ticks_in` climbs in `/internal/feed-stats` and the engine log shows no
+   401s from `/internal/ingest` or `/internal/history` — every deep-pass
+   page is a `/internal/history` call and would be rejected the same way.
+5. **Toolchain after the migration:** `psql --version` / `pg_dump --version`
+   report **18.x** (a 16.x pg_dump refuses an 18 server), and
+   `cargo --version` works in the shell you will build from.
+6. **Timing:** a weekday pass pauses the live tick push for 30–60% of the
+   time (§4.1). Run it on a weekend.
+
 ## 1. Before numbers (5 min)
 
 ```powershell
-$env:Path += ";C:\Program Files\PostgreSQL\16\bin"
+$env:Path += ";C:\Program Files\PostgreSQL\18\bin"
 cd C:\vyxtrader\repo
 git fetch --all
-git checkout fix/candle-open-and-deep-backfill  # or main once merged
-git log --oneline -1                              # note the hash
+git log --oneline -1                              # what the box runs NOW (pre-flight 2)
+git checkout main; git pull --ff-only             # NOT the old fix/ branch
+git log --oneline -1                              # note the hash (e131b80 or later)
 
 # engine-role URL exactly as in C:\vyxtrader\scripts\start-engine.cmd's MARKET_DATA_DATABASE_URL
 $env:MARKET_DATA_DATABASE_URL = "postgres://engine:<engine role password>@127.0.0.1:5432/market_data"
@@ -312,10 +362,10 @@ $opt = New-PSSessionOption -SkipCACheck -SkipCNCheck
 $s = New-PSSession -ComputerName <vps-ip-or-host> -Port 5986 -UseSSL -Credential (Get-Credential) -SessionOption $opt
 
 Invoke-Command -Session $s -ScriptBlock {
-  $env:Path += ";C:\Program Files\PostgreSQL\16\bin;C:\Users\<user>\.cargo\bin"
+  $env:Path += ";C:\Program Files\PostgreSQL\18\bin;C:\Users\<user>\.cargo\bin"
   $env:MARKET_DATA_DATABASE_URL = "postgres://engine:<pw>@127.0.0.1:5432/market_data"
   mkdir C:\vyxtrader\backup\deep-backfill -Force | Out-Null
-  cd C:\vyxtrader\repo; git fetch --all; git checkout fix/candle-open-and-deep-backfill; git log --oneline -1
+  cd C:\vyxtrader\repo; git fetch --all; git log --oneline -1; git checkout main; git pull --ff-only; git log --oneline -1
   foreach ($sym in "XAUUSD","EURUSD") { node scripts\candle-integrity-report.mjs $sym --days=45 > "C:\vyxtrader\backup\deep-backfill\before-$sym.txt" }
   pg_dump -U postgres -h 127.0.0.1 -Fc market_data > C:\vyxtrader\backup\deep-backfill\market_data-pre.dump   # needs PGPASSWORD
   Copy-Item engine\target\release\trading-core-server.exe C:\vyxtrader\backup\deep-backfill\trading-core-server.pre.exe
