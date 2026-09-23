@@ -1,0 +1,82 @@
+{
+  "name": "11-custom-group-thresholds",
+  "why": "Two identical accounts at ~70%: a1 in group 150/80 is stopped out; a2 in the default 100/50 group only gets a margin call. Proves per-group thresholds are read.",
+  "knownDivergence": [
+    {
+      "id": "used-margin-open-vs-live",
+      "fields": [
+        "marginLevelBefore"
+      ],
+      "note": "Rust prices used margin at OPEN price (calc.rs used_margin), web at LIVE close-side price (lib/margin.ts liveUsedMarginFor); the level number differs, the decision does not."
+    }
+  ],
+  "broker": {
+    "negativeBalanceProtection": true
+  },
+  "groups": [
+    {
+      "key": "std",
+      "marginCallLevel": "100",
+      "stopOutLevel": "50"
+    },
+    {
+      "key": "tight",
+      "marginCallLevel": "150",
+      "stopOutLevel": "80"
+    }
+  ],
+  "accounts": [
+    {
+      "key": "a1",
+      "group": "tight",
+      "balance": "2000",
+      "credit": "0",
+      "leverage": 100
+    },
+    {
+      "key": "a2",
+      "group": "std",
+      "balance": "2000",
+      "credit": "0",
+      "leverage": 100
+    }
+  ],
+  "symbols": [
+    {
+      "name": "XAUUSD",
+      "contractSize": "100",
+      "digits": 2,
+      "quoteCurrency": "USD"
+    }
+  ],
+  "positions": [
+    {
+      "key": "p1",
+      "account": "a1",
+      "symbol": "XAUUSD",
+      "side": "BUY",
+      "volume": "1",
+      "openPrice": "2000",
+      "slPrice": null,
+      "tpPrice": null
+    },
+    {
+      "key": "p2",
+      "account": "a2",
+      "symbol": "XAUUSD",
+      "side": "BUY",
+      "volume": "1",
+      "openPrice": "2000",
+      "slPrice": null,
+      "tpPrice": null
+    }
+  ],
+  "prices": [
+    {
+      "symbol": "XAUUSD",
+      "bid": "1994",
+      "ask": "1994.5",
+      "ageSeconds": 0
+    }
+  ]
+}

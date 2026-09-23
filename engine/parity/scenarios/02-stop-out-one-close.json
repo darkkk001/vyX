@@ -1,0 +1,82 @@
+{
+  "name": "02-stop-out-one-close",
+  "why": "Level ~10% < 50: the single worst position (p1, -800) is force-closed; the survivor p2 is then at ~191%, so the loop stops after one close.",
+  "knownDivergence": [
+    {
+      "id": "used-margin-open-vs-live",
+      "fields": [
+        "marginLevelBefore"
+      ],
+      "note": "Rust prices used margin at OPEN price (calc.rs used_margin), web at LIVE close-side price (lib/margin.ts liveUsedMarginFor); the level number differs, the decision does not."
+    }
+  ],
+  "broker": {
+    "negativeBalanceProtection": true
+  },
+  "groups": [
+    {
+      "key": "std",
+      "marginCallLevel": "100",
+      "stopOutLevel": "50"
+    }
+  ],
+  "accounts": [
+    {
+      "key": "a1",
+      "group": "std",
+      "balance": "1000",
+      "credit": "0",
+      "leverage": 100
+    }
+  ],
+  "symbols": [
+    {
+      "name": "XAUUSD",
+      "contractSize": "100",
+      "digits": 2,
+      "quoteCurrency": "USD"
+    },
+    {
+      "name": "EURUSD",
+      "contractSize": "100000",
+      "digits": 5,
+      "quoteCurrency": "USD"
+    }
+  ],
+  "positions": [
+    {
+      "key": "p1",
+      "account": "a1",
+      "symbol": "XAUUSD",
+      "side": "BUY",
+      "volume": "1",
+      "openPrice": "2000",
+      "slPrice": null,
+      "tpPrice": null
+    },
+    {
+      "key": "p2",
+      "account": "a1",
+      "symbol": "EURUSD",
+      "side": "SELL",
+      "volume": "0.1",
+      "openPrice": "1.10000",
+      "slPrice": null,
+      "tpPrice": null
+    }
+  ],
+  "prices": [
+    {
+      "symbol": "XAUUSD",
+      "bid": "1992",
+      "ask": "1992.5",
+      "ageSeconds": 0
+    },
+    {
+      "symbol": "EURUSD",
+      "bid": "1.09890",
+      "ask": "1.09900",
+      "ageSeconds": 0
+    }
+  ]
+}

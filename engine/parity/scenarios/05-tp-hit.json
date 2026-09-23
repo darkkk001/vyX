@@ -1,0 +1,60 @@
+{
+  "name": "05-tp-hit",
+  "why": "SELL with TP 1.09500, ask exactly 1.09500 (<= boundary): closes at ask for +500.",
+  "knownDivergence": [
+    {
+      "id": "used-margin-open-vs-live",
+      "fields": [
+        "marginLevelBefore"
+      ],
+      "note": "Rust prices used margin at OPEN price (calc.rs used_margin), web at LIVE close-side price (lib/margin.ts liveUsedMarginFor); the level number differs, the decision does not."
+    }
+  ],
+  "broker": {
+    "negativeBalanceProtection": true
+  },
+  "groups": [
+    {
+      "key": "std",
+      "marginCallLevel": "100",
+      "stopOutLevel": "50"
+    }
+  ],
+  "accounts": [
+    {
+      "key": "a1",
+      "group": "std",
+      "balance": "10000",
+      "credit": "0",
+      "leverage": 100
+    }
+  ],
+  "symbols": [
+    {
+      "name": "EURUSD",
+      "contractSize": "100000",
+      "digits": 5,
+      "quoteCurrency": "USD"
+    }
+  ],
+  "positions": [
+    {
+      "key": "p1",
+      "account": "a1",
+      "symbol": "EURUSD",
+      "side": "SELL",
+      "volume": "1",
+      "openPrice": "1.10000",
+      "slPrice": null,
+      "tpPrice": "1.09500"
+    }
+  ],
+  "prices": [
+    {
+      "symbol": "EURUSD",
+      "bid": "1.09490",
+      "ask": "1.09500",
+      "ageSeconds": 0
+    }
+  ]
+}

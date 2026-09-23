@@ -12,6 +12,7 @@ members = [
     "server",
     "loadtest",
     "parallel-run",
+    "parity",
 ]
 
 [workspace.package]

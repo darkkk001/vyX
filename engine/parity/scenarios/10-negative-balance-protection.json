@@ -1,0 +1,60 @@
+{
+  "name": "10-negative-balance-protection",
+  "why": "balance 500, loss -1000 -> stop-out drives the balance to -500. Broker has negativeBalanceProtection=true: web floors the balance at 0 and books a +500 NEGATIVE_BALANCE_PROTECTION write-off.",
+  "knownDivergence": [
+    {
+      "id": "used-margin-open-vs-live",
+      "fields": [
+        "marginLevelBefore"
+      ],
+      "note": "Rust prices used margin at OPEN price (calc.rs used_margin), web at LIVE close-side price (lib/margin.ts liveUsedMarginFor); the level number differs, the decision does not."
+    }
+  ],
+  "broker": {
+    "negativeBalanceProtection": true
+  },
+  "groups": [
+    {
+      "key": "std",
+      "marginCallLevel": "100",
+      "stopOutLevel": "50"
+    }
+  ],
+  "accounts": [
+    {
+      "key": "a1",
+      "group": "std",
+      "balance": "500",
+      "credit": "0",
+      "leverage": 100
+    }
+  ],
+  "symbols": [
+    {
+      "name": "XAUUSD",
+      "contractSize": "100",
+      "digits": 2,
+      "quoteCurrency": "USD"
+    }
+  ],
+  "positions": [
+    {
+      "key": "p1",
+      "account": "a1",
+      "symbol": "XAUUSD",
+      "side": "BUY",
+      "volume": "1",
+      "openPrice": "2000",
+      "slPrice": null,
+      "tpPrice": null
+    }
+  ],
+  "prices": [
+    {
+      "symbol": "XAUUSD",
+      "bid": "1990",
+      "ask": "1990.5",
+      "ageSeconds": 0
+    }
+  ]
+}

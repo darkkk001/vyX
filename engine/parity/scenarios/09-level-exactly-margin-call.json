@@ -1,0 +1,60 @@
+{
+  "name": "09-level-exactly-margin-call",
+  "why": "Price == open (P&L 0, margin 2000 on both paths), balance 2000: level exactly 100.00 == marginCallLevel. Web: <= -> margin call. Rust: strict < -> Ok.",
+  "knownDivergence": [
+    {
+      "id": "margin-call-lte-vs-lt",
+      "fields": [
+        "marginCallNotified"
+      ],
+      "note": "risk-monitor.ts uses marginLevel.lte(marginCallLevel); margin/src/lib.rs evaluate() uses level < call_level."
+    }
+  ],
+  "broker": {
+    "negativeBalanceProtection": true
+  },
+  "groups": [
+    {
+      "key": "std",
+      "marginCallLevel": "100",
+      "stopOutLevel": "50"
+    }
+  ],
+  "accounts": [
+    {
+      "key": "a1",
+      "group": "std",
+      "balance": "2000",
+      "credit": "0",
+      "leverage": 100
+    }
+  ],
+  "symbols": [
+    {
+      "name": "XAUUSD",
+      "contractSize": "100",
+      "digits": 2,
+      "quoteCurrency": "USD"
+    }
+  ],
+  "positions": [
+    {
+      "key": "p1",
+      "account": "a1",
+      "symbol": "XAUUSD",
+      "side": "BUY",
+      "volume": "1",
+      "openPrice": "2000",
+      "slPrice": null,
+      "tpPrice": null
+    }
+  ],
+  "prices": [
+    {
+      "symbol": "XAUUSD",
+      "bid": "2000",
+      "ask": "2000.5",
+      "ageSeconds": 0
+    }
+  ]
+}

@@ -1,0 +1,65 @@
+{
+  "name": "06-credit-decides-stop-out",
+  "why": "balance 1000 + credit 1000, loss -800. Web (no credit): 200/1992 = 10% -> stop-out. Rust (credit counted): 1200/2000 = 60% -> margin call only.",
+  "knownDivergence": [
+    {
+      "id": "credit-in-equity",
+      "fields": [
+        "marginLevelBefore",
+        "closedPositionIds",
+        "closeReasons",
+        "finalBalance",
+        "transactions",
+        "marginCallNotified"
+      ],
+      "note": "calc.rs equity() adds state.credit; web equity is balance + floating only."
+    }
+  ],
+  "broker": {
+    "negativeBalanceProtection": true
+  },
+  "groups": [
+    {
+      "key": "std",
+      "marginCallLevel": "100",
+      "stopOutLevel": "50"
+    }
+  ],
+  "accounts": [
+    {
+      "key": "a1",
+      "group": "std",
+      "balance": "1000",
+      "credit": "1000",
+      "leverage": 100
+    }
+  ],
+  "symbols": [
+    {
+      "name": "XAUUSD",
+      "contractSize": "100",
+      "digits": 2,
+      "quoteCurrency": "USD"
+    }
+  ],
+  "positions": [
+    {
+      "key": "p1",
+      "account": "a1",
+      "symbol": "XAUUSD",
+      "side": "BUY",
+      "volume": "1",
+      "openPrice": "2000",
+      "slPrice": null,
+      "tpPrice": null
+    }
+  ],
+  "prices": [
+    {
+      "symbol": "XAUUSD",
+      "bid": "1992",
+      "ask": "1992.5",
+      "ageSeconds": 0
+    }
+  ]
+}

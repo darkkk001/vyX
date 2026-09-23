@@ -1,0 +1,53 @@
+{
+  "name": "12-heartbeat-stale-tick",
+  "why": "LivePrice tickAt is 60s old but updatedAt is 1s old (the MT5 EA heartbeat resends an unchanged price). Web gates on tickAt -> no price -> no action. Rust gates on updatedAt -> uses the frozen 1992 -> stop-out.",
+  "knownDivergence": [],
+  "broker": {
+    "negativeBalanceProtection": true
+  },
+  "groups": [
+    {
+      "key": "std",
+      "marginCallLevel": "100",
+      "stopOutLevel": "50"
+    }
+  ],
+  "accounts": [
+    {
+      "key": "a1",
+      "group": "std",
+      "balance": "1000",
+      "credit": "0",
+      "leverage": 100
+    }
+  ],
+  "symbols": [
+    {
+      "name": "XAUUSD",
+      "contractSize": "100",
+      "digits": 2,
+      "quoteCurrency": "USD"
+    }
+  ],
+  "positions": [
+    {
+      "key": "p1",
+      "account": "a1",
+      "symbol": "XAUUSD",
+      "side": "BUY",
+      "volume": "1",
+      "openPrice": "2000",
+      "slPrice": null,
+      "tpPrice": null
+    }
+  ],
+  "prices": [
+    {
+      "symbol": "XAUUSD",
+      "bid": "1992",
+      "ask": "1992.5",
+      "ageSeconds": 60,
+      "updatedAgeSeconds": 1
+    }
+  ]
+}

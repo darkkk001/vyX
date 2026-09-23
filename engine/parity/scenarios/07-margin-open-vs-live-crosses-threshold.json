@@ -1,0 +1,65 @@
+{
+  "name": "07-margin-open-vs-live-crosses-threshold",
+  "why": "BUY 1 XAUUSD 2000 -> 1900, equity 960. Web margin at 1900 = 50.53% (>= 50, margin call only). Rust margin at 2000 = 48% -> stop-out.",
+  "knownDivergence": [
+    {
+      "id": "used-margin-open-vs-live",
+      "fields": [
+        "marginLevelBefore",
+        "closedPositionIds",
+        "closeReasons",
+        "finalBalance",
+        "transactions",
+        "marginCallNotified"
+      ],
+      "note": "Open-price vs live-price used margin moves the level across the 50% stop-out line."
+    }
+  ],
+  "broker": {
+    "negativeBalanceProtection": true
+  },
+  "groups": [
+    {
+      "key": "std",
+      "marginCallLevel": "100",
+      "stopOutLevel": "50"
+    }
+  ],
+  "accounts": [
+    {
+      "key": "a1",
+      "group": "std",
+      "balance": "10960",
+      "credit": "0",
+      "leverage": 100
+    }
+  ],
+  "symbols": [
+    {
+      "name": "XAUUSD",
+      "contractSize": "100",
+      "digits": 2,
+      "quoteCurrency": "USD"
+    }
+  ],
+  "positions": [
+    {
+      "key": "p1",
+      "account": "a1",
+      "symbol": "XAUUSD",
+      "side": "BUY",
+      "volume": "1",
+      "openPrice": "2000",
+      "slPrice": null,
+      "tpPrice": null
+    }
+  ],
+  "prices": [
+    {
+      "symbol": "XAUUSD",
+      "bid": "1900",
+      "ask": "1900.5",
+      "ageSeconds": 0
+    }
+  ]
+}
