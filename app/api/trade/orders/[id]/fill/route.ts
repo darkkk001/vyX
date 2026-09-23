@@ -262,6 +262,7 @@ export async function POST(
       leverage: account.leverage,
       marginCallLevel: account.group?.marginCallLevel ?? new Prisma.Decimal(100),
       newOrderContractSize: brokerSymbol.symbol.contractSize,
+      newOrderQuoteCurrency: brokerSymbol.symbol.quoteCurrency,
       newOrderVolume: order.volume,
       newOrderFillPrice: fillPrice,
     });

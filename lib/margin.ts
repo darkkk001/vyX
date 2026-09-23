@@ -2,6 +2,7 @@ import "server-only";
 import { Prisma, PrismaClient } from "@prisma/client";
 import { getFreshPrices } from "@/lib/live-price";
 import { computeRealizedPnl, closePriceFor } from "@/lib/trading";
+import { conversionRate, loadFxLookup } from "@/lib/fx";
 
 export type AccountMarginSnapshot = {
   accountId: string;
@@ -29,13 +30,16 @@ export async function computeAccountMarginSnapshots(prisma: PrismaClient, broker
     where: { brokerId, status: "OPEN" },
     include: {
       account: {
-        select: { id: true, accountNumber: true, balance: true, leverage: true, group: { select: { marginCallLevel: true, stopOutLevel: true } } },
+        select: { id: true, accountNumber: true, balance: true, leverage: true, currency: true, group: { select: { marginCallLevel: true, stopOutLevel: true } } },
       },
-      symbol: { select: { name: true, contractSize: true } },
+      symbol: { select: { name: true, contractSize: true, quoteCurrency: true } },
     },
   });
 
-  const priceBySymbol = await getFreshPrices([...new Set(positions.map((p) => p.symbol.name))]);
+  const [priceBySymbol, fx] = await Promise.all([
+    getFreshPrices([...new Set(positions.map((p) => p.symbol.name))]),
+    loadFxLookup(prisma, positions.map((p) => [p.symbol.quoteCurrency, p.account.currency] as const)),
+  ]);
 
   const byAccount = new Map<string, AccountMarginSnapshot>();
   for (const p of positions) {
@@ -55,10 +59,12 @@ export async function computeAccountMarginSnapshots(prisma: PrismaClient, broker
     snap.positionCount += 1;
 
     const live = priceBySymbol.get(p.symbol.name);
-    if (live) {
+    // quote -> account currency (lib/fx.ts); no rate = counted like no price, never as if it were 1
+    const rate = conversionRate(p.symbol.quoteCurrency, p.account.currency, fx);
+    if (live && rate) {
       const currentPrice = closePriceFor(p.side, live.bid, live.ask);
-      snap.equity += computeRealizedPnl({ side: p.side, openPrice: p.openPrice, closePrice: currentPrice, volume: p.volume, contractSize: p.symbol.contractSize }).toNumber();
-      snap.usedMargin += liveUsedMarginFor({ side: p.side, volume: p.volume, contractSize: p.symbol.contractSize, bid: live.bid, ask: live.ask, leverage: p.account.leverage }).toNumber();
+      snap.equity += computeRealizedPnl({ side: p.side, openPrice: p.openPrice, closePrice: currentPrice, volume: p.volume, contractSize: p.symbol.contractSize }).mul(rate).toNumber();
+      snap.usedMargin += liveUsedMarginFor({ side: p.side, volume: p.volume, contractSize: p.symbol.contractSize, bid: live.bid, ask: live.ask, leverage: p.account.leverage }).mul(rate).toNumber();
     }
 
     byAccount.set(p.account.id, snap);
@@ -143,7 +149,10 @@ export function checkPreTradeMargin(params: {
 // margin (nothing / not enough deposited -- the shortfall exists even with no other position
 // open), "INSUFFICIENT_MARGIN" when the balance could but the margin already tied up in open
 // positions (or the floating loss on them) leaves too little free. The client names them apart.
-export type PreTradeMarginRejection = { error: "INSUFFICIENT_BALANCE" | "INSUFFICIENT_MARGIN"; required: string; available: string; balance: string };
+// "NO_CONVERSION_RATE" (2026-09-23): the new order's symbol, or one already open, is quoted in a currency
+// other than the account's and no price exists to convert it with (lib/fx.ts). Margin cannot be known, so
+// the order is refused rather than sized as if JPY were USD.
+export type PreTradeMarginRejection = { error: "INSUFFICIENT_BALANCE" | "INSUFFICIENT_MARGIN" | "NO_CONVERSION_RATE"; required: string; available: string; balance: string };
 
 // DB-touching wrapper around checkPreTradeMargin above -- computes this
 // one account's current equity/used-margin (same per-position formulas
@@ -166,17 +175,27 @@ export async function checkAccountPreTradeMargin(
     newOrderContractSize: Prisma.Decimal;
     newOrderVolume: Prisma.Decimal;
     newOrderFillPrice: Prisma.Decimal;
+    newOrderQuoteCurrency: string;
   }
 ): Promise<PreTradeMarginRejection | null> {
   const [account, positions] = await Promise.all([
-    prisma.account.findUniqueOrThrow({ where: { id: params.accountId }, select: { balance: true } }),
+    prisma.account.findUniqueOrThrow({ where: { id: params.accountId }, select: { balance: true, currency: true } }),
     prisma.position.findMany({
       where: { accountId: params.accountId, status: "OPEN" },
-      select: { side: true, volume: true, openPrice: true, symbol: { select: { name: true, contractSize: true } } },
+      select: { side: true, volume: true, openPrice: true, symbol: { select: { name: true, contractSize: true, quoteCurrency: true } } },
     }),
   ]);
 
-  const priceBySymbol = await getFreshPrices([...new Set(positions.map((p) => p.symbol.name))]);
+  const [priceBySymbol, fx] = await Promise.all([
+    getFreshPrices([...new Set(positions.map((p) => p.symbol.name))]),
+    loadFxLookup(prisma, [[params.newOrderQuoteCurrency, account.currency], ...positions.map((p) => [p.symbol.quoteCurrency, account.currency] as const)]),
+  ]);
+  // Every figure below is quote currency x rate = account currency (lib/fx.ts).
+  const newOrderRate = conversionRate(params.newOrderQuoteCurrency, account.currency, fx);
+  const positionRates = positions.map((p) => conversionRate(p.symbol.quoteCurrency, account.currency, fx));
+  if (!newOrderRate || positionRates.some((r) => r == null)) {
+    return { error: "NO_CONVERSION_RATE", required: "-", available: "-", balance: account.balance.toFixed(2) };
+  }
 
   // 2026-09-05 P0 fix: this used to always price existing positions'
   // margin off their own frozen openPrice, the one outlier convention
@@ -187,20 +206,21 @@ export async function checkAccountPreTradeMargin(
   // silently dropping a position's margin contribution during a feed gap).
   let equity = account.balance;
   let usedMargin = new Prisma.Decimal(0);
-  for (const p of positions) {
+  for (const [i, p] of positions.entries()) {
+    const rate = positionRates[i]!;
     const live = priceBySymbol.get(p.symbol.name);
     if (live) {
       const currentPrice = closePriceFor(p.side, live.bid, live.ask);
-      usedMargin = usedMargin.add(liveUsedMarginFor({ side: p.side, volume: p.volume, contractSize: p.symbol.contractSize, bid: live.bid, ask: live.ask, leverage: params.leverage }));
+      usedMargin = usedMargin.add(liveUsedMarginFor({ side: p.side, volume: p.volume, contractSize: p.symbol.contractSize, bid: live.bid, ask: live.ask, leverage: params.leverage }).mul(rate));
       equity = equity.add(
-        computeRealizedPnl({ side: p.side, openPrice: p.openPrice, closePrice: currentPrice, volume: p.volume, contractSize: p.symbol.contractSize })
+        computeRealizedPnl({ side: p.side, openPrice: p.openPrice, closePrice: currentPrice, volume: p.volume, contractSize: p.symbol.contractSize }).mul(rate)
       );
     } else {
-      usedMargin = usedMargin.add(requiredMarginFor(p.volume, p.symbol.contractSize, p.openPrice, params.leverage));
+      usedMargin = usedMargin.add(requiredMarginFor(p.volume, p.symbol.contractSize, p.openPrice, params.leverage).mul(rate));
     }
   }
 
-  const requiredMargin = requiredMarginFor(params.newOrderVolume, params.newOrderContractSize, params.newOrderFillPrice, params.leverage);
+  const requiredMargin = requiredMarginFor(params.newOrderVolume, params.newOrderContractSize, params.newOrderFillPrice, params.leverage).mul(newOrderRate);
   const rejectCode = checkPreTradeMargin({ equity, usedMargin, requiredMargin, marginCallLevel: params.marginCallLevel });
   if (!rejectCode) return null;
   const balanceShort = account.balance.lte(0) || account.balance.lt(requiredMargin);

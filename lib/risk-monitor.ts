@@ -10,6 +10,7 @@ import { emitPositionClosedActivity } from "@/lib/dealer-activity";
 import { publishTradingEvent } from "@/lib/nats";
 import { createNotification } from "@/lib/notifications";
 import { liveUsedMarginFor } from "@/lib/margin";
+import { conversionRate, loadFxLookup } from "@/lib/fx";
 import * as mirror from "@/lib/mirror";
 import * as coverage from "@/lib/coverage";
 
@@ -48,24 +49,30 @@ type OpenPositionWithMarket = {
   symbol: string;
   bid: Prisma.Decimal | null; // null = no fresh (<=15s old) price for this symbol right now
   ask: Prisma.Decimal | null;
+  // quote currency -> account currency (lib/fx.ts). P&L and margin below are multiplied by it so an
+  // account's equity and margin level are in ITS currency; 1 for the same currency. A position whose
+  // rate cannot be resolved is treated exactly like one with no price (bid/ask null): not counted, not
+  // closeable, never counted as if JPY were USD.
+  fxRate: Prisma.Decimal;
 };
 
 async function loadOpenPositionsWithMarket(accountId: string): Promise<OpenPositionWithMarket[]> {
   const positions = await prisma.position.findMany({
     where: { accountId, status: "OPEN" },
-    include: { symbol: { select: { name: true, contractSize: true } } },
+    include: { symbol: { select: { name: true, contractSize: true, quoteCurrency: true } }, account: { select: { currency: true } } },
   });
   if (positions.length === 0) return [];
 
   const symbolNames = [...new Set(positions.map((p) => p.symbol.name))];
   // Every position for one account shares that account's own brokerId
   // (a position can only ever be opened under its own account's broker).
-  const [prices, brokerSymbols] = await Promise.all([
+  const [prices, brokerSymbols, fx] = await Promise.all([
     getFreshPrices(symbolNames),
     prisma.brokerSymbol.findMany({
       where: { brokerId: positions[0].brokerId, symbol: { name: { in: symbolNames } } },
       include: { symbol: { select: { name: true, category: true } }, tradingSessions: true },
     }),
+    loadFxLookup(prisma, positions.map((p) => [p.symbol.quoteCurrency, p.account.currency] as const)),
   ]);
   // Trading-session gate reused verbatim from the order-placement path
   // (checkTradingSession -- see its own comment on why "zero configured
@@ -82,8 +89,11 @@ async function loadOpenPositionsWithMarket(accountId: string): Promise<OpenPosit
   );
 
   return positions.map((p) => {
-    const live = closedSymbols.has(p.symbol.name) ? undefined : prices.get(p.symbol.name);
+    const rate = conversionRate(p.symbol.quoteCurrency, p.account.currency, fx);
+    if (!rate) console.error(`risk monitor: no ${p.symbol.quoteCurrency}->${p.account.currency} rate for ${p.symbol.name} position ${p.id}; treated as unpriced`);
+    const live = closedSymbols.has(p.symbol.name) || !rate ? undefined : prices.get(p.symbol.name);
     return {
+      fxRate: rate ?? new Prisma.Decimal(1),
       id: p.id,
       brokerId: p.brokerId,
       accountId: p.accountId,
@@ -188,9 +198,9 @@ export async function evaluateAccountRisk(accountId: string): Promise<RiskMonito
     for (const p of positions) {
       if (p.bid == null || p.ask == null) continue; // no live price -- not closeable, not counted
       const cp = closePriceFor(p.side, p.bid, p.ask);
-      const pnl = computeRealizedPnl({ side: p.side, openPrice: p.openPrice, closePrice: cp, volume: p.volume, contractSize: p.contractSize });
+      const pnl = computeRealizedPnl({ side: p.side, openPrice: p.openPrice, closePrice: cp, volume: p.volume, contractSize: p.contractSize }).mul(p.fxRate);
       equity = equity.add(pnl);
-      usedMargin = usedMargin.add(liveUsedMarginFor({ side: p.side, volume: p.volume, contractSize: p.contractSize, bid: p.bid, ask: p.ask, leverage: freshAccount.leverage }));
+      usedMargin = usedMargin.add(liveUsedMarginFor({ side: p.side, volume: p.volume, contractSize: p.contractSize, bid: p.bid, ask: p.ask, leverage: freshAccount.leverage }).mul(p.fxRate));
       if (!worst || pnl.lt(worst.pnl)) worst = { position: p, pnl, closePrice: cp };
     }
 
@@ -259,8 +269,8 @@ export async function evaluateAccountRisk(accountId: string): Promise<RiskMonito
     for (const p of remaining) {
       if (p.bid == null || p.ask == null) continue; // no live price -- not counted, same as passes 1/2
       const cp = closePriceFor(p.side, p.bid, p.ask);
-      equity = equity.add(computeRealizedPnl({ side: p.side, openPrice: p.openPrice, closePrice: cp, volume: p.volume, contractSize: p.contractSize }));
-      usedMargin = usedMargin.add(liveUsedMarginFor({ side: p.side, volume: p.volume, contractSize: p.contractSize, bid: p.bid, ask: p.ask, leverage: latestAccount.leverage }));
+      equity = equity.add(computeRealizedPnl({ side: p.side, openPrice: p.openPrice, closePrice: cp, volume: p.volume, contractSize: p.contractSize }).mul(p.fxRate));
+      usedMargin = usedMargin.add(liveUsedMarginFor({ side: p.side, volume: p.volume, contractSize: p.contractSize, bid: p.bid, ask: p.ask, leverage: latestAccount.leverage }).mul(p.fxRate));
     }
     if (usedMargin.gt(0)) {
       const marginLevel = equity.div(usedMargin).mul(100);

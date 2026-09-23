@@ -394,6 +394,7 @@ async function mirrorFillForRule(db: Db, rule: MirrorRule, source: MirrorSourceP
       leverage: targetAccount.leverage,
       marginCallLevel: targetAccount.group?.marginCallLevel ?? new Prisma.Decimal(100),
       newOrderContractSize: brokerSymbol.symbol.contractSize,
+      newOrderQuoteCurrency: brokerSymbol.symbol.quoteCurrency,
       newOrderVolume: volume,
       newOrderFillPrice: fillPrice,
     });

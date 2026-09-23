@@ -390,6 +390,7 @@ async function handlePlaceOrder(request: NextRequest) {
             leverage: account.leverage,
             marginCallLevel: account.group?.marginCallLevel ?? new Prisma.Decimal(100),
             newOrderContractSize: brokerSymbol.symbol.contractSize,
+            newOrderQuoteCurrency: brokerSymbol.symbol.quoteCurrency,
             newOrderVolume: volume,
             newOrderFillPrice: fillPrice,
           });
@@ -576,6 +577,7 @@ async function handlePlaceOrder(request: NextRequest) {
         leverage: account.leverage,
         marginCallLevel: account.group?.marginCallLevel ?? new Prisma.Decimal(100),
         newOrderContractSize: brokerSymbol.symbol.contractSize,
+        newOrderQuoteCurrency: brokerSymbol.symbol.quoteCurrency,
         newOrderVolume: volume,
         newOrderFillPrice: fillPrice,
       });

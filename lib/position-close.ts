@@ -1,6 +1,7 @@
 import "server-only";
 import { Prisma } from "@prisma/client";
 import { computeRealizedPnl } from "@/lib/trading";
+import { quoteToAccountRate } from "@/lib/fx";
 
 export type ClosePositionInput = {
   id: string;
@@ -46,13 +47,23 @@ export async function closePositionInTx(
   const closeVolume = params.closeVolume ?? position.volume;
   const isPartial = closeVolume.lt(position.volume);
 
-  const realizedPnl = computeRealizedPnl({
+  // computeRealizedPnl is in the symbol's QUOTE currency; the balance is in the ACCOUNT's (lib/fx.ts). The
+  // rate is resolved before anything is written, so a missing rate refuses the close with nothing changed
+  // rather than booking JPY as if it were USD. Same-currency (every XXXUSD on a USD account) is exactly 1
+  // and reads no price.
+  const ccy = await tx.position.findUniqueOrThrow({
+    where: { id: position.id },
+    select: { symbol: { select: { quoteCurrency: true } }, account: { select: { currency: true } } },
+  });
+  const rate = await quoteToAccountRate(tx, ccy.symbol.quoteCurrency, ccy.account.currency);
+  const quotePnl = computeRealizedPnl({
     side: position.side,
     openPrice: position.openPrice,
     closePrice,
     volume: closeVolume,
     contractSize: position.symbol.contractSize,
   });
+  const realizedPnl = rate.eq(1) ? quotePnl : quotePnl.mul(rate).toDecimalPlaces(4);
 
   // The guard is status AND the volume the caller read (2026-09-23). Status alone let a caller holding a
   // stale volume apply after a concurrent partial close had already reduced the position: both partials

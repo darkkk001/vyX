@@ -239,6 +239,56 @@ describe("closePositionInTx (live DB, rolled back)", () => {
     });
   });
 
+  // Quote-currency conversion (2026-09-23): P&L comes out in the symbol's QUOTE currency and used to be
+  // booked as if it were the account's. A USD account closing a JPY-quoted pair must book USD.
+  it("books a JPY-quoted trade's P&L in the account's USD at the USDJPY rate", async () => {
+    if (!dbReachable) return;
+    await withRollback(async (tx) => {
+      const fx = await createFixture(tx);
+      const suffix = randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase();
+      const jpy = await tx.symbol.create({ data: { name: `TJPY${suffix}`, baseCurrency: "USD", quoteCurrency: "JPY", digits: 3, contractSize: D("100000"), category: "FOREX" } });
+      // upsert: another suite may hold a committed USDJPY row; this transaction is rolled back either way
+      await tx.livePrice.upsert({
+        where: { symbol: "USDJPY" },
+        create: { symbol: "USDJPY", bid: D("150.000"), ask: D("150.000"), updatedAt: new Date(), tickAt: new Date() },
+        update: { bid: D("150.000"), ask: D("150.000") },
+      });
+      const order = await tx.order.create({ data: { brokerId: fx.brokerId, accountId: fx.accountId, symbolId: jpy.id, side: "BUY", type: "MARKET", volume: D("1.00"), status: "FILLED", filledPrice: D("150.000"), filledAt: new Date(), idempotencyKey: `pc-test:${randomUUID()}` } });
+      const pos = await tx.position.create({ data: { brokerId: fx.brokerId, accountId: fx.accountId, symbolId: jpy.id, originOrderId: order.id, side: "BUY", volume: D("1.00"), openPrice: D("150.000"), status: "OPEN" } });
+
+      const r = await closePositionInTx(tx, {
+        position: { id: pos.id, accountId: fx.accountId, brokerId: fx.brokerId, side: "BUY", openPrice: D("150.000"), volume: D("1.00"), symbol: { contractSize: D("100000") } },
+        closePrice: "150.100", // +10 pips on 1 lot = 10,000 JPY
+      });
+      expect(r.closed).toBe(true);
+      if (r.closed) expect(r.realizedPnl.toString()).toBe("66.6667"); // 10,000 / 150, not 10,000
+      const acct = await tx.account.findUniqueOrThrow({ where: { id: fx.accountId } });
+      expect(acct.balance.toString()).toBe("100066.6667");
+      const txn = await tx.transaction.findFirstOrThrow({ where: { accountId: fx.accountId, type: "TRADE_PNL" } });
+      expect(txn.amount.toString()).toBe("66.6667");
+    });
+  });
+
+  it("refuses (writes nothing) when a non-account-currency P&L has no rate to convert with", async () => {
+    if (!dbReachable) return;
+    await withRollback(async (tx) => {
+      const fx = await createFixture(tx);
+      const suffix = randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase();
+      const odd = await tx.symbol.create({ data: { name: `TXYZ${suffix}`, baseCurrency: "USD", quoteCurrency: "XYZ", digits: 3, contractSize: D("1000"), category: "FOREX" } });
+      const order = await tx.order.create({ data: { brokerId: fx.brokerId, accountId: fx.accountId, symbolId: odd.id, side: "BUY", type: "MARKET", volume: D("1.00"), status: "FILLED", filledPrice: D("10"), filledAt: new Date(), idempotencyKey: `pc-test:${randomUUID()}` } });
+      const pos = await tx.position.create({ data: { brokerId: fx.brokerId, accountId: fx.accountId, symbolId: odd.id, originOrderId: order.id, side: "BUY", volume: D("1.00"), openPrice: D("10"), status: "OPEN" } });
+
+      await expect(closePositionInTx(tx, {
+        position: { id: pos.id, accountId: fx.accountId, brokerId: fx.brokerId, side: "BUY", openPrice: D("10"), volume: D("1.00"), symbol: { contractSize: D("1000") } },
+        closePrice: "11",
+      })).rejects.toThrow(/no XYZ->USD conversion rate/);
+      const after = await tx.position.findUniqueOrThrow({ where: { id: pos.id } });
+      expect(after.status).toBe("OPEN");
+      const acct = await tx.account.findUniqueOrThrow({ where: { id: fx.accountId } });
+      expect(acct.balance.toString()).toBe("100000");
+    });
+  });
+
   it("uses the caller's supplied note verbatim when given, otherwise defaults based on partial/full", async () => {
     if (!dbReachable) return;
     await withRollback(async (tx) => {
