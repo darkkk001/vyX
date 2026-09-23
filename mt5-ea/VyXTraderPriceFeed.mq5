@@ -7,7 +7,7 @@
 //| LivePrice table this EA feeds.                                    |
 //+------------------------------------------------------------------+
 #property strict
-#property version   "1.41"
+#property version   "1.42"
 
 input string ServerUrl            = "https://www.vyxtrader.com/api/internal/price-feed";
 // No default -- this file is committed to a public-ish repo. A real
@@ -16,6 +16,14 @@ input string ServerUrl            = "https://www.vyxtrader.com/api/internal/pric
 // on the terminal instead. Empty means "not configured yet" and OnTick/
 // OnTimer both refuse to push until it's set (see the guard below).
 input string ApiSecret            = "";
+// v1.42 -- when ApiSecret is left EMPTY, OnInit reads the secret from the shared terminal data folder:
+// %APPDATA%\MetaQuotes\Terminal\Common\Files\vyx_secret.txt (one line, the secret, nothing else). That
+// is what lets the EA come back after a VPS reboot with nothing typed into it: the startup .set / profile
+// never has to carry the secret, and rotating it is one file edit + EA reinit. A non-empty ApiSecret
+// input still wins, exactly as before.
+const string API_SECRET_FILE = "vyx_secret.txt";
+string g_apiSecret = "";          // what every push actually sends -- see LoadApiSecret
+string g_apiSecretSource = "";    // "Inputs" / the file / "" (for the log only; the value is never printed)
 // No longer used to drive OnInit's timer (see EventSetMillisecondTimer
 // below, now keyed off PushMinIntervalMs instead) -- left declared,
 // unused, rather than removed, so an already-configured EA instance's
@@ -575,8 +583,49 @@ void SyncClockOffset()
    RefreshBrokerOffset();
 }
 
+// v1.42 -- resolves the secret once per init: the ApiSecret input if set, else the first line of
+// Common\Files\vyx_secret.txt (FILE_COMMON, so every terminal on the box shares it and a portable install
+// finds it too). Surrounding whitespace, the line break and a UTF-8 BOM are stripped. Logs only WHERE the
+// secret came from and its length, never the value.
+void LoadApiSecret()
+{
+   g_apiSecret = ApiSecret;
+   StringTrimLeft(g_apiSecret);
+   StringTrimRight(g_apiSecret);
+   if (StringLen(g_apiSecret) > 0)
+   {
+      g_apiSecretSource = "Inputs";
+   }
+   else
+   {
+      g_apiSecretSource = "";
+      ResetLastError();
+      int h = FileOpen(API_SECRET_FILE, FILE_READ | FILE_TXT | FILE_COMMON | FILE_ANSI);
+      if (h == INVALID_HANDLE)
+      {
+         Print("VyXTraderPriceFeed: ApiSecret input is empty and Common\\Files\\", API_SECRET_FILE, " could not be opened (error ", GetLastError(), ")");
+      }
+      else
+      {
+         string line = FileIsEnding(h) ? "" : FileReadString(h);
+         FileClose(h);
+         if (StringLen(line) > 0 && StringGetCharacter(line, 0) == 0xFEFF) line = StringSubstr(line, 1);
+         if (StringLen(line) >= 3 && StringGetCharacter(line, 0) == 0xEF && StringGetCharacter(line, 1) == 0xBB && StringGetCharacter(line, 2) == 0xBF)
+            line = StringSubstr(line, 3); // a UTF-8 BOM read through FILE_ANSI
+         StringTrimLeft(line);
+         StringTrimRight(line);
+         g_apiSecret = line;
+         if (StringLen(g_apiSecret) > 0) g_apiSecretSource = "Common\\Files\\" + API_SECRET_FILE;
+         else Print("VyXTraderPriceFeed: Common\\Files\\", API_SECRET_FILE, " is empty");
+      }
+   }
+   if (StringLen(g_apiSecret) > 0)
+      Print("VyXTraderPriceFeed: secret loaded from ", g_apiSecretSource, " (", StringLen(g_apiSecret), " chars)");
+}
+
 int OnInit()
 {
+   LoadApiSecret();
    ParseSymbolMap();
    // Before SyncClockOffset so a first backfill can't fire with a zero
    // offset if the handshake is slow or fails; SyncClockOffset refreshes
@@ -668,7 +717,7 @@ string Base64UrlEncode(string src)
 // segment isn't touched by that.
 void SendViaProxy(string ticksJson)
 {
-   string payload = "{\"secret\":\"" + ApiSecret + "\",\"ticks\":" + ticksJson + "}";
+   string payload = "{\"secret\":\"" + g_apiSecret + "\",\"ticks\":" + ticksJson + "}";
    string url = ServerUrl + "/" + Base64UrlEncode(payload);
 
    uchar noData[];
@@ -702,7 +751,7 @@ void SendViaProxy(string ticksJson)
 bool SendDirect(string ticksJson)
 {
    string url = DirectServerUrl + "/internal/price-feed";
-   string headers = "Content-Type: application/json\r\nx-price-feed-secret: " + ApiSecret + "\r\n";
+   string headers = "Content-Type: application/json\r\nx-price-feed-secret: " + g_apiSecret + "\r\n";
 
    uchar body[];
    StringToCharArray(ticksJson, body, 0, StringLen(ticksJson), CP_UTF8);
@@ -846,7 +895,7 @@ void SendHistoryPage(string canonicalSymbol, string brokerSymbol, ENUM_TIMEFRAME
       + "\",\"server_offset_sec\":" + IntegerToString(BrokerOffsetSec)
       + ",\"bars\":" + bars + "}";
    string url = DirectServerUrl + "/internal/history";
-   string headers = "Content-Type: application/json\r\nx-price-feed-secret: " + ApiSecret + "\r\n";
+   string headers = "Content-Type: application/json\r\nx-price-feed-secret: " + g_apiSecret + "\r\n";
 
    uchar body[];
    StringToCharArray(json, body, 0, StringLen(json), CP_UTF8);
@@ -908,7 +957,7 @@ void SendHistoryBars(string canonicalSymbol, string brokerSymbol, ENUM_TIMEFRAME
 // via StepDeepBackfill, never all at once.
 void StartDeepBackfill()
 {
-   if (!UseDirectMode || StringLen(DirectServerUrl) == 0 || StringLen(ApiSecret) == 0)
+   if (!UseDirectMode || StringLen(DirectServerUrl) == 0 || StringLen(g_apiSecret) == 0)
    {
       lastHistoryBackfillMs = GetTickCount(); // proxy mode / not configured -- same early-out convention as before
       return;
@@ -1186,7 +1235,7 @@ void RunShallowHistoryBackfill()
       lastHistoryBackfillMs = GetTickCount(); // don't retry every cycle in proxy mode, same as SyncClockOffset
       return;
    }
-   if (StringLen(ApiSecret) == 0) return; // BuildAndSend already warns about this; avoid a duplicate log line here
+   if (StringLen(g_apiSecret) == 0) return; // BuildAndSend already warns about this; avoid a duplicate log line here
 
    for (int i = 0; i < ArraySize(ActiveBrokerSymbols); i++)
    {
@@ -1208,9 +1257,9 @@ void RunShallowHistoryBackfill()
 // tick rate of ~20-40/s).
 void BuildAndSend()
 {
-   if (StringLen(ApiSecret) == 0)
+   if (StringLen(g_apiSecret) == 0)
    {
-      Print("VyXTraderPriceFeed: ApiSecret is empty -- set it in this EA's Inputs tab before it will push anything");
+      Print("VyXTraderPriceFeed: no secret -- set ApiSecret in the Inputs tab, or put it in Common\\Files\\", API_SECRET_FILE, " and reinit; nothing is pushed until then");
       return;
    }
 
