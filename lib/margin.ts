@@ -139,7 +139,9 @@ export function checkPreTradeMargin(params: {
   const projectedUsedMargin = params.usedMargin.add(params.requiredMargin);
   if (projectedUsedMargin.isZero()) return null;
   const projectedLevel = params.equity.div(projectedUsedMargin).mul(100);
-  if (projectedLevel.lt(params.marginCallLevel)) {
+  // Stage 2 F3: margin call is `level <= marginCallLevel`, so an order that would land exactly ON the call
+  // level would open straight into margin call and is refused too (was lt).
+  if (projectedLevel.lte(params.marginCallLevel)) {
     return "INSUFFICIENT_MARGIN";
   }
   return null;

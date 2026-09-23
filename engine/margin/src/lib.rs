@@ -87,8 +87,9 @@ pub fn missing_group_thresholds<'a>(known_group_ids: &'a [String], by_group: &Th
 pub fn evaluate(equity: Decimal, used_margin: Decimal, thresholds: MarginThresholds) -> MonitorAction {
     match margin_level(equity, used_margin) {
         None => MonitorAction::Ok, // flat account, nothing to monitor
-        Some(level) if level < thresholds.stop_out_level => MonitorAction::StopOut,
-        Some(level) if level < thresholds.call_level => MonitorAction::MarginCall,
+        // Stage 2 F3 (canonical, MT5, = lib/risk-monitor.ts): AT OR BELOW each threshold
+        Some(level) if level <= thresholds.stop_out_level => MonitorAction::StopOut,
+        Some(level) if level <= thresholds.call_level => MonitorAction::MarginCall,
         Some(_) => MonitorAction::Ok,
     }
 }
@@ -161,20 +162,25 @@ mod tests {
         assert_eq!(action, MonitorAction::StopOut);
     }
 
-    /// `< thresholds.call_level`, not `<=` -- exactly at the call level is
-    /// still Ok. Implied by the code, previously unasserted.
+    /// Stage 2 F3: `<=` -- exactly at the call level IS a margin call (the web's rule, MT5's).
     #[test]
-    fn exactly_at_call_level_is_ok() {
+    fn exactly_at_call_level_is_margin_call() {
         let action = evaluate(dec!(1000), dec!(1000), MarginThresholds::default()); // level = 100
-        assert_eq!(action, MonitorAction::Ok);
+        assert_eq!(action, MonitorAction::MarginCall);
     }
 
-    /// Same "< not <=" semantic at the stop-out boundary -- exactly at
-    /// the stop-out level is still just a MarginCall, not a StopOut.
+    /// Stage 2 F3: `<=` -- exactly at the stop-out level IS a stop-out.
     #[test]
-    fn exactly_at_stop_out_level_is_margin_call() {
+    fn exactly_at_stop_out_level_is_stop_out() {
         let action = evaluate(dec!(500), dec!(1000), MarginThresholds::default()); // level = 50
-        assert_eq!(action, MonitorAction::MarginCall);
+        assert_eq!(action, MonitorAction::StopOut);
+    }
+
+    /// Just above either threshold is not.
+    #[test]
+    fn just_above_each_threshold_is_not() {
+        assert_eq!(evaluate(dec!(1000.01), dec!(1000), MarginThresholds::default()), MonitorAction::Ok);
+        assert_eq!(evaluate(dec!(500.01), dec!(1000), MarginThresholds::default()), MonitorAction::MarginCall);
     }
 
     #[test]

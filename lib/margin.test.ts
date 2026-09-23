@@ -42,6 +42,15 @@ describe("checkPreTradeMargin (parity with engine/risk/src/lib.rs's check_free_m
     expect(result).toBeNull();
   });
 
+  // Stage 2 F3: margin call is `level <= marginCallLevel`, so an order that would land EXACTLY on the call
+  // level opens straight into margin call and is refused (it used to pass with `lt`).
+  it("rejects an order that would land exactly on the margin-call level; accepts one a cent above it", () => {
+    const at = checkPreTradeMargin({ equity: new Prisma.Decimal(1000), usedMargin: new Prisma.Decimal(400), requiredMargin: new Prisma.Decimal(600), marginCallLevel: new Prisma.Decimal(100) });
+    expect(at).toBe("INSUFFICIENT_MARGIN"); // 1000 / 1000 = 100%
+    const above = checkPreTradeMargin({ equity: new Prisma.Decimal("1000.01"), usedMargin: new Prisma.Decimal(400), requiredMargin: new Prisma.Decimal(600), marginCallLevel: new Prisma.Decimal(100) });
+    expect(above).toBeNull();
+  });
+
   it("honors a broker/group's own configured margin-call level, not just Rust's hardcoded 100", () => {
     // Same numbers as the "accepts" case above (free margin 800 >= 600,
     // so Rust's binary check_free_margin would pass) -- but a broker

@@ -216,7 +216,6 @@ pub async fn evaluate_account(
     pool: &PgPool,
     nats: Option<&async_nats::Client>,
     account_id: &str,
-    by_group: &margin::ThresholdsByGroup,
 ) -> Result<Option<EvalReport>, sqlx::Error> {
     let Some(mut state) = load_book_state(pool, account_id).await? else {
         return Ok(None);
@@ -236,9 +235,9 @@ pub async fn evaluate_account(
     // evaluation entirely rather than falling back to a guess -- the
     // account is picked up again on the next pass once the load
     // succeeds, rather than evaluated once against the wrong number.
-    let group_id = db::get_account_group_id(pool, account_id).await?;
-    let Some(thresholds) = margin::resolve_thresholds(group_id.as_deref(), by_group) else {
-        tracing::warn!(account_id, ?group_id, "margin monitor: group thresholds not loaded yet, skipping this pass");
+    // Stage 2 F3: the account's own Group, read now from the same database (defaults 100 / 50 without one).
+    // Replaces the per-pass cached map, which skipped an account whose group was "not loaded yet".
+    let Some(thresholds) = book::account_thresholds(pool, account_id).await? else {
         return Ok(None);
     };
 
@@ -261,7 +260,8 @@ pub async fn evaluate_account(
             MonitorAction::Ok => break,
             MonitorAction::MarginCall => {
                 report.margin_call = true;
-                let level = risk::margin_level(equity(&state), used_margin(&state)).unwrap_or(Decimal::ZERO);
+                // evaluate() only returns MarginCall for a real level; a null level is never an action
+                let Some(level) = risk::margin_level(equity(&state), used_margin(&state)) else { break };
                 publish_best_effort(
                     nats,
                     &TradingEvent::MarginCall { account_id: account_id.to_string(), margin_level: level },
@@ -271,9 +271,9 @@ pub async fn evaluate_account(
             }
             MonitorAction::StopOut => {
                 // the web's note text exactly (lib/risk-monitor.ts), so both paths leave identical Transaction rows
-                let level = risk::margin_level(equity(&state), used_margin(&state)).unwrap_or(Decimal::ZERO);
+                let Some(level) = risk::margin_level(equity(&state), used_margin(&state)) else { break };
                 let note = format!(
-                    "Stop-out (automatic): margin level {:.2}% below {}%",
+                    "Stop-out (automatic): margin level {:.2}% at or below {}%",
                     level,
                     thresholds.stop_out_level.normalize()
                 );
@@ -322,20 +322,9 @@ pub async fn run_once(pool: &PgPool, nats: &async_nats::Client) {
         }
     };
 
-    // Risk item 2 (hot reload): re-loaded fresh on every pass, not cached
-    // across passes -- a group edit takes effect within one poll cycle /
-    // one price tick, whichever trigger fires next, with no separate
-    // "group changed" event needed. Cheap: one row per group.
-    let by_group = match db::load_group_thresholds(pool).await {
-        Ok(m) => m,
-        Err(err) => {
-            tracing::error!(?err, "margin monitor: failed to load group thresholds, skipping this pass entirely");
-            return;
-        }
-    };
-
+    // thresholds are read per account inside evaluate_account (Stage 2 F3), not cached per pass
     for account_id in account_ids {
-        if let Err(err) = evaluate_account(pool, Some(nats), &account_id, &by_group).await {
+        if let Err(err) = evaluate_account(pool, Some(nats), &account_id).await {
             tracing::error!(?err, account_id, "margin monitor: failed to evaluate account");
         }
     }

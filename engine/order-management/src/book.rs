@@ -136,6 +136,24 @@ pub async fn open_positions_with_market(
         .collect())
 }
 
+/// The account's stop-out / margin-call thresholds, read from its OWN Group in the same database, every
+/// evaluation (Stage 2 F3: one source, no cached map). No group: the global defaults 100 / 50
+/// (margin::MarginThresholds::default, = lib/risk-monitor.ts's `?? 100` / `?? 50`). None = no such account.
+pub async fn account_thresholds(pool: &PgPool, account_id: &str) -> Result<Option<margin::MarginThresholds>, sqlx::Error> {
+    let row: Option<(Option<Decimal>, Option<Decimal>)> = sqlx::query_as(
+        r#"SELECT g."marginCallLevel", g."stopOutLevel"
+           FROM "Account" a LEFT JOIN "Group" g ON g.id = a."groupId"
+           WHERE a.id = $1"#,
+    )
+    .bind(account_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|(call, stop_out)| {
+        let d = margin::MarginThresholds::default();
+        margin::MarginThresholds { call_level: call.unwrap_or(d.call_level), stop_out_level: stop_out.unwrap_or(d.stop_out_level) }
+    }))
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct CloseOutcome {
     pub realized_pnl: Decimal,

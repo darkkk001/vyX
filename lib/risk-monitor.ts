@@ -231,7 +231,9 @@ export async function evaluateAccountRisk(accountId: string): Promise<RiskMonito
     const { marginLevel, worst } = measureAccount(freshAccount, positions);
 
     if (marginLevel == null) break; // nothing to gate a margin level on
-    if (marginLevel.gte(stopOutLevel)) break; // back above threshold -- done
+    // Stage 2 F3 (canonical, MT5): stop out when the level is AT OR BELOW stopOutLevel; done only once it is
+    // strictly above. Was gte (an account sitting exactly on the threshold was left alone).
+    if (marginLevel.gt(stopOutLevel)) break; // back above threshold -- done
     if (!worst) break; // below threshold but nothing closeable has a live price right now -- stuck, not this function's call to guess a price
 
     const outcome = await prisma.$transaction((tx) =>
@@ -246,7 +248,7 @@ export async function evaluateAccountRisk(accountId: string): Promise<RiskMonito
           symbol: { contractSize: worst!.position.contractSize },
         },
         closePrice: worst.closePrice,
-        note: `Stop-out (automatic): margin level ${marginLevel.toFixed(2)}% below ${stopOutLevel}%`,
+        note: `Stop-out (automatic): margin level ${marginLevel.toFixed(2)}% at or below ${stopOutLevel}%`,
       })
     );
     stopOutClosed.push(worst.position.id);

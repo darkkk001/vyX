@@ -1,6 +1,6 @@
 {
-  "name": "09-level-exactly-margin-call",
-  "why": "Price == open (P&L 0, margin 2000 on both paths), balance 2000: level exactly 100.00 == marginCallLevel. Web: <= -> margin call. Rust: strict < -> Ok.",
+  "name": "19-level-exactly-stop-out",
+  "why": "Margin level exactly 50.00% (balance 1000, 1 lot XAUUSD bid 2000 = 2000 used margin, flat P&L) with stop-out at 50%. Canonical `<=` (Stage 2 F3, MT5): stopped out on both engines.",
   "knownDivergence": [],
   "broker": {
     "negativeBalanceProtection": true
@@ -16,7 +16,7 @@
     {
       "key": "a1",
       "group": "std",
-      "balance": "2000",
+      "balance": "1000",
       "credit": "0",
       "leverage": 100
     }
@@ -46,7 +46,7 @@
       "symbol": "XAUUSD",
       "bid": "2000",
       "ask": "2000.5",
-      "ageSeconds": 0
+      "ageSeconds": 1
     }
   ]
 }

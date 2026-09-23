@@ -27,10 +27,9 @@ fn money(d: Decimal) -> String {
 }
 
 pub async fn evaluate(pool: &PgPool, sc: &Scenario) -> Result<BTreeMap<String, AccountOutcome>, String> {
-    let by_group = order_management::db::load_group_thresholds(pool).await.map_err(|e| e.to_string())?;
     let mut out = BTreeMap::new();
     for acct in &sc.accounts {
-        let report = order_management::monitor::evaluate_account(pool, None, &acct.key, &by_group)
+        let report = order_management::monitor::evaluate_account(pool, None, &acct.key)
             .await
             .map_err(|e| format!("{}/{}: {e}", sc.name, acct.key))?
             .ok_or_else(|| format!("{}/{}: evaluate_account did not evaluate (no positions / thresholds not loaded)", sc.name, acct.key))?;
