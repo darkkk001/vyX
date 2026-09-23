@@ -95,6 +95,9 @@ export async function GET(request: NextRequest) {
       // true when the platform opened the hedge (and so closes it itself); false = the dealer booked
       // it by hand and the dealer closes it
       coverageAutoHedged: p.coveragePosition?.autoHedged ?? false,
+      // A_BOOK / B_BOOK: the Smart Dealer Manager's realized DEALER P/L counts only the desk's own
+      // B-book closes (2026-09-23); an A-book trade's result is the LP's, not the dealer's
+      bookType: p.bookType,
     }))
   );
 }
