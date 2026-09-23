@@ -1,9 +1,9 @@
 # Rust cutover, Phase 3: stop-out / margin call / SL-TP moves from the web to the engine
 
-_Written 2026-09-23. Status: pre-stage web money fixes **LIVE** (b5dc33c, 55b86da, deployed 2026-09-23) plus
-the balance row lock (8b5f60b). **Stage 0 DONE** (0417ad0). **Stage 1 DONE** (book.rs, gate green: the
-engine's real monitor on the real schema matches the web's balances and Transaction rows on every
-scenario; the only FAIL left is Stage 2's freshness rule). Stages 2-6 not started._
+_Written 2026-09-23. Status (2026-09-24): pre-stage web money fixes LIVE (b5dc33c, 55b86da, 8b5f60b).
+**Stage 0 DONE** (0417ad0). **Stage 1 DONE** (d8732b1). **Stage 2 DONE** (c25e1f8 F4, a938732 F2, d0d4045 F3,
+d843c6d F1, 58729f6 F5; terminal dfea309): gate green, 20/20 parity scenarios MATCH on the real monitor
+against the real schema. Stages 3-6 not started. ENGINE_ORDER_MANAGEMENT stays OFF._
 
 ## Scope
 
@@ -21,9 +21,11 @@ queue, mirror and coverage stay on the web. Nothing in this plan touches LP rout
 
 | Question | Decision |
 |---|---|
-| Credit in equity | **Web behaviour**: equity = balance + floating P&L of priced positions, credit NOT counted. Rust changes (Stage 2), the web does not. |
+| Credit in equity | **Model A (2026-09-24, final; replaces the 2026-09-23 "credit out")**: equity = balance + credit + floating. A loss beyond the balance is paid from credit, then negative-balance protection. BEHAVIOR CHANGE on the web (production credit is 0, so no live effect yet). |
 | Quote-currency conversion | Fix it everywhere. Web done in 55b86da (`lib/fx.ts`); Rust must use the same rule (Stage 2). |
 | Admin-close double credit | Fix before the cutover. Done in b5dc33c. |
+| Stop-out / margin call | `<=` for both (MT5), 2026-09-24. BEHAVIOR CHANGE on the web at exactly the threshold. |
+| Freshness | `tickAt` (UTC) + trading sessions; EA confirmed to send UTC, no EA change. |
 | Plan doc | This file. |
 
 ## Reference behaviour (what Rust must reproduce)
@@ -105,7 +107,7 @@ margin call, default thresholds instead of skipping, SL/TP order.
 - **Gate:** all 12 scenarios MATCH (the known-divergence tags are removed); plus new scenarios for
   JPY-quoted positions and a closed trading session.
 
-### Stage 2 — Canonical formulas (DRAFT 2026-09-24, awaiting approval; nothing implemented)
+### Stage 2 — Canonical formulas (APPROVED 2026-09-24 with credit Model A and stop-out `<=`; IMPLEMENTED, gate 20/20)
 
 Both engines implement exactly this. Decimal only (Prisma.Decimal / rust_decimal) for every money figure,
 level and threshold; a JS `number` or f64 only at a display boundary. Every row names where the code
@@ -129,7 +131,7 @@ changes; "BEHAVIOR CHANGE" = the web's live money path acts differently afterwar
 | 11 | custom group thresholds | 70.21 | 70.00 | level only |
 | 12 | heartbeat on a stale tick | no price, nothing | 10.00, stops out p1 | freshness on updatedAt (**FAIL**) |
 
-#### CONFLICTS with earlier decisions (need your call before implementing)
+#### CONFLICTS with earlier decisions (RESOLVED 2026-09-24: credit Model A, stop-out `<=`)
 
 1. **Credit.** The 2026-09-23 decision (table at the top of this file) was "web behaviour: credit NOT in
    equity". The 2026-09-24 brief says `Equity = Balance + Credit + FloatingPnL`. These are opposite.

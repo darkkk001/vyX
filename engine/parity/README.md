@@ -145,3 +145,12 @@ Result 2026-09-23: 0 MATCH, 11 EXPECTED-DIVERGENCE (Stage 2 formula tags only), 
 on balances and Transaction rows.
 
 DB tests for book.rs: `ENGINE_TEST_DATABASE_URL=postgresql://postgres@127.0.0.1:5499/vyx_test VYX_REQUIRE_DB_TESTS=1 cargo test -p order-management --test book_db`
+
+## Stage 2 result (2026-09-24): the gate
+
+`bash scripts/parity/run-db.sh`: **20 scenarios, 20 MATCH, 0 EXPECTED-DIVERGENCE, 0 FAIL** after F4 (tickAt +
+sessions), F2 (live margin + fx), F3 (`<=` thresholds from the account's Group), F1 (credit Model A with the
+balance -> credit -> NBP consumption rule) and F5 (SL/TP oldest first). New edge scenarios: 13 zero used margin,
+14 negative equity with credit, 15 SL on a stale tick with fresh updatedAt, 16 DST-boundary tickAt, 17 USDJPY
+conversion, 18 closed session, 19 exactly at stop-out, 20 SL/TP order with NBP. Outcomes now also compare
+finalCredit. The Stage 0 pure-calc mode (run-all.sh) is frozen at the pre-Stage-2 engine and is no longer a gate.
