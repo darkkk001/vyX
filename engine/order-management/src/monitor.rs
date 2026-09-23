@@ -19,13 +19,16 @@
 //!   path now that a live tick stream exists; a real price move triggers
 //!   an evaluation immediately instead of waiting for the next poll.
 //!
-//! "Effective balance" = Account.balance (Prisma-owned, never written
-//! here) + the sum of this account's ledger_entries (Rust-owned) — see
-//! db.rs's `get_ledger_sum` doc comment for why realized P&L from a
-//! force-close is tracked as a ledger delta rather than a direct balance
-//! write.
+//! Book (Rust cutover Stage 1, 2026-09-23): the monitor reads and closes on
+//! the REAL Prisma book through book.rs (`"Position"` / `"Account"` /
+//! `"Transaction"`), writing a close exactly like the web's
+//! closePositionInTx (guard, row lock, negative-balance protection,
+//! Account.balance + TRADE_PNL). It used to read the engine's own empty
+//! `positions` table and book realized P&L as a `ledger_entries` delta on
+//! top of an Account.balance it never wrote.
 
-use crate::calc::{close_price_for, equity, floating_pnl, load_account_state, used_margin, AccountState};
+use crate::book;
+use crate::calc::{close_price_for, equity, floating_pnl, load_book_state, used_margin, AccountState};
 use crate::db;
 use margin::{evaluate, MonitorAction};
 use protocol::TradingEvent;
@@ -87,10 +90,11 @@ fn sl_tp_trigger(p: &db::OpenPositionWithMarket) -> Option<SlTpReason> {
 /// close — see db.rs's idempotency note.
 async fn close_sl_tp_triggered(
     pool: &PgPool,
-    nats: &async_nats::Client,
+    nats: Option<&async_nats::Client>,
     account_id: &str,
     state: &mut AccountState,
-) -> Result<(), sqlx::Error> {
+) -> Result<Vec<(String, &'static str)>, sqlx::Error> {
+    let mut closed = Vec::new();
     let triggered: Vec<(usize, SlTpReason, Decimal, Decimal)> = state
         .positions
         .iter()
@@ -109,15 +113,22 @@ async fn close_sl_tp_triggered(
     for (idx, reason, close_price, pnl) in triggered.into_iter().rev() {
         let position = state.positions.remove(idx);
 
+        let note = match reason {
+            SlTpReason::StopLoss => "Stop loss hit (automatic)",
+            SlTpReason::TakeProfit => "Take profit hit (automatic)",
+        };
         let mut tx = pool.begin().await?;
-        let closed =
-            db::close_position_with_ledger_entry(&mut tx, &position.id, account_id, close_price, pnl).await?;
+        let closed_now = book::close_position_in_tx(&mut tx, &position.id, position.volume, close_price, pnl, note).await?;
         tx.commit().await?;
 
-        let Some(_entry_id) = closed else {
+        let Some(outcome) = closed_now else {
             continue; // already closed by a concurrent pass — nothing to credit or publish
         };
-        state.effective_balance += pnl;
+        state.effective_balance = outcome.final_balance; // after any negative-balance floor
+        closed.push((position.id.clone(), match reason {
+            SlTpReason::StopLoss => "stop_loss",
+            SlTpReason::TakeProfit => "take_profit",
+        }));
 
         let event = match reason {
             SlTpReason::StopLoss => {
@@ -130,7 +141,7 @@ async fn close_sl_tp_triggered(
         publish_best_effort(nats, &event).await;
     }
 
-    Ok(())
+    Ok(closed)
 }
 
 enum CloseAttempt {
@@ -151,8 +162,8 @@ enum CloseAttempt {
 /// required.
 async fn force_close_worst(
     pool: &PgPool,
-    account_id: &str,
     state: &mut AccountState,
+    note: &str,
 ) -> Result<CloseAttempt, sqlx::Error> {
     let worst = state
         .positions
@@ -171,30 +182,47 @@ async fn force_close_worst(
     let position = state.positions.remove(idx);
 
     let mut tx = pool.begin().await?;
-    let closed =
-        db::close_position_with_ledger_entry(&mut tx, &position.id, account_id, close_price, pnl).await?;
+    let closed = book::close_position_in_tx(&mut tx, &position.id, position.volume, close_price, pnl, note).await?;
     tx.commit().await?;
 
-    let Some(_entry_id) = closed else {
+    let Some(outcome) = closed else {
         return Ok(CloseAttempt::AlreadyClosedConcurrently);
     };
 
-    state.effective_balance += pnl;
+    state.effective_balance = outcome.final_balance; // after any negative-balance floor
     Ok(CloseAttempt::Closed(position.id))
 }
 
-async fn evaluate_account(
+/// What one evaluation decided and did -- returned so a caller that is not NATS (the parity harness,
+/// Stage 5's shadow comparison) can see the decision, not just the rows it left behind.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct EvalReport {
+    /// equity / used margin x 100 when the pass started, before any close (None = no used margin)
+    pub margin_level_before: Option<Decimal>,
+    /// every position this pass closed, in order, with "stop_loss" / "take_profit" / "stop_out"
+    pub closed: Vec<(String, &'static str)>,
+    /// the pass ended in margin call (not stop-out)
+    pub margin_call: bool,
+}
+
+/// One account, one pass. `None` = not evaluated (no account / no open position / its group's thresholds
+/// not loaded). `nats` is optional so the same code runs without a broker for the harness and shadow mode.
+pub async fn evaluate_account(
     pool: &PgPool,
-    nats: &async_nats::Client,
+    nats: Option<&async_nats::Client>,
     account_id: &str,
     by_group: &margin::ThresholdsByGroup,
-) -> Result<(), sqlx::Error> {
-    let Some(mut state) = load_account_state(pool, account_id).await? else {
-        return Ok(());
+) -> Result<Option<EvalReport>, sqlx::Error> {
+    let Some(mut state) = load_book_state(pool, account_id).await? else {
+        return Ok(None);
     };
     if state.positions.is_empty() {
-        return Ok(());
+        return Ok(None);
     }
+    let mut report = EvalReport {
+        margin_level_before: risk::margin_level(equity(&state), used_margin(&state)),
+        ..EvalReport::default()
+    };
 
     // Risk item 2: resolve THIS account's own real thresholds -- its
     // group's broker-configured marginCallLevel/stopOutLevel, or the
@@ -206,16 +234,16 @@ async fn evaluate_account(
     let group_id = db::get_account_group_id(pool, account_id).await?;
     let Some(thresholds) = margin::resolve_thresholds(group_id.as_deref(), by_group) else {
         tracing::warn!(account_id, ?group_id, "margin monitor: group thresholds not loaded yet, skipping this pass");
-        return Ok(());
+        return Ok(None);
     };
 
     // SL/TP resolves first: it's the trader's own chosen exit, independent
     // of margin level, and closing these here means the margin/stop-out
     // loop below only ever considers positions that are still actually
     // open.
-    close_sl_tp_triggered(pool, nats, account_id, &mut state).await?;
+    report.closed = close_sl_tp_triggered(pool, nats, account_id, &mut state).await?;
     if state.positions.is_empty() {
-        return Ok(());
+        return Ok(Some(report));
     }
 
     let mut closed_ids = Vec::new();
@@ -227,6 +255,7 @@ async fn evaluate_account(
         match action {
             MonitorAction::Ok => break,
             MonitorAction::MarginCall => {
+                report.margin_call = true;
                 let level = risk::margin_level(equity(&state), used_margin(&state)).unwrap_or(Decimal::ZERO);
                 publish_best_effort(
                     nats,
@@ -235,14 +264,26 @@ async fn evaluate_account(
                 .await;
                 break;
             }
-            MonitorAction::StopOut => match force_close_worst(pool, account_id, &mut state).await? {
-                CloseAttempt::Closed(closed_id) => closed_ids.push(closed_id),
-                CloseAttempt::AlreadyClosedConcurrently => continue,
-                CloseAttempt::NoCloseablePosition => {
-                    tracing::warn!(account_id, "stop-out triggered but no closeable position has a live price");
-                    break;
+            MonitorAction::StopOut => {
+                // the web's note text exactly (lib/risk-monitor.ts), so both paths leave identical Transaction rows
+                let level = risk::margin_level(equity(&state), used_margin(&state)).unwrap_or(Decimal::ZERO);
+                let note = format!(
+                    "Stop-out (automatic): margin level {:.2}% below {}%",
+                    level,
+                    thresholds.stop_out_level.normalize()
+                );
+                match force_close_worst(pool, &mut state, &note).await? {
+                    CloseAttempt::Closed(closed_id) => {
+                        report.closed.push((closed_id.clone(), "stop_out"));
+                        closed_ids.push(closed_id);
+                    }
+                    CloseAttempt::AlreadyClosedConcurrently => continue,
+                    CloseAttempt::NoCloseablePosition => {
+                        tracing::warn!(account_id, "stop-out triggered but no closeable position has a live price");
+                        break;
+                    }
                 }
-            },
+            }
         }
     }
 
@@ -254,10 +295,11 @@ async fn evaluate_account(
         .await;
     }
 
-    Ok(())
+    Ok(Some(report))
 }
 
-async fn publish_best_effort(nats: &async_nats::Client, event: &TradingEvent) {
+async fn publish_best_effort(nats: Option<&async_nats::Client>, event: &TradingEvent) {
+    let Some(nats) = nats else { return };
     if let Err(err) = crate::events::publish(nats, event).await {
         tracing::warn!(?err, "failed to publish margin event to NATS");
     }
@@ -267,7 +309,7 @@ async fn publish_best_effort(nats: &async_nats::Client, event: &TradingEvent) {
 /// account are logged and don't stop the rest — a bug in one account's
 /// data shouldn't leave every other account unmonitored.
 pub async fn run_once(pool: &PgPool, nats: &async_nats::Client) {
-    let account_ids = match db::get_account_ids_with_open_positions(pool).await {
+    let account_ids = match book::account_ids_with_open_positions(pool).await {
         Ok(ids) => ids,
         Err(err) => {
             tracing::error!(?err, "margin monitor: failed to list accounts with open positions");
@@ -288,7 +330,7 @@ pub async fn run_once(pool: &PgPool, nats: &async_nats::Client) {
     };
 
     for account_id in account_ids {
-        if let Err(err) = evaluate_account(pool, nats, &account_id, &by_group).await {
+        if let Err(err) = evaluate_account(pool, Some(nats), &account_id, &by_group).await {
             tracing::error!(?err, account_id, "margin monitor: failed to evaluate account");
         }
     }

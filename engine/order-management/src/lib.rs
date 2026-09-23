@@ -6,6 +6,7 @@
 //! persists the result in one transaction, per the sequence diagram in
 //! ../../docs/trading-engine.md §2.
 
+pub mod book;
 pub mod calc;
 pub mod db;
 pub mod events;

@@ -1,7 +1,9 @@
 # Rust cutover, Phase 3: stop-out / margin call / SL-TP moves from the web to the engine
 
-_Written 2026-09-23. Status: **Stage 0 DONE** (harness, commit 0417ad0). Pre-stage web money bugs FIXED
-(b5dc33c admin-close guard, 55b86da quote currency), awaiting deploy. Stages 1-6 not started._
+_Written 2026-09-23. Status: pre-stage web money fixes **LIVE** (b5dc33c, 55b86da, deployed 2026-09-23) plus
+the balance row lock (8b5f60b). **Stage 0 DONE** (0417ad0). **Stage 1 DONE** (book.rs, gate green: the
+engine's real monitor on the real schema matches the web's balances and Transaction rows on every
+scenario; the only FAIL left is Stage 2's freshness rule). Stages 2-6 not started._
 
 ## Scope
 
@@ -26,7 +28,7 @@ queue, mirror and coverage stay on the web. Nothing in this plan touches LP rout
 
 ## Reference behaviour (what Rust must reproduce)
 
-The web path after b5dc33c + 55b86da is the spec. Each row is pinned by a parity scenario
+The web path after b5dc33c + 55b86da + 8b5f60b is the spec. Each row is pinned by a parity scenario
 (`engine/parity/scenarios`).
 
 | Rule | Web (spec) | Rust today | Stage |
@@ -46,7 +48,10 @@ The web path after b5dc33c + 55b86da is the spec. Each row is pinned by a parity
 
 Every stage ends at a gate; the next does not start until the gate is green.
 
-### Pre-stage: web money bugs. DONE, not yet deployed
+### Pre-stage: web money bugs. DONE (b5dc33c + 55b86da deployed 2026-09-23; 8b5f60b committed)
+
+- 8b5f60b: every read-modify-write of `Account.balance` locks the row first (`lib/account-lock.ts`):
+  10 concurrent closes on one account lost 6-7 of their P&Ls without it. Concurrency test + 624/624.
 
 - b5dc33c: admin close, reverse close and void go through the guarded close / claim; `closePositionInTx`
   guards on status AND volume (stale partial / stale full close no longer pay twice). 7 new tests.
@@ -63,7 +68,24 @@ Every stage ends at a gate; the next does not start until the gate is green.
 0 MATCH, 10 EXPECTED-DIVERGENCE, **2 FAIL**, both real engine gaps now owned by Stages 1 and 2.
 Details and per-scenario meaning: `engine/parity/README.md`.
 
-### Stage 1: engine DB layer on the real schema (4-6 days)
+### Stage 1: engine DB layer on the real schema. DONE
+
+Delivered: `engine/order-management/src/book.rs` (the risk path's reads and the close on `"Position"` /
+`"Account"` / `"Transaction"`, a line-for-line port of `closePositionInTx`: status + volume guard,
+`FOR UPDATE` on the account, negative-balance protection + AuditLog, TRADE_PNL with the raw balanceAfter),
+`calc::load_book_state` (balance = `Account.balance`, no ledger sum), `monitor.rs` on book.rs with the
+web's note texts and a public `evaluate_account` returning an `EvalReport` (optional NATS; Stage 5's
+shadow mode needs the decision, not just the rows). Tests: `tests/book_db.rs`, 6 DB tests including 10
+real concurrent closes (fails without the row lock). Gate: `bash scripts/parity/run-db.sh` = 11
+EXPECTED-DIVERGENCE (all Stage 2 formula tags) + 1 FAIL (scenario 12, Stage 2's freshness rule);
+scenario 10 (NBP) now matches on balances and Transaction rows.
+
+Scope note: only the RISK path moved. The engine's order path (insert_order / insert_position, pending
+orders, swap, its own manual close at lib.rs:648) still uses the lowercase tables; it is behind
+ENGINE_ORDER_MANAGEMENT (off) and has no callers, and moves in the order-execution phase, not this one.
+The gateway's `"Position"` read (d84d926) moves with the Stage 2 formulas it has to share.
+
+Original plan text:
 
 - Rewrite the 24 statements in `engine/order-management/src/db.rs` onto `"Position"` / `"Order"` /
   `"Transaction"` / `"Account"`: `accountId`, `symbolId` join, `openPrice`, `deletedAt IS NULL`, VOIDED

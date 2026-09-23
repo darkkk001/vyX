@@ -1,0 +1,189 @@
+//! The risk path's book on the REAL Prisma schema (Rust cutover Stage 1, docs/RUST-CUTOVER-PLAN.md).
+//!
+//! Until this module the margin monitor read and wrote the engine's own lowercase tables (`positions`,
+//! `ledger_entries`), which production never fills: every broker's book lives in Prisma's `"Position"` /
+//! `"Account"` / `"Transaction"`. This module reads the book from there and closes a position exactly the
+//! way the web's `lib/position-close.ts` `closePositionInTx` does, so the two paths write identical rows:
+//!
+//! 1. guarded UPDATE of `"Position"` (status = OPEN AND volume = what the caller read: a concurrent close,
+//!    or a partial that already reduced it, makes this a benign `None`);
+//! 2. `"Account"` row locked (`FOR UPDATE`) before its balance is read, so two closes on one account can
+//!    never lose each other's P&L;
+//! 3. negative-balance protection per `"Broker"."negativeBalanceProtection"`: the balance floors at 0 and
+//!    the excess is an explicit NEGATIVE_BALANCE_PROTECTION write-off + AuditLog row;
+//! 4. `"Account".balance` written, and a TRADE_PNL `"Transaction"` whose balanceAfter is the RAW
+//!    (uncapped) result, as the web records it.
+//!
+//! What this module does NOT decide yet (Stage 2): the formulas (credit, live-price margin, tickAt
+//! freshness, quote-currency conversion). `realized_pnl` is the caller's, in the account's currency.
+
+use crate::db::OpenPositionWithMarket;
+use rust_decimal::Decimal;
+use sqlx::PgPool;
+use uuid::Uuid;
+
+fn side_from_prisma(s: &str) -> protocol::OrderSide {
+    match s {
+        "SELL" => protocol::OrderSide::Sell,
+        _ => protocol::OrderSide::Buy,
+    }
+}
+
+/// Every account holding at least one OPEN position (same set lib/risk-monitor.ts's callers walk).
+pub async fn account_ids_with_open_positions(pool: &PgPool) -> Result<Vec<String>, sqlx::Error> {
+    let rows: Vec<(String,)> =
+        sqlx::query_as(r#"SELECT DISTINCT "accountId" FROM "Position" WHERE status = 'OPEN'"#).fetch_all(pool).await?;
+    Ok(rows.into_iter().map(|(id,)| id).collect())
+}
+
+/// One account's OPEN positions with the latest quote joined in. Price freshness is still the engine's
+/// old rule (`updatedAt` within 15 s); Stage 2 moves it to the web's (`tickAt` + trading sessions).
+pub async fn open_positions_with_market(
+    pool: &PgPool,
+    account_id: &str,
+) -> Result<Vec<OpenPositionWithMarket>, sqlx::Error> {
+    #[allow(clippy::type_complexity)]
+    let rows: Vec<(String, String, String, Decimal, Decimal, Decimal, Option<Decimal>, Option<Decimal>, Option<Decimal>, Option<Decimal>)> =
+        sqlx::query_as(
+            r#"SELECT p.id, s.name, p.side::text, p.volume, p."openPrice", s."contractSize",
+                      lp.bid, lp.ask, p."slPrice", p."tpPrice"
+               FROM "Position" p
+               JOIN "Symbol" s ON s.id = p."symbolId"
+               LEFT JOIN "LivePrice" lp ON lp.symbol = s.name AND lp."updatedAt" > now() - interval '15 seconds'
+               WHERE p."accountId" = $1 AND p.status = 'OPEN'
+               ORDER BY p."openedAt", p.id"#,
+        )
+        .bind(account_id)
+        .fetch_all(pool)
+        .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, symbol, side, volume, open_price, contract_size, bid, ask, sl_price, tp_price)| OpenPositionWithMarket {
+            id,
+            symbol,
+            side: side_from_prisma(&side),
+            volume,
+            open_price,
+            contract_size,
+            bid,
+            ask,
+            sl_price,
+            tp_price,
+        })
+        .collect())
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CloseOutcome {
+    pub realized_pnl: Decimal,
+    /// balance + realized P&L, before any floor (what the TRADE_PNL row records as balanceAfter)
+    pub raw_balance_after: Decimal,
+    /// what Account.balance now holds
+    pub final_balance: Decimal,
+    /// Some(amount) when negative-balance protection absorbed the part below zero
+    pub write_off: Option<Decimal>,
+}
+
+/// Closes one position in full at `close_price`, crediting `realized_pnl` (account currency), inside the
+/// caller's transaction. `expected_volume` is the volume the caller read the position with; if the row is
+/// no longer OPEN with exactly that volume, nothing is written and `None` comes back (a benign race).
+pub async fn close_position_in_tx(
+    tx: &mut sqlx::PgTransaction<'_>,
+    position_id: &str,
+    expected_volume: Decimal,
+    close_price: Decimal,
+    realized_pnl: Decimal,
+    note: &str,
+) -> Result<Option<CloseOutcome>, sqlx::Error> {
+    let claimed: Option<(String, String)> = sqlx::query_as(
+        r#"UPDATE "Position"
+           SET status = 'CLOSED', "closePrice" = $1, "realizedPnl" = $2, "closedAt" = now()
+           WHERE id = $3 AND status = 'OPEN' AND volume = $4
+           RETURNING "accountId", "brokerId""#,
+    )
+    .bind(close_price)
+    .bind(realized_pnl)
+    .bind(position_id)
+    .bind(expected_volume)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let Some((account_id, broker_id)) = claimed else {
+        return Ok(None);
+    };
+
+    let (balance_before,): (Decimal,) = sqlx::query_as(r#"SELECT balance FROM "Account" WHERE id = $1 FOR UPDATE"#)
+        .bind(&account_id)
+        .fetch_one(&mut **tx)
+        .await?;
+    let raw_balance_after = balance_before + realized_pnl;
+
+    let mut final_balance = raw_balance_after;
+    let mut write_off = None;
+    if raw_balance_after < Decimal::ZERO {
+        let (protect,): (bool,) = sqlx::query_as(r#"SELECT "negativeBalanceProtection" FROM "Broker" WHERE id = $1"#)
+            .bind(&broker_id)
+            .fetch_one(&mut **tx)
+            .await?;
+        if protect {
+            write_off = Some(-raw_balance_after);
+            final_balance = Decimal::ZERO;
+        }
+    }
+
+    sqlx::query(r#"UPDATE "Account" SET balance = $1, "updatedAt" = now() WHERE id = $2"#)
+        .bind(final_balance)
+        .bind(&account_id)
+        .execute(&mut **tx)
+        .await?;
+
+    sqlx::query(
+        r#"INSERT INTO "Transaction"
+             (id, "brokerId", "accountId", type, status, amount, "balanceBefore", "balanceAfter", "referenceType", "referenceId", note, "updatedAt")
+           VALUES ($1, $2, $3, 'TRADE_PNL', 'COMPLETED', $4, $5, $6, 'Position', $7, $8, now())"#,
+    )
+    .bind(Uuid::new_v4().to_string())
+    .bind(&broker_id)
+    .bind(&account_id)
+    .bind(realized_pnl)
+    .bind(balance_before)
+    .bind(raw_balance_after)
+    .bind(position_id)
+    .bind(note)
+    .execute(&mut **tx)
+    .await?;
+
+    if let Some(amount) = write_off {
+        sqlx::query(
+            r#"INSERT INTO "Transaction"
+                 (id, "brokerId", "accountId", type, status, amount, "balanceBefore", "balanceAfter", "referenceType", "referenceId", note, "updatedAt")
+               VALUES ($1, $2, $3, 'NEGATIVE_BALANCE_PROTECTION', 'COMPLETED', $4, $5, $6, 'Position', $7, $8, now())"#,
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(&broker_id)
+        .bind(&account_id)
+        .bind(amount)
+        .bind(raw_balance_after)
+        .bind(final_balance)
+        .bind(position_id)
+        .bind(format!("Negative-balance protection: broker absorbed ${:.2} beyond zero", amount))
+        .execute(&mut **tx)
+        .await?;
+        let detail = serde_json::json!({
+            "positionId": position_id,
+            "writeOffAmount": format!("{:.2}", amount),
+            "rawBalanceAfter": format!("{:.2}", raw_balance_after),
+        });
+        sqlx::query(
+            r#"INSERT INTO "AuditLog" (id, "brokerId", action, "entityType", "entityId", "newValue")
+               VALUES ($1, $2, 'NEGATIVE_BALANCE_PROTECTION_APPLIED', 'Account', $3, $4::jsonb)"#,
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(&broker_id)
+        .bind(&account_id)
+        .bind(detail.to_string())
+        .execute(&mut **tx)
+        .await?;
+    }
+
+    Ok(Some(CloseOutcome { realized_pnl, raw_balance_after, final_balance, write_off }))
+}

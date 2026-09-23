@@ -8,9 +8,17 @@ use std::path::PathBuf;
 fn main() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let scenario_dir = root.join("scenarios");
-    let out_dir = root.join("out").join("rust");
-    std::fs::create_dir_all(&out_dir).expect("create out/rust");
-    let filter = std::env::args().nth(1);
+    // `-- --db <scenario>`: Stage 1 DB mode (see db_mode.rs); otherwise the pure-calc Stage 0 run
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let db_mode = args.first().map(String::as_str) == Some("--db");
+    let filter = if db_mode { args.get(1).cloned() } else { args.first().cloned() };
+    let out_dir = root.join("out").join(if db_mode { "rust-db" } else { "rust" });
+    std::fs::create_dir_all(&out_dir).expect("create out dir");
+    let runtime = db_mode.then(|| tokio::runtime::Runtime::new().expect("tokio runtime"));
+    let pool = runtime.as_ref().map(|rt| rt.block_on(parity::db_mode::connect()).unwrap_or_else(|e| {
+        eprintln!("[parity:rust-db] {e}");
+        std::process::exit(2)
+    }));
 
     let mut paths: Vec<PathBuf> = std::fs::read_dir(&scenario_dir)
         .expect("read scenarios dir")
@@ -31,7 +39,17 @@ fn main() {
                 continue;
             }
         };
-        let out = evaluate(&sc);
+        let out = match (&runtime, &pool) {
+            (Some(rt), Some(pool)) => match rt.block_on(parity::db_mode::evaluate(pool, &sc)) {
+                Ok(accounts) => parity::ScenarioOutcome { scenario: sc.name.clone(), engine: "rust-db", accounts },
+                Err(e) => {
+                    eprintln!("[parity:rust-db] {e}");
+                    failed = true;
+                    continue;
+                }
+            },
+            _ => evaluate(&sc),
+        };
         let summary: Vec<String> = out
             .accounts
             .iter()

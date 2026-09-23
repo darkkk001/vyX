@@ -132,3 +132,16 @@ FAILs are real engine gaps that are not on the known list:
 Also not covered here: if several positions hit SL/TP in the same pass, Rust closes them in reverse load order
 (`monitor.rs:109`) and the web closes them in load order. Under negative-balance protection that order can change
 the final balance. Every scenario here has at most one SL/TP hit.
+
+## Stage 1 DB mode (the engine's real monitor on the real schema)
+
+`bash scripts/parity/run-db.sh [--markdown]` runs the web as above, then for each scenario re-seeds it
+(`PARITY_SEED_ONLY=1 ... run-ts.ts <scenario>`) and runs `cargo run -p parity -- --db <scenario>`, which calls
+`order_management::monitor::evaluate_account` over `book.rs` against `vyx_rust_harness` and reads back the
+balance and Transaction rows it wrote (`out/rust-db/`). `diff.mjs --rust-dir rust-db` compares.
+
+Result 2026-09-23: 0 MATCH, 11 EXPECTED-DIVERGENCE (Stage 2 formula tags only), 1 FAIL = scenario 12
+(freshness on updatedAt, Stage 2). Scenario 10 (negative-balance protection), a FAIL in Stage 0, now matches
+on balances and Transaction rows.
+
+DB tests for book.rs: `ENGINE_TEST_DATABASE_URL=postgresql://postgres@127.0.0.1:5499/vyx_test VYX_REQUIRE_DB_TESTS=1 cargo test -p order-management --test book_db`

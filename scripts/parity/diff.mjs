@@ -14,7 +14,10 @@ import path from "node:path";
 const root = path.resolve(import.meta.dirname, "..", "..");
 const scenarioDir = path.join(root, "engine", "parity", "scenarios");
 const tsDir = path.join(root, "engine", "parity", "out", "ts");
-const rustDir = path.join(root, "engine", "parity", "out", "rust");
+// --rust-dir rust-db compares the web against the engine's DB mode (Stage 1: the real monitor on the real
+// schema, `cargo run -p parity -- --db`) instead of the pure-calc run
+const rustDirArg = process.argv.indexOf("--rust-dir");
+const rustDir = path.join(root, "engine", "parity", "out", rustDirArg > 0 ? process.argv[rustDirArg + 1] : "rust");
 const markdown = process.argv.includes("--markdown");
 
 const FIELDS = ["marginLevelBefore", "closedPositionIds", "closeReasons", "finalBalance", "transactions", "marginCallNotified"];

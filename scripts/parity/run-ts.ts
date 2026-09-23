@@ -86,6 +86,10 @@ async function main() {
   const filter = process.argv[2];
   const files = fs.readdirSync(scenarioDir).filter((f) => f.endsWith(".json") && (!filter || f.includes(filter))).sort();
   fs.mkdirSync(outDir, { recursive: true });
+  // PARITY_SEED_ONLY=1 (Stage 1 DB mode, scripts/parity/run-db.sh): seed exactly one scenario and stop, leaving
+  // it in the database for the engine's real monitor (`cargo run -p parity -- --db <scenario>`) to evaluate.
+  const seedOnly = process.env.PARITY_SEED_ONLY === "1";
+  if (seedOnly && files.length !== 1) throw new Error(`[parity] PARITY_SEED_ONLY needs a filter matching exactly one scenario (got ${files.length})`);
 
   async function wipe() {
     const tables = await prisma.$queryRaw<{ tablename: string }[]>`
@@ -161,6 +165,11 @@ async function main() {
         VALUES (${px.symbol}, ${D(px.bid)}, ${D(px.ask)}, now() - make_interval(secs => ${px.ageSeconds}::double precision), now() - make_interval(secs => ${updatedAge}::double precision))`;
     }
 
+    if (seedOnly) {
+      console.log(`[parity:seed] ${sc.name} seeded into vyx_rust_harness`);
+      continue;
+    }
+
     const accounts: Record<string, AccountOutcome> = {};
     for (const a of sc.accounts) {
       const marginLevelBefore = await webMarginLevel(a.key);
@@ -194,7 +203,7 @@ async function main() {
     fs.writeFileSync(path.join(outDir, `${sc.name}.json`), JSON.stringify(out, null, 2) + "\n");
     console.log(`[parity:ts] ${sc.name}: ${Object.entries(accounts).map(([k, v]) => `${k} closed=[${v.closedPositionIds.join(",")}] balance=${v.finalBalance} mc=${v.marginCallNotified}`).join("; ")}`);
   }
-  await wipe();
+  if (!seedOnly) await wipe();
   await prisma.$disconnect();
   console.log(`[parity:ts] ${files.length} scenario(s) written to ${outDir} (${suppressedEvents.length} gateway event publish(es) swallowed locally)`);
 }

@@ -74,6 +74,24 @@ pub async fn load_account_state(pool: &PgPool, account_id: &str) -> Result<Optio
     }))
 }
 
+/// The margin monitor's account state on the REAL book (Stage 1, see book.rs): positions from `"Position"`,
+/// and the balance is `"Account".balance` itself, because book::close_position_in_tx writes realized P&L
+/// straight into it (the web's model). There is no ledger sum on top: adding one while the close also
+/// writes the balance would count every close twice. `load_account_state` above stays for the order path
+/// (pending_orders.rs), which is out of the Phase 3 scope and still on the engine's own tables.
+pub async fn load_book_state(pool: &PgPool, account_id: &str) -> Result<Option<AccountState>, sqlx::Error> {
+    let Some(funds) = db::get_account_funds(pool, account_id).await? else {
+        return Ok(None);
+    };
+    let positions = crate::book::open_positions_with_market(pool, account_id).await?;
+    Ok(Some(AccountState {
+        effective_balance: funds.balance,
+        credit: funds.credit,
+        leverage: funds.leverage.max(1) as u32,
+        positions,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

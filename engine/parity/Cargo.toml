@@ -16,3 +16,5 @@ order-management = { path = "../order-management" }
 rust_decimal.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tokio.workspace = true
+sqlx.workspace = true

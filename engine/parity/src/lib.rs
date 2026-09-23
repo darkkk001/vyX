@@ -15,6 +15,8 @@
 //!
 //! Nothing here fixes a divergence -- Stage 0 only makes them visible.
 
+pub mod db_mode;
+
 use order_management::calc::{close_price_for, equity, floating_pnl, used_margin, AccountState};
 use order_management::db::OpenPositionWithMarket;
 use margin::{MarginThresholds, MonitorAction, ThresholdsByGroup};
