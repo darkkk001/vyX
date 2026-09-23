@@ -6,13 +6,14 @@
 // Same safety as run-ts.ts: refuses anything but the scratch DB, pins every outbound path local, blocks fetch.
 import http from "node:http";
 
-const HARNESS_URL = "postgresql://postgres@127.0.0.1:5499/vyx_rust_harness";
-for (const name of ["DATABASE_URL", "DIRECT_URL"]) {
-  if (process.env[name] !== HARNESS_URL) {
-    console.error(`[post-close-server] refusing to run: ${name} must be exactly ${HARNESS_URL}.`);
-    process.exit(2);
-  }
+// the parity harness DB, or the Stage 4 load harness's engine DB (scripts/load/run.sh) -- nothing else
+const ALLOWED = ["postgresql://postgres@127.0.0.1:5499/vyx_rust_harness", "postgresql://postgres@127.0.0.1:5499/vyx_load_engine"];
+const DB_URL = process.env.DATABASE_URL ?? "";
+if (!ALLOWED.includes(DB_URL) || process.env.DIRECT_URL !== DB_URL) {
+  console.error(`[post-close-server] refusing to run: DATABASE_URL and DIRECT_URL must both be one of ${ALLOWED.join(", ")}.`);
+  process.exit(2);
 }
+const DB_NAME = DB_URL.slice(DB_URL.lastIndexOf("/") + 1);
 if (!process.env.POST_CLOSE_SECRET) {
   console.error("[post-close-server] POST_CLOSE_SECRET is required");
   process.exit(2);
@@ -33,8 +34,8 @@ const port = Number(process.env.PARITY_POST_CLOSE_PORT ?? 5591);
 async function main() {
   const { prisma } = await import("@/lib/prisma");
   const [where] = await prisma.$queryRaw<{ db: string; port: number }[]>`SELECT current_database() AS db, inet_server_port() AS port`;
-  if (where.db !== "vyx_rust_harness" || Number(where.port) !== 5499) {
-    throw new Error(`[post-close-server] connected to ${where.db}:${where.port}, expected vyx_rust_harness:5499`);
+  if (where.db !== DB_NAME || Number(where.port) !== 5499) {
+    throw new Error(`[post-close-server] connected to ${where.db}:${where.port}, expected ${DB_NAME}:5499`);
   }
   const { NextRequest } = await import("next/server");
   const { POST } = await import("@/app/api/internal/post-close/route");

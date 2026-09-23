@@ -36,10 +36,11 @@ fn side_from_prisma(s: &str) -> protocol::OrderSide {
     }
 }
 
-/// Every account holding at least one OPEN position (same set lib/risk-monitor.ts's callers walk).
+/// Every account holding at least one OPEN position (same set lib/risk-monitor.ts's callers walk), in accountId byte
+/// order (Stage 4: a deterministic pass order; the load harness's web reference walks the same order).
 pub async fn account_ids_with_open_positions(pool: &PgPool) -> Result<Vec<String>, sqlx::Error> {
     let rows: Vec<(String,)> =
-        sqlx::query_as(r#"SELECT DISTINCT "accountId" FROM "Position" WHERE status = 'OPEN'"#).fetch_all(pool).await?;
+        sqlx::query_as(r#"SELECT "accountId" FROM "Position" WHERE status = 'OPEN' GROUP BY "accountId" ORDER BY "accountId" COLLATE "C""#).fetch_all(pool).await?;
     Ok(rows.into_iter().map(|(id,)| id).collect())
 }
 
@@ -356,35 +357,55 @@ pub const FOLLOW_UP_DEFER_SECS: i32 = 30;
 ///   step not yet done): the web releases it, and tells the desk, while the client position is still open.
 /// The web runs all of these inside its pass, right after the close that triggers them, so by the time it
 /// evaluates this account they have happened; the monitor waits for them the same way.
+/// Where an account stands against pending follow-ups (see `pending_follow_up_state`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FollowUpOwed {
+    /// nothing pending touches it: evaluate
+    No,
+    /// a follow-up queued under FOLLOW_UP_DEFER_SECS ago still will: wait for it
+    Yes,
+    /// only follow-ups OLDER than the window still touch it (a stuck outbox): evaluate anyway -- the safety release
+    Expired,
+}
+
+/// Deferral queries run and safety releases taken since start (Stage 4 cost / starvation metrics; also worth
+/// alerting on in production: a safety release means the outbox was stuck for FOLLOW_UP_DEFER_SECS).
+pub static DEFER_QUERIES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub static SAFETY_RELEASES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 pub async fn pending_follow_up_owns(pool: &PgPool, account_id: &str) -> Result<bool, sqlx::Error> {
-    let (owed,): (bool,) = sqlx::query_as(
-        r#"SELECT EXISTS (
-             SELECT 1 FROM "PostCloseEffect" e
+    Ok(pending_follow_up_state(pool, account_id).await? == FollowUpOwed::Yes)
+}
+
+/// The three cases above as one query, without the window, reporting whether any of them is still fresh.
+pub async fn pending_follow_up_state(pool: &PgPool, account_id: &str) -> Result<FollowUpOwed, sqlx::Error> {
+    DEFER_QUERIES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let (any, fresh): (bool, bool) = sqlx::query_as(
+        r#"WITH owed AS (
+             SELECT e."createdAt" FROM "PostCloseEffect" e
              JOIN "MirrorLink" ml ON ml."sourcePositionId" = e."positionId"
              JOIN "Position" t ON t.id = ml."targetPositionId"
              WHERE e.status = 'PENDING' AND e.kind = 'POSITION_CLOSED' AND NOT ('mirror' = ANY(e."doneSteps"))
-               AND e."createdAt" > now() - ($2::int * interval '1 second')
                AND t."accountId" = $1 AND t.status = 'OPEN'
-           ) OR EXISTS (
-             SELECT 1 FROM "PostCloseEffect" e
+             UNION ALL
+             SELECT e."createdAt" FROM "PostCloseEffect" e
              JOIN "Position" s ON s.id = e."positionId"
              JOIN "Position" leg ON leg.id = s."coveragePositionId"
              WHERE e.status = 'PENDING' AND e.kind = 'POSITION_CLOSED' AND NOT ('coverage' = ANY(e."doneSteps"))
-               AND e."createdAt" > now() - ($2::int * interval '1 second')
                AND leg."accountId" = $1 AND leg.status = 'OPEN' AND leg."autoHedged"
-           ) OR EXISTS (
-             SELECT 1 FROM "PostCloseEffect" e
+             UNION ALL
+             SELECT e."createdAt" FROM "PostCloseEffect" e
              JOIN "Position" client ON client."coveragePositionId" = e."positionId"
              WHERE e.status = 'PENDING' AND e.kind = 'POSITION_CLOSED' AND NOT ('coverage' = ANY(e."doneSteps"))
-               AND e."createdAt" > now() - ($2::int * interval '1 second')
                AND client."accountId" = $1 AND client.status = 'OPEN'
-           )"#,
+           )
+           SELECT count(*) > 0, coalesce(bool_or("createdAt" > now() - ($2::int * interval '1 second')), false) FROM owed"#,
     )
     .bind(account_id)
     .bind(FOLLOW_UP_DEFER_SECS)
     .fetch_one(pool)
     .await?;
-    Ok(owed)
+    Ok(if fresh { FollowUpOwed::Yes } else if any { FollowUpOwed::Expired } else { FollowUpOwed::No })
 }
 
 /// Why the monitor closed a position, as the post-close outbox row records it ("reason").

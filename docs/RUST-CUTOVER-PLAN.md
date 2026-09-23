@@ -576,6 +576,114 @@ Not compared, by design:
     that it writes to scratch.
   - Recommended but separable.
 
+#### 4.7 Addition (user, 2026-09-24): chained follow-ups / cascades and deferral starvation
+
+**What is seeded.** In the generator, besides the 4.1 mix, per seed:
+
+| Topology | Chain | Web (one pass, account order) |
+|---|---|---|
+| Mirror cascade (depth 2 and 3) | client stop-out → mirror closes t1 on master A → A's realized loss puts A in stop-out → A's own position a1 (mirrored by a second rule onto master B) closes → mirror closes b1 on B | order client, A, B: every close lands before the next account is evaluated |
+| Coverage cascade | client X's close → its auto-hedged leg closes on the coverage account C → C's realized loss stops C out → C's other leg (hedging client Y) closes → Y is released | order X, C, Y |
+| Fan-in | 50-200 clients mirrored onto ONE master / hedged on ONE coverage account, all stopped out by the same shock | master / C evaluated once, after all of them |
+| Reverse orders | each of the above with the downstream account FIRST | the downstream account acts on its own first |
+
+"Coverage-of-coverage" (a coverage leg hedged by another leg) cannot arise from the product (lib/coverage.ts never
+auto-hedges a coverage leg; covered by lib/coverage.test.ts). It is seeded directly as a data-only case to prove
+nothing loops. A mirror target is not re-mirrored either (onFill only runs for real fills), so mirror chains run
+through the master's OWN positions, as seeded above.
+
+**The prediction (to be proven by the harness, not assumed).** With the 4.5 rule, deferral looks only at rows that
+ALREADY exist. In the depth-2 chain with order client, A, B:
+1. The client closes in cycle 1; A is deferred.
+2. B is evaluated in the same cycle, because nothing pending touches B yet (A's close has not happened).
+3. B may then stop out b1 itself, where the web had it closed by the mirror, at another price.
+
+The same shape applies to X / C / Y. **Expected result: FAIL on depth ≥ 2.**
+
+**Fix options (for approval once the harness shows it; engine-only, BEHAVIOR CHANGE):**
+- **(R) Resume point.** When an account is deferred, the pass stops there and resumes from that account once its
+  follow-ups ran. This is exactly the web's sequential semantics. Accounts after it wait about one outbox round
+  (~100 ms at the dispatcher's fast path); unrelated brokers are not held.
+- **(T) Transitive deferral.** Defer every account reachable from a deferred one through mirror rules / coverage
+  links. Less waiting, but it needs a graph walk each pass and is easier to get subtly wrong.
+- My recommendation is **R**, simpler and exact.
+
+**Starvation.** Today the 30 s safety release is per ROW: a steady stream of fresh rows touching the same master
+(fan-in) could keep it deferred for longer than any single row's window. Proposed alongside R:
+- an ACCOUNT-level cap, measured from the account's first continuous deferral (kept in the monitor's memory);
+- the 30 s window stays only as the stuck-outbox safety net.
+
+**Gate additions.**
+- (a) Every cascade and fan-in topology gives an identical snapshot, in both orders, with K ≥ 2 concurrent evaluators
+  and the dispatcher running CONCURRENTLY (production shape), not only drained between cycles.
+- (b) **Zero safety releases.** The harness counts every evaluation of an account while a pending row older than the
+  window still touches it (a harness-side query, no engine change). It must be 0 in every topology the web resolves in
+  one pass.
+- (c) Per account, recorded: number of passes deferred, and the time from first deferral to evaluation (max / p95).
+  Bound: ≤ chain depth passes, and ≤ 2 s in the harness.
+
+#### 4.8 Addition (user, 2026-09-24): cost of the deferral query
+
+`book::pending_follow_up_owns` is 3 EXISTS subqueries on every evaluated account. They use existing indexes:
+- PostCloseEffect `(status, nextAttemptAt)`;
+- MirrorLink `sourcePositionId` @unique;
+- Position `coveragePositionId` @unique, plus its pkey.
+
+Measured on scratch:
+1. `EXPLAIN (ANALYZE, BUFFERS)` of the query with PostCloseEffect at 0 / 1k / 100k DONE rows plus a few PENDING ones:
+   plan, index use, shared-buffer hits, exec time.
+2. At N = 100 / 500 / 1000 open accounts, one steady-state pass with no pending rows (the normal case) and one
+   stop-out pass. Recorded:
+   - extra queries per pass, and the added pass wall time;
+   - `pg_stat_database.xact_commit` / `tup_fetched` deltas;
+   - `pg_stat_statements` mean time, if the extension can be enabled on scratch (otherwise client-side timing).
+3. Projection to Neon: today's coalesced cadence (1 pass/s, see the compute-leak memory) × accounts with open positions
+   = extra queries per hour. Also, whether it keeps compute from auto-suspending (it does not add wake-ups: it rides
+   the pass that already runs).
+
+**Likely optimisation, measured in the same run.** One cheap query per PASS ("any PENDING POSITION_CLOSED row younger
+than the window?", served by the status index). The per-account EXISTS runs only when that returns true: in steady
+state that is 1 query per pass instead of N. It is engine-only, and results are unchanged by construction; the gate
+re-runs to prove it.
+
+**Deliverables added to 4.6.**
+- A `topology` section in the generator.
+- Starvation / safety-release counters in the engine run's report.
+- `scripts/load/explain-deferral.ts`.
+- A cost table in this doc.
+- Estimated **+1-1.5 days** on top of 4.6. If R is approved after the harness shows the divergence, **+1 day** for
+  it and a re-run.
+
+#### 4.9 Harness built; RED before the fix (2026-09-24)
+
+**What is built.**
+- `scripts/load/{generate,seed,run-web,snapshot,env}.ts`, `diff.mjs` and `run.sh`.
+- `parity --load-run <walkers>` (engine/parity/src/load_mode.rs).
+- `monitor::run_pass`, which run_once now calls.
+- Deterministic pass order: `accountId COLLATE "C"`.
+- `book::pending_follow_up_state`, with DEFER_QUERIES / SAFETY_RELEASES counters.
+
+The load databases are cloned from `vyx_rust_harness`. **A FRESH database cannot take `migrate deploy`:**
+`20260921160000_stage3a_group_the_ungrouped` is a production data migration that aborts when its listed accounts are
+missing. A self-hosted installer needs a baseline or a skip for it.
+
+**RED, seed 1, 100 clients** (152 accounts, 549 positions, 46 mirror links, 9 topologies), engine = Stage 4.5 rule:
+
+| Topology | K=1 | K=2 | What differs |
+|---|---|---|---|
+| bulk | MATCH | **FAIL (9)** | concurrency, not ordering: e.g. b-bulk-raw-a00066, the engine also stopped out p000290 (+819.28) that the web left open; balance web -671.71 / engine 147.57. A walker's in-memory state went stale when the other walker closed a PROFITABLE position of the same account; the web re-reads account + positions every stop-out iteration. Also 2 extra MARGIN_CALL notices on a00092 |
+| mirror-d2 | **FAIL** | **FAIL** | B: web 0 / engine 2000 (web: b1 mirror-closed +2000 BEFORE B's stop-out of b2, NBP 900; engine: b2 first) |
+| mirror-d3 | **FAIL** | **FAIL** | same on B |
+| coverage-chain | **FAIL** | **FAIL** | ly: web closed by CV's stop-out, engine by coverage auto-close; POSITION_COVERAGE_RELEASED + COVERAGE_STOP_OUT on Y missing |
+| coverage-chain-rev | **FAIL** | **FAIL** | the same shape on lx / X |
+| mirror-d2-rev, mirror-d3-rev, fan-in, circular, coverage-of-coverage | MATCH | MATCH | depth 1 and reverse orders are already right |
+
+Engine run K=2: 27 rounds, 146 closes, 5628 deferral queries, 0 safety releases. The worst account was deferred 50
+passes / 7.2 s, because the dispatcher drains ~146 follow-ups one HTTP call at a time.
+
+**Two engine fixes follow, in separate commits:** (1) re-read the account after every close (the web's semantics);
+(2) the resume point (R) with its loop guard.
+
 ### Stage 4.5: mirror / coverage ordering aligned with the web — DONE 2026-09-24
 
 **Decision (user, 2026-09-24).** The web is canonical and is not changed: it runs mirror / coverage right after

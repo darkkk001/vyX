@@ -10,6 +10,11 @@ fn main() {
     let scenario_dir = root.join("scenarios");
     // `-- --db <scenario>`: Stage 1 DB mode (see db_mode.rs); otherwise the pure-calc Stage 0 run
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // `-- --load-run <walkers> <report.json>`: Stage 4 load harness, engine side (load_mode.rs, scripts/load/run.sh)
+    if args.first().map(String::as_str) == Some("--load-run") {
+        parity::load_mode::main(&args[1..]);
+        return;
+    }
     // `-- --evaluate-accounts <id,id,...>`: Stage 3 gate (lib/post-close.test.ts) -- one real monitor pass per
     // account on whatever the caller seeded into the harness DB; the closes and their outbox rows stay behind.
     if args.first().map(String::as_str) == Some("--evaluate-accounts") {

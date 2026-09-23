@@ -243,8 +243,13 @@ pub async fn evaluate_account(
     // close that triggers them, so an account holding a mirror target or an auto-hedged leg is evaluated only AFTER
     // that position was closed for it. The engine queues those follow-ups (outbox); until one has run, the account
     // it touches waits for the next pass instead of stopping out a position the follow-up is about to close.
-    if book::pending_follow_up_owns(pool, account_id).await? {
-        return Ok(Some(EvalReport { deferred: true, ..EvalReport::default() }));
+    match book::pending_follow_up_state(pool, account_id).await? {
+        book::FollowUpOwed::Yes => return Ok(Some(EvalReport { deferred: true, ..EvalReport::default() })),
+        book::FollowUpOwed::Expired => {
+            book::SAFETY_RELEASES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            tracing::warn!(account_id, "post-close follow-up older than the deferral window still pending: evaluating anyway (outbox stuck?)");
+        }
+        book::FollowUpOwed::No => {}
     }
     let Some(mut state) = load_book_state(pool, account_id).await? else {
         return Ok(None);
@@ -361,20 +366,49 @@ async fn publish_best_effort(nats: Option<&async_nats::Client>, event: &TradingE
 /// account are logged and don't stop the rest — a bug in one account's
 /// data shouldn't leave every other account unmonitored.
 pub async fn run_once(pool: &PgPool, nats: &async_nats::Client) {
+    run_pass(pool, Some(nats)).await;
+}
+
+/// What one full pass did (Stage 4: the load harness drives passes through this, the production entry point).
+#[derive(Debug, Clone, Default)]
+pub struct PassReport {
+    /// accounts evaluated (not deferred), in pass order
+    pub evaluated: Vec<String>,
+    /// accounts deferred to a later pass (a pending follow-up touches them)
+    pub deferred: Vec<String>,
+    /// positions closed by this pass
+    pub closed: usize,
+    pub errors: usize,
+}
+
+/// One pass over every account with an open position, in accountId order. `nats` is optional so the harness can
+/// run it without a broker.
+pub async fn run_pass(pool: &PgPool, nats: Option<&async_nats::Client>) -> PassReport {
+    let mut report = PassReport::default();
     let account_ids = match book::account_ids_with_open_positions(pool).await {
         Ok(ids) => ids,
         Err(err) => {
             tracing::error!(?err, "margin monitor: failed to list accounts with open positions");
-            return;
+            report.errors += 1;
+            return report;
         }
     };
 
     // thresholds are read per account inside evaluate_account (Stage 2 F3), not cached per pass
     for account_id in account_ids {
-        if let Err(err) = evaluate_account(pool, Some(nats), &account_id).await {
-            tracing::error!(?err, account_id, "margin monitor: failed to evaluate account");
+        match evaluate_account(pool, nats, &account_id).await {
+            Ok(Some(r)) if r.deferred => report.deferred.push(account_id),
+            Ok(r) => {
+                report.closed += r.map(|r| r.closed.len()).unwrap_or(0);
+                report.evaluated.push(account_id);
+            }
+            Err(err) => {
+                report.errors += 1;
+                tracing::error!(?err, account_id, "margin monitor: failed to evaluate account");
+            }
         }
     }
+    report
 }
 
 /// Shared across every trigger source (the polling timer and, in
