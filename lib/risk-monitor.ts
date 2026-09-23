@@ -60,6 +60,10 @@ async function loadOpenPositionsWithMarket(accountId: string): Promise<OpenPosit
   const positions = await prisma.position.findMany({
     where: { accountId, status: "OPEN" },
     include: { symbol: { select: { name: true, contractSize: true, quoteCurrency: true } }, account: { select: { currency: true } } },
+    // Stage 2 F5: a fixed order (oldest first), the same one the engine uses. Several SL/TP closes in one
+    // pass interact through negative-balance protection and credit, so their order can change the final
+    // balance; it used to be whatever order Postgres returned.
+    orderBy: [{ openedAt: "asc" }, { id: "asc" }],
   });
   if (positions.length === 0) return [];
 

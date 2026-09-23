@@ -95,24 +95,26 @@ async fn close_sl_tp_triggered(
     state: &mut AccountState,
 ) -> Result<Vec<(String, &'static str)>, sqlx::Error> {
     let mut closed = Vec::new();
-    let triggered: Vec<(usize, SlTpReason, Decimal, Decimal)> = state
+    let triggered: Vec<(String, SlTpReason, Decimal, Decimal)> = state
         .positions
         .iter()
-        .enumerate()
-        .filter_map(|(i, p)| {
+        .filter_map(|p| {
             let reason = sl_tp_trigger(p)?;
             let (bid, ask) = (p.bid?, p.ask?);
             let close_price = close_price_for(p.side, bid, ask);
             // booked exactly as the web books it: quote P&L x rate, 4 dp when converted (fx.rs convert_pnl)
             let pnl = crate::fx::convert_pnl(floating_pnl(p.side, p.open_price, close_price, p.contract_size, p.volume), p.fx_rate);
-            Some((i, reason, close_price, pnl))
+            Some((p.id.clone(), reason, close_price, pnl))
         })
         .collect();
 
-    // Remove highest-index-first so earlier indices in `triggered` stay
-    // valid as we go.
-    for (idx, reason, close_price, pnl) in triggered.into_iter().rev() {
-        let position = state.positions.remove(idx);
+    // Stage 2 F5: closed in the book's own order (oldest first, book.rs ORDER BY "openedAt", id), the same
+    // order lib/risk-monitor.ts uses. Several SL/TP closes in one pass interact through negative-balance
+    // protection and credit, so the order can change the final balance; this used to walk the list backwards.
+    // Positions are taken out by id, so an earlier removal cannot shift a later one.
+    for (id, reason, close_price, pnl) in triggered {
+        let Some(pos_idx) = state.positions.iter().position(|p| p.id == id) else { continue };
+        let position = state.positions.remove(pos_idx);
 
         let note = match reason {
             SlTpReason::StopLoss => "Stop loss hit (automatic)",
