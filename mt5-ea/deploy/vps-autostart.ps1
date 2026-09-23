@@ -11,8 +11,13 @@
 #      The value is never printed; only its length.
 #   2. writes <MT5>\config\vyx-startup.ini: MT5's own startup config, which opens an XAUUSD M1 chart and
 #      attaches VyXTraderPriceFeed with the preset MQL5\Presets\VyXTraderPriceFeed.set on every launch.
-#   3. registers the scheduled task "VyX MT5 price feed": at system startup (+60 s for the network),
-#      terminal64.exe /portable /config:<ini>, run whether the user is logged on or not, restart on failure.
+#   3. registers the scheduled task "VyX MT5 price feed": AT LOG ON of this user (+30 s for the network), in
+#      that user's own interactive session, so MT5 is on the desktop you see over RDP and its inputs can be
+#      changed there. A reboot comes back unattended because Windows auto-logon (Sysinternals Autologon)
+#      signs this user in; the script checks that auto-logon is on for this user and says so if not.
+#      The task runs <MT5>\config\vyx-launch.ps1, which starts terminal64.exe /portable /config:<ini> ONLY if
+#      that exact terminal64.exe is not already running: an RDP connection that opens a new session is also a
+#      "log on" and must not start a second MT5 on the same portable folder.
 #
 # Before running it: in MT5, EA Properties > Inputs, clear ApiSecret (v1.42 then reads the file), make sure
 # ForceDeepBackfill / DeepBackfillFullHistory are false, and Save the inputs as
@@ -58,14 +63,38 @@ Period=M1
 "@ | Set-Content -Path $ini -Encoding ASCII
 Write-Output "2) startup config: $ini"
 
-# 3) scheduled task
-$cred = Get-Credential -UserName "$env:USERDOMAIN\$env:USERNAME" -Message "Windows password for $env:USERNAME (the task runs as this user, logged on or not)"
-$action = New-ScheduledTaskAction -Execute $terminal -Argument "/portable /config:`"$ini`"" -WorkingDirectory $Mt5Dir
-$trigger = New-ScheduledTaskTrigger -AtStartup
-$trigger.Delay = "PT60S"
+# 3) auto-logon check: "at log on" only brings MT5 back after a reboot if Windows signs this user in by itself
+$winlogon = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"
+$autoOn = "$($winlogon.AutoAdminLogon)" -eq "1"
+$autoUser = "$($winlogon.DefaultUserName)"
+if (-not $autoOn) {
+    Write-Warning "Windows auto-logon is OFF: after a reboot MT5 starts only when someone logs in. Run Sysinternals Autologon (autologon64.exe) for $env:USERNAME, then re-run this script."
+} elseif ($autoUser -ne $env:USERNAME) {
+    Write-Warning "Windows auto-logon signs in '$autoUser', not '$env:USERNAME': this task (and the secret file) belong to $env:USERNAME. Point Autologon at $env:USERNAME, or run this script as $autoUser."
+} else {
+    Write-Output "3) auto-logon: ON for $autoUser"
+}
+
+# 4) launcher: start this MT5 only if that exact terminal64.exe is not running already (an RDP login that opens
+#    a new session is also a "log on"; two MT5s on one portable folder fight over its files)
+$launcher = Join-Path $Mt5Dir "config\vyx-launch.ps1"
+@"
+`$exe = '$terminal'
+`$running = Get-Process terminal64 -ErrorAction SilentlyContinue | Where-Object { `$_.Path -eq `$exe }
+if (`$running) { exit 0 }
+Start-Process -FilePath `$exe -ArgumentList '/portable','/config:"$ini"' -WorkingDirectory '$Mt5Dir'
+"@ | Set-Content -Path $launcher -Encoding ASCII
+Write-Output "4) launcher: $launcher"
+
+# 5) scheduled task: at THIS user's log on, in their interactive session (visible over RDP), no stored password
+$me = "$env:USERDOMAIN\$env:USERNAME"
+$action = New-ScheduledTaskAction -Execute "powershell.exe" `
+    -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$launcher`"" -WorkingDirectory $Mt5Dir
+$trigger = New-ScheduledTaskTrigger -AtLogOn -User $me
+$trigger.Delay = "PT30S"
+$principal = New-ScheduledTaskPrincipal -UserId $me -LogonType Interactive -RunLevel Highest
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable `
-    -RestartCount 5 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
-Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings `
-    -User $cred.UserName -Password $cred.GetNetworkCredential().Password -RunLevel Highest -Force | Out-Null
-Write-Output "3) scheduled task '$TaskName': at startup +60s -> $terminal /portable /config:$ini"
-Write-Output "Done. Test it: close MT5, then  Start-ScheduledTask -TaskName '$TaskName'  and watch feed-stats ticks_in climb."
+    -ExecutionTimeLimit (New-TimeSpan -Minutes 5) -MultipleInstances IgnoreNew
+Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
+Write-Output "5) scheduled task '$TaskName': at log on of $me (+30s) -> $launcher"
+Write-Output "Done. Test it: close MT5, then  Start-ScheduledTask -TaskName '$TaskName'  -- MT5 opens on this desktop, and feed-stats ticks_in climbs."
