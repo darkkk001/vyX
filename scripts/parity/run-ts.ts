@@ -51,7 +51,7 @@ type Scenario = {
   broker: { negativeBalanceProtection: boolean };
   groups: { key: string; marginCallLevel: Dec; stopOutLevel: Dec }[];
   accounts: { key: string; group: string; balance: Dec; credit: Dec; leverage: number }[];
-  symbols: { name: string; contractSize: Dec; digits: number; quoteCurrency: string }[];
+  symbols: { name: string; contractSize: Dec; digits: number; quoteCurrency: string; category?: string; sessionClosedNow?: boolean }[];
   positions: { key: string; account: string; symbol: string; side: "BUY" | "SELL"; volume: Dec; openPrice: Dec; slPrice?: Dec | null; tpPrice?: Dec | null }[];
   prices: { symbol: string; bid: Dec; ask: Dec; ageSeconds: number; updatedAgeSeconds?: number }[];
 };
@@ -72,10 +72,7 @@ const outDir = path.join(repoRoot, "engine", "parity", "out", "ts");
 async function main() {
   const { Prisma } = await import("@prisma/client");
   const { prisma } = await import("@/lib/prisma");
-  const { evaluateAccountRisk } = await import("@/lib/risk-monitor");
-  const { getFreshPrices } = await import("@/lib/live-price");
-  const { liveUsedMarginFor } = await import("@/lib/margin");
-  const { computeRealizedPnl, closePriceFor } = await import("@/lib/trading");
+  const { evaluateAccountRisk, accountMarginLevel } = await import("@/lib/risk-monitor");
   const D = (v: string | number) => new Prisma.Decimal(v);
 
   const [where] = await prisma.$queryRaw<{ db: string; port: number }[]>`SELECT current_database() AS db, inet_server_port() AS port`;
@@ -99,24 +96,11 @@ async function main() {
     await prisma.$executeRawUnsafe(`TRUNCATE ${list} CASCADE`);
   }
 
-  // Web-side margin level at the start of the evaluation, before any close -- composed from the
-  // same exported helpers risk-monitor.ts pass 2 uses (getFreshPrices, closePriceFor,
-  // computeRealizedPnl, liveUsedMarginFor) because evaluateAccountRisk does not return it.
-  // Symbols are seeded as CRYPTO, so risk-monitor's trading-session gate never removes a price.
+  // Web-side margin level at the start of the evaluation, before any close: lib/risk-monitor.ts's own
+  // accountMarginLevel, i.e. exactly the measure its stop-out / margin-call passes decide on (usable prices
+  // only: tickAt freshness, trading sessions, fx rates).
   async function webMarginLevel(accountId: string): Promise<string | null> {
-    const account = await prisma.account.findUniqueOrThrow({ where: { id: accountId } });
-    const positions = await prisma.position.findMany({ where: { accountId, status: "OPEN" }, include: { symbol: true } });
-    const prices = await getFreshPrices([...new Set(positions.map((p) => p.symbol.name))]);
-    let equity = account.balance;
-    let used = D(0);
-    for (const p of positions) {
-      const live = prices.get(p.symbol.name);
-      if (!live) continue;
-      const cp = closePriceFor(p.side, live.bid, live.ask);
-      equity = equity.add(computeRealizedPnl({ side: p.side, openPrice: p.openPrice, closePrice: cp, volume: p.volume, contractSize: p.symbol.contractSize }));
-      used = used.add(liveUsedMarginFor({ side: p.side, volume: p.volume, contractSize: p.symbol.contractSize, bid: live.bid, ask: live.ask, leverage: account.leverage }));
-    }
-    return used.lte(0) ? null : equity.div(used).mul(100).toString();
+    return (await accountMarginLevel(accountId))?.toString() ?? null;
   }
 
   for (const file of files) {
@@ -139,10 +123,16 @@ async function main() {
     }
     const symbolIds = new Map<string, string>();
     for (const s of sc.symbols) {
-      // CRYPTO = continuously traded (lib/risk.ts checkTradingSession), so the harness result never
-      // depends on the weekday/hour it runs at; the category has no other effect on this path.
-      const row = await prisma.symbol.create({ data: { name: s.name, baseCurrency: s.name.slice(0, 3), quoteCurrency: s.quoteCurrency, digits: s.digits, contractSize: D(s.contractSize), category: "CRYPTO" } });
-      await prisma.brokerSymbol.create({ data: { brokerId: broker.id, symbolId: row.id } });
+      // Default CRYPTO = continuously traded (lib/risk.ts checkTradingSession), so a result never depends on
+      // the weekday/hour the harness runs at. A scenario that tests the session gate sets `category` and
+      // `sessionClosedNow`: the BrokerSymbol then gets one configured session on a DIFFERENT weekday, which
+      // makes the market closed right now whatever the time (Stage 2 F4).
+      const row = await prisma.symbol.create({ data: { name: s.name, baseCurrency: s.name.slice(0, 3), quoteCurrency: s.quoteCurrency, digits: s.digits, contractSize: D(s.contractSize), category: (s.category ?? "CRYPTO") as never } });
+      const bs = await prisma.brokerSymbol.create({ data: { brokerId: broker.id, symbolId: row.id } });
+      if (s.sessionClosedNow) {
+        const otherDay = (new Date().getUTCDay() + 3) % 7;
+        await prisma.tradingSession.create({ data: { brokerSymbolId: bs.id, dayOfWeek: otherDay, openTime: "00:00", closeTime: "23:59" } });
+      }
       symbolIds.set(s.name, row.id);
     }
     for (const p of sc.positions) {

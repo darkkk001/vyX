@@ -126,6 +126,43 @@ function slTpTrigger(p: OpenPositionWithMarket): SlTpReason | null {
   return null;
 }
 
+// The ONE place an account's equity, used margin and margin level are computed for risk decisions
+// (Stage 2, docs/RUST-CUTOVER-PLAN.md "Canonical formulas"). Pass 2 (stop-out) and pass 3 (margin call)
+// both use it, and so does accountMarginLevel below (the parity harness / shadow comparison), so the level
+// a test or a shadow run reports is exactly the one the decision was made on. A position without a usable
+// price (bid/ask null: no fresh tick, closed session, or no conversion rate) is counted nowhere.
+// marginLevel is null when nothing uses margin: never a margin call, never a stop-out.
+type AccountMeasure = {
+  equity: Prisma.Decimal;
+  usedMargin: Prisma.Decimal;
+  marginLevel: Prisma.Decimal | null;
+  worst: { position: OpenPositionWithMarket; pnl: Prisma.Decimal; closePrice: Prisma.Decimal } | null;
+};
+
+function measureAccount(account: { balance: Prisma.Decimal; leverage: number }, positions: OpenPositionWithMarket[]): AccountMeasure {
+  let equity = account.balance;
+  let usedMargin = new Prisma.Decimal(0);
+  let worst: AccountMeasure["worst"] = null;
+  for (const p of positions) {
+    if (p.bid == null || p.ask == null) continue; // no usable price -- not closeable, not counted
+    const cp = closePriceFor(p.side, p.bid, p.ask);
+    const pnl = computeRealizedPnl({ side: p.side, openPrice: p.openPrice, closePrice: cp, volume: p.volume, contractSize: p.contractSize }).mul(p.fxRate);
+    equity = equity.add(pnl);
+    usedMargin = usedMargin.add(liveUsedMarginFor({ side: p.side, volume: p.volume, contractSize: p.contractSize, bid: p.bid, ask: p.ask, leverage: account.leverage }).mul(p.fxRate));
+    if (!worst || pnl.lt(worst.pnl)) worst = { position: p, pnl, closePrice: cp };
+  }
+  const marginLevel = usedMargin.gt(0) ? equity.div(usedMargin).mul(100) : null;
+  return { equity, usedMargin, marginLevel, worst };
+}
+
+/** The account's margin level right now, measured exactly as the stop-out / margin-call passes measure it.
+ *  null = no used margin (or no account). For the parity harness and Stage 5's shadow comparison. */
+export async function accountMarginLevel(accountId: string): Promise<Prisma.Decimal | null> {
+  const account = await prisma.account.findUnique({ where: { id: accountId } });
+  if (!account) return null;
+  return measureAccount(account, await loadOpenPositionsWithMarket(accountId)).marginLevel;
+}
+
 export type RiskMonitorResult = {
   evaluated: boolean;
   slTpClosed: string[];
@@ -191,21 +228,9 @@ export async function evaluateAccountRisk(accountId: string): Promise<RiskMonito
     // and stop-out's whole point is reacting to the account's CURRENT
     // state, not a snapshot from before this loop started.
     const freshAccount = await prisma.account.findUniqueOrThrow({ where: { id: accountId } });
-    let equity = freshAccount.balance;
-    let usedMargin = new Prisma.Decimal(0);
-    let worst: { position: OpenPositionWithMarket; pnl: Prisma.Decimal; closePrice: Prisma.Decimal } | null = null;
+    const { marginLevel, worst } = measureAccount(freshAccount, positions);
 
-    for (const p of positions) {
-      if (p.bid == null || p.ask == null) continue; // no live price -- not closeable, not counted
-      const cp = closePriceFor(p.side, p.bid, p.ask);
-      const pnl = computeRealizedPnl({ side: p.side, openPrice: p.openPrice, closePrice: cp, volume: p.volume, contractSize: p.contractSize }).mul(p.fxRate);
-      equity = equity.add(pnl);
-      usedMargin = usedMargin.add(liveUsedMarginFor({ side: p.side, volume: p.volume, contractSize: p.contractSize, bid: p.bid, ask: p.ask, leverage: freshAccount.leverage }).mul(p.fxRate));
-      if (!worst || pnl.lt(worst.pnl)) worst = { position: p, pnl, closePrice: cp };
-    }
-
-    if (usedMargin.lte(0)) break; // nothing to gate a margin level on
-    const marginLevel = equity.div(usedMargin).mul(100);
+    if (marginLevel == null) break; // nothing to gate a margin level on
     if (marginLevel.gte(stopOutLevel)) break; // back above threshold -- done
     if (!worst) break; // below threshold but nothing closeable has a live price right now -- stuck, not this function's call to guess a price
 
@@ -264,16 +289,8 @@ export async function evaluateAccountRisk(accountId: string): Promise<RiskMonito
   const remaining = (await loadOpenPositionsWithMarket(accountId)).filter((p) => !stopOutClosed.includes(p.id));
   if (remaining.length > 0) {
     const latestAccount = await prisma.account.findUniqueOrThrow({ where: { id: accountId } });
-    let equity = latestAccount.balance;
-    let usedMargin = new Prisma.Decimal(0);
-    for (const p of remaining) {
-      if (p.bid == null || p.ask == null) continue; // no live price -- not counted, same as passes 1/2
-      const cp = closePriceFor(p.side, p.bid, p.ask);
-      equity = equity.add(computeRealizedPnl({ side: p.side, openPrice: p.openPrice, closePrice: cp, volume: p.volume, contractSize: p.contractSize }).mul(p.fxRate));
-      usedMargin = usedMargin.add(liveUsedMarginFor({ side: p.side, volume: p.volume, contractSize: p.contractSize, bid: p.bid, ask: p.ask, leverage: latestAccount.leverage }).mul(p.fxRate));
-    }
-    if (usedMargin.gt(0)) {
-      const marginLevel = equity.div(usedMargin).mul(100);
+    const { marginLevel } = measureAccount(latestAccount, remaining);
+    if (marginLevel != null) {
       const inMarginCall = marginLevel.lte(marginCallLevel);
       if (inMarginCall && !latestAccount.marginCallNotifiedAt) {
         const body = `Account ${latestAccount.accountNumber}'s margin level is ${marginLevel.toFixed(2)}%, at or below the ${marginCallLevel}% margin-call level. Deposit funds or close positions to avoid stop-out.`;

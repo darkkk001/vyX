@@ -1,6 +1,6 @@
 {
-  "name": "12-heartbeat-stale-tick",
-  "why": "LivePrice tickAt is 60s old but updatedAt is 1s old (the MT5 EA heartbeat resends an unchanged price). Both engines gate on tickAt (Stage 2 F4): no usable price, no action.",
+  "name": "15-stale-tick-fresh-updatedAt-sl",
+  "why": "The SL (1995) is crossed by a quote whose tickAt is 60 s old while updatedAt is 1 s old (EA heartbeat on a frozen feed). No usable price on either engine: the SL must NOT fire.",
   "knownDivergence": [
     {
       "id": "unpriced-position-margin",
@@ -46,15 +46,15 @@
       "side": "BUY",
       "volume": "1",
       "openPrice": "2000",
-      "slPrice": null,
+      "slPrice": "1995",
       "tpPrice": null
     }
   ],
   "prices": [
     {
       "symbol": "XAUUSD",
-      "bid": "1992",
-      "ask": "1992.5",
+      "bid": "1990",
+      "ask": "1990.5",
       "ageSeconds": 60,
       "updatedAgeSeconds": 1
     }

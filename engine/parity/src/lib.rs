@@ -80,6 +80,12 @@ pub struct SymbolCfg {
     pub contract_size: Decimal,
     pub digits: u32,
     pub quote_currency: String,
+    /// Prisma SymbolCategory; the harness seeds CRYPTO (always in session) when absent
+    #[serde(default)]
+    pub category: Option<String>,
+    /// seed a configured session on another weekday, so the market is closed now (Stage 2 F4)
+    #[serde(default)]
+    pub session_closed_now: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]

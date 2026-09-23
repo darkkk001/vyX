@@ -36,39 +36,74 @@ pub async fn account_ids_with_open_positions(pool: &PgPool) -> Result<Vec<String
     Ok(rows.into_iter().map(|(id,)| id).collect())
 }
 
-/// One account's OPEN positions with the latest quote joined in. Price freshness is still the engine's
-/// old rule (`updatedAt` within 15 s); Stage 2 moves it to the web's (`tickAt` + trading sessions).
+/// One account's OPEN positions with their USABLE price (Stage 2 F4, the web's rule in lib/live-price.ts
+/// getFreshPrices + lib/risk-monitor.ts's session gate):
+/// - the quote's `tickAt` (the real last-tick time, UTC) is under 15 s old. NOT `updatedAt`: the EA's
+///   heartbeat re-sends an unchanged price every few seconds, which keeps `updatedAt` fresh on a dead feed;
+/// - AND the symbol's trading session is open now for this account's broker (session.rs). As on the web,
+///   only a symbol that has a BrokerSymbol row for the broker can be session-closed.
+/// A position without a usable price comes back with `bid`/`ask` = None: counted nowhere, closeable by nothing.
 pub async fn open_positions_with_market(
     pool: &PgPool,
     account_id: &str,
 ) -> Result<Vec<OpenPositionWithMarket>, sqlx::Error> {
     #[allow(clippy::type_complexity)]
-    let rows: Vec<(String, String, String, Decimal, Decimal, Decimal, Option<Decimal>, Option<Decimal>, Option<Decimal>, Option<Decimal>)> =
+    let rows: Vec<(String, String, String, Decimal, Decimal, Decimal, Option<Decimal>, Option<Decimal>, Option<Decimal>, Option<Decimal>, String, String)> =
         sqlx::query_as(
             r#"SELECT p.id, s.name, p.side::text, p.volume, p."openPrice", s."contractSize",
-                      lp.bid, lp.ask, p."slPrice", p."tpPrice"
+                      lp.bid, lp.ask, p."slPrice", p."tpPrice", s.category::text, p."brokerId"
                FROM "Position" p
                JOIN "Symbol" s ON s.id = p."symbolId"
-               LEFT JOIN "LivePrice" lp ON lp.symbol = s.name AND lp."updatedAt" > now() - interval '15 seconds'
+               LEFT JOIN "LivePrice" lp ON lp.symbol = s.name AND lp."tickAt" > now() - interval '15 seconds'
                WHERE p."accountId" = $1 AND p.status = 'OPEN'
                ORDER BY p."openedAt", p.id"#,
         )
         .bind(account_id)
         .fetch_all(pool)
         .await?;
+    if rows.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // the broker's configured sessions for these symbols (one account = one broker, as the web assumes)
+    let broker_id = rows[0].11.clone();
+    let names: Vec<String> = rows.iter().map(|r| r.1.clone()).collect();
+    let session_rows: Vec<(String, Option<i32>, Option<String>, Option<String>)> = sqlx::query_as(
+        r#"SELECT s.name, ts."dayOfWeek", ts."openTime", ts."closeTime"
+           FROM "BrokerSymbol" bs
+           JOIN "Symbol" s ON s.id = bs."symbolId"
+           LEFT JOIN "TradingSession" ts ON ts."brokerSymbolId" = bs.id
+           WHERE bs."brokerId" = $1 AND s.name = ANY($2)"#,
+    )
+    .bind(&broker_id)
+    .bind(&names)
+    .fetch_all(pool)
+    .await?;
+    let mut sessions: std::collections::HashMap<String, Vec<crate::session::SessionWindow>> = std::collections::HashMap::new();
+    for (name, day, open, close) in session_rows {
+        let list = sessions.entry(name).or_default();
+        if let (Some(day_of_week), Some(open_time), Some(close_time)) = (day, open, close) {
+            list.push(crate::session::SessionWindow { day_of_week, open_time, close_time });
+        }
+    }
+    let now = chrono::Utc::now();
+
     Ok(rows
         .into_iter()
-        .map(|(id, symbol, side, volume, open_price, contract_size, bid, ask, sl_price, tp_price)| OpenPositionWithMarket {
-            id,
-            symbol,
-            side: side_from_prisma(&side),
-            volume,
-            open_price,
-            contract_size,
-            bid,
-            ask,
-            sl_price,
-            tp_price,
+        .map(|(id, symbol, side, volume, open_price, contract_size, bid, ask, sl_price, tp_price, category, _)| {
+            let closed = sessions.get(&symbol).is_some_and(|windows| crate::session::is_market_closed(windows, now, &category));
+            OpenPositionWithMarket {
+                id,
+                symbol,
+                side: side_from_prisma(&side),
+                volume,
+                open_price,
+                contract_size,
+                bid: if closed { None } else { bid },
+                ask: if closed { None } else { ask },
+                sl_price,
+                tp_price,
+            }
         })
         .collect())
 }

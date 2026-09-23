@@ -1,6 +1,6 @@
 {
-  "name": "12-heartbeat-stale-tick",
-  "why": "LivePrice tickAt is 60s old but updatedAt is 1s old (the MT5 EA heartbeat resends an unchanged price). Both engines gate on tickAt (Stage 2 F4): no usable price, no action.",
+  "name": "16-dst-boundary-tickat",
+  "why": "tickAt exactly 3600 s old with updatedAt fresh: the autumn DST window where the EA's broker offset is an hour out for up to one clock sync. The quote would stop the account out; neither engine may use it.",
   "knownDivergence": [
     {
       "id": "unpriced-position-margin",
@@ -55,7 +55,7 @@
       "symbol": "XAUUSD",
       "bid": "1992",
       "ask": "1992.5",
-      "ageSeconds": 60,
+      "ageSeconds": 3600,
       "updatedAgeSeconds": 1
     }
   ]

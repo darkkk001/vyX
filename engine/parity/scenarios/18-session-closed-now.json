@@ -1,6 +1,6 @@
 {
-  "name": "12-heartbeat-stale-tick",
-  "why": "LivePrice tickAt is 60s old but updatedAt is 1s old (the MT5 EA heartbeat resends an unchanged price). Both engines gate on tickAt (Stage 2 F4): no usable price, no action.",
+  "name": "18-session-closed-now",
+  "why": "XAUUSD (METALS) with a configured trading session only on another weekday, so the market is closed now; the tick is fresh and would stop the account out. A closed session means no usable price on both engines.",
   "knownDivergence": [
     {
       "id": "unpriced-position-margin",
@@ -35,7 +35,9 @@
       "name": "XAUUSD",
       "contractSize": "100",
       "digits": 2,
-      "quoteCurrency": "USD"
+      "quoteCurrency": "USD",
+      "category": "METALS",
+      "sessionClosedNow": true
     }
   ],
   "positions": [
@@ -55,8 +57,7 @@
       "symbol": "XAUUSD",
       "bid": "1992",
       "ask": "1992.5",
-      "ageSeconds": 60,
-      "updatedAgeSeconds": 1
+      "ageSeconds": 1
     }
   ]
 }

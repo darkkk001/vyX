@@ -13,6 +13,7 @@ pub mod events;
 pub mod monitor;
 pub mod pending_orders;
 pub mod pricing;
+pub mod session;
 pub mod swap;
 
 use chrono::Duration as ChronoDuration;
