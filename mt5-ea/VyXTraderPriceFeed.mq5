@@ -7,7 +7,7 @@
 //| LivePrice table this EA feeds.                                    |
 //+------------------------------------------------------------------+
 #property strict
-#property version   "1.42"
+#property version   "1.43"
 
 input string ServerUrl            = "https://www.vyxtrader.com/api/internal/price-feed";
 // No default -- this file is committed to a public-ish repo. A real
@@ -356,6 +356,17 @@ const int TICK_WEBREQUEST_TIMEOUT_MS = 5000;
 // ever completed, so a plain reattach doesn't redo it -- ForceDeepBackfill
 // above is the override.
 const string DEEP_BACKFILL_DONE_GVAR = "VyXTraderPriceFeed_DeepBackfillDone";
+// v1.43 -- one feed per terminal. Two instances (a stale chart left in the profile next to the real one)
+// each pushed every symbol, each ran its own backfill passes, and one carried an old secret and got 401s.
+// A TEMPORARY global variable (GlobalVariableTemp: never written to disk, gone when the terminal closes or
+// crashes) holds the chart id of the instance that owns the feed; any other instance refuses to start.
+const string INSTANCE_LOCK_GVAR = "VyXTraderPriceFeed_Instance";
+bool g_ownsInstanceLock = false;
+// v1.43 -- live-quote health: a terminal that is not connected to the trade server still serves CopyRates
+// from its local history cache, so backfills "work" while no live tick ever arrives. Logged, not silent.
+bool g_lastConnected = true;
+uint g_lastConnectionCheckMs = 0;
+uint g_lastDisconnectedLogMs = 0;
 // Floor between one staged step and the next -- long enough that OnTick's
 // own tick-driven pushes (and the next OnTimer's plain BuildAndSend) get a
 // real gap to run in when a step finishes fast (H4/D1, ~1.3s measured).
@@ -623,8 +634,29 @@ void LoadApiSecret()
       Print("VyXTraderPriceFeed: secret loaded from ", g_apiSecretSource, " (", StringLen(g_apiSecret), " chars)");
 }
 
+// True when this chart owns (or has just claimed) the feed. A holder whose chart no longer exists is stale
+// (its EA was removed without OnDeinit, or the chart was closed) and is taken over.
+bool ClaimSingleInstance()
+{
+   long me = ChartID();
+   if (!GlobalVariableCheck(INSTANCE_LOCK_GVAR)) GlobalVariableTemp(INSTANCE_LOCK_GVAR);
+   double holder = GlobalVariableGet(INSTANCE_LOCK_GVAR);
+   if ((long)holder == me) return true;
+   if (holder != 0 && ChartSymbol((long)holder) != "")
+   {
+      Print("VyXTraderPriceFeed: another instance already runs the feed on chart ", (long)holder, " (", ChartSymbol((long)holder),
+            ") -- this one on chart ", me, " (", _Symbol, ") will not start. Close this chart, or remove the EA from it, so the profile keeps ONE feed.");
+      return false;
+   }
+   return GlobalVariableSetOnCondition(INSTANCE_LOCK_GVAR, (double)me, holder);
+}
+
 int OnInit()
 {
+   // v1.43 -- one feed per terminal (see INSTANCE_LOCK_GVAR). Refusing here removes the EA from this chart,
+   // so the next profile save drops the duplicate by itself.
+   if (!ClaimSingleInstance()) return(INIT_FAILED);
+   g_ownsInstanceLock = true;
    LoadApiSecret();
    ParseSymbolMap();
    // Before SyncClockOffset so a first backfill can't fire with a zero
@@ -646,6 +678,13 @@ int OnInit()
    // quick one when someone set only half of it.
    if (DeepBackfillFullHistory && !ForceDeepBackfill)
       Print("VyXTraderPriceFeed (history backfill): DeepBackfillFullHistory=true is ignored without ForceDeepBackfill=true -- set both to run the full-history pass");
+   // v1.43 -- say which history pass this init runs and why, so an unexpected full pass after a restart is
+   // explained in the log (a chart whose saved inputs still say ForceDeepBackfill=true, or a done flag that
+   // was never written because the terminal crashed mid-pass).
+   Print("VyXTraderPriceFeed (history backfill) on init: ",
+         ForceDeepBackfill ? (DeepBackfillFullHistory ? "FULL-HISTORY pass (ForceDeepBackfill=true, DeepBackfillFullHistory=true)" : "deep pass (ForceDeepBackfill=true)")
+                           : (!deepAlreadyDone ? "deep pass (first run on this terminal: done flag not set)" : "shallow outage-repair pass only"),
+         "; done flag ", deepAlreadyDone ? "set" : "NOT set");
    if (ForceDeepBackfill || !deepAlreadyDone)
       StartDeepBackfill();
    else
@@ -662,6 +701,9 @@ int OnInit()
 void OnDeinit(const int reason)
 {
    EventKillTimer();
+   if (g_ownsInstanceLock && GlobalVariableCheck(INSTANCE_LOCK_GVAR) && (long)GlobalVariableGet(INSTANCE_LOCK_GVAR) == ChartID())
+      GlobalVariableSet(INSTANCE_LOCK_GVAR, 0);
+   g_ownsInstanceLock = false;
 }
 
 void OnTick()
@@ -1030,6 +1072,9 @@ void FinishDeepBackfill()
       Print("VyXTraderPriceFeed (history backfill): deep pass complete in ", DoubleToString(elapsedSec, 1), "s");
    }
    GlobalVariableSet(DEEP_BACKFILL_DONE_GVAR, 1);
+   // v1.43 -- written to disk NOW: MT5 saves global variables only on a clean shutdown, so after an
+   // "Abnormal termination" the flag was lost and the next start ran the whole deep pass again.
+   GlobalVariablesFlush();
    // MQL5 cannot reset an input from code (see ForceDeepBackfill's own
    // comment) -- every future reinit repeats this pass until someone does.
    if (ForceDeepBackfill)
@@ -1390,8 +1435,27 @@ void BuildAndSend()
    }
 }
 
+// v1.43 -- every 5 s: is the terminal connected to the trade server? Logs the change both ways, and a
+// reminder once a minute while it stays down (history keeps flowing from the local cache; live ticks do not).
+void CheckConnection()
+{
+   uint now = GetTickCount();
+   if (now - g_lastConnectionCheckMs < 5000) return;
+   g_lastConnectionCheckMs = now;
+   bool connected = (bool)TerminalInfoInteger(TERMINAL_CONNECTED);
+   if (connected && !g_lastConnected)
+      Print("VyXTraderPriceFeed: terminal reconnected to the trade server -- live quotes flowing again");
+   if (!connected && (g_lastConnected || now - g_lastDisconnectedLogMs >= 60000))
+   {
+      Print("VyXTraderPriceFeed: terminal is NOT connected to the trade server -- no live quotes, only cached history. Check the account login (Journal: 'authorized on ...') and the connection status bottom-right.");
+      g_lastDisconnectedLogMs = now;
+   }
+   g_lastConnected = connected;
+}
+
 void OnTimer()
 {
+   CheckConnection();
    BuildAndSend();
 
    // v1.35 -- while the staged deep pass is in flight, it owns this

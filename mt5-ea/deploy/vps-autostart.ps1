@@ -9,24 +9,29 @@
 #   1. writes the price-feed secret to %APPDATA%\MetaQuotes\Terminal\Common\Files\vyx_secret.txt, read from
 #      the engine's own start-engine.cmd (PRICE_FEED_SECRET), so the EA and the engine can never disagree.
 #      The value is never printed; only its length.
-#   2. writes <MT5>\config\vyx-startup.ini: MT5's own startup config, which opens an XAUUSD M1 chart and
-#      attaches VyXTraderPriceFeed with the preset MQL5\Presets\VyXTraderPriceFeed.set on every launch.
+#   2. checks the dedicated MT5 profile "VyXFeed" (MQL5\Profiles\Charts\VyXFeed): exactly ONE chart carrying
+#      VyXTraderPriceFeed, with no secret saved in it, and lists every other profile / preset file that still
+#      holds a non-empty ApiSecret (names only) so an old secret can be removed. MT5 is started with
+#      /profile:VyXFeed, so a restart reopens exactly that chart with that EA. (v1 of this script used a
+#      [StartUp] Expert= config instead, which opens an ADDITIONAL chart on every launch and piled up
+#      duplicate EAs; its vyx-startup.ini is deleted.)
 #   3. registers the scheduled task "VyX MT5 price feed": AT LOG ON of this user (+30 s for the network), in
 #      that user's own interactive session, so MT5 is on the desktop you see over RDP and its inputs can be
 #      changed there. A reboot comes back unattended because Windows auto-logon (Sysinternals Autologon)
 #      signs this user in; the script checks that auto-logon is on for this user and says so if not.
-#      The task runs <MT5>\config\vyx-launch.ps1, which starts terminal64.exe /portable /config:<ini> ONLY if
+#      The task runs <MT5>\config\vyx-launch.ps1, which starts terminal64.exe /portable /profile:VyXFeed ONLY if
 #      that exact terminal64.exe is not already running: an RDP connection that opens a new session is also a
 #      "log on" and must not start a second MT5 on the same portable folder.
 #
-# Before running it: in MT5, EA Properties > Inputs, clear ApiSecret (v1.42 then reads the file), make sure
-# ForceDeepBackfill / DeepBackfillFullHistory are false, and Save the inputs as
-# MQL5\Presets\VyXTraderPriceFeed.set (the button on the Inputs tab). The preset must NOT hold the secret.
+# Before running it, in MT5 (EA v1.43+):
+#   - close every chart except ONE XAUUSD M1 chart; on it, EA Properties > Inputs: ApiSecret EMPTY (read from
+#     the file), ForceDeepBackfill = false, DeepBackfillFullHistory = false, DeepBackfillSymbols/Timeframes empty;
+#   - File > Profiles > Save As... "VyXFeed".
 
 param(
     [string] $Mt5Dir = "C:\MT5-Pepperstone",
     [string] $EngineCmd = "C:\vyxtrader\scripts\start-engine.cmd",
-    [string] $ChartSymbol = "XAUUSD",
+    [string] $Profile = "VyXFeed",
     [string] $TaskName = "VyX MT5 price feed"
 )
 $ErrorActionPreference = "Stop"
@@ -45,23 +50,24 @@ $secretFile = Join-Path $commonFiles "vyx_secret.txt"
 icacls $secretFile /inheritance:r /grant:r "$($env:USERNAME):(R,W)" "SYSTEM:(F)" "Administrators:(F)" | Out-Null
 Write-Output "1) secret file: $secretFile ($($secret.Length) chars, ACL restricted)"
 
-# 2) MT5 startup config
+# 2) the MT5 profile that holds the ONE feed chart
 $terminal = Join-Path $Mt5Dir "terminal64.exe"
 if (-not (Test-Path $terminal)) { throw "no terminal64.exe in $Mt5Dir" }
-$preset = Join-Path $Mt5Dir "MQL5\Presets\VyXTraderPriceFeed.set"
-if (-not (Test-Path $preset)) { throw "missing $preset -- save the EA's Inputs (ApiSecret EMPTY) as that preset first" }
-if (Select-String -Path $preset -Pattern '^ApiSecret=.+' -Quiet) { throw "$preset carries an ApiSecret value -- clear it in the Inputs tab and save the preset again" }
-if (Select-String -Path $preset -Pattern '^(ForceDeepBackfill|DeepBackfillFullHistory)=(true|1)' -Quiet) { throw "$preset has a deep-backfill flag ON -- every reboot would re-run the pass; set both false and save again" }
-New-Item -ItemType Directory -Force (Join-Path $Mt5Dir "config") | Out-Null
-$ini = Join-Path $Mt5Dir "config\vyx-startup.ini"
-@"
-[StartUp]
-Expert=VyXTraderPriceFeed
-ExpertParameters=VyXTraderPriceFeed.set
-Symbol=$ChartSymbol
-Period=M1
-"@ | Set-Content -Path $ini -Encoding ASCII
-Write-Output "2) startup config: $ini"
+$profilesRoot = Join-Path $Mt5Dir "MQL5\Profiles\Charts"
+$profileDir = Join-Path $profilesRoot $Profile
+if (-not (Test-Path $profileDir)) { throw "no MT5 profile '$Profile' ($profileDir) -- set up the one chart and File > Profiles > Save As '$Profile' first" }
+$feedCharts = @(Get-ChildItem $profileDir -Filter *.chr | Where-Object { Select-String -Path $_.FullName -Pattern '^name=VyXTraderPriceFeed\s*$' -Quiet })
+if ($feedCharts.Count -ne 1) { throw "profile '$Profile' has $($feedCharts.Count) charts with VyXTraderPriceFeed -- it must be exactly 1 (close the extra charts, save the profile again)" }
+$chart = $feedCharts[0].FullName
+if (Select-String -Path $chart -Pattern '^ApiSecret=\S' -Quiet) { throw "the feed chart in '$Profile' has ApiSecret set in its inputs -- clear it (v1.42+ reads the file) and save the profile again" }
+if (Select-String -Path $chart -Pattern '^(ForceDeepBackfill|DeepBackfillFullHistory)=(true|1)\b' -Quiet) { throw "the feed chart in '$Profile' has a deep-backfill flag ON -- every restart would re-run it; set both false and save the profile again" }
+Write-Output "2) profile '$Profile': one feed chart ($([IO.Path]::GetFileName($chart))), no saved secret, backfill flags off"
+# every other place an old secret may still sit (names only, never the value)
+$stale = Get-ChildItem (Join-Path $Mt5Dir "MQL5\Profiles"), (Join-Path $Mt5Dir "MQL5\Presets") -Recurse -Include *.chr, *.set -ErrorAction SilentlyContinue |
+    Where-Object { Select-String -Path $_.FullName -Pattern '^ApiSecret=\S' -Quiet }
+foreach ($f in $stale) { Write-Warning "an ApiSecret value is still saved in $($f.FullName) -- delete that chart/preset (or clear the value) so no old secret lingers" }
+$oldIni = Join-Path $Mt5Dir "config\vyx-startup.ini"
+if (Test-Path $oldIni) { Remove-Item $oldIni -Force; Write-Output "   removed v1's $oldIni ([StartUp] Expert= added a chart on every launch)" }
 
 # 3) auto-logon check: "at log on" only brings MT5 back after a reboot if Windows signs this user in by itself
 $winlogon = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"
@@ -82,7 +88,7 @@ $launcher = Join-Path $Mt5Dir "config\vyx-launch.ps1"
 `$exe = '$terminal'
 `$running = Get-Process terminal64 -ErrorAction SilentlyContinue | Where-Object { `$_.Path -eq `$exe }
 if (`$running) { exit 0 }
-Start-Process -FilePath `$exe -ArgumentList '/portable','/config:"$ini"' -WorkingDirectory '$Mt5Dir'
+Start-Process -FilePath `$exe -ArgumentList '/portable','/profile:$Profile' -WorkingDirectory '$Mt5Dir'
 "@ | Set-Content -Path $launcher -Encoding ASCII
 Write-Output "4) launcher: $launcher"
 
