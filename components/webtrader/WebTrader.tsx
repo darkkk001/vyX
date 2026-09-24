@@ -21,6 +21,7 @@ import {
   type SymbolCategory,
 } from "@/lib/market-simulator";
 import { tradeApi, serverNow, effectiveAsk, ApiError, type AccountInfo, type ApiPosition, type ApiOrder, type ApiFundsRequest, type ApiPaymentMethod, type ApiKycStatus, type ApiLinkedAccount, type ApiSession, type ApiAlert } from "@/lib/trade-api";
+import { hedgedUsedMarginDisplay, type DisplayMarginLeg } from "@/lib/hedged-margin-display";
 import AddSymbolDialog from "./AddSymbolDialog";
 import ChartSettingsDialog from "./ChartSettingsDialog";
 import KLineChartPanel, {
@@ -2175,12 +2176,16 @@ export default function WebTrader({
     // liveUsedMarginFor -- the server-side canonical version this was
     // unified with 2026-09-05. Was always-bid regardless of side before,
     // a minor (spread-sized) inconsistency with positionPnl just above.
-    return positions.reduce((sum, p) => {
+    // MT5 hedged margin (2026-09-25): per symbol, the hedged BUY+SELL volume pays the symbol's hedged margin %;
+    // same formula as the server (lib/margin.ts hedgedUsedMargin), so the level shown is the level stopped out on.
+    const legs: DisplayMarginLeg[] = [];
+    for (const p of positions) {
       const m = market[p.symbol.name];
-      if (!m) return sum;
+      if (!m) continue;
       const price = p.side === "BUY" ? m.bid : m.ask;
-      return sum + (m.def.contractSize * parseFloat(p.volume) * price) / account.leverage;
-    }, 0);
+      legs.push({ symbolKey: p.symbol.name, side: p.side, volume: parseFloat(p.volume), margin: (m.def.contractSize * parseFloat(p.volume) * price) / account.leverage, hedgedMarginPct: m.def.hedgedMarginPct ?? 200 });
+    }
+    return hedgedUsedMarginDisplay(legs);
   }, [positions, market, account]);
   // Stage 2 F1 (credit Model A): equity = balance + credit + floating, the same figure the server's risk monitor uses
   const equity = account ? parseFloat(account.balance) + parseFloat(account.credit ?? "0") + floatingPnl : 0;

@@ -50,6 +50,9 @@ export async function GET() {
       minLot: bs.minLot.toString(),
       maxLot: bs.maxLot.toString(),
       lotStep: bs.lotStep.toString(),
+      // MT5 hedged margin (lib/margin.ts hedgedUsedMargin): the terminal / WebTrader account panel uses it so the
+      // margin they show is the one the server stops out on. 200 = no reduction.
+      hedgedMarginPct: bs.hedgedMarginPct.toString(),
     })),
   });
 }

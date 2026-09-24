@@ -266,6 +266,8 @@ export async function POST(
       newOrderQuoteCurrency: brokerSymbol.symbol.quoteCurrency,
       newOrderVolume: order.volume,
       newOrderFillPrice: fillPrice,
+      newOrderSide: order.side,
+      newOrderSymbolId: order.symbolId,
     });
     if (marginError) {
       return NextResponse.json(marginError, { status: 400 });

@@ -393,6 +393,8 @@ async function handlePlaceOrder(request: NextRequest) {
             newOrderQuoteCurrency: brokerSymbol.symbol.quoteCurrency,
             newOrderVolume: volume,
             newOrderFillPrice: fillPrice,
+            newOrderSide: side,
+            newOrderSymbolId: brokerSymbol.symbolId,
           });
           if (!marginError) {
             const position = await prisma.$transaction(async (tx) => {
@@ -579,6 +581,8 @@ async function handlePlaceOrder(request: NextRequest) {
         newOrderQuoteCurrency: brokerSymbol.symbol.quoteCurrency,
         newOrderVolume: volume,
         newOrderFillPrice: fillPrice,
+        newOrderSide: side,
+        newOrderSymbolId: brokerSymbol.symbolId,
       });
       if (marginError) {
         return NextResponse.json(marginError, { status: 400 });

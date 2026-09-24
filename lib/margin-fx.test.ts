@@ -68,6 +68,8 @@ describe("margin figures are in the account's currency", () => {
       newOrderVolume: D("1"),
       newOrderFillPrice: D("150.000"),
       newOrderQuoteCurrency: "JPY",
+      newOrderSide: "BUY",
+      newOrderSymbolId: ids.jpy,
     });
     expect(r).toBeNull();
   });
@@ -82,6 +84,8 @@ describe("margin figures are in the account's currency", () => {
       newOrderVolume: D("1"),
       newOrderFillPrice: D("10"),
       newOrderQuoteCurrency: "XYZ",
+      newOrderSide: "BUY",
+      newOrderSymbolId: ids.xyz,
     });
     expect(r?.error).toBe("NO_CONVERSION_RATE");
   });

@@ -40,10 +40,12 @@ export async function computeAccountMarginSnapshots(prisma: PrismaClient, broker
     },
   });
 
-  const [priceBySymbol, fx] = await Promise.all([
+  const [priceBySymbol, fx, hedgedPct] = await Promise.all([
     getFreshPrices([...new Set(positions.map((p) => p.symbol.name))]),
     loadFxLookup(prisma, positions.map((p) => [p.symbol.quoteCurrency, p.account.currency] as const)),
+    loadHedgedMarginPct(prisma, brokerId),
   ]);
+  const legsByAccount = new Map<string, MarginLeg[]>();
 
   type Acc = { accountId: string; accountNumber: string; balance: Prisma.Decimal; credit: Prisma.Decimal; floating: Prisma.Decimal; usedMargin: Prisma.Decimal; exposure: Prisma.Decimal; positionCount: number; marginCallLevel: Prisma.Decimal; stopOutLevel: Prisma.Decimal };
   const byAccount = new Map<string, Acc>();
@@ -69,10 +71,14 @@ export async function computeAccountMarginSnapshots(prisma: PrismaClient, broker
     if (live && rate) {
       const currentPrice = closePriceFor(p.side, live.bid, live.ask);
       acc.floating = acc.floating.add(computeRealizedPnl({ side: p.side, openPrice: p.openPrice, closePrice: currentPrice, volume: p.volume, contractSize: p.symbol.contractSize }).mul(rate));
-      acc.usedMargin = acc.usedMargin.add(liveUsedMarginFor({ side: p.side, volume: p.volume, contractSize: p.symbol.contractSize, bid: live.bid, ask: live.ask, leverage: p.account.leverage }).mul(rate));
+      const margin = liveUsedMarginFor({ side: p.side, volume: p.volume, contractSize: p.symbol.contractSize, bid: live.bid, ask: live.ask, leverage: p.account.leverage }).mul(rate);
+      const legs = legsByAccount.get(p.account.id) ?? [];
+      legs.push({ symbolKey: p.symbolId, side: p.side, volume: p.volume, margin, hedgedMarginPct: hedgedPct.get(p.symbolId) ?? DEFAULT_HEDGED_MARGIN_PCT });
+      legsByAccount.set(p.account.id, legs);
     }
     byAccount.set(p.account.id, acc);
   }
+  for (const [accountId, legs] of legsByAccount) byAccount.get(accountId)!.usedMargin = hedgedUsedMargin(legs);
 
   return [...byAccount.values()].map((a) => {
     const equity = a.balance.add(a.credit).add(a.floating);
@@ -106,6 +112,53 @@ export function requiredMarginFor(
   leverage: number
 ): Prisma.Decimal {
   return volume.mul(contractSize).mul(price).div(leverage);
+}
+
+// ---- MT5 hedged margin (2026-09-25) ----
+// An account's used margin is no longer a plain sum of per-position margins. Per SYMBOL, the BUY and SELL volume that
+// offset each other (the hedged volume) is charged BrokerSymbol.hedgedMarginPct of ONE lot's margin per lot PAIR; only
+// the uncovered volume pays full margin. 200 = both legs in full (the behavior before this, and the default), so a
+// symbol nobody configured is unchanged.
+//
+// Canonical formula, per symbol (engine/order-management/src/calc.rs used_margin is the same, operation for
+// operation, so the web and the engine agree to the last digit):
+//   L = the side with the larger volume (BUY on a tie), S = the other; Ml, Ms = the sum of those positions' full
+//   margins (live close-side price x fx rate, exactly as liveUsedMarginFor); l, s = their volumes.
+//   covered = s == 0 ? 0 : Ml * s / l            (the larger side's margin on the hedged volume)
+//   margin  = (Ml - covered) + (Ms + covered) * pct / 200
+// At pct 200 that is exactly Ml + Ms, the plain sum.
+export type MarginLeg = {
+  /** Positions with the same key hedge each other (the symbol; one account at a time). */
+  symbolKey: string;
+  side: "BUY" | "SELL";
+  volume: Prisma.Decimal;
+  /** This position's full margin in the account currency. */
+  margin: Prisma.Decimal;
+  hedgedMarginPct: Prisma.Decimal;
+};
+
+export const DEFAULT_HEDGED_MARGIN_PCT = new Prisma.Decimal(200);
+
+export function hedgedUsedMargin(legs: MarginLeg[]): Prisma.Decimal {
+  const bySymbol = new Map<string, { buyVol: Prisma.Decimal; sellVol: Prisma.Decimal; buyMargin: Prisma.Decimal; sellMargin: Prisma.Decimal; pct: Prisma.Decimal }>();
+  const zero = new Prisma.Decimal(0);
+  for (const leg of legs) {
+    const s = bySymbol.get(leg.symbolKey) ?? { buyVol: zero, sellVol: zero, buyMargin: zero, sellMargin: zero, pct: leg.hedgedMarginPct };
+    if (leg.side === "BUY") { s.buyVol = s.buyVol.add(leg.volume); s.buyMargin = s.buyMargin.add(leg.margin); }
+    else { s.sellVol = s.sellVol.add(leg.volume); s.sellMargin = s.sellMargin.add(leg.margin); }
+    bySymbol.set(leg.symbolKey, s);
+  }
+  let total = zero;
+  for (const s of bySymbol.values()) total = total.add(symbolHedgedMargin(s.buyVol, s.buyMargin, s.sellVol, s.sellMargin, s.pct));
+  return total;
+}
+
+function symbolHedgedMargin(buyVol: Prisma.Decimal, buyMargin: Prisma.Decimal, sellVol: Prisma.Decimal, sellMargin: Prisma.Decimal, pct: Prisma.Decimal): Prisma.Decimal {
+  const buyIsLarger = buyVol.gte(sellVol);
+  const [l, ml, s, ms] = buyIsLarger ? [buyVol, buyMargin, sellVol, sellMargin] : [sellVol, sellMargin, buyVol, buyMargin];
+  if (s.isZero()) return ml.add(ms);
+  const covered = ml.mul(s).div(l);
+  return ml.sub(covered).add(ms.add(covered).mul(pct).div(200));
 }
 
 // 2026-09-05 P0 fix -- the single, unified "how much margin does this
@@ -184,6 +237,12 @@ export type PreTradeMarginRejection = { error: "INSUFFICIENT_BALANCE" | "INSUFFI
 // margin instead of price. On reject, returns the actual numbers (not
 // just a bare code) so the client can show a real "insufficient margin —
 // required $X, available $Y" message instead of a bare rejection.
+/** symbolId -> BrokerSymbol.hedgedMarginPct for one broker. */
+export async function loadHedgedMarginPct(prisma: PrismaClient, brokerId: string): Promise<Map<string, Prisma.Decimal>> {
+  const rows = await prisma.brokerSymbol.findMany({ where: { brokerId }, select: { symbolId: true, hedgedMarginPct: true } });
+  return new Map(rows.map((r) => [r.symbolId, r.hedgedMarginPct]));
+}
+
 export async function checkAccountPreTradeMargin(
   prisma: PrismaClient,
   params: {
@@ -194,15 +253,20 @@ export async function checkAccountPreTradeMargin(
     newOrderVolume: Prisma.Decimal;
     newOrderFillPrice: Prisma.Decimal;
     newOrderQuoteCurrency: string;
+    /** Hedged margin (2026-09-25): the new order's side and symbol decide how much of it offsets open positions. */
+    newOrderSide: "BUY" | "SELL";
+    newOrderSymbolId: string;
   }
 ): Promise<PreTradeMarginRejection | null> {
   const [account, positions] = await Promise.all([
-    prisma.account.findUniqueOrThrow({ where: { id: params.accountId }, select: { balance: true, credit: true, currency: true } }),
+    prisma.account.findUniqueOrThrow({ where: { id: params.accountId }, select: { balance: true, credit: true, currency: true, brokerId: true } }),
     prisma.position.findMany({
       where: { accountId: params.accountId, status: "OPEN" },
-      select: { side: true, volume: true, openPrice: true, symbol: { select: { name: true, contractSize: true, quoteCurrency: true } } },
+      select: { side: true, volume: true, openPrice: true, symbolId: true, symbol: { select: { name: true, contractSize: true, quoteCurrency: true } } },
     }),
   ]);
+  const hedgedPct = await loadHedgedMarginPct(prisma, account.brokerId);
+  const pctFor = (symbolId: string) => hedgedPct.get(symbolId) ?? DEFAULT_HEDGED_MARGIN_PCT;
 
   const [priceBySymbol, fx] = await Promise.all([
     getFreshPrices([...new Set(positions.map((p) => p.symbol.name))]),
@@ -225,22 +289,33 @@ export async function checkAccountPreTradeMargin(
   // Stage 2 F1 (credit Model A): the client can trade on credit, so it counts toward the equity this order is
   // checked against (BEHAVIOR CHANGE 2026-09-24; it used to start from the balance alone).
   let equity = account.balance.add(account.credit);
-  let usedMargin = new Prisma.Decimal(0);
+  const legs: MarginLeg[] = [];
   for (const [i, p] of positions.entries()) {
     const rate = positionRates[i]!;
     const live = priceBySymbol.get(p.symbol.name);
+    let margin: Prisma.Decimal;
     if (live) {
       const currentPrice = closePriceFor(p.side, live.bid, live.ask);
-      usedMargin = usedMargin.add(liveUsedMarginFor({ side: p.side, volume: p.volume, contractSize: p.symbol.contractSize, bid: live.bid, ask: live.ask, leverage: params.leverage }).mul(rate));
+      margin = liveUsedMarginFor({ side: p.side, volume: p.volume, contractSize: p.symbol.contractSize, bid: live.bid, ask: live.ask, leverage: params.leverage }).mul(rate);
       equity = equity.add(
         computeRealizedPnl({ side: p.side, openPrice: p.openPrice, closePrice: currentPrice, volume: p.volume, contractSize: p.symbol.contractSize }).mul(rate)
       );
     } else {
-      usedMargin = usedMargin.add(requiredMarginFor(p.volume, p.symbol.contractSize, p.openPrice, params.leverage).mul(rate));
+      margin = requiredMarginFor(p.volume, p.symbol.contractSize, p.openPrice, params.leverage).mul(rate);
     }
+    legs.push({ symbolKey: p.symbolId, side: p.side, volume: p.volume, margin, hedgedMarginPct: pctFor(p.symbolId) });
   }
+  const usedMargin = hedgedUsedMargin(legs);
 
-  const requiredMargin = requiredMarginFor(params.newOrderVolume, params.newOrderContractSize, params.newOrderFillPrice, params.leverage).mul(newOrderRate);
+  const newOrderFullMargin = requiredMarginFor(params.newOrderVolume, params.newOrderContractSize, params.newOrderFillPrice, params.leverage).mul(newOrderRate);
+  const usedMarginAfter = hedgedUsedMargin([
+    ...legs,
+    { symbolKey: params.newOrderSymbolId, side: params.newOrderSide, volume: params.newOrderVolume, margin: newOrderFullMargin, hedgedMarginPct: pctFor(params.newOrderSymbolId) },
+  ]);
+  // MT5: an order that does not increase the used margin (it hedges an open position at a hedged margin % below 200)
+  // is always allowed, whatever the level -- it can only make the account safer.
+  if (usedMarginAfter.lte(usedMargin)) return null;
+  const requiredMargin = usedMarginAfter.sub(usedMargin);
   const rejectCode = checkPreTradeMargin({ equity, usedMargin, requiredMargin, marginCallLevel: params.marginCallLevel });
   if (!rejectCode) return null;
   // "INSUFFICIENT_BALANCE" = the funds (balance + credit) could not carry this order's margin even with nothing

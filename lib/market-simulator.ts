@@ -55,6 +55,8 @@ export type SymbolDef = {
   minLot: number;
   maxLot: number;
   lotStep: number;
+  // MT5 hedged margin % for this symbol (lib/margin.ts hedgedUsedMargin); optional, 200 = no reduction.
+  hedgedMarginPct?: number;
 };
 
 // Bootstrap/fallback set only -- used to seed the very first render before
@@ -115,6 +117,7 @@ export function buildSymbolDef(row: {
   minLot?: string | number;
   maxLot?: string | number;
   lotStep?: string | number;
+  hedgedMarginPct?: string | number;
 }): SymbolDef {
   const hint = PLACEHOLDER_HINTS[row.name];
   const contractSize = typeof row.contractSize === "string" ? parseFloat(row.contractSize) : row.contractSize;
@@ -134,6 +137,7 @@ export function buildSymbolDef(row: {
     minLot: toNum(row.minLot, 0.01),
     maxLot: toNum(row.maxLot, 100),
     lotStep: toNum(row.lotStep, 0.01),
+    hedgedMarginPct: toNum(row.hedgedMarginPct, 200),
   };
 }
 

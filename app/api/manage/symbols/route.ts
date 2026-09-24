@@ -25,6 +25,7 @@ const DEFAULTS = {
   maxExposure: null as string | null,
   tradingMode: "BOTH" as TradingMode,
   defaultBookType: "B_BOOK" as BookType,
+  hedgedMarginPct: "200",
 };
 
 async function requireManager() {
@@ -65,6 +66,7 @@ export async function GET() {
       maxExposure: cfg ? (cfg.maxExposure ? cfg.maxExposure.toString() : null) : DEFAULTS.maxExposure,
       tradingMode: cfg ? cfg.tradingMode : DEFAULTS.tradingMode,
       defaultBookType: cfg ? cfg.defaultBookType : DEFAULTS.defaultBookType,
+      hedgedMarginPct: cfg ? cfg.hedgedMarginPct.toString() : DEFAULTS.hedgedMarginPct,
     };
   });
 
@@ -148,6 +150,13 @@ export async function PATCH(request: NextRequest) {
   // null here means "not sent", which is not the same as invalid: it leaves
   // the stored value alone rather than rewriting it.
   const defaultBookType = BOOK_TYPES.includes(body?.defaultBookType as BookType) ? (body!.defaultBookType as BookType) : null;
+  // MT5 hedged margin (2026-09-25), OPTIONAL: not sent = the stored value stays (a client that does not know the field
+  // never resets it). 0-200: % of one lot's margin charged per hedged BUY+SELL lot pair; 200 = no reduction.
+  const hedgedMarginPctRaw = (body as Record<string, unknown> | null)?.hedgedMarginPct;
+  const hedgedMarginPct = hedgedMarginPctRaw == null || hedgedMarginPctRaw === "" ? null : parseDecimal(hedgedMarginPctRaw);
+  if (hedgedMarginPctRaw != null && hedgedMarginPctRaw !== "" && (!hedgedMarginPct || hedgedMarginPct.lt(0) || hedgedMarginPct.gt(200))) {
+    return NextResponse.json({ error: "hedgedMarginPct must be a number from 0 to 200 (200 = hedged positions pay full margin on both legs)" }, { status: 400 });
+  }
 
   if (
     !spreadMarkup ||
@@ -218,6 +227,7 @@ export async function PATCH(request: NextRequest) {
     // fallback here instead would silently re-book an A_BOOK symbol the first
     // time a 1.0.10 saved any unrelated field on it.
     ...(defaultBookType === null ? {} : { defaultBookType }),
+    ...(hedgedMarginPct === null ? {} : { hedgedMarginPct }),
   };
 
   const updated = await prisma.brokerSymbol.upsert({
@@ -246,6 +256,7 @@ export async function PATCH(request: NextRequest) {
             maxExposure: existing.maxExposure?.toString() ?? null,
             tradingMode: existing.tradingMode,
             defaultBookType: existing.defaultBookType,
+            hedgedMarginPct: existing.hedgedMarginPct.toString(),
           }
         : DEFAULTS,
       newValue: {
@@ -260,6 +271,7 @@ export async function PATCH(request: NextRequest) {
         maxExposure: updated.maxExposure?.toString() ?? null,
         tradingMode: updated.tradingMode,
         defaultBookType: updated.defaultBookType,
+        hedgedMarginPct: updated.hedgedMarginPct.toString(),
       },
     },
   });
@@ -278,5 +290,6 @@ export async function PATCH(request: NextRequest) {
     maxExposure: updated.maxExposure?.toString() ?? null,
     tradingMode: updated.tradingMode,
     defaultBookType: updated.defaultBookType,
+    hedgedMarginPct: updated.hedgedMarginPct.toString(),
   });
 }

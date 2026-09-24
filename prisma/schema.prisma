@@ -1672,6 +1672,10 @@ model BrokerSymbol {
   symbolId         String
   symbol           Symbol      @relation(fields: [symbolId], references: [id])
   spreadMarkup     Decimal     @default(0) @db.Decimal(10, 4) // pips added on top of raw spread
+  // MT5 hedged margin (2026-09-25): margin for a fully hedged BUY+SELL lot PAIR on this symbol, as a % of ONE lot's
+  // full margin (lib/margin.ts hedgedUsedMargin). 200 = both legs charged in full (the behavior before this field),
+  // 100 = only the larger side, 50 = the MT5 FX default, 0 = a hedged pair is free.
+  hedgedMarginPct  Decimal     @default(200) @db.Decimal(6, 2)
   minLot           Decimal     @default(0.01) @db.Decimal(10, 2)
   maxLot           Decimal     @default(100) @db.Decimal(10, 2)
   lotStep          Decimal     @default(0.01) @db.Decimal(10, 2)

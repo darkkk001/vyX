@@ -397,6 +397,8 @@ async function mirrorFillForRule(db: Db, rule: MirrorRule, source: MirrorSourceP
       newOrderQuoteCurrency: brokerSymbol.symbol.quoteCurrency,
       newOrderVolume: volume,
       newOrderFillPrice: fillPrice,
+      newOrderSide: mirrorSide,
+      newOrderSymbolId: brokerSymbol.symbolId,
     });
     if (marginError) {
       await recordMirrorFailure(db, rule, `insufficient margin (required ${marginError.required}, available ${marginError.available})`);

@@ -9,7 +9,7 @@ import { cancelPendingClose } from "@/lib/queued-close";
 import { emitPositionClosedActivity } from "@/lib/dealer-activity";
 import { publishTradingEvent } from "@/lib/nats";
 import { createNotification } from "@/lib/notifications";
-import { liveUsedMarginFor } from "@/lib/margin";
+import { DEFAULT_HEDGED_MARGIN_PCT, hedgedUsedMargin, liveUsedMarginFor, type MarginLeg } from "@/lib/margin";
 import { conversionRate, loadFxLookup } from "@/lib/fx";
 import * as mirror from "@/lib/mirror";
 import * as coverage from "@/lib/coverage";
@@ -54,6 +54,8 @@ type OpenPositionWithMarket = {
   // rate cannot be resolved is treated exactly like one with no price (bid/ask null): not counted, not
   // closeable, never counted as if JPY were USD.
   fxRate: Prisma.Decimal;
+  // MT5 hedged margin (2026-09-25): BrokerSymbol.hedgedMarginPct of this position's symbol (200 = no reduction).
+  hedgedMarginPct: Prisma.Decimal;
 };
 
 async function loadOpenPositionsWithMarket(accountId: string): Promise<OpenPositionWithMarket[]> {
@@ -92,6 +94,7 @@ async function loadOpenPositionsWithMarket(accountId: string): Promise<OpenPosit
       .map((bs) => bs.symbol.name)
   );
 
+  const hedgedPctBySymbol = new Map(brokerSymbols.map((bs) => [bs.symbol.name, bs.hedgedMarginPct] as const));
   return positions.map((p) => {
     const rate = conversionRate(p.symbol.quoteCurrency, p.account.currency, fx);
     if (!rate) console.error(`risk monitor: no ${p.symbol.quoteCurrency}->${p.account.currency} rate for ${p.symbol.name} position ${p.id}; treated as unpriced`);
@@ -111,6 +114,7 @@ async function loadOpenPositionsWithMarket(accountId: string): Promise<OpenPosit
       symbol: p.symbol.name,
       bid: live?.bid ?? null,
       ask: live?.ask ?? null,
+      hedgedMarginPct: hedgedPctBySymbol.get(p.symbol.name) ?? DEFAULT_HEDGED_MARGIN_PCT,
     };
   });
 }
@@ -147,16 +151,19 @@ type AccountMeasure = {
 // (2026-09-24): credit used to be ignored here, so an account holding credit was stopped out on its balance alone.
 function measureAccount(account: { balance: Prisma.Decimal; credit: Prisma.Decimal; leverage: number }, positions: OpenPositionWithMarket[]): AccountMeasure {
   let equity = account.balance.add(account.credit);
-  let usedMargin = new Prisma.Decimal(0);
+  const legs: MarginLeg[] = [];
   let worst: AccountMeasure["worst"] = null;
   for (const p of positions) {
     if (p.bid == null || p.ask == null) continue; // no usable price -- not closeable, not counted
     const cp = closePriceFor(p.side, p.bid, p.ask);
     const pnl = computeRealizedPnl({ side: p.side, openPrice: p.openPrice, closePrice: cp, volume: p.volume, contractSize: p.contractSize }).mul(p.fxRate);
     equity = equity.add(pnl);
-    usedMargin = usedMargin.add(liveUsedMarginFor({ side: p.side, volume: p.volume, contractSize: p.contractSize, bid: p.bid, ask: p.ask, leverage: account.leverage }).mul(p.fxRate));
+    legs.push({ symbolKey: p.symbol, side: p.side, volume: p.volume, margin: liveUsedMarginFor({ side: p.side, volume: p.volume, contractSize: p.contractSize, bid: p.bid, ask: p.ask, leverage: account.leverage }).mul(p.fxRate), hedgedMarginPct: p.hedgedMarginPct });
     if (!worst || pnl.lt(worst.pnl)) worst = { position: p, pnl, closePrice: cp };
   }
+  // hedged per symbol (lib/margin.ts hedgedUsedMargin); the stop-out still closes the LARGEST LOSS first (MT5),
+  // re-measured after every close -- closing one leg of a hedge can raise the used margin, and the loop sees that
+  const usedMargin = hedgedUsedMargin(legs);
   const marginLevel = usedMargin.gt(0) ? equity.div(usedMargin).mul(100) : null;
   return { equity, usedMargin, marginLevel, worst };
 }
