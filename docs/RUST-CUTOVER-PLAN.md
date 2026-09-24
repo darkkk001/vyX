@@ -935,7 +935,24 @@ its own stop-out. Cost: one indexed EXISTS query per evaluated account.
 **Not yet built:** the Stage 4 load harness (4.1-4.6 above is still a plan awaiting approval). This ordering case
 goes into its generator; at that scale it must MATCH as here.
 
-### Stage 5: shadow — PLAN, AWAITING APPROVAL (2026-09-24)
+### Stage 5: shadow — APPROVED 2026-09-24 (decisions below), build after backoffice 1.0.18
+
+**Decisions (user, 2026-09-24).**
+1. **Neon compute: moot.** Since 7a54e62 (per-tick margin trigger, live on the VPS), the engine reads the book
+   every 5 s anyway, so Neon no longer auto-suspends. Shadow cadence stays `VYX_SHADOW_PASS_SECS` = 1 s.
+2. **Soak exit:**
+   - a floor of N = 30 real risk actions (stop-outs + SL/TP + margin-call edges) paired MATCH / TIMING;
+   - AND 7 consecutive days with 0 unexplained VALUE / ENGINE_ONLY / WEB_ONLY.
+   - The soak bot's stress scenarios supply most of the 30.
+3. **Daily summary:**
+   - a log on the VPS is the primary record;
+   - the same summary is also rendered on a backoffice page.
+4. **Soak bot:** unblocked. The slippage question does not block it.
+
+**Timing-window update (2026-09-24).** The web's stop-out latency is now ~1-2 s (the engine's per-tick margin
+trigger) with the 5 s backstop (`VYX_RISK_HOOK_BACKSTOP_SECS=5`) and the 5-min Vercel cron underneath. It is no
+longer 60 s. §5.3's window is set from this at build time.
+
 
 **Goal.** In production, the engine evaluates every account exactly as it would at cutover, but **acts on nothing**.
 The web keeps acting (it is canonical). A reconciler compares the two continuously. Every difference is classified,
