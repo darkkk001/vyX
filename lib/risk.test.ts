@@ -218,24 +218,34 @@ describe("computeNextSessionOpen", () => {
 describe("checkSlippage", () => {
   // lib/group-pricing.ts's pipSize(2) = 0.1 (exp = digits-1 = 1) -- same
   // convention engine/order-management/src/pricing.rs uses, kept in sync
-  // deliberately. Default tolerance is 5 pips = 0.5 price units here.
+  // deliberately. A 5-pip cap = 0.5 price units here.
   const digits = 2;
 
-  it("accepts a fill within the default 5-pip tolerance", () => {
+  it("no preference = unlimited (MT5 market execution): any deviation fills", () => {
     const result = checkSlippage({
       clientReferencePrice: "2400.00",
-      serverFillPrice: new Prisma.Decimal("2400.30"), // 3 pips
+      serverFillPrice: new Prisma.Decimal("2460.00"), // 600 pips
       maxSlippagePips: null,
       digits,
     });
     expect(result).toBeNull();
   });
 
-  it("rejects a fill beyond the default tolerance as SLIPPAGE_EXCEEDED", () => {
+  it("accepts a fill within a 5-pip cap", () => {
+    const result = checkSlippage({
+      clientReferencePrice: "2400.00",
+      serverFillPrice: new Prisma.Decimal("2400.30"), // 3 pips
+      maxSlippagePips: "5",
+      digits,
+    });
+    expect(result).toBeNull();
+  });
+
+  it("rejects a fill beyond a 5-pip cap as SLIPPAGE_EXCEEDED", () => {
     const result = checkSlippage({
       clientReferencePrice: "2400.00",
       serverFillPrice: new Prisma.Decimal("2400.60"), // 6 pips
-      maxSlippagePips: null,
+      maxSlippagePips: "5",
       digits,
     });
     expect(result).toBe("SLIPPAGE_EXCEEDED");

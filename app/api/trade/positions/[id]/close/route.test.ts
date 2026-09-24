@@ -103,7 +103,7 @@ describe("client close is priced by the server, never by the client", () => {
     // 101.90 is 1.85% off mid -- inside evaluateLiveMarketPrice's 2% band, so
     // the old route would have filled at it and credited (101.90 - 90) = 11.90
     // instead of the real (100.00 - 90) = 10.00.
-    const res = await clientClose(fx, pos.id, { closePrice: "101.90" });
+    const res = await clientClose(fx, pos.id, { closePrice: "101.90", maxSlippagePips: "5" });
     expect(res.status).toBe(400);
     expect(res.json.error).toBe("SLIPPAGE_EXCEEDED");
     expect(res.json.serverPrice).toBe("100");
@@ -140,6 +140,18 @@ describe("client close is priced by the server, never by the client", () => {
     const after = await prisma.position.findUniqueOrThrow({ where: { id: pos.id } });
     expect(after.closePrice!.toString()).toBe("100.1");
     expect(after.realizedPnl!.toString()).toBe("9.9");
+  });
+
+  it("no slippage preference (unlimited since 2026-09-24) fills at the server price, not the client's", async () => {
+    if (!dbReachable) return;
+    const fx = await createFixture();
+    const pos = await openPosition(fx, "BUY", "90.00");
+    await refreshPrice(fx);
+    const res = await clientClose(fx, pos.id, { closePrice: "101.90" });
+    expect(res.status).toBe(200);
+    const after = await prisma.position.findUniqueOrThrow({ where: { id: pos.id } });
+    expect(after.closePrice!.toString()).toBe("100");
+    expect(after.realizedPnl!.toString()).toBe("10");
   });
 
   it("an 'unlimited' slippage opt-out still fills at the server price, not the client's", async () => {

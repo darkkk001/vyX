@@ -213,9 +213,9 @@ export const tradeApi = {
     price: number;
     slPrice?: number | null;
     tpPrice?: number | null;
-    // Optional -- see lib/risk.ts's checkSlippage. Omitted by every
-    // current caller, which falls back to the server's default tolerance.
-    maxSlippagePips?: number;
+    // Optional -- see lib/risk.ts's checkSlippage. Omitted = "unlimited" (MT5 market execution, owner
+    // decision 2026-09-24): the server fills at its own price, no slippage rejection.
+    maxSlippagePips?: number | "unlimited";
     idempotencyKey: string;
     // Informational only (see app/api/trade/orders/route.ts) -- flags
     // this order for the STM_HOTKEY_ORDER audit trail, doesn't change
@@ -225,7 +225,10 @@ export const tradeApi = {
     // No `position` key when dealing mode queued the order for manual
     // dealer review instead of auto-filling -- see
     // app/api/trade/orders/route.ts's dealingModeAt branch.
-    call<{ order: { id: string }; position?: { id: string } }>("/api/trade/orders", { method: "POST", body: JSON.stringify(body) }),
+    call<{ order: { id: string }; position?: { id: string } }>("/api/trade/orders", {
+      method: "POST",
+      body: JSON.stringify({ ...body, maxSlippagePips: body.maxSlippagePips ?? "unlimited" }),
+    }),
   cancelOrder: (id: string) => call(`/api/trade/orders/${id}`, { method: "DELETE" }),
   // Draggable entry-price line for a resting LIMIT/STOP order (chart
   // interaction pack). `currentPrice` is the client's own live price, same
@@ -257,7 +260,7 @@ export const tradeApi = {
   closePosition: (id: string, closePrice: number, volume?: number, source?: "stm_bulk") =>
     call(`/api/trade/positions/${id}/close`, {
       method: "POST",
-      body: JSON.stringify({ closePrice, ...(volume != null ? { volume } : {}), ...(source ? { source } : {}) }),
+      body: JSON.stringify({ closePrice, maxSlippagePips: "unlimited", ...(volume != null ? { volume } : {}), ...(source ? { source } : {}) }),
     }),
   // One request, one server-side transaction, one price snapshot per
   // symbol -- see lib/bulk-close.ts. Replaces WebTrader.tsx's old

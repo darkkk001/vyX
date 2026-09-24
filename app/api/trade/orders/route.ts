@@ -89,8 +89,8 @@ async function handlePlaceOrder(request: NextRequest) {
   const price = body?.price != null ? String(body.price) : null;
   const slPrice = body?.slPrice != null ? String(body.slPrice) : null;
   const tpPrice = body?.tpPrice != null ? String(body.tpPrice) : null;
-  // Optional -- see lib/risk.ts's checkSlippage. WebTrader doesn't send
-  // this today, so every order falls back to the default tolerance.
+  // Optional -- see lib/risk.ts's checkSlippage. WebTrader and the native terminal send "unlimited" unless the
+  // trader set a cap; nothing sent = the broker's defaultMaxSlippagePips if set, else unlimited.
   const maxSlippagePips = body?.maxSlippagePips != null ? String(body.maxSlippagePips) : null;
   // Optional, client-asserted, informational only -- doesn't change
   // validation/risk/execution at all (every branch below runs identically
@@ -554,8 +554,7 @@ async function handlePlaceOrder(request: NextRequest) {
         clientReferencePrice: price,
         serverFillPrice: fillPrice,
         // Client-supplied tolerance wins; otherwise fall back to the
-        // broker-wide default (app/api/manage/risk), then to lib/risk.ts's
-        // hardcoded DEFAULT_MAX_SLIPPAGE_PIPS when neither is set.
+        // broker-wide default (app/api/manage/risk); neither = unlimited.
         maxSlippagePips:
           maxSlippagePips ??
           (broker.defaultMaxSlippagePips != null ? broker.defaultMaxSlippagePips.toString() : null),

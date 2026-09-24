@@ -54,7 +54,7 @@ export async function POST(
   }
   // Optional, same contract as the open path (lib/risk.ts's checkSlippage):
   // the native terminal sends its SLIPPAGE MAX ("unlimited" for "M"),
-  // WebTrader sends nothing and gets the broker default.
+  // WebTrader sends "unlimited" too; nothing sent = the broker default if set, else unlimited.
   const maxSlippagePips = body?.maxSlippagePips != null ? String(body.maxSlippagePips) : null;
   // Informational only, doesn't change validation/execution -- flags this
   // close for the STM_BULK_CLOSE audit trail. See

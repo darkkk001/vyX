@@ -31,6 +31,7 @@ import {
   evaluateLiveMarketPrice,
   checkPriceFreshness,
   checkSlippage,
+  PENDING_TRIGGER_MAX_SLIPPAGE_PIPS,
 } from "@/lib/risk";
 
 // Called by the client when its local price simulation reports the
@@ -246,7 +247,7 @@ export async function POST(
     const slippageError = checkSlippage({
       clientReferencePrice: requestedFillPrice,
       serverFillPrice: fillPrice,
-      maxSlippagePips: null,
+      maxSlippagePips: PENDING_TRIGGER_MAX_SLIPPAGE_PIPS,
       digits: brokerSymbol.symbol.digits,
     });
     if (slippageError) {

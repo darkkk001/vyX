@@ -437,10 +437,18 @@ export function checkPriceFreshness(livePrice: { tickAt: Date } | null): string 
 // pending-order trigger, now used only as a tolerance anchor: how far the
 // server's own fill price is allowed to have moved from what the client
 // expected before the order gets rejected instead of silently filled at a
-// worse price. maxSlippagePips is client-supplied (WebTrader doesn't send
-// one today, so this always falls back to the default) so a future UI
-// can let a trader tighten or loosen it per order.
-const DEFAULT_MAX_SLIPPAGE_PIPS = new Prisma.Decimal(5);
+// worse price. maxSlippagePips is client-supplied, the trader's own choice.
+//
+// BEHAVIOR CHANGE 2026-09-24 (owner decision): no preference = UNLIMITED, like MT5 market execution. There used
+// to be a hardcoded 5-pip fallback here, so every WebTrader order (it never sent one) and every client that sent
+// nothing was rejected on a > 5 pip move. Now the trader sets a cap (the native terminal's SLIPPAGE MAX) or gets
+// none; the broker's explicit defaultMaxSlippagePips (dealer settings) still applies where a route passes it.
+// Money-safe either way: the fill is always the SERVER's price -- this check only ever protects the trader.
+
+// A triggered pending LIMIT/STOP (.../orders/[id]/fill) is not a trader slippage preference: the client reports
+// the trigger price it saw, and this tolerance is how far the live price may be from it before the fill is
+// refused. Deliberately unchanged by the market-execution default above.
+export const PENDING_TRIGGER_MAX_SLIPPAGE_PIPS = "5";
 
 export function checkSlippage(params: {
   clientReferencePrice: Prisma.Decimal | string;
@@ -451,10 +459,10 @@ export function checkSlippage(params: {
   // Explicit client opt-out -- the native terminal's "M" / unlimited SLIPPAGE MAX
   // sends the literal "unlimited": the client accepts any fill price, so never reject.
   // This deliberately does NOT fall back to the broker default (that fallback is only
-  // for a client that sent no preference at all, e.g. today's WebTrader).
+  // for a client that sent no preference at all).
   if (params.maxSlippagePips === "unlimited") return null;
-  const maxPips =
-    params.maxSlippagePips != null ? new Prisma.Decimal(params.maxSlippagePips) : DEFAULT_MAX_SLIPPAGE_PIPS;
+  if (params.maxSlippagePips == null) return null;
+  const maxPips = new Prisma.Decimal(params.maxSlippagePips);
   const tolerance = maxPips.mul(pipSize(params.digits));
   const deviation = params.serverFillPrice.sub(new Prisma.Decimal(params.clientReferencePrice)).abs();
   if (deviation.gt(tolerance)) {
