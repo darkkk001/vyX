@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Prisma, GroupTier, GroupDealingMode } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { LEVERAGE_RULE, parseLeverage } from "@/lib/leverage";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { resolveGroupRouting, legacyGroupTypeFor } from "@/lib/group-routing";
 
@@ -101,9 +102,9 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "name is required" }, { status: 400 });
   }
 
-  const leverage = Number.isFinite(Number(body?.leverage)) ? Math.trunc(Number(body.leverage)) : NaN;
-  if (!Number.isFinite(leverage) || leverage <= 0) {
-    return NextResponse.json({ error: "leverage must be a positive integer" }, { status: 400 });
+  const leverage = parseLeverage(body?.leverage);
+  if (leverage == null) {
+    return NextResponse.json({ error: `leverage must be ${LEVERAGE_RULE}` }, { status: 400 });
   }
 
   let marginCallLevel: Prisma.Decimal;

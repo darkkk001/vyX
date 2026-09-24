@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Prisma, RoutingCategory, GroupModeRestriction } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { LEVERAGE_RULE, parseLeverage } from "@/lib/leverage";
 import { publishAccountUpdated } from "@/lib/account-events";
 import { checkAccountStructure } from "@/lib/account-structure";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
@@ -116,9 +117,9 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
   let leverage: number | undefined;
   if (hasFinanceChange && "leverage" in body) {
-    leverage = Number.isFinite(Number(body.leverage)) ? Math.trunc(Number(body.leverage)) : NaN;
-    if (!Number.isFinite(leverage) || leverage <= 0) {
-      return NextResponse.json({ error: "leverage must be a positive integer" }, { status: 400 });
+    leverage = parseLeverage(body.leverage) ?? undefined;
+    if (leverage == null) {
+      return NextResponse.json({ error: `leverage must be ${LEVERAGE_RULE}` }, { status: 400 });
     }
   }
 

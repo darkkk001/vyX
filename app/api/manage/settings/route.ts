@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { LEVERAGE_RULE, parseLeverage } from "@/lib/leverage";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 
 async function requireBrokerAdmin() {
@@ -60,9 +61,9 @@ export async function PATCH(request: NextRequest) {
     data.defaultAccountCurrency = defaultAccountCurrency;
   }
   if (body?.defaultAccountLeverage != null) {
-    const n = Math.trunc(Number(body.defaultAccountLeverage));
-    if (!Number.isFinite(n) || n <= 0) {
-      return NextResponse.json({ error: "defaultAccountLeverage must be a positive integer" }, { status: 400 });
+    const n = parseLeverage(body.defaultAccountLeverage);
+    if (n == null) {
+      return NextResponse.json({ error: `defaultAccountLeverage must be ${LEVERAGE_RULE}` }, { status: 400 });
     }
     data.defaultAccountLeverage = n;
   }

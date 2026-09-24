@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { LEVERAGE_RULE, parseLeverage } from "@/lib/leverage";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { hasPermission } from "@/lib/permissions";
 import { provisionAccount } from "@/lib/account-provisioning";
@@ -267,9 +268,9 @@ async function createAccount(request: NextRequest, session: NonNullable<Awaited<
   // could also change it after the fact via that same route.
   let leverage = group?.leverage ?? broker.defaultAccountLeverage;
   if (canSetFinancials && body?.leverage != null) {
-    const n = Number.isFinite(Number(body.leverage)) ? Math.trunc(Number(body.leverage)) : NaN;
-    if (!Number.isFinite(n) || n <= 0) {
-      return NextResponse.json({ error: "leverage must be a positive integer" }, { status: 400 });
+    const n = parseLeverage(body.leverage);
+    if (n == null) {
+      return NextResponse.json({ error: `leverage must be ${LEVERAGE_RULE}` }, { status: 400 });
     }
     leverage = n;
   }

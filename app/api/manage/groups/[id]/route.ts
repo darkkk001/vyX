@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Prisma, GroupTier, GroupDealingMode } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { checkAccountStructure } from "@/lib/account-structure";
+import { LEVERAGE_RULE, parseLeverage } from "@/lib/leverage";
 import { publishAccountsUpdatedAfterResponse } from "@/lib/account-events";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { resolveGroupRouting, legacyGroupTypeFor } from "@/lib/group-routing";
@@ -34,9 +36,9 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   if (!name) {
     return NextResponse.json({ error: "name is required" }, { status: 400 });
   }
-  const leverage = Number.isFinite(Number(body?.leverage)) ? Math.trunc(Number(body.leverage)) : NaN;
-  if (!Number.isFinite(leverage) || leverage <= 0) {
-    return NextResponse.json({ error: "leverage must be a positive integer" }, { status: 400 });
+  const leverage = parseLeverage(body?.leverage);
+  if (leverage == null) {
+    return NextResponse.json({ error: `leverage must be ${LEVERAGE_RULE}` }, { status: 400 });
   }
   let marginCallLevel: Prisma.Decimal;
   let stopOutLevel: Prisma.Decimal;
@@ -92,6 +94,20 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   });
   const { category, modeRestriction } = routing;
   const groupType = legacyGroupTypeFor(routing);
+
+  if (category !== existing.category || modeRestriction !== existing.modeRestriction) {
+    const byMode = await prisma.account.groupBy({ by: ["accountMode"], where: { groupId: id }, _count: { _all: true } });
+    for (const m of byMode) {
+      const violation = checkAccountStructure({ accountMode: m.accountMode, group: { category, modeRestriction }, allowCoverage: category === "COVERAGE" });
+      if (violation) {
+        const n = m._count._all;
+        return NextResponse.json(
+          { error: `${n} ${m.accountMode.toLowerCase()} account${n === 1 ? " is" : "s are"} in this group and ${violation.message}. Move ${n === 1 ? "it" : "them"} to another group first.`, code: violation.code, accounts: n },
+          { status: 409 }
+        );
+      }
+    }
+  }
 
   try {
     const group = await prisma.$transaction(async (tx) => {
