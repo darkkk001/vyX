@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Prisma, RoutingCategory, GroupModeRestriction } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { publishAccountUpdated } from "@/lib/account-events";
 import { checkAccountStructure } from "@/lib/account-structure";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { hasPermission } from "@/lib/permissions";
@@ -235,6 +236,9 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
     return result;
   });
+
+  // after commit: an open terminal / WebTrader picks up the new leverage / status / group / type at once
+  await publishAccountUpdated(brokerId, id, "account");
 
   return NextResponse.json({
     id: updated.id,

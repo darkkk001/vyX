@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { publishAccountsUpdatedAfterResponse } from "@/lib/account-events";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 
 async function requireManager() {
@@ -96,6 +97,7 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
       },
     });
   });
+  publishAccountsUpdatedAfterResponse(brokerId, { groupId: id }, "group_symbols");
 
   return NextResponse.json({ restrictSymbols, allowedSymbolIds: validSymbolIds });
 }

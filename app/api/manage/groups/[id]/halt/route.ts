@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { publishAccountsUpdatedAfterResponse } from "@/lib/account-events";
 import { getAdminSession } from "@/lib/auth";
 import { forbidUnlessBrokerAdminOrPermission } from "@/lib/permissions";
 
@@ -58,6 +59,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     });
     return updated;
   });
+  publishAccountsUpdatedAfterResponse(brokerId, { groupId: id }, "group_halt");
 
   return NextResponse.json({
     id: group.id,

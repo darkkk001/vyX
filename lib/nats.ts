@@ -62,6 +62,9 @@ const SUBJECTS = {
   // payout). Account-scoped (account_id), like order.> / position.>: the gateway's trader stream forwards it to
   // that account's sockets, the admin stream (account.>) to its broker's backoffice. Clients refetch the account.
   BalanceChanged: "account.balance",
+  // A backoffice change to the account's terms (leverage, status, group, type, pricing, allowed symbols, halt) --
+  // see lib/account-events.ts. Same account.> wildcard and per-account_id forwarding as BalanceChanged.
+  AccountUpdated: "account.updated",
 } as const satisfies Record<string, string>;
 
 export type TradingEventType = keyof typeof SUBJECTS;

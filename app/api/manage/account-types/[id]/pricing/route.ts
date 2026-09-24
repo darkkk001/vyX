@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { publishAccountsUpdatedAfterResponse } from "@/lib/account-events";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { parseSymbolPricingPatch, decimalOrNull, isEmptyPricingPatch } from "@/lib/pricing-editor-shared";
 
@@ -121,6 +122,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         },
       });
     });
+    publishAccountsUpdatedAfterResponse(brokerId, { accountTypeId: id }, "account_type_pricing");
     return NextResponse.json({
       symbolId,
       hasOverride: false,
@@ -169,6 +171,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     return row;
   });
 
+  publishAccountsUpdatedAfterResponse(brokerId, { accountTypeId: id }, "account_type_pricing");
   return NextResponse.json({
     symbolId,
     hasOverride: true,

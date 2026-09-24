@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { publishAccountsUpdatedAfterResponse } from "@/lib/account-events";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 
 async function requireManager() {
@@ -145,6 +146,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       });
       return type;
     });
+    publishAccountsUpdatedAfterResponse(brokerId, { accountTypeId: id }, "account_type");
 
     return NextResponse.json({
       id: updated.id,

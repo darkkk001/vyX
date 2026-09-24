@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Prisma, GroupTier, GroupDealingMode } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { publishAccountsUpdatedAfterResponse } from "@/lib/account-events";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { resolveGroupRouting, legacyGroupTypeFor } from "@/lib/group-routing";
 
@@ -144,6 +145,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       });
       return updated;
     });
+    publishAccountsUpdatedAfterResponse(brokerId, { groupId: id }, "group");
 
     // Same polymorphic-reference lookup as GET's own -- see that route's
     // comment. Recomputed here (not just echoed from the request body) so
