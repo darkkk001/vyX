@@ -24,7 +24,12 @@ import { AsyncLocalStorage } from "node:async_hooks";
 // streams prove that); this is one more route on the same service, same
 // shared-secret convention as app/api/manage/feed-health/route.ts's own
 // calls to it.
-const SUBJECTS: Record<string, string> = {
+// `as const satisfies`: the event names are a closed set. It used to be typed Record<string, string>, which made
+// TradingEventType plain `string` -- so publishTradingEvent("BalanceChanged") compiled although the map had no such
+// entry, sent `subject: undefined`, and the gateway rejected every deposit / withdrawal / adjustment event (400):
+// the terminal and WebTrader never heard of a backoffice balance change until some other event refreshed them
+// (2026-09-24). A misspelt or missing event name is now a type error.
+const SUBJECTS = {
   OrderAccepted: "order.accepted",
   OrderRejected: "order.rejected",
   OrderFilled: "order.filled",
@@ -53,7 +58,11 @@ const SUBJECTS: Record<string, string> = {
   // trader-facing stream) also subscribes to -- this event carries other
   // accounts' activity and must never reach a trader's own browser.
   DealerActivity: "dealing.activity",
-};
+  // A backoffice balance change landed on an account (deposit / withdrawal approved, adjustment, transfer, IB
+  // payout). Account-scoped (account_id), like order.> / position.>: the gateway's trader stream forwards it to
+  // that account's sockets, the admin stream (account.>) to its broker's backoffice. Clients refetch the account.
+  BalanceChanged: "account.balance",
+} as const satisfies Record<string, string>;
 
 export type TradingEventType = keyof typeof SUBJECTS;
 

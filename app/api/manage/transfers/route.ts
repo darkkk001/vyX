@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { publishTradingEvent } from "@/lib/nats";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession } from "@/lib/auth";
@@ -142,6 +143,10 @@ export async function POST(request: NextRequest) {
   if (!result) {
     return NextResponse.json({ error: "insufficient balance on the source account" }, { status: 400 });
   }
+
+  // both accounts' terminals refresh at once (after the commit; best-effort, never fails the transfer)
+  await publishTradingEvent("BalanceChanged", { account_id: fromAccountId, broker_id: brokerId, transaction_id: result.outTxn.id }).catch(() => {});
+  await publishTradingEvent("BalanceChanged", { account_id: toAccountId, broker_id: brokerId, transaction_id: result.inTxn.id }).catch(() => {});
 
   return NextResponse.json({ outTransactionId: result.outTxn.id, inTransactionId: result.inTxn.id });
 }

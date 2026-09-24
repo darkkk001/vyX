@@ -424,7 +424,9 @@ export async function attachTradingEventStream(server: Server, natsUrl: string):
   // alert.triggered with the same account_id field every other subject
   // here already carries, so the forwarding loop below needs no change
   // at all, just this one more subscription.
-  const subs = [nc.subscribe("order.>"), nc.subscribe("margin.>"), nc.subscribe("position.>"), nc.subscribe("alert.>")];
+  // "account.>" (2026-09-24): BalanceChanged -- a deposit / withdrawal / adjustment / transfer made in the backoffice
+  // reaches the trader's terminal at once, instead of waiting for the next order / position event to refresh it.
+  const subs = [nc.subscribe("order.>"), nc.subscribe("margin.>"), nc.subscribe("position.>"), nc.subscribe("alert.>"), nc.subscribe("account.>")];
 
   const wss = new WebSocketServer({ noServer: true });
   const clientsByAccount = new Map<string, Set<WebSocket>>();

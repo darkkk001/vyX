@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { publishTradingEvent } from "@/lib/nats";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession } from "@/lib/auth";
@@ -81,6 +82,9 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
         return { transaction, lastPayoutAt: updated.lastPayoutAt };
       });
+
+      // the IB's terminal refreshes at once (after the commit; best-effort, never fails the payout)
+      await publishTradingEvent("BalanceChanged", { account_id: result.transaction.accountId, broker_id: brokerId, transaction_id: result.transaction.id }).catch(() => {});
 
       return NextResponse.json({
         id,
