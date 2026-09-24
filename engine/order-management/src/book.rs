@@ -164,6 +164,43 @@ pub async fn account_thresholds(pool: &PgPool, account_id: &str) -> Result<Optio
     }))
 }
 
+/// The money side of one close, pure (Stage 5): what `close_position_in_tx` writes and what the shadow's
+/// simulated close applies in memory. ONE function, so a would-close in shadow cannot drift from a real close.
+/// Stage 2 F1 (credit Model A, = lib/position-close.ts): a loss that takes the BALANCE below zero is paid from
+/// CREDIT next, up to the shortfall; only what credit cannot cover reaches negative-balance protection
+/// (`protect_nbp` = the broker's negativeBalanceProtection), which floors the balance at 0.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CloseMoney {
+    /// balance + realized P&L, before credit and any floor (the TRADE_PNL row's balanceAfter)
+    pub raw_balance_after: Decimal,
+    /// after credit paid what it could
+    pub after_credit: Decimal,
+    pub final_balance: Decimal,
+    pub final_credit: Decimal,
+    pub credit_used: Option<Decimal>,
+    pub write_off: Option<Decimal>,
+}
+
+pub fn close_money(balance_before: Decimal, credit_before: Decimal, realized_pnl: Decimal, protect_nbp: bool) -> CloseMoney {
+    let raw_balance_after = balance_before + realized_pnl;
+    let mut after_credit = raw_balance_after;
+    let mut final_credit = credit_before;
+    let mut credit_used = None;
+    if raw_balance_after < Decimal::ZERO && credit_before > Decimal::ZERO {
+        let used = credit_before.min(-raw_balance_after);
+        after_credit = raw_balance_after + used;
+        final_credit = credit_before - used;
+        credit_used = Some(used);
+    }
+    let mut final_balance = after_credit;
+    let mut write_off = None;
+    if after_credit < Decimal::ZERO && protect_nbp {
+        write_off = Some(-after_credit);
+        final_balance = Decimal::ZERO;
+    }
+    CloseMoney { raw_balance_after, after_credit, final_balance, final_credit, credit_used, write_off }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct CloseOutcome {
     pub realized_pnl: Decimal,
@@ -214,32 +251,20 @@ pub async fn close_position_in_tx(
         .bind(&account_id)
         .fetch_one(&mut **tx)
         .await?;
-    let raw_balance_after = balance_before + realized_pnl;
-
-    // Stage 2 F1 (credit Model A, = lib/position-close.ts): a loss that takes the BALANCE below zero is paid
-    // from CREDIT next, up to the shortfall; only what credit cannot cover reaches negative-balance protection.
-    let mut after_credit = raw_balance_after;
-    let mut final_credit = credit_before;
-    let mut credit_used = None;
-    if raw_balance_after < Decimal::ZERO && credit_before > Decimal::ZERO {
-        let used = credit_before.min(-raw_balance_after);
-        after_credit = raw_balance_after + used;
-        final_credit = credit_before - used;
-        credit_used = Some(used);
-    }
-
-    let mut final_balance = after_credit;
-    let mut write_off = None;
-    if after_credit < Decimal::ZERO {
+    // the money rules live in close_money (shared with the Stage 5 shadow's simulated close); the broker's
+    // negative-balance protection flag is read only when the result would go below zero, as before
+    let unprotected = close_money(balance_before, credit_before, realized_pnl, false);
+    let protect = if unprotected.after_credit < Decimal::ZERO {
         let (protect,): (bool,) = sqlx::query_as(r#"SELECT "negativeBalanceProtection" FROM "Broker" WHERE id = $1"#)
             .bind(&broker_id)
             .fetch_one(&mut **tx)
             .await?;
-        if protect {
-            write_off = Some(-after_credit);
-            final_balance = Decimal::ZERO;
-        }
-    }
+        protect
+    } else {
+        false
+    };
+    let CloseMoney { raw_balance_after, after_credit, final_balance, final_credit, credit_used, write_off } =
+        close_money(balance_before, credit_before, realized_pnl, protect);
 
     sqlx::query(r#"UPDATE "Account" SET balance = $1, credit = $2, "updatedAt" = now() WHERE id = $3"#)
         .bind(final_balance)

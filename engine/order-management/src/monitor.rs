@@ -33,9 +33,135 @@ use crate::db;
 use margin::{evaluate, MonitorAction};
 use protocol::TradingEvent;
 use rust_decimal::Decimal;
+use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use sqlx::PgPool;
+
+/// Rust cutover Stage 5: how a pass acts on its decisions. `Live` closes, queues follow-ups, writes the margin-call
+/// edge and publishes (cutover behaviour, unchanged). `Shadow` takes the SAME decisions but acts on nothing: a
+/// close is applied in memory with book::close_money (the real close's own money rules), the rest of the
+/// evaluation sees that simulated account, and the decision is recorded (shadow.rs). No book write, no
+/// PostCloseEffect, no margin-call edge write, no NATS event.
+#[derive(Clone, Default)]
+pub enum Mode {
+    #[default]
+    Live,
+    Shadow(Arc<crate::shadow::Recorder>),
+}
+
+impl Mode {
+    fn is_shadow(&self) -> bool {
+        matches!(self, Mode::Shadow(_))
+    }
+}
+
+/// Shadow only: what this evaluation has closed in simulation, and the simulated funds. Applied to every re-read
+/// of the account, which the database (untouched in shadow) would otherwise still show as before the close.
+#[derive(Default)]
+struct Overlay {
+    closed: HashSet<String>,
+    funds: Option<(Decimal, Decimal)>,
+}
+
+/// load_book_state, plus the shadow overlay (Live: the database as it is).
+async fn load(pool: &PgPool, account_id: &str, mode: &Mode, ov: &Overlay) -> Result<Option<AccountState>, sqlx::Error> {
+    let state = load_book_state(pool, account_id).await?;
+    if !mode.is_shadow() {
+        return Ok(state);
+    }
+    Ok(state.map(|mut st| {
+        st.positions.retain(|p| !ov.closed.contains(&p.id));
+        if let Some((balance, credit)) = ov.funds {
+            st.effective_balance = balance;
+            st.credit = credit;
+        }
+        st
+    }))
+}
+
+/// symbol -> [bid, ask] of the positions' usable prices (the shadow record's snapshot)
+fn price_snapshot(state: &AccountState) -> serde_json::Value {
+    let mut m = serde_json::Map::new();
+    for p in &state.positions {
+        if let (Some(b), Some(a)) = (p.bid, p.ask) {
+            m.insert(p.symbol.clone(), serde_json::json!([b.to_string(), a.to_string()]));
+        }
+    }
+    serde_json::Value::Object(m)
+}
+
+/// The funds after closing `position` at `close_price` with `pnl`: Live writes the close (and queues its follow-up)
+/// in one transaction; Shadow simulates it and records the decision. None = the position was already closed by a
+/// concurrent pass (Live only). Returns (final balance, final credit).
+#[allow(clippy::too_many_arguments)]
+async fn apply_close(
+    pool: &PgPool,
+    mode: &Mode,
+    ov: &mut Overlay,
+    state: &AccountState,
+    account_id: &str,
+    position: &db::OpenPositionWithMarket,
+    close_price: Decimal,
+    pnl: Decimal,
+    note: &str,
+    reason: book::CloseReason,
+    level_before: Option<Decimal>,
+) -> Result<Option<(Decimal, Decimal)>, sqlx::Error> {
+    match mode {
+        Mode::Live => {
+            let mut tx = pool.begin().await?;
+            let closed = book::close_position_in_tx(&mut tx, &position.id, position.volume, close_price, pnl, note).await?;
+            if let Some(outcome) = &closed {
+                // Stage 3: the web's post-close follow-up, queued in the close's own transaction
+                book::enqueue_post_close(&mut tx, &position.id, outcome, reason, position.volume, close_price).await?;
+            }
+            tx.commit().await?;
+            let Some(outcome) = closed else { return Ok(None) };
+            crate::outbox::wake();
+            Ok(Some((outcome.final_balance, outcome.final_credit))) // after any credit use and negative-balance floor
+        }
+        Mode::Shadow(recorder) => {
+            // the broker's negative-balance protection is read only when it can matter, as in the real close
+            let unprotected = book::close_money(state.effective_balance, state.credit, pnl, false);
+            let protect = if unprotected.after_credit < Decimal::ZERO {
+                let (p,): (bool,) = sqlx::query_as(
+                    r#"SELECT b."negativeBalanceProtection" FROM "Account" a JOIN "Broker" b ON b.id = a."brokerId" WHERE a.id = $1"#,
+                )
+                .bind(account_id)
+                .fetch_one(pool)
+                .await?;
+                p
+            } else {
+                false
+            };
+            let money = book::close_money(state.effective_balance, state.credit, pnl, protect);
+            ov.closed.insert(position.id.clone());
+            ov.funds = Some((money.final_balance, money.final_credit));
+            let (kind, level) = match reason {
+                book::CloseReason::StopLoss => (crate::shadow::Kind::StopLoss, None),
+                book::CloseReason::TakeProfit => (crate::shadow::Kind::TakeProfit, None),
+                book::CloseReason::StopOut { margin_level, .. } => (crate::shadow::Kind::StopOut, Some(margin_level)),
+            };
+            recorder
+                .record(crate::shadow::Decision {
+                    kind,
+                    account_id: account_id.to_string(),
+                    position_id: Some(position.id.clone()),
+                    level_before,
+                    level,
+                    close_price: Some(close_price),
+                    pnl: Some(pnl),
+                    balance_after: Some(money.final_balance),
+                    credit_after: Some(money.final_credit),
+                    write_off: money.write_off,
+                    prices: price_snapshot(state),
+                })
+                .await;
+            Ok(Some((money.final_balance, money.final_credit)))
+        }
+    }
+}
 
 enum SlTpReason {
     StopLoss,
@@ -93,6 +219,9 @@ async fn close_sl_tp_triggered(
     nats: Option<&async_nats::Client>,
     account_id: &str,
     state: &mut AccountState,
+    mode: &Mode,
+    ov: &mut Overlay,
+    level_before: Option<Decimal>,
 ) -> Result<Vec<(String, &'static str)>, sqlx::Error> {
     let mut closed = Vec::new();
     let triggered: Vec<(String, SlTpReason, Decimal, Decimal)> = state
@@ -120,24 +249,15 @@ async fn close_sl_tp_triggered(
             SlTpReason::StopLoss => "Stop loss hit (automatic)",
             SlTpReason::TakeProfit => "Take profit hit (automatic)",
         };
-        let mut tx = pool.begin().await?;
-        let closed_now = book::close_position_in_tx(&mut tx, &position.id, position.volume, close_price, pnl, note).await?;
-        if let Some(outcome) = &closed_now {
-            // Stage 3: the web's post-close follow-up, queued in the close's own transaction
-            let why = match reason {
-                SlTpReason::StopLoss => book::CloseReason::StopLoss,
-                SlTpReason::TakeProfit => book::CloseReason::TakeProfit,
-            };
-            book::enqueue_post_close(&mut tx, &position.id, outcome, why, position.volume, close_price).await?;
-        }
-        tx.commit().await?;
-
-        let Some(outcome) = closed_now else {
+        let why = match reason {
+            SlTpReason::StopLoss => book::CloseReason::StopLoss,
+            SlTpReason::TakeProfit => book::CloseReason::TakeProfit,
+        };
+        let Some((balance, credit)) = apply_close(pool, mode, ov, state, account_id, &position, close_price, pnl, note, why, level_before).await? else {
             continue; // already closed by a concurrent pass — nothing to credit or publish
         };
-        crate::outbox::wake();
-        state.effective_balance = outcome.final_balance; // after any credit use and negative-balance floor
-        state.credit = outcome.final_credit;
+        state.effective_balance = balance; // after any credit use and negative-balance floor
+        state.credit = credit;
         closed.push((position.id.clone(), match reason {
             SlTpReason::StopLoss => "stop_loss",
             SlTpReason::TakeProfit => "take_profit",
@@ -151,7 +271,9 @@ async fn close_sl_tp_triggered(
                 TradingEvent::TakeProfitHit { account_id: account_id.to_string(), position_id: position.id }
             }
         };
-        publish_best_effort(nats, &event).await;
+        if !mode.is_shadow() {
+            publish_best_effort(nats, &event).await;
+        }
     }
 
     Ok(closed)
@@ -173,11 +295,16 @@ enum CloseAttempt {
 /// Force-closes the account's single worst (most negative floating P&L)
 /// closeable position — one with a live bid/ask, since a close price is
 /// required.
+#[allow(clippy::too_many_arguments)]
 async fn force_close_worst(
     pool: &PgPool,
     state: &mut AccountState,
     note: &str,
     reason: book::CloseReason,
+    mode: &Mode,
+    ov: &mut Overlay,
+    account_id: &str,
+    level_before: Option<Decimal>,
 ) -> Result<CloseAttempt, sqlx::Error> {
     let worst = state
         .positions
@@ -193,27 +320,19 @@ async fn force_close_worst(
     let Some((idx, _, close_price)) = worst else {
         return Ok(CloseAttempt::NoCloseablePosition);
     };
-    let position = state.positions.remove(idx);
     let pnl = crate::fx::convert_pnl(
-        floating_pnl(position.side, position.open_price, close_price, position.contract_size, position.volume),
-        position.fx_rate,
+        floating_pnl(state.positions[idx].side, state.positions[idx].open_price, close_price, state.positions[idx].contract_size, state.positions[idx].volume),
+        state.positions[idx].fx_rate,
     );
+    // the snapshot / funds are taken with the position still in the book (shadow records what it was decided on)
+    let applied = apply_close(pool, mode, ov, state, account_id, &state.positions[idx].clone(), close_price, pnl, note, reason, level_before).await?;
+    let position = state.positions.remove(idx);
 
-    let mut tx = pool.begin().await?;
-    let closed = book::close_position_in_tx(&mut tx, &position.id, position.volume, close_price, pnl, note).await?;
-    if let Some(outcome) = &closed {
-        // Stage 3: the web's post-close follow-up (incl. the stop-out notice), queued in the close's own transaction
-        book::enqueue_post_close(&mut tx, &position.id, outcome, reason, position.volume, close_price).await?;
-    }
-    tx.commit().await?;
-
-    let Some(outcome) = closed else {
+    let Some((balance, credit)) = applied else {
         return Ok(CloseAttempt::AlreadyClosedConcurrently);
     };
-    crate::outbox::wake();
-
-    state.effective_balance = outcome.final_balance; // after any credit use and negative-balance floor
-    state.credit = outcome.final_credit;
+    state.effective_balance = balance; // after any credit use and negative-balance floor
+    state.credit = credit;
     Ok(CloseAttempt::Closed(position.id))
 }
 
@@ -239,7 +358,17 @@ pub async fn evaluate_account(
     nats: Option<&async_nats::Client>,
     account_id: &str,
 ) -> Result<Option<EvalReport>, sqlx::Error> {
-    evaluate_account_checked(pool, nats, account_id, true).await
+    evaluate_account_checked(pool, nats, account_id, true, &Mode::Live).await
+}
+
+/// One account in a given mode (Stage 5: the shadow harness gate evaluates single accounts in `Mode::Shadow`).
+pub async fn evaluate_account_mode(
+    pool: &PgPool,
+    nats: Option<&async_nats::Client>,
+    account_id: &str,
+    mode: &Mode,
+) -> Result<Option<EvalReport>, sqlx::Error> {
+    evaluate_account_checked(pool, nats, account_id, !mode.is_shadow(), mode).await
 }
 
 /// `check_deferral` false = the caller knows no follow-up can be pending (run_pass's precheck): skip the query.
@@ -248,7 +377,12 @@ async fn evaluate_account_checked(
     nats: Option<&async_nats::Client>,
     account_id: &str,
     check_deferral: bool,
+    mode: &Mode,
 ) -> Result<Option<EvalReport>, sqlx::Error> {
+    // shadow queues nothing, so nothing is ever pending for it: the web runs mirror / coverage inline and the
+    // shadow sees their results on its next read
+    let check_deferral = check_deferral && !mode.is_shadow();
+    let mut ov = Overlay::default();
     // Stage 4.5 BEHAVIOR CHANGE (engine): the web runs mirror / coverage follow-ups inside its pass, right after the
     // close that triggers them, so an account holding a mirror target or an auto-hedged leg is evaluated only AFTER
     // that position was closed for it. The engine queues those follow-ups (outbox); until one has run, the account
@@ -262,7 +396,7 @@ async fn evaluate_account_checked(
         }
         book::FollowUpOwed::No => {}
     }
-    let Some(mut state) = load_book_state(pool, account_id).await? else {
+    let Some(mut state) = load(pool, account_id, mode, &ov).await? else {
         return Ok(None);
     };
     if state.positions.is_empty() {
@@ -291,7 +425,8 @@ async fn evaluate_account_checked(
     // loop below only ever considers positions that are still actually
     // open.
     let before_sl_tp = state.positions.len();
-    report.closed = close_sl_tp_triggered(pool, nats, account_id, &mut state).await?;
+    let level_before = report.margin_level_before;
+    report.closed = close_sl_tp_triggered(pool, nats, account_id, &mut state, mode, &mut ov, level_before).await?;
 
     // Stage 4 BEHAVIOR CHANGE (engine): after ANY close attempt (ours, or one a concurrent pass got to first) the
     // account and its positions are read again from the database before the next decision, exactly as
@@ -306,7 +441,7 @@ async fn evaluate_account_checked(
     let max_iterations = state.positions.len();
     for _ in 0..max_iterations {
         if dirty {
-            match load_book_state(pool, account_id).await? {
+            match load(pool, account_id, mode, &ov).await? {
                 Some(fresh) => state = fresh,
                 None => break,
             }
@@ -322,11 +457,13 @@ async fn evaluate_account_checked(
                 report.margin_call = true;
                 // evaluate() only returns MarginCall for a real level; a null level is never an action
                 let Some(level) = risk::margin_level(equity(&state), used_margin(&state)) else { break };
-                publish_best_effort(
-                    nats,
-                    &TradingEvent::MarginCall { account_id: account_id.to_string(), margin_level: level },
-                )
-                .await;
+                if !mode.is_shadow() {
+                    publish_best_effort(
+                        nats,
+                        &TradingEvent::MarginCall { account_id: account_id.to_string(), margin_level: level },
+                    )
+                    .await;
+                }
                 break;
             }
             MonitorAction::StopOut => {
@@ -338,7 +475,7 @@ async fn evaluate_account_checked(
                     thresholds.stop_out_level.normalize()
                 );
                 let reason = book::CloseReason::StopOut { margin_level: level, stop_out_level: thresholds.stop_out_level };
-                match force_close_worst(pool, &mut state, &note, reason).await? {
+                match force_close_worst(pool, &mut state, &note, reason, mode, &mut ov, account_id, level_before).await? {
                     CloseAttempt::Closed(closed_id) => {
                         report.closed.push((closed_id.clone(), "stop_out"));
                         closed_ids.push(closed_id);
@@ -357,7 +494,7 @@ async fn evaluate_account_checked(
         }
     }
 
-    if !closed_ids.is_empty() {
+    if !closed_ids.is_empty() && !mode.is_shadow() {
         publish_best_effort(
             nats,
             &TradingEvent::StopOut { account_id: account_id.to_string(), closed_position_ids: closed_ids },
@@ -370,7 +507,7 @@ async fn evaluate_account_checked(
     // open positions but no usable price has no level: nothing changes, as on the web. Re-read after any close, as
     // the web's pass 3 does.
     if dirty {
-        if let Some(fresh) = load_book_state(pool, account_id).await? {
+        if let Some(fresh) = load(pool, account_id, mode, &ov).await? {
             state = fresh;
         }
     }
@@ -385,6 +522,32 @@ async fn evaluate_account_checked(
         Some(book::MarginCallEdge::Out) => notified,
         None => false,
     };
+    if let Mode::Shadow(recorder) = mode {
+        // shadow: its OWN edge per account (the web's flag moves with the web's decisions, not ours); recorded on
+        // change only, nothing written to the book
+        if let Some(e) = edge {
+            let (kind, level) = match e {
+                book::MarginCallEdge::In { margin_level, .. } => (crate::shadow::Kind::MarginCallIn, Some(margin_level)),
+                book::MarginCallEdge::Out => (crate::shadow::Kind::MarginCallOut, risk::margin_level(equity(&state), used_margin(&state))),
+            };
+            recorder
+                .record_edge(crate::shadow::Decision {
+                    kind,
+                    account_id: account_id.to_string(),
+                    position_id: None,
+                    level_before,
+                    level,
+                    close_price: None,
+                    pnl: None,
+                    balance_after: Some(state.effective_balance),
+                    credit_after: Some(state.credit),
+                    write_off: None,
+                    prices: price_snapshot(&state),
+                })
+                .await;
+        }
+        return Ok(Some(report));
+    }
     if transition(edge) {
         if let Some(fresh) = load_book_state(pool, account_id).await? {
             state = fresh;
@@ -477,6 +640,11 @@ impl PassCursor {
 /// One pass over every account with an open position, in accountId order, from the cursor's resume point. `nats` is
 /// optional so the harness can run it without a broker.
 pub async fn run_pass(pool: &PgPool, nats: Option<&async_nats::Client>, cursor: &mut PassCursor) -> PassReport {
+    run_pass_mode(pool, nats, cursor, &Mode::Live).await
+}
+
+/// One pass in a given mode. Shadow: no deferral (it queues nothing), so no precheck and no resume point.
+pub async fn run_pass_mode(pool: &PgPool, nats: Option<&async_nats::Client>, cursor: &mut PassCursor, mode: &Mode) -> PassReport {
     let mut report = PassReport::default();
     let account_ids = match book::account_ids_with_open_positions(pool).await {
         Ok(ids) => ids,
@@ -494,18 +662,18 @@ pub async fn run_pass(pool: &PgPool, nats: Option<&async_nats::Client>, cursor: 
     // queues POSITION_CLOSED follow-ups (the web and the dispatcher never do), so nothing else can make one appear.
     // VYX_DEFER_PRECHECK=0 turns this off (every account queries, as before) for A/B verification.
     let queued_at_start = book::FOLLOW_UPS_QUEUED.load(std::sync::atomic::Ordering::Relaxed);
-    let mut maybe_pending = !defer_precheck_enabled() || match book::any_pending_follow_up(pool).await {
+    let mut maybe_pending = !mode.is_shadow() && (!defer_precheck_enabled() || match book::any_pending_follow_up(pool).await {
         Ok(any) => any,
         Err(err) => {
             tracing::error!(?err, "margin monitor: follow-up precheck failed; checking every account");
             true
         }
-    };
+    });
 
     // thresholds are read per account inside evaluate_account (Stage 2 F3), not cached per pass
     for account_id in &account_ids[start..] {
-        maybe_pending = maybe_pending || book::FOLLOW_UPS_QUEUED.load(std::sync::atomic::Ordering::Relaxed) != queued_at_start;
-        match evaluate_account_checked(pool, nats, account_id, maybe_pending).await {
+        maybe_pending = !mode.is_shadow() && (maybe_pending || book::FOLLOW_UPS_QUEUED.load(std::sync::atomic::Ordering::Relaxed) != queued_at_start);
+        match evaluate_account_checked(pool, nats, account_id, maybe_pending, mode).await {
             Ok(Some(r)) if r.deferred => {
                 report.deferred.push(account_id.clone());
                 if cursor.stops < MAX_CASCADE_STOPS && cursor.stopped_at.insert(account_id.clone()) {
@@ -572,6 +740,24 @@ pub fn spawn(pool: PgPool, nats: async_nats::Client, interval: std::time::Durati
         loop {
             ticker.tick().await;
             run_once_guarded(&pool, &nats, &guard).await;
+        }
+    });
+}
+
+/// Stage 5: the shadow monitor. A pass every `interval` in `Mode::Shadow`, one at a time (a slow pass delays the
+/// next, never overlaps it). No NATS, no dispatcher, no writes to the book.
+pub fn spawn_shadow(pool: PgPool, recorder: Arc<crate::shadow::Recorder>, interval: std::time::Duration) {
+    tokio::spawn(async move {
+        let mode = Mode::Shadow(recorder);
+        let mut ticker = tokio::time::interval(interval);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut cursor = PassCursor::default();
+        loop {
+            ticker.tick().await;
+            let report = run_pass_mode(&pool, None, &mut cursor, &mode).await;
+            if report.errors > 0 {
+                tracing::warn!(errors = report.errors, "shadow pass: some accounts failed to evaluate");
+            }
         }
     });
 }

@@ -18,6 +18,7 @@ pub mod pricing;
 pub mod session;
 pub mod swap;
 pub mod margin_watch;
+pub mod shadow;
 
 use chrono::Duration as ChronoDuration;
 use crate::calc::{close_price_for, floating_pnl};
