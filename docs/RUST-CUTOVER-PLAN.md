@@ -959,6 +959,46 @@ The web keeps acting (it is canonical). A reconciler compares the two continuous
 and an unexplained one resets the soak clock. At the end we know, on real prices and real books, that the engine
 decides what the web decides, and how much earlier or later.
 
+#### 5.0 BUILT 2026-09-24 (a7fa2de, 5ba8d67, + the gate commit): results
+
+**What was built.**
+- `book::close_money`: the close's money rules as one pure function, used by the real close AND the shadow.
+- `monitor::Mode::Shadow`: the same evaluate / run_pass, with an overlay for simulated closes; writes and
+  publishes nothing.
+- `shadow.rs`: the Recorder, table `shadow_decision` (local database only), per-account level samples.
+- `reconcile.rs`: the classes MATCH / TIMING / SNAPSHOT / PREEMPTED / VALUE / ENGINE_ONLY / WEB_ONLY, the soak
+  clock, the daily summary (log + `shadow_daily`).
+- `ENGINE_ORDER_MANAGEMENT=shadow` in the server.
+
+**Gates.**
+- Drift guard (`tests/shadow_db.rs`): shadow first, then live, on the same book, for a stop-out cascade through
+  credit and negative-balance protection, SL + TP, and a margin call. Shadow leaves the book untouched, and its
+  would-closes equal live's real closes: positions, prices, P&L, final funds, write-off.
+- Reconciler (`tests/reconcile_db.rs`): every class, idempotent, clock reset.
+- DB parity 22/22 and the engine suite 269/269 with the live path restructured.
+- **Scratch gate §5.5** (`scripts/load/shadow-gate.sh`: the shadow every 200 ms on `vyx_load_web` WHILE the web
+  acts, then reconcile). 100 clients, 9 topologies, 4 seeds. **0 unexplained in every run.**
+
+  | seed | web risk closes | shadow decisions | MATCH | TIMING | PREEMPTED |
+  |---|---|---|---|---|---|
+  | 1 | 147 | 221 | 118 | 58 | 45 |
+  | 2 | 128 | 210 | 104 | 61 | 45 |
+  | 3 | 123 | 200 | 92 | 63 | 45 |
+  | 4 | 147 | 228 | 98 | 85 | 45 |
+
+  - PREEMPTED = the web's own follow-ups closing a position the shadow would have stopped out: 22 coverage
+    auto-closes + 23 mirror closes. The fan-in topology is a fixed size, hence the same 45 in every seed.
+  - TIMING = the web's passes are slower than the shadow's 200 ms (seconds apart, inside the window).
+
+**Deploy (VPS, engine only):**
+- `set ENGINE_ORDER_MANAGEMENT=shadow` in start-engine.cmd, above the engine launch line;
+- optional: `VYX_SHADOW_STORE_URL` (default = the local `MARKET_DATA_DATABASE_URL`), `VYX_SHADOW_PASS_SECS` (1),
+  `VYX_SHADOW_RECONCILE_SECS` (60);
+- rollback: unset the mode.
+
+**Still open:** the backoffice page for the daily summary (it needs an engine read endpoint + a web route + the
+Caddy route), and the soak bot.
+
 #### 5.1 What "shadow" means in the engine (no writes, no events)
 
 - **Mode.** `ENGINE_ORDER_MANAGEMENT=shadow` is a new value. `on` stays cutover, and off (the default) stays off. In

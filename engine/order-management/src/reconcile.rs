@@ -150,6 +150,10 @@ pub struct Reconciler {
     book: PgPool,
     store: PgPool,
     recorder: Arc<Recorder>,
+    /// pairing window (WINDOW_SECS in production; the load-harness gate runs for seconds, not minutes)
+    window_secs: i64,
+    /// a web row must be this old before it is read (its transaction and follow-ups settled)
+    settle_secs: i64,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -161,7 +165,14 @@ impl Reconciler {
     pub async fn new(book: PgPool, recorder: Arc<Recorder>) -> Result<Self, String> {
         let store = recorder.store().cloned().ok_or("reconciler needs the shadow store (local database)")?;
         sqlx::raw_sql(SCHEMA).execute(&store).await.map_err(|e| format!("reconciler schema: {e}"))?;
-        Ok(Reconciler { book, store, recorder })
+        Ok(Reconciler { book, store, recorder, window_secs: WINDOW_SECS, settle_secs: 5 })
+    }
+
+    /// Shorter timings for the scratch gate (Stage 5 §5.5), where the whole run takes seconds.
+    pub fn with_timing(mut self, window_secs: i64, settle_secs: i64) -> Self {
+        self.window_secs = window_secs;
+        self.settle_secs = settle_secs;
+        self
     }
 
     async fn state(&self, key: &str) -> Option<String> {
@@ -224,7 +235,8 @@ impl Reconciler {
     /// One run: new web actions since the cursor, then shadow decisions nobody paired within the window.
     pub async fn run_once(&self) -> Result<RunReport, sqlx::Error> {
         let mut report = RunReport::default();
-        let window = ChronoDuration::seconds(WINDOW_SECS);
+        let window = ChronoDuration::seconds(self.window_secs);
+        let settle = self.settle_secs as f64;
         self.clock_started_at().await;
 
         // ---- 1. web risk closes since the cursor (settled: at least 5 s old) ----
@@ -237,10 +249,10 @@ impl Reconciler {
                FROM "Transaction" t LEFT JOIN "Position" p ON p.id = t."referenceId"
                WHERE t.type = 'TRADE_PNL' AND t."referenceType" = 'Position'
                  AND (t.note LIKE 'Stop loss hit (automatic)%' OR t.note LIKE 'Take profit hit (automatic)%' OR t.note LIKE 'Stop-out (automatic)%')
-                 AND (t."createdAt", t.id) > ($1, $2) AND t."createdAt" < now() - interval '5 seconds'
+                 AND (t."createdAt", t.id) > ($1, $2) AND t."createdAt" < now() - make_interval(secs => $3)
                ORDER BY t."createdAt", t.id LIMIT 500"#,
         )
-        .bind(cursor_at).bind(&cursor_id).fetch_all(&self.book).await?;
+        .bind(cursor_at).bind(&cursor_id).bind(settle).fetch_all(&self.book).await?;
         for (txn, account, position, note, at, amount, close_price) in &closes {
             let Some(kind) = web_kind(note) else { continue };
             let decision: Option<(String, String, DateTime<Utc>, Option<Decimal>, Option<Decimal>)> = sqlx::query_as(
@@ -249,7 +261,7 @@ impl Reconciler {
             .bind(position).fetch_optional(&self.store).await?;
             let fan = self.fan_in(account).await;
             match decision {
-                Some((key, skind, first, sprice, spnl)) if (*at - first).num_seconds().abs() <= WINDOW_SECS || skind != kind => {
+                Some((key, skind, first, sprice, spnl)) if (*at - first).num_seconds().abs() <= self.window_secs || skind != kind => {
                     let class = classify_pair(kind, &skind, (*at - first).num_milliseconds(), *close_price, sprice, Some(*amount), spnl);
                     let detail = serde_json::json!({ "webNote": note, "webPrice": close_price, "webPnl": amount, "shadowKind": skind, "shadowPrice": sprice, "shadowPnl": spnl });
                     self.write_pair(class, kind, account, Some(position), Some(txn), Some(&key), Some(*at), Some(first), fan, detail, &mut report).await;
@@ -280,10 +292,10 @@ impl Reconciler {
         let mc_id = self.state("web_mc_cursor_id").await.unwrap_or_default();
         let notices: Vec<(String, String, DateTime<Utc>, String)> = sqlx::query_as(
             r#"SELECT id, "accountId", "createdAt", body FROM "Notification"
-               WHERE type = 'MARGIN_CALL' AND "accountId" IS NOT NULL AND ("createdAt", id) > ($1, $2) AND "createdAt" < now() - interval '5 seconds'
+               WHERE type = 'MARGIN_CALL' AND "accountId" IS NOT NULL AND ("createdAt", id) > ($1, $2) AND "createdAt" < now() - make_interval(secs => $3)
                ORDER BY "createdAt", id LIMIT 500"#,
         )
-        .bind(mc_at).bind(&mc_id).fetch_all(&self.book).await?;
+        .bind(mc_at).bind(&mc_id).bind(settle).fetch_all(&self.book).await?;
         for (nid, account, at, body) in &notices {
             let decision: Option<(String, DateTime<Utc>)> = sqlx::query_as(
                 "SELECT dedupe_key, first_seen FROM shadow_decision WHERE kind = 'margin_call_in' AND account_id = $1 AND first_seen BETWEEN $2 AND $3 ORDER BY first_seen LIMIT 1",
@@ -316,7 +328,7 @@ impl Reconciler {
                WHERE p.id IS NULL AND d.kind IN ('stop_loss','take_profit','stop_out','margin_call_in') AND d.first_seen < now() - make_interval(secs => $1)
                ORDER BY d.first_seen LIMIT 500"#,
         )
-        .bind((WINDOW_SECS + 10) as f64).fetch_all(&self.store).await?;
+        .bind((self.window_secs + self.settle_secs + 5) as f64).fetch_all(&self.store).await?;
         for (key, kind, account, position, first, level) in &lonely {
             let fan = self.fan_in(account).await;
             if let Some(pos) = position {

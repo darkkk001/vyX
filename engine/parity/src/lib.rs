@@ -17,6 +17,7 @@
 
 pub mod db_mode;
 pub mod load_mode;
+pub mod shadow_gate;
 
 use order_management::calc::{close_price_for, equity, floating_pnl, used_margin, AccountState};
 use order_management::db::OpenPositionWithMarket;

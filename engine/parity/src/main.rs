@@ -10,6 +10,11 @@ fn main() {
     let scenario_dir = root.join("scenarios");
     // `-- --db <scenario>`: Stage 1 DB mode (see db_mode.rs); otherwise the pure-calc Stage 0 run
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // `-- --shadow-run <stop-file> <report.json>`: Stage 5 scratch gate, the shadow beside the web (shadow_gate.rs)
+    if args.first().map(String::as_str) == Some("--shadow-run") {
+        parity::shadow_gate::main(&args[1..]);
+        return;
+    }
     // `-- --load-run <walkers> <report.json>`: Stage 4 load harness, engine side (load_mode.rs, scripts/load/run.sh)
     if args.first().map(String::as_str) == Some("--load-run") {
         parity::load_mode::main(&args[1..]);
