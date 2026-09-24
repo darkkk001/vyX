@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_CHART_SETTINGS } from "./chart-settings";
+import { DEFAULT_CHART_SETTINGS, mergeChartSettings } from "./chart-settings";
 
 describe("DEFAULT_CHART_SETTINGS", () => {
   // Light is now the default -- a fresh login / an account that has never
@@ -8,6 +8,14 @@ describe("DEFAULT_CHART_SETTINGS", () => {
   // always wins via mergeChartSettings' spread, unaffected by this default.
   it("defaults theme to light", () => {
     expect(DEFAULT_CHART_SETTINGS.theme).toBe("light");
+  });
+
+  // 2026-09-24: a new account's chart starts clean (no session map, no PDH/PDL); mergeChartSettings keeps any
+  // account's explicitly saved value.
+  it("a new account's chart starts clean: no session map, no session high/low", () => {
+    expect(DEFAULT_CHART_SETTINGS.showSessionMap).toBe(false);
+    expect(DEFAULT_CHART_SETTINGS.showSessionHighLow).toBe(false);
+    expect(mergeChartSettings({ showSessionMap: true }).showSessionMap).toBe(true);
   });
 
   // PDH/PDL (showSessionHighLow) was on for every trader with no saved

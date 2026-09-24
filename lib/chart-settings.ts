@@ -112,7 +112,9 @@ export const DEFAULT_CHART_SETTINGS: ChartSettings = {
   // flip alone only reaches accounts that have NEVER saved any chart
   // setting at all.
   showSessionHighLow: false,
-  showSessionMap: true,
+  // Defaults OFF (2026-09-24, owner: a new account's chart starts clean). Like showSessionHighLow above, this only
+  // reaches accounts that never saved a chart setting; a saved blob keeps its explicit value.
+  showSessionMap: false,
   showOhlcBar: true,
   timezone: "UTC",
   soundsEnabled: true,
