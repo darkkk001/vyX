@@ -173,3 +173,26 @@ async fn every_class_the_soak_gate_counts_and_the_clock_reset() {
     assert!(summary["counts"]["MATCH"].as_i64().unwrap_or(0) >= 2, "{summary}");
     assert_eq!(summary["exitMet"], serde_json::json!(false));
 }
+
+/// The VPS shape: the engine role has USAGE on the schema only (deploy/market_data.sql), so it cannot create the
+/// shadow tables; deploy/shadow-store.sql made them as postgres. Recorder + Reconciler must start and write.
+/// Runs only with SHADOW_STORE_PROBE_URL (a scratch database prepared that way, connected as the restricted role).
+#[tokio::test]
+async fn a_role_without_create_rights_uses_the_tables_made_by_shadow_store_sql() {
+    let Ok(url) = std::env::var("SHADOW_STORE_PROBE_URL") else { return };
+    assert!(url.contains("@127.0.0.1:"), "scratch only");
+    let pool = PgPool::connect(&url).await.unwrap();
+    let create = sqlx::query("CREATE TABLE probe_should_fail (x int)").execute(&pool).await;
+    assert!(create.is_err(), "the probe role must NOT be able to create tables, or this test proves nothing");
+    let recorder = Arc::new(Recorder::connect(&url).await.expect("recorder starts on existing tables"));
+    let reconciler = Reconciler::new(pool.clone(), recorder.clone()).await.expect("reconciler starts on existing tables");
+    recorder.record(order_management::shadow::Decision {
+        kind: order_management::shadow::Kind::StopOut, account_id: "probe".into(), position_id: Some("probe-p".into()),
+        level_before: None, level: Some(dec!(90)), close_price: Some(dec!(1)), pnl: Some(dec!(-1)), balance_after: None, credit_after: None, write_off: None,
+        prices: serde_json::json!({}),
+    }).await;
+    let (n,): (i64,) = sqlx::query_as("SELECT count(*) FROM shadow_decision WHERE account_id = 'probe'").fetch_one(&pool).await.unwrap();
+    assert_eq!(n, 1, "the restricted role wrote a decision");
+    let _ = reconciler.clock_started_at().await;
+    sqlx::query("DELETE FROM shadow_decision WHERE account_id = 'probe'").execute(&pool).await.unwrap();
+}

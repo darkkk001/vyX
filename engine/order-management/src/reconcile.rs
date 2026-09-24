@@ -164,7 +164,7 @@ pub struct RunReport {
 impl Reconciler {
     pub async fn new(book: PgPool, recorder: Arc<Recorder>) -> Result<Self, String> {
         let store = recorder.store().cloned().ok_or("reconciler needs the shadow store (local database)")?;
-        sqlx::raw_sql(SCHEMA).execute(&store).await.map_err(|e| format!("reconciler schema: {e}"))?;
+        crate::shadow::ensure_schema(&store, SCHEMA, &["shadow_pair", "shadow_state", "shadow_daily"]).await?;
         Ok(Reconciler { book, store, recorder, window_secs: WINDOW_SECS, settle_secs: 5 })
     }
 

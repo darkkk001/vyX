@@ -117,6 +117,22 @@ CREATE INDEX IF NOT EXISTS shadow_decision_first_seen ON shadow_decision (first_
 CREATE INDEX IF NOT EXISTS shadow_decision_position ON shadow_decision (position_id);
 "#;
 
+/// Create the store's tables, or, for a role that may not CREATE in the schema (the VPS's `engine` role on
+/// market_data: USAGE only), accept them when deploy/shadow-store.sql already created them as postgres.
+pub async fn ensure_schema(pool: &PgPool, schema: &str, tables: &[&str]) -> Result<(), String> {
+    match sqlx::raw_sql(schema).execute(pool).await {
+        Ok(_) => Ok(()),
+        Err(create_err) => {
+            for t in tables {
+                if let Err(e) = sqlx::query(&format!("SELECT 1 FROM {t} LIMIT 0")).execute(pool).await {
+                    return Err(format!("cannot create the shadow tables ({create_err}) and {t} is not usable ({e}): run deploy/shadow-store.sql as postgres"));
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
 /// Only a database on this machine may hold the shadow store (the plan: VPS-local, never Neon).
 pub fn is_local_url(url: &str) -> bool {
     let after_at = url.rsplit('@').next().unwrap_or("");
@@ -135,7 +151,7 @@ impl Recorder {
             return Err("shadow store must be a local database (127.0.0.1 / localhost), refusing".into());
         }
         let pool = PgPool::connect(url).await.map_err(|e| format!("shadow store connect: {e}"))?;
-        sqlx::raw_sql(SCHEMA).execute(&pool).await.map_err(|e| format!("shadow store schema: {e}"))?;
+        ensure_schema(&pool, SCHEMA, &["shadow_decision"]).await?;
         Ok(Recorder { store: Some(pool), seen: Mutex::new(HashMap::new()), edges: Mutex::new(HashMap::new()), samples: Mutex::new(HashMap::new()) })
     }
 

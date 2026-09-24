@@ -991,6 +991,8 @@ decides what the web decides, and how much earlier or later.
   - TIMING = the web's passes are slower than the shadow's 200 ms (seconds apart, inside the window).
 
 **Deploy (VPS, engine only):**
+- once, as postgres: `psql -U postgres -h 127.0.0.1 -d market_data -f deploy\shadow-store.sql`. The engine role
+  has USAGE on public only and cannot create the tables; proven on scratch with a role restricted the same way;
 - `set ENGINE_ORDER_MANAGEMENT=shadow` in start-engine.cmd, above the engine launch line;
 - optional: `VYX_SHADOW_STORE_URL` (default = the local `MARKET_DATA_DATABASE_URL`), `VYX_SHADOW_PASS_SECS` (1),
   `VYX_SHADOW_RECONCILE_SECS` (60);
