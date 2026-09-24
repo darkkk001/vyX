@@ -201,7 +201,7 @@ pub fn spawn_periodic_flush(
                 // evaluate that symbol NOW (see risk_hook.rs) instead of at the next minute cron
                 if ok {
                     if let Some(hook) = &risk_hook {
-                        hook.after_flush(&dirty);
+                        hook.after_flush(&dirty, &cache);
                     }
                 }
             }

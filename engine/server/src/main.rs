@@ -1430,6 +1430,16 @@ async fn main() {
     let risk_hook = market_data::risk_hook::RiskHook::from_env();
     if let Some(hook) = &risk_hook {
         hook.spawn_reload_loop(pool.clone(), std::time::Duration::from_secs(5));
+        // per-tick margin trigger (order_management::margin_watch): an account at or below its stop-out is
+        // evaluated on the flush that put it there, not at the next backstop pass. VYX_RISK_HOOK_MARGIN=0 = off.
+        if std::env::var("VYX_RISK_HOOK_MARGIN").map(|v| v.trim() == "0").unwrap_or(false) {
+            tracing::warn!("risk hook margin trigger OFF (VYX_RISK_HOOK_MARGIN=0): stop-out on positions without SL/TP waits for the backstop");
+        } else {
+            let watch = order_management::margin_watch::MarginWatch::new();
+            watch.spawn_reload_loop(pool.clone(), std::time::Duration::from_secs(5));
+            hook.set_margin_watch(watch);
+            tracing::info!("risk hook margin trigger enabled: stop-out / margin call evaluated on the tick");
+        }
         match market_data::risk_hook::RiskHook::backstop_interval_from_env() {
             Some(every) => {
                 tracing::info!(every_secs = every.as_secs(), "risk hook backstop enabled: full margin-monitor pass on a timer");

@@ -29,6 +29,14 @@
 //! the route's full pass (every account with an open position: SL / TP, stop-out, margin
 //! call), so real-time protection no longer depends on a Vercel cron existing at all.
 //! Idle cost is one index-backed `count` on the route side when nothing is open.
+//!
+//! Per-tick margin trigger (2026-09-24). The level check fires only for positions WITH an SL / TP, so a
+//! stop-out waited for the backstop (up to 60 s; production 2026-09-24: an account at 80 % against a 99 %
+//! stop-out for most of a minute). A `MarginWatch` (order_management::margin_watch, plugged in by the server
+//! because this crate cannot depend on order-management) recomputes, after every flush, the margin level of
+//! each account holding a flushed symbol and names the symbols whose accounts are at or below stop-out (or
+//! crossed margin call); they go through the same `?symbols=` call and the same per-symbol rate limit. The
+//! web still decides and closes; this only asks it NOW.
 
 use rust_decimal::Decimal;
 use sqlx::PgPool;
@@ -37,6 +45,16 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use protocol::Tick;
+
+use crate::cache::TickCache;
+
+/// The per-tick margin trigger (see the module doc). Pure in-memory on the flush path: no I/O.
+pub trait MarginWatch: Send + Sync {
+    /// After a LivePrice flush: the flushed symbols whose accounts the web must evaluate now.
+    fn symbols_to_evaluate(&self, flushed: &[Tick], cache: &TickCache) -> Vec<String>;
+    /// A margin-triggered evaluation came back (closes may have happened): refresh the watched book.
+    fn evaluated(&self);
+}
 
 #[derive(Clone, Debug)]
 struct Level {
@@ -51,6 +69,7 @@ pub struct RiskHook {
     client: reqwest::Client,
     levels: Mutex<HashMap<String, Vec<Level>>>,
     last_fired: Mutex<HashMap<String, Instant>>,
+    margin_watch: std::sync::OnceLock<Arc<dyn MarginWatch>>,
 }
 
 impl RiskHook {
@@ -60,7 +79,19 @@ impl RiskHook {
         let secret = std::env::var("VYX_RISK_HOOK_SECRET").ok().filter(|s| !s.trim().is_empty())?;
         let client = reqwest::Client::builder().timeout(Duration::from_secs(12)).build().ok()?;
         tracing::info!(url = %url, "risk hook enabled: SL/TP evaluation fires on the tick that touches a level");
-        Some(Arc::new(RiskHook { url, secret, client, levels: Mutex::new(HashMap::new()), last_fired: Mutex::new(HashMap::new()) }))
+        Some(Arc::new(RiskHook {
+            url,
+            secret,
+            client,
+            levels: Mutex::new(HashMap::new()),
+            last_fired: Mutex::new(HashMap::new()),
+            margin_watch: std::sync::OnceLock::new(),
+        }))
+    }
+
+    /// Plug in the per-tick margin trigger (once; a second call is ignored).
+    pub fn set_margin_watch(&self, watch: Arc<dyn MarginWatch>) {
+        let _ = self.margin_watch.set(watch);
     }
 
     /// Reload the open positions' levels (symbol -> [side, sl, tp]) from the Prisma table.
@@ -104,9 +135,17 @@ impl RiskHook {
         out
     }
 
-    /// After a LivePrice flush: fire the evaluation for every touched symbol (max once a second each).
-    pub fn after_flush(self: &Arc<Self>, ticks: &[Tick]) {
+    /// After a LivePrice flush: fire the evaluation for every symbol whose ticks touched an SL / TP, or put
+    /// an account holding it at or below stop-out / across margin call (max once a second each).
+    pub fn after_flush(self: &Arc<Self>, ticks: &[Tick], cache: &TickCache) {
         let mut symbols = self.touched(ticks);
+        let margin: Vec<String> = self.margin_watch.get().map(|w| w.symbols_to_evaluate(ticks, cache)).unwrap_or_default();
+        let by_margin = !margin.is_empty();
+        for s in margin {
+            if !symbols.contains(&s) {
+                symbols.push(s);
+            }
+        }
         if symbols.is_empty() {
             return;
         }
@@ -128,17 +167,46 @@ impl RiskHook {
         tokio::spawn(async move {
             let url = format!("{}?symbols={}", hook.url, symbols.join(","));
             match hook.client.get(&url).bearer_auth(&hook.secret).send().await {
-                Ok(resp) if resp.status().is_success() => tracing::info!(symbols = %symbols.join(","), "risk hook fired"),
+                Ok(resp) if resp.status().is_success() => tracing::info!(symbols = %symbols.join(","), margin = by_margin, "risk hook fired"),
                 Ok(resp) => tracing::warn!(status = %resp.status(), "risk hook rejected"),
                 Err(err) => tracing::warn!(error = %err, "risk hook failed"),
+            }
+            if by_margin {
+                if let Some(w) = hook.margin_watch.get() {
+                    w.evaluated();
+                }
             }
         });
     }
 
     /// `VYX_RISK_HOOK_BACKSTOP_SECS` (default 60); None when set to 0 (backstop off).
     pub fn backstop_interval_from_env() -> Option<Duration> {
-        let secs = std::env::var("VYX_RISK_HOOK_BACKSTOP_SECS").ok().and_then(|v| v.trim().parse::<u64>().ok()).unwrap_or(60);
-        (secs > 0).then(|| Duration::from_secs(secs))
+        let (every, problem) = Self::parse_backstop(std::env::var_os("VYX_RISK_HOOK_BACKSTOP_SECS").map(|v| v.to_string_lossy().into_owned()));
+        if let Some(problem) = problem {
+            tracing::error!("{problem}");
+        }
+        every
+    }
+
+    /// The backstop interval from the raw env value, plus a message when the value was SET but unusable.
+    /// It used to fall back to 60 silently (2026-09-24: a `set` line in start-engine.cmd that did not come
+    /// through as a plain number left the backstop at 60 with nothing in the log). Unset = 60, quietly.
+    pub fn parse_backstop(raw: Option<String>) -> (Option<Duration>, Option<String>) {
+        let Some(raw) = raw else { return (Some(Duration::from_secs(60)), None) };
+        match raw.trim().parse::<u64>() {
+            Ok(0) => (None, None),
+            Ok(secs) => (Some(Duration::from_secs(secs)), None),
+            Err(_) => {
+                let chars: Vec<String> = raw.chars().map(|c| format!("U+{:04X}", c as u32)).collect();
+                (
+                    Some(Duration::from_secs(60)),
+                    Some(format!(
+                        "VYX_RISK_HOOK_BACKSTOP_SECS={raw:?} is not a whole number of seconds (characters: {}); USING 60. Write it as: set VYX_RISK_HOOK_BACKSTOP_SECS=5 (no quotes, no spaces around =, ASCII digits)",
+                        chars.join(" ")
+                    )),
+                )
+            }
+        }
     }
 
     /// One full pass: the route without `symbols` evaluates every account holding an open position.
@@ -229,7 +297,73 @@ mod tests {
             client: reqwest::Client::builder().timeout(Duration::from_secs(5)).build().unwrap(),
             levels: Mutex::new(HashMap::new()),
             last_fired: Mutex::new(HashMap::new()),
+            margin_watch: std::sync::OnceLock::new(),
         })
+    }
+
+    #[test]
+    fn a_backstop_value_that_is_set_but_not_a_number_is_reported_not_silently_60() {
+        let p = |v: &str| RiskHook::parse_backstop(Some(v.to_string()));
+        assert_eq!(RiskHook::parse_backstop(None), (Some(Duration::from_secs(60)), None));
+        assert_eq!(p("5"), (Some(Duration::from_secs(5)), None));
+        assert_eq!(p(" 5 \r"), (Some(Duration::from_secs(5)), None));
+        assert_eq!(p("0"), (None, None));
+        for bad in ["\"5\"", "5s", "\u{6F5}", "5\u{A0}x", ""] {
+            let (every, problem) = p(bad);
+            assert_eq!(every, Some(Duration::from_secs(60)), "{bad:?}");
+            let msg = problem.unwrap_or_else(|| panic!("{bad:?} must be reported"));
+            assert!(msg.contains("USING 60") && msg.contains("VYX_RISK_HOOK_BACKSTOP_SECS="), "{msg}");
+        }
+        // the character dump shows what the eye cannot: an Arabic-Indic five
+        assert!(p("\u{6F5}").1.unwrap().contains("U+06F5"));
+    }
+
+    struct StubWatch {
+        symbols: Vec<String>,
+        evaluated: std::sync::atomic::AtomicUsize,
+    }
+
+    impl MarginWatch for StubWatch {
+        fn symbols_to_evaluate(&self, _flushed: &[Tick], _cache: &TickCache) -> Vec<String> {
+            self.symbols.clone()
+        }
+        fn evaluated(&self) {
+            self.evaluated.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    fn tick(symbol: &str) -> Tick {
+        serde_json::from_value(serde_json::json!({ "symbol": symbol, "bid": "4280", "ask": "4280.3" })).unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_margin_trigger_fires_the_symbol_without_any_sl_tp_and_then_asks_for_a_reload() {
+        let (url, mut rx) = mock_route(200).await;
+        let h = hook(url);
+        let watch = Arc::new(StubWatch { symbols: vec!["XAUUSD".into()], evaluated: Default::default() });
+        h.set_margin_watch(watch.clone());
+        // no SL / TP levels at all: only the margin watch can fire this
+        h.after_flush(&[tick("XAUUSD")], &TickCache::new());
+        let (line, auth) = tokio::time::timeout(Duration::from_secs(3), rx.recv()).await.expect("fired").unwrap();
+        assert_eq!(line, "GET /api/internal/margin-monitor?symbols=XAUUSD HTTP/1.1");
+        assert_eq!(auth, "Bearer s3cret");
+        for _ in 0..50 {
+            if watch.evaluated.load(std::sync::atomic::Ordering::SeqCst) == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(watch.evaluated.load(std::sync::atomic::Ordering::SeqCst), 1);
+        // the per-symbol limit still holds: a second flush within the second does not call again
+        h.after_flush(&[tick("XAUUSD")], &TickCache::new());
+        assert!(tokio::time::timeout(Duration::from_millis(300), rx.recv()).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn without_a_margin_watch_or_a_touched_level_nothing_fires() {
+        let (url, mut rx) = mock_route(200).await;
+        hook(url).after_flush(&[tick("XAUUSD")], &TickCache::new());
+        assert!(tokio::time::timeout(Duration::from_millis(300), rx.recv()).await.is_err());
     }
 
     #[tokio::test]
