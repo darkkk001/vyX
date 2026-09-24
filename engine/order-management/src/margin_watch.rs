@@ -47,6 +47,8 @@ pub struct WatchedPosition {
     pub open_price: Decimal,
     pub contract_size: Decimal,
     pub quote_currency: String,
+    /// BrokerSymbol.hedgedMarginPct (calc::used_margin); 200 = no reduction
+    pub hedged_margin_pct: Decimal,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -86,13 +88,15 @@ impl Book {
 /// book::account_thresholds, so a row can never be dropped for a missing group.)
 pub async fn load_book<'e, E: sqlx::PgExecutor<'e>>(e: E) -> Result<Book, sqlx::Error> {
     #[allow(clippy::type_complexity)]
-    let rows: Vec<(String, Decimal, Decimal, i32, String, Option<Decimal>, Option<Decimal>, String, String, Decimal, Decimal, Decimal, String)> =
+    let rows: Vec<(String, Decimal, Decimal, i32, String, Option<Decimal>, Option<Decimal>, String, String, Decimal, Decimal, Decimal, String, Decimal)> =
         sqlx::query_as(
             r#"SELECT a.id, a.balance, a.credit, a.leverage, a.currency, g."marginCallLevel", g."stopOutLevel",
-                      s.name, p.side::text, p.volume, p."openPrice", s."contractSize", s."quoteCurrency"
+                      s.name, p.side::text, p.volume, p."openPrice", s."contractSize", s."quoteCurrency",
+                      COALESCE(bs."hedgedMarginPct", 200)
                FROM "Position" p
                JOIN "Account" a ON a.id = p."accountId"
                JOIN "Symbol" s ON s.id = p."symbolId"
+               LEFT JOIN "BrokerSymbol" bs ON bs."brokerId" = p."brokerId" AND bs."symbolId" = p."symbolId"
                LEFT JOIN "Group" g ON g.id = a."groupId"
                WHERE p.status = 'OPEN'
                ORDER BY a.id COLLATE "C", p."openedAt", p.id"#,
@@ -101,7 +105,7 @@ pub async fn load_book<'e, E: sqlx::PgExecutor<'e>>(e: E) -> Result<Book, sqlx::
         .await?;
     let d = MarginThresholds::default();
     let mut accounts: Vec<WatchedAccount> = Vec::new();
-    for (id, balance, credit, leverage, currency, call, stop_out, symbol, side, volume, open_price, contract_size, quote_currency) in rows {
+    for (id, balance, credit, leverage, currency, call, stop_out, symbol, side, volume, open_price, contract_size, quote_currency, hedged_margin_pct) in rows {
         if accounts.last().map(|a| a.id != id).unwrap_or(true) {
             accounts.push(WatchedAccount {
                 id,
@@ -114,7 +118,7 @@ pub async fn load_book<'e, E: sqlx::PgExecutor<'e>>(e: E) -> Result<Book, sqlx::
             });
         }
         let side = if side == "SELL" { protocol::OrderSide::Sell } else { protocol::OrderSide::Buy };
-        accounts.last_mut().unwrap().positions.push(WatchedPosition { symbol, side, volume, open_price, contract_size, quote_currency });
+        accounts.last_mut().unwrap().positions.push(WatchedPosition { symbol, side, volume, open_price, contract_size, quote_currency, hedged_margin_pct });
     }
     Ok(Book::new(accounts))
 }
@@ -144,6 +148,7 @@ pub fn measure(account: &WatchedAccount, cache: &TickCache) -> (Decimal, Decimal
                 sl_price: None,
                 tp_price: None,
                 fx_rate: rate.unwrap_or(Decimal::ONE),
+                hedged_margin_pct: p.hedged_margin_pct,
             }
         })
         .collect();
@@ -291,6 +296,7 @@ mod tests {
                     open_price: dec!(4290),
                     contract_size: dec!(100),
                     quote_currency: "USD".into(),
+                    hedged_margin_pct: dec!(200),
                 })
                 .collect(),
         }
@@ -407,7 +413,7 @@ mod tests {
             leverage: 100,
             currency: "USD".into(),
             thresholds: MarginThresholds { call_level: dec!(100), stop_out_level: dec!(50) },
-            positions: vec![WatchedPosition { symbol: "USDJPY".into(), side: protocol::OrderSide::Sell, volume: dec!(0.1), open_price: dec!(150), contract_size: dec!(100000), quote_currency: "JPY".into() }],
+            positions: vec![WatchedPosition { symbol: "USDJPY".into(), side: protocol::OrderSide::Sell, volume: dec!(0.1), open_price: dec!(150), contract_size: dec!(100000), quote_currency: "JPY".into(), hedged_margin_pct: dec!(200) }],
         };
         let cache = cache_with(&[(tick("USDJPY", dec!(151), dec!(151)), 0)]);
         let (equity, used) = measure(&a, &cache);

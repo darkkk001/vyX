@@ -56,14 +56,15 @@ pub async fn open_positions_with_market(
     account_id: &str,
 ) -> Result<Vec<OpenPositionWithMarket>, sqlx::Error> {
     #[allow(clippy::type_complexity)]
-    let rows: Vec<(String, String, String, Decimal, Decimal, Decimal, Option<Decimal>, Option<Decimal>, Option<Decimal>, Option<Decimal>, String, String, String, String)> =
+    let rows: Vec<(String, String, String, Decimal, Decimal, Decimal, Option<Decimal>, Option<Decimal>, Option<Decimal>, Option<Decimal>, String, String, String, String, Decimal)> =
         sqlx::query_as(
             r#"SELECT p.id, s.name, p.side::text, p.volume, p."openPrice", s."contractSize",
                       lp.bid, lp.ask, p."slPrice", p."tpPrice", s.category::text, p."brokerId",
-                      s."quoteCurrency", a.currency
+                      s."quoteCurrency", a.currency, COALESCE(bs."hedgedMarginPct", 200)
                FROM "Position" p
                JOIN "Symbol" s ON s.id = p."symbolId"
                JOIN "Account" a ON a.id = p."accountId"
+               LEFT JOIN "BrokerSymbol" bs ON bs."brokerId" = p."brokerId" AND bs."symbolId" = p."symbolId"
                LEFT JOIN "LivePrice" lp ON lp.symbol = s.name AND lp."tickAt" > now() - interval '15 seconds'
                WHERE p."accountId" = $1 AND p.status = 'OPEN'
                ORDER BY p."openedAt", p.id"#,
@@ -120,7 +121,7 @@ pub async fn open_positions_with_market(
 
     Ok(rows
         .into_iter()
-        .map(|(id, symbol, side, volume, open_price, contract_size, bid, ask, sl_price, tp_price, category, _, quote_ccy, account_ccy)| {
+        .map(|(id, symbol, side, volume, open_price, contract_size, bid, ask, sl_price, tp_price, category, _, quote_ccy, account_ccy, hedged_margin_pct)| {
             let closed = sessions.get(&symbol).is_some_and(|windows| crate::session::is_market_closed(windows, now, &category));
             let rate = crate::fx::conversion_rate(&quote_ccy, &account_ccy, |s| fx_quotes.get(s).copied());
             if rate.is_none() {
@@ -139,6 +140,7 @@ pub async fn open_positions_with_market(
                 sl_price,
                 tp_price,
                 fx_rate: rate.unwrap_or(Decimal::ONE),
+                hedged_margin_pct,
             }
         })
         .collect())

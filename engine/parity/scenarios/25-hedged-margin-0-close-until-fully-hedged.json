@@ -1,0 +1,73 @@
+{
+  "name": "25-hedged-margin-0-close-until-fully-hedged",
+  "why": "Hedged margin 0%: BUY 1 + BUY 1 + SELL 1, equity 50, margin = the uncovered BUY lot only (1990) -> 2.5%: the largest loss (first BUY, oldest on the tie) closes; the rest is fully hedged, margin 0, level none -> no further close.",
+  "knownDivergence": [],
+  "broker": {
+    "negativeBalanceProtection": true
+  },
+  "groups": [
+    {
+      "key": "std",
+      "marginCallLevel": "100",
+      "stopOutLevel": "50"
+    }
+  ],
+  "accounts": [
+    {
+      "key": "a1",
+      "group": "std",
+      "balance": "1100",
+      "credit": "0",
+      "leverage": 100
+    }
+  ],
+  "symbols": [
+    {
+      "name": "XAUUSD",
+      "contractSize": "100",
+      "digits": 2,
+      "quoteCurrency": "USD",
+      "hedgedMarginPct": "0"
+    }
+  ],
+  "positions": [
+    {
+      "key": "p1",
+      "account": "a1",
+      "symbol": "XAUUSD",
+      "side": "BUY",
+      "volume": "1",
+      "openPrice": "2000",
+      "slPrice": null,
+      "tpPrice": null
+    },
+    {
+      "key": "p2",
+      "account": "a1",
+      "symbol": "XAUUSD",
+      "side": "BUY",
+      "volume": "1",
+      "openPrice": "2000",
+      "slPrice": null,
+      "tpPrice": null
+    },
+    {
+      "key": "p3",
+      "account": "a1",
+      "symbol": "XAUUSD",
+      "side": "SELL",
+      "volume": "1",
+      "openPrice": "2000",
+      "slPrice": null,
+      "tpPrice": null
+    }
+  ],
+  "prices": [
+    {
+      "symbol": "XAUUSD",
+      "bid": "1990",
+      "ask": "1990.5",
+      "ageSeconds": 0
+    }
+  ]
+}

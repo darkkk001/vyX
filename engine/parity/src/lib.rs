@@ -92,6 +92,9 @@ pub struct SymbolCfg {
     /// seed a configured session on another weekday, so the market is closed now (Stage 2 F4)
     #[serde(default)]
     pub session_closed_now: bool,
+    /// BrokerSymbol.hedgedMarginPct (MT5 hedged margin); absent = 200 (no reduction)
+    #[serde(default)]
+    pub hedged_margin_pct: Option<Decimal>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -241,6 +244,7 @@ fn account_state(sc: &Scenario, acct: &AccountCfg) -> AccountState {
                 sl_price: p.sl_price,
                 tp_price: p.tp_price,
                 fx_rate: Decimal::ONE, // Stage 0 pure-calc mode predates conversion (the gate is run-db.sh)
+                hedged_margin_pct: sym.hedged_margin_pct.unwrap_or_else(order_management::calc::default_hedged_margin_pct),
             }
         })
         .collect();

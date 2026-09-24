@@ -1,0 +1,62 @@
+{
+  "name": "24-hedged-margin-200-pair-stopped-out",
+  "why": "The same pair at the default 200% (both legs in full, the behavior before hedged margin): margin 3980.5, level ~36.4% -> stop-out closes the largest loss (the BUY, -1000), then 72.8% -> done.",
+  "knownDivergence": [],
+  "broker": {
+    "negativeBalanceProtection": true
+  },
+  "groups": [
+    {
+      "key": "std",
+      "marginCallLevel": "100",
+      "stopOutLevel": "50"
+    }
+  ],
+  "accounts": [
+    {
+      "key": "a1",
+      "group": "std",
+      "balance": "1500",
+      "credit": "0",
+      "leverage": 100
+    }
+  ],
+  "symbols": [
+    {
+      "name": "XAUUSD",
+      "contractSize": "100",
+      "digits": 2,
+      "quoteCurrency": "USD"
+    }
+  ],
+  "positions": [
+    {
+      "key": "p1",
+      "account": "a1",
+      "symbol": "XAUUSD",
+      "side": "BUY",
+      "volume": "1",
+      "openPrice": "2000",
+      "slPrice": null,
+      "tpPrice": null
+    },
+    {
+      "key": "p2",
+      "account": "a1",
+      "symbol": "XAUUSD",
+      "side": "SELL",
+      "volume": "1",
+      "openPrice": "2000",
+      "slPrice": null,
+      "tpPrice": null
+    }
+  ],
+  "prices": [
+    {
+      "symbol": "XAUUSD",
+      "bid": "1990",
+      "ask": "1990.5",
+      "ageSeconds": 0
+    }
+  ]
+}

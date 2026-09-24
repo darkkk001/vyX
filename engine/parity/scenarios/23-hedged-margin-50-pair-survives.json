@@ -1,0 +1,63 @@
+{
+  "name": "23-hedged-margin-50-pair-survives",
+  "why": "MT5 hedged margin 50%: BUY 1 + SELL 1 XAUUSD, equity 1450; margin (1990 + 1990.5) * 50/200 = 995.125 -> level ~145.7%: no action on either path.",
+  "knownDivergence": [],
+  "broker": {
+    "negativeBalanceProtection": true
+  },
+  "groups": [
+    {
+      "key": "std",
+      "marginCallLevel": "100",
+      "stopOutLevel": "50"
+    }
+  ],
+  "accounts": [
+    {
+      "key": "a1",
+      "group": "std",
+      "balance": "1500",
+      "credit": "0",
+      "leverage": 100
+    }
+  ],
+  "symbols": [
+    {
+      "name": "XAUUSD",
+      "contractSize": "100",
+      "digits": 2,
+      "quoteCurrency": "USD",
+      "hedgedMarginPct": "50"
+    }
+  ],
+  "positions": [
+    {
+      "key": "p1",
+      "account": "a1",
+      "symbol": "XAUUSD",
+      "side": "BUY",
+      "volume": "1",
+      "openPrice": "2000",
+      "slPrice": null,
+      "tpPrice": null
+    },
+    {
+      "key": "p2",
+      "account": "a1",
+      "symbol": "XAUUSD",
+      "side": "SELL",
+      "volume": "1",
+      "openPrice": "2000",
+      "slPrice": null,
+      "tpPrice": null
+    }
+  ],
+  "prices": [
+    {
+      "symbol": "XAUUSD",
+      "bid": "1990",
+      "ask": "1990.5",
+      "ageSeconds": 0
+    }
+  ]
+}

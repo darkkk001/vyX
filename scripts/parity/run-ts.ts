@@ -52,7 +52,7 @@ type Scenario = {
   groups: { key: string; marginCallLevel: Dec; stopOutLevel: Dec }[];
   // coverage: this account is the broker's coverage account (Broker.coverageAccountId), Stage 4.5
   accounts: { key: string; group: string; balance: Dec; credit: Dec; leverage: number; coverage?: boolean }[];
-  symbols: { name: string; contractSize: Dec; digits: number; quoteCurrency: string; category?: string; sessionClosedNow?: boolean }[];
+  symbols: { name: string; contractSize: Dec; digits: number; quoteCurrency: string; category?: string; sessionClosedNow?: boolean; hedgedMarginPct?: Dec }[];
   // coverageLeg: this (client) position is hedged by that leg (covered + coveragePositionId); autoHedged: this
   // leg was opened by auto-hedge, so the platform closes it when the client closes (lib/coverage.ts onClose)
   positions: { key: string; account: string; symbol: string; side: "BUY" | "SELL"; volume: Dec; openPrice: Dec; slPrice?: Dec | null; tpPrice?: Dec | null; coverageLeg?: string; autoHedged?: boolean }[];
@@ -137,7 +137,7 @@ async function main() {
       // `sessionClosedNow`: the BrokerSymbol then gets one configured session on a DIFFERENT weekday, which
       // makes the market closed right now whatever the time (Stage 2 F4).
       const row = await prisma.symbol.create({ data: { name: s.name, baseCurrency: s.name.slice(0, 3), quoteCurrency: s.quoteCurrency, digits: s.digits, contractSize: D(s.contractSize), category: (s.category ?? "CRYPTO") as never } });
-      const bs = await prisma.brokerSymbol.create({ data: { brokerId: broker.id, symbolId: row.id } });
+      const bs = await prisma.brokerSymbol.create({ data: { brokerId: broker.id, symbolId: row.id, ...(s.hedgedMarginPct != null ? { hedgedMarginPct: D(s.hedgedMarginPct) } : {}) } });
       if (s.sessionClosedNow) {
         const otherDay = (new Date().getUTCDay() + 3) % 7;
         await prisma.tradingSession.create({ data: { brokerSymbolId: bs.id, dayOfWeek: otherDay, openTime: "00:00", closeTime: "23:59" } });

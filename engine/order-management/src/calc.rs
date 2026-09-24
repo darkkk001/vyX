@@ -40,15 +40,55 @@ pub struct AccountState {
 /// Canonical used margin (Stage 2 F2, lib/margin.ts liveUsedMarginFor): at the LIVE close-side price
 /// (BUY bid, SELL ask), converted to the account currency, over positions with a usable price only. A
 /// position without one is in neither the used margin nor the equity.
+///
+/// MT5 hedged margin (2026-09-25, lib/margin.ts hedgedUsedMargin, operation for operation): per SYMBOL the
+/// offsetting BUY/SELL volume pays the symbol's hedged margin % (BrokerSymbol.hedgedMarginPct) of one lot's
+/// margin per lot pair; only the uncovered volume pays in full. 200 = the plain sum (the default).
 pub fn used_margin(state: &AccountState) -> Decimal {
-    state
-        .positions
-        .iter()
-        .filter_map(|p| {
-            let (bid, ask) = (p.bid?, p.ask?);
-            Some(risk::required_margin(p.volume, p.contract_size, close_price_for(p.side, bid, ask), state.leverage) * p.fx_rate)
-        })
-        .sum()
+    // first-seen symbol order, like the web's Map (the sum is exact either way)
+    let mut books: Vec<(&str, SymbolMarginBook)> = Vec::new();
+    for p in &state.positions {
+        let (Some(bid), Some(ask)) = (p.bid, p.ask) else { continue };
+        let margin = risk::required_margin(p.volume, p.contract_size, close_price_for(p.side, bid, ask), state.leverage) * p.fx_rate;
+        let idx = match books.iter().position(|(s, _)| *s == p.symbol) {
+            Some(i) => i,
+            None => {
+                books.push((p.symbol.as_str(), SymbolMarginBook { pct: p.hedged_margin_pct, ..Default::default() }));
+                books.len() - 1
+            }
+        };
+        let b = &mut books[idx].1;
+        match p.side {
+            OrderSide::Buy => { b.buy_vol += p.volume; b.buy_margin += margin; }
+            OrderSide::Sell => { b.sell_vol += p.volume; b.sell_margin += margin; }
+        }
+    }
+    books.iter().map(|(_, b)| symbol_hedged_margin(b)).sum()
+}
+
+#[derive(Default, Debug, Clone, Copy)]
+pub struct SymbolMarginBook {
+    pub buy_vol: Decimal,
+    pub buy_margin: Decimal,
+    pub sell_vol: Decimal,
+    pub sell_margin: Decimal,
+    pub pct: Decimal,
+}
+
+/// L = the side with the larger volume (BUY on a tie), S = the other:
+/// covered = Ml * s / l ; margin = (Ml - covered) + (Ms + covered) * pct / 200. s = 0 -> Ml + Ms.
+pub fn symbol_hedged_margin(b: &SymbolMarginBook) -> Decimal {
+    let (l, ml, s, ms) = if b.buy_vol >= b.sell_vol { (b.buy_vol, b.buy_margin, b.sell_vol, b.sell_margin) } else { (b.sell_vol, b.sell_margin, b.buy_vol, b.buy_margin) };
+    if s.is_zero() {
+        return ml + ms;
+    }
+    let covered = ml * s / l;
+    (ml - covered) + (ms + covered) * b.pct / Decimal::from(200)
+}
+
+/// BrokerSymbol.hedgedMarginPct's default: both legs of a hedge in full (the behavior before hedged margin).
+pub fn default_hedged_margin_pct() -> Decimal {
+    Decimal::from(200)
 }
 
 /// One position's floating P&L in the ACCOUNT currency at its close-side price; None without a usable price.
@@ -124,5 +164,60 @@ mod tests {
     fn close_price_is_bid_for_buy_ask_for_sell() {
         assert_eq!(close_price_for(OrderSide::Buy, dec!(1.10000), dec!(1.10020)), dec!(1.10000));
         assert_eq!(close_price_for(OrderSide::Sell, dec!(1.10000), dec!(1.10020)), dec!(1.10020));
+    }
+
+    // Same numbers as lib/hedged-margin.test.ts (MT5 hedged margin, 2026-09-25): the web and the engine agree.
+    fn book(buy_vol: Decimal, buy_margin: Decimal, sell_vol: Decimal, sell_margin: Decimal, pct: Decimal) -> Decimal {
+        symbol_hedged_margin(&SymbolMarginBook { buy_vol, buy_margin, sell_vol, sell_margin, pct })
+    }
+
+    #[test]
+    fn hedged_margin_200_is_the_plain_sum() {
+        assert_eq!(book(dec!(1), dec!(100), dec!(1), dec!(101), dec!(200)), dec!(201));
+        assert_eq!(book(dec!(3), dec!(300), dec!(1), dec!(101), dec!(200)), dec!(401));
+    }
+
+    #[test]
+    fn hedged_pair_costs_pct_over_200_of_both_legs() {
+        assert_eq!(book(dec!(1), dec!(100), dec!(1), dec!(101), dec!(100)), dec!(100.5));
+        assert_eq!(book(dec!(1), dec!(100), dec!(1), dec!(101), dec!(50)), dec!(50.25));
+        assert_eq!(book(dec!(1), dec!(100), dec!(1), dec!(101), dec!(0)), dec!(0));
+    }
+
+    #[test]
+    fn only_the_hedged_volume_is_reduced() {
+        assert_eq!(book(dec!(3), dec!(300), dec!(1), dec!(101), dec!(50)), dec!(250.25));
+        assert_eq!(book(dec!(1), dec!(100), dec!(2), dec!(202), dec!(0)), dec!(101));
+        assert_eq!(book(dec!(2), dec!(200), dec!(0), dec!(0), dec!(0)), dec!(200));
+    }
+
+    #[test]
+    fn used_margin_groups_by_symbol_and_skips_unpriced() {
+        let pos = |symbol: &str, side: OrderSide, bid: Option<Decimal>, pct: Decimal| db::OpenPositionWithMarket {
+            id: String::new(),
+            symbol: symbol.into(),
+            side,
+            volume: dec!(1),
+            open_price: dec!(2000),
+            contract_size: dec!(100),
+            bid,
+            ask: bid.map(|b| b + dec!(0.20)),
+            sl_price: None,
+            tp_price: None,
+            fx_rate: Decimal::ONE,
+            hedged_margin_pct: pct,
+        };
+        // XAU pair at 50%: BUY 2000 (bid), SELL 2000.20 (ask) at 1:100 -> (2000 + 2000.2) * 50 / 200 = 1000.05
+        let state = AccountState {
+            effective_balance: dec!(5000),
+            credit: dec!(0),
+            leverage: 100,
+            positions: vec![
+                pos("XAU", OrderSide::Buy, Some(dec!(2000)), dec!(50)),
+                pos("XAU", OrderSide::Sell, Some(dec!(2000)), dec!(50)),
+                pos("OTHER", OrderSide::Sell, None, dec!(0)), // unpriced: in neither margin nor equity
+            ],
+        };
+        assert_eq!(used_margin(&state), dec!(1000.05));
     }
 }

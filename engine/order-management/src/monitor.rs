@@ -604,6 +604,7 @@ mod tests {
             sl_price,
             tp_price,
             fx_rate: Decimal::ONE,
+            hedged_margin_pct: dec!(200),
         }
     }
 
