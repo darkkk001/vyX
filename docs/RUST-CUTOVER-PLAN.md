@@ -1050,6 +1050,238 @@ weeks to show much.
 2. Soak exit volume N, given demo-level activity.
 3. Where the daily summary goes: a log file on the VPS, a backoffice page, or both.
 
+### Stage 5 soak driver: an external trading bot — PLAN ONLY, AWAITING APPROVAL (2026-09-24)
+
+**Purpose.** Give the shadow soak N ≥ 30 real risk actions plus every scenario, without anyone trading by hand.
+
+**Hard design rule (user).** The bot is an EXTERNAL client of the web's real order API, like a trader. The web opens
+and closes through its normal flow, and the shadow engine computes the same book from the same database. The bot is
+not part of the shadow and never injects events into it.
+
+#### Facts from the code and data (2026-09-24; production data read in a READ ONLY session, counts only)
+
+1. **Programmatic order API: yes, the web's own.**
+   - **Login:** `POST /api/trade/login {accountNumber, password}` on the tenant's host
+     (`app/api/trade/login/route.ts`).
+     - Rate limit: 5 logins/min per (broker, account) (`:44`).
+     - It sets the `vyx_trade_session` cookie (`:105`; opaque token in Redis, 7-day TTL,
+       `lib/account-auth.ts:10-11`).
+   - **Every trade route:** `getAccountSession()` (`lib/account-auth.ts:260-277`) needs that cookie and the
+     `x-broker-id` the middleware derives from the HOST. So the bot must call `https://<tenant>.vyxtrader.com/...`,
+     and a session can never act on another tenant.
+   - **The native build gate** (`lib/client-builds.ts:81`) only applies to `x-client-platform: DESKTOP_NATIVE`.
+     `x-client-platform: API` is accepted and recorded as `orderSource = API` (`app/api/trade/orders/route.ts:96-100`),
+     so bot orders are tagged.
+   - **No origin / CSRF check** in `middleware.ts`.
+   - **Routes:**
+     - open: `POST /api/trade/orders {symbol, side, type MARKET|LIMIT|STOP, idempotencyKey, price?, slPrice?, tpPrice?}`
+       (`:78-115`);
+     - SL/TP: `PATCH /api/trade/positions/[id]` (`route.ts:12-25`);
+     - close: `POST /api/trade/positions/[id]/close`;
+     - bulk: `/close-bulk`; close-by: `/close-by`.
+2. **Demo prices are the SAME as real prices. Flag.**
+   - `LivePrice` is keyed by symbol only (`prisma/schema.prisma` LivePrice.symbol @id), and nothing in the pricing
+     reads `accountMode`.
+   - Pushing a price for EURUSD / XAUUSD would move it for EVERY broker, real accounts included. **That is ruled
+     out.**
+   - The engine ingest accepts ANY symbol (no whitelist, `engine/market-data/src/ingest.rs:111-140`). So controlled
+     prices are possible only on DEDICATED synthetic symbols that exist in no other broker's list.
+   - Today: 30 symbols, none reserved.
+3. **What production tenants have** (enabled mirror rules; credit = accounts with credit > 0):
+
+   | tenant | coverage account | mirror rules | groups | credit accounts |
+   |---|---|---|---|---|
+   | futurixglobal | yes | 1 | 6 | 0 |
+   | acmefx | no | 0 | 3 | 0 |
+   | novamarkets | no | 0 | 1 | 0 |
+   | zzzqa | no | 0 | 2 | 0 |
+
+   - **No tenant has a credit (Model A) account.** A bot tenant needs its own setup: groups, coverage account,
+     mirror master(s), credit.
+   - For that setup, credit is a balance adjustment behind maker-checker, so it needs two staff users.
+4. **Futurix is NOT disposable.**
+   - 800 orders in the last 14 days (last on 2026-09-22), 15 LIVE-mode accounts, its own branded builds.
+   - `zzzqa` is the QA tenant (the `CLIENT_BUILD_DEV_TENANTS` default): 3 demo accounts, 42 orders in 14 days.
+   - **An isolated bot tenant is needed.**
+     - Recommended: a new tenant `zzshadowbot`, not QA's.
+     - It must be ACTIVE: `resolve-broker` only serves ACTIVE brokers, and new ones are created TRIAL.
+
+#### Component 1: the bot (external, web order API only)
+
+- **Runs as its own process, outside the engine:** Node + fetch, on the VPS as a separate service (off by default),
+  or anywhere with HTTPS. It talks ONLY to `https://zzshadowbot.vyxtrader.com/api/trade/*` with trader sessions, and
+  sends `x-client-platform: API`.
+- **Seeded and reproducible:** one integer seed drives every choice (PRNG, as in the Stage 4 generator). A run can be
+  replayed, modulo market timing.
+- **Scenario weights** (configurable), each a scripted sequence against one bot account:
+
+  | scenario | what it does | risk action it produces |
+  |---|---|---|
+  | normal | open 1-3 small positions, hold minutes to hours, close manually | none (baseline) |
+  | tp-sl | open with SL/TP a few ticks away on a synthetic symbol, let the driver cross them | SL / TP by the risk monitor |
+  | aggressive-stopout | a small account, high leverage, large size; the driver moves adversely | stop-out (multi-close) |
+  | margin-call | size to about 80-95 % level; a mild drift | margin-call edge in / out |
+  | bulk | several positions, then close-bulk / close-by | manual closes (control group) |
+  | credit | an account carrying credit (Model A), losses past the balance | stop-out consuming credit, NBP |
+  | multi-symbol / fx | a JPY-quoted synthetic symbol plus USD ones | conversion path |
+  | mirror / coverage | a bot account in the mirrored group / hedged by auto-hedge | follow-ups: mirror + coverage |
+
+- **Ground truth:** every action goes to an append-only JSONL log: time, scenario, seed step, account, request,
+  response, position / order ids, and the expected risk outcome. The reconciler's pairs are checked against it (every
+  expected risk action seen by the web AND the shadow).
+- **Rate:** configurable (scenarios started per hour, max concurrent positions per account, max accounts). Calibrated
+  in Component 4.
+
+#### Component 2: price driver (synthetic symbols only; hard guards)
+
+- **Symbols:** dedicated ones with a reserved prefix, e.g. `ZBEUR` (USD-quoted, CRYPTO category so always in session),
+  `ZBGOLD`, `ZBJPY` (JPY-quoted; conversion reads the REAL USDJPY read-only).
+  - They are listed (BrokerSymbol) ONLY on `zzshadowbot`, so no other tenant can see or trade them.
+- **Moves:** random-walk drift, gaps, high-vol bursts, and "drive to level L" on demand, for a deterministic stop-out /
+  SL / TP. All seeded; every tick is logged.
+- **Hard guard 1 (engine change, small):**
+  - A SEPARATE ingest credential, `SYNTH_FEED_SECRET`, whose ticks are accepted ONLY for symbols with the reserved
+    prefix: any other symbol rejects the whole batch (403) and is logged.
+  - The real `PRICE_FEED_SECRET` is never given to the bot.
+  - Synthetic ticks carry no clock fields, so they stay out of the feed's clock / latency stats.
+- **Hard guard 2 (setup check, before every run):** the driver refuses to start unless every symbol it drives has the
+  prefix AND BrokerSymbol rows only on `zzshadowbot`.
+- **Path:** the ticks go through the engine's REAL ingest (the same path as the MT5 feed), so the web (reading prices
+  from the VPS) and the shadow see them as real market data.
+
+#### Component 3: shadow integration: none
+
+- The shadow reads every account with open positions from the same database; the bot tenant's accounts are just more
+  accounts.
+- Prices come through the real feed. The web acts through its own triggers (risk hook, backstop, cron). The shadow
+  evaluates and records.
+- Nothing in the bot or the driver knows the shadow exists; the reconciler pairs the web's real TRADE_PNL rows with
+  the shadow's would-closes.
+- **Only link, read-only and offline:** the soak report compares the reconciler's pairs with the bot's ground-truth
+  log, to prove every expected risk action was seen by both.
+
+#### Component 4: orchestration
+
+- **Setup script (once).**
+  - Uses the backoffice / super-admin APIs, with credentials typed at run time and never stored.
+  - Creates tenant `zzshadowbot` (ACTIVE), groups (thresholds 100/50, 80/30, 50/20, 120/60; AUTO dealing), the
+    coverage account + auto-hedge, 2 mirror masters with rules, and ~20 bot trader accounts (demo mode, known
+    passwords in the bot's local secret file).
+  - Credit on some of those accounts goes through maker-checker with two bot staff users.
+  - The synthetic symbols are listed on this tenant only.
+- **Pilot (24 h)** at a low rate. Count risk actions (web TRADE_PNL notes) against the ground truth, then set the rate
+  so N ≥ 30 lands within the first 3-4 days and every scenario appears at least k times (k = 3).
+- **Soak:** runs for the whole Stage 5 soak (1-2 weeks).
+- **Kill switches:**
+  - a stop file / env flag checked every loop;
+  - `SYNTH_FEED_SECRET` unset stops the driver at the engine;
+  - the tenant set to SUSPENDED stops every bot login;
+  - the service stopped.
+- **Cost / hygiene:**
+  - Bot writes land in production Neon (orders, positions, notifications): bounded by the rate, measured in the soak's
+    Neon report.
+  - After the soak the tenant is suspended, then kept or purged (decision later).
+
+#### Guards (every run)
+
+1. **Host pin:** the bot only ever builds URLs on `BOT_TENANT=zzshadowbot`, and at start
+   `GET /api/trade/me` must return that broker for every session. Anything else refuses and exits.
+2. **Account allowlist:** only the accounts the setup script created (ids in the bot's config); a session for any
+   other account is refused.
+3. **Symbol allowlist:** the bot trades only the reserved-prefix symbols. A real symbol is never sent, even if listed.
+4. The price-driver guards 1 + 2 above.
+5. **Tenant denylist:** the setup script and the bot hard-refuse futurixglobal, acmefx, novamarkets and zzzqa by name,
+   whatever the config says.
+
+**Effort:** bot ~2 days; driver + engine guard ~1 day; setup script ~1 day; orchestration + pilot ~1 day + 24 h pilot.
+
+**Decisions for you.**
+1. A new tenant `zzshadowbot`, or reuse `zzzqa`?
+2. Synthetic reserved-prefix symbols only. That is the only way to force stop-outs without touching real prices: OK?
+3. Where the bot runs: a VPS service, or another machine.
+4. Who places Futurix's ~800 orders / 14 days: your testing, or the broker? (It decides how Futurix appears in the
+   soak.)
+
+#### Soak driver: decisions (user, 2026-09-24) and the setup plan, REVISED (awaiting build approval)
+
+**Decisions.**
+- A new tenant `zzshadowbot` (ACTIVE), not zzzqa.
+- Synthetic `ZB`-prefixed symbols only.
+- The bot runs on ANOTHER machine (never the VPS).
+- Coverage + mirror set up through the product's APIs, and targeted.
+- **Credit: a one-time DIRECT DB SEED** on one or two bot-tenant accounts. NO new credit API (out of scope, its own
+  money path). The shadow needs the credit VALUE, not its origin; what it must exercise is credit consumption + NBP
+  (Stage 2 F1).
+- **Price path locked:** the bot machine posts synthetic ticks to the web route
+  `https://www.vyxtrader.com/api/internal/price-feed` with `SYNTH_FEED_SECRET`. Engine localhost (8081) is not
+  reachable from outside and is not used.
+
+**Credit seed: safe to do directly (verified).** On production, in a READ ONLY session, `"Account"` has:
+- 0 user triggers;
+- 0 CHECK / exclusion constraints;
+- 0 rules;
+- 0 RLS policies.
+
+`credit` is `numeric(18,4) NOT NULL DEFAULT 0` (scratch schema identical). No API-only invariant exists: credit is only
+read (`lockAccountFunds`, measureAccount, the terminal) and consumed on a close (`closePositionInTx`).
+
+The seed is a setup-script step that runs once:
+1. It first asserts the target account belongs to broker `zzshadowbot` (by the broker's id AND subdomain) and holds no
+   open position.
+2. Then, in ONE transaction: `UPDATE "Account" SET credit = <amount> WHERE id = $1 AND "brokerId" = <zzshadowbot id>`
+   (exactly one row, or rollback), plus an `AuditLog` row `SHADOWBOT_CREDIT_SEEDED` {amount, reason: "Stage 5 soak
+   setup"}, so the credit's origin is traceable.
+3. No Transaction row: there is no type for a credit grant, and inventing one is the scope the decision excludes.
+
+Statements for that account show credit without a grant line. It is a bot account only.
+
+**Synthetic price path, in the web route (locked).**
+- `app/api/internal/price-feed` (`lib/price-feed.ts ingestTicks`) gets a SECOND, separate branch.
+- **The real path is untouched:** the `PRICE_FEED_SECRET` check, the forward to `TRADING_CORE_URL/internal/price-feed`
+  with `x-price-feed-secret`, and the response all stay byte-for-byte as today. The synth secret is never accepted
+  there.
+- **Synth branch:** entered only when the bearer equals `SYNTH_FEED_SECRET` (constant-time, a separate env var).
+  1. Every tick's symbol must start with `ZB`, or the whole batch gets 403 (logged).
+  2. No clock / t0 fields are forwarded.
+  3. The ticks are forwarded to a NEW engine route `TRADING_CORE_URL/internal/synth-feed` with its own header
+     `x-synth-feed-secret`.
+  4. The engine checks the secret and the prefix again (defence in depth), keeps its OWN counters (`synth_ticks_in`,
+     last synth tick) so the real feed's `ticks_in` / feed health never count synthetic ticks (a dead MT5 feed stays
+     visible), then hands the ticks to the SAME ingest (tick cache → LivePrice → candles → risk hook). That shared
+     part is what makes them market data to the web and the shadow.
+- **To verify first (step 0 of the build):** whether Vercel reaches `TRADING_CORE_URL`. Its value is a secret I cannot
+  read, and today's real EA uses the VPS-local direct path, so the web route's forward may never have been exercised
+  in production. The synth branch is the safe probe: a ZB tick either lands (the engine counter moves) or the route
+  answers 502 "market data core unreachable". If 502, TRADING_CORE_URL / its exposure needs a VPS-side fix before the
+  soak. Nothing on the real path changes either way.
+- **Kill:** unset `SYNTH_FEED_SECRET` on Vercel or the engine; the branch answers 503 / 403.
+
+**Setup order (script, credentials typed at run time, never stored).**
+1. **Super admin:** `POST /api/admin/brokers` → `zzshadowbot` (+ BROKER_ADMIN), then `PATCH /api/admin/brokers/[id]`
+   → ACTIVE.
+2. **Tenant admin:** staff users (`POST /api/manage/admins`, two with ACCOUNT_FINANCE, for any dealer / finance action
+   the bot's staff side needs); groups (`POST /api/manage/groups`: 4 threshold sets, the client groups DEALING / AUTO);
+   ~20 trader accounts (`POST /api/manage/accounts`, demo mode, `initialBalance`).
+3. **Symbols:** the ZB symbols created and listed on `zzshadowbot` ONLY (BrokerSymbol), always in session. The script
+   re-asserts no other broker lists them.
+4. **Coverage (API):** `POST /api/manage/dealing-desk-toggle` (desk auto-fill + auto-hedge). The coverage account is
+   provisioned by `ensureCoverageAccount` on the first auto-hedged fill. Some client positions are booked by hand
+   (`POST /api/manage/positions/[id]/book`) for dealer-booked legs.
+5. **Mirror (API):** one master account + `POST /api/manage/mirror-rules` (sourceType GROUP → the follower group,
+   REVERSE, SOURCE_PRICE; optionally a second MARKET-mode rule).
+6. **Credit (DB seed):** as above, on 1-2 dedicated accounts.
+7. **Record:** the setup writes its ids (tenant, groups, accounts, symbols, rules, coverage) to the bot's local config,
+   which feeds the allowlists.
+
+**What the bot then targets specifically.**
+- **credit:** the seeded accounts, sized so a stop-out's loss runs past the balance: credit consumed (CREDIT row +
+  CREDIT_CONSUMED_BY_LOSS audit), then NBP.
+- **coverage:** follower fills auto-hedged; some legs dealer-booked (left open for the desk); the coverage account
+  driven to stop-out (legs closed, clients released); a short no-price window on a leg's symbol (retry, then
+  COVERAGE_CLOSE_FAILED).
+- **mirror:** follower fills mirrored onto the master; follower SL / TP / stop-out closes follow through; the master
+  under stop-out while followers close (the Stage 4.5 / R ordering, live).
+
 ### Stage 6: cutover with a warm fallback (1-2 days + drill)
 
 Per-broker `riskAuthority = WEB | SHADOW | RUST`, read by both sides so exactly one acts. Futurix demo
