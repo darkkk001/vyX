@@ -13,10 +13,23 @@
 //! on every pass. One row per decision (`dedupe_key`); later sightings bump `last_seen` / `seen_count`, and the
 //! first sighting's numbers (level, price, P&L) are kept: that is the moment the engine would have acted.
 
+use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use rust_decimal::Decimal;
 use sqlx::PgPool;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
+
+/// How long the per-account level samples are kept (the reconciler looks one window either side of a web action).
+const SAMPLE_KEEP_MINUTES: i64 = 10;
+
+/// One evaluation's view of an account: when, its margin level (None = no used margin), and its thresholds.
+#[derive(Debug, Clone, Copy)]
+struct Sample {
+    at: DateTime<Utc>,
+    level: Option<Decimal>,
+    stop_out: Decimal,
+    call: Decimal,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Copy)]
 pub enum Kind {
@@ -77,6 +90,8 @@ pub struct Recorder {
     seen: Mutex<HashMap<String, (Decision, u32)>>,
     /// account -> (last recorded edge, episode counter)
     edges: Mutex<HashMap<String, (Kind, u64)>>,
+    /// account -> recent evaluations (memory only): the reconciler's SNAPSHOT evidence
+    samples: Mutex<HashMap<String, VecDeque<Sample>>>,
 }
 
 pub const SCHEMA: &str = r#"
@@ -111,7 +126,7 @@ pub fn is_local_url(url: &str) -> bool {
 
 impl Recorder {
     pub fn in_memory() -> Self {
-        Recorder { store: None, seen: Mutex::new(HashMap::new()), edges: Mutex::new(HashMap::new()) }
+        Recorder { store: None, seen: Mutex::new(HashMap::new()), edges: Mutex::new(HashMap::new()), samples: Mutex::new(HashMap::new()) }
     }
 
     /// The local store: creates the table if needed. A non-local URL is refused (Err), never used.
@@ -121,7 +136,7 @@ impl Recorder {
         }
         let pool = PgPool::connect(url).await.map_err(|e| format!("shadow store connect: {e}"))?;
         sqlx::raw_sql(SCHEMA).execute(&pool).await.map_err(|e| format!("shadow store schema: {e}"))?;
-        Ok(Recorder { store: Some(pool), seen: Mutex::new(HashMap::new()), edges: Mutex::new(HashMap::new()) })
+        Ok(Recorder { store: Some(pool), seen: Mutex::new(HashMap::new()), edges: Mutex::new(HashMap::new()), samples: Mutex::new(HashMap::new()) })
     }
 
     pub fn store(&self) -> Option<&PgPool> {
@@ -199,6 +214,45 @@ impl Recorder {
         if let Err(err) = res {
             tracing::warn!(error = %err, key, "shadow: could not store a decision (kept in memory)");
         }
+    }
+
+    /// Every shadow evaluation of an account: its level and thresholds now (kept SAMPLE_KEEP_MINUTES, memory only).
+    pub fn sample(&self, account_id: &str, level: Option<Decimal>, stop_out: Decimal, call: Decimal) {
+        self.sample_at(account_id, Utc::now(), level, stop_out, call);
+    }
+    pub fn sample_at(&self, account_id: &str, at: DateTime<Utc>, level: Option<Decimal>, stop_out: Decimal, call: Decimal) {
+        let mut all = self.samples.lock().unwrap();
+        let q = all.entry(account_id.to_string()).or_default();
+        q.push_back(Sample { at, level, stop_out, call });
+        let keep_from = at - ChronoDuration::minutes(SAMPLE_KEEP_MINUTES);
+        while q.front().is_some_and(|s| s.at < keep_from) {
+            q.pop_front();
+        }
+    }
+    fn around<T>(&self, account_id: &str, at: DateTime<Utc>, window: ChronoDuration, f: impl Fn(&mut dyn Iterator<Item = &Sample>) -> T) -> T {
+        let all = self.samples.lock().unwrap();
+        let empty = VecDeque::new();
+        let q = all.get(account_id).unwrap_or(&empty);
+        let mut it = q.iter().filter(|s| s.at >= at - window && s.at <= at + window);
+        f(&mut it)
+    }
+    /// Did the shadow evaluate this account at all around `at`?
+    pub fn sampled_around(&self, account_id: &str, at: DateTime<Utc>, window: ChronoDuration) -> bool {
+        self.around(account_id, at, window, |it| it.next().is_some())
+    }
+    /// The lowest level the shadow saw around `at`, with the stop-out level then.
+    pub fn min_level_around(&self, account_id: &str, at: DateTime<Utc>, window: ChronoDuration) -> Option<(Decimal, Decimal)> {
+        self.around(account_id, at, window, |it| it.filter_map(|s| s.level.map(|l| (l, s.stop_out))).min_by(|a, b| a.0.cmp(&b.0)))
+    }
+    /// The lowest level the shadow saw around `at`, with the margin-call level then.
+    pub fn min_call_around(&self, account_id: &str, at: DateTime<Utc>, window: ChronoDuration) -> Option<(Decimal, Decimal)> {
+        self.around(account_id, at, window, |it| it.filter_map(|s| s.level.map(|l| (l, s.call))).min_by(|a, b| a.0.cmp(&b.0)))
+    }
+    pub fn stop_out_level(&self, account_id: &str) -> Option<Decimal> {
+        self.samples.lock().unwrap().get(account_id).and_then(|q| q.back()).map(|s| s.stop_out)
+    }
+    pub fn call_level(&self, account_id: &str) -> Option<Decimal> {
+        self.samples.lock().unwrap().get(account_id).and_then(|q| q.back()).map(|s| s.call)
     }
 
     /// Every decision recorded in this process, with its sighting count (tests, the harness gate).

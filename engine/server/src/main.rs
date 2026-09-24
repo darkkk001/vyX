@@ -1392,6 +1392,44 @@ async fn main() {
             .and_then(|v| v.parse().ok())
             .unwrap_or(300);
         order_management::swap::spawn(pool.clone(), std::time::Duration::from_secs(swap_poll_interval_secs));
+    } else if std::env::var("ENGINE_ORDER_MANAGEMENT").map(|v| v.trim().eq_ignore_ascii_case("shadow")).unwrap_or(false) {
+        // Rust cutover Stage 5 (docs/RUST-CUTOVER-PLAN.md §5): the monitor evaluates every account exactly as at
+        // cutover but ACTS ON NOTHING (monitor::Mode::Shadow): no close, no follow-up row, no margin-call edge, no
+        // NATS event, no dispatcher; the thresholds guard stays empty, so the order routes keep refusing. The web
+        // keeps acting. Decisions go to shadow_decision in a LOCAL Postgres (VYX_SHADOW_STORE_URL, else the local
+        // market-data database); a non-local URL is refused. Kill switch: unset the mode and restart.
+        let pass_secs: u64 = std::env::var("VYX_SHADOW_PASS_SECS").ok().and_then(|v| v.trim().parse().ok()).filter(|s| *s > 0).unwrap_or(1);
+        let store_url = std::env::var("VYX_SHADOW_STORE_URL").ok().filter(|s| !s.trim().is_empty())
+            .or_else(|| std::env::var("MARKET_DATA_DATABASE_URL").ok().filter(|s| !s.trim().is_empty()));
+        let recorder = match store_url {
+            Some(url) => match order_management::shadow::Recorder::connect(&url).await {
+                Ok(r) => {
+                    tracing::info!("shadow store: shadow_decision on the local database");
+                    r
+                }
+                Err(err) => {
+                    tracing::error!(%err, "shadow store unavailable: decisions are kept in memory and logged only");
+                    order_management::shadow::Recorder::in_memory()
+                }
+            },
+            None => {
+                tracing::warn!("shadow store: no VYX_SHADOW_STORE_URL / MARKET_DATA_DATABASE_URL, decisions are kept in memory and logged only");
+                order_management::shadow::Recorder::in_memory()
+            }
+        };
+        let recorder = Arc::new(recorder);
+        tracing::warn!(pass_secs, "order management SHADOW: the monitor evaluates every account and records what it would do; it writes nothing and publishes nothing. The web owns every close.");
+        order_management::monitor::spawn_shadow(pool.clone(), recorder.clone(), std::time::Duration::from_secs(pass_secs));
+        // §5.3: pairs the web's real risk actions with the shadow's decisions every minute (reads the book, writes only
+        // to the local store); the daily summary goes to the log and to shadow_daily
+        let reconcile_secs: u64 = std::env::var("VYX_SHADOW_RECONCILE_SECS").ok().and_then(|v| v.trim().parse().ok()).filter(|s| *s > 0).unwrap_or(60);
+        match order_management::reconcile::Reconciler::new(pool.clone(), recorder.clone()).await {
+            Ok(rec) => {
+                tracing::info!(reconcile_secs, "shadow reconciler running");
+                order_management::reconcile::spawn(rec, std::time::Duration::from_secs(reconcile_secs));
+            }
+            Err(err) => tracing::error!(%err, "shadow reconciler NOT running: decisions are recorded but not compared"),
+        }
     } else {
         tracing::info!(
             "order management OFF (ENGINE_ORDER_MANAGEMENT unset): margin monitor, per-tick triggers, thresholds guard and swap roller are not running. The web path owns stop-out; market data, alerts and the risk hook are unaffected. Set ENGINE_ORDER_MANAGEMENT=1 to restore."

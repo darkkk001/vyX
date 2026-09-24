@@ -419,6 +419,10 @@ async fn evaluate_account_checked(
     let Some(thresholds) = book::account_thresholds(pool, account_id).await? else {
         return Ok(None);
     };
+    if let Mode::Shadow(recorder) = mode {
+        // the reconciler's SNAPSHOT evidence: where this account stood on every shadow pass
+        recorder.sample(account_id, report.margin_level_before, thresholds.stop_out_level, thresholds.call_level);
+    }
 
     // SL/TP resolves first: it's the trader's own chosen exit, independent
     // of margin level, and closing these here means the margin/stop-out
