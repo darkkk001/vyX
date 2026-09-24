@@ -499,3 +499,57 @@ describe("Stage 3: the web cron backstop and the route", () => {
     }
   });
 });
+
+describe("Stage 4.6: the route's batch form is ADDITIVE (the single {id} contract is unchanged)", () => {
+  const call = (body: unknown, auth = "Bearer gate-secret") =>
+    postCloseRoute(new NextRequest("http://localhost/api/internal/post-close", { method: "POST", headers: { authorization: auth }, body: typeof body === "string" ? body : JSON.stringify(body) }));
+
+  it("single {id}: same status codes and bodies as before (200 done / 200 gone / 400 / 401)", async () => {
+    if (!ready) return;
+    vi.stubEnv("POST_CLOSE_SECRET", "gate-secret");
+    try {
+      const w = await seedWorld();
+      engineEvaluate(w.client);
+      const row = await closeRow(w);
+      expect((await call({ id: row.id }, "Bearer nope")).status).toBe(401);
+      expect((await call({ nope: 1 })).status).toBe(400);
+      expect((await call("5")).status).toBe(400); // a primitive JSON body is a 400, not a crash
+      const first = await call({ id: row.id });
+      expect([first.status, await first.json()]).toEqual([200, { status: "done" }]);
+      const again = await call({ id: row.id });
+      expect([again.status, await again.json()]).toEqual([200, { status: "gone" }]);
+      await expectStopOutFollowUpExactlyOnce(w);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("{ids}: runs in order, stops at the first row that is not finished, the rest come back not_attempted", async () => {
+    if (!ready) return;
+    vi.stubEnv("POST_CLOSE_SECRET", "gate-secret");
+    try {
+      const ok = await seedWorld();
+      engineEvaluate(ok.client);
+      const okRow = await closeRow(ok);
+      const stuck = await seedWorld();
+      engineEvaluate(stuck.client);
+      await prisma.livePrice.delete({ where: { symbol: stuck.symbolName } }); // its auto-hedged leg has no price: retry
+      const stuckRow = await closeRow(stuck);
+
+      const r1 = await call({ ids: [stuckRow.id, okRow.id] });
+      expect(r1.status).toBe(200);
+      expect((await r1.json()).results.map((r: { id: string; status: string }) => [r.id, r.status])).toEqual([[stuckRow.id, "retry"], [okRow.id, "not_attempted"]]);
+      expect((await prisma.postCloseEffect.findUniqueOrThrow({ where: { id: okRow.id } })).status).toBe("PENDING"); // untouched
+
+      const r2 = await call({ ids: [okRow.id, stuckRow.id] });
+      expect((await r2.json()).results.map((r: { status: string }) => r.status)).toEqual(["done", "retry"]);
+      await expectStopOutFollowUpExactlyOnce(ok);
+
+      for (const bad of [{ ids: [] }, { ids: [1] }, { ids: "x" }, { ids: Array.from({ length: 51 }, (_, i) => `id${i}`) }]) {
+        expect((await call(bad)).status).toBe(400);
+      }
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+});

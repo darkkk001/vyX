@@ -740,6 +740,156 @@ asynchronously) to use as evidence.
 
 **Regression:** parity 22/22, engine 242, Stage 3 gate 26/26.
 
+### Stage 4.6: fan-in dispatcher latency — BUILT 2026-09-24 (results in 4.11.4; web part awaiting deploy approval)
+
+**Problem.** In fan-in, 200 follow-ups are delivered one HTTP call at a time: ~75 ms per row on this machine, so the
+master waits ~15 s.
+
+**Constraint (from the code, not assumed).** All 200 fan-in rows touch the SAME master (M) and coverage account (CV).
+The order in which M's targets close decides which position carries how much negative-balance write-off (NBP
+attribution per Transaction row). For example, with balance 100: -500 then +300 ends at 300, while +300 then -500
+ends at 0. The web closes them in client order. So rows touching a shared account must stay SERIAL, in source-close
+order, or the result stops being web-identical. Exactly-once alone would survive parallelism, but the gate would not.
+
+**Existing hole, fixed as part of this.** Today `drain_once` carries on after a failed row, so a LATER row touching
+the same account can run before it. That is an ordering violation on failure.
+
+#### 4.11.1 Design
+
+1. **Conflict groups (engine dispatcher).**
+   - One query fetches the due rows (up to 200) together with every account each row will touch: the source account,
+     mirror target accounts, the coverage leg's account, and clients a closed leg releases.
+   - Union-find turns shared accounts into groups. Within a group, order is (createdAt, id) = source-close order.
+   - Up to P groups are in flight at once (`VYX_POST_CLOSE_PARALLEL`, default 8; 1 = today's serial behaviour).
+   - Disjoint groups touch disjoint accounts, so running them in parallel cannot change any result.
+2. **Stop at the first failure within a group.** A row that answers retry, error or busy stops its group. Rows after
+   it are not attempted (no attempt counted, they stay due), and the group continues from that row once it is due
+   again. This closes the hole above.
+3. **Batch per group (web side: the OUTBOX RUNNER ONLY, not the inline web money path).**
+   - `POST /api/internal/post-close` also accepts `{ids: [...]}` (max 50, in order), and `runPostCloseBatch` runs
+     them in that order.
+   - It stops at the first row that is not done and answers per id: `done`/`gone` (settled), `retry`/`error` (the row
+     that stopped it), `not_attempted` (the rest).
+   - The single-id form stays unchanged.
+   - This saves one HTTP round trip per row. In production that is VPS → Vercel, plus the function's per-invocation
+     overhead.
+4. **Partial-batch safety.**
+   - The per-row lease and `doneSteps` markers are unchanged: every row still claims its own 60 s lease inside
+     runPostClose, and a second dispatcher or the web backstop just gets `busy`.
+   - The dispatcher records a failure only for the row that stopped the group. Settled rows are finished;
+     not_attempted rows are simply re-sent.
+   - If the whole request gets no answer, the dispatcher re-reads the rows' status: DONE ones are skipped, the first
+     still-PENDING one gets the attempt counted, and the rest are re-sent (idempotent anyway through the markers).
+   - Result: half a batch done means only the other half is sent again, and a row can never go DEAD because a
+     neighbour failed.
+5. **Events published in parallel (runner).** A row's pendingEvents go out concurrently (`Promise.all`) instead of
+   one after another: ~5 gateway round trips become ~1 in production. Delivery is still at-least-once, and DONE is
+   still marked after the publish.
+
+**BEHAVIOR CHANGE (engine dispatch semantics):**
+- groups in parallel;
+- stop-at-first-failure within a group;
+- batch delivery.
+
+**Web change (outbox runner / route only):** the batch form and the parallel publish. The inline risk path
+(`lib/risk-monitor.ts`, `evaluateAccountRisk`) and everything the web does on its own closes are untouched.
+
+#### 4.11.2 Step 1: measure before optimising
+
+The per-row cost is split into: HTTP, the lease claim, each step's transaction (mirror and coverage each run
+closePositionInTx with an account row lock), the pendingEvents read, the publish, and DONE. This uses a
+harness-only timing hook in `post-close-server.ts`. The split decides how far batching gets.
+
+**Honest risk.** Fan-in is ONE group of 200 rows by nature. Parallelism cannot help it; only a lower per-row cost can.
+- If the floor without HTTP is still above ~10 ms per row on this machine, whose disk slowed ~1.8x mid-session, then
+  <2 s for 200 rows is not reachable while staying web-identical.
+- In that case I report the measured floor and stop for a decision. The next lever would be all of a row's steps in
+  ONE transaction (fewer commits, same exactly-once, coarser failure granularity), which is itself a BEHAVIOR CHANGE
+  of the runner.
+
+#### 4.11.3 Gate
+
+1. Fan-in max wait **< 2 s** at 1000 clients, measured with the same harness. If not reachable, the measured floor
+   plus the decision above.
+2. The full Stage 4 matrix: seeds 1-3 × 100 / 500 / 1000 × K=2, plus K=4. **0 differences**, closes equal to the
+   web, 0 safety releases, ≤ 1 pass deferred.
+3. **Exactly-once checker** (new, on the engine DB after every run):
+   - every PostCloseEffect row is DONE, none DEAD;
+   - no step twice in `doneSteps`;
+   - at most one TRADE_PNL per position;
+   - every Notification / AuditLog count equals the web's (already in the diff).
+4. **Faults:**
+   - The harness server fails the k-th row of a batch once (500), and drops one whole batch response.
+   - Settled rows are not redone, the remainder is delivered once, nothing goes DEAD, and the result still MATCHes.
+5. **Two dispatchers at once** on the same outbox: no double delivery (route `busy`), MATCH.
+6. **Regression:** parity 22/22, Stage 3 gate 26/26, engine tests, plus new unit tests for grouping (union-find) and
+   batch accounting against a mock route.
+
+**Effort:** ~1.5-2 days. Add ~0.5 day if the single-transaction lever is needed and approved.
+
+#### 4.11.4 Results (2026-09-24; approved clamps: additive route, measurement first, no single-transaction lever)
+
+**Built.**
+- Engine `outbox.rs`: `queued_rows` (every PENDING row with the accounts it touches), `conflict_groups` (union-find),
+  `drain_once` (groups in parallel, `VYX_POST_CLOSE_PARALLEL`=8; strictly in order within a group; a group whose head
+  is not due waits whole), `deliver_group` (stops at the first unfinished row; batch `{ids}`, `VYX_POST_CLOSE_BATCH`=50,
+  0 = the old single form), and DELIVERIES / DELIVERY_MICROS metrics.
+- Web runner (`lib/post-close.ts`): `runPostCloseBatch`, the parallel publish, and two harness-only hooks (timing,
+  fault injection).
+- Route: the additive `{ids}` form; `{id}` unchanged.
+
+**Gate (all green).**
+- **Matrix:** seeds 1-3 × 100 / 500 / 1000 × K=2, plus s4 × 500 × K=4. 0 differences, closes = the web, 0 safety
+  releases, ≤ 1 pass deferred.
+- **Exactly-once checker** (`scripts/load/exactly-once.ts`) OK in every run: all rows DONE, no step twice, one row per
+  close, no double close, no duplicate follow-up notice / audit.
+- **Faults** (every 7th row fails once, every 5th answer dropped after the work, 2 dispatchers at once): 118 rows retried,
+  still 0 differences, exactly-once OK, nothing DEAD. Worst wait 27.5 s: the backoff (2 s, then 10 s) holding a group's
+  head; still under the 30 s window, 0 safety releases.
+- **Unit / DB tests:** grouping; batch done → error → not_attempted (only the failed row counts an attempt, the next is
+  untouched); a group waits while its head backs off; an unanswered batch counts one attempt on the first still-PENDING
+  row.
+- **Route:** `{id}` single form unchanged (401 / 400 / primitive body 400 / 200 done / 200 gone); `{ids}` order, stop,
+  not_attempted, 400s.
+- **Suites:** Stage 3 gate 28/28, parity 22/22, engine 243 (3 clean runs). One run showed 1 engine failure that did
+  not reproduce in 3 reruns and whose name was not captured: a possible flake, watch it. TS 965 pass, 13 pre-existing.
+
+**Measured floor** (per row, the SHAPE; seed 1, 1000 clients, K=2):
+
+| | fan-in wait (200-row group) | per row | steps (transactions) | HTTP | lease + read + DONE |
+|---|---|---|---|---|---|
+| before (serial, one global queue) | 8.8 s | 16.3 ms | ~83 % | ~4 % | ~12 % |
+| groups + batch, MX500 (D:) | 5.0-5.6 s | ~24 ms (DB contention across parallel groups) | ~83 % | ~2-3 % | ~12 % |
+| same on the NVMe (C:, data + WAL) | 5.6 s | 23 ms | same shape | | |
+| same with `synchronous_commit=off` | 4.75 s | 24 ms | same shape | | |
+
+**The disk is NOT the bottleneck.** NVMe equals MX500, and removing the commit flush altogether gains ~15 %. The floor
+is the follow-up's own query round trips (Node / Prisma interactive transactions: five step transactions per row, two
+of them full closes with an account row lock). 500 clients (a 100-row group): 2.5-2.7 s. The time grows linearly with
+the rows in the group, ~24-28 ms each.
+
+**Production will be SLOWER per row, not faster.** The route runs on Vercel against Neon over the network, so every
+query adds ~1-2 ms of round trip. A better VPS disk does not bring it to 2-2.5 s. The single-transaction lever (fewer
+round trips) is the only real one; it is deferred (user, 2026-09-24): an optional post-cutover optimisation, not a
+blocker.
+
+#### 4.11.5 KNOWN fan-in timing ceiling (for the Stage 5 shadow reconciler)
+
+When one account (a mirror master, a coverage account) receives follow-ups from N source closes in one pass, the
+engine finishes them N rows in a row, strictly in order, after the sources close. The web does them inline in the same
+order. Same values, different timing.
+
+The shadow reconciler classifies a difference on such an account as **TIMING (known)**, not VALUE / WEB_ONLY, while it
+is within:
+
+**ceiling = max(2 s, N × 30 ms)** (N = follow-up rows in that account's conflict group for the pass)
+
+- Measured on the harness: N = 200 → 4.75-5.6 s (≤ 6 s); N = 100 → 2.5-2.7 s (≤ 3 s).
+- The 30 ms per row is ~25 % above the measured ~24 ms.
+- **Recalibrate in Stage 5** against Neon: the shadow records the real per-row time, and the constant becomes the
+  measured p95 per row × 1.25.
+- Past the ceiling, or with a differing VALUE, it is a real finding.
+
 ### Stage 4.5: mirror / coverage ordering aligned with the web — DONE 2026-09-24
 
 **Decision (user, 2026-09-24).** The web is canonical and is not changed: it runs mirror / coverage right after

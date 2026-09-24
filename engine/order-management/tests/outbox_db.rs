@@ -27,8 +27,25 @@ async fn pool() -> Option<PgPool> {
     Some(PgPool::connect(&url).await.expect("connect to the scratch DB"))
 }
 
-/// A one-status HTTP server; every request it receives (head + body) is kept.
+/// How the mock answers one request: (HTTP status, body), or None to drop the connection without an answer.
+type Responder = Arc<dyn Fn(&serde_json::Value) -> Option<(u16, String)> + Send + Sync>;
+
+/// A one-status HTTP server; every request it receives (head + body) is kept. A 200 answers the batch form
+/// (`{ids}`) with every row `done`, the single form with `{"status":"done"}`.
 async fn mock(status: u16) -> (String, Arc<Mutex<Vec<String>>>) {
+    mock_with(Arc::new(move |body: &serde_json::Value| {
+        if status != 200 {
+            return Some((status, r#"{"status":"error"}"#.to_string()));
+        }
+        Some((200, match body.get("ids").and_then(|v| v.as_array()) {
+            Some(ids) => serde_json::json!({ "results": ids.iter().map(|id| serde_json::json!({ "id": id, "status": "done" })).collect::<Vec<_>>() }).to_string(),
+            None => r#"{"status":"done"}"#.to_string(),
+        }))
+    }))
+    .await
+}
+
+async fn mock_with(respond: Responder) -> (String, Arc<Mutex<Vec<String>>>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let seen = Arc::new(Mutex::new(Vec::new()));
@@ -37,6 +54,7 @@ async fn mock(status: u16) -> (String, Arc<Mutex<Vec<String>>>) {
         loop {
             let Ok((mut socket, _)) = listener.accept().await else { return };
             let seen = seen_by_server.clone();
+            let respond = respond.clone();
             tokio::spawn(async move {
                 let mut buf = vec![0u8; 65536];
                 let mut total = 0;
@@ -58,9 +76,12 @@ async fn mock(status: u16) -> (String, Arc<Mutex<Vec<String>>>) {
                         }
                     }
                 }
-                let body = r#"{"status":"x"}"#;
-                let response = format!("HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
-                let _ = socket.write_all(response.as_bytes()).await;
+                let text = String::from_utf8_lossy(&buf[..total]).to_string();
+                let json: serde_json::Value = text.find("\r\n\r\n").and_then(|h| serde_json::from_str(&text[h + 4..]).ok()).unwrap_or(serde_json::Value::Null);
+                if let Some((status, body)) = respond(&json) {
+                    let response = format!("HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
+                    let _ = socket.write_all(response.as_bytes()).await;
+                }
                 let _ = socket.shutdown().await;
             });
         }
@@ -69,7 +90,7 @@ async fn mock(status: u16) -> (String, Arc<Mutex<Vec<String>>>) {
 }
 
 fn cfg(url: &str) -> DispatcherConfig {
-    DispatcherConfig { url: url.to_string(), secret: "s3cret".into(), sweep_interval: Duration::from_secs(3600) }
+    DispatcherConfig { url: url.to_string(), secret: "s3cret".into(), sweep_interval: Duration::from_secs(3600), parallel: 8, batch: 50 }
 }
 
 async fn broker(pool: &PgPool) -> String {
@@ -138,6 +159,50 @@ async fn dispatcher_delivers_backs_off_gives_up_once_and_wakes_fast() {
     assert_eq!((stats.delivered, stats.failed), (1, 0));
     assert_eq!(state(&pool, &id).await.1, 0);
     sqlx::query(r#"UPDATE "PostCloseEffect" SET status = 'DONE' WHERE id = $1"#).bind(&id).execute(&pool).await.unwrap(); // what the route does
+
+    // Stage 4.6: one conflict group (three rows sharing an account) answered done / error / not_attempted: the first
+    // settles, only the SECOND gets an attempt, the third is untouched. Then the group waits while its head backs off,
+    // and a batch with no answer at all puts the attempt on the first row still PENDING only.
+    {
+        let shared = format!("acct-shared-{}", &b[..8]);
+        let mut group = Vec::new();
+        for _ in 0..3 {
+            let rid = row(&pool, &b).await;
+            sqlx::query(r#"UPDATE "PostCloseEffect" SET "accountId" = $2 WHERE id = $1"#).bind(&rid).bind(&shared).execute(&pool).await.unwrap();
+            group.push(rid);
+        }
+        let (script_url, script_seen) = mock_with(Arc::new(|body: &serde_json::Value| {
+            let ids = body.get("ids")?.as_array()?.clone();
+            let statuses = ["done", "error", "not_attempted"];
+            let results: Vec<serde_json::Value> = ids
+                .iter()
+                .enumerate()
+                .map(|(i, id)| serde_json::json!({ "id": id, "status": statuses.get(i).copied().unwrap_or("not_attempted"), "error": "boom" }))
+                .collect();
+            Some((200, serde_json::json!({ "results": results }).to_string()))
+        }))
+        .await;
+        let stats = outbox::drain_once(&pool, &client, &cfg(&script_url)).await.unwrap();
+        assert_eq!((stats.delivered, stats.failed), (1, 1), "{stats:?}");
+        let requests = script_seen.lock().unwrap().clone();
+        assert_eq!(requests.len(), 1, "one conflict group = one batch request");
+        assert!(requests[0].contains(&format!(r#""ids":["{}","{}","{}"]"#, group[0], group[1], group[2])), "in order: {}", requests[0]);
+        assert_eq!(state(&pool, &group[1]).await.1, 1, "the failed row carries the attempt");
+        assert_eq!(state(&pool, &group[2]).await.1, 0, "the row after it is untouched");
+        sqlx::query(r#"UPDATE "PostCloseEffect" SET status = 'DONE' WHERE id = $1"#).bind(&group[0]).execute(&pool).await.unwrap(); // what the route did
+        let before = script_seen.lock().unwrap().len();
+        outbox::drain_once(&pool, &client, &cfg(&script_url)).await.unwrap();
+        assert_eq!(script_seen.lock().unwrap().len(), before, "a group whose head is backing off waits as a whole");
+        sqlx::query(r#"UPDATE "PostCloseEffect" SET "nextAttemptAt" = now() WHERE id = ANY($1)"#).bind(&group).execute(&pool).await.unwrap();
+        let (drop_url, _) = mock_with(Arc::new(|_: &serde_json::Value| None)).await;
+        outbox::drain_once(&pool, &client, &cfg(&drop_url)).await.unwrap();
+        assert_eq!(
+            (state(&pool, &group[1]).await.1, state(&pool, &group[2]).await.1),
+            (2, 0),
+            "only the first PENDING row of an unanswered batch counts an attempt"
+        );
+        sqlx::query(r#"UPDATE "PostCloseEffect" SET status = 'DONE' WHERE id = ANY($1)"#).bind(&group).execute(&pool).await.unwrap();
+    }
 
     // a 500: one attempt, next try in 2 s, the error kept; not due again straight away
     let (err_url, err_seen) = mock(500).await;

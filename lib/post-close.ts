@@ -163,11 +163,32 @@ function marginCallSteps(row: Row): { name: string; work: (tx: Prisma.Transactio
   ];
 }
 
+/** Harness-only: called with each phase's wall time (Stage 4.6 measurement, scripts/parity/post-close-server.ts). */
+export type PostCloseTiming = (phase: string, ms: number) => void;
+let harnessTiming: PostCloseTiming | undefined;
+/** Harness-only: time every run in this process (the route calls runPostClose without options). */
+export function setPostCloseTiming(fn: PostCloseTiming | undefined) {
+  harnessTiming = fn;
+}
+let harnessFault: ((rowId: string, point: string) => void) | undefined;
+/** Harness-only: inject failures into every run in this process (Stage 4.6 fault gate); a throw is a failed run. */
+export function setPostCloseFault(fn: ((rowId: string, point: string) => void) | undefined) {
+  harnessFault = fn;
+}
+
 /** Runs one outbox row to completion, or as far as it gets. Never throws (except the test-only PostCloseCrash).
  *  opts.ignoreLease is test-only too: two runners on one row at once, to prove the step markers alone keep every
- *  write exactly-once even if the lease ever failed. */
-export async function runPostClose(id: string, opts?: { fault?: PostCloseFault; ignoreLease?: boolean }): Promise<PostCloseResult> {
+ *  write exactly-once even if the lease ever failed. opts.timing is harness-only (per-phase wall time). */
+export async function runPostClose(id: string, opts?: { fault?: PostCloseFault; ignoreLease?: boolean; timing?: PostCloseTiming }): Promise<PostCloseResult> {
   const ignoreLease = opts?.ignoreLease === true;
+  const timing = opts?.timing ?? harnessTiming;
+  let t = performance.now();
+  const lap = (phase: string) => {
+    if (!timing) return;
+    const now = performance.now();
+    timing(phase, now - t);
+    t = now;
+  };
   const claimed = await prisma.$queryRaw<Row[]>`
     UPDATE "PostCloseEffect" SET "leaseUntil" = now() + (${LEASE_SECONDS}::int * interval '1 second')
     WHERE id = ${id} AND status = 'PENDING' AND (${ignoreLease} OR "leaseUntil" IS NULL OR "leaseUntil" < now())
@@ -177,7 +198,8 @@ export async function runPostClose(id: string, opts?: { fault?: PostCloseFault; 
     return { status: !row || row.status !== "PENDING" ? "gone" : "busy" };
   }
   const row = claimed[0];
-  const fault = opts?.fault ?? (() => {});
+  const fault = opts?.fault ?? (harnessFault ? (point: string) => harnessFault!(row.id, point) : () => {});
+  lap("lease");
 
   try {
     const steps = row.kind === "MARGIN_CALL" ? marginCallSteps(row) : row.kind === "POSITION_CLOSED" ? closeSteps(row) : null;
@@ -185,18 +207,22 @@ export async function runPostClose(id: string, opts?: { fault?: PostCloseFault; 
     for (const step of steps) {
       fault(`before:${step.name}`);
       await runStep(row.id, step.name, step.work);
+      lap(`step:${step.name}`);
       fault(`after:${step.name}`);
     }
 
     // last step: every write has committed, now the events (read back from the row: a previous run's too)
     fault("before:publish");
     const fresh = await prisma.postCloseEffect.findUniqueOrThrow({ where: { id: row.id }, select: { pendingEvents: true } });
-    for (const e of (fresh.pendingEvents ?? []) as unknown as BufferedTradingEvent[]) {
-      await publishTradingEvent(e.type, e.payload);
-    }
+    lap("read_events");
+    // Stage 4.6: all of a row's events at once (publishTradingEvent never throws); still at-least-once, and DONE is
+    // still written only after every one of them went out
+    await Promise.all(((fresh.pendingEvents ?? []) as unknown as BufferedTradingEvent[]).map((e) => publishTradingEvent(e.type, e.payload)));
+    lap("publish");
     await prisma.$executeRaw`
       UPDATE "PostCloseEffect" SET status = 'DONE', "doneAt" = now(), "leaseUntil" = NULL, "lastError" = NULL
       WHERE id = ${row.id} AND status = 'PENDING'`;
+    lap("done");
     return { status: "done" };
   } catch (err) {
     if (err instanceof PostCloseCrash) throw err; // test-only: the lease stays held, as after a real crash
@@ -204,6 +230,28 @@ export async function runPostClose(id: string, opts?: { fault?: PostCloseFault; 
     await prisma.$executeRaw`UPDATE "PostCloseEffect" SET "leaseUntil" = NULL, "lastError" = ${message.slice(0, 2000)} WHERE id = ${row.id}`.catch(() => {});
     return { status: err instanceof coverage.CoverageRetryLater ? "retry" : "error", error: message };
   }
+}
+
+export type PostCloseBatchResult = { id: string; status: PostCloseStatus | "not_attempted"; error?: string };
+
+/** Stage 4.6: runs rows IN THE ORDER GIVEN (the engine dispatcher sends one conflict group: rows that touch the same
+ *  accounts, in source-close order) and stops at the first row that is not finished -- retry / error / busy -- so a
+ *  later row never overtakes an earlier one on the same account. The rest come back `not_attempted` (no attempt is
+ *  counted for them; the dispatcher sends them again). Each row is still claimed and run exactly as runPostClose
+ *  does alone: its own lease, its own step markers. */
+export async function runPostCloseBatch(ids: string[]): Promise<PostCloseBatchResult[]> {
+  const results: PostCloseBatchResult[] = [];
+  let stopped = false;
+  for (const id of ids) {
+    if (stopped) {
+      results.push({ id, status: "not_attempted" });
+      continue;
+    }
+    const r = await runPostClose(id);
+    results.push({ id, ...r });
+    if (r.status !== "done" && r.status !== "gone") stopped = true;
+  }
+  return results;
 }
 
 /** One failed run (or a dispatcher that could not reach the route): count it and schedule the next try, or give

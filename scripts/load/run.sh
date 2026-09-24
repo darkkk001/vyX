@@ -51,7 +51,7 @@ DATABASE_URL=$ENG DIRECT_URL=$ENG $TSX scripts/load/seed.ts "$OUT/world.json"
 PC_PORT=5592
 PC_SECRET="load-$(date +%s)-$RANDOM"
 if (exec 3<>/dev/tcp/127.0.0.1/$PC_PORT) 2>/dev/null; then echo "[load] port $PC_PORT busy"; exit 2; fi
-DATABASE_URL=$ENG DIRECT_URL=$ENG POST_CLOSE_SECRET=$PC_SECRET PARITY_POST_CLOSE_PORT=$PC_PORT POST_CLOSE_FAIL_POSITIONS="${POST_CLOSE_FAIL_POSITIONS:-}" \
+DATABASE_URL=$ENG DIRECT_URL=$ENG POST_CLOSE_SECRET=$PC_SECRET PARITY_POST_CLOSE_PORT=$PC_PORT PARITY_POST_CLOSE_TIMING="$OUT/post-close-timing.json" PARITY_POST_CLOSE_FAIL_EVERY="${PARITY_POST_CLOSE_FAIL_EVERY:-0}" PARITY_POST_CLOSE_DROP_EVERY="${PARITY_POST_CLOSE_DROP_EVERY:-0}" \
   $TSX scripts/parity/post-close-server.ts > "$OUT/post-close-server.log" 2>&1 &
 PC_PID=$!
 stop_pc_server() {
@@ -71,6 +71,7 @@ VYX_POST_CLOSE_URL="http://127.0.0.1:$PC_PORT/api/internal/post-close" VYX_POST_
   engine/target/debug/parity.exe --load-run "$K" "$OUT/engine-report.json" || echo "[load] engine run exited non-zero"
 stop_pc_server
 DATABASE_URL=$ENG DIRECT_URL=$ENG $TSX scripts/load/snapshot.ts "$OUT/engine-snapshot.json"
+DATABASE_URL=$ENG DIRECT_URL=$ENG $TSX scripts/load/exactly-once.ts | tee "$OUT/exactly-once.txt"
 
 # ---- compare
 node scripts/load/diff.mjs "$OUT/world.json" "$OUT/web-snapshot.json" "$OUT/engine-snapshot.json" | tee "$OUT/diff.txt"

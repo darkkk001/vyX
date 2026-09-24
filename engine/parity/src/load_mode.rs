@@ -57,6 +57,9 @@ pub struct LoadReport {
     errors: usize,
     defer_queries: u64,
     defer_prechecks: u64,
+    /// dispatcher HTTP calls and their mean round trip, ms (Stage 4.6)
+    deliveries: u64,
+    delivery_mean_ms: f64,
     safety_releases: u64,
     max_passes_deferred: usize,
     max_waited_ms: u128,
@@ -75,7 +78,11 @@ async fn pg_counters(pool: &PgPool) -> Result<(i64, i64), String> {
 pub async fn run(walkers: usize) -> Result<LoadReport, String> {
     let pool = connect().await?;
     let cfg = outbox::DispatcherConfig::from_env().ok_or("VYX_POST_CLOSE_URL / VYX_POST_CLOSE_SECRET must point at the load post-close server")?;
-    outbox::spawn(pool.clone(), cfg);
+    // LOAD_DISPATCHERS=2: two dispatchers on the same outbox (exactly-once must hold: the route's per-row lease)
+    let dispatchers: usize = std::env::var("LOAD_DISPATCHERS").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
+    for _ in 0..dispatchers.max(1) {
+        outbox::spawn(pool.clone(), cfg.clone());
+    }
 
     // the live feed: same prices, fresh tickAt
     let restamp_pool = pool.clone();
@@ -95,6 +102,7 @@ pub async fn run(walkers: usize) -> Result<LoadReport, String> {
     let (x0, t0) = pg_counters(&pool).await?;
     let q0 = book::DEFER_QUERIES.load(Ordering::Relaxed);
     let c0 = book::DEFER_PRECHECKS.load(Ordering::Relaxed);
+    let (d0, u0) = (outbox::DELIVERIES.load(Ordering::Relaxed), outbox::DELIVERY_MICROS.load(Ordering::Relaxed));
     let s0 = book::SAFETY_RELEASES.load(Ordering::Relaxed);
     let start = Instant::now();
     let mut report = LoadReport { walkers, ..Default::default() };
@@ -182,6 +190,9 @@ pub async fn run(walkers: usize) -> Result<LoadReport, String> {
     report.pg_tup_fetched = t1 - t0;
     report.defer_queries = book::DEFER_QUERIES.load(Ordering::Relaxed) - q0;
     report.defer_prechecks = book::DEFER_PRECHECKS.load(Ordering::Relaxed) - c0;
+    report.deliveries = outbox::DELIVERIES.load(Ordering::Relaxed) - d0;
+    let micros = outbox::DELIVERY_MICROS.load(Ordering::Relaxed) - u0;
+    report.delivery_mean_ms = if report.deliveries > 0 { micros as f64 / report.deliveries as f64 / 1000.0 } else { 0.0 };
     report.safety_releases = book::SAFETY_RELEASES.load(Ordering::Relaxed) - s0;
     report.max_passes_deferred = report.deferrals.values().map(|d| d.passes_deferred).max().unwrap_or(0);
     report.max_waited_ms = report.deferrals.values().filter_map(|d| d.waited_ms).max().unwrap_or(0);
@@ -195,9 +206,9 @@ pub fn main(args: &[String]) {
     match rt.block_on(run(walkers)) {
         Ok(report) => {
             println!(
-                "[load:engine] walkers={} rounds={} settled={} closed={} wall={}ms deferQueries={} prechecks={} safetyReleases={} maxPassesDeferred={} maxWaited={}ms errors={}",
+                "[load:engine] walkers={} rounds={} settled={} closed={} wall={}ms deferQueries={} prechecks={} safetyReleases={} maxPassesDeferred={} maxWaited={}ms deliveries={} deliveryMean={:.1}ms errors={}",
                 report.walkers, report.rounds, report.settled, report.closed, report.wall_ms, report.defer_queries, report.defer_prechecks, report.safety_releases,
-                report.max_passes_deferred, report.max_waited_ms, report.errors
+                report.max_passes_deferred, report.max_waited_ms, report.deliveries, report.delivery_mean_ms, report.errors
             );
             std::fs::write(&out, serde_json::to_string_pretty(&report).expect("serialize") + "\n").expect("write report");
             if !report.settled || report.errors > 0 {
