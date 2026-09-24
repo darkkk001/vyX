@@ -2327,6 +2327,9 @@ model LpRoutingRule {
 model PostCloseEffect {
   id            String    @id @default(cuid())
   kind          String // "POSITION_CLOSED" | "MARGIN_CALL"
+  // Stage 4.6: insertion order, the order follow-ups are delivered in (within a conflict group). createdAt is only
+  // millisecond-precise, and a tie fell back to the random id -- found by a flaky test, 2026-09-24.
+  seq           BigInt    @default(autoincrement())
   dedupeKey     String    @unique // "close:<positionId>:<TRADE_PNL txn id>" | "mc:<accountId>:<edge epoch ms>"
   brokerId      String
   accountId     String

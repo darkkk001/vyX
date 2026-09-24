@@ -74,4 +74,12 @@ DATABASE_URL=$ENG DIRECT_URL=$ENG $TSX scripts/load/snapshot.ts "$OUT/engine-sna
 DATABASE_URL=$ENG DIRECT_URL=$ENG $TSX scripts/load/exactly-once.ts | tee "$OUT/exactly-once.txt"
 
 # ---- compare
-node scripts/load/diff.mjs "$OUT/world.json" "$OUT/web-snapshot.json" "$OUT/engine-snapshot.json" | tee "$OUT/diff.txt"
+# a failure names its run exactly, so it can be repeated: bash scripts/load/run.sh --seed S --accounts N --walkers K
+if ! node scripts/load/diff.mjs "$OUT/world.json" "$OUT/web-snapshot.json" "$OUT/engine-snapshot.json" | tee "$OUT/diff.txt"; then
+  echo "[load] FAILED seed=$SEED accounts=$N walkers=$K commit=$(git rev-parse --short HEAD) out=$OUT"
+  exit 1
+fi
+if grep -q "FAIL" "$OUT/exactly-once.txt"; then
+  echo "[load] EXACTLY-ONCE FAILED seed=$SEED accounts=$N walkers=$K commit=$(git rev-parse --short HEAD) out=$OUT"
+  exit 1
+fi

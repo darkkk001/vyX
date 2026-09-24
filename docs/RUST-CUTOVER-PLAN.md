@@ -935,13 +935,120 @@ its own stop-out. Cost: one indexed EXISTS query per evaluated account.
 **Not yet built:** the Stage 4 load harness (4.1-4.6 above is still a plan awaiting approval). This ordering case
 goes into its generator; at that scale it must MATCH as here.
 
-### Stage 5: shadow (2-3 days build, 1-2 weeks soak)
+### Stage 5: shadow — PLAN, AWAITING APPROVAL (2026-09-24)
 
-The engine evaluates and decides but does not act; the web risk monitor logs its own decisions; both go
-to a comparison store on the VPS Postgres (never Neon), each with the price snapshot it used. The book
-is held in memory (NATS position events + a 5-10 s reconcile read) so Neon's compute does not climb back
-(see the 2026-09-23 coalescing fix).
-- **Gate:** every mismatch explained (timing / snapshot); an unexplained one resets the soak clock.
+**Goal.** In production, the engine evaluates every account exactly as it would at cutover, but **acts on nothing**.
+The web keeps acting (it is canonical). A reconciler compares the two continuously. Every difference is classified,
+and an unexplained one resets the soak clock. At the end we know, on real prices and real books, that the engine
+decides what the web decides, and how much earlier or later.
+
+#### 5.1 What "shadow" means in the engine (no writes, no events)
+
+- **Mode.** `ENGINE_ORDER_MANAGEMENT=shadow` is a new value. `on` stays cutover, and off (the default) stays off. In
+  shadow the monitor runs the SAME `run_pass` / `evaluate_account` with a `Mode::Shadow` that never writes to the
+  book:
+  - no `close_position_in_tx`;
+  - no PostCloseEffect;
+  - no margin-call edge write;
+  - no NATS trading events;
+  - the dispatcher not spawned;
+  - the order routes stay refusing.
+- **Simulated closes.** A would-be close is applied to the in-memory account state by `book::simulate_close`: a pure
+  function with the SAME money rules as `close_position_in_tx` (P&L, then credit Model A, then NBP floor). Later
+  decisions in the same stop-out loop therefore see the would-be balance, exactly as they would after a real close.
+  Drift guard: a new parity mode runs every harness scenario through `simulate_close` and compares it with the real
+  DB close. They must be identical.
+- **What is recorded per evaluation that decides something** (would close, margin-call edge in/out): the account, the
+  position(s), the reason, the level before, the close price(s), the P&L, and the price snapshot used (bid/ask +
+  tickAt per symbol). Written to a **comparison store on the VPS Postgres (local, never Neon)**, table
+  `shadow_decision`.
+- **Resume point / deferral.** Nothing is pending in shadow (no outbox), so every pass evaluates every account. The web
+  runs mirror / coverage inline, and the engine sees their results on its next read.
+
+#### 5.2 What the web contributes (no web code change)
+
+The web's decisions are read from what it ALREADY writes to Neon, by the reconciler (engine process, VPS):
+- TRADE_PNL rows with their notes: "Stop loss", "Take profit", "Stop-out (automatic): margin level X% ...", with
+  closePrice, amount and createdAt;
+- `Account.marginCallNotifiedAt` transitions and the MARGIN_CALL notifications.
+
+This is one incremental query per minute on a cursor (createdAt, id). No web change, no new Neon table.
+`evaluateAccountRisk` stays untouched.
+
+#### 5.3 Reconciler and classification (VPS, every minute)
+
+A web close and an engine would-close are paired by (position, reason).
+
+| Class | Meaning | Gate |
+|---|---|---|
+| MATCH | same position, same reason, within the timing window | - |
+| TIMING | same decision, engine earlier or later than the web beyond a few seconds but within the window | recorded (skew histogram) |
+| TIMING (known) | a mirror / coverage fan-in account, within the §4.11.5 ceiling max(2 s, N × 30 ms) | recorded |
+| SNAPSHOT | the decisions differ, but replaying the engine's calc on the WEB's inputs (its close price, the engine snapshot nearest the web's createdAt for the other symbols) gives the web's decision: a price-timing difference, not logic | investigated, explained |
+| VALUE | same inputs, different decision (other reason, other position chosen, other level, other P&L / NBP) | **resets the soak clock** |
+| ENGINE_ONLY / WEB_ONLY | one side acted and the other never did within the window | **resets the soak clock** unless it reclassifies as SNAPSHOT |
+
+**Timing window.**
+- **Web side.** The web's stop-out latency is its trigger cadence: the risk hook's per-symbol call on an SL/TP touch,
+  plus the full-book backstop every `VYX_RISK_HOOK_BACKSTOP_SECS` (60 s) IF it is really running on the VPS, else the
+  Vercel cron (5 min).
+- **Engine side.** 1 s.
+- **Step 1 of Stage 5** verifies which of the two web cadences is live (the runbook says the backstop must be checked
+  against the current CRON_SECRET), and the window is set from it.
+
+**Output.**
+- a daily summary: counts per class, the skew p50 / p95 / max, fan-in ceilings hit;
+- every VALUE / ENGINE_ONLY / WEB_ONLY with both snapshots;
+- a staff-facing notification on a clock reset.
+
+#### 5.4 Neon cost (the compute-leak lesson)
+
+Shadow reads the book from Neon on every pass, as cutover will; the precheck already removed the deferral query.
+Cutover pays this cost too, so shadow is also its measurement:
+- **Pass cadence** `VYX_SHADOW_PASS_SECS`, default 1 s.
+- **Kill switch:** unset the mode, and one restart stops it.
+- **Measured during the soak:** Neon compute hours and queries/s against the web-only baseline of the week before.
+
+**Decision needed.** Any continuous pass keeps Neon from auto-suspending. Today the web cron may let it sleep between
+runs, so shadow = Neon compute ~24 h a day for the soak.
+
+#### 5.5 Before production: the same shadow on the load harness (scratch)
+
+Run the Stage 4 harness in shadow shape:
+- the web acts on `vyx_load_web`;
+- the engine in `shadow` mode reads THE SAME database concurrently;
+- the reconciler classifies.
+
+Gate before prod:
+- 0 VALUE / ENGINE_ONLY / WEB_ONLY on the seeded worlds (every topology, both orders, K=2);
+- `simulate_close` = real close on all 22 parity scenarios.
+
+This proves the reconciler's pairing and classes at volume, where production (demo money, little activity) would take
+weeks to show much.
+
+#### 5.6 Soak and gate
+
+1. Scratch gate (5.5) green.
+2. Deploy the engine with `shadow` on the VPS (engine only; the web unchanged). A runbook covers env, restart,
+   rollback = unset.
+3. Soak 1-2 weeks on production.
+   - **Exit:** no VALUE / ENGINE_ONLY / WEB_ONLY unexplained for the last 7 days, and at least N real web risk actions
+     (stop-outs + SL/TP) paired MATCH / TIMING. N is to be agreed; today's production volume is low (demo money), so
+     SL/TP will dominate.
+   - Also recorded: the TIMING skew distribution, the fan-in ceilings, and Neon compute versus baseline.
+4. Stage 6 (riskAuthority per broker, warm fallback, the drill) only after the soak exit.
+
+**Effort.**
+- Build: ~3-4 days (shadow mode + simulate_close + drift guard ~1.5; store + reconciler + classes ~1.5; harness
+  shadow gate ~1).
+- Soak: 1-2 weeks.
+- Web: nothing.
+
+**Decisions for you.**
+1. Neon: accept ~24 h/day compute for the soak (and at cutover), or a slower shadow cadence (e.g. 5 s) during the
+   soak.
+2. Soak exit volume N, given demo-level activity.
+3. Where the daily summary goes: a log file on the VPS, a backoffice page, or both.
 
 ### Stage 6: cutover with a warm fallback (1-2 days + drill)
 

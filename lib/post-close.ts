@@ -293,7 +293,7 @@ export async function drainPostCloseBackstop(limit = 10): Promise<{ ran: number;
   const due = await prisma.$queryRaw<{ id: string }[]>`
     SELECT id FROM "PostCloseEffect"
     WHERE status = 'PENDING' AND "nextAttemptAt" <= now() AND "createdAt" < now() - interval '2 minutes'
-    ORDER BY "createdAt" LIMIT ${limit}`;
+    ORDER BY seq LIMIT ${limit}`;
   let failed = 0;
   for (const { id } of due) {
     const result = await runPostClose(id);
@@ -301,6 +301,9 @@ export async function drainPostCloseBackstop(limit = 10): Promise<{ ran: number;
       failed++;
       await recordPostCloseFailure(id, result.error ?? result.status).catch((err) => console.error("recordPostCloseFailure failed", id, err));
     }
+    // Stage 4.6: in insertion order, and stop at the first row that did not finish -- a later row may touch the same
+    // account and must not overtake it (the backstop does not group, so it stops outright; the next run resumes)
+    if (result.status !== "done" && result.status !== "gone") break;
   }
   return { ran: due.length, failed };
 }

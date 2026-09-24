@@ -89,7 +89,7 @@ pub async fn due_ids(pool: &PgPool, limit: i64) -> Result<Vec<String>, sqlx::Err
     let rows: Vec<(String,)> = sqlx::query_as(
         r#"SELECT id FROM "PostCloseEffect"
            WHERE status = 'PENDING' AND "nextAttemptAt" <= now() AND ("leaseUntil" IS NULL OR "leaseUntil" < now())
-           ORDER BY "createdAt" LIMIT $1"#,
+           ORDER BY seq LIMIT $1"#,
     )
     .bind(limit)
     .fetch_all(pool)
@@ -263,7 +263,7 @@ pub fn conflict_groups(rows: &[QueuedRow]) -> Vec<Vec<usize>> {
     groups.into_values().collect()
 }
 
-/// Every PENDING row (oldest first, bounded) with whether it is due and the accounts it touches.
+/// Every PENDING row (in insertion order, "seq"; bounded) with whether it is due and the accounts it touches.
 pub async fn queued_rows(pool: &PgPool, limit: i64) -> Result<Vec<QueuedRow>, sqlx::Error> {
     let rows: Vec<(String, bool, Vec<String>)> = sqlx::query_as(
         r#"SELECT e.id,
@@ -278,7 +278,7 @@ pub async fn queued_rows(pool: &PgPool, limit: i64) -> Result<Vec<QueuedRow>, sq
                   )
            FROM "PostCloseEffect" e
            WHERE e.status = 'PENDING'
-           ORDER BY e."createdAt", e.id
+           ORDER BY e.seq
            LIMIT $1"#,
     )
     .bind(limit)
