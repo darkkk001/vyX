@@ -239,11 +239,22 @@ pub async fn evaluate_account(
     nats: Option<&async_nats::Client>,
     account_id: &str,
 ) -> Result<Option<EvalReport>, sqlx::Error> {
+    evaluate_account_checked(pool, nats, account_id, true).await
+}
+
+/// `check_deferral` false = the caller knows no follow-up can be pending (run_pass's precheck): skip the query.
+async fn evaluate_account_checked(
+    pool: &PgPool,
+    nats: Option<&async_nats::Client>,
+    account_id: &str,
+    check_deferral: bool,
+) -> Result<Option<EvalReport>, sqlx::Error> {
     // Stage 4.5 BEHAVIOR CHANGE (engine): the web runs mirror / coverage follow-ups inside its pass, right after the
     // close that triggers them, so an account holding a mirror target or an auto-hedged leg is evaluated only AFTER
     // that position was closed for it. The engine queues those follow-ups (outbox); until one has run, the account
     // it touches waits for the next pass instead of stopping out a position the follow-up is about to close.
-    match book::pending_follow_up_state(pool, account_id).await? {
+    let owed = if check_deferral { book::pending_follow_up_state(pool, account_id).await? } else { book::FollowUpOwed::No };
+    match owed {
         book::FollowUpOwed::Yes => return Ok(Some(EvalReport { deferred: true, ..EvalReport::default() })),
         book::FollowUpOwed::Expired => {
             book::SAFETY_RELEASES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -478,9 +489,23 @@ pub async fn run_pass(pool: &PgPool, nats: Option<&async_nats::Client>, cursor: 
     // ids come in byte order (COLLATE "C"), the order of Rust's String comparison
     let start = cursor.resume_at.take().map(|r| account_ids.partition_point(|id| id.as_str() < r.as_str())).unwrap_or(0);
 
+    // Stage 4 §4.8: the per-account deferral query only runs once a follow-up can be pending -- one was at the start
+    // of the pass, or this process queued one since (its own closes, or a concurrent pass's). Only this process ever
+    // queues POSITION_CLOSED follow-ups (the web and the dispatcher never do), so nothing else can make one appear.
+    // VYX_DEFER_PRECHECK=0 turns this off (every account queries, as before) for A/B verification.
+    let queued_at_start = book::FOLLOW_UPS_QUEUED.load(std::sync::atomic::Ordering::Relaxed);
+    let mut maybe_pending = !defer_precheck_enabled() || match book::any_pending_follow_up(pool).await {
+        Ok(any) => any,
+        Err(err) => {
+            tracing::error!(?err, "margin monitor: follow-up precheck failed; checking every account");
+            true
+        }
+    };
+
     // thresholds are read per account inside evaluate_account (Stage 2 F3), not cached per pass
     for account_id in &account_ids[start..] {
-        match evaluate_account(pool, nats, account_id).await {
+        maybe_pending = maybe_pending || book::FOLLOW_UPS_QUEUED.load(std::sync::atomic::Ordering::Relaxed) != queued_at_start;
+        match evaluate_account_checked(pool, nats, account_id, maybe_pending).await {
             Ok(Some(r)) if r.deferred => {
                 report.deferred.push(account_id.clone());
                 if cursor.stops < MAX_CASCADE_STOPS && cursor.stopped_at.insert(account_id.clone()) {
@@ -505,6 +530,11 @@ pub async fn run_pass(pool: &PgPool, nats: Option<&async_nats::Client>, cursor: 
     cursor.stopped_at.clear();
     cursor.stops = 0;
     report
+}
+
+fn defer_precheck_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("VYX_DEFER_PRECHECK").map(|v| v.trim() != "0").unwrap_or(true))
 }
 
 /// Shared across every trigger source (the polling timer and, in

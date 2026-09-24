@@ -373,6 +373,24 @@ pub enum FollowUpOwed {
 pub static DEFER_QUERIES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 pub static SAFETY_RELEASES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// POSITION_CLOSED follow-ups this process queued (enqueue_post_close). A pass that saw none pending at its start
+/// only needs the per-account deferral query once this moves (see monitor::run_pass).
+pub static FOLLOW_UPS_QUEUED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub static DEFER_PRECHECKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Stage 4 §4.8, the per-PASS precheck: is ANY post-close follow-up pending at all? (No window, so a stuck row still
+/// routes the accounts it touches through the per-account query and its safety-release accounting.) One index probe
+/// on ("status", ...) instead of the 3-way query for every account, in the normal case where nothing is pending.
+pub async fn any_pending_follow_up(pool: &PgPool) -> Result<bool, sqlx::Error> {
+    DEFER_PRECHECKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let (any,): (bool,) = sqlx::query_as(
+        r#"SELECT EXISTS (SELECT 1 FROM "PostCloseEffect" WHERE status = 'PENDING' AND kind = 'POSITION_CLOSED')"#,
+    )
+    .fetch_one(pool)
+    .await?;
+    Ok(any)
+}
+
 pub async fn pending_follow_up_owns(pool: &PgPool, account_id: &str) -> Result<bool, sqlx::Error> {
     Ok(pending_follow_up_state(pool, account_id).await? == FollowUpOwed::Yes)
 }
@@ -465,6 +483,8 @@ pub async fn enqueue_post_close(
     .bind(payload.to_string())
     .execute(&mut **tx)
     .await?;
+    // counted once the caller commits or not -- a rolled-back row only makes the next pass check once more
+    FOLLOW_UPS_QUEUED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     Ok(())
 }
 

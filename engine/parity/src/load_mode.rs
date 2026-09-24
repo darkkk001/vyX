@@ -56,6 +56,7 @@ pub struct LoadReport {
     closed: usize,
     errors: usize,
     defer_queries: u64,
+    defer_prechecks: u64,
     safety_releases: u64,
     max_passes_deferred: usize,
     max_waited_ms: u128,
@@ -93,6 +94,7 @@ pub async fn run(walkers: usize) -> Result<LoadReport, String> {
 
     let (x0, t0) = pg_counters(&pool).await?;
     let q0 = book::DEFER_QUERIES.load(Ordering::Relaxed);
+    let c0 = book::DEFER_PRECHECKS.load(Ordering::Relaxed);
     let s0 = book::SAFETY_RELEASES.load(Ordering::Relaxed);
     let start = Instant::now();
     let mut report = LoadReport { walkers, ..Default::default() };
@@ -179,6 +181,7 @@ pub async fn run(walkers: usize) -> Result<LoadReport, String> {
     report.pg_xact_commit = x1 - x0;
     report.pg_tup_fetched = t1 - t0;
     report.defer_queries = book::DEFER_QUERIES.load(Ordering::Relaxed) - q0;
+    report.defer_prechecks = book::DEFER_PRECHECKS.load(Ordering::Relaxed) - c0;
     report.safety_releases = book::SAFETY_RELEASES.load(Ordering::Relaxed) - s0;
     report.max_passes_deferred = report.deferrals.values().map(|d| d.passes_deferred).max().unwrap_or(0);
     report.max_waited_ms = report.deferrals.values().filter_map(|d| d.waited_ms).max().unwrap_or(0);
@@ -192,8 +195,8 @@ pub fn main(args: &[String]) {
     match rt.block_on(run(walkers)) {
         Ok(report) => {
             println!(
-                "[load:engine] walkers={} rounds={} settled={} closed={} wall={}ms deferQueries={} safetyReleases={} maxPassesDeferred={} maxWaited={}ms errors={}",
-                report.walkers, report.rounds, report.settled, report.closed, report.wall_ms, report.defer_queries, report.safety_releases,
+                "[load:engine] walkers={} rounds={} settled={} closed={} wall={}ms deferQueries={} prechecks={} safetyReleases={} maxPassesDeferred={} maxWaited={}ms errors={}",
+                report.walkers, report.rounds, report.settled, report.closed, report.wall_ms, report.defer_queries, report.defer_prechecks, report.safety_releases,
                 report.max_passes_deferred, report.max_waited_ms, report.errors
             );
             std::fs::write(&out, serde_json::to_string_pretty(&report).expect("serialize") + "\n").expect("write report");

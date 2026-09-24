@@ -472,7 +472,7 @@ never compared note text, so it had not shown.
 4. On the VPS engine: `VYX_POST_CLOSE_URL=https://<web>/api/internal/post-close` + `VYX_POST_CLOSE_SECRET`
    (same value). Only takes effect with ENGINE_ORDER_MANAGEMENT=1 (still OFF).
 
-### Stage 4: synthetic load, scratch only — PLAN, AWAITING APPROVAL (2026-09-24)
+### Stage 4: synthetic load, scratch only — DONE 2026-09-24 (see 4.9 RED, 4.10 GREEN)
 
 **Goal.** At 100 / 500 / 1000 accounts, one price shock through stop-out. We need proof of three things:
 1. The engine (monitor + outbox + lib/post-close.ts) leaves EXACTLY the web's final state.
@@ -683,6 +683,62 @@ passes / 7.2 s, because the dispatcher drains ~146 follow-ups one HTTP call at a
 
 **Two engine fixes follow, in separate commits:** (1) re-read the account after every close (the web's semantics);
 (2) the resume point (R) with its loop guard.
+
+#### 4.10 After the fixes: GREEN (2026-09-24)
+
+**Engine commits.**
+1. `6962567`: re-read the account after every close; margin-call edge transitions decided on a fresh read.
+2. `2d269ce`: resume point (R) + loop guard (`tests/pass_db.rs`).
+3. The per-pass deferral precheck (this commit).
+
+**Gate matrix**, with the precheck on (the default):
+
+| Run | Engine wall | Closes (= web) | Deferral queries | Prechecks | Safety releases | Max passes deferred | Max wait | Diff |
+|---|---|---|---|---|---|---|---|---|
+| s1/s2/s3 × 100, K=2 | 4.8–6.6 s | 147 / 128 / 123 | ~285 | 32 | 0 | 1 | ≤1.6 s | 0 |
+| s1/s2/s3 × 500, K=2 | 21–25 s | 739 / 767 / 715 | ~1240 | 32–34 | 0 | 1 | ≤6.9 s | 0 |
+| s1/s2/s3 × 1000, K=2 | ~49 s | 1292 / 1307 / 1241 | ~2450 | 34 | 0 | 1 | ≤15.8 s | 0 |
+| s4 × 500, K=4 | 27.8 s | 739 | 2497 | 68 | 0 | 1 | 8.2 s | 0 |
+
+What the matrix covers:
+- Every topology in every run: bulk, mirror-d2/d3 both orders, coverage-chain both orders, fan-in, circular,
+  coverage-of-coverage.
+- 2 or 4 concurrent walkers, with the dispatcher running.
+- Every account deferred at most 1 pass, which is ≤ chain depth.
+- 0 safety releases.
+
+**Timing caveat.** The machine slowed between runs: the web's first pass at 1000 clients took 40 s in the earlier
+matrix and 72 s later. An A/B on that same slow machine (s1 × 1000) gives:
+
+| Precheck | Engine wall | Max wait |
+|---|---|---|
+| off | 49.2 s | 14.7 s |
+| on | 50.5 s | 14.8 s |
+
+So the slowdown is the machine, not the change. The max wait is the fan-in master (200 follow-ups ahead of it,
+delivered one HTTP call at a time by the dispatcher). The same volume on the web runs inline inside a 40-72 s pass.
+
+**Deferral query cost (§4.8, `scripts/load/explain-deferral.sh`, 632 accounts).**
+- **Plan:** every PostCloseEffect access goes through the `status` index, unchanged from 893 to 101,893 DONE rows.
+- **Per-account query:** ~1.0-1.15 ms including planning (plpgsql EXECUTE; the engine's prepared statements skip the
+  planning).
+- **Precheck:** ~0.044 ms.
+
+**Precheck (engine, results-identical).** One `EXISTS` on PENDING POSITION_CLOSED rows per pass. The per-account
+query only runs once one is pending, or once this process queued one during the pass (FOLLOW_UPS_QUEUED; only the
+engine queues these rows, so concurrent walkers are covered).
+
+| Situation | Deferral queries | Pass time | Results |
+|---|---|---|---|
+| Steady state, 433 open accounts, nothing pending | 433 → 0 (+1 precheck) | ~1.2 s → ~0.94 s | identical |
+| Stop-out storm, s1 × 500 | 2160 → 1246 | similar | engine snapshot precheck on vs off: 0 differences; both 0 vs the web |
+| Stop-out storm, s1 × 1000 | 4206 → 2450 | similar | identical |
+
+Neon projection: at the coalesced 1 pass/s this saves one query per open account per second, i.e. ~433 queries/s at
+this book size, whenever nothing is pending. `pg_stat_database` xact deltas proved too noisy (stats flush
+asynchronously) to use as evidence.
+
+**Regression:** parity 22/22, engine 242, Stage 3 gate 26/26.
 
 ### Stage 4.5: mirror / coverage ordering aligned with the web — DONE 2026-09-24
 
