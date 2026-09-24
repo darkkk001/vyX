@@ -15,7 +15,7 @@ import * as mirror from "@/lib/mirror";
 import * as coverage from "@/lib/coverage";
 import { resolveWantsDealingQueue } from "@/lib/dealing-routing";
 import { orderAuditFields } from "@/lib/order-audit";
-import { getLivePriceRow } from "@/lib/live-price";
+import { classifyMissingPrice, getLivePriceRow } from "@/lib/live-price";
 import {
   checkTradingHalted,
   checkCloseOnly,
@@ -254,9 +254,12 @@ async function handlePlaceOrder(request: NextRequest) {
     livePrice = await getLivePriceRow(symbolName);
     const priceError = evaluateLiveMarketPrice(livePrice, symbolName, price) ?? checkPriceFreshness(livePrice);
     if (priceError) {
-      // NO_LIVE_FEED here means the schedule says OPEN but no tick reached the engine for 15 s (a real
-      // feed gap, or a session config that does not know about a break) -- the last tick time lets
-      // the terminal say so instead of "no live feed" on what the trader sees as a closed market.
+      // NO_LIVE_FEED / PRICE_STALE here mean the schedule says OPEN but this symbol has no fresh tick. If the feed is
+      // alive (other symbols tick) the market is simply not quoting (reopen after a break, holiday): answer
+      // MARKET_CLOSED (reason NOT_QUOTING), not a "feed gap". Only a feed that is down everywhere stays NO_LIVE_FEED.
+      if ((priceError === "NO_LIVE_FEED" || priceError === "PRICE_STALE") && (await classifyMissingPrice(session.brokerId, symbolName)) === "MARKET_CLOSED") {
+        return NextResponse.json({ error: "MARKET_CLOSED", reason: "NOT_QUOTING", nextOpenAt: null, symbol: symbolName, lastTickAt: livePrice?.tickAt?.toISOString() ?? null }, { status: 400 });
+      }
       return NextResponse.json({ error: priceError, symbol: symbolName, lastTickAt: livePrice?.tickAt?.toISOString() ?? null }, { status: 400 });
     }
   } else {

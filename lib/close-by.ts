@@ -1,6 +1,6 @@
 import "server-only";
 import { Prisma, PrismaClient } from "@prisma/client";
-import { getFreshPrices } from "@/lib/live-price";
+import { classifyMissingPrice, getFreshPrices } from "@/lib/live-price";
 import { closePositionInTx } from "@/lib/position-close";
 import { publishTradingEvent } from "@/lib/nats";
 import { checkTradingSession, computeNextSessionOpen } from "@/lib/risk";
@@ -95,7 +95,8 @@ export async function resolveCloseByPair(
   const priceMap = await getFreshPrices([a.symbol.name]);
   const live = priceMap.get(a.symbol.name);
   if (!live) {
-    return { ok: false as const, error: "no live price for this symbol" };
+    // schedule OPEN but no fresh tick: the market not quoting (feed alive elsewhere) reads as closed
+    return { ok: false as const, error: (await classifyMissingPrice(params.brokerId, a.symbol.name)) === "MARKET_CLOSED" ? "MARKET_CLOSED" : "no live price for this symbol" };
   }
   const closePrice = live.bid.add(live.ask).div(2);
   const closeVolume = a.volume.lte(b.volume) ? a.volume : b.volume;

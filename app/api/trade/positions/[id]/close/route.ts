@@ -10,7 +10,7 @@ import { checkLotStep, checkPriceFreshness, checkSlippage, checkTradingSession, 
 import { closePriceFor } from "@/lib/trading";
 import * as mirror from "@/lib/mirror";
 import * as coverage from "@/lib/coverage";
-import { getLivePriceRow } from "@/lib/live-price";
+import { classifyMissingPrice, getLivePriceRow } from "@/lib/live-price";
 import { accountWantsDealingQueue, afterCloseQueued, queueCloseInTx, ClosePendingError } from "@/lib/queued-close";
 
 // Closing (fully or partially) is the one place a trade changes the
@@ -113,7 +113,12 @@ export async function POST(
   const livePrice = await getLivePriceRow(position.symbol.name);
   const priceError = evaluateLiveMarketPrice(livePrice, position.symbol.name, clientReferencePrice) ?? checkPriceFreshness(livePrice);
   if (priceError || !livePrice) {
-    return NextResponse.json({ error: priceError ?? "NO_LIVE_FEED", symbol: position.symbol.name, lastTickAt: livePrice?.tickAt?.toISOString() ?? null }, { status: 400 });
+    const code = priceError ?? "NO_LIVE_FEED";
+    // schedule OPEN but no fresh tick: feed alive elsewhere = this market is not quoting (see classifyMissingPrice)
+    if ((code === "NO_LIVE_FEED" || code === "PRICE_STALE") && (await classifyMissingPrice(session.brokerId, position.symbol.name)) === "MARKET_CLOSED") {
+      return NextResponse.json({ error: "MARKET_CLOSED", reason: "NOT_QUOTING", nextOpenAt: null, symbol: position.symbol.name, lastTickAt: livePrice?.tickAt?.toISOString() ?? null }, { status: 400 });
+    }
+    return NextResponse.json({ error: code, symbol: position.symbol.name, lastTickAt: livePrice?.tickAt?.toISOString() ?? null }, { status: 400 });
   }
   const closePrice = closePriceFor(position.side, livePrice.bid, livePrice.ask);
 

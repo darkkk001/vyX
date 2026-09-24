@@ -117,7 +117,8 @@ function formatElapsed(sinceMs: number, nowMs: number): string {
 // placement's own risk-check chain doesn't attach nextOpenAt yet) has
 // none to give.
 function formatMarketClosedMessage(symbolName: string, nextOpenAtIso?: string | null): string {
-  if (!nextOpenAtIso) return "Market closed, opens Sun 22:00 UTC";
+  // no next-open time: the server says the market is not quoting right now (a break / reopen / holiday); never guess a day
+  if (!nextOpenAtIso) return `Market closed, ${symbolName} is not trading right now. Try again when it reopens.`;
   const d = new Date(nextOpenAtIso);
   const dayLabel = d.toLocaleDateString("en-US", { weekday: "long", timeZone: "UTC" });
   const timeLabel = d.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "UTC" });

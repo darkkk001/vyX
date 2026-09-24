@@ -139,6 +139,23 @@ export async function getFreshPrices(symbolNames: string[]): Promise<Map<string,
   return new Map(rows.map((r) => [r.symbol, r]));
 }
 
+/**
+ * No usable tick for `symbolName` although its trading schedule says OPEN (2026-09-25). Two very different causes:
+ * - the FEED is down: nothing is ticking anywhere -> "NO_LIVE_FEED" (a real problem, say so);
+ * - this MARKET is not quoting while the feed is alive (other symbols ticked in the last 15 s): the minutes after the
+ *   daily break / weekend reopen before its first tick, an exchange holiday, an early close the schedule does not
+ *   know -> "MARKET_CLOSED". A trader closing a position then sees "market closed", not "feed gap, last tick 62
+ *   minutes ago", which read as the platform being broken.
+ * Only ever called on the error path (a missing price), so the extra read costs nothing in normal trading.
+ */
+export async function classifyMissingPrice(brokerId: string, symbolName: string): Promise<"MARKET_CLOSED" | "NO_LIVE_FEED"> {
+  const rows = await prisma.brokerSymbol.findMany({ where: { brokerId, enabled: true }, select: { symbol: { select: { name: true } } } });
+  const others = rows.map((r) => r.symbol.name).filter((n) => n !== symbolName);
+  if (others.length === 0) return "NO_LIVE_FEED";
+  const fresh = await getFreshPrices(others).catch(() => new Map<string, FreshPrice>());
+  return fresh.size > 0 ? "MARKET_CLOSED" : "NO_LIVE_FEED";
+}
+
 export async function getFreshPrice(symbolName: string): Promise<FreshPrice | null> {
   const map = await getFreshPrices([symbolName]);
   return map.get(symbolName) ?? null;

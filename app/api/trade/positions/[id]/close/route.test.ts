@@ -176,4 +176,24 @@ describe("client close is priced by the server, never by the client", () => {
     expect(res.json.error).toBe("NO_LIVE_FEED");
     expect((await prisma.position.findUniqueOrThrow({ where: { id: pos.id } })).status).toBe("OPEN");
   });
+
+  // 2026-09-25: the schedule says open but THIS market has not ticked (reopen after a break, holiday) while the feed is
+  // alive (another enabled symbol ticks): that is a closed market to the trader, not a "feed gap".
+  it("no tick on this symbol while another ticks = MARKET_CLOSED (not quoting), nothing moves", async () => {
+    if (!dbReachable) return;
+    const fx = await createFixture();
+    const pos = await openPosition(fx, "BUY", "90.00");
+    await prisma.livePrice.update({ where: { symbol: fx.symbolName }, data: { tickAt: new Date(Date.now() - 62 * 60_000) } });
+    const other = await prisma.symbol.create({ data: { name: `${fx.symbolName}B`, baseCurrency: "TST", quoteCurrency: "USD", category: "CRYPTO", digits: 2, contractSize: D(1) } });
+    createdSymbolNames.push(other.name);
+    await prisma.brokerSymbol.create({ data: { brokerId: fx.brokerId, symbolId: other.id, tradingMode: "BOTH" } });
+    await prisma.livePrice.create({ data: { symbol: other.name, bid: D("50.00"), ask: D("50.10"), tickAt: new Date() } });
+    const before = await balance(fx);
+    const res = await clientClose(fx, pos.id, { closePrice: "100.00" });
+    expect(res.status).toBe(400);
+    expect(res.json.error).toBe("MARKET_CLOSED");
+    expect(res.json.reason).toBe("NOT_QUOTING");
+    expect((await prisma.position.findUniqueOrThrow({ where: { id: pos.id } })).status).toBe("OPEN");
+    expect((await balance(fx)).equals(before)).toBe(true);
+  });
 });
