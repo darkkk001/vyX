@@ -168,11 +168,20 @@ pub struct MarginWatch {
     book: RwLock<Arc<Book>>,
     tracks: Mutex<HashMap<String, Track>>,
     reload_now: Notify,
+    /// Stage 5 (2026-09-25): every account this trigger fires for is handed to the shadow FIRST, before the hook
+    /// calls the web, so the shadow samples the breached state instead of racing the web's close. Unset (live, no
+    /// shadow) = nothing changes. A send never blocks and never delays the web call.
+    on_fire: Mutex<Option<tokio::sync::mpsc::UnboundedSender<String>>>,
 }
 
 impl MarginWatch {
     pub fn new() -> Arc<Self> {
-        Arc::new(MarginWatch { book: RwLock::new(Arc::new(Book::default())), tracks: Mutex::new(HashMap::new()), reload_now: Notify::new() })
+        Arc::new(MarginWatch { book: RwLock::new(Arc::new(Book::default())), tracks: Mutex::new(HashMap::new()), reload_now: Notify::new(), on_fire: Mutex::new(None) })
+    }
+
+    /// Stage 5: hand every fired account to the shadow (monitor::spawn_shadow_trigger) before the web is called.
+    pub fn set_on_fire(&self, tx: tokio::sync::mpsc::UnboundedSender<String>) {
+        *self.on_fire.lock().unwrap() = Some(tx);
     }
 
     pub fn set_book(&self, book: Book) {
@@ -243,6 +252,12 @@ impl MarginWatch {
                         edge
                     }
                 };
+                if fire {
+                    // to the shadow first (a non-blocking send), then the symbol goes back to the hook for the web call
+                    if let Some(tx) = self.on_fire.lock().unwrap().as_ref() {
+                        let _ = tx.send(account.id.clone());
+                    }
+                }
                 if fire && !out.contains(&t.symbol) {
                     out.push(t.symbol.clone());
                 }

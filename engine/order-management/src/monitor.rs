@@ -748,6 +748,32 @@ pub fn spawn(pool: PgPool, nats: async_nats::Client, interval: std::time::Durati
     }));
 }
 
+/// Stage 5 (2026-09-25): the shadow evaluates an account the moment the per-tick trigger fires for it, with the same
+/// ticks, before the web is called (margin_watch::MarginWatch::set_on_fire). Without it the web, reacting on that trigger,
+/// could close before the shadow's next 1 s pass ever sampled the breach: a WEB_ONLY that resets the soak clock and buries
+/// a real one in noise. Only WHEN the shadow evaluates changes: the same evaluate_account_mode (close / P&L / NBP
+/// untouched), Mode::Shadow (nothing written). Accounts queued while one is evaluated are taken together, each once.
+pub fn spawn_shadow_trigger(pool: PgPool, recorder: Arc<crate::shadow::Recorder>, prices: book::PriceSource) -> tokio::sync::mpsc::UnboundedSender<String> {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    tokio::spawn(book::with_price_source(prices, async move {
+        let mode = Mode::Shadow(recorder);
+        while let Some(first) = rx.recv().await {
+            let mut batch = vec![first];
+            while let Ok(more) = rx.try_recv() {
+                if !batch.contains(&more) {
+                    batch.push(more);
+                }
+            }
+            for account_id in batch {
+                if let Err(err) = evaluate_account_mode(&pool, None, &account_id, &mode).await {
+                    tracing::warn!(%account_id, %err, "shadow trigger: evaluation failed (the 1 s pass will retry)");
+                }
+            }
+        }
+    }));
+    tx
+}
+
 /// Stage 5: the shadow monitor. A pass every `interval` in `Mode::Shadow`, one at a time (a slow pass delays the
 /// next, never overlaps it). No NATS, no dispatcher, no writes to the book.
 pub fn spawn_shadow(pool: PgPool, recorder: Arc<crate::shadow::Recorder>, interval: std::time::Duration, prices: book::PriceSource) {

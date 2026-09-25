@@ -206,3 +206,62 @@ async fn a_hedged_pair_is_measured_with_the_symbols_hedged_margin_pct() {
     assert!(hedged_pair_fires(dec!(200)).await, "200 %: both legs in full, 90 % <= 99: the trigger fires");
     assert!(!hedged_pair_fires(dec!(50)).await, "50 %: 360 %, the hedged account must NOT be triggered");
 }
+
+/// Stage 5 production race (2026-09-25): the account the per-tick trigger fires for is handed to the shadow before the
+/// web is called, and the shadow's decision exists within a fraction of the web's round trip (the web then has to
+/// receive the call, evaluate and close). Real RiskHook + MarginWatch + shadow worker on the scratch DB, ticks as price.
+#[tokio::test]
+async fn the_trigger_hands_the_account_to_the_shadow_before_the_web_and_it_decides_at_once() {
+    let Some(pool) = pool().await else { return };
+    // committed (the worker reads it through its own connection): 10 x 0.01 at 4290, balance 142, 100 / 99
+    let mut conn = pool.acquire().await.unwrap();
+    let acc = account(&mut conn, dec!(142), Some((dec!(100), dec!(99))), 10).await;
+    drop(conn);
+    let book = load_book(&pool).await.unwrap();
+    let mine: Vec<_> = book.accounts.into_iter().filter(|a| a.id == acc).collect();
+    assert_eq!(mine.len(), 1);
+
+    let (url, mut rx) = mock_route().await;
+    std::env::set_var("VYX_RISK_HOOK_URL", &url);
+    std::env::set_var("VYX_RISK_HOOK_SECRET", "s3cret");
+    let hook = RiskHook::from_env().expect("hook");
+    let cache = Arc::new(TickCache::new());
+    let recorder = Arc::new(order_management::shadow::Recorder::in_memory());
+    let inbox = order_management::monitor::spawn_shadow_trigger(pool.clone(), recorder.clone(), order_management::book::PriceSource::Ticks(cache.clone()));
+    let watch = MarginWatch::new();
+    watch.set_book(order_management::margin_watch::Book::new(mine));
+    watch.set_on_fire(inbox);
+    hook.set_margin_watch(watch.clone());
+
+    let t = gold(dec!(4280));
+    cache.set(&t, chrono::Utc::now());
+    let started = std::time::Instant::now();
+    hook.after_flush(std::slice::from_ref(&t), &cache);
+    let mut decided_after = None;
+    for _ in 0..200 {
+        if recorder.decisions().iter().any(|(d, _)| d.kind == order_management::shadow::Kind::StopOut) {
+            decided_after = Some(started.elapsed());
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    // the web call is unchanged: still made for the symbol
+    let line = tokio::time::timeout(Duration::from_secs(3), rx.recv()).await.expect("route called").unwrap();
+    // cleanup (committed rows)
+    let broker: Option<(String,)> = sqlx::query_as(r#"SELECT "brokerId" FROM "Account" WHERE id = $1"#).bind(&acc).fetch_optional(&pool).await.unwrap();
+    for sql in [
+        r#"DELETE FROM "Position" WHERE "accountId" = $1"#,
+        r#"DELETE FROM "Order" WHERE "accountId" = $1"#,
+        r#"DELETE FROM "Account" WHERE id = $1"#,
+    ] {
+        let _ = sqlx::query(sql).bind(&acc).execute(&pool).await;
+    }
+    if let Some((b,)) = broker {
+        let _ = sqlx::query(r#"DELETE FROM "Group" WHERE "brokerId" = $1"#).bind(&b).execute(&pool).await;
+        let _ = sqlx::query(r#"DELETE FROM "Broker" WHERE id = $1"#).bind(&b).execute(&pool).await;
+    }
+    let decided_after = decided_after.expect("the shadow decided the stop-out from the trigger");
+    eprintln!("shadow decision {decided_after:?} after the trigger");
+    assert_eq!(line, "GET /api/internal/margin-monitor?symbols=XAUUSD HTTP/1.1");
+    assert!(decided_after < Duration::from_millis(250), "{decided_after:?}");
+}
