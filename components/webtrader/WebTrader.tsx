@@ -3620,7 +3620,7 @@ export default function WebTrader({
       <DesktopTitleBar brokerName={brokerName} brokerLogoUrl={brokerLogoUrl} server={serverName} connected={connected} />
       <div id="app">
         <div className={`margin-call-banner${account?.tradingState && account.tradingState !== "open" ? " show" : ""}`}>
-          {account?.tradingState === "halted" ? "Trading halted. Your broker has paused new orders." : "Close-only. Your broker allows closing positions only."}
+          {account?.tradingState === "halted" ? "Trading halted: the broker has stopped new trades." : "Close-only: you can close positions but not open new ones."}
         </div>
         <div className={`margin-call-banner${marginCall ? " show" : ""}`}>
           Margin call, your margin level is below {marginCallLevel}%. Deposit funds or close positions to avoid stop-out.
