@@ -97,6 +97,16 @@ fn current_price_source() -> Result<PriceSource, sqlx::Error> {
     }
 }
 
+/// An FX conversion quote older than this is not used: equal to lib/fx.ts FX_RATE_MAX_AGE_MS (72 h, a weekend fits).
+pub fn fx_rate_max_age() -> chrono::Duration {
+    chrono::Duration::hours(72)
+}
+
+/// A conversion quote from the ticks, or None when there is none or it is older than fx_rate_max_age.
+fn fx_quote_from_ticks(cache: &market_data::cache::TickCache, symbol: &str, now: chrono::DateTime<chrono::Utc>) -> Option<(Decimal, Decimal)> {
+    cache.latest(symbol).filter(|(t, received)| now - tick_time(t, *received) < fx_rate_max_age()).map(|(t, _)| (t.bid, t.ask))
+}
+
 /// The tick time the web uses for freshness (engine price_row: tick_ms, else the receive time).
 pub fn tick_time(tick: &protocol::Tick, received_at: chrono::DateTime<chrono::Utc>) -> chrono::DateTime<chrono::Utc> {
     tick.tick_ms.and_then(chrono::DateTime::from_timestamp_millis).unwrap_or(received_at)
@@ -172,9 +182,10 @@ pub async fn open_positions_with_market(
     let fx_quotes: std::collections::HashMap<String, crate::fx::Quote> = if fx_symbols.is_empty() {
         std::collections::HashMap::new()
     } else if let PriceSource::Ticks(cache) = &source {
-        fx_symbols.iter().filter_map(|s| cache.latest(s).map(|(t, _)| (s.clone(), (t.bid, t.ask)))).collect()
+        // same age limit as lib/fx.ts FX_RATE_MAX_AGE_MS: older = no rate = the position is unpriced
+        fx_symbols.iter().filter_map(|s| fx_quote_from_ticks(cache, s, now).map(|q| (s.clone(), q))).collect()
     } else {
-        let q: Vec<(String, Decimal, Decimal)> = sqlx::query_as(r#"SELECT symbol, bid, ask FROM "LivePrice" WHERE symbol = ANY($1)"#)
+        let q: Vec<(String, Decimal, Decimal)> = sqlx::query_as(r#"SELECT symbol, bid, ask FROM "LivePrice" WHERE symbol = ANY($1) AND "tickAt" > now() - interval '72 hours'"#)
             .bind(&fx_symbols)
             .fetch_all(pool)
             .await?;
@@ -703,5 +714,22 @@ mod price_source_tests {
         cache.set(&tick(dec!(4271), dec!(4271.3), None), now - chrono::Duration::seconds(3));
         assert_eq!(fresh_from_ticks(&cache, "XAUUSD", now), (Some(dec!(4271)), Some(dec!(4271.3))));
         assert_eq!(fresh_from_ticks(&cache, "EURUSD", now), (None, None), "unknown symbol = unpriced");
+    }
+
+    /// FX age limit, the same as lib/fx.ts (fx-age.test.ts): 49 h (a weekend) converts, over 72 h is no rate.
+    #[test]
+    fn fx_quotes_older_than_72h_are_not_used() {
+        let cache = market_data::cache::TickCache::new();
+        let now = chrono::Utc::now();
+        let set = |hours: i64| {
+            let t: protocol::Tick = serde_json::from_value(serde_json::json!({ "symbol": "EURUSD", "bid": dec!(1.08), "ask": dec!(1.0802), "tick_ms": (now - chrono::Duration::hours(hours)).timestamp_millis() })).unwrap();
+            cache.set(&t, now);
+        };
+        set(49);
+        assert_eq!(fx_quote_from_ticks(&cache, "EURUSD", now), Some((dec!(1.08), dec!(1.0802))), "a weekend-old rate converts");
+        set(73);
+        assert_eq!(fx_quote_from_ticks(&cache, "EURUSD", now), None, "older than 72 h: no rate");
+        set(24 * 10);
+        assert_eq!(fx_quote_from_ticks(&cache, "EURUSD", now), None, "10 days (the stale Neon copy): no rate");
     }
 }

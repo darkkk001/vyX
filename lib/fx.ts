@@ -14,14 +14,22 @@ import { getLivePriceRows } from "@/lib/live-price";
 // is read at all.
 //
 // Rate: the MID of the conversion pair's latest quote, as MT5 does for a cross when it has to pick one side
-// for a figure that is not itself a fill. Freshness is NOT required: an FX rate a few minutes old moves a
-// P&L by a fraction of a percent, while no conversion at all is wrong by the whole exchange rate. What IS
-// required is a price at all; without one the caller must refuse rather than guess (FxRateUnavailableError).
+// for a figure that is not itself a fill. Tick-level freshness is NOT required: an FX rate a few minutes old
+// moves a P&L by a fraction of a percent, while no conversion at all is wrong by the whole exchange rate.
+// But an age LIMIT is (2026-09-25): a quote older than FX_RATE_MAX_AGE_MS counts as no price at all, so the
+// caller refuses (FxRateUnavailableError / the position is unpriced) instead of converting with it. Before, a
+// VPS outage fell back to Neon's LivePrice, which stopped moving when the feed's writes went VPS-local (S5):
+// every non-USD conversion would silently have used a 10-day-old rate. 72 h still covers a normal weekend or
+// holiday (Friday's FX close to the Sunday reopen is ~49 h: a BTC position in a EUR account is valued on
+// Saturday with Friday's EURUSD, as MT5 does). The engine applies the same limit (order-management book.rs).
 
 export type FxQuote = { bid: Prisma.Decimal; ask: Prisma.Decimal };
 export type FxLookup = (symbol: string) => FxQuote | undefined;
 
 const ONE = new Prisma.Decimal(1);
+
+/** A conversion quote older than this is not used (see the header). Keep equal to the engine's FX_RATE_MAX_AGE. */
+export const FX_RATE_MAX_AGE_MS = 72 * 3600 * 1000;
 
 export class FxRateUnavailableError extends Error {
   constructor(public readonly from: string, public readonly to: string) {
@@ -78,9 +86,11 @@ export async function loadFxLookup(db: Db, pairs: Iterable<readonly [string, str
   for (const [from, to] of pairs) for (const s of conversionSymbolsFor(from, to)) symbols.add(s);
   if (symbols.size === 0) return () => undefined;
   const rows = await getLivePriceRows([...symbols], db);
+  const cutoff = Date.now() - FX_RATE_MAX_AGE_MS;
   return (symbol) => {
     const r = rows.get(symbol);
-    return r ? { bid: new Prisma.Decimal(r.bid), ask: new Prisma.Decimal(r.ask) } : undefined;
+    // too old to convert with = no price: refuse, never a stale rate
+    return r && r.tickAt.getTime() > cutoff ? { bid: new Prisma.Decimal(r.bid), ask: new Prisma.Decimal(r.ask) } : undefined;
   };
 }
 
