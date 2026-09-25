@@ -182,7 +182,8 @@ pub fn database_identity(url: &str) -> Option<String> {
 /// The tables no shadow connection may be able to write.
 pub const MONEY_TABLES: &[&str] = &["Position", "Account", "Transaction", "Order", "PostCloseEffect", "Notification", "AuditLog", "PriceAlert"];
 
-/// Guard 1: the read-only book pool, or why shadow must not start.
+/// Guard 1: the read-only book pool, or why shadow must not start (write on a money table, Account.passwordHash
+/// readable, a non-read-only session, or another database).
 pub async fn connect_read_only_book(shadow_url: Option<&str>, main_url: &str) -> Result<PgPool, String> {
     let url = shadow_url.map(str::trim).filter(|s| !s.is_empty()).ok_or("VYX_SHADOW_DATABASE_URL is not set: shadow needs its own read-only Neon role")?;
     let (a, b) = (database_identity(url), database_identity(main_url));
@@ -210,6 +211,12 @@ pub async fn connect_read_only_book(shadow_url: Option<&str>, main_url: &str) ->
     .map_err(|e| format!("VYX_SHADOW_DATABASE_URL: privilege check failed ({e})"))?;
     if can_write != Some(false) {
         return Err(format!("VYX_SHADOW_DATABASE_URL role '{who}' can write a money table ({}): use the read-only role (deploy/neon-shadow-readonly.sql)", MONEY_TABLES.join(", ")));
+    }
+    // least privilege (user 2026-09-25): a standing credential must not read secrets it has no use for
+    let (reads_password,): (bool,) = sqlx::query_as(r#"SELECT has_column_privilege(current_user, 'public."Account"', 'passwordHash', 'SELECT')"#)
+        .fetch_one(&pool).await.map_err(|e| format!("VYX_SHADOW_DATABASE_URL: column privilege check failed ({e})"))?;
+    if reads_password {
+        return Err(format!("VYX_SHADOW_DATABASE_URL role '{who}' can read Account.passwordHash: grant only the columns in deploy/neon-shadow-readonly.sql"));
     }
     let (ro,): (String,) = sqlx::query_as("SHOW transaction_read_only").fetch_one(&pool).await.map_err(|e| e.to_string())?;
     if ro != "on" {
