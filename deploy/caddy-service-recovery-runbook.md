@@ -1,5 +1,35 @@
 # Caddy service "Paused" + missing MARKET_DATA_READ_SECRET: recovery runbook (2026-09-26)
 
+## Outcome (2026-09-26, run by the owner on the VPS)
+- **Cause: the `vyxtrader-caddy` service was simply paused.** Step 1 found a single caddy.exe, a child of nssm, and
+  no stray instance. The "second Caddy / nssm throttling" hypothesis below was wrong. Pausing an nssm service does
+  not stop its child, so Caddy kept serving the whole time.
+- **Fix: `nssm continue vyxtrader-caddy`.** Service RUNNING, `/health` 200, no downtime. Step 2's stop / kill / start
+  was not needed.
+- **Step 3 done:** `set MARKET_DATA_READ_SECRET=...` added to `C:yxtrader\scripts\start-engine.cmd` (backup kept),
+  engine restarted.
+- **Caddy has no log file.** `nssm get vyxtrader-caddy AppStderr` / `AppStdout` are empty, so Caddy's own output
+  (certificate renewals, upstream errors, config errors at start) goes nowhere. The next incident will have no
+  Caddy log to read. Optional fix, safe at any time (it takes effect on the next service restart, which is ~2 s of
+  feed downtime):
+  ```powershell
+  New-Item -ItemType Directory -Force C:yxtrader\logs | Out-Null
+  nssm set vyxtrader-caddy AppStdout C:yxtrader\logs\caddy.out.log
+  nssm set vyxtrader-caddy AppStderr C:yxtrader\logs\caddy.err.log
+  nssm set vyxtrader-caddy AppRotateFiles 1
+  nssm set vyxtrader-caddy AppRotateOnline 1
+  nssm set vyxtrader-caddy AppRotateBytes 10485760      # rotate at 10 MB
+  nssm restart vyxtrader-caddy                           # do it while markets are closed
+  curl.exe -s -o NUL -w "%{http_code}`n" https://feed.vyxtrader.com/health   # 200
+  Get-Content C:yxtrader\logs\caddy.err.log -Tail 20                      # Caddy writes its log to stderr
+  ```
+  Rollback: `nssm reset vyxtrader-caddy AppStdout; nssm reset vyxtrader-caddy AppStderr; nssm restart vyxtrader-caddy`.
+- **If it shows Paused again:** `nssm status vyxtrader-caddy`. If PAUSED, run `nssm continue vyxtrader-caddy` (no
+  downtime) and check who paused it: `Get-WinEvent -FilterHashtable @{LogName='System'; Id=7036} -MaxEvents 50 |
+  ? Message -match 'caddy'` shows the service state changes with their times.
+
+The rest of this file is the original diagnosis and procedure, kept for reference.
+
 ## What is known (checked from outside, read-only)
 - `feed.vyxtrader.com` resolves to 161.97.138.160 (the VPS; a plain A record, no tunnel). It is served by Caddy
   **right now**: `/health` answers 200 with `Server: Caddy` and `Via: 1.1 Caddy`, and `/internal/*` without a secret
@@ -20,7 +50,7 @@
 - `feed-health` / `alert-stats` (`TRADING_CORE_URL` + `x-internal-secret`) fail silently (they show blank in
   Feed health, with no log line), so the logs can't tell. Open the backoffice Feed health screen: numbers = OK.
 
-## Why the service shows "Paused" (hypothesis; step 1 confirms it)
+## Why the service shows "Paused" (original hypothesis: turned out WRONG, see Outcome)
 When the program nssm starts exits right away, nssm throttles the restart, and Windows shows the service as
 **Paused** meanwhile. Caddy is still serving, so the most likely cause: a second Caddy, started outside the service
 (a console, `caddy start`, or a scheduled task), holds ports 80/443. The service's own Caddy then dies at once with

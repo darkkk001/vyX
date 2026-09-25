@@ -236,13 +236,18 @@ search for `.env` files, or of the nssm service's own environment, will not find
 findstr /i /c:"MARKET_DATA_READ_SECRET" /c:"INTERNAL_SERVICE_SECRET" C:\vyxtrader\scripts\start-engine.cmd
 ```
 
+- **Status 2026-09-26:** `MARKET_DATA_READ_SECRET` is now set in start-engine.cmd (added by the owner, backup kept,
+  engine restarted), so the engine itself accepts `X-Market-Data-Secret` on `/internal/candles` and `/internal/prices`
+  as well as Caddy's check. Its value must stay equal to Vercel's `MARKET_DATA_READ_SECRET` and to the one Caddy
+  checks: change all three together (deploy/caddy-service-recovery-runbook.md).
 - `MARKET_DATA_READ_SECRET` is **optional** (§5). When it is not set, the engine logs
   "MARKET_DATA_READ_SECRET not set -- /internal/candles and /internal/prices accept the internal secret only",
   and those two read routes accept `x-internal-secret: <INTERNAL_SERVICE_SECRET>` only.
 - The web app sends only `X-Market-Data-Secret` (lib/market-data-client.ts). With the engine's copy unset, the
   web's VPS reads are accepted only if Caddy's own check on feed.vyxtrader.com forwards them.
 
-Read-only check that works either way: use the internal secret against localhost. For example, the XAUUSD M1
+Read-only check that works either way: use the internal secret against localhost (or, now that it is set, the read
+secret: `$H = @{ "x-market-data-secret" = <value> }`). For example, the XAUUSD M1
 candles after Friday's close, to confirm that no flat bars were stored:
 
 ```powershell
