@@ -22,6 +22,11 @@ mkdir -p "$OUT"
 cd "$ROOT"
 $PSQL -h 127.0.0.1 -p 5499 -U postgres -Atc "select 1 from pg_database where datname='vyx_load_web'" | grep -q 1 || { echo "[shadow-gate] vyx_load_web missing: run scripts/load/run.sh once"; exit 2; }
 
+# Stage 5 guard 1: the shadow reads the book as a read-only role (engine/order-management/src/shadow.rs
+# connect_read_only_book refuses a role that can write a money table)
+$PSQL -h 127.0.0.1 -p 5499 -U postgres -d vyx_load_web -q -c "DO \$\$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='shadow_ro') THEN CREATE ROLE shadow_ro LOGIN; END IF; END \$\$;" -c "GRANT CONNECT ON DATABASE vyx_load_web TO shadow_ro; GRANT USAGE ON SCHEMA public TO shadow_ro; GRANT SELECT ON ALL TABLES IN SCHEMA public TO shadow_ro; ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO shadow_ro;"
+export VYX_SHADOW_DATABASE_URL=postgresql://shadow_ro@127.0.0.1:5499/vyx_load_web
+
 TSX="npx tsx --conditions=react-server"
 $TSX scripts/load/generate.ts --seed "$SEED" --accounts "$N" --out "$OUT/world.json"
 DATABASE_URL=$WEB DIRECT_URL=$WEB $TSX scripts/load/seed.ts "$OUT/world.json"

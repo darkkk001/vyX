@@ -133,6 +133,92 @@ pub async fn ensure_schema(pool: &PgPool, schema: &str, tables: &[&str]) -> Resu
     }
 }
 
+// ---- Stage 5 startup guards (user, 2026-09-25): shadow must not be able to act, by construction ----
+//
+// 1. READ-ONLY book connection: the shadow monitor and the reconciler read the book through their OWN pool from
+//    VYX_SHADOW_DATABASE_URL, a Neon role that cannot write any money table (verified at startup, not assumed), and
+//    every session on it is default_transaction_read_only. The engine's main pool stays as it is (it must still
+//    write price alerts / notifications). The URL must point at the SAME Neon endpoint as DATABASE_URL, so the shadow
+//    can never watch a different (e.g. the retired) database.
+// 2. + 3. No post-close delivery configured: with shadow mode, VYX_POST_CLOSE_URL / VYX_POST_CLOSE_SECRET set is a
+//    misconfiguration and shadow refuses to start.
+// A failed guard stops SHADOW only (order management stays OFF, loud ERROR): the engine keeps serving prices, candles
+// and the risk hook, because refusing the whole process would take the price feed down for every trader.
+
+/// Guard 2+3: shadow with a post-close delivery configured. Some(reason) = refuse.
+pub fn shadow_env_violation(post_close_url: Option<&str>, post_close_secret: Option<&str>) -> Option<String> {
+    let set = |v: Option<&str>| v.map(|s| !s.trim().is_empty()).unwrap_or(false);
+    match (set(post_close_url), set(post_close_secret)) {
+        (false, false) => None,
+        (u, s) => Some(format!(
+            "shadow mode with post-close delivery configured ({}{}{}): unset them, shadow must never deliver follow-ups",
+            if u { "VYX_POST_CLOSE_URL" } else { "" },
+            if u && s { " + " } else { "" },
+            if s { "VYX_POST_CLOSE_SECRET" } else { "" }
+        )),
+    }
+}
+
+/// The Neon endpoint id of a connection URL ("ep-morning-glade-b23tui1g"), the pooler suffix removed; for a
+/// non-Neon host, the host itself.
+pub fn neon_endpoint(url: &str) -> Option<String> {
+    let after_at = url.rsplit('@').next()?;
+    let host = after_at.split(['/', ':', '?']).next()?.trim();
+    if host.is_empty() {
+        return None;
+    }
+    let first = host.split('.').next().unwrap_or(host);
+    Some(first.strip_suffix("-pooler").unwrap_or(first).to_string())
+}
+
+/// "endpoint/database" of a connection URL: the identity two URLs must share to be the same database.
+pub fn database_identity(url: &str) -> Option<String> {
+    let endpoint = neon_endpoint(url)?;
+    let after_at = url.rsplit('@').next()?;
+    let db = after_at.split_once('/').map(|(_, rest)| rest.split(['?', '#']).next().unwrap_or("")).unwrap_or("");
+    Some(format!("{endpoint}/{db}"))
+}
+
+/// The tables no shadow connection may be able to write.
+pub const MONEY_TABLES: &[&str] = &["Position", "Account", "Transaction", "Order", "PostCloseEffect", "Notification", "AuditLog", "PriceAlert"];
+
+/// Guard 1: the read-only book pool, or why shadow must not start.
+pub async fn connect_read_only_book(shadow_url: Option<&str>, main_url: &str) -> Result<PgPool, String> {
+    let url = shadow_url.map(str::trim).filter(|s| !s.is_empty()).ok_or("VYX_SHADOW_DATABASE_URL is not set: shadow needs its own read-only Neon role")?;
+    let (a, b) = (database_identity(url), database_identity(main_url));
+    if a.is_none() || a != b {
+        return Err(format!("VYX_SHADOW_DATABASE_URL points at {:?} but DATABASE_URL at {:?}: shadow must read the same database the web acts on", a, b));
+    }
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(4)
+        .after_connect(|conn, _meta| {
+            Box::pin(async move {
+                sqlx::query("SET default_transaction_read_only = on").execute(conn).await?;
+                Ok(())
+            })
+        })
+        .connect(url)
+        .await
+        .map_err(|e| format!("VYX_SHADOW_DATABASE_URL: cannot connect ({e})"))?;
+    let tables: Vec<String> = MONEY_TABLES.iter().map(|t| format!("public.\"{t}\"")).collect();
+    let (who, can_write): (String, Option<bool>) = sqlx::query_as(
+        "SELECT current_user::text, bool_or(has_table_privilege(current_user, t, p)) FROM unnest($1::text[]) t, unnest(ARRAY['INSERT','UPDATE','DELETE']) p",
+    )
+    .bind(&tables)
+    .fetch_one(&pool)
+    .await
+    .map_err(|e| format!("VYX_SHADOW_DATABASE_URL: privilege check failed ({e})"))?;
+    if can_write != Some(false) {
+        return Err(format!("VYX_SHADOW_DATABASE_URL role '{who}' can write a money table ({}): use the read-only role (deploy/neon-shadow-readonly.sql)", MONEY_TABLES.join(", ")));
+    }
+    let (ro,): (String,) = sqlx::query_as("SHOW transaction_read_only").fetch_one(&pool).await.map_err(|e| e.to_string())?;
+    if ro != "on" {
+        return Err("shadow book sessions are not read-only".into());
+    }
+    tracing::info!(role = %who, endpoint = ?a, "shadow book: read-only role verified (no write on any money table, read-only sessions)");
+    Ok(pool)
+}
+
 /// Only a database on this machine may hold the shadow store (the plan: VPS-local, never Neon).
 pub fn is_local_url(url: &str) -> bool {
     let after_at = url.rsplit('@').next().unwrap_or("");
@@ -281,6 +367,30 @@ impl Recorder {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn guard_refuses_shadow_with_post_close_delivery() {
+        assert_eq!(super::shadow_env_violation(None, None), None);
+        assert_eq!(super::shadow_env_violation(Some("  "), Some("")), None);
+        assert!(super::shadow_env_violation(None, Some("s3cret")).unwrap().contains("VYX_POST_CLOSE_SECRET"));
+        assert!(super::shadow_env_violation(Some("http://x"), None).unwrap().contains("VYX_POST_CLOSE_URL"));
+        assert!(super::shadow_env_violation(Some("http://x"), Some("s")).unwrap().contains("VYX_POST_CLOSE_URL + VYX_POST_CLOSE_SECRET"));
+    }
+
+    #[test]
+    fn neon_endpoint_ignores_pooler_and_credentials() {
+        let live = "postgresql://ro:pw@ep-morning-glade-b23tui1g-pooler.c-6.eu-central-1.aws.neon.tech/neondb?sslmode=require";
+        let direct = "postgresql://neondb_owner:x@ep-morning-glade-b23tui1g.c-6.eu-central-1.aws.neon.tech/neondb";
+        let dead = "postgresql://neondb_owner:x@ep-flat-boat-b1wjz20p-pooler.c-5.eu-central-1.aws.neon.tech/neondb";
+        assert_eq!(super::neon_endpoint(live).as_deref(), Some("ep-morning-glade-b23tui1g"));
+        assert_eq!(super::neon_endpoint(live), super::neon_endpoint(direct));
+        assert_ne!(super::neon_endpoint(live), super::neon_endpoint(dead));
+        assert_eq!(super::neon_endpoint("postgresql://u:p@127.0.0.1:5499/vyx_test").as_deref(), Some("127"));
+        // same host, another database: NOT the same identity
+        assert_ne!(super::database_identity("postgresql://ro@127.0.0.1:5499/vyx_test"), super::database_identity("postgresql://postgres@127.0.0.1:5499/vyx_load_web"));
+        assert_eq!(super::database_identity(live), super::database_identity(direct));
+        assert_eq!(super::database_identity(live).as_deref(), Some("ep-morning-glade-b23tui1g/neondb"));
+    }
+
     use super::*;
     use rust_decimal_macros::dec;
 

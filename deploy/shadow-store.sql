@@ -49,6 +49,10 @@ CREATE TABLE IF NOT EXISTS shadow_daily (
   clock_days     NUMERIC NOT NULL,
   created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- soak exit gate (2026-09-25): weekend reopens / NFP windows lived through, and the verdict
+ALTER TABLE shadow_daily ADD COLUMN IF NOT EXISTS weekend_opens INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE shadow_daily ADD COLUMN IF NOT EXISTS nfp_windows INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE shadow_daily ADD COLUMN IF NOT EXISTS exit_met BOOLEAN NOT NULL DEFAULT false;
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON shadow_decision, shadow_pair, shadow_state, shadow_daily TO engine;
 GRANT USAGE, SELECT ON SEQUENCE shadow_decision_id_seq, shadow_pair_id_seq TO engine;

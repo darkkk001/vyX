@@ -20,8 +20,9 @@
 //! VALUE / ENGINE_ONLY / WEB_ONLY are UNEXPLAINED: each resets the soak clock (shadow_state.clock_started_at) and is
 //! logged at ERROR with both sides.
 //!
-//! Soak exit (user, 2026-09-24): at least 30 real risk actions paired MATCH / TIMING, and 7 consecutive days with no
-//! unexplained class. The daily summary goes to the log (primary) and to shadow_daily (for the backoffice page).
+//! Soak exit (user, 2026-09-24, widened 2026-09-25): at least 30 real risk actions paired MATCH / TIMING, 7 consecutive
+//! days with no unexplained class, and inside that clean run the shadow was ALIVE through at least 2 weekend reopens
+//! and 1 NFP window (see coverage_event: recorded while reconciling, so an engine that was down does not count). The daily summary goes to the log (primary) and to shadow_daily (for the backoffice page).
 
 use crate::shadow::Recorder;
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
@@ -65,7 +66,35 @@ CREATE TABLE IF NOT EXISTS shadow_daily (
   clock_days     NUMERIC NOT NULL,
   created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+ALTER TABLE shadow_daily ADD COLUMN IF NOT EXISTS weekend_opens INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE shadow_daily ADD COLUMN IF NOT EXISTS nfp_windows INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE shadow_daily ADD COLUMN IF NOT EXISTS exit_met BOOLEAN NOT NULL DEFAULT false;
 "#;
+
+/// A market event the soak must live through (user exit gate, 2026-09-25), or None. Checked on every reconcile run;
+/// the first sighting is recorded in shadow_state, so it only counts if the shadow was running during it.
+/// - weekend reopen: Sunday 22:00-23:00 UTC (the default FX/metals reopen, session.rs is_default_fx_session_closed);
+/// - NFP: the first Friday of the month, 08:30 New York = 12:30 UTC in US daylight time, 13:30 UTC otherwise, and the
+///   hour after it.
+pub fn coverage_event(now: DateTime<Utc>) -> Option<String> {
+    use chrono::{Datelike, Timelike, Weekday};
+    if now.weekday() == Weekday::Sun && now.hour() == 22 {
+        return Some(format!("weekend_open:{}", now.date_naive()));
+    }
+    if now.weekday() == Weekday::Fri && now.day() <= 7 {
+        let start = if crate::session::us_eastern_is_dst(now) { 12 * 60 + 30 } else { 13 * 60 + 30 };
+        let m = now.hour() * 60 + now.minute();
+        if m >= start && m < start + 60 {
+            return Some(format!("nfp:{}", now.date_naive()));
+        }
+    }
+    None
+}
+
+/// The soak exit, in one place: 30 paired, 7 clean days, 2 weekend reopens and 1 NFP window lived through.
+pub fn exit_met(paired: i64, clock_days: Decimal, weekend_opens: i64, nfp_windows: i64) -> bool {
+    paired >= 30 && clock_days >= Decimal::new(7, 0) && weekend_opens >= 2 && nfp_windows >= 1
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Class {
@@ -238,6 +267,10 @@ impl Reconciler {
         let window = ChronoDuration::seconds(self.window_secs);
         let settle = self.settle_secs as f64;
         self.clock_started_at().await;
+        if let Some(event) = coverage_event(Utc::now()) {
+            let _ = sqlx::query("INSERT INTO shadow_state (key, value) VALUES ($1, $2) ON CONFLICT (key) DO NOTHING")
+                .bind(format!("event:{event}")).bind(Utc::now().to_rfc3339()).execute(&self.store).await;
+        }
 
         // ---- 1. web risk closes since the cursor (settled: at least 5 s old) ----
         let cursor_at = self.state("web_close_cursor_at").await.and_then(|v| DateTime::parse_from_rfc3339(&v).ok()).map(|t| t.with_timezone(&Utc))
@@ -372,18 +405,28 @@ impl Reconciler {
             .bind(day).fetch_all(&self.store).await?;
         let pct = |p: f64| skews.get(((skews.len() as f64 - 1.0) * p).round() as usize).map(|r| r.0);
         let (paired,): (i64,) = sqlx::query_as("SELECT count(*) FROM shadow_pair WHERE class IN ('MATCH','TIMING')").fetch_one(&self.store).await?;
-        let clock = Utc::now() - self.clock_started_at().await;
+        let clock_start = self.clock_started_at().await;
+        let clock = Utc::now() - clock_start;
         let clock_days = Decimal::new(clock.num_minutes(), 0) / Decimal::new(1440, 0);
+        // coverage events lived through inside the CURRENT clean run (a reset clock drops the earlier ones)
+        let events: Vec<(String, String)> = sqlx::query_as("SELECT key, value FROM shadow_state WHERE key LIKE 'event:%'").fetch_all(&self.store).await?;
+        let in_run = |prefix: &str| {
+            events.iter().filter(|(k, v)| k.starts_with(prefix) && DateTime::parse_from_rfc3339(v).map(|t| t.with_timezone(&Utc) >= clock_start).unwrap_or(false)).count() as i64
+        };
+        let (weekend_opens, nfp_windows) = (in_run("event:weekend_open:"), in_run("event:nfp:"));
+        let exit = exit_met(paired, clock_days, weekend_opens, nfp_windows);
         let counts_json: serde_json::Map<String, serde_json::Value> = counts.iter().map(|(c, n)| (c.clone(), serde_json::json!(n))).collect();
         let summary = serde_json::json!({
             "day": day.to_string(), "counts": counts_json, "skewP50Ms": pct(0.5), "skewP95Ms": pct(0.95), "skewMaxMs": skews.last().map(|r| r.0),
-            "pairedTotal": paired, "clockDays": clock_days.round_dp(2).to_string(), "exitMet": paired >= 30 && clock_days >= Decimal::new(7, 0),
+            "pairedTotal": paired, "clockDays": clock_days.round_dp(2).to_string(), "weekendOpens": weekend_opens, "nfpWindows": nfp_windows,
+            "exitMet": exit,
         });
         let _ = sqlx::query(
-            r#"INSERT INTO shadow_daily (day, counts, skew_p50_ms, skew_p95_ms, skew_max_ms, paired_total, clock_days) VALUES ($1, $2, $3, $4, $5, $6, $7)
-               ON CONFLICT (day) DO UPDATE SET counts = $2, skew_p50_ms = $3, skew_p95_ms = $4, skew_max_ms = $5, paired_total = $6, clock_days = $7, created_at = now()"#,
+            r#"INSERT INTO shadow_daily (day, counts, skew_p50_ms, skew_p95_ms, skew_max_ms, paired_total, clock_days, weekend_opens, nfp_windows, exit_met) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+               ON CONFLICT (day) DO UPDATE SET counts = $2, skew_p50_ms = $3, skew_p95_ms = $4, skew_max_ms = $5, paired_total = $6, clock_days = $7, weekend_opens = $8, nfp_windows = $9, exit_met = $10, created_at = now()"#,
         )
         .bind(day).bind(serde_json::Value::Object(counts_json)).bind(pct(0.5)).bind(pct(0.95)).bind(skews.last().map(|r| r.0)).bind(paired).bind(clock_days.round_dp(2))
+        .bind(weekend_opens as i32).bind(nfp_windows as i32).bind(exit)
         .execute(&self.store).await;
         tracing::info!(summary = %summary, "shadow daily summary");
         Ok(summary)
@@ -408,6 +451,42 @@ pub fn spawn(reconciler: Reconciler, every: std::time::Duration) {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod exit_gate_tests {
+    use super::*;
+    use chrono::TimeZone;
+    fn at(y: i32, mo: u32, d: u32, h: u32, mi: u32) -> DateTime<Utc> { Utc.with_ymd_and_hms(y, mo, d, h, mi, 0).unwrap() }
+
+    #[test]
+    fn weekend_reopen_is_the_sunday_22_utc_hour() {
+        assert_eq!(coverage_event(at(2026, 9, 27, 22, 5)).as_deref(), Some("weekend_open:2026-09-27"));
+        assert_eq!(coverage_event(at(2026, 9, 27, 21, 59)), None);
+        assert_eq!(coverage_event(at(2026, 9, 27, 23, 0)), None);
+    }
+
+    #[test]
+    fn nfp_is_the_first_friday_0830_new_york() {
+        // 2026-10-02 (first Friday, US daylight time): 12:30-13:30 UTC
+        assert_eq!(coverage_event(at(2026, 10, 2, 12, 30)).as_deref(), Some("nfp:2026-10-02"));
+        assert_eq!(coverage_event(at(2026, 10, 2, 13, 29)).as_deref(), Some("nfp:2026-10-02"));
+        assert_eq!(coverage_event(at(2026, 10, 2, 12, 29)), None);
+        assert_eq!(coverage_event(at(2026, 10, 9, 12, 45)), None); // second Friday
+        // 2026-12-04 (standard time): 13:30-14:30 UTC
+        assert_eq!(coverage_event(at(2026, 12, 4, 12, 45)), None);
+        assert_eq!(coverage_event(at(2026, 12, 4, 13, 45)).as_deref(), Some("nfp:2026-12-04"));
+    }
+
+    #[test]
+    fn exit_needs_all_four() {
+        let d = |n: i64| Decimal::new(n, 0);
+        assert!(exit_met(30, d(7), 2, 1));
+        assert!(!exit_met(29, d(7), 2, 1));
+        assert!(!exit_met(30, d(6), 2, 1));
+        assert!(!exit_met(30, d(7), 1, 1));
+        assert!(!exit_met(30, d(7), 2, 0));
+    }
 }
 
 #[cfg(test)]

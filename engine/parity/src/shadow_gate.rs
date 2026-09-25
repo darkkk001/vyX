@@ -44,7 +44,11 @@ async fn run(stop_file: &str, out: &str) -> Result<usize, String> {
     if db != "vyx_load_web" || port != 5499 {
         return Err(format!("connected to {db}:{port}, expected vyx_load_web:5499 -- refusing"));
     }
-    let reconciler = Reconciler::new(pool.clone(), recorder.clone()).await?.with_timing(WINDOW_SECS, SETTLE_SECS);
+    // Stage 5 guard 1, exercised for real: the shadow reads the book through a READ-ONLY role (the same check the
+    // server makes at startup), so a write -- or a row lock -- anywhere on the shadow path fails this gate.
+    let ro_url = std::env::var("VYX_SHADOW_DATABASE_URL").unwrap_or_else(|_| "postgresql://shadow_ro@127.0.0.1:5499/vyx_load_web".into());
+    let book = order_management::shadow::connect_read_only_book(Some(&ro_url), WEB_URL).await?;
+    let reconciler = Reconciler::new(book.clone(), recorder.clone()).await?.with_timing(WINDOW_SECS, SETTLE_SECS);
     for t in ["shadow_pair", "shadow_decision", "shadow_state", "shadow_daily"] {
         sqlx::query(&format!("DELETE FROM {t}")).execute(&pool).await.map_err(|e| e.to_string())?;
     }
@@ -58,7 +62,7 @@ async fn run(stop_file: &str, out: &str) -> Result<usize, String> {
     let mut passes = 0usize;
     let mut stop_seen: Option<Instant> = None;
     loop {
-        monitor::run_pass_mode(&pool, None, &mut cursor, &mode).await;
+        monitor::run_pass_mode(&book, None, &mut cursor, &mode).await;
         passes += 1;
         if stop_seen.is_none() && std::path::Path::new(stop_file).exists() {
             stop_seen = Some(Instant::now());

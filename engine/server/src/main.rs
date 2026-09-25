@@ -1392,12 +1392,29 @@ async fn main() {
             .and_then(|v| v.parse().ok())
             .unwrap_or(300);
         order_management::swap::spawn(pool.clone(), std::time::Duration::from_secs(swap_poll_interval_secs));
-    } else if std::env::var("ENGINE_ORDER_MANAGEMENT").map(|v| v.trim().eq_ignore_ascii_case("shadow")).unwrap_or(false) {
+    } else if std::env::var("ENGINE_ORDER_MANAGEMENT").map(|v| v.trim().eq_ignore_ascii_case("shadow")).unwrap_or(false) { 'shadow: {
         // Rust cutover Stage 5 (docs/RUST-CUTOVER-PLAN.md §5): the monitor evaluates every account exactly as at
         // cutover but ACTS ON NOTHING (monitor::Mode::Shadow): no close, no follow-up row, no margin-call edge, no
         // NATS event, no dispatcher; the thresholds guard stays empty, so the order routes keep refusing. The web
         // keeps acting. Decisions go to shadow_decision in a LOCAL Postgres (VYX_SHADOW_STORE_URL, else the local
         // market-data database); a non-local URL is refused. Kill switch: unset the mode and restart.
+        // Stage 5 guards (order_management::shadow): refuse SHADOW (not the engine) on any violation
+        let env_violation = order_management::shadow::shadow_env_violation(
+            std::env::var("VYX_POST_CLOSE_URL").ok().as_deref(),
+            std::env::var("VYX_POST_CLOSE_SECRET").ok().as_deref(),
+        );
+        let book_pool = match env_violation {
+            Some(reason) => Err(reason),
+            None => order_management::shadow::connect_read_only_book(std::env::var("VYX_SHADOW_DATABASE_URL").ok().as_deref(), &database_url).await,
+        };
+        let book_pool = match book_pool {
+            Ok(p) => p,
+            Err(reason) => {
+                tracing::error!(%reason, "SHADOW REFUSED: order management stays OFF (the web owns every close); market data, alerts and the risk hook keep running");
+                // leaves ONLY this shadow setup block; main() carries on (prices, candles, alerts, risk hook)
+                break 'shadow;
+            }
+        };
         let pass_secs: u64 = std::env::var("VYX_SHADOW_PASS_SECS").ok().and_then(|v| v.trim().parse().ok()).filter(|s| *s > 0).unwrap_or(1);
         let store_url = std::env::var("VYX_SHADOW_STORE_URL").ok().filter(|s| !s.trim().is_empty())
             .or_else(|| std::env::var("MARKET_DATA_DATABASE_URL").ok().filter(|s| !s.trim().is_empty()));
@@ -1419,18 +1436,18 @@ async fn main() {
         };
         let recorder = Arc::new(recorder);
         tracing::warn!(pass_secs, "order management SHADOW: the monitor evaluates every account and records what it would do; it writes nothing and publishes nothing. The web owns every close.");
-        order_management::monitor::spawn_shadow(pool.clone(), recorder.clone(), std::time::Duration::from_secs(pass_secs));
+        order_management::monitor::spawn_shadow(book_pool.clone(), recorder.clone(), std::time::Duration::from_secs(pass_secs));
         // §5.3: pairs the web's real risk actions with the shadow's decisions every minute (reads the book, writes only
         // to the local store); the daily summary goes to the log and to shadow_daily
         let reconcile_secs: u64 = std::env::var("VYX_SHADOW_RECONCILE_SECS").ok().and_then(|v| v.trim().parse().ok()).filter(|s| *s > 0).unwrap_or(60);
-        match order_management::reconcile::Reconciler::new(pool.clone(), recorder.clone()).await {
+        match order_management::reconcile::Reconciler::new(book_pool.clone(), recorder.clone()).await {
             Ok(rec) => {
                 tracing::info!(reconcile_secs, "shadow reconciler running");
                 order_management::reconcile::spawn(rec, std::time::Duration::from_secs(reconcile_secs));
             }
             Err(err) => tracing::error!(%err, "shadow reconciler NOT running: decisions are recorded but not compared"),
         }
-    } else {
+    } } else {
         tracing::info!(
             "order management OFF (ENGINE_ORDER_MANAGEMENT unset): margin monitor, per-tick triggers, thresholds guard and swap roller are not running. The web path owns stop-out; market data, alerts and the risk hook are unaffected. Set ENGINE_ORDER_MANAGEMENT=1 to restore."
         );

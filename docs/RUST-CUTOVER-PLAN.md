@@ -1109,6 +1109,32 @@ weeks to show much.
 2. Soak exit volume N, given demo-level activity.
 3. Where the daily summary goes: a log file on the VPS, a backoffice page, or both.
 
+#### 2026-09-25 additions (before the push)
+
+**Startup guards: shadow cannot act, by construction.** A failed guard refuses SHADOW only; the engine keeps serving
+prices, candles, alerts and the risk hook (refusing the whole process would take the price feed down for every trader).
+1. Read-only book connection. The shadow monitor and the reconciler read through `VYX_SHADOW_DATABASE_URL`, a
+   separate Neon role (`deploy/neon-shadow-readonly.sql`: SELECT only, `default_transaction_read_only = on`). At
+   startup the engine checks that this role cannot INSERT, UPDATE or DELETE any money table, that its sessions are
+   read-only, and that it is the SAME endpoint and database as `DATABASE_URL`. The main pool is unchanged, because
+   it still writes price alerts and notifications.
+2. + 3. Shadow together with `VYX_POST_CLOSE_URL` or `VYX_POST_CLOSE_SECRET` set: refused.
+Verified: the scratch gate now runs the shadow THROUGH a read-only role (a write or a row lock anywhere on the shadow
+path fails it); a writable role and a different database are both refused.
+
+**Soak exit (widened).** At least 30 paired MATCH / TIMING, 7 clean days, and, inside that clean run, the shadow was
+alive through at least 2 weekend reopens (Sunday 22:00-23:00 UTC) and 1 NFP window (the first Friday, 08:30 New York
+plus 1 h). Events are recorded while reconciling, so an engine that was down does not count. The daily summary and
+`shadow_daily` carry `weekendOpens`, `nfpWindows`, `exitMet`.
+
+**Cadence.** The reconciler runs every `VYX_SHADOW_RECONCILE_SECS` (default 60 s). Neon: the live DB already runs
+~20 transactions/s from the web and the per-tick risk hook, so the compute never suspends; a 60 s reconcile adds
+queries, not compute-hours. Set 300 only if the Neon plan has a hard compute-hours cap (confirm in the console).
+
+**Deploy order (two risk profiles, two deploys).** Hedged margin (web 4b6e906 + engine c7a6382) is its own push and
+is on the LIVE trigger path (the per-tick margin trigger is not behind `ENGINE_ORDER_MANAGEMENT`). Deploy the engine
+at that code first (no shadow env), verify the risk hook, THEN the Stage 5 build with `ENGINE_ORDER_MANAGEMENT=shadow`.
+
 ### Stage 5 soak driver: an external trading bot — PLAN ONLY, AWAITING APPROVAL (2026-09-24)
 
 **Purpose.** Give the shadow soak N ≥ 30 real risk actions plus every scenario, without anyone trading by hand.
