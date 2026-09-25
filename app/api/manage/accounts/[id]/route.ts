@@ -147,6 +147,19 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     }
   }
 
+  // Audit 2026-09-24 (money): a group change copies the group's leverage onto the account, so when that CHANGES the
+  // account's leverage it needs the same permission as a direct leverage edit (BROKER_ADMIN or ACCOUNT_FINANCE). A
+  // group change that keeps the leverage stays open to any MANAGER.
+  if (hasGroupChange && group && group.leverage !== account.leverage && !hasFinanceChange && session.role !== "BROKER_ADMIN" && !(await hasPermission(session, "ACCOUNT_FINANCE"))) {
+    return NextResponse.json(
+      {
+        error: `forbidden: this group change would move leverage 1:${account.leverage} -> 1:${group.leverage}, which requires BROKER_ADMIN or ACCOUNT_FINANCE`,
+        code: "GROUP_CHANGE_CHANGES_LEVERAGE",
+      },
+      { status: 403 }
+    );
+  }
+
   const updated = await prisma.$transaction(async (tx) => {
     const data: {
       groupId?: string;

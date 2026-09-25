@@ -336,8 +336,16 @@ export async function checkBrokerExposure(
   totalExposureLimit: Prisma.Decimal | null
 ): Promise<string | null> {
   if (totalExposureLimit == null) return null;
+  // Audit 2026-09-24 (money): the broker's own hedge legs (coverage account / COVERAGE groups) are not client exposure;
+  // counting them let every hedge eat into the clients' limit. The exposure screen shows this same measure.
+  const broker = await db.broker.findUnique({ where: { id: brokerId }, select: { coverageAccountId: true } });
   const agg = await db.position.aggregate({
-    where: { brokerId, status: "OPEN" },
+    where: {
+      brokerId,
+      status: "OPEN",
+      account: { group: { category: { not: "COVERAGE" } } },
+      ...(broker?.coverageAccountId ? { accountId: { not: broker.coverageAccountId } } : {}),
+    },
     _sum: { volume: true },
   });
   const current = agg._sum.volume ?? new Prisma.Decimal(0);

@@ -43,6 +43,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   switch (execResult.kind) {
     case "REVERSE_IN_PLACE":
       await publishTradingEvent("PositionModified", { position_id: execResult.position.id, account_id: execResult.accountId, broker_id: brokerId });
+      for (const f of execResult.followers) await publishTradingEvent("PositionModified", { position_id: f.positionId, account_id: f.accountId, broker_id: brokerId }).catch(() => {});
       break;
     case "REVERSE_CLOSE_REOPEN":
       await mirror

@@ -91,20 +91,43 @@ export async function GET() {
   }
   let netDeposits7d = 0;
   let netDepositsPrior7d = 0;
+  // Audit 2026-09-24 (money): Transaction.amount is already SIGNED (a withdrawal is negative), so the net is the plain
+  // sum; negating withdrawals again used to ADD them. Chart buckets carry magnitudes (both bars drawn upward).
   for (const t of depositsWithdrawals14d) {
-    const amount = t.amount.toNumber();
-    const signed = t.type === "DEPOSIT" ? amount : -amount;
+    const signed = t.amount.toNumber();
     if (t.createdAt >= sevenDaysAgo) {
       netDeposits7d += signed;
       const bucket = byDay.get(dayKey(t.createdAt));
       if (bucket) {
-        if (t.type === "DEPOSIT") bucket.deposits += amount;
-        else bucket.withdrawals += amount;
+        if (t.type === "DEPOSIT") bucket.deposits += Math.abs(signed);
+        else bucket.withdrawals += Math.abs(signed);
       }
     } else {
       netDepositsPrior7d += signed;
     }
   }
+
+  // Broker-book result of trades closed since the trading day started (owner decision: 22:00 UTC rollover). The
+  // broker's side of a broker-book trade is the client's result reversed. Live client accounts only: no demo, no
+  // voided trades (status CLOSED only), no broker hedge legs (coverage account / COVERAGE groups). Audit 2026-09-24.
+  const tradingDayStart = new Date(now);
+  tradingDayStart.setUTCHours(22, 0, 0, 0);
+  if (tradingDayStart > now) tradingDayStart.setUTCDate(tradingDayStart.getUTCDate() - 1);
+  const brokerRow = await prisma.broker.findUniqueOrThrow({ where: { id: brokerId }, select: { coverageAccountId: true } });
+  const closedToday = await prisma.position.aggregate({
+    where: {
+      brokerId,
+      status: "CLOSED",
+      deletedAt: null,
+      bookType: "B_BOOK",
+      closedAt: { gte: tradingDayStart },
+      account: { accountMode: "LIVE", group: { category: { not: "COVERAGE" } } },
+      ...(brokerRow.coverageAccountId ? { accountId: { not: brokerRow.coverageAccountId } } : {}),
+    },
+    _sum: { realizedPnl: true },
+    _count: true,
+  });
+  const brokerBookClosedToday = -(closedToday._sum.realizedPnl?.toNumber() ?? 0);
 
   const entityLabels = await resolveEntityLabels(brokerId, activity.map((a) => ({ entityType: a.entityType, entityId: a.entityId })));
   return NextResponse.json({
@@ -115,7 +138,11 @@ export async function GET() {
     activeTradeAccountCount: activeTradeAccounts.length,
     pendingKyc,
     pendingWithdrawalCount: pendingWithdrawals._count,
-    pendingWithdrawalSum: pendingWithdrawals._sum.amount?.toNumber() ?? 0,
+    // a positive amount of money waiting to go out (withdrawal rows are stored negative)
+    pendingWithdrawalSum: Math.abs(pendingWithdrawals._sum.amount?.toNumber() ?? 0),
+    brokerBookClosedToday,
+    brokerBookClosedTodayCount: closedToday._count,
+    tradingDayStart: tradingDayStart.toISOString(),
     netDeposits7d,
     netDepositsPrior7d,
     depositsWithdrawalsByDay: [...byDay.entries()].map(([date, v]) => ({ date, deposits: v.deposits, withdrawals: v.withdrawals })),

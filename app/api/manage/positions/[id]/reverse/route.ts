@@ -67,6 +67,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
   if (result.kind === "REVERSE_IN_PLACE") {
     await publishTradingEvent("PositionModified", { position_id: result.position.id, account_id: result.accountId, broker_id: brokerId });
+    // the hedge leg / mirrored copy flipped with it (lib/position-actions.ts)
+    for (const f of result.followers) await publishTradingEvent("PositionModified", { position_id: f.positionId, account_id: f.accountId, broker_id: brokerId }).catch(() => {});
     return NextResponse.json({
       mode: "IN_PLACE",
       positionId: result.position.id,

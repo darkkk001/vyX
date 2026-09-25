@@ -60,7 +60,8 @@ export async function GET() {
             accountNumber: true,
             fullName: true,
             groupId: true,
-            group: { select: { name: true } },
+            accountMode: true,
+            group: { select: { name: true, category: true } },
             ibLinkAsClient: { select: { ibAccountId: true } },
           },
         },
@@ -85,6 +86,11 @@ export async function GET() {
       select: { ibAccountId: true, ibAccount: { select: { accountNumber: true, fullName: true } } },
     }),
   ]);
+
+  // Audit 2026-09-24 (money): the broker's own hedge legs are not client positions. Flagged per row so every total on
+  // the exposure screen can leave them out (the coverage account, or any account in a COVERAGE group).
+  const brokerRow = await prisma.broker.findUniqueOrThrow({ where: { id: brokerId }, select: { coverageAccountId: true } });
+  const isCoverageLeg = (p: (typeof positions)[number]) => p.accountId === brokerRow.coverageAccountId || p.account.group?.category === "COVERAGE";
 
   const symbolNames = [...new Set(positions.map((p) => p.symbol.name))];
   const priceBySymbol = await getFreshPrices(symbolNames);
@@ -141,6 +147,9 @@ export async function GET() {
       // position (app/api/manage/positions/[id]/book). The Smart Dealer
       // Manager excludes covered positions from its unbooked list.
       covered: p.covered,
+      // the broker's own hedge leg (not a client position) / a demo account: excluded from client money totals
+      isCoverageLeg: isCoverageLeg(p),
+      accountMode: p.account.accountMode,
       // the hedge leg on the coverage account (BOOK NOW), so the dealing screen can pair a client
       // position with its coverage P&L; null on an unbooked position and on the leg itself
       coveragePositionId: p.coveragePositionId,

@@ -137,6 +137,8 @@ export type ReverseInPlaceResult = {
   newSide: OrderSide;
   floatingPnlAtFlip: Prisma.Decimal | null;
   mirrorWarning: boolean;
+  /** positions flipped with it (the broker's hedge leg, a mirrored copy), for the caller's PositionModified events */
+  followers: { positionId: string; accountId: string }[];
 };
 
 export async function executeReverseInPlace(
@@ -170,6 +172,51 @@ export async function executeReverseInPlace(
   const updated = await tx.position.update({ where: { id: position.id }, data: { side: newSide } });
   const mirrorWarning = await isAccountMirrored(tx, position.accountId, position.account.groupId);
 
+  // Audit 2026-09-24 (money): the positions that follow this one flip with it, in the same transaction -- an in-place
+  // reverse is a correction, not a trade, so their counterparts are corrected the same way (same entry, side
+  // inverted, nothing realized). Before, a covered position's hedge leg stayed on the old side (the broker hedged
+  // the wrong way) and a mirrored copy kept the old direction.
+  const followers: { positionId: string; accountId: string }[] = [];
+  if (position.coveragePositionId) {
+    const leg = await tx.position.findUnique({ where: { id: position.coveragePositionId }, select: { id: true, accountId: true, side: true, status: true, ticket: true } });
+    if (leg && leg.status === "OPEN") {
+      const legSide: OrderSide = leg.side === "BUY" ? "SELL" : "BUY";
+      await tx.position.update({ where: { id: leg.id }, data: { side: legSide } });
+      followers.push({ positionId: leg.id, accountId: leg.accountId });
+      await tx.auditLog.create({
+        data: {
+          brokerId: params.brokerId,
+          actorAdminId: params.adminId,
+          action: "POSITION_COVERAGE_REVERSED_IN_PLACE",
+          entityType: "Position",
+          entityId: leg.id,
+          oldValue: { side: leg.side },
+          newValue: { side: legSide, clientPositionId: position.id, legTicket: leg.ticket },
+        },
+      });
+    }
+  }
+  const link = await tx.mirrorLink.findUnique({ where: { sourcePositionId: position.id } });
+  if (link) {
+    const copy = await tx.position.findUnique({ where: { id: link.targetPositionId }, select: { id: true, accountId: true, side: true, status: true } });
+    if (copy && copy.status === "OPEN") {
+      const copySide: OrderSide = copy.side === "BUY" ? "SELL" : "BUY";
+      await tx.position.update({ where: { id: copy.id }, data: { side: copySide } });
+      followers.push({ positionId: copy.id, accountId: copy.accountId });
+      await tx.auditLog.create({
+        data: {
+          brokerId: params.brokerId,
+          actorAdminId: params.adminId,
+          action: "MIRROR_REVERSED_IN_PLACE",
+          entityType: "Position",
+          entityId: copy.id,
+          oldValue: { side: copy.side },
+          newValue: { side: copySide, sourcePositionId: position.id, ruleId: link.ruleId },
+        },
+      });
+    }
+  }
+
   await tx.auditLog.create({
     data: {
       brokerId: params.brokerId,
@@ -189,7 +236,7 @@ export async function executeReverseInPlace(
     },
   });
 
-  return { kind: "REVERSE_IN_PLACE", position: updated, accountId: position.accountId, oldSide, newSide, floatingPnlAtFlip, mirrorWarning };
+  return { kind: "REVERSE_IN_PLACE", position: updated, accountId: position.accountId, oldSide, newSide, floatingPnlAtFlip, mirrorWarning, followers };
 }
 
 // ---------- Reverse: close & reopen opposite @ market (old behavior, kept) ----------
