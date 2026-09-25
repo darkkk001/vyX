@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { SYMBOL_DEFS, fmt, type MarketState, type SymbolDef } from "@/lib/market-simulator";
-import { tradeApi, effectiveAsk, type ApiPosition } from "@/lib/trade-api";
+import { tradeApi, effectiveAsk, type ApiPosition, type SpreadRule } from "@/lib/trade-api";
 import {
   registerHotkeys,
   hotkeyToLabel,
@@ -115,7 +115,7 @@ export default function SmartTradeManager({
   // (raw price units), same shape/source as WebTrader.tsx's own state.
   // See lib/trade-api.ts's ApiLivePrice/effectiveAsk comments for why this
   // is a separate value rather than baked into market[symbol].ask itself.
-  askMarkupBySymbol: Record<string, number>;
+  askMarkupBySymbol: Record<string, SpreadRule>;
   positions: ApiPosition[];
   positionPnl: (p: ApiPosition) => number;
   activeSymbol: string;
@@ -177,7 +177,7 @@ export default function SmartTradeManager({
   // 2026-09-05 P0 fix: the BUY-side reference used throughout this file
   // is the marked-up ask (what a BUY will actually open at), not the raw
   // feed ask -- matches placeOrder's own fix in WebTrader.tsx.
-  const buyAsk = m ? effectiveAsk(askMarkupBySymbol, config.symbol, m.ask) : 0;
+  const buyAsk = m ? effectiveAsk(askMarkupBySymbol, config.symbol, m.ask, m.bid) : 0;
   const slValidity = useMemo(() => {
     if (!m || !m.live || config.sl === "") return null;
     const sl = parseFloat(config.sl);

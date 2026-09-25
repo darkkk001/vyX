@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { withConfigEvent } from "@/lib/config-events";
 import { prisma } from "@/lib/prisma";
 import { forbidUnlessBrokerAdminOrPermission, PERMISSION_LABELS } from "@/lib/permissions";
 import { publishAccountsUpdatedAfterResponse } from "@/lib/account-events";
@@ -81,7 +82,7 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
 // this AccountType -- identical shape to the Group pricing route's own
 // PATCH, see its comments for the blank-means-null and mutual-exclusion
 // rules (both shared via lib/pricing-editor-shared.ts).
-export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+async function patchHandler(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await requireManager();
   if (!session) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
@@ -188,3 +189,6 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     swapShort: decimalOrNull(updated.swapShort),
   });
 }
+
+// Batch 5 (real-time): a successful write announces the change to every open client (lib/config-events.ts)
+export const PATCH = withConfigEvent("pricing", patchHandler);

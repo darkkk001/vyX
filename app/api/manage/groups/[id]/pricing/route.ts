@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { withConfigEvent } from "@/lib/config-events";
 import { prisma } from "@/lib/prisma";
 import { forbidUnlessBrokerAdminOrPermission, PERMISSION_LABELS } from "@/lib/permissions";
 import { publishAccountsUpdatedAfterResponse } from "@/lib/account-events";
@@ -89,7 +90,7 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
 // shared.ts's own comment for why this changed from the pre-Stage-5
 // "blank means 0" convention), and spreadMarkup/targetTotalSpreadPips
 // are mutually exclusive per row.
-export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+async function patchHandler(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await requireManager();
   if (!session) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
@@ -202,3 +203,6 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     swapShort: decimalOrNull(updated.swapShort),
   });
 }
+
+// Batch 5 (real-time): a successful write announces the change to every open client (lib/config-events.ts)
+export const PATCH = withConfigEvent("pricing", patchHandler);

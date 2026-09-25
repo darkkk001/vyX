@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { withConfigEvent } from "@/lib/config-events";
 import { Prisma, GroupTier, GroupDealingMode } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { checkAccountStructure } from "@/lib/account-structure";
@@ -18,7 +19,7 @@ async function requireManager() {
   return session!;
 }
 
-export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+async function patchHandler(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await requireManager();
   if (!session) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
@@ -208,7 +209,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 // "reassign on delete" flow, and Account.groupId has no onDelete
 // behavior of its own to fall back on, so a bypassed check here would
 // leave Account rows with a group foreign key that no longer resolves.
-export async function DELETE(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+async function deleteHandler(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await getAdminSession();
   if (!requireAdminRole(session, ["BROKER_ADMIN"]) || !session!.brokerId) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
@@ -280,3 +281,7 @@ export async function DELETE(_request: NextRequest, { params }: { params: Promis
 
   return NextResponse.json({ ok: true });
 }
+
+// Batch 5 (real-time): a successful write announces the change to every open client (lib/config-events.ts)
+export const PATCH = withConfigEvent("groups", patchHandler);
+export const DELETE = withConfigEvent("groups", deleteHandler);

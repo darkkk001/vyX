@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
+import { withConfigEvent } from "@/lib/config-events";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { PERMISSIONS } from "@/lib/permissions";
 
-export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+async function patchHandler(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await getAdminSession();
   if (!requireAdminRole(session, ["BROKER_ADMIN"]) || !session!.brokerId) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
@@ -89,3 +90,6 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
   return NextResponse.json({ id: updated.id, status: updated.status, extraPermissions: updated.extraPermissions });
 }
+
+// Batch 5 (real-time): a successful write announces the change to every open client (lib/config-events.ts)
+export const PATCH = withConfigEvent("permissions", patchHandler);

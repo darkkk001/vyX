@@ -30,7 +30,8 @@ export async function GET() {
       // strip pill (v2 redesign's "Standard · 1:500" -- Group.name IS
       // "Standard" for a broker's default group, but this must read the
       // real value, never assume every broker names it that).
-      group: { select: { marginCallLevel: true, stopOutLevel: true, name: true } },
+      group: { select: { marginCallLevel: true, stopOutLevel: true, name: true, tradingHaltedAt: true, closeOnlyAt: true } },
+      broker: { select: { tradingHaltedAt: true, closeOnlyAt: true } },
     },
   });
 
@@ -38,7 +39,10 @@ export async function GET() {
     return NextResponse.json({ error: "account not found" }, { status: 404 });
   }
 
-  const { group, ...rest } = account;
+  const { group, broker, ...rest } = account;
+  // Batch 5: whether this account can trade right now (the broker's or its group's halt / close-only; halted wins),
+  // re-read by the terminal on every ConfigChanged so a halt shows at once
+  const tradingState = broker?.tradingHaltedAt || group?.tradingHaltedAt ? "halted" : broker?.closeOnlyAt || group?.closeOnlyAt ? "close_only" : "open";
   // stopOutLevel (audit 2026-09-24): the terminal shows and warns at stop-out too, not only at margin call
-  return NextResponse.json({ ...rest, marginCallLevel: (group?.marginCallLevel ?? 100).toString(), stopOutLevel: (group?.stopOutLevel ?? 50).toString(), groupName: group?.name ?? null });
+  return NextResponse.json({ ...rest, marginCallLevel: (group?.marginCallLevel ?? 100).toString(), stopOutLevel: (group?.stopOutLevel ?? 50).toString(), groupName: group?.name ?? null, tradingState });
 }

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { withConfigEvent } from "@/lib/config-events";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession } from "@/lib/auth";
@@ -41,7 +42,7 @@ export async function GET() {
   });
 }
 
-export async function PATCH(request: NextRequest) {
+async function patchHandler(request: NextRequest) {
   const session = await getAdminSession();
   if (!session || !session.brokerId) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
@@ -234,3 +235,6 @@ export async function PATCH(request: NextRequest) {
     defaultMaxSlippagePips: updated.defaultMaxSlippagePips ? updated.defaultMaxSlippagePips.toString() : null,
   });
 }
+
+// Batch 5 (real-time): a successful write announces the change to every open client (lib/config-events.ts)
+export const PATCH = withConfigEvent("risk", patchHandler);

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { withConfigEvent } from "@/lib/config-events";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
@@ -47,7 +48,7 @@ export async function GET() {
   );
 }
 
-export async function POST(request: NextRequest) {
+async function postHandler(request: NextRequest) {
   const session = await requireManager();
   if (!session) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
@@ -120,3 +121,6 @@ export async function POST(request: NextRequest) {
     throw error;
   }
 }
+
+// Batch 5 (real-time): a successful write announces the change to every open client (lib/config-events.ts)
+export const POST = withConfigEvent("pricing", postHandler);

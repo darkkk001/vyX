@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
+import { withConfigEvent } from "@/lib/config-events";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession } from "@/lib/auth";
 import { forbidUnlessBrokerAdminOrPermission } from "@/lib/permissions";
 import { validateKycDecision, applyKycDecision } from "@/lib/kyc-decision";
 
-export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+async function patchHandler(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await getAdminSession();
   if (await forbidUnlessBrokerAdminOrPermission(session, "KYC_REVIEW")) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
@@ -41,3 +42,6 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
   return NextResponse.json(updated);
 }
+
+// Batch 5 (real-time): a successful write announces the change to every open client (lib/config-events.ts)
+export const PATCH = withConfigEvent("kyc", patchHandler);

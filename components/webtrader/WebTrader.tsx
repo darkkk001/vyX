@@ -20,7 +20,7 @@ import {
   type SymbolDef,
   type SymbolCategory,
 } from "@/lib/market-simulator";
-import { tradeApi, serverNow, effectiveAsk, ApiError, type AccountInfo, type ApiPosition, type ApiOrder, type ApiFundsRequest, type ApiPaymentMethod, type ApiKycStatus, type ApiLinkedAccount, type ApiSession, type ApiAlert } from "@/lib/trade-api";
+import { tradeApi, serverNow, effectiveAsk, spreadRuleFromPrice, ApiError, type SpreadRule, type AccountInfo, type ApiPosition, type ApiOrder, type ApiFundsRequest, type ApiPaymentMethod, type ApiKycStatus, type ApiLinkedAccount, type ApiSession, type ApiAlert } from "@/lib/trade-api";
 import { hedgedUsedMarginDisplay, type DisplayMarginLeg } from "@/lib/hedged-margin-display";
 import AddSymbolDialog from "./AddSymbolDialog";
 import ChartSettingsDialog from "./ChartSettingsDialog";
@@ -1646,7 +1646,10 @@ export default function WebTrader({
   // at the specific "about to open a BUY" sites via effectiveAsk. A broker
   // rarely changes this, so a full replace once per 30s poll (no WS
   // equivalent exists for it) is more than fresh enough.
-  const [askMarkupBySymbol, setAskMarkupBySymbol] = useState<Record<string, number>>({});
+  // Batch 5: holds the per-symbol spread RULE (markup, or target spread), re-read at once on ConfigChanged.
+  const [askMarkupBySymbol, setAskMarkupBySymbol] = useState<Record<string, SpreadRule>>({});
+  // the prices poll below, callable from the trading-event handler (ConfigChanged -> re-read now, not in 30 s)
+  const pollPricesNowRef = useRef<() => void>(() => {});
   useEffect(() => {
     let cancelled = false;
     let wasConnected = true;
@@ -1657,10 +1660,10 @@ export default function WebTrader({
         const next: Record<string, { bid: number; ask: number; at: number }> = {};
         const now = Date.now();
         const closedNext: Record<string, boolean> = {};
-        const markupNext: Record<string, number> = {};
+        const markupNext: Record<string, SpreadRule> = {};
         for (const row of rows) {
           closedNext[row.symbol] = row.marketClosed;
-          markupNext[row.symbol] = parseFloat(row.askMarkup) || 0;
+          markupNext[row.symbol] = spreadRuleFromPrice(row);
           // Ignore stale rows (EA/terminal offline, or a genuinely frozen
           // market) so the chart falls back to simulation instead of
           // freezing on the last real tick. tickAt, not updatedAt -- the
@@ -1725,6 +1728,7 @@ export default function WebTrader({
       if (!cancelled) { refreshOrders(); refreshPositions(); }
     }
     poll();
+    pollPricesNowRef.current = () => { void poll(); };
     const interval = setInterval(poll, 30000);
     return () => { cancelled = true; clearInterval(interval); };
   }, [appendLog, refreshOrders, refreshPositions]);
@@ -1874,7 +1878,7 @@ export default function WebTrader({
   // account refresh every other event type still gets.
   useEffect(() => {
     function handleEvent(raw: string) {
-      let parsed: { type?: string; symbol?: string; triggered_price?: string } | null = null;
+      let parsed: { type?: string; symbol?: string; triggered_price?: string; scope?: string; state?: string } | null = null;
       try {
         parsed = JSON.parse(raw);
       } catch {
@@ -1891,10 +1895,31 @@ export default function WebTrader({
         return;
       }
 
+      // Batch 5 (real-time everywhere): a backoffice config change -- re-read symbols, the spread rule and the
+      // trading state now. Debounced: one bulk edit can send several.
+      if (parsed?.type === "ConfigChanged") {
+        if (configRefetchTimer) clearTimeout(configRefetchTimer);
+        configRefetchTimer = setTimeout(() => {
+          configRefetchTimer = null;
+          pollPricesNowRef.current();
+          refreshAccount();
+          if (parsed?.scope === "symbols" || parsed?.scope === "sessions" || parsed?.scope === "groups") refreshSymbolsAndWatchlist();
+        }, 250);
+        return;
+      }
+
+      if (parsed?.type === "MarginCall") {
+        if (parsed.state === "margin_call") pushToast("Margin call, your margin level is below the margin call level", true);
+        refreshAccount();
+        refreshPositions();
+        return;
+      }
+
       refreshOrders();
       refreshPositions();
       refreshAccount();
     }
+    let configRefetchTimer: ReturnType<typeof setTimeout> | null = null;
 
     // Desktop: same native-relay reasoning as the price-tick effect
     // above -- startLiveStreams isn't called again here, it starts both
@@ -2341,7 +2366,7 @@ export default function WebTrader({
       // up fill against) needs to be marked up, same 2026-09-05 P0 fix as
       // placeOrder above.
       const price = o.side === "BUY" ? m.ask : m.bid;
-      const fillReferencePrice = o.side === "BUY" ? effectiveAsk(askMarkupBySymbol, o.symbol.name, m.ask) : m.bid;
+      const fillReferencePrice = o.side === "BUY" ? effectiveAsk(askMarkupBySymbol, o.symbol.name, m.ask, m.bid) : m.bid;
       let shouldFill = false;
       if (o.type === "LIMIT") shouldFill = o.side === "BUY" ? price <= trigger : price >= trigger;
       if (o.type === "STOP") shouldFill = o.side === "BUY" ? price >= trigger : price <= trigger;
@@ -2463,7 +2488,7 @@ export default function WebTrader({
     // 2026-09-05 P0 fix: a BUY opens at the marked-up ask (matching what
     // the server will actually fill at); a SELL opens at raw bid,
     // unmarked, same convention as lib/group-pricing.ts's applySpreadMarkup.
-    const refPrice = side === "BUY" ? effectiveAsk(askMarkupBySymbol, activeSymbol, m.ask) : m.bid;
+    const refPrice = side === "BUY" ? effectiveAsk(askMarkupBySymbol, activeSymbol, m.ask, m.bid) : m.bid;
     const error = isValidSlTpForSide(side, sl, tp, refPrice);
     if (error) { pushToast(error); return; }
     try {
@@ -2676,7 +2701,7 @@ export default function WebTrader({
       // opening fill, same as placeOrder -- marked-up ask when it's a BUY.
       await tradeApi.placeOrder({
         symbol: p.symbol.name, side: newSide, type: "MARKET", volume: parseFloat(p.volume),
-        price: newSide === "BUY" ? effectiveAsk(askMarkupBySymbol, p.symbol.name, mm.ask) : mm.bid, idempotencyKey: crypto.randomUUID(),
+        price: newSide === "BUY" ? effectiveAsk(askMarkupBySymbol, p.symbol.name, mm.ask, mm.bid) : mm.bid, idempotencyKey: crypto.randomUUID(),
       });
       pushToast(`${p.symbol.name} reversed to ${newSide}`);
       await Promise.all([refreshPositions(), refreshHistory(), refreshAccount()]);
@@ -2941,7 +2966,7 @@ export default function WebTrader({
     const sl = quickOrderSl === "" ? null : parseFloat(quickOrderSl);
     const tp = quickOrderTp === "" ? null : parseFloat(quickOrderTp);
     // 2026-09-05 P0 fix: same marked-up-ask-for-BUY rule as placeOrder.
-    const refPrice = side === "BUY" ? effectiveAsk(askMarkupBySymbol, quickOrder.symbol, mm.ask) : mm.bid;
+    const refPrice = side === "BUY" ? effectiveAsk(askMarkupBySymbol, quickOrder.symbol, mm.ask, mm.bid) : mm.bid;
     const error = isValidSlTpForSide(side, sl, tp, refPrice);
     if (error) { pushToast(error); return; }
     try {
@@ -3594,6 +3619,9 @@ export default function WebTrader({
     <div className="wt-root" data-theme={theme} data-mode={chartSettings.theme}>
       <DesktopTitleBar brokerName={brokerName} brokerLogoUrl={brokerLogoUrl} server={serverName} connected={connected} />
       <div id="app">
+        <div className={`margin-call-banner${account?.tradingState && account.tradingState !== "open" ? " show" : ""}`}>
+          {account?.tradingState === "halted" ? "Trading halted. Your broker has paused new orders." : "Close-only. Your broker allows closing positions only."}
+        </div>
         <div className={`margin-call-banner${marginCall ? " show" : ""}`}>
           Margin call, your margin level is below {marginCallLevel}%. Deposit funds or close positions to avoid stop-out.
         </div>
@@ -4004,7 +4032,7 @@ export default function WebTrader({
                       )}
                     </span>
                     {columnPrefs.change ? <span className={`wl-cell mono ${changePct !== null && changePct >= 0 ? "wl-pos" : "wl-neg"}`}>{changePct !== null ? (changePct >= 0 ? "+" : "") + changePct.toFixed(2) + "%" : "-"}</span> : null}
-                    {columnPrefs.spread ? <span className="wl-cell mono" style={{ textAlign: "right" }}>{hasEverTicked ? spreadPoints(effectiveAsk(askMarkupBySymbol, name, row.ask), row.bid, row.def.digits) : "-"}</span> : null}
+                    {columnPrefs.spread ? <span className="wl-cell mono" style={{ textAlign: "right" }}>{hasEverTicked ? spreadPoints(effectiveAsk(askMarkupBySymbol, name, row.ask, row.bid), row.bid, row.def.digits) : "-"}</span> : null}
                     {columnPrefs.high ? <span className="wl-cell mono">{hasEverTicked ? fmt(row.high, row.def.digits) : "-"}</span> : null}
                     {columnPrefs.low ? <span className="wl-cell mono">{hasEverTicked ? fmt(row.low, row.def.digits) : "-"}</span> : null}
                     <button className={`wl-alert-btn${alerts.some((a) => a.symbol === name) ? " active" : ""}`} onClick={(e) => { e.stopPropagation(); openPriceAlert(name); }} title="Set price alert">
@@ -4196,7 +4224,7 @@ export default function WebTrader({
                       // "—", never a number computed against the launch seed.
                       <div className="chart-change mono" style={{ color: "var(--text-3)" }}>-</div>
                     )}
-                    <div className="chart-spread mono">Spread {fmt(effectiveAsk(askMarkupBySymbol, activeSymbol, m.ask) - m.bid, m.def.digits)}</div>
+                    <div className="chart-spread mono">Spread {fmt(effectiveAsk(askMarkupBySymbol, activeSymbol, m.ask, m.bid) - m.bid, m.def.digits)}</div>
                   </>
                 ) : (
                   <div className="chart-price mono" style={{ color: "var(--text-3)", fontSize: 12 }}>-</div>
@@ -4919,7 +4947,7 @@ export default function WebTrader({
                   </button>
                   <button className={`sentiment-price-btn buy${pendingMarketSide === "BUY" ? " selected" : ""}`} disabled={buyDisabled} title={staleTicketTitle} onClick={() => confirmAndPlace("BUY")}>
                     <span className="sp-label">Buy</span>
-                    <span className="sp-value mono">{m.lastTickAt > 0 ? fmt(effectiveAsk(askMarkupBySymbol, activeSymbol, m.ask), m.def.digits) : "-"}</span>
+                    <span className="sp-value mono">{m.lastTickAt > 0 ? fmt(effectiveAsk(askMarkupBySymbol, activeSymbol, m.ask, m.bid), m.def.digits) : "-"}</span>
                   </button>
                 </div>
               </div>

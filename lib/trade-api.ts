@@ -24,6 +24,8 @@ export type AccountInfo = {
   // (from its Group, "100" if ungrouped), so WebTrader's own banner/toast
   // stops hardcoding 100% regardless of what the broker actually set.
   marginCallLevel: string;
+  // Batch 5: broker or group trading halt / close-only (halted wins). Re-read on every ConfigChanged.
+  tradingState?: "open" | "close_only" | "halted";
 };
 
 export type ApiSession = {
@@ -65,14 +67,33 @@ export type ApiPosition = {
 // state that needs a true CLOSE reference (SELL position floating P&L,
 // margin, SL/TP preview) silently wrong. Callers apply it explicitly, via
 // effectiveAsk below, only at the specific "about to open a BUY" sites.
-export type ApiLivePrice = { symbol: string; bid: string; ask: string; updatedAt: string; tickAt: string; marketClosed: boolean; askMarkup: string };
+export type ApiLivePrice = { symbol: string; bid: string; ask: string; updatedAt: string; tickAt: string; marketClosed: boolean; askMarkup: string; spreadRule?: "markup" | "target"; targetSpread?: string };
+
+// Batch 5 (quote = fill, docs/audit/2026-09-24/realtime-contract.md): the spread RULE per symbol, not only the markup
+// in force at the last poll -- in target mode the fill markup moves with the live raw spread on every tick.
+export type SpreadRule = { markup: number; target?: number };
+
+export function spreadRuleFromPrice(row: Pick<ApiLivePrice, "askMarkup" | "spreadRule" | "targetSpread">): SpreadRule {
+  const markup = parseFloat(row.askMarkup) || 0;
+  if (row.spreadRule === "target" && row.targetSpread != null) {
+    const target = parseFloat(row.targetSpread);
+    if (Number.isFinite(target)) return { markup, target };
+  }
+  return { markup };
+}
 
 // The one place this addition happens -- every "what would a new BUY
 // actually cost" call site (order ticket, quick-order, Smart Trade
 // Manager, the watchlist/chart spread display) should go through this
 // rather than re-deriving it, so the fix stays in exactly one place.
-export function effectiveAsk(askMarkupBySymbol: Record<string, number>, symbol: string, rawAsk: number): number {
-  return rawAsk + (askMarkupBySymbol[symbol] ?? 0);
+//
+// Same formula as the fill (lib/pricing-engine.ts resolveEffectiveSpreadMarkup): markup mode -> ask + markup;
+// target mode -> markup = max(0, target - live raw spread), i.e. BUY = max(ask, bid + target).
+export function effectiveAsk(spreadRuleBySymbol: Record<string, SpreadRule>, symbol: string, rawAsk: number, rawBid: number): number {
+  const rule = spreadRuleBySymbol[symbol];
+  if (!rule) return rawAsk;
+  if (rule.target != null) return Math.max(rawAsk, rawBid + rule.target);
+  return rawAsk + rule.markup;
 }
 
 export type ApiCandleTimeframe = "M1" | "M5" | "M15" | "M30" | "H1" | "H4" | "D1" | "W1" | "MN1" | "Y1";

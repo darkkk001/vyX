@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { withConfigEvent } from "@/lib/config-events";
 import { Prisma, PaymentMethodType } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
@@ -80,7 +81,7 @@ function parseDecimal(value: unknown): Prisma.Decimal | null {
   }
 }
 
-export async function PATCH(request: NextRequest) {
+async function patchHandler(request: NextRequest) {
   const session = await requireBrokerAdmin();
   if (!session) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
@@ -158,3 +159,6 @@ export async function PATCH(request: NextRequest) {
     walletAddress: saved.walletAddress,
   });
 }
+
+// Batch 5 (real-time): a successful write announces the change to every open client (lib/config-events.ts)
+export const PATCH = withConfigEvent("payments", patchHandler);

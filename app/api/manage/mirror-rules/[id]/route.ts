@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { withConfigEvent } from "@/lib/config-events";
 import { Prisma, MirrorFillPriceMode } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession } from "@/lib/auth";
@@ -131,7 +132,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
 // admin re-enable, not something that happens on its own). Maker-checker
 // NOT required for v0 (the brief's own explicit call); every change is
 // still audited.
-export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+async function patchHandler(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await requireMirrorManage();
   if (!session) return NextResponse.json({ error: "forbidden" }, { status: 403 });
   const { id } = await params;
@@ -230,3 +231,6 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
   return NextResponse.json({ id: updated.id, status: ruleStatus(updated) });
 }
+
+// Batch 5 (real-time): a successful write announces the change to every open client (lib/config-events.ts)
+export const PATCH = withConfigEvent("mirror", patchHandler);

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { withConfigEvent } from "@/lib/config-events";
 import { prisma } from "@/lib/prisma";
 import { publishAccountsUpdatedAfterResponse } from "@/lib/account-events";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
@@ -46,7 +47,7 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
 // recreate" semantics as app/api/manage/symbols/[id]/sessions/route.ts's
 // PUT, the existing precedent for a small admin-edited list with no
 // per-row add/delete endpoints.
-export async function PUT(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+async function putHandler(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await requireManager();
   if (!session) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
@@ -101,3 +102,6 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
 
   return NextResponse.json({ restrictSymbols, allowedSymbolIds: validSymbolIds });
 }
+
+// Batch 5 (real-time): a successful write announces the change to every open client (lib/config-events.ts)
+export const PUT = withConfigEvent("groups", putHandler);

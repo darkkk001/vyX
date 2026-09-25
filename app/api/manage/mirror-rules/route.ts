@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { withConfigEvent } from "@/lib/config-events";
 import { Prisma, MirrorFillPriceMode } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession } from "@/lib/auth";
@@ -101,7 +102,7 @@ export async function GET() {
   });
 }
 
-export async function POST(request: NextRequest) {
+async function postHandler(request: NextRequest) {
   const session = await requireMirrorManage();
   if (!session) return NextResponse.json({ error: "forbidden" }, { status: 403 });
   const brokerId = session.brokerId!;
@@ -189,3 +190,6 @@ export async function POST(request: NextRequest) {
 
   return NextResponse.json({ id: rule.id }, { status: 201 });
 }
+
+// Batch 5 (real-time): a successful write announces the change to every open client (lib/config-events.ts)
+export const POST = withConfigEvent("mirror", postHandler);

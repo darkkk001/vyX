@@ -317,8 +317,11 @@ export async function evaluateAccountRisk(accountId: string): Promise<RiskMonito
         await createNotification(prisma, { brokerId: latestAccount.brokerId, type: "MARGIN_CALL", title: "Margin call", body, entityType: "Account", entityId: accountId, accountId });
         await createNotification(prisma, { brokerId: latestAccount.brokerId, type: "MARGIN_CALL", title: "Margin call", body, entityType: "Account", entityId: accountId });
         await prisma.account.update({ where: { id: accountId }, data: { marginCallNotifiedAt: new Date() } });
+        // Batch 5: the trader's terminal and the broker's backoffice learn at once (MarginCall, both streams)
+        await publishTradingEvent("MarginCall", { account_id: accountId, broker_id: latestAccount.brokerId, level: marginLevel.toFixed(2), state: "margin_call" }).catch(() => {});
       } else if (!inMarginCall && latestAccount.marginCallNotifiedAt) {
         await prisma.account.update({ where: { id: accountId }, data: { marginCallNotifiedAt: null } });
+        await publishTradingEvent("MarginCall", { account_id: accountId, broker_id: latestAccount.brokerId, level: marginLevel.toFixed(2), state: "cleared" }).catch(() => {});
       }
     }
   } else if (account.marginCallNotifiedAt) {

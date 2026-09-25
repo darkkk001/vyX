@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { withConfigEvent } from "@/lib/config-events";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession } from "@/lib/auth";
 import { getPermissionContext, PERMISSION_LABELS } from "@/lib/permissions";
@@ -56,7 +57,7 @@ export async function GET() {
   });
 }
 
-export async function PATCH(request: NextRequest) {
+async function patchHandler(request: NextRequest) {
   const session = await getAdminSession();
   const permissions = await getPermissionContext(session, "manage/dealing-desk-toggle");
   if (permissions.forbidUnless("RISK_SETTINGS")) {
@@ -318,3 +319,6 @@ async function flushDealingQueueToMarket(
 
   return results;
 }
+
+// Batch 5 (real-time): a successful write announces the change to every open client (lib/config-events.ts)
+export const PATCH = withConfigEvent("dealing", patchHandler);

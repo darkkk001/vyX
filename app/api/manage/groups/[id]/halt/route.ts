@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { withConfigEvent } from "@/lib/config-events";
 import { prisma } from "@/lib/prisma";
 import { publishAccountsUpdatedAfterResponse } from "@/lib/account-events";
 import { getAdminSession } from "@/lib/auth";
@@ -13,7 +14,7 @@ import { forbidUnlessBrokerAdminOrPermission } from "@/lib/permissions";
 // app/api/manage/groups/[id]/route.ts) so an emergency action never
 // requires resubmitting that whole form -- one focused endpoint, same
 // convention as app/api/manage/dealing-desk-toggle/route.ts.
-export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+async function patchHandler(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await getAdminSession();
   if (await forbidUnlessBrokerAdminOrPermission(session, "EMERGENCY_CONTROLS")) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
@@ -69,3 +70,6 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     closeOnlyAt: group.closeOnlyAt ? group.closeOnlyAt.toISOString() : null,
   });
 }
+
+// Batch 5 (real-time): a successful write announces the change to every open client (lib/config-events.ts)
+export const PATCH = withConfigEvent("groups", patchHandler);

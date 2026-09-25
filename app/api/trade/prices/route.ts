@@ -132,6 +132,9 @@ export async function GET() {
   }
 
   const askMarkupByName = new Map<string, string>();
+  // Batch 5 (quote = fill, docs/audit/2026-09-24/realtime-contract.md): the RULE, not only today's number, so the
+  // client applies the fill formula on every tick -- target mode: BUY = max(ask, bid + targetSpread)
+  const targetSpreadByName = new Map<string, string>();
   for (const bs of brokerSymbols) {
     const override = overrideBySymbolId.get(bs.symbolId);
     let markupPips: Prisma.Decimal;
@@ -154,6 +157,9 @@ export async function GET() {
       const tick = priceByName.get(bs.symbol.name);
       const liveBaseSpreadPips = tick ? tick.ask.sub(tick.bid).div(pipSize(bs.symbol.digits)) : null;
       markupPips = resolveEffectiveSpreadMarkup(resolved.spread, liveBaseSpreadPips).markup;
+      if (resolved.spread.mode === "target") {
+        targetSpreadByName.set(bs.symbol.name, resolved.spread.targetTotalSpreadPips.mul(pipSize(bs.symbol.digits)).toString());
+      }
     } else {
       // Per-field fallback (2026-09-07 migration pricing_engine_nullable_widening
       // made GroupSymbolConfig.spreadMarkup nullable) -- an override row with
@@ -169,6 +175,8 @@ export async function GET() {
       ...p,
       marketClosed: closedByName.get(p.symbol) ?? false,
       askMarkup: askMarkupByName.get(p.symbol) ?? "0",
+      spreadRule: targetSpreadByName.has(p.symbol) ? "target" : "markup",
+      ...(targetSpreadByName.has(p.symbol) ? { targetSpread: targetSpreadByName.get(p.symbol) } : {}),
     })),
     { headers: { "Cache-Control": "no-store", "x-market-data-source": priceSource } }
   );

@@ -65,6 +65,13 @@ const SUBJECTS = {
   // A backoffice change to the account's terms (leverage, status, group, type, pricing, allowed symbols, halt) --
   // see lib/account-events.ts. Same account.> wildcard and per-account_id forwarding as BalanceChanged.
   AccountUpdated: "account.updated",
+  // Batch 5 (real-time, docs/audit/2026-09-24/realtime-contract.md): a backoffice change to broker-wide configuration
+  // (symbols, pricing, trading hours, halts, dealing, mirror, payment methods, permissions, settings). BROKER-scoped:
+  // no account_id -- the gateway's trader stream forwards it to EVERY trader socket of broker_id, the admin stream to
+  // the broker's backoffice. Clients re-fetch what the scope names. See lib/config-events.ts.
+  ConfigChanged: "config.changed",
+  // An account crossed its margin-call / stop-out level (or recovered): account-scoped, both streams.
+  MarginCall: "margin.call",
 } as const satisfies Record<string, string>;
 
 export type TradingEventType = keyof typeof SUBJECTS;

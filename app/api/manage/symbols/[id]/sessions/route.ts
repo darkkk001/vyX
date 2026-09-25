@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { withConfigEvent } from "@/lib/config-events";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 
@@ -39,7 +40,7 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
 // Replaces the full session list for this symbol -- simplest correct
 // semantics for a small, admin-edited list (no per-row add/delete
 // endpoints needed). Empty array = always tradable (see checkTradingSession).
-export async function PUT(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+async function putHandler(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await requireManager();
   if (!session) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
@@ -82,3 +83,6 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
   const updated = await prisma.tradingSession.findMany({ where: { brokerSymbolId: id }, orderBy: [{ dayOfWeek: "asc" }, { openTime: "asc" }] });
   return NextResponse.json(updated.map((s) => ({ id: s.id, dayOfWeek: s.dayOfWeek, openTime: s.openTime, closeTime: s.closeTime })));
 }
+
+// Batch 5 (real-time): a successful write announces the change to every open client (lib/config-events.ts)
+export const PUT = withConfigEvent("sessions", putHandler);

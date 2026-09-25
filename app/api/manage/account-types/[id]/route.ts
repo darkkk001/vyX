@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { withConfigEvent } from "@/lib/config-events";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { publishAccountsUpdatedAfterResponse } from "@/lib/account-events";
@@ -17,7 +18,7 @@ async function requireManager() {
 // stays null = inherit), so an edit that never touched pricing (the backoffice form, enable/disable, make default)
 // can never turn "inherit" into an explicit 0. Null or blank = inherit; an unparseable value is refused (400).
 
-export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+async function patchHandler(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await requireManager();
   if (!session) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
@@ -122,3 +123,6 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     throw error;
   }
 }
+
+// Batch 5 (real-time): a successful write announces the change to every open client (lib/config-events.ts)
+export const PATCH = withConfigEvent("pricing", patchHandler);

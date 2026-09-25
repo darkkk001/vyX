@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { withConfigEvent } from "@/lib/config-events";
 import bcrypt from "bcryptjs";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
@@ -43,7 +44,7 @@ export async function GET() {
 
 const CREATABLE_ROLES = new Set(["BROKER_ADMIN", "MANAGER", "SUPPORT"]);
 
-export async function POST(request: NextRequest) {
+async function postHandler(request: NextRequest) {
   const session = await requireBrokerAdmin();
   if (!session) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
@@ -90,3 +91,6 @@ export async function POST(request: NextRequest) {
     throw error;
   }
 }
+
+// Batch 5 (real-time): a successful write announces the change to every open client (lib/config-events.ts)
+export const POST = withConfigEvent("permissions", postHandler);

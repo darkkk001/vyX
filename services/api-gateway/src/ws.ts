@@ -426,23 +426,34 @@ export async function attachTradingEventStream(server: Server, natsUrl: string):
   // at all, just this one more subscription.
   // "account.>" (2026-09-24): BalanceChanged -- a deposit / withdrawal / adjustment / transfer made in the backoffice
   // reaches the trader's terminal at once, instead of waiting for the next order / position event to refresh it.
-  const subs = [nc.subscribe("order.>"), nc.subscribe("margin.>"), nc.subscribe("position.>"), nc.subscribe("alert.>"), nc.subscribe("account.>")];
+  // "config.>" (Batch 5, 2026-09-26): broker-wide ConfigChanged -- no account_id; forwarded to every trader socket of
+  // its broker_id (clientsByBroker below), so a backoffice change reaches every open terminal within ~1 s.
+  const subs = [nc.subscribe("order.>"), nc.subscribe("margin.>"), nc.subscribe("position.>"), nc.subscribe("alert.>"), nc.subscribe("account.>"), nc.subscribe("config.>")];
 
   const wss = new WebSocketServer({ noServer: true });
   const clientsByAccount = new Map<string, Set<WebSocket>>();
+  const clientsByBroker = new Map<string, Set<WebSocket>>();
 
-  function registerClient(ws: WebSocket, accountId: string) {
+  function registerClient(ws: WebSocket, accountId: string, brokerId: string) {
     let set = clientsByAccount.get(accountId);
     if (!set) {
       set = new Set();
       clientsByAccount.set(accountId, set);
     }
     set.add(ws);
+    let bset = clientsByBroker.get(brokerId);
+    if (!bset) {
+      bset = new Set();
+      clientsByBroker.set(brokerId, bset);
+    }
+    bset.add(ws);
     gatewayStats.tradingWsConnectionsTotal += 1;
 
     function unregister() {
       set!.delete(ws);
       if (set!.size === 0) clientsByAccount.delete(accountId);
+      bset!.delete(ws);
+      if (bset!.size === 0) clientsByBroker.delete(brokerId);
       gatewayStats.tradingWsDisconnectionsTotal += 1;
     }
     ws.on("close", unregister);
@@ -461,7 +472,7 @@ export async function attachTradingEventStream(server: Server, natsUrl: string):
           return;
         }
         wss.handleUpgrade(req, socket, head, (ws) => {
-          registerClient(ws, session.accountId);
+          registerClient(ws, session.accountId, session.brokerId);
         });
       })
       .catch((err) => {
@@ -477,12 +488,27 @@ export async function attachTradingEventStream(server: Server, natsUrl: string):
         const text = Buffer.from(msg.data).toString("utf-8");
 
         let accountId: string | undefined;
+        let parsed: { account_id?: string; broker_id?: string; type?: string; scope?: string } | undefined;
         try {
-          accountId = JSON.parse(text)?.account_id;
+          parsed = JSON.parse(text);
+          accountId = parsed?.account_id;
         } catch {
           continue; // malformed payload -- nothing to route it to
         }
-        if (!accountId) continue;
+        if (!accountId) {
+          // broker-wide configuration change (Batch 5): every trader socket of that broker
+          if (parsed?.type === "ConfigChanged" && parsed.broker_id) {
+            // a symbol enable / disable must also reach the price stream's enabled-symbol filter now, not in 10 min
+            if (parsed.scope === "symbols") void refreshSymbolFilter(parsed.broker_id);
+            for (const client of clientsByBroker.get(parsed.broker_id) ?? []) {
+              if (client.readyState === WebSocket.OPEN) {
+                client.send(text);
+                gatewayStats.tradingEventsForwardedTotal += 1;
+              }
+            }
+          }
+          continue;
+        }
 
         const clients = clientsByAccount.get(accountId);
         if (!clients) continue;
@@ -518,7 +544,8 @@ export async function attachTradingEventStream(server: Server, natsUrl: string):
 export async function attachAdminEventStream(server: Server, natsUrl: string): Promise<void> {
   const nc: NatsConnection = await connect({ servers: natsUrl, reconnect: true, maxReconnectAttempts: -1 });
   logNatsConnectionLoss("admin event stream", nc);
-  const subs = [nc.subscribe("order.>"), nc.subscribe("position.>"), nc.subscribe("dealing.>"), nc.subscribe("account.>")];
+  // "config.>" + "margin.>" (Batch 5): broker config changes and margin-call / stop-out crossings reach the backoffice
+  const subs = [nc.subscribe("order.>"), nc.subscribe("position.>"), nc.subscribe("dealing.>"), nc.subscribe("account.>"), nc.subscribe("config.>"), nc.subscribe("margin.>")];
 
   const wss = new WebSocketServer({ noServer: true });
   // ws -> that connection's own admin's brokerId, same per-tenant

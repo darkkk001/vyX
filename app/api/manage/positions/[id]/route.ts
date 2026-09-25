@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { publishTradingEvent } from "@/lib/nats";
 import { forbidUnlessBrokerAdminOrPermission, PERMISSION_LABELS } from "@/lib/permissions";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { getFreshPrice } from "@/lib/live-price";
@@ -120,6 +121,9 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
     return result;
   });
+
+  // Batch 5 (audit: admin SL/TP edits published nothing): the trader's terminal and every backoffice see it at once
+  await publishTradingEvent("PositionModified", { position_id: updated.id, account_id: updated.accountId, broker_id: brokerId }).catch(() => {});
 
   return NextResponse.json({
     positionId: updated.id,
