@@ -32,6 +32,29 @@ async function patchHandler(request: NextRequest, { params }: { params: Promise<
   }
 
   const body = await request.json().catch(() => null);
+  // Phase 2 batch 1: the backoffice's Enable / Disable sends only { enabled } -- that used to fail "name is required".
+  // An enabled-only body toggles just that field (with its audit row) and leaves everything else as stored.
+  if (body && typeof body.enabled === "boolean" && Object.keys(body).length === 1) {
+    const enabledOnly = body.enabled as boolean;
+    const toggled = await prisma.$transaction(async (tx) => {
+      const type = await tx.accountType.update({ where: { id }, data: { enabled: enabledOnly } });
+      await tx.auditLog.create({
+        data: { brokerId, actorAdminId: session.adminId, action: "ACCOUNT_TYPE_UPDATED", entityType: "AccountType", entityId: id, oldValue: { enabled: existing.enabled }, newValue: { enabled: enabledOnly } },
+      });
+      return type;
+    });
+    publishAccountsUpdatedAfterResponse(brokerId, { accountTypeId: id }, "account_type");
+    return NextResponse.json({
+      id: toggled.id,
+      name: toggled.name,
+      description: toggled.description,
+      pricingHint: toggled.pricingHint,
+      sortOrder: toggled.sortOrder,
+      isDefault: toggled.isDefault,
+      enabled: toggled.enabled,
+      ...typePricingJson(toggled),
+    });
+  }
   const name = typeof body?.name === "string" ? body.name.trim() : "";
   if (!name) {
     return NextResponse.json({ error: "name is required" }, { status: 400 });

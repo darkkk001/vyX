@@ -78,7 +78,12 @@ async function patchHandler(request: NextRequest, { params }: { params: Promise<
   const swapFree: boolean | null = body?.swapFree === null ? null : body?.swapFree === true;
   const forceDealingMode = body?.forceDealingMode === true;
   const dealingMode = GROUP_DEALING_MODES.includes(body?.dealingMode) ? (body.dealingMode as GroupDealingMode) : "INHERIT";
-  const tier = GROUP_TIERS.includes(body?.tier) ? (body.tier as GroupTier) : "STANDARD";
+  // Phase 2 batch 1: a field the form does not send keeps its stored value. The backoffice form never sends `tier`, so
+  // every save used to reset it to STANDARD.
+  const tier = GROUP_TIERS.includes(body?.tier) ? (body.tier as GroupTier) : existing.tier;
+  // "Clients can choose this group at signup" (D4: the group is the pricing tier; its name is the client-facing label
+  // until the label field lands). Absent = keep.
+  const isClientSelectable = typeof body?.isClientSelectable === "boolean" ? body.isClientSelectable : existing.isClientSelectable;
   // Two axes since Stage 1 of docs/ACCOUNT-STRUCTURE-MIGRATION.md (§0.1):
   // `category` is ROUTING (where the order goes, who holds the risk) and
   // `modeRestriction` is which account MODES may sit in this group. A body
@@ -89,6 +94,15 @@ async function patchHandler(request: NextRequest, { params }: { params: Promise<
   // `existing` is passed so a 1.0.9 client resending `groupType: "DEALING"`
   // cannot silently downgrade a REVERSAL or COVERAGE group it has no way
   // to express.
+  // A broker always needs a default group (account creation falls back to it, lib/account-provisioning.ts): unticking the
+  // only default is refused instead of leaving account creation failing with NO_GROUP_AVAILABLE.
+  if (existing.isDefault && !isDefault) {
+    const otherDefault = await prisma.group.findFirst({ where: { brokerId, isDefault: true, id: { not: id } } });
+    if (!otherDefault) {
+      return NextResponse.json({ error: "make another group the default first; a broker always needs one default group for new accounts" }, { status: 409 });
+    }
+  }
+
   const routing = resolveGroupRouting(body, dealingMode, {
     category: existing.category,
     modeRestriction: existing.modeRestriction,
@@ -117,7 +131,7 @@ async function patchHandler(request: NextRequest, { params }: { params: Promise<
       }
       const updated = await tx.group.update({
         where: { id },
-        data: { name, leverage, marginCallLevel, stopOutLevel, isDefault, maxLotSize, tradingRestriction, swapFree, forceDealingMode, category, modeRestriction, groupType, dealingMode, tier },
+        data: { name, leverage, marginCallLevel, stopOutLevel, isDefault, maxLotSize, tradingRestriction, swapFree, forceDealingMode, category, modeRestriction, groupType, dealingMode, tier, isClientSelectable },
       });
       await tx.auditLog.create({
         data: {
@@ -141,6 +155,7 @@ async function patchHandler(request: NextRequest, { params }: { params: Promise<
             groupType: existing.groupType,
             dealingMode: existing.dealingMode,
             tier: existing.tier,
+            isClientSelectable: existing.isClientSelectable,
           },
           newValue: {
             name,
@@ -157,6 +172,7 @@ async function patchHandler(request: NextRequest, { params }: { params: Promise<
             groupType,
             dealingMode,
             tier,
+            isClientSelectable,
           },
         },
       });

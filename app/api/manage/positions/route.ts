@@ -6,6 +6,7 @@ import { forbidUnlessBrokerAdminOrPermission, PERMISSION_LABELS } from "@/lib/pe
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { getFreshPrice, getFreshPrices } from "@/lib/live-price";
 import { computeRealizedPnl, validateSlTp } from "@/lib/trading";
+import { loadRateResolver } from "@/lib/fx";
 import { resolveBookType, applySpreadMarkup, pipSize, chargeCommission } from "@/lib/group-pricing";
 import { resolveFillPricing, logSpreadWarning } from "@/lib/pricing-engine";
 import { publishTradingEvent } from "@/lib/nats";
@@ -62,11 +63,12 @@ export async function GET() {
             fullName: true,
             groupId: true,
             accountMode: true,
+            currency: true,
             group: { select: { name: true, category: true } },
             ibLinkAsClient: { select: { ibAccountId: true } },
           },
         },
-        symbol: { select: { name: true, digits: true, contractSize: true } },
+        symbol: { select: { name: true, digits: true, contractSize: true, quoteCurrency: true } },
         originOrder: { select: { idempotencyKey: true, source: true } },
       },
       orderBy: { openedAt: "desc" },
@@ -94,7 +96,13 @@ export async function GET() {
   const isCoverageLeg = (p: (typeof positions)[number]) => p.accountId === brokerRow.coverageAccountId || p.account.group?.category === "COVERAGE";
 
   const symbolNames = [...new Set(positions.map((p) => p.symbol.name))];
-  const priceBySymbol = await getFreshPrices(symbolNames);
+  // Phase 2 batch 1 (FX, docs/contracts/fx-and-market-week.md): P/L is in the symbol's QUOTE currency; each row is
+  // converted to ITS account's currency with the server's rate (lib/fx.ts), and the conversion quotes go out with the
+  // rows so the backoffice re-prices live with the same rule. No rate = unpriced (floatingPnl null, fxRate null).
+  const [priceBySymbol, fx] = await Promise.all([
+    getFreshPrices(symbolNames),
+    loadRateResolver(prisma, new Map(positions.map((p) => [`${p.symbol.quoteCurrency}/${p.account.currency}`, [p.symbol.quoteCurrency, p.account.currency] as const])).values()),
+  ]);
 
   // Backoffice manual position tools -- Reverse's confirm dialog needs to
   // warn when the position's account is mirror-relevant (see
@@ -108,14 +116,15 @@ export async function GET() {
   const rows = positions.map((p) => {
     const lp = priceBySymbol.get(p.symbol.name);
     const currentPrice = lp ? (p.side === "BUY" ? lp.bid : lp.ask) : null;
-    const floatingPnl = currentPrice
+    const fxRate = fx.rate(p.symbol.quoteCurrency, p.account.currency);
+    const floatingPnl = currentPrice && fxRate
       ? computeRealizedPnl({
           side: p.side,
           openPrice: p.openPrice,
           closePrice: currentPrice,
           volume: p.volume,
           contractSize: p.symbol.contractSize,
-        })
+        }).mul(fxRate)
       : null;
     return {
       id: p.id,
@@ -136,6 +145,11 @@ export async function GET() {
       // arrives (and the only one that matters if the stream never
       // connects at all).
       contractSize: p.symbol.contractSize.toString(),
+      // FX: floatingPnl above is already in accountCurrency; a live re-price multiplies its quote-currency P/L by the
+      // rate recomputed from `fx.quotes` (+ live ticks of those pairs). fxRate null = unpriced, shown "–".
+      quoteCurrency: p.symbol.quoteCurrency,
+      accountCurrency: p.account.currency,
+      fxRate: fxRate ? fxRate.toString() : null,
       // Live Exposure redesign (futurix-live-exposure-design.html): Swap
       // and Book columns on the positions table, and the A-book/B-book
       // split on the Book P&L KPI -- both already stored on Position at
@@ -179,7 +193,7 @@ export async function GET() {
     .map((r) => ({ id: r.ibAccountId, accountNumber: r.ibAccount.accountNumber, fullName: r.ibAccount.fullName }))
     .sort((a, b) => a.accountNumber.localeCompare(b.accountNumber));
 
-  return NextResponse.json({ rows, accounts, symbols: tradableSymbols, groups, ibOptions });
+  return NextResponse.json({ rows, accounts, symbols: tradableSymbols, groups, ibOptions, fx: { quotes: fx.quotes } });
 }
 
 // Manual position open -- a dealing desk placing a MARKET trade for an

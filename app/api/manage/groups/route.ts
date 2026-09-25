@@ -142,6 +142,8 @@ async function postHandler(request: NextRequest) {
   const forceDealingMode = body?.forceDealingMode === true;
   const dealingMode = GROUP_DEALING_MODES.includes(body?.dealingMode) ? (body.dealingMode as GroupDealingMode) : "INHERIT";
   const tier = GROUP_TIERS.includes(body?.tier) ? (body.tier as GroupTier) : "STANDARD";
+  // Phase 2 batch 1: a group created here can be offered to clients at signup (it never could before)
+  const isClientSelectable = body?.isClientSelectable === true;
   // Two axes since Stage 1 of docs/ACCOUNT-STRUCTURE-MIGRATION.md (§0.1):
   // `category` is ROUTING (where the order goes, who holds the risk) and
   // `modeRestriction` is which account MODES may sit in this group. A body
@@ -161,7 +163,7 @@ async function postHandler(request: NextRequest) {
         await tx.group.updateMany({ where: { brokerId, isDefault: true }, data: { isDefault: false } });
       }
       const created = await tx.group.create({
-        data: { brokerId, name, leverage, marginCallLevel, stopOutLevel, isDefault, maxLotSize, tradingRestriction, swapFree, forceDealingMode, category, modeRestriction, groupType, dealingMode, tier },
+        data: { brokerId, name, leverage, marginCallLevel, stopOutLevel, isDefault, maxLotSize, tradingRestriction, swapFree, forceDealingMode, category, modeRestriction, groupType, dealingMode, tier, isClientSelectable },
       });
       await tx.auditLog.create({
         data: {

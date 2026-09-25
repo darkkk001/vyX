@@ -2,6 +2,7 @@ import "server-only";
 import { Prisma, PositionActionType, type Position, type OrderSide } from "@prisma/client";
 import { getFreshPrice } from "@/lib/live-price";
 import { checkTradingSession, computeNextSessionOpen } from "@/lib/risk";
+import { loadRateResolver } from "@/lib/fx";
 import { computeRealizedPnl } from "@/lib/trading";
 import { resolveBookType } from "@/lib/group-pricing";
 import { closePositionInTx } from "@/lib/position-close";
@@ -48,8 +49,8 @@ async function loadOpenPosition(tx: Tx, brokerId: string, positionId: string) {
   const position = await tx.position.findUnique({
     where: { id: positionId },
     include: {
-      symbol: { select: { name: true, category: true, contractSize: true } },
-      account: { select: { accountNumber: true, groupId: true } },
+      symbol: { select: { name: true, category: true, contractSize: true, quoteCurrency: true } },
+      account: { select: { accountNumber: true, groupId: true, currency: true } },
     },
   });
   if (!position || position.brokerId !== brokerId) throw new PositionActionError("position not found");
@@ -150,23 +151,25 @@ export async function executeReverseInPlace(
   const newSide: OrderSide = oldSide === "BUY" ? "SELL" : "BUY";
 
   const price = await getFreshPrice(position.symbol.name);
-  const floatingPnlAtFlip = price
+  // FX (Phase 2 batch 1): the audited floating P/L is in the account's currency; no rate = unpriced (null)
+  const fxRate = price ? (await loadRateResolver(tx, [[position.symbol.quoteCurrency, position.account.currency]])).rate(position.symbol.quoteCurrency, position.account.currency) : null;
+  const floatingPnlAtFlip = price && fxRate
     ? computeRealizedPnl({
         side: newSide,
         openPrice: position.openPrice,
         closePrice: newSide === "BUY" ? price.ask : price.bid,
         volume: position.volume,
         contractSize: position.symbol.contractSize,
-      })
+      }).mul(fxRate)
     : null;
-  const floatingPnlBefore = price
+  const floatingPnlBefore = price && fxRate
     ? computeRealizedPnl({
         side: oldSide,
         openPrice: position.openPrice,
         closePrice: oldSide === "BUY" ? price.ask : price.bid,
         volume: position.volume,
         contractSize: position.symbol.contractSize,
-      })
+      }).mul(fxRate)
     : null;
 
   const updated = await tx.position.update({ where: { id: position.id }, data: { side: newSide } });

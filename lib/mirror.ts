@@ -13,6 +13,7 @@ import {
   checkGroupCloseOnly,
 } from "@/lib/risk";
 import { getFreshPrices } from "@/lib/live-price";
+import { loadRateResolver } from "@/lib/fx";
 import { computeRealizedPnl } from "@/lib/trading";
 import { closePositionInTx } from "@/lib/position-close";
 import { emitPositionClosedActivity } from "@/lib/dealer-activity";
@@ -158,7 +159,7 @@ async function triggerKillSwitch(db: Db, rule: MirrorRule, reason: string): Prom
 // that would have tipped it over is itself caught by the very next call.
 // DB check per fill, not a cached rule -- see the brief's own "10s max, or
 // check DB per fill -- volume is low, DB check is fine for v0" note.
-async function checkKillSwitch(db: Db, rule: MirrorRule): Promise<{ killed: boolean; reason?: string }> {
+export async function checkKillSwitch(db: Db, rule: MirrorRule): Promise<{ killed: boolean; reason?: string }> {
   if (rule.maxOpenLots != null) {
     const links = await db.mirrorLink.findMany({ where: { ruleId: rule.id }, select: { targetPositionId: true } });
     if (links.length > 0) {
@@ -182,18 +183,28 @@ async function checkKillSwitch(db: Db, rule: MirrorRule): Promise<{ killed: bool
     });
     const realizedToday = realizedAgg._sum.amount ?? new Prisma.Decimal(0);
 
-    const openPositions = await db.position.findMany({
-      where: { accountId: rule.targetAccountId, status: "OPEN" },
-      select: { side: true, volume: true, openPrice: true, symbol: { select: { name: true, contractSize: true } } },
-    });
-    const priceBySymbol = await getFreshPrices([...new Set(openPositions.map((p) => p.symbol.name))]);
+    const [openPositions, target] = await Promise.all([
+      db.position.findMany({
+        where: { accountId: rule.targetAccountId, status: "OPEN" },
+        select: { side: true, volume: true, openPrice: true, symbol: { select: { name: true, contractSize: true, quoteCurrency: true } } },
+      }),
+      db.account.findUniqueOrThrow({ where: { id: rule.targetAccountId }, select: { currency: true } }),
+    ]);
+    // Phase 2 batch 1 (FX): the floating P/L is compared with maxDailyLoss, which is in the target account's currency,
+    // so each leg is converted from its quote currency first (lib/fx.ts). It used to add JPY / GBP / EUR amounts as if
+    // they were the account's own.
+    const [priceBySymbol, fx] = await Promise.all([
+      getFreshPrices([...new Set(openPositions.map((p) => p.symbol.name))]),
+      loadRateResolver(db, openPositions.map((p) => [p.symbol.quoteCurrency, target.currency] as const)),
+    ]);
     let floating = new Prisma.Decimal(0);
     for (const p of openPositions) {
       const live = priceBySymbol.get(p.symbol.name);
-      if (!live) continue; // no fresh price -- excluded from floating, same "can't value it, don't guess" convention as checkAccountPreTradeMargin
+      const rate = fx.rate(p.symbol.quoteCurrency, target.currency);
+      if (!live || !rate) continue; // no fresh price / no rate -- excluded from floating, same "can't value it, don't guess" convention as checkAccountPreTradeMargin
       const cp = p.side === "BUY" ? live.bid : live.ask;
       floating = floating.add(
-        computeRealizedPnl({ side: p.side, openPrice: p.openPrice, closePrice: cp, volume: p.volume, contractSize: p.symbol.contractSize })
+        computeRealizedPnl({ side: p.side, openPrice: p.openPrice, closePrice: cp, volume: p.volume, contractSize: p.symbol.contractSize }).mul(rate)
       );
     }
 

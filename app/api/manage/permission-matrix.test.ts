@@ -121,6 +121,8 @@ const MANIFEST: Row[] = [
   { mod: "dealing-desk/route", method: "GET", perm: "ANY_MANAGER" },
   { mod: "dealing-queue/[id]/route", method: "PATCH", perm: "DEALING", needsId: true, body: {} },
   { mod: "dealing-queue/route", method: "GET", perm: "ANY_MANAGER" },
+  // Phase 2 batch 1: a dealer cancels a client's resting LIMIT/STOP order
+  { mod: "orders/[id]/cancel/route", method: "POST", perm: "DEALING", needsId: true, body: {} },
   { mod: "deals/route", method: "GET", perm: "ANY_MANAGER" },
   { mod: "feed-health/route", method: "GET", perm: "ANY_MANAGER" },
   { mod: "funds-requests/[id]/route", method: "PATCH", perm: "FUNDS_APPROVAL", needsId: true, body: {} },

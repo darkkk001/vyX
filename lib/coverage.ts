@@ -11,6 +11,7 @@ import { computeProportionalCloseVolume } from "@/lib/mirror";
 import { createNotification } from "@/lib/notifications";
 import { publishTradingEvent } from "@/lib/nats";
 import { emitPositionClosedActivity } from "@/lib/dealer-activity";
+import { loadRateResolver } from "@/lib/fx";
 import { computeRealizedPnl } from "@/lib/trading";
 
 // Dealer coverage (B-book hedging). A broker hedges a client's B-book
@@ -271,7 +272,7 @@ export async function onClose(db: Db, ev: CoverageCloseEvent, opts?: { retryWith
   if (!closed.coveragePositionId) return;
   const leg = await db.position.findUnique({
     where: { id: closed.coveragePositionId },
-    include: { symbol: { select: { name: true, contractSize: true, digits: true } } },
+    include: { symbol: { select: { name: true, contractSize: true, digits: true, quoteCurrency: true } }, account: { select: { currency: true } } },
   });   // leg.autoHedged decides who closes it, below
   if (!leg || leg.status !== "OPEN") return; // the dealer already closed coverage -- nothing to follow
 
@@ -293,14 +294,16 @@ export async function onClose(db: Db, ev: CoverageCloseEvent, opts?: { retryWith
   // UNBOOKED position's close never gets here: it is governed solely by the dealer-review queue on the
   // close itself (lib/queued-close.ts), which is a separate switch and untouched by any of this.
   if (!leg.autoHedged) {
-    const legPnl = live
+    // FX (Phase 2 batch 1): in the coverage account's currency; no rate = "unpriced"
+    const legRate = live ? (await loadRateResolver(db, [[leg.symbol.quoteCurrency, leg.account.currency]])).rate(leg.symbol.quoteCurrency, leg.account.currency) : null;
+    const legPnl = live && legRate
       ? computeRealizedPnl({
           side: leg.side,
           openPrice: leg.openPrice,
           closePrice: leg.side === "BUY" ? live.bid : live.ask,
           volume: leg.volume,
           contractSize: leg.symbol.contractSize,
-        })
+        }).mul(legRate)
       : null;
     const at = legPnl ? `${legPnl.gte(0) ? "+" : ""}${legPnl.toFixed(2)}` : "unpriced";
     await db.auditLog.create({

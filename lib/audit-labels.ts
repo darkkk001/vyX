@@ -80,6 +80,7 @@ const LABELS: Record<string, string> = {
   ORDER_TRIGGERED_AND_FILLED: "Pending order triggered and filled",
   TRADER_CANCELLED_DEALING_ORDER: "Client cancelled order (awaiting dealer)",
   TRADER_CANCELLED_PENDING_ORDER: "Client cancelled pending order",
+  DEALER_CANCELLED_PENDING_ORDER: "Dealer cancelled pending order",
   STM_BULK_CLOSE: "Closed positions via Smart Trade Manager bulk action",
   BALANCE_ADJUSTMENT: "Adjusted balance",
   BALANCE_ADJUSTMENT_REQUESTED: "Requested balance adjustment (pending approval)",

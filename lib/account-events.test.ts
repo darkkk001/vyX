@@ -73,7 +73,8 @@ describe("AccountUpdated", () => {
     for (const [file, re] of routes) {
       const src = readFileSync(path.resolve(import.meta.dirname, "..", file), "utf8");
       // the pricing routes publish on BOTH the reset and the upsert branch
-      const expected = file.endsWith("pricing/route.ts") ? 2 : 1;
+      // account-types/[id] also publishes from its enabled-only Enable/Disable path (Phase 2 batch 1)
+      const expected = file.endsWith("pricing/route.ts") || file.endsWith("account-types/[id]/route.ts") ? 2 : 1;
       expect(src.match(new RegExp(re.source, "g"))?.length ?? 0, file).toBe(expected);
     }
   });

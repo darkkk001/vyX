@@ -6,6 +6,7 @@ import { getAdminSession } from "@/lib/auth";
 import { forbidUnlessBrokerAdminOrPermission } from "@/lib/permissions";
 import { getFreshPrices } from "@/lib/live-price";
 import { computeRealizedPnl } from "@/lib/trading";
+import { loadRateResolver } from "@/lib/fx";
 
 const FILL_PRICE_MODES: MirrorFillPriceMode[] = ["SOURCE_PRICE", "MARKET"];
 
@@ -55,11 +56,11 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   const [sourcePositions, targetPositions] = await Promise.all([
     prisma.position.findMany({
       where: { id: { in: sourcePositionIds } },
-      include: { symbol: { select: { name: true, digits: true, contractSize: true } } },
+      include: { symbol: { select: { name: true, digits: true, contractSize: true, quoteCurrency: true } }, account: { select: { currency: true } } },
     }),
     prisma.position.findMany({
       where: { id: { in: targetPositionIds } },
-      include: { symbol: { select: { name: true, digits: true, contractSize: true } } },
+      include: { symbol: { select: { name: true, digits: true, contractSize: true, quoteCurrency: true } }, account: { select: { currency: true } } },
     }),
   ]);
   const sourceById = new Map(sourcePositions.map((p) => [p.id, p]));
@@ -67,13 +68,17 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
 
   const allSymbolNames = new Set<string>([...sourcePositions, ...targetPositions].map((p) => p.symbol.name));
   const priceBySymbol = await getFreshPrices([...allSymbolNames]);
+  // FX (Phase 2 batch 1): an open position's P/L converted to its account's currency (realizedPnl already is)
+  const fx = await loadRateResolver(prisma, [...sourcePositions, ...targetPositions].map((p) => [p.symbol.quoteCurrency, p.account.currency] as const));
 
   const pnlFor = (p: (typeof sourcePositions)[number]): Prisma.Decimal | null => {
     if (p.status === "CLOSED") return p.realizedPnl ?? new Prisma.Decimal(0);
     const live = priceBySymbol.get(p.symbol.name);
     if (!live) return null;
     const cp = p.side === "BUY" ? live.bid : live.ask;
-    return computeRealizedPnl({ side: p.side, openPrice: p.openPrice, closePrice: cp, volume: p.volume, contractSize: p.symbol.contractSize });
+    const rate = fx.rate(p.symbol.quoteCurrency, p.account.currency);
+    if (!rate) return null; // unpriced
+    return computeRealizedPnl({ side: p.side, openPrice: p.openPrice, closePrice: cp, volume: p.volume, contractSize: p.symbol.contractSize }).mul(rate);
   };
 
   let netStrategyPnl = new Prisma.Decimal(0);

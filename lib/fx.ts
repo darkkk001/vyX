@@ -104,6 +104,25 @@ export function fxLookupFromQuotes(
   return (symbol) => bySymbol.get(symbol);
 }
 
+/** Rates for several (quote, account) pairs from ONE quote read: `rate(quote, account)` is conversionRate's answer,
+ *  null = unpriced. `quotes` are the rows it read (already within the 72 h limit), for a client that re-prices live. */
+export async function loadRateResolver(db: Db, pairs: Iterable<readonly [string, string]>): Promise<{
+  rate: (quoteCurrency: string, accountCurrency: string) => Prisma.Decimal | null;
+  quotes: { symbol: string; bid: string; ask: string; tickAt: string }[];
+}> {
+  const list = [...pairs];
+  const symbols = new Set<string>();
+  for (const [from, to] of list) for (const s of conversionSymbolsFor(from, to)) symbols.add(s);
+  const rows = symbols.size > 0 ? await getLivePriceRows([...symbols], db) : new Map();
+  const now = Date.now();
+  const lookup = fxLookupFromQuotes(rows.values(), now);
+  const fresh = [...rows.values()].filter((r) => r.tickAt.getTime() > now - FX_RATE_MAX_AGE_MS);
+  return {
+    rate: (quoteCurrency, accountCurrency) => conversionRate(quoteCurrency, accountCurrency, lookup),
+    quotes: fresh.map((r) => ({ symbol: r.symbol, bid: r.bid.toString(), ask: r.ask.toString(), tickAt: r.tickAt.toISOString() })),
+  };
+}
+
 /** The rate for one pair, loaded now. Throws FxRateUnavailableError when there is nothing to convert with. */
 export async function quoteToAccountRate(db: Db, quoteCurrency: string, accountCurrency: string): Promise<Prisma.Decimal> {
   const lookup = await loadFxLookup(db, [[quoteCurrency, accountCurrency]]);
