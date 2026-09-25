@@ -142,3 +142,31 @@ describe("PATCH /api/manage/symbols -- defaultBookType compatibility", () => {
     expect(res.status).toBe(400);
   });
 });
+
+// Hedged margin floor (owner decision 2026-09-25): 50-200 freely, below 50 only with an explicit confirmation.
+describe("PATCH /api/manage/symbols -- hedgedMarginPct floor", () => {
+  it("50 to 200 saves without confirmation; not sent keeps the stored value", async () => {
+    if (!dbReachable) return;
+    const fx = await createFixture();
+    expect((await patch(fx, { ...baseBody(fx.symbolId), hedgedMarginPct: "50" })).json.hedgedMarginPct).toBe("50");
+    expect((await patch(fx, { ...baseBody(fx.symbolId) })).json.hedgedMarginPct).toBe("50");
+    expect((await patch(fx, { ...baseBody(fx.symbolId), hedgedMarginPct: "200" })).json.hedgedMarginPct).toBe("200");
+  });
+
+  it("below 50 is refused without confirmBelowFloor, saved (and audited) with it", async () => {
+    if (!dbReachable) return;
+    const fx = await createFixture();
+    const refused = await patch(fx, { ...baseBody(fx.symbolId), hedgedMarginPct: "0" });
+    expect(refused.status).toBe(400);
+    expect(refused.json.code).toBe("HEDGED_MARGIN_BELOW_FLOOR");
+    const ok = await patch(fx, { ...baseBody(fx.symbolId), hedgedMarginPct: "0", confirmBelowFloor: true });
+    expect(ok.status).toBe(200);
+    expect(ok.json.hedgedMarginPct).toBe("0");
+    const audit = await prisma.auditLog.findFirst({ where: { brokerId: fx.brokerId, action: "SYMBOL_CONFIG_UPDATED" }, orderBy: { createdAt: "desc" } });
+    expect((audit?.newValue as Record<string, unknown>).confirmedBelowHedgedFloor).toBe(true);
+    // re-sending the already confirmed value while editing another field is not a new decision
+    expect((await patch(fx, { ...baseBody(fx.symbolId), spreadMarkup: "2", hedgedMarginPct: "0" })).status).toBe(200);
+    // a DIFFERENT value below the floor needs its own confirmation
+    expect((await patch(fx, { ...baseBody(fx.symbolId), hedgedMarginPct: "25" })).status).toBe(400);
+  });
+});

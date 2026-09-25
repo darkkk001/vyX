@@ -13,6 +13,9 @@ const BOOK_TYPES: BookType[] = ["A_BOOK", "B_BOOK"];
 // get_broker_symbol_config, kept in sync deliberately: whatever this
 // screen shows for an unconfigured symbol is exactly what the Rust
 // engine will actually apply if that symbol trades before anyone edits it.
+// Hedged margin: values below this need an explicit confirmation (see PATCH).
+const HEDGED_MARGIN_FLOOR_PCT = 50;
+
 const DEFAULTS = {
   spreadMarkup: "0",
   minLot: "0.01",
@@ -157,6 +160,23 @@ export async function PATCH(request: NextRequest) {
   if (hedgedMarginPctRaw != null && hedgedMarginPctRaw !== "" && (!hedgedMarginPct || hedgedMarginPct.lt(0) || hedgedMarginPct.gt(200))) {
     return NextResponse.json({ error: "hedgedMarginPct must be a number from 0 to 200 (200 = hedged positions pay full margin on both legs)" }, { status: 400 });
   }
+  // Floor (owner decision 2026-09-25): 50-200 freely; BELOW 50 only with an explicit confirmation. At 0 a fully hedged
+  // account has no used margin, so no margin level: it is never stopped out, even at negative equity (a broker loss
+  // risk). And under the MT5 largest-loss rule, closing a hedge leg can unhedge the book and cascade into more closes.
+  const confirmBelowFloor = (body as Record<string, unknown> | null)?.confirmBelowFloor === true;
+  if (hedgedMarginPct && hedgedMarginPct.lt(HEDGED_MARGIN_FLOOR_PCT) && !confirmBelowFloor) {
+    const existingPct = (await prisma.brokerSymbol.findUnique({ where: { brokerId_symbolId: { brokerId: session.brokerId!, symbolId } }, select: { hedgedMarginPct: true } }))?.hedgedMarginPct;
+    // a save that merely re-sends an already confirmed value (another field edited) is not a new decision
+    if (!existingPct || !existingPct.equals(hedgedMarginPct)) {
+      return NextResponse.json(
+        {
+          error: `hedgedMarginPct below ${HEDGED_MARGIN_FLOOR_PCT} needs explicit confirmation (confirmBelowFloor): at 0 a fully hedged account is never stopped out, even at negative equity, and a stop-out can unhedge the book and cascade`,
+          code: "HEDGED_MARGIN_BELOW_FLOOR",
+        },
+        { status: 400 }
+      );
+    }
+  }
 
   if (
     !spreadMarkup ||
@@ -272,6 +292,7 @@ export async function PATCH(request: NextRequest) {
         tradingMode: updated.tradingMode,
         defaultBookType: updated.defaultBookType,
         hedgedMarginPct: updated.hedgedMarginPct.toString(),
+        ...(confirmBelowFloor ? { confirmedBelowHedgedFloor: true } : {}),
       },
     },
   });
