@@ -7,7 +7,9 @@ import { createNotification } from "@/lib/notifications";
 import { openPositionFromOrder } from "@/lib/dealing";
 import { resolveBookType, applySpreadMarkup, pipSize, chargeCommission } from "@/lib/group-pricing";
 import { resolveFillPricing, logSpreadWarning } from "@/lib/pricing-engine";
-import { checkAccountPreTradeMargin } from "@/lib/margin";
+import { loadAccountMarginState, evaluatePreTradeMargin } from "@/lib/margin";
+import { runAfterResponse } from "@/lib/after-response";
+import { positionDto, POSITION_DTO_INCLUDE } from "@/lib/position-dto";
 import { recordOrderAckLatency } from "@/lib/order-latency";
 import { publishTradingEvent } from "@/lib/nats";
 import { recordDealerActivity } from "@/lib/dealer-activity";
@@ -65,22 +67,24 @@ async function logHotkeyOrder(brokerId: string, orderId: string) {
 // function's many early-return branches needed touching individually.
 export async function POST(request: NextRequest) {
   const startedAt = Date.now();
-  const response = await handlePlaceOrder(request);
-  if (response.status === 201) {
-    const session = await getAccountSession();
-    if (session) {
-      void recordOrderAckLatency(session.brokerId, Date.now() - startedAt).catch(() => {});
-    }
-  }
-  return response;
-}
-
-async function handlePlaceOrder(request: NextRequest) {
+  // Latency fix 1 (2026-09-26): ONE session check per request -- this wrapper used to check it again after the
+  // handler just to learn the broker for the latency sample (two more Redis round trips before the response).
   const session = await getAccountSession();
   if (!session) {
     return NextResponse.json({ error: "not authenticated" }, { status: 401 });
   }
+  const response = await handlePlaceOrder(request, session);
+  const appMs = Date.now() - startedAt;
+  response.headers.set("Server-Timing", `app;dur=${appMs}`);
+  if (response.status === 201) {
+    await runAfterResponse("order-ack-latency", () => recordOrderAckLatency(session.brokerId, appMs), { awaitWithoutScope: false });
+  }
+  return response;
+}
 
+type Session = { accountId: string; brokerId: string };
+
+async function handlePlaceOrder(request: NextRequest, session: Session) {
   const body = await request.json().catch(() => null);
   const symbolName = typeof body?.symbol === "string" ? body.symbol.trim().toUpperCase() : "";
   const side = body?.side === "SELL" ? "SELL" : body?.side === "BUY" ? "BUY" : null;
@@ -119,19 +123,49 @@ async function handlePlaceOrder(request: NextRequest) {
     );
   }
 
-  // Idempotency: a duplicated submission (retry, double-click) returns the
-  // already-created order instead of creating a second one.
-  const existing = await prisma.order.findUnique({
-    where: { accountId_idempotencyKey: { accountId: session.accountId, idempotencyKey } },
-  });
+  // Latency fix 1 (2026-09-26, docs/audit/2026-09-24/latency-breakdown.md): every read the checks below need that does
+  // not depend on another read runs in ONE wave -- idempotency, the symbol, the broker, the account and the live price.
+  // Answers and their order are unchanged: a duplicate still returns the existing order first, then the symbol, the
+  // volume and the schema-drift guard, exactly as before.
+  //
+  // The Broker load selects every Broker column, so it is the first thing
+  // to fail if the running code is ahead of the database's schema (a
+  // migration not yet applied to the DB THIS deployment actually points at
+  // -- Prisma P2022 "column does not exist"). Guard it explicitly: a raw
+  // throw here would surface to the trader as an opaque 500 on the money
+  // path; a handled 503 says what's wrong and is safe to retry once the DB
+  // is migrated. Same guard covers the account load's own P2021/P2022.
+  //
+  // S4 (docs/market-data.md §8): getLivePriceRow reads the engine's own tick
+  // when MARKET_DATA_PRICES=vps (the in-memory tick, not the flushed row --
+  // the PRICE_STALE-on-fast-clicks lag goes away), Neon otherwise / on failure.
+  type Loaded = [
+    Prisma.BrokerGetPayload<object>,
+    Prisma.AccountGetPayload<{ include: { group: { include: { allowedSymbols: { select: { symbolId: true } } } } } }>,
+  ];
+  const [existing, brokerSymbol, brokerAccount, livePrice] = await Promise.all([
+    // Idempotency: a duplicated submission (retry, double-click) returns the
+    // already-created order instead of creating a second one.
+    prisma.order.findUnique({ where: { accountId_idempotencyKey: { accountId: session.accountId, idempotencyKey } } }),
+    prisma.brokerSymbol.findFirst({
+      where: { brokerId: session.brokerId, enabled: true, symbol: { name: symbolName } },
+      include: { symbol: true, tradingSessions: true },
+    }),
+    Promise.all([
+      prisma.broker.findUniqueOrThrow({ where: { id: session.brokerId } }),
+      prisma.account.findUniqueOrThrow({
+        where: { id: session.accountId },
+        include: { group: { include: { allowedSymbols: { select: { symbolId: true } } } } },
+      }),
+    ]).then(
+      (v): { ok: true; v: Loaded } => ({ ok: true, v: v as Loaded }),
+      (err: unknown): { ok: false; err: unknown } => ({ ok: false, err })
+    ),
+    getLivePriceRow(symbolName),
+  ]);
   if (existing) {
     return NextResponse.json(existing, { status: 200 });
   }
-
-  const brokerSymbol = await prisma.brokerSymbol.findFirst({
-    where: { brokerId: session.brokerId, enabled: true, symbol: { name: symbolName } },
-    include: { symbol: true, tradingSessions: true },
-  });
   if (!brokerSymbol) {
     return NextResponse.json({ error: "symbol not available for this broker" }, { status: 400 });
   }
@@ -152,26 +186,8 @@ async function handlePlaceOrder(request: NextRequest) {
     );
   }
 
-  // Risk checks -- see lib/risk.ts. Cheap/synchronous first, then the
-  // query-backed ones, all before any order/position is created.
-  // This Broker load selects every Broker column, so it is the first thing
-  // to fail if the running code is ahead of the database's schema (a
-  // migration not yet applied to the DB THIS deployment actually points at
-  // -- Prisma P2022 "column does not exist"). Guard it explicitly: a raw
-  // throw here would surface to the trader as an opaque 500 on the money
-  // path; a handled 503 says what's wrong and is safe to retry once the DB
-  // is migrated. Same guard covers the account load's own P2021/P2022.
-  let broker: Prisma.BrokerGetPayload<object>;
-  let account: Prisma.AccountGetPayload<{ include: { group: { include: { allowedSymbols: { select: { symbolId: true } } } } } }>;
-  try {
-    [broker, account] = await Promise.all([
-      prisma.broker.findUniqueOrThrow({ where: { id: session.brokerId } }),
-      prisma.account.findUniqueOrThrow({
-        where: { id: session.accountId },
-        include: { group: { include: { allowedSymbols: { select: { symbolId: true } } } } },
-      }),
-    ]);
-  } catch (err) {
+  if (!brokerAccount.ok) {
+    const err = brokerAccount.err;
     if (err instanceof Prisma.PrismaClientKnownRequestError && (err.code === "P2022" || err.code === "P2021")) {
       console.error("trade/orders: schema drift on broker/account load", err.code, err.meta);
       return NextResponse.json(
@@ -181,7 +197,22 @@ async function handlePlaceOrder(request: NextRequest) {
     }
     throw err;
   }
-  const riskError =
+  const [broker, account] = brokerAccount.v;
+
+  const riskResponse = (riskError: string) => {
+    // MARKET_CLOSED carries the next session open, exactly like the close / modify routes, so the
+    // terminal can say "XAUUSD market is closed, opens Monday 22:00 UTC" instead of a bare code.
+    if (riskError === "MARKET_CLOSED") {
+      const nextOpenAt = computeNextSessionOpen(brokerSymbol.tradingSessions, new Date(), brokerSymbol.symbol.category);
+      return NextResponse.json({ error: riskError, symbol: symbolName, nextOpenAt: nextOpenAt.toISOString() }, { status: 400 });
+    }
+    // the lot-step / group-max-lot rules are volume rejections too: same code for the sound
+    const volumeCode = riskError.startsWith("volume ") ? { code: "INVALID_VOLUME" } : {};
+    return NextResponse.json({ error: riskError, ...volumeCode }, { status: 400 });
+  };
+
+  // Risk checks -- see lib/risk.ts. The synchronous ones first (no I/O); the query-backed ones only once those pass.
+  const syncRiskError =
     checkTradingHalted(broker) ??
     checkCloseOnly(broker) ??
     checkSymbolTradingMode(brokerSymbol.tradingMode, side) ??
@@ -197,22 +228,70 @@ async function handlePlaceOrder(request: NextRequest) {
           account.group.allowedSymbols.map((s) => s.symbolId),
           brokerSymbol.symbolId
         )
-      : null) ??
-    (await checkMaxOpenPositions(prisma, session.accountId, broker.maxOpenPositionsPerAccount)) ??
-    (await checkSymbolExposure(prisma, session.accountId, brokerSymbol.symbolId, volume, brokerSymbol.maxExposure)) ??
-    (await checkBrokerExposure(prisma, session.brokerId, volume, broker.totalExposureLimit)) ??
-    (await checkMaxDailyLoss(prisma, session.accountId, account.maxDailyLoss));
-  if (riskError) {
-    // MARKET_CLOSED carries the next session open, exactly like the close / modify routes, so the
-    // terminal can say "XAUUSD market is closed, opens Monday 22:00 UTC" instead of a bare code.
-    if (riskError === "MARKET_CLOSED") {
-      const nextOpenAt = computeNextSessionOpen(brokerSymbol.tradingSessions, new Date(), brokerSymbol.symbol.category);
-      return NextResponse.json({ error: riskError, symbol: symbolName, nextOpenAt: nextOpenAt.toISOString() }, { status: 400 });
-    }
-    // the lot-step / group-max-lot rules are volume rejections too: same code for the sound
-    const volumeCode = riskError.startsWith("volume ") ? { code: "INVALID_VOLUME" } : {};
-    return NextResponse.json({ error: riskError, ...volumeCode }, { status: 400 });
-  }
+      : null);
+  if (syncRiskError) return riskResponse(syncRiskError);
+
+  // See lib/dealing-routing.ts's own doc comment -- Group.dealingMode can
+  // override the four checks below entirely, in either direction.
+  // `wantsQueue` doubles as the correct "is this account dealer-managed"
+  // signal for the dealer-awareness feature below (recordDealerActivity's
+  // isDealingGroup) -- NOT the raw groupTypeIsDealing flag alone, which a
+  // group can be true for while still being AUTO/dealer-desk-off (see
+  // lib/dealing-routing.ts's isDealingManagedAccount doc comment for the
+  // 2026-09-04 bug this fixed).
+  const wantsQueue = resolveWantsDealingQueue({
+    groupDealingMode: account.group?.dealingMode ?? "INHERIT",
+    brokerDealingModeOn: !!broker.dealingModeAt,
+    groupForceDealingMode: !!account.group?.forceDealingMode,
+    groupTypeIsDealing: account.group?.groupType === "DEALING",
+    dealingDeskAutoFillOn: !!broker.dealingDeskAutoFillAt,
+  });
+
+  // Latency fix 1: wave 2 -- the four query-backed risk checks, the fill pricing and the account's margin state (the
+  // fill price is applied to it afterwards, synchronously) all at once. The first failing risk check in the old
+  // order still wins.
+  const pricingInput = livePrice
+    ? {
+        pricingEngineEnabled: broker.pricingEngineEnabled,
+        accountId: account.id,
+        accountTypeId: account.accountTypeId,
+        groupId: account.groupId,
+        symbolId: brokerSymbol.symbolId,
+        brokerSpreadMarkup: brokerSymbol.spreadMarkup,
+        brokerCommissionPerLot: brokerSymbol.commissionPerLot,
+        brokerSwapLong: brokerSymbol.swapLong,
+        brokerSwapShort: brokerSymbol.swapShort,
+        liveBaseSpreadPips: livePrice.ask.sub(livePrice.bid).div(pipSize(brokerSymbol.symbol.digits)),
+      }
+    : null;
+  const [riskResults, pricing, marginState] = await Promise.all([
+    Promise.all([
+      checkMaxOpenPositions(prisma, session.accountId, broker.maxOpenPositionsPerAccount),
+      checkSymbolExposure(prisma, session.accountId, brokerSymbol.symbolId, volume, brokerSymbol.maxExposure),
+      checkBrokerExposure(prisma, session.brokerId, volume, broker.totalExposureLimit),
+      checkMaxDailyLoss(prisma, session.accountId, account.maxDailyLoss),
+    ]),
+    type === "MARKET" && pricingInput ? resolveFillPricing(prisma, pricingInput) : Promise.resolve(null),
+    loadAccountMarginState(prisma, session.accountId, account.leverage, [brokerSymbol.symbol.quoteCurrency], session.brokerId),
+  ]);
+  const asyncRiskError = riskResults.find((e) => e != null) ?? null;
+  if (asyncRiskError) return riskResponse(asyncRiskError);
+
+  // Phase 0 money-risk patch (docs/ROADMAP.md item 2) -- the pre-trade margin gate (lib/margin.ts), on the state
+  // loaded above: the same rule engine/risk/src/lib.rs's check_free_margin enforces on the Rust path.
+  const marginGate = (fillPrice: Prisma.Decimal) =>
+    marginState
+      ? evaluatePreTradeMargin(marginState, {
+          leverage: account.leverage,
+          marginCallLevel: account.group?.marginCallLevel ?? new Prisma.Decimal(100),
+          newOrderContractSize: brokerSymbol.symbol.contractSize,
+          newOrderQuoteCurrency: brokerSymbol.symbol.quoteCurrency,
+          newOrderVolume: volume,
+          newOrderFillPrice: fillPrice,
+          newOrderSide: side,
+          newOrderSymbolId: brokerSymbol.symbolId,
+        })
+      : { error: "NO_CONVERSION_RATE" as const, required: "-", available: "-", balance: account.balance.toFixed(2) };
 
   if (!price) {
     return NextResponse.json({ error: "price is required" }, { status: 400 });
@@ -240,18 +319,13 @@ async function handlePlaceOrder(request: NextRequest) {
   // half of the same exploit was fixed) to mint the difference as profit.
   // evaluateLiveMarketPrice now floors both halves the same way. PENDING
   // (LIMIT/STOP) orders' price-sanity/freshness isn't checked here — they
-  // rest until a real tick triggers a fill via the separate fill endpoint,
-  // which runs this same check itself. Their *directional* validity
+  // rest until a real tick triggers a fill (lib/pending-trigger.ts), which
+  // runs this same check itself. Their *directional* validity
   // (below/above the current market, see validatePendingOrderDirection's
   // own comment) is a different, narrower thing that IS worth checking
   // right now, at placement -- it's a static fact about the order that
   // will never become more or less true while it rests, unlike staleness.
-  // S4 (docs/market-data.md §8): getLivePriceRow reads the engine's own tick
-  // when MARKET_DATA_PRICES=vps (the in-memory tick, not the flushed row --
-  // the PRICE_STALE-on-fast-clicks lag goes away), Neon otherwise / on failure.
-  let livePrice: Awaited<ReturnType<typeof getLivePriceRow>> = null;
   if (type === "MARKET") {
-    livePrice = await getLivePriceRow(symbolName);
     const priceError = evaluateLiveMarketPrice(livePrice, symbolName, price) ?? checkPriceFreshness(livePrice);
     if (priceError) {
       // NO_LIVE_FEED / PRICE_STALE here mean the schedule says OPEN but this symbol has no fresh tick. If the feed is
@@ -262,7 +336,7 @@ async function handlePlaceOrder(request: NextRequest) {
       }
       return NextResponse.json({ error: priceError, symbol: symbolName, lastTickAt: livePrice?.tickAt?.toISOString() ?? null }, { status: 400 });
     }
-  } else {
+  } else if (livePrice) {
     // Security/correctness fix (2026-09-05 audit finding) -- a "BUY LIMIT"
     // placed above market or a "SELL STOP" placed above market used to go
     // through unrejected (live-confirmed). Skipped gracefully when there's
@@ -270,31 +344,12 @@ async function handlePlaceOrder(request: NextRequest) {
     // against" tolerance the rest of this route already extends to a
     // brand-new/never-ticked symbol, rather than blocking every pending
     // order until a feed exists.
-    const pendingLivePrice = await getLivePriceRow(symbolName);
-    if (pendingLivePrice) {
-      const marketRef = side === "BUY" ? pendingLivePrice.ask : pendingLivePrice.bid;
-      const directionError = validatePendingOrderDirection({ type, side, entryPrice: price, marketPrice: marketRef });
-      if (directionError) {
-        return NextResponse.json({ error: directionError }, { status: 400 });
-      }
+    const marketRef = side === "BUY" ? livePrice.ask : livePrice.bid;
+    const directionError = validatePendingOrderDirection({ type, side, entryPrice: price, marketPrice: marketRef });
+    if (directionError) {
+      return NextResponse.json({ error: directionError }, { status: 400 });
     }
   }
-
-  // See lib/dealing-routing.ts's own doc comment -- Group.dealingMode can
-  // override the four checks below entirely, in either direction.
-  // `wantsQueue` doubles as the correct "is this account dealer-managed"
-  // signal for the dealer-awareness feature below (recordDealerActivity's
-  // isDealingGroup) -- NOT the raw groupTypeIsDealing flag alone, which a
-  // group can be true for while still being AUTO/dealer-desk-off (see
-  // lib/dealing-routing.ts's isDealingManagedAccount doc comment for the
-  // 2026-09-04 bug this fixed).
-  const wantsQueue = resolveWantsDealingQueue({
-    groupDealingMode: account.group?.dealingMode ?? "INHERIT",
-    brokerDealingModeOn: !!broker.dealingModeAt,
-    groupForceDealingMode: !!account.group?.forceDealingMode,
-    groupTypeIsDealing: account.group?.groupType === "DEALING",
-    dealingDeskAutoFillOn: !!broker.dealingDeskAutoFillAt,
-  });
 
   // Audit 2026-09-24 (money): an order that rests (LIMIT/STOP) or waits for a human dealer (queued MARKET) passes the
   // same pre-trade margin gate at PLACEMENT as an immediate fill -- an account in margin call can no longer stack
@@ -303,21 +358,22 @@ async function handlePlaceOrder(request: NextRequest) {
   if (type !== "MARKET" || wantsQueue) {
     const marginPrice =
       type === "MARKET" ? (side === "BUY" ? livePrice!.ask : livePrice!.bid) : new Prisma.Decimal(price!);
-    const placementMarginError = await checkAccountPreTradeMargin(prisma, {
-      accountId: session.accountId,
-      leverage: account.leverage,
-      marginCallLevel: account.group?.marginCallLevel ?? new Prisma.Decimal(100),
-      newOrderContractSize: brokerSymbol.symbol.contractSize,
-      newOrderQuoteCurrency: brokerSymbol.symbol.quoteCurrency,
-      newOrderVolume: volume,
-      newOrderFillPrice: marginPrice,
-      newOrderSide: side,
-      newOrderSymbolId: brokerSymbol.symbolId,
-    });
+    const placementMarginError = marginGate(marginPrice);
     if (placementMarginError) {
       return NextResponse.json(placementMarginError, { status: 400 });
     }
   }
+
+  const dealerActivityBase = {
+    brokerId: session.brokerId,
+    accountId: session.accountId,
+    accountNumber: account.accountNumber,
+    accountFullName: account.fullName,
+    isDealingGroup: wantsQueue,
+    symbol: symbolName,
+    side: side as "BUY" | "SELL",
+    volume: volume.toString(),
+  };
 
   try {
     if (type === "MARKET" && wantsQueue) {
@@ -373,7 +429,6 @@ async function handlePlaceOrder(request: NextRequest) {
           },
         },
       });
-      if (source === "hotkey") await logHotkeyOrder(session.brokerId, order.id);
 
       // Smart Dealer -- see Broker.smartDealerAcceptPct/RejectPct's
       // schema comments. Evaluated once, right here, at submission --
@@ -384,23 +439,11 @@ async function handlePlaceOrder(request: NextRequest) {
         const requested = new Prisma.Decimal(price);
         const diffPct = liveRef.sub(requested).abs().div(requested).mul(100);
 
-        if (broker.smartDealerAcceptPct != null && diffPct.lte(broker.smartDealerAcceptPct)) {
+        if (broker.smartDealerAcceptPct != null && diffPct.lte(broker.smartDealerAcceptPct) && pricing) {
           // diffPct above stays computed against the raw liveRef (how far
           // the market moved from what the client asked) -- spread markup
           // is a separate, broker-revenue adjustment applied only to the
           // actual fill price, not to the accept/reject threshold check.
-          const pricing = await resolveFillPricing(prisma, {
-            pricingEngineEnabled: broker.pricingEngineEnabled,
-            accountId: account.id,
-            accountTypeId: account.accountTypeId,
-            groupId: account.groupId,
-            symbolId: brokerSymbol.symbolId,
-            brokerSpreadMarkup: brokerSymbol.spreadMarkup,
-            brokerCommissionPerLot: brokerSymbol.commissionPerLot,
-            brokerSwapLong: brokerSymbol.swapLong,
-            brokerSwapShort: brokerSymbol.swapShort,
-            liveBaseSpreadPips: livePrice.ask.sub(livePrice.bid).div(pipSize(brokerSymbol.symbol.digits)),
-          });
           logSpreadWarning({ accountId: account.id, symbolId: brokerSymbol.symbolId, brokerId: session.brokerId }, pricing.warning);
           const fillPrice = applySpreadMarkup({ side, price: liveRef, spreadMarkup: pricing.spreadMarkup, digits: brokerSymbol.symbol.digits });
           const bookType = resolveBookType(account.group.category);
@@ -411,17 +454,7 @@ async function handlePlaceOrder(request: NextRequest) {
           // order outright -- it falls through to the ordinary human
           // dealer queue below, same as a diffPct that simply didn't
           // clear the accept threshold.
-          const marginError = await checkAccountPreTradeMargin(prisma, {
-            accountId: session.accountId,
-            leverage: account.leverage,
-            marginCallLevel: account.group?.marginCallLevel ?? new Prisma.Decimal(100),
-            newOrderContractSize: brokerSymbol.symbol.contractSize,
-            newOrderQuoteCurrency: brokerSymbol.symbol.quoteCurrency,
-            newOrderVolume: volume,
-            newOrderFillPrice: fillPrice,
-            newOrderSide: side,
-            newOrderSymbolId: brokerSymbol.symbolId,
-          });
+          const marginError = marginGate(fillPrice);
           if (!marginError) {
             const position = await prisma.$transaction(async (tx) => {
               const pos = await openPositionFromOrder(tx, order, fillPrice, bookType, pricing.commissionPerLot);
@@ -437,43 +470,43 @@ async function handlePlaceOrder(request: NextRequest) {
               });
               return pos;
             });
-            // docs/briefs/VYX-MIRROR-V0-BRIEF.md -- Smart Dealer auto-accept
-            // is a real fill, same as the direct MARKET-fill branch below,
-            // but returns early before ever reaching that branch's own
-            // hook -- this was the exact "mirror hook gap" this call was
-            // missing.
-            await mirror.onFillPosition(prisma, position, brokerSymbol.symbol.name).catch((err) => console.error("mirror.onFill failed", err));
-            // auto-hedge (lib/coverage.ts): a no-op unless the desk is in auto-fill with auto-hedge on
-            await coverage.onFillAutoHedge(prisma, { positionId: position.id, brokerId: session.brokerId });
-            await publishTradingEvent("OrderFilled", {
-              order_id: order.id,
-              account_id: session.accountId,
-              broker_id: session.brokerId,
-              price: fillPrice.toString(),
-              volume: volume.toString(),
-              remaining_volume: "0",
+            // the rare auto-accept path re-reads the full row (commission, ticket) instead of rebuilding it
+            const [dto, balanceRow] = await Promise.all([
+              prisma.position.findUniqueOrThrow({ where: { id: position.id }, include: POSITION_DTO_INCLUDE }),
+              prisma.account.findUniqueOrThrow({ where: { id: session.accountId }, select: { balance: true } }),
+            ]);
+            const balance = balanceRow.balance.toString();
+            // Latency fix 1: the trader's event goes out right after COMMIT; mirror / auto-hedge / the dealer feed
+            // after the response (docs/briefs/VYX-MIRROR-V0-BRIEF.md: a mirror failure never touches this fill).
+            await runAfterResponse("publish OrderFilled", () =>
+              publishTradingEvent("OrderFilled", {
+                order_id: order.id,
+                account_id: session.accountId,
+                broker_id: session.brokerId,
+                price: fillPrice.toString(),
+                volume: volume.toString(),
+                remaining_volume: "0",
+                position_id: position.id,
+                position: dto,
+                balance,
+              })
+            );
+            await runAfterResponse("fill follow-through", async () => {
+              await mirror.onFillPosition(prisma, position, brokerSymbol.symbol.name).catch((err) => console.error("mirror.onFill failed", err));
+              // auto-hedge (lib/coverage.ts): a no-op unless the desk is in auto-fill with auto-hedge on
+              await coverage.onFillAutoHedge(prisma, { positionId: position.id, brokerId: session.brokerId });
+              await recordDealerActivity(prisma, {
+                ...dealerActivityBase,
+                action: "POSITION_OPENED",
+                values: { openPrice: fillPrice.toString(), origin: "smart_dealer_auto_accept" },
+                orderId: order.id,
+                positionId: position.id,
+              });
+              if (source === "hotkey") await logHotkeyOrder(session.brokerId, order.id);
             });
-            await recordDealerActivity(prisma, {
-              brokerId: session.brokerId,
-              accountId: session.accountId,
-              accountNumber: account.accountNumber,
-              accountFullName: account.fullName,
-              isDealingGroup: wantsQueue,
-              action: "POSITION_OPENED",
-              symbol: symbolName,
-              side,
-              volume: volume.toString(),
-              values: { openPrice: fillPrice.toString(), origin: "smart_dealer_auto_accept" },
-              orderId: order.id,
-              positionId: position.id,
-            });
-            // `position`, not `positionId` -- must match the direct-fill
-            // branch's shape below (and lib/trade-api.ts's placeOrder type)
-            // exactly. This mismatch previously meant a Smart-Dealer
-            // auto-accepted order (a real, immediate fill) showed the
-            // client its "awaiting dealer approval" toast instead of the
-            // fill confirmation, and skipped the orderFilled sound.
-            return NextResponse.json({ order: { ...order, status: "FILLED", filledPrice: fillPrice }, position: { id: position.id } }, { status: 201 });
+            // `position` must match the direct-fill branch's shape below (and lib/trade-api.ts's placeOrder type):
+            // a mismatch once showed an auto-accepted fill as "awaiting dealer approval" and skipped its sound.
+            return NextResponse.json({ order: { ...order, status: "FILLED", filledPrice: fillPrice }, position: dto, balance }, { status: 201 });
           }
         }
 
@@ -493,66 +526,62 @@ async function handlePlaceOrder(request: NextRequest) {
             });
             return o;
           });
-          await publishTradingEvent("OrderRejected", {
-            order_id: order.id,
-            account_id: session.accountId,
-            broker_id: session.brokerId,
-            reason,
-          });
+          await runAfterResponse("publish OrderRejected", () =>
+            publishTradingEvent("OrderRejected", { order_id: order.id, account_id: session.accountId, broker_id: session.brokerId, reason })
+          );
+          if (source === "hotkey") await runAfterResponse("hotkey audit", () => logHotkeyOrder(session.brokerId, order.id));
           return NextResponse.json({ order: rejected }, { status: 201 });
         }
       }
 
-      // Neither Smart Dealer threshold fired (or it's off) -- queue for
-      // a human as before.
-      await createNotification(prisma, {
-        brokerId: session.brokerId,
-        type: "DEALING_ORDER_PENDING",
-        title: "Order awaiting dealer review",
-        body: `${account.accountNumber}, ${side} ${volume.toString()} ${symbolName}`,
-        entityType: "Order",
-        entityId: order.id,
-      });
-      await publishTradingEvent("OrderAccepted", { order_id: order.id, account_id: session.accountId, broker_id: session.brokerId });
-      // Backoffice-facing signal, distinct from OrderAccepted (which the
-      // trader's own WebTrader listens for) -- carries the row shape
-      // app/manage/(shell)/dealing/DealingQueueManager.tsx needs so a new
-      // queue entry can be applied straight to that component's local
-      // rows state instead of waiting for a refetch (see
-      // services/api-gateway/src/ws.ts's attachAdminEventStream).
-      await publishTradingEvent("DealingQueued", {
-        order_id: order.id,
-        broker_id: session.brokerId,
-        account_id: session.accountId,
-        account_number: account.accountNumber,
-        account_full_name: account.fullName,
-        symbol: symbolName,
-        digits: brokerSymbol.symbol.digits,
-        side,
-        volume: volume.toString(),
-        requested_price: price,
-        created_at: order.createdAt.toISOString(),
-        // Same livePrice this function already fetched above to validate
-        // the order itself -- included so the backoffice can render a
-        // usable row (Accept's price field is pre-filled from this)
-        // straight from the event, without a second round trip just to
-        // learn the live price.
-        live_bid: livePrice?.bid.toString() ?? null,
-        live_ask: livePrice?.ask.toString() ?? null,
-      });
-      await recordDealerActivity(prisma, {
-        brokerId: session.brokerId,
-        accountId: session.accountId,
-        accountNumber: account.accountNumber,
-        accountFullName: account.fullName,
-        isDealingGroup: wantsQueue,
-        action: "ORDER_PLACED",
-        symbol: symbolName,
-        side,
-        volume: volume.toString(),
-        values: { requestedPrice: price, slPrice, tpPrice, queuedForDealing: true },
-        orderId: order.id,
-        skipNotification: true, // DEALING_ORDER_PENDING notification already fired above
+      // Neither Smart Dealer threshold fired (or it's off) -- queue for a human as before. The trader's own event
+      // first; the dealer-facing notification, queue row and activity feed after the response.
+      await runAfterResponse("publish OrderAccepted", () =>
+        publishTradingEvent("OrderAccepted", { order_id: order.id, account_id: session.accountId, broker_id: session.brokerId })
+      );
+      await runAfterResponse("dealing queue follow-through", async () => {
+        await createNotification(prisma, {
+          brokerId: session.brokerId,
+          type: "DEALING_ORDER_PENDING",
+          title: "Order awaiting dealer review",
+          body: `${account.accountNumber}, ${side} ${volume.toString()} ${symbolName}`,
+          entityType: "Order",
+          entityId: order.id,
+        });
+        // Backoffice-facing signal, distinct from OrderAccepted (which the
+        // trader's own WebTrader listens for) -- carries the row shape
+        // app/manage/(shell)/dealing/DealingQueueManager.tsx needs so a new
+        // queue entry can be applied straight to that component's local
+        // rows state instead of waiting for a refetch (see
+        // services/api-gateway/src/ws.ts's attachAdminEventStream).
+        await publishTradingEvent("DealingQueued", {
+          order_id: order.id,
+          broker_id: session.brokerId,
+          account_id: session.accountId,
+          account_number: account.accountNumber,
+          account_full_name: account.fullName,
+          symbol: symbolName,
+          digits: brokerSymbol.symbol.digits,
+          side,
+          volume: volume.toString(),
+          requested_price: price,
+          created_at: order.createdAt.toISOString(),
+          // Same livePrice this function already fetched above to validate
+          // the order itself -- included so the backoffice can render a
+          // usable row (Accept's price field is pre-filled from this)
+          // straight from the event, without a second round trip just to
+          // learn the live price.
+          live_bid: livePrice?.bid.toString() ?? null,
+          live_ask: livePrice?.ask.toString() ?? null,
+        });
+        await recordDealerActivity(prisma, {
+          ...dealerActivityBase,
+          action: "ORDER_PLACED",
+          values: { requestedPrice: price, slPrice, tpPrice, queuedForDealing: true },
+          orderId: order.id,
+          skipNotification: true, // DEALING_ORDER_PENDING notification already fired above
+        });
+        if (source === "hotkey") await logHotkeyOrder(session.brokerId, order.id);
       });
       return NextResponse.json({ order }, { status: 201 });
     }
@@ -563,21 +592,11 @@ async function handlePlaceOrder(request: NextRequest) {
       // (already validated for staleness above), not the client's
       // submitted `price`. requestedPrice keeps the client's original
       // reference so the audit trail still shows what the client expected.
-      const pricing = await resolveFillPricing(prisma, {
-        pricingEngineEnabled: broker.pricingEngineEnabled,
-        accountId: account.id,
-        accountTypeId: account.accountTypeId,
-        groupId: account.groupId,
-        symbolId: brokerSymbol.symbolId,
-        brokerSpreadMarkup: brokerSymbol.spreadMarkup,
-        brokerCommissionPerLot: brokerSymbol.commissionPerLot,
-        brokerSwapLong: brokerSymbol.swapLong,
-        brokerSwapShort: brokerSymbol.swapShort,
-        liveBaseSpreadPips: livePrice!.ask.sub(livePrice!.bid).div(pipSize(brokerSymbol.symbol.digits)),
-      });
-      logSpreadWarning({ accountId: account.id, symbolId: brokerSymbol.symbolId, brokerId: session.brokerId }, pricing.warning);
+      // `pricing` was resolved in wave 2 above (it only needs the live spread, which is this same read).
+      const fillPricing = pricing!;
+      logSpreadWarning({ accountId: account.id, symbolId: brokerSymbol.symbolId, brokerId: session.brokerId }, fillPricing.warning);
       const serverRef = side === "BUY" ? livePrice!.ask : livePrice!.bid;
-      const fillPrice = applySpreadMarkup({ side, price: serverRef, spreadMarkup: pricing.spreadMarkup, digits: brokerSymbol.symbol.digits });
+      const fillPrice = applySpreadMarkup({ side, price: serverRef, spreadMarkup: fillPricing.spreadMarkup, digits: brokerSymbol.symbol.digits });
       const slippageError = checkSlippage({
         clientReferencePrice: price,
         serverFillPrice: fillPrice,
@@ -592,24 +611,11 @@ async function handlePlaceOrder(request: NextRequest) {
         return NextResponse.json({ error: slippageError }, { status: 400 });
       }
       // Phase 0 money-risk patch (docs/ROADMAP.md item 2) -- pre-trade
-      // margin gate, same rule engine/risk/src/lib.rs's check_free_margin
-      // already enforces on the Rust path (lib/margin.ts's
-      // checkPreTradeMargin/lib/margin.test.ts). Rejects before any
-      // Order/Position row is written -- unlike the smart-dealer branch
-      // above, there's no "fall through to a human" option here, so an
-      // insufficient-margin order is rejected outright with the actual
-      // numbers so WebTrader can show a real message.
-      const marginError = await checkAccountPreTradeMargin(prisma, {
-        accountId: session.accountId,
-        leverage: account.leverage,
-        marginCallLevel: account.group?.marginCallLevel ?? new Prisma.Decimal(100),
-        newOrderContractSize: brokerSymbol.symbol.contractSize,
-        newOrderQuoteCurrency: brokerSymbol.symbol.quoteCurrency,
-        newOrderVolume: volume,
-        newOrderFillPrice: fillPrice,
-        newOrderSide: side,
-        newOrderSymbolId: brokerSymbol.symbolId,
-      });
+      // margin gate. Rejects before any Order/Position row is written --
+      // unlike the smart-dealer branch above, there's no "fall through to
+      // a human" option here, so an insufficient-margin order is rejected
+      // outright with the actual numbers so WebTrader can show a real message.
+      const marginError = marginGate(fillPrice);
       if (marginError) {
         return NextResponse.json(marginError, { status: 400 });
       }
@@ -647,7 +653,7 @@ async function handlePlaceOrder(request: NextRequest) {
             bookType,
           },
         });
-        await chargeCommission(tx, { brokerId: session.brokerId, accountId: session.accountId, positionId: position.id, commissionPerLot: pricing.commissionPerLot, volume });
+        const balanceAfter = await chargeCommission(tx, { brokerId: session.brokerId, accountId: session.accountId, positionId: position.id, commissionPerLot: fillPricing.commissionPerLot, volume });
         // Broker feedback items 14+15 -- the highest-volume fill path in
         // the app (immediate MARKET fill, no dealing queue involved) had
         // no audit row at all; "requested vs filled" is exactly what a
@@ -662,46 +668,51 @@ async function handlePlaceOrder(request: NextRequest) {
             newValue: { status: "FILLED", filledPrice: fillPrice.toString() },
           },
         });
-        return { order, position };
+        const commission = fillPricing.commissionPerLot.mul(volume);
+        return {
+          order,
+          position: commission.gt(0) ? { ...position, commission: position.commission.add(commission) } : position,
+          balanceAfter,
+        };
       });
-      // docs/briefs/VYX-MIRROR-V0-BRIEF.md -- called after this route's own
-      // transaction has committed, never inside it: a mirror failure
-      // (margin, market closed, kill switch) must never roll back or
-      // block the client's own fill. lib/mirror.ts's onFill never throws,
-      // but the extra catch here is a deliberate second guarantee for a
-      // money-moving hook on the highest-volume order path in the app.
-      await mirror.onFillPosition(prisma, result.position, brokerSymbol.symbol.name).catch((err) => console.error("mirror.onFill failed", err));
-      // auto-hedge (lib/coverage.ts): a no-op unless the desk is in auto-fill with auto-hedge on
-      await coverage.onFillAutoHedge(prisma, { positionId: result.position.id, brokerId: session.brokerId });
-      if (source === "hotkey") await logHotkeyOrder(session.brokerId, result.order.id);
-      await publishTradingEvent("OrderFilled", {
-        order_id: result.order.id,
-        account_id: session.accountId,
-        broker_id: session.brokerId,
-        price: result.order.filledPrice?.toString() ?? price,
-        volume: volume.toString(),
-        remaining_volume: "0",
+      const dto = positionDto(result.position, brokerSymbol.symbol, orderSource);
+      // the balance moves on an open only when a commission is charged; otherwise it is left out (contract)
+      const balance = result.balanceAfter?.toString();
+      // Latency fix 1: the trader's event goes out right after COMMIT, carrying the position (latency fix 2: the
+      // terminal draws from this or the response, whichever arrives first).
+      await runAfterResponse("publish OrderFilled", () =>
+        publishTradingEvent("OrderFilled", {
+          order_id: result.order.id,
+          account_id: session.accountId,
+          broker_id: session.brokerId,
+          price: result.order.filledPrice?.toString() ?? price,
+          volume: volume.toString(),
+          remaining_volume: "0",
+          position_id: result.position.id,
+          position: dto,
+          ...(balance !== undefined ? { balance } : {}),
+        })
+      );
+      // docs/briefs/VYX-MIRROR-V0-BRIEF.md -- after this route's own transaction has committed, never inside it: a
+      // mirror failure (margin, market closed, kill switch) must never roll back or block the client's own fill. Now
+      // also after the response (latency fix 1): none of it changes what the trader is told.
+      await runAfterResponse("fill follow-through", async () => {
+        await mirror.onFillPosition(prisma, result.position, brokerSymbol.symbol.name).catch((err) => console.error("mirror.onFill failed", err));
+        // auto-hedge (lib/coverage.ts): a no-op unless the desk is in auto-fill with auto-hedge on
+        await coverage.onFillAutoHedge(prisma, { positionId: result.position.id, brokerId: session.brokerId });
+        if (source === "hotkey") await logHotkeyOrder(session.brokerId, result.order.id);
+        await recordDealerActivity(prisma, {
+          ...dealerActivityBase,
+          action: "POSITION_OPENED",
+          values: { openPrice: result.order.filledPrice?.toString() ?? price, origin: "market" },
+          orderId: result.order.id,
+          positionId: result.position.id,
+        });
       });
-      await recordDealerActivity(prisma, {
-        brokerId: session.brokerId,
-        accountId: session.accountId,
-        accountNumber: account.accountNumber,
-        accountFullName: account.fullName,
-        isDealingGroup: wantsQueue,
-        action: "POSITION_OPENED",
-        symbol: symbolName,
-        side,
-        volume: volume.toString(),
-        values: { openPrice: result.order.filledPrice?.toString() ?? price, origin: "market" },
-        orderId: result.order.id,
-        positionId: result.position.id,
-      });
-      return NextResponse.json(result, { status: 201 });
+      return NextResponse.json({ order: result.order, position: dto, ...(balance !== undefined ? { balance } : {}) }, { status: 201 });
     }
 
-    // LIMIT / STOP: rests as a PENDING order until the client's local price
-    // simulation reports the trigger price is hit, then calls the fill
-    // endpoint.
+    // LIMIT / STOP: rests as a PENDING order until a real tick reaches it (lib/pending-trigger.ts).
     const order = await prisma.order.create({
       data: {
         brokerId: session.brokerId,
@@ -738,20 +749,17 @@ async function handlePlaceOrder(request: NextRequest) {
         },
       },
     });
-    if (source === "hotkey") await logHotkeyOrder(session.brokerId, order.id);
-    await publishTradingEvent("OrderAccepted", { order_id: order.id, account_id: session.accountId, broker_id: session.brokerId });
-    await recordDealerActivity(prisma, {
-      brokerId: session.brokerId,
-      accountId: session.accountId,
-      accountNumber: account.accountNumber,
-      accountFullName: account.fullName,
-      isDealingGroup: wantsQueue,
-      action: "ORDER_PLACED",
-      symbol: symbolName,
-      side,
-      volume: volume.toString(),
-      values: { requestedPrice: price, triggerPrice: price, slPrice, tpPrice, orderType: type },
-      orderId: order.id,
+    await runAfterResponse("publish OrderAccepted", () =>
+      publishTradingEvent("OrderAccepted", { order_id: order.id, account_id: session.accountId, broker_id: session.brokerId })
+    );
+    await runAfterResponse("pending follow-through", async () => {
+      if (source === "hotkey") await logHotkeyOrder(session.brokerId, order.id);
+      await recordDealerActivity(prisma, {
+        ...dealerActivityBase,
+        action: "ORDER_PLACED",
+        values: { requestedPrice: price, triggerPrice: price, slPrice, tpPrice, orderType: type },
+        orderId: order.id,
+      });
     });
     return NextResponse.json(order, { status: 201 });
   } catch (error) {

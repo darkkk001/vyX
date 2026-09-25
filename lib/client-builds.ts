@@ -70,11 +70,23 @@ export async function listClientBuilds(): Promise<ClientBuild[]> {
   return out.sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
 }
 
+/// Start the registry GET for this request's build now (null when there is nothing to look up), for checkClientBuild.
+export function prefetchClientBuild(h: Headers): Promise<ClientBuild | null> | null {
+  if (h.get("x-client-platform") !== "DESKTOP_NATIVE") return null;
+  const buildId = (h.get("x-client-build") ?? "").trim();
+  if (!buildId || buildId === "dev" || buildId.startsWith("dev-")) return null;
+  const p = getClientBuild(buildId);
+  p.catch(() => {}); // awaited later (or dropped when there is no session); never an unhandled rejection
+  return p;
+}
+
 export type ClientBuildVerdict = { ok: true; buildId: string | null } | { ok: false; reason: "missing" | "unknown" | "revoked" | "wrong-tenant"; buildId: string };
 
 /// The check every authenticated request and both logins run. Cheap: one Redis GET, only for
 /// native clients (browser requests return ok immediately).
-export async function checkClientBuild(brokerId: string | null, brokerSubdomain: string | null): Promise<ClientBuildVerdict> {
+/// `prefetched` (latency fix 1, 2026-09-26): the registry GET already started by prefetchClientBuild, so a session
+/// getter pays one Redis round trip (session + build in parallel) instead of two in a row.
+export async function checkClientBuild(brokerId: string | null, brokerSubdomain: string | null, prefetched?: Promise<ClientBuild | null> | null): Promise<ClientBuildVerdict> {
   const h = await headers();
   const platform = h.get("x-client-platform");
   const buildId = (h.get("x-client-build") ?? "").trim();
@@ -90,7 +102,7 @@ export async function checkClientBuild(brokerId: string | null, brokerSubdomain:
     const allowed = (process.env.CLIENT_BUILD_DEV_TENANTS ?? "zzzqa").split(",").map((s) => s.trim()).filter(Boolean);
     return brokerSubdomain && allowed.includes(brokerSubdomain) ? { ok: true, buildId } : { ok: false, reason: "wrong-tenant", buildId };
   }
-  const b = await getClientBuild(buildId);
+  const b = await (prefetched ?? getClientBuild(buildId));
   if (!b) return { ok: false, reason: "unknown", buildId };
   if (b.status !== "ACTIVE") return { ok: false, reason: "revoked", buildId };
   if (brokerId && b.brokerId !== brokerId) return { ok: false, reason: "wrong-tenant", buildId };

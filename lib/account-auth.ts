@@ -2,7 +2,7 @@ import "server-only";
 import bcrypt from "bcryptjs";
 import crypto from "node:crypto";
 import { cookies, headers } from "next/headers";
-import { checkClientBuild } from "@/lib/client-builds";
+import { checkClientBuild, prefetchClientBuild } from "@/lib/client-builds";
 import { prisma } from "@/lib/prisma";
 import { getRedis } from "@/lib/redis";
 import { cookieScopeDomain } from "@/lib/cookie-domain";
@@ -262,15 +262,17 @@ export async function getAccountSession(): Promise<AccountSessionPayload | null>
   const token = cookieStore.get(ACCOUNT_SESSION_COOKIE_NAME)?.value;
   if (!token) return null;
 
+  // latency fix 1 (2026-09-26): the session GET and the client-build GET run together, one Redis round trip
+  const headerList = await headers();
+  const buildLookup = prefetchClientBuild(headerList);
   const session = await verifyAccountSessionToken(token);
   if (!session) return null;
 
-  const headerList = await headers();
   const requestBrokerId = headerList.get("x-broker-id");
   if (!requestBrokerId || requestBrokerId !== session.brokerId) return null;
 
   // native-client build binding (lib/client-builds.ts): a revoked / foreign / unregistered build gets no session
-  const verdict = await checkClientBuild(session.brokerId, headerList.get("x-broker-slug"));
+  const verdict = await checkClientBuild(session.brokerId, headerList.get("x-broker-slug"), buildLookup);
   if (!verdict.ok) return null;
 
   return session;

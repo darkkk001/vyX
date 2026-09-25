@@ -19,7 +19,7 @@ const HOST = `e2eb5${sfx}.localhost:3100`;
 const results: { check: string; ok: boolean; detail: string }[] = [];
 const rec = (check: string, ok: boolean, detail: string) => { results.push({ check, ok, detail }); console.log(`${ok ? "PASS" : "FAIL"}  ${check}  -- ${detail}`); };
 
-function req(method: string, path: string, body: unknown, cookie: string): Promise<{ status: number; json: any; setCookie: string[] }> {
+function req(method: string, path: string, body: unknown, cookie: string): Promise<{ status: number; json: any; setCookie: string[]; timing: string; at: number }> {
   return new Promise((resolve, reject) => {
     const data = body === undefined ? undefined : JSON.stringify(body);
     const r = http.request({ host: "127.0.0.1", port: 3100, method, path, headers: { host: HOST, "content-type": "application/json", cookie, ...(data ? { "content-length": Buffer.byteLength(data) } : {}) } }, (res) => {
@@ -28,7 +28,7 @@ function req(method: string, path: string, body: unknown, cookie: string): Promi
       res.on("end", () => {
         let json: any = null;
         try { json = JSON.parse(buf); } catch { json = buf.slice(0, 200); }
-        resolve({ status: res.statusCode ?? 0, json, setCookie: (res.headers["set-cookie"] as string[]) ?? [] });
+        resolve({ status: res.statusCode ?? 0, json, setCookie: (res.headers["set-cookie"] as string[]) ?? [], timing: String(res.headers["server-timing"] ?? ""), at: Date.now() });
       });
     });
     r.on("error", reject);
@@ -94,6 +94,7 @@ async function main() {
       rec(`${label}: trader stream got ConfigChanged(${scope}) <= 1 s`, !!te && te.at - t0 <= 1000, te ? `${te.at - t0} ms from the click` : "not received in 3 s");
       rec(`${label}: backoffice stream got ConfigChanged(${scope}) <= 1 s`, !!ae && ae.at - t0 <= 1000, ae ? `${ae.at - t0} ms from the click` : "not received in 3 s");
     }
+    let lastPos: string | undefined;
     async function quoteAndFill(label: string, expectBuy: number, expectPoints: number) {
       const row = (await prices()).find((p) => p.symbol === sym.name);
       const quoted = effectiveAsk({ [sym.name]: spreadRuleFromPrice(row) }, sym.name, Number(row.ask), Number(row.bid));
@@ -141,6 +142,23 @@ async function main() {
     await change("trading halt lifted", "PATCH", `/api/manage/groups/${group.id}/halt`, { halted: false }, "groups");
     const me2 = (await req("GET", "/api/trade/me", undefined, traderCookie)).json;
     rec("trading halt lifted: /me tradingState", me2.tradingState === "open", `tradingState ${me2.tradingState}`);
+
+    // 6. latency fixes 1 + 2: the position in the 2xx body AND the event, event published right after COMMIT
+    for (const step of ["fill", "modify", "close"] as const) {
+      const t0 = Date.now();
+      let r;
+      if (step === "fill") r = await buy(4456.65);
+      else if (step === "modify") r = await req("PATCH", `/api/trade/positions/${lastPos}`, { slPrice: "4400.00", tpPrice: "4500.00" }, traderCookie);
+      else r = await req("POST", `/api/trade/positions/${lastPos}/close`, { closePrice: "4456.35" }, traderCookie);
+      const type = step === "fill" ? "OrderFilled" : step === "modify" ? "PositionModified" : "PositionClosed";
+      const pos = step === "modify" ? r.json : r.json?.position;
+      if (step === "fill") lastPos = pos?.id;
+      const ev = await trader.waitFor((m) => m.type === type && m.position?.id === lastPos, t0);
+      rec(`${step}: 2xx body carries the position`, r.status >= 200 && r.status < 300 && pos?.id === lastPos && !!pos?.symbol?.name, `HTTP ${r.status}, position ${pos?.id ?? "missing"}${r.json?.balance ? ", balance " + r.json.balance : ""}`);
+      rec(`${step}: ${type} event carries the position`, !!ev, ev ? `event ${ev.at - t0} ms after the click, response ${r.at - t0} ms (${ev.at <= r.at ? "event first" : "response first"})` : "no event in 3 s");
+      rec(`${step}: Server-Timing header`, /^app;dur=\d+$/.test(r.timing), r.timing || "missing");
+      if (step === "close") rec("close: balance in body and event", !!r.json?.balance && ev?.msg?.balance === r.json.balance, `body ${r.json?.balance} event ${ev?.msg?.balance}`);
+    }
 
     trader.ws.close();
     admin.ws.close();

@@ -246,7 +246,7 @@ export async function loadHedgedMarginPct(prisma: PrismaClient | Prisma.Transact
 /** One account's live margin state: equity (balance + credit + floating P/L, account currency) and hedged used
  *  margin, with the same per-position formulas the pre-trade gate and the risk monitor use. `null` = a position's
  *  quote currency (or one of `extraQuoteCurrencies`) has no conversion rate to the account currency. */
-type AccountMarginState = {
+export type AccountMarginState = {
   account: { balance: Prisma.Decimal; credit: Prisma.Decimal; currency: string; brokerId: string };
   equity: Prisma.Decimal;
   usedMargin: Prisma.Decimal;
@@ -256,20 +256,24 @@ type AccountMarginState = {
   openPositions: number;
 };
 
-async function loadAccountMarginState(
+// `brokerId` (latency fix 1, 2026-09-26): a caller that already knows it lets the hedged-% read run together with the
+// account + positions reads instead of after them.
+export async function loadAccountMarginState(
   prisma: PrismaClient | Prisma.TransactionClient,
   accountId: string,
   leverage: number,
-  extraQuoteCurrencies: string[] = []
+  extraQuoteCurrencies: string[] = [],
+  brokerId?: string
 ): Promise<AccountMarginState | null> {
-  const [account, positions] = await Promise.all([
+  const [account, positions, hedgedPctKnownBroker] = await Promise.all([
     prisma.account.findUniqueOrThrow({ where: { id: accountId }, select: { balance: true, credit: true, currency: true, brokerId: true } }),
     prisma.position.findMany({
       where: { accountId, status: "OPEN" },
       select: { side: true, volume: true, openPrice: true, symbolId: true, symbol: { select: { name: true, contractSize: true, quoteCurrency: true } } },
     }),
+    brokerId ? loadHedgedMarginPct(prisma, brokerId) : Promise.resolve(null),
   ]);
-  const hedgedPct = await loadHedgedMarginPct(prisma, account.brokerId);
+  const hedgedPct = hedgedPctKnownBroker && account.brokerId === brokerId ? hedgedPctKnownBroker : await loadHedgedMarginPct(prisma, account.brokerId);
   const pctFor = (symbolId: string) => hedgedPct.get(symbolId) ?? DEFAULT_HEDGED_MARGIN_PCT;
 
   const [priceBySymbol, fx] = await Promise.all([
@@ -330,6 +334,25 @@ export async function checkAccountPreTradeMargin(
     const acc = await prisma.account.findUniqueOrThrow({ where: { id: params.accountId }, select: { balance: true } });
     return { error: "NO_CONVERSION_RATE", required: "-", available: "-", balance: acc.balance.toFixed(2) };
   }
+  return evaluatePreTradeMargin(state, params);
+}
+
+/** The pre-trade gate on an already loaded margin state (loadAccountMarginState with the order's quote currency in
+ *  `extraQuoteCurrencies`), so a route can load the state in parallel with its other reads and apply the fill price
+ *  afterwards. The rule is checkAccountPreTradeMargin's, unchanged. */
+export function evaluatePreTradeMargin(
+  state: AccountMarginState,
+  params: {
+    leverage: number;
+    marginCallLevel: Prisma.Decimal;
+    newOrderContractSize: Prisma.Decimal;
+    newOrderVolume: Prisma.Decimal;
+    newOrderFillPrice: Prisma.Decimal;
+    newOrderQuoteCurrency: string;
+    newOrderSide: "BUY" | "SELL";
+    newOrderSymbolId: string;
+  }
+): PreTradeMarginRejection | null {
   const { account, equity, usedMargin, legs, pctFor } = state;
   const newOrderRate = state.rateFor(params.newOrderQuoteCurrency)!;
 

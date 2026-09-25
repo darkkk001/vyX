@@ -1566,12 +1566,17 @@ export default function WebTrader({
   // often than is useful for a human-readable chart.
   const lastTickAcceptedAtRef = useRef<Record<string, number>>({});
   const MAX_TICK_HZ_PER_SYMBOL = 20;
-  function acceptCoalescedTick(symbol: string, bid: number, ask: number) {
+  function acceptCoalescedTick(symbol: string, bid: number, ask: number, tickMs?: unknown) {
     const now = performance.now();
     const last = lastTickAcceptedAtRef.current[symbol] ?? 0;
     if (now - last < 1000 / MAX_TICK_HZ_PER_SYMBOL) return;
     lastTickAcceptedAtRef.current[symbol] = now;
-    const at = serverNow();
+    // The tick's OWN time (engine tick_ms), so a candle lands in the minute the price traded in and the EA's 5 s
+    // heartbeat of an unchanged price (frozen tick_ms, e.g. every weekend) is recognised as no new tick at all
+    // (owner rule 2026-09-26: no tick = no candle). A tick_ms from the future is not trusted; none = arrival time.
+    const serverClock = serverNow();
+    const ms = typeof tickMs === "number" ? tickMs : Number(tickMs);
+    const at = Number.isFinite(ms) && ms > 0 && ms <= serverClock + 1000 ? ms : serverClock;
     liveTicksRef.current = { ...liveTicksRef.current, [symbol]: { bid, ask, at } };
     // hotfix/terminal-live-bugs #2 -- this used to only write liveTicksRef
     // and wait for the 1500ms interval below to notice it, which meant a
@@ -1755,11 +1760,11 @@ export default function WebTrader({
       window.vyxDesktop.startLiveStreams?.().catch(() => {});
       return window.vyxDesktop.onPriceTick((payload) => {
         try {
-          const tick = JSON.parse(payload) as { symbol: string; bid: string | number; ask: string | number };
+          const tick = JSON.parse(payload) as { symbol: string; bid: string | number; ask: string | number; tick_ms?: number | null };
           const bid = Number(tick.bid);
           const ask = Number(tick.ask);
           if (!tick.symbol || !Number.isFinite(bid) || !Number.isFinite(ask)) return;
-          acceptCoalescedTick(tick.symbol, bid, ask);
+          acceptCoalescedTick(tick.symbol, bid, ask, tick.tick_ms);
         } catch {
           // malformed frame — ignore, next tick will correct the picture
         }
@@ -1830,11 +1835,11 @@ export default function WebTrader({
           // liveTicksRef expects a real number, so this crashed the
           // whole page the moment a live tick actually arrived --
           // dormant until the WS auth fix made that path work at all.
-          const tick = parsed as { symbol: string; bid: string | number; ask: string | number };
+          const tick = parsed as { symbol: string; bid: string | number; ask: string | number; tick_ms?: number | null };
           const bid = Number(tick.bid);
           const ask = Number(tick.ask);
           if (!tick.symbol || !Number.isFinite(bid) || !Number.isFinite(ask)) return;
-          acceptCoalescedTick(tick.symbol, bid, ask);
+          acceptCoalescedTick(tick.symbol, bid, ask, tick.tick_ms);
         } catch {
           // malformed frame — ignore, next tick will correct the picture
         }

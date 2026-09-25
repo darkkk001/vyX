@@ -1,5 +1,5 @@
 import "server-only";
-import { Prisma } from "@prisma/client";
+import { Prisma, type Position, type Transaction } from "@prisma/client";
 import { computeRealizedPnl } from "@/lib/trading";
 import { quoteToAccountRate } from "@/lib/fx";
 import { lockAccountFunds } from "@/lib/account-lock";
@@ -15,7 +15,7 @@ export type ClosePositionInput = {
 };
 
 export type ClosePositionOutcome =
-  | { closed: true; position: unknown; transaction: unknown; partial: boolean; realizedPnl: Prisma.Decimal }
+  | { closed: true; position: Position; transaction: Transaction; partial: boolean; realizedPnl: Prisma.Decimal }
   | { closed: false }; // lost a race: another call already closed/reduced this position first
 
 // The one place a trade changes the account balance. Shared by the

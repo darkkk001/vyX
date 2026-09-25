@@ -5,13 +5,14 @@ import { getAccountSession } from "@/lib/account-auth";
 import { closePositionInTx } from "@/lib/position-close";
 import { publishTradingEvent } from "@/lib/nats";
 import { recordDealerActivity } from "@/lib/dealer-activity";
-import { isDealingManagedAccount } from "@/lib/dealing-routing";
+import { isDealingManagedAccount, resolveWantsDealingQueue } from "@/lib/dealing-routing";
 import { checkLotStep, checkPriceFreshness, checkSlippage, checkTradingSession, computeNextSessionOpen, evaluateLiveMarketPrice } from "@/lib/risk";
 import { closePriceFor } from "@/lib/trading";
 import * as mirror from "@/lib/mirror";
 import * as coverage from "@/lib/coverage";
 import { classifyMissingPrice, getLivePriceRow } from "@/lib/live-price";
-import { accountWantsDealingQueue, afterCloseQueued, queueCloseInTx, ClosePendingError } from "@/lib/queued-close";
+import { afterCloseQueued, queueCloseInTx, ClosePendingError } from "@/lib/queued-close";
+import { runAfterResponse } from "@/lib/after-response";
 
 // Closing (fully or partially) is the one place a trade changes the
 // account balance. Realized P&L is computed server-side and applied
@@ -38,6 +39,13 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const startedAt = Date.now();
+  const res = await handleClose(request, params);
+  res.headers.set("Server-Timing", `app;dur=${Date.now() - startedAt}`);
+  return res;
+}
+
+async function handleClose(request: NextRequest, params: Promise<{ id: string }>) {
   const session = await getAccountSession();
   if (!session) {
     return NextResponse.json({ error: "not authenticated" }, { status: 401 });
@@ -62,16 +70,27 @@ export async function POST(
   // closeOne and docs/webtrader-stm-architecture-review.md §4.6.
   const source = body?.source === "stm_bulk" ? "stm_bulk" : null;
 
-  const position = await prisma.position.findUnique({
-    where: { id },
-    include: {
-      symbol: { select: { id: true, name: true, category: true, contractSize: true, digits: true } },
-      account: { select: { accountNumber: true, fullName: true, group: { select: { groupType: true, dealingMode: true, forceDealingMode: true } } } },
-    },
-  });
-  if (!position || position.accountId !== session.accountId) {
+  // Latency fix 1 (2026-09-26, docs/audit/2026-09-24/latency-breakdown.md): everything this close needs is keyed by the
+  // position id, so it is read in ONE wave -- each related row through a relation filter (one SQL statement each)
+  // instead of nested includes (one round trip per level), and the live price as soon as the symbol is known. Rows
+  // read for a position that turns out not to be this account's are discarded unanswered (404 below).
+  const bySymbolOfPosition = { positions: { some: { id } } };
+  const symbolRead = prisma.symbol.findFirst({ where: bySymbolOfPosition, select: { id: true, name: true, category: true, contractSize: true, digits: true } });
+  const [row, symbol, accountRow, group, brokerSymbol, tradingSessions, broker, livePrice] = await Promise.all([
+    prisma.position.findUnique({ where: { id } }),
+    symbolRead,
+    prisma.account.findFirst({ where: { positions: { some: { id } } }, select: { accountNumber: true, fullName: true } }),
+    prisma.group.findFirst({ where: { accounts: { some: { positions: { some: { id } } } } }, select: { groupType: true, dealingMode: true, forceDealingMode: true } }),
+    prisma.brokerSymbol.findFirst({ where: { brokerId: session.brokerId, symbol: bySymbolOfPosition } }),
+    prisma.tradingSession.findMany({ where: { brokerSymbol: { brokerId: session.brokerId, symbol: bySymbolOfPosition } } }),
+    prisma.broker.findUniqueOrThrow({ where: { id: session.brokerId }, select: { dealingModeAt: true, dealingDeskAutoFillAt: true, defaultMaxSlippagePips: true } }),
+    // S4 (docs/market-data.md §8): the engine's own in-memory tick when MARKET_DATA_PRICES=vps, Neon otherwise
+    symbolRead.then((s) => (s ? getLivePriceRow(s.name) : null)),
+  ]);
+  if (!row || row.accountId !== session.accountId || !symbol || !accountRow) {
     return NextResponse.json({ error: "position not found" }, { status: 404 });
   }
+  const position = { ...row, symbol, account: { ...accountRow, group } };
   if (position.status !== "OPEN") {
     return NextResponse.json({ error: "position is not open" }, { status: 409 });
   }
@@ -94,23 +113,15 @@ export async function POST(
   // genuine feed outage (market OPEN, feed down), which is what
   // checkLiveMarketPrice below still guards, now correctly scoped to only
   // that rarer case.
-  const brokerSymbol = await prisma.brokerSymbol.findUnique({
-    where: { brokerId_symbolId: { brokerId: session.brokerId, symbolId: position.symbol.id } },
-    include: { tradingSessions: true },
-  });
-  const sessionError = checkTradingSession(brokerSymbol?.tradingSessions ?? [], new Date(), position.symbol.category);
+  const sessionError = checkTradingSession(tradingSessions, new Date(), position.symbol.category);
   if (sessionError) {
-    const nextOpenAt = computeNextSessionOpen(brokerSymbol?.tradingSessions ?? [], new Date(), position.symbol.category);
+    const nextOpenAt = computeNextSessionOpen(tradingSessions, new Date(), position.symbol.category);
     return NextResponse.json({ error: sessionError, nextOpenAt: nextOpenAt.toISOString() }, { status: 400 });
   }
 
-  // S4 (docs/market-data.md §8): the engine's own in-memory tick when
-  // MARKET_DATA_PRICES=vps, Neon otherwise. evaluateLiveMarketPrice keeps the
-  // client's reference honest (NO_LIVE_FEED / too far from market) and
-  // checkPriceFreshness gates staleness at the fill threshold, both exactly
-  // as the open path does. The fill price itself is derived below from this
-  // read and nothing else.
-  const livePrice = await getLivePriceRow(position.symbol.name);
+  // evaluateLiveMarketPrice keeps the client's reference honest (NO_LIVE_FEED / too far from market) and
+  // checkPriceFreshness gates staleness at the fill threshold, both exactly as the open path does. The fill price
+  // itself is derived below from this read and nothing else.
   const priceError = evaluateLiveMarketPrice(livePrice, position.symbol.name, clientReferencePrice) ?? checkPriceFreshness(livePrice);
   if (priceError || !livePrice) {
     const code = priceError ?? "NO_LIVE_FEED";
@@ -167,7 +178,19 @@ export async function POST(
   // executed here. Automatic closes (SL / TP / stop-out) never come through this route.
   // The queued order carries the client's reference as its requestedPrice -- the dealer prices
   // the close at accept time (app/api/manage/dealing-queue/[id]), so no slippage check here.
-  const routing = await accountWantsDealingQueue(prisma, session.brokerId, position.account.group);
+  const brokerDealingModeOn = !!broker.dealingModeAt;
+  const dealingDeskAutoFillOn = !!broker.dealingDeskAutoFillAt;
+  const routing = {
+    wantsQueue: resolveWantsDealingQueue({
+      groupDealingMode: position.account.group?.dealingMode ?? "INHERIT",
+      brokerDealingModeOn,
+      groupForceDealingMode: !!position.account.group?.forceDealingMode,
+      groupTypeIsDealing: position.account.group?.groupType === "DEALING",
+      dealingDeskAutoFillOn,
+    }),
+    brokerDealingModeOn,
+    dealingDeskAutoFillOn,
+  };
   if (routing.wantsQueue) {
     const clientPlatformHeader = request.headers.get("x-client-platform");
     const orderSource: "WEB" | "DESKTOP_NATIVE" | "MOBILE" | "API" =
@@ -217,7 +240,6 @@ export async function POST(
   // Slippage: the server's fill vs what the client saw, within the client's
   // tolerance, else the broker default, else lib/risk.ts's hardcoded default
   // -- the identical chain the open path runs on its MARKET fill.
-  const broker = await prisma.broker.findUniqueOrThrow({ where: { id: session.brokerId }, select: { defaultMaxSlippagePips: true } });
   const slippageError = checkSlippage({
     clientReferencePrice,
     serverFillPrice: closePrice,
@@ -253,51 +275,69 @@ export async function POST(
     return NextResponse.json({ error: "position was already closed" }, { status: 409 });
   }
 
-  if (source === "stm_bulk") {
-    await prisma.auditLog.create({
-      data: {
-        brokerId: session.brokerId,
-        action: "STM_BULK_CLOSE",
-        entityType: "Position",
-        entityId: position.id,
-        oldValue: { volume: position.volume.toString() },
-        newValue: { closeVolume: closeVolume.toString(), partial: outcome.partial },
-      },
+  // Latency fix 2 (docs/audit/2026-09-24/latency-contract.md): the post-close row (CLOSED, or OPEN with the reduced
+  // volume) and the balance after the realized P/L, in the response AND the event -- the terminal applies whichever
+  // arrives first instead of refetching.
+  const closedRow = { ...outcome.position, symbol: { name: position.symbol.name, digits: position.symbol.digits, contractSize: position.symbol.contractSize } };
+  const balance = outcome.transaction.balanceAfter.toString();
+  // Latency fix 1: the trader's event right after COMMIT (it used to wait for the mirror and coverage follow-through).
+  await runAfterResponse("publish PositionClosed", () =>
+    publishTradingEvent("PositionClosed", {
+      position_id: position.id,
+      account_id: session.accountId,
+      broker_id: session.brokerId,
+      partial: outcome.partial,
+      close_volume: closeVolume.toString(),
+      close_price: closePrice.toString(),
+      realized_pnl: outcome.realizedPnl.toString(),
+      position: closedRow,
+      balance,
+    })
+  );
+  // Follow-through that does not change what the trader is told, after the response. docs/briefs/VYX-MIRROR-V0-BRIEF.md
+  // -- after this route's own transaction has committed, never inside it (same reasoning as the fill-path hook in
+  // app/api/trade/orders/route.ts). `position.volume` here is still this route's own top-of-function read, from before
+  // closePositionInTx reduced/closed the row -- exactly the "source volume before this close" onClose needs to compute
+  // a proportional close on the mirrored side.
+  await runAfterResponse("close follow-through", async () => {
+    if (source === "stm_bulk") {
+      await prisma.auditLog.create({
+        data: {
+          brokerId: session.brokerId,
+          action: "STM_BULK_CLOSE",
+          entityType: "Position",
+          entityId: position.id,
+          oldValue: { volume: position.volume.toString() },
+          newValue: { closeVolume: closeVolume.toString(), partial: outcome.partial },
+        },
+      });
+    }
+    await mirror.onClose(prisma, {
+      positionId: position.id,
+      brokerId: session.brokerId,
+      closedLots: closeVolume,
+      sourceVolumeBeforeClose: position.volume,
+      closePrice,
+    }).catch((err) => console.error("mirror.onClose failed", err));
+    // coverage follow-through (lib/coverage.ts onClose): a booked position's hedge leg closes with it
+    await coverage.onClose(prisma, { positionId: position.id, brokerId: session.brokerId, closedLots: closeVolume, sourceVolumeBeforeClose: position.volume, reason: "manual" }).catch((err) => console.error("coverage.onClose failed", err));
+    await recordDealerActivity(prisma, {
+      brokerId: session.brokerId,
+      accountId: session.accountId,
+      accountNumber: position.account.accountNumber,
+      accountFullName: position.account.fullName,
+      isDealingGroup: isDealingManagedAccount({
+        group: position.account.group,
+        brokerDealingModeOn: routing.brokerDealingModeOn,
+        dealingDeskAutoFillOn: routing.dealingDeskAutoFillOn,
+      }),
+      action: "POSITION_CLOSED",
+      symbol: position.symbol.name,
+      side: position.side,
+      volume: closeVolume.toString(),
+      values: { closePrice: closePrice.toString(), clientReferencePrice, partial: outcome.partial, realizedPnl: outcome.realizedPnl.toString(), closeReason: "MANUAL", origin: source === "stm_bulk" ? "client_stm" : "client_close" },
+      positionId: position.id,
     });
-  }
-  // docs/briefs/VYX-MIRROR-V0-BRIEF.md -- after this route's own
-  // transaction has committed, never inside it (same reasoning as the
-  // fill-path hook in app/api/trade/orders/route.ts). `position.volume`
-  // here is still this route's own top-of-function read, from before
-  // closePositionInTx reduced/closed the row -- exactly the "source
-  // volume before this close" onClose needs to compute a proportional
-  // close on the mirrored side.
-  await mirror.onClose(prisma, {
-    positionId: position.id,
-    brokerId: session.brokerId,
-    closedLots: closeVolume,
-    sourceVolumeBeforeClose: position.volume,
-    closePrice,
-  }).catch((err) => console.error("mirror.onClose failed", err));
-  // coverage follow-through (lib/coverage.ts onClose): a booked position's hedge leg closes with it
-  await coverage.onClose(prisma, { positionId: position.id, brokerId: session.brokerId, closedLots: closeVolume, sourceVolumeBeforeClose: position.volume, reason: "manual" }).catch((err) => console.error("coverage.onClose failed", err));
-  await publishTradingEvent("PositionClosed", { position_id: position.id, account_id: session.accountId, broker_id: session.brokerId });
-  await recordDealerActivity(prisma, {
-    brokerId: session.brokerId,
-    accountId: session.accountId,
-    accountNumber: position.account.accountNumber,
-    accountFullName: position.account.fullName,
-    isDealingGroup: isDealingManagedAccount({
-      group: position.account.group,
-      brokerDealingModeOn: routing.brokerDealingModeOn,
-      dealingDeskAutoFillOn: routing.dealingDeskAutoFillOn,
-    }),
-    action: "POSITION_CLOSED",
-    symbol: position.symbol.name,
-    side: position.side,
-    volume: closeVolume.toString(),
-    values: { closePrice: closePrice.toString(), clientReferencePrice, partial: outcome.partial, realizedPnl: outcome.realizedPnl.toString(), closeReason: "MANUAL", origin: source === "stm_bulk" ? "client_stm" : "client_close" },
-    positionId: position.id,
   });
-  return NextResponse.json({ position: outcome.position, transaction: outcome.transaction, partial: outcome.partial });
+  return NextResponse.json({ position: closedRow, transaction: outcome.transaction, partial: outcome.partial, balance });
 }

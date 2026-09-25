@@ -108,9 +108,10 @@ export async function resolveSymbolPricing(
 export async function chargeCommission(
   tx: Tx,
   params: { brokerId: string; accountId: string; positionId: string; commissionPerLot: Prisma.Decimal; volume: Prisma.Decimal }
-): Promise<void> {
+): Promise<Prisma.Decimal | null> {
+  // returns the balance after the charge (the row is locked, so it is exact), or null when nothing was charged
   const amount = params.commissionPerLot.mul(params.volume);
-  if (amount.lte(0)) return;
+  if (amount.lte(0)) return null;
 
   const balanceBefore = await lockAccountBalance(tx, params.accountId); // row lock: lib/account-lock.ts
   const balanceAfter = balanceBefore.sub(amount);
@@ -148,4 +149,5 @@ export async function chargeCommission(
     where: { id: params.positionId },
     data: { commission: { increment: amount } },
   });
+  return balanceAfter;
 }

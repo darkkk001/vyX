@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createInitialMarket, tickMarket, bucketStartMs, correctedBucketStart, resolveDayOpenFromD1, feedStatusFor, type Timeframe } from "@/lib/market-simulator";
+import { createInitialMarket, tickMarket, bucketStartMs, correctedBucketStart, resolveDayOpenFromD1, feedStatusFor, TIMEFRAMES, type MarketState, type Timeframe } from "@/lib/market-simulator";
 
 // hotfix/terminal-live-bugs -- production showed XAUUSD's daily %chg as
 // +88.85% (comparing a live ~4442 price against dayOpen, which was never
@@ -257,12 +257,25 @@ describe("seedDayOpen contract -- does not get clobbered by the next live tick (
   });
 });
 
+// The real chart always has seeded history before live ticks arrive (WebTrader's seedRealCandles): the first tick
+// into an EMPTY series deliberately opens no bar (2026-09-08 "blank flash + one stray candle" fix). These tests seed
+// one real history bar per timeframe at `t`, the way seedRealCandles does, before ticking.
+function seedHistory(market: Record<string, MarketState>, symbol: string, t: number, price: number) {
+  const m = market[symbol];
+  for (const tf of TIMEFRAMES) {
+    const start = bucketStartMs(tf, t);
+    m.lastCandleStart[tf] = start;
+    m.candles[tf] = [{ o: price, h: price, l: price, c: price, t: start }];
+  }
+  return market;
+}
+
 describe("tickMarket -- last-candle sync (bug #2: chart lagging the live tick)", () => {
   const TF: Timeframe = "M1";
 
   it("gives the current timeframe's last candle a fresh object reference on every real tick, with close matching the tick's bid", () => {
-    let market = createInitialMarket();
     const t0 = Date.UTC(2026, 7, 31, 9, 0, 5); // inside the same M1 bucket as t1 below
+    let market = seedHistory(createInitialMarket(), "XAUUSD", t0, 4441.0);
     market = tickMarket(market, { XAUUSD: { bid: 4442.0, ask: 4442.3, at: t0 } }, t0);
     const barAfterFirstTick = market.XAUUSD.candles[TF][market.XAUUSD.candles[TF].length - 1];
     expect(barAfterFirstTick.c).toBe(4442.0);
@@ -282,8 +295,8 @@ describe("tickMarket -- last-candle sync (bug #2: chart lagging the live tick)",
   });
 
   it("keeps every consumer of bid (header, watchlist, chart candle) reading the identical value after a tick, never a stale one for any of them", () => {
-    let market = createInitialMarket();
     const now = Date.UTC(2026, 7, 31, 9, 5, 0);
+    let market = seedHistory(createInitialMarket(), "XAUUSD", now, 4438.0);
     market = tickMarket(market, { XAUUSD: { bid: 4439.0, ask: 4439.3, at: now } }, now);
     const laterSameBucket = now + 400;
     market = tickMarket(market, { XAUUSD: { bid: 4442.58, ask: 4442.88, at: laterSameBucket } }, laterSameBucket);
@@ -296,7 +309,7 @@ describe("tickMarket -- last-candle sync (bug #2: chart lagging the live tick)",
 
   it("bucket-aligns M1 candles identically to the server's own bucketing (bucketStartMs), so a live tick's bucket never disagrees with seeded history", () => {
     const now = Date.UTC(2026, 7, 31, 9, 5, 37);
-    let market = createInitialMarket();
+    let market = seedHistory(createInitialMarket(), "XAUUSD", now - 60_000, 4440.0);
     market = tickMarket(market, { XAUUSD: { bid: 4442.58, ask: 4442.88, at: now } }, now);
     const bar = market.XAUUSD.candles[TF][market.XAUUSD.candles[TF].length - 1];
     expect(bar.t).toBe(bucketStartMs("M1", now));
@@ -313,8 +326,8 @@ describe("tickMarket -- last-candle sync (bug #2: chart lagging the live tick)",
   it.each(["M1", "M5", "M30", "H1", "H4", "D1"] as const)(
     "keeps %s's last bar in sync with the live tick (same reference-change + close-match contract as M1)",
     (tf) => {
-      let market = createInitialMarket();
       const t0 = Date.UTC(2026, 7, 31, 9, 0, 0);
+      let market = seedHistory(createInitialMarket(), "XAUUSD", t0, 4434.0);
       market = tickMarket(market, { XAUUSD: { bid: 4435.0, ask: 4435.3, at: t0 } }, t0);
       const firstBar = market.XAUUSD.candles[tf][market.XAUUSD.candles[tf].length - 1];
 
@@ -329,94 +342,78 @@ describe("tickMarket -- last-candle sync (bug #2: chart lagging the live tick)",
   );
 });
 
-describe("tickMarket -- local gap-fill (round 5: patchy M1, missing bars mid-session)", () => {
+// Owner rule (2026-09-26): a candle is created only by a real tick. No tick (market closed, feed stopped, symbol
+// disabled) = no candle and no flat bar; the chart shows a gap until the next tick. Replaces the round-5 local
+// gap-fill, which painted flat bars over skipped minutes.
+describe("tickMarket -- a candle only from a real tick (no flat bars, gaps stay gaps)", () => {
   const TF: Timeframe = "M1";
 
-  it("does not gap-fill the very first tick this symbol has ever seen (lastCandleStart is still the 0 sentinel)", () => {
+  it("does not open a bar for the very first tick into an empty series (history is seeded first)", () => {
     const market = createInitialMarket();
     const now = Date.UTC(2026, 7, 31, 12, 0, 0); // Monday
     const ticked = tickMarket(market, { XAUUSD: { bid: 4400, ask: 4400.3, at: now } }, now);
-    expect(ticked.XAUUSD.candles[TF]).toHaveLength(1); // just the one real bar, no fabricated history before it
+    expect(ticked.XAUUSD.candles[TF]).toHaveLength(0);
+    expect(ticked.XAUUSD.bid).toBe(4400);
   });
 
-  it("flat-fills every skipped minute between the last known bucket and the new tick's bucket", () => {
-    let market = createInitialMarket();
+  it("a real tick after skipped minutes opens exactly ONE bar at its own minute -- no flat bars in between", () => {
     const t0 = Date.UTC(2026, 7, 31, 12, 0, 0); // Monday
-    market = tickMarket(market, { XAUUSD: { bid: 4400, ask: 4400.3, at: t0 } }, t0);
-
-    // Simulates the exact seam this fix targets: a history fetch (or a
-    // throttled tab) leaves lastCandleStart[tf] several minutes behind the
-    // next real tick's own bucket.
-    const t4 = t0 + 4 * 60_000; // 4 minutes later -- 3 minutes skipped
+    let market = seedHistory(createInitialMarket(), "XAUUSD", t0, 4400);
+    const t4 = t0 + 4 * 60_000; // 3 minutes without a tick
     market = tickMarket(market, { XAUUSD: { bid: 4410, ask: 4410.3, at: t4 } }, t4);
-
     const bars = market.XAUUSD.candles[TF];
-    expect(bars).toHaveLength(5); // t0's real bar + 3 flat-filled + t4's real bar
-    expect(bars.map((b) => b.t)).toEqual([t0, t0 + 60_000, t0 + 120_000, t0 + 180_000, t4]);
-    // Every flat-filled bar carries the last known close forward flat --
-    // same shape as engine/market-data/src/gap_fill.rs's own fills.
-    for (const bar of bars.slice(1, 4)) {
-      expect(bar.o).toBe(4400);
-      expect(bar.h).toBe(4400);
-      expect(bar.l).toBe(4400);
-      expect(bar.c).toBe(4400);
-    }
-    expect(bars[4].c).toBe(4410); // the real tick's own bar, untouched
+    expect(bars.map((b) => b.t)).toEqual([t0, t4]);
+    expect(bars[1]).toMatchObject({ o: 4410, h: 4410, l: 4410, c: 4410 });
   });
 
-  it("never fabricates a bar during a real weekend close for a non-continuously-traded symbol", () => {
-    let market = createInitialMarket();
-    // Friday 20:58 UTC -> Monday 00:02 UTC, well past the FX/metals
-    // weekend close on both ends.
-    const fri = Date.UTC(2026, 7, 28, 20, 58, 0);
-    market = tickMarket(market, { XAUUSD: { bid: 4400, ask: 4400.3, at: fri } }, fri);
-    const mon = Date.UTC(2026, 7, 31, 0, 2, 0);
-    market = tickMarket(market, { XAUUSD: { bid: 4410, ask: 4410.3, at: mon } }, mon);
-
-    const bars = market.XAUUSD.candles[TF];
-    // Only Fri 20:58, Fri 20:59, Fri 21:00 (still <21:00 isn't reached --
-    // 20:58 -> 20:59 is the only fillable minute before the 21:00 close)
-    // and the real Monday bar should exist; nothing across the weekend.
-    for (const bar of bars) {
-      const d = new Date(bar.t);
-      const day = d.getUTCDay();
-      const hour = d.getUTCHours();
-      const isWeekendClosed = day === 6 || (day === 5 && hour >= 21) || (day === 0 && hour < 22);
-      expect(isWeekendClosed).toBe(false);
+  it("a heartbeat (the same price re-sent with the same tick time, every 5 s) never opens a bar, even across minutes", () => {
+    const fri = Date.UTC(2026, 8, 25, 20, 59, 58); // Friday's last real tick
+    let market = seedHistory(createInitialMarket(), "XAUUSD", fri, 4284.99);
+    market = tickMarket(market, { XAUUSD: { bid: 4284.99, ask: 4285.3, at: fri } }, fri);
+    const before = market.XAUUSD.candles[TF].length;
+    // 30 minutes of heartbeats: arrival time moves on, the tick's own time does not
+    for (let s = 5; s <= 1800; s += 5) {
+      market = tickMarket(market, { XAUUSD: { bid: 4284.99, ask: 4285.3, at: fri } }, fri + s * 1000);
     }
+    expect(market.XAUUSD.candles[TF]).toHaveLength(before);
   });
 
-  it("does fabricate bars across the weekend for a continuously-traded (CRYPTO) symbol", () => {
-    let market = createInitialMarket();
+  it("a tick stamped inside the weekend close opens no bar for a non-continuously-traded symbol (the quote still updates)", () => {
+    const fri = Date.UTC(2026, 8, 25, 20, 58, 0);
+    let market = seedHistory(createInitialMarket(), "XAUUSD", fri, 4284.0);
+    const sat = Date.UTC(2026, 8, 26, 3, 17, 0);
+    market = tickMarket(market, { XAUUSD: { bid: 4284.99, ask: 4285.3, at: sat } }, sat);
+    for (const tf of ["M1", "H1", "D1"] as const) {
+      expect(market.XAUUSD.candles[tf].every((b) => new Date(b.t).getUTCDay() !== 6)).toBe(true);
+    }
+    expect(market.XAUUSD.candles[TF]).toHaveLength(1);
+    expect(market.XAUUSD.bid).toBe(4284.99);
+  });
+
+  it("Monday's first real tick after the weekend opens one bar at Monday's minute, nothing across the weekend", () => {
+    const fri = Date.UTC(2026, 8, 25, 20, 58, 0);
+    let market = seedHistory(createInitialMarket(), "XAUUSD", fri, 4284.0);
+    const mon = Date.UTC(2026, 8, 27, 22, 1, 30); // Sunday 22:01 UTC = the reopen
+    market = tickMarket(market, { XAUUSD: { bid: 4290, ask: 4290.3, at: mon } }, mon);
+    expect(market.XAUUSD.candles[TF].map((b) => b.t)).toEqual([bucketStartMs("M1", fri), bucketStartMs("M1", mon)]);
+  });
+
+  it("a continuously-traded (CRYPTO) symbol's real weekend tick does open its bar -- but still no flat bars before it", () => {
     const fri = Date.UTC(2026, 7, 28, 23, 58, 0);
-    market = tickMarket(market, { BTCUSD: { bid: 60000, ask: 60010, at: fri } }, fri);
-    const sat = Date.UTC(2026, 7, 29, 0, 2, 0); // 4 minutes later, deep into Saturday
+    let market = seedHistory(createInitialMarket(), "BTCUSD", fri, 60000);
+    const sat = Date.UTC(2026, 7, 29, 0, 2, 0); // 4 minutes later, Saturday
     market = tickMarket(market, { BTCUSD: { bid: 60100, ask: 60110, at: sat } }, sat);
-
-    const bars = market.BTCUSD.candles[TF];
-    const saturdayBars = bars.filter((b) => new Date(b.t).getUTCDay() === 6);
-    expect(saturdayBars.length).toBeGreaterThan(0); // crypto keeps ticking through the weekend, so gap-fill must too
+    expect(market.BTCUSD.candles[TF].map((b) => b.t)).toEqual([bucketStartMs("M1", fri), bucketStartMs("M1", sat)]);
   });
 
-  it("caps the number of local gap-fill bars for a pathological gap instead of fabricating thousands", () => {
-    let market = createInitialMarket();
-    const t0 = Date.UTC(2026, 7, 31, 0, 0, 0); // Monday midnight
-    market = tickMarket(market, { XAUUSD: { bid: 4400, ask: 4400.3, at: t0 } }, t0);
-    const farFuture = t0 + 10 * 86_400_000; // 10 days later (a tab asleep for over a week)
-    market = tickMarket(market, { XAUUSD: { bid: 4410, ask: 4410.3, at: farFuture } }, farFuture);
-
-    // Bounded, not the ~9,360 minutes that would otherwise separate these
-    // two ticks (10 days of M1 buckets).
-    expect(market.XAUUSD.candles[TF].length).toBeLessThan(200);
-  });
-
-  it("still respects the 300-bar cap after a multi-bar local gap-fill push", () => {
-    let market = createInitialMarket();
-    const t0 = Date.UTC(2026, 7, 31, 0, 0, 0);
-    market = tickMarket(market, { XAUUSD: { bid: 4400, ask: 4400.3, at: t0 } }, t0);
-    const later = t0 + 250 * 60_000; // 250 skipped minutes, well within the local gap-fill cap
-    market = tickMarket(market, { XAUUSD: { bid: 4410, ask: 4410.3, at: later } }, later);
-    expect(market.XAUUSD.candles[TF].length).toBeLessThanOrEqual(300);
+  it("a late tick older than the newest bar never re-opens or rewrites an earlier bar", () => {
+    const t0 = Date.UTC(2026, 7, 31, 12, 5, 0);
+    let market = seedHistory(createInitialMarket(), "XAUUSD", t0, 4400);
+    market = tickMarket(market, { XAUUSD: { bid: 4405, ask: 4405.3, at: t0 + 1000 } }, t0 + 1000);
+    const snapshot = market.XAUUSD.candles[TF].map((b) => ({ ...b }));
+    const late = t0 - 3 * 60_000;
+    market = tickMarket(market, { XAUUSD: { bid: 4300, ask: 4300.3, at: late } }, t0 + 2000);
+    expect(market.XAUUSD.candles[TF]).toEqual(snapshot);
   });
 });
 
