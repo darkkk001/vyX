@@ -193,7 +193,11 @@ async fn dispatcher_delivers_backs_off_gives_up_once_and_wakes_fast() {
         let before = script_seen.lock().unwrap().len();
         outbox::drain_once(&pool, &client, &cfg(&script_url)).await.unwrap();
         assert_eq!(script_seen.lock().unwrap().len(), before, "a group whose head is backing off waits as a whole");
-        sqlx::query(r#"UPDATE "PostCloseEffect" SET "nextAttemptAt" = now() WHERE id = ANY($1)"#).bind(&group).execute(&pool).await.unwrap();
+        // due 1 s AGO, not now(): "nextAttemptAt" is timestamptz(3) and Postgres ROUNDS now() to the millisecond, so a
+        // row set to now() can sit up to 0.5 ms in the future; a drain inside that window skipped it (the (1, 0) flake of
+        // 2026-09-25, proven: 938 of 2000 immediate checks saw such a row as not yet due). Harmless in production (a
+        // row is picked up 0.5 ms later), fatal to an assert made in the same instant.
+        sqlx::query(r#"UPDATE "PostCloseEffect" SET "nextAttemptAt" = now() - interval '1 second' WHERE id = ANY($1)"#).bind(&group).execute(&pool).await.unwrap();
         let (drop_url, _) = mock_with(Arc::new(|_: &serde_json::Value| None)).await;
         outbox::drain_once(&pool, &client, &cfg(&drop_url)).await.unwrap();
         assert_eq!(
