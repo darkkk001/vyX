@@ -222,3 +222,36 @@ only after: `x-market-data-source: vps` on `/api/trade/prices` AND on
 `/api/trade/candles` for every symbol, a real market order filled on zzzqa
 with the flag on, and this gateway step done. Until then Neon's LivePrice is
 still read by something.
+
+## Where the engine reads its secrets (2026-09-26)
+
+The engine takes every secret from its **process environment** only, via `std::env::var` in
+`engine/server/src/main.rs` (`MARKET_DATA_READ_SECRET` at ~l.1291, `INTERNAL_SERVICE_SECRET` and
+`PRICE_FEED_SECRET` just above). It reads no `.env` file. On the VPS that environment comes from the
+`set NAME=value` lines in **`C:\vyxtrader\scripts\start-engine.cmd`**, the script the `vyxtrader-engine`
+nssm service runs (deploy/contabo-deploy.ps1 backs it up to `C:\vyxtrader\backup\start-engine.cmd`). A
+search for `.env` files, or of the nssm service's own environment, will not find it.
+
+```powershell
+findstr /i /c:"MARKET_DATA_READ_SECRET" /c:"INTERNAL_SERVICE_SECRET" C:\vyxtrader\scripts\start-engine.cmd
+```
+
+- `MARKET_DATA_READ_SECRET` is **optional** (§5). When it is not set, the engine logs
+  "MARKET_DATA_READ_SECRET not set -- /internal/candles and /internal/prices accept the internal secret only",
+  and those two read routes accept `x-internal-secret: <INTERNAL_SERVICE_SECRET>` only.
+- The web app sends only `X-Market-Data-Secret` (lib/market-data-client.ts). With the engine's copy unset, the
+  web's VPS reads are accepted only if Caddy's own check on feed.vyxtrader.com forwards them.
+
+Read-only check that works either way: use the internal secret against localhost. For example, the XAUUSD M1
+candles after Friday's close, to confirm that no flat bars were stored:
+
+```powershell
+$S = (findstr /i "INTERNAL_SERVICE_SECRET" C:\vyxtrader\scripts\start-engine.cmd).Split("=",2)[1].Trim()
+$H = @{ "x-internal-secret" = $S }
+Invoke-RestMethod "http://127.0.0.1:8081/internal/candles?symbol=XAUUSD&tf=M1&limit=900" -Headers $H |
+  ? { $_.bucketStart -ge '2026-09-25T20:40' } | ft bucketStart,open,high,low,close,updatedAt
+Invoke-RestMethod "http://127.0.0.1:8081/internal/prices/XAUUSD" -Headers $H   # tickAt = the last real tick
+```
+
+A flat bar has open = high = low = close. The engine writes a candle only for a tick whose own time (tick_ms) falls
+inside trading hours (engine/market-data/src/ingest.rs), so no rows are expected after the Friday close.
