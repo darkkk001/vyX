@@ -54,15 +54,44 @@ async fn run(stop_file: &str, out: &str) -> Result<usize, String> {
     }
     // the web cursor starts before anything this run books
     reconciler.run_once().await.map_err(|e| e.to_string())?;
-    println!("[shadow-gate] shadow ready");
+
+    // Production's price path (2026-09-25): the shadow prices the book from the engine's in-memory ticks, never the
+    // database's LivePrice. Here a feeder plays the live feed: it copies the price rows the load walkers move into a
+    // TickCache every 50 ms, with each row's tickAt as the tick's origin time (what the engine's feed carries).
+    let ticks = Arc::new(market_data::cache::TickCache::new());
+    let feeder_stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    {
+        let (pool, ticks, stop) = (pool.clone(), ticks.clone(), feeder_stop.clone());
+        tokio::spawn(async move {
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                if let Ok(rows) = sqlx::query_as::<_, (String, rust_decimal::Decimal, rust_decimal::Decimal, chrono::DateTime<chrono::Utc>)>(r#"SELECT symbol, bid, ask, "tickAt" FROM "LivePrice""#).fetch_all(&pool).await {
+                    for (symbol, bid, ask, tick_at) in rows {
+                        if let Ok(t) = serde_json::from_value::<protocol::Tick>(json!({ "symbol": symbol, "bid": bid, "ask": ask, "tick_ms": tick_at.timestamp_millis() })) {
+                            ticks.set(&t, chrono::Utc::now());
+                        }
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        });
+    }
+    let source = order_management::book::PriceSource::Ticks(ticks.clone());
+    // the feeder's first copy is in before the first pass
+    tokio::time::sleep(Duration::from_millis(200)).await;
 
     let mode = Mode::Shadow(recorder.clone());
     let mut cursor = PassCursor::default();
+    // One full pass BEFORE the web starts acting: the pinned false-UNEXPLAINED (2026-09-25). The seeded world starts
+    // ALREADY breached, and "ready" used to be printed before the shadow's first pass, so whenever the web reached an
+    // account first the shadow only ever sampled it after the close (samples all later than the web's close = WEB_ONLY).
+    // In production the shadow is running long before any breach; this makes the gate start the same way.
+    order_management::book::with_price_source(source.clone(), monitor::run_pass_mode(&book, None, &mut cursor, &mode)).await;
+    println!("[shadow-gate] shadow ready");
     let started = Instant::now();
     let mut passes = 0usize;
     let mut stop_seen: Option<Instant> = None;
     loop {
-        monitor::run_pass_mode(&book, None, &mut cursor, &mode).await;
+        order_management::book::with_price_source(source.clone(), monitor::run_pass_mode(&book, None, &mut cursor, &mode)).await;
         passes += 1;
         if stop_seen.is_none() && std::path::Path::new(stop_file).exists() {
             stop_seen = Some(Instant::now());
@@ -72,6 +101,7 @@ async fn run(stop_file: &str, out: &str) -> Result<usize, String> {
         }
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
+    feeder_stop.store(true, std::sync::atomic::Ordering::Relaxed);
     // every shadow decision older than the window can now be judged one-sided or not
     tokio::time::sleep(Duration::from_secs((WINDOW_SECS + SETTLE_SECS + 6) as u64)).await;
     reconciler.run_once().await.map_err(|e| e.to_string())?;

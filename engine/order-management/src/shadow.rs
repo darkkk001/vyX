@@ -346,6 +346,12 @@ impl Recorder {
         f(&mut it)
     }
     /// Did the shadow evaluate this account at all around `at`?
+    /// Every sample of the account around `at`: (ms relative to `at`, level, stop-out). For the WEB_ONLY detail: it shows
+    /// whether the shadow looked at the account while the position was below its stop-out, or only before and after.
+    pub fn samples_around(&self, account_id: &str, at: DateTime<Utc>, window: ChronoDuration) -> Vec<(i64, Option<Decimal>, Decimal)> {
+        self.around(account_id, at, window, |it| it.map(|s| ((s.at - at).num_milliseconds(), s.level.map(|l| l.round_dp(2)), s.stop_out)).collect())
+    }
+
     pub fn sampled_around(&self, account_id: &str, at: DateTime<Utc>, window: ChronoDuration) -> bool {
         self.around(account_id, at, window, |it| it.next().is_some())
     }

@@ -31,7 +31,8 @@ GRANT USAGE ON SCHEMA public TO vyx_shadow_ro;
 -- start from nothing (a re-run never keeps an older, wider grant)
 REVOKE ALL ON ALL TABLES IN SCHEMA public FROM vyx_shadow_ro;
 
--- book tables with no personal data: whole table, SELECT only
+-- book tables with no personal data: whole table, SELECT only. ("LivePrice" stays: the loader's SQL still joins it,
+-- but in production the book's prices come from the engine's in-memory ticks and the joined values are ignored.)
 GRANT SELECT ON "Position", "Symbol", "BrokerSymbol", "TradingSession", "Group", "LivePrice",
                 "MirrorRule", "MirrorLink", "PostCloseEffect" TO vyx_shadow_ro;
 

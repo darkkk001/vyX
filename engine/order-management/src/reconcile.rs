@@ -309,7 +309,9 @@ impl Reconciler {
                     };
                     let evaluated = self.recorder.sampled_around(account, *at, window);
                     let class = if near { Class::Snapshot } else { Class::WebOnly };
-                    let detail = serde_json::json!({ "webNote": note, "webPrice": close_price, "webPnl": amount, "shadowEvaluatedAccountAround": evaluated, "lateShadowDecision": other.map(|o| o.0) });
+                    let samples: Vec<serde_json::Value> = self.recorder.samples_around(account, *at, window).into_iter()
+                        .map(|(ms, level, so)| serde_json::json!({ "ms": ms, "level": level, "stopOut": so })).collect();
+                    let detail = serde_json::json!({ "webNote": note, "webPrice": close_price, "webPnl": amount, "shadowEvaluatedAccountAround": evaluated, "lateShadowDecision": other.map(|o| o.0), "shadowSamples": samples });
                     self.write_pair(class, kind, account, Some(position), Some(txn), None, Some(*at), None, fan, detail, &mut report).await;
                 }
             }

@@ -738,20 +738,20 @@ pub async fn run_once_guarded(pool: &PgPool, nats: &async_nats::Client, guard: &
 /// Spawns the polling-timer trigger as a background task — the safety
 /// net described in the module doc comment, not the primary trigger path
 /// once a tick-driven subscription is also running alongside it.
-pub fn spawn(pool: PgPool, nats: async_nats::Client, interval: std::time::Duration, guard: RunGuard) {
-    tokio::spawn(async move {
+pub fn spawn(pool: PgPool, nats: async_nats::Client, interval: std::time::Duration, guard: RunGuard, prices: book::PriceSource) {
+    tokio::spawn(book::with_price_source(prices, async move {
         let mut ticker = tokio::time::interval(interval);
         loop {
             ticker.tick().await;
             run_once_guarded(&pool, &nats, &guard).await;
         }
-    });
+    }));
 }
 
 /// Stage 5: the shadow monitor. A pass every `interval` in `Mode::Shadow`, one at a time (a slow pass delays the
 /// next, never overlaps it). No NATS, no dispatcher, no writes to the book.
-pub fn spawn_shadow(pool: PgPool, recorder: Arc<crate::shadow::Recorder>, interval: std::time::Duration) {
-    tokio::spawn(async move {
+pub fn spawn_shadow(pool: PgPool, recorder: Arc<crate::shadow::Recorder>, interval: std::time::Duration, prices: book::PriceSource) {
+    tokio::spawn(book::with_price_source(prices, async move {
         let mode = Mode::Shadow(recorder);
         let mut ticker = tokio::time::interval(interval);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -763,7 +763,7 @@ pub fn spawn_shadow(pool: PgPool, recorder: Arc<crate::shadow::Recorder>, interv
                 tracing::warn!(errors = report.errors, "shadow pass: some accounts failed to evaluate");
             }
         }
-    });
+    }));
 }
 
 #[cfg(test)]

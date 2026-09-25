@@ -159,6 +159,16 @@ impl TickCache {
     // pass `max_age` explicitly rather than this module hardcoding it, so
     // the two stay obviously in sync at the call site instead of by
     // coincidence.
+    /// The latest tick of `symbol` and when the engine received it, whatever its age: the entry GET
+    /// /internal/prices serves the web (order_management::book::PriceSource::Ticks reads the same one).
+    pub fn latest(&self, symbol: &str) -> Option<(Tick, DateTime<Utc>)> {
+        let guard = match self.inner.read() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        guard.get(symbol).map(|e| (e.tick.clone(), e.at))
+    }
+
     pub fn get_if_fresh(&self, symbol: &str, max_age: Duration) -> Option<Tick> {
         let guard = match self.inner.read() {
             Ok(g) => g,

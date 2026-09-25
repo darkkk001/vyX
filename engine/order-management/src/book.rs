@@ -51,6 +51,65 @@ pub async fn account_ids_with_open_positions(pool: &PgPool) -> Result<Vec<String
 /// - AND the symbol's trading session is open now for this account's broker (session.rs). As on the web,
 ///   only a symbol that has a BrokerSymbol row for the broker can be session-closed.
 /// A position without a usable price comes back with `bid`/`ask` = None: counted nowhere, closeable by nothing.
+// ---- Where the book's prices come from (2026-09-25) ----
+// Since the market-data move (S5, 2026-09-15) the feed writes LivePrice to the VPS-local database; Neon's
+// "LivePrice" stopped moving (10 days stale on 2026-09-25). This loader joined Neon's LivePrice, so in production the
+// shadow -- and Stage 6's real close path -- would have seen every position UNPRICED. The live engine now prices the
+// book from its OWN in-memory ticks: the very entry GET /internal/prices serves the web (lib/live-price.ts vps
+// path), so the web and the engine read one source, the same Decimal bid / ask (the web gets them via
+// decimal_json = normalize().to_string(), exact) under the same freshness rule (tickAt = the tick's origin time,
+// else its receive time; fresh = newer than 15 s). Only the SOURCE changes: close, P&L, NBP untouched.
+
+/// The book's price source.
+#[derive(Clone, Default)]
+pub enum PriceSource {
+    /// The "LivePrice" table of the book's own database (tests, parity, the scratch harnesses).
+    #[default]
+    Db,
+    /// The engine's in-memory ticks (the live feed): production.
+    Ticks(std::sync::Arc<market_data::cache::TickCache>),
+}
+
+tokio::task_local! {
+    static PRICE_SOURCE: PriceSource;
+}
+
+/// Set by the server (shadow / live order management): a book read with no tick source in scope is then an ERROR,
+/// never a silent read of the database's LivePrice (a task spawned outside the scope would otherwise fall back).
+static REQUIRE_TICK_SOURCE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn require_tick_source() {
+    REQUIRE_TICK_SOURCE.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Runs `f` with `source` as the book's price source (a monitor pass runs as one task: every read inside sees it).
+pub async fn with_price_source<F: std::future::Future>(source: PriceSource, f: F) -> F::Output {
+    PRICE_SOURCE.scope(source, f).await
+}
+
+fn current_price_source() -> Result<PriceSource, sqlx::Error> {
+    match PRICE_SOURCE.try_with(|s| s.clone()) {
+        Ok(s) => Ok(s),
+        Err(_) if REQUIRE_TICK_SOURCE.load(std::sync::atomic::Ordering::SeqCst) => {
+            Err(sqlx::Error::Protocol("book read without the engine's tick source in scope (would read the database's stale LivePrice)".into()))
+        }
+        Err(_) => Ok(PriceSource::Db),
+    }
+}
+
+/// The tick time the web uses for freshness (engine price_row: tick_ms, else the receive time).
+pub fn tick_time(tick: &protocol::Tick, received_at: chrono::DateTime<chrono::Utc>) -> chrono::DateTime<chrono::Utc> {
+    tick.tick_ms.and_then(chrono::DateTime::from_timestamp_millis).unwrap_or(received_at)
+}
+
+/// Fresh bid / ask from the ticks, the web's rule: tick time newer than 15 s.
+fn fresh_from_ticks(cache: &market_data::cache::TickCache, symbol: &str, now: chrono::DateTime<chrono::Utc>) -> (Option<Decimal>, Option<Decimal>) {
+    match cache.latest(symbol) {
+        Some((t, received)) if now - tick_time(&t, received) < chrono::Duration::seconds(15) => (Some(t.bid), Some(t.ask)),
+        _ => (None, None),
+    }
+}
+
 pub async fn open_positions_with_market(
     pool: &PgPool,
     account_id: &str,
@@ -109,8 +168,11 @@ pub async fn open_positions_with_market(
             }
         }
     }
+    let source = current_price_source()?;
     let fx_quotes: std::collections::HashMap<String, crate::fx::Quote> = if fx_symbols.is_empty() {
         std::collections::HashMap::new()
+    } else if let PriceSource::Ticks(cache) = &source {
+        fx_symbols.iter().filter_map(|s| cache.latest(s).map(|(t, _)| (s.clone(), (t.bid, t.ask)))).collect()
     } else {
         let q: Vec<(String, Decimal, Decimal)> = sqlx::query_as(r#"SELECT symbol, bid, ask FROM "LivePrice" WHERE symbol = ANY($1)"#)
             .bind(&fx_symbols)
@@ -122,6 +184,11 @@ pub async fn open_positions_with_market(
     Ok(rows
         .into_iter()
         .map(|(id, symbol, side, volume, open_price, contract_size, bid, ask, sl_price, tp_price, category, _, quote_ccy, account_ccy, hedged_margin_pct)| {
+            // the SOURCE of bid / ask: the database's LivePrice (the SQL above) or the engine's ticks
+            let (bid, ask) = match &source {
+                PriceSource::Db => (bid, ask),
+                PriceSource::Ticks(cache) => fresh_from_ticks(cache, &symbol, now),
+            };
             let closed = sessions.get(&symbol).is_some_and(|windows| crate::session::is_market_closed(windows, now, &category));
             let rate = crate::fx::conversion_rate(&quote_ccy, &account_ccy, |s| fx_quotes.get(s).copied());
             if rate.is_none() {
@@ -596,5 +663,45 @@ mod tests {
         assert_eq!(fixed2(dec!(-0.125)), "-0.13");
         assert_eq!(fixed2(dec!(12.344)), "12.34");
         assert_eq!(fixed2(dec!(49.995)), "50.00");
+    }
+}
+
+
+#[cfg(test)]
+mod price_source_tests {
+    use super::*;
+    use rust_decimal_macros::dec;
+
+    fn tick(bid: Decimal, ask: Decimal, tick_ms: Option<i64>) -> protocol::Tick {
+        let mut j = serde_json::json!({ "symbol": "XAUUSD", "bid": bid, "ask": ask });
+        if let Some(ms) = tick_ms {
+            j["tick_ms"] = serde_json::json!(ms);
+        }
+        serde_json::from_value(j).unwrap()
+    }
+
+    /// The web receives bid / ask as decimal_json (normalize().to_string()) and parses them back as Decimal: for every
+    /// shape of price it gets exactly the Decimal the engine's book uses. No float anywhere, no rounding difference.
+    #[test]
+    fn the_webs_copy_of_a_tick_is_the_same_decimal() {
+        for d in [dec!(4270.50), dec!(4270.5), dec!(1.08345), dec!(0.00001), dec!(150.000), dec!(77061.0), dec!(2000.20)] {
+            let over_the_wire = d.normalize().to_string();
+            assert_eq!(over_the_wire.parse::<Decimal>().unwrap(), d, "{d} -> {over_the_wire}");
+        }
+    }
+
+    #[test]
+    fn ticks_give_the_exact_bid_ask_under_the_webs_freshness_rule() {
+        let cache = market_data::cache::TickCache::new();
+        let now = chrono::Utc::now();
+        // the tick's own origin time decides (engine price_row tickAt = tick_ms), not when it was received
+        cache.set(&tick(dec!(4270.55), dec!(4270.85), Some((now - chrono::Duration::milliseconds(14_999)).timestamp_millis())), now);
+        assert_eq!(fresh_from_ticks(&cache, "XAUUSD", now), (Some(dec!(4270.55)), Some(dec!(4270.85))));
+        cache.set(&tick(dec!(4270.55), dec!(4270.85), Some((now - chrono::Duration::seconds(15)).timestamp_millis())), now);
+        assert_eq!(fresh_from_ticks(&cache, "XAUUSD", now), (None, None), "15 s old = stale (web: tickAt > now - 15 s)");
+        // no tick_ms: the receive time, as price_row
+        cache.set(&tick(dec!(4271), dec!(4271.3), None), now - chrono::Duration::seconds(3));
+        assert_eq!(fresh_from_ticks(&cache, "XAUUSD", now), (Some(dec!(4271)), Some(dec!(4271.3))));
+        assert_eq!(fresh_from_ticks(&cache, "EURUSD", now), (None, None), "unknown symbol = unpriced");
     }
 }

@@ -10,6 +10,8 @@ path = "src/main.rs"
 
 [dependencies]
 protocol = { path = "../protocol" }
+market-data = { path = "../market-data" }
+chrono.workspace = true
 risk = { path = "../risk" }
 margin = { path = "../margin" }
 order-management = { path = "../order-management" }

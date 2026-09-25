@@ -1133,6 +1133,7 @@ async fn spawn_tick_driven_triggers(
     pool: PgPool,
     nats: async_nats::Client,
     guard: order_management::monitor::RunGuard,
+    prices: order_management::book::PriceSource,
 ) -> Result<(), async_nats::SubscribeError> {
     let mut sub = nats.subscribe("price.tick.*").await?;
     tracing::info!("tick-driven triggers: subscribed to price.tick.*");
@@ -1167,9 +1168,9 @@ async fn spawn_tick_driven_triggers(
             };
             if run_monitor {
                 let (pool1, nats1, guard1) = (pool.clone(), nats.clone(), guard.clone());
-                tokio::spawn(async move {
+                tokio::spawn(order_management::book::with_price_source(prices.clone(), async move {
                     order_management::monitor::run_once_guarded(&pool1, &nats1, &guard1).await;
-                });
+                }));
             }
             // (b) pending-order triggers: per symbol, at most once per window. Per symbol because a
             // trigger only ever concerns the symbol that moved, so one busy symbol must not starve
@@ -1339,6 +1340,10 @@ async fn main() {
     // Deliberately NOT gated, because they are live and load-bearing: the price-feed ingest,
     // candles / prices serving, the alert cache, the NATS tick fan-out, and market_data::risk_hook
     // (which reads the real "Position" / "Symbol" and drives the web's own margin monitor).
+    // The engine's in-memory ticks: the live feed, served to the web by GET /internal/prices, and (2026-09-25) the
+    // book's price source whenever order management runs (live or shadow), instead of the database's LivePrice,
+    // which stopped moving when the feed's writes went VPS-local (S5).
+    let tick_cache = Arc::new(TickCache::new());
     let order_management_on = std::env::var("ENGINE_ORDER_MANAGEMENT")
         .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "on" | "yes"))
         .unwrap_or(false);
@@ -1351,13 +1356,16 @@ async fn main() {
             "order management ENABLED: margin monitor, per-tick triggers, thresholds guard and swap roller running against the engine's own tables"
         );
         let monitor_guard = order_management::monitor::new_run_guard();
+        order_management::book::require_tick_source();
+        let prices = order_management::book::PriceSource::Ticks(tick_cache.clone());
         order_management::monitor::spawn(
             pool.clone(),
             nats.clone(),
             std::time::Duration::from_secs(monitor_interval_secs),
             monitor_guard.clone(),
+            prices.clone(),
         );
-        spawn_tick_driven_triggers(pool.clone(), nats.clone(), monitor_guard)
+        spawn_tick_driven_triggers(pool.clone(), nats.clone(), monitor_guard, prices)
             .await
             .expect("failed to subscribe tick-driven triggers to price.tick.*");
 
@@ -1436,7 +1444,8 @@ async fn main() {
         };
         let recorder = Arc::new(recorder);
         tracing::warn!(pass_secs, "order management SHADOW: the monitor evaluates every account and records what it would do; it writes nothing and publishes nothing. The web owns every close.");
-        order_management::monitor::spawn_shadow(book_pool.clone(), recorder.clone(), std::time::Duration::from_secs(pass_secs));
+        order_management::book::require_tick_source();
+        order_management::monitor::spawn_shadow(book_pool.clone(), recorder.clone(), std::time::Duration::from_secs(pass_secs), order_management::book::PriceSource::Ticks(tick_cache.clone()));
         // §5.3: pairs the web's real risk actions with the shadow's decisions every minute (reads the book, writes only
         // to the local store); the daily summary goes to the log and to shadow_daily
         let reconcile_secs: u64 = std::env::var("VYX_SHADOW_RECONCILE_SECS").ok().and_then(|v| v.trim().parse().ok()).filter(|s| *s > 0).unwrap_or(60);
@@ -1453,7 +1462,6 @@ async fn main() {
         );
     }
 
-    let tick_cache = Arc::new(TickCache::new());
     let symbol_activity_registry = Arc::new(SymbolActivity::new());
 
     // Periodic Postgres flush of the in-memory tick cache -- see
