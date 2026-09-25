@@ -72,9 +72,14 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     }
   }
 
-  const result = await prisma.$transaction((tx) =>
-    applyBalanceAdjustment(tx, { accountId: id, brokerId, amount, note, adminId: session!.adminId })
-  );
+  let result: Awaited<ReturnType<typeof applyBalanceAdjustment>>;
+  try {
+    result = await prisma.$transaction((tx) => applyBalanceAdjustment(tx, { accountId: id, brokerId, amount, note, adminId: session!.adminId }));
+  } catch (err) {
+    // audit 2026-09-24: a debit below 0 or below the open positions' margin is refused (lib/margin.ts checkBalanceDebit)
+    if (err instanceof BalanceAdjustmentError) return NextResponse.json({ error: err.message }, { status: 400 });
+    throw err;
+  }
 
   // after commit: let the trader's terminal refresh its balance + Balance-history tab live
   await publishTradingEvent("BalanceChanged", { account_id: id, broker_id: brokerId, transaction_id: result.transactionId }).catch(

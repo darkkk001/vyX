@@ -21,24 +21,24 @@ const D = (v: string | number) => new Prisma.Decimal(v);
 
 describe("resolveFundsApprovalStep (maker-checker decision, pure)", () => {
   it("a DEPOSIT is always single-approval, regardless of any markedByAdminId", () => {
-    expect(resolveFundsApprovalStep({ type: "DEPOSIT", markedByAdminId: null, actingAdminId: "admin-1" })).toEqual({ step: "approve" });
+    expect(resolveFundsApprovalStep({ type: "DEPOSIT", markedByAdminId: null, actingAdminId: "admin-1", actingRole: "BROKER_ADMIN", withdrawalApproval: "DUAL" })).toEqual({ step: "approve", single: false });
     // Even if some markedByAdminId were somehow set on a deposit, it's
     // still a plain approve -- the mark/confirm dance is withdrawal-only.
-    expect(resolveFundsApprovalStep({ type: "DEPOSIT", markedByAdminId: "admin-2", actingAdminId: "admin-1" })).toEqual({ step: "approve" });
+    expect(resolveFundsApprovalStep({ type: "DEPOSIT", markedByAdminId: "admin-2", actingAdminId: "admin-1", actingRole: "BROKER_ADMIN", withdrawalApproval: "DUAL" })).toEqual({ step: "approve", single: false });
   });
 
   it("a WITHDRAWAL's first approval marks it -- no balance change yet", () => {
-    expect(resolveFundsApprovalStep({ type: "WITHDRAWAL", markedByAdminId: null, actingAdminId: "admin-1" })).toEqual({ step: "mark" });
+    expect(resolveFundsApprovalStep({ type: "WITHDRAWAL", markedByAdminId: null, actingAdminId: "admin-1", actingRole: "BROKER_ADMIN", withdrawalApproval: "DUAL" })).toEqual({ step: "mark" });
   });
 
   it("the SAME admin cannot confirm their own mark", () => {
-    const result = resolveFundsApprovalStep({ type: "WITHDRAWAL", markedByAdminId: "admin-1", actingAdminId: "admin-1" });
+    const result = resolveFundsApprovalStep({ type: "WITHDRAWAL", markedByAdminId: "admin-1", actingAdminId: "admin-1", actingRole: "BROKER_ADMIN", withdrawalApproval: "DUAL" });
     expect(result.step).toBe("error");
     if (result.step === "error") expect(result.error).toMatch(/different staff member/);
   });
 
   it("a DIFFERENT admin confirming an already-marked withdrawal actually approves it", () => {
-    expect(resolveFundsApprovalStep({ type: "WITHDRAWAL", markedByAdminId: "admin-1", actingAdminId: "admin-2" })).toEqual({ step: "approve" });
+    expect(resolveFundsApprovalStep({ type: "WITHDRAWAL", markedByAdminId: "admin-1", actingAdminId: "admin-2", actingRole: "BROKER_ADMIN", withdrawalApproval: "DUAL" })).toEqual({ step: "approve", single: false });
   });
 });
 
@@ -158,7 +158,7 @@ describe("approveFundsRequest (live DB, rolled back)", () => {
       const fx = await createFixture(tx, "1000");
       const req = await createRequest(tx, fx, "WITHDRAWAL", "-300");
 
-      const step1 = resolveFundsApprovalStep({ type: "WITHDRAWAL", markedByAdminId: null, actingAdminId: fx.admin1Id });
+      const step1 = resolveFundsApprovalStep({ type: "WITHDRAWAL", markedByAdminId: null, actingAdminId: fx.admin1Id, actingRole: "BROKER_ADMIN", withdrawalApproval: "DUAL" });
       expect(step1.step).toBe("mark");
       const marked = await markFundsRequestForApproval(tx, { transactionId: req.id, brokerId: fx.brokerId, adminId: fx.admin1Id });
       expect(marked.markedByAdminId).toBe(fx.admin1Id);
@@ -166,7 +166,7 @@ describe("approveFundsRequest (live DB, rolled back)", () => {
       const acctAfterMark = await tx.account.findUniqueOrThrow({ where: { id: fx.accountId } });
       expect(acctAfterMark.balance.toString()).toBe("1000"); // marking never touches balance
 
-      const step2 = resolveFundsApprovalStep({ type: "WITHDRAWAL", markedByAdminId: fx.admin1Id, actingAdminId: fx.admin2Id });
+      const step2 = resolveFundsApprovalStep({ type: "WITHDRAWAL", markedByAdminId: fx.admin1Id, actingAdminId: fx.admin2Id, actingRole: "BROKER_ADMIN", withdrawalApproval: "DUAL" });
       expect(step2.step).toBe("approve");
       const result = await approveFundsRequest(tx, {
         transactionId: req.id, brokerId: fx.brokerId, accountId: fx.accountId, amount: D("-300"), adminId: fx.admin2Id, note: null, type: "WITHDRAWAL",

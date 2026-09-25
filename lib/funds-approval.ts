@@ -2,6 +2,7 @@ import "server-only";
 import { Prisma } from "@prisma/client";
 import { nextPspStatusOnMark, nextPspStatusOnApprove } from "@/lib/psp/adapter";
 import { lockAccountBalance } from "@/lib/account-lock";
+import { checkBalanceDebit } from "@/lib/margin";
 
 type Tx = Prisma.TransactionClient;
 
@@ -15,25 +16,40 @@ type Tx = Prisma.TransactionClient;
 // withdrawals move money out.
 export type FundsApprovalStep =
   | { step: "mark" }
-  | { step: "approve" }
+  | { step: "approve"; single: boolean }
   | { step: "error"; error: string };
 
+// Owner decision D5 (2026-09-25): Broker.withdrawalApproval. DUAL (default) = the two-admin flow above. SINGLE = a
+// BROKER_ADMIN completes a withdrawal alone (marked or not), audited as a single approval. A MANAGER (even with
+// FUNDS_APPROVAL) never completes one alone: in either mode its APPROVE only marks, and a different admin completes.
 export function resolveFundsApprovalStep(params: {
   type: "DEPOSIT" | "WITHDRAWAL";
   markedByAdminId: string | null;
   actingAdminId: string;
+  actingRole: "BROKER_ADMIN" | "MANAGER";
+  withdrawalApproval: "SINGLE" | "DUAL";
 }): FundsApprovalStep {
   if (params.type === "DEPOSIT") {
-    return { step: "approve" };
+    return { step: "approve", single: false };
   }
   // WITHDRAWAL
+  if (params.withdrawalApproval === "SINGLE" && params.actingRole === "BROKER_ADMIN") {
+    return { step: "approve", single: true };
+  }
   if (!params.markedByAdminId) {
     return { step: "mark" };
   }
   if (params.markedByAdminId === params.actingAdminId) {
     return { step: "error", error: "a different staff member must confirm this withdrawal" };
   }
-  return { step: "approve" };
+  return { step: "approve", single: false };
+}
+
+/** Thrown inside a transaction when another admin already acted on the same request (status-guarded claim). */
+export class FundsRequestRaceError extends Error {
+  constructor() {
+    super("request already reviewed");
+  }
 }
 
 export type MarkResult = { transactionId: string; markedByAdminId: string };
@@ -43,13 +59,15 @@ export async function markFundsRequestForApproval(
   tx: Tx,
   params: { transactionId: string; brokerId: string; adminId: string }
 ): Promise<MarkResult> {
-  await tx.transaction.update({
-    where: { id: params.transactionId },
+  const claimed = await tx.transaction.updateMany({
+    // status-guarded (audit 2026-09-24): only a PENDING, unmarked request can be marked
+    where: { id: params.transactionId, status: "PENDING", markedByAdminId: null },
     // pspStatus advances alongside the real mark regardless of which
     // adapter created the request -- see lib/psp/adapter.ts's own header
     // comment on why this is adapter-agnostic.
     data: { markedByAdminId: params.adminId, markedAt: new Date(), pspStatus: nextPspStatusOnMark() },
   });
+  if (claimed.count === 0) throw new FundsRequestRaceError();
   await tx.auditLog.create({
     data: {
       brokerId: params.brokerId,
@@ -85,10 +103,13 @@ export async function rejectFundsRequest(
   tx: Tx,
   params: { transactionId: string; brokerId: string; adminId: string; note: string | null }
 ): Promise<{ id: string; status: string }> {
-  const updated = await tx.transaction.update({
-    where: { id: params.transactionId },
+  // status-guarded (audit 2026-09-24): a reject racing an approval can never flip a COMPLETED payout to REJECTED
+  const claimed = await tx.transaction.updateMany({
+    where: { id: params.transactionId, status: "PENDING" },
     data: { status: "REJECTED", reviewedByAdminId: params.adminId, markedByAdminId: null, markedAt: null, note: params.note },
   });
+  if (claimed.count === 0) throw new FundsRequestRaceError();
+  const updated = { id: params.transactionId, status: "REJECTED" };
   await tx.auditLog.create({
     data: {
       brokerId: params.brokerId,
@@ -122,19 +143,33 @@ export async function approveFundsRequest(
     adminId: string;
     note: string | null;
     type: "DEPOSIT" | "WITHDRAWAL";
+    /** SINGLE = completed by one BROKER_ADMIN under Broker.withdrawalApproval SINGLE (recorded in the audit row) */
+    approvalMode?: "SINGLE" | "DUAL";
+    markedByAdminId?: string | null;
   }
 ): Promise<ApproveResult> {
   const balanceBefore = await lockAccountBalance(tx, params.accountId); // row lock: lib/account-lock.ts
   const balanceAfter = balanceBefore.add(params.amount); // amount already signed (negative for withdrawal)
 
-  if (balanceAfter.lt(0)) {
-    return { ok: false, error: "account balance is no longer sufficient for this withdrawal, reject or ask the trader to resubmit" };
+  if (params.type === "WITHDRAWAL") {
+    // Audit 2026-09-24 (money): not only balance >= 0 -- a payout must not leave open positions under-margined.
+    // Checked on the LOCKED balance (lib/margin.ts checkBalanceDebit).
+    const debit = await checkBalanceDebit(tx, { accountId: params.accountId, amount: params.amount.neg(), balance: balanceBefore });
+    if (debit) {
+      return {
+        ok: false,
+        error:
+          debit.error === "BALANCE_BELOW_ZERO"
+            ? "account balance is no longer sufficient for this withdrawal, reject or ask the trader to resubmit"
+            : `withdrawal refused: ${debit.message}. Reject it or ask the trader to close positions first`,
+      };
+    }
   }
 
-  await tx.account.update({ where: { id: params.accountId }, data: { balance: balanceAfter } });
-
-  const updated = await tx.transaction.update({
-    where: { id: params.transactionId },
+  // status-guarded claim (audit 2026-09-24): two admins approving at once -- the second waits on the account lock
+  // above, then finds the request no longer PENDING and rolls back; the money moves once.
+  const claimed = await tx.transaction.updateMany({
+    where: { id: params.transactionId, status: "PENDING" },
     data: {
       status: "COMPLETED",
       balanceBefore,
@@ -144,6 +179,10 @@ export async function approveFundsRequest(
       pspStatus: nextPspStatusOnApprove(params.type),
     },
   });
+  if (claimed.count === 0) throw new FundsRequestRaceError();
+
+  await tx.account.update({ where: { id: params.accountId }, data: { balance: balanceAfter } });
+  const updated = { id: params.transactionId };
 
   await tx.auditLog.create({
     data: {
@@ -152,8 +191,14 @@ export async function approveFundsRequest(
       action: "FUNDS_REQUEST_APPROVED",
       entityType: "Transaction",
       entityId: params.transactionId,
-      oldValue: { status: "PENDING" },
-      newValue: { status: "COMPLETED", balanceBefore: balanceBefore.toString(), balanceAfter: balanceAfter.toString() },
+      oldValue: { status: "PENDING", markedByAdminId: params.markedByAdminId ?? null },
+      newValue: {
+        status: "COMPLETED",
+        balanceBefore: balanceBefore.toString(),
+        balanceAfter: balanceAfter.toString(),
+        // D5: which rule completed it -- SINGLE = one BROKER_ADMIN alone, DUAL = marked + confirmed by two admins
+        ...(params.type === "WITHDRAWAL" ? { approvalMode: params.approvalMode ?? "DUAL" } : {}),
+      },
     },
   });
 

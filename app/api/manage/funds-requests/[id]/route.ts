@@ -9,7 +9,11 @@ import {
   cancelFundsRequestMark,
   rejectFundsRequest,
   approveFundsRequest,
+  FundsRequestRaceError,
 } from "@/lib/funds-approval";
+
+const racedResponse = () => NextResponse.json({ error: "request already reviewed by another admin" }, { status: 409 });
+const raced = (e: unknown) => (e instanceof FundsRequestRaceError ? null : Promise.reject(e));
 
 // Approve/reject a PENDING deposit or withdrawal request -- BROKER_ADMIN
 // by default, delegatable via FUNDS_APPROVAL (see lib/permissions.ts).
@@ -64,39 +68,49 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   }
 
   if (action === "REJECT") {
-    const rejected = await prisma.$transaction((tx) =>
-      rejectFundsRequest(tx, { transactionId: id, brokerId, adminId: session!.adminId, note: note ?? existing.note })
-    );
+    const rejected = await prisma
+      .$transaction((tx) => rejectFundsRequest(tx, { transactionId: id, brokerId, adminId: session!.adminId, note: note ?? existing.note }))
+      .catch(raced);
+    if (!rejected) return racedResponse();
     return NextResponse.json(rejected);
   }
 
-  // APPROVE
+  // APPROVE -- Broker.withdrawalApproval (owner decision D5): SINGLE lets one BROKER_ADMIN complete a withdrawal
+  const broker = await prisma.broker.findUniqueOrThrow({ where: { id: brokerId }, select: { withdrawalApproval: true } });
   const step = resolveFundsApprovalStep({
     type: existing.type as "DEPOSIT" | "WITHDRAWAL",
     markedByAdminId: existing.markedByAdminId,
     actingAdminId: session!.adminId,
+    actingRole: session!.role === "BROKER_ADMIN" ? "BROKER_ADMIN" : "MANAGER",
+    withdrawalApproval: broker.withdrawalApproval,
   });
   if (step.step === "error") {
     return NextResponse.json({ error: step.error }, { status: 400 });
   }
   if (step.step === "mark") {
-    const marked = await prisma.$transaction((tx) =>
-      markFundsRequestForApproval(tx, { transactionId: id, brokerId, adminId: session!.adminId })
-    );
+    const marked = await prisma
+      .$transaction((tx) => markFundsRequestForApproval(tx, { transactionId: id, brokerId, adminId: session!.adminId }))
+      .catch(raced);
+    if (!marked) return racedResponse();
     return NextResponse.json({ id: marked.transactionId, status: existing.status, marked: true });
   }
 
-  const approved = await prisma.$transaction((tx) =>
-    approveFundsRequest(tx, {
-      transactionId: id,
-      brokerId,
-      accountId: existing.accountId,
-      amount: existing.amount,
-      adminId: session!.adminId,
-      note: note ?? existing.note,
-      type: existing.type as "DEPOSIT" | "WITHDRAWAL",
-    })
-  );
+  const approved = await prisma
+    .$transaction((tx) =>
+      approveFundsRequest(tx, {
+        transactionId: id,
+        brokerId,
+        accountId: existing.accountId,
+        amount: existing.amount,
+        adminId: session!.adminId,
+        note: note ?? existing.note,
+        type: existing.type as "DEPOSIT" | "WITHDRAWAL",
+        approvalMode: step.single ? "SINGLE" : "DUAL",
+        markedByAdminId: existing.markedByAdminId,
+      })
+    )
+    .catch(raced);
+  if (!approved) return racedResponse();
   if (!approved.ok) {
     return NextResponse.json({ error: approved.error }, { status: 409 });
   }

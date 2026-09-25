@@ -35,7 +35,7 @@ export default function TransfersManager() {
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState(false);
+  const [success, setSuccess] = useState<string | false>(false);
 
   async function load() {
     const [transfers, accountList] = await Promise.all([
@@ -66,7 +66,8 @@ export default function TransfersManager() {
       setError(b.error ?? "transfer failed");
       return;
     }
-    setSuccess(true);
+    // 202 = a MANAGER's transfer, filed for a second admin's approval (Approvals); nothing moved yet
+    setSuccess(response.status === 202 ? "Transfer sent for approval. It runs when a second admin approves it." : "Transfer completed.");
     setAmount("");
     setNote("");
     load().catch(() => {});
@@ -106,7 +107,7 @@ export default function TransfersManager() {
             {busy ? "Transferring..." : "Transfer"}
           </Button>
         </div>
-        {success ? <p className="mt-2 text-sm text-[var(--buy)]">Transfer completed.</p> : null}
+        {success ? <p className="mt-2 text-sm text-[var(--buy)]">{success}</p> : null}
         {error ? <p className="mt-2 text-sm text-[var(--sell)]">{error}</p> : null}
       </form>
 

@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { LEVERAGE_RULE, parseLeverage } from "@/lib/leverage";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { hasPermission } from "@/lib/permissions";
+import { balanceAdjustmentNeedsApproval, requestBalanceAdjustment } from "@/lib/balance-adjustment";
 import { provisionAccount } from "@/lib/account-provisioning";
 import { isCountryCode } from "@/lib/countries";
 import { checkAccountStructure } from "@/lib/account-structure";
@@ -275,19 +276,25 @@ async function createAccount(request: NextRequest, session: NonNullable<Awaited<
     leverage = n;
   }
 
-  let initialBalance: Prisma.Decimal;
-  if (canSetFinancials) {
-    try {
-      initialBalance = new Prisma.Decimal(String(body?.initialBalance ?? "0"));
-    } catch {
-      return NextResponse.json({ error: "invalid initialBalance" }, { status: 400 });
-    }
-    if (initialBalance.lt(0)) {
-      return NextResponse.json({ error: "initialBalance must not be negative" }, { status: 400 });
-    }
-  } else {
-    initialBalance = new Prisma.Decimal(0);
+  // Audit 2026-09-24 (money): a starting balance is enforced here, not only hidden in the form.
+  // - without the finance permission (BROKER_ADMIN or ACCOUNT_FINANCE): refused (403), never silently dropped
+  // - a MANAGER's LIVE account: created at 0, and the starting balance is filed as a maker-checker balance
+  //   adjustment a different admin approves (the same rule as adjust-balance)
+  // - BROKER_ADMIN, or any DEMO account: funded directly, as before
+  let requestedBalance: Prisma.Decimal;
+  try {
+    requestedBalance = new Prisma.Decimal(String(body?.initialBalance ?? "0"));
+  } catch {
+    return NextResponse.json({ error: "invalid initialBalance" }, { status: 400 });
   }
+  if (requestedBalance.lt(0)) {
+    return NextResponse.json({ error: "initialBalance must not be negative" }, { status: 400 });
+  }
+  if (requestedBalance.gt(0) && !canSetFinancials) {
+    return NextResponse.json({ error: "forbidden: a starting balance needs BROKER_ADMIN or ACCOUNT_FINANCE" }, { status: 403 });
+  }
+  const initialBalanceNeedsApproval = requestedBalance.gt(0) && accountMode === "LIVE" && balanceAdjustmentNeedsApproval(session.role as "MANAGER" | "BROKER_ADMIN");
+  const initialBalance = initialBalanceNeedsApproval ? new Prisma.Decimal(0) : requestedBalance;
 
   const passwordHash = await bcrypt.hash(password, 10);
 
@@ -321,11 +328,21 @@ async function createAccount(request: NextRequest, session: NonNullable<Awaited<
     throw error;
   }
 
+  let initialBalanceRequestId: string | null = null;
+  if (initialBalanceNeedsApproval) {
+    const req = await prisma.$transaction((tx) =>
+      requestBalanceAdjustment(tx, { brokerId, accountId: result.id, amount: requestedBalance, note: "Starting balance for a new LIVE account", adminId: session.adminId })
+    );
+    initialBalanceRequestId = req.id;
+  }
+
   return NextResponse.json(
     {
       id: result.id,
       accountNumber: result.accountNumber,
       email: result.email,
+      // set when a MANAGER's starting balance waits for a second admin (APR); the account exists at 0 until then
+      ...(initialBalanceRequestId ? { initialBalancePendingRequestId: initialBalanceRequestId } : {}),
       // No password here -- the caller already has it (they just typed
       // it into the form); echoing it back in the response just puts a
       // live credential in the network log/devtools for no benefit.

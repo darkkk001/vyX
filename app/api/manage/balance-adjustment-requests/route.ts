@@ -22,6 +22,8 @@ export async function GET(request: Request) {
     where: { brokerId, ...(statusFilter ? { status: statusFilter } : {}) },
     include: {
       account: { select: { accountNumber: true, fullName: true, balance: true } },
+      toAccount: { select: { accountNumber: true, fullName: true } },
+      ibRelationship: { select: { clientAccount: { select: { accountNumber: true } } } },
       requestedByAdmin: { select: { email: true } },
       reviewedByAdmin: { select: { email: true } },
     },
@@ -33,6 +35,10 @@ export async function GET(request: Request) {
     rows.map((r) => ({
       id: r.id,
       status: r.status,
+      // audit 2026-09-24: the queue also holds a MANAGER's TRANSFER and IB_PAYOUT (amount recomputed on approval)
+      kind: r.kind,
+      toAccount: r.toAccount ? { id: r.toAccountId, accountNumber: r.toAccount.accountNumber, fullName: r.toAccount.fullName } : null,
+      ibClientAccountNumber: r.ibRelationship?.clientAccount.accountNumber ?? null,
       amount: r.amount.toString(),
       note: r.note,
       reviewNote: r.reviewNote,

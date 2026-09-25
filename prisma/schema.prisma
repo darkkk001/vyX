@@ -410,6 +410,12 @@ model Broker {
   // lib/position-close.ts's closePositionInTx.
   negativeBalanceProtection Boolean @default(true)
 
+  // Owner decision D5 (2026-09-25, audit MASTER-PLAN): how many admins a withdrawal needs. DUAL (default) = one admin
+  // marks it, a DIFFERENT admin completes it (lib/funds-approval.ts). SINGLE = one BROKER_ADMIN completes it alone,
+  // with its own audit row (for a broker with a single admin). A MANAGER never completes a withdrawal alone in either
+  // mode. Set by BROKER_ADMIN only (CFG screen, app/api/manage/settings), audited.
+  withdrawalApproval WithdrawalApproval @default(DUAL)
+
   // Phase 2 pricing engine (2026-09-07) -- false (default) = every fill
   // site and lib/swap-rollover.ts keep resolving pricing exactly as
   // before (Group/GroupSymbolConfig only, via lib/group-pricing.ts's
@@ -748,6 +754,7 @@ model Account {
 
   ibLinkAsIb     IbRelationship[] @relation("IbAccount")
   ibLinkAsClient IbRelationship?  @relation("ClientAccount")
+  balanceRequestsAsTarget BalanceAdjustmentRequest[] @relation("BalanceRequestTarget")
 
   convertedFromLead Lead?
   priceAlerts       PriceAlert[]
@@ -761,7 +768,7 @@ model Account {
 
   watchlistItems            WatchlistItem[]
   savedWithdrawalAddresses  SavedWithdrawalAddress[]
-  balanceAdjustmentRequests BalanceAdjustmentRequest[]
+  balanceAdjustmentRequests BalanceAdjustmentRequest[] @relation("BalanceRequestAccount")
 
   // Per-account, per-symbol pricing override -- see AccountSymbolConfig's
   // own doc comment. Absence of a row for a symbol means "fall through to
@@ -1964,6 +1971,20 @@ enum BalanceAdjustmentRequestStatus {
   REJECTED
 }
 
+enum WithdrawalApproval {
+  SINGLE
+  DUAL
+}
+
+// What a maker-checker money request does once approved (audit 2026-09-24): a balance ADJUSTMENT (the original
+// kind), an internal TRANSFER between two accounts of the same client (toAccountId), or an IB_PAYOUT of a
+// relationship's pending commission (ibRelationshipId; the amount is recomputed at approval, never trusted).
+enum BalanceRequestKind {
+  ADJUSTMENT
+  TRANSFER
+  IB_PAYOUT
+}
+
 // 2026-09-06 Section D audit fix -- same maker-checker gate as
 // PositionActionRequest above, applied to direct balance adjustments
 // (lib/balance-adjustment.ts), which previously had none: a MANAGER (or
@@ -1978,13 +1999,20 @@ model BalanceAdjustmentRequest {
   brokerId  String
   broker    Broker  @relation(fields: [brokerId], references: [id])
   accountId String
-  account   Account @relation(fields: [accountId], references: [id])
+  account   Account @relation("BalanceRequestAccount", fields: [accountId], references: [id])
   amount    Decimal @db.Decimal(18, 2)
   // Required at request time already (lib/balance-adjustment.ts's own
   // validateBalanceAdjustment) -- an unexplained balance correction is
   // exactly what a dispute needs a reason on record for, same reasoning
   // as the direct-execute path this replaces for MANAGER.
   note      String
+
+  kind             BalanceRequestKind @default(ADJUSTMENT)
+  // TRANSFER: the receiving account (accountId is the source). IB_PAYOUT: the relationship (accountId is the IB).
+  toAccountId      String?
+  toAccount        Account?           @relation("BalanceRequestTarget", fields: [toAccountId], references: [id])
+  ibRelationshipId String?
+  ibRelationship   IbRelationship?    @relation(fields: [ibRelationshipId], references: [id])
 
   status BalanceAdjustmentRequestStatus @default(PENDING)
 
@@ -2148,6 +2176,8 @@ model IbRelationship {
 
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  payoutRequests BalanceAdjustmentRequest[]
 
   @@index([brokerId])
   @@index([ibAccountId])

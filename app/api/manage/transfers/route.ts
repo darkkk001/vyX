@@ -4,7 +4,8 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession } from "@/lib/auth";
 import { forbidUnlessBrokerAdminOrPermission } from "@/lib/permissions";
-import { lockAccountBalances } from "@/lib/account-lock";
+import { executeTransfer, TransferError } from "@/lib/transfer";
+import { balanceAdjustmentNeedsApproval, requestBalanceAdjustment, BalanceAdjustmentError } from "@/lib/balance-adjustment";
 
 async function requireBrokerAdmin() {
   const session = await getAdminSession();
@@ -74,74 +75,27 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "amount must be positive" }, { status: 400 });
   }
 
-  const [fromAccount, toAccount] = await Promise.all([
-    prisma.account.findUnique({ where: { id: fromAccountId } }),
-    prisma.account.findUnique({ where: { id: toAccountId } }),
-  ]);
-  if (!fromAccount || fromAccount.brokerId !== brokerId || !toAccount || toAccount.brokerId !== brokerId) {
-    return NextResponse.json({ error: "account not found" }, { status: 404 });
-  }
-  if (fromAccount.status !== "ACTIVE" || toAccount.status !== "ACTIVE") {
-    return NextResponse.json({ error: "both accounts must be active" }, { status: 400 });
-  }
-  if (fromAccount.accountMode !== toAccount.accountMode) {
-    return NextResponse.json({ error: "cannot transfer between a Demo and a Live account" }, { status: 400 });
-  }
-  if (fromAccount.currency !== toAccount.currency) {
-    return NextResponse.json(
-      { error: `currency mismatch: ${fromAccount.currency} account cannot transfer directly to a ${toAccount.currency} account` },
-      { status: 400 }
-    );
-  }
-
-  const result = await prisma.$transaction(async (tx) => {
-    // both rows locked up front, in id order (lib/account-lock.ts): no lost update, no A->B / B->A deadlock
-    const locked = await lockAccountBalances(tx, [fromAccountId, toAccountId]);
-    if (locked.get(fromAccountId)!.lt(amount)) {
-      throw new Error("INSUFFICIENT_BALANCE");
+  // Audit 2026-09-24 (money): same client only, the source's open positions keep their margin, and the same
+  // maker-checker rule as a balance adjustment -- a MANAGER's transfer is filed for a second admin's approval
+  // (lib/balance-adjustment.ts, kind TRANSFER); BROKER_ADMIN executes directly. lib/transfer.ts runs every check.
+  if (balanceAdjustmentNeedsApproval(session.role as "MANAGER" | "BROKER_ADMIN")) {
+    try {
+      const created = await prisma.$transaction((tx) =>
+        requestBalanceAdjustment(tx, { brokerId, accountId: fromAccountId, toAccountId, amount, note, adminId: session.adminId, kind: "TRANSFER" })
+      );
+      return NextResponse.json({ pending: true, requestId: created.id }, { status: 202 });
+    } catch (e) {
+      if (e instanceof BalanceAdjustmentError) return NextResponse.json({ error: e.message }, { status: 400 });
+      throw e;
     }
-    const fromBalanceBefore = locked.get(fromAccountId)!;
-    const fromBalanceAfter = fromBalanceBefore.sub(amount);
-    await tx.account.update({ where: { id: fromAccountId }, data: { balance: fromBalanceAfter } });
-    const outTxn = await tx.transaction.create({
-      data: {
-        brokerId, accountId: fromAccountId, type: "TRANSFER_OUT", status: "COMPLETED",
-        amount: amount.neg(), balanceBefore: fromBalanceBefore, balanceAfter: fromBalanceAfter,
-        note: `Transfer to ${toAccount.accountNumber}: ${note}`, createdByAdminId: session.adminId,
-      },
-    });
+  }
 
-    const toBalanceBefore = locked.get(toAccountId)!;
-    const toBalanceAfter = toBalanceBefore.add(amount);
-    await tx.account.update({ where: { id: toAccountId }, data: { balance: toBalanceAfter } });
-    const inTxn = await tx.transaction.create({
-      data: {
-        brokerId, accountId: toAccountId, type: "TRANSFER_IN", status: "COMPLETED",
-        amount, balanceBefore: toBalanceBefore, balanceAfter: toBalanceAfter,
-        note: `Transfer from ${fromAccount.accountNumber}: ${note}`, createdByAdminId: session.adminId,
-      },
-    });
-
-    await tx.auditLog.create({
-      data: {
-        brokerId,
-        actorAdminId: session.adminId,
-        action: "INTERNAL_TRANSFER",
-        entityType: "Account",
-        entityId: fromAccountId,
-        oldValue: { fromBalance: fromBalanceBefore.toString(), toBalance: toBalanceBefore.toString() },
-        newValue: { fromAccount: fromAccount.accountNumber, toAccount: toAccount.accountNumber, amount: amount.toString(), note },
-      },
-    });
-
-    return { outTxn, inTxn };
-  }).catch((e) => {
-    if (e instanceof Error && e.message === "INSUFFICIENT_BALANCE") return null;
+  let result: Awaited<ReturnType<typeof executeTransfer>>;
+  try {
+    result = await prisma.$transaction((tx) => executeTransfer(tx, { brokerId, fromAccountId, toAccountId, amount, note, adminId: session.adminId }));
+  } catch (e) {
+    if (e instanceof TransferError) return NextResponse.json({ error: e.message }, { status: e.status });
     throw e;
-  });
-
-  if (!result) {
-    return NextResponse.json({ error: "insufficient balance on the source account" }, { status: 400 });
   }
 
   // both accounts' terminals refresh at once (after the commit; best-effort, never fails the transfer)

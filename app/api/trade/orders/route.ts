@@ -296,6 +296,29 @@ async function handlePlaceOrder(request: NextRequest) {
     dealingDeskAutoFillOn: !!broker.dealingDeskAutoFillAt,
   });
 
+  // Audit 2026-09-24 (money): an order that rests (LIMIT/STOP) or waits for a human dealer (queued MARKET) passes the
+  // same pre-trade margin gate at PLACEMENT as an immediate fill -- an account in margin call can no longer stack
+  // orders that fill later. Priced at the entry price (LIMIT/STOP) or the live side (queued MARKET). The fill paths
+  // (trigger fill, dealer accept, requote accept) check again at execution.
+  if (type !== "MARKET" || wantsQueue) {
+    const marginPrice =
+      type === "MARKET" ? (side === "BUY" ? livePrice!.ask : livePrice!.bid) : new Prisma.Decimal(price!);
+    const placementMarginError = await checkAccountPreTradeMargin(prisma, {
+      accountId: session.accountId,
+      leverage: account.leverage,
+      marginCallLevel: account.group?.marginCallLevel ?? new Prisma.Decimal(100),
+      newOrderContractSize: brokerSymbol.symbol.contractSize,
+      newOrderQuoteCurrency: brokerSymbol.symbol.quoteCurrency,
+      newOrderVolume: volume,
+      newOrderFillPrice: marginPrice,
+      newOrderSide: side,
+      newOrderSymbolId: brokerSymbol.symbolId,
+    });
+    if (placementMarginError) {
+      return NextResponse.json(placementMarginError, { status: 400 });
+    }
+  }
+
   try {
     if (type === "MARKET" && wantsQueue) {
       // Dealing mode on -- broker-wide (Broker.dealingModeAt), this

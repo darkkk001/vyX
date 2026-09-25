@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { forbidUnlessBrokerAdminOrPermission } from "@/lib/permissions";
-import { approveBalanceAdjustmentRequest } from "@/lib/balance-adjustment";
+import { approveBalanceAdjustmentRequest, BalanceAdjustmentError, BalanceRequestRaceError } from "@/lib/balance-adjustment";
 import { publishTradingEvent } from "@/lib/nats";
 
 // The checker half of the maker-checker gate: an admin holding the same
@@ -29,16 +29,24 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   const body = await request.json().catch(() => ({}));
   const reviewNote = typeof body?.reviewNote === "string" ? body.reviewNote.trim().slice(0, 500) || null : null;
 
-  const result = await prisma.$transaction((tx) =>
-    approveBalanceAdjustmentRequest(tx, { requestId: id, brokerId, adminId: session!.adminId, reviewNote })
-  );
+  let result: Awaited<ReturnType<typeof approveBalanceAdjustmentRequest>>;
+  try {
+    result = await prisma.$transaction((tx) => approveBalanceAdjustmentRequest(tx, { requestId: id, brokerId, adminId: session!.adminId, reviewNote }));
+  } catch (e) {
+    // the claim rolled back with the failure: the request is still PENDING (refused) or another admin had it (raced)
+    if (e instanceof BalanceRequestRaceError) return NextResponse.json({ error: "request already reviewed by another admin" }, { status: 409 });
+    if (e instanceof BalanceAdjustmentError) return NextResponse.json({ error: e.message }, { status: 409 });
+    throw e;
+  }
   if (!result.ok) {
     return NextResponse.json({ error: result.error }, { status: 409 });
   }
 
-  await publishTradingEvent("BalanceChanged", { account_id: result.accountId, broker_id: brokerId, transaction_id: result.transactionId }).catch(
-    (err) => console.error("[approve-balance-adjustment] BalanceChanged publish failed", err)
-  );
+  for (const accountId of result.affectedAccountIds) {
+    await publishTradingEvent("BalanceChanged", { account_id: accountId, broker_id: brokerId, transaction_id: result.transactionId }).catch(
+      (err) => console.error("[approve-balance-adjustment] BalanceChanged publish failed", err)
+    );
+  }
 
   return NextResponse.json({ requestId: result.requestId, transactionId: result.transactionId, balance: result.balanceAfter.toString() });
 }

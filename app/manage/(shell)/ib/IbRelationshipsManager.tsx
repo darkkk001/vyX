@@ -202,6 +202,8 @@ export default function IbRelationshipsManager() {
       return;
     }
     setPayTarget(null);
+    // 202 = a MANAGER's payout, filed for a second admin's approval (Approvals); nothing paid yet
+    if (response.status === 202) setPayErrors((prev) => ({ ...prev, [row.id]: "Payout sent for approval." }));
     reload().catch(() => {});
   }
 

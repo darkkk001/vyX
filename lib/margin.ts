@@ -238,30 +238,34 @@ export type PreTradeMarginRejection = { error: "INSUFFICIENT_BALANCE" | "INSUFFI
 // just a bare code) so the client can show a real "insufficient margin —
 // required $X, available $Y" message instead of a bare rejection.
 /** symbolId -> BrokerSymbol.hedgedMarginPct for one broker. */
-export async function loadHedgedMarginPct(prisma: PrismaClient, brokerId: string): Promise<Map<string, Prisma.Decimal>> {
+export async function loadHedgedMarginPct(prisma: PrismaClient | Prisma.TransactionClient, brokerId: string): Promise<Map<string, Prisma.Decimal>> {
   const rows = await prisma.brokerSymbol.findMany({ where: { brokerId }, select: { symbolId: true, hedgedMarginPct: true } });
   return new Map(rows.map((r) => [r.symbolId, r.hedgedMarginPct]));
 }
 
-export async function checkAccountPreTradeMargin(
-  prisma: PrismaClient,
-  params: {
-    accountId: string;
-    leverage: number;
-    marginCallLevel: Prisma.Decimal;
-    newOrderContractSize: Prisma.Decimal;
-    newOrderVolume: Prisma.Decimal;
-    newOrderFillPrice: Prisma.Decimal;
-    newOrderQuoteCurrency: string;
-    /** Hedged margin (2026-09-25): the new order's side and symbol decide how much of it offsets open positions. */
-    newOrderSide: "BUY" | "SELL";
-    newOrderSymbolId: string;
-  }
-): Promise<PreTradeMarginRejection | null> {
+/** One account's live margin state: equity (balance + credit + floating P/L, account currency) and hedged used
+ *  margin, with the same per-position formulas the pre-trade gate and the risk monitor use. `null` = a position's
+ *  quote currency (or one of `extraQuoteCurrencies`) has no conversion rate to the account currency. */
+type AccountMarginState = {
+  account: { balance: Prisma.Decimal; credit: Prisma.Decimal; currency: string; brokerId: string };
+  equity: Prisma.Decimal;
+  usedMargin: Prisma.Decimal;
+  legs: MarginLeg[];
+  pctFor: (symbolId: string) => Prisma.Decimal;
+  rateFor: (quoteCurrency: string) => Prisma.Decimal | null;
+  openPositions: number;
+};
+
+async function loadAccountMarginState(
+  prisma: PrismaClient | Prisma.TransactionClient,
+  accountId: string,
+  leverage: number,
+  extraQuoteCurrencies: string[] = []
+): Promise<AccountMarginState | null> {
   const [account, positions] = await Promise.all([
-    prisma.account.findUniqueOrThrow({ where: { id: params.accountId }, select: { balance: true, credit: true, currency: true, brokerId: true } }),
+    prisma.account.findUniqueOrThrow({ where: { id: accountId }, select: { balance: true, credit: true, currency: true, brokerId: true } }),
     prisma.position.findMany({
-      where: { accountId: params.accountId, status: "OPEN" },
+      where: { accountId, status: "OPEN" },
       select: { side: true, volume: true, openPrice: true, symbolId: true, symbol: { select: { name: true, contractSize: true, quoteCurrency: true } } },
     }),
   ]);
@@ -270,14 +274,12 @@ export async function checkAccountPreTradeMargin(
 
   const [priceBySymbol, fx] = await Promise.all([
     getFreshPrices([...new Set(positions.map((p) => p.symbol.name))]),
-    loadFxLookup(prisma, [[params.newOrderQuoteCurrency, account.currency], ...positions.map((p) => [p.symbol.quoteCurrency, account.currency] as const)]),
+    loadFxLookup(prisma, [...extraQuoteCurrencies.map((q) => [q, account.currency] as const), ...positions.map((p) => [p.symbol.quoteCurrency, account.currency] as const)]),
   ]);
   // Every figure below is quote currency x rate = account currency (lib/fx.ts).
-  const newOrderRate = conversionRate(params.newOrderQuoteCurrency, account.currency, fx);
-  const positionRates = positions.map((p) => conversionRate(p.symbol.quoteCurrency, account.currency, fx));
-  if (!newOrderRate || positionRates.some((r) => r == null)) {
-    return { error: "NO_CONVERSION_RATE", required: "-", available: "-", balance: account.balance.toFixed(2) };
-  }
+  const rateFor = (quoteCurrency: string) => conversionRate(quoteCurrency, account.currency, fx);
+  const positionRates = positions.map((p) => rateFor(p.symbol.quoteCurrency));
+  if (positionRates.some((r) => r == null) || extraQuoteCurrencies.some((q) => rateFor(q) == null)) return null;
 
   // 2026-09-05 P0 fix: this used to always price existing positions'
   // margin off their own frozen openPrice, the one outlier convention
@@ -296,16 +298,40 @@ export async function checkAccountPreTradeMargin(
     let margin: Prisma.Decimal;
     if (live) {
       const currentPrice = closePriceFor(p.side, live.bid, live.ask);
-      margin = liveUsedMarginFor({ side: p.side, volume: p.volume, contractSize: p.symbol.contractSize, bid: live.bid, ask: live.ask, leverage: params.leverage }).mul(rate);
+      margin = liveUsedMarginFor({ side: p.side, volume: p.volume, contractSize: p.symbol.contractSize, bid: live.bid, ask: live.ask, leverage }).mul(rate);
       equity = equity.add(
         computeRealizedPnl({ side: p.side, openPrice: p.openPrice, closePrice: currentPrice, volume: p.volume, contractSize: p.symbol.contractSize }).mul(rate)
       );
     } else {
-      margin = requiredMarginFor(p.volume, p.symbol.contractSize, p.openPrice, params.leverage).mul(rate);
+      margin = requiredMarginFor(p.volume, p.symbol.contractSize, p.openPrice, leverage).mul(rate);
     }
     legs.push({ symbolKey: p.symbolId, side: p.side, volume: p.volume, margin, hedgedMarginPct: pctFor(p.symbolId) });
   }
-  const usedMargin = hedgedUsedMargin(legs);
+  return { account, equity, usedMargin: hedgedUsedMargin(legs), legs, pctFor, rateFor, openPositions: positions.length };
+}
+
+export async function checkAccountPreTradeMargin(
+  prisma: PrismaClient,
+  params: {
+    accountId: string;
+    leverage: number;
+    marginCallLevel: Prisma.Decimal;
+    newOrderContractSize: Prisma.Decimal;
+    newOrderVolume: Prisma.Decimal;
+    newOrderFillPrice: Prisma.Decimal;
+    newOrderQuoteCurrency: string;
+    /** Hedged margin (2026-09-25): the new order's side and symbol decide how much of it offsets open positions. */
+    newOrderSide: "BUY" | "SELL";
+    newOrderSymbolId: string;
+  }
+): Promise<PreTradeMarginRejection | null> {
+  const state = await loadAccountMarginState(prisma, params.accountId, params.leverage, [params.newOrderQuoteCurrency]);
+  if (!state) {
+    const acc = await prisma.account.findUniqueOrThrow({ where: { id: params.accountId }, select: { balance: true } });
+    return { error: "NO_CONVERSION_RATE", required: "-", available: "-", balance: acc.balance.toFixed(2) };
+  }
+  const { account, equity, usedMargin, legs, pctFor } = state;
+  const newOrderRate = state.rateFor(params.newOrderQuoteCurrency)!;
 
   const newOrderFullMargin = requiredMarginFor(params.newOrderVolume, params.newOrderContractSize, params.newOrderFillPrice, params.leverage).mul(newOrderRate);
   const usedMarginAfter = hedgedUsedMargin([
@@ -328,4 +354,58 @@ export async function checkAccountPreTradeMargin(
     available: equity.sub(usedMargin).toFixed(2),
     balance: account.balance.toFixed(2),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Money OUT of an account (audit 2026-09-24, money): a withdrawal, a transfer out, a debit adjustment.
+// Refused when afterwards the balance would be below 0, or -- with positions open -- the margin level would be at or
+// below the group's margin-call level (the same line a new order may not cross, checkPreTradeMargin). A debit never
+// pushes an account with open positions into margin call; with nothing open only the balance floor applies.
+// `balance` may be passed in by a caller that already holds the row lock (lib/account-lock.ts), so the check runs on
+// the locked value, not a stale read.
+// ---------------------------------------------------------------------------
+export type BalanceDebitRejection = {
+  error: "BALANCE_BELOW_ZERO" | "INSUFFICIENT_FREE_MARGIN" | "NO_CONVERSION_RATE";
+  message: string;
+  balanceAfter: string;
+  freeMarginAfter: string | null;
+};
+
+export function evaluateBalanceDebit(params: {
+  balanceAfter: Prisma.Decimal;
+  equityAfter: Prisma.Decimal;
+  usedMargin: Prisma.Decimal;
+  marginCallLevel: Prisma.Decimal;
+}): BalanceDebitRejection | null {
+  if (params.balanceAfter.lt(0)) {
+    return { error: "BALANCE_BELOW_ZERO", message: `balance would go below 0 (${params.balanceAfter.toFixed(2)})`, balanceAfter: params.balanceAfter.toFixed(2), freeMarginAfter: null };
+  }
+  if (params.usedMargin.isZero()) return null;
+  const levelAfter = params.equityAfter.div(params.usedMargin).mul(100);
+  if (levelAfter.lte(params.marginCallLevel)) {
+    const free = params.equityAfter.sub(params.usedMargin);
+    return {
+      error: "INSUFFICIENT_FREE_MARGIN",
+      message: `open positions need the margin: the margin level would fall to ${levelAfter.toFixed(0)}% (margin call ${params.marginCallLevel.toFixed(0)}%)`,
+      balanceAfter: params.balanceAfter.toFixed(2),
+      freeMarginAfter: free.toFixed(2),
+    };
+  }
+  return null;
+}
+
+export async function checkBalanceDebit(
+  prisma: PrismaClient | Prisma.TransactionClient,
+  params: { accountId: string; amount: Prisma.Decimal; balance?: Prisma.Decimal }
+): Promise<BalanceDebitRejection | null> {
+  const acc = await prisma.account.findUniqueOrThrow({ where: { id: params.accountId }, select: { leverage: true, balance: true, group: { select: { marginCallLevel: true } } } });
+  const balance = params.balance ?? acc.balance;
+  const balanceAfter = balance.sub(params.amount);
+  const state = await loadAccountMarginState(prisma, params.accountId, acc.leverage);
+  if (!state) {
+    return { error: "NO_CONVERSION_RATE", message: "an open position cannot be valued in the account currency right now, try again later", balanceAfter: balanceAfter.toFixed(2), freeMarginAfter: null };
+  }
+  // equity was computed from the stored balance; move it by the difference to the locked one, then by the debit
+  const equityAfter = state.equity.add(balance.sub(state.account.balance)).sub(params.amount);
+  return evaluateBalanceDebit({ balanceAfter, equityAfter, usedMargin: state.usedMargin, marginCallLevel: acc.group?.marginCallLevel ?? new Prisma.Decimal(100) });
 }

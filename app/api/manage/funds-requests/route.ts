@@ -25,8 +25,11 @@ export async function GET() {
     take: 200,
   });
 
+  const broker = await prisma.broker.findUniqueOrThrow({ where: { id: session!.brokerId! }, select: { withdrawalApproval: true } });
   return NextResponse.json({
     currentAdminId: session!.adminId,
+    // D5: SINGLE = a BROKER_ADMIN's APPROVE completes a withdrawal at once; DUAL = mark + a second admin confirms
+    withdrawalApproval: broker.withdrawalApproval,
     rows: requests.map((t) => ({
       id: t.id,
       type: t.type,

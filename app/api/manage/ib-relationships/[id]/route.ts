@@ -4,8 +4,8 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession } from "@/lib/auth";
 import { forbidUnlessBrokerAdminOrPermission } from "@/lib/permissions";
-import { computePendingCommission } from "@/lib/commission";
-import { lockAccountBalance } from "@/lib/account-lock";
+import { executeIbPayout, IbPayoutError } from "@/lib/ib-payout";
+import { balanceAdjustmentNeedsApproval, requestBalanceAdjustment, pendingIbCommission, BalanceAdjustmentError } from "@/lib/balance-adjustment";
 
 // Two things this route can do to a relationship, both BROKER_ADMIN by
 // default, delegatable via IB_PAYOUTS (see lib/permissions.ts):
@@ -29,59 +29,26 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   const body = await request.json().catch(() => null);
 
   if (body?.action === "PAY") {
+    // Audit 2026-09-24 (money): the same maker-checker rule as a balance adjustment -- a MANAGER (IB_PAYOUTS) files
+    // the payout for a second admin's approval (lib/balance-adjustment.ts, kind IB_PAYOUT); BROKER_ADMIN pays
+    // directly. The amount is recomputed at execution either way (lib/ib-payout.ts).
+    if (balanceAdjustmentNeedsApproval(session!.role as "MANAGER" | "BROKER_ADMIN")) {
+      try {
+        const created = await prisma.$transaction(async (tx) => {
+          const pending = await pendingIbCommission(tx, id);
+          if (pending.lte(0)) throw new BalanceAdjustmentError("no pending commission to pay");
+          return requestBalanceAdjustment(tx, {
+            brokerId, accountId: existing.ibAccountId, amount: pending, note: "IB commission payout", adminId: session!.adminId, kind: "IB_PAYOUT", ibRelationshipId: id,
+          });
+        });
+        return NextResponse.json({ pending: true, requestId: created.id, amount: created.amount.toString() }, { status: 202 });
+      } catch (e) {
+        if (e instanceof BalanceAdjustmentError) return NextResponse.json({ error: e.message }, { status: 400 });
+        throw e;
+      }
+    }
     try {
-      const result = await prisma.$transaction(async (tx) => {
-        // Recompute inside the transaction -- never trust a client-supplied
-        // amount, and a position could close between the list render and
-        // this click.
-        const pending = await computePendingCommission(tx, existing);
-        if (pending.lte(0)) {
-          throw new Error("NOTHING_PENDING");
-        }
-
-        const balanceBefore = await lockAccountBalance(tx, existing.ibAccountId); // row lock: lib/account-lock.ts
-        const balanceAfter = balanceBefore.add(pending);
-
-        await tx.account.update({ where: { id: existing.ibAccountId }, data: { balance: balanceAfter } });
-
-        const transaction = await tx.transaction.create({
-          data: {
-            brokerId,
-            accountId: existing.ibAccountId,
-            type: "COMMISSION",
-            status: "COMPLETED",
-            amount: pending,
-            balanceBefore,
-            balanceAfter,
-            referenceType: "IbRelationship",
-            referenceId: existing.id,
-            reviewedByAdminId: session!.adminId,
-          },
-        });
-
-        const updated = await tx.ibRelationship.update({
-          where: { id },
-          data: { lastPayoutAt: new Date() },
-        });
-
-        await tx.auditLog.create({
-          data: {
-            brokerId,
-            actorAdminId: session!.adminId,
-            action: "IB_COMMISSION_PAID",
-            entityType: "IbRelationship",
-            entityId: id,
-            newValue: {
-              amount: pending.toString(),
-              transactionId: transaction.id,
-              balanceBefore: balanceBefore.toString(),
-              balanceAfter: balanceAfter.toString(),
-            },
-          },
-        });
-
-        return { transaction, lastPayoutAt: updated.lastPayoutAt };
-      });
+      const result = await prisma.$transaction((tx) => executeIbPayout(tx, { relationshipId: id, brokerId, adminId: session!.adminId }));
 
       // the IB's terminal refreshes at once (after the commit; best-effort, never fails the payout)
       await publishTradingEvent("BalanceChanged", { account_id: result.transaction.accountId, broker_id: brokerId, transaction_id: result.transaction.id }).catch(() => {});
@@ -89,12 +56,12 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       return NextResponse.json({
         id,
         paid: result.transaction.amount.toString(),
-        balanceAfter: result.transaction.balanceAfter.toString(),
-        lastPayoutAt: result.lastPayoutAt!.toISOString(),
+        balanceAfter: result.transaction.balanceAfter!.toString(),
+        lastPayoutAt: result.lastPayoutAt.toISOString(),
       });
     } catch (error) {
-      if (error instanceof Error && error.message === "NOTHING_PENDING") {
-        return NextResponse.json({ error: "no pending commission to pay" }, { status: 400 });
+      if (error instanceof IbPayoutError) {
+        return NextResponse.json({ error: error.message }, { status: 400 });
       }
       throw error;
     }

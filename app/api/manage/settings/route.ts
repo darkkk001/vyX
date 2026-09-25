@@ -29,6 +29,8 @@ export async function GET() {
     status: broker.status,
     defaultAccountCurrency: broker.defaultAccountCurrency,
     defaultAccountLeverage: broker.defaultAccountLeverage,
+    // owner decision D5: SINGLE = one BROKER_ADMIN completes a withdrawal; DUAL = two different admins
+    withdrawalApproval: broker.withdrawalApproval,
   });
 }
 
@@ -40,7 +42,7 @@ export async function PATCH(request: NextRequest) {
   const brokerId = session.brokerId!;
 
   const body = await request.json().catch(() => null);
-  const data: { defaultAccountCurrency?: string; defaultAccountLeverage?: number } = {};
+  const data: { defaultAccountCurrency?: string; defaultAccountLeverage?: number; withdrawalApproval?: "SINGLE" | "DUAL" } = {};
 
   if (typeof body?.defaultAccountCurrency === "string" && body.defaultAccountCurrency.trim()) {
     const defaultAccountCurrency = body.defaultAccountCurrency.trim().toUpperCase();
@@ -68,13 +70,38 @@ export async function PATCH(request: NextRequest) {
     data.defaultAccountLeverage = n;
   }
 
+  if (body?.withdrawalApproval !== undefined) {
+    if (body.withdrawalApproval !== "SINGLE" && body.withdrawalApproval !== "DUAL") {
+      return NextResponse.json({ error: "withdrawalApproval must be SINGLE or DUAL" }, { status: 400 });
+    }
+    data.withdrawalApproval = body.withdrawalApproval;
+  }
+
   if (Object.keys(data).length === 0) {
     return NextResponse.json({ error: "nothing to update" }, { status: 400 });
   }
 
-  const updated = await prisma.broker.update({ where: { id: brokerId }, data });
+  // audited (audit 2026-09-24: broker-settings saves wrote no AuditLog row); old and new value of every field sent
+  const updated = await prisma.$transaction(async (tx) => {
+    const before = await tx.broker.findUniqueOrThrow({ where: { id: brokerId }, select: { defaultAccountCurrency: true, defaultAccountLeverage: true, withdrawalApproval: true } });
+    const after = await tx.broker.update({ where: { id: brokerId }, data });
+    const keys = Object.keys(data) as (keyof typeof data)[];
+    await tx.auditLog.create({
+      data: {
+        brokerId,
+        actorAdminId: session.adminId,
+        action: "BROKER_SETTINGS_UPDATED",
+        entityType: "Broker",
+        entityId: brokerId,
+        oldValue: Object.fromEntries(keys.map((k) => [k, before[k]])),
+        newValue: Object.fromEntries(keys.map((k) => [k, after[k]])),
+      },
+    });
+    return after;
+  });
   return NextResponse.json({
     defaultAccountCurrency: updated.defaultAccountCurrency,
     defaultAccountLeverage: updated.defaultAccountLeverage,
+    withdrawalApproval: updated.withdrawalApproval,
   });
 }
