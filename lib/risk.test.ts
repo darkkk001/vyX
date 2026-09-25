@@ -85,8 +85,8 @@ describe("isDefaultFxSessionClosed", () => {
   it("is closed Saturday, any time", () => {
     expect(isDefaultFxSessionClosed(new Date(Date.UTC(2026, 8, 5, 12, 0)))).toBe(true); // Sat
   });
-  it("is closed Sunday 21:59 UTC", () => {
-    expect(isDefaultFxSessionClosed(new Date(Date.UTC(2026, 8, 6, 21, 59)))).toBe(true); // Sun
+  it("is closed Sunday 20:59 UTC in summer (reopens 21:00 UTC = 17:00 EDT)", () => {
+    expect(isDefaultFxSessionClosed(new Date(Date.UTC(2026, 8, 6, 20, 59)))).toBe(true); // Sun
   });
   it("is open Sunday 22:01 UTC", () => {
     expect(isDefaultFxSessionClosed(new Date(Date.UTC(2026, 8, 6, 22, 1)))).toBe(false); // Sun
@@ -100,8 +100,8 @@ describe("checkTradingSession", () => {
   it("rejects a MARKET-style check at Fri 22:30 UTC with no configured sessions (the actual incident)", () => {
     expect(checkTradingSession([], new Date(Date.UTC(2026, 8, 4, 22, 30)), "METALS")).toBe("MARKET_CLOSED");
   });
-  it("rejects at Sun 21:59 UTC", () => {
-    expect(checkTradingSession([], new Date(Date.UTC(2026, 8, 6, 21, 59)), "METALS")).toBe("MARKET_CLOSED");
+  it("rejects at Sun 20:59 UTC in summer", () => {
+    expect(checkTradingSession([], new Date(Date.UTC(2026, 8, 6, 20, 59)), "METALS")).toBe("MARKET_CLOSED");
   });
   it("accepts at Sun 22:01 UTC", () => {
     expect(checkTradingSession([], new Date(Date.UTC(2026, 8, 6, 22, 1)), "METALS")).toBeNull();
@@ -177,19 +177,19 @@ describe("metals daily break", () => {
 // real configured sessions. Dates match checkTradingSession's own test
 // dates above exactly, so "Fri"/"Sat"/"Sun" here are the same real days.
 describe("computeNextSessionOpen", () => {
-  it("default rule: closed Friday 22:30 UTC -> reopens the same week's Sunday 22:00 UTC", () => {
+  it("default rule: closed Friday 22:30 UTC -> reopens the same week's Sunday 21:00 UTC (summer: 17:00 EDT)", () => {
     const result = computeNextSessionOpen([], new Date(Date.UTC(2026, 8, 4, 22, 30)));
-    expect(result.toISOString()).toBe(new Date(Date.UTC(2026, 8, 6, 22, 0, 0, 0)).toISOString());
+    expect(result.toISOString()).toBe(new Date(Date.UTC(2026, 8, 6, 21, 0, 0, 0)).toISOString());
   });
 
-  it("default rule: closed Saturday 12:00 UTC -> reopens the same week's Sunday 22:00 UTC", () => {
+  it("default rule: closed Saturday 12:00 UTC -> reopens the same week's Sunday 21:00 UTC (summer)", () => {
     const result = computeNextSessionOpen([], new Date(Date.UTC(2026, 8, 5, 12, 0)));
-    expect(result.toISOString()).toBe(new Date(Date.UTC(2026, 8, 6, 22, 0, 0, 0)).toISOString());
+    expect(result.toISOString()).toBe(new Date(Date.UTC(2026, 8, 6, 21, 0, 0, 0)).toISOString());
   });
 
-  it("default rule: closed Sunday 21:59 UTC -> reopens later THAT SAME DAY at 22:00 UTC, not next week", () => {
-    const result = computeNextSessionOpen([], new Date(Date.UTC(2026, 8, 6, 21, 59)));
-    expect(result.toISOString()).toBe(new Date(Date.UTC(2026, 8, 6, 22, 0, 0, 0)).toISOString());
+  it("default rule: closed Sunday 20:59 UTC -> reopens later THAT SAME DAY at 21:00 UTC (summer), not next week", () => {
+    const result = computeNextSessionOpen([], new Date(Date.UTC(2026, 8, 6, 20, 59)));
+    expect(result.toISOString()).toBe(new Date(Date.UTC(2026, 8, 6, 21, 0, 0, 0)).toISOString());
   });
 
   it("configured sessions: Wednesday-only 09:00-17:00, checked Tuesday 20:00 -> reopens Wednesday 09:00 UTC", () => {

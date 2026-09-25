@@ -86,12 +86,22 @@ export async function loadFxLookup(db: Db, pairs: Iterable<readonly [string, str
   for (const [from, to] of pairs) for (const s of conversionSymbolsFor(from, to)) symbols.add(s);
   if (symbols.size === 0) return () => undefined;
   const rows = await getLivePriceRows([...symbols], db);
-  const cutoff = Date.now() - FX_RATE_MAX_AGE_MS;
-  return (symbol) => {
-    const r = rows.get(symbol);
-    // too old to convert with = no price: refuse, never a stale rate
-    return r && r.tickAt.getTime() > cutoff ? { bid: new Prisma.Decimal(r.bid), ask: new Prisma.Decimal(r.ask) } : undefined;
-  };
+  return fxLookupFromQuotes(rows.values(), Date.now());
+}
+
+/** The lookup over a set of quotes, with the age limit applied: a quote whose tick is FX_RATE_MAX_AGE_MS old or
+ *  older is no price at all (refuse, never a stale rate). The one place that rule lives -- loadFxLookup and the FX
+ *  contract vectors (lib/fx-contract.ts) both go through it. */
+export function fxLookupFromQuotes(
+  quotes: Iterable<{ symbol: string; bid: Prisma.Decimal | string | number; ask: Prisma.Decimal | string | number; tickAt: Date }>,
+  nowMs: number
+): FxLookup {
+  const cutoff = nowMs - FX_RATE_MAX_AGE_MS;
+  const bySymbol = new Map<string, FxQuote>();
+  for (const q of quotes) {
+    if (q.tickAt.getTime() > cutoff) bySymbol.set(q.symbol, { bid: new Prisma.Decimal(q.bid), ask: new Prisma.Decimal(q.ask) });
+  }
+  return (symbol) => bySymbol.get(symbol);
 }
 
 /** The rate for one pair, loaded now. Throws FxRateUnavailableError when there is nothing to convert with. */

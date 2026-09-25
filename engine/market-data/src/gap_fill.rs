@@ -439,6 +439,22 @@ impl Default for GapFillTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The one weekly close/open rule, shared with the web app (lib/market-week.ts) and the terminal (MarketSchedule):
+    // docs/contracts/market-week-vectors.json, Friday 17:00 -> Sunday 17:00 New York, 21:00 UTC summer / 22:00 winter.
+    #[test]
+    fn market_closed_matches_the_shared_market_week_vectors() {
+        let file: serde_json::Value = serde_json::from_str(include_str!("../../../docs/contracts/market-week-vectors.json")).unwrap();
+        let cases = file["cases"].as_array().unwrap();
+        assert!(cases.len() >= 20);
+        for c in cases {
+            let t: DateTime<Utc> = c["utc"].as_str().unwrap().parse().unwrap();
+            let closed = c["closed"].as_bool().unwrap();
+            assert_eq!(market_closed(t), closed, "{} ({})", c["utc"], c["why"]);
+            // crypto is never closed by the weekly rule
+            assert!(market_open("BTCUSD", t), "{}", c["utc"]);
+        }
+    }
     use chrono::TimeZone;
     use rust_decimal_macros::dec;
 

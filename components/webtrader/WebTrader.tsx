@@ -14,12 +14,15 @@ import {
   resolveDayOpenFromD1,
   fmt,
   money,
+  setMoneyCurrency,
+  moneyCurrencyCode,
   type MarketState,
   type Candle,
   type Timeframe,
   type SymbolDef,
   type SymbolCategory,
 } from "@/lib/market-simulator";
+import { conversionRateNum, fxLookupNum, marginInAccount, newOrderMarginInAccount, pnlInAccount, quoteCurrencyOf, type FxQuoteNum } from "@/lib/fx-client";
 import { tradeApi, serverNow, effectiveAsk, spreadRuleFromPrice, ApiError, type SpreadRule, type AccountInfo, type ApiPosition, type ApiOrder, type ApiFundsRequest, type ApiPaymentMethod, type ApiKycStatus, type ApiLinkedAccount, type ApiSession, type ApiAlert } from "@/lib/trade-api";
 import { hedgedUsedMarginDisplay, type DisplayMarginLeg } from "@/lib/hedged-margin-display";
 import AddSymbolDialog from "./AddSymbolDialog";
@@ -1094,7 +1097,9 @@ export default function WebTrader({
   // ---------- data loading ----------
   const refreshAccount = useCallback(async () => {
     try {
-      setAccount(await tradeApi.me());
+      const me = await tradeApi.me();
+      setMoneyCurrency(me.currency); // FX batch: money shows in the account currency
+      setAccount(me);
     } catch (err) {
       // Only a real 401 means the session actually expired -- this used to
       // force a logout on *any* failed request (a network blip, a 500, a
@@ -1653,6 +1658,8 @@ export default function WebTrader({
   // equivalent exists for it) is more than fresh enough.
   // Batch 5: holds the per-symbol spread RULE (markup, or target spread), re-read at once on ConfigChanged.
   const [askMarkupBySymbol, setAskMarkupBySymbol] = useState<Record<string, SpreadRule>>({});
+  // FX batch: the server's conversion quotes (GET /api/trade/prices?fx=1 fx.quotes), for rateFor below
+  const [fxQuotes, setFxQuotes] = useState<Record<string, FxQuoteNum>>({});
   // the prices poll below, callable from the trading-event handler (ConfigChanged -> re-read now, not in 30 s)
   const pollPricesNowRef = useRef<() => void>(() => {});
   useEffect(() => {
@@ -1660,8 +1667,15 @@ export default function WebTrader({
     let wasConnected = true;
     async function poll() {
       try {
-        const rows = await tradeApi.prices();
+        const res = await tradeApi.pricesWithFx();
         if (cancelled) return;
+        const rows = Array.isArray(res) ? res : res.prices;
+        // FX batch: the conversion quotes the account needs (fx.quotes), recomputed into rates per tick below
+        if (!Array.isArray(res) && res.fx) {
+          const next: Record<string, FxQuoteNum> = {};
+          for (const q of res.fx.quotes) next[q.symbol] = { bid: parseFloat(q.bid), ask: parseFloat(q.ask), tickAtMs: new Date(q.tickAt).getTime() };
+          setFxQuotes(next);
+        }
         const next: Record<string, { bid: number; ask: number; at: number }> = {};
         const now = Date.now();
         const closedNext: Record<string, boolean> = {};
@@ -2180,27 +2194,47 @@ export default function WebTrader({
     return () => { cancelled = true; };
   }, [chartLayout, gridCells, seedRealCandles]);
 
+  // FX batch (docs/contracts/fx-and-market-week.md): every money figure computed from a price is in the symbol's QUOTE
+  // currency; rateFor converts it to the account currency with the server's rule (lib/fx-client.ts), from the
+  // server's conversion quotes overlaid by live ticks of the same pairs. null = unpriced: shown "–" (NaN), left out of
+  // equity and margin -- never silently treated as 1.
+  const rateFor = useCallback(
+    (symbolName: string): number | null => {
+      const m = market[symbolName];
+      const quote = m ? quoteCurrencyOf(m.def) : null;
+      const accountCurrency = (account?.currency ?? "USD").toUpperCase();
+      if (!quote) return null;
+      if (quote === accountCurrency) return 1;
+      const live: Record<string, FxQuoteNum> = {};
+      for (const [name, mm] of Object.entries(market)) {
+        if (mm.lastTickAt > 0 && fxQuotes[name]) live[name] = { bid: mm.bid, ask: mm.ask, tickAtMs: mm.lastTickAt };
+      }
+      return conversionRateNum(quote, accountCurrency, fxLookupNum(fxQuotes, serverNow(), live));
+    },
+    [market, fxQuotes, account?.currency]
+  );
   const positionPnl = useCallback(
     (p: ApiPosition): number => {
       const m = market[p.symbol.name];
       if (!m) return 0;
-      const closePrice = p.side === "BUY" ? m.bid : m.ask;
-      const diff = p.side === "BUY" ? closePrice - parseFloat(p.openPrice) : parseFloat(p.openPrice) - closePrice;
-      return diff * m.def.contractSize * parseFloat(p.volume);
+      return pnlInAccount(p.side, parseFloat(p.openPrice), m.bid, m.ask, m.def.contractSize, parseFloat(p.volume), rateFor(p.symbol.name)) ?? NaN;
     },
-    [market]
+    [market, rateFor]
   );
   const pnlAtPrice = useCallback(
     (symbolName: string, side: "BUY" | "SELL", entry: number, vol: number, targetPrice: number): number => {
       const m = market[symbolName];
       if (!m) return 0;
+      const rate = rateFor(symbolName);
+      if (rate == null) return NaN;
       const diff = side === "BUY" ? targetPrice - entry : entry - targetPrice;
-      return diff * m.def.contractSize * vol;
+      return diff * m.def.contractSize * vol * rate;
     },
-    [market]
+    [market, rateFor]
   );
 
-  const floatingPnl = useMemo(() => positions.reduce((s, p) => s + positionPnl(p), 0), [positions, positionPnl]);
+  // an unpriced position (NaN) is left out of the floating P/L, as on the server
+  const floatingPnl = useMemo(() => positions.reduce((s, p) => { const v = positionPnl(p); return Number.isFinite(v) ? s + v : s; }, 0), [positions, positionPnl]);
   const usedMargin = useMemo(() => {
     if (!account) return 0;
     // Side-aware (bid for BUY, ask for SELL), matching lib/margin.ts's
@@ -2213,11 +2247,12 @@ export default function WebTrader({
     for (const p of positions) {
       const m = market[p.symbol.name];
       if (!m) continue;
-      const price = p.side === "BUY" ? m.bid : m.ask;
-      legs.push({ symbolKey: p.symbol.name, side: p.side, volume: parseFloat(p.volume), margin: (m.def.contractSize * parseFloat(p.volume) * price) / account.leverage, hedgedMarginPct: m.def.hedgedMarginPct ?? 200 });
+      const margin = marginInAccount(p.side, m.bid, m.ask, m.def.contractSize, parseFloat(p.volume), account.leverage, rateFor(p.symbol.name));
+      if (margin == null) continue; // unpriced: left out, as on the server
+      legs.push({ symbolKey: p.symbol.name, side: p.side, volume: parseFloat(p.volume), margin, hedgedMarginPct: m.def.hedgedMarginPct ?? 200 });
     }
     return hedgedUsedMarginDisplay(legs);
-  }, [positions, market, account]);
+  }, [positions, market, account, rateFor]);
   // Stage 2 F1 (credit Model A): equity = balance + credit + floating, the same figure the server's risk monitor uses
   const equity = account ? parseFloat(account.balance) + parseFloat(account.credit ?? "0") + floatingPnl : 0;
   const freeMargin = equity - usedMargin;
@@ -2319,7 +2354,7 @@ export default function WebTrader({
         tradeApi.closePosition(p.id, price)
           .then((res) => {
             const pnl = (res as { transaction: { amount: string } }).transaction.amount;
-            pushToast(`${p.symbol.name} closed, ${hitType} hit, ${parseFloat(pnl) >= 0 ? "+" : ""}${parseFloat(pnl).toFixed(2)} USD`, true);
+            pushToast(`${p.symbol.name} closed, ${hitType} hit, ${parseFloat(pnl) >= 0 ? "+" : ""}${parseFloat(pnl).toFixed(2)} ${moneyCurrencyCode()}`, true);
             return Promise.all([refreshPositions(), refreshHistory(), refreshAccount()]);
           })
           .catch(() => {})
@@ -2562,7 +2597,7 @@ export default function WebTrader({
     try {
       const res = await tradeApi.closePosition(id, price);
       const pnl = parseFloat((res as { transaction: { amount: string } }).transaction.amount);
-      pushToast(`Closed ${p.symbol.name}, ${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)} USD`);
+      pushToast(`Closed ${p.symbol.name}, ${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)} ${moneyCurrencyCode()}`);
       // refreshPositions()'s own diff (see that callback) is what plays
       // the close sound -- not duplicated here, to avoid firing twice.
       await Promise.all([refreshPositions(), refreshHistory(), refreshAccount()]);
@@ -2634,7 +2669,7 @@ export default function WebTrader({
     try {
       const res = await tradeApi.closePosition(id, price, amount);
       const pnl = parseFloat((res as { transaction: { amount: string } }).transaction.amount);
-      pushToast(`Closed ${amount} lots of ${p.symbol.name}, ${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)} USD`);
+      pushToast(`Closed ${amount} lots of ${p.symbol.name}, ${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)} ${moneyCurrencyCode()}`);
       setPartialCloseTarget(null);
       await Promise.all([refreshPositions(), refreshHistory(), refreshAccount()]);
     } catch (err) {
@@ -2672,7 +2707,7 @@ export default function WebTrader({
     try {
       const res = await tradeApi.closeBy(positionId, againstPositionId);
       const totalPnl = parseFloat(res.realizedPnlA) + parseFloat(res.realizedPnlB);
-      pushToast(`Closed by: ${res.closeVolume} lots netted @ ${res.closePrice}, ${totalPnl >= 0 ? "+" : ""}${totalPnl.toFixed(2)} USD`, true);
+      pushToast(`Closed by: ${res.closeVolume} lots netted @ ${res.closePrice}, ${totalPnl >= 0 ? "+" : ""}${totalPnl.toFixed(2)} ${moneyCurrencyCode()}`, true);
       setCloseByTarget(null);
       await Promise.all([refreshPositions(), refreshHistory(), refreshAccount()]);
     } catch (err) {
@@ -5008,7 +5043,7 @@ export default function WebTrader({
               <div className="field"><span className="field-label">Leverage</span><span className="mono" style={{ fontSize: 12.5 }}>1:{account?.leverage ?? 100}</span></div>
             </div>
 
-            <div className="margin-note">Margin required <span className="mono">{account ? fmt((volume * m.def.contractSize * m.bid) / account.leverage, 2) : "-"}</span> USD</div>
+            <div className="margin-note">Margin required <span className="mono">{account ? fmt(newOrderMarginInAccount(volume, m.def.contractSize, m.bid, account.leverage, rateFor(m.def.name)) ?? NaN, 2) : "-"}</span> {(account?.currency ?? "USD").toUpperCase()}</div>
             {ticketHintLines.length > 0 ? <div className="sltp-preview" dangerouslySetInnerHTML={{ __html: ticketHintLines.join("<br>") }} /> : null}
 
             {orderMode === "market" && pendingMarketSide ? (
@@ -5859,7 +5894,7 @@ export default function WebTrader({
                       </div>
                     ) : null}
                     <div className="field-group" style={{ marginTop: 10 }}>
-                      <div className="field"><span className="field-label">Amount (USD)</span><input className="mono" placeholder="0.00" style={{ width: 100 }} value={fundsAmount} onChange={(e) => setFundsAmount(e.target.value)} /></div>
+                      <div className="field"><span className="field-label">Amount ({moneyCurrencyCode()})</span><input className="mono" placeholder="0.00" style={{ width: 100 }} value={fundsAmount} onChange={(e) => setFundsAmount(e.target.value)} /></div>
                     </div>
                     {selectedMethod && (selectedMethod.feePercent !== "0" || selectedMethod.feeFixed !== "0") ? (
                       <div className="margin-note">

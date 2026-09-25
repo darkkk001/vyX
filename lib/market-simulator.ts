@@ -1,3 +1,4 @@
+import { isWeeklyClosed } from "@/lib/market-week";
 // Client-side price simulation — same approach as the vyx-webtrader.html
 // prototype and the Phase 2 plan ("keep price simulation client-side for
 // now, do not build the real execution engine yet"). Phase 5 replaces this
@@ -57,6 +58,9 @@ export type SymbolDef = {
   lotStep: number;
   // MT5 hedged margin % for this symbol (lib/margin.ts hedgedUsedMargin); optional, 200 = no reduction.
   hedgedMarginPct?: number;
+  // FX batch (docs/contracts/fx-and-market-week.md): P/L and margin come out in this currency and are converted to the
+  // account currency with the server's rate (lib/fx-client.ts). Undefined only for a bootstrap SYMBOL_DEFS entry.
+  quoteCurrency?: string;
 };
 
 // Bootstrap/fallback set only -- used to seed the very first render before
@@ -118,6 +122,7 @@ export function buildSymbolDef(row: {
   maxLot?: string | number;
   lotStep?: string | number;
   hedgedMarginPct?: string | number;
+  quoteCurrency?: string;
 }): SymbolDef {
   const hint = PLACEHOLDER_HINTS[row.name];
   const contractSize = typeof row.contractSize === "string" ? parseFloat(row.contractSize) : row.contractSize;
@@ -138,6 +143,7 @@ export function buildSymbolDef(row: {
     maxLot: toNum(row.maxLot, 100),
     lotStep: toNum(row.lotStep, 0.01),
     hedgedMarginPct: toNum(row.hedgedMarginPct, 200),
+    ...(row.quoteCurrency ? { quoteCurrency: row.quoteCurrency.toUpperCase() } : {}),
   };
 }
 
@@ -339,17 +345,11 @@ export function createInitialMarket(defs: SymbolDef[] = SYMBOL_DEFS): Record<str
   return market;
 }
 
-// Mirrors engine/market-data/src/gap_fill.rs's market_closed() (Sat all day, Fri >=21:00 UTC, Sun <22:00 UTC). Owner
+// The one weekly rule, lib/market-week.ts (Friday 17:00 -> Sunday 17:00 New York, DST-aware; engine and terminal use the same vectors). Owner
 // rule (2026-09-26): a candle is created only by a real tick, never outside trading hours -- a tick stamped inside
 // this window opens no bar (it can only be the EA's weekend heartbeat of Friday's last price).
 function isMarketClosed(t: number): boolean {
-  const d = new Date(t);
-  const day = d.getUTCDay(); // 0 = Sunday .. 6 = Saturday
-  const hour = d.getUTCHours();
-  if (day === 6) return true;
-  if (day === 5) return hour >= 21;
-  if (day === 0) return hour < 22;
-  return false;
+  return isWeeklyClosed(new Date(t));
 }
 
 // `tickTime` is the tick's OWN time (the engine's tick_ms, else the poll row's tickAt), not the moment it arrived: a
@@ -534,11 +534,23 @@ export function resolveDayOpenFromD1(
   return best;
 }
 
+// A figure that can't be valued (an unpriced position: no quote -> account conversion rate) is NaN and shows "–".
 export function fmt(value: number, digits: number): string {
-  return value.toFixed(digits);
+  return Number.isFinite(value) ? value.toFixed(digits) : "\u2013";
 }
 
+// FX batch: money is shown in the ACCOUNT currency -- "$1,234.00" for USD, "1,234.00 EUR" otherwise. WebTrader sets
+// the currency once the account is known (setMoneyCurrency).
+let moneyCurrency = "USD";
+export function setMoneyCurrency(code: string | null | undefined): void {
+  moneyCurrency = (code ?? "USD").trim().toUpperCase() || "USD";
+}
+export function moneyCurrencyCode(): string {
+  return moneyCurrency;
+}
 export function money(value: number): string {
+  if (!Number.isFinite(value)) return "\u2013";
   const sign = value < 0 ? "-" : "";
-  return sign + "$" + Math.abs(value).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  const amount = Math.abs(value).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  return moneyCurrency === "USD" ? sign + "$" + amount : sign + amount + " " + moneyCurrency;
 }

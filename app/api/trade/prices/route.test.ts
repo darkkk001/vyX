@@ -75,7 +75,7 @@ async function getPrices(accountId: string, brokerId: string) {
   const { getAccountSession } = await import("@/lib/account-auth");
   vi.mocked(getAccountSession).mockResolvedValue({ accountId, brokerId });
   const { GET } = await import("./route");
-  const response = await GET();
+  const response = await GET(new Request("https://t.local/api/trade/prices"));
   return response.json();
 }
 

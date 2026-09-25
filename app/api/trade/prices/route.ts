@@ -5,7 +5,8 @@ import { getAccountSession } from "@/lib/account-auth";
 import { checkTradingSession } from "@/lib/risk";
 import { pipSize } from "@/lib/group-pricing";
 import { resolvePricingV2, resolveEffectiveSpreadMarkup } from "@/lib/pricing-engine";
-import { getLivePriceRowsWithSource } from "@/lib/live-price";
+import { getLivePriceRows, getLivePriceRowsWithSource } from "@/lib/live-price";
+import { conversionRate, conversionSymbolsFor, fxLookupFromQuotes, FX_RATE_MAX_AGE_MS } from "@/lib/fx";
 
 // Polled by the WebTrader client every couple seconds to blend real MT5
 // ticks (see /api/internal/price-feed) into the otherwise-simulated market
@@ -22,14 +23,14 @@ import { getLivePriceRowsWithSource } from "@/lib/live-price";
 // trading terminal to ever be served a stale response for this route.
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+export async function GET(request: Request) {
   const session = await getAccountSession();
   if (!session) {
     return NextResponse.json({ error: "not authenticated" }, { status: 401 });
   }
 
   const [account, broker] = await Promise.all([
-    prisma.account.findUnique({ where: { id: session.accountId }, select: { groupId: true, accountTypeId: true } }),
+    prisma.account.findUnique({ where: { id: session.accountId }, select: { groupId: true, accountTypeId: true, currency: true } }),
     prisma.broker.findUnique({ where: { id: session.brokerId }, select: { pricingEngineEnabled: true } }),
   ]);
 
@@ -42,7 +43,7 @@ export async function GET() {
   // carry).
   const brokerSymbols = await prisma.brokerSymbol.findMany({
     where: { brokerId: session.brokerId, enabled: true },
-    include: { symbol: { select: { id: true, name: true, digits: true, category: true } }, tradingSessions: true },
+    include: { symbol: { select: { id: true, name: true, digits: true, category: true, quoteCurrency: true } }, tradingSessions: true },
   });
   const now = new Date();
   const closedByName = new Map(
@@ -170,14 +171,35 @@ export async function GET() {
     if (markupPips.isZero()) continue;
     askMarkupByName.set(bs.symbol.name, markupPips.mul(pipSize(bs.symbol.digits)).toString());
   }
-  return NextResponse.json(
-    [...priceByName.values()].map((p) => ({
-      ...p,
-      marketClosed: closedByName.get(p.symbol) ?? false,
-      askMarkup: askMarkupByName.get(p.symbol) ?? "0",
-      spreadRule: targetSpreadByName.has(p.symbol) ? "target" : "markup",
-      ...(targetSpreadByName.has(p.symbol) ? { targetSpread: targetSpreadByName.get(p.symbol) } : {}),
-    })),
-    { headers: { "Cache-Control": "no-store", "x-market-data-source": priceSource } }
-  );
+  const rows = [...priceByName.values()].map((p) => ({
+    ...p,
+    marketClosed: closedByName.get(p.symbol) ?? false,
+    askMarkup: askMarkupByName.get(p.symbol) ?? "0",
+    spreadRule: targetSpreadByName.has(p.symbol) ? "target" : "markup",
+    ...(targetSpreadByName.has(p.symbol) ? { targetSpread: targetSpreadByName.get(p.symbol) } : {}),
+  }));
+  const headers = { "Cache-Control": "no-store", "x-market-data-source": priceSource };
+
+  // FX batch (2026-09-26, docs/contracts/fx-and-market-week.md §2): `?fx=1` answers { prices, fx } -- the conversion
+  // quotes every quote currency of this broker's symbols needs to reach the account currency (already filtered to the
+  // 72 h limit), plus the server's own rate per currency. Without the flag the answer stays the bare array every
+  // installed client (terminal <= 1.0.48, WebTrader, desktop shells) parses.
+  if (new URL(request.url).searchParams.get("fx") === "1") {
+    const accountCurrency = (account?.currency ?? "USD").toUpperCase();
+    const quoteCurrencies = [...new Set(brokerSymbols.map((bs) => bs.symbol.quoteCurrency.toUpperCase()))];
+    const wanted = [...new Set(quoteCurrencies.flatMap((q) => conversionSymbolsFor(q, accountCurrency)))];
+    const fxRows = wanted.length > 0 ? await getLivePriceRows(wanted) : new Map();
+    const now = Date.now();
+    const quotes = [...fxRows.values()]
+      .filter((r) => r.tickAt.getTime() > now - FX_RATE_MAX_AGE_MS)
+      .map((r) => ({ symbol: r.symbol, bid: r.bid.toString(), ask: r.ask.toString(), tickAt: r.tickAt.toISOString() }));
+    const lookup = fxLookupFromQuotes(fxRows.values(), now);
+    const rates: Record<string, string> = {};
+    for (const q of quoteCurrencies) {
+      const rate = conversionRate(q, accountCurrency, lookup);
+      if (rate) rates[q] = rate.toString();
+    }
+    return NextResponse.json({ prices: rows, fx: { accountCurrency, quotes, rates } }, { headers });
+  }
+  return NextResponse.json(rows, { headers });
 }

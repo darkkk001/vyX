@@ -2,6 +2,7 @@ import { Prisma, PrismaClient, TradingMode, SymbolCategory } from "@prisma/clien
 import type { OrderSide } from "@/lib/trading";
 import { pipSize } from "@/lib/group-pricing";
 import { getLivePriceRow } from "@/lib/live-price";
+import { isWeeklyClosed, nextWeeklyReopen, nyCloseHourUtc } from "@/lib/market-week";
 
 type Db = PrismaClient | Prisma.TransactionClient;
 
@@ -136,21 +137,8 @@ function isContinuouslyTraded(category: SymbolCategory): boolean {
 // (2nd Sunday of March 07:00 UTC -> 1st Sunday of November 06:00 UTC).
 // Applies to the DEFAULT rule only: a broker's own configured
 // TradingSession rows always win, break included.
-function nthSundayOfMonthUtc(year: number, month0: number, n: number): Date {
-  const first = new Date(Date.UTC(year, month0, 1));
-  const firstSunday = 1 + ((7 - first.getUTCDay()) % 7);
-  return new Date(Date.UTC(year, month0, firstSunday + (n - 1) * 7));
-}
-export function usEasternIsDst(now: Date): boolean {
-  const y = now.getUTCFullYear();
-  const start = nthSundayOfMonthUtc(y, 2, 2).getTime() + 7 * 3_600_000; // 2nd Sunday of March, 02:00 EST = 07:00 UTC
-  const end = nthSundayOfMonthUtc(y, 10, 1).getTime() + 6 * 3_600_000; // 1st Sunday of November, 02:00 EDT = 06:00 UTC
-  const t = now.getTime();
-  return t >= start && t < end;
-}
-export function nyCloseHourUtc(now: Date): number {
-  return usEasternIsDst(now) ? 21 : 22;
-}
+// usEasternIsDst / nyCloseHourUtc live in lib/market-week.ts (the one weekly rule), re-exported here for existing callers
+export { usEasternIsDst, nyCloseHourUtc } from "@/lib/market-week";
 export function hasDailyBreak(category: SymbolCategory): boolean {
   return category === "METALS";
 }
@@ -169,20 +157,13 @@ export function isInDailyBreak(now: Date, category: SymbolCategory): boolean {
 // on a Saturday. "Zero rows = always tradable" was the wrong default for
 // a symbol nobody has actively opted OUT of a real market close for.
 //
-// Mirrors engine/market-data/src/gap_fill.rs's market_closed() exactly --
-// same DST-safe Friday 21:00 UTC cutoff (that file's own comment explains
-// why 21:00 not 22:00: NY close is 21:00 UTC in winter/EST, 22:00 in
-// summer/EDT, and 21:00 is the earlier, always-safe bound). Not literally
-// shared code -- Rust and this Next.js app don't share a build -- but
-// this is the ONE rule both are meant to implement; keep them in sync by
-// hand if this ever changes.
+// The rule itself is lib/market-week.ts's isWeeklyClosed (Friday 17:00 -> Sunday 17:00 New York, 21:00 UTC in summer
+// and 22:00 UTC in winter), the same rule the engine and the terminal implement against
+// docs/contracts/market-week-vectors.json. It used to be a fixed Friday 21:00 / Sunday 22:00 UTC here: one hour wrong
+// every week (summer Sunday 21:00-22:00 refused although the market was open; winter Friday 21:00-22:00 open-looking
+// in the terminal while this refused it the other way round).
 export function isDefaultFxSessionClosed(now: Date): boolean {
-  const day = now.getUTCDay(); // 0 = Sunday .. 6 = Saturday
-  const hour = now.getUTCHours();
-  if (day === 6) return true; // Saturday: closed all day
-  if (day === 5 && hour >= 21) return true; // Friday >= 21:00 UTC
-  if (day === 0 && hour < 22) return true; // Sunday < 22:00 UTC
-  return false;
+  return isWeeklyClosed(now);
 }
 
 // `sessions` (admin-configured TradingSession rows) take priority when
@@ -250,14 +231,7 @@ export function computeNextSessionOpen(
       reopen.setUTCHours(reopen.getUTCHours() + 1);
       return reopen;
     }
-    const result = new Date(now);
-    result.setUTCHours(22, 0, 0, 0);
-    const daysToSunday = (7 - result.getUTCDay()) % 7;
-    result.setUTCDate(result.getUTCDate() + daysToSunday);
-    if (result.getTime() <= now.getTime()) {
-      result.setUTCDate(result.getUTCDate() + 7);
-    }
-    return result;
+    return nextWeeklyReopen(now); // Sunday 17:00 New York: 21:00 UTC in summer, 22:00 UTC in winter
   }
   const toMinutes = (hhmm: string) => {
     const [h, m] = hhmm.split(":").map(Number);

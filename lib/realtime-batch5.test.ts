@@ -62,7 +62,7 @@ async function asAdmin(fx: Fx) {
 async function priceRow(fx: Fx) {
   asTrader(fx);
   const { GET } = await import("@/app/api/trade/prices/route");
-  const rows = (await (await GET()).json()) as { symbol: string; bid: string; ask: string; askMarkup: string; spreadRule?: "markup" | "target"; targetSpread?: string }[];
+  const rows = (await (await GET(new Request("https://t.local/api/trade/prices"))).json()) as { symbol: string; bid: string; ask: string; askMarkup: string; spreadRule?: "markup" | "target"; targetSpread?: string }[];
   const row = rows.find((r) => r.symbol === fx.symbolName);
   expect(row, "symbol in /api/trade/prices").toBeDefined();
   return row!;

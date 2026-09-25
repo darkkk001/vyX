@@ -67,6 +67,12 @@ export type ApiPosition = {
 // state that needs a true CLOSE reference (SELL position floating P&L,
 // margin, SL/TP preview) silently wrong. Callers apply it explicitly, via
 // effectiveAsk below, only at the specific "about to open a BUY" sites.
+export type ApiFx = {
+  accountCurrency: string;
+  quotes: { symbol: string; bid: string; ask: string; tickAt: string }[];
+  rates: Record<string, string>;
+};
+
 export type ApiLivePrice = { symbol: string; bid: string; ask: string; updatedAt: string; tickAt: string; marketClosed: boolean; askMarkup: string; spreadRule?: "markup" | "target"; targetSpread?: string };
 
 // Batch 5 (quote = fill, docs/audit/2026-09-24/realtime-contract.md): the spread RULE per symbol, not only the markup
@@ -207,6 +213,8 @@ export const tradeApi = {
   brokerBranding: () => call<ApiBrokerBranding>("/api/trade/broker-branding"),
   me: () => call<AccountInfo>("/api/trade/me"),
   prices: () => call<ApiLivePrice[]>("/api/trade/prices"),
+  // FX batch (docs/contracts/fx-and-market-week.md §2): the same rows plus the conversion quotes and the server's rates
+  pricesWithFx: () => call<ApiLivePrice[] | { prices: ApiLivePrice[]; fx?: ApiFx }>("/api/trade/prices?fx=1"),
   // Mints a short-lived ticket the price-tick/trading-event WebSockets
   // authenticate with instead of a cookie -- see WebTrader.tsx's own
   // WS connect() comment and app/api/trade/ws-ticket/route.ts.
