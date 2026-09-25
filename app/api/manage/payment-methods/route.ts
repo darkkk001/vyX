@@ -122,10 +122,28 @@ export async function PATCH(request: NextRequest) {
 
   const data = { enabled, minAmount, maxAmount, feePercent, feeFixed, instructions, walletAddress };
 
-  const saved = await prisma.paymentMethod.upsert({
-    where: { brokerId_type: { brokerId: session.brokerId!, type: body.type as PaymentMethodType } },
-    create: { brokerId: session.brokerId!, type: body.type as PaymentMethodType, ...data },
-    update: data,
+  // audited (audit 2026-09-24, money): a changed deposit wallet address, fee or limit is exactly what a dispute or an
+  // account takeover investigation needs on record -- old and new value of every field, in the same transaction
+  const snap = (m: { enabled: boolean; minAmount: Prisma.Decimal; maxAmount: Prisma.Decimal | null; feePercent: Prisma.Decimal; feeFixed: Prisma.Decimal; instructions: string | null; walletAddress: string | null } | null) =>
+    m
+      ? { enabled: m.enabled, minAmount: m.minAmount.toString(), maxAmount: m.maxAmount?.toString() ?? null, feePercent: m.feePercent.toString(), feeFixed: m.feeFixed.toString(), instructions: m.instructions, walletAddress: m.walletAddress }
+      : null;
+  const saved = await prisma.$transaction(async (tx) => {
+    const where = { brokerId_type: { brokerId: session.brokerId!, type: body.type as PaymentMethodType } };
+    const before = await tx.paymentMethod.findUnique({ where });
+    const after = await tx.paymentMethod.upsert({ where, create: { brokerId: session.brokerId!, type: body.type as PaymentMethodType, ...data }, update: data });
+    await tx.auditLog.create({
+      data: {
+        brokerId: session.brokerId!,
+        actorAdminId: session.adminId,
+        action: before ? "PAYMENT_METHOD_UPDATED" : "PAYMENT_METHOD_CREATED",
+        entityType: "PaymentMethod",
+        entityId: after.id,
+        oldValue: snap(before) ?? undefined,
+        newValue: { type: after.type, ...snap(after)! },
+      },
+    });
+    return after;
   });
 
   return NextResponse.json({

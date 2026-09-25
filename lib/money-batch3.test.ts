@@ -176,7 +176,9 @@ describe("dashboard money tiles", () => {
     await tx("WITHDRAWAL", -250, "PENDING");
 
     const now = new Date();
-    const dayStart = new Date(now); dayStart.setUTCHours(22, 0, 0, 0); if (dayStart > now) dayStart.setUTCDate(dayStart.getUTCDate() - 1);
+    // the dashboard's trading day is the charts' D1 boundary since Batch 4 (lib/trading-day.ts), 22:00 UTC only as fallback
+    const { tradingDayStart } = await import("@/lib/trading-day");
+    const dayStart = (await tradingDayStart(now)).start;
     const inDay = new Date(Math.max(dayStart.getTime() + 60_000, now.getTime() - 60_000));
     const before = new Date(dayStart.getTime() - 60_000);
     await position(fx, live.id, 1, { status: "CLOSED", realizedPnl: -40, closedAt: inDay }); // client lost 40 -> broker +40
@@ -197,7 +199,7 @@ describe("dashboard money tiles", () => {
     expect(today.withdrawals).toBe(300);
     expect(j.brokerBookClosedToday).toBe(15);
     expect(j.brokerBookClosedTodayCount).toBe(2);
-    expect(new Date(j.tradingDayStart).getUTCHours()).toBe(22);
+    expect(new Date(j.tradingDayStart).toISOString()).toBe(dayStart.toISOString());
   });
 });
 

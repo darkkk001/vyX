@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { forbidUnlessBrokerAdminOrPermission, PERMISSION_LABELS } from "@/lib/permissions";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { getFreshPrice } from "@/lib/live-price";
 import { ensureCoverageAccount } from "@/lib/coverage";
@@ -24,6 +25,11 @@ export async function POST(request: NextRequest) {
   const session = await getAdminSession();
   if (!requireAdminRole(session, ["MANAGER", "BROKER_ADMIN"]) || !session!.brokerId) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  }
+  // owner decision 2026-09-25 (audit Batch 4): DEALING -- BROKER_ADMIN, or a MANAGER granted it. No second admin
+  // (dealing needs speed); every action writes its audit row.
+  if (await forbidUnlessBrokerAdminOrPermission(session, "DEALING")) {
+    return NextResponse.json({ error: "forbidden", permission: "DEALING", permissionLabel: PERMISSION_LABELS.DEALING }, { status: 403 });
   }
   const brokerId = session!.brokerId;
 

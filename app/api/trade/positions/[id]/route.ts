@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { getLivePriceRow } from "@/lib/live-price";
 import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
 import { validateSlTp } from "@/lib/trading";
@@ -20,13 +21,11 @@ export async function PATCH(
   const { id } = await params;
 
   const body = await request.json().catch(() => null);
-  const currentPrice = body?.currentPrice != null ? String(body.currentPrice) : null;
   const slPrice = body?.slPrice !== undefined ? (body.slPrice == null ? null : String(body.slPrice)) : undefined;
   const tpPrice = body?.tpPrice !== undefined ? (body.tpPrice == null ? null : String(body.tpPrice)) : undefined;
 
-  if (!currentPrice) {
-    return NextResponse.json({ error: "currentPrice is required" }, { status: 400 });
-  }
+  // currentPrice from the client is no longer trusted (audit 2026-09-24, money): SL/TP are checked against the
+  // server's own live close-side price below. Older terminals still send it; it is ignored when a live price exists.
 
   const position = await prisma.position.findUnique({ where: { id } });
   if (!position || position.accountId !== session.accountId) {
@@ -63,9 +62,15 @@ export async function PATCH(
     prisma.broker.findUnique({ where: { id: session.brokerId }, select: { dealingModeAt: true, dealingDeskAutoFillAt: true } }),
   ]);
 
+  const live = brokerSymbol ? await getLivePriceRow(brokerSymbol.symbol.name) : null;
+  const serverClosePrice = live ? (position.side === "BUY" ? live.bid : live.ask).toString() : null;
+  if (!serverClosePrice) {
+    // no server price at all right now: refuse rather than trust the client's number
+    return NextResponse.json({ error: "NO_LIVE_FEED", symbol: brokerSymbol?.symbol.name ?? null }, { status: 400 });
+  }
   const validationError = validateSlTp({
     side: position.side,
-    referencePrice: currentPrice,
+    referencePrice: serverClosePrice,
     slPrice: slPrice === undefined ? position.slPrice : slPrice,
     tpPrice: tpPrice === undefined ? position.tpPrice : tpPrice,
     digits: brokerSymbol?.symbol.digits,

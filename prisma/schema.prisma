@@ -2173,6 +2173,12 @@ model IbRelationship {
   // all-time if null), not stored/accrued anywhere. Set to now() each
   // time a payout is made (app/api/manage/ib-relationships/[id]/route.ts).
   lastPayoutAt    DateTime?      @db.Timestamptz(3)
+  // Owner decision 2026-09-25 (audit Batch 4, line 8): commission is fixed at each trade's close -- a rate edit applies
+  // only to trades closed after it. Before a rate/type change, everything closed so far is locked in at the OLD rate:
+  // accruedUnpaid += that amount, accruedThrough = the change time. Pending = accruedUnpaid + trades closed after
+  // accruedThrough (or lastPayoutAt when never locked) at the current rate. A payout zeroes it (lib/ib-payout.ts).
+  accruedUnpaid   Decimal        @default(0) @db.Decimal(18, 4)
+  accruedThrough  DateTime?      @db.Timestamptz(3)
 
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)

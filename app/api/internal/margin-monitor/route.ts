@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { evaluateAccountRisk, evaluateRiskForSymbol } from "@/lib/risk-monitor";
 import { bearerMatches } from "@/lib/internal-auth";
 import { drainPostCloseBackstop } from "@/lib/post-close";
+import { evaluatePendingTriggers } from "@/lib/pending-trigger";
 
 // 2026-09-05 P0 fix -- the reliable floor beneath the tick-ingest trigger
 // (lib/price-feed.ts's ingestTicks -> evaluateRiskForSymbol), which is
@@ -55,7 +56,12 @@ export async function GET(request: NextRequest) {
         console.error("margin-monitor: symbol evaluation failed", symbol, err);
       }
     }
-    return NextResponse.json({ symbolsEvaluated: symbols.length, errors });
+    // resting LIMIT / STOP orders on these symbols whose entry the price reached (Batch 4: server-side trigger)
+    const pending = await evaluatePendingTriggers(symbols).catch((err) => {
+      console.error("margin-monitor: pending trigger failed", err);
+      return null;
+    });
+    return NextResponse.json({ symbolsEvaluated: symbols.length, errors, pending });
   }
 
   // Cheapest possible check first, index-backed: if nothing is open
@@ -69,9 +75,16 @@ export async function GET(request: NextRequest) {
     return { ran: 0, failed: 0 };
   });
 
+  // every resting LIMIT / STOP order (Batch 4: server-side trigger; the engine's 60 s pass and this cron are the floor
+  // under the tick hook) -- before the no-open-positions bail-out, since a pending order needs no open position
+  const pending = await evaluatePendingTriggers().catch((err) => {
+    console.error("margin-monitor: pending trigger sweep failed", err);
+    return null;
+  });
+
   const openCount = await prisma.position.count({ where: { status: "OPEN" } });
   if (openCount === 0) {
-    return NextResponse.json({ accountsEvaluated: 0, errors: 0, outbox });
+    return NextResponse.json({ accountsEvaluated: 0, errors: 0, outbox, pending });
   }
 
   const openAccounts = await prisma.position.findMany({
@@ -90,5 +103,5 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  return NextResponse.json({ accountsEvaluated: openAccounts.length, errors, outbox });
+  return NextResponse.json({ accountsEvaluated: openAccounts.length, errors, outbox, pending });
 }

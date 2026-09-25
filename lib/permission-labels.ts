@@ -17,6 +17,10 @@ export const PERMISSIONS = [
   "IB_PAYOUTS",
   "ACCOUNT_FINANCE",
   "MIRROR_MANAGE",
+  // owner decisions 2026-09-25 (audit Batch 4, lines 16 / 20)
+  "PRICING",
+  "CLIENT_TRADING",
+  "DEALING",
 ] as const;
 export type Permission = (typeof PERMISSIONS)[number];
 
@@ -29,4 +33,7 @@ export const PERMISSION_LABELS: Record<Permission, string> = {
   IB_PAYOUTS: "IB payouts",
   ACCOUNT_FINANCE: "Account finance (add/adjust/leverage/status)",
   MIRROR_MANAGE: "Reverse mirror rules (create/edit/kill switch)",
+  PRICING: "Can edit pricing (spread, commission, swap, hedged margin)",
+  CLIENT_TRADING: "Can trade on client accounts (close, bulk close, SL/TP, open for a client)",
+  DEALING: "Dealing (accept / offer new price / reject dealer orders, hedge orders)",
 };

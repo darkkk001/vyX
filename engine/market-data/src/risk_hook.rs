@@ -63,11 +63,33 @@ struct Level {
     tp: Option<Decimal>,
 }
 
+/// A resting LIMIT / STOP order's entry (audit 2026-09-24 Batch 4): pending orders trigger SERVER-side. The tick that
+/// crosses the entry fires the same `?symbols=` call; the web (lib/pending-trigger.ts) re-checks the trigger on its
+/// own price and fills. A BUY trades at the ask, a SELL at the bid.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct PendingLevel {
+    is_buy: bool,
+    is_limit: bool,
+    entry: Decimal,
+}
+
+impl PendingLevel {
+    fn triggered(&self, bid: Decimal, ask: Decimal) -> bool {
+        match (self.is_buy, self.is_limit) {
+            (true, true) => ask <= self.entry,   // BUY LIMIT: buy when the ask falls to the entry
+            (true, false) => ask >= self.entry,  // BUY STOP: buy when the ask rises to the entry
+            (false, true) => bid >= self.entry,  // SELL LIMIT: sell when the bid rises to the entry
+            (false, false) => bid <= self.entry, // SELL STOP: sell when the bid falls to the entry
+        }
+    }
+}
+
 pub struct RiskHook {
     url: String,
     secret: String,
     client: reqwest::Client,
     levels: Mutex<HashMap<String, Vec<Level>>>,
+    pending: Mutex<HashMap<String, Vec<PendingLevel>>>,
     last_fired: Mutex<HashMap<String, Instant>>,
     margin_watch: std::sync::OnceLock<Arc<dyn MarginWatch>>,
 }
@@ -84,6 +106,7 @@ impl RiskHook {
             secret,
             client,
             levels: Mutex::new(HashMap::new()),
+            pending: Mutex::new(HashMap::new()),
             last_fired: Mutex::new(HashMap::new()),
             margin_watch: std::sync::OnceLock::new(),
         }))
@@ -113,6 +136,24 @@ impl RiskHook {
             }
             Err(err) => tracing::warn!(error = %err, "risk hook: could not reload SL/TP levels"),
         }
+        // resting LIMIT / STOP orders (the web's own "Order" table: PENDING, not the engine's orders table)
+        let pending: Result<Vec<(String, String, String, Decimal)>, sqlx::Error> = sqlx::query_as(
+            r#"SELECT s.name, o.side::text, o.type::text, o."requestedPrice"
+               FROM "Order" o JOIN "Symbol" s ON s.id = o."symbolId"
+               WHERE o.status = 'PENDING' AND o.type IN ('LIMIT', 'STOP') AND o."requestedPrice" IS NOT NULL"#,
+        )
+        .fetch_all(pool)
+        .await;
+        match pending {
+            Ok(rows) => {
+                let mut map: HashMap<String, Vec<PendingLevel>> = HashMap::new();
+                for (symbol, side, kind, entry) in rows {
+                    map.entry(symbol).or_default().push(PendingLevel { is_buy: side == "BUY", is_limit: kind == "LIMIT", entry });
+                }
+                *self.pending.lock().unwrap() = map;
+            }
+            Err(err) => tracing::warn!(error = %err, "risk hook: could not reload pending order entries"),
+        }
     }
 
     /// Symbols among the flushed ticks whose bid / ask touches an open level.
@@ -129,6 +170,17 @@ impl RiskHook {
                 sl_hit || tp_hit
             });
             if hit && !out.contains(&t.symbol) {
+                out.push(t.symbol.clone());
+            }
+        }
+        drop(levels);
+        // a resting LIMIT / STOP whose entry this tick crosses (server-side trigger, Batch 4)
+        let pending = self.pending.lock().unwrap();
+        for t in ticks {
+            if out.contains(&t.symbol) {
+                continue;
+            }
+            if pending.get(&t.symbol).map_or(false, |ps| ps.iter().any(|p| p.triggered(t.bid, t.ask))) {
                 out.push(t.symbol.clone());
             }
         }
@@ -256,6 +308,24 @@ impl RiskHook {
 
 #[cfg(test)]
 mod tests {
+    use rust_decimal_macros::dec;
+
+    #[test]
+    fn pending_entries_trigger_on_the_side_they_trade() {
+        let buy_limit = super::PendingLevel { is_buy: true, is_limit: true, entry: dec!(100) };
+        assert!(buy_limit.triggered(dec!(99.8), dec!(100.0)));
+        assert!(!buy_limit.triggered(dec!(99.9), dec!(100.1)));
+        let buy_stop = super::PendingLevel { is_buy: true, is_limit: false, entry: dec!(100) };
+        assert!(buy_stop.triggered(dec!(99.9), dec!(100.1)));
+        assert!(!buy_stop.triggered(dec!(99.7), dec!(99.9)));
+        let sell_limit = super::PendingLevel { is_buy: false, is_limit: true, entry: dec!(100) };
+        assert!(sell_limit.triggered(dec!(100.0), dec!(100.2)));
+        assert!(!sell_limit.triggered(dec!(99.9), dec!(100.1)));
+        let sell_stop = super::PendingLevel { is_buy: false, is_limit: false, entry: dec!(100) };
+        assert!(sell_stop.triggered(dec!(99.9), dec!(100.1)));
+        assert!(!sell_stop.triggered(dec!(100.1), dec!(100.3)));
+    }
+
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
@@ -296,6 +366,7 @@ mod tests {
             secret: "s3cret".into(),
             client: reqwest::Client::builder().timeout(Duration::from_secs(5)).build().unwrap(),
             levels: Mutex::new(HashMap::new()),
+            pending: Mutex::new(HashMap::new()),
             last_fired: Mutex::new(HashMap::new()),
             margin_watch: std::sync::OnceLock::new(),
         })

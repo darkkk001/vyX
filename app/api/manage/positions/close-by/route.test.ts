@@ -34,7 +34,7 @@ async function createFixture(): Promise<Fixture> {
   const suffix = randomUUID().replace(/-/g, "").slice(0, 10);
   const broker = await prisma.broker.create({ data: { name: `Dealer CloseBy ${suffix}`, subdomain: `dcb-${suffix}`, dealingModeAt: null } });
   createdBrokerIds.push(broker.id);
-  const admin = await prisma.adminUser.create({ data: { brokerId: broker.id, email: `dcb-${suffix}@test.local`, passwordHash: "x", role: "MANAGER" } });
+  const admin = await prisma.adminUser.create({ data: { brokerId: broker.id, email: `dcb-${suffix}@test.local`, passwordHash: "x", role: "MANAGER", extraPermissions: ["CLIENT_TRADING"] } });
   const symbol = await prisma.symbol.create({ data: { name: `DC${suffix.toUpperCase()}`, baseCurrency: "TST", quoteCurrency: "USD", category: "CRYPTO", digits: 2, contractSize: D(1) } });
   createdSymbolNames.push(symbol.name);
   await prisma.brokerSymbol.create({ data: { brokerId: broker.id, symbolId: symbol.id, minLot: D(0.01), maxLot: D(100), lotStep: D(0.01), tradingMode: "BOTH" } });

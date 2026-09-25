@@ -95,6 +95,10 @@ export async function POST(request: NextRequest) {
   if (!clientAccount || clientAccount.brokerId !== brokerId) {
     return NextResponse.json({ error: "client account not found" }, { status: 404 });
   }
+  // audit 2026-09-24 (money): demo trading must never accrue real partner commission
+  if (ibAccount.accountMode !== "LIVE" || clientAccount.accountMode !== "LIVE") {
+    return NextResponse.json({ error: "partner links are only allowed between LIVE accounts (no demo)" }, { status: 400 });
+  }
 
   try {
     const created = await prisma.$transaction(async (tx) => {

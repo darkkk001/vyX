@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { resolveEntityLabels } from "@/lib/entity-labels";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
+import { tradingDayStart } from "@/lib/trading-day";
 import { humanizeAction, excludeSuperAdminActor } from "@/lib/audit-labels";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -110,9 +111,9 @@ export async function GET() {
   // Broker-book result of trades closed since the trading day started (owner decision: 22:00 UTC rollover). The
   // broker's side of a broker-book trade is the client's result reversed. Live client accounts only: no demo, no
   // voided trades (status CLOSED only), no broker hedge legs (coverage account / COVERAGE groups). Audit 2026-09-24.
-  const tradingDayStart = new Date(now);
-  tradingDayStart.setUTCHours(22, 0, 0, 0);
-  if (tradingDayStart > now) tradingDayStart.setUTCDate(tradingDayStart.getUTCDate() - 1);
+  // Batch 4 (owner decision): the charts' own D1 boundary, DST-aware (lib/trading-day.ts); 22:00 UTC only as fallback
+  const tradingDay = await tradingDayStart(now);
+  const tradingDayStartAt = tradingDay.start;
   const brokerRow = await prisma.broker.findUniqueOrThrow({ where: { id: brokerId }, select: { coverageAccountId: true } });
   const closedToday = await prisma.position.aggregate({
     where: {
@@ -120,7 +121,7 @@ export async function GET() {
       status: "CLOSED",
       deletedAt: null,
       bookType: "B_BOOK",
-      closedAt: { gte: tradingDayStart },
+      closedAt: { gte: tradingDayStartAt },
       account: { accountMode: "LIVE", group: { category: { not: "COVERAGE" } } },
       ...(brokerRow.coverageAccountId ? { accountId: { not: brokerRow.coverageAccountId } } : {}),
     },
@@ -142,7 +143,8 @@ export async function GET() {
     pendingWithdrawalSum: Math.abs(pendingWithdrawals._sum.amount?.toNumber() ?? 0),
     brokerBookClosedToday,
     brokerBookClosedTodayCount: closedToday._count,
-    tradingDayStart: tradingDayStart.toISOString(),
+    tradingDayStart: tradingDayStartAt.toISOString(),
+    tradingDaySource: tradingDay.source,
     netDeposits7d,
     netDepositsPrior7d,
     depositsWithdrawalsByDay: [...byDay.entries()].map(([date, v]) => ({ date, deposits: v.deposits, withdrawals: v.withdrawals })),

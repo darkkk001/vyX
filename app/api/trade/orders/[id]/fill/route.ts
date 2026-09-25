@@ -1,62 +1,25 @@
 import { NextRequest, NextResponse } from "next/server";
-import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
-import { publishTradingEvent } from "@/lib/nats";
-import { createNotification } from "@/lib/notifications";
-import * as mirror from "@/lib/mirror";
-import * as coverage from "@/lib/coverage";
-import { resolveWantsDealingQueue } from "@/lib/dealing-routing";
-import { recordDealerActivity } from "@/lib/dealer-activity";
-import { resolveBookType, applySpreadMarkup, pipSize, chargeCommission } from "@/lib/group-pricing";
-import { resolveFillPricing, logSpreadWarning } from "@/lib/pricing-engine";
-import { checkAccountPreTradeMargin } from "@/lib/margin";
-import { orderAuditFields } from "@/lib/order-audit";
-import { getLivePriceRow } from "@/lib/live-price";
-import {
-  checkTradingHalted,
-  checkCloseOnly,
-  checkSymbolTradingMode,
-  checkTradingSession,
-  checkLotStep,
-  checkGroupMaxLot,
-  checkGroupTradingRestriction,
-  checkGroupTradingHalted,
-  checkGroupCloseOnly,
-  checkGroupAllowedSymbol,
-  checkMaxOpenPositions,
-  checkSymbolExposure,
-  checkBrokerExposure,
-  checkMaxDailyLoss,
-  evaluateLiveMarketPrice,
-  checkPriceFreshness,
-  checkSlippage,
-  PENDING_TRIGGER_MAX_SLIPPAGE_PIPS,
-} from "@/lib/risk";
+import { triggerPendingOrder } from "@/lib/pending-trigger";
 
-// Called by the client when its local price simulation reports the
-// resting LIMIT/STOP order's trigger price has been hit. Moves the order
-// through PENDING -> ACCEPTED -> FILLED and opens the resulting Position,
-// atomically. (Phase 5's real engine replaces this trigger-detection with
-// server-side matching against a live feed; the state machine itself
-// doesn't change.)
-export async function POST(
-  request: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
-) {
+// POST /api/trade/orders/[id]/fill -- the trigger report from an OLDER terminal (audit 2026-09-24 Batch 4). Pending
+// LIMIT / STOP orders now trigger server-side (lib/pending-trigger.ts, engine tick hook + passes); the current
+// terminal no longer calls this. Kept for installed older builds: it runs the very same routine, so the order is
+// claimed once (a server trigger and this POST can never both fill it), and a lasting failure REJECTS the order --
+// which also ends an old terminal's re-POST-every-tick loop (it gets 409 "cannot fill an order in status REJECTED").
+export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await getAccountSession();
   if (!session) {
     return NextResponse.json({ error: "not authenticated" }, { status: 401 });
   }
   const { id } = await params;
-
   const body = await request.json().catch(() => null);
   const requestedFillPrice = body?.price != null ? String(body.price) : null;
   if (!requestedFillPrice) {
     return NextResponse.json({ error: "price is required" }, { status: 400 });
   }
-
-  const order = await prisma.order.findUnique({ where: { id }, include: { symbol: { select: { name: true } } } });
+  const order = await prisma.order.findUnique({ where: { id }, select: { accountId: true, status: true } });
   if (!order || order.accountId !== session.accountId) {
     return NextResponse.json({ error: "order not found" }, { status: 404 });
   }
@@ -64,290 +27,17 @@ export async function POST(
     return NextResponse.json({ error: `cannot fill an order in status ${order.status}` }, { status: 409 });
   }
 
-  const [brokerSymbol, account, broker] = await Promise.all([
-    prisma.brokerSymbol.findFirst({
-      where: { brokerId: order.brokerId, symbolId: order.symbolId },
-      include: { symbol: true, tradingSessions: true },
-    }),
-    prisma.account.findUniqueOrThrow({
-      where: { id: order.accountId },
-      include: { group: { include: { allowedSymbols: { select: { symbolId: true } } } } },
-    }),
-    prisma.broker.findUniqueOrThrow({ where: { id: order.brokerId } }),
-  ]);
-
-  // Fetched once, reused both by the risk battery below (the coarse
-  // sanity check) and, further down, as the actual server-side fill-price
-  // basis (Phase 0 money-risk patch, docs/ROADMAP.md) -- previously this
-  // route filled pending-order triggers at the client's own
-  // trigger-detected price, same exploit class POST /api/trade/orders had
-  // for MARKET orders.
-  const livePrice = brokerSymbol ? await getLivePriceRow(brokerSymbol.symbol.name) : null;
-
-  // Same risk battery POST /api/trade/orders and the dealing-queue Accept
-  // route both run before opening a position -- this fill path (a
-  // pending order's trigger firing, possibly days after submission) was
-  // the one place none of this ran at all: a resting order could fill
-  // straight through an exposure limit or a broker-wide trading halt
-  // declared after it was placed. checkTradingHalted first since it's
-  // the one that matters most for something that can trigger while
-  // nobody's watching.
-  const riskError =
-    checkTradingHalted(broker) ??
-    checkCloseOnly(broker) ??
-    (brokerSymbol ? checkSymbolTradingMode(brokerSymbol.tradingMode, order.side) : null) ??
-    (brokerSymbol ? checkTradingSession(brokerSymbol.tradingSessions, new Date(), brokerSymbol.symbol.category) : null) ??
-    (brokerSymbol ? checkLotStep(order.volume, brokerSymbol.minLot, brokerSymbol.lotStep) : null) ??
-    (brokerSymbol ? evaluateLiveMarketPrice(livePrice, brokerSymbol.symbol.name, requestedFillPrice) : null) ??
-    (brokerSymbol ? checkPriceFreshness(livePrice) : null) ??
-    (account.group ? checkGroupMaxLot(order.volume, account.group.maxLotSize) : null) ??
-    (account.group ? checkGroupTradingRestriction(account.group.tradingRestriction, order.side) : null) ??
-    (account.group ? checkGroupTradingHalted(account.group) : null) ??
-    (account.group ? checkGroupCloseOnly(account.group) : null) ??
-    (account.group
-      ? checkGroupAllowedSymbol(
-          account.group.restrictSymbols,
-          account.group.allowedSymbols.map((s) => s.symbolId),
-          order.symbolId
-        )
-      : null) ??
-    (await checkMaxOpenPositions(prisma, order.accountId, broker.maxOpenPositionsPerAccount)) ??
-    (await checkSymbolExposure(prisma, order.accountId, order.symbolId, order.volume, brokerSymbol?.maxExposure ?? null)) ??
-    (await checkBrokerExposure(prisma, order.brokerId, order.volume, broker.totalExposureLimit)) ??
-    (await checkMaxDailyLoss(prisma, order.accountId, account.maxDailyLoss));
-  if (riskError) {
-    return NextResponse.json({ error: riskError }, { status: 400 });
+  const r = await triggerPendingOrder(id, requestedFillPrice, "client");
+  switch (r.kind) {
+    case "filled":
+      return NextResponse.json({ order: r.order, position: r.position });
+    case "queued":
+      return NextResponse.json({ order: r.order, position: null });
+    case "rejected":
+      return NextResponse.json({ error: r.reason, rejected: true, ...(r.detail ?? {}) }, { status: 400 });
+    case "kept":
+      return NextResponse.json({ error: r.reason, pending: true }, { status: 409 });
+    case "skipped":
+      return NextResponse.json({ error: `cannot fill: ${r.reason}` }, { status: 409 });
   }
-
-  // Same dealing-mode gate as POST /api/trade/orders' own MARKET-order
-  // branch, including Group.dealingMode's override (see that route's own
-  // comment) -- a resting LIMIT/STOP order under dealing mode must NOT
-  // auto-fill just because its trigger price was hit, unless this
-  // group is explicitly AUTO; and a MANUAL group must queue even if
-  // nothing else would have. Reclassifying to type MARKET (status stays
-  // PENDING, requestedPrice becomes the trigger-detected price) is
-  // deliberate: it makes this order indistinguishable from a fresh
-  // dealing-queue market order, so the existing GET
-  // /api/manage/dealing-queue query (type: "MARKET") and the existing
-  // PATCH accept/reject route both pick it up with zero changes to
-  // either. The client's own pending-order-trigger effect already
-  // handles "no position yet" the same way a plain market order under
-  // dealing mode does -- nothing to change there either.
-  const wantsQueue = resolveWantsDealingQueue({
-    groupDealingMode: account.group?.dealingMode ?? "INHERIT",
-    brokerDealingModeOn: !!broker.dealingModeAt,
-    groupForceDealingMode: !!account.group?.forceDealingMode,
-    groupTypeIsDealing: account.group?.groupType === "DEALING",
-    dealingDeskAutoFillOn: !!broker.dealingDeskAutoFillAt,
-  });
-  if (wantsQueue) {
-    const originalType = order.type;
-    const originalRequestedPrice = order.requestedPrice?.toString() ?? null;
-    const queued = await prisma.$transaction(async (tx) => {
-      const updated = await tx.order.update({
-        where: { id: order.id },
-        data: { type: "MARKET", requestedPrice: requestedFillPrice },
-      });
-      // The order's own original type/price get overwritten above (kept
-      // out of a new column deliberately -- see this branch's own doc
-      // comment on why reclassifying in place, not adding new schema, was
-      // the choice) -- this audit row is the only place that history
-      // survives. Previously nothing recorded this ever happened at all.
-      await tx.auditLog.create({
-        data: {
-          brokerId: order.brokerId,
-          action: "PENDING_ORDER_QUEUED_FOR_DEALING",
-          entityType: "Order",
-          entityId: order.id,
-          oldValue: {
-            ...orderAuditFields(order, order.symbol.name, account.accountNumber),
-            type: originalType,
-            requestedPrice: originalRequestedPrice,
-            status: "PENDING",
-          },
-          newValue: { triggerPrice: requestedFillPrice, type: "MARKET", requestedPrice: requestedFillPrice, status: "PENDING" },
-        },
-      });
-      return updated;
-    });
-    // Same notification a fresh dealing-queue market order gets
-    // (app/api/trade/orders/route.ts) -- previously a triggered pending
-    // order queued completely silently, with no badge/alert telling a
-    // dealer it was waiting.
-    await createNotification(prisma, {
-      brokerId: order.brokerId,
-      type: "DEALING_ORDER_PENDING",
-      title: "Order awaiting dealer review",
-      body: `${account.accountNumber}, ${order.side} ${order.volume.toString()} ${brokerSymbol?.symbol.name ?? ""} (triggered pending order)`,
-      entityType: "Order",
-      entityId: order.id,
-    });
-    // Realtime-sync gap fix -- this branch reclassifies the order into
-    // exactly the same PENDING/MARKET shape a fresh dealing-queue order
-    // has (this branch's own comment above), but never actually published
-    // the DealingQueued event DealingQueueManager.tsx listens for to apply
-    // a new row live -- unlike app/api/trade/orders/route.ts's own
-    // dealing-queue branch, which does. Previously a triggered pending
-    // order only reached the queue UI on that dealer's next manual
-    // refresh/reconnect.
-    await publishTradingEvent("DealingQueued", {
-      order_id: order.id,
-      broker_id: order.brokerId,
-      account_id: order.accountId,
-      account_number: account.accountNumber,
-      account_full_name: account.fullName,
-      symbol: order.symbol.name,
-      digits: brokerSymbol?.symbol.digits ?? 5,
-      side: order.side,
-      volume: order.volume.toString(),
-      requested_price: requestedFillPrice,
-      created_at: order.createdAt.toISOString(),
-      live_bid: livePrice?.bid.toString() ?? null,
-      live_ask: livePrice?.ask.toString() ?? null,
-    });
-    await recordDealerActivity(prisma, {
-      brokerId: order.brokerId,
-      accountId: order.accountId,
-      accountNumber: account.accountNumber,
-      accountFullName: account.fullName,
-      isDealingGroup: wantsQueue,
-      action: "ORDER_TRIGGERED",
-      symbol: order.symbol.name,
-      side: order.side,
-      volume: order.volume.toString(),
-      values: { triggerPrice: requestedFillPrice, originalRequestedPrice: originalRequestedPrice, originalType },
-      orderId: order.id,
-    });
-    return NextResponse.json({ order: queued, position: null });
-  }
-
-  // Phase 0 money-risk patch (docs/ROADMAP.md) -- server-price-authority
-  // fill, same rule as POST /api/trade/orders. requestedFillPrice (the
-  // client's trigger-detected price) is now only the slippage-tolerance
-  // anchor, not the fill basis; livePrice was already validated fresh
-  // above by checkPriceFreshness.
-  const pricing = await resolveFillPricing(prisma, {
-    pricingEngineEnabled: broker.pricingEngineEnabled,
-    accountId: account.id,
-    accountTypeId: account.accountTypeId,
-    groupId: account.groupId,
-    symbolId: order.symbolId,
-    brokerSpreadMarkup: brokerSymbol?.spreadMarkup ?? new Prisma.Decimal(0),
-    brokerCommissionPerLot: brokerSymbol?.commissionPerLot ?? new Prisma.Decimal(0),
-    brokerSwapLong: brokerSymbol?.swapLong ?? new Prisma.Decimal(0),
-    brokerSwapShort: brokerSymbol?.swapShort ?? new Prisma.Decimal(0),
-    liveBaseSpreadPips: brokerSymbol && livePrice ? livePrice.ask.sub(livePrice.bid).div(pipSize(brokerSymbol.symbol.digits)) : null,
-  });
-  logSpreadWarning({ accountId: account.id, symbolId: order.symbolId, brokerId: order.brokerId }, pricing.warning);
-  const serverRef = brokerSymbol && livePrice ? (order.side === "BUY" ? livePrice.ask : livePrice.bid) : new Prisma.Decimal(requestedFillPrice);
-  const fillPrice = brokerSymbol
-    ? applySpreadMarkup({ side: order.side, price: serverRef, spreadMarkup: pricing.spreadMarkup, digits: brokerSymbol.symbol.digits })
-    : serverRef;
-  if (brokerSymbol) {
-    const slippageError = checkSlippage({
-      clientReferencePrice: requestedFillPrice,
-      serverFillPrice: fillPrice,
-      maxSlippagePips: PENDING_TRIGGER_MAX_SLIPPAGE_PIPS,
-      digits: brokerSymbol.symbol.digits,
-    });
-    if (slippageError) {
-      return NextResponse.json({ error: slippageError }, { status: 400 });
-    }
-    // Phase 0 money-risk patch (docs/ROADMAP.md item 2) -- same gate as
-    // POST /api/trade/orders' immediate-fill branch. A resting LIMIT/STOP
-    // order can sit for days; the account's margin picture at trigger
-    // time can be very different from when it was placed, and nothing
-    // checked that before.
-    const marginError = await checkAccountPreTradeMargin(prisma, {
-      accountId: order.accountId,
-      leverage: account.leverage,
-      marginCallLevel: account.group?.marginCallLevel ?? new Prisma.Decimal(100),
-      newOrderContractSize: brokerSymbol.symbol.contractSize,
-      newOrderQuoteCurrency: brokerSymbol.symbol.quoteCurrency,
-      newOrderVolume: order.volume,
-      newOrderFillPrice: fillPrice,
-      newOrderSide: order.side,
-      newOrderSymbolId: order.symbolId,
-    });
-    if (marginError) {
-      return NextResponse.json(marginError, { status: 400 });
-    }
-  }
-  const bookType = resolveBookType(account.group.category);
-
-  const result = await prisma.$transaction(async (tx) => {
-    await tx.order.update({ where: { id: order.id }, data: { status: "ACCEPTED" } });
-    const filledOrder = await tx.order.update({
-      where: { id: order.id },
-      data: { status: "FILLED", filledPrice: fillPrice, filledAt: new Date() },
-    });
-    const position = await tx.position.create({
-      data: {
-        brokerId: order.brokerId,
-        accountId: order.accountId,
-        symbolId: order.symbolId,
-        originOrderId: order.id,
-        side: order.side,
-        volume: order.volume,
-        openPrice: fillPrice,
-        slPrice: order.slPrice,
-        tpPrice: order.tpPrice,
-        bookType,
-      },
-    });
-    await chargeCommission(tx, { brokerId: order.brokerId, accountId: order.accountId, positionId: position.id, commissionPerLot: pricing.commissionPerLot, volume: order.volume });
-    // Broker feedback items 14+15 -- the common "resting LIMIT/STOP order
-    // triggers and fills immediately" path (no dealing queue involved)
-    // had no audit row at all. requestedPrice is the client's original
-    // limit/stop price, triggerPrice is what the trigger actually fired
-    // at, filledPrice is what it actually filled at -- three genuinely
-    // different numbers a slippage/requote dispute needs kept distinct.
-    await tx.auditLog.create({
-      data: {
-        brokerId: order.brokerId,
-        action: "ORDER_TRIGGERED_AND_FILLED",
-        entityType: "Position",
-        entityId: position.id,
-        oldValue: {
-          ...orderAuditFields(order, order.symbol.name, account.accountNumber),
-          requestedPrice: order.requestedPrice?.toString() ?? null,
-          slPrice: order.slPrice?.toString() ?? null,
-          tpPrice: order.tpPrice?.toString() ?? null,
-          status: "PENDING",
-        },
-        newValue: { triggerPrice: requestedFillPrice, filledPrice: fillPrice.toString(), status: "FILLED" },
-      },
-    });
-    return { order: filledOrder, position };
-  });
-
-  // docs/briefs/VYX-MIRROR-V0-BRIEF.md -- mirror hook gap fix: a pending
-  // LIMIT/STOP order's trigger firing is a real fill, same as any other
-  // fill path.
-  await mirror.onFillPosition(prisma, result.position, order.symbol.name).catch((err) => console.error("mirror.onFill failed", err));
-  // auto-hedge (lib/coverage.ts): a no-op unless the desk is in auto-fill with auto-hedge on
-  await coverage.onFillAutoHedge(prisma, { positionId: result.position.id, brokerId: order.brokerId });
-  await publishTradingEvent("OrderFilled", {
-    order_id: order.id,
-    account_id: order.accountId,
-    broker_id: order.brokerId,
-    price: fillPrice.toString(),
-    volume: order.volume.toString(),
-    remaining_volume: "0",
-  });
-  await recordDealerActivity(prisma, {
-    brokerId: order.brokerId,
-    accountId: order.accountId,
-    accountNumber: account.accountNumber,
-    accountFullName: account.fullName,
-    isDealingGroup: wantsQueue,
-    action: "POSITION_OPENED",
-    symbol: order.symbol.name,
-    side: order.side,
-    volume: order.volume.toString(),
-    values: { openPrice: fillPrice.toString(), origin: "pending_trigger" },
-    orderId: order.id,
-    positionId: result.position.id,
-  });
-  return NextResponse.json(result);
 }

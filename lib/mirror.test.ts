@@ -33,7 +33,7 @@ const FILL_HOOK_SITES: { file: string; occurrences: number; description: string 
   { file: "app/api/trade/orders/route.ts", occurrences: 2, description: "direct MARKET fill + Smart Dealer auto-accept" },
   { file: "app/api/manage/dealing-queue/[id]/route.ts", occurrences: 1, description: "dealer ACCEPT" },
   { file: "app/api/trade/orders/[id]/requote-response/route.ts", occurrences: 1, description: "client accepts a requote" },
-  { file: "app/api/trade/orders/[id]/fill/route.ts", occurrences: 1, description: "pending LIMIT/STOP trigger fill" },
+  { file: "lib/pending-trigger.ts", occurrences: 1, description: "pending LIMIT/STOP trigger fill (server trigger + legacy fill route, Batch 4)" },
   { file: "app/api/manage/positions/route.ts", occurrences: 1, description: "admin manual open (execute for client)" },
   { file: "app/api/manage/positions/[id]/reverse/route.ts", occurrences: 1, description: "admin reverse -- new leg" },
 ];

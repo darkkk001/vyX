@@ -30,7 +30,7 @@ export async function GET() {
       // strip pill (v2 redesign's "Standard · 1:500" -- Group.name IS
       // "Standard" for a broker's default group, but this must read the
       // real value, never assume every broker names it that).
-      group: { select: { marginCallLevel: true, name: true } },
+      group: { select: { marginCallLevel: true, stopOutLevel: true, name: true } },
     },
   });
 
@@ -39,5 +39,6 @@ export async function GET() {
   }
 
   const { group, ...rest } = account;
-  return NextResponse.json({ ...rest, marginCallLevel: (group?.marginCallLevel ?? 100).toString(), groupName: group?.name ?? null });
+  // stopOutLevel (audit 2026-09-24): the terminal shows and warns at stop-out too, not only at margin call
+  return NextResponse.json({ ...rest, marginCallLevel: (group?.marginCallLevel ?? 100).toString(), stopOutLevel: (group?.stopOutLevel ?? 50).toString(), groupName: group?.name ?? null });
 }

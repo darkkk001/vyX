@@ -447,14 +447,16 @@ export async function onFillAutoHedge(
     where: { id: ev.positionId },
     include: {
       symbol: { select: { name: true, digits: true } },
-      account: { select: { accountNumber: true, group: { select: { groupType: true } } } },
+      account: { select: { accountNumber: true, group: { select: { groupType: true, forceDealingMode: true } } } },
     },
   });
   if (!position || position.status !== "OPEN" || position.covered || position.deletedAt) return;
   // only the desk's own book: a DEALING-type group is the dealing desk's classification, and it is
   // the right signal HERE (unlike dealer-awareness, which asks whether review is on) precisely
   // because auto-fill has already turned review off for exactly these groups.
-  if (position.account.group?.groupType !== "DEALING") return;
+  // Owner decision (2026-09-25): every manual-dealing group -- DEALING type AND forced dealing -- the same scope the
+  // dealing screen treats as the desk's book (DealingScreen SDM / GRP / panic). Was DEALING type only.
+  if (position.account.group?.groupType !== "DEALING" && !position.account.group?.forceDealingMode) return;
   // a coverage leg is A_BOOK and lives on the coverage account: never hedge the hedge
   if (position.bookType !== "B_BOOK") return;
   if (broker.coverageAccountId && position.accountId === broker.coverageAccountId) return;

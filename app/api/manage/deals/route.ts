@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { tradingDayStart } from "@/lib/trading-day";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 
 // Same query app/manage/(shell)/deals/page.tsx's Server Component used
@@ -28,7 +29,10 @@ export async function GET(request: NextRequest) {
   // rather than only trades closed at exactly 00:00:00.
   const closedAt: Prisma.DateTimeFilter = {};
   const fromRaw = sp.get("from")?.trim();
-  if (fromRaw) {
+  if (fromRaw === "trading-day") {
+    // the broker's trading day, the charts' own D1 boundary (lib/trading-day.ts; Batch 4)
+    closedAt.gte = (await tradingDayStart()).start;
+  } else if (fromRaw) {
     const d = new Date(fromRaw);
     if (!Number.isNaN(d.getTime())) closedAt.gte = d;
   }

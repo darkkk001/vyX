@@ -49,10 +49,13 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
   if (action === "REJECT") {
     const updated = await prisma.$transaction(async (tx) => {
-      const r = await tx.liveAccountRequest.update({
-        where: { id },
+      // status-guarded (audit 2026-09-24): not while another admin is approving it (reviewedAt set = claimed)
+      const claimed = await tx.liveAccountRequest.updateMany({
+        where: { id, status: "PENDING", reviewedAt: null },
         data: { status: "REJECTED", rejectionReason, reviewedByAdminId: session!.adminId, reviewedAt: new Date() },
       });
+      if (claimed.count === 0) return null;
+      const r = await tx.liveAccountRequest.findUniqueOrThrow({ where: { id } });
       await tx.auditLog.create({
         data: {
           brokerId,
@@ -66,8 +69,21 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       });
       return r;
     });
+    if (!updated) return NextResponse.json({ error: "request already reviewed" }, { status: 409 });
     return NextResponse.json({ id: updated.id, status: updated.status });
   }
+
+  // Claim the request BEFORE creating the account (audit 2026-09-24, money): two admins approving at once used to
+  // create two live accounts. reviewedAt set while status is still PENDING = "being approved"; the loser gets 409.
+  // If creating the account fails, the claim is released.
+  const claim = await prisma.liveAccountRequest.updateMany({
+    where: { id, status: "PENDING", reviewedAt: null },
+    data: { reviewedByAdminId: session!.adminId, reviewedAt: new Date() },
+  });
+  if (claim.count === 0) {
+    return NextResponse.json({ error: "request already reviewed" }, { status: 409 });
+  }
+  const releaseClaim = () => prisma.liveAccountRequest.updateMany({ where: { id, status: "PENDING" }, data: { reviewedByAdminId: null, reviewedAt: null } });
 
   // APPROVE
   const [client, broker] = await Promise.all([
@@ -110,6 +126,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       createdByAdminId: session!.adminId,
     });
   } catch (error) {
+    await releaseClaim().catch(() => {});
     if (error instanceof AccountStructureError) {
       return NextResponse.json({ error: error.message, code: error.code }, { status: 400 });
     }

@@ -38,7 +38,9 @@ export async function executeIbPayout(tx: Tx, params: { relationshipId: string; 
     },
   });
 
-  const updated = await tx.ibRelationship.update({ where: { id: relationship.id }, data: { lastPayoutAt: new Date() } });
+  // paid up to now: the locked-in amount is consumed, and the next pending counts from this moment (Batch 4)
+  const paidAt = new Date();
+  const updated = await tx.ibRelationship.update({ where: { id: relationship.id }, data: { lastPayoutAt: paidAt, accruedUnpaid: 0, accruedThrough: paidAt } });
 
   await tx.auditLog.create({
     data: {

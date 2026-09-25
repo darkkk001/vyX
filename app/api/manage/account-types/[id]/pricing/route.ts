@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { forbidUnlessBrokerAdminOrPermission, PERMISSION_LABELS } from "@/lib/permissions";
 import { publishAccountsUpdatedAfterResponse } from "@/lib/account-events";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { parseSymbolPricingPatch, decimalOrNull, isEmptyPricingPatch } from "@/lib/pricing-editor-shared";
@@ -84,6 +85,11 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   const session = await requireManager();
   if (!session) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  }
+  // owner decision 2026-09-25 (audit Batch 4): PRICING -- BROKER_ADMIN, or a MANAGER granted it. No second admin
+  // (dealing needs speed); every action writes its audit row.
+  if (await forbidUnlessBrokerAdminOrPermission(session, "PRICING")) {
+    return NextResponse.json({ error: "forbidden", permission: "PRICING", permissionLabel: PERMISSION_LABELS.PRICING }, { status: 403 });
   }
   const brokerId = session.brokerId!;
   const { id } = await params;

@@ -51,7 +51,11 @@ type PermKey =
   | "FUNDS_APPROVAL"
   | "INTERNAL_TRANSFERS"
   | "IB_PAYOUTS"
-  | "MIRROR_MANAGE";
+  | "MIRROR_MANAGE"
+  // Batch 4 owner decisions (2026-09-25)
+  | "PRICING"
+  | "CLIENT_TRADING"
+  | "DEALING";
 
 type PersonaKey = "readonly" | "dealer" | "finance" | "support";
 
@@ -106,7 +110,8 @@ const MANIFEST: Row[] = [
   { mod: "admins/route", method: "GET", perm: "BROKER_ADMIN_ONLY" },
   { mod: "audit/route", method: "GET", perm: "ANY_MANAGER" },
   { mod: "balance-adjustment-requests/[id]/approve/route", method: "POST", perm: "ACCOUNT_FINANCE", needsId: true, body: {} },
-  { mod: "balance-adjustment-requests/[id]/reject/route", method: "POST", perm: "ANY_MANAGER", needsId: true, body: {} },
+  // reject needs the same authority as approve (audit 2026-09-24 line 19)
+  { mod: "balance-adjustment-requests/[id]/reject/route", method: "POST", perm: "ACCOUNT_FINANCE", needsId: true, body: {} },
   { mod: "balance-adjustment-requests/route", method: "GET", perm: "ANY_MANAGER" },
   { mod: "client-kyc-requests/[id]/document/route", method: "GET", perm: "KYC_REVIEW", needsId: true },
   { mod: "client-kyc-requests/[id]/route", method: "PATCH", perm: "KYC_REVIEW", needsId: true, body: {} },
@@ -114,7 +119,7 @@ const MANIFEST: Row[] = [
   { mod: "dashboard/route", method: "GET", perm: "ANY_MANAGER" },
   { mod: "dealing-desk-toggle/route", method: "GET", perm: "RISK_SETTINGS" },
   { mod: "dealing-desk/route", method: "GET", perm: "ANY_MANAGER" },
-  { mod: "dealing-queue/[id]/route", method: "PATCH", perm: "ANY_MANAGER", needsId: true, body: {} },
+  { mod: "dealing-queue/[id]/route", method: "PATCH", perm: "DEALING", needsId: true, body: {} },
   { mod: "dealing-queue/route", method: "GET", perm: "ANY_MANAGER" },
   { mod: "deals/route", method: "GET", perm: "ANY_MANAGER" },
   { mod: "feed-health/route", method: "GET", perm: "ANY_MANAGER" },
@@ -149,15 +154,15 @@ const MANIFEST: Row[] = [
   { mod: "order-latency/route", method: "GET", perm: "ANY_MANAGER" },
   { mod: "payment-methods/route", method: "GET", perm: "BROKER_ADMIN_ONLY" },
   { mod: "position-action-requests/[id]/approve/route", method: "POST", perm: "ACCOUNT_FINANCE", needsId: true, body: {} },
-  { mod: "position-action-requests/[id]/reject/route", method: "POST", perm: "ANY_MANAGER", needsId: true, body: {} },
+  { mod: "position-action-requests/[id]/reject/route", method: "POST", perm: "ACCOUNT_FINANCE", needsId: true, body: {} },
   { mod: "position-action-requests/route", method: "GET", perm: "ANY_MANAGER" },
-  { mod: "positions/[id]/close/route", method: "POST", perm: "ANY_MANAGER", needsId: true, body: {} },
+  { mod: "positions/[id]/close/route", method: "POST", perm: "CLIENT_TRADING", needsId: true, body: {} },
   { mod: "positions/[id]/delete/route", method: "POST", perm: "ANY_MANAGER", needsId: true, body: {} },
   { mod: "positions/[id]/replay/route", method: "GET", perm: "ANY_MANAGER", needsId: true },
   { mod: "positions/[id]/reverse/route", method: "POST", perm: "ANY_MANAGER", needsId: true, body: {} },
-  { mod: "positions/[id]/route", method: "PATCH", perm: "ANY_MANAGER", needsId: true, body: {} },
+  { mod: "positions/[id]/route", method: "PATCH", perm: "CLIENT_TRADING", needsId: true, body: {} },
   { mod: "positions/[id]/void/route", method: "POST", perm: "ANY_MANAGER", needsId: true, body: {} },
-  { mod: "positions/close-bulk/route", method: "POST", perm: "ANY_MANAGER", body: {} },
+  { mod: "positions/close-bulk/route", method: "POST", perm: "CLIENT_TRADING", body: {} },
   { mod: "positions/route", method: "GET", perm: "ANY_MANAGER" },
   { mod: "pricing-shadow-compare/route", method: "GET", perm: "ANY_MANAGER" },
   { mod: "reports/client/route", method: "GET", perm: "ANY_MANAGER" },

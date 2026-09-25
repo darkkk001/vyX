@@ -1,11 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
+import { forbidUnlessBrokerAdminOrPermission } from "@/lib/permissions";
 import { rejectBalanceAdjustmentRequest } from "@/lib/balance-adjustment";
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await getAdminSession();
   if (!requireAdminRole(session, ["MANAGER", "BROKER_ADMIN"]) || !session!.brokerId) {
+    return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  }
+  // audit 2026-09-24 (money): rejecting needs the same authority as approving (ACCOUNT_FINANCE, or BROKER_ADMIN)
+  if (await forbidUnlessBrokerAdminOrPermission(session, "ACCOUNT_FINANCE")) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
   const brokerId = session!.brokerId!;

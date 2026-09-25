@@ -37,7 +37,7 @@ describe("checkGroupCloseOnly", () => {
 // group could be put in close-only and still open positions through the path that was missed.
 const OPEN_GATES = [
   "app/api/trade/orders/route.ts",
-  "app/api/trade/orders/[id]/fill/route.ts",
+  "lib/pending-trigger.ts", // the pending LIMIT/STOP trigger fill (server trigger + the legacy fill route, Batch 4)
   "app/api/trade/orders/[id]/requote-response/route.ts",
   "app/api/manage/positions/route.ts",
   "app/api/manage/dealing-queue/[id]/route.ts",

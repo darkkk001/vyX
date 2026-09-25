@@ -51,12 +51,13 @@ async function withTx<T>(db: Db, fn: (tx: Prisma.TransactionClient) => Promise<T
 /// account queues one close Order per target instead of closing).
 export async function selectBulkCloseTargets(
   db: Db,
-  params: { accountId: string; brokerId: string; scope: BulkCloseScope; symbol?: string }
+  params: { accountId: string; brokerId: string; scope: BulkCloseScope; symbol?: string; positionIds?: string[] }
 ) {
   const { accountId, brokerId, scope, symbol } = params;
 
   const openPositions = await db.position.findMany({
-    where: { accountId, status: "OPEN" },
+    // positionIds: exactly the positions a screen listed (Live exposure's current filter, audit 2026-09-24)
+    where: { accountId, status: "OPEN", ...(params.positionIds ? { id: { in: params.positionIds } } : {}) },
     include: { symbol: { select: { id: true, name: true, digits: true, contractSize: true } } },
   });
   if (openPositions.length === 0) return { matching: [] as typeof openPositions, priceBySymbol: new Map<string, { bid: Prisma.Decimal; ask: Prisma.Decimal }>(), nextOpenBySymbolName: new Map<string, string>() };
@@ -121,7 +122,7 @@ export async function selectBulkCloseTargets(
 
 export async function closeBulkForAccount(
   db: Db,
-  params: { accountId: string; brokerId: string; scope: BulkCloseScope; symbol?: string }
+  params: { accountId: string; brokerId: string; scope: BulkCloseScope; symbol?: string; positionIds?: string[] }
 ): Promise<BulkClosePositionResult[]> {
   const { brokerId, accountId, scope } = params;
   const { matching, priceBySymbol, nextOpenBySymbolName } = await selectBulkCloseTargets(db, params);

@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { getAdminSession } from "@/lib/auth";
 import { forbidUnlessBrokerAdminOrPermission } from "@/lib/permissions";
 import { executeIbPayout, IbPayoutError } from "@/lib/ib-payout";
+import { lockAccruedCommission } from "@/lib/commission";
 import { balanceAdjustmentNeedsApproval, requestBalanceAdjustment, pendingIbCommission, BalanceAdjustmentError } from "@/lib/balance-adjustment";
 
 // Two things this route can do to a relationship, both BROKER_ADMIN by
@@ -89,6 +90,9 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   }
 
   const updated = await prisma.$transaction(async (tx) => {
+    // owner decision 2026-09-25 (Batch 4): trades already closed keep the rate they closed under -- lock them in at the
+    // OLD rate before the new one takes effect
+    const lockedAtOldRate = await lockAccruedCommission(tx, existing);
     const result = await tx.ibRelationship.update({ where: { id }, data });
     await tx.auditLog.create({
       data: {
@@ -98,7 +102,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         entityType: "IbRelationship",
         entityId: id,
         oldValue: { commissionType: existing.commissionType, commissionRate: existing.commissionRate.toString() },
-        newValue: { commissionType: result.commissionType, commissionRate: result.commissionRate.toString() },
+        newValue: { commissionType: result.commissionType, commissionRate: result.commissionRate.toString(), lockedAtOldRate: lockedAtOldRate.toString() },
       },
     });
     return result;

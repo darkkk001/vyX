@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Prisma, TradingMode, BookType } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { forbidUnlessBrokerAdminOrPermission, PERMISSION_LABELS } from "@/lib/permissions";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 
 const TRADING_MODES: TradingMode[] = ["BOTH", "BUY_ONLY", "SELL_ONLY"];
@@ -133,6 +134,35 @@ export async function PATCH(request: NextRequest) {
   const symbol = await prisma.symbol.findUnique({ where: { id: symbolId } });
   if (!symbol) {
     return NextResponse.json({ error: "unknown symbolId" }, { status: 400 });
+  }
+
+  // owner decision 2026-09-25 (audit Batch 4, line 16): spread markup, commission, swaps and hedged margin need PRICING
+  // (BROKER_ADMIN, or a MANAGER granted it). Only when one of them actually changes: the form resends every field,
+  // so disabling a symbol or editing its lot sizes stays open to any MANAGER.
+  {
+    const current = await prisma.brokerSymbol.findUnique({ where: { brokerId_symbolId: { brokerId: session.brokerId!, symbolId } } });
+    const num = (v: unknown) => {
+      try {
+        return v === undefined || v === null || v === "" ? null : new Prisma.Decimal(String(v));
+      } catch {
+        return null;
+      }
+    };
+    const differs = (sent: unknown, stored: Prisma.Decimal | null | undefined) => {
+      if (sent === undefined) return false;
+      const a = num(sent) ?? new Prisma.Decimal(0);
+      return !a.equals(stored ?? new Prisma.Decimal(0));
+    };
+    const b = body as Record<string, unknown>;
+    const pricingChanged =
+      differs(b.spreadMarkup, current?.spreadMarkup) ||
+      differs(b.commissionPerLot, current?.commissionPerLot) ||
+      differs(b.swapLong, current?.swapLong) ||
+      differs(b.swapShort, current?.swapShort) ||
+      (b.hedgedMarginPct !== undefined && differs(b.hedgedMarginPct, current?.hedgedMarginPct ?? new Prisma.Decimal(200)));
+    if (pricingChanged && (await forbidUnlessBrokerAdminOrPermission(session, "PRICING"))) {
+      return NextResponse.json({ error: "forbidden", permission: "PRICING", permissionLabel: PERMISSION_LABELS.PRICING }, { status: 403 });
+    }
   }
 
   const spreadMarkup = parseDecimalOrZero(body?.spreadMarkup);
