@@ -2,8 +2,9 @@
 -- (engine env VYX_SHADOW_DATABASE_URL). The engine verifies at startup that this role cannot INSERT / UPDATE / DELETE
 -- any money table and refuses SHADOW otherwise (engine/order-management/src/shadow.rs connect_read_only_book).
 --
--- Run ONCE on the LIVE database (ep-morning-glade) as neondb_owner, with a strong password in place of <PASSWORD>:
---   psql "<DIRECT_URL of ep-morning-glade>" -v ON_ERROR_STOP=1 -f deploy/neon-shadow-readonly.sql
+-- Run ONCE on the LIVE database (ep-morning-glade) as neondb_owner; the password is a psql variable, never typed into
+-- this file (so it cannot land in git):
+--   psql "<DIRECT_URL of ep-morning-glade>" -v ON_ERROR_STOP=1 -v shadow_pw='<strong password>' -f deploy/neon-shadow-readonly.sql
 -- Then on the VPS, in start-engine.cmd (above the engine launch line):
 --   set VYX_SHADOW_DATABASE_URL=postgresql://vyx_shadow_ro:<PASSWORD>@ep-morning-glade-b23tui1g-pooler.c-6.eu-central-1.aws.neon.tech/neondb?sslmode=require
 -- Idempotent except the password line (re-running it just resets the password).
@@ -14,7 +15,7 @@ BEGIN
   END IF;
 END
 $$;
-ALTER ROLE vyx_shadow_ro WITH LOGIN PASSWORD '<PASSWORD>';
+ALTER ROLE vyx_shadow_ro WITH LOGIN PASSWORD :'shadow_pw';
 ALTER ROLE vyx_shadow_ro SET default_transaction_read_only = on;
 GRANT CONNECT ON DATABASE neondb TO vyx_shadow_ro;
 GRANT USAGE ON SCHEMA public TO vyx_shadow_ro;

@@ -167,3 +167,42 @@ async fn a_tick_that_puts_a_loaded_account_under_stop_out_calls_the_route_for_it
     assert!(started.elapsed() < Duration::from_secs(1), "{:?}", started.elapsed());
     let _: Arc<MarginWatch> = watch;
 }
+
+/// MT5 hedged margin (2026-09-25): the trigger reads BrokerSymbol.hedgedMarginPct from the DB and measures the hedged
+/// margin, so a hedged account is neither falsely triggered (pct 50) nor missed (pct 200). BUY 0.10 + SELL 0.10 XAUUSD
+/// at 4290, leverage 1000, balance 80; tick 4280 / 4280.30: floating -100 + 97 = -3 -> equity 77. Margin: legs 42.80 +
+/// 42.803 = 85.603 at 200 % -> 90 % (<= 99: fire); at 50 % -> 21.40 -> 360 % (no fire).
+async fn hedged_pair_fires(pct: Decimal) -> bool {
+    let Some(pool) = pool().await else { return pct == dec!(200) };
+    let mut tx = pool.begin().await.unwrap();
+    let acc = account(&mut *tx, dec!(80), Some((dec!(100), dec!(99))), 0).await;
+    let (broker,): (String,) = sqlx::query_as(r#"SELECT "brokerId" FROM "Account" WHERE id = $1"#).bind(&acc).fetch_one(&mut *tx).await.unwrap();
+    let (symbol,): (String,) = sqlx::query_as(r#"SELECT id FROM "Symbol" WHERE name = 'XAUUSD'"#).fetch_one(&mut *tx).await.unwrap();
+    sqlx::query(r#"INSERT INTO "BrokerSymbol" (id, "brokerId", "symbolId", "hedgedMarginPct", "updatedAt") VALUES ($1, $2, $3, $4, now())"#)
+        .bind(id()).bind(&broker).bind(&symbol).bind(pct).execute(&mut *tx).await.unwrap();
+    for side in ["BUY", "SELL"] {
+        let (order, position) = (id(), id());
+        sqlx::query(r#"INSERT INTO "Order" (id, "brokerId", "accountId", "symbolId", side, type, volume, status, "idempotencyKey", "updatedAt") VALUES ($1, $2, $3, $4, $5::"OrderSide", 'MARKET', 0.10, 'FILLED', $6, now())"#)
+            .bind(&order).bind(&broker).bind(&acc).bind(&symbol).bind(side).bind(format!("mwdb:{order}")).execute(&mut *tx).await.unwrap();
+        let ticket: i32 = (u32::from_str_radix(&position[..7], 16).unwrap() % 2_000_000_000) as i32;
+        sqlx::query(r#"INSERT INTO "Position" (id, "brokerId", "accountId", "symbolId", "originOrderId", side, volume, "openPrice", ticket) VALUES ($1, $2, $3, $4, $5, $6::"OrderSide", 0.10, 4290, $7)"#)
+            .bind(&position).bind(&broker).bind(&acc).bind(&symbol).bind(&order).bind(side).bind(ticket).execute(&mut *tx).await.unwrap();
+    }
+    let book = load_book(&mut *tx).await.unwrap();
+    tx.rollback().await.unwrap();
+    let mine: Vec<_> = book.accounts.into_iter().filter(|a| a.id == acc).collect();
+    assert_eq!(mine.len(), 1);
+    assert!(mine[0].positions.iter().all(|p| p.hedged_margin_pct == pct), "the book carries the symbol's hedged margin %");
+    let watch = MarginWatch::new();
+    watch.set_book(order_management::margin_watch::Book::new(mine));
+    let cache = TickCache::new();
+    let t = gold(dec!(4280));
+    cache.set(&t, chrono::Utc::now());
+    !watch.decide(std::slice::from_ref(&t), &cache, std::time::Instant::now()).is_empty()
+}
+
+#[tokio::test]
+async fn a_hedged_pair_is_measured_with_the_symbols_hedged_margin_pct() {
+    assert!(hedged_pair_fires(dec!(200)).await, "200 %: both legs in full, 90 % <= 99: the trigger fires");
+    assert!(!hedged_pair_fires(dec!(50)).await, "50 %: 360 %, the hedged account must NOT be triggered");
+}
