@@ -123,3 +123,89 @@ describe("GET/POST /api/manage/account-types (live DB)", () => {
     expect(status).toBe(400);
   });
 });
+
+// Audit 2026-09-24 (money): flat type pricing is null (inherit) unless a value is given; never a silent 0. An explicit
+// 0 on the type outranks the group's pricing (lib/pricing-engine.ts), so zeros by default gave every account on a
+// backoffice-made type 0 markup / commission / swaps and swap-free off.
+async function patchType(fx: Fixture, id: string, body: Record<string, unknown>) {
+  const { getAdminSession } = await import("@/lib/auth");
+  vi.mocked(getAdminSession).mockResolvedValue({ adminId: fx.adminId, role: "BROKER_ADMIN", brokerId: fx.brokerId });
+  const { PATCH } = await import("./[id]/route");
+  const request = new NextRequest(`https://test.local/api/manage/account-types/${id}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const response = await PATCH(request, { params: Promise.resolve({ id }) });
+  return { status: response.status, json: await response.json() };
+}
+
+describe("account-type flat pricing: null = inherit, never 0 by default (live DB)", () => {
+  const FIELDS = ["spreadMarkup", "commissionPerLot", "swapLong", "swapShort"] as const;
+
+  it("POST with no pricing (the backoffice form) stores null for every field, and GET returns null, not \"0\"", async () => {
+    if (!dbReachable) return;
+    const fx = await createFixture();
+    const { status, json } = await post(fx, { name: "ECN", isDefault: true });
+    expect(status).toBe(201);
+    const row = await prisma.accountType.findUniqueOrThrow({ where: { id: json.id } });
+    for (const f of FIELDS) expect(row[f]).toBeNull();
+    expect(row.swapFree).toBeNull();
+    const { json: list } = await get(fx);
+    for (const f of FIELDS) expect(list[0][f]).toBeNull();
+    const audit = await prisma.auditLog.findFirstOrThrow({ where: { action: "ACCOUNT_TYPE_CREATED", entityId: json.id } });
+    expect((audit.newValue as Record<string, unknown>).spreadMarkup).toBeNull();
+  });
+
+  it("POST with blank fields (the web form's inherit) stores null; a typed 0 is a real explicit 0", async () => {
+    if (!dbReachable) return;
+    const fx = await createFixture();
+    const { json } = await post(fx, { name: "Raw", spreadMarkup: "", commissionPerLot: "0", swapLong: "", swapShort: "-1.5", swapFree: null });
+    const row = await prisma.accountType.findUniqueOrThrow({ where: { id: json.id } });
+    expect(row.spreadMarkup).toBeNull();
+    expect(row.commissionPerLot?.toString()).toBe("0");
+    expect(row.swapLong).toBeNull();
+    expect(row.swapShort?.toString()).toBe("-1.5");
+    expect(row.swapFree).toBeNull();
+  });
+
+  it("POST with an unparseable number is refused (400), not zeroed", async () => {
+    if (!dbReachable) return;
+    const fx = await createFixture();
+    const { status, json } = await post(fx, { name: "Bad", spreadMarkup: "abc" });
+    expect(status).toBe(400);
+    expect(json.error).toMatch(/spreadMarkup/);
+    expect(await prisma.accountType.count({ where: { brokerId: fx.brokerId } })).toBe(0);
+  });
+
+  it("PATCH that never touches pricing (backoffice edit, enable/disable) keeps null as null", async () => {
+    if (!dbReachable) return;
+    const fx = await createFixture();
+    const { json } = await post(fx, { name: "Pro", isDefault: true });
+    const r1 = await patchType(fx, json.id, { name: "Pro", description: "renamed", sortOrder: 2, isDefault: true });
+    expect(r1.status).toBe(200);
+    const r2 = await patchType(fx, json.id, { name: "Pro", isDefault: true, enabled: false });
+    expect(r2.status).toBe(200);
+    const row = await prisma.accountType.findUniqueOrThrow({ where: { id: json.id } });
+    for (const f of FIELDS) expect(row[f]).toBeNull();
+    expect(row.swapFree).toBeNull();
+    for (const f of FIELDS) expect(r2.json[f]).toBeNull();
+  });
+
+  it("PATCH sets a value, keeps it when absent, and a blank / null puts it back to inherit", async () => {
+    if (!dbReachable) return;
+    const fx = await createFixture();
+    const { json } = await post(fx, { name: "Std", isDefault: true });
+    await patchType(fx, json.id, { name: "Std", isDefault: true, spreadMarkup: "1.2", swapFree: true });
+    await patchType(fx, json.id, { name: "Std", isDefault: true });
+    let row = await prisma.accountType.findUniqueOrThrow({ where: { id: json.id } });
+    expect(row.spreadMarkup?.toString()).toBe("1.2");
+    expect(row.swapFree).toBe(true);
+    await patchType(fx, json.id, { name: "Std", isDefault: true, spreadMarkup: "", swapFree: null });
+    row = await prisma.accountType.findUniqueOrThrow({ where: { id: json.id } });
+    expect(row.spreadMarkup).toBeNull();
+    expect(row.swapFree).toBeNull();
+    const bad = await patchType(fx, json.id, { name: "Std", isDefault: true, commissionPerLot: "x" });
+    expect(bad.status).toBe(400);
+  });
+});

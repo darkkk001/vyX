@@ -3,6 +3,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { publishAccountsUpdatedAfterResponse } from "@/lib/account-events";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
+import { parseTypePricing, typePricingJson } from "@/lib/account-type-pricing";
 
 async function requireManager() {
   const session = await getAdminSession();
@@ -12,50 +13,9 @@ async function requireManager() {
   return session!;
 }
 
-// Same "config now, enforce later" reasoning as account-types/route.ts's
-// own POST. A field entirely ABSENT from the body keeps `existing`'s
-// value (this PATCH's own `enabled` already works this way, a couple
-// lines below) -- toggleTypeEnabled/makeTypeDefault in SettingsManager.tsx
-// only ever resend name/description/pricingHint/sortOrder/isDefault/
-// enabled, never the pricing fields, so without this fallback either of
-// those two actions would silently zero out a type's saved pricing every
-// time. A field that IS present but unparseable falls back to 0 rather
-// than silently keeping the old value, since that's a real (if bad) input
-// the admin just typed, not an unrelated action that never touched pricing.
-// `existing`'s fields are typed `| null` since the 2026-09-07 migration
-// pricing_engine_nullable_widening made these columns nullable -- the
-// flat spreadMarkup/commissionPerLot/swapLong/swapShort here still only
-// ever store a concrete literal value (blank/absent falls back to
-// `existing`, never null -- this form isn't the per-symbol editor, see
-// app/api/manage/account-types/[id]/pricing/route.ts for the one that
-// actually needs null-means-inherit on those four). swapFree is
-// different: it's a real tri-state now that it's read at fill time
-// (lib/pricing-engine.ts) -- absent from the body keeps the existing
-// value (partial-PATCH semantics, matching every other field here),
-// explicit null means "inherit from Group," true/false are explicit.
-function parsePricingFields(
-  body: unknown,
-  existing: { spreadMarkup: Prisma.Decimal | null; commissionPerLot: Prisma.Decimal | null; swapLong: Prisma.Decimal | null; swapShort: Prisma.Decimal | null; swapFree: boolean | null }
-) {
-  const b = body as Record<string, unknown> | null;
-  const parseDecimal = (v: unknown, fallback: Prisma.Decimal): Prisma.Decimal => {
-    if (v === undefined) return fallback;
-    try {
-      const d = new Prisma.Decimal(String(v));
-      return d.isFinite() ? d : new Prisma.Decimal(0);
-    } catch {
-      return new Prisma.Decimal(0);
-    }
-  };
-  const swapFree: boolean | null = b?.swapFree === undefined ? existing.swapFree : b.swapFree === null ? null : b.swapFree === true;
-  return {
-    spreadMarkup: parseDecimal(b?.spreadMarkup, existing.spreadMarkup ?? new Prisma.Decimal(0)),
-    commissionPerLot: parseDecimal(b?.commissionPerLot, existing.commissionPerLot ?? new Prisma.Decimal(0)),
-    swapLong: parseDecimal(b?.swapLong, existing.swapLong ?? new Prisma.Decimal(0)),
-    swapShort: parseDecimal(b?.swapShort, existing.swapShort ?? new Prisma.Decimal(0)),
-    swapFree,
-  };
-}
+// Flat pricing fields: see lib/account-type-pricing.ts. A field ABSENT from the body keeps the stored value (null
+// stays null = inherit), so an edit that never touched pricing (the backoffice form, enable/disable, make default)
+// can never turn "inherit" into an explicit 0. Null or blank = inherit; an unparseable value is refused (400).
 
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await requireManager();
@@ -86,7 +46,12 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   // matching a PATCH's own partial-update convention rather than forcing
   // every caller to always resend it.
   const enabled = typeof body?.enabled === "boolean" ? body.enabled : existing.enabled;
-  const pricing = parsePricingFields(body, existing);
+  // absent = keep what is stored (null stays null = inherit); null / blank = inherit; never 0 by default
+  // (lib/account-type-pricing.ts, audit 2026-09-24 money)
+  const pricing = parseTypePricing(body, existing);
+  if ("error" in pricing) {
+    return NextResponse.json({ error: pricing.error }, { status: 400 });
+  }
 
   // A broker must always have exactly one default (app/api/manage/
   // accounts/route.ts's own account-creation fallback depends on it
@@ -123,11 +88,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
             sortOrder: existing.sortOrder,
             isDefault: existing.isDefault,
             enabled: existing.enabled,
-            spreadMarkup: existing.spreadMarkup?.toString() ?? "0",
-            commissionPerLot: existing.commissionPerLot?.toString() ?? "0",
-            swapLong: existing.swapLong?.toString() ?? "0",
-            swapShort: existing.swapShort?.toString() ?? "0",
-            swapFree: existing.swapFree,
+            ...typePricingJson(existing),
           },
           newValue: {
             name,
@@ -136,11 +97,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
             sortOrder,
             isDefault,
             enabled,
-            spreadMarkup: pricing.spreadMarkup.toString(),
-            commissionPerLot: pricing.commissionPerLot.toString(),
-            swapLong: pricing.swapLong.toString(),
-            swapShort: pricing.swapShort.toString(),
-            swapFree: pricing.swapFree,
+            ...typePricingJson(pricing),
           },
         },
       });
@@ -156,11 +113,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       sortOrder: updated.sortOrder,
       isDefault: updated.isDefault,
       enabled: updated.enabled,
-      spreadMarkup: updated.spreadMarkup?.toString() ?? "0",
-      commissionPerLot: updated.commissionPerLot?.toString() ?? "0",
-      swapLong: updated.swapLong?.toString() ?? "0",
-      swapShort: updated.swapShort?.toString() ?? "0",
-      swapFree: updated.swapFree,
+      ...typePricingJson(updated),
     });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {

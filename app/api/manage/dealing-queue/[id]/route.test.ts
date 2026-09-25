@@ -69,7 +69,9 @@ async function createFixture(): Promise<Fixture> {
       passwordHash: "x",
       fullName: "Dealing Queue Test Client",
       accountMode: "LIVE",
-      balance: D(10000),
+      // funded well above 1 lot's margin: dealer ACCEPT runs the pre-trade margin gate (audit 2026-09-24), and these
+      // tests are about price and audit, not margin (margin-gate.test.ts covers that)
+      balance: D(1_000_000),
     },
   });
   return { brokerId: broker.id, adminId: admin.id, accountId: account.id, symbolId: symbol.id, symbolName: symbol.name, digits: 2 };

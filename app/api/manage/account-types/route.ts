@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
+import { parseTypePricing, typePricingJson } from "@/lib/account-type-pricing";
 
 async function requireManager() {
   const session = await getAdminSession();
@@ -36,47 +37,14 @@ export async function GET() {
       sortOrder: t.sortOrder,
       isDefault: t.isDefault,
       enabled: t.enabled,
-      // Guaranteed non-null in practice -- POST/PATCH below always write
-      // all 4 as concrete Decimals -- the `?? "0"` just satisfies the
-      // now-nullable column type (2026-09-07 migration
-      // pricing_engine_nullable_widening).
-      spreadMarkup: t.spreadMarkup?.toString() ?? "0",
-      commissionPerLot: t.commissionPerLot?.toString() ?? "0",
-      swapLong: t.swapLong?.toString() ?? "0",
-      swapShort: t.swapShort?.toString() ?? "0",
+      // null = inherit (the group decides); never printed as "0" (audit 2026-09-24, money)
+      spreadMarkup: t.spreadMarkup?.toString() ?? null,
+      commissionPerLot: t.commissionPerLot?.toString() ?? null,
+      swapLong: t.swapLong?.toString() ?? null,
+      swapShort: t.swapShort?.toString() ?? null,
       swapFree: t.swapFree, // real tri-state (2026-09-07 Stage 5) -- null means "inherit from Group"
     }))
   );
-}
-
-// Storage-only pricing fields (2026-09-05) -- spreadMarkup/commissionPerLot/
-// swapLong/swapShort/swapFree are real values a broker sets here and they
-// save, but no live fill-time path reads them yet (Group/GroupSymbolConfig
-// via lib/group-pricing.ts remains the only thing actually applied to a
-// real fill). See AccountType.spreadMarkup's own schema comment for the
-// full "config now, enforce later" reasoning. Invalid/missing input on any
-// of these silently falls back to 0/false rather than rejecting the
-// request -- same tolerant-parse convention every other Decimal field in
-// this app's POST routes already uses (e.g. Group's own marginCallLevel).
-function parsePricingFields(body: unknown) {
-  const b = body as Record<string, unknown> | null;
-  const parseDecimal = (v: unknown): Prisma.Decimal => {
-    try {
-      const d = new Prisma.Decimal(String(v ?? "0"));
-      return d.isFinite() ? d : new Prisma.Decimal(0);
-    } catch {
-      return new Prisma.Decimal(0);
-    }
-  };
-  return {
-    spreadMarkup: parseDecimal(b?.spreadMarkup),
-    commissionPerLot: parseDecimal(b?.commissionPerLot),
-    swapLong: parseDecimal(b?.swapLong),
-    swapShort: parseDecimal(b?.swapShort),
-    // Tri-state (2026-09-07 Stage 5) -- explicit null means "inherit from
-    // Group," same as the PATCH route's own handling.
-    swapFree: b?.swapFree === null ? null : b?.swapFree === true,
-  };
 }
 
 export async function POST(request: NextRequest) {
@@ -95,7 +63,11 @@ export async function POST(request: NextRequest) {
   const pricingHint = typeof body?.pricingHint === "string" && body.pricingHint.trim() ? body.pricingHint.trim() : null;
   const sortOrder = Number.isFinite(Number(body?.sortOrder)) ? Math.trunc(Number(body.sortOrder)) : 0;
   const isDefault = body?.isDefault === true;
-  const pricing = parsePricingFields(body);
+  // null (inherit) unless a value is given; never 0 by default (lib/account-type-pricing.ts)
+  const pricing = parseTypePricing(body);
+  if ("error" in pricing) {
+    return NextResponse.json({ error: pricing.error }, { status: 400 });
+  }
 
   try {
     const created = await prisma.$transaction(async (tx) => {
@@ -121,11 +93,7 @@ export async function POST(request: NextRequest) {
             pricingHint,
             sortOrder,
             isDefault,
-            spreadMarkup: pricing.spreadMarkup.toString(),
-            commissionPerLot: pricing.commissionPerLot.toString(),
-            swapLong: pricing.swapLong.toString(),
-            swapShort: pricing.swapShort.toString(),
-            swapFree: pricing.swapFree,
+            ...typePricingJson(pricing),
           },
         },
       });
@@ -141,11 +109,7 @@ export async function POST(request: NextRequest) {
         sortOrder: created.sortOrder,
         isDefault: created.isDefault,
         enabled: created.enabled,
-        spreadMarkup: created.spreadMarkup?.toString() ?? "0",
-        commissionPerLot: created.commissionPerLot?.toString() ?? "0",
-        swapLong: created.swapLong?.toString() ?? "0",
-        swapShort: created.swapShort?.toString() ?? "0",
-        swapFree: created.swapFree,
+        ...typePricingJson(created),
       },
       { status: 201 }
     );

@@ -13,6 +13,7 @@ import { isDealingManagedAccount } from "@/lib/dealing-routing";
 import * as mirror from "@/lib/mirror";
 import * as coverage from "@/lib/coverage";
 import { executeQueuedCloseInTx, afterQueuedCloseExecuted } from "@/lib/queued-close";
+import { checkAccountPreTradeMargin } from "@/lib/margin";
 import {
   checkTradingHalted,
   checkCloseOnly,
@@ -321,6 +322,23 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     return NextResponse.json({ error: "no live price available to accept at market" }, { status: 409 });
   }
   const markedUpFillPrice = applySpreadMarkup({ side: order.side, price: acceptBase, spreadMarkup: pricing.spreadMarkup, digits: order.symbol.digits });
+  // Audit 2026-09-24 (money): the same pre-trade margin gate as a direct fill. The margin picture can have changed
+  // while the order sat in the queue; a dealer accept must not open what the client could not open themselves.
+  // A close never reaches here (handled above) and an order that does not raise used margin always passes.
+  const marginError = await checkAccountPreTradeMargin(prisma, {
+    accountId: order.accountId,
+    leverage: order.account.leverage,
+    marginCallLevel: order.account.group?.marginCallLevel ?? new Prisma.Decimal(100),
+    newOrderContractSize: order.symbol.contractSize,
+    newOrderQuoteCurrency: order.symbol.quoteCurrency,
+    newOrderVolume: order.volume,
+    newOrderFillPrice: markedUpFillPrice,
+    newOrderSide: order.side,
+    newOrderSymbolId: order.symbolId,
+  });
+  if (marginError) {
+    return NextResponse.json(marginError, { status: 400 });
+  }
   const bookType = resolveBookType(order.account.group.category);
 
   try {

@@ -9,6 +9,8 @@ import { publishTradingEvent } from "@/lib/nats";
 import * as mirror from "@/lib/mirror";
 import * as coverage from "@/lib/coverage";
 import { orderAuditFields } from "@/lib/order-audit";
+import { checkAccountPreTradeMargin } from "@/lib/margin";
+import { Prisma } from "@prisma/client";
 import {
   checkTradingHalted,
   checkCloseOnly,
@@ -199,6 +201,22 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   });
   logSpreadWarning({ accountId: account.id, symbolId: order.symbolId, brokerId: order.brokerId }, pricing.warning);
   const fillPrice = applySpreadMarkup({ side: order.side, price: order.requotedPrice!, spreadMarkup: pricing.spreadMarkup, digits: brokerSymbol.symbol.digits });
+  // Audit 2026-09-24 (money): accepting a requote is a fill like any other, so it passes the same pre-trade margin
+  // gate as a direct order (the account may have changed since it was queued).
+  const marginError = await checkAccountPreTradeMargin(prisma, {
+    accountId: account.id,
+    leverage: account.leverage,
+    marginCallLevel: account.group?.marginCallLevel ?? new Prisma.Decimal(100),
+    newOrderContractSize: brokerSymbol.symbol.contractSize,
+    newOrderQuoteCurrency: brokerSymbol.symbol.quoteCurrency,
+    newOrderVolume: order.volume,
+    newOrderFillPrice: fillPrice,
+    newOrderSide: order.side,
+    newOrderSymbolId: order.symbolId,
+  });
+  if (marginError) {
+    return NextResponse.json(marginError, { status: 400 });
+  }
   const bookType = resolveBookType(account.group.category);
 
   try {

@@ -36,13 +36,12 @@ type AccountTypeRow = {
   sortOrder: number;
   isDefault: boolean;
   enabled: boolean;
-  // Storage-only pricing (2026-09-05) -- set/saved here, but no live
-  // fill-time path reads these yet. See AccountType.spreadMarkup's own
-  // schema comment for the full "config now, enforce later" reasoning.
-  spreadMarkup: string;
-  commissionPerLot: string;
-  swapLong: string;
-  swapShort: string;
+  // Flat type pricing: null = inherit from the group (lib/account-type-pricing.ts). An explicit value, 0 included,
+  // outranks the group once the broker's pricing engine is on.
+  spreadMarkup: string | null;
+  commissionPerLot: string | null;
+  swapLong: string | null;
+  swapShort: string | null;
   // Tri-state (2026-09-07 Stage 5): null = inherit from Group, actually
   // resolved at fill time now (lib/pricing-engine.ts) once your broker's
   // pricing engine is enabled.
@@ -94,10 +93,11 @@ export default function SettingsManager() {
     pricingHint: "",
     sortOrder: "0",
     isDefault: false,
-    spreadMarkup: "0",
-    commissionPerLot: "0",
-    swapLong: "0",
-    swapShort: "0",
+    // blank = inherit from the group; a new type never starts with explicit zeros (audit 2026-09-24, money)
+    spreadMarkup: "",
+    commissionPerLot: "",
+    swapLong: "",
+    swapShort: "",
     // A brand-new type defaults to null (inherit) rather than an explicit
     // false -- matches the resolver's own fall-through, avoids a new type
     // silently locking out a Group's swap-free setting for every account
@@ -123,10 +123,10 @@ export default function SettingsManager() {
             pricingHint: target.pricingHint ?? "",
             sortOrder: String(target.sortOrder),
             isDefault: target.isDefault,
-            spreadMarkup: target.spreadMarkup,
-            commissionPerLot: target.commissionPerLot,
-            swapLong: target.swapLong,
-            swapShort: target.swapShort,
+            spreadMarkup: target.spreadMarkup ?? "",
+            commissionPerLot: target.commissionPerLot ?? "",
+            swapLong: target.swapLong ?? "",
+            swapShort: target.swapShort ?? "",
             swapFree: target.swapFree,
           }
     );
@@ -321,8 +321,8 @@ export default function SettingsManager() {
                 <TableRow key={t.id}>
                   <TableCell primary>{t.name}</TableCell>
                   <TableCell className="text-[var(--text-3)]">{t.description ?? "-"}</TableCell>
-                  <TableCell align="right" mono>{t.spreadMarkup}p</TableCell>
-                  <TableCell align="right" mono>${t.commissionPerLot}</TableCell>
+                  <TableCell align="right" mono>{t.spreadMarkup == null ? "inherit" : `${t.spreadMarkup}p`}</TableCell>
+                  <TableCell align="right" mono>{t.commissionPerLot == null ? "inherit" : `$${t.commissionPerLot}`}</TableCell>
                   <TableCell>
                     {t.swapFree === true ? (
                       <Badge tone="success">Swap-free</Badge>
@@ -330,7 +330,7 @@ export default function SettingsManager() {
                       <Badge tone="neutral">Inherits</Badge>
                     ) : (
                       <span className="font-mono text-xs text-[var(--text-3)]">
-                        L {t.swapLong} / S {t.swapShort}
+                        L {t.swapLong ?? "inherit"} / S {t.swapShort ?? "inherit"}
                       </span>
                     )}
                   </TableCell>
@@ -441,6 +441,7 @@ export default function SettingsManager() {
                 type="text"
                 inputMode="decimal"
                 mono
+                placeholder="inherit"
                 value={typeForm.spreadMarkup}
                 onChange={(e) => setTypeForm((p) => ({ ...p, spreadMarkup: e.target.value }))}
               />
@@ -450,6 +451,7 @@ export default function SettingsManager() {
                 type="text"
                 inputMode="decimal"
                 mono
+                placeholder="inherit"
                 value={typeForm.commissionPerLot}
                 onChange={(e) => setTypeForm((p) => ({ ...p, commissionPerLot: e.target.value }))}
               />
@@ -460,6 +462,7 @@ export default function SettingsManager() {
                 inputMode="decimal"
                 mono
                 disabled={typeForm.swapFree === true}
+                placeholder="inherit"
                 value={typeForm.swapLong}
                 onChange={(e) => setTypeForm((p) => ({ ...p, swapLong: e.target.value }))}
               />
@@ -470,6 +473,7 @@ export default function SettingsManager() {
                 inputMode="decimal"
                 mono
                 disabled={typeForm.swapFree === true}
+                placeholder="inherit"
                 value={typeForm.swapShort}
                 onChange={(e) => setTypeForm((p) => ({ ...p, swapShort: e.target.value }))}
               />

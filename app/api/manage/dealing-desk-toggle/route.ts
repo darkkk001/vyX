@@ -11,6 +11,9 @@ import { orderAuditFields } from "@/lib/order-audit";
 import { recordDealerActivity } from "@/lib/dealer-activity";
 import { publishTradingEvent } from "@/lib/nats";
 import * as mirror from "@/lib/mirror";
+import * as coverage from "@/lib/coverage";
+import { checkAccountPreTradeMargin } from "@/lib/margin";
+import { Prisma } from "@prisma/client";
 import { executeQueuedCloseInTx, afterQueuedCloseExecuted } from "@/lib/queued-close";
 import {
   checkTradingHalted,
@@ -100,7 +103,7 @@ export async function PATCH(request: NextRequest) {
   // already handles with zero extra code.
   let flushed: { orderId: string; accountNumber: string; status: "filled" | "skipped"; reason?: string }[] = [];
   if (hasDealerOn && !dealerOn) {
-    flushed = await flushDealingQueueToMarket(brokerId);
+    flushed = await flushDealingQueueToMarket(brokerId, session!.adminId);
   }
 
   return NextResponse.json({
@@ -126,7 +129,8 @@ export async function PATCH(request: NextRequest) {
 // still sees it and can decide by hand. Never fakes a price or bypasses a
 // risk check just to clear the queue.
 async function flushDealingQueueToMarket(
-  brokerId: string
+  brokerId: string,
+  adminId: string
 ): Promise<{ orderId: string; accountNumber: string; status: "filled" | "skipped"; reason?: string }[]> {
   const broker = await prisma.broker.findUniqueOrThrow({ where: { id: brokerId } });
   const queued = await prisma.order.findMany({
@@ -239,6 +243,23 @@ async function flushDealingQueueToMarket(
     logSpreadWarning({ accountId: order.accountId, symbolId: order.symbolId, brokerId }, pricing.warning);
     const liveRef = order.side === "BUY" ? livePrice.ask : livePrice.bid;
     const fillPrice = applySpreadMarkup({ side: order.side, price: liveRef, spreadMarkup: pricing.spreadMarkup, digits: order.symbol.digits });
+    // Audit 2026-09-24 (money): the same pre-trade margin gate as a direct fill; an order that fails it is left in
+    // the queue (skipped, with the reason), the same as a risk-battery failure above.
+    const marginError = await checkAccountPreTradeMargin(prisma, {
+      accountId: order.accountId,
+      leverage: order.account.leverage,
+      marginCallLevel: order.account.group?.marginCallLevel ?? new Prisma.Decimal(100),
+      newOrderContractSize: order.symbol.contractSize,
+      newOrderQuoteCurrency: order.symbol.quoteCurrency,
+      newOrderVolume: order.volume,
+      newOrderFillPrice: fillPrice,
+      newOrderSide: order.side,
+      newOrderSymbolId: order.symbolId,
+    });
+    if (marginError) {
+      results.push({ orderId: order.id, accountNumber: order.account.accountNumber, status: "skipped", reason: marginError.error });
+      continue;
+    }
     const bookType = resolveBookType(order.account.group.category);
 
     try {
@@ -259,6 +280,9 @@ async function flushDealingQueueToMarket(
         return pos;
       });
       await mirror.onFillPosition(prisma, position, order.symbol.name).catch((err) => console.error("mirror.onFill failed", err));
+      // Audit 2026-09-24 (money): a flushed fill is a fill like any other; with auto-hedge on it is covered the same
+      // way (the desk is already in auto-fill here, so the hook applies). Never throws.
+      await coverage.onFillAutoHedge(prisma, { positionId: position.id, brokerId, adminId });
       await publishTradingEvent("OrderFilled", {
         order_id: order.id,
         account_id: order.accountId,
