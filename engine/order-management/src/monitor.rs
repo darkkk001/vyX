@@ -28,7 +28,7 @@
 //! top of an Account.balance it never wrote.
 
 use crate::book;
-use crate::calc::{close_price_for, equity, floating_pnl, load_book_state, used_margin, AccountState};
+use crate::calc::{equity, floating_pnl, load_book_state, position_close_price, used_margin, AccountState};
 use crate::db;
 use margin::{evaluate, MonitorAction};
 use protocol::TradingEvent;
@@ -181,7 +181,8 @@ enum SlTpReason {
 /// not re-validated here).
 fn sl_tp_trigger(p: &db::OpenPositionWithMarket) -> Option<SlTpReason> {
     let (bid, ask) = (p.bid?, p.ask?);
-    let close_price = close_price_for(p.side, bid, ask);
+    // a SELL's SL / TP triggers at its account's ask (the price it closes at), a BUY's at the raw bid
+    let close_price = position_close_price(p, bid, ask);
     let crossed = |level: Decimal, is_below_trigger: bool| {
         if is_below_trigger { close_price <= level } else { close_price >= level }
     };
@@ -230,7 +231,7 @@ async fn close_sl_tp_triggered(
         .filter_map(|p| {
             let reason = sl_tp_trigger(p)?;
             let (bid, ask) = (p.bid?, p.ask?);
-            let close_price = close_price_for(p.side, bid, ask);
+            let close_price = position_close_price(p, bid, ask);
             // booked exactly as the web books it: quote P&L x rate, 4 dp when converted (fx.rs convert_pnl)
             let pnl = crate::fx::convert_pnl(floating_pnl(p.side, p.open_price, close_price, p.contract_size, p.volume), p.fx_rate);
             Some((p.id.clone(), reason, close_price, pnl))
@@ -313,7 +314,7 @@ async fn force_close_worst(
         .filter_map(|(i, p)| {
             let (bid, ask) = (p.bid?, p.ask?);
             // the worst is chosen in the ACCOUNT currency (a JPY loss and a USD loss compare as money)
-            Some((i, crate::calc::floating_pnl_account(p)?, close_price_for(p.side, bid, ask)))
+            Some((i, crate::calc::floating_pnl_account(p)?, position_close_price(p, bid, ask)))
         })
         .min_by(|a, b| a.1.cmp(&b.1));
 
@@ -843,6 +844,7 @@ mod tests {
             tp_price,
             fx_rate: Decimal::ONE,
             hedged_margin_pct: dec!(200),
+            ask_rule: None,
         }
     }
 

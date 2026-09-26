@@ -52,6 +52,7 @@ use std::time::{Duration, Instant};
 use protocol::Tick;
 
 use crate::activity::{self, GateLog};
+use crate::ask_markup::{self as ask_markup, AskRule};
 use crate::cache::TickCache;
 
 /// The per-tick margin trigger (see the module doc). Pure in-memory on the flush path: no I/O.
@@ -71,20 +72,26 @@ struct Level {
     is_buy: bool,
     sl: Option<Decimal>,
     tp: Option<Decimal>,
+    /// The position's account ask rule (crate::ask_markup, 2026-09-26): a SELL's levels are checked against the
+    /// account's ask, the price it closes at. None = the raw ask.
+    ask_rule: Option<AskRule>,
 }
 
 /// A resting LIMIT / STOP order's entry (audit 2026-09-24 Batch 4): pending orders trigger SERVER-side. The tick that
 /// crosses the entry fires the same `?symbols=` call; the web (lib/pending-trigger.ts) re-checks the trigger on its
-/// own price and fills. A BUY trades at the ask, a SELL at the bid.
+/// own price and fills. A BUY trades at the ask -- its ACCOUNT's ask (2026-09-26: the fill already used it, the
+/// trigger now does too) -- a SELL at the bid.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct PendingLevel {
     is_buy: bool,
     is_limit: bool,
     entry: Decimal,
+    ask_rule: Option<AskRule>,
 }
 
 impl PendingLevel {
-    fn triggered(&self, bid: Decimal, ask: Decimal) -> bool {
+    fn triggered(&self, bid: Decimal, raw_ask: Decimal) -> bool {
+        let ask = if self.is_buy { self.ask_rule.as_ref().map_or(raw_ask, |r| ask_markup::account_ask(r, bid, raw_ask)) } else { raw_ask };
         match (self.is_buy, self.is_limit) {
             (true, true) => ask <= self.entry,   // BUY LIMIT: buy when the ask falls to the entry
             (true, false) => ask >= self.entry,  // BUY STOP: buy when the ask rises to the entry
@@ -130,38 +137,61 @@ impl RiskHook {
         let _ = self.margin_watch.set(watch);
     }
 
-    /// Reload the open positions' levels (symbol -> [side, sl, tp]) from the Prisma table.
+    /// Reload the open positions' levels (symbol -> [side, sl, tp, account ask rule]) from the Prisma table.
     pub async fn reload(&self, pool: &PgPool) {
-        let rows: Result<Vec<(String, String, Option<Decimal>, Option<Decimal>)>, sqlx::Error> = sqlx::query_as(
-            r#"SELECT s.name, p.side::text, p."slPrice", p."tpPrice"
-               FROM "Position" p JOIN "Symbol" s ON s.id = p."symbolId"
+        use sqlx::Row;
+        let sql = format!(
+            r#"SELECT s.name, p.side::text AS side, p."slPrice" AS sl, p."tpPrice" AS tp, {levels}
+               FROM "Position" p JOIN "Symbol" s ON s.id = p."symbolId" JOIN "Account" a ON a.id = p."accountId"
+               {joins}
                WHERE p.status = 'OPEN' AND (p."slPrice" IS NOT NULL OR p."tpPrice" IS NOT NULL)"#,
-        )
-        .fetch_all(pool)
-        .await;
+            levels = ask_markup::LEVELS_COLUMNS,
+            joins = ask_markup::LEVELS_JOINS,
+        );
+        let rows = sqlx::query(&sql).fetch_all(pool).await.and_then(|rows| {
+            rows.iter()
+                .map(|r| -> Result<(String, Level), sqlx::Error> {
+                    let side: String = r.try_get("side")?;
+                    let ask_rule = ask_markup::resolve(&ask_markup::levels_from_row(r)?);
+                    Ok((r.try_get("name")?, Level { is_buy: side == "BUY", sl: r.try_get("sl")?, tp: r.try_get("tp")?, ask_rule }))
+                })
+                .collect::<Result<Vec<_>, _>>()
+        });
         match rows {
             Ok(rows) => {
                 let mut map: HashMap<String, Vec<Level>> = HashMap::new();
-                for (symbol, side, sl, tp) in rows {
-                    map.entry(symbol).or_default().push(Level { is_buy: side == "BUY", sl, tp });
+                for (symbol, level) in rows {
+                    map.entry(symbol).or_default().push(level);
                 }
                 *self.levels.lock().unwrap() = map;
             }
             Err(err) => tracing::warn!(error = %err, "risk hook: could not reload SL/TP levels"),
         }
-        // resting LIMIT / STOP orders (the web's own "Order" table: PENDING, not the engine's orders table)
-        let pending: Result<Vec<(String, String, String, Decimal)>, sqlx::Error> = sqlx::query_as(
-            r#"SELECT s.name, o.side::text, o.type::text, o."requestedPrice"
-               FROM "Order" o JOIN "Symbol" s ON s.id = o."symbolId"
+        // resting LIMIT / STOP orders (the web's own "Order" table: PENDING, not the engine's orders table), with the
+        // order's account ask rule for a BUY entry
+        let sql = format!(
+            r#"SELECT s.name, o.side::text AS side, o.type::text AS kind, o."requestedPrice" AS entry, {levels}
+               FROM "Order" o JOIN "Symbol" s ON s.id = o."symbolId" JOIN "Account" a ON a.id = o."accountId"
+               {joins}
                WHERE o.status = 'PENDING' AND o.type IN ('LIMIT', 'STOP') AND o."requestedPrice" IS NOT NULL"#,
-        )
-        .fetch_all(pool)
-        .await;
+            levels = ask_markup::LEVELS_COLUMNS,
+            joins = ask_markup::LEVELS_JOINS,
+        );
+        let pending = sqlx::query(&sql).fetch_all(pool).await.and_then(|rows| {
+            rows.iter()
+                .map(|r| -> Result<(String, PendingLevel), sqlx::Error> {
+                    let side: String = r.try_get("side")?;
+                    let kind: String = r.try_get("kind")?;
+                    let ask_rule = ask_markup::resolve(&ask_markup::levels_from_row(r)?);
+                    Ok((r.try_get("name")?, PendingLevel { is_buy: side == "BUY", is_limit: kind == "LIMIT", entry: r.try_get("entry")?, ask_rule }))
+                })
+                .collect::<Result<Vec<_>, _>>()
+        });
         match pending {
             Ok(rows) => {
                 let mut map: HashMap<String, Vec<PendingLevel>> = HashMap::new();
-                for (symbol, side, kind, entry) in rows {
-                    map.entry(symbol).or_default().push(PendingLevel { is_buy: side == "BUY", is_limit: kind == "LIMIT", entry });
+                for (symbol, level) in rows {
+                    map.entry(symbol).or_default().push(level);
                 }
                 *self.pending.lock().unwrap() = map;
             }
@@ -187,8 +217,8 @@ impl RiskHook {
         for t in ticks {
             let Some(ls) = levels.get(&t.symbol) else { continue };
             let hit = ls.iter().any(|l| {
-                // close price: a BUY closes at bid, a SELL at ask (lib/trading.ts closePriceFor)
-                let cp = if l.is_buy { t.bid } else { t.ask };
+                // close price: a BUY closes at the raw bid, a SELL at its account's ask (lib/ask-markup.ts)
+                let cp = if l.is_buy { t.bid } else { ask_markup::close_price(protocol::OrderSide::Sell, t.bid, t.ask, l.ask_rule.as_ref()) };
                 let sl_hit = l.sl.map_or(false, |sl| if l.is_buy { cp <= sl } else { cp >= sl });
                 let tp_hit = l.tp.map_or(false, |tp| if l.is_buy { cp >= tp } else { cp <= tp });
                 sl_hit || tp_hit
@@ -344,18 +374,47 @@ mod tests {
 
     #[test]
     fn pending_entries_trigger_on_the_side_they_trade() {
-        let buy_limit = super::PendingLevel { is_buy: true, is_limit: true, entry: dec!(100) };
+        let buy_limit = super::PendingLevel { is_buy: true, is_limit: true, entry: dec!(100), ask_rule: None };
         assert!(buy_limit.triggered(dec!(99.8), dec!(100.0)));
         assert!(!buy_limit.triggered(dec!(99.9), dec!(100.1)));
-        let buy_stop = super::PendingLevel { is_buy: true, is_limit: false, entry: dec!(100) };
+        let buy_stop = super::PendingLevel { is_buy: true, is_limit: false, entry: dec!(100), ask_rule: None };
         assert!(buy_stop.triggered(dec!(99.9), dec!(100.1)));
         assert!(!buy_stop.triggered(dec!(99.7), dec!(99.9)));
-        let sell_limit = super::PendingLevel { is_buy: false, is_limit: true, entry: dec!(100) };
+        let sell_limit = super::PendingLevel { is_buy: false, is_limit: true, entry: dec!(100), ask_rule: None };
         assert!(sell_limit.triggered(dec!(100.0), dec!(100.2)));
         assert!(!sell_limit.triggered(dec!(99.9), dec!(100.1)));
-        let sell_stop = super::PendingLevel { is_buy: false, is_limit: false, entry: dec!(100) };
+        let sell_stop = super::PendingLevel { is_buy: false, is_limit: false, entry: dec!(100), ask_rule: None };
         assert!(sell_stop.triggered(dec!(99.9), dec!(100.1)));
         assert!(!sell_stop.triggered(dec!(100.1), dec!(100.3)));
+    }
+
+    #[test]
+    fn a_buy_entry_triggers_on_its_account_ask_a_sell_entry_on_the_raw_bid() {
+        use crate::ask_markup::AskRule;
+        // +1.5 pips on a 2-digit symbol = +0.15
+        let rule = Some(AskRule::Markup { markup_pips: dec!(1.5), digits: 2 });
+        // BUY STOP at 100.10: raw ask 100.00 has not reached it, the account ask 100.15 has
+        let buy_stop = super::PendingLevel { is_buy: true, is_limit: false, entry: dec!(100.10), ask_rule: rule };
+        assert!(buy_stop.triggered(dec!(99.90), dec!(100.00)));
+        // BUY LIMIT at 100.00: raw ask 99.95 would fill it raw; the account ask 100.10 is above the entry
+        let buy_limit = super::PendingLevel { is_buy: true, is_limit: true, entry: dec!(100.00), ask_rule: rule };
+        assert!(!buy_limit.triggered(dec!(99.80), dec!(99.95)));
+        // a SELL entry never reads the ask
+        let sell_stop = super::PendingLevel { is_buy: false, is_limit: false, entry: dec!(99.90), ask_rule: rule };
+        assert!(!sell_stop.triggered(dec!(99.95), dec!(100.00)));
+    }
+
+    #[test]
+    fn a_sell_level_is_touched_at_its_account_ask() {
+        use crate::ask_markup::AskRule;
+        let h = hook("http://127.0.0.1:1/x".into());
+        // SELL SL at 4299.25: raw ask 4299.13 has not reached it, the account ask 4299.28 (+1.5 pips) has
+        h.levels.lock().unwrap().insert("XAUUSD".into(), vec![Level { is_buy: false, sl: Some(dec!(4299.25)), tp: None, ask_rule: Some(AskRule::Markup { markup_pips: dec!(1.5), digits: 2 }) }]);
+        let t: Tick = serde_json::from_value(serde_json::json!({ "symbol": "XAUUSD", "bid": "4298.96", "ask": "4299.13" })).unwrap();
+        assert_eq!(h.touched(std::slice::from_ref(&t)), vec!["XAUUSD".to_string()]);
+        // the same level on the raw ask (no rule) is not touched
+        h.levels.lock().unwrap().insert("XAUUSD".into(), vec![Level { is_buy: false, sl: Some(dec!(4299.25)), tp: None, ask_rule: None }]);
+        assert!(h.touched(std::slice::from_ref(&t)).is_empty());
     }
 
     use super::*;
@@ -554,7 +613,7 @@ mod tests {
         // a resting order on a ticking symbol reopens the gate even with no position open
         let pending = hook(url);
         pending.set_margin_watch(Arc::new(BookWatch(Some(HashSet::new()))));
-        pending.pending.lock().unwrap().insert("BTCUSD".into(), vec![PendingLevel { is_buy: true, is_limit: true, entry: Decimal::ONE }]);
+        pending.pending.lock().unwrap().insert("BTCUSD".into(), vec![PendingLevel { is_buy: true, is_limit: true, entry: Decimal::ONE, ask_rule: None }]);
         pending.spawn_backstop_loop(Duration::from_millis(50), cache_ticked("BTCUSD", 0));
         let (line, _) = tokio::time::timeout(Duration::from_secs(3), rx.recv()).await.expect("pass").unwrap();
         assert!(!line.contains("symbols"), "{line}");

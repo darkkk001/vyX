@@ -9,6 +9,7 @@ use chrono::{DateTime, Datelike, TimeZone, Utc};
 use protocol::{BrokerBar, Tick};
 
 pub mod activity;
+pub mod ask_markup;
 pub mod alerts;
 pub mod broker_offset;
 pub mod cache;

@@ -1,0 +1,53 @@
+{
+  "name": "27-sell-markup-sl-at-account-ask",
+  "why": "Owner decision 2026-09-26: a SELL closes (and its SL triggers) at the account's marked-up ask. BrokerSymbol.spreadMarkup 1.5 pips on XAUUSD: raw ask 4299.13 is below the SL 4299.25, the account ask 4299.28 is above it, so the SL fires and closes at 4299.28 (-928). Needs scripts/parity/run-ts.ts to seed BrokerSymbol.spreadMarkup from symbols[].spreadMarkup.",
+  "knownDivergence": [],
+  "broker": {
+    "negativeBalanceProtection": true
+  },
+  "groups": [
+    {
+      "key": "std",
+      "marginCallLevel": "100",
+      "stopOutLevel": "50"
+    }
+  ],
+  "accounts": [
+    {
+      "key": "a1",
+      "group": "std",
+      "balance": "10000",
+      "credit": "0",
+      "leverage": 100
+    }
+  ],
+  "symbols": [
+    {
+      "name": "XAUUSD",
+      "contractSize": "100",
+      "digits": 2,
+      "quoteCurrency": "USD",
+      "spreadMarkup": "1.5"
+    }
+  ],
+  "positions": [
+    {
+      "key": "p1",
+      "account": "a1",
+      "symbol": "XAUUSD",
+      "side": "SELL",
+      "volume": "1",
+      "openPrice": "4290.00",
+      "slPrice": "4299.25",
+      "tpPrice": null
+    }
+  ],
+  "prices": [
+    {
+      "symbol": "XAUUSD",
+      "bid": "4298.96",
+      "ask": "4299.13",
+      "ageSeconds": 0
+    }
+  ]
+}

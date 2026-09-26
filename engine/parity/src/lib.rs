@@ -4,7 +4,7 @@
 //! - equity / used margin: `order_management::calc::{equity, used_margin}` on a real
 //!   `calc::AccountState` built from `db::OpenPositionWithMarket` rows,
 //! - thresholds: `margin::resolve_thresholds`, decision: `margin::evaluate`,
-//! - level: `risk::margin_level`, P&L / close price: `calc::{floating_pnl, close_price_for}`.
+//! - level: `risk::margin_level`, P&L / close price: `calc::{floating_pnl, position_close_price}`.
 //!
 //! What is NOT callable, and is therefore mirrored here (minimal, with the source line cited):
 //! - `monitor.rs` `sl_tp_trigger` (line 53), `force_close_worst` (152) and `evaluate_account`
@@ -19,7 +19,7 @@ pub mod db_mode;
 pub mod load_mode;
 pub mod shadow_gate;
 
-use order_management::calc::{close_price_for, equity, floating_pnl, used_margin, AccountState};
+use order_management::calc::{equity, floating_pnl, position_close_price, used_margin, AccountState};
 use order_management::db::OpenPositionWithMarket;
 use margin::{MarginThresholds, MonitorAction, ThresholdsByGroup};
 use protocol::OrderSide;
@@ -96,6 +96,9 @@ pub struct SymbolCfg {
     /// BrokerSymbol.hedgedMarginPct (MT5 hedged margin); absent = 200 (no reduction)
     #[serde(default)]
     pub hedged_margin_pct: Option<Decimal>,
+    /// BrokerSymbol.spreadMarkup in pips (2026-09-26: a SELL closes at the account's marked-up ask); absent = 0
+    #[serde(default)]
+    pub spread_markup: Option<Decimal>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -246,6 +249,9 @@ fn account_state(sc: &Scenario, acct: &AccountCfg) -> AccountState {
                 tp_price: p.tp_price,
                 fx_rate: Decimal::ONE, // Stage 0 pure-calc mode predates conversion (the gate is run-db.sh)
                 hedged_margin_pct: sym.hedged_margin_pct.unwrap_or_else(order_management::calc::default_hedged_margin_pct),
+                // the scenario's broker markup, no group / pricing-engine levels (market_data::ask_markup resolve with the
+                // engine off and no group config = BrokerSymbol.spreadMarkup)
+                ask_rule: sym.spread_markup.map(|markup_pips| market_data::ask_markup::AskRule::Markup { markup_pips, digits: sym.digits as i32 }),
             }
         })
         .collect();
@@ -262,7 +268,7 @@ fn account_state(sc: &Scenario, acct: &AccountCfg) -> AccountState {
 /// Mirror of monitor.rs:53 `sl_tp_trigger` (private).
 fn sl_tp_trigger(p: &OpenPositionWithMarket) -> Option<&'static str> {
     let (bid, ask) = (p.bid?, p.ask?);
-    let cp = close_price_for(p.side, bid, ask);
+    let cp = position_close_price(p, bid, ask);
     match p.side {
         OrderSide::Buy => {
             if p.sl_price.is_some_and(|sl| cp <= sl) {
@@ -309,7 +315,7 @@ pub fn evaluate_account(sc: &Scenario, acct: &AccountCfg, by_group: &ThresholdsB
             .enumerate()
             .filter_map(|(i, p)| {
                 let reason = sl_tp_trigger(p)?;
-                let cp = close_price_for(p.side, p.bid?, p.ask?);
+                let cp = position_close_price(p, p.bid?, p.ask?);
                 Some((i, reason, floating_pnl(p.side, p.open_price, cp, p.contract_size, p.volume)))
             })
             .collect();
@@ -338,7 +344,7 @@ pub fn evaluate_account(sc: &Scenario, acct: &AccountCfg, by_group: &ThresholdsB
                         .iter()
                         .enumerate()
                         .filter_map(|(i, p)| {
-                            let cp = close_price_for(p.side, p.bid?, p.ask?);
+                            let cp = position_close_price(p, p.bid?, p.ask?);
                             Some((i, floating_pnl(p.side, p.open_price, cp, p.contract_size, p.volume)))
                         })
                         .min_by(|a, b| a.1.cmp(&b.1));
@@ -440,6 +446,21 @@ mod tests {
         assert!(!fresh_for_engine(&px));
         px.updated_age_seconds = Some(1.0); // heartbeat: tick old, row write recent
         assert!(fresh_for_engine(&px));
+    }
+
+    #[test]
+    fn a_sell_with_a_broker_markup_closes_at_the_marked_up_ask() {
+        let sc = Scenario::from_json(&std::fs::read_to_string(scenario_dir().join("27-sell-markup-sl-at-account-ask.json")).unwrap()).unwrap();
+        let out = evaluate(&sc);
+        // SELL 1 lot XAUUSD from 4290.00, SL 4299.25; raw ask 4299.13 (not hit), account ask 4299.28 (+1.5 pips): hit.
+        // P&L = (4290.00 - 4299.28) x 100 x 1 = -928
+        let a = &out.accounts["a1"];
+        assert_eq!(a.closed_position_ids, vec!["p1".to_string()]);
+        assert_eq!(a.close_reasons, vec!["stop_loss".to_string()]);
+        assert_eq!(a.transactions, vec![Txn { kind: "TRADE_PNL".into(), amount: "-928".into() }]);
+        // the same scenario without the markup: nothing closes
+        let raw = Scenario::from_json(&std::fs::read_to_string(scenario_dir().join("27-sell-markup-sl-at-account-ask.json")).unwrap().replace(r#""spreadMarkup": "1.5""#, r#""spreadMarkup": "0""#)).unwrap();
+        assert!(evaluate(&raw).accounts["a1"].closed_position_ids.is_empty());
     }
 
     #[test]

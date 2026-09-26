@@ -855,6 +855,9 @@ pub struct OpenPositionWithMarket {
     pub fx_rate: Decimal,
     /// BrokerSymbol.hedgedMarginPct of this position's symbol (calc::used_margin); 200 = no reduction.
     pub hedged_margin_pct: Decimal,
+    /// The account's ask rule for this symbol (market_data::ask_markup, 2026-09-26): a SELL closes, triggers and is
+    /// valued at the account's marked-up ask. None = the raw ask.
+    pub ask_rule: Option<market_data::ask_markup::AskRule>,
 }
 
 /// LEFT JOIN on LivePrice, same reasoning as
@@ -920,6 +923,7 @@ pub async fn get_open_positions_with_market(
                     tp_price,
                     fx_rate: Decimal::ONE, // legacy order-path table: no conversion
                     hedged_margin_pct: Decimal::from(200), // legacy order-path table: no hedged margin
+                    ask_rule: None, // legacy order-path table (ENGINE_ORDER_MANAGEMENT off in production): raw ask
                 }
             },
         )

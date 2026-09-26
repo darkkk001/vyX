@@ -124,23 +124,39 @@ pub async fn open_positions_with_market(
     pool: &PgPool,
     account_id: &str,
 ) -> Result<Vec<OpenPositionWithMarket>, sqlx::Error> {
+    // one row per open position, with the levels of its account's ask rule (market_data::ask_markup, 2026-09-26: a SELL
+    // closes, triggers and is valued at the account's ask) -- joined here, never a query per position
+    let sql = format!(
+        r#"SELECT p.id, s.name, p.side::text AS side, p.volume, p."openPrice" AS open_price, s."contractSize" AS contract_size,
+                  lp.bid, lp.ask, p."slPrice" AS sl_price, p."tpPrice" AS tp_price, s.category::text AS category, p."brokerId" AS broker_id,
+                  s."quoteCurrency" AS quote_ccy, a.currency AS account_ccy, COALESCE(bs."hedgedMarginPct", 200) AS hedged_margin_pct,
+                  {levels}
+           FROM "Position" p
+           JOIN "Symbol" s ON s.id = p."symbolId"
+           JOIN "Account" a ON a.id = p."accountId"
+           LEFT JOIN "BrokerSymbol" bs ON bs."brokerId" = p."brokerId" AND bs."symbolId" = p."symbolId"
+           LEFT JOIN "LivePrice" lp ON lp.symbol = s.name AND lp."tickAt" > now() - interval '15 seconds'
+           {joins}
+           WHERE p."accountId" = $1 AND p.status = 'OPEN'
+           ORDER BY p."openedAt", p.id"#,
+        levels = market_data::ask_markup::LEVELS_COLUMNS,
+        joins = market_data::ask_markup::LEVELS_JOINS,
+    );
     #[allow(clippy::type_complexity)]
-    let rows: Vec<(String, String, String, Decimal, Decimal, Decimal, Option<Decimal>, Option<Decimal>, Option<Decimal>, Option<Decimal>, String, String, String, String, Decimal)> =
-        sqlx::query_as(
-            r#"SELECT p.id, s.name, p.side::text, p.volume, p."openPrice", s."contractSize",
-                      lp.bid, lp.ask, p."slPrice", p."tpPrice", s.category::text, p."brokerId",
-                      s."quoteCurrency", a.currency, COALESCE(bs."hedgedMarginPct", 200)
-               FROM "Position" p
-               JOIN "Symbol" s ON s.id = p."symbolId"
-               JOIN "Account" a ON a.id = p."accountId"
-               LEFT JOIN "BrokerSymbol" bs ON bs."brokerId" = p."brokerId" AND bs."symbolId" = p."symbolId"
-               LEFT JOIN "LivePrice" lp ON lp.symbol = s.name AND lp."tickAt" > now() - interval '15 seconds'
-               WHERE p."accountId" = $1 AND p.status = 'OPEN'
-               ORDER BY p."openedAt", p.id"#,
-        )
-        .bind(account_id)
-        .fetch_all(pool)
-        .await?;
+    let rows: Vec<(String, String, String, Decimal, Decimal, Decimal, Option<Decimal>, Option<Decimal>, Option<Decimal>, Option<Decimal>, String, String, String, String, Decimal, Option<market_data::ask_markup::AskRule>)> = {
+        use sqlx::Row;
+        let raw = sqlx::query(&sql).bind(account_id).fetch_all(pool).await?;
+        let mut out = Vec::with_capacity(raw.len());
+        for r in &raw {
+            out.push((
+                r.try_get("id")?, r.try_get("name")?, r.try_get("side")?, r.try_get("volume")?, r.try_get("open_price")?, r.try_get("contract_size")?,
+                r.try_get("bid")?, r.try_get("ask")?, r.try_get("sl_price")?, r.try_get("tp_price")?, r.try_get("category")?, r.try_get("broker_id")?,
+                r.try_get("quote_ccy")?, r.try_get("account_ccy")?, r.try_get("hedged_margin_pct")?,
+                market_data::ask_markup::resolve(&market_data::ask_markup::levels_from_row(r)?),
+            ));
+        }
+        out
+    };
     if rows.is_empty() {
         return Ok(Vec::new());
     }
@@ -194,7 +210,7 @@ pub async fn open_positions_with_market(
 
     Ok(rows
         .into_iter()
-        .map(|(id, symbol, side, volume, open_price, contract_size, bid, ask, sl_price, tp_price, category, _, quote_ccy, account_ccy, hedged_margin_pct)| {
+        .map(|(id, symbol, side, volume, open_price, contract_size, bid, ask, sl_price, tp_price, category, _, quote_ccy, account_ccy, hedged_margin_pct, ask_rule)| {
             // the SOURCE of bid / ask: the database's LivePrice (the SQL above) or the engine's ticks
             let (bid, ask) = match &source {
                 PriceSource::Db => (bid, ask),
@@ -219,6 +235,7 @@ pub async fn open_positions_with_market(
                 tp_price,
                 fx_rate: rate.unwrap_or(Decimal::ONE),
                 hedged_margin_pct,
+                ask_rule,
             }
         })
         .collect())

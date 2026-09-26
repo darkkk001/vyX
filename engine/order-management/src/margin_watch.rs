@@ -54,6 +54,8 @@ pub struct WatchedPosition {
     pub quote_currency: String,
     /// BrokerSymbol.hedgedMarginPct (calc::used_margin); 200 = no reduction
     pub hedged_margin_pct: Decimal,
+    /// The account's ask rule (market_data::ask_markup): a SELL is valued at the account's ask. None = raw.
+    pub ask_rule: Option<market_data::ask_markup::AskRule>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -92,25 +94,37 @@ impl Book {
 /// account has a group and both levels are NOT NULL today; the LEFT JOIN + 100 / 50 fallback mirror
 /// book::account_thresholds, so a row can never be dropped for a missing group.)
 pub async fn load_book<'e, E: sqlx::PgExecutor<'e>>(e: E) -> Result<Book, sqlx::Error> {
+    use sqlx::Row;
+    // + the levels of each position's account ask rule (market_data::ask_markup), joined: still one query
+    let sql = format!(
+        r#"SELECT a.id, a.balance, a.credit, a.leverage, a.currency, g."marginCallLevel" AS call, g."stopOutLevel" AS stop_out,
+                  s.name, p.side::text AS side, p.volume, p."openPrice" AS open_price, s."contractSize" AS contract_size,
+                  s."quoteCurrency" AS quote_ccy, COALESCE(bs."hedgedMarginPct", 200) AS hedged_margin_pct,
+                  {levels}
+           FROM "Position" p
+           JOIN "Account" a ON a.id = p."accountId"
+           JOIN "Symbol" s ON s.id = p."symbolId"
+           LEFT JOIN "BrokerSymbol" bs ON bs."brokerId" = p."brokerId" AND bs."symbolId" = p."symbolId"
+           LEFT JOIN "Group" g ON g.id = a."groupId"
+           {joins}
+           WHERE p.status = 'OPEN'
+           ORDER BY a.id COLLATE "C", p."openedAt", p.id"#,
+        levels = market_data::ask_markup::LEVELS_COLUMNS,
+        joins = market_data::ask_markup::LEVELS_JOINS,
+    );
+    let raw = sqlx::query(&sql).fetch_all(e).await?;
     #[allow(clippy::type_complexity)]
-    let rows: Vec<(String, Decimal, Decimal, i32, String, Option<Decimal>, Option<Decimal>, String, String, Decimal, Decimal, Decimal, String, Decimal)> =
-        sqlx::query_as(
-            r#"SELECT a.id, a.balance, a.credit, a.leverage, a.currency, g."marginCallLevel", g."stopOutLevel",
-                      s.name, p.side::text, p.volume, p."openPrice", s."contractSize", s."quoteCurrency",
-                      COALESCE(bs."hedgedMarginPct", 200)
-               FROM "Position" p
-               JOIN "Account" a ON a.id = p."accountId"
-               JOIN "Symbol" s ON s.id = p."symbolId"
-               LEFT JOIN "BrokerSymbol" bs ON bs."brokerId" = p."brokerId" AND bs."symbolId" = p."symbolId"
-               LEFT JOIN "Group" g ON g.id = a."groupId"
-               WHERE p.status = 'OPEN'
-               ORDER BY a.id COLLATE "C", p."openedAt", p.id"#,
-        )
-        .fetch_all(e)
-        .await?;
+    let mut rows: Vec<(String, Decimal, Decimal, i32, String, Option<Decimal>, Option<Decimal>, String, String, Decimal, Decimal, Decimal, String, Decimal, Option<market_data::ask_markup::AskRule>)> = Vec::with_capacity(raw.len());
+    for r in &raw {
+        rows.push((
+            r.try_get("id")?, r.try_get("balance")?, r.try_get("credit")?, r.try_get("leverage")?, r.try_get("currency")?, r.try_get("call")?, r.try_get("stop_out")?,
+            r.try_get("name")?, r.try_get("side")?, r.try_get("volume")?, r.try_get("open_price")?, r.try_get("contract_size")?, r.try_get("quote_ccy")?,
+            r.try_get("hedged_margin_pct")?, market_data::ask_markup::resolve(&market_data::ask_markup::levels_from_row(r)?),
+        ));
+    }
     let d = MarginThresholds::default();
     let mut accounts: Vec<WatchedAccount> = Vec::new();
-    for (id, balance, credit, leverage, currency, call, stop_out, symbol, side, volume, open_price, contract_size, quote_currency, hedged_margin_pct) in rows {
+    for (id, balance, credit, leverage, currency, call, stop_out, symbol, side, volume, open_price, contract_size, quote_currency, hedged_margin_pct, ask_rule) in rows {
         if accounts.last().map(|a| a.id != id).unwrap_or(true) {
             accounts.push(WatchedAccount {
                 id,
@@ -123,7 +137,7 @@ pub async fn load_book<'e, E: sqlx::PgExecutor<'e>>(e: E) -> Result<Book, sqlx::
             });
         }
         let side = if side == "SELL" { protocol::OrderSide::Sell } else { protocol::OrderSide::Buy };
-        accounts.last_mut().unwrap().positions.push(WatchedPosition { symbol, side, volume, open_price, contract_size, quote_currency, hedged_margin_pct });
+        accounts.last_mut().unwrap().positions.push(WatchedPosition { symbol, side, volume, open_price, contract_size, quote_currency, hedged_margin_pct, ask_rule });
     }
     Ok(Book::new(accounts))
 }
@@ -154,6 +168,7 @@ pub fn measure(account: &WatchedAccount, cache: &TickCache) -> (Decimal, Decimal
                 tp_price: None,
                 fx_rate: rate.unwrap_or(Decimal::ONE),
                 hedged_margin_pct: p.hedged_margin_pct,
+                ask_rule: p.ask_rule,
             }
         })
         .collect();
@@ -342,6 +357,7 @@ mod tests {
                     contract_size: dec!(100),
                     quote_currency: "USD".into(),
                     hedged_margin_pct: dec!(200),
+                    ask_rule: None,
                 })
                 .collect(),
         }
@@ -458,7 +474,7 @@ mod tests {
             leverage: 100,
             currency: "USD".into(),
             thresholds: MarginThresholds { call_level: dec!(100), stop_out_level: dec!(50) },
-            positions: vec![WatchedPosition { symbol: "USDJPY".into(), side: protocol::OrderSide::Sell, volume: dec!(0.1), open_price: dec!(150), contract_size: dec!(100000), quote_currency: "JPY".into(), hedged_margin_pct: dec!(200) }],
+            positions: vec![WatchedPosition { symbol: "USDJPY".into(), side: protocol::OrderSide::Sell, volume: dec!(0.1), open_price: dec!(150), contract_size: dec!(100000), quote_currency: "JPY".into(), hedged_margin_pct: dec!(200), ask_rule: None }],
         };
         let cache = cache_with(&[(tick("USDJPY", dec!(151), dec!(151)), 0)]);
         let (equity, used) = measure(&a, &cache);

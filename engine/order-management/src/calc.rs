@@ -23,11 +23,19 @@ pub fn floating_pnl(
     diff * contract_size * volume
 }
 
+/// The RAW close-side price (BUY bid, SELL ask). Only the legacy engine-table order path uses it now; the book's
+/// positions close at `position_close_price` (a SELL at its account's ask).
 pub fn close_price_for(side: OrderSide, bid: Decimal, ask: Decimal) -> Decimal {
     match side {
         OrderSide::Buy => bid,
         OrderSide::Sell => ask,
     }
+}
+
+/// The price a book position closes at, and is valued at (owner decision 2026-09-26, lib/ask-markup.ts
+/// accountClosePrice): a BUY at the raw bid, a SELL at its account's ask (market_data::ask_markup).
+pub fn position_close_price(p: &db::OpenPositionWithMarket, bid: Decimal, ask: Decimal) -> Decimal {
+    market_data::ask_markup::close_price(p.side, bid, ask, p.ask_rule.as_ref())
 }
 
 pub struct AccountState {
@@ -38,7 +46,7 @@ pub struct AccountState {
 }
 
 /// Canonical used margin (Stage 2 F2, lib/margin.ts liveUsedMarginFor): at the LIVE close-side price
-/// (BUY bid, SELL ask), converted to the account currency, over positions with a usable price only. A
+/// (BUY bid, SELL the account's ask), converted to the account currency, over positions with a usable price only. A
 /// position without one is in neither the used margin nor the equity.
 ///
 /// MT5 hedged margin (2026-09-25, lib/margin.ts hedgedUsedMargin, operation for operation): per SYMBOL the
@@ -49,7 +57,7 @@ pub fn used_margin(state: &AccountState) -> Decimal {
     let mut books: Vec<(&str, SymbolMarginBook)> = Vec::new();
     for p in &state.positions {
         let (Some(bid), Some(ask)) = (p.bid, p.ask) else { continue };
-        let margin = risk::required_margin(p.volume, p.contract_size, close_price_for(p.side, bid, ask), state.leverage) * p.fx_rate;
+        let margin = risk::required_margin(p.volume, p.contract_size, position_close_price(p, bid, ask), state.leverage) * p.fx_rate;
         let idx = match books.iter().position(|(s, _)| *s == p.symbol) {
             Some(i) => i,
             None => {
@@ -94,7 +102,7 @@ pub fn default_hedged_margin_pct() -> Decimal {
 /// One position's floating P&L in the ACCOUNT currency at its close-side price; None without a usable price.
 pub fn floating_pnl_account(p: &db::OpenPositionWithMarket) -> Option<Decimal> {
     let (bid, ask) = (p.bid?, p.ask?);
-    Some(floating_pnl(p.side, p.open_price, close_price_for(p.side, bid, ask), p.contract_size, p.volume) * p.fx_rate)
+    Some(floating_pnl(p.side, p.open_price, position_close_price(p, bid, ask), p.contract_size, p.volume) * p.fx_rate)
 }
 
 pub fn equity(state: &AccountState) -> Decimal {
@@ -192,6 +200,25 @@ mod tests {
     }
 
     #[test]
+    fn a_sell_is_valued_and_margined_at_its_account_ask_a_buy_at_the_raw_bid() {
+        use market_data::ask_markup::AskRule;
+        let pos = |side: OrderSide| db::OpenPositionWithMarket {
+            id: String::new(), symbol: "XAUUSD".into(), side, volume: dec!(1), open_price: dec!(4290), contract_size: dec!(100),
+            bid: Some(dec!(4298.96)), ask: Some(dec!(4299.13)), sl_price: None, tp_price: None, fx_rate: Decimal::ONE,
+            hedged_margin_pct: dec!(200), ask_rule: Some(AskRule::Markup { markup_pips: dec!(1.5), digits: 2 }),
+        };
+        let (sell, buy) = (pos(OrderSide::Sell), pos(OrderSide::Buy));
+        assert_eq!(position_close_price(&sell, dec!(4298.96), dec!(4299.13)), dec!(4299.28));
+        assert_eq!(position_close_price(&buy, dec!(4298.96), dec!(4299.13)), dec!(4298.96));
+        // SELL: (4290 - 4299.28) x 100 = -928; BUY: (4298.96 - 4290) x 100 = +896
+        assert_eq!(floating_pnl_account(&sell), Some(dec!(-928.00)));
+        assert_eq!(floating_pnl_account(&buy), Some(dec!(896.00)));
+        let state = AccountState { effective_balance: dec!(10000), credit: dec!(0), leverage: 100, positions: vec![sell] };
+        assert_eq!(used_margin(&state), dec!(4299.28));
+        assert_eq!(equity(&state), dec!(9072.00));
+    }
+
+    #[test]
     fn used_margin_groups_by_symbol_and_skips_unpriced() {
         let pos = |symbol: &str, side: OrderSide, bid: Option<Decimal>, pct: Decimal| db::OpenPositionWithMarket {
             id: String::new(),
@@ -206,6 +233,7 @@ mod tests {
             tp_price: None,
             fx_rate: Decimal::ONE,
             hedged_margin_pct: pct,
+            ask_rule: None,
         };
         // XAU pair at 50%: BUY 2000 (bid), SELL 2000.20 (ask) at 1:100 -> (2000 + 2000.2) * 50 / 200 = 1000.05
         let state = AccountState {
