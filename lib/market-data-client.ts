@@ -194,7 +194,12 @@ export async function fetchVpsCandles(symbol: string, timeframe: string, limit =
 /** The engine's answer to a price read, telling a FAILED read (unreachable, timeout, 5xx, auth) apart from "this symbol
  *  has no price": only a failure raises the no-price alert (lib/price-source-alert.ts). Owner decision 2026-09-26: a
  *  failed read is never answered from Neon's LivePrice (frozen since 2026-09-14). */
-export type PriceRead<T> = { ok: true; value: T } | { ok: false; notFound: boolean; reason: string };
+export type PriceRead<T> = { ok: true; value: T; idleGate?: EngineIdleGate } | { ok: false; notFound: boolean; reason: string };
+
+/** The engine's own book gate (header x-vyx-idle-gate on GET /internal/prices, engine market_data::activity):
+ *  whether anything it holds can move right now. Absent on an older engine. */
+export type EngineIdleGate = "running" | "feed-quiet" | "flat-book" | "book-closed" | "unknown";
+const IDLE_GATES = new Set<EngineIdleGate>(["running", "feed-quiet", "flat-book", "book-closed", "unknown"]);
 
 async function getJsonResult(path: string): Promise<PriceRead<unknown>> {
   const base = baseUrl();
@@ -206,7 +211,8 @@ async function getJsonResult(path: string): Promise<PriceRead<unknown>> {
     const res = await fetch(`${base}${path}`, { headers: { "X-Market-Data-Secret": secret }, signal: controller.signal, cache: "no-store" });
     if (res.status === 404) return { ok: false, notFound: true, reason: "not found" };
     if (!res.ok) return { ok: false, notFound: false, reason: `HTTP ${res.status}` };
-    return { ok: true, value: (await res.json()) as unknown };
+    const gate = (res.headers.get("x-vyx-idle-gate") ?? "").trim().toLowerCase() as EngineIdleGate;
+    return { ok: true, value: (await res.json()) as unknown, ...(IDLE_GATES.has(gate) ? { idleGate: gate } : {}) };
   } catch (err) {
     return { ok: false, notFound: false, reason: err instanceof Error ? (err.name === "AbortError" ? `timeout after ${TIMEOUT_MS} ms` : err.message) : String(err) };
   } finally {
@@ -226,7 +232,7 @@ export async function readVpsPrice(symbol: string): Promise<PriceRead<EnginePric
 export async function readVpsPrices(): Promise<PriceRead<EnginePrice[]>> {
   const r = await getJsonResult("/internal/prices");
   if (!r.ok) return r;
-  return Array.isArray(r.value) ? { ok: true, value: r.value as EnginePrice[] } : { ok: false, notFound: false, reason: "malformed answer (not a list)" };
+  return Array.isArray(r.value) ? { ok: true, value: r.value as EnginePrice[], idleGate: r.idleGate } : { ok: false, notFound: false, reason: "malformed answer (not a list)" };
 }
 
 /** One symbol's live tick from the engine's memory (S4). null = use Neon's LivePrice. */

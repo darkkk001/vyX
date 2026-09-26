@@ -5,11 +5,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import net from "node:net";
 import { NextRequest } from "next/server";
 
-const vps = vi.hoisted(() => ({ rows: null as null | { symbol: string; bid: string; ask: string; tickAt: string; updatedAt: string; ageMs: number }[] }));
+const vps = vi.hoisted(() => ({ rows: null as null | { symbol: string; bid: string; ask: string; tickAt: string; updatedAt: string; ageMs: number }[], gate: undefined as undefined | string }));
 vi.mock("@/lib/market-data-client", async (orig) => ({
   ...(await orig<typeof import("@/lib/market-data-client")>()),
   // null = the engine read FAILED (no Neon fallback since 2026-09-26: the pass runs and finds no price)
-  readVpsPrices: async () => (vps.rows ? { ok: true, value: vps.rows } : { ok: false, notFound: false, reason: "test: unreachable" }),
+  readVpsPrices: async () => (vps.rows ? { ok: true, value: vps.rows, ...(vps.gate ? { idleGate: vps.gate } : {}) } : { ok: false, notFound: false, reason: "test: unreachable" }),
   readVpsPrice: async () => ({ ok: true, value: null }),
 }));
 
@@ -40,6 +40,42 @@ describe("margin-monitor full pass: idle gate", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
     vps.rows = null;
+    vps.gate = undefined;
+  });
+
+  // (b, 2026-09-26): the engine's own book gate decides when it is sent
+  it("engine says book-closed while BTC ticks (a weekend with only XAUUSD held): skipped, no database work", async () => {
+    vps.rows = [row("XAUUSD", 40 * 3600), row("BTCUSD", 1)];
+    vps.gate = "book-closed";
+    if (PROXIED) await statements("reset");
+    const body = await (await call()).json();
+    expect(body).toMatchObject({ skipped: "engine book gate: book-closed", accountsEvaluated: 0 });
+    if (PROXIED) expect(await statements("get")).toBe(0);
+  });
+
+  it("engine says flat-book / feed-quiet: skipped", async () => {
+    vps.rows = [row("BTCUSD", 1)];
+    for (const g of ["flat-book", "feed-quiet"]) {
+      vps.gate = g;
+      expect((await (await call()).json()).skipped).toBe(`engine book gate: ${g}`);
+    }
+  });
+
+  it("engine says running: the pass runs even if every tick looks stale to the web", async () => {
+    vps.rows = [row("XAUUSD", 40 * 3600)];
+    vps.gate = "running";
+    const body = await (await call()).json();
+    expect(body.skipped).toBeUndefined();
+    expect(body).toHaveProperty("outbox");
+  });
+
+  it("engine without a gate (or unknown): the earlier any-fresh-symbol rule", async () => {
+    vps.rows = [row("BTCUSD", 1)];
+    vps.gate = "unknown";
+    expect((await (await call()).json()).skipped).toBeUndefined();
+    vps.rows = [row("XAUUSD", 40 * 3600)];
+    vps.gate = undefined;
+    expect((await (await call()).json()).skipped).toBe("no fresh price on any symbol");
   });
 
   it("a closed market (every tick older than 15 s) returns at once with no database work", async () => {

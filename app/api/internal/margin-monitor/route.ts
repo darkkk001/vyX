@@ -4,7 +4,7 @@ import { evaluateAccountRisk, evaluateRiskForSymbol } from "@/lib/risk-monitor";
 import { bearerMatches } from "@/lib/internal-auth";
 import { drainPostCloseBackstop } from "@/lib/post-close";
 import { evaluatePendingTriggers } from "@/lib/pending-trigger";
-import { anyFreshPriceOnVps } from "@/lib/live-price";
+import { marginPassGate } from "@/lib/live-price";
 
 // 2026-09-05 P0 fix -- the reliable floor beneath the tick-ingest trigger
 // (lib/price-feed.ts's ingestTicks -> evaluateRiskForSymbol), which is
@@ -71,8 +71,11 @@ export async function GET(request: NextRequest) {
   // covers the Vercel cron). Asked of the engine's tick cache, not the DB. Unknown (not on the VPS price source, or
   // the engine unreachable) = run the pass as before. The post-close outbox only fills from engine closes, which need
   // a fresh price too; anything left in it runs on the first pass after the feed ticks again.
-  if ((await anyFreshPriceOnVps()) === false) {
-    return NextResponse.json({ skipped: "no fresh price on any symbol", accountsEvaluated: 0, errors: 0 });
+  // (b, 2026-09-26): the engine's own book gate when it sends one -- skip while nothing the book holds can move, even
+  // when other symbols tick (a weekend with only closed-market positions while crypto trades).
+  const gate = await marginPassGate();
+  if (gate.run === false) {
+    return NextResponse.json({ skipped: gate.reason, accountsEvaluated: 0, errors: 0 });
   }
 
   // Cheapest possible check first, index-backed: if nothing is open

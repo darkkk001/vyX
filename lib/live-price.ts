@@ -121,17 +121,31 @@ export async function getLivePriceRowsWithSource(symbolNames: string[], db: Db =
  * unknown (not reading from the VPS, or the engine unreachable): the caller must go on as before.
  */
 export async function anyFreshPriceOnVps(): Promise<boolean | null> {
-  if (!pricesFromVps()) return null;
+  return (await marginPassGate()).run;
+}
+
+/**
+ * Should the full margin pass run? (Neon load, 2026-09-26, owner item b.) Asked of the engine alone -- no database:
+ *  - the engine's own book gate (header x-vyx-idle-gate, engine market_data::activity): "running" = something the book
+ *    holds (an open position or a resting order) has a fresh tick -> run; "feed-quiet" / "flat-book" / "book-closed"
+ *    = nothing the pass could act on can move -> skip (e.g. a weekend with only XAUUSD held while crypto ticks);
+ *  - an older engine without the header (or "unknown"): the earlier rule -- skip only while NO symbol ticks at all.
+ * run: null = the engine could not be read (alerted): the pass runs as before and, with no price, acts on nothing.
+ */
+export async function marginPassGate(): Promise<{ run: boolean | null; reason: string }> {
+  if (!pricesFromVps()) return { run: null, reason: "not on the VPS price source" };
   const r = await readVpsPrices();
   if (!r.ok) {
     await reportPriceSourceDown({ where: "margin-monitor idle gate", reason: r.reason });
-    return null; // unknown: the pass runs, finds no price, and acts on nothing
+    return { run: null, reason: "engine unreadable" };
   }
+  if (r.idleGate && r.idleGate !== "unknown") return { run: r.idleGate === "running", reason: `engine book gate: ${r.idleGate}` };
   const cutoff = Date.now() - FRESH_MAX_AGE_MS;
-  return r.value.some((p) => {
+  const anyFresh = r.value.some((p) => {
     const row = toLivePriceRow(p);
     return row != null && row.tickAt.getTime() > cutoff;
   });
+  return { run: anyFresh, reason: anyFresh ? "a symbol ticks (engine without a book gate)" : "no fresh price on any symbol" };
 }
 
 export async function getLivePriceRows(symbolNames: string[], db: Db = prisma): Promise<Map<string, LivePrice>> {
