@@ -755,24 +755,86 @@ pub fn spawn(pool: PgPool, nats: async_nats::Client, interval: std::time::Durati
 /// a real one in noise. Only WHEN the shadow evaluates changes: the same evaluate_account_mode (close / P&L / NBP
 /// untouched), Mode::Shadow (nothing written). Accounts queued while one is evaluated are taken together, each once.
 pub fn spawn_shadow_trigger(pool: PgPool, recorder: Arc<crate::shadow::Recorder>, prices: book::PriceSource) -> tokio::sync::mpsc::UnboundedSender<String> {
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    spawn_shadow_trigger_with_handoff(pool, recorder, prices).0
+}
+
+/// One request to the shadow trigger: evaluate this account now; `done` (when set) resolves once it was evaluated.
+struct ShadowRequest {
+    account_id: String,
+    done: Option<tokio::sync::oneshot::Sender<()>>,
+}
+
+/// The SL / TP shadow handoff (2026-09-26, market_data::risk_hook::ShadowHandoff): the same shadow trigger, but the
+/// caller can WAIT for the evaluation. The risk hook uses it so the shadow has evaluated an account whose SL / TP a tick
+/// touched before the web -- which closes such a position within ~1 s -- is called; a fire-and-forget send still lost
+/// that race (the web's close landed before the shadow's read), a WEB_ONLY that reset the soak clock.
+#[derive(Clone)]
+pub struct ShadowTrigger {
+    tx: tokio::sync::mpsc::UnboundedSender<ShadowRequest>,
+}
+
+impl ShadowTrigger {
+    /// Evaluate these accounts in shadow now; true when every one was evaluated within `timeout` (false = timed out,
+    /// the caller goes on anyway: the shadow never holds up a real close for longer than that).
+    pub async fn evaluate_now(&self, account_ids: Vec<String>, timeout: std::time::Duration) -> bool {
+        let mut waits = Vec::with_capacity(account_ids.len());
+        for account_id in account_ids {
+            let (done, wait) = tokio::sync::oneshot::channel();
+            if self.tx.send(ShadowRequest { account_id, done: Some(done) }).is_ok() {
+                waits.push(wait);
+            }
+        }
+        let all = async {
+            for w in waits {
+                let _ = w.await;
+            }
+        };
+        tokio::time::timeout(timeout, all).await.is_ok()
+    }
+}
+
+/// The shadow trigger worker, reachable both ways: the plain inbox (margin trigger, fire-and-forget) and the
+/// ShadowTrigger handle (SL / TP handoff, awaitable). One worker, so an account is never evaluated twice at once.
+pub fn spawn_shadow_trigger_with_handoff(
+    pool: PgPool,
+    recorder: Arc<crate::shadow::Recorder>,
+    prices: book::PriceSource,
+) -> (tokio::sync::mpsc::UnboundedSender<String>, ShadowTrigger) {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<ShadowRequest>();
+    let (inbox, mut plain) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let forward = tx.clone();
+    tokio::spawn(async move {
+        while let Some(account_id) = plain.recv().await {
+            if forward.send(ShadowRequest { account_id, done: None }).is_err() {
+                break;
+            }
+        }
+    });
     tokio::spawn(book::with_price_source(prices, async move {
         let mode = Mode::Shadow(recorder);
         while let Some(first) = rx.recv().await {
-            let mut batch = vec![first];
+            // accounts queued while one is evaluated are taken together, each once; every waiter is released after
+            // ITS account was evaluated
+            let mut batch: Vec<(String, Vec<tokio::sync::oneshot::Sender<()>>)> = Vec::new();
+            let mut add = |r: ShadowRequest| match batch.iter_mut().find(|(a, _)| *a == r.account_id) {
+                Some((_, dones)) => dones.extend(r.done),
+                None => batch.push((r.account_id, r.done.into_iter().collect())),
+            };
+            add(first);
             while let Ok(more) = rx.try_recv() {
-                if !batch.contains(&more) {
-                    batch.push(more);
-                }
+                add(more);
             }
-            for account_id in batch {
+            for (account_id, dones) in batch {
                 if let Err(err) = evaluate_account_mode(&pool, None, &account_id, &mode).await {
-                    tracing::warn!(%account_id, %err, "shadow trigger: evaluation failed (the 1 s pass will retry)");
+                    tracing::warn!(%account_id, %err, "shadow trigger: evaluation failed (the pass will retry)");
+                }
+                for d in dones {
+                    let _ = d.send(());
                 }
             }
         }
     }));
-    tx
+    (inbox, ShadowTrigger { tx })
 }
 
 /// The shadow pass's idle gate (2026-09-26, market_data::activity): the engine's tick cache, and the per-tick margin

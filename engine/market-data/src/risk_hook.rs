@@ -38,6 +38,13 @@
 //! crossed margin call); they go through the same `?symbols=` call and the same per-symbol rate limit. The
 //! web still decides and closes; this only asks it NOW.
 //!
+//! SL / TP shadow handoff (2026-09-26): with a shadow running, the accounts whose SL / TP a tick touched are handed to
+//! the shadow and the call to the web waits for that evaluation (bounded by the handoff itself, 300 ms in the server)
+//! before it is made. Without it the web closed the position within ~1 s of the tick and the shadow, which sees SL / TP
+//! only in its periodic pass, never saw the breach: a WEB_ONLY that reset the Stage 5 soak clock (2026-09-26 06:10:29
+//! UTC, #100002473 / #100002472). Resting-order triggers are not handed off (the shadow does not evaluate them); the
+//! margin trigger keeps its own handoff (MarginWatch::set_on_fire). No shadow = no handoff, no wait.
+//!
 //! Idle gate (2026-09-26, crate::activity): the backstop skips its pass while the feed is quiet, the book is flat or
 //! none of its symbols has a fresh tick, and the reload stops querying once nothing has ticked for a minute. The web
 //! route could not have acted on any of those passes (every decision needs a price at most 15 s old).
@@ -46,6 +53,8 @@ use rust_decimal::Decimal;
 use sqlx::PgPool;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -67,8 +76,13 @@ pub trait MarginWatch: Send + Sync {
     }
 }
 
+/// The shadow handoff (see the module doc): evaluate these accounts in shadow NOW, resolve when done (or timed out).
+pub type ShadowHandoff = Arc<dyn Fn(Vec<String>) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
+
 #[derive(Clone, Debug)]
 struct Level {
+    /// the position's account (the SL / TP shadow handoff names the accounts a tick touched)
+    account_id: String,
     is_buy: bool,
     sl: Option<Decimal>,
     tp: Option<Decimal>,
@@ -111,6 +125,8 @@ pub struct RiskHook {
     margin_watch: std::sync::OnceLock<Arc<dyn MarginWatch>>,
     /// The levels / pending entries have been read at least once (the idle gate never skips the first load).
     loaded: AtomicBool,
+    /// Stage 5: the SL / TP shadow handoff (set only when the shadow runs).
+    shadow_handoff: std::sync::OnceLock<ShadowHandoff>,
 }
 
 impl RiskHook {
@@ -129,7 +145,13 @@ impl RiskHook {
             last_fired: Mutex::new(HashMap::new()),
             margin_watch: std::sync::OnceLock::new(),
             loaded: AtomicBool::new(false),
+            shadow_handoff: std::sync::OnceLock::new(),
         }))
+    }
+
+    /// Stage 5: evaluate SL / TP-touched accounts in shadow before the web is called (once; a second call is ignored).
+    pub fn set_shadow_handoff(&self, handoff: ShadowHandoff) {
+        let _ = self.shadow_handoff.set(handoff);
     }
 
     /// Plug in the per-tick margin trigger (once; a second call is ignored).
@@ -141,7 +163,7 @@ impl RiskHook {
     pub async fn reload(&self, pool: &PgPool) {
         use sqlx::Row;
         let sql = format!(
-            r#"SELECT s.name, p.side::text AS side, p."slPrice" AS sl, p."tpPrice" AS tp, {levels}
+            r#"SELECT s.name, p."accountId" AS account_id, p.side::text AS side, p."slPrice" AS sl, p."tpPrice" AS tp, {levels}
                FROM "Position" p JOIN "Symbol" s ON s.id = p."symbolId" JOIN "Account" a ON a.id = p."accountId"
                {joins}
                WHERE p.status = 'OPEN' AND (p."slPrice" IS NOT NULL OR p."tpPrice" IS NOT NULL)"#,
@@ -153,7 +175,7 @@ impl RiskHook {
                 .map(|r| -> Result<(String, Level), sqlx::Error> {
                     let side: String = r.try_get("side")?;
                     let ask_rule = ask_markup::resolve(&ask_markup::levels_from_row(r)?);
-                    Ok((r.try_get("name")?, Level { is_buy: side == "BUY", sl: r.try_get("sl")?, tp: r.try_get("tp")?, ask_rule }))
+                    Ok((r.try_get("name")?, Level { account_id: r.try_get("account_id")?, is_buy: side == "BUY", sl: r.try_get("sl")?, tp: r.try_get("tp")?, ask_rule }))
                 })
                 .collect::<Result<Vec<_>, _>>()
         });
@@ -211,20 +233,34 @@ impl RiskHook {
     }
 
     /// Symbols among the flushed ticks whose bid / ask touches an open level.
+    #[cfg(test)]
     fn touched(&self, ticks: &[Tick]) -> Vec<String> {
+        self.touched_with_accounts(ticks).0
+    }
+
+    /// The touched symbols (SL / TP levels and resting-order entries), and the (symbol, account) pairs whose SL / TP
+    /// level a tick crossed -- the accounts the shadow is handed (never for a resting order).
+    fn touched_with_accounts(&self, ticks: &[Tick]) -> (Vec<String>, Vec<(String, String)>) {
         let levels = self.levels.lock().unwrap();
         let mut out = Vec::new();
+        let mut accounts: Vec<(String, String)> = Vec::new();
         for t in ticks {
             let Some(ls) = levels.get(&t.symbol) else { continue };
-            let hit = ls.iter().any(|l| {
+            for l in ls {
                 // close price: a BUY closes at the raw bid, a SELL at its account's ask (lib/ask-markup.ts)
                 let cp = if l.is_buy { t.bid } else { ask_markup::close_price(protocol::OrderSide::Sell, t.bid, t.ask, l.ask_rule.as_ref()) };
                 let sl_hit = l.sl.map_or(false, |sl| if l.is_buy { cp <= sl } else { cp >= sl });
                 let tp_hit = l.tp.map_or(false, |tp| if l.is_buy { cp >= tp } else { cp <= tp });
-                sl_hit || tp_hit
-            });
-            if hit && !out.contains(&t.symbol) {
-                out.push(t.symbol.clone());
+                if !(sl_hit || tp_hit) {
+                    continue;
+                }
+                if !out.contains(&t.symbol) {
+                    out.push(t.symbol.clone());
+                }
+                let pair = (t.symbol.clone(), l.account_id.clone());
+                if !accounts.contains(&pair) {
+                    accounts.push(pair);
+                }
             }
         }
         drop(levels);
@@ -238,13 +274,13 @@ impl RiskHook {
                 out.push(t.symbol.clone());
             }
         }
-        out
+        (out, accounts)
     }
 
     /// After a LivePrice flush: fire the evaluation for every symbol whose ticks touched an SL / TP, or put
     /// an account holding it at or below stop-out / across margin call (max once a second each).
     pub fn after_flush(self: &Arc<Self>, ticks: &[Tick], cache: &TickCache) {
-        let mut symbols = self.touched(ticks);
+        let (mut symbols, sl_tp_accounts) = self.touched_with_accounts(ticks);
         let margin: Vec<String> = self.margin_watch.get().map(|w| w.symbols_to_evaluate(ticks, cache)).unwrap_or_default();
         let by_margin = !margin.is_empty();
         for s in margin {
@@ -269,8 +305,23 @@ impl RiskHook {
         if symbols.is_empty() {
             return;
         }
+        // the SL / TP-touched accounts of the symbols actually called (after the per-symbol limit), for the shadow
+        let mut handoff_accounts: Vec<String> = Vec::new();
+        if self.shadow_handoff.get().is_some() {
+            for (symbol, account) in sl_tp_accounts {
+                if symbols.contains(&symbol) && !handoff_accounts.contains(&account) {
+                    handoff_accounts.push(account);
+                }
+            }
+        }
         let hook = Arc::clone(self);
         tokio::spawn(async move {
+            // Stage 5: the shadow evaluates the breached accounts BEFORE the web can close them (bounded wait)
+            if !handoff_accounts.is_empty() {
+                if let Some(handoff) = hook.shadow_handoff.get() {
+                    handoff(handoff_accounts).await;
+                }
+            }
             let url = format!("{}?symbols={}", hook.url, symbols.join(","));
             match hook.client.get(&url).bearer_auth(&hook.secret).send().await {
                 Ok(resp) if resp.status().is_success() => tracing::info!(symbols = %symbols.join(","), margin = by_margin, "risk hook fired"),
@@ -409,11 +460,11 @@ mod tests {
         use crate::ask_markup::AskRule;
         let h = hook("http://127.0.0.1:1/x".into());
         // SELL SL at 4299.25: raw ask 4299.13 has not reached it, the account ask 4299.28 (+1.5 pips) has
-        h.levels.lock().unwrap().insert("XAUUSD".into(), vec![Level { is_buy: false, sl: Some(dec!(4299.25)), tp: None, ask_rule: Some(AskRule::Markup { markup_pips: dec!(1.5), digits: 2 }) }]);
+        h.levels.lock().unwrap().insert("XAUUSD".into(), vec![Level { account_id: "a1".into(), is_buy: false, sl: Some(dec!(4299.25)), tp: None, ask_rule: Some(AskRule::Markup { markup_pips: dec!(1.5), digits: 2 }) }]);
         let t: Tick = serde_json::from_value(serde_json::json!({ "symbol": "XAUUSD", "bid": "4298.96", "ask": "4299.13" })).unwrap();
         assert_eq!(h.touched(std::slice::from_ref(&t)), vec!["XAUUSD".to_string()]);
         // the same level on the raw ask (no rule) is not touched
-        h.levels.lock().unwrap().insert("XAUUSD".into(), vec![Level { is_buy: false, sl: Some(dec!(4299.25)), tp: None, ask_rule: None }]);
+        h.levels.lock().unwrap().insert("XAUUSD".into(), vec![Level { account_id: "a1".into(), is_buy: false, sl: Some(dec!(4299.25)), tp: None, ask_rule: None }]);
         assert!(h.touched(std::slice::from_ref(&t)).is_empty());
     }
 
@@ -461,6 +512,7 @@ mod tests {
             last_fired: Mutex::new(HashMap::new()),
             margin_watch: std::sync::OnceLock::new(),
             loaded: AtomicBool::new(false),
+            shadow_handoff: std::sync::OnceLock::new(),
         })
     }
 
@@ -626,6 +678,91 @@ mod tests {
         h.set_margin_watch(Arc::new(BookWatch(None)));
         h.spawn_backstop_loop(Duration::from_millis(50), cache_ticked("XAUUSD", 0));
         tokio::time::timeout(Duration::from_secs(3), rx.recv()).await.expect("pass").unwrap();
+    }
+
+    fn lvl(account: &str, is_buy: bool, sl: Option<Decimal>, tp: Option<Decimal>, ask_rule: Option<crate::ask_markup::AskRule>) -> Level {
+        Level { account_id: account.into(), is_buy, sl, tp, ask_rule }
+    }
+
+    #[test]
+    fn touched_names_the_accounts_whose_sl_or_tp_a_tick_crosses() {
+        use crate::ask_markup::AskRule;
+        let h = hook("http://127.0.0.1:1/x".into());
+        h.levels.lock().unwrap().insert(
+            "XAUUSD".into(),
+            vec![
+                lvl("buy_sl", true, Some(dec!(4299.00)), None, None),         // bid 4298.96 <= 4299.00: hit
+                lvl("buy_tp", true, None, Some(dec!(4298.90)), None),         // bid 4298.96 >= 4298.90: hit
+                lvl("buy_far", true, Some(dec!(4290)), Some(dec!(4310)), None), // neither
+                lvl("sell_sl", false, Some(dec!(4299.10)), None, None),       // raw ask 4299.13 >= 4299.10: hit
+                lvl("sell_tp", false, None, Some(dec!(4299.20)), None),       // raw ask 4299.13 <= 4299.20: hit
+                lvl("sell_far", false, Some(dec!(4300)), Some(dec!(4290)), None),
+                // account ask rule: 4299.13 + 0.15 = 4299.28 >= SL 4299.25 (raw would not reach it)
+                lvl("sell_sl_markup", false, Some(dec!(4299.25)), None, Some(AskRule::Markup { markup_pips: dec!(1.5), digits: 2 })),
+            ],
+        );
+        // a resting order on another symbol: touched as a symbol, never as an account
+        h.pending.lock().unwrap().insert("EURUSD".into(), vec![PendingLevel { is_buy: false, is_limit: true, entry: dec!(1.1), ask_rule: None }]);
+        let gold: Tick = serde_json::from_value(serde_json::json!({ "symbol": "XAUUSD", "bid": "4298.96", "ask": "4299.13" })).unwrap();
+        let eur: Tick = serde_json::from_value(serde_json::json!({ "symbol": "EURUSD", "bid": "1.2", "ask": "1.2001" })).unwrap();
+        let (symbols, accounts) = h.touched_with_accounts(&[gold, eur]);
+        assert_eq!(symbols, vec!["XAUUSD".to_string(), "EURUSD".to_string()]);
+        let names: Vec<&str> = accounts.iter().map(|(_, a)| a.as_str()).collect();
+        assert_eq!(names, vec!["buy_sl", "buy_tp", "sell_sl", "sell_tp", "sell_sl_markup"]);
+        assert!(accounts.iter().all(|(s, _)| s == "XAUUSD"));
+    }
+
+    #[tokio::test]
+    async fn an_sl_touch_hands_the_account_to_the_shadow_before_the_web_is_called() {
+        let (url, mut rx) = mock_route(200).await;
+        let h = hook(url);
+        h.levels.lock().unwrap().insert("XAUUSD".into(), vec![lvl("acc-1", false, Some(dec!(4280.2)), None, None)]);
+        // the handoff records what it got, then takes 150 ms (a shadow evaluation): the web must wait for it
+        let (tx, mut handed) = mpsc::unbounded_channel::<(Vec<String>, Instant)>();
+        h.set_shadow_handoff(Arc::new(move |ids: Vec<String>| {
+            let tx = tx.clone();
+            Box::pin(async move {
+                let _ = tx.send((ids, Instant::now()));
+                tokio::time::sleep(Duration::from_millis(150)).await;
+            })
+        }));
+        let started = Instant::now();
+        h.after_flush(&[tick("XAUUSD")], &TickCache::new()); // ask 4280.3 >= SL 4280.2
+        let (line, _) = tokio::time::timeout(Duration::from_secs(3), rx.recv()).await.expect("web called").unwrap();
+        let web_at = started.elapsed();
+        let (ids, _) = handed.try_recv().expect("the account was handed to the shadow BEFORE the web received the call");
+        assert_eq!(ids, vec!["acc-1".to_string()]);
+        assert_eq!(line, "GET /api/internal/margin-monitor?symbols=XAUUSD HTTP/1.1");
+        assert!(web_at >= Duration::from_millis(150), "the web call waited for the shadow evaluation: {web_at:?}");
+    }
+
+    #[tokio::test]
+    async fn a_resting_order_trigger_is_not_handed_to_the_shadow_and_does_not_wait() {
+        let (url, mut rx) = mock_route(200).await;
+        let h = hook(url);
+        h.pending.lock().unwrap().insert("XAUUSD".into(), vec![PendingLevel { is_buy: false, is_limit: true, entry: dec!(4270), ask_rule: None }]);
+        let (tx, mut handed) = mpsc::unbounded_channel::<Vec<String>>();
+        h.set_shadow_handoff(Arc::new(move |ids: Vec<String>| {
+            let tx = tx.clone();
+            Box::pin(async move {
+                let _ = tx.send(ids);
+                tokio::time::sleep(Duration::from_secs(5)).await;
+            })
+        }));
+        h.after_flush(&[tick("XAUUSD")], &TickCache::new()); // bid 4280 >= SELL LIMIT 4270
+        tokio::time::timeout(Duration::from_secs(1), rx.recv()).await.expect("web called at once").unwrap();
+        assert!(handed.try_recv().is_err(), "no shadow handoff for a resting order");
+    }
+
+    #[tokio::test]
+    async fn without_a_shadow_the_sl_call_goes_out_unchanged() {
+        let (url, mut rx) = mock_route(200).await;
+        let h = hook(url);
+        h.levels.lock().unwrap().insert("XAUUSD".into(), vec![lvl("acc-1", false, Some(dec!(4280.2)), None, None)]);
+        let started = Instant::now();
+        h.after_flush(&[tick("XAUUSD")], &TickCache::new());
+        tokio::time::timeout(Duration::from_secs(1), rx.recv()).await.expect("web called").unwrap();
+        assert!(started.elapsed() < Duration::from_millis(500));
     }
 
     /// Manual e2e: a real margin-monitor route (local `next dev` on a scratch DB) and nothing but the

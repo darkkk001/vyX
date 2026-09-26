@@ -1346,6 +1346,8 @@ async fn main() {
     let tick_cache = Arc::new(TickCache::new());
     // Stage 5: the shadow's trigger inbox (monitor::spawn_shadow_trigger), handed to the per-tick margin trigger below
     let mut shadow_trigger: Option<tokio::sync::mpsc::UnboundedSender<String>> = None;
+    // Stage 5 (2026-09-26): the awaitable side of the same shadow trigger, for the risk hook's SL / TP handoff
+    let mut shadow_handoff: Option<order_management::monitor::ShadowTrigger> = None;
     // the per-tick margin trigger's book, filled in below once it exists: the shadow pass's idle gate reads it
     let margin_watch_slot: Arc<std::sync::OnceLock<Arc<order_management::margin_watch::MarginWatch>>> = Arc::new(std::sync::OnceLock::new());
     let order_management_on = std::env::var("ENGINE_ORDER_MANAGEMENT")
@@ -1456,7 +1458,9 @@ async fn main() {
             order_management::book::PriceSource::Ticks(tick_cache.clone()),
             order_management::monitor::ShadowGate { cache: tick_cache.clone(), watch: margin_watch_slot.clone() },
         );
-        shadow_trigger = Some(order_management::monitor::spawn_shadow_trigger(book_pool.clone(), recorder.clone(), order_management::book::PriceSource::Ticks(tick_cache.clone())));
+        let (inbox, handoff) = order_management::monitor::spawn_shadow_trigger_with_handoff(book_pool.clone(), recorder.clone(), order_management::book::PriceSource::Ticks(tick_cache.clone()));
+        shadow_trigger = Some(inbox);
+        shadow_handoff = Some(handoff);
         // §5.3: pairs the web's real risk actions with the shadow's decisions every minute (reads the book, writes only
         // to the local store); the daily summary goes to the log and to shadow_daily
         let reconcile_secs: u64 = std::env::var("VYX_SHADOW_RECONCILE_SECS").ok().and_then(|v| v.trim().parse().ok()).filter(|s| *s > 0).unwrap_or(60);
@@ -1503,6 +1507,21 @@ async fn main() {
     // the full-book backstop (stop-out on positions with no SL / TP) runs every minute from here.
     let risk_hook = market_data::risk_hook::RiskHook::from_env();
     if let Some(hook) = &risk_hook {
+        // Stage 5: an SL / TP touch is evaluated in shadow before the web is called (bounded: a real close is never held
+        // up by the shadow for longer than this)
+        if let Some(handoff) = &shadow_handoff {
+            const SHADOW_HANDOFF_WAIT: std::time::Duration = std::time::Duration::from_millis(300);
+            let handoff = handoff.clone();
+            hook.set_shadow_handoff(std::sync::Arc::new(move |ids: Vec<String>| {
+                let handoff = handoff.clone();
+                Box::pin(async move {
+                    if !handoff.evaluate_now(ids, SHADOW_HANDOFF_WAIT).await {
+                        tracing::warn!("shadow trigger: SL/TP evaluation took longer than 300 ms, the web is called anyway");
+                    }
+                })
+            }));
+            tracing::info!("shadow trigger: SL/TP touches are evaluated in shadow first (waits up to 300 ms)");
+        }
         hook.spawn_reload_loop(pool.clone(), std::time::Duration::from_secs(5), tick_cache.clone());
         // per-tick margin trigger (order_management::margin_watch): an account at or below its stop-out is
         // evaluated on the flush that put it there, not at the next backstop pass. VYX_RISK_HOOK_MARGIN=0 = off.
