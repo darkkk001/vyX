@@ -258,6 +258,16 @@ impl RiskHook {
         self.loaded.store(true, Ordering::Relaxed);
     }
 
+    /// The `x-vyx-idle-gate` value of GET /internal/prices (2026-09-26): the book gate exactly as this hook's backstop
+    /// computes it, so the web's Vercel cron can skip its full pass without touching Neon. "unknown" when the book is not
+    /// known (no margin trigger, or its book not loaded yet): the web then runs as before.
+    pub fn idle_gate_header(&self, cache: &TickCache, now: chrono::DateTime<chrono::Utc>) -> &'static str {
+        match self.book_symbols() {
+            Some(book) => activity::book_gate(cache, Some(&book), now).header_value(),
+            None => "unknown",
+        }
+    }
+
     /// What the book holds, for the idle gate: the margin trigger's open-position symbols plus every symbol a resting
     /// order or an SL / TP level waits on. None = unknown (no margin trigger, or its book not loaded yet), in which
     /// case the gate only skips while the whole feed is quiet.
@@ -675,6 +685,37 @@ mod tests {
         // the last XAUUSD tick is a weekend-old heartbeat: nothing can be decided, so nothing is asked
         hook(url).spawn_backstop_loop(Duration::from_millis(50), cache_ticked("XAUUSD", 3600));
         assert!(tokio::time::timeout(Duration::from_millis(400), rx.recv()).await.is_err());
+    }
+
+    #[test]
+    fn the_idle_gate_header_says_whether_the_book_can_move() {
+        let now = chrono::Utc::now();
+        let h = hook("http://127.0.0.1:1/x".into());
+        // no margin trigger: the book is unknown
+        assert_eq!(h.idle_gate_header(&cache_ticked("XAUUSD", 0), now), "unknown");
+        let unloaded = hook("http://127.0.0.1:1/x".into());
+        unloaded.set_margin_watch(Arc::new(BookWatch(None)));
+        assert_eq!(unloaded.idle_gate_header(&cache_ticked("XAUUSD", 0), now), "unknown");
+        // flat book while something ticks
+        let flat = hook("http://127.0.0.1:1/x".into());
+        flat.set_margin_watch(Arc::new(BookWatch(Some(HashSet::new()))));
+        assert_eq!(flat.idle_gate_header(&cache_ticked("BTCUSD", 0), now), "flat-book");
+        // the book holds XAUUSD, only BTCUSD ticks (a crypto weekend)
+        let held = hook("http://127.0.0.1:1/x".into());
+        held.set_margin_watch(Arc::new(BookWatch(Some(["XAUUSD".to_string()].into()))));
+        let c = TickCache::new();
+        c.set(&tick("BTCUSD"), now);
+        c.set(&tick("XAUUSD"), now - chrono::Duration::hours(40));
+        assert_eq!(held.idle_gate_header(&c, now), "book-closed");
+        // nothing ticks at all
+        assert_eq!(held.idle_gate_header(&cache_ticked("XAUUSD", 3600), now), "feed-quiet");
+        // the held symbol ticks
+        assert_eq!(held.idle_gate_header(&cache_ticked("XAUUSD", 1), now), "running");
+        // a resting order's symbol counts as held
+        let pend = hook("http://127.0.0.1:1/x".into());
+        pend.set_margin_watch(Arc::new(BookWatch(Some(HashSet::new()))));
+        pend.pending.lock().unwrap().insert("BTCUSD".into(), vec![PendingLevel { is_buy: true, is_limit: true, entry: Decimal::ONE, ask_rule: None }]);
+        assert_eq!(pend.idle_gate_header(&cache_ticked("BTCUSD", 0), now), "running");
     }
 
     struct BookWatch(Option<HashSet<String>>);

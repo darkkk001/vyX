@@ -84,12 +84,14 @@ ALTER TABLE shadow_daily ADD COLUMN IF NOT EXISTS exit_met BOOLEAN NOT NULL DEFA
 
 /// A market event the soak must live through (user exit gate, 2026-09-25), or None. Checked on every reconcile run;
 /// the first sighting is recorded in shadow_state, so it only counts if the shadow was running during it.
-/// - weekend reopen: Sunday 22:00-23:00 UTC (the default FX/metals reopen, session.rs is_default_fx_session_closed);
+/// - weekend reopen: the first hour after the weekly reopen, Sunday 17:00 New York = the shared market-week rule
+///   (docs/contracts/market-week-vectors.json, lib/market-week.ts): 21:00-22:00 UTC during US daylight time, 22:00-23:00
+///   UTC otherwise (owner, 2026-09-26: never a fixed 22:00);
 /// - NFP: the first Friday of the month, 08:30 New York = 12:30 UTC in US daylight time, 13:30 UTC otherwise, and the
-///   hour after it.
+///   hour after it (the same us_eastern_is_dst).
 pub fn coverage_event(now: DateTime<Utc>) -> Option<String> {
     use chrono::{Datelike, Timelike, Weekday};
-    if now.weekday() == Weekday::Sun && now.hour() == 22 {
+    if now.weekday() == Weekday::Sun && now.hour() == crate::session::ny_close_hour_utc(now) {
         return Some(format!("weekend_open:{}", now.date_naive()));
     }
     if now.weekday() == Weekday::Fri && now.day() <= 7 {
@@ -100,6 +102,16 @@ pub fn coverage_event(now: DateTime<Utc>) -> Option<String> {
         }
     }
     None
+}
+
+/// Idle gate for the reconciler (2026-09-26, Neon load): whether a run -- which reads the book database (Neon) -- is
+/// due. Pure, testable. A run is skipped only when ALL hold: the book's idle gate is closed (feed quiet, flat book or
+/// no held symbol ticking: the web cannot act on a price, so no new risk action can appear), no shadow decision is
+/// waiting to be paired, the gate has been closed longer than the catch-up (so a web action from just before the close,
+/// readable only after the pairing window + settle time, was paired), and no coverage event (weekend reopen, NFP) is
+/// on: the soak exit needs the shadow reconciling through those.
+pub fn run_due(gate: market_data::activity::Gate, pending: bool, closed_for: Option<std::time::Duration>, catchup: std::time::Duration, in_coverage: bool) -> bool {
+    in_coverage || gate == market_data::activity::Gate::Run || pending || closed_for.is_none_or(|c| c <= catchup)
 }
 
 /// The soak exit, in one place: 30 paired, 7 clean days, 2 weekend reopens and 1 NFP window lived through.
@@ -206,6 +218,41 @@ impl Reconciler {
         let store = recorder.store().cloned().ok_or("reconciler needs the shadow store (local database)")?;
         crate::shadow::ensure_schema(&store, SCHEMA, &["shadow_pair", "shadow_state", "shadow_daily"]).await?;
         Ok(Reconciler { book, store, recorder, window_secs: WINDOW_SECS, settle_secs: 5 })
+    }
+
+    /// How long runs continue after the idle gate closes: the pairing window + the settle time + a margin + one run,
+    /// so a web action from the last moment before the close is read and paired before the reconciler sleeps.
+    pub fn catchup(&self, every: std::time::Duration) -> std::time::Duration {
+        std::time::Duration::from_secs((self.window_secs + self.settle_secs + 5).max(0) as u64) + every
+    }
+
+    /// Is a shadow decision still waiting to be paired? Local store only (never the book). Decisions older than the
+    /// pairing horizon (window + settle + margin + `extra`) that are still unpaired are ones step 3 deliberately leaves
+    /// to the web side and will not change while the book is idle, so they do not keep the reconciler awake.
+    pub async fn waiting_decisions(&self, extra: std::time::Duration) -> Result<bool, sqlx::Error> {
+        let horizon = (self.window_secs + self.settle_secs + 5) as f64 + extra.as_secs_f64();
+        let (any,): (bool,) = sqlx::query_as(
+            r#"SELECT EXISTS (SELECT 1 FROM shadow_decision d LEFT JOIN shadow_pair p ON p.decision_key = d.dedupe_key
+                              WHERE p.id IS NULL AND d.kind IN ('stop_loss','take_profit','stop_out','margin_call_in')
+                                AND d.first_seen > now() - make_interval(secs => $1))"#,
+        )
+        .bind(horizon)
+        .fetch_one(&self.store)
+        .await?;
+        Ok(any)
+    }
+
+    /// One timer tick of the gated loop: decides (run_due) and, when due, runs. `closed_for` = how long the idle gate has
+    /// been closed (None while it is open). Returns None when the run was skipped: nothing was sent to the book pool.
+    pub async fn tick(&self, gate: market_data::activity::Gate, closed_for: Option<std::time::Duration>, every: std::time::Duration, now: DateTime<Utc>) -> Result<Option<RunReport>, sqlx::Error> {
+        let catchup = self.catchup(every);
+        let in_coverage = coverage_event(now).is_some();
+        let decided_without_store = in_coverage || gate == market_data::activity::Gate::Run || closed_for.is_none_or(|c| c <= catchup);
+        let pending = if decided_without_store { false } else { self.waiting_decisions(every * 2).await.unwrap_or(true) };
+        if !run_due(gate, pending, closed_for, catchup, in_coverage) {
+            return Ok(None);
+        }
+        self.run_once().await.map(Some)
     }
 
     /// Shorter timings for the scratch gate (Stage 5 §5.5), where the whole run takes seconds.
@@ -490,15 +537,32 @@ impl Reconciler {
 }
 
 /// Every `every`: one reconcile run; after each UTC midnight, the previous day's summary.
-pub fn spawn(reconciler: Reconciler, every: std::time::Duration) {
+/// The reconciler loop. `gate` (the shadow pass's own idle-gate inputs: tick cache + margin-trigger book) lets runs sleep
+/// while the book cannot move (run_due); None = run every tick, as before. The daily summary reads the local store only
+/// and keeps its schedule either way.
+pub fn spawn(reconciler: Reconciler, every: std::time::Duration, gate: Option<crate::monitor::ShadowGate>) {
     tokio::spawn(async move {
+        static LOG: market_data::activity::GateLog = market_data::activity::GateLog::new("reconciler");
         let mut ticker = tokio::time::interval(every);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut last_day = Utc::now().date_naive();
+        let mut closed_since: Option<std::time::Instant> = None;
         loop {
             ticker.tick().await;
-            if let Err(err) = reconciler.run_once().await {
-                tracing::warn!(error = %err, "shadow reconcile run failed");
+            let g = gate.as_ref().map(|g| g.gate()).unwrap_or(market_data::activity::Gate::Run);
+            if g == market_data::activity::Gate::Run {
+                closed_since = None;
+            } else if closed_since.is_none() {
+                closed_since = Some(std::time::Instant::now());
+            }
+            match reconciler.tick(g, closed_since.map(|t| t.elapsed()), every, Utc::now()).await {
+                Ok(Some(_)) => {
+                    LOG.observe(market_data::activity::Gate::Run);
+                }
+                Ok(None) => {
+                    LOG.observe(g);
+                }
+                Err(err) => tracing::warn!(error = %err, "shadow reconcile run failed"),
             }
             let today = Utc::now().date_naive();
             if today != last_day {
@@ -516,10 +580,67 @@ mod exit_gate_tests {
     fn at(y: i32, mo: u32, d: u32, h: u32, mi: u32) -> DateTime<Utc> { Utc.with_ymd_and_hms(y, mo, d, h, mi, 0).unwrap() }
 
     #[test]
-    fn weekend_reopen_is_the_sunday_22_utc_hour() {
-        assert_eq!(coverage_event(at(2026, 9, 27, 22, 5)).as_deref(), Some("weekend_open:2026-09-27"));
-        assert_eq!(coverage_event(at(2026, 9, 27, 21, 59)), None);
-        assert_eq!(coverage_event(at(2026, 9, 27, 23, 0)), None);
+    fn weekend_reopen_follows_the_shared_market_week_rule() {
+        // summer Sunday (EDT): reopen 21:00 UTC -> the window is 21:00-21:59
+        assert_eq!(coverage_event(at(2026, 9, 27, 20, 59)), None);
+        assert_eq!(coverage_event(at(2026, 9, 27, 21, 0)).as_deref(), Some("weekend_open:2026-09-27"));
+        assert_eq!(coverage_event(at(2026, 9, 27, 21, 59)).as_deref(), Some("weekend_open:2026-09-27"));
+        assert_eq!(coverage_event(at(2026, 9, 27, 22, 0)), None);
+        // clock-change Sunday 2026-11-01 (EST since 06:00 UTC): reopen 22:00 UTC
+        assert_eq!(coverage_event(at(2026, 11, 1, 21, 0)), None);
+        assert_eq!(coverage_event(at(2026, 11, 1, 22, 0)).as_deref(), Some("weekend_open:2026-11-01"));
+        // winter Sunday: 22:00-22:59
+        assert_eq!(coverage_event(at(2026, 11, 8, 22, 0)).as_deref(), Some("weekend_open:2026-11-08"));
+        assert_eq!(coverage_event(at(2026, 11, 8, 22, 59)).as_deref(), Some("weekend_open:2026-11-08"));
+        assert_eq!(coverage_event(at(2026, 11, 8, 23, 0)), None);
+        assert_eq!(coverage_event(at(2026, 11, 8, 21, 30)), None);
+        // spring clock-change Sunday 2027-03-14 (EDT since 07:00 UTC): 21:00 UTC
+        assert_eq!(coverage_event(at(2027, 3, 14, 21, 0)).as_deref(), Some("weekend_open:2027-03-14"));
+        assert_eq!(coverage_event(at(2027, 3, 14, 22, 0)), None);
+    }
+
+    /// Against docs/contracts/market-week-vectors.json: every Sunday case that is still closed is no reopen event, every
+    /// Sunday case at or after the reopen (all within its first hour in the file) is one.
+    #[test]
+    fn weekend_reopen_matches_the_market_week_vectors() {
+        use chrono::{Datelike, Weekday};
+        let file: serde_json::Value = serde_json::from_str(include_str!("../../../docs/contracts/market-week-vectors.json")).unwrap();
+        let mut sundays = 0;
+        for c in file["cases"].as_array().unwrap() {
+            let t: DateTime<Utc> = c["utc"].as_str().unwrap().parse().unwrap();
+            if t.weekday() != Weekday::Sun {
+                continue;
+            }
+            sundays += 1;
+            let closed = c["closed"].as_bool().unwrap();
+            let ev = coverage_event(t);
+            if closed {
+                assert!(!ev.as_deref().unwrap_or("").starts_with("weekend_open"), "{} ({}): closed, no reopen yet", c["utc"], c["why"]);
+            } else {
+                assert_eq!(ev, Some(format!("weekend_open:{}", t.date_naive())), "{} ({})", c["utc"], c["why"]);
+            }
+        }
+        assert!(sundays >= 8, "the vectors cover the Sunday reopen in both seasons and both clock changes");
+    }
+
+    #[test]
+    fn a_run_is_skipped_only_when_the_book_is_idle_nothing_waits_and_the_catch_up_is_done() {
+        use market_data::activity::Gate;
+        use std::time::Duration as D;
+        let catchup = D::from_secs(130);
+        // idle, nothing waiting, closed well past the catch-up: skip
+        assert!(!run_due(Gate::BookClosed, false, Some(D::from_secs(600)), catchup, false));
+        assert!(!run_due(Gate::FeedQuiet, false, Some(D::from_secs(600)), catchup, false));
+        assert!(!run_due(Gate::FlatBook, false, Some(D::from_secs(600)), catchup, false));
+        // a decision waiting to be paired: run
+        assert!(run_due(Gate::BookClosed, true, Some(D::from_secs(600)), catchup, false));
+        // inside the catch-up after the close: run
+        assert!(run_due(Gate::BookClosed, false, Some(D::from_secs(60)), catchup, false));
+        assert!(run_due(Gate::BookClosed, false, None, catchup, false));
+        // the book can move: run
+        assert!(run_due(Gate::Run, false, None, catchup, false));
+        // a coverage window (weekend reopen / NFP): run even with the gate closed and nothing waiting
+        assert!(run_due(Gate::FeedQuiet, false, Some(D::from_secs(3600)), catchup, true));
     }
 
     #[test]

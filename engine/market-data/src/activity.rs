@@ -34,6 +34,16 @@ pub enum Gate {
 }
 
 impl Gate {
+    /// The wire value of GET /internal/prices' `x-vyx-idle-gate` header (risk_hook::idle_gate_header).
+    pub fn header_value(self) -> &'static str {
+        match self {
+            Gate::Run => "running",
+            Gate::FeedQuiet => "feed-quiet",
+            Gate::FlatBook => "flat-book",
+            Gate::BookClosed => "book-closed",
+        }
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Gate::Run => "running",

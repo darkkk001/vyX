@@ -95,6 +95,9 @@ struct AppState {
     // not open) until the first successful load proves every group in
     // use actually has real thresholds loaded.
     thresholds_guard: Arc<std::sync::RwLock<ThresholdsGuardState>>,
+    // The risk hook (None when VYX_RISK_HOOK_URL is unset): GET /internal/prices reports its idle gate in the
+    // x-vyx-idle-gate header (2026-09-26), so the web's cron can skip its full pass without touching Neon.
+    risk_hook: Option<Arc<market_data::risk_hook::RiskHook>>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1041,7 +1044,7 @@ fn price_row(tick: Tick, age_ms: i64, now: chrono::DateTime<Utc>) -> PriceRow {
 /// Every symbol's latest tick straight from memory (TickCache) -- no
 /// Postgres on this path at all, which is the point: the order routes
 /// price off the live tick instead of the flushed DB row.
-async fn internal_prices(State(state): State<Arc<AppState>>) -> Json<Vec<PriceRow>> {
+async fn internal_prices(State(state): State<Arc<AppState>>) -> ([(&'static str, &'static str); 1], Json<Vec<PriceRow>>) {
     let now = Utc::now();
     let mut rows: Vec<PriceRow> = state
         .tick_cache
@@ -1050,7 +1053,10 @@ async fn internal_prices(State(state): State<Arc<AppState>>) -> Json<Vec<PriceRo
         .map(|(tick, age_ms)| price_row(tick, age_ms, now))
         .collect();
     rows.sort_by(|a, b| a.symbol.cmp(&b.symbol));
-    Json(rows)
+    // the body is unchanged (every web build reads it as before); the header says whether the book can move:
+    // running | feed-quiet | flat-book | book-closed | unknown (risk_hook::RiskHook::idle_gate_header)
+    let gate = state.risk_hook.as_ref().map_or("unknown", |h| h.idle_gate_header(&state.tick_cache, now));
+    ([("x-vyx-idle-gate", gate)], Json(rows))
 }
 
 async fn internal_price(
@@ -1486,7 +1492,12 @@ async fn main() {
         match order_management::reconcile::Reconciler::new(book_pool.clone(), recorder.clone()).await {
             Ok(rec) => {
                 tracing::info!(reconcile_secs, "shadow reconciler running");
-                order_management::reconcile::spawn(rec, std::time::Duration::from_secs(reconcile_secs));
+                // idle gate (2026-09-26): the same inputs as the shadow pass; the reopen / NFP windows always run
+                order_management::reconcile::spawn(
+                    rec,
+                    std::time::Duration::from_secs(reconcile_secs),
+                    Some(order_management::monitor::ShadowGate { cache: tick_cache.clone(), watch: margin_watch_slot.clone() }),
+                );
             }
             Err(err) => tracing::error!(%err, "shadow reconciler NOT running: decisions are recorded but not compared"),
         }
@@ -1590,7 +1601,7 @@ async fn main() {
         feed_stats_registry.clone(),
         gap_fill_tracker.clone(),
         broker_offset_tracker.clone(),
-        risk_hook,
+        risk_hook.clone(),
     );
 
     // Nightly Candle retention -- Contabo DB hygiene audit (M1 was 68% of
@@ -1637,6 +1648,7 @@ async fn main() {
         alert_cache,
         alert_metrics,
         thresholds_guard,
+        risk_hook,
     });
 
     // Order/position/stats routes require x-internal-secret
