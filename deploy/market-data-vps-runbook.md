@@ -140,7 +140,7 @@ itself accepts `X-Market-Data-Secret` on `/internal/candles` and
 Then restart only the engine (the gateway keeps serving):
 
 ```powershell
-nssm restart vyxtrader-engine
+& "C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe" restart vyxtrader-engine
 Start-Sleep 5
 $H = @{ "x-internal-secret" = "<INTERNAL_SERVICE_SECRET from start-engine.cmd>" }
 (Invoke-RestMethod http://127.0.0.1:8081/internal/feed-stats -Headers $H) | Select-Object market_data_write, market_data_reader, db_ok, db_fail, local_db_ok, local_db_fail, local_db_lag_ms, ticks_in
@@ -162,7 +162,7 @@ The rows must match; the price row's `ageMs` must be small (< 5000) during
 market hours.
 
 Rollback (seconds): set `MARKET_DATA_WRITE=neon` (or delete both lines),
-`nssm restart vyxtrader-engine`. The local database is simply left behind.
+`& "C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe" restart vyxtrader-engine`. The local database is simply left behind.
 
 ## 6. Soak (24 h) — the gate for S3
 
@@ -202,14 +202,14 @@ The gateway's positions summary (`services/api-gateway/src/db.ts`) is the one
 VPS-side reader of `LivePrice`. Once the web app is on `MARKET_DATA_PRICES=vps`:
 
 ```powershell
-cd C:yxtraderepo
+cd C:\vyxtrader\repo
 git pull                                              # must contain "web: live prices from the engine (S4)"
-cd servicespi-gateway
+cd services\api-gateway
 npm ci; npm run build
-Copy-Item C:yxtrader\scripts\start-gateway.cmd C:yxtraderackup\start-gateway.cmd.pre-s4
-notepad C:yxtrader\scripts\start-gateway.cmd    # add, next to DATABASE_URL:
+Copy-Item C:\vyxtrader\scripts\start-gateway.cmd C:\vyxtrader\backup\start-gateway.cmd.pre-s4
+notepad C:\vyxtrader\scripts\start-gateway.cmd    # add, next to DATABASE_URL:
 #   set MARKET_DATA_DATABASE_URL=postgres://engine:<engine role password>@127.0.0.1:5432/market_data
-nssm restart vyxtrader-gateway
+& "C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe" restart vyxtrader-gateway
 Invoke-WebRequest https://feed.vyxtrader.com/health -UseBasicParsing | Select-Object StatusCode   # 200
 ```
 

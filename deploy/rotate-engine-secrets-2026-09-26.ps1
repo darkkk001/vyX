@@ -10,6 +10,7 @@
 # -NoRestart: edit start-engine.cmd only (use it when the engine is about to be restarted by another script anyway).
 param([switch]$NoRestart)
 $ErrorActionPreference = "Stop"
+$Nssm = "C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe"   # nssm is not on the VPS PATH (2026-09-26): always the full path
 $Cmd = "C:\vyxtrader\scripts\start-engine.cmd"
 $Bk  = "C:\vyxtrader\backup\start-engine.cmd.pre-secret-rotation-$(Get-Date -Format yyyyMMdd-HHmmss)"
 
@@ -54,10 +55,10 @@ Remove-Variable hook, pw
 
 if ($NoRestart) { "Not restarted (-NoRestart): the new values take effect on the next engine restart."; exit 0 }
 
-$log = (nssm get vyxtrader-engine AppStdout).Trim(); $err = (nssm get vyxtrader-engine AppStderr).Trim()
-nssm restart vyxtrader-engine
+$log = (& $Nssm get vyxtrader-engine AppStdout).Trim(); $err = (& $Nssm get vyxtrader-engine AppStderr).Trim()
+& $Nssm restart vyxtrader-engine
 Start-Sleep 20
-nssm status vyxtrader-engine
+& $Nssm status vyxtrader-engine
 foreach ($f in @($log, $err) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique) {
   "---- $f (last lines) ----"
   Get-Content $f -Tail 300 | Select-String -Pattern 'read-only role verified|SHADOW REFUSED|password authentication failed|shadow reconciler|risk hook enabled|risk hook backstop|risk hook rejected|idle gate' | ForEach-Object { $_.Line }

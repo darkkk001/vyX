@@ -56,6 +56,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$Nssm = "C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe"   # nssm is not on the VPS PATH (2026-09-26): always the full path
 
 # ---- admin check ----------------------------------------------------------
 $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
@@ -116,8 +117,8 @@ function Invoke-FullRollback([string]$reason) {
     try {
         if ($script:ServicesTouched) {
             Write-Host "Stopping both services..."
-            & nssm stop $GatewayService 2>&1 | Write-Host
-            & nssm stop $EngineService 2>&1 | Write-Host
+            & $Nssm stop $GatewayService 2>&1 | Write-Host
+            & $Nssm stop $EngineService 2>&1 | Write-Host
 
             if (Test-Path $BackupExe) {
                 Copy-Item -Force $BackupExe $EngineExe
@@ -140,9 +141,9 @@ function Invoke-FullRollback([string]$reason) {
 
         if ($script:ServicesTouched) {
             Write-Host "Restarting engine, then gateway, on the restored build..."
-            & nssm start $EngineService 2>&1 | Write-Host
+            & $Nssm start $EngineService 2>&1 | Write-Host
             Start-Sleep -Seconds 3
-            & nssm start $GatewayService 2>&1 | Write-Host
+            & $Nssm start $GatewayService 2>&1 | Write-Host
             Write-Warn "Both services restarted on the pre-deploy build. This script does NOT re-verify health after a rollback restart -- check manually."
         }
     } catch {
@@ -345,11 +346,11 @@ $logCountBeforeRestart = Get-LogLineCount $EngineLogPath
 $logSampleBeforeRestart = Get-Date
 
 Write-Host "Stopping $GatewayService..."
-& nssm stop $GatewayService 2>&1 | Write-Host
+& $Nssm stop $GatewayService 2>&1 | Write-Host
 Start-Sleep -Seconds 2
 
 Write-Host "Restarting $EngineService..."
-& nssm restart $EngineService 2>&1 | Write-Host
+& $Nssm restart $EngineService 2>&1 | Write-Host
 if (-not (Wait-ForHttp200 -Url "http://127.0.0.1:8081/health" -TimeoutSec 30)) {
     Invoke-FullRollback "engine did not respond 200 on http://127.0.0.1:8081/health within 30s"
 }
@@ -364,7 +365,7 @@ if ($EngineLogPath -and (Test-Path $EngineLogPath)) {
 }
 
 Write-Host "Starting $GatewayService..."
-& nssm start $GatewayService 2>&1 | Write-Host
+& $Nssm start $GatewayService 2>&1 | Write-Host
 if (-not (Wait-ForHttp200 -Url "http://127.0.0.1:8080/health" -TimeoutSec 30)) {
     Invoke-FullRollback "gateway did not respond 200 on http://127.0.0.1:8080/health within 30s"
 }

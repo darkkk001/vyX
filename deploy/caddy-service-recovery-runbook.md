@@ -4,27 +4,27 @@
 - **Cause: the `vyxtrader-caddy` service was simply paused.** Step 1 found a single caddy.exe, a child of nssm, and
   no stray instance. The "second Caddy / nssm throttling" hypothesis below was wrong. Pausing an nssm service does
   not stop its child, so Caddy kept serving the whole time.
-- **Fix: `nssm continue vyxtrader-caddy`.** Service RUNNING, `/health` 200, no downtime. Step 2's stop / kill / start
+- **Fix: `& "C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe" continue vyxtrader-caddy`.** Service RUNNING, `/health` 200, no downtime. Step 2's stop / kill / start
   was not needed.
-- **Step 3 done:** `set MARKET_DATA_READ_SECRET=...` added to `C:yxtrader\scripts\start-engine.cmd` (backup kept),
+- **Step 3 done:** `set MARKET_DATA_READ_SECRET=...` added to `C:\vyxtrader\scripts\start-engine.cmd` (backup kept),
   engine restarted.
-- **Caddy has no log file.** `nssm get vyxtrader-caddy AppStderr` / `AppStdout` are empty, so Caddy's own output
+- **Caddy has no log file.** `& "C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe" get vyxtrader-caddy AppStderr` / `AppStdout` are empty, so Caddy's own output
   (certificate renewals, upstream errors, config errors at start) goes nowhere. The next incident will have no
   Caddy log to read. Optional fix, safe at any time (it takes effect on the next service restart, which is ~2 s of
   feed downtime):
   ```powershell
-  New-Item -ItemType Directory -Force C:yxtrader\logs | Out-Null
-  nssm set vyxtrader-caddy AppStdout C:yxtrader\logs\caddy.out.log
-  nssm set vyxtrader-caddy AppStderr C:yxtrader\logs\caddy.err.log
-  nssm set vyxtrader-caddy AppRotateFiles 1
-  nssm set vyxtrader-caddy AppRotateOnline 1
-  nssm set vyxtrader-caddy AppRotateBytes 10485760      # rotate at 10 MB
-  nssm restart vyxtrader-caddy                           # do it while markets are closed
+  New-Item -ItemType Directory -Force C:\vyxtrader\logs | Out-Null
+  & "C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe" set vyxtrader-caddy AppStdout C:\vyxtrader\logs\caddy.out.log
+  & "C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe" set vyxtrader-caddy AppStderr C:\vyxtrader\logs\caddy.err.log
+  & "C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe" set vyxtrader-caddy AppRotateFiles 1
+  & "C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe" set vyxtrader-caddy AppRotateOnline 1
+  & "C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe" set vyxtrader-caddy AppRotateBytes 10485760      # rotate at 10 MB
+  & "C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe" restart vyxtrader-caddy                           # do it while markets are closed
   curl.exe -s -o NUL -w "%{http_code}`n" https://feed.vyxtrader.com/health   # 200
-  Get-Content C:yxtrader\logs\caddy.err.log -Tail 20                      # Caddy writes its log to stderr
+  Get-Content C:\vyxtrader\logs\caddy.err.log -Tail 20                      # Caddy writes its log to stderr
   ```
-  Rollback: `nssm reset vyxtrader-caddy AppStdout; nssm reset vyxtrader-caddy AppStderr; nssm restart vyxtrader-caddy`.
-- **If it shows Paused again:** `nssm status vyxtrader-caddy`. If PAUSED, run `nssm continue vyxtrader-caddy` (no
+  Rollback: `nssm reset vyxtrader-caddy AppStdout; nssm reset vyxtrader-caddy AppStderr; & "C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe" restart vyxtrader-caddy`.
+- **If it shows Paused again:** `& "C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe" status vyxtrader-caddy`. If PAUSED, run `& "C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe" continue vyxtrader-caddy` (no
   downtime) and check who paused it: `Get-WinEvent -FilterHashtable @{LogName='System'; Id=7036} -MaxEvents 50 |
   ? Message -match 'caddy'` shows the service state changes with their times.
 
@@ -51,7 +51,7 @@ The rest of this file is the original diagnosis and procedure, kept for referenc
   Feed health, with no log line), so the logs can't tell. Open the backoffice Feed health screen: numbers = OK.
 
 ## Why the service shows "Paused" (original hypothesis: turned out WRONG, see Outcome)
-When the program nssm starts exits right away, nssm throttles the restart, and Windows shows the service as
+When the program & "C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe" starts exits right away, nssm throttles the restart, and Windows shows the service as
 **Paused** meanwhile. Caddy is still serving, so the most likely cause: a second Caddy, started outside the service
 (a console, `caddy start`, or a scheduled task), holds ports 80/443. The service's own Caddy then dies at once with
 "address already in use", over and over.
@@ -68,10 +68,10 @@ service tries to start, `feed.vyxtrader.com` goes down:
 
 ## Step 1: diagnose (read-only)
 ```powershell
-nssm status vyxtrader-caddy
-nssm get vyxtrader-caddy Application; nssm get vyxtrader-caddy AppParameters; nssm get vyxtrader-caddy AppDirectory
-nssm get vyxtrader-caddy AppStdout; nssm get vyxtrader-caddy AppStderr      # then read the tail of that file:
-Get-Content (nssm get vyxtrader-caddy AppStderr) -Tail 40
+& "C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe" status vyxtrader-caddy
+& "C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe" get vyxtrader-caddy Application; & "C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe" get vyxtrader-caddy AppParameters; & "C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe" get vyxtrader-caddy AppDirectory
+& "C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe" get vyxtrader-caddy AppStdout; & "C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe" get vyxtrader-caddy AppStderr      # then read the tail of that file:
+Get-Content (& "C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe" get vyxtrader-caddy AppStderr) -Tail 40
 # who holds 80/443, and how it was started
 Get-NetTCPConnection -LocalPort 80,443 -State Listen | ForEach-Object {
   Get-CimInstance Win32_Process -Filter "ProcessId=$($_.OwningProcess)" | Select-Object ProcessId, Name, CommandLine, CreationDate }
@@ -92,13 +92,13 @@ output before continuing.
 Do it now, while markets are closed.
 ```powershell
 $CF = "<Caddyfile path>"
-& (nssm get vyxtrader-caddy Application) validate --config $CF      # must say "Valid configuration"
+& (& "C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe" get vyxtrader-caddy Application) validate --config $CF      # must say "Valid configuration"
 Copy-Item $CF "$CF.bak-2026-09-26"
-nssm stop vyxtrader-caddy
+& "C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe" stop vyxtrader-caddy
 Stop-Process -Id <stray caddy ProcessId from step 1> -Force
-nssm start vyxtrader-caddy
+& "C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe" start vyxtrader-caddy
 Start-Sleep 5
-nssm status vyxtrader-caddy                                        # SERVICE_RUNNING
+& "C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe" status vyxtrader-caddy                                        # SERVICE_RUNNING
 curl.exe -s -o NUL -w "%{http_code}`n" https://feed.vyxtrader.com/health   # 200
 Get-CimInstance Win32_Process -Filter "Name='caddy.exe'" | Select-Object ProcessId, ParentProcessId, CommandLine
 ```
@@ -108,7 +108,7 @@ The last line must show one caddy.exe whose parent is nssm. If a scheduled task 
 **Rollback:** if the service won't stay RUNNING (stderr says why), bring the old way back so the feed is up, then
 send me the stderr tail:
 ```powershell
-nssm stop vyxtrader-caddy
+& "C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe" stop vyxtrader-caddy
 Start-Process -FilePath "<caddy.exe path>" -ArgumentList "<the rest of the saved CommandLine>" -WindowStyle Hidden
 curl.exe -s -o NUL -w "%{http_code}`n" https://feed.vyxtrader.com/health   # 200
 ```
@@ -120,7 +120,7 @@ same value (step 1's Select-String shows it on the `X-Market-Data-Secret` matche
 Copy-Item C:\vyxtrader\scripts\start-engine.cmd C:\vyxtrader\backup\start-engine.cmd.pre-readsecret
 notepad C:\vyxtrader\scripts\start-engine.cmd
 #   add, next to the other set lines:   set MARKET_DATA_READ_SECRET=<the value from the Caddyfile matcher>
-nssm restart vyxtrader-engine
+& "C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe" restart vyxtrader-engine
 Start-Sleep 5
 $R = @{ "x-market-data-secret" = "<same value>" }
 Invoke-RestMethod http://127.0.0.1:8081/internal/prices/XAUUSD -Headers $R        # a price, not 401
@@ -129,7 +129,7 @@ curl.exe -s -o NUL -w "%{http_code}`n" https://feed.vyxtrader.com/health        
 The engine restart is the ~10 s 502 window the web saw on 09-24/25. Web reads fall back to Neon meanwhile, so do it
 while markets are closed.
 
-**Rollback:** `Copy-Item C:\vyxtrader\backup\start-engine.cmd.pre-readsecret C:\vyxtrader\scripts\start-engine.cmd -Force; nssm restart vyxtrader-engine`.
+**Rollback:** `Copy-Item C:\vyxtrader\backup\start-engine.cmd.pre-readsecret C:\vyxtrader\scripts\start-engine.cmd -Force; & "C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe" restart vyxtrader-engine`.
 
 ## Step 4: the candle check that was skipped
 Run the read-only check in market-data-vps-runbook.md ("Where the engine reads its secrets"). After step 3 the read

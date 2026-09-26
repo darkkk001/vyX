@@ -44,7 +44,7 @@ function Read-CmdVar([string] $name) {
 # ---------------------------------------------------------------- 1. engine
 Step "1. engine on $EngineUrl"
 try { $h = Invoke-WebRequest "$EngineUrl/health" -UseBasicParsing -TimeoutSec 5; if ($h.StatusCode -eq 200) { Ok "/health 200" } else { Bad "/health $($h.StatusCode)" } }
-catch { Bad "/health unreachable: $($_.Exception.Message) -- start the engine service (nssm start vyxtrader-engine) and rerun"; exit 1 }
+catch { Bad "/health unreachable: $($_.Exception.Message) -- start the engine service (C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe start vyxtrader-engine) and rerun"; exit 1 }
 $port = $EngineUrl -replace '.*:(\d+).*', '$1'
 $owners = @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue | ForEach-Object { Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue } | Sort-Object Id -Unique)
 foreach ($p in $owners) { Note "port $port owned by $($p.ProcessName) pid $($p.Id) started $($p.StartTime) ($($p.Path))" }
@@ -70,7 +70,7 @@ try {
 } catch {
     $code = [int]$_.Exception.Response.StatusCode
     if ($code -eq 400) { Ok "the engine accepts this PRICE_FEED_SECRET (empty batch -> 400 no valid ticks)" }
-    elseif ($code -eq 401) { Bad "the RUNNING engine rejects PRICE_FEED_SECRET from $EngineCmd (401): it was started with another value -- nssm restart vyxtrader-engine, then rerun"; exit 1 }
+    elseif ($code -eq 401) { Bad "the RUNNING engine rejects PRICE_FEED_SECRET from $EngineCmd (401): it was started with another value -- C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe restart vyxtrader-engine, then rerun"; exit 1 }
     else { Bad "price-feed probe answered $code" }
 }
 function Get-Stats { Invoke-RestMethod "$EngineUrl/internal/feed-stats" -Headers @{ "x-internal-secret" = $internalSecret } -TimeoutSec 5 }

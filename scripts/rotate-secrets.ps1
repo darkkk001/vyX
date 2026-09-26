@@ -164,5 +164,5 @@ Write-Warn "Confirmed via grep this turn: neither secret is read anywhere in the
 if ($WhatIf) {
     Write-Host "`n-WhatIf: nothing was written. Re-run without -WhatIf to apply." -ForegroundColor Yellow
 } else {
-    Write-Host "`nDone. Restart order: nssm restart vyxtrader-engine, then nssm restart vyxtrader-gateway (gateway sends INTERNAL_SERVICE_SECRET to the engine on every call -- both must be on the new value before either is trusted)." -ForegroundColor Cyan
+    Write-Host "`nDone. Restart order: C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe restart vyxtrader-engine, then C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe restart vyxtrader-gateway (gateway sends INTERNAL_SERVICE_SECRET to the engine on every call -- both must be on the new value before either is trusted)." -ForegroundColor Cyan
 }

@@ -136,13 +136,13 @@ build overwrites it:
 cd C:\vyxtrader\repo\engine
 Copy-Item .\target\release\trading-core-server.exe C:\vyxtrader\backup\deep-backfill\trading-core-server.pre.exe
 cargo build --release -p server            # ends with "Finished `release` profile"
-nssm restart vyxtrader-engine
+& "C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe" restart vyxtrader-engine
 Start-Sleep 5
 $H = @{ "x-internal-secret" = "<INTERNAL_SERVICE_SECRET from start-engine.cmd>" }
 (Invoke-RestMethod http://127.0.0.1:8081/internal/feed-stats -Headers $H) | Select-Object market_data_write, market_data_reader, local_db_ok, local_db_fail, ticks_in
 ```
 
-Then read the engine's stdout log (`nssm get vyxtrader-engine AppStdout` tells
+Then read the engine's stdout log (`& "C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe" get vyxtrader-engine AppStdout` tells
 you the path) for these lines, which appear within seconds of boot:
 
 ```
@@ -156,7 +156,7 @@ later boot it reads `0` (the sweep is one `count(*)` per timeframe and no
 DELETE when clean).
 
 Rollback: stop the service, copy `trading-core-server.pre.exe` back over the
-release exe, `nssm start vyxtrader-engine`.
+release exe, `& "C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe" start vyxtrader-engine`.
 
 ## 2a. Forming-candle OPEN fix — what the same deploy changes (no extra steps)
 
@@ -370,7 +370,7 @@ Invoke-Command -Session $s -ScriptBlock {
   pg_dump -U postgres -h 127.0.0.1 -Fc market_data > C:\vyxtrader\backup\deep-backfill\market_data-pre.dump   # needs PGPASSWORD
   Copy-Item engine\target\release\trading-core-server.exe C:\vyxtrader\backup\deep-backfill\trading-core-server.pre.exe
   cd engine; cargo build --release -p server 2>&1 | Select-Object -Last 2
-  nssm restart vyxtrader-engine; Start-Sleep 8
+  & "C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe" restart vyxtrader-engine; Start-Sleep 8
   Invoke-RestMethod http://127.0.0.1:8081/internal/feed-stats -Headers @{ "x-internal-secret" = "<secret>" } | Select-Object market_data_write, local_db_ok, local_db_fail, ticks_in
   psql $env:MARKET_DATA_DATABASE_URL -f C:\vyxtrader\repo\deploy\market-data-offgrid-cleanup.sql
   # EA: copy + headless compile (MetaEditor's /compile needs no window; if it hangs under WinRM, do this one via RDP)

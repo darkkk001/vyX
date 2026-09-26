@@ -7,6 +7,7 @@
 #   * start-engine.cmd: VYX_RISK_HOOK_BACKSTOP_SECS=5 (owner: stays 5) and VYX_SHADOW_PASS_SECS=10 (owner: 10).
 # Unchanged: ENGINE_ORDER_MANAGEMENT (stays shadow), every DB URL, every secret. Rollback at the bottom.
 $ErrorActionPreference = "Stop"
+$Nssm = "C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe"   # nssm is not on the VPS PATH (2026-09-26): always the full path
 $Repo   = "C:\vyxtrader\repo"
 $Cmd    = "C:\vyxtrader\scripts\start-engine.cmd"
 $Stamp  = Get-Date -Format yyyyMMdd-HHmmss
@@ -55,10 +56,10 @@ $storeUrl = Get-CmdVar "VYX_SHADOW_STORE_URL"; if (-not $storeUrl) { $storeUrl =
 psql "$storeUrl" -v ON_ERROR_STOP=1 -c "BEGIN READ ONLY; SELECT class, kind, count(*) FROM shadow_pair GROUP BY class, kind ORDER BY 1, 2; SELECT key, value FROM shadow_state ORDER BY key; COMMIT;"
 
 # ---- STEP 5: restart and read the startup lines ----
-$log = (nssm get vyxtrader-engine AppStdout).Trim(); $err = (nssm get vyxtrader-engine AppStderr).Trim()
-nssm restart vyxtrader-engine
+$log = (& $Nssm get vyxtrader-engine AppStdout).Trim(); $err = (& $Nssm get vyxtrader-engine AppStderr).Trim()
+& $Nssm restart vyxtrader-engine
 Start-Sleep 20
-nssm status vyxtrader-engine
+& $Nssm status vyxtrader-engine
 $pattern = 'read-only role verified|shadow reconciler|order management SHADOW|risk hook backstop|risk hook margin trigger|risk hook enabled|risk hook OFF|SHADOW REFUSED|USING 60|idle gate'
 foreach ($f in @($log, $err) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique) {
   "---- $f ----"
@@ -71,7 +72,7 @@ foreach ($f in @($log, $err) | Where-Object { $_ -and (Test-Path $_) } | Select-
 "Backups: $Bk"
 
 # ---- ROLLBACK (only if needed) ----
-# nssm stop vyxtrader-engine
+# & "C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe" stop vyxtrader-engine
 # Copy-Item "<backup dir>\trading-core-server.pre.exe" C:\vyxtrader\repo\engine\target\release\trading-core-server.exe -Force
 # Copy-Item "<backup dir>\start-engine.cmd.pre" C:\vyxtrader\scripts\start-engine.cmd -Force
-# nssm start vyxtrader-engine
+# & "C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe" start vyxtrader-engine
