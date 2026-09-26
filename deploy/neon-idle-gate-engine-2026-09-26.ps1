@@ -8,6 +8,22 @@
 # Unchanged: ENGINE_ORDER_MANAGEMENT (stays shadow), every DB URL, every secret. Rollback at the bottom.
 $ErrorActionPreference = "Stop"
 $Nssm = "C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe"   # nssm is not on the VPS PATH (2026-09-26): always the full path
+
+# Windows PowerShell 5.1 turns a native program's stderr into error records when it is redirected (2>&1), and with
+# $ErrorActionPreference = "Stop" the first one ends the script -- cargo writes its progress ("Compiling ...") to
+# stderr, so a successful build stopped the deploy (owner, 2026-09-26). Every native call goes through Invoke-Native:
+# the preference is relaxed for that call only, every line is shown as plain text, and success is judged by the exit
+# code, which the caller checks.
+function Invoke-Native([scriptblock]$Command, [int]$Tail = 0) {
+  $prev = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try {
+    $out = & $Command 2>&1 | ForEach-Object { "$_" }
+    if ($Tail -gt 0) { $out | Select-Object -Last $Tail } else { $out }
+  } finally {
+    $ErrorActionPreference = $prev
+  }
+}
 $Repo   = "C:\vyxtrader\repo"
 $Cmd    = "C:\vyxtrader\scripts\start-engine.cmd"
 $Stamp  = Get-Date -Format yyyyMMdd-HHmmss
@@ -17,18 +33,19 @@ New-Item -ItemType Directory -Force $Bk | Out-Null
 
 # ---- STEP 1: code ----
 Set-Location $Repo
-git fetch --all
-git checkout main
-git pull --ff-only
-git log --oneline -3
+Invoke-Native { git fetch --all }
+Invoke-Native { git checkout main }
+Invoke-Native { git pull --ff-only }
+if ($LASTEXITCODE -ne 0) { throw "git pull --ff-only failed -- nothing touched" }
+Invoke-Native { git log --oneline -3 }
 if (-not (Select-String -Path "$Repo\engine\market-data\src\activity.rs" -Pattern "pub fn book_gate" -Quiet)) { throw "main does not carry the idle gate yet (engine\market-data\src\activity.rs) -- nothing touched" }
 
 # ---- STEP 2: build (the running exe keeps serving until the restart) ----
 Copy-Item "$Repo\engine\target\release\trading-core-server.exe" "$Bk\trading-core-server.pre.exe"
 Copy-Item $Cmd "$Bk\start-engine.cmd.pre"
 Set-Location "$Repo\engine"
-cargo build --release -p server 2>&1 | Select-Object -Last 2
-if ($LASTEXITCODE -ne 0) { throw "build failed -- the old engine is still running, nothing restarted" }
+Invoke-Native { cargo build --release -p server } -Tail 3
+if ($LASTEXITCODE -ne 0) { throw "build failed (exit $LASTEXITCODE) -- the old engine is still running, nothing restarted" }
 
 # ---- STEP 3: the two timer values (update in place, else insert above the launch line; no duplicates) ----
 $lines = [System.Collections.Generic.List[string]](Get-Content $Cmd)
@@ -53,7 +70,7 @@ Set-Content -Path $Cmd -Value $lines -Encoding ascii
 $envLines = Get-Content $Cmd
 function Get-CmdVar($name) { ($envLines | Where-Object { $_ -match ('^\s*set\s+"?' + $name + '=') } | Select-Object -First 1) -replace ('^\s*set\s+"?' + $name + '='), '' -replace '"\s*$', '' }
 $storeUrl = Get-CmdVar "VYX_SHADOW_STORE_URL"; if (-not $storeUrl) { $storeUrl = Get-CmdVar "MARKET_DATA_DATABASE_URL" }
-psql "$storeUrl" -v ON_ERROR_STOP=1 -c "BEGIN READ ONLY; SELECT class, kind, count(*) FROM shadow_pair GROUP BY class, kind ORDER BY 1, 2; SELECT key, value FROM shadow_state ORDER BY key; COMMIT;"
+Invoke-Native { psql "$storeUrl" -v ON_ERROR_STOP=1 -c "BEGIN READ ONLY; SELECT class, kind, count(*) FROM shadow_pair GROUP BY class, kind ORDER BY 1, 2; SELECT key, value FROM shadow_state ORDER BY key; COMMIT;" }
 
 # ---- STEP 5: restart and read the startup lines ----
 $log = (& $Nssm get vyxtrader-engine AppStdout).Trim(); $err = (& $Nssm get vyxtrader-engine AppStderr).Trim()

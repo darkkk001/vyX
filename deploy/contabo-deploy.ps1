@@ -58,6 +58,22 @@ param(
 $ErrorActionPreference = "Stop"
 $Nssm = "C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe"   # nssm is not on the VPS PATH (2026-09-26): always the full path
 
+# Windows PowerShell 5.1 turns a native program's stderr into error records when it is redirected (2>&1), and with
+# $ErrorActionPreference = "Stop" the first one ends the script -- cargo writes its progress ("Compiling ...") to
+# stderr, so a successful build stopped the deploy (owner, 2026-09-26). Every native call goes through Invoke-Native:
+# the preference is relaxed for that call only, every line is shown as plain text, and success is judged by the exit
+# code, which the caller checks.
+function Invoke-Native([scriptblock]$Command, [int]$Tail = 0) {
+  $prev = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try {
+    $out = & $Command 2>&1 | ForEach-Object { "$_" }
+    if ($Tail -gt 0) { $out | Select-Object -Last $Tail } else { $out }
+  } finally {
+    $ErrorActionPreference = $prev
+  }
+}
+
 # ---- admin check ----------------------------------------------------------
 $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 if (-not $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
@@ -117,9 +133,8 @@ function Invoke-FullRollback([string]$reason) {
     try {
         if ($script:ServicesTouched) {
             Write-Host "Stopping both services..."
-            & $Nssm stop $GatewayService 2>&1 | Write-Host
-            & $Nssm stop $EngineService 2>&1 | Write-Host
-
+            Invoke-Native { & $Nssm stop $GatewayService } | Write-Host
+            Invoke-Native { & $Nssm stop $EngineService } | Write-Host
             if (Test-Path $BackupExe) {
                 Copy-Item -Force $BackupExe $EngineExe
                 Write-Ok "Restored engine exe from $BackupExe"
@@ -134,16 +149,16 @@ function Invoke-FullRollback([string]$reason) {
 
         if (Test-Path $RepoDir) {
             Push-Location $RepoDir
-            git checkout $RollbackRef 2>&1 | Write-Host
+            Invoke-Native { git checkout $RollbackRef } | Write-Host
             Pop-Location
             Write-Ok "Repo reverted to $RollbackRef"
         }
 
         if ($script:ServicesTouched) {
             Write-Host "Restarting engine, then gateway, on the restored build..."
-            & $Nssm start $EngineService 2>&1 | Write-Host
+            Invoke-Native { & $Nssm start $EngineService } | Write-Host
             Start-Sleep -Seconds 3
-            & $Nssm start $GatewayService 2>&1 | Write-Host
+            Invoke-Native { & $Nssm start $GatewayService } | Write-Host
             Write-Warn "Both services restarted on the pre-deploy build. This script does NOT re-verify health after a rollback restart -- check manually."
         }
     } catch {
@@ -160,7 +175,7 @@ function Stop-Deploy([string]$msg) {
     if ((Test-Path $RepoDir) -and $script:CheckedOutTargetBranch) {
         try {
             Push-Location $RepoDir
-            git checkout $RollbackRef 2>&1 | Write-Host
+            Invoke-Native { git checkout $RollbackRef } | Write-Host
             Pop-Location
         } catch { }
     }
@@ -207,14 +222,14 @@ if ($status) {
     Stop-Deploy "git status is not clean, refusing to touch a dirty working tree:`n$status"
 }
 
-git fetch --all
+Invoke-Native { git fetch --all }
 if ($LASTEXITCODE -ne 0) { Pop-Location; Stop-Deploy "git fetch --all failed" }
 
-git checkout $TargetBranch
+Invoke-Native { git checkout $TargetBranch }
 if ($LASTEXITCODE -ne 0) { Pop-Location; Stop-Deploy "git checkout $TargetBranch failed" }
 $script:CheckedOutTargetBranch = $true
 
-git pull
+Invoke-Native { git pull }
 if ($LASTEXITCODE -ne 0) { Pop-Location; Stop-Deploy "git pull failed" }
 
 $head = (git rev-parse --short HEAD).Trim()
@@ -232,7 +247,7 @@ Write-StepHeader "Step 3: Build engine"
 $preBuildTime = (Get-Item $EngineExe).LastWriteTime
 
 Push-Location (Join-Path $RepoDir "engine")
-cargo build --release -p server
+Invoke-Native { cargo build --release -p server } -Tail 3
 $buildExit = $LASTEXITCODE
 Pop-Location
 
@@ -251,10 +266,10 @@ Write-Ok "Engine built: $EngineExe (was $preBuildTime, now $postBuildTime)"
 Write-StepHeader "Step 4: Build gateway"
 Push-Location (Join-Path $RepoDir "services\api-gateway")
 
-npm ci
+Invoke-Native { npm ci } -Tail 3
 if ($LASTEXITCODE -ne 0) { Pop-Location; Stop-Deploy "npm ci failed in services/api-gateway" }
 
-npm run build
+Invoke-Native { npm run build } -Tail 3
 $gwBuildExit = $LASTEXITCODE
 Pop-Location
 
@@ -346,11 +361,11 @@ $logCountBeforeRestart = Get-LogLineCount $EngineLogPath
 $logSampleBeforeRestart = Get-Date
 
 Write-Host "Stopping $GatewayService..."
-& $Nssm stop $GatewayService 2>&1 | Write-Host
+Invoke-Native { & $Nssm stop $GatewayService } | Write-Host
 Start-Sleep -Seconds 2
 
 Write-Host "Restarting $EngineService..."
-& $Nssm restart $EngineService 2>&1 | Write-Host
+Invoke-Native { & $Nssm restart $EngineService } | Write-Host
 if (-not (Wait-ForHttp200 -Url "http://127.0.0.1:8081/health" -TimeoutSec 30)) {
     Invoke-FullRollback "engine did not respond 200 on http://127.0.0.1:8081/health within 30s"
 }
@@ -365,7 +380,7 @@ if ($EngineLogPath -and (Test-Path $EngineLogPath)) {
 }
 
 Write-Host "Starting $GatewayService..."
-& $Nssm start $GatewayService 2>&1 | Write-Host
+Invoke-Native { & $Nssm start $GatewayService } | Write-Host
 if (-not (Wait-ForHttp200 -Url "http://127.0.0.1:8080/health" -TimeoutSec 30)) {
     Invoke-FullRollback "gateway did not respond 200 on http://127.0.0.1:8080/health within 30s"
 }
