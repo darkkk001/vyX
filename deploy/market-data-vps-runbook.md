@@ -260,3 +260,38 @@ Invoke-RestMethod "http://127.0.0.1:8081/internal/prices/XAUUSD" -Headers $H   #
 
 A flat bar has open = high = low = close. The engine writes a candle only for a tick whose own time (tick_ms) falls
 inside trading hours (engine/market-data/src/ingest.rs), so no rows are expected after the Friday close.
+
+## Rotating the risk-hook secret and the shadow password (2026-09-26)
+
+Two engine secrets live in `C:\vyxtrader\scripts\start-engine.cmd` and each has a partner outside the VPS; rotate both
+sides of a pair together, never print a value (not in chat, not in a transcript, not in a log):
+
+| start-engine.cmd | Partner | Used for |
+|---|---|---|
+| `VYX_RISK_HOOK_SECRET` | Vercel **`CRON_SECRET`** (Production), read by `/api/internal/margin-monitor` and `/api/internal/swap-rollover`; Vercel's own crons send it too | the engine's per-tick SL/TP / margin trigger and its backstop pass (`Authorization: Bearer`) |
+| password inside `VYX_SHADOW_DATABASE_URL` (`postgres://vyx_shadow_ro:<pw>@<pooler host>/...`) | the Neon role **`vyx_shadow_ro`** | the Stage 5 shadow monitor + reconciler (read-only book) |
+
+Order (the 2026-09-26 rotation after both values were exposed in a chat):
+1. Generate the two values on the admin PC into a file OUTSIDE the repo (48 hex for the hook secret; 32+ letters/digits
+   for the password, so the URL needs no escaping). Never echo them.
+2. Neon (as the owner role): `ALTER ROLE vyx_shadow_ro WITH PASSWORD '<new>'`. Verify by logging in AS the role on the
+   pooler host: `current_setting('transaction_read_only') = on` and an UPDATE is refused. From here the old password
+   is dead: the running engine keeps the connections it already has; new ones fail until step 4.
+3. Vercel: `vercel env rm CRON_SECRET production -y`, then `vercel env add CRON_SECRET production < <file with the value
+   only>`; it takes effect on the next production deployment (push, or `vercel redeploy`). From that deployment the
+   engine's old secret gets 401 (the Vercel cron keeps working: it sends the new value itself).
+4. VPS, elevated PowerShell, right after the deployment is live:
+   ```powershell
+   cd C:\vyxtrader\repo; git pull --ff-only
+   powershell -ExecutionPolicy Bypass -File C:\vyxtrader\repo\deploy\rotate-engine-secrets-2026-09-26.ps1
+   ```
+   It prompts for the two values (hidden input), backs up start-engine.cmd, replaces the `VYX_RISK_HOOK_SECRET` line and
+   only the password inside `VYX_SHADOW_DATABASE_URL`, checks that the web accepts the new secret (and refuses none),
+   restarts the engine and greps the log: `read-only role verified`, `shadow reconciler running`, `risk hook enabled`;
+   never `password authentication failed`, `SHADOW REFUSED`, `risk hook rejected`.
+5. Delete the generated file on the admin PC.
+
+The gap between steps 2/3 and 4 is covered: the Vercel cron (every 5 min) keeps running stop-outs with the new
+secret, and the shadow only reads. A rollback of start-engine.cmd alone does not help once Neon and Vercel have the new
+values: fix forward. `PRICE_FEED_SECRET` / `INTERNAL_SERVICE_SECRET` rotate with `scripts/rotate-secrets.ps1`;
+`MARKET_DATA_READ_SECRET` with Vercel + Caddy (deploy/caddy-service-recovery-runbook.md).

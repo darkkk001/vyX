@@ -1118,6 +1118,10 @@ prices, candles, alerts and the risk hook (refusing the whole process would take
    startup the engine checks that this role cannot INSERT, UPDATE or DELETE any money table, that its sessions are
    read-only, and that it is the SAME endpoint and database as `DATABASE_URL`. The main pool is unchanged, because
    it still writes price alerts and notifications.
+   Its password lives only in the VPS's start-engine.cmd (inside `VYX_SHADOW_DATABASE_URL`); rotation (last done
+   2026-09-26 after an exposure) and the pairing with Neon: deploy/market-data-vps-runbook.md "Rotating the risk-hook
+   secret and the shadow password". The role's column grants include the account-ask pricing columns
+   (deploy/shadow-ro-ask-markup-grants.sql, applied 2026-09-26).
 2. + 3. Shadow together with `VYX_POST_CLOSE_URL` or `VYX_POST_CLOSE_SECRET` set: refused.
 Verified: the scratch gate now runs the shadow THROUGH a read-only role (a write or a row lock anywhere on the shadow
 path fails it); a writable role and a different database are both refused.
