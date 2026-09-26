@@ -38,21 +38,18 @@ const createdBrokerIds: string[] = [];
 async function createFixture(opts?: { dealerOn?: boolean }): Promise<Fixture> {
   const suffix = randomUUID().replace(/-/g, "").slice(0, 10);
   const broker = await prisma.broker.create({
-    // dealingModeAt set = broker-wide DEALER mode ON: every account routes to the queue (INHERIT)
-    data: { name: `Queued Close Test ${suffix}`, subdomain: `qctest-${suffix}`, dealingModeAt: opts?.dealerOn === false ? null : new Date() },
+    // the dealer desk is ON (dealingDeskAutoFillAt null); queueing is decided by the account's group category below
+    // (Phase 2 batch 2 routing rule: DEALING queues while the desk is on, B_BOOK never does)
+    data: { name: `Queued Close Test ${suffix}`, subdomain: `qctest-${suffix}`, dealingDeskAutoFillAt: null },
   });
   createdBrokerIds.push(broker.id);
   const admin = await prisma.adminUser.create({ data: { brokerId: broker.id, email: `qc-admin-${suffix}@test.local`, passwordHash: "x", role: "BROKER_ADMIN" } });
   const symbol = await prisma.symbol.create({ data: { name: `QC${suffix.toUpperCase()}`, baseCurrency: "TST", quoteCurrency: "USD", category: "CRYPTO", digits: 2, contractSize: D(1) } });
   await prisma.brokerSymbol.create({ data: { brokerId: broker.id, symbolId: symbol.id, minLot: D(0.01), maxLot: D(100), lotStep: D(0.01), tradingMode: "BOTH" } });
   await prisma.livePrice.create({ data: { symbol: symbol.name, bid: D("100.00"), ask: D("100.10"), tickAt: new Date() } });
-  // Queueing in these tests is driven by the BROKER switch (dealingModeAt),
-  // per createFixture's own comment, so the group must not itself be
-  // dealing-typed: resolveWantsDealingQueue still ORs in
-  // groupType === "DEALING" (the Stage 1 shadow column), which would make
-  // every case queue regardless of the switch. See STAGE3B note in the PR.
+  // dealerOn (default) = a DEALING DESK group, queued while the desk is on; dealerOn: false = a B_BOOK group, never queued
   const _g0 = await prisma.group.create({
-    data: { brokerId: broker.id, name: `TG-${Math.random().toString(36).slice(2, 10)}`, groupType: "DEMO" },
+    data: { brokerId: broker.id, name: `TG-${Math.random().toString(36).slice(2, 10)}`, category: opts?.dealerOn === false ? "B_BOOK" : "DEALING" },
   });
   const account = await prisma.account.create({
     data: { groupId: _g0.id, brokerId: broker.id, accountNumber: `8${suffix.slice(0, 7)}`, email: `qc-client-${suffix}@test.local`, passwordHash: "x", fullName: "Queued Close Client", accountMode: "LIVE", balance: D(10000) },
@@ -329,7 +326,7 @@ describe("closes respect DEALER mode (live DB)", () => {
     if (!dbReachable) return;
     // a DEALING-type group at INHERIT: queues while the desk is on, auto-fills once the desk is off
     const fx = await createFixture({ dealerOn: false });
-    const group = await prisma.group.create({ data: { brokerId: fx.brokerId, name: "Dealing", groupType: "DEALING" } });
+    const group = await prisma.group.create({ data: { brokerId: fx.brokerId, name: "Dealing", groupType: "DEALING", category: "DEALING" } });
     await prisma.account.update({ where: { id: fx.accountId }, data: { groupId: group.id } });
     const pos = await openPosition(fx, { openPrice: "90.00", volume: "1.00" });
     await refreshPrice(fx, "100.00", "100.10");

@@ -37,7 +37,7 @@ export async function POST(request: NextRequest) {
   // bulk close (app/api/manage/positions/close-bulk) keeps executing directly.
   const account = await prisma.account.findUniqueOrThrow({
     where: { id: session.accountId },
-    select: { accountNumber: true, fullName: true, group: { select: { groupType: true, dealingMode: true, forceDealingMode: true } } },
+    select: { accountNumber: true, fullName: true, group: { select: { groupType: true, dealingMode: true, forceDealingMode: true, category: true } } },
   });
   const routing = await accountWantsDealingQueue(prisma, session.brokerId, account.group);
   if (routing.wantsQueue) {

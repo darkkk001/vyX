@@ -1,4 +1,5 @@
 import type { AccountMode, RoutingCategory, GroupModeRestriction } from "@prisma/client";
+import { isLpConnected } from "@/lib/liquidity";
 
 // One helper, every writer. Stage 1 of docs/ACCOUNT-STRUCTURE-MIGRATION.md
 // (§1.4): the single place that decides whether a (mode, group) pair is a
@@ -68,6 +69,16 @@ export function checkAccountStructure(input: StructureInput): StructureViolation
     return {
       code: "DEMO_IN_LIVE_MONEY_GROUP",
       message: `a demo account cannot be placed in a ${group.category} group: practice money is never bridged to a liquidity provider`,
+    };
+  }
+
+  // Owner decision (2026-09-26, Phase 2 batch 2): an A_BOOK group takes no accounts until a liquidity provider is
+  // connected (lib/liquidity.ts) -- every creation path (lib/account-provisioning.ts) and every group move
+  // (app/api/manage/accounts/[id], a group switched to A_BOOK with accounts in it) runs this check.
+  if (group.category === "A_BOOK" && !isLpConnected(group)) {
+    return {
+      code: "LP_NOT_CONNECTED",
+      message: "no liquidity provider is connected to this A-book group yet, so accounts can't be added to it",
     };
   }
 

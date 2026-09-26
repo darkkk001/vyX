@@ -15,7 +15,7 @@ import { publishTradingEvent } from "@/lib/nats";
 import { recordDealerActivity } from "@/lib/dealer-activity";
 import * as mirror from "@/lib/mirror";
 import * as coverage from "@/lib/coverage";
-import { resolveWantsDealingQueue } from "@/lib/dealing-routing";
+import { deskIsOn, orderRoute, LP_NOT_CONNECTED, SYSTEM_ACCOUNT_ORDER } from "@/lib/dealing-routing";
 import { orderAuditFields } from "@/lib/order-audit";
 import { classifyMissingPrice, getLivePriceRow } from "@/lib/live-price";
 import {
@@ -231,21 +231,14 @@ async function handlePlaceOrder(request: NextRequest, session: Session) {
       : null);
   if (syncRiskError) return riskResponse(syncRiskError);
 
-  // See lib/dealing-routing.ts's own doc comment -- Group.dealingMode can
-  // override the four checks below entirely, in either direction.
-  // `wantsQueue` doubles as the correct "is this account dealer-managed"
-  // signal for the dealer-awareness feature below (recordDealerActivity's
-  // isDealingGroup) -- NOT the raw groupTypeIsDealing flag alone, which a
-  // group can be true for while still being AUTO/dealer-desk-off (see
-  // lib/dealing-routing.ts's isDealingManagedAccount doc comment for the
-  // 2026-09-04 bug this fixed).
-  const wantsQueue = resolveWantsDealingQueue({
-    groupDealingMode: account.group?.dealingMode ?? "INHERIT",
-    brokerDealingModeOn: !!broker.dealingModeAt,
-    groupForceDealingMode: !!account.group?.forceDealingMode,
-    groupTypeIsDealing: account.group?.groupType === "DEALING",
-    dealingDeskAutoFillOn: !!broker.dealingDeskAutoFillAt,
-  });
+  // `wantsQueue` doubles as the "is this account dealer-managed right now" signal for the dealer activity feed below
+  // (recordDealerActivity's isDealingGroup).
+  // Phase 2 batch 2 (owner): routing by the group's category (lib/dealing-routing.ts). An A_BOOK group with no liquidity
+  // provider connected takes no orders; the broker's system coverage account takes no client orders.
+  const route = orderRoute(account.group, deskIsOn(broker));
+  if (route === "NO_LP") return NextResponse.json(LP_NOT_CONNECTED, { status: 400 });
+  if (route === "SYSTEM") return NextResponse.json(SYSTEM_ACCOUNT_ORDER, { status: 400 });
+  const wantsQueue = route === "QUEUE";
 
   // Latency fix 1: wave 2 -- the four query-backed risk checks, the fill pricing and the account's margin state (the
   // fill price is applied to it afterwards, synchronously) all at once. The first failing risk check in the old

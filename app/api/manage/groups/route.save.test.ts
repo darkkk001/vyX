@@ -78,7 +78,8 @@ describe("Groups: the fields moved into the edit form still save", () => {
       maxLotSize: "25",
       swapFree: true,
       modeRestriction: "DEMO_ONLY",
-      category: "B_BOOK",
+      // "Always send to dealer" (forceDealingMode) is kept only on a DEALING group (Phase 2 batch 2 routing rule)
+      category: "DEALING",
       dealingMode: "MANUAL",
       tradingRestriction: "BOTH",
       forceDealingMode: true,

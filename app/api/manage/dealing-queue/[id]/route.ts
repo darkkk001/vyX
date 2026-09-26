@@ -10,7 +10,7 @@ import { resolveBookType, applySpreadMarkup } from "@/lib/group-pricing";
 import { resolveFillPricing, logSpreadWarning } from "@/lib/pricing-engine";
 import { publishTradingEvent } from "@/lib/nats";
 import { recordDealerActivity } from "@/lib/dealer-activity";
-import { isDealingManagedAccount } from "@/lib/dealing-routing";
+import { isDealingManagedAccount, deskIsOn } from "@/lib/dealing-routing";
 import * as mirror from "@/lib/mirror";
 import * as coverage from "@/lib/coverage";
 import { executeQueuedCloseInTx, afterQueuedCloseExecuted } from "@/lib/queued-close";
@@ -395,11 +395,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       accountId: order.accountId,
       accountNumber: order.account.accountNumber,
       accountFullName: order.account.fullName,
-      isDealingGroup: isDealingManagedAccount({
-        group: order.account.group,
-        brokerDealingModeOn: !!broker.dealingModeAt,
-        dealingDeskAutoFillOn: !!broker.dealingDeskAutoFillAt,
-      }),
+      isDealingGroup: isDealingManagedAccount({ group: order.account.group, deskOn: deskIsOn(broker) }),
       action: "POSITION_OPENED",
       symbol: order.symbol.name,
       side: order.side,

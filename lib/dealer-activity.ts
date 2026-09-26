@@ -3,7 +3,7 @@ import type { Prisma, PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { createNotification } from "@/lib/notifications";
 import { publishTradingEvent } from "@/lib/nats";
-import { isDealingManagedAccount } from "@/lib/dealing-routing";
+import { isDealingManagedAccount, deskIsOn } from "@/lib/dealing-routing";
 
 // Dealer awareness (2026-09-04 feature) -- a dealer responsible for a
 // DEALING-group account (Group.groupType === "DEALING") needs to see
@@ -140,7 +140,7 @@ export async function emitPositionClosedActivity(
       select: {
         brokerId: true, accountId: true, side: true,
         symbol: { select: { name: true } },
-        account: { select: { accountNumber: true, fullName: true, group: { select: { groupType: true, dealingMode: true, forceDealingMode: true } } } },
+        account: { select: { accountNumber: true, fullName: true, group: { select: { groupType: true, dealingMode: true, forceDealingMode: true, category: true } } } },
         broker: { select: { dealingModeAt: true, dealingDeskAutoFillAt: true } },
       },
     });
@@ -150,7 +150,7 @@ export async function emitPositionClosedActivity(
       accountId: position.accountId,
       accountNumber: position.account.accountNumber,
       accountFullName: position.account.fullName,
-      isDealingGroup: isDealingManagedAccount({ group: position.account.group, brokerDealingModeOn: !!position.broker.dealingModeAt, dealingDeskAutoFillOn: !!position.broker.dealingDeskAutoFillAt }),
+      isDealingGroup: isDealingManagedAccount({ group: position.account.group, deskOn: deskIsOn(position.broker) }),
       action: "POSITION_CLOSED",
       symbol: position.symbol.name,
       side: position.side,
@@ -268,11 +268,10 @@ export async function getDealerActivityFeedRows(
         closePrice: true,
         realizedPnl: true,
         symbol: { select: { name: true } },
-        account: { select: { id: true, accountNumber: true, fullName: true, group: { select: { groupType: true, dealingMode: true, forceDealingMode: true } } } },
+        account: { select: { id: true, accountNumber: true, fullName: true, group: { select: { groupType: true, dealingMode: true, forceDealingMode: true, category: true } } } },
       },
     }),
   ]);
-  const brokerDealingModeOn = !!broker?.dealingModeAt;
   const dealingDeskAutoFillOn = !!broker?.dealingDeskAutoFillAt;
 
   // the close reason lives on the TRADE_PNL ledger row every close path writes
@@ -287,7 +286,7 @@ export async function getDealerActivityFeedRows(
   for (const r of pnlRows) if (r.referenceId && !noteByPosition.has(r.referenceId)) noteByPosition.set(r.referenceId, r.note);
   const closedRows = closed
     .map((p): DealerActivityFeedRow | null => {
-      const isDealingGroup = isDealingManagedAccount({ group: p.account.group, brokerDealingModeOn, dealingDeskAutoFillOn });
+      const isDealingGroup = isDealingManagedAccount({ group: p.account.group, deskOn: !dealingDeskAutoFillOn });
       if (opts.dealingOnly && !isDealingGroup) return null;
       return {
         id: `pos:${p.id}`,
@@ -319,7 +318,7 @@ export async function getDealerActivityFeedRows(
   const accounts = accountNumbers.length
     ? await prisma.account.findMany({
         where: { brokerId, accountNumber: { in: accountNumbers } },
-        select: { id: true, accountNumber: true, fullName: true, group: { select: { groupType: true, dealingMode: true, forceDealingMode: true } } },
+        select: { id: true, accountNumber: true, fullName: true, group: { select: { groupType: true, dealingMode: true, forceDealingMode: true, category: true } } },
       })
     : [];
   const accountByNumber = new Map(accounts.map((a) => [a.accountNumber, a]));
@@ -338,7 +337,7 @@ export async function getDealerActivityFeedRows(
       // dealingMode=AUTO (a legitimate, common config: book accounting and
       // manual review are independent). isDealingManagedAccount is the
       // same resolution the real order-routing path uses.
-      const isDealingGroup = isDealingManagedAccount({ group: account.group, brokerDealingModeOn, dealingDeskAutoFillOn });
+      const isDealingGroup = isDealingManagedAccount({ group: account.group, deskOn: !dealingDeskAutoFillOn });
       if (opts.dealingOnly && !isDealingGroup) return null;
       return {
         id: r.id,
@@ -412,18 +411,17 @@ export async function getDealingDeskRestingOrders(brokerId: string): Promise<Res
     prisma.order.findMany({
       where: { brokerId, type: { in: ["LIMIT", "STOP"] }, status: "PENDING" },
       include: {
-        account: { select: { id: true, accountNumber: true, fullName: true, group: { select: { groupType: true, dealingMode: true, forceDealingMode: true } } } },
+        account: { select: { id: true, accountNumber: true, fullName: true, group: { select: { groupType: true, dealingMode: true, forceDealingMode: true, category: true } } } },
         symbol: { select: { name: true, digits: true } },
       },
       orderBy: { createdAt: "desc" },
     }),
     prisma.broker.findUnique({ where: { id: brokerId }, select: { dealingModeAt: true, dealingDeskAutoFillAt: true } }),
   ]);
-  const brokerDealingModeOn = !!broker?.dealingModeAt;
   const dealingDeskAutoFillOn = !!broker?.dealingDeskAutoFillAt;
 
   return orders
-    .filter((o) => isDealingManagedAccount({ group: o.account.group, brokerDealingModeOn, dealingDeskAutoFillOn }))
+    .filter((o) => isDealingManagedAccount({ group: o.account.group, deskOn: !dealingDeskAutoFillOn }))
     .map((o) => ({
       orderId: o.id,
       accountId: o.account.id,
@@ -448,13 +446,12 @@ export async function getDealingDeskRestingOrders(brokerId: string): Promise<Res
 // pulling every account broker-wide just to filter most of them back out.
 export async function getDealingGroupAccounts(brokerId: string): Promise<{ id: string; accountNumber: string; fullName: string }[]> {
   const [groups, broker] = await Promise.all([
-    prisma.group.findMany({ where: { brokerId }, select: { id: true, groupType: true, dealingMode: true, forceDealingMode: true } }),
+    prisma.group.findMany({ where: { brokerId }, select: { id: true, groupType: true, dealingMode: true, forceDealingMode: true, category: true } }),
     prisma.broker.findUnique({ where: { id: brokerId }, select: { dealingModeAt: true, dealingDeskAutoFillAt: true } }),
   ]);
-  const brokerDealingModeOn = !!broker?.dealingModeAt;
   const dealingDeskAutoFillOn = !!broker?.dealingDeskAutoFillAt;
   const dealingGroupIds = groups
-    .filter((g) => isDealingManagedAccount({ group: g, brokerDealingModeOn, dealingDeskAutoFillOn }))
+    .filter((g) => isDealingManagedAccount({ group: g, deskOn: !dealingDeskAutoFillOn }))
     .map((g) => g.id);
   if (dealingGroupIds.length === 0) return [];
   return prisma.account.findMany({

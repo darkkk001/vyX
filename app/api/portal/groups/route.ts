@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getClientSession } from "@/lib/client-auth";
+import { isLpConnected } from "@/lib/liquidity";
 
 // Client-facing list of the groups a client may open an account in.
 //
@@ -35,6 +36,9 @@ export async function GET(request: Request) {
     where: {
       brokerId: session.brokerId,
       isClientSelectable: true,
+      // Phase 2 batch 2: the system coverage group is never offered, nor an A_BOOK group while no liquidity provider
+      // is connected (lib/liquidity.ts; account creation refuses it anyway, lib/account-structure.ts)
+      category: { notIn: isLpConnected() ? ["COVERAGE"] : ["COVERAGE", "A_BOOK"] },
       modeRestriction: mode === "DEMO" ? { in: ["ANY", "DEMO_ONLY"] } : { in: ["ANY", "LIVE_ONLY"] },
       tradingHaltedAt: null,
     },

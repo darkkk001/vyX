@@ -1,173 +1,58 @@
 import { describe, expect, it } from "vitest";
-import { resolveWantsDealingQueue, isDealingManagedAccount } from "@/lib/dealing-routing";
+import { orderRoute, resolveWantsDealingQueue, isDealingManagedAccount, deskIsOn } from "@/lib/dealing-routing";
+import { checkAccountStructure } from "@/lib/account-structure";
 
-// Reverse-mirror hook gap follow-up: Futurix's "Reverse" group was left at
-// its default groupType=DEALING (see prisma/schema.prisma's own comment on
-// why that's the default), which routes every order to the manual dealing
-// queue -- fatal for a strategy that depends on instant fills. This is the
-// group-level override that lets a group stay correctly groupType=DEALING
-// for book accounting while still bypassing the queue.
+// Routing by the group's category (owner decision 2026-09-26, Phase 2 batch 2). The retired inputs (Group.dealingMode,
+// forceDealingMode outside DEALING, Broker.dealingModeAt, the legacy groupType) no longer exist in the signature.
+const g = (category: "A_BOOK" | "B_BOOK" | "DEALING" | "REVERSAL" | "COVERAGE", forceDealingMode = false) => ({ category, forceDealingMode });
 
-describe("resolveWantsDealingQueue -- INHERIT (default, zero behavior change)", () => {
-  it("queues when the broker-wide dealing mode is on", () => {
-    expect(
-      resolveWantsDealingQueue({ groupDealingMode: "INHERIT", brokerDealingModeOn: true, groupForceDealingMode: false, groupTypeIsDealing: false })
-    ).toBe(true);
+describe("orderRoute: one rule per category", () => {
+  it.each([
+    // category, alwaysSendToDealer, desk ON, desk OFF
+    ["B_BOOK", false, "FILL", "FILL"],
+    ["B_BOOK", true, "FILL", "FILL"], // the dealer option means nothing outside DEALING
+    ["DEALING", false, "QUEUE", "FILL"],
+    ["DEALING", true, "QUEUE", "QUEUE"], // "Always send to dealer": queued even with the desk off
+    ["REVERSAL", false, "FILL", "FILL"],
+    ["REVERSAL", true, "FILL", "FILL"],
+    ["A_BOOK", false, "NO_LP", "NO_LP"], // no liquidity provider connected yet
+    ["COVERAGE", false, "SYSTEM", "SYSTEM"],
+  ] as const)("%s (always to dealer: %s): desk on -> %s, desk off -> %s", (category, always, deskOnRoute, deskOffRoute) => {
+    expect(orderRoute(g(category, always), true)).toBe(deskOnRoute);
+    expect(orderRoute(g(category, always), false)).toBe(deskOffRoute);
   });
 
-  it("queues when the group's own forceDealingMode is on", () => {
-    expect(
-      resolveWantsDealingQueue({ groupDealingMode: "INHERIT", brokerDealingModeOn: false, groupForceDealingMode: true, groupTypeIsDealing: false })
-    ).toBe(true);
+  it("an account with no group routes like B_BOOK", () => {
+    expect(orderRoute(null, true)).toBe("FILL");
   });
 
-  it("queues when the group's groupType is DEALING", () => {
-    expect(
-      resolveWantsDealingQueue({ groupDealingMode: "INHERIT", brokerDealingModeOn: false, groupForceDealingMode: false, groupTypeIsDealing: true })
-    ).toBe(true);
+  it("queue / dealer-managed are exactly route === QUEUE; NO_LP and SYSTEM are never queued (a close must not strand)", () => {
+    for (const [group, deskOn, queued] of [
+      [g("DEALING"), true, true],
+      [g("DEALING"), false, false],
+      [g("B_BOOK"), true, false],
+      [g("A_BOOK"), true, false],
+      [g("COVERAGE"), true, false],
+    ] as const) {
+      expect(resolveWantsDealingQueue({ group, deskOn })).toBe(queued);
+      expect(isDealingManagedAccount({ group, deskOn })).toBe(queued);
+    }
   });
 
-  it("does not queue when none of the three legacy conditions are set", () => {
-    expect(
-      resolveWantsDealingQueue({ groupDealingMode: "INHERIT", brokerDealingModeOn: false, groupForceDealingMode: false, groupTypeIsDealing: false })
-    ).toBe(false);
-  });
-});
-
-describe("resolveWantsDealingQueue -- AUTO (always bypass, regardless of anything else)", () => {
-  it("never queues even when every legacy condition is on", () => {
-    expect(
-      resolveWantsDealingQueue({ groupDealingMode: "AUTO", brokerDealingModeOn: true, groupForceDealingMode: true, groupTypeIsDealing: true })
-    ).toBe(false);
-  });
-
-  it("never queues when nothing else is on either (the ordinary case)", () => {
-    expect(
-      resolveWantsDealingQueue({ groupDealingMode: "AUTO", brokerDealingModeOn: false, groupForceDealingMode: false, groupTypeIsDealing: false })
-    ).toBe(false);
-  });
-
-  it("this is the fix: a group that is correctly groupType=DEALING for book accounting still auto-fills under AUTO", () => {
-    expect(
-      resolveWantsDealingQueue({ groupDealingMode: "AUTO", brokerDealingModeOn: false, groupForceDealingMode: false, groupTypeIsDealing: true })
-    ).toBe(false);
+  it("the desk switch: ON = Broker.dealingDeskAutoFillAt null", () => {
+    expect(deskIsOn({ dealingDeskAutoFillAt: null })).toBe(true);
+    expect(deskIsOn({ dealingDeskAutoFillAt: new Date() })).toBe(false);
+    expect(deskIsOn(null)).toBe(false);
   });
 });
 
-describe("resolveWantsDealingQueue -- MANUAL (always queue, regardless of anything else)", () => {
-  it("always queues even when every legacy condition is off", () => {
-    expect(
-      resolveWantsDealingQueue({ groupDealingMode: "MANUAL", brokerDealingModeOn: false, groupForceDealingMode: false, groupTypeIsDealing: false })
-    ).toBe(true);
-  });
-
-  it("always queues when every legacy condition is also on (redundant, still true)", () => {
-    expect(
-      resolveWantsDealingQueue({ groupDealingMode: "MANUAL", brokerDealingModeOn: true, groupForceDealingMode: true, groupTypeIsDealing: true })
-    ).toBe(true);
-  });
-});
-
-describe("resolveWantsDealingQueue -- dealingDeskAutoFillOn (2026-09-04)", () => {
-  it("bypasses the queue for an INHERIT, groupType=DEALING group when the desk switch is off", () => {
-    expect(
-      resolveWantsDealingQueue({
-        groupDealingMode: "INHERIT",
-        brokerDealingModeOn: false,
-        groupForceDealingMode: false,
-        groupTypeIsDealing: true,
-        dealingDeskAutoFillOn: true,
-      })
-    ).toBe(false);
-  });
-
-  it("does not affect a group whose own dealingMode is explicitly MANUAL", () => {
-    expect(
-      resolveWantsDealingQueue({
-        groupDealingMode: "MANUAL",
-        brokerDealingModeOn: false,
-        groupForceDealingMode: false,
-        groupTypeIsDealing: true,
-        dealingDeskAutoFillOn: true,
-      })
-    ).toBe(true);
-  });
-
-  it("does not affect a group whose own dealingMode is explicitly AUTO (already false either way)", () => {
-    expect(
-      resolveWantsDealingQueue({
-        groupDealingMode: "AUTO",
-        brokerDealingModeOn: false,
-        groupForceDealingMode: false,
-        groupTypeIsDealing: true,
-        dealingDeskAutoFillOn: true,
-      })
-    ).toBe(false);
-  });
-
-  it("does not affect a non-dealing-type group (the switch only ever relaxes DEALING-type groups)", () => {
-    expect(
-      resolveWantsDealingQueue({
-        groupDealingMode: "INHERIT",
-        brokerDealingModeOn: true,
-        groupForceDealingMode: false,
-        groupTypeIsDealing: false,
-        dealingDeskAutoFillOn: true,
-      })
-    ).toBe(true);
-  });
-
-  it("defaults to off (undefined) with zero behavior change for callers that haven't been updated", () => {
-    expect(
-      resolveWantsDealingQueue({
-        groupDealingMode: "INHERIT",
-        brokerDealingModeOn: false,
-        groupForceDealingMode: false,
-        groupTypeIsDealing: true,
-      })
-    ).toBe(true);
-  });
-});
-
-describe("isDealingManagedAccount -- the 2026-09-04 bug fix", () => {
-  it("is false for a groupType=DEALING group whose own dealingMode is AUTO (the actual reported bug: a 'B-Book' group)", () => {
-    expect(
-      isDealingManagedAccount({
-        group: { groupType: "DEALING", dealingMode: "AUTO", forceDealingMode: false },
-        brokerDealingModeOn: false,
-      })
-    ).toBe(false);
-  });
-
-  it("is true for a groupType=DEALING group at the INHERIT default", () => {
-    expect(
-      isDealingManagedAccount({
-        group: { groupType: "DEALING", dealingMode: "INHERIT", forceDealingMode: false },
-        brokerDealingModeOn: false,
-      })
-    ).toBe(true);
-  });
-
-  it("is false for an account with no group at all", () => {
-    expect(isDealingManagedAccount({ group: null, brokerDealingModeOn: false })).toBe(false);
-  });
-
-  it("is true for any group when the broker-wide dealingModeAt is on", () => {
-    expect(
-      isDealingManagedAccount({
-        group: { groupType: "LP", dealingMode: "INHERIT", forceDealingMode: false },
-        brokerDealingModeOn: true,
-      })
-    ).toBe(true);
-  });
-
-  it("respects the dealer desk switch for a groupType=DEALING/INHERIT group", () => {
-    expect(
-      isDealingManagedAccount({
-        group: { groupType: "DEALING", dealingMode: "INHERIT", forceDealingMode: false },
-        brokerDealingModeOn: false,
-        dealingDeskAutoFillOn: true,
-      })
-    ).toBe(false);
+describe("accounts into an A_BOOK group without a connected LP are refused", () => {
+  it("a LIVE account gets the LP message; a DEMO account keeps its more specific refusal", () => {
+    const live = checkAccountStructure({ accountMode: "LIVE", group: { category: "A_BOOK", modeRestriction: "LIVE_ONLY" } });
+    expect(live?.code).toBe("LP_NOT_CONNECTED");
+    expect(live?.message).toMatch(/no liquidity provider is connected/);
+    expect(checkAccountStructure({ accountMode: "DEMO", group: { category: "A_BOOK", modeRestriction: "LIVE_ONLY" } })?.code).toBe("DEMO_IN_LIVE_MONEY_GROUP");
+    expect(checkAccountStructure({ accountMode: "LIVE", group: { category: "B_BOOK", modeRestriction: "ANY" } })).toBeNull();
+    expect(checkAccountStructure({ accountMode: "LIVE", group: { category: "COVERAGE", modeRestriction: "LIVE_ONLY" } })?.code).toBe("COVERAGE_GROUP_RESERVED");
   });
 });

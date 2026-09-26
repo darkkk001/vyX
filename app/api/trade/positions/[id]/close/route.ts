@@ -80,7 +80,7 @@ async function handleClose(request: NextRequest, params: Promise<{ id: string }>
     prisma.position.findUnique({ where: { id } }),
     symbolRead,
     prisma.account.findFirst({ where: { positions: { some: { id } } }, select: { accountNumber: true, fullName: true } }),
-    prisma.group.findFirst({ where: { accounts: { some: { positions: { some: { id } } } } }, select: { groupType: true, dealingMode: true, forceDealingMode: true } }),
+    prisma.group.findFirst({ where: { accounts: { some: { positions: { some: { id } } } } }, select: { groupType: true, dealingMode: true, forceDealingMode: true, category: true } }),
     prisma.brokerSymbol.findFirst({ where: { brokerId: session.brokerId, symbol: bySymbolOfPosition } }),
     prisma.tradingSession.findMany({ where: { brokerSymbol: { brokerId: session.brokerId, symbol: bySymbolOfPosition } } }),
     prisma.broker.findUniqueOrThrow({ where: { id: session.brokerId }, select: { dealingModeAt: true, dealingDeskAutoFillAt: true, defaultMaxSlippagePips: true } }),
@@ -181,13 +181,7 @@ async function handleClose(request: NextRequest, params: Promise<{ id: string }>
   const brokerDealingModeOn = !!broker.dealingModeAt;
   const dealingDeskAutoFillOn = !!broker.dealingDeskAutoFillAt;
   const routing = {
-    wantsQueue: resolveWantsDealingQueue({
-      groupDealingMode: position.account.group?.dealingMode ?? "INHERIT",
-      brokerDealingModeOn,
-      groupForceDealingMode: !!position.account.group?.forceDealingMode,
-      groupTypeIsDealing: position.account.group?.groupType === "DEALING",
-      dealingDeskAutoFillOn,
-    }),
+    wantsQueue: resolveWantsDealingQueue({ group: position.account.group, deskOn: !dealingDeskAutoFillOn }),
     brokerDealingModeOn,
     dealingDeskAutoFillOn,
   };
@@ -326,11 +320,7 @@ async function handleClose(request: NextRequest, params: Promise<{ id: string }>
       accountId: session.accountId,
       accountNumber: position.account.accountNumber,
       accountFullName: position.account.fullName,
-      isDealingGroup: isDealingManagedAccount({
-        group: position.account.group,
-        brokerDealingModeOn: routing.brokerDealingModeOn,
-        dealingDeskAutoFillOn: routing.dealingDeskAutoFillOn,
-      }),
+      isDealingGroup: isDealingManagedAccount({ group: position.account.group, deskOn: !routing.dealingDeskAutoFillOn }),
       action: "POSITION_CLOSED",
       symbol: position.symbol.name,
       side: position.side,

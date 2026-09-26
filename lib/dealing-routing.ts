@@ -1,67 +1,63 @@
-import { GroupDealingMode } from "@prisma/client";
+import type { RoutingCategory } from "@prisma/client";
+import { isLpConnected } from "@/lib/liquidity";
 
-// Forward-compatible subset of the Auto Dealing design in
-// REALTIME-SYNC-AND-DEALING-BRIEF §9 -- enum names kept consistent with
-// it deliberately. Shared by both places that decide whether a MARKET
-// order (or a resting order's trigger fill) reaches the manual dealing
-// queue: app/api/trade/orders/route.ts and
-// app/api/trade/orders/[id]/fill/route.ts. Previously duplicated inline
-// in both files; extracted here once a group-level override was needed,
-// so both call sites can't drift and the decision itself is unit-testable
-// without spinning up either route. Also now the single source of truth
-// for "is this a dealer-managed account" used by the dealer-awareness
-// feature (lib/dealer-activity.ts) -- see that file's own note on the
-// 2026-09-04 bug this fixed: Group.groupType alone is NOT the right
-// signal (it's a book-routing classification most groups default to,
-// unrelated to whether the dealer actually reviews this group's orders).
+// Where a client's order goes: ONE rule, by the group's routing CATEGORY (owner decision 2026-09-26, Phase 2 batch 2).
+// Every open and close path asks this: app/api/trade/orders (MARKET), the pending-order trigger (lib/pending-trigger.ts),
+// the client close / close-by / close-bulk (lib/queued-close.ts), the desk-switch flush
+// (app/api/manage/dealing-desk-toggle), and "is this account dealer-managed right now" for the dealer activity feed.
 //
-// INHERIT (default) = zero behavior change, the original three-way OR
-// still decides. AUTO = always bypass the queue for this group,
-// regardless of broker/group/desk settings (still subject to margin gate
-// and server price -- this only skips manual review, not trade
-// validity). MANUAL = always queue for this group, even if nothing else
-// would have. Both AUTO and MANUAL are explicit per-group overrides an
-// admin chose deliberately -- the broker-wide dealingDeskAutoFillOn
-// switch below never touches a group that set either.
-export function resolveWantsDealingQueue(params: {
-  groupDealingMode: GroupDealingMode;
-  brokerDealingModeOn: boolean;
-  groupForceDealingMode: boolean;
-  groupTypeIsDealing: boolean;
-  // Dealer desk ON/OFF (2026-09-04) -- Broker.dealingDeskAutoFillAt != null.
-  // Only relaxes review for a DEALING-type group sitting at the INHERIT
-  // default (see groupTypeIsDealing below); never affects a group with an
-  // explicit MANUAL/AUTO override (those already returned above), and
-  // never affects a non-dealing-type group either (unrelated to this
-  // switch -- that's what brokerDealingModeOn/groupForceDealingMode are
-  // for). Defaults to false so every existing call site that hasn't been
-  // updated to pass it keeps today's exact behavior.
-  dealingDeskAutoFillOn?: boolean;
-}): boolean {
-  if (params.groupDealingMode === "MANUAL") return true;
-  if (params.groupDealingMode === "AUTO") return false;
-  if (params.groupTypeIsDealing && params.dealingDeskAutoFillOn) return false;
-  return params.brokerDealingModeOn || params.groupForceDealingMode || params.groupTypeIsDealing;
+//   B_BOOK       auto-fill, never queued
+//   DEALING      queued for the dealer while the desk is ON (Broker.dealingDeskAutoFillAt null), auto-filled while it
+//                is OFF -- unless the group's "Always send to dealer" option (Group.forceDealingMode) is set: then
+//                queued even with the desk off. That option exists for DEALING groups only.
+//   REVERSAL     auto-fill; the copy rule (lib/mirror.ts) mirrors it
+//   A_BOOK       bridged to a liquidity provider: until one is connected (lib/liquidity.ts) orders are REFUSED
+//   COVERAGE     system (the broker's own hedge account): client orders never route here
+//
+// Retired (owner, same date): Group.dealingMode (MANUAL / AUTO / INHERIT), Group.forceDealingMode on any category but
+// DEALING, and the broker-wide Broker.dealingModeAt. The columns stay; nothing routes on them any more. Before this,
+// routing read the legacy Group.groupType, which is "DEALING" for B_BOOK and DEALING alike, so choosing between them
+// changed nothing.
+
+export type RoutingGroup = { category: RoutingCategory; forceDealingMode: boolean };
+export type OrderRoute = "FILL" | "QUEUE" | "NO_LP" | "SYSTEM";
+
+// `error` is the sentence a client shows as-is; `code` is what a client keys on (the same { error, code } shape the
+// volume refusals use).
+export const LP_NOT_CONNECTED = {
+  error: "Orders can't be placed yet: this account's group is routed to a liquidity provider and none is connected. Contact your broker.",
+  code: "LP_NOT_CONNECTED",
+} as const;
+export const SYSTEM_ACCOUNT_ORDER = {
+  error: "This is the broker's system coverage account; client orders can't be placed on it.",
+  code: "SYSTEM_ACCOUNT",
+} as const;
+
+/** `deskOn` = the dealer desk is ON (Broker.dealingDeskAutoFillAt == null). A missing group routes like B_BOOK. */
+export function orderRoute(group: RoutingGroup | null | undefined, deskOn: boolean): OrderRoute {
+  switch (group?.category ?? "B_BOOK") {
+    case "DEALING":
+      return deskOn || !!group?.forceDealingMode ? "QUEUE" : "FILL";
+    case "A_BOOK":
+      return isLpConnected(group) ? "FILL" : "NO_LP";
+    case "COVERAGE":
+      return "SYSTEM";
+    default:
+      return "FILL"; // B_BOOK, REVERSAL
+  }
 }
 
-// Shared "is this account's group actually dealer-managed right now"
-// check -- the correct definition for the dealer-awareness feature
-// (lib/dealer-activity.ts), reusing this file's own canonical routing
-// decision instead of a separate, wrong proxy. A group with
-// groupType=DEALING but dealingMode=AUTO (a legitimate, common
-// configuration -- book-routing and manual-review are independent
-// concerns) is NOT dealer-managed; this returns false for it, where the
-// old `groupType === "DEALING"` check incorrectly returned true.
-export function isDealingManagedAccount(params: {
-  group: { dealingMode: GroupDealingMode; forceDealingMode: boolean; groupType: string } | null | undefined;
-  brokerDealingModeOn: boolean;
-  dealingDeskAutoFillOn?: boolean;
-}): boolean {
-  return resolveWantsDealingQueue({
-    groupDealingMode: params.group?.dealingMode ?? "INHERIT",
-    brokerDealingModeOn: params.brokerDealingModeOn,
-    groupForceDealingMode: !!params.group?.forceDealingMode,
-    groupTypeIsDealing: params.group?.groupType === "DEALING",
-    dealingDeskAutoFillOn: params.dealingDeskAutoFillOn,
-  });
+/** The broker row's dealer-desk switch, as the routing rule reads it. */
+export function deskIsOn(broker: { dealingDeskAutoFillAt: Date | null } | null | undefined): boolean {
+  return broker != null && broker.dealingDeskAutoFillAt == null;
+}
+
+/** Does an order (open, or a client's close) from this group wait for a dealer? */
+export function resolveWantsDealingQueue(params: { group: RoutingGroup | null | undefined; deskOn: boolean }): boolean {
+  return orderRoute(params.group, params.deskOn) === "QUEUE";
+}
+
+/** "Is this account dealer-managed right now" -- the dealer-awareness feed's definition (lib/dealer-activity.ts). */
+export function isDealingManagedAccount(params: { group: RoutingGroup | null | undefined; deskOn: boolean }): boolean {
+  return resolveWantsDealingQueue(params);
 }

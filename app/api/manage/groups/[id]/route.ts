@@ -76,7 +76,9 @@ async function patchHandler(request: NextRequest, { params }: { params: Promise<
   // form always resends the full object, so there's no "field absent ->
   // keep existing" case to handle here, unlike a true partial PATCH.
   const swapFree: boolean | null = body?.swapFree === null ? null : body?.swapFree === true;
-  const forceDealingMode = body?.forceDealingMode === true;
+  // "Always send to dealer" (Phase 2 batch 2): queue even with the dealer desk off. Meaningful for DEALING groups only
+  // (lib/dealing-routing.ts), so it is stored false for every other category (see the write below).
+  const forceDealingModeRequested = body?.forceDealingMode === true;
   const dealingMode = GROUP_DEALING_MODES.includes(body?.dealingMode) ? (body.dealingMode as GroupDealingMode) : "INHERIT";
   // Phase 2 batch 1: a field the form does not send keeps its stored value. The backoffice form never sends `tier`, so
   // every save used to reset it to STANDARD.
@@ -109,6 +111,7 @@ async function patchHandler(request: NextRequest, { params }: { params: Promise<
   });
   const { category, modeRestriction } = routing;
   const groupType = legacyGroupTypeFor(routing);
+  const forceDealingMode = category === "DEALING" && forceDealingModeRequested;
 
   if (category !== existing.category || modeRestriction !== existing.modeRestriction) {
     const byMode = await prisma.account.groupBy({ by: ["accountMode"], where: { groupId: id }, _count: { _all: true } });

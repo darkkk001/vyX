@@ -5,7 +5,7 @@ import { getAdminSession } from "@/lib/auth";
 import { getPermissionContext, PERMISSION_LABELS } from "@/lib/permissions";
 import { getFreshPrice } from "@/lib/live-price";
 import { openPositionFromOrder } from "@/lib/dealing";
-import { resolveWantsDealingQueue } from "@/lib/dealing-routing";
+import { resolveWantsDealingQueue, deskIsOn } from "@/lib/dealing-routing";
 import { resolveBookType, applySpreadMarkup, pipSize } from "@/lib/group-pricing";
 import { resolveFillPricing, logSpreadWarning } from "@/lib/pricing-engine";
 import { orderAuditFields } from "@/lib/order-audit";
@@ -145,13 +145,7 @@ async function flushDealingQueueToMarket(
   const results: { orderId: string; accountNumber: string; status: "filled" | "skipped"; reason?: string }[] = [];
 
   for (const order of queued) {
-    const stillWantsQueue = resolveWantsDealingQueue({
-      groupDealingMode: order.account.group?.dealingMode ?? "INHERIT",
-      brokerDealingModeOn: !!broker.dealingModeAt,
-      groupForceDealingMode: !!order.account.group?.forceDealingMode,
-      groupTypeIsDealing: order.account.group?.groupType === "DEALING",
-      dealingDeskAutoFillOn: !!broker.dealingDeskAutoFillAt,
-    });
+    const stillWantsQueue = resolveWantsDealingQueue({ group: order.account.group, deskOn: deskIsOn(broker) });
     if (stillWantsQueue) continue; // explicit MANUAL override or similar -- not this switch's to touch
 
     const brokerSymbol = await prisma.brokerSymbol.findFirst({

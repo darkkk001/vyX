@@ -11,7 +11,7 @@ import * as coverage from "@/lib/coverage";
 import { publishTradingEvent } from "@/lib/nats";
 import { recordDealerActivity } from "@/lib/dealer-activity";
 import { cancelPendingClose } from "@/lib/queued-close";
-import { isDealingManagedAccount } from "@/lib/dealing-routing";
+import { isDealingManagedAccount, deskIsOn } from "@/lib/dealing-routing";
 
 async function requireManager() {
   const session = await getAdminSession();
@@ -49,7 +49,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     where: { id },
     include: {
       symbol: { select: { name: true, category: true, contractSize: true } },
-      account: { select: { accountNumber: true, fullName: true, group: { select: { groupType: true, dealingMode: true, forceDealingMode: true } } } },
+      account: { select: { accountNumber: true, fullName: true, group: { select: { groupType: true, dealingMode: true, forceDealingMode: true, category: true } } } },
     },
   });
   if (!position || position.brokerId !== brokerId) {
@@ -147,11 +147,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     accountId: position.accountId,
     accountNumber: position.account.accountNumber,
     accountFullName: position.account.fullName,
-    isDealingGroup: isDealingManagedAccount({
-      group: position.account.group,
-      brokerDealingModeOn: !!brokerForActivity?.dealingModeAt,
-      dealingDeskAutoFillOn: !!brokerForActivity?.dealingDeskAutoFillAt,
-    }),
+    isDealingGroup: isDealingManagedAccount({ group: position.account.group, deskOn: deskIsOn(brokerForActivity) }),
     action: "POSITION_CLOSED",
     symbol: position.symbol.name,
     side: position.side,

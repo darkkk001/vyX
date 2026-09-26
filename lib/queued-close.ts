@@ -1,7 +1,7 @@
 import "server-only";
 import { Prisma, PrismaClient } from "@prisma/client";
 import { closePositionInTx, type ClosePositionOutcome } from "@/lib/position-close";
-import { resolveWantsDealingQueue } from "@/lib/dealing-routing";
+import { resolveWantsDealingQueue, deskIsOn, type RoutingGroup } from "@/lib/dealing-routing";
 import { createNotification } from "@/lib/notifications";
 import { publishTradingEvent } from "@/lib/nats";
 import { recordDealerActivity } from "@/lib/dealer-activity";
@@ -41,26 +41,16 @@ export class ClosePendingError extends Error {
   constructor(public readonly orderId: string) { super("CLOSE_PENDING"); }
 }
 
-/// Does this account's routing want the dealer queue right now (the open path's exact gate)?
+/// Does this account's routing want the dealer queue right now (the open path's exact gate, lib/dealing-routing.ts)?
+/// `deskOn` is returned for the callers' dealer-activity flag.
 export async function accountWantsDealingQueue(
   db: PrismaClient | Prisma.TransactionClient,
   brokerId: string,
-  group: { dealingMode: "INHERIT" | "MANUAL" | "AUTO"; forceDealingMode: boolean; groupType: string } | null | undefined
-): Promise<{ wantsQueue: boolean; brokerDealingModeOn: boolean; dealingDeskAutoFillOn: boolean }> {
-  const broker = await db.broker.findUniqueOrThrow({ where: { id: brokerId }, select: { dealingModeAt: true, dealingDeskAutoFillAt: true } });
-  const brokerDealingModeOn = !!broker.dealingModeAt;
-  const dealingDeskAutoFillOn = !!broker.dealingDeskAutoFillAt;
-  return {
-    wantsQueue: resolveWantsDealingQueue({
-      groupDealingMode: group?.dealingMode ?? "INHERIT",
-      brokerDealingModeOn,
-      groupForceDealingMode: !!group?.forceDealingMode,
-      groupTypeIsDealing: group?.groupType === "DEALING",
-      dealingDeskAutoFillOn,
-    }),
-    brokerDealingModeOn,
-    dealingDeskAutoFillOn,
-  };
+  group: RoutingGroup | null | undefined
+): Promise<{ wantsQueue: boolean; deskOn: boolean }> {
+  const broker = await db.broker.findUniqueOrThrow({ where: { id: brokerId }, select: { dealingDeskAutoFillAt: true } });
+  const deskOn = deskIsOn(broker);
+  return { wantsQueue: resolveWantsDealingQueue({ group, deskOn }), deskOn };
 }
 
 /// Create the queued close Order and lock the position, atomically. Throws ClosePendingError

@@ -5,7 +5,7 @@ import { publishTradingEvent } from "@/lib/nats";
 import { createNotification } from "@/lib/notifications";
 import * as mirror from "@/lib/mirror";
 import * as coverage from "@/lib/coverage";
-import { resolveWantsDealingQueue } from "@/lib/dealing-routing";
+import { deskIsOn, orderRoute, LP_NOT_CONNECTED, SYSTEM_ACCOUNT_ORDER } from "@/lib/dealing-routing";
 import { recordDealerActivity } from "@/lib/dealer-activity";
 import { resolveBookType, applySpreadMarkup, pipSize, chargeCommission } from "@/lib/group-pricing";
 import { resolveFillPricing, logSpreadWarning } from "@/lib/pricing-engine";
@@ -147,13 +147,11 @@ export async function triggerPendingOrder(orderId: string, triggerPrice: string,
     (await checkMaxDailyLoss(prisma, order.accountId, account.maxDailyLoss));
   if (riskError) return fail(riskError);
 
-  const wantsQueue = resolveWantsDealingQueue({
-    groupDealingMode: account.group?.dealingMode ?? "INHERIT",
-    brokerDealingModeOn: !!broker.dealingModeAt,
-    groupForceDealingMode: !!account.group?.forceDealingMode,
-    groupTypeIsDealing: account.group?.groupType === "DEALING",
-    dealingDeskAutoFillOn: !!broker.dealingDeskAutoFillAt,
-  });
+  // Phase 2 batch 2: an A_BOOK group without a connected LP / the system coverage account never fills a trigger
+  const route = orderRoute(account.group, deskIsOn(broker));
+  if (route === "NO_LP") return fail(LP_NOT_CONNECTED.code, { message: LP_NOT_CONNECTED.error });
+  if (route === "SYSTEM") return fail(SYSTEM_ACCOUNT_ORDER.code, { message: SYSTEM_ACCOUNT_ORDER.error });
+  const wantsQueue = route === "QUEUE";
 
   if (wantsQueue) {
     // The triggered order becomes a MARKET order waiting for the dealer (unchanged behaviour), claimed once.

@@ -9,7 +9,7 @@ import * as coverage from "@/lib/coverage";
 import { publishTradingEvent } from "@/lib/nats";
 import { recordDealerActivity } from "@/lib/dealer-activity";
 import { cancelPendingClose } from "@/lib/queued-close";
-import { isDealingManagedAccount } from "@/lib/dealing-routing";
+import { isDealingManagedAccount, deskIsOn } from "@/lib/dealing-routing";
 
 async function requireManager() {
   const session = await getAdminSession();
@@ -59,7 +59,7 @@ export async function POST(request: NextRequest) {
 
   const account = await prisma.account.findUniqueOrThrow({
     where: { id: first.accountId },
-    select: { accountNumber: true, fullName: true, group: { select: { groupType: true, dealingMode: true, forceDealingMode: true } } },
+    select: { accountNumber: true, fullName: true, group: { select: { groupType: true, dealingMode: true, forceDealingMode: true, category: true } } },
   });
 
   const legs = [a, b] as const;
@@ -87,11 +87,7 @@ export async function POST(request: NextRequest) {
   }
 
   const broker = await prisma.broker.findUnique({ where: { id: brokerId }, select: { dealingModeAt: true, dealingDeskAutoFillAt: true } });
-  const isDealingGroup = isDealingManagedAccount({
-    group: account.group,
-    brokerDealingModeOn: !!broker?.dealingModeAt,
-    dealingDeskAutoFillOn: !!broker?.dealingDeskAutoFillAt,
-  });
+  const isDealingGroup = isDealingManagedAccount({ group: account.group, deskOn: deskIsOn(broker) });
   for (const [i, p] of legs.entries()) {
     const partial = closeVolume.lt(p.volume);
     await mirror.onClose(prisma, { positionId: p.id, brokerId, closedLots: closeVolume, sourceVolumeBeforeClose: p.volume, closePrice }).catch((err) => console.error("mirror.onClose failed (dealer close-by)", err));

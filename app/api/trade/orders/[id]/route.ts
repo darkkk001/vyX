@@ -6,7 +6,7 @@ import { publishTradingEvent } from "@/lib/nats";
 import { validatePendingPriceDistance, validatePendingOrderDirection, validateSlTp } from "@/lib/trading";
 import { orderAuditFields } from "@/lib/order-audit";
 import { recordDealerActivity } from "@/lib/dealer-activity";
-import { isDealingManagedAccount } from "@/lib/dealing-routing";
+import { isDealingManagedAccount, deskIsOn } from "@/lib/dealing-routing";
 import { checkTradingSession, computeNextSessionOpen } from "@/lib/risk";
 import { getLivePriceRow } from "@/lib/live-price";
 
@@ -49,7 +49,7 @@ export async function PATCH(
     where: { id },
     include: {
       symbol: { select: { name: true, category: true } },
-      account: { select: { accountNumber: true, fullName: true, group: { select: { groupType: true, dealingMode: true, forceDealingMode: true } } } },
+      account: { select: { accountNumber: true, fullName: true, group: { select: { groupType: true, dealingMode: true, forceDealingMode: true, category: true } } } },
     },
   });
   if (!order || order.accountId !== session.accountId) {
@@ -179,11 +179,7 @@ export async function PATCH(
     accountId: session.accountId,
     accountNumber: order.account.accountNumber,
     accountFullName: order.account.fullName,
-    isDealingGroup: isDealingManagedAccount({
-      group: order.account.group,
-      brokerDealingModeOn: !!brokerForActivity?.dealingModeAt,
-      dealingDeskAutoFillOn: !!brokerForActivity?.dealingDeskAutoFillAt,
-    }),
+    isDealingGroup: isDealingManagedAccount({ group: order.account.group, deskOn: deskIsOn(brokerForActivity) }),
     action: "ORDER_MODIFIED",
     symbol: order.symbol.name,
     side: order.side,
@@ -217,7 +213,7 @@ export async function DELETE(
     where: { id },
     include: {
       symbol: { select: { name: true } },
-      account: { select: { accountNumber: true, fullName: true, group: { select: { groupType: true, dealingMode: true, forceDealingMode: true } } } },
+      account: { select: { accountNumber: true, fullName: true, group: { select: { groupType: true, dealingMode: true, forceDealingMode: true, category: true } } } },
     },
   });
   if (!order || order.accountId !== session.accountId) {
@@ -267,11 +263,7 @@ export async function DELETE(
     accountId: session.accountId,
     accountNumber: order.account.accountNumber,
     accountFullName: order.account.fullName,
-    isDealingGroup: isDealingManagedAccount({
-      group: order.account.group,
-      brokerDealingModeOn: !!brokerForActivity?.dealingModeAt,
-      dealingDeskAutoFillOn: !!brokerForActivity?.dealingDeskAutoFillAt,
-    }),
+    isDealingGroup: isDealingManagedAccount({ group: order.account.group, deskOn: deskIsOn(brokerForActivity) }),
     action: "ORDER_CANCELLED",
     symbol: order.symbol.name,
     side: order.side,

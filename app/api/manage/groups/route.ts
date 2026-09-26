@@ -1,3 +1,4 @@
+import { isLpConnected } from "@/lib/liquidity";
 import { NextRequest, NextResponse } from "next/server";
 import { withConfigEvent } from "@/lib/config-events";
 import { Prisma, GroupTier, GroupDealingMode } from "@prisma/client";
@@ -69,6 +70,9 @@ export async function GET() {
       // add-account picker filters on it so a broker admin cannot drop a
       // client into the COVERAGE hedge book or the REVERSAL source group.
       isClientSelectable: g.isClientSelectable,
+      // Phase 2 batch 2: may a client account be placed in / moved to this group right now -- published to clients, not
+      // the system coverage group, and not an A_BOOK group while no liquidity provider is connected (lib/liquidity.ts)
+      acceptsAccounts: g.isClientSelectable && g.category !== "COVERAGE" && (g.category !== "A_BOOK" || isLpConnected(g)),
       maxLotSize: g.maxLotSize ? g.maxLotSize.toString() : "",
       tradingRestriction: g.tradingRestriction,
       tradingHalted: g.tradingHaltedAt != null,
@@ -139,7 +143,9 @@ async function postHandler(request: NextRequest) {
   // Tri-state (2026-09-07 Stage 5) -- explicit null means "inherit from
   // the hardcoded false floor" (nothing below Group in the chain).
   const swapFree: boolean | null = body?.swapFree === null ? null : body?.swapFree === true;
-  const forceDealingMode = body?.forceDealingMode === true;
+  // "Always send to dealer" (Phase 2 batch 2): queue even with the dealer desk off. Meaningful for DEALING groups only
+  // (lib/dealing-routing.ts), so it is stored false for every other category (see the write below).
+  const forceDealingModeRequested = body?.forceDealingMode === true;
   const dealingMode = GROUP_DEALING_MODES.includes(body?.dealingMode) ? (body.dealingMode as GroupDealingMode) : "INHERIT";
   const tier = GROUP_TIERS.includes(body?.tier) ? (body.tier as GroupTier) : "STANDARD";
   // Phase 2 batch 1: a group created here can be offered to clients at signup (it never could before)
@@ -154,6 +160,7 @@ async function postHandler(request: NextRequest) {
   const routing = resolveGroupRouting(body, dealingMode);
   const { category, modeRestriction } = routing;
   const groupType = legacyGroupTypeFor(routing);
+  const forceDealingMode = category === "DEALING" && forceDealingModeRequested;
 
   try {
     const group = await prisma.$transaction(async (tx) => {

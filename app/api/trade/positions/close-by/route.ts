@@ -26,7 +26,7 @@ export async function POST(request: NextRequest) {
   // client saw), each locking its position; the dealer accepts / rejects them one by one.
   const account = await prisma.account.findUniqueOrThrow({
     where: { id: session.accountId },
-    select: { accountNumber: true, fullName: true, group: { select: { groupType: true, dealingMode: true, forceDealingMode: true } } },
+    select: { accountNumber: true, fullName: true, group: { select: { groupType: true, dealingMode: true, forceDealingMode: true, category: true } } },
   });
   const routing = await accountWantsDealingQueue(prisma, session.brokerId, account.group);
   if (routing.wantsQueue) {
