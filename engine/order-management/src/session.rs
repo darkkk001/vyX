@@ -51,11 +51,16 @@ pub fn is_in_daily_break(now: DateTime<Utc>, category: &str) -> bool {
     (1..=4).contains(&day) && now.hour() == ny_close_hour_utc(now)
 }
 
-/// lib/risk.ts isDefaultFxSessionClosed: Saturday all day, Friday >= 21:00 UTC, Sunday < 22:00 UTC.
+/// lib/risk.ts isDefaultFxSessionClosed = lib/market-week.ts isWeeklyClosed: Friday 17:00 New York -> Sunday 17:00
+/// New York, i.e. Saturday all day, Friday from the NY-close hour, Sunday before it -- 21:00 UTC while US daylight
+/// time is in force, 22:00 UTC otherwise (docs/contracts/market-week-vectors.json). 2026-09-27 fix: this was still
+/// the fixed Friday >= 21:00 / Sunday < 22:00 UTC rule, so on a summer Sunday 21:00-22:00 the engine (and its Stage 5
+/// shadow) treated the market as closed while the web traded it, and in winter it closed an hour early on Friday.
 pub fn is_default_fx_session_closed(now: DateTime<Utc>) -> bool {
     let day = now.weekday().num_days_from_sunday();
     let hour = now.hour();
-    day == 6 || (day == 5 && hour >= 21) || (day == 0 && hour < 22)
+    let close = ny_close_hour_utc(now);
+    day == 6 || (day == 5 && hour >= close) || (day == 0 && hour < close)
 }
 
 fn to_minutes(hhmm: &str) -> Option<u32> {
@@ -88,6 +93,22 @@ pub fn is_market_closed(sessions: &[SessionWindow], now: DateTime<Utc>, category
 
 #[cfg(test)]
 mod tests {
+    /// docs/contracts/market-week-vectors.json -- the same file the web (lib/market-week.test.ts), the terminal and the
+    /// engine's candle gap-fill are pinned to: every case, for a symbol without configured sessions.
+    #[test]
+    fn the_default_weekly_close_matches_the_market_week_vectors() {
+        let file: serde_json::Value = serde_json::from_str(include_str!("../../../docs/contracts/market-week-vectors.json")).unwrap();
+        let cases = file["cases"].as_array().unwrap();
+        assert!(cases.len() >= 20);
+        for c in cases {
+            let at: DateTime<Utc> = c["utc"].as_str().unwrap().parse().unwrap();
+            let closed = c["closed"].as_bool().unwrap();
+            assert_eq!(is_default_fx_session_closed(at), closed, "{} ({})", c["utc"], c["why"]);
+            assert_eq!(is_market_closed(&[], at, "FOREX"), closed, "FOREX {}", c["utc"]);
+            assert!(!is_market_closed(&[], at, "CRYPTO"), "crypto never closes {}", c["utc"]);
+        }
+    }
+
     use super::*;
 
     // Every case below is lib/risk.test.ts's own, same instants, same expectations.
@@ -100,18 +121,26 @@ mod tests {
 
     #[test]
     fn default_fx_session() {
-        assert!(is_default_fx_session_closed(at(2026, 8, 4, 22, 30))); // Fri 22:30
+        // summer (US daylight time): Friday 21:00 UTC close, Sunday 21:00 UTC reopen
+        assert!(!is_default_fx_session_closed(at(2026, 8, 4, 20, 59))); // Fri 20:59
+        assert!(is_default_fx_session_closed(at(2026, 8, 4, 21, 0))); // Fri 21:00
         assert!(is_default_fx_session_closed(at(2026, 8, 5, 12, 0))); // Sat
-        assert!(is_default_fx_session_closed(at(2026, 8, 6, 21, 59))); // Sun 21:59
-        assert!(!is_default_fx_session_closed(at(2026, 8, 6, 22, 1))); // Sun 22:01
+        assert!(is_default_fx_session_closed(at(2026, 8, 6, 20, 59))); // Sun 20:59
+        assert!(!is_default_fx_session_closed(at(2026, 8, 6, 21, 0))); // Sun 21:00 reopen (was closed until 22:00: the bug)
         assert!(!is_default_fx_session_closed(at(2026, 8, 2, 12, 0))); // Wed
+        // winter: Friday 22:00 UTC close, Sunday 22:00 UTC reopen
+        assert!(!is_default_fx_session_closed(at(2026, 11, 4, 21, 30))); // Fri 2026-12-04 21:30 (was closed: the bug)
+        assert!(is_default_fx_session_closed(at(2026, 11, 4, 22, 0))); // Fri 22:00
+        assert!(is_default_fx_session_closed(at(2026, 11, 6, 21, 59))); // Sun 21:59
+        assert!(!is_default_fx_session_closed(at(2026, 11, 6, 22, 0))); // Sun 22:00 reopen
     }
 
     #[test]
     fn check_trading_session() {
         assert!(is_market_closed(&[], at(2026, 8, 4, 22, 30), "METALS"));
-        assert!(is_market_closed(&[], at(2026, 8, 6, 21, 59), "METALS"));
-        assert!(!is_market_closed(&[], at(2026, 8, 6, 22, 1), "METALS"));
+        assert!(is_market_closed(&[], at(2026, 8, 6, 20, 59), "METALS")); // summer Sunday before the 21:00 reopen
+        assert!(!is_market_closed(&[], at(2026, 8, 6, 21, 1), "METALS")); // summer Sunday after it
+        assert!(is_market_closed(&[], at(2026, 11, 6, 21, 59), "METALS")); // winter Sunday before the 22:00 reopen
         assert!(!is_market_closed(&[], at(2026, 8, 5, 12, 0), "CRYPTO"));
         assert!(!is_market_closed(&[w(6, "00:00", "23:59")], at(2026, 8, 5, 12, 0), "METALS"));
         assert!(is_market_closed(&[w(3, "09:00", "17:00")], at(2026, 8, 2, 20, 0), "METALS"));
