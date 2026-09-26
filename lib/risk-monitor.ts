@@ -195,7 +195,7 @@ export async function evaluateAccountRisk(accountId: string): Promise<RiskMonito
   // only after something closed -- a close is the only thing in here that changes them. Before, every account was
   // read three times over on every pass (pass 1, the stop-out loop, pass 3: ~22 queries) even when nothing closed,
   // which is the common case the engine's backstop runs every 5 s.
-  const readAccount = () => prisma.account.findUnique({ where: { id: accountId }, include: { group: { select: { stopOutLevel: true, marginCallLevel: true } } } });
+  const readAccount = () => prisma.account.findUnique({ where: { id: accountId }, include: { group: { select: { stopOutLevel: true, marginCallLevel: true, category: true } } } });
   let [positions, account] = await Promise.all([loadOpenPositionsWithMarket(accountId), readAccount()]);
   let changed = false;
   const refresh = async () => {
@@ -292,7 +292,8 @@ export async function evaluateAccountRisk(accountId: string): Promise<RiskMonito
       // client position the leg was hedging.
       await coverage.notifyStopOut(prisma, { brokerId: worst.position.brokerId, accountId, accountNumber: freshAccount.accountNumber, positionId: worst.position.id, ticket: worst.position.ticket, symbol: worst.position.symbol, side: worst.position.side, volume: worst.position.volume.toString(), marginLevel: marginLevel.toFixed(2), stopOutLevel: stopOutLevel.toString() }).catch((err) => console.error("coverage.notifyStopOut failed", err));
       await coverage.onClose(prisma, { positionId: worst.position.id, brokerId: worst.position.brokerId, closedLots: worst.position.volume, sourceVolumeBeforeClose: worst.position.volume, reason: "stop_out", marginLevel: marginLevel.toFixed(2) }).catch((err) => console.error("coverage.onClose failed", err));
-      await publishTradingEvent("PositionClosed", { position_id: worst.position.id, account_id: accountId, broker_id: worst.position.brokerId, reason: "stop_out" });
+      // is_coverage (Phase 2 batch 5): the broker's own hedge account stopped out -- the dealer's louder alarm, exact
+      await publishTradingEvent("PositionClosed", { position_id: worst.position.id, account_id: accountId, broker_id: worst.position.brokerId, reason: "stop_out", is_coverage: freshAccount.group?.category === "COVERAGE" });
       await emitPositionClosedActivity(prisma, { positionId: worst.position.id, closePrice: worst.closePrice, closeVolume: worst.position.volume, partial: false, realizedPnl: outcome.realizedPnl, closeReason: "STOP_OUT", origin: "risk_monitor" });
     }
     // If outcome.closed is false, a concurrent evaluation (or the trader)
