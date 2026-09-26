@@ -148,6 +148,8 @@ pub struct RiskHook {
     shadow_snapshot: std::sync::OnceLock<SnapshotSender>,
     /// a book change was announced: reload now (request_reload)
     reload_now: Notify,
+    /// how many reloads have run (tests, diagnostics: a lost event must force one, an in-order stream must not)
+    pub reload_count: std::sync::atomic::AtomicU64,
 }
 
 impl RiskHook {
@@ -168,6 +170,7 @@ impl RiskHook {
             loaded: AtomicBool::new(false),
             shadow_snapshot: std::sync::OnceLock::new(),
             reload_now: Notify::new(),
+            reload_count: std::sync::atomic::AtomicU64::new(0),
         }))
     }
 
@@ -195,6 +198,7 @@ impl RiskHook {
     /// Reload the open positions' levels (symbol -> [side, sl, tp, account ask rule]) from the Prisma table.
     pub async fn reload(&self, pool: &PgPool) {
         use sqlx::Row;
+        self.reload_count.fetch_add(1, Ordering::Relaxed);
         let sql = format!(
             r#"SELECT s.name, p.id AS position_id, p."accountId" AS account_id, p.side::text AS side, p."slPrice" AS sl, p."tpPrice" AS tp, {levels}
                FROM "Position" p JOIN "Symbol" s ON s.id = p."symbolId" JOIN "Account" a ON a.id = p."accountId"
@@ -450,18 +454,35 @@ impl RiskHook {
         });
     }
 
-    /// Keep the levels current: every `every` while anything ticks (crate::activity::reload_due; always the first
-    /// time), and at once on request_reload (a book change announced by the web), whatever the idle gate says.
+    /// The book gate of what this hook watches (market_data::activity), for the safety-reload cadence.
+    pub fn book_gate(&self, cache: &TickCache) -> activity::Gate {
+        let book = self.book_symbols();
+        activity::book_gate(cache, book.as_ref(), chrono::Utc::now())
+    }
+
+    /// Keep the levels current at a fixed safety interval (tests); see spawn_reload_loop_with.
     pub fn spawn_reload_loop(self: &Arc<Self>, pool: PgPool, every: Duration, cache: Arc<TickCache>) {
+        self.spawn_reload_loop_with(pool, cache, Arc::new(move || every));
+    }
+
+    /// Keep the levels current: a safety reload once `interval()` has passed since the last one while anything ticks
+    /// (crate::activity::reload_due; always the first time), and at once on request_reload (a book change announced by
+    /// the web, a lost event, a reconnect), whatever the idle gate says. `interval` is re-read every second, so a
+    /// cadence change (crate::book_events::safety_interval: 5 s / 10 min) applies within a second.
+    pub fn spawn_reload_loop_with(self: &Arc<Self>, pool: PgPool, cache: Arc<TickCache>, interval: Arc<dyn Fn() -> Duration + Send + Sync>) {
         let hook = Arc::clone(self);
         tokio::spawn(async move {
             let mut asked = false;
+            let mut last: Option<tokio::time::Instant> = None;
             loop {
-                if asked || !hook.loaded.load(Ordering::Relaxed) || activity::reload_due(&cache, chrono::Utc::now()) {
+                let due = last.is_none_or(|l| l.elapsed() >= interval());
+                if asked || !hook.loaded.load(Ordering::Relaxed) || (due && activity::reload_due(&cache, chrono::Utc::now())) {
                     hook.reload(&pool).await;
+                    last = Some(tokio::time::Instant::now());
                 }
+                let nap = interval().min(Duration::from_secs(1));
                 asked = tokio::select! {
-                    _ = tokio::time::sleep(every) => false,
+                    _ = tokio::time::sleep(nap) => false,
                     _ = hook.reload_now.notified() => true,
                 };
             }
@@ -564,6 +585,7 @@ mod tests {
             loaded: AtomicBool::new(false),
             shadow_snapshot: std::sync::OnceLock::new(),
             reload_now: Notify::new(),
+            reload_count: std::sync::atomic::AtomicU64::new(0),
         })
     }
 

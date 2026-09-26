@@ -1204,8 +1204,23 @@ async fn spawn_tick_driven_triggers(
 }
 
 /// Reload on change (market_data::book_events): every web book-change subject feeds one debouncer, which calls
-/// `on_change` once per burst.
-async fn spawn_book_change_reload(nats: async_nats::Client, on_change: Arc<dyn Fn() + Send + Sync>) -> Result<(), async_nats::SubscribeError> {
+/// `on_change` once per burst. Guard 2: the gateway's `book.seq` markers (one subscription, publish order) feed the
+/// feed's sequence tracker; a lost event or a gateway restart reloads everything at once, not after the debounce.
+async fn spawn_book_change_reload(
+    nats: async_nats::Client,
+    feed: Arc<market_data::book_events::BookFeed>,
+    on_change: Arc<dyn Fn() + Send + Sync>,
+) -> Result<(), async_nats::SubscribeError> {
+    let mut seq_sub = nats.subscribe(market_data::book_events::BOOK_SEQ_SUBJECT.to_string()).await?;
+    let (seq_feed, seq_reload) = (feed.clone(), on_change.clone());
+    tokio::spawn(async move {
+        while let Some(msg) = seq_sub.next().await {
+            if seq_feed.observe_marker(&msg.payload) {
+                seq_reload();
+            }
+        }
+        tracing::warn!("book events: book.seq subscription ended");
+    });
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     for subject in market_data::book_events::BOOK_CHANGE_SUBJECTS {
         let mut sub = nats.subscribe(subject.to_string()).await?;
@@ -1542,14 +1557,21 @@ async fn main() {
             hook.set_shadow_snapshot(tx.clone());
             tracing::info!("shadow snapshot: SL/TP touches are evaluated in shadow as of the touch (no wait on the web call)");
         }
-        hook.spawn_reload_loop(pool.clone(), std::time::Duration::from_secs(5), tick_cache.clone());
+        // Safety-reload cadence (owner, 2026-09-26): 5 s while the book can move or the event feed is unproven, 10 min
+        // while the book is idle and every change provably arrives as an event (market_data::book_events)
+        let book_feed = market_data::book_events::BookFeed::new();
+        let safety_interval: Arc<dyn Fn() -> std::time::Duration + Send + Sync> = {
+            let (h, c, f) = (hook.clone(), tick_cache.clone(), book_feed.clone());
+            Arc::new(move || market_data::book_events::safety_interval(h.book_gate(&c), f.is_healthy()))
+        };
+        hook.spawn_reload_loop_with(pool.clone(), tick_cache.clone(), safety_interval.clone());
         // per-tick margin trigger (order_management::margin_watch): an account at or below its stop-out is
         // evaluated on the flush that put it there, not at the next backstop pass. VYX_RISK_HOOK_MARGIN=0 = off.
         if std::env::var("VYX_RISK_HOOK_MARGIN").map(|v| v.trim() == "0").unwrap_or(false) {
             tracing::warn!("risk hook margin trigger OFF (VYX_RISK_HOOK_MARGIN=0): stop-out on positions without SL/TP waits for the backstop");
         } else {
             let watch = order_management::margin_watch::MarginWatch::new();
-            watch.spawn_reload_loop(pool.clone(), std::time::Duration::from_secs(5), tick_cache.clone());
+            watch.spawn_reload_loop_with(pool.clone(), tick_cache.clone(), safety_interval.clone());
             let _ = margin_watch_slot.set(watch.clone());
             if let Some(tx) = &shadow_trigger {
                 watch.set_on_fire(tx.clone());
@@ -1562,15 +1584,25 @@ async fn main() {
         // once (debounced), not only on the 5 s poll -- a just-set SL / TP is watched before the next tick
         let reload_hook = hook.clone();
         let reload_watch = margin_watch_slot.clone();
-        match spawn_book_change_reload(nats.clone(), Arc::new(move || {
+        let full_reload: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
             reload_hook.request_reload();
             if let Some(w) = reload_watch.get() {
                 w.request_reload();
             }
-        }))
-        .await
-        {
-            Ok(()) => tracing::info!(subjects = ?market_data::book_events::BOOK_CHANGE_SUBJECTS, debounce_ms = market_data::book_events::DEBOUNCE.as_millis() as u64, "reload on change: subscribed"),
+        });
+        match spawn_book_change_reload(nats.clone(), book_feed.clone(), full_reload.clone()).await {
+            Ok(()) => {
+                tracing::info!(subjects = ?market_data::book_events::BOOK_CHANGE_SUBJECTS, sequence = market_data::book_events::BOOK_SEQ_SUBJECT, debounce_ms = market_data::book_events::DEBOUNCE.as_millis() as u64, "reload on change: subscribed");
+                // Guard 1: a NATS reconnect reloads everything (announcements sent while disconnected are gone)
+                let state_client = nats.clone();
+                market_data::book_events::spawn_connection_watch(
+                    Arc::new(move || state_client.connection_state() == async_nats::connection::State::Connected),
+                    book_feed.clone(),
+                    std::time::Duration::from_millis(500),
+                    full_reload.clone(),
+                );
+                tracing::info!(idle_secs = market_data::book_events::SAFETY_IDLE.as_secs(), fast_secs = market_data::book_events::SAFETY_FAST.as_secs(), "safety reload: 5 s while the book can move or the event feed is unproven, 10 min when idle with a sequenced feed");
+            }
             Err(err) => tracing::warn!(?err, "reload on change: NATS subscribe failed -- levels and margin book follow the 5 s poll only"),
         }
         match market_data::risk_hook::RiskHook::backstop_interval_from_env() {

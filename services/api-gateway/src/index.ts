@@ -11,6 +11,7 @@ import { connect, StringCodec, type NatsConnection } from "nats";
 import ordersRouter from "./routes/orders.js";
 import positionsRouter from "./routes/positions.js";
 import { attachPriceStream, attachTradingEventStream, attachAdminEventStream, gatewayStats, orderAckStats } from "./ws.js";
+import { BOOK_SEQ_SUBJECT, newBookSeqState, stampBookEvent } from "./book-seq.js";
 
 const app = express();
 app.use(express.json());
@@ -71,6 +72,9 @@ function getInternalEventsConnection(): Promise<NatsConnection> {
   return internalEventsNc;
 }
 
+// one numbering per gateway boot (book-seq.ts): the engine reloads its whole book on a gap or a new epoch
+const bookSeq = newBookSeqState();
+
 app.post("/internal/events", async (req, res) => {
   const provided = req.headers["x-internal-secret"];
   if (provided !== (process.env.INTERNAL_SERVICE_SECRET ?? "")) {
@@ -84,7 +88,10 @@ app.post("/internal/events", async (req, res) => {
   }
   try {
     const nc = await getInternalEventsConnection();
-    nc.publish(subject, internalEventsSc.encode(JSON.stringify(payload)));
+    // book-change events are numbered (book-seq.ts): the event, then its marker on book.seq, in that order
+    const stamped = stampBookEvent(bookSeq, subject, payload);
+    nc.publish(subject, internalEventsSc.encode(JSON.stringify(stamped.payload)));
+    if (stamped.marker) nc.publish(BOOK_SEQ_SUBJECT, internalEventsSc.encode(JSON.stringify(stamped.marker)));
     gatewayStats.internalEventsPublishedTotal += 1;
     res.status(202).json({ ok: true });
   } catch (err) {

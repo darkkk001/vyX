@@ -243,15 +243,25 @@ impl MarginWatch {
     /// Refresh the book every `every` while anything ticks (market_data::activity::reload_due; always the first time),
     /// and at once after a triggered evaluation (closes change it).
     pub fn spawn_reload_loop(self: &Arc<Self>, pool: PgPool, every: Duration, cache: Arc<TickCache>) {
+        self.spawn_reload_loop_with(pool, cache, Arc::new(move || every));
+    }
+
+    /// As spawn_reload_loop, with the safety interval read from `interval` every second (market_data::book_events::
+    /// safety_interval: 5 s while the book can move or the event feed is unproven, 10 min otherwise).
+    pub fn spawn_reload_loop_with(self: &Arc<Self>, pool: PgPool, cache: Arc<TickCache>, interval: Arc<dyn Fn() -> Duration + Send + Sync>) {
         let watch = Arc::clone(self);
         tokio::spawn(async move {
             let mut asked = true; // the first load
+            let mut last: Option<tokio::time::Instant> = None;
             loop {
-                if asked || !watch.loaded.load(Ordering::Acquire) || market_data::activity::reload_due(&cache, chrono::Utc::now()) {
+                let due = last.is_none_or(|l| l.elapsed() >= interval());
+                if asked || !watch.loaded.load(Ordering::Acquire) || (due && market_data::activity::reload_due(&cache, chrono::Utc::now())) {
                     watch.reload(&pool).await;
+                    last = Some(tokio::time::Instant::now());
                 }
+                let nap = interval().min(Duration::from_secs(1));
                 asked = tokio::select! {
-                    _ = tokio::time::sleep(every) => false,
+                    _ = tokio::time::sleep(nap) => false,
                     _ = watch.reload_now.notified() => true,
                 };
             }
