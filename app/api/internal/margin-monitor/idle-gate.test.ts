@@ -8,8 +8,9 @@ import { NextRequest } from "next/server";
 const vps = vi.hoisted(() => ({ rows: null as null | { symbol: string; bid: string; ask: string; tickAt: string; updatedAt: string; ageMs: number }[] }));
 vi.mock("@/lib/market-data-client", async (orig) => ({
   ...(await orig<typeof import("@/lib/market-data-client")>()),
-  fetchVpsPrices: async () => vps.rows,
-  fetchVpsPrice: async () => null,
+  // null = the engine read FAILED (no Neon fallback since 2026-09-26: the pass runs and finds no price)
+  readVpsPrices: async () => (vps.rows ? { ok: true, value: vps.rows } : { ok: false, notFound: false, reason: "test: unreachable" }),
+  readVpsPrice: async () => ({ ok: true, value: null }),
 }));
 
 import { GET } from "./route";

@@ -338,18 +338,33 @@ export async function evaluateAccountRisk(accountId: string): Promise<RiskMonito
         // Batch 5: the trader's terminal and the broker's backoffice learn at once (MarginCall, both streams)
         await publishTradingEvent("MarginCall", { account_id: accountId, broker_id: latestAccount.brokerId, level: marginLevel.toFixed(2), state: "margin_call" }).catch(() => {});
       } else if (!inMarginCall && latestAccount.marginCallNotifiedAt) {
-        await prisma.account.update({ where: { id: accountId }, data: { marginCallNotifiedAt: null } });
-        await publishTradingEvent("MarginCall", { account_id: accountId, broker_id: latestAccount.brokerId, level: marginLevel.toFixed(2), state: "cleared" }).catch(() => {});
+        const body = `Account ${latestAccount.accountNumber}'s margin level is ${marginLevel.toFixed(2)}%, back above the ${marginCallLevel}% margin-call level.`;
+        if (await clearMarginCall(accountId, latestAccount.brokerId, body)) {
+          await publishTradingEvent("MarginCall", { account_id: accountId, broker_id: latestAccount.brokerId, level: marginLevel.toFixed(2), state: "cleared" }).catch(() => {});
+        }
       }
     }
   } else if (notifiedBefore) {
     // Nothing left open (stop-out/SL-TP closed everything above) -- reset
     // so the next time this account opens a position and drifts into
     // margin call again, it notifies fresh instead of staying silenced.
-    await prisma.account.update({ where: { id: accountId }, data: { marginCallNotifiedAt: null } });
+    await clearMarginCall(accountId, account.brokerId, `Account ${account.accountNumber} has no open position left; the margin call is over.`);
   }
 
   return { evaluated: true, slTpClosed, stopOutClosed };
+}
+
+// Item 3 (2026-09-26): the END of a margin-call episode is recorded too, not only its start. The flag clear and a
+// trader-copy MARGIN_CALL_CLEARED notification commit together, so the Stage 5 reconciler (order_management::reconcile)
+// can tell an in-edge the web deliberately did not re-notify (its episode still open) from a real miss. Guarded on the
+// flag being set, so two concurrent evaluations record one end. Returns whether this call ended the episode.
+async function clearMarginCall(accountId: string, brokerId: string, body: string): Promise<boolean> {
+  return prisma.$transaction(async (tx) => {
+    const cleared = await tx.account.updateMany({ where: { id: accountId, marginCallNotifiedAt: { not: null } }, data: { marginCallNotifiedAt: null } });
+    if (cleared.count === 0) return false;
+    await createNotification(tx, { brokerId, type: "MARGIN_CALL_CLEARED", title: "Margin call over", body, entityType: "Account", entityId: accountId, accountId });
+    return true;
+  });
 }
 
 // Evaluates every account that currently holds an open position in the

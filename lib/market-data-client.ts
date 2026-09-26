@@ -191,6 +191,44 @@ export async function fetchVpsCandles(symbol: string, timeframe: string, limit =
   return rows.length > 0 ? rows : null;
 }
 
+/** The engine's answer to a price read, telling a FAILED read (unreachable, timeout, 5xx, auth) apart from "this symbol
+ *  has no price": only a failure raises the no-price alert (lib/price-source-alert.ts). Owner decision 2026-09-26: a
+ *  failed read is never answered from Neon's LivePrice (frozen since 2026-09-14). */
+export type PriceRead<T> = { ok: true; value: T } | { ok: false; notFound: boolean; reason: string };
+
+async function getJsonResult(path: string): Promise<PriceRead<unknown>> {
+  const base = baseUrl();
+  const secret = readSecret();
+  if (!base || !secret) return { ok: false, notFound: false, reason: "market data URL / read secret not configured" };
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  try {
+    const res = await fetch(`${base}${path}`, { headers: { "X-Market-Data-Secret": secret }, signal: controller.signal, cache: "no-store" });
+    if (res.status === 404) return { ok: false, notFound: true, reason: "not found" };
+    if (!res.ok) return { ok: false, notFound: false, reason: `HTTP ${res.status}` };
+    return { ok: true, value: (await res.json()) as unknown };
+  } catch (err) {
+    return { ok: false, notFound: false, reason: err instanceof Error ? (err.name === "AbortError" ? `timeout after ${TIMEOUT_MS} ms` : err.message) : String(err) };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** One symbol's live tick, or why there is none. */
+export async function readVpsPrice(symbol: string): Promise<PriceRead<EnginePrice | null>> {
+  const r = await getJsonResult(`/internal/prices/${encodeURIComponent(symbol)}`);
+  if (!r.ok) return r.notFound ? { ok: true, value: null } : r;
+  const row = r.value as EnginePrice | null;
+  return { ok: true, value: row && typeof row.bid === "string" && typeof row.ask === "string" ? row : null };
+}
+
+/** Every symbol's live tick, or why there is none. */
+export async function readVpsPrices(): Promise<PriceRead<EnginePrice[]>> {
+  const r = await getJsonResult("/internal/prices");
+  if (!r.ok) return r;
+  return Array.isArray(r.value) ? { ok: true, value: r.value as EnginePrice[] } : { ok: false, notFound: false, reason: "malformed answer (not a list)" };
+}
+
 /** One symbol's live tick from the engine's memory (S4). null = use Neon's LivePrice. */
 export async function fetchVpsPrice(symbol: string): Promise<EnginePrice | null> {
   const row = (await getJson(`/internal/prices/${encodeURIComponent(symbol)}`)) as EnginePrice | null;

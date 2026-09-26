@@ -127,6 +127,12 @@ describe("evaluateAccountRisk (load once, re-read after a close)", () => {
     const after = await prisma.account.findUniqueOrThrow({ where: { id: a.id } });
     expect(after.balance.toNumber()).toBe(994); // 1000 - 6 from the SL close
     expect(after.marginCallNotifiedAt).toBeNull(); // (994 + 4) / 94 = 1062 % > 100: cleared
+    // item 3: the end of the episode is recorded, trader copy, once
+    const ends = await prisma.notification.findMany({ where: { accountId: a.id, type: "MARGIN_CALL_CLEARED" } });
+    expect(ends).toHaveLength(1);
+    expect(ends[0].body).toMatch(/back above the 100% margin-call level/);
+    await evaluateAccountRisk(a.id); // already clear: no second record
+    expect(await prisma.notification.count({ where: { accountId: a.id, type: "MARGIN_CALL_CLEARED" } })).toBe(1);
   });
 
   it("an account whose positions were all stopped out resets its margin-call flag", async () => {
@@ -137,5 +143,15 @@ describe("evaluateAccountRisk (load once, re-read after a close)", () => {
     const r = await evaluateAccountRisk(a.id);
     expect(r.stopOutClosed).toHaveLength(1);
     expect((await prisma.account.findUniqueOrThrow({ where: { id: a.id } })).marginCallNotifiedAt).toBeNull();
+    const ends = await prisma.notification.findMany({ where: { accountId: a.id, type: "MARGIN_CALL_CLEARED" } });
+    expect(ends.map((n) => n.body)).toEqual([expect.stringMatching(/no open position left/)]);
+  });
+
+  it("an account that never was in margin call records no episode end", async () => {
+    const a = await account(1_000);
+    await open(a.id, 100);
+    await price(101);
+    await evaluateAccountRisk(a.id);
+    expect(await prisma.notification.count({ where: { accountId: a.id, type: "MARGIN_CALL_CLEARED" } })).toBe(0);
   });
 });

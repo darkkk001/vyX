@@ -1,7 +1,8 @@
 import "server-only";
 import { Prisma, type LivePrice, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { fetchVpsPrice, fetchVpsPrices, type EnginePrice } from "@/lib/market-data-client";
+import { readVpsPrice, readVpsPrices, type EnginePrice } from "@/lib/market-data-client";
+import { reportPriceSourceDown } from "@/lib/price-source-alert";
 
 export type FreshPrice = { symbol: string; bid: Prisma.Decimal; ask: Prisma.Decimal };
 
@@ -11,10 +12,11 @@ export type FreshPrice = { symbol: string; bid: Prisma.Decimal; ask: Prisma.Deci
 //     (the engine flushes its tick cache there every 250 ms).
 //   * The engine's own tick cache over GET /internal/prices[/{symbol}]
 //     (lib/market-data-client) -- the Neon -> VPS market-data migration's
-//     stage S4 (docs/market-data.md §8). Enabled by MARKET_DATA_PRICES=vps;
-//     any failure of that call falls back to Neon, so with the engine
-//     dual-writing (MARKET_DATA_WRITE=both) the switch is reversible at
-//     any moment and never a data loss. This is also what removes the
+//     stage S4 (docs/market-data.md §8). Enabled by MARKET_DATA_PRICES=vps.
+//     Owner decision 2026-09-26: a FAILED engine read is NEVER answered from
+//     Neon (its LivePrice has been frozen since 2026-09-14, when the feed's
+//     writes went VPS-local): it is "no price", every risk action refuses,
+//     and the broker's staff is alerted (lib/price-source-alert.ts). This is also what removes the
 //     order path's DB flush lag (PRICE_STALE on fast clicks): the engine
 //     answers with the tick it holds in memory, not the row it last wrote.
 //
@@ -74,15 +76,18 @@ export function toLivePriceRow(p: EnginePrice): LivePrice | null {
  */
 export async function getLivePriceRow(symbolName: string, db: Db = prisma): Promise<LivePrice | null> {
   if (pricesFromVps()) {
-    const p = await fetchVpsPrice(symbolName);
-    const row = p ? toLivePriceRow(p) : null;
-    if (row) return row;
-    // engine unreachable, or no tick for the symbol in its cache -> Neon
+    const r = await readVpsPrice(symbolName);
+    if (!r.ok) {
+      await reportPriceSourceDown({ where: "getLivePriceRow", symbol: symbolName, reason: r.reason });
+      return null; // no price -- never Neon's frozen row
+    }
+    return r.value ? toLivePriceRow(r.value) : null;
   }
   return db.livePrice.findUnique({ where: { symbol: symbolName } });
 }
 
-export type PriceSource = "vps" | "neon" | "neon-fallback";
+// "vps-unavailable": the engine read failed; the answer is empty (no Neon fallback, 2026-09-26)
+export type PriceSource = "vps" | "neon" | "vps-unavailable";
 
 /**
  * Every listed symbol's current row (no freshness filter), keyed by symbol,
@@ -92,21 +97,22 @@ export type PriceSource = "vps" | "neon" | "neon-fallback";
 export async function getLivePriceRowsWithSource(symbolNames: string[], db: Db = prisma): Promise<{ rows: Map<string, LivePrice>; source: PriceSource }> {
   if (symbolNames.length === 0) return { rows: new Map(), source: pricesFromVps() ? "vps" : "neon" };
   const wanted = new Set(symbolNames);
-  const vps = pricesFromVps();
-  if (vps) {
-    const all = await fetchVpsPrices();
-    if (all) {
-      const map = new Map<string, LivePrice>();
-      for (const p of all) {
-        if (!wanted.has(p.symbol)) continue;
-        const row = toLivePriceRow(p);
-        if (row) map.set(row.symbol, row);
-      }
-      if (map.size > 0) return { rows: map, source: "vps" };
+  if (pricesFromVps()) {
+    const r = await readVpsPrices();
+    if (!r.ok) {
+      await reportPriceSourceDown({ where: "getLivePriceRows", reason: r.reason });
+      return { rows: new Map(), source: "vps-unavailable" }; // no price -- never Neon's frozen rows
     }
+    const map = new Map<string, LivePrice>();
+    for (const p of r.value) {
+      if (!wanted.has(p.symbol)) continue;
+      const row = toLivePriceRow(p);
+      if (row) map.set(row.symbol, row);
+    }
+    return { rows: map, source: "vps" };
   }
   const rows = await db.livePrice.findMany({ where: { symbol: { in: symbolNames } } });
-  return { rows: new Map(rows.map((r) => [r.symbol, r])), source: vps ? "neon-fallback" : "neon" };
+  return { rows: new Map(rows.map((r) => [r.symbol, r])), source: "neon" };
 }
 
 /**
@@ -116,10 +122,13 @@ export async function getLivePriceRowsWithSource(symbolNames: string[], db: Db =
  */
 export async function anyFreshPriceOnVps(): Promise<boolean | null> {
   if (!pricesFromVps()) return null;
-  const all = await fetchVpsPrices();
-  if (!all) return null;
+  const r = await readVpsPrices();
+  if (!r.ok) {
+    await reportPriceSourceDown({ where: "margin-monitor idle gate", reason: r.reason });
+    return null; // unknown: the pass runs, finds no price, and acts on nothing
+  }
   const cutoff = Date.now() - FRESH_MAX_AGE_MS;
-  return all.some((p) => {
+  return r.value.some((p) => {
     const row = toLivePriceRow(p);
     return row != null && row.tickAt.getTime() > cutoff;
   });
@@ -138,15 +147,14 @@ export async function getLivePriceRows(symbolNames: string[], db: Db = prisma): 
 export async function getFreshPrices(symbolNames: string[]): Promise<Map<string, FreshPrice>> {
   if (symbolNames.length === 0) return new Map();
   if (pricesFromVps()) {
+    // the engine's rows only (a failed read = none, alerted in getLivePriceRows)
     const rows = await getLivePriceRows(symbolNames);
-    if (rows.size > 0) {
-      const cutoff = Date.now() - FRESH_MAX_AGE_MS;
-      const map = new Map<string, FreshPrice>();
-      for (const r of rows.values()) {
-        if (r.tickAt.getTime() > cutoff) map.set(r.symbol, { symbol: r.symbol, bid: r.bid, ask: r.ask });
-      }
-      return map;
+    const cutoff = Date.now() - FRESH_MAX_AGE_MS;
+    const map = new Map<string, FreshPrice>();
+    for (const r of rows.values()) {
+      if (r.tickAt.getTime() > cutoff) map.set(r.symbol, { symbol: r.symbol, bid: r.bid, ask: r.ask });
     }
+    return map;
   }
   const rows = await prisma.$queryRaw<FreshPrice[]>`
     SELECT symbol, bid, ask FROM "LivePrice"
