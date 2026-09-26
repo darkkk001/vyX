@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession } from "@/lib/auth";
-import { forbidUnlessBrokerAdminOrPermission } from "@/lib/permissions";
+import { forbidUnlessPermissionOrSupportReader } from "@/lib/permissions";
 
 // BROKER_ADMIN by default -- same finance carve-out as balance
 // adjustment/leverage edits (AdminRole.MANAGER's own schema comment: "not
@@ -10,7 +10,7 @@ import { forbidUnlessBrokerAdminOrPermission } from "@/lib/permissions";
 // then recent resolved ones for context.
 export async function GET() {
   const session = await getAdminSession();
-  if (await forbidUnlessBrokerAdminOrPermission(session, "FUNDS_APPROVAL")) {
+  if (await forbidUnlessPermissionOrSupportReader(session, "FUNDS_APPROVAL") /* SUPPORT reads (view only) */) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
   const brokerId = session!.brokerId!;

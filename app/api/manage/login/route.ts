@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
-import { createSessionToken, SESSION_COOKIE_NAME, sessionCookieOptions } from "@/lib/auth";
+import { createSessionToken, SESSION_COOKIE_NAME, sessionCookieOptions, TWO_FACTOR_SETUP_REQUIRED } from "@/lib/auth";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { checkClientBuild, clientBuildErrorMessage } from "@/lib/client-builds";
 import { issuePendingAdmin2faChallenge } from "@/lib/totp";
@@ -92,7 +92,19 @@ export async function POST(request: NextRequest) {
 
   await prisma.adminUser.update({ where: { id: admin.id }, data: { lastLoginAt: new Date() } });
 
-  const response = NextResponse.json({ id: admin.id, email: admin.email, role: admin.role, brokerId: admin.brokerId });
+  // Phase 2 batch 4: 2FA is mandatory for every backoffice staff member. Reaching
+  // here means this admin has NOT enrolled yet (an enrolled one got the TOTP
+  // challenge above) -- the session just minted is ENROLMENT-ONLY (lib/auth.ts's
+  // getAdminSession confines it to the 2FA setup/confirm endpoints until
+  // .../two-factor/confirm succeeds), and the client is told so up front.
+  const response = NextResponse.json({
+    id: admin.id,
+    email: admin.email,
+    role: admin.role,
+    brokerId: admin.brokerId,
+    twoFactorSetupRequired: true,
+    code: TWO_FACTOR_SETUP_REQUIRED,
+  });
   response.cookies.set(SESSION_COOKIE_NAME, token, await sessionCookieOptions(remember));
   return response;
 }

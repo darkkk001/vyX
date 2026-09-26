@@ -16,22 +16,31 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "email is required" }, { status: 400 });
   }
 
+  // Phase 2 batch 4 (audit line 163): a throttled request is said to be
+  // throttled instead of pretending it was filed. Keyed by the typed e-mail
+  // whether or not it exists, so this reveals nothing about which e-mails are
+  // real (every e-mail gets the same 3 tries an hour).
   const { allowed } = await checkRateLimit(`admin-forgot-password:${email}`, 3, 3600);
   if (!allowed) {
-    return NextResponse.json({ ok: true });
+    return NextResponse.json({ error: "too many reset requests for this e-mail, try again later" }, { status: 429 });
   }
 
   const admin = await prisma.adminUser.findUnique({ where: { email } });
   // Only records a request for a real, broker-scoped admin (same
   // "don't leak whether this identifier is real" rule as everywhere
   // else) -- always returns the same generic response either way.
-  if (admin && admin.brokerId && (admin.role === "MANAGER" || admin.role === "BROKER_ADMIN")) {
+  // Phase 2 batch 4: SUPPORT staff included (their requests used to be
+  // dropped silently), and the notification names the action that answers it:
+  // a broker admin's Team (USR) -> RESET PASSWORD, which shows a one-time
+  // temporary password (POST /api/manage/admins/[id]/reset-password).
+  if (admin && admin.brokerId && admin.status === "ACTIVE" && (admin.role === "MANAGER" || admin.role === "BROKER_ADMIN" || admin.role === "SUPPORT")) {
+    const action = "A broker admin resets it in Team (USR): select the staff member, RESET PASSWORD.";
     await prisma.notification.create({
       data: {
         brokerId: admin.brokerId,
         type: "ADMIN_PASSWORD_RESET_REQUESTED",
         title: `Backoffice password reset requested: ${admin.email}`,
-        body: note ? `${admin.email}: ${note}` : `${admin.email} requested a backoffice password reset.`,
+        body: note ? `${admin.email}: ${note} · ${action}` :`${admin.email} requested a backoffice password reset. ${action}`,
         entityType: "AdminUser",
         entityId: admin.id,
       },

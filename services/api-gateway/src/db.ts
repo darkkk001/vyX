@@ -200,3 +200,12 @@ export async function getLedgerSum(accountId: string): Promise<Decimal> {
   );
   return new Decimal(rows[0].total ?? 0);
 }
+
+// Phase 2 batch 3/4 (mandatory staff 2FA, 2026-09-26): the admin event stream admits a broker staff session only while
+// that admin is ACTIVE and has 2FA enrolled -- the same gate the web API's getAdminSession applies (lib/auth.ts). A
+// disabled admin, or one still in enrolment-only state, gets no broker-wide event stream.
+export async function adminMayStream(adminId: string): Promise<boolean> {
+  const { rows } = await pool.query(`SELECT status::text AS status, "twoFactorEnabled" AS tfa FROM "AdminUser" WHERE id = $1`, [adminId]);
+  const row = rows[0] as { status: string; tfa: boolean } | undefined;
+  return !!row && row.status === "ACTIVE" && row.tfa === true;
+}

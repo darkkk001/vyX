@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { prisma } from "@/lib/prisma";
-import { forbidUnlessBrokerAdminOrPermission, PERMISSION_LABELS } from "@/lib/permissions";
+import { canReadAsManagerOrSupport, forbidUnlessBrokerAdminOrPermission, PERMISSION_LABELS } from "@/lib/permissions";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { getFreshPrice, getFreshPrices } from "@/lib/live-price";
 import { computeRealizedPnl, validateSlTp } from "@/lib/trading";
@@ -36,6 +36,13 @@ async function requireManager() {
   return session!;
 }
 
+// Phase 2 batch 4: the GET below is also open to the read-only SUPPORT role
+// (lib/permissions.ts isSupportReader); every write in this file keeps requireManager.
+async function requireReader() {
+  const session = await getAdminSession();
+  return canReadAsManagerOrSupport(session) ? session! : null;
+}
+
 // Everything app/manage/(shell)/positions/page.tsx's Server Component
 // used to compute in one request (open positions + the account/symbol/
 // group/IB option lists the exposure monitor's filters need) -- exposed
@@ -47,7 +54,7 @@ async function requireManager() {
 // /api/manage/ib-relationships GET, since any Manager reaching this page
 // (not just one with IB_PAYOUTS) needs the read-only IB filter dropdown.
 export async function GET() {
-  const session = await requireManager();
+  const session = await requireReader();
   if (!session) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }

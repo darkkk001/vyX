@@ -156,6 +156,7 @@ export default function BrokersManager() {
   const [newAdminEmail, setNewAdminEmail] = useState("");
   const [detailBusy, setDetailBusy] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
+  const [detailNotice, setDetailNotice] = useState<string | null>(null);
 
   // --- WebTrader SSO secret (Tenant detail modal) ---
   // Only ever held in state right after generation -- the API never
@@ -195,6 +196,7 @@ export default function BrokersManager() {
     setDetailAdmins(null);
     setNewAdminEmail("");
     setDetailError(null);
+    setDetailNotice(null);
     setRevealedSsoSecret(null);
     setRevealedAdminPassword(null);
     setSsoError(null);
@@ -276,6 +278,24 @@ export default function BrokersManager() {
     }
     setDetailAdmins((prev) => prev?.map((a) => (a.id === admin.id ? { ...a, status: "DISABLED" } : a)) ?? null);
     reload().catch(() => {});
+  }
+
+  // Phase 2 batch 4: staff 2FA is mandatory -- a staff member who lost their
+  // authenticator device is reset here (secret + backup codes cleared, every
+  // session revoked, audited); they enrol a new device at their next sign-in.
+  async function resetTwoFactor(admin: AdminOption) {
+    if (!window.confirm(`Reset two-factor for ${admin.email}? Their sessions end now and they enrol a new authenticator at their next sign-in.`)) return;
+    setDetailBusy(true);
+    setDetailError(null);
+    setDetailNotice(null);
+    const response = await fetch(`/api/admin/admins/${admin.id}/reset-two-factor`, { method: "POST" });
+    setDetailBusy(false);
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      setDetailError(body.error ?? "failed to reset two-factor");
+      return;
+    }
+    setDetailNotice(`Two-factor reset for ${admin.email}. They enrol a new device at their next sign-in.`);
   }
 
   async function generateSsoSecret() {
@@ -594,9 +614,14 @@ export default function BrokersManager() {
                         </p>
                       </div>
                       {a.status === "ACTIVE" ? (
-                        <Button size="sm" variant="ghost" disabled={detailBusy} onClick={() => removeAdmin(a)}>
-                          Remove
-                        </Button>
+                        <div className="flex gap-1">
+                          <Button size="sm" variant="ghost" disabled={detailBusy} onClick={() => resetTwoFactor(a)}>
+                            Reset 2FA
+                          </Button>
+                          <Button size="sm" variant="ghost" disabled={detailBusy} onClick={() => removeAdmin(a)}>
+                            Remove
+                          </Button>
+                        </div>
                       ) : null}
                     </div>
                   ))}
@@ -804,6 +829,7 @@ export default function BrokersManager() {
             </ModalSection>
 
             {detailError ? <p className="text-sm text-[var(--sell)]">{detailError}</p> : null}
+            {detailNotice ? <p className="text-sm text-[var(--text-2)]">{detailNotice}</p> : null}
             <ModalActions>
               <Button variant="ghost" onClick={() => setDetailTarget(null)}>
                 Close

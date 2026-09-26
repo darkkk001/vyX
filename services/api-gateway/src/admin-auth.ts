@@ -10,6 +10,7 @@
 // this Gateway.
 
 import { Redis } from "ioredis";
+import { adminMayStream } from "./db.js";
 
 const SESSION_COOKIE_NAME = "vyx_admin_session";
 
@@ -57,9 +58,13 @@ export async function getAdminSession(cookieHeader: string | undefined): Promise
   const raw = await getRedis().get(sessionKey(token));
   if (!raw) return null;
 
+  let session: AdminSessionPayload;
   try {
-    return JSON.parse(raw) as AdminSessionPayload;
+    session = JSON.parse(raw) as AdminSessionPayload;
   } catch {
     return null;
   }
+  // broker staff: only an ACTIVE admin with 2FA enrolled (mandatory since 2026-09-26) gets the event stream
+  if (session.brokerId && !(await adminMayStream(session.adminId))) return null;
+  return session;
 }

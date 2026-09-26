@@ -26,7 +26,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   let brokerId: string | null = null;
   if (!isInternal) {
     const session = await getAdminSession();
-    if (!requireAdminRole(session, ["MANAGER", "BROKER_ADMIN"]) || !session!.brokerId) {
+    if (!requireAdminRole(session, ["MANAGER", "BROKER_ADMIN", "SUPPORT"]) /* SUPPORT: read-only support role, lib/permissions.ts isSupportReader */ || !session!.brokerId) {
       return NextResponse.json({ error: "forbidden" }, { status: 403 });
     }
     brokerId = session!.brokerId!;

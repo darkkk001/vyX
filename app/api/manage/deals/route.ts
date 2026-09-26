@@ -15,7 +15,7 @@ import { getAdminSession, requireAdminRole } from "@/lib/auth";
 // backoffice dealing-group HISTORY view's date-range picker.
 export async function GET(request: NextRequest) {
   const session = await getAdminSession();
-  if (!requireAdminRole(session, ["MANAGER", "BROKER_ADMIN"]) || !session!.brokerId) {
+  if (!requireAdminRole(session, ["MANAGER", "BROKER_ADMIN", "SUPPORT"]) /* SUPPORT: read-only support role, lib/permissions.ts isSupportReader */ || !session!.brokerId) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
   const brokerId = session!.brokerId!;

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { get } from "@vercel/blob";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession } from "@/lib/auth";
-import { forbidUnlessBrokerAdminOrPermission } from "@/lib/permissions";
+import { forbidUnlessPermissionOrSupportReader } from "@/lib/permissions";
 
 // Proxies a KYC document image -- the browser's network tab only ever
 // sees this app's own domain, never the underlying Blob URL. Documents
@@ -15,7 +15,7 @@ import { forbidUnlessBrokerAdminOrPermission } from "@/lib/permissions";
 // before ever touching Blob.
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await getAdminSession();
-  if (await forbidUnlessBrokerAdminOrPermission(session, "KYC_REVIEW")) {
+  if (await forbidUnlessPermissionOrSupportReader(session, "KYC_REVIEW") /* SUPPORT reads (view only) */) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
   const brokerId = session!.brokerId!;

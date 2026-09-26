@@ -1,9 +1,12 @@
 import "dotenv/config";
 import { randomUUID } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { assertNotProductionDatabase } from "@/scripts/lib/assert-not-production.mjs";
+import { expectedAllowed, FAKE_ID, MANIFEST, PERSONA_DEFS, type PersonaKey, type Row } from "@/lib/manage-permission-manifest";
 
 // Real-request coverage of the actual RBAC boundary every /api/manage/*
 // route enforces -- not a re-derivation of each route's own gating code
@@ -38,154 +41,6 @@ vi.mock("@/lib/auth", () => ({
   getAdminSession: vi.fn(),
   requireAdminRole: (session: { role: string } | null, roles: string[]) => session !== null && roles.includes(session.role),
 }));
-
-type PermKey =
-  | "ANY_MANAGER"
-  | "BROKER_ADMIN_ONLY"
-  | "ANY_ADMIN"
-  | "RISK_OR_EMERGENCY"
-  | "KYC_REVIEW"
-  | "RISK_SETTINGS"
-  | "EMERGENCY_CONTROLS"
-  | "ACCOUNT_FINANCE"
-  | "FUNDS_APPROVAL"
-  | "INTERNAL_TRANSFERS"
-  | "IB_PAYOUTS"
-  | "MIRROR_MANAGE"
-  // Batch 4 owner decisions (2026-09-25)
-  | "PRICING"
-  | "CLIENT_TRADING"
-  | "DEALING";
-
-type PersonaKey = "readonly" | "dealer" | "finance" | "support";
-
-const PERSONA_DEFS: Record<PersonaKey, { role: "MANAGER" | "SUPPORT"; extraPermissions: string[] }> = {
-  readonly: { role: "MANAGER", extraPermissions: [] },
-  dealer: { role: "MANAGER", extraPermissions: ["RISK_SETTINGS", "EMERGENCY_CONTROLS"] },
-  finance: { role: "MANAGER", extraPermissions: ["ACCOUNT_FINANCE", "FUNDS_APPROVAL", "INTERNAL_TRANSFERS", "IB_PAYOUTS"] },
-  support: { role: "SUPPORT", extraPermissions: [] },
-};
-
-function expectedAllowed(perm: PermKey, persona: PersonaKey): boolean {
-  const def = PERSONA_DEFS[persona];
-  switch (perm) {
-    case "ANY_MANAGER":
-      return def.role === "MANAGER";
-    case "BROKER_ADMIN_ONLY":
-      return false; // none of the 4 personas is BROKER_ADMIN -- deliberate, see file header
-    case "ANY_ADMIN":
-      return true; // any signed-in admin, SUPPORT included (theme/route.ts)
-    case "RISK_OR_EMERGENCY":
-      return def.role === "MANAGER" && (def.extraPermissions.includes("RISK_SETTINGS") || def.extraPermissions.includes("EMERGENCY_CONTROLS"));
-    default:
-      return def.role === "MANAGER" && def.extraPermissions.includes(perm);
-  }
-}
-
-type Row = {
-  mod: string; // relative to app/api/manage/
-  method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
-  perm: PermKey;
-  needsId?: boolean;
-  body?: Record<string, unknown>;
-};
-
-const FAKE_ID = "cnonexistenttestid00001";
-
-// One row per DISTINCT permission requirement found in each route.ts
-// (by direct reading -- see the file header). Ordered to match
-// alphabetical file layout under app/api/manage/.
-const MANIFEST: Row[] = [
-  { mod: "account-types/[id]/pricing/route", method: "GET", perm: "ANY_MANAGER", needsId: true },
-  { mod: "account-types/[id]/route", method: "PATCH", perm: "ANY_MANAGER", needsId: true, body: {} },
-  { mod: "account-types/route", method: "GET", perm: "ANY_MANAGER" },
-  { mod: "accounts/[id]/activity/route", method: "GET", perm: "ANY_MANAGER", needsId: true },
-  { mod: "accounts/[id]/adjust-balance/route", method: "POST", perm: "ACCOUNT_FINANCE", needsId: true, body: {} },
-  { mod: "accounts/[id]/positions/route", method: "GET", perm: "ANY_MANAGER", needsId: true },
-  { mod: "accounts/[id]/pricing/route", method: "GET", perm: "ANY_MANAGER", needsId: true },
-  { mod: "accounts/[id]/reset-password/route", method: "POST", perm: "ANY_MANAGER", needsId: true, body: {} },
-  { mod: "accounts/[id]/route", method: "PATCH", perm: "ANY_MANAGER", needsId: true, body: {} },
-  { mod: "accounts/route", method: "GET", perm: "ANY_MANAGER" },
-  { mod: "admins/[id]/route", method: "PATCH", perm: "BROKER_ADMIN_ONLY", needsId: true, body: {} },
-  { mod: "admins/route", method: "GET", perm: "BROKER_ADMIN_ONLY" },
-  { mod: "audit/route", method: "GET", perm: "ANY_MANAGER" },
-  { mod: "balance-adjustment-requests/[id]/approve/route", method: "POST", perm: "ACCOUNT_FINANCE", needsId: true, body: {} },
-  // reject needs the same authority as approve (audit 2026-09-24 line 19)
-  { mod: "balance-adjustment-requests/[id]/reject/route", method: "POST", perm: "ACCOUNT_FINANCE", needsId: true, body: {} },
-  { mod: "balance-adjustment-requests/route", method: "GET", perm: "ANY_MANAGER" },
-  { mod: "client-kyc-requests/[id]/document/route", method: "GET", perm: "KYC_REVIEW", needsId: true },
-  { mod: "client-kyc-requests/[id]/route", method: "PATCH", perm: "KYC_REVIEW", needsId: true, body: {} },
-  { mod: "client-kyc-requests/route", method: "GET", perm: "KYC_REVIEW" },
-  { mod: "dashboard/route", method: "GET", perm: "ANY_MANAGER" },
-  { mod: "dealing-desk-toggle/route", method: "GET", perm: "RISK_SETTINGS" },
-  { mod: "dealing-desk/route", method: "GET", perm: "ANY_MANAGER" },
-  { mod: "dealing-queue/[id]/route", method: "PATCH", perm: "DEALING", needsId: true, body: {} },
-  { mod: "dealing-queue/route", method: "GET", perm: "ANY_MANAGER" },
-  // Phase 2 batch 1: a dealer cancels a client's resting LIMIT/STOP order
-  { mod: "orders/[id]/cancel/route", method: "POST", perm: "DEALING", needsId: true, body: {} },
-  { mod: "deals/route", method: "GET", perm: "ANY_MANAGER" },
-  { mod: "feed-health/route", method: "GET", perm: "ANY_MANAGER" },
-  { mod: "funds-requests/[id]/route", method: "PATCH", perm: "FUNDS_APPROVAL", needsId: true, body: {} },
-  { mod: "funds-requests/route", method: "GET", perm: "FUNDS_APPROVAL" },
-  { mod: "groups/[id]/halt/route", method: "PATCH", perm: "EMERGENCY_CONTROLS", needsId: true, body: {} },
-  { mod: "groups/[id]/pricing/route", method: "GET", perm: "ANY_MANAGER", needsId: true },
-  { mod: "groups/[id]/route", method: "PATCH", perm: "ANY_MANAGER", needsId: true, body: {} },
-  { mod: "groups/[id]/route", method: "DELETE", perm: "BROKER_ADMIN_ONLY", needsId: true },
-  { mod: "groups/[id]/symbols/route", method: "GET", perm: "ANY_MANAGER", needsId: true },
-  { mod: "groups/route", method: "GET", perm: "ANY_MANAGER" },
-  { mod: "ib-relationships/[id]/route", method: "PATCH", perm: "IB_PAYOUTS", needsId: true, body: {} },
-  { mod: "ib-relationships/route", method: "GET", perm: "IB_PAYOUTS" },
-  { mod: "kyc-requests/[id]/document/route", method: "GET", perm: "KYC_REVIEW", needsId: true },
-  { mod: "kyc-requests/[id]/route", method: "PATCH", perm: "KYC_REVIEW", needsId: true, body: {} },
-  { mod: "kyc-requests/route", method: "GET", perm: "KYC_REVIEW" },
-  { mod: "leads/[id]/route", method: "PATCH", perm: "ANY_MANAGER", needsId: true, body: {} },
-  { mod: "leads/route", method: "GET", perm: "ANY_MANAGER" },
-  { mod: "liquidity-providers/[id]/route", method: "PATCH", perm: "BROKER_ADMIN_ONLY", needsId: true, body: {} },
-  { mod: "liquidity-providers/route", method: "GET", perm: "BROKER_ADMIN_ONLY" },
-  { mod: "liquidity/route", method: "GET", perm: "BROKER_ADMIN_ONLY" },
-  { mod: "live-account-requests/[id]/route", method: "PATCH", perm: "KYC_REVIEW", needsId: true, body: {} },
-  { mod: "live-account-requests/route", method: "GET", perm: "KYC_REVIEW" },
-  { mod: "live-activity/route", method: "GET", perm: "ANY_MANAGER" },
-  { mod: "lp-routing/[id]/route", method: "DELETE", perm: "BROKER_ADMIN_ONLY", needsId: true },
-  { mod: "lp-routing/route", method: "GET", perm: "BROKER_ADMIN_ONLY" },
-  { mod: "margin/route", method: "GET", perm: "ANY_MANAGER" },
-  { mod: "mirror-rules/[id]/route", method: "GET", perm: "MIRROR_MANAGE", needsId: true },
-  { mod: "mirror-rules/route", method: "GET", perm: "MIRROR_MANAGE" },
-  { mod: "notifications/[id]/route", method: "PATCH", perm: "ANY_MANAGER", needsId: true, body: {} },
-  { mod: "notifications/route", method: "GET", perm: "ANY_MANAGER" },
-  { mod: "order-latency/route", method: "GET", perm: "ANY_MANAGER" },
-  { mod: "payment-methods/route", method: "GET", perm: "BROKER_ADMIN_ONLY" },
-  { mod: "position-action-requests/[id]/approve/route", method: "POST", perm: "ACCOUNT_FINANCE", needsId: true, body: {} },
-  { mod: "position-action-requests/[id]/reject/route", method: "POST", perm: "ACCOUNT_FINANCE", needsId: true, body: {} },
-  { mod: "position-action-requests/route", method: "GET", perm: "ANY_MANAGER" },
-  { mod: "positions/[id]/close/route", method: "POST", perm: "CLIENT_TRADING", needsId: true, body: {} },
-  { mod: "positions/[id]/delete/route", method: "POST", perm: "ANY_MANAGER", needsId: true, body: {} },
-  { mod: "positions/[id]/replay/route", method: "GET", perm: "ANY_MANAGER", needsId: true },
-  { mod: "positions/[id]/reverse/route", method: "POST", perm: "ANY_MANAGER", needsId: true, body: {} },
-  { mod: "positions/[id]/route", method: "PATCH", perm: "CLIENT_TRADING", needsId: true, body: {} },
-  { mod: "positions/[id]/void/route", method: "POST", perm: "ANY_MANAGER", needsId: true, body: {} },
-  { mod: "positions/close-bulk/route", method: "POST", perm: "CLIENT_TRADING", body: {} },
-  { mod: "positions/route", method: "GET", perm: "ANY_MANAGER" },
-  { mod: "pricing-shadow-compare/route", method: "GET", perm: "ANY_MANAGER" },
-  { mod: "reports/client/route", method: "GET", perm: "ANY_MANAGER" },
-  { mod: "reports/financial/route", method: "GET", perm: "ANY_MANAGER" },
-  { mod: "reports/ib/route", method: "GET", perm: "ANY_MANAGER" },
-  { mod: "reports/lp/route", method: "GET", perm: "BROKER_ADMIN_ONLY" },
-  { mod: "reports/risk/route", method: "GET", perm: "ANY_MANAGER" },
-  { mod: "reports/summary/route", method: "GET", perm: "ANY_MANAGER" },
-  { mod: "reports/trading/route", method: "GET", perm: "ANY_MANAGER" },
-  { mod: "risk-radar/route", method: "GET", perm: "ANY_MANAGER" },
-  { mod: "risk/route", method: "GET", perm: "RISK_OR_EMERGENCY" },
-  { mod: "risk/route", method: "PATCH", perm: "EMERGENCY_CONTROLS", body: { tradingHalted: true } },
-  { mod: "risk/route", method: "PATCH", perm: "RISK_SETTINGS", body: { maxOpenPositionsPerAccount: 10 } },
-  { mod: "search/route", method: "GET", perm: "ANY_MANAGER" },
-  { mod: "settings/route", method: "GET", perm: "BROKER_ADMIN_ONLY" },
-  { mod: "shell-info/route", method: "GET", perm: "ANY_MANAGER" },
-  { mod: "symbols/[id]/sessions/route", method: "GET", perm: "ANY_MANAGER", needsId: true },
-  { mod: "symbols/route", method: "GET", perm: "ANY_MANAGER" },
-  { mod: "theme/route", method: "PATCH", perm: "ANY_ADMIN", body: { theme: "dark" } },
-  { mod: "transfers/route", method: "GET", perm: "INTERNAL_TRANSFERS" },
-];
 
 let dbReachable = false;
 let brokerId = "";
@@ -274,8 +129,8 @@ describe("permission matrix -- every /api/manage/* endpoint x every non-BROKER_A
 
   for (const row of MANIFEST) {
     for (const persona of personas) {
-      const allowed = expectedAllowed(row.perm, persona);
-      const label = `${row.method} ${row.mod} [${row.perm}] -- ${persona} should be ${allowed ? "let through" : "blocked (403)"}`;
+      const allowed = expectedAllowed(row.perm, persona, row.supportRead);
+      const label = `${row.method} ${row.mod} [${row.perm}${row.supportRead ? "+SUPPORT_READ" : ""}] -- ${persona} should be ${allowed ? "let through" : "blocked (403)"}`;
       it(label, async () => {
         if (!dbReachable) return;
         const status = await callRoute(row, persona);
@@ -286,5 +141,57 @@ describe("permission matrix -- every /api/manage/* endpoint x every non-BROKER_A
         }
       });
     }
+  }
+});
+
+// Phase 2 batch 4 (owner decision: SUPPORT is READ-ONLY). The manifest above is
+// hand-authored and only lists one row per distinct gate, so it cannot by itself
+// prove "SUPPORT is refused on EVERY write". This sweep discovers every route.ts
+// under app/api/manage/ from the filesystem and every method it exports, and
+// asserts SUPPORT gets exactly 403 on all of them except the GETs the manifest
+// marks supportRead -- a new route or method is covered the day it is added.
+// Exempt, with reasons: login + login/verify-2fa (pre-auth, no session at all),
+// two-factor-required (answers 403 to everyone by design), theme PATCH (the
+// signed-in admin's own light/dark preference, ANY_ADMIN).
+const SWEEP_EXEMPT = new Set(["login/route POST", "login/verify-2fa/route POST", "theme/route PATCH"]);
+function discoverManageRoutes(): { mod: string; method: Row["method"] }[] {
+  const root = path.join(process.cwd(), "app", "api", "manage");
+  const out: { mod: string; method: Row["method"] }[] = [];
+  const walk = (dir: string) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.name === "route.ts") {
+        const mod = path.relative(root, full).split(path.sep).join("/").replace(/\.ts$/, "");
+        if (mod.startsWith("two-factor-required/")) continue;
+        const src = fs.readFileSync(full, "utf8");
+        for (const m of src.matchAll(/export\s+(?:async\s+function|const)\s+(GET|POST|PATCH|PUT|DELETE)\b/g)) {
+          out.push({ mod, method: m[1] as Row["method"] });
+        }
+      }
+    }
+  };
+  walk(root);
+  return out;
+}
+
+describe("SUPPORT is read-only -- every /api/manage/* route x method, auto-discovered (live DB)", () => {
+  const supportReads = new Set(MANIFEST.filter((r) => r.supportRead).map((r) => `${r.mod} ${r.method}`));
+  const routes = discoverManageRoutes();
+  it("discovers the route tree", () => {
+    expect(routes.length).toBeGreaterThan(100);
+  });
+  for (const r of routes) {
+    const key = `${r.mod} ${r.method}`;
+    if (SWEEP_EXEMPT.has(key)) continue;
+    const allowed = supportReads.has(key);
+    it(`${key} -- SUPPORT ${allowed ? "may read" : "refused (403)"}`, async () => {
+      if (!dbReachable) return;
+      // a field-gated write (risk PATCH) answers 400 to an empty body before any gate -- reuse the manifest's body
+      const body = r.method === "GET" ? undefined : (MANIFEST.find((m) => m.mod === r.mod && m.method === r.method && m.body)?.body ?? {});
+      const status = await callRoute({ mod: r.mod, method: r.method, perm: "ANY_MANAGER", needsId: true, body }, "support");
+      if (allowed) expect(status).not.toBe(403);
+      else expect(status).toBe(403);
+    });
   }
 });

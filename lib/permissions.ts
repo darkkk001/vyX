@@ -20,6 +20,30 @@ export async function hasPermission(session: AdminSessionPayload | null, permiss
   return !!admin && admin.status === "ACTIVE" && admin.extraPermissions.includes(permission);
 }
 
+// Phase 2 batch 4 (owner decision 2026-09-26): SUPPORT is a READ-ONLY support
+// role. It may open exactly these reads -- Clients (list + client 360), KYC
+// (both queues + documents, no approve/reject), Notifications, Trade history
+// and Deposits/withdrawals (view) -- and nothing else: no money, dealing,
+// pricing, configuration, staff or approval action. Each such GET route asks
+// this instead of hand-rolling the check, so "SUPPORT may read here" is one
+// greppable call per route (app/api/manage/permission-manifest.ts lists them,
+// with supportRead: true, and the permission matrix test proves every other
+// route -- every write included -- still refuses SUPPORT).
+export function isSupportReader(session: AdminSessionPayload | null): boolean {
+  return !!session && session.role === "SUPPORT" && !!session.brokerId;
+}
+
+// A GET that any MANAGER / BROKER_ADMIN may read and SUPPORT may read too.
+export function canReadAsManagerOrSupport(session: AdminSessionPayload | null): boolean {
+  return !!session && !!session.brokerId && (session.role === "MANAGER" || session.role === "BROKER_ADMIN" || session.role === "SUPPORT");
+}
+
+// forbidUnlessBrokerAdminOrPermission for a GET SUPPORT may also read (KYC queues, funds requests).
+export async function forbidUnlessPermissionOrSupportReader(session: AdminSessionPayload | null, permission: Permission): Promise<boolean> {
+  if (isSupportReader(session)) return false;
+  return forbidUnlessBrokerAdminOrPermission(session, permission);
+}
+
 // One-line replacement for every route's existing
 // `!requireAdminRole(session, ["BROKER_ADMIN"]) || !session!.brokerId`
 // gate: true when the caller should be REJECTED.

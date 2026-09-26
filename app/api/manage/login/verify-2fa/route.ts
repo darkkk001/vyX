@@ -63,7 +63,14 @@ export async function POST(request: NextRequest) {
 
   await Promise.all([deletePendingAdmin2faChallenge(pendingToken), clearFailures(lockoutKey!)]);
 
-  const token = await createSessionToken({ adminId: admin.id, role: admin.role, brokerId: admin.brokerId }, remember);
+  // Phase 2 batch 4: device metadata (same as the password-only path in
+  // ../route.ts) -- without it a 2FA-verified session was never indexed, so it
+  // was missing from "your sessions" and survived revokeAllAdminSessions (a
+  // disable / password reset / 2FA reset left it alive until its TTL).
+  const clientBuild = (request.headers.get("x-client-build") ?? "").trim();
+  const userAgent = [request.headers.get("user-agent"), clientBuild ? `VyxBuild/${clientBuild}` : ""].filter(Boolean).join(" ") || null;
+  const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? null;
+  const token = await createSessionToken({ adminId: admin.id, role: admin.role, brokerId: admin.brokerId }, remember, { userAgent, ip });
   await prisma.adminUser.update({ where: { id: admin.id }, data: { lastLoginAt: new Date() } });
 
   const response = NextResponse.json({ id: admin.id, email: admin.email, role: admin.role, brokerId: admin.brokerId });

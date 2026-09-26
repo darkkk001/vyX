@@ -4,7 +4,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { LEVERAGE_RULE, parseLeverage } from "@/lib/leverage";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
-import { hasPermission } from "@/lib/permissions";
+import { canReadAsManagerOrSupport, hasPermission } from "@/lib/permissions";
 import { balanceAdjustmentNeedsApproval, requestBalanceAdjustment } from "@/lib/balance-adjustment";
 import { provisionAccount } from "@/lib/account-provisioning";
 import { isCountryCode } from "@/lib/countries";
@@ -19,8 +19,15 @@ async function requireManager() {
   return session!;
 }
 
+// Phase 2 batch 4: the GET below is also open to the read-only SUPPORT role
+// (lib/permissions.ts isSupportReader); every write in this file keeps requireManager.
+async function requireReader() {
+  const session = await getAdminSession();
+  return canReadAsManagerOrSupport(session) ? session! : null;
+}
+
 export async function GET() {
-  const session = await requireManager();
+  const session = await requireReader();
   if (!session) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }

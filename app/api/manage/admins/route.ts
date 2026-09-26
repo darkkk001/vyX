@@ -25,7 +25,7 @@ export async function GET() {
   const admins = await prisma.adminUser.findMany({
     where: { brokerId: session.brokerId! },
     orderBy: { createdAt: "desc" },
-    select: { id: true, email: true, role: true, status: true, lastLoginAt: true, createdAt: true, extraPermissions: true },
+    select: { id: true, email: true, role: true, status: true, lastLoginAt: true, createdAt: true, extraPermissions: true, twoFactorEnabled: true },
   });
 
   return NextResponse.json({
@@ -38,6 +38,8 @@ export async function GET() {
       lastLoginAt: a.lastLoginAt ? a.lastLoginAt.toISOString() : null,
       createdAt: a.createdAt.toISOString(),
       extraPermissions: a.extraPermissions,
+      // Phase 2 batch 4: staff 2FA is mandatory -- the broker admin sees who still has to set it up (at their next sign-in)
+      twoFactorEnabled: a.twoFactorEnabled,
     })),
   });
 }

@@ -2,6 +2,7 @@ import "server-only";
 import { checkClientBuild } from "@/lib/client-builds";
 import crypto from "node:crypto";
 import { cookies, headers } from "next/headers";
+import { redirect } from "next/navigation";
 import type { AdminRole } from "@prisma/client";
 import { getRedis } from "@/lib/redis";
 import { prisma } from "@/lib/prisma";
@@ -27,6 +28,27 @@ const SUPER_ADMIN_ENROLLMENT_API_ALLOWLIST = new Set([
   "/api/admin/logout",
 ]);
 
+// Phase 2 batch 4 (owner decision 2026-09-26): 2FA is MANDATORY for every
+// backoffice staff member (BROKER_ADMIN / MANAGER / SUPPORT) at every broker,
+// regardless of Broker.requireAdmin2fa. A staff member without 2FA who signs in
+// gets an ENROLMENT-ONLY session: it may call exactly these API paths (enrol,
+// read its own 2FA status / sessions, sign out, the minimal shell-info the
+// native backoffice needs to show the enrolment step). Every other /api/* call
+// is answered 403 { error, code: "TWO_FACTOR_SETUP_REQUIRED" } -- enforced here,
+// in getAdminSession, so no route can forget it. Confirming enrolment flips
+// AdminUser.twoFactorEnabled, which getAdminSession re-reads on every request,
+// so the same session becomes full on the very next call.
+export const TWO_FACTOR_SETUP_REQUIRED = "TWO_FACTOR_SETUP_REQUIRED";
+export const TWO_FACTOR_SETUP_REQUIRED_PATH = "/api/manage/two-factor-required";
+export const STAFF_ENROLLMENT_API_ALLOWLIST: ReadonlySet<string> = new Set([
+  "/api/admin/two-factor/setup",
+  "/api/admin/two-factor/confirm",
+  "/api/admin/two-factor/status",
+  "/api/admin/sessions",
+  "/api/admin/logout",
+  "/api/manage/shell-info",
+]);
+
 export type AdminSessionPayload = {
   adminId: string;
   role: AdminRole;
@@ -38,6 +60,11 @@ export type AdminSessionPayload = {
   // migration had). See lib/account-auth.ts's identical field for the
   // full reasoning -- this mirrors it exactly.
   sessionId?: string;
+  // Set (never stored) by getAdminSession for a broker staff session whose
+  // admin has not enrolled 2FA yet -- the session reached an allowlisted
+  // enrolment path (see STAFF_ENROLLMENT_API_ALLOWLIST) or a web page (the
+  // manage shell layout steers those to /manage/security).
+  twoFactorSetupRequired?: boolean;
 };
 
 export type SessionMetadata = {
@@ -117,7 +144,25 @@ export async function verifySessionToken(token: string): Promise<AdminSessionPay
 // captured it before logout. See app/api/admin/logout/route.ts, the only
 // caller: this is what makes "log out" real instead of client-side-only.
 export async function revokeSessionToken(token: string): Promise<void> {
-  await getRedis().del(sessionKey(token));
+  const redis = getRedis();
+  const raw = await redis.get(sessionKey(token));
+  await redis.del(sessionKey(token));
+  // Also drop the device-list entry (Phase 2 batch 4, audit line 457): a
+  // signed-out session must not linger in "your sessions" until its index
+  // entry happens to be swept.
+  if (!raw) return;
+  try {
+    const payload = JSON.parse(raw) as AdminSessionPayload;
+    if (payload.sessionId) {
+      await Promise.all([
+        redis.del(sessionIdKey(payload.sessionId)),
+        redis.del(sessionMetaKey(payload.sessionId)),
+        redis.srem(sessionIndexKey(payload.adminId), payload.sessionId),
+      ]);
+    }
+  } catch {
+    /* the session itself is gone; the index self-heals on the next read */
+  }
 }
 
 export type SessionListEntry = SessionMetadata & { sessionId: string; current: boolean };
@@ -296,6 +341,22 @@ export async function getAdminSession(): Promise<AdminSessionPayload | null> {
     }
   }
 
+  // Broker staff must have 2FA enrolled too (Phase 2 batch 4, mandatory for
+  // every staff member at every broker -- Broker.requireAdmin2fa no longer
+  // matters). An enrolment-only session reaching any other API path is sent to
+  // TWO_FACTOR_SETUP_REQUIRED_PATH, which answers 403 { error, code } -- a
+  // redirect (thrown, so the calling route never continues) is the one way a
+  // shared helper can dictate the response body of every route that calls it.
+  // No x-pathname at all (a request that skipped middleware.ts) fails closed.
+  if (liveAdmin.role !== "SUPER_ADMIN" && !liveAdmin.twoFactorEnabled) {
+    const path = (await headers()).get("x-pathname") ?? "";
+    if (path.length === 0) return null;
+    if (path.startsWith("/api/") && !STAFF_ENROLLMENT_API_ALLOWLIST.has(path)) {
+      redirect(TWO_FACTOR_SETUP_REQUIRED_PATH);
+    }
+    return { ...session, twoFactorSetupRequired: true };
+  }
+
   return session;
 }
 
@@ -318,18 +379,15 @@ export function requireAdminRole(session: AdminSessionPayload | null, roles: Adm
   return session !== null && roles.includes(session.role);
 }
 
-// Phase 1 trust pack -- Broker.requireAdmin2fa's enforcement, extracted
-// out of app/manage/(shell)/layout.tsx as a pure function so it's
-// testable without a Server Component/session/DB round trip. A null
-// broker or admin (a lookup that failed, or a brokerless Super Admin --
-// this policy is meaningless there, see Broker.requireAdmin2fa's own
-// schema comment) never forces anything.
-export function shouldForceAdminTwoFactorSetup(
-  broker: { requireAdmin2fa: boolean } | null,
-  admin: { twoFactorEnabled: boolean } | null
-): boolean {
-  if (!broker || !admin) return false;
-  return broker.requireAdmin2fa && !admin.twoFactorEnabled;
+// Phase 1 trust pack -- the web manage shell's forced-2FA-setup rule, kept as
+// a pure function so it's testable without a Server Component. Phase 2 batch 4
+// (owner decision): 2FA is mandatory for every backoffice staff member, so the
+// broker's requireAdmin2fa flag no longer decides anything -- an admin without
+// 2FA is always sent to enrol. A failed admin lookup never forces anything
+// (the session check itself already failed closed in that case).
+export function shouldForceAdminTwoFactorSetup(admin: { twoFactorEnabled: boolean } | null): boolean {
+  if (!admin) return false;
+  return !admin.twoFactorEnabled;
 }
 
 export async function sessionCookieOptions(remember: boolean = false) {

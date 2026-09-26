@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { resolveEntityLabels } from "@/lib/entity-labels";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
+import { canReadAsManagerOrSupport } from "@/lib/permissions";
 
 async function requireManager() {
   const session = await getAdminSession();
@@ -11,8 +12,15 @@ async function requireManager() {
   return session!;
 }
 
+// Phase 2 batch 4: the GET below is also open to the read-only SUPPORT role
+// (lib/permissions.ts isSupportReader); every write in this file keeps requireManager.
+async function requireReader() {
+  const session = await getAdminSession();
+  return canReadAsManagerOrSupport(session) ? session! : null;
+}
+
 export async function GET() {
-  const session = await requireManager();
+  const session = await requireReader();
   if (!session) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }

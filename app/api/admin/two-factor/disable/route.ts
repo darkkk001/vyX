@@ -15,6 +15,18 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
 
+  // Phase 2 batch 4 (owner decision): 2FA is mandatory for every backoffice
+  // staff member -- turning it off is not an option for them. A lost or
+  // replaced device is handled by re-enrolling (POST .../setup with the
+  // password, then .../confirm) or, without the device, by the platform
+  // super admin's reset (POST /api/admin/admins/[id]/reset-two-factor).
+  if (session!.role !== "SUPER_ADMIN") {
+    return NextResponse.json(
+      { error: "2FA is mandatory for backoffice staff; re-enrol a new device instead of turning it off", code: "TWO_FACTOR_MANDATORY" },
+      { status: 409 }
+    );
+  }
+
   const { allowed } = await checkRateLimit(`admin-2fa-disable:${session!.adminId}`, 10, 300);
   if (!allowed) {
     return NextResponse.json({ error: "too many attempts, try again shortly" }, { status: 429 });

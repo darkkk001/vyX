@@ -1,14 +1,14 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession } from "@/lib/auth";
-import { forbidUnlessBrokerAdminOrPermission } from "@/lib/permissions";
+import { forbidUnlessPermissionOrSupportReader } from "@/lib/permissions";
 
 // BROKER_ADMIN by default -- docs/authentication.md names KYC approval as
 // the explicit example of something a MANAGER (dealing desk) shouldn't be
 // able to do -- but delegatable via KYC_REVIEW, see lib/permissions.ts.
 export async function GET() {
   const session = await getAdminSession();
-  if (await forbidUnlessBrokerAdminOrPermission(session, "KYC_REVIEW")) {
+  if (await forbidUnlessPermissionOrSupportReader(session, "KYC_REVIEW") /* SUPPORT reads (view only) */) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
   const brokerId = session!.brokerId!;
