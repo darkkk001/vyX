@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { accountClosePrice, loadAccountAskRules } from "@/lib/ask-markup";
 import { getLivePriceRow } from "@/lib/live-price";
 import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
@@ -69,7 +70,9 @@ async function handleModify(request: NextRequest, params: Promise<{ id: string }
     return NextResponse.json({ error: sessionError, nextOpenAt: nextOpenAt.toISOString() }, { status: 400 });
   }
 
-  const serverClosePrice = brokerSymbol && live ? (position.side === "BUY" ? live.bid : live.ask).toString() : null;
+  // what the position closes / triggers at: a BUY at the raw bid, a SELL at its account's ask (lib/ask-markup.ts)
+  const askRuleFor = position.side === "SELL" && brokerSymbol && live ? await loadAccountAskRules(prisma, position.accountId, [position.symbolId]) : null;
+  const serverClosePrice = brokerSymbol && live ? accountClosePrice(position.side, live.bid, live.ask, askRuleFor?.(position.symbolId)).toString() : null;
   if (!serverClosePrice) {
     // no server price at all right now: refuse rather than trust the client's number
     return NextResponse.json({ error: "NO_LIVE_FEED", symbol: brokerSymbol?.symbol.name ?? null }, { status: 400 });

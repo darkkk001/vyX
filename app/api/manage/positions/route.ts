@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { accountClosePrice, askRuleWire, loadAskRules } from "@/lib/ask-markup";
 import { Prisma } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { prisma } from "@/lib/prisma";
@@ -106,9 +107,12 @@ export async function GET() {
   // Phase 2 batch 1 (FX, docs/contracts/fx-and-market-week.md): P/L is in the symbol's QUOTE currency; each row is
   // converted to ITS account's currency with the server's rate (lib/fx.ts), and the conversion quotes go out with the
   // rows so the backoffice re-prices live with the same rule. No rate = unpriced (floatingPnl null, fxRate null).
-  const [priceBySymbol, fx] = await Promise.all([
+  // Each row's account ask rule (lib/ask-markup.ts, owner decision 2026-09-26): a SELL is valued -- current price, P/L
+  // -- at its account's ask, and the rule goes out with the row so the backoffice re-prices live with the same formula.
+  const [priceBySymbol, fx, askRules] = await Promise.all([
     getFreshPrices(symbolNames),
     loadRateResolver(prisma, new Map(positions.map((p) => [`${p.symbol.quoteCurrency}/${p.account.currency}`, [p.symbol.quoteCurrency, p.account.currency] as const])).values()),
+    loadAskRules(prisma, positions.map((p) => ({ accountId: p.accountId, symbolId: p.symbolId }))),
   ]);
 
   // Backoffice manual position tools -- Reverse's confirm dialog needs to
@@ -122,7 +126,8 @@ export async function GET() {
 
   const rows = positions.map((p) => {
     const lp = priceBySymbol.get(p.symbol.name);
-    const currentPrice = lp ? (p.side === "BUY" ? lp.bid : lp.ask) : null;
+    const askRule = askRules.get(p.accountId, p.symbolId);
+    const currentPrice = lp ? accountClosePrice(p.side, lp.bid, lp.ask, askRule) : null;
     const fxRate = fx.rate(p.symbol.quoteCurrency, p.account.currency);
     const floatingPnl = currentPrice && fxRate
       ? computeRealizedPnl({
@@ -179,6 +184,9 @@ export async function GET() {
       volume: p.volume.toString(),
       openPrice: p.openPrice.toFixed(p.symbol.digits),
       currentPrice: currentPrice ? currentPrice.toFixed(p.symbol.digits) : null,
+      // the account's ask rule for this symbol (a SELL closes at raw ask + askMarkup, or max(ask, bid + targetSpread) in
+      // target mode; price units). Missing on an older server = raw.
+      ...(askRule ? askRuleWire(askRule, lp?.bid, lp?.ask) : { askMarkup: "0", spreadRule: "markup" as const }),
       floatingPnl: floatingPnl ? floatingPnl.toFixed(2) : null,
       slPrice: p.slPrice ? p.slPrice.toFixed(p.symbol.digits) : null,
       tpPrice: p.tpPrice ? p.tpPrice.toFixed(p.symbol.digits) : null,

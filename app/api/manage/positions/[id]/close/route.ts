@@ -12,6 +12,7 @@ import { publishTradingEvent } from "@/lib/nats";
 import { recordDealerActivity } from "@/lib/dealer-activity";
 import { cancelPendingClose } from "@/lib/queued-close";
 import { isDealingManagedAccount, deskIsOn } from "@/lib/dealing-routing";
+import { accountClosePrice, loadAccountAskRules } from "@/lib/ask-markup";
 
 async function requireManager() {
   const session = await getAdminSession();
@@ -103,10 +104,11 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   if (!price) {
     return NextResponse.json({ error: `no live price for ${position.symbol.name}` }, { status: 409 });
   }
-  // Same close-price convention as calc::close_price_for (Rust engine)
-  // and this session's positions dashboard: bid for an open BUY, ask
-  // for an open SELL -- what closing it right now would actually fill at.
-  const closePrice = position.side === "BUY" ? price.bid : price.ask;
+  // Same close-price convention as calc::close_price_for (Rust engine) and the positions dashboard: bid for an open
+  // BUY, the ACCOUNT's ask for an open SELL (lib/ask-markup.ts, owner decision 2026-09-26) -- what closing it right now
+  // would actually fill at. A coverage account's ask is raw.
+  const askRuleFor = await loadAccountAskRules(prisma, position.accountId, [position.symbolId]);
+  const closePrice = accountClosePrice(position.side, price.bid, price.ask, askRuleFor(position.symbolId));
 
   // The close itself is lib/position-actions.ts executeAdminCloseInTx -> closePositionInTx (2026-09-23):
   // status + volume guard against a double close, negative-balance protection, the TRADE_PNL row, the

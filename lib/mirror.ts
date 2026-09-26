@@ -1,4 +1,5 @@
 import "server-only";
+import { accountClosePrice, loadAccountAskRules, loadSellAskRules, valuationAsk } from "@/lib/ask-markup";
 import { Prisma, PrismaClient, MirrorRule, OrderSide } from "@prisma/client";
 import { openPositionFromOrder } from "@/lib/dealing";
 import { applySpreadMarkup, pipSize, resolveBookType } from "@/lib/group-pricing";
@@ -186,23 +187,25 @@ export async function checkKillSwitch(db: Db, rule: MirrorRule): Promise<{ kille
     const [openPositions, target] = await Promise.all([
       db.position.findMany({
         where: { accountId: rule.targetAccountId, status: "OPEN" },
-        select: { side: true, volume: true, openPrice: true, symbol: { select: { name: true, contractSize: true, quoteCurrency: true } } },
+        select: { side: true, volume: true, openPrice: true, accountId: true, symbolId: true, symbol: { select: { name: true, contractSize: true, quoteCurrency: true } } },
       }),
       db.account.findUniqueOrThrow({ where: { id: rule.targetAccountId }, select: { currency: true } }),
     ]);
     // Phase 2 batch 1 (FX): the floating P/L is compared with maxDailyLoss, which is in the target account's currency,
     // so each leg is converted from its quote currency first (lib/fx.ts). It used to add JPY / GBP / EUR amounts as if
     // they were the account's own.
-    const [priceBySymbol, fx] = await Promise.all([
+    // a SELL is valued at the target account's ask (lib/ask-markup.ts, owner decision 2026-09-26)
+    const [priceBySymbol, fx, askRules] = await Promise.all([
       getFreshPrices([...new Set(openPositions.map((p) => p.symbol.name))]),
       loadRateResolver(db, openPositions.map((p) => [p.symbol.quoteCurrency, target.currency] as const)),
+      loadSellAskRules(db, openPositions),
     ]);
     let floating = new Prisma.Decimal(0);
     for (const p of openPositions) {
       const live = priceBySymbol.get(p.symbol.name);
       const rate = fx.rate(p.symbol.quoteCurrency, target.currency);
       if (!live || !rate) continue; // no fresh price / no rate -- excluded from floating, same "can't value it, don't guess" convention as checkAccountPreTradeMargin
-      const cp = p.side === "BUY" ? live.bid : live.ask;
+      const cp = p.side === "BUY" ? live.bid : valuationAsk(askRules, p, live.bid, live.ask);
       floating = floating.add(
         computeRealizedPnl({ side: p.side, openPrice: p.openPrice, closePrice: cp, volume: p.volume, contractSize: p.symbol.contractSize }).mul(rate)
       );
@@ -539,7 +542,8 @@ export async function onClose(db: Db, closeEvent: MirrorSourceClose, opts?: { re
         await recordMirrorFailure(db, rule, "no live price to close mirrored position (market closed?)");
         return;
       }
-      closePrice = targetPosition.side === "BUY" ? livePrice.bid : livePrice.ask;
+      // MARKET: the target's own close-side price -- a SELL at the target account's ask (lib/ask-markup.ts)
+      closePrice = targetPosition.side === "BUY" ? livePrice.bid : accountClosePrice("SELL", livePrice.bid, livePrice.ask, (await loadAccountAskRules(db, targetPosition.accountId, [targetPosition.symbolId]))(targetPosition.symbolId));
     }
 
     // Stage 3 BEHAVIOR CHANGE (2026-09-24): the target's close, its queued-close cancel and the

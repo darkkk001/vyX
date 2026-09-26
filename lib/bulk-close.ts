@@ -3,6 +3,7 @@ import { Prisma, PrismaClient } from "@prisma/client";
 import { getFreshPrices } from "@/lib/live-price";
 import { computeRealizedPnl, closePriceFor } from "@/lib/trading";
 import { closePositionInTx } from "@/lib/position-close";
+import { loadSellAskRules, valuationAsk } from "@/lib/ask-markup";
 import { publishTradingEvent } from "@/lib/nats";
 import { checkTradingSession, computeNextSessionOpen } from "@/lib/risk";
 import * as mirror from "@/lib/mirror";
@@ -60,7 +61,7 @@ export async function selectBulkCloseTargets(
     where: { accountId, status: "OPEN", ...(params.positionIds ? { id: { in: params.positionIds } } : {}) },
     include: { symbol: { select: { id: true, name: true, digits: true, contractSize: true } } },
   });
-  if (openPositions.length === 0) return { matching: [] as typeof openPositions, priceBySymbol: new Map<string, { bid: Prisma.Decimal; ask: Prisma.Decimal }>(), nextOpenBySymbolName: new Map<string, string>() };
+  if (openPositions.length === 0) return { matching: [] as typeof openPositions, priceBySymbol: new Map<string, { bid: Prisma.Decimal; ask: Prisma.Decimal }>(), nextOpenBySymbolName: new Map<string, string>(), closePriceOf: () => new Prisma.Decimal(0) };
 
   // Fix (2026-09-05 audit finding): a closed-market symbol used to fall
   // straight through to "no live price" below, identical to a genuine
@@ -92,7 +93,9 @@ export async function selectBulkCloseTargets(
   // entirely (their positions are reported via nextOpenBySymbolName
   // instead, never priced at all).
   const symbolNames = [...new Set(openPositions.map((p) => p.symbol.name))];
-  const priceBySymbol = await getFreshPrices(symbolNames.filter((n) => !nextOpenBySymbolName.has(n)));
+  // a SELL closes at its account's ask (lib/ask-markup.ts, owner decision 2026-09-26), a BUY at the raw bid
+  const [priceBySymbol, askRules] = await Promise.all([getFreshPrices(symbolNames.filter((n) => !nextOpenBySymbolName.has(n))), loadSellAskRules(db, openPositions)]);
+  const closePriceOf = (p: (typeof openPositions)[number], live: { bid: Prisma.Decimal; ask: Prisma.Decimal }) => closePriceFor(p.side, live.bid, valuationAsk(askRules, p, live.bid, live.ask));
 
   const candidates = openPositions.filter((p) => {
     if (scope === "SYMBOL") return p.symbol.name === symbol;
@@ -112,12 +115,12 @@ export async function selectBulkCloseTargets(
     if (nextOpenBySymbolName.has(p.symbol.name)) return true;
     const live = priceBySymbol.get(p.symbol.name);
     if (!live) return false; // no fresh price -- can't classify, excluded (also can't close, see below)
-    const cp = closePriceFor(p.side, live.bid, live.ask);
+    const cp = closePriceOf(p, live);
     const pnl = computeRealizedPnl({ side: p.side, openPrice: p.openPrice, closePrice: cp, volume: p.volume, contractSize: p.symbol.contractSize });
     return scope === "PROFIT" ? pnl.gte(0) : pnl.lt(0);
   });
 
-  return { matching, priceBySymbol, nextOpenBySymbolName };
+  return { matching, priceBySymbol, nextOpenBySymbolName, closePriceOf };
 }
 
 export async function closeBulkForAccount(
@@ -125,7 +128,7 @@ export async function closeBulkForAccount(
   params: { accountId: string; brokerId: string; scope: BulkCloseScope; symbol?: string; positionIds?: string[] }
 ): Promise<BulkClosePositionResult[]> {
   const { brokerId, accountId, scope } = params;
-  const { matching, priceBySymbol, nextOpenBySymbolName } = await selectBulkCloseTargets(db, params);
+  const { matching, priceBySymbol, nextOpenBySymbolName, closePriceOf } = await selectBulkCloseTargets(db, params);
   if (matching.length === 0) return [];
 
   const results: BulkClosePositionResult[] = [];
@@ -143,7 +146,7 @@ export async function closeBulkForAccount(
         results.push({ positionId: p.id, closed: false, closePrice: null, realizedPnl: null, error: "no live price" });
         continue;
       }
-      const closePrice = closePriceFor(p.side, live.bid, live.ask);
+      const closePrice = closePriceOf(p, live);
       closePriceByPositionId.set(p.id, closePrice);
       const outcome = await closePositionInTx(tx, {
         position: {

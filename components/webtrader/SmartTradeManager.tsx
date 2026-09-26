@@ -269,7 +269,7 @@ export default function SmartTradeManager({
   async function partialCloseOne(p: ApiPosition, pct: number) {
     const mm = market[p.symbol.name];
     if (!mm || !mm.live) throw new Error(`${p.symbol.name}: no live feed`);
-    const price = p.side === "BUY" ? mm.bid : mm.ask;
+    const price = p.side === "BUY" ? mm.bid : effectiveAsk(askMarkupBySymbol, p.symbol.name, mm.ask, mm.bid); // a SELL closes at the account's ask
     const amount = +(parseFloat(p.volume) * pct).toFixed(2);
     if (amount <= 0 || amount >= parseFloat(p.volume)) throw new Error(`${p.symbol.name}: invalid partial volume`);
     await tradeApi.closePosition(p.id, price, amount, "stm_bulk");
@@ -278,7 +278,7 @@ export default function SmartTradeManager({
   async function breakEvenOne(p: ApiPosition, offset: number) {
     const mm = market[p.symbol.name];
     if (!mm || !mm.live) throw new Error(`${p.symbol.name}: no live feed`);
-    const currentPrice = p.side === "BUY" ? mm.bid : mm.ask;
+    const currentPrice = p.side === "BUY" ? mm.bid : effectiveAsk(askMarkupBySymbol, p.symbol.name, mm.ask, mm.bid);
     const newSl = p.side === "BUY" ? parseFloat(p.openPrice) + offset : parseFloat(p.openPrice) - offset;
     await tradeApi.editPositionSlTp(p.id, { currentPrice, slPrice: newSl });
   }
@@ -300,7 +300,7 @@ export default function SmartTradeManager({
   async function closeOne(p: ApiPosition) {
     const mm = market[p.symbol.name];
     if (!mm || !mm.live) throw new Error(`${p.symbol.name}: no live feed`);
-    const price = p.side === "BUY" ? mm.bid : mm.ask;
+    const price = p.side === "BUY" ? mm.bid : effectiveAsk(askMarkupBySymbol, p.symbol.name, mm.ask, mm.bid); // a SELL closes at the account's ask
     await tradeApi.closePosition(p.id, price, undefined, "stm_bulk");
   }
   function closeProfitable() {

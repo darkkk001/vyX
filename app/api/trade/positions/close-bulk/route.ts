@@ -44,7 +44,7 @@ export async function POST(request: NextRequest) {
     const clientPlatformHeader = request.headers.get("x-client-platform");
     const orderSource: "WEB" | "DESKTOP_NATIVE" | "MOBILE" | "API" =
       clientPlatformHeader === "DESKTOP_NATIVE" || clientPlatformHeader === "MOBILE" || clientPlatformHeader === "API" ? clientPlatformHeader : "WEB";
-    const { matching, priceBySymbol, nextOpenBySymbolName } = await selectBulkCloseTargets(prisma, { accountId: session.accountId, brokerId: session.brokerId, scope, symbol });
+    const { matching, priceBySymbol, nextOpenBySymbolName, closePriceOf } = await selectBulkCloseTargets(prisma, { accountId: session.accountId, brokerId: session.brokerId, scope, symbol });
     const results: BulkClosePositionResult[] = [];
     const batch = Date.now();
     for (const p of matching) {
@@ -53,7 +53,7 @@ export async function POST(request: NextRequest) {
       const live = priceBySymbol.get(p.symbol.name);
       if (!live) { results.push({ positionId: p.id, closed: false, closePrice: null, realizedPnl: null, error: "no live price" }); continue; }
       if (p.closePendingOrderId) { results.push({ positionId: p.id, closed: false, closePrice: null, realizedPnl: null, error: "CLOSE_PENDING", queued: true, orderId: p.closePendingOrderId }); continue; }
-      const requestedPrice = closePriceFor(p.side, live.bid, live.ask);
+      const requestedPrice = closePriceOf(p, live); // a SELL at the account's ask (lib/ask-markup.ts)
       try {
         const order = await prisma.$transaction((tx) =>
           queueCloseInTx(tx, {

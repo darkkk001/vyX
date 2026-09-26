@@ -31,6 +31,7 @@ import { useAdminEventStream, ADMIN_STREAM_RECONNECTED, type AdminEvent } from "
 import { useLiveTicks } from "@/lib/price-stream";
 import { formatPrice, formatNumber, formatPnl, formatDateTime } from "@/lib/format";
 import { useUnsavedChangesWarning } from "@/lib/use-unsaved-changes-warning";
+import { effectiveAsk, spreadRuleFromPrice } from "@/lib/trade-api";
 
 export type PositionRow = {
   id: string;
@@ -47,6 +48,10 @@ export type PositionRow = {
   volume: string;
   openPrice: string;
   currentPrice: string | null;
+  // the account's ask rule (app/api/manage/positions: askMarkup / spreadRule / targetSpread, price units)
+  askMarkup?: string;
+  spreadRule?: "markup" | "target";
+  targetSpread?: string;
   floatingPnl: string | null;
   slPrice: string | null;
   tpPrice: string | null;
@@ -221,7 +226,8 @@ export default function PositionsManager() {
     return rawRows.map((p) => {
       const tick = liveTicks[p.symbolName];
       if (!tick) return p;
-      const closePrice = p.side === "BUY" ? tick.bid : tick.ask;
+      // a SELL closes at its account's ask (lib/ask-markup.ts): the row's rule, raw when an older server sent none
+      const closePrice = p.side === "BUY" ? tick.bid : effectiveAsk({ [p.symbolName]: spreadRuleFromPrice({ askMarkup: p.askMarkup ?? "0", spreadRule: p.spreadRule, targetSpread: p.targetSpread }) }, p.symbolName, tick.ask, tick.bid);
       const openPrice = Number(p.openPrice);
       const diff = p.side === "BUY" ? closePrice - openPrice : openPrice - closePrice;
       const floatingPnl = diff * Number(p.contractSize) * Number(p.volume);

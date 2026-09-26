@@ -7,7 +7,7 @@ import { publishTradingEvent } from "@/lib/nats";
 import { recordDealerActivity } from "@/lib/dealer-activity";
 import { isDealingManagedAccount, resolveWantsDealingQueue } from "@/lib/dealing-routing";
 import { checkLotStep, checkPriceFreshness, checkSlippage, checkTradingSession, computeNextSessionOpen, evaluateLiveMarketPrice, effectiveMaxSlippagePips, isValidMaxSlippageInput } from "@/lib/risk";
-import { closePriceFor } from "@/lib/trading";
+import { accountClosePrice, loadAccountAskRules } from "@/lib/ask-markup";
 import * as mirror from "@/lib/mirror";
 import * as coverage from "@/lib/coverage";
 import { classifyMissingPrice, getLivePriceRow } from "@/lib/live-price";
@@ -79,7 +79,7 @@ async function handleClose(request: NextRequest, params: Promise<{ id: string }>
   // read for a position that turns out not to be this account's are discarded unanswered (404 below).
   const bySymbolOfPosition = { positions: { some: { id } } };
   const symbolRead = prisma.symbol.findFirst({ where: bySymbolOfPosition, select: { id: true, name: true, category: true, contractSize: true, digits: true } });
-  const [row, symbol, accountRow, group, brokerSymbol, tradingSessions, broker, livePrice] = await Promise.all([
+  const [row, symbol, accountRow, group, brokerSymbol, tradingSessions, broker, livePrice, askRuleFor] = await Promise.all([
     prisma.position.findUnique({ where: { id } }),
     symbolRead,
     prisma.account.findFirst({ where: { positions: { some: { id } } }, select: { accountNumber: true, fullName: true } }),
@@ -89,6 +89,8 @@ async function handleClose(request: NextRequest, params: Promise<{ id: string }>
     prisma.broker.findUniqueOrThrow({ where: { id: session.brokerId }, select: { dealingModeAt: true, dealingDeskAutoFillAt: true, defaultMaxSlippagePips: true } }),
     // S4 (docs/market-data.md §8): the engine's own in-memory tick when MARKET_DATA_PRICES=vps, Neon otherwise
     symbolRead.then((s) => (s ? getLivePriceRow(s.name) : null)),
+    // the account's ask rule for this symbol (lib/ask-markup.ts): a SELL closes at the marked-up ask a BUY opens at
+    symbolRead.then((s) => (s ? loadAccountAskRules(prisma, session.accountId, [s.id]) : null)),
   ]);
   if (!row || row.accountId !== session.accountId || !symbol || !accountRow) {
     return NextResponse.json({ error: "position not found" }, { status: 404 });
@@ -134,7 +136,8 @@ async function handleClose(request: NextRequest, params: Promise<{ id: string }>
     }
     return NextResponse.json({ error: code, symbol: position.symbol.name, lastTickAt: livePrice?.tickAt?.toISOString() ?? null }, { status: 400 });
   }
-  const closePrice = closePriceFor(position.side, livePrice.bid, livePrice.ask);
+  // Owner decision (2026-09-26): a BUY closes at the raw bid, a SELL at this account's ask (lib/ask-markup.ts)
+  const closePrice = accountClosePrice(position.side, livePrice.bid, livePrice.ask, askRuleFor?.(position.symbol.id));
 
   let closeVolume = position.volume;
   if (body?.volume != null) {
@@ -236,12 +239,12 @@ async function handleClose(request: NextRequest, params: Promise<{ id: string }>
 
   // Slippage: the server's fill vs what the client saw, within the EFFECTIVE max -- the smaller of the trader's value
   // and the broker's cap (lib/risk.ts effectiveMaxSlippagePips), the same rule as the open path.
-  const slippageError = checkSlippage({
-    clientReferencePrice,
-    serverFillPrice: closePrice,
-    maxSlippagePips: effectiveMaxSlippagePips(maxSlippagePips, broker.defaultMaxSlippagePips),
-    digits: position.symbol.digits,
-  });
+  // A SELL's reference may be the raw ask (a client from before the account-ask close, 2026-09-26) or the account's ask:
+  // the markup is not market movement, so the close is refused only when the reference is off BOTH.
+  const maxSlip = effectiveMaxSlippagePips(maxSlippagePips, broker.defaultMaxSlippagePips);
+  const slippageTo = (fill: Prisma.Decimal) => checkSlippage({ clientReferencePrice, serverFillPrice: fill, maxSlippagePips: maxSlip, digits: position.symbol.digits });
+  const offAccountAsk = slippageTo(closePrice);
+  const slippageError = offAccountAsk && position.side === "SELL" && !closePrice.equals(livePrice.ask) && !slippageTo(livePrice.ask) ? null : offAccountAsk;
   if (slippageError) {
     return NextResponse.json({ error: slippageError, serverPrice: closePrice.toString() }, { status: 400 });
   }

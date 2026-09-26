@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { accountClosePrice, loadAccountAskRules } from "@/lib/ask-markup";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { forbidUnlessBrokerAdminOrPermission, PERMISSION_LABELS } from "@/lib/permissions";
@@ -100,7 +101,13 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   // an OPEN fills at ask (BUY) / bid (SELL); a queued CLOSE (closesPositionId set, docs/CLOSES-
   // RESPECT-DEALER-MODE.md) settles on the other side: a BUY position closes at bid, a SELL at ask
   const isClose = order.closesPositionId != null;
-  const liveRefAtClick = liveAtClick ? ((order.side === "BUY") !== isClose ? liveAtClick.ask : liveAtClick.bid) : null;
+  // a SELL position's close settles at its ACCOUNT's ask (lib/ask-markup.ts, owner decision 2026-09-26)
+  const closeAskRule = isClose && order.side === "SELL" && liveAtClick ? (await loadAccountAskRules(prisma, order.accountId, [order.symbolId]))(order.symbolId) : null;
+  const liveRefAtClick = liveAtClick
+    ? (order.side === "BUY") !== isClose
+      ? isClose ? accountClosePrice("SELL", liveAtClick.bid, liveAtClick.ask, closeAskRule) : liveAtClick.ask
+      : liveAtClick.bid
+    : null;
 
   if (action === "REJECT") {
     const reason = typeof body?.reason === "string" ? body.reason.trim() : "";
@@ -224,8 +231,8 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
   if (isClose) {
     // ACCEPT on a queued CLOSE: close the position at the dealer's price -- the client's own
-    // requested close price (REQUESTED) or the live close-side price at click (MARKET) -- with no
-    // spread markup (a close realizes at the price, the way every other close path does). The
+    // requested close price (REQUESTED, as the client sent it) or the live close-side price at click (MARKET: a SELL
+    // at its account's ask, lib/ask-markup.ts; no further markup on top). The
     // open-side risk battery (max positions, exposure, lot rules) does not apply to a close; the
     // market must be open and trading not halted for this broker. Close-only mode allows closes.
     const closeRiskError = checkTradingHalted(broker) ?? checkTradingSession(brokerSymbol.tradingSessions, new Date(), order.symbol.category);

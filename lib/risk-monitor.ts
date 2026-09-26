@@ -13,6 +13,7 @@ import { DEFAULT_HEDGED_MARGIN_PCT, hedgedUsedMargin, liveUsedMarginFor, type Ma
 import { conversionRate, loadFxLookup } from "@/lib/fx";
 import * as mirror from "@/lib/mirror";
 import * as coverage from "@/lib/coverage";
+import { loadSellAskRules, valuationAsk } from "@/lib/ask-markup";
 
 // The legacy Next.js trading path (the one actually carrying every
 // broker's live traffic today, per docs/decisions.md ADR-003) has never
@@ -72,13 +73,16 @@ async function loadOpenPositionsWithMarket(accountId: string): Promise<OpenPosit
   const symbolNames = [...new Set(positions.map((p) => p.symbol.name))];
   // Every position for one account shares that account's own brokerId
   // (a position can only ever be opened under its own account's broker).
-  const [prices, brokerSymbols, fx] = await Promise.all([
+  // Owner decision (2026-09-26, lib/ask-markup.ts): a SELL closes -- SL / TP trigger, stop-out, P/L, margin -- at its
+  // account's ask (the marked-up one a BUY opens at); a BUY at the raw bid. Resolved only when a SELL is open.
+  const [prices, brokerSymbols, fx, askRules] = await Promise.all([
     getFreshPrices(symbolNames),
     prisma.brokerSymbol.findMany({
       where: { brokerId: positions[0].brokerId, symbol: { name: { in: symbolNames } } },
       include: { symbol: { select: { name: true, category: true } }, tradingSessions: true },
     }),
     loadFxLookup(prisma, positions.map((p) => [p.symbol.quoteCurrency, p.account.currency] as const)),
+    loadSellAskRules(prisma, positions),
   ]);
   // Trading-session gate reused verbatim from the order-placement path
   // (checkTradingSession -- see its own comment on why "zero configured
@@ -113,7 +117,8 @@ async function loadOpenPositionsWithMarket(accountId: string): Promise<OpenPosit
       ticket: p.ticket,
       symbol: p.symbol.name,
       bid: live?.bid ?? null,
-      ask: live?.ask ?? null,
+      // the close-side ask of THIS account (every reader below uses `ask` only as a SELL's close price)
+      ask: live ? valuationAsk(askRules, p, live.bid, live.ask) : null,
       hedgedMarginPct: hedgedPctBySymbol.get(p.symbol.name) ?? DEFAULT_HEDGED_MARGIN_PCT,
     };
   });

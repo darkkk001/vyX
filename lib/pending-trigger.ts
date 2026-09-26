@@ -1,4 +1,5 @@
 import "server-only";
+import { loadAskRules, markedUpAsk, RAW_ASK } from "@/lib/ask-markup";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { publishTradingEvent } from "@/lib/nats";
@@ -320,15 +321,20 @@ export async function triggerPendingOrder(orderId: string, triggerPrice: string,
 export async function evaluatePendingTriggers(symbols?: string[]): Promise<{ checked: number; filled: number; queued: number; rejected: number; kept: number }> {
   const orders = await prisma.order.findMany({
     where: { status: "PENDING", type: { in: ["LIMIT", "STOP"] }, requestedPrice: { not: null }, ...(symbols && symbols.length ? { symbol: { name: { in: symbols } } } : {}) },
-    select: { id: true, side: true, type: true, requestedPrice: true, symbol: { select: { name: true } } },
+    select: { id: true, side: true, type: true, requestedPrice: true, accountId: true, symbolId: true, symbol: { select: { name: true } } },
     orderBy: { createdAt: "asc" },
     take: 500,
   });
-  const prices = await getFreshPrices([...new Set(orders.map((o) => o.symbol.name))]);
+  // A BUY trades at its account's ask (lib/ask-markup.ts, owner decision 2026-09-26): its entry is reached when THAT ask
+  // reaches it -- the price it then fills at -- not the raw ask (a BUY LIMIT used to trigger up to one markup early).
+  const [prices, askRules] = await Promise.all([
+    getFreshPrices([...new Set(orders.map((o) => o.symbol.name))]),
+    loadAskRules(prisma, orders.filter((o) => o.side === "BUY").map((o) => ({ accountId: o.accountId, symbolId: o.symbolId }))),
+  ]);
   const out = { checked: orders.length, filled: 0, queued: 0, rejected: 0, kept: 0 };
   for (const o of orders) {
     const p = prices.get(o.symbol.name);
-    if (!p || !pendingTriggered(o, o.requestedPrice!, p.bid, p.ask)) continue;
+    if (!p || !pendingTriggered(o, o.requestedPrice!, p.bid, o.side === "BUY" ? markedUpAsk(askRules.get(o.accountId, o.symbolId) ?? RAW_ASK(0), p.bid, p.ask) : p.ask)) continue;
     const triggerPrice = (o.side === "BUY" ? p.ask : p.bid).toString();
     try {
       const r = await triggerPendingOrder(o.id, triggerPrice, "server");

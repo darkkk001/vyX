@@ -150,3 +150,14 @@ export async function loadAccountAskRules(db: Db, accountId: string, symbolIds: 
   const rules = await loadAskRules(db, symbolIds.map((symbolId) => ({ accountId, symbolId })));
   return (symbolId) => rules.get(accountId, symbolId);
 }
+
+/** The rules a set of positions needs to be valued at their close-side price: only a SELL closes at the ask, so only
+ *  SELL positions are resolved (none = no query at all). */
+export function loadSellAskRules(db: Db, positions: { accountId: string; symbolId: string; side: "BUY" | "SELL" }[]): Promise<AskRules> {
+  return loadAskRules(db, positions.filter((p) => p.side === "SELL").map((p) => ({ accountId: p.accountId, symbolId: p.symbolId })));
+}
+
+/** A position's close-side ask for valuation: the account's ask for a SELL; a BUY never reads it (it closes at bid). */
+export function valuationAsk(rules: AskRules, p: { accountId: string; symbolId: string; side: "BUY" | "SELL" }, bid: Prisma.Decimal.Value, ask: Prisma.Decimal.Value): Prisma.Decimal {
+  return p.side === "SELL" ? accountClosePrice("SELL", bid, ask, rules.get(p.accountId, p.symbolId)) : new Prisma.Decimal(ask);
+}

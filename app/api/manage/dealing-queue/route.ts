@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server";
+import { Prisma } from "@prisma/client";
+import { askRuleWire, loadAskRules } from "@/lib/ask-markup";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { getFreshPrices } from "@/lib/live-price";
@@ -49,7 +51,16 @@ export async function GET() {
     }),
   ]);
 
-  const priceBySymbol = await getFreshPrices([...new Set(pending.map((o) => o.symbol.name))]);
+  // each order's account ask rule (lib/ask-markup.ts): a BUY opens and a SELL position closes at the account's ask, so
+  // the desk's "accept at market" / requote presets use the price the fill would really use
+  const [priceBySymbol, askRules] = await Promise.all([
+    getFreshPrices([...new Set(pending.map((o) => o.symbol.name))]),
+    loadAskRules(prisma, [...pending, ...requoted].map((o) => ({ accountId: o.accountId, symbolId: o.symbolId }))),
+  ]);
+  const ruleWire = (o: (typeof pending)[number], bid?: Prisma.Decimal, ask?: Prisma.Decimal) => {
+    const r = askRules.get(o.accountId, o.symbolId);
+    return r ? askRuleWire(r, bid, ask) : { askMarkup: "0", spreadRule: "markup" as const };
+  };
 
   return NextResponse.json({
     rows: pending.map((o) => {
@@ -66,6 +77,8 @@ export async function GET() {
         createdAt: o.createdAt.toISOString(),
         liveBid: live ? live.bid.toString() : null,
         liveAsk: live ? live.ask.toString() : null,
+        // the account's ask rule (price units; missing on an older server = raw)
+        ...ruleWire(o, live?.bid, live?.ask),
         // Closes respect DEALER mode: a queued CLOSE of position #closesTicket (volume = the lots to
         // close; partial when less than the position's volume). kind OPEN = a new position.
         kind: o.closesPositionId ? "CLOSE" : "OPEN",
@@ -86,6 +99,7 @@ export async function GET() {
       requestedPrice: o.requestedPrice ? o.requestedPrice.toString() : null,
       requotedPrice: o.requotedPrice ? o.requotedPrice.toString() : null,
       createdAt: o.createdAt.toISOString(),
+      ...ruleWire(o),
       kind: o.closesPositionId ? "CLOSE" : "OPEN",
       closesPositionId: o.closesPositionId,
       closesTicket: o.closesPosition?.ticket ?? null,

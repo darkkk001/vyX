@@ -3,6 +3,7 @@ import { Prisma, PrismaClient } from "@prisma/client";
 import { getFreshPrices } from "@/lib/live-price";
 import { computeRealizedPnl, closePriceFor } from "@/lib/trading";
 import { conversionRate, loadFxLookup } from "@/lib/fx";
+import { loadSellAskRules, valuationAsk } from "@/lib/ask-markup";
 
 export type AccountMarginSnapshot = {
   accountId: string;
@@ -40,10 +41,12 @@ export async function computeAccountMarginSnapshots(prisma: PrismaClient, broker
     },
   });
 
-  const [priceBySymbol, fx, hedgedPct] = await Promise.all([
+  // a SELL is valued at its account's ask (lib/ask-markup.ts, owner decision 2026-09-26): the price it closes at
+  const [priceBySymbol, fx, hedgedPct, askRules] = await Promise.all([
     getFreshPrices([...new Set(positions.map((p) => p.symbol.name))]),
     loadFxLookup(prisma, positions.map((p) => [p.symbol.quoteCurrency, p.account.currency] as const)),
     loadHedgedMarginPct(prisma, brokerId),
+    loadSellAskRules(prisma, positions),
   ]);
   const legsByAccount = new Map<string, MarginLeg[]>();
 
@@ -69,9 +72,10 @@ export async function computeAccountMarginSnapshots(prisma: PrismaClient, broker
     // quote -> account currency (lib/fx.ts); no rate = counted like no price, never as if it were 1
     const rate = conversionRate(p.symbol.quoteCurrency, p.account.currency, fx);
     if (live && rate) {
-      const currentPrice = closePriceFor(p.side, live.bid, live.ask);
+      const ask = valuationAsk(askRules, p, live.bid, live.ask);
+      const currentPrice = closePriceFor(p.side, live.bid, ask);
       acc.floating = acc.floating.add(computeRealizedPnl({ side: p.side, openPrice: p.openPrice, closePrice: currentPrice, volume: p.volume, contractSize: p.symbol.contractSize }).mul(rate));
-      const margin = liveUsedMarginFor({ side: p.side, volume: p.volume, contractSize: p.symbol.contractSize, bid: live.bid, ask: live.ask, leverage: p.account.leverage }).mul(rate);
+      const margin = liveUsedMarginFor({ side: p.side, volume: p.volume, contractSize: p.symbol.contractSize, bid: live.bid, ask, leverage: p.account.leverage }).mul(rate);
       const legs = legsByAccount.get(p.account.id) ?? [];
       legs.push({ symbolKey: p.symbolId, side: p.side, volume: p.volume, margin, hedgedMarginPct: hedgedPct.get(p.symbolId) ?? DEFAULT_HEDGED_MARGIN_PCT });
       legsByAccount.set(p.account.id, legs);
@@ -273,12 +277,15 @@ export async function loadAccountMarginState(
     }),
     brokerId ? loadHedgedMarginPct(prisma, brokerId) : Promise.resolve(null),
   ]);
+  // a SELL is valued at the account's ask (lib/ask-markup.ts); resolved only when a SELL is open (no query otherwise)
+  const askRulesP = loadSellAskRules(prisma, positions.map((p) => ({ accountId, symbolId: p.symbolId, side: p.side })));
   const hedgedPct = hedgedPctKnownBroker && account.brokerId === brokerId ? hedgedPctKnownBroker : await loadHedgedMarginPct(prisma, account.brokerId);
   const pctFor = (symbolId: string) => hedgedPct.get(symbolId) ?? DEFAULT_HEDGED_MARGIN_PCT;
 
-  const [priceBySymbol, fx] = await Promise.all([
+  const [priceBySymbol, fx, askRules] = await Promise.all([
     getFreshPrices([...new Set(positions.map((p) => p.symbol.name))]),
     loadFxLookup(prisma, [...extraQuoteCurrencies.map((q) => [q, account.currency] as const), ...positions.map((p) => [p.symbol.quoteCurrency, account.currency] as const)]),
+    askRulesP,
   ]);
   // Every figure below is quote currency x rate = account currency (lib/fx.ts).
   const rateFor = (quoteCurrency: string) => conversionRate(quoteCurrency, account.currency, fx);
@@ -301,8 +308,9 @@ export async function loadAccountMarginState(
     const live = priceBySymbol.get(p.symbol.name);
     let margin: Prisma.Decimal;
     if (live) {
-      const currentPrice = closePriceFor(p.side, live.bid, live.ask);
-      margin = liveUsedMarginFor({ side: p.side, volume: p.volume, contractSize: p.symbol.contractSize, bid: live.bid, ask: live.ask, leverage }).mul(rate);
+      const ask = valuationAsk(askRules, { accountId, symbolId: p.symbolId, side: p.side }, live.bid, live.ask);
+      const currentPrice = closePriceFor(p.side, live.bid, ask);
+      margin = liveUsedMarginFor({ side: p.side, volume: p.volume, contractSize: p.symbol.contractSize, bid: live.bid, ask, leverage }).mul(rate);
       equity = equity.add(
         computeRealizedPnl({ side: p.side, openPrice: p.openPrice, closePrice: currentPrice, volume: p.volume, contractSize: p.symbol.contractSize }).mul(rate)
       );

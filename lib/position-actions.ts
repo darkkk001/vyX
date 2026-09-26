@@ -8,6 +8,7 @@ import { resolveBookType } from "@/lib/group-pricing";
 import { closePositionInTx } from "@/lib/position-close";
 import { randomUUID } from "node:crypto";
 import { lockAccountBalance } from "@/lib/account-lock";
+import { accountClosePrice, loadAccountAskRules } from "@/lib/ask-markup";
 
 type Tx = Prisma.TransactionClient;
 
@@ -281,9 +282,13 @@ export async function executeReverseCloseReopen(
   const price = await getFreshPrice(position.symbol.name);
   if (!price) throw new PositionActionError(`no live price for ${position.symbol.name}`);
 
-  const closePrice = position.side === "BUY" ? price.bid : price.ask;
+  // every ask-side execution at the ACCOUNT's ask (lib/ask-markup.ts, owner decision 2026-09-26): a SELL closes at it
+  // and the reversed BUY opens at it (it used to open at the raw ask, below what a trader's own BUY pays)
+  const askRuleFor = await loadAccountAskRules(tx, position.accountId, [position.symbolId]);
+  const accountAsk = accountClosePrice("SELL", price.bid, price.ask, askRuleFor(position.symbolId));
+  const closePrice = position.side === "BUY" ? price.bid : accountAsk;
   const newSide: OrderSide = position.side === "BUY" ? "SELL" : "BUY";
-  const openPrice = newSide === "BUY" ? price.ask : price.bid;
+  const openPrice = newSide === "BUY" ? accountAsk : price.bid;
 
   const account = await tx.account.findUniqueOrThrow({
     where: { id: position.accountId },

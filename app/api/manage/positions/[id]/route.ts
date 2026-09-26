@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { accountClosePrice, loadAccountAskRules } from "@/lib/ask-markup";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { publishTradingEvent } from "@/lib/nats";
@@ -78,7 +79,8 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   if (!price) {
     return NextResponse.json({ error: `no live price for ${position.symbol.name}` }, { status: 409 });
   }
-  const referencePrice = position.side === "BUY" ? price.bid : price.ask;
+  // a SELL is checked against its account's ask -- the price it closes / triggers at (lib/ask-markup.ts)
+  const referencePrice = position.side === "BUY" ? price.bid : accountClosePrice("SELL", price.bid, price.ask, (await loadAccountAskRules(prisma, position.accountId, [position.symbolId]))(position.symbolId));
   const brokerSymbol = await prisma.brokerSymbol.findUnique({
     where: { brokerId_symbolId: { brokerId: position.brokerId, symbolId: position.symbolId } },
     include: { symbol: { select: { digits: true } } },

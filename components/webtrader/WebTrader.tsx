@@ -1142,7 +1142,7 @@ export default function WebTrader({
         const sl = prev.slPrice ? parseFloat(prev.slPrice) : null;
         const tp = prev.tpPrice ? parseFloat(prev.tpPrice) : null;
         const live = marketRef.current[prev.symbol.name];
-        const refPrice = live ? (prev.side === "BUY" ? live.bid : live.ask) : null;
+        const refPrice = live ? (prev.side === "BUY" ? live.bid : effectiveAsk(askMarkupRef.current, prev.symbol.name, live.ask, live.bid)) : null;
         const closeEpsilon = Math.pow(10, -digits) * 3; // a few points of tolerance
         if (refPrice !== null && sl !== null && Math.abs(refPrice - sl) <= closeEpsilon) {
           playSound("slHit", chartSettingsRef.current);
@@ -1657,7 +1657,14 @@ export default function WebTrader({
   // rarely changes this, so a full replace once per 30s poll (no WS
   // equivalent exists for it) is more than fresh enough.
   // Batch 5: holds the per-symbol spread RULE (markup, or target spread), re-read at once on ConfigChanged.
+  // Owner decision (2026-09-26, lib/ask-markup.ts): every ask-side execution uses this account's ask -- a BUY opens AND
+  // a SELL closes at it (SL / TP, stop-out, P/L, margin), so closeRefFor below applies it to every SELL-position price.
+  // The bid is never marked up: a BUY closes and a SELL opens at the raw bid.
   const [askMarkupBySymbol, setAskMarkupBySymbol] = useState<Record<string, SpreadRule>>({});
+  const askMarkupRef = useRef(askMarkupBySymbol);
+  askMarkupRef.current = askMarkupBySymbol;
+  // the price an open position closes at on this account: BUY -> raw bid, SELL -> this account's ask
+  const closeRefFor = (side: "BUY" | "SELL", symbol: string, m: { bid: number; ask: number }) => (side === "BUY" ? m.bid : effectiveAsk(askMarkupRef.current, symbol, m.ask, m.bid));
   // FX batch: the server's conversion quotes (GET /api/trade/prices?fx=1 fx.quotes), for rateFor below
   const [fxQuotes, setFxQuotes] = useState<Record<string, FxQuoteNum>>({});
   // the prices poll below, callable from the trading-event handler (ConfigChanged -> re-read now, not in 30 s)
@@ -2217,9 +2224,9 @@ export default function WebTrader({
     (p: ApiPosition): number => {
       const m = market[p.symbol.name];
       if (!m) return 0;
-      return pnlInAccount(p.side, parseFloat(p.openPrice), m.bid, m.ask, m.def.contractSize, parseFloat(p.volume), rateFor(p.symbol.name)) ?? NaN;
+      return pnlInAccount(p.side, parseFloat(p.openPrice), m.bid, effectiveAsk(askMarkupBySymbol, p.symbol.name, m.ask, m.bid), m.def.contractSize, parseFloat(p.volume), rateFor(p.symbol.name)) ?? NaN;
     },
-    [market, rateFor]
+    [market, rateFor, askMarkupBySymbol]
   );
   const pnlAtPrice = useCallback(
     (symbolName: string, side: "BUY" | "SELL", entry: number, vol: number, targetPrice: number): number => {
@@ -2247,12 +2254,12 @@ export default function WebTrader({
     for (const p of positions) {
       const m = market[p.symbol.name];
       if (!m) continue;
-      const margin = marginInAccount(p.side, m.bid, m.ask, m.def.contractSize, parseFloat(p.volume), account.leverage, rateFor(p.symbol.name));
+      const margin = marginInAccount(p.side, m.bid, effectiveAsk(askMarkupBySymbol, p.symbol.name, m.ask, m.bid), m.def.contractSize, parseFloat(p.volume), account.leverage, rateFor(p.symbol.name));
       if (margin == null) continue; // unpriced: left out, as on the server
       legs.push({ symbolKey: p.symbol.name, side: p.side, volume: parseFloat(p.volume), margin, hedgedMarginPct: m.def.hedgedMarginPct ?? 200 });
     }
     return hedgedUsedMarginDisplay(legs);
-  }, [positions, market, account, rateFor]);
+  }, [positions, market, account, rateFor, askMarkupBySymbol]);
   // Stage 2 F1 (credit Model A): equity = balance + credit + floating, the same figure the server's risk monitor uses
   const equity = account ? parseFloat(account.balance) + parseFloat(account.credit ?? "0") + floatingPnl : 0;
   const freeMargin = equity - usedMargin;
@@ -2343,7 +2350,7 @@ export default function WebTrader({
       if (closingIds.current.has(p.id)) return;
       const m = market[p.symbol.name];
       if (!m || !m.live) return;
-      const price = p.side === "BUY" ? m.bid : m.ask;
+      const price = closeRefFor(p.side, p.symbol.name, m);
       const sl = p.slPrice != null ? parseFloat(p.slPrice) : null;
       const tp = p.tpPrice != null ? parseFloat(p.tpPrice) : null;
       let hitType: "S/L" | "T/P" | null = null;
@@ -2593,7 +2600,7 @@ export default function WebTrader({
     // (MARKET_CLOSED vs NO_LIVE_FEED, see app/api/trade/positions/[id]/
     // close/route.ts) -- let the request through and branch on its answer
     // instead of guessing client-side.
-    const price = p.side === "BUY" ? mm.bid : mm.ask;
+    const price = closeRefFor(p.side, p.symbol.name, mm);
     try {
       const res = await tradeApi.closePosition(id, price);
       const pnl = parseFloat((res as { transaction: { amount: string } }).transaction.amount);
@@ -2663,7 +2670,7 @@ export default function WebTrader({
     if (validationError) { setPartialCloseError(validationError); return; }
     const mm = market[p.symbol.name];
     // See closePositionFull's own comment -- same fix, same reason.
-    const price = p.side === "BUY" ? mm.bid : mm.ask;
+    const price = closeRefFor(p.side, p.symbol.name, mm);
     setPartialCloseBusy(true);
     setPartialCloseError(null);
     try {
@@ -2733,7 +2740,7 @@ export default function WebTrader({
     if (!p) return;
     const mm = market[p.symbol.name];
     if (!mm.live) { pushToast("No live feed for this symbol"); return; }
-    const closePrice = p.side === "BUY" ? mm.bid : mm.ask;
+    const closePrice = closeRefFor(p.side, p.symbol.name, mm);
     const newSide = p.side === "BUY" ? "SELL" : "BUY";
     try {
       await tradeApi.closePosition(id, closePrice);
@@ -2839,9 +2846,10 @@ export default function WebTrader({
         for (const p of symPositions) {
           const testSl = sl ?? (p.slPrice ? parseFloat(p.slPrice) : null);
           const testTp = tp ?? (p.tpPrice ? parseFloat(p.tpPrice) : null);
-          const error = isValidSlTpForSide(p.side, testSl, testTp, mm.bid);
+          const ref = closeRefFor(p.side, p.symbol.name, mm);
+          const error = isValidSlTpForSide(p.side, testSl, testTp, ref);
           if (error) { skipped++; continue; }
-          await tradeApi.editPositionSlTp(p.id, { currentPrice: mm.bid, slPrice: sl ?? undefined, tpPrice: tp ?? undefined });
+          await tradeApi.editPositionSlTp(p.id, { currentPrice: ref, slPrice: sl ?? undefined, tpPrice: tp ?? undefined });
           updated++;
         }
         pushToast(skipped > 0 ? `${sltpEdit.netSymbol}, updated ${updated}, skipped ${skipped}` : `${sltpEdit.netSymbol}, updated SL/TP on ${updated} positions`);
@@ -2859,10 +2867,11 @@ export default function WebTrader({
       const p = positions.find((x) => x.id === sltpEdit.posId);
       if (p) {
         const mm = market[p.symbol.name];
-        const error = isValidSlTpForSide(p.side, sl, tp, mm.bid);
+        const ref = closeRefFor(p.side, p.symbol.name, mm);
+        const error = isValidSlTpForSide(p.side, sl, tp, ref);
         if (error) { pushToast(error); return; }
         try {
-          await tradeApi.editPositionSlTp(p.id, { currentPrice: mm.bid, slPrice: sl, tpPrice: tp });
+          await tradeApi.editPositionSlTp(p.id, { currentPrice: ref, slPrice: sl, tpPrice: tp });
           pushToast(`${p.symbol.name} position updated`);
         } catch (err) {
           if (err instanceof ApiError && err.message === "MARKET_CLOSED") {
@@ -2898,10 +2907,11 @@ export default function WebTrader({
     if (value != null && isNaN(value)) { pushToast("Enter a valid price"); return false; }
     const testSl = field === "sl" ? value : p.slPrice ? parseFloat(p.slPrice) : null;
     const testTp = field === "tp" ? value : p.tpPrice ? parseFloat(p.tpPrice) : null;
-    const error = isValidSlTpForSide(p.side, testSl, testTp, mm.bid);
+    const ref = closeRefFor(p.side, p.symbol.name, mm);
+    const error = isValidSlTpForSide(p.side, testSl, testTp, ref);
     if (error) { pushToast(error); return false; }
     try {
-      await tradeApi.editPositionSlTp(id, { currentPrice: mm.bid, ...(field === "sl" ? { slPrice: value } : { tpPrice: value }) });
+      await tradeApi.editPositionSlTp(id, { currentPrice: ref, ...(field === "sl" ? { slPrice: value } : { tpPrice: value }) });
       pushToast(`${p.symbol.name} ${field.toUpperCase()} updated`);
       await refreshPositions();
       return true;
