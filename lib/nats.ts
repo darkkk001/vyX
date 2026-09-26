@@ -117,28 +117,36 @@ export async function publishTradingEvent(
     buffer.push({ type, payload });
     return;
   }
-  try {
-    // Bounded, not truly fire-and-forget -- a slow/unreachable gateway
-    // must never add meaningful latency to (or fail) the caller's own
-    // trade/dealing action. Same 2s AbortController convention as
-    // app/api/manage/feed-health/route.ts's own internal-service calls.
+  // Bounded, not truly fire-and-forget -- a slow/unreachable gateway must never add meaningful latency to (or fail)
+  // the caller's own trade/dealing action: 2 s in total. One retry (2026-09-26, owner: lost-event guards) on a network
+  // error or a 5xx, inside the same budget: the gateway stamps book events with a sequence the engine checks for gaps
+  // (services/api-gateway), but an event that never REACHES the gateway gets no number, so this hop is the one a gap
+  // cannot reveal -- the engine's 10-minute safety reload is the backstop behind the retry.
+  const body = JSON.stringify({ subject: SUBJECTS[type], payload: { type, ...payload } });
+  const deadline = Date.now() + 2000;
+  for (let attempt = 1; attempt <= 2; attempt++) {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 2000);
+    const timeout = setTimeout(() => controller.abort(), Math.max(1, deadline - Date.now()));
     try {
       const res = await fetch(`${GATEWAY_URL}/internal/events`, {
         method: "POST",
         headers: { "content-type": "application/json", "x-internal-secret": INTERNAL_SERVICE_SECRET },
-        body: JSON.stringify({ subject: SUBJECTS[type], payload: { type, ...payload } }),
+        body,
         signal: controller.signal,
       });
-      if (!res.ok) {
+      if (res.ok) return;
+      if (res.status < 500 || attempt === 2 || Date.now() >= deadline) {
         console.warn("publishTradingEvent: gateway rejected event", type, res.status);
+        return;
+      }
+    } catch (err) {
+      if (attempt === 2 || Date.now() >= deadline - 50) {
+        console.warn("failed to publish trading event to gateway", type, err);
+        return;
       }
     } finally {
       clearTimeout(timeout);
     }
-  } catch (err) {
-    console.warn("failed to publish trading event to gateway", type, err);
   }
 }
 

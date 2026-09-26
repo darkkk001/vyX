@@ -71,4 +71,32 @@ describe("publishTradingEvent (HTTP relay to the gateway)", () => {
     const { publishTradingEvent } = await import("@/lib/nats");
     await expect(publishTradingEvent("OrderFilled", { broker_id: "b1" })).resolves.toBeUndefined();
   });
+
+  // 2026-09-26 (owner: lost-event guards): the web -> gateway hop is the one a sequence gap cannot reveal, so a
+  // failed publish is retried once, inside the same 2 s budget.
+  it("retries once after a network error and succeeds; the same body both times", async () => {
+    fetchMock.mockRejectedValueOnce(new Error("ECONNRESET")).mockResolvedValueOnce({ ok: true, status: 202 });
+    const { publishTradingEvent } = await import("@/lib/nats");
+    await publishTradingEvent("PositionModified", { broker_id: "b1", position_id: "p1" });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[1][1].body).toBe(fetchMock.mock.calls[0][1].body);
+  });
+
+  it("retries once after a 5xx; a 4xx is not retried", async () => {
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 502 }).mockResolvedValueOnce({ ok: true, status: 202 });
+    const { publishTradingEvent } = await import("@/lib/nats");
+    await publishTradingEvent("OrderFilled", { broker_id: "b1" });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    fetchMock.mockClear();
+    fetchMock.mockResolvedValue({ ok: false, status: 401 });
+    await publishTradingEvent("OrderFilled", { broker_id: "b1" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("a gateway that stays down costs at most two calls and never throws", async () => {
+    fetchMock.mockRejectedValue(new Error("ECONNREFUSED"));
+    const { publishTradingEvent } = await import("@/lib/nats");
+    await expect(publishTradingEvent("OrderFilled", { broker_id: "b1" })).resolves.toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
 });
