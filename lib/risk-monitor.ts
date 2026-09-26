@@ -186,10 +186,23 @@ export async function evaluateAccountRisk(accountId: string): Promise<RiskMonito
   const slTpClosed: string[] = [];
   const stopOutClosed: string[] = [];
 
+  // Neon load (2026-09-26): the positions (with their prices) and the account are read ONCE, together, and re-read
+  // only after something closed -- a close is the only thing in here that changes them. Before, every account was
+  // read three times over on every pass (pass 1, the stop-out loop, pass 3: ~22 queries) even when nothing closed,
+  // which is the common case the engine's backstop runs every 5 s.
+  const readAccount = () => prisma.account.findUnique({ where: { id: accountId }, include: { group: { select: { stopOutLevel: true, marginCallLevel: true } } } });
+  let [positions, account] = await Promise.all([loadOpenPositionsWithMarket(accountId), readAccount()]);
+  let changed = false;
+  const refresh = async () => {
+    if (!changed) return;
+    [positions, account] = await Promise.all([loadOpenPositionsWithMarket(accountId), readAccount()]);
+    changed = false;
+  };
+
   // Pass 1: SL/TP. Every triggered position closes -- unlike stop-out,
   // this isn't "pick the single worst one," each is an independent
   // trader-chosen exit level, not a margin-driven rescue.
-  for (const p of await loadOpenPositionsWithMarket(accountId)) {
+  for (const p of positions) {
     const reason = slTpTrigger(p);
     if (!reason || p.bid == null || p.ask == null) continue;
     const cp = closePriceFor(p.side, p.bid, p.ask);
@@ -209,6 +222,7 @@ export async function evaluateAccountRisk(accountId: string): Promise<RiskMonito
       })
     );
     if (outcome.closed) {
+      changed = true;
       slTpClosed.push(p.id);
       // Closes respect DEALER mode: SL / TP bypass the dealer, so a close the client had queued for
       // this position is now moot -- retire it and release the lock (the client sees a cancel).
@@ -224,24 +238,19 @@ export async function evaluateAccountRisk(accountId: string): Promise<RiskMonito
   }
 
   // Pass 2: margin / stop-out, on whatever remains open after pass 1.
-  const account = await prisma.account.findUnique({
-    where: { id: accountId },
-    include: { group: { select: { stopOutLevel: true, marginCallLevel: true } } },
-  });
+  await refresh();
   if (!account) return { evaluated: false, slTpClosed, stopOutClosed };
   const stopOutLevel = account.group?.stopOutLevel ?? new Prisma.Decimal(50);
 
   for (;;) {
-    const positions = (await loadOpenPositionsWithMarket(accountId)).filter(
-      (p) => !stopOutClosed.includes(p.id)
-    );
-    if (positions.length === 0) break;
-
-    // Re-read balance every iteration: it changes after each force-close,
-    // and stop-out's whole point is reacting to the account's CURRENT
-    // state, not a snapshot from before this loop started.
-    const freshAccount = await prisma.account.findUniqueOrThrow({ where: { id: accountId } });
-    const { marginLevel, worst } = measureAccount(freshAccount, positions);
+    // Re-read after every close (refresh): the balance changes after each force-close, and stop-out's whole point is
+    // reacting to the account's CURRENT state, not a snapshot from before this loop started.
+    await refresh();
+    const freshAccount = account;
+    if (!freshAccount) break;
+    const open = positions.filter((p) => !stopOutClosed.includes(p.id));
+    if (open.length === 0) break;
+    const { marginLevel, worst } = measureAccount(freshAccount, open);
 
     if (marginLevel == null) break; // nothing to gate a margin level on
     // Stage 2 F3 (canonical, MT5): stop out when the level is AT OR BELOW stopOutLevel; done only once it is
@@ -265,6 +274,7 @@ export async function evaluateAccountRisk(accountId: string): Promise<RiskMonito
       })
     );
     stopOutClosed.push(worst.position.id);
+    changed = true;
     if (outcome.closed) {
       await cancelPendingClose(prisma, worst.position.id, "position closed by stop-out").catch((err) => console.error("cancelPendingClose failed", err));
       // docs/briefs/VYX-MIRROR-V0-BRIEF.md -- mirror hook gap fix: an
@@ -301,9 +311,11 @@ export async function evaluateAccountRisk(accountId: string): Promise<RiskMonito
   // recovers back above the threshold (or every position closes), so the
   // next episode notifies fresh.
   const marginCallLevel = account.group?.marginCallLevel ?? new Prisma.Decimal(100);
-  const remaining = (await loadOpenPositionsWithMarket(accountId)).filter((p) => !stopOutClosed.includes(p.id));
-  if (remaining.length > 0) {
-    const latestAccount = await prisma.account.findUniqueOrThrow({ where: { id: accountId } });
+  const notifiedBefore = account.marginCallNotifiedAt;
+  await refresh();
+  const remaining = positions.filter((p) => !stopOutClosed.includes(p.id));
+  if (remaining.length > 0 && account) {
+    const latestAccount = account;
     const { marginLevel } = measureAccount(latestAccount, remaining);
     if (marginLevel != null) {
       const inMarginCall = marginLevel.lte(marginCallLevel);
@@ -324,7 +336,7 @@ export async function evaluateAccountRisk(accountId: string): Promise<RiskMonito
         await publishTradingEvent("MarginCall", { account_id: accountId, broker_id: latestAccount.brokerId, level: marginLevel.toFixed(2), state: "cleared" }).catch(() => {});
       }
     }
-  } else if (account.marginCallNotifiedAt) {
+  } else if (notifiedBefore) {
     // Nothing left open (stop-out/SL-TP closed everything above) -- reset
     // so the next time this account opens a position and drifts into
     // margin call again, it notifies fresh instead of staying silenced.

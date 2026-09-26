@@ -37,15 +37,21 @@
 //! each account holding a flushed symbol and names the symbols whose accounts are at or below stop-out (or
 //! crossed margin call); they go through the same `?symbols=` call and the same per-symbol rate limit. The
 //! web still decides and closes; this only asks it NOW.
+//!
+//! Idle gate (2026-09-26, crate::activity): the backstop skips its pass while the feed is quiet, the book is flat or
+//! none of its symbols has a fresh tick, and the reload stops querying once nothing has ticked for a minute. The web
+//! route could not have acted on any of those passes (every decision needs a price at most 15 s old).
 
 use rust_decimal::Decimal;
 use sqlx::PgPool;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use protocol::Tick;
 
+use crate::activity::{self, GateLog};
 use crate::cache::TickCache;
 
 /// The per-tick margin trigger (see the module doc). Pure in-memory on the flush path: no I/O.
@@ -54,6 +60,10 @@ pub trait MarginWatch: Send + Sync {
     fn symbols_to_evaluate(&self, flushed: &[Tick], cache: &TickCache) -> Vec<String>;
     /// A margin-triggered evaluation came back (closes may have happened): refresh the watched book.
     fn evaluated(&self);
+    /// The symbols of every open position in the watched book; None until the book has loaded once.
+    fn book_symbols(&self) -> Option<HashSet<String>> {
+        None
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -92,6 +102,8 @@ pub struct RiskHook {
     pending: Mutex<HashMap<String, Vec<PendingLevel>>>,
     last_fired: Mutex<HashMap<String, Instant>>,
     margin_watch: std::sync::OnceLock<Arc<dyn MarginWatch>>,
+    /// The levels / pending entries have been read at least once (the idle gate never skips the first load).
+    loaded: AtomicBool,
 }
 
 impl RiskHook {
@@ -109,6 +121,7 @@ impl RiskHook {
             pending: Mutex::new(HashMap::new()),
             last_fired: Mutex::new(HashMap::new()),
             margin_watch: std::sync::OnceLock::new(),
+            loaded: AtomicBool::new(false),
         }))
     }
 
@@ -154,6 +167,17 @@ impl RiskHook {
             }
             Err(err) => tracing::warn!(error = %err, "risk hook: could not reload pending order entries"),
         }
+        self.loaded.store(true, Ordering::Relaxed);
+    }
+
+    /// What the book holds, for the idle gate: the margin trigger's open-position symbols plus every symbol a resting
+    /// order or an SL / TP level waits on. None = unknown (no margin trigger, or its book not loaded yet), in which
+    /// case the gate only skips while the whole feed is quiet.
+    pub fn book_symbols(&self) -> Option<HashSet<String>> {
+        let mut symbols = self.margin_watch.get()?.book_symbols()?;
+        symbols.extend(self.pending.lock().unwrap().keys().cloned());
+        symbols.extend(self.levels.lock().unwrap().keys().cloned());
+        Some(symbols)
     }
 
     /// Symbols among the flushed ticks whose bid / ask touches an open level.
@@ -280,26 +304,34 @@ impl RiskHook {
         }
     }
 
-    /// The full-book backstop (see the module doc): a full pass every `every`, the first at start.
-    /// Passes are awaited one after another, so a slow route delays the next instead of piling up.
-    pub fn spawn_backstop_loop(self: &Arc<Self>, every: Duration) {
+    /// The full-book backstop (see the module doc): a full pass every `every`, the first at start, skipped while the
+    /// idle gate is closed (crate::activity). Passes are awaited one after another, so a slow route delays the next
+    /// instead of piling up.
+    pub fn spawn_backstop_loop(self: &Arc<Self>, every: Duration, cache: Arc<TickCache>) {
         let hook = Arc::clone(self);
         tokio::spawn(async move {
+            static LOG: GateLog = GateLog::new("risk hook backstop");
             let mut ticker = tokio::time::interval(every);
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
                 ticker.tick().await;
-                hook.fire_full_pass().await;
+                let book = hook.book_symbols();
+                if LOG.observe(activity::book_gate(&cache, book.as_ref(), chrono::Utc::now())) {
+                    hook.fire_full_pass().await;
+                }
             }
         });
     }
 
-    /// Keep the levels current: every `every` (and the caller may reload on NATS position events).
-    pub fn spawn_reload_loop(self: &Arc<Self>, pool: PgPool, every: Duration) {
+    /// Keep the levels current: every `every` while anything ticks (crate::activity::reload_due; always the first
+    /// time). The caller may also reload on NATS position events.
+    pub fn spawn_reload_loop(self: &Arc<Self>, pool: PgPool, every: Duration, cache: Arc<TickCache>) {
         let hook = Arc::clone(self);
         tokio::spawn(async move {
             loop {
-                hook.reload(&pool).await;
+                if !hook.loaded.load(Ordering::Relaxed) || activity::reload_due(&cache, chrono::Utc::now()) {
+                    hook.reload(&pool).await;
+                }
                 tokio::time::sleep(every).await;
             }
         });
@@ -369,7 +401,15 @@ mod tests {
             pending: Mutex::new(HashMap::new()),
             last_fired: Mutex::new(HashMap::new()),
             margin_watch: std::sync::OnceLock::new(),
+            loaded: AtomicBool::new(false),
         })
+    }
+
+    /// A cache with one tick of `symbol` received `age_secs` ago.
+    fn cache_ticked(symbol: &str, age_secs: i64) -> Arc<TickCache> {
+        let c = TickCache::new();
+        c.set(&tick(symbol), chrono::Utc::now() - chrono::Duration::seconds(age_secs));
+        Arc::new(c)
     }
 
     #[test]
@@ -458,7 +498,7 @@ mod tests {
     async fn the_backstop_loop_fires_at_start_and_then_on_every_interval_without_a_cron() {
         let (url, mut rx) = mock_route(200).await;
         let started = Instant::now();
-        hook(url).spawn_backstop_loop(Duration::from_millis(300));
+        hook(url).spawn_backstop_loop(Duration::from_millis(300), cache_ticked("XAUUSD", 0));
         for _ in 0..3 {
             let (line, _) = tokio::time::timeout(Duration::from_secs(3), rx.recv()).await.expect("backstop pass").unwrap();
             assert!(!line.contains("symbols"), "{line}");
@@ -471,10 +511,62 @@ mod tests {
     #[tokio::test]
     async fn a_failing_route_does_not_stop_the_backstop_loop() {
         let (url, mut rx) = mock_route(500).await;
-        hook(url).spawn_backstop_loop(Duration::from_millis(100));
+        hook(url).spawn_backstop_loop(Duration::from_millis(100), cache_ticked("XAUUSD", 0));
         for _ in 0..3 {
             tokio::time::timeout(Duration::from_secs(3), rx.recv()).await.expect("loop kept running").unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn the_backstop_skips_while_the_feed_is_quiet() {
+        let (url, mut rx) = mock_route(200).await;
+        // the last XAUUSD tick is a weekend-old heartbeat: nothing can be decided, so nothing is asked
+        hook(url).spawn_backstop_loop(Duration::from_millis(50), cache_ticked("XAUUSD", 3600));
+        assert!(tokio::time::timeout(Duration::from_millis(400), rx.recv()).await.is_err());
+    }
+
+    struct BookWatch(Option<HashSet<String>>);
+    impl MarginWatch for BookWatch {
+        fn symbols_to_evaluate(&self, _flushed: &[Tick], _cache: &TickCache) -> Vec<String> {
+            Vec::new()
+        }
+        fn evaluated(&self) {}
+        fn book_symbols(&self) -> Option<HashSet<String>> {
+            self.0.clone()
+        }
+    }
+
+    #[tokio::test]
+    async fn the_backstop_skips_a_flat_book_and_a_book_whose_symbols_are_stale() {
+        let (url, mut rx) = mock_route(200).await;
+        // flat: the watch has loaded an empty book, no resting order
+        let flat = hook(url.clone());
+        flat.set_margin_watch(Arc::new(BookWatch(Some(HashSet::new()))));
+        flat.spawn_backstop_loop(Duration::from_millis(50), cache_ticked("BTCUSD", 0));
+        // closed: the book holds XAUUSD, only BTCUSD ticks (a crypto weekend)
+        let closed = hook(url.clone());
+        closed.set_margin_watch(Arc::new(BookWatch(Some(["XAUUSD".to_string()].into()))));
+        let c = TickCache::new();
+        c.set(&tick("BTCUSD"), chrono::Utc::now());
+        c.set(&tick("XAUUSD"), chrono::Utc::now() - chrono::Duration::hours(40));
+        closed.spawn_backstop_loop(Duration::from_millis(50), Arc::new(c));
+        assert!(tokio::time::timeout(Duration::from_millis(400), rx.recv()).await.is_err());
+        // a resting order on a ticking symbol reopens the gate even with no position open
+        let pending = hook(url);
+        pending.set_margin_watch(Arc::new(BookWatch(Some(HashSet::new()))));
+        pending.pending.lock().unwrap().insert("BTCUSD".into(), vec![PendingLevel { is_buy: true, is_limit: true, entry: Decimal::ONE }]);
+        pending.spawn_backstop_loop(Duration::from_millis(50), cache_ticked("BTCUSD", 0));
+        let (line, _) = tokio::time::timeout(Duration::from_secs(3), rx.recv()).await.expect("pass").unwrap();
+        assert!(!line.contains("symbols"), "{line}");
+    }
+
+    #[tokio::test]
+    async fn an_unloaded_book_is_unknown_so_only_a_quiet_feed_skips() {
+        let (url, mut rx) = mock_route(200).await;
+        let h = hook(url);
+        h.set_margin_watch(Arc::new(BookWatch(None)));
+        h.spawn_backstop_loop(Duration::from_millis(50), cache_ticked("XAUUSD", 0));
+        tokio::time::timeout(Duration::from_secs(3), rx.recv()).await.expect("pass").unwrap();
     }
 
     /// Manual e2e: a real margin-monitor route (local `next dev` on a scratch DB) and nothing but the
@@ -484,7 +576,7 @@ mod tests {
     #[ignore]
     async fn e2e_backstop_drives_a_real_margin_monitor_route() {
         let hook = RiskHook::from_env().expect("VYX_RISK_HOOK_URL / VYX_RISK_HOOK_SECRET");
-        hook.spawn_backstop_loop(Duration::from_secs(5));
+        hook.spawn_backstop_loop(Duration::from_secs(5), cache_ticked("XAUUSD", 0));
         tokio::time::sleep(Duration::from_secs(12)).await;
         // the route still accepts the backstop's auth after the loop's own passes
         assert!(hook.fire_full_pass().await);

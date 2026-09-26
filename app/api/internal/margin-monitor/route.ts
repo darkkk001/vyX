@@ -4,6 +4,7 @@ import { evaluateAccountRisk, evaluateRiskForSymbol } from "@/lib/risk-monitor";
 import { bearerMatches } from "@/lib/internal-auth";
 import { drainPostCloseBackstop } from "@/lib/post-close";
 import { evaluatePendingTriggers } from "@/lib/pending-trigger";
+import { anyFreshPriceOnVps } from "@/lib/live-price";
 
 // 2026-09-05 P0 fix -- the reliable floor beneath the tick-ingest trigger
 // (lib/price-feed.ts's ingestTicks -> evaluateRiskForSymbol), which is
@@ -62,6 +63,16 @@ export async function GET(request: NextRequest) {
       return null;
     });
     return NextResponse.json({ symbolsEvaluated: symbols.length, errors, pending });
+  }
+
+  // Idle gate (Neon load, 2026-09-26): with no fresh tick on ANY symbol (weekend, feed down) nothing below can
+  // decide anything -- every SL/TP, stop-out and pending trigger needs a price at most 15 s old -- so the full pass
+  // returns before touching the database (the engine's backstop applies the same rule, market_data::activity; this
+  // covers the Vercel cron). Asked of the engine's tick cache, not the DB. Unknown (not on the VPS price source, or
+  // the engine unreachable) = run the pass as before. The post-close outbox only fills from engine closes, which need
+  // a fresh price too; anything left in it runs on the first pass after the feed ticks again.
+  if ((await anyFreshPriceOnVps()) === false) {
+    return NextResponse.json({ skipped: "no fresh price on any symbol", accountsEvaluated: 0, errors: 0 });
   }
 
   // Cheapest possible check first, index-backed: if nothing is open

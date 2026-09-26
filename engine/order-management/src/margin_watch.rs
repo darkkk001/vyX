@@ -17,6 +17,10 @@
 //! stays underneath for anything this misses (a position opened since the last refresh, a session the
 //! engine cannot see).
 //!
+//! Idle gate (2026-09-26, market_data::activity): the reload stops querying once nothing has ticked for a minute (a
+//! position cannot open without a fresh price), except the first load and a reload asked for after a triggered
+//! evaluation; and book_symbols() tells the hook's backstop and the shadow pass what the book holds.
+//!
 //! Damping: a stop-out that stays (the web disagrees, e.g. a session it treats as closed) re-fires after
 //! 1, 2, 4 ... 30 s, reset once the account is back above; a margin-call edge fires at most every 5 s per
 //! account.
@@ -28,6 +32,7 @@ use protocol::Tick;
 use rust_decimal::Decimal;
 use sqlx::PgPool;
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 use tokio::sync::Notify;
@@ -172,11 +177,27 @@ pub struct MarginWatch {
     /// calls the web, so the shadow samples the breached state instead of racing the web's close. Unset (live, no
     /// shadow) = nothing changes. A send never blocks and never delays the web call.
     on_fire: Mutex<Option<tokio::sync::mpsc::UnboundedSender<String>>>,
+    /// The book has been set at least once: until then book_symbols() is None (unknown), never "flat".
+    loaded: AtomicBool,
 }
 
 impl MarginWatch {
     pub fn new() -> Arc<Self> {
-        Arc::new(MarginWatch { book: RwLock::new(Arc::new(Book::default())), tracks: Mutex::new(HashMap::new()), reload_now: Notify::new(), on_fire: Mutex::new(None) })
+        Arc::new(MarginWatch {
+            book: RwLock::new(Arc::new(Book::default())),
+            tracks: Mutex::new(HashMap::new()),
+            reload_now: Notify::new(),
+            on_fire: Mutex::new(None),
+            loaded: AtomicBool::new(false),
+        })
+    }
+
+    /// The symbols of every open position in the book; None until the book has loaded once.
+    pub fn book_symbols(&self) -> Option<HashSet<String>> {
+        if !self.loaded.load(Ordering::Acquire) {
+            return None;
+        }
+        Some(self.book.read().unwrap().by_symbol.keys().cloned().collect())
     }
 
     /// Stage 5: hand every fired account to the shadow (monitor::spawn_shadow_trigger) before the web is called.
@@ -189,6 +210,7 @@ impl MarginWatch {
         // forget the damping of accounts that no longer hold anything
         self.tracks.lock().unwrap().retain(|id, _| ids.contains(id.as_str()));
         *self.book.write().unwrap() = Arc::new(book);
+        self.loaded.store(true, Ordering::Release);
     }
 
     pub async fn reload(&self, pool: &PgPool) {
@@ -198,16 +220,20 @@ impl MarginWatch {
         }
     }
 
-    /// Refresh the book every `every`, and at once after a triggered evaluation (closes change it).
-    pub fn spawn_reload_loop(self: &Arc<Self>, pool: PgPool, every: Duration) {
+    /// Refresh the book every `every` while anything ticks (market_data::activity::reload_due; always the first time),
+    /// and at once after a triggered evaluation (closes change it).
+    pub fn spawn_reload_loop(self: &Arc<Self>, pool: PgPool, every: Duration, cache: Arc<TickCache>) {
         let watch = Arc::clone(self);
         tokio::spawn(async move {
+            let mut asked = true; // the first load
             loop {
-                watch.reload(&pool).await;
-                tokio::select! {
-                    _ = tokio::time::sleep(every) => {}
-                    _ = watch.reload_now.notified() => {}
+                if asked || !watch.loaded.load(Ordering::Acquire) || market_data::activity::reload_due(&cache, chrono::Utc::now()) {
+                    watch.reload(&pool).await;
                 }
+                asked = tokio::select! {
+                    _ = tokio::time::sleep(every) => false,
+                    _ = watch.reload_now.notified() => true,
+                };
             }
         });
     }
@@ -274,6 +300,10 @@ impl market_data::risk_hook::MarginWatch for MarginWatch {
 
     fn evaluated(&self) {
         self.reload_now.notify_one();
+    }
+
+    fn book_symbols(&self) -> Option<HashSet<String>> {
+        MarginWatch::book_symbols(self)
     }
 }
 
@@ -435,6 +465,16 @@ mod tests {
         // floating = (150 - 151) x 100000 x 0.1 = -10000 JPY / 151 = -66.225... USD; margin = 0.1 x 100000 x 151 / 100 = 15100 JPY = 100 USD
         assert_eq!(used.round_dp(6), dec!(100));
         assert_eq!((equity - dec!(1000)).round_dp(3), dec!(-66.225));
+    }
+
+    #[test]
+    fn book_symbols_is_unknown_until_the_first_load_then_what_the_book_holds() {
+        let w = MarginWatch::new();
+        assert_eq!(w.book_symbols(), None, "not loaded: unknown, never 'flat'");
+        w.set_book(Book::new(Vec::new()));
+        assert_eq!(w.book_symbols(), Some(HashSet::new()));
+        w.set_book(Book::new(vec![gold_account("a", dec!(1))]));
+        assert_eq!(w.book_symbols(), Some(["XAUUSD".to_string()].into()));
     }
 
     #[test]

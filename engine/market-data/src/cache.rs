@@ -211,6 +211,25 @@ impl TickCache {
             .collect()
     }
 
+    /// True when any symbol's latest tick is at most `max_age` old as of `now` (the tick's own time, as
+    /// `get_if_fresh` measures it: a weekend heartbeat re-sending a frozen price does not count).
+    pub fn any_fresh_at(&self, now: DateTime<Utc>, max_age: Duration) -> bool {
+        let guard = match self.inner.read() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        guard.values().any(|e| now - e.at <= max_age)
+    }
+
+    /// True when at least one of `symbols` has a tick at most `max_age` old as of `now`.
+    pub fn any_of_fresh_at<'a>(&self, symbols: impl IntoIterator<Item = &'a String>, now: DateTime<Utc>, max_age: Duration) -> bool {
+        let guard = match self.inner.read() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        symbols.into_iter().any(|s| guard.get(s).is_some_and(|e| now - e.at <= max_age))
+    }
+
     // Claims every symbol currently marked dirty for LivePrice persistence
     // and clears the flag in the same lock acquisition, so a tick landing
     // right after this returns can't be silently lost: `set` above always

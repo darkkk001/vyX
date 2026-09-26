@@ -1346,6 +1346,8 @@ async fn main() {
     let tick_cache = Arc::new(TickCache::new());
     // Stage 5: the shadow's trigger inbox (monitor::spawn_shadow_trigger), handed to the per-tick margin trigger below
     let mut shadow_trigger: Option<tokio::sync::mpsc::UnboundedSender<String>> = None;
+    // the per-tick margin trigger's book, filled in below once it exists: the shadow pass's idle gate reads it
+    let margin_watch_slot: Arc<std::sync::OnceLock<Arc<order_management::margin_watch::MarginWatch>>> = Arc::new(std::sync::OnceLock::new());
     let order_management_on = std::env::var("ENGINE_ORDER_MANAGEMENT")
         .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "on" | "yes"))
         .unwrap_or(false);
@@ -1447,7 +1449,13 @@ async fn main() {
         let recorder = Arc::new(recorder);
         tracing::warn!(pass_secs, "order management SHADOW: the monitor evaluates every account and records what it would do; it writes nothing and publishes nothing. The web owns every close.");
         order_management::book::require_tick_source();
-        order_management::monitor::spawn_shadow(book_pool.clone(), recorder.clone(), std::time::Duration::from_secs(pass_secs), order_management::book::PriceSource::Ticks(tick_cache.clone()));
+        order_management::monitor::spawn_shadow(
+            book_pool.clone(),
+            recorder.clone(),
+            std::time::Duration::from_secs(pass_secs),
+            order_management::book::PriceSource::Ticks(tick_cache.clone()),
+            order_management::monitor::ShadowGate { cache: tick_cache.clone(), watch: margin_watch_slot.clone() },
+        );
         shadow_trigger = Some(order_management::monitor::spawn_shadow_trigger(book_pool.clone(), recorder.clone(), order_management::book::PriceSource::Ticks(tick_cache.clone())));
         // §5.3: pairs the web's real risk actions with the shadow's decisions every minute (reads the book, writes only
         // to the local store); the daily summary goes to the log and to shadow_daily
@@ -1495,14 +1503,15 @@ async fn main() {
     // the full-book backstop (stop-out on positions with no SL / TP) runs every minute from here.
     let risk_hook = market_data::risk_hook::RiskHook::from_env();
     if let Some(hook) = &risk_hook {
-        hook.spawn_reload_loop(pool.clone(), std::time::Duration::from_secs(5));
+        hook.spawn_reload_loop(pool.clone(), std::time::Duration::from_secs(5), tick_cache.clone());
         // per-tick margin trigger (order_management::margin_watch): an account at or below its stop-out is
         // evaluated on the flush that put it there, not at the next backstop pass. VYX_RISK_HOOK_MARGIN=0 = off.
         if std::env::var("VYX_RISK_HOOK_MARGIN").map(|v| v.trim() == "0").unwrap_or(false) {
             tracing::warn!("risk hook margin trigger OFF (VYX_RISK_HOOK_MARGIN=0): stop-out on positions without SL/TP waits for the backstop");
         } else {
             let watch = order_management::margin_watch::MarginWatch::new();
-            watch.spawn_reload_loop(pool.clone(), std::time::Duration::from_secs(5));
+            watch.spawn_reload_loop(pool.clone(), std::time::Duration::from_secs(5), tick_cache.clone());
+            let _ = margin_watch_slot.set(watch.clone());
             if let Some(tx) = &shadow_trigger {
                 watch.set_on_fire(tx.clone());
                 tracing::info!("shadow trigger: every account the margin trigger fires for is evaluated in shadow first");
@@ -1513,7 +1522,7 @@ async fn main() {
         match market_data::risk_hook::RiskHook::backstop_interval_from_env() {
             Some(every) => {
                 tracing::info!(every_secs = every.as_secs(), "risk hook backstop enabled: full margin-monitor pass on a timer");
-                hook.spawn_backstop_loop(every);
+                hook.spawn_backstop_loop(every, tick_cache.clone());
             }
             None => tracing::warn!("risk hook backstop OFF (VYX_RISK_HOOK_BACKSTOP_SECS=0): stop-out on positions without SL/TP relies on an external cron"),
         }

@@ -774,16 +774,38 @@ pub fn spawn_shadow_trigger(pool: PgPool, recorder: Arc<crate::shadow::Recorder>
     tx
 }
 
+/// The shadow pass's idle gate (2026-09-26, market_data::activity): the engine's tick cache, and the per-tick margin
+/// trigger's book once the server has built it (it is created after the shadow). A pass is skipped while the feed is
+/// quiet, or the trigger's book is flat or holds no symbol with a fresh tick: every decision needs a price at most
+/// 15 s old, so such a pass could only re-read the book and decide nothing. The per-tick shadow trigger
+/// (spawn_shadow_trigger) is never gated.
+#[derive(Clone)]
+pub struct ShadowGate {
+    pub cache: Arc<market_data::cache::TickCache>,
+    pub watch: Arc<std::sync::OnceLock<Arc<crate::margin_watch::MarginWatch>>>,
+}
+
+impl ShadowGate {
+    pub fn gate(&self) -> market_data::activity::Gate {
+        let book = self.watch.get().and_then(|w| w.book_symbols());
+        market_data::activity::book_gate(&self.cache, book.as_ref(), chrono::Utc::now())
+    }
+}
+
 /// Stage 5: the shadow monitor. A pass every `interval` in `Mode::Shadow`, one at a time (a slow pass delays the
-/// next, never overlaps it). No NATS, no dispatcher, no writes to the book.
-pub fn spawn_shadow(pool: PgPool, recorder: Arc<crate::shadow::Recorder>, interval: std::time::Duration, prices: book::PriceSource) {
+/// next, never overlaps it), skipped while `gate` is closed. No NATS, no dispatcher, no writes to the book.
+pub fn spawn_shadow(pool: PgPool, recorder: Arc<crate::shadow::Recorder>, interval: std::time::Duration, prices: book::PriceSource, gate: ShadowGate) {
     tokio::spawn(book::with_price_source(prices, async move {
+        static LOG: market_data::activity::GateLog = market_data::activity::GateLog::new("shadow pass");
         let mode = Mode::Shadow(recorder);
         let mut ticker = tokio::time::interval(interval);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut cursor = PassCursor::default();
         loop {
             ticker.tick().await;
+            if !LOG.observe(gate.gate()) {
+                continue;
+            }
             let report = run_pass_mode(&pool, None, &mut cursor, &mode).await;
             if report.errors > 0 {
                 tracing::warn!(errors = report.errors, "shadow pass: some accounts failed to evaluate");

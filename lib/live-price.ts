@@ -109,6 +109,22 @@ export async function getLivePriceRowsWithSource(symbolNames: string[], db: Db =
   return { rows: new Map(rows.map((r) => [r.symbol, r])), source: vps ? "neon-fallback" : "neon" };
 }
 
+/**
+ * Idle gate for the full margin pass (Neon load, 2026-09-26): does ANY symbol have a fresh (15 s) tick right now?
+ * Answered from the engine's tick cache alone (no database), so a closed market costs the caller nothing. null =
+ * unknown (not reading from the VPS, or the engine unreachable): the caller must go on as before.
+ */
+export async function anyFreshPriceOnVps(): Promise<boolean | null> {
+  if (!pricesFromVps()) return null;
+  const all = await fetchVpsPrices();
+  if (!all) return null;
+  const cutoff = Date.now() - FRESH_MAX_AGE_MS;
+  return all.some((p) => {
+    const row = toLivePriceRow(p);
+    return row != null && row.tickAt.getTime() > cutoff;
+  });
+}
+
 export async function getLivePriceRows(symbolNames: string[], db: Db = prisma): Promise<Map<string, LivePrice>> {
   return (await getLivePriceRowsWithSource(symbolNames, db)).rows;
 }
