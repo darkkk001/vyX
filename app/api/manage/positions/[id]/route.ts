@@ -6,6 +6,9 @@ import { forbidUnlessBrokerAdminOrPermission, PERMISSION_LABELS } from "@/lib/pe
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { getFreshPrice } from "@/lib/live-price";
 import { validateSlTp } from "@/lib/trading";
+import { recordDealerActivity } from "@/lib/dealer-activity";
+import { isDealingManagedAccount, deskIsOn } from "@/lib/dealing-routing";
+import { runAfterResponse } from "@/lib/after-response";
 
 async function requireManager() {
   const session = await getAdminSession();
@@ -124,6 +127,36 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
   // Batch 5 (audit: admin SL/TP edits published nothing): the trader's terminal and every backoffice see it at once
   await publishTradingEvent("PositionModified", { position_id: updated.id, account_id: updated.accountId, broker_id: brokerId }).catch(() => {});
+  // Phase 2 batch 3 (audit EXP line): the change also reaches the dealer activity feed, after the response
+  await runAfterResponse("admin sl/tp dealer activity", async () => {
+    const [account, broker] = await Promise.all([
+      prisma.account.findUnique({ where: { id: updated.accountId }, select: { accountNumber: true, fullName: true, group: { select: { category: true, forceDealingMode: true } } } }),
+      prisma.broker.findUnique({ where: { id: brokerId }, select: { dealingDeskAutoFillAt: true } }),
+    ]);
+    if (!account) return;
+    await recordDealerActivity(prisma, {
+      brokerId,
+      accountId: updated.accountId,
+      accountNumber: account.accountNumber,
+      accountFullName: account.fullName,
+      isDealingGroup: isDealingManagedAccount({ group: account.group, deskOn: deskIsOn(broker) }),
+      action: "ORDER_MODIFIED",
+      symbol: position.symbol.name,
+      side: position.side,
+      volume: position.volume.toString(),
+      values: {
+        oldSlPrice: position.slPrice?.toString() ?? null,
+        newSlPrice: slPrice?.toString() ?? null,
+        oldTpPrice: position.tpPrice?.toString() ?? null,
+        newTpPrice: tpPrice?.toString() ?? null,
+        onOpenPosition: true,
+        origin: "admin",
+        reason,
+      },
+      positionId: updated.id,
+      skipNotification: true, // staff made this change; no staff notification about it
+    });
+  });
 
   return NextResponse.json({
     positionId: updated.id,

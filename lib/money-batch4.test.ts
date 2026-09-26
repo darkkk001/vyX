@@ -358,16 +358,21 @@ describe("live account applications (line 10)", () => {
   });
 });
 
-describe("auto-hedge covers forced-dealing groups too (decision 1)", () => {
-  it("a fill in a forced-dealing (non-DEALING-type) group is hedged when auto-hedge is on", async () => {
+// Superseded (owner decision 2026-09-26, Phase 2 batch 3): auto-hedge covers DEALING DESK groups only. A B_BOOK group
+// is not auto-hedged even with the old force-dealing flag set; a DEALING group is (lib/phase2-batch3.test.ts covers
+// all three categories).
+describe("auto-hedge scope follows the group category (was: forced-dealing groups too, decision 1)", () => {
+  it("a forced-dealing B_BOOK group is NOT hedged; a DEALING group is", async () => {
     if (!dbReachable) return;
-    const fx = await broker({ groupType: "LP", forceDealingMode: true });
-    await prisma.group.update({ where: { id: fx.groupId }, data: { category: "B_BOOK" } });
-    await prisma.broker.update({ where: { id: fx.brokerId }, data: { autoHedgeAt: new Date(), dealingDeskAutoFillAt: new Date() } });
-    const acc = await account(fx);
-    const pos = await position(fx, acc.id, 1);
     const coverage = await import("@/lib/coverage");
-    await coverage.onFillAutoHedge(prisma, { positionId: pos.id, brokerId: fx.brokerId });
-    expect((await prisma.position.findUniqueOrThrow({ where: { id: pos.id } })).covered).toBe(true);
+    for (const [category, hedged] of [["B_BOOK", false], ["DEALING", true]] as const) {
+      const fx = await broker({ groupType: "LP", forceDealingMode: true });
+      await prisma.group.update({ where: { id: fx.groupId }, data: { category } });
+      await prisma.broker.update({ where: { id: fx.brokerId }, data: { autoHedgeAt: new Date(), dealingDeskAutoFillAt: new Date() } });
+      const acc = await account(fx);
+      const pos = await position(fx, acc.id, 1);
+      await coverage.onFillAutoHedge(prisma, { positionId: pos.id, brokerId: fx.brokerId });
+      expect((await prisma.position.findUniqueOrThrow({ where: { id: pos.id } })).covered, category).toBe(hedged);
+    }
   });
 });

@@ -432,6 +432,36 @@ export function checkPriceFreshness(livePrice: { tickAt: Date } | null): string 
 // refused. Deliberately unchanged by the market-execution default above.
 export const PENDING_TRIGGER_MAX_SLIPPAGE_PIPS = "5";
 
+// Owner decision (2026-09-26, Phase 2 batch 3): the EFFECTIVE max slippage is the smaller of the trader's own value
+// and the broker's cap (Broker.defaultMaxSlippagePips) -- the broker's number is a ceiling a trader can tighten but
+// never widen. The trader's "unlimited" (or nothing sent) means "the broker's cap"; no broker cap means the trader's
+// own value; neither = no limit (null). Before, any value the trader sent -- "unlimited" included -- displaced the
+// broker default entirely, so the broker setting only ever applied to a client that sent nothing.
+/** A trader's max-slippage input is "unlimited", nothing, or a plain non-negative number -- anything else is refused
+ *  (400) rather than guessed at. */
+export function isValidMaxSlippageInput(v: string | null | undefined): boolean {
+  return v == null || v === "" || v === "unlimited" || /^\d+(\.\d+)?$/.test(v.trim());
+}
+
+export function effectiveMaxSlippagePips(
+  traderValue: string | number | null | undefined,
+  brokerCap: Prisma.Decimal | null | undefined
+): string | null {
+  const cap = brokerCap != null ? new Prisma.Decimal(brokerCap) : null;
+  let trader: Prisma.Decimal | null = null;
+  if (traderValue != null && traderValue !== "unlimited" && traderValue !== "") {
+    try {
+      trader = new Prisma.Decimal(String(traderValue));
+    } catch {
+      trader = null;
+    }
+    if (trader && trader.lt(0)) trader = null;
+  }
+  if (trader && cap) return Prisma.Decimal.min(trader, cap).toString();
+  if (trader) return trader.toString();
+  return cap ? cap.toString() : null;
+}
+
 export function checkSlippage(params: {
   clientReferencePrice: Prisma.Decimal | string;
   serverFillPrice: Prisma.Decimal;

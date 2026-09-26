@@ -41,6 +41,15 @@ export async function GET(request: NextRequest) {
       originOrder: { select: { source: true } },
     },
     orderBy: { closedAt: "desc" },
+    // Phase 2 batch 3 (audit term-account / term-tabs lines): never the account's whole lifetime in one answer. Newest
+    // first; `limit` (1..5000) or 1000 by default, 5000 when a `from` bounds the window. A client that already has
+    // history asks with from = its newest closedAt and gets only what is new.
+    take: clampTake(searchParams.get("limit"), from ? 5000 : 1000),
   });
   return NextResponse.json(trades);
+}
+
+function clampTake(raw: string | null, fallback: number): number {
+  const n = raw ? Math.trunc(Number(raw)) : NaN;
+  return Number.isFinite(n) && n >= 1 ? Math.min(n, 5000) : fallback;
 }

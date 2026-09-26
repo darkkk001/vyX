@@ -57,6 +57,8 @@ export async function GET() {
       // MT5 hedged margin (lib/margin.ts hedgedUsedMargin): the terminal / WebTrader account panel uses it so the
       // margin they show is the one the server stops out on. 200 = no reduction.
       hedgedMarginPct: bs.hedgedMarginPct.toString(),
+      // Phase 2 batch 3: the symbol's side restriction (BOTH / BUY_ONLY / SELL_ONLY); the ticket disables the other side
+      tradingMode: bs.tradingMode,
     })),
   });
 }

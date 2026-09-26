@@ -141,6 +141,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   // queued for this position is moot once it is fully closed (a partial keeps it, and its lock).
   if (!isPartial) await cancelPendingClose(prisma, position.id, "position closed by admin").catch((err) => console.error("cancelPendingClose failed", err));
   await publishTradingEvent("PositionClosed", { position_id: position.id, account_id: position.accountId, broker_id: brokerId });
+  // Phase 2 batch 3: the realized P/L moved the client's balance -- the balance screens (terminal account panel, TRX,
+  // CLI) follow BalanceChanged, which only the funds / adjustment / transfer routes used to publish
+  await publishTradingEvent("BalanceChanged", { account_id: position.accountId, broker_id: brokerId, reason: "position_closed" });
   const brokerForActivity = await prisma.broker.findUnique({ where: { id: brokerId }, select: { dealingModeAt: true, dealingDeskAutoFillAt: true } });
   await recordDealerActivity(prisma, {
     brokerId,

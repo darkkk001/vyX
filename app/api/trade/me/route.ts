@@ -30,7 +30,7 @@ export async function GET() {
       // strip pill (v2 redesign's "Standard · 1:500" -- Group.name IS
       // "Standard" for a broker's default group, but this must read the
       // real value, never assume every broker names it that).
-      group: { select: { marginCallLevel: true, stopOutLevel: true, name: true, tradingHaltedAt: true, closeOnlyAt: true } },
+      group: { select: { marginCallLevel: true, stopOutLevel: true, name: true, tradingHaltedAt: true, closeOnlyAt: true, tradingRestriction: true } },
       broker: { select: { tradingHaltedAt: true, closeOnlyAt: true } },
     },
   });
@@ -44,5 +44,7 @@ export async function GET() {
   // re-read by the terminal on every ConfigChanged so a halt shows at once
   const tradingState = broker?.tradingHaltedAt || group?.tradingHaltedAt ? "halted" : broker?.closeOnlyAt || group?.closeOnlyAt ? "close_only" : "open";
   // stopOutLevel (audit 2026-09-24): the terminal shows and warns at stop-out too, not only at margin call
-  return NextResponse.json({ ...rest, marginCallLevel: (group?.marginCallLevel ?? 100).toString(), stopOutLevel: (group?.stopOutLevel ?? 50).toString(), groupName: group?.name ?? null, tradingState });
+  return NextResponse.json({ ...rest, marginCallLevel: (group?.marginCallLevel ?? 100).toString(), stopOutLevel: (group?.stopOutLevel ?? 50).toString(), groupName: group?.name ?? null, tradingState,
+    // Phase 2 batch 3: the group's side restriction (BOTH / BUY_ONLY / SELL_ONLY), so the ticket disables the side the server refuses
+    tradingRestriction: group?.tradingRestriction ?? "BOTH" });
 }

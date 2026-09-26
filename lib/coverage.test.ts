@@ -74,13 +74,14 @@ async function createFixture(tx: Prisma.TransactionClient, opts?: { dealerReview
   await tx.livePrice.create({ data: { symbol: symbol.name, bid: D("1.10000"), ask: D("1.10020") } });
   // dealingMode AUTO = this client's closes are NOT dealer-reviewed (auto-fill): the coverage leg
   // follows the client automatically. MANUAL (opts.dealerReviewed) = the desk closes it by hand.
-  // groupType DEALING = the dealing desk's own book (what auto-hedge covers); dealingMode decides
-  // whether this client's orders/closes are reviewed, independently of that.
+  // category DEALING = the dealing desk's own book, the only one auto-hedge covers (owner decision 2026-09-26,
+  // Phase 2 batch 3); an LP-typed fixture is an A_BOOK group, which auto-hedge never touches.
   const group = await tx.group.create({
     data: {
       brokerId: broker.id, name: `Cov Client Group ${suffix}`,
       dealingMode: opts?.dealerReviewed ? "MANUAL" : "AUTO",
       groupType: opts?.groupType ?? "DEALING",
+      category: opts?.groupType === "LP" ? "A_BOOK" : "DEALING",
     },
   });
   const client = await tx.account.create({

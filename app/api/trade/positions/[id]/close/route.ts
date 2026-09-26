@@ -6,7 +6,7 @@ import { closePositionInTx } from "@/lib/position-close";
 import { publishTradingEvent } from "@/lib/nats";
 import { recordDealerActivity } from "@/lib/dealer-activity";
 import { isDealingManagedAccount, resolveWantsDealingQueue } from "@/lib/dealing-routing";
-import { checkLotStep, checkPriceFreshness, checkSlippage, checkTradingSession, computeNextSessionOpen, evaluateLiveMarketPrice } from "@/lib/risk";
+import { checkLotStep, checkPriceFreshness, checkSlippage, checkTradingSession, computeNextSessionOpen, evaluateLiveMarketPrice, effectiveMaxSlippagePips, isValidMaxSlippageInput } from "@/lib/risk";
 import { closePriceFor } from "@/lib/trading";
 import * as mirror from "@/lib/mirror";
 import * as coverage from "@/lib/coverage";
@@ -64,6 +64,9 @@ async function handleClose(request: NextRequest, params: Promise<{ id: string }>
   // the native terminal sends its SLIPPAGE MAX ("unlimited" for "M"),
   // WebTrader sends "unlimited" too; nothing sent = the broker default if set, else unlimited.
   const maxSlippagePips = body?.maxSlippagePips != null ? String(body.maxSlippagePips) : null;
+  if (!isValidMaxSlippageInput(maxSlippagePips)) {
+    return NextResponse.json({ error: "maxSlippagePips must be a non-negative number or \"unlimited\"" }, { status: 400 });
+  }
   // Informational only, doesn't change validation/execution -- flags this
   // close for the STM_BULK_CLOSE audit trail. See
   // components/webtrader/SmartTradeManager.tsx's runBulk/partialCloseOne/
@@ -231,13 +234,12 @@ async function handleClose(request: NextRequest, params: Promise<{ id: string }>
     return NextResponse.json({ queued: true, order: queued, positionId: position.id, closeVolume: closeVolume.toString() }, { status: 202 });
   }
 
-  // Slippage: the server's fill vs what the client saw, within the client's
-  // tolerance, else the broker default, else lib/risk.ts's hardcoded default
-  // -- the identical chain the open path runs on its MARKET fill.
+  // Slippage: the server's fill vs what the client saw, within the EFFECTIVE max -- the smaller of the trader's value
+  // and the broker's cap (lib/risk.ts effectiveMaxSlippagePips), the same rule as the open path.
   const slippageError = checkSlippage({
     clientReferencePrice,
     serverFillPrice: closePrice,
-    maxSlippagePips: maxSlippagePips ?? (broker.defaultMaxSlippagePips != null ? broker.defaultMaxSlippagePips.toString() : null),
+    maxSlippagePips: effectiveMaxSlippagePips(maxSlippagePips, broker.defaultMaxSlippagePips),
     digits: position.symbol.digits,
   });
   if (slippageError) {
