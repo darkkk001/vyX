@@ -37,7 +37,13 @@ GRANT SELECT ON "Position", "Symbol", "BrokerSymbol", "TradingSession", "Group",
                 "MirrorRule", "MirrorLink", "PostCloseEffect" TO vyx_shadow_ro;
 
 -- tables with personal or secret data: only the columns the shadow reads
-GRANT SELECT (id, "brokerId", "groupId", balance, credit, leverage, currency, "marginCallNotifiedAt") ON "Account" TO vyx_shadow_ro;
-GRANT SELECT (id, "negativeBalanceProtection") ON "Broker" TO vyx_shadow_ro;
+GRANT SELECT (id, "brokerId", "groupId", "accountTypeId", balance, credit, leverage, currency, "marginCallNotifiedAt") ON "Account" TO vyx_shadow_ro;
+GRANT SELECT (id, "negativeBalanceProtection", "pricingEngineEnabled", "coverageAccountId") ON "Broker" TO vyx_shadow_ro;
+-- the account's ask (2026-09-26, deploy/shadow-ro-ask-markup-grants.sql): a SELL closes at its account's marked-up ask,
+-- resolved group -> account type -> account (market_data::ask_markup, lib/ask-markup.ts)
+GRANT SELECT ("groupId", "symbolId", "spreadMarkup", "targetTotalSpreadPips") ON "GroupSymbolConfig" TO vyx_shadow_ro;
+GRANT SELECT (id, "spreadMarkup") ON "AccountType" TO vyx_shadow_ro;
+GRANT SELECT ("accountTypeId", "symbolId", "spreadMarkup", "targetTotalSpreadPips") ON "AccountTypeSymbolConfig" TO vyx_shadow_ro;
+GRANT SELECT ("accountId", "symbolId", "spreadMarkup", "targetTotalSpreadPips") ON "AccountSymbolConfig" TO vyx_shadow_ro;
 GRANT SELECT (id, "accountId", type, "referenceType", "referenceId", note, amount, "createdAt") ON "Transaction" TO vyx_shadow_ro;
 GRANT SELECT (id, "accountId", type, body, "createdAt") ON "Notification" TO vyx_shadow_ro;

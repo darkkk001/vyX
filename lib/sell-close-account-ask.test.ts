@@ -68,7 +68,6 @@ afterAll(async () => {
   await prisma.broker.updateMany({ where: { id: { in: brokers } }, data: { coverageAccountId: null } });
   await prisma.notification.deleteMany({ where }).catch(() => {});
   await prisma.auditLog.deleteMany({ where });
-  await prisma.dealerActivity?.deleteMany?.({ where }).catch(() => {});
   await prisma.postCloseEffect.deleteMany({ where }).catch(() => {});
   await prisma.transaction.deleteMany({ where });
   await prisma.position.updateMany({ where, data: { coveragePositionId: null, closePendingOrderId: null } });
@@ -243,7 +242,7 @@ describe("the backoffice rows carry the account's price and rule", () => {
     await tick(fx);
     await asAdmin(fx);
     const { GET } = await import("@/app/api/manage/positions/route");
-    const res = await GET(req("/api/manage/positions", "GET"));
+    const res = await GET();
     expect(res.status).toBe(200);
     const body = await res.json();
     const rows = (body.positions ?? body.rows ?? body) as { id: string; currentPrice: string; floatingPnl: string; askMarkup: string; spreadRule: string }[];
