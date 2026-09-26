@@ -17,6 +17,17 @@
 //!   coverage, mirror), explained;
 //! - VALUE: same position, different decision (another kind, or the same close price with another P&L);
 //! - ENGINE_ONLY / WEB_ONLY: one side acted and the other did not within the window.
+//! Margin-call pairing (2026-09-26, the 12 ENGINE_ONLY margin_call_in rows of 2026-09-25 on 50005708, an account sitting
+//! at its 100 % call level): both sides edge-detect independently and sample at different moments, so an account
+//! flapping around the level produces a different number of "in" edges on each side. (1) A web notice pairs with the
+//! NEAREST shadow edge in the window that no other notice has taken (it used to take the earliest, even one already
+//! paired, and the second pair was silently dropped). (2) A shadow edge left alone is SNAPSHOT when the web sent a
+//! margin-call notice for the account within the window. (3) It is also SNAPSHOT when the web's own record says the
+//! account was still inside a margin-call episode then: the web notifies once per episode and, since 2026-09-26, writes
+//! a MARGIN_CALL_CLEARED notification when it ends one -- a notice newer than the last clear before the edge is an
+//! open episode. Before the first MARGIN_CALL_CLEARED row exists anywhere the episode cannot be known and (3) never
+//! applies.
+//!
 //! VALUE / ENGINE_ONLY / WEB_ONLY are UNEXPLAINED: each resets the soak clock (shadow_state.clock_started_at) and is
 //! logged at ERROR with both sides.
 //!
@@ -332,10 +343,14 @@ impl Reconciler {
         )
         .bind(mc_at).bind(&mc_id).bind(settle).fetch_all(&self.book).await?;
         for (nid, account, at, body) in &notices {
+            // (1) the NEAREST edge in the window that no earlier notice has taken
             let decision: Option<(String, DateTime<Utc>)> = sqlx::query_as(
-                "SELECT dedupe_key, first_seen FROM shadow_decision WHERE kind = 'margin_call_in' AND account_id = $1 AND first_seen BETWEEN $2 AND $3 ORDER BY first_seen LIMIT 1",
+                r#"SELECT d.dedupe_key, d.first_seen FROM shadow_decision d
+                   WHERE d.kind = 'margin_call_in' AND d.account_id = $1 AND d.first_seen BETWEEN $2 AND $3
+                     AND NOT EXISTS (SELECT 1 FROM shadow_pair p WHERE p.decision_key = d.dedupe_key)
+                   ORDER BY abs(extract(epoch FROM (d.first_seen - $4))), d.first_seen LIMIT 1"#,
             )
-            .bind(account).bind(*at - window).bind(*at + window).fetch_optional(&self.store).await?;
+            .bind(account).bind(*at - window).bind(*at + window).bind(*at).fetch_optional(&self.store).await?;
             let fan = self.fan_in(account).await;
             match decision {
                 Some((key, first)) => {
@@ -391,11 +406,50 @@ impl Reconciler {
                 self.write_pair(class, kind, account, Some(pos), None, Some(key), None, Some(*first), fan, detail, &mut report).await;
             } else {
                 let near = level.zip(self.recorder.call_level(account)).is_some_and(|(l, c)| at_edge(l, c));
-                let class = if near { Class::Snapshot } else { Class::EngineOnly };
-                self.write_pair(class, kind, account, None, None, Some(key), None, Some(*first), fan, serde_json::json!({ "shadowLevel": level }), &mut report).await;
+                let web = if kind == "margin_call_in" && !near { self.web_margin_call_evidence(account, *first, window).await? } else { None };
+                let class = if near || web.is_some() { Class::Snapshot } else { Class::EngineOnly };
+                let mut detail = serde_json::json!({ "shadowLevel": level });
+                if let Some(w) = web {
+                    detail["web"] = w;
+                }
+                self.write_pair(class, kind, account, None, None, Some(key), None, Some(*first), fan, detail, &mut report).await;
             }
         }
         Ok(report)
+    }
+
+    /// Why a lone shadow margin-call "in" edge at `at` is explained by the web's own record, if it is (see the module
+    /// doc): (2) the web sent a margin-call notice for the account within the window, or (3) the account was still inside
+    /// a web margin-call episode then (its last notice before `at` is newer than its last MARGIN_CALL_CLEARED, and the
+    /// web was already writing clears when that notice was sent).
+    async fn web_margin_call_evidence(&self, account: &str, at: DateTime<Utc>, window: ChronoDuration) -> Result<Option<serde_json::Value>, sqlx::Error> {
+        let near: Option<(String, DateTime<Utc>)> = sqlx::query_as(
+            r#"SELECT id, "createdAt" FROM "Notification" WHERE type = 'MARGIN_CALL' AND "accountId" = $1 AND "createdAt" BETWEEN $2 AND $3
+               ORDER BY abs(extract(epoch FROM ("createdAt" - $4))) LIMIT 1"#,
+        )
+        .bind(account).bind(at - window).bind(at + window).bind(at).fetch_optional(&self.book).await?;
+        if let Some((id, when)) = near {
+            return Ok(Some(serde_json::json!({ "reason": "web margin-call notice within the window", "webNotice": id, "webAt": when })));
+        }
+        let (tracking_since,): (Option<DateTime<Utc>>,) =
+            sqlx::query_as(r#"SELECT min("createdAt") FROM "Notification" WHERE type = 'MARGIN_CALL_CLEARED'"#).fetch_one(&self.book).await?;
+        let Some(tracking_since) = tracking_since else { return Ok(None) };
+        let last_call: Option<(String, DateTime<Utc>)> = sqlx::query_as(
+            r#"SELECT id, "createdAt" FROM "Notification" WHERE type = 'MARGIN_CALL' AND "accountId" = $1 AND "createdAt" <= $2 ORDER BY "createdAt" DESC LIMIT 1"#,
+        )
+        .bind(account).bind(at).fetch_optional(&self.book).await?;
+        let Some((call_id, call_at)) = last_call else { return Ok(None) };
+        if call_at < tracking_since {
+            return Ok(None); // the episode began before the web recorded clears: unknown, not assumed open
+        }
+        let (last_clear,): (Option<DateTime<Utc>>,) = sqlx::query_as(
+            r#"SELECT max("createdAt") FROM "Notification" WHERE type = 'MARGIN_CALL_CLEARED' AND "accountId" = $1 AND "createdAt" <= $2"#,
+        )
+        .bind(account).bind(at).fetch_one(&self.book).await?;
+        if last_clear.is_some_and(|c| c >= call_at) {
+            return Ok(None); // the web had closed that episode: the shadow's edge is a new one the web did not see
+        }
+        Ok(Some(serde_json::json!({ "reason": "inside an open web margin-call episode", "webEpisodeStart": call_at, "webNotice": call_id })))
     }
 
     /// The day's summary (UTC day): counts per class, skew p50 / p95 / max of the paired ones, the running total of

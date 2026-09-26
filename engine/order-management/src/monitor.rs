@@ -529,8 +529,10 @@ async fn evaluate_account_checked(
     };
     if let Mode::Shadow(recorder) = mode {
         // shadow: its OWN edge per account (the web's flag moves with the web's decisions, not ours); recorded on
-        // change only, nothing written to the book
-        if let Some(e) = edge {
+        // change only, nothing written to the book. A pinned evaluation (book::Pin, the SL / TP snapshot) looks at a
+        // PAST moment: it decides the SL / TP (and any stop-out) of that moment but records no margin-call edge, which
+        // would reorder the account's edge history behind the pass that already saw later states.
+        if let Some(e) = edge.filter(|_| book::current_pin().is_none()) {
             let (kind, level) = match e {
                 book::MarginCallEdge::In { margin_level, .. } => (crate::shadow::Kind::MarginCallIn, Some(margin_level)),
                 book::MarginCallEdge::Out => (crate::shadow::Kind::MarginCallOut, risk::margin_level(equity(&state), used_margin(&state))),
@@ -755,24 +757,74 @@ pub fn spawn(pool: PgPool, nats: async_nats::Client, interval: std::time::Durati
 /// a real one in noise. Only WHEN the shadow evaluates changes: the same evaluate_account_mode (close / P&L / NBP
 /// untouched), Mode::Shadow (nothing written). Accounts queued while one is evaluated are taken together, each once.
 pub fn spawn_shadow_trigger(pool: PgPool, recorder: Arc<crate::shadow::Recorder>, prices: book::PriceSource) -> tokio::sync::mpsc::UnboundedSender<String> {
+    spawn_shadow_trigger_with_snapshots(pool, recorder, prices).0
+}
+
+/// The SL / TP snapshot inbox's work (Stage 5, 2026-09-26): evaluate each touched account in shadow, PINNED to the
+/// moment the risk hook saw the tick (book::Pin) -- the same decision the pass would have made then, even when the web
+/// has closed the position by now. One evaluation per account (its touches share the moment and the ticks). Must run
+/// inside the book's price source scope (the worker's), like every shadow evaluation.
+pub async fn evaluate_snapshot(pool: &PgPool, mode: &Mode, touches: Vec<market_data::risk_hook::SlTpTouch>) {
+    let mut accounts: Vec<(String, book::Pin)> = Vec::new();
+    for t in touches {
+        let entry = match accounts.iter_mut().find(|(a, _)| *a == t.account_id) {
+            Some(e) => e,
+            None => {
+                accounts.push((t.account_id.clone(), book::Pin { at: t.at, ticks: Default::default() }));
+                accounts.last_mut().unwrap()
+            }
+        };
+        entry.1.at = entry.1.at.min(t.at);
+        entry.1.ticks.insert(t.symbol.clone(), (t.bid, t.ask, t.tick_at));
+    }
+    for (account_id, pin) in accounts {
+        if let Err(err) = book::with_pin(pin, evaluate_account_mode(pool, None, &account_id, mode)).await {
+            tracing::warn!(%account_id, %err, "shadow snapshot: evaluation failed");
+        }
+    }
+}
+
+/// The shadow trigger worker with both inboxes: account ids (the per-tick margin trigger, MarginWatch::set_on_fire)
+/// and SL / TP snapshots (the risk hook, RiskHook::set_shadow_snapshot). One worker, so an account is never evaluated
+/// twice at once. Nobody ever waits on it: both are fire-and-forget sends.
+pub fn spawn_shadow_trigger_with_snapshots(
+    pool: PgPool,
+    recorder: Arc<crate::shadow::Recorder>,
+    prices: book::PriceSource,
+) -> (tokio::sync::mpsc::UnboundedSender<String>, market_data::risk_hook::SnapshotSender) {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let (snap_tx, mut snap_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<market_data::risk_hook::SlTpTouch>>();
     tokio::spawn(book::with_price_source(prices, async move {
         let mode = Mode::Shadow(recorder);
-        while let Some(first) = rx.recv().await {
-            let mut batch = vec![first];
-            while let Ok(more) = rx.try_recv() {
-                if !batch.contains(&more) {
-                    batch.push(more);
+        loop {
+            tokio::select! {
+                // snapshots first: they pin a past moment, the sooner the closer to it
+                biased;
+                Some(touches) = snap_rx.recv() => {
+                    let mut all = touches;
+                    while let Ok(more) = snap_rx.try_recv() {
+                        all.extend(more);
+                    }
+                    evaluate_snapshot(&pool, &mode, all).await;
                 }
-            }
-            for account_id in batch {
-                if let Err(err) = evaluate_account_mode(&pool, None, &account_id, &mode).await {
-                    tracing::warn!(%account_id, %err, "shadow trigger: evaluation failed (the 1 s pass will retry)");
+                Some(first) = rx.recv() => {
+                    let mut batch = vec![first];
+                    while let Ok(more) = rx.try_recv() {
+                        if !batch.contains(&more) {
+                            batch.push(more);
+                        }
+                    }
+                    for account_id in batch {
+                        if let Err(err) = evaluate_account_mode(&pool, None, &account_id, &mode).await {
+                            tracing::warn!(%account_id, %err, "shadow trigger: evaluation failed (the pass will retry)");
+                        }
+                    }
                 }
+                else => break,
             }
         }
     }));
-    tx
+    (tx, snap_tx)
 }
 
 /// The shadow pass's idle gate (2026-09-26, market_data::activity): the engine's tick cache, and the per-tick margin

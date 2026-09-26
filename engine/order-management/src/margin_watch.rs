@@ -235,6 +235,11 @@ impl MarginWatch {
         }
     }
 
+    /// A book change was announced (market_data::book_events): reload the book now, not at the next poll.
+    pub fn request_reload(&self) {
+        self.reload_now.notify_one();
+    }
+
     /// Refresh the book every `every` while anything ticks (market_data::activity::reload_due; always the first time),
     /// and at once after a triggered evaluation (closes change it).
     pub fn spawn_reload_loop(self: &Arc<Self>, pool: PgPool, every: Duration, cache: Arc<TickCache>) {

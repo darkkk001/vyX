@@ -10,6 +10,7 @@ use protocol::{BrokerBar, Tick};
 
 pub mod activity;
 pub mod ask_markup;
+pub mod book_events;
 pub mod alerts;
 pub mod broker_offset;
 pub mod cache;

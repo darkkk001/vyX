@@ -87,6 +87,36 @@ pub async fn with_price_source<F: std::future::Future>(source: PriceSource, f: F
     PRICE_SOURCE.scope(source, f).await
 }
 
+/// Stage 5 SL / TP snapshot (2026-09-26, market_data::risk_hook::SlTpTouch): an evaluation pinned to the moment the
+/// risk hook saw a tick cross an SL / TP. While a Pin is in scope the book reads the account AS IT STOOD AT `at`:
+/// - positions open at `at` -- including one the web has closed since (status CLOSED, closedAt >= at): its side, volume,
+///   open price and levels do not change on a close -- and none opened after `at`;
+/// - the balance and credit before every position-referenced ledger row written since `at` (the close's TRADE_PNL, its
+///   CREDIT use and negative-balance write-off, a later position's commission: calc::load_book_state);
+/// - the hook's own tick for the touched symbols (fresh = its tick time within 15 s of `at`, the web's rule), the
+///   engine's ticks for the rest; sessions judged at `at`.
+/// The decision logic is untouched: only the state it reads is pinned. The live path never waits for any of this.
+#[derive(Clone, Debug)]
+pub struct Pin {
+    pub at: chrono::DateTime<chrono::Utc>,
+    /// symbol -> (bid, ask, tick time) as the risk hook saw it
+    pub ticks: std::collections::HashMap<String, (Decimal, Decimal, chrono::DateTime<chrono::Utc>)>,
+}
+
+tokio::task_local! {
+    static PIN: Pin;
+}
+
+/// Runs `f` with the book pinned to `pin` (see Pin).
+pub async fn with_pin<F: std::future::Future>(pin: Pin, f: F) -> F::Output {
+    PIN.scope(pin, f).await
+}
+
+/// The Pin in scope, if any.
+pub fn current_pin() -> Option<Pin> {
+    PIN.try_with(|p| p.clone()).ok()
+}
+
 fn current_price_source() -> Result<PriceSource, sqlx::Error> {
     match PRICE_SOURCE.try_with(|s| s.clone()) {
         Ok(s) => Ok(s),
@@ -124,6 +154,7 @@ pub async fn open_positions_with_market(
     pool: &PgPool,
     account_id: &str,
 ) -> Result<Vec<OpenPositionWithMarket>, sqlx::Error> {
+    let pin = current_pin();
     // one row per open position, with the levels of its account's ask rule (market_data::ask_markup, 2026-09-26: a SELL
     // closes, triggers and is valued at the account's ask) -- joined here, never a query per position
     let sql = format!(
@@ -137,15 +168,22 @@ pub async fn open_positions_with_market(
            LEFT JOIN "BrokerSymbol" bs ON bs."brokerId" = p."brokerId" AND bs."symbolId" = p."symbolId"
            LEFT JOIN "LivePrice" lp ON lp.symbol = s.name AND lp."tickAt" > now() - interval '15 seconds'
            {joins}
-           WHERE p."accountId" = $1 AND p.status = 'OPEN'
+           WHERE p."accountId" = $1 AND {open}
            ORDER BY p."openedAt", p.id"#,
         levels = market_data::ask_markup::LEVELS_COLUMNS,
         joins = market_data::ask_markup::LEVELS_JOINS,
+        // pinned (Stage 5 snapshot): what was open at the pin's moment, including a position closed since
+        open = if pin.is_some() { r#"p."openedAt" <= $2 AND (p.status = 'OPEN' OR p."closedAt" >= $2)"# } else { "p.status = 'OPEN'" },
     );
     #[allow(clippy::type_complexity)]
     let rows: Vec<(String, String, String, Decimal, Decimal, Decimal, Option<Decimal>, Option<Decimal>, Option<Decimal>, Option<Decimal>, String, String, String, String, Decimal, Option<market_data::ask_markup::AskRule>)> = {
         use sqlx::Row;
-        let raw = sqlx::query(&sql).bind(account_id).fetch_all(pool).await?;
+        let q = sqlx::query(&sql).bind(account_id);
+        let q = match &pin {
+            Some(p) => q.bind(p.at),
+            None => q,
+        };
+        let raw = q.fetch_all(pool).await?;
         let mut out = Vec::with_capacity(raw.len());
         for r in &raw {
             out.push((
@@ -182,7 +220,8 @@ pub async fn open_positions_with_market(
             list.push(crate::session::SessionWindow { day_of_week, open_time, close_time });
         }
     }
-    let now = chrono::Utc::now();
+    // pinned: sessions, freshness and conversion quotes judged at the pin's moment
+    let now = pin.as_ref().map_or_else(chrono::Utc::now, |p| p.at);
 
     // quote -> account conversion (Stage 2 F2, fx.rs = lib/fx.ts): every symbol a needed conversion may read,
     // latest quote whatever its age, in one query; nothing is read when every pair is same-currency.
@@ -212,9 +251,12 @@ pub async fn open_positions_with_market(
         .into_iter()
         .map(|(id, symbol, side, volume, open_price, contract_size, bid, ask, sl_price, tp_price, category, _, quote_ccy, account_ccy, hedged_margin_pct, ask_rule)| {
             // the SOURCE of bid / ask: the database's LivePrice (the SQL above) or the engine's ticks
-            let (bid, ask) = match &source {
-                PriceSource::Db => (bid, ask),
-                PriceSource::Ticks(cache) => fresh_from_ticks(cache, &symbol, now),
+            let (bid, ask) = match (&source, pin.as_ref().and_then(|p| p.ticks.get(&symbol))) {
+                // pinned: the risk hook's own tick for a touched symbol, under the web's 15 s rule at the pin's moment
+                (_, Some(&(b, a, tick_at))) if now - tick_at < chrono::Duration::seconds(15) => (Some(b), Some(a)),
+                (_, Some(_)) => (None, None),
+                (PriceSource::Db, None) => (bid, ask),
+                (PriceSource::Ticks(cache), None) => fresh_from_ticks(cache, &symbol, now),
             };
             let closed = sessions.get(&symbol).is_some_and(|windows| crate::session::is_market_closed(windows, now, &category));
             let rate = crate::fx::conversion_rate(&quote_ccy, &account_ccy, |s| fx_quotes.get(s).copied());

@@ -1197,6 +1197,25 @@ async fn spawn_tick_driven_triggers(
     Ok(())
 }
 
+/// Reload on change (market_data::book_events): every web book-change subject feeds one debouncer, which calls
+/// `on_change` once per burst.
+async fn spawn_book_change_reload(nats: async_nats::Client, on_change: Arc<dyn Fn() + Send + Sync>) -> Result<(), async_nats::SubscribeError> {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    for subject in market_data::book_events::BOOK_CHANGE_SUBJECTS {
+        let mut sub = nats.subscribe(subject.to_string()).await?;
+        let tx = tx.clone();
+        tokio::spawn(async move {
+            while let Some(msg) = sub.next().await {
+                if tx.send(msg.subject.to_string()).is_err() {
+                    break;
+                }
+            }
+        });
+    }
+    market_data::book_events::spawn_debounced(rx, market_data::book_events::DEBOUNCE, on_change);
+    Ok(())
+}
+
 /// Phase 1 trust pack §3 -- keeps AlertCache current between boot-time
 /// loads: app/api/trade/alerts publishes here on every create/cancel so a
 /// new alert is checked against the very next tick, not just after a
@@ -1346,6 +1365,8 @@ async fn main() {
     let tick_cache = Arc::new(TickCache::new());
     // Stage 5: the shadow's trigger inbox (monitor::spawn_shadow_trigger), handed to the per-tick margin trigger below
     let mut shadow_trigger: Option<tokio::sync::mpsc::UnboundedSender<String>> = None;
+    // Stage 5 (2026-09-26): the same worker's SL / TP snapshot inbox, handed to the risk hook below (never waited on)
+    let mut shadow_snapshot: Option<market_data::risk_hook::SnapshotSender> = None;
     // the per-tick margin trigger's book, filled in below once it exists: the shadow pass's idle gate reads it
     let margin_watch_slot: Arc<std::sync::OnceLock<Arc<order_management::margin_watch::MarginWatch>>> = Arc::new(std::sync::OnceLock::new());
     let order_management_on = std::env::var("ENGINE_ORDER_MANAGEMENT")
@@ -1456,7 +1477,9 @@ async fn main() {
             order_management::book::PriceSource::Ticks(tick_cache.clone()),
             order_management::monitor::ShadowGate { cache: tick_cache.clone(), watch: margin_watch_slot.clone() },
         );
-        shadow_trigger = Some(order_management::monitor::spawn_shadow_trigger(book_pool.clone(), recorder.clone(), order_management::book::PriceSource::Ticks(tick_cache.clone())));
+        let (inbox, snapshots) = order_management::monitor::spawn_shadow_trigger_with_snapshots(book_pool.clone(), recorder.clone(), order_management::book::PriceSource::Ticks(tick_cache.clone()));
+        shadow_trigger = Some(inbox);
+        shadow_snapshot = Some(snapshots);
         // §5.3: pairs the web's real risk actions with the shadow's decisions every minute (reads the book, writes only
         // to the local store); the daily summary goes to the log and to shadow_daily
         let reconcile_secs: u64 = std::env::var("VYX_SHADOW_RECONCILE_SECS").ok().and_then(|v| v.trim().parse().ok()).filter(|s| *s > 0).unwrap_or(60);
@@ -1503,6 +1526,11 @@ async fn main() {
     // the full-book backstop (stop-out on positions with no SL / TP) runs every minute from here.
     let risk_hook = market_data::risk_hook::RiskHook::from_env();
     if let Some(hook) = &risk_hook {
+        // Stage 5: every SL / TP touch goes to the shadow as a snapshot (a send; the web call never waits)
+        if let Some(tx) = &shadow_snapshot {
+            hook.set_shadow_snapshot(tx.clone());
+            tracing::info!("shadow snapshot: SL/TP touches are evaluated in shadow as of the touch (no wait on the web call)");
+        }
         hook.spawn_reload_loop(pool.clone(), std::time::Duration::from_secs(5), tick_cache.clone());
         // per-tick margin trigger (order_management::margin_watch): an account at or below its stop-out is
         // evaluated on the flush that put it there, not at the next backstop pass. VYX_RISK_HOOK_MARGIN=0 = off.
@@ -1518,6 +1546,21 @@ async fn main() {
             }
             hook.set_margin_watch(watch);
             tracing::info!("risk hook margin trigger enabled: stop-out / margin call evaluated on the tick");
+        }
+        // Reload on change (2026-09-26): the web's book-change announcements reload the levels and the margin book at
+        // once (debounced), not only on the 5 s poll -- a just-set SL / TP is watched before the next tick
+        let reload_hook = hook.clone();
+        let reload_watch = margin_watch_slot.clone();
+        match spawn_book_change_reload(nats.clone(), Arc::new(move || {
+            reload_hook.request_reload();
+            if let Some(w) = reload_watch.get() {
+                w.request_reload();
+            }
+        }))
+        .await
+        {
+            Ok(()) => tracing::info!(subjects = ?market_data::book_events::BOOK_CHANGE_SUBJECTS, debounce_ms = market_data::book_events::DEBOUNCE.as_millis() as u64, "reload on change: subscribed"),
+            Err(err) => tracing::warn!(?err, "reload on change: NATS subscribe failed -- levels and margin book follow the 5 s poll only"),
         }
         match market_data::risk_hook::RiskHook::backstop_interval_from_env() {
             Some(every) => {

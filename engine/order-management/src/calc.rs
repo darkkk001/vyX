@@ -141,9 +141,26 @@ pub async fn load_book_state(pool: &PgPool, account_id: &str) -> Result<Option<A
         return Ok(None);
     };
     let positions = crate::book::open_positions_with_market(pool, account_id).await?;
+    // Stage 5 snapshot (book::Pin): the funds before every position-referenced ledger row written since the pin's moment
+    // (a close's TRADE_PNL / CREDIT use / negative-balance write-off, a later position's commission). A CREDIT row's
+    // amount went INTO the balance and OUT of credit.
+    let (balance, credit) = match crate::book::current_pin() {
+        None => (funds.balance, funds.credit),
+        Some(pin) => {
+            let (since, credit_used): (Decimal, Decimal) = sqlx::query_as(
+                r#"SELECT COALESCE(sum(amount), 0), COALESCE(sum(amount) FILTER (WHERE type::text = 'CREDIT'), 0)
+                   FROM "Transaction" WHERE "accountId" = $1 AND "referenceType" = 'Position' AND "createdAt" >= $2"#,
+            )
+            .bind(account_id)
+            .bind(pin.at)
+            .fetch_one(pool)
+            .await?;
+            (funds.balance - since, funds.credit + credit_used)
+        }
+    };
     Ok(Some(AccountState {
-        effective_balance: funds.balance,
-        credit: funds.credit,
+        effective_balance: balance,
+        credit,
         leverage: funds.leverage.max(1) as u32,
         positions,
     }))
