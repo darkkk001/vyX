@@ -35,6 +35,20 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
   const updated = await prisma.$transaction(async (tx) => {
     const provider = await tx.liquidityProvider.update({ where: { id }, data });
+    // Phase 2 batch 5: a notes edit is audited too (it used to write nothing)
+    if (data.notes !== undefined && (data.notes ?? null) !== (existing.notes ?? null)) {
+      await tx.auditLog.create({
+        data: {
+          brokerId,
+          actorAdminId: session!.adminId,
+          action: "LP_NOTES_CHANGED",
+          entityType: "LiquidityProvider",
+          entityId: id,
+          oldValue: { notes: existing.notes ?? null },
+          newValue: { notes: provider.notes ?? null },
+        },
+      });
+    }
     if (data.status !== undefined) {
       await tx.auditLog.create({
         data: {

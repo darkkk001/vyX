@@ -73,8 +73,20 @@ export async function POST(request: NextRequest) {
   }
   const notes = typeof body?.notes === "string" && body.notes.trim() ? body.notes.trim() : null;
 
-  const rule = await prisma.lpRoutingRule.create({
-    data: { brokerId, liquidityProviderId, symbolId, priority, notes },
+  // Phase 2 batch 5: created and audited together (a rule create used to write no audit row)
+  const rule = await prisma.$transaction(async (tx) => {
+    const created = await tx.lpRoutingRule.create({ data: { brokerId, liquidityProviderId, symbolId, priority, notes } });
+    await tx.auditLog.create({
+      data: {
+        brokerId,
+        actorAdminId: session.adminId,
+        action: "LP_ROUTING_RULE_CREATED",
+        entityType: "LpRoutingRule",
+        entityId: created.id,
+        newValue: { liquidityProviderId, liquidityProvider: provider.name, symbolId, priority, notes },
+      },
+    });
+    return created;
   });
 
   return NextResponse.json({ id: rule.id }, { status: 201 });

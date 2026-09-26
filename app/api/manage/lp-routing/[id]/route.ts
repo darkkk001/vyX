@@ -14,6 +14,19 @@ export async function DELETE(_request: Request, { params }: { params: Promise<{ 
     return NextResponse.json({ error: "not found" }, { status: 404 });
   }
 
-  await prisma.lpRoutingRule.delete({ where: { id } });
+  // Phase 2 batch 5: deleted and audited together (a rule delete used to write no audit row)
+  await prisma.$transaction(async (tx) => {
+    await tx.lpRoutingRule.delete({ where: { id } });
+    await tx.auditLog.create({
+      data: {
+        brokerId: session!.brokerId!,
+        actorAdminId: session!.adminId,
+        action: "LP_ROUTING_RULE_DELETED",
+        entityType: "LpRoutingRule",
+        entityId: id,
+        oldValue: { liquidityProviderId: existing.liquidityProviderId, symbolId: existing.symbolId, priority: existing.priority, notes: existing.notes },
+      },
+    });
+  });
   return NextResponse.json({ ok: true });
 }

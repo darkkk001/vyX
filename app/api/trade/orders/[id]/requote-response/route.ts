@@ -88,7 +88,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // app/manage/(shell)/dealing/DealingQueueManager.tsx -- otherwise has
     // no way to learn the client withdrew/rejected a requote until its
     // next refetch.
-    await publishTradingEvent("OrderCancelled", { order_id: id, account_id: session.accountId, broker_id: order.brokerId });
+    // requote: the client's answer, for the dealer's sound / list (Phase 2 batch 5); older clients ignore the field
+    await publishTradingEvent("OrderCancelled", { order_id: id, account_id: session.accountId, broker_id: order.brokerId, requote: "rejected" });
     return NextResponse.json({ id, status: "CANCELLED" });
   }
 
@@ -253,6 +254,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       price: fillPrice.toString(),
       volume: order.volume.toString(),
       remaining_volume: "0",
+      requote: "accepted", // the client accepted the dealer's requote (Phase 2 batch 5: dealer sound)
     });
     return NextResponse.json({ id: order.id, status: "FILLED", positionId: position.id, filledPrice: fillPrice.toString() });
   } catch (error) {
