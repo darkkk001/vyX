@@ -326,8 +326,9 @@ current caller. During a rotation the engine and the gateway accept `INTERNAL_SE
 3. **Vercel:** `MARKET_DATA_READ_SECRET` and `INTERNAL_SERVICE_SECRET` (Production) = NEW
    (`vercel env rm <NAME> production -y`, then `vercel env add <NAME> production < <file holding only the value>`), then
    `vercel redeploy <current production deployment>` so no new code ships with it. Check: Feed health shows numbers,
-   a chart loads, the terminal quotes move. The Super Admin app re-mints its gate cookie at the next launch
-   (the old cookie's signature no longer verifies): relaunch it.
+   a chart loads, the terminal quotes move. Super Admin (web only, admin.vyxtrader.com): its `vyx_admin_gate`
+   cookie is signed with INTERNAL_SERVICE_SECRET, so it stops verifying; open the gate URL
+   (`/api/admin/desktop-gate?secret=...`) again and sign in.
 4. **VPS, Finish** (Caddy FIRST: it reads the OLD values from the `*_PREVIOUS` lines the second script removes):
    ```powershell
    powershell -ExecutionPolicy Bypass -File C:\vyxtrader\repo\deploy\caddy-rotate-secrets-2026-09-28.ps1 -Phase Finish
