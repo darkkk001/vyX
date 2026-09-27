@@ -13,12 +13,14 @@ export async function GET() {
   }
   const brokerId = session!.brokerId!;
 
-  const records = await prisma.kycRecord.findMany({
-    where: { account: { brokerId } },
-    include: { account: { select: { accountNumber: true, fullName: true, country: true, phone: true } } },
-    orderBy: [{ status: "asc" }, { createdAt: "desc" }],
-    take: 200,
-  });
+  // Phase 2 batch 6 (issue 135): every PENDING record (the queue a reviewer works off), then the latest 200 reviewed
+  // ones -- a pending record beyond the old 200-row cap was never listed. Same shape and order as before.
+  const include = { account: { select: { accountNumber: true, fullName: true, country: true, phone: true } } };
+  const [pending, reviewed] = await Promise.all([
+    prisma.kycRecord.findMany({ where: { account: { brokerId }, status: "PENDING" }, include, orderBy: { createdAt: "desc" } }),
+    prisma.kycRecord.findMany({ where: { account: { brokerId }, status: { not: "PENDING" } }, include, orderBy: [{ status: "asc" }, { createdAt: "desc" }], take: 200 }),
+  ]);
+  const records = [...pending, ...reviewed];
 
   return NextResponse.json(
     records.map((r) => ({
@@ -26,6 +28,7 @@ export async function GET() {
       status: r.status,
       documentType: r.documentType,
       rejectionReason: r.rejectionReason,
+      hasAddressProof: r.addressProofUrl != null, // issue 134: viewable at .../document?side=address
       accountNumber: r.account.accountNumber,
       accountFullName: r.account.fullName,
       accountCountry: r.account.country,

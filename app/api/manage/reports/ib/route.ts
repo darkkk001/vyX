@@ -1,12 +1,15 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getAdminSession, requireAdminRole } from "@/lib/auth";
+import { getAdminSession } from "@/lib/auth";
+import { forbidUnlessBrokerAdminOrPermission } from "@/lib/permissions";
 import { computePendingCommission } from "@/lib/commission";
 import { toCsv } from "@/lib/csv";
 
 export async function GET() {
   const session = await getAdminSession();
-  if (!requireAdminRole(session, ["MANAGER", "BROKER_ADMIN"]) || !session!.brokerId) {
+  // Phase 2 batch 6 (issues 131 / 158): pending IB commission is finance data -- BROKER_ADMIN or IB_PAYOUTS, the same
+  // gate as the IB screen and the payout (app/api/manage/ib-relationships); any MANAGER could read it before
+  if (await forbidUnlessBrokerAdminOrPermission(session, "IB_PAYOUTS")) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
   const brokerId = session!.brokerId!;

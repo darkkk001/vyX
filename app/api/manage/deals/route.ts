@@ -13,6 +13,8 @@ import { getAdminSession, requireAdminRole } from "@/lib/auth";
 // (ISO date or datetime; range on closedAt -- `to` is inclusive of the
 // whole day when only a date is given), accountId, groupId. Used by the
 // backoffice dealing-group HISTORY view's date-range picker.
+const DEALS_LIMIT = 500;
+
 export async function GET(request: NextRequest) {
   const session = await getAdminSession();
   if (!requireAdminRole(session, ["MANAGER", "BROKER_ADMIN", "SUPPORT"]) /* SUPPORT: read-only support role, lib/permissions.ts isSupportReader */ || !session!.brokerId) {
@@ -54,15 +56,16 @@ export async function GET(request: NextRequest) {
   // list -- "recoverable from the audit view" (the brief's own words)
   // means the audit log, not this list; see POSITION_DELETED's own
   // AuditLog entry for the full record.
+  const dealsWhere: Prisma.PositionWhereInput = {
+    brokerId,
+    status: { in: ["CLOSED", "VOIDED"] },
+    deletedAt: null,
+    ...(accountId ? { accountId } : {}),
+    ...(groupId ? { account: { groupId } } : {}),
+    ...(closedAt.gte || closedAt.lt ? { closedAt } : {}),
+  };
   const positions = await prisma.position.findMany({
-    where: {
-      brokerId,
-      status: { in: ["CLOSED", "VOIDED"] },
-      deletedAt: null,
-      ...(accountId ? { accountId } : {}),
-      ...(groupId ? { account: { groupId } } : {}),
-      ...(closedAt.gte || closedAt.lt ? { closedAt } : {}),
-    },
+    where: dealsWhere,
     include: {
       account: { select: { accountNumber: true, fullName: true } },
       // the hedge leg this trade was booked against: whether the platform opened it (auto-hedge) or
@@ -72,8 +75,14 @@ export async function GET(request: NextRequest) {
       symbol: { select: { name: true, digits: true } },
     },
     orderBy: { closedAt: "desc" },
-    take: 500,
+    take: DEALS_LIMIT + 1,
   });
+  // Phase 2 batch 6 (issues 108 / 114): one row past the cap tells whether the list was cut; the body stays the bare
+  // array every client parses, the answer goes in headers (x-truncated, x-total-count only when cut)
+  const truncated = positions.length > DEALS_LIMIT;
+  if (truncated) positions.length = DEALS_LIMIT;
+  const headers: Record<string, string> = { "x-row-limit": String(DEALS_LIMIT), "x-truncated": truncated ? "true" : "false" };
+  if (truncated) headers["x-total-count"] = String(await prisma.position.count({ where: dealsWhere }));
 
   return NextResponse.json(
     positions.map((p) => ({
@@ -102,6 +111,7 @@ export async function GET(request: NextRequest) {
       // A_BOOK / B_BOOK: the Smart Dealer Manager's realized DEALER P/L counts only the desk's own
       // B-book closes (2026-09-23); an A-book trade's result is the LP's, not the dealer's
       bookType: p.bookType,
-    }))
+    })),
+    { headers }
   );
 }

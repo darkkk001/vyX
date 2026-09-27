@@ -156,30 +156,38 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
   const portalLoginUrl = `${brokerPublicOrigin(broker)}/portal/login`;
 
-  const { html, text } = renderBrokerEmail(
-    { name: broker.name, logoUrl: broker.logoUrl, primaryColor: broker.primaryColor, supportEmail: broker.supportEmail },
-    {
-      preheader: `Your ${broker.name} Live account is ready.`,
-      heading: "Your Live account is ready",
-      bodyLines: [
-        `Your Live account request has been approved. Here are your account details:`,
-        `Account number: ${account.accountNumber}`,
-        `Password: ${password}`,
-        `For your security, please log in and change your password as soon as possible.`,
-      ],
-      cta: { label: "Log in to your account", url: portalLoginUrl },
-    }
-  );
+  // Phase 2 batch 6 (issue 136): the account exists and the request is APPROVED by now -- a failing e-mail must not
+  // turn that into a 500 (the dealer would retry an approval that already happened). Logged; the reply says so.
+  let emailed = true;
+  try {
+    const { html, text } = renderBrokerEmail(
+      { name: broker.name, logoUrl: broker.logoUrl, primaryColor: broker.primaryColor, supportEmail: broker.supportEmail },
+      {
+        preheader: `Your ${broker.name} Live account is ready.`,
+        heading: "Your Live account is ready",
+        bodyLines: [
+          `Your Live account request has been approved. Here are your account details:`,
+          `Account number: ${account.accountNumber}`,
+          `Password: ${password}`,
+          `For your security, please log in and change your password as soon as possible.`,
+        ],
+        cta: { label: "Log in to your account", url: portalLoginUrl },
+      }
+    );
 
-  await sendBrokerEmail(
-    { name: broker.name, emailEnabled: broker.emailEnabled, emailFromAddress: broker.emailFromAddress, emailFromName: broker.emailFromName },
-    {
-      to: client.email,
-      subject: `Your Live account is ready - ${broker.name}`,
-      html,
-      text,
-    }
-  );
+    await sendBrokerEmail(
+      { name: broker.name, emailEnabled: broker.emailEnabled, emailFromAddress: broker.emailFromAddress, emailFromName: broker.emailFromName },
+      {
+        to: client.email,
+        subject: `Your Live account is ready - ${broker.name}`,
+        html,
+        text,
+      }
+    );
+  } catch (err) {
+    emailed = false;
+    console.error("live-account-requests: approved, but the credentials e-mail failed", { requestId: updated.id, accountNumber: account.accountNumber }, err);
+  }
 
-  return NextResponse.json({ id: updated.id, status: updated.status, accountNumber: account.accountNumber });
+  return NextResponse.json({ id: updated.id, status: updated.status, accountNumber: account.accountNumber, emailed });
 }

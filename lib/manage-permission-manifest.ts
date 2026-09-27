@@ -150,7 +150,7 @@ export const MANIFEST: Row[] = [
   { mod: "pricing-shadow-compare/route", method: "GET", perm: "ANY_MANAGER" },
   { mod: "reports/client/route", method: "GET", perm: "ANY_MANAGER" },
   { mod: "reports/financial/route", method: "GET", perm: "ANY_MANAGER" },
-  { mod: "reports/ib/route", method: "GET", perm: "ANY_MANAGER" },
+  { mod: "reports/ib/route", method: "GET", perm: "IB_PAYOUTS" },
   { mod: "reports/lp/route", method: "GET", perm: "BROKER_ADMIN_ONLY" },
   { mod: "reports/risk/route", method: "GET", perm: "ANY_MANAGER" },
   { mod: "reports/summary/route", method: "GET", perm: "ANY_MANAGER" },

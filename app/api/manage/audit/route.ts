@@ -32,6 +32,10 @@ export async function GET(request: NextRequest) {
         ? {
             OR: [
               { entityId: { contains: q, mode: "insensitive" } },
+              // Phase 2 batch 6 (issue 76): the screen promises actor, action and entity-type search too
+              { actorAdmin: { email: { contains: q, mode: "insensitive" } } },
+              { action: { contains: q.replace(/\s+/g, "_"), mode: "insensitive" } },
+              { entityType: { contains: q, mode: "insensitive" } },
               { oldValue: { path: ["orderNumber"], string_contains: q } },
               { newValue: { path: ["orderNumber"], string_contains: q } },
               { oldValue: { path: ["accountNumber"], string_contains: q } },
@@ -51,6 +55,8 @@ export async function GET(request: NextRequest) {
       id: log.id,
       actorEmail: log.actorAdmin?.email ?? "system",
       actionLabel: humanizeAction(log.action),
+      // Phase 2 batch 6 (issue 78): the raw action, so a client can route a row (RISK_* / DEALING_* -> their screens)
+      action: log.action,
       entityType: log.entityType,
       entityId: log.entityId,
       entityLabel: entityLabels.get(log.entityId ?? "") ?? "",

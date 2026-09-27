@@ -17,12 +17,13 @@ export async function GET() {
   }
   const brokerId = session!.brokerId!;
 
-  const records = await prisma.clientKycRecord.findMany({
-    where: { client: { brokerId } },
-    include: { client: { select: { fullName: true, email: true, country: true, phone: true } } },
-    orderBy: [{ status: "asc" }, { createdAt: "desc" }],
-    take: 200,
-  });
+  // Phase 2 batch 6 (issue 135): every PENDING record, then the latest 200 reviewed ones (same shape and order)
+  const include = { client: { select: { fullName: true, email: true, country: true, phone: true } } };
+  const [pending, reviewed] = await Promise.all([
+    prisma.clientKycRecord.findMany({ where: { client: { brokerId }, status: "PENDING" }, include, orderBy: { createdAt: "desc" } }),
+    prisma.clientKycRecord.findMany({ where: { client: { brokerId }, status: { not: "PENDING" } }, include, orderBy: [{ status: "asc" }, { createdAt: "desc" }], take: 200 }),
+  ]);
+  const records = [...pending, ...reviewed];
 
   return NextResponse.json(
     records.map((r) => ({

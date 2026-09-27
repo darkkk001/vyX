@@ -41,8 +41,10 @@ export async function GET() {
       .map((log) => ({
         id: log.id,
         time: log.createdAt.toISOString().slice(11, 19),
+        // Phase 2 batch 6 (issue 233): the full instant -- a row older than a day was shown with today's date
+        at: log.createdAt.toISOString(),
         message: describeOrderAuditEvent(log.action, log.oldValue, log.newValue),
       }))
-      .filter((l): l is { id: string; time: string; message: string } => l.message !== null)
+      .filter((l): l is { id: string; time: string; at: string; message: string } => l.message !== null)
   );
 }

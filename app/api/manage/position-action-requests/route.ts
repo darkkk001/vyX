@@ -23,6 +23,7 @@ export async function GET(request: Request) {
       position: {
         select: {
           id: true,
+          ticket: true,
           side: true,
           volume: true,
           openPrice: true,
@@ -52,6 +53,8 @@ export async function GET(request: Request) {
       reviewedByName: r.reviewedByAdmin?.email ?? null,
       position: {
         id: r.position.id,
+        // Phase 2 batch 6 (issue 72): the backoffice TICKET column read this and always showed "-"
+        ticket: r.position.ticket,
         symbolName: r.position.symbol.name,
         side: r.position.side,
         volume: r.position.volume.toString(),

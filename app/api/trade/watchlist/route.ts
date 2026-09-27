@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
 import { getOrSeedWatchlist } from "@/lib/watchlist";
+import { checkGroupAllowedSymbol } from "@/lib/risk";
 
 export async function GET() {
   const session = await getAccountSession();
@@ -34,6 +35,17 @@ export async function POST(request: NextRequest) {
   });
   if (!brokerSymbol) {
     return NextResponse.json({ error: "symbol not enabled for this broker" }, { status: 404 });
+  }
+  // Phase 2 batch 6 (issue 272): a symbol the account's group may not trade is not added either
+  const account = await prisma.account.findUnique({
+    where: { id: session.accountId },
+    select: { group: { select: { restrictSymbols: true, allowedSymbols: { select: { symbolId: true } } } } },
+  });
+  const groupRefusal = account?.group
+    ? checkGroupAllowedSymbol(account.group.restrictSymbols, account.group.allowedSymbols.map((s) => s.symbolId), symbolId)
+    : null;
+  if (groupRefusal) {
+    return NextResponse.json({ error: groupRefusal }, { status: 403 });
   }
 
   const maxPosition = await prisma.watchlistItem.aggregate({

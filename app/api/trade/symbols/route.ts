@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
+import { checkGroupAllowedSymbol } from "@/lib/risk";
 
 // The trader terminal's own symbol universe -- every symbol this broker
 // has enabled, full stop. Replaces lib/market-simulator.ts's hardcoded
@@ -17,7 +18,15 @@ export async function GET() {
     return NextResponse.json({ error: "not authenticated" }, { status: 401 });
   }
 
-  const brokerSymbols = await prisma.brokerSymbol.findMany({
+  // Phase 2 batch 6 (issue 272): a group with restrictSymbols on offers only its allowed symbols -- the same rule every
+  // order is checked with (lib/risk.ts checkGroupAllowedSymbol); the picker used to list symbols the order then refused
+  const account = await prisma.account.findUnique({
+    where: { id: session.accountId },
+    select: { group: { select: { restrictSymbols: true, allowedSymbols: { select: { symbolId: true } } } } },
+  });
+  const allowedIds = account?.group?.allowedSymbols.map((s) => s.symbolId) ?? [];
+  const allowed = (symbolId: string) => !account?.group || checkGroupAllowedSymbol(account.group.restrictSymbols, allowedIds, symbolId) === null;
+  const brokerSymbolRows = await prisma.brokerSymbol.findMany({
     where: { brokerId: session.brokerId, enabled: true },
     include: {
       symbol: { select: { id: true, name: true, category: true, digits: true, contractSize: true, quoteCurrency: true, baseCurrency: true } },
@@ -28,6 +37,7 @@ export async function GET() {
     },
     orderBy: { symbol: { name: "asc" } },
   });
+  const brokerSymbols = brokerSymbolRows.filter((bs) => allowed(bs.symbol.id));
 
   return NextResponse.json({
     symbols: brokerSymbols.map((bs) => ({

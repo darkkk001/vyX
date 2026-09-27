@@ -47,7 +47,7 @@ async function putHandler(request: NextRequest, { params }: { params: Promise<{ 
   }
   const { id } = await params;
 
-  const brokerSymbol = await prisma.brokerSymbol.findUnique({ where: { id } });
+  const brokerSymbol = await prisma.brokerSymbol.findUnique({ where: { id }, include: { symbol: { select: { name: true } } } });
   if (!brokerSymbol || brokerSymbol.brokerId !== session.brokerId) {
     return NextResponse.json({ error: "symbol not found" }, { status: 404 });
   }
@@ -75,10 +75,24 @@ async function putHandler(request: NextRequest, { params }: { params: Promise<{ 
     sessions.push({ dayOfWeek, openTime, closeTime });
   }
 
-  await prisma.$transaction([
-    prisma.tradingSession.deleteMany({ where: { brokerSymbolId: id } }),
-    ...(sessions.length > 0 ? [prisma.tradingSession.createMany({ data: sessions.map((s) => ({ ...s, brokerSymbolId: id })) })] : []),
-  ]);
+  // Phase 2 batch 6 (issue 172): the replace and its audit row (old and new windows) commit together
+  const window = (s: { dayOfWeek: number; openTime: string; closeTime: string }) => `${s.dayOfWeek} ${s.openTime}-${s.closeTime}`;
+  await prisma.$transaction(async (tx) => {
+    const before = await tx.tradingSession.findMany({ where: { brokerSymbolId: id }, orderBy: [{ dayOfWeek: "asc" }, { openTime: "asc" }] });
+    await tx.tradingSession.deleteMany({ where: { brokerSymbolId: id } });
+    if (sessions.length > 0) await tx.tradingSession.createMany({ data: sessions.map((s) => ({ ...s, brokerSymbolId: id })) });
+    await tx.auditLog.create({
+      data: {
+        brokerId: session.brokerId!,
+        actorAdminId: session.adminId,
+        action: "SYMBOL_SESSIONS_UPDATED",
+        entityType: "BrokerSymbol",
+        entityId: id,
+        oldValue: { symbol: brokerSymbol.symbol.name, sessions: before.map(window) },
+        newValue: { symbol: brokerSymbol.symbol.name, sessions: sessions.map(window) },
+      },
+    });
+  });
 
   const updated = await prisma.tradingSession.findMany({ where: { brokerSymbolId: id }, orderBy: [{ dayOfWeek: "asc" }, { openTime: "asc" }] });
   return NextResponse.json(updated.map((s) => ({ id: s.id, dayOfWeek: s.dayOfWeek, openTime: s.openTime, closeTime: s.closeTime })));

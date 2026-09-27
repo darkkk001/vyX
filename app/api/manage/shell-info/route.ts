@@ -67,7 +67,7 @@ export async function GET() {
   const extraPermissions = session!.role === "MANAGER" ? admin.extraPermissions : [];
   const permissions =
     session!.role === "BROKER_ADMIN" ? [...PERMISSIONS] : extraPermissions.filter((p) => (PERMISSIONS as readonly string[]).includes(p));
-  const unreadNotifications = await prisma.notification.count({ where: { brokerId, readAt: null } });
+  const unreadNotifications = await prisma.notification.count({ where: { brokerId, accountId: null, readAt: null } }); // staff rows only (issue 145)
 
   return NextResponse.json({
     ...identity,

@@ -22,8 +22,9 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   const { id } = await params;
 
   const side = new URL(request.url).searchParams.get("side");
-  if (side !== "front" && side !== "back") {
-    return NextResponse.json({ error: "side must be front or back" }, { status: 400 });
+  // Phase 2 batch 6 (issue 134): the address proof too, like the client-level route
+  if (side !== "front" && side !== "back" && side !== "address") {
+    return NextResponse.json({ error: "side must be front, back, or address" }, { status: 400 });
   }
 
   const record = await prisma.kycRecord.findUnique({
@@ -34,7 +35,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     return NextResponse.json({ error: "record not found" }, { status: 404 });
   }
 
-  const blobUrl = side === "front" ? record.documentFrontUrl : record.documentBackUrl;
+  const blobUrl = side === "front" ? record.documentFrontUrl : side === "back" ? record.documentBackUrl : record.addressProofUrl;
   if (!blobUrl) {
     return NextResponse.json({ error: "no document on this side" }, { status: 404 });
   }

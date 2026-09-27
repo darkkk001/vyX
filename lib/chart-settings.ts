@@ -38,6 +38,9 @@ export type ChartSettings = {
   // session, so the bands would be meaningless there.
   showSessionMap: boolean;
   showOhlcBar: boolean;
+  // The terminal's MT5 Ask line (terminal 1.0.52). The web chart does not draw it; stored here so the trader's
+  // choice survives a save from either client (the PUT keeps only known keys, issue 254).
+  showAskLine: boolean;
   // Only "UTC" is offered today -- groundwork for a real TZ selector, per
   // the chart interaction pack spec ("timezone display (UTC default --
   // groundwork for the TZ selector)").
@@ -116,6 +119,7 @@ export const DEFAULT_CHART_SETTINGS: ChartSettings = {
   // reaches accounts that never saved a chart setting; a saved blob keeps its explicit value.
   showSessionMap: false,
   showOhlcBar: true,
+  showAskLine: true,
   timezone: "UTC",
   soundsEnabled: true,
   soundOrderFilled: true,
@@ -138,6 +142,28 @@ export const DEFAULT_CHART_SETTINGS: ChartSettings = {
 // Merges a possibly-partial/stale persisted blob over the defaults so an
 // old saved settings object (missing a field added after it was saved)
 // never produces an undefined value the chart can't render.
+// Phase 2 batch 6 (issue 254): what a PUT may store -- only the keys above (anything else is dropped), each with its
+// default's type, the two fixed-value keys at their allowed values, colours as #RRGGBB / #RGB, and a size cap.
+export const CHART_SETTINGS_MAX_BYTES = 8 * 1024;
+const COLOR_RE = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/;
+const ENUMS: Partial<Record<keyof ChartSettings, readonly string[]>> = { theme: ["dark", "light"], timezone: ["UTC"] };
+
+export function validateChartSettings(body: unknown): { ok: true; settings: Partial<ChartSettings> } | { ok: false; error: string } {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return { ok: false, error: "a settings object is required" };
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(body as Record<string, unknown>)) {
+    if (!(key in DEFAULT_CHART_SETTINGS)) continue; // unknown key: dropped
+    const k = key as keyof ChartSettings;
+    const def = DEFAULT_CHART_SETTINGS[k];
+    if (typeof value !== typeof def) return { ok: false, error: `${key} must be a ${typeof def}` };
+    const allowed = ENUMS[k];
+    if (allowed && !allowed.includes(value as string)) return { ok: false, error: `${key} must be one of ${allowed.join(", ")}` };
+    if (typeof value === "string" && !allowed && !COLOR_RE.test(value)) return { ok: false, error: `${key} must be a colour like #26a69a` };
+    out[key] = value;
+  }
+  return { ok: true, settings: out as Partial<ChartSettings> };
+}
+
 export function mergeChartSettings(saved: unknown): ChartSettings {
   if (!saved || typeof saved !== "object") return DEFAULT_CHART_SETTINGS;
   return { ...DEFAULT_CHART_SETTINGS, ...(saved as Partial<ChartSettings>) };

@@ -10,7 +10,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   const { id } = await params;
 
   const notification = await prisma.notification.findUnique({ where: { id } });
-  if (!notification || notification.brokerId !== session!.brokerId) {
+  if (!notification || notification.brokerId !== session!.brokerId || notification.accountId !== null) {
     return NextResponse.json({ error: "notification not found" }, { status: 404 });
   }
 

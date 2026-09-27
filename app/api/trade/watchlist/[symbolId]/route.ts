@@ -11,6 +11,15 @@ export async function DELETE(_request: Request, { params }: { params: Promise<{ 
     return NextResponse.json({ error: "not authenticated" }, { status: 401 });
   }
   const { symbolId } = await params;
+  // Phase 2 batch 6 (issue 234): an empty watchlist is re-seeded with the defaults on the next read, so removing the
+  // LAST symbol silently brought the defaults back. Refuse it, with the reason; "reset to default" stays its own call.
+  const [items, isMember] = await Promise.all([
+    prisma.watchlistItem.count({ where: { accountId: session.accountId } }),
+    prisma.watchlistItem.count({ where: { accountId: session.accountId, symbolId } }),
+  ]);
+  if (isMember > 0 && items <= 1) {
+    return NextResponse.json({ error: "LAST_WATCHLIST_SYMBOL", message: "The watchlist needs at least one symbol. Add another symbol first." }, { status: 409 });
+  }
   await prisma.watchlistItem.deleteMany({ where: { accountId: session.accountId, symbolId } });
   return NextResponse.json({ ok: true });
 }

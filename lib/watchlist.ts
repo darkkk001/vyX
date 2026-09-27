@@ -1,5 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
+import { checkGroupAllowedSymbol } from "@/lib/risk";
 
 // The historical fixed watchlist (lib/market-simulator.ts's old SYMBOL_DEFS)
 // used as a starter set for a brand-new account or a "reset to default" --
@@ -30,10 +31,13 @@ export type WatchlistSymbolRow = {
 };
 
 async function seedDefaultWatchlist(accountId: string, brokerId: string): Promise<void> {
-  const enabled = await prisma.brokerSymbol.findMany({
-    where: { brokerId, enabled: true },
-    include: { symbol: { select: { id: true, name: true } } },
-  });
+  // Phase 2 batch 6 (issue 272): only symbols the account's group may trade (lib/risk.ts checkGroupAllowedSymbol)
+  const [allEnabled, account] = await Promise.all([
+    prisma.brokerSymbol.findMany({ where: { brokerId, enabled: true }, include: { symbol: { select: { id: true, name: true } } } }),
+    prisma.account.findUnique({ where: { id: accountId }, select: { group: { select: { restrictSymbols: true, allowedSymbols: { select: { symbolId: true } } } } } }),
+  ]);
+  const allowedIds = account?.group?.allowedSymbols.map((s) => s.symbolId) ?? [];
+  const enabled = allEnabled.filter((bs) => !account?.group || checkGroupAllowedSymbol(account.group.restrictSymbols, allowedIds, bs.symbol.id) === null);
   if (enabled.length === 0) return;
 
   const byName = new Map(enabled.map((bs) => [bs.symbol.name, bs.symbol.id]));

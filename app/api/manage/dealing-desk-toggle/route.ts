@@ -175,6 +175,7 @@ async function flushDealingQueueToMarket(
             await tx.auditLog.create({
               data: {
                 brokerId,
+                actorAdminId: adminId, // Phase 2 batch 6 (issue 104): the admin who turned the desk off
                 action: "DEALING_DESK_AUTO_FLUSHED_CLOSE",
                 entityType: "Position",
                 entityId: order.closesPositionId!,
@@ -267,6 +268,7 @@ async function flushDealingQueueToMarket(
         await tx.auditLog.create({
           data: {
             brokerId,
+            actorAdminId: adminId, // Phase 2 batch 6 (issue 104): the admin who turned the desk off
             action: "DEALING_DESK_AUTO_FLUSHED",
             entityType: "Position",
             entityId: pos.id,

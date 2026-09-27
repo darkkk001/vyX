@@ -16,16 +16,17 @@ export async function GET() {
   }
   const brokerId = session!.brokerId!;
 
-  const requests = await prisma.liveAccountRequest.findMany({
-    where: { brokerId },
-    include: {
-      client: { select: { fullName: true, email: true, country: true, phone: true } },
-      accountType: { select: { name: true } },
-      createdAccount: { select: { accountNumber: true } },
-    },
-    orderBy: [{ status: "asc" }, { createdAt: "desc" }],
-    take: 200,
-  });
+  // Phase 2 batch 6 (issue 138): every PENDING request, then the latest 200 decided ones (same shape and order)
+  const include = {
+    client: { select: { fullName: true, email: true, country: true, phone: true } },
+    accountType: { select: { name: true } },
+    createdAccount: { select: { accountNumber: true } },
+  };
+  const [pending, decided] = await Promise.all([
+    prisma.liveAccountRequest.findMany({ where: { brokerId, status: "PENDING" }, include, orderBy: { createdAt: "desc" } }),
+    prisma.liveAccountRequest.findMany({ where: { brokerId, status: { not: "PENDING" } }, include, orderBy: [{ status: "asc" }, { createdAt: "desc" }], take: 200 }),
+  ]);
+  const requests = [...pending, ...decided];
 
   return NextResponse.json(
     requests.map((r) => ({

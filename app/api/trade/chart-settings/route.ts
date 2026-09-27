@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
-import { DEFAULT_CHART_SETTINGS, mergeChartSettings, type ChartSettings } from "@/lib/chart-settings";
+import { CHART_SETTINGS_MAX_BYTES, DEFAULT_CHART_SETTINGS, mergeChartSettings, validateChartSettings, type ChartSettings } from "@/lib/chart-settings";
 
 export async function GET() {
   const session = await getAccountSession();
@@ -24,12 +24,23 @@ export async function PUT(request: NextRequest) {
   if (!session) {
     return NextResponse.json({ error: "not authenticated" }, { status: 401 });
   }
-  const body = await request.json().catch(() => null);
-  if (!body || typeof body !== "object") {
-    return NextResponse.json({ error: "a settings object is required" }, { status: 400 });
+  // Phase 2 batch 6 (issue 254): capped, only known keys stored, each type-checked (lib/chart-settings.ts)
+  const raw = await request.text().catch(() => "");
+  if (raw.length > CHART_SETTINGS_MAX_BYTES) {
+    return NextResponse.json({ error: `settings document too large (max ${CHART_SETTINGS_MAX_BYTES} bytes)` }, { status: 413 });
+  }
+  let body: unknown = null;
+  try {
+    body = JSON.parse(raw);
+  } catch {
+    body = null;
+  }
+  const checked = validateChartSettings(body);
+  if (!checked.ok) {
+    return NextResponse.json({ error: checked.error }, { status: 400 });
   }
 
-  const merged: ChartSettings = { ...DEFAULT_CHART_SETTINGS, ...body };
+  const merged: ChartSettings = { ...DEFAULT_CHART_SETTINGS, ...checked.settings };
   await prisma.account.update({
     where: { id: session.accountId },
     data: { chartSettings: merged },

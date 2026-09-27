@@ -25,8 +25,10 @@ export async function GET() {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
 
+  // Phase 2 batch 6 (issues 145 / 146): staff rows only -- a trader-copy row (accountId set: MARGIN_CALL, MARGIN_CALL_CLEARED,
+  // price alerts ...) belongs to the trader's own inbox; the staff copy of the same event has no accountId
   const notifications = await prisma.notification.findMany({
-    where: { brokerId: session.brokerId! },
+    where: { brokerId: session.brokerId!, accountId: null },
     orderBy: { createdAt: "desc" },
     take: 100,
   });
@@ -58,7 +60,7 @@ export async function PATCH(request: NextRequest) {
     return NextResponse.json({ error: "markAllRead must be true" }, { status: 400 });
   }
   await prisma.notification.updateMany({
-    where: { brokerId: session.brokerId!, readAt: null },
+    where: { brokerId: session.brokerId!, accountId: null, readAt: null },
     data: { readAt: new Date() },
   });
   return NextResponse.json({ ok: true });

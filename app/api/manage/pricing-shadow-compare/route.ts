@@ -20,7 +20,17 @@ async function requireManager() {
   return session!;
 }
 
-export async function GET() {
+export async function GET(request: Request) {
+  // Phase 2 batch 6 (issue 209): the Super Admin broker page tells Super Admin to run this before flipping a broker's
+  // pricing engine, but it refused SUPER_ADMIN. Super Admin names the broker (?broker=<id or subdomain>).
+  const admin = await getAdminSession();
+  if (admin?.role === "SUPER_ADMIN") {
+    const ref = new URL(request.url).searchParams.get("broker")?.trim();
+    if (!ref) return NextResponse.json({ error: "broker (id or subdomain) is required for Super Admin" }, { status: 400 });
+    const broker = await prisma.broker.findFirst({ where: { OR: [{ id: ref }, { subdomain: ref }] }, select: { id: true } });
+    if (!broker) return NextResponse.json({ error: "broker not found" }, { status: 404 });
+    return NextResponse.json(await runShadowPricingComparison(prisma, broker.id));
+  }
   const session = await requireManager();
   if (!session) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
