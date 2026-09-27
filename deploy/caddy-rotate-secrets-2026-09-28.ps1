@@ -4,7 +4,9 @@
 #
 #   -Phase Overlap : `header_up ... <OLD internal>` -> NEW internal (the engine already accepts both).
 #                    Every other line holding an OLD value (the X-Market-Data-Secret matcher) keeps OLD and gains a
-#                    copy with NEW, so the web's current (OLD) and next (NEW) read secret both pass.
+#                    copy with NEW, so the web's current (OLD) and next (NEW) read secret both pass. A
+#                    `@name not header X-Market-Data-Secret "OLD"` refusal matcher becomes `@name { not { header ... "OLD"
+#                    / header ... "NEW" } }`: refused only when the header is neither value.
 #   -Phase Finish  : (after Vercel is on NEW) the lines holding OLD values are removed; NEW stays.
 # Always `caddy validate` then `caddy reload` (zero downtime; NEVER `nssm restart vyxtrader-caddy`: it does not stop the
 # running Caddy). After the reload it checks through https://feed.vyxtrader.com and, if any check is wrong, puts the
@@ -64,12 +66,31 @@ foreach ($l in $lines) {
     if ($Phase -eq "Overlap") { $out.Add($l.Replace($oldInternal, $newInternal)) } else { throw "a header_up line still holds the OLD internal secret -- run -Phase Overlap first; nothing touched" }
     continue
   }
-  if ($t -match '^not\b' -or $t -match '\bnot\s+header\b') { throw "an OLD value sits in a 'not' matcher -- this script does not rewrite that form; nothing touched. Send me the masked lines above." }
-  if ($Phase -eq "Finish") { continue }   # drop the OLD copy; its NEW twin (added by Overlap) stays
-  $newLine = $l.Replace($oldInternal, $newInternal).Replace($oldRead, $newRead)
+  $indent = $l.Substring(0, $l.Length - $l.TrimStart().Length)
+  if ($Phase -eq "Finish") {
+    # only the plain `header <field> <OLD>` lines Overlap left next to their NEW twin may go; anything else means
+    # Overlap never ran on this file
+    if ($t -notmatch '^header\s') { throw "an OLD value is still in a matcher Overlap did not rewrite -- run -Phase Overlap first; nothing touched" }
+    continue
+  }
+  $swap = { param($s) $s.Replace($oldInternal, $newInternal).Replace($oldRead, $newRead) }
+  if ($t -match '^(@\S+)\s+not\s+(header\s+.+)$' -or $t -match '^()not\s+(header\s+.+)$') {
+    # `@name not header F "OLD"` (single line) or `not header F "OLD"` (inside a matcher block): one `not { }` holding
+    # both values, i.e. NOT (F is OLD or F is NEW): same field in one matcher set = either value (tested, Caddy 2.10.2).
+    # Two separate `not header` lines would instead refuse a request carrying either value.
+    $name = $Matches[1]; $body = $Matches[2]; $in = $indent
+    if ($name) { $out.Add("$indent$name {"); $in = "$indent`t" }
+    $out.Add("${in}not {")
+    $out.Add("$in`t$body")
+    $out.Add("$in`t" + (& $swap $body))
+    $out.Add("$in}")
+    if ($name) { $out.Add("$indent}") }
+    continue
+  }
+  if ($t -match '^not\b' -or $t -match '\bnot\b') { throw "an OLD value sits in a 'not' form this script does not rewrite (only 'not header'); nothing touched. Send me the masked lines above." }
+  $newLine = & $swap $l
   if ($t -match '^(@\S+)\s+(.+)$') {
     # single-line named matcher: turn it into a block so both values live in ONE matcher set (same field = either value)
-    $indent = $l.Substring(0, $l.Length - $l.TrimStart().Length)
     $name = $Matches[1]; $body = $Matches[2]
     $out.Add("$indent$name {")
     $out.Add("$indent`t$body")
@@ -79,7 +100,8 @@ foreach ($l in $lines) {
     $out.Add($l); $out.Add($newLine)
   }
 }
-if ($Phase -eq "Overlap" -and (($out | Where-Object { $_.Contains($newRead) }).Count -eq 0)) { throw "no line checks the read secret -- nothing touched. Send me the masked lines above." }
+if ((($out | Where-Object { $_.Contains($newRead) }).Count -eq 0)) { throw "no line checks the NEW read secret -- nothing touched. Send me the masked lines above." }
+if ((($out | Where-Object { $_.Contains($oldInternal) -or ($Phase -eq "Finish" -and $_.Contains($oldRead)) }).Count -gt 0)) { throw "an OLD value would remain -- nothing touched. Send me the masked lines above." }
 "lines holding a secret (masked), after:"
 $out | Where-Object { $_.Contains($oldInternal) -or $_.Contains($oldRead) -or $_.Contains($newInternal) -or $_.Contains($newRead) } | ForEach-Object { "  " + (Mask $_) }
 
