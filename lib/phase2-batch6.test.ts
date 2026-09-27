@@ -347,6 +347,20 @@ describe("trader routes (233, 254, 272, 234)", () => {
     expect((await call(wl.POST, "/api/trade/watchlist", "POST", { symbolId: w.syms[0].id })).status).toBe(200);
   });
 
+  it("272: a symbol the account still holds stays listed (tradable: false) so its position keeps its pricing", async () => {
+    if (!dbReachable) return;
+    const w = await world({ symbolCount: 3, restrict: true });
+    await prisma.groupSymbol.create({ data: { groupId: w.groupId, symbolId: w.syms[1].id } });
+    // an open position in syms[0], which the group does not allow (e.g. allowed list narrowed after the open)
+    const order = await prisma.order.create({ data: { brokerId: w.brokerId, accountId: w.accountId, symbolId: w.syms[0].id, side: "BUY", type: "MARKET", volume: new Prisma.Decimal("0.1"), status: "FILLED", idempotencyKey: `b6-held-${Date.now()}` } });
+    await prisma.position.create({ data: { brokerId: w.brokerId, accountId: w.accountId, symbolId: w.syms[0].id, originOrderId: order.id, side: "BUY", volume: new Prisma.Decimal("0.1"), openPrice: new Prisma.Decimal("100") } });
+    const sym = await import("@/app/api/trade/symbols/route");
+    const rows = (await call(sym.GET, "/api/trade/symbols")).json.symbols as { id: string; tradable: boolean }[];
+    expect(rows.map((s) => [s.id, s.tradable]).sort()).toEqual([[w.syms[0].id, false], [w.syms[1].id, true]].sort());
+    // syms[2]: neither allowed nor held -> still hidden
+    expect(rows.some((s) => s.id === w.syms[2].id)).toBe(false);
+  });
+
   it("234: the last watchlist symbol cannot be removed; others can", async () => {
     if (!dbReachable) return;
     const w = await world({ symbolCount: 2 });

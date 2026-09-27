@@ -37,12 +37,25 @@ export async function GET() {
     },
     orderBy: { symbol: { name: "asc" } },
   });
-  const brokerSymbols = brokerSymbolRows.filter((bs) => allowed(bs.symbol.id));
+  // A symbol the account still HOLDS (an open position or a resting order) stays listed even when the group no longer
+  // allows it: the terminal / WebTrader price and value those rows from this list (digits, contract size, quote
+  // currency). It goes out as tradable: false, so the ticket and watchlist leave it out; the order path still refuses
+  // new orders on it (lib/risk.ts checkGroupAllowedSymbol).
+  const [heldPositions, heldOrders] = account?.group?.restrictSymbols
+    ? await Promise.all([
+        prisma.position.findMany({ where: { accountId: session.accountId, status: "OPEN" }, select: { symbolId: true }, distinct: ["symbolId"] }),
+        prisma.order.findMany({ where: { accountId: session.accountId, status: "PENDING" }, select: { symbolId: true }, distinct: ["symbolId"] }),
+      ])
+    : [[], []];
+  const held = new Set([...heldPositions, ...heldOrders].map((r) => r.symbolId));
+  const brokerSymbols = brokerSymbolRows.filter((bs) => allowed(bs.symbol.id) || held.has(bs.symbol.id));
 
   return NextResponse.json({
     symbols: brokerSymbols.map((bs) => ({
       id: bs.symbol.id,
       name: bs.symbol.name,
+      // false = listed only because the account still holds it (see above); older clients ignore the field
+      tradable: allowed(bs.symbol.id),
       category: bs.symbol.category,
       tradingSessions: bs.tradingSessions,
       digits: bs.symbol.digits,
