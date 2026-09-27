@@ -188,8 +188,11 @@ if ($Phase -eq "Overlap") {
 }
 Remove-Variable newInternal, newRead, oldInternal, oldRead -ErrorAction SilentlyContinue
 & $Nssm status vyxtrader-engine; & $Nssm status vyxtrader-gateway
-$log = (& $Nssm get vyxtrader-engine AppStdout).Trim(); $err = (& $Nssm get vyxtrader-engine AppStderr).Trim()
-foreach ($f in @($log, $err) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique) {
+# nssm prints UTF-16: in PowerShell its output carries NUL characters (and can be several lines), which made
+# Test-Path / Get-Content fail with "Illegal characters in path" (owner, 2026-09-28). Join, strip NULs, trim.
+function Get-NssmValue([string]$Svc, [string]$Key) { ((& $Nssm get $Svc $Key) -join "" -replace "`0", "").Trim() }
+$log = Get-NssmValue vyxtrader-engine AppStdout; $err = Get-NssmValue vyxtrader-engine AppStderr
+foreach ($f in @($log, $err) | Where-Object { $_ -and (Test-Path -LiteralPath $_ -ErrorAction SilentlyContinue) } | Select-Object -Unique) {
   Get-Content $f -Tail 300 | Select-String -Pattern 'secret rotation|risk hook enabled|shadow reconciler running|SHADOW REFUSED|book events' | Select-Object -Last 8 | ForEach-Object { "  " + $_.Line }
 }
 if ($Phase -eq "Overlap") { "Engine log: expect 'secret rotation in progress' (WARN)." } else { "Engine log: the newest start has NO 'secret rotation in progress'." }

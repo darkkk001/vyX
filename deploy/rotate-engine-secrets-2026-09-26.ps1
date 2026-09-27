@@ -55,11 +55,14 @@ Remove-Variable hook, pw
 
 if ($NoRestart) { "Not restarted (-NoRestart): the new values take effect on the next engine restart."; exit 0 }
 
-$log = (& $Nssm get vyxtrader-engine AppStdout).Trim(); $err = (& $Nssm get vyxtrader-engine AppStderr).Trim()
+# nssm prints UTF-16: in PowerShell its output carries NUL characters (and can be several lines), which made
+# Test-Path / Get-Content fail with "Illegal characters in path" (owner, 2026-09-28). Join, strip NULs, trim.
+function Get-NssmValue([string]$Svc, [string]$Key) { ((& $Nssm get $Svc $Key) -join "" -replace "`0", "").Trim() }
+$log = Get-NssmValue vyxtrader-engine AppStdout; $err = Get-NssmValue vyxtrader-engine AppStderr
 & $Nssm restart vyxtrader-engine
 Start-Sleep 20
 & $Nssm status vyxtrader-engine
-foreach ($f in @($log, $err) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique) {
+foreach ($f in @($log, $err) | Where-Object { $_ -and (Test-Path -LiteralPath $_ -ErrorAction SilentlyContinue) } | Select-Object -Unique) {
   "---- $f (last lines) ----"
   Get-Content $f -Tail 300 | Select-String -Pattern 'read-only role verified|SHADOW REFUSED|password authentication failed|shadow reconciler|risk hook enabled|risk hook backstop|risk hook rejected|idle gate' | ForEach-Object { $_.Line }
 }

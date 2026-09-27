@@ -86,7 +86,10 @@ $storeUrl = Get-CmdVar "VYX_SHADOW_STORE_URL"; if (-not $storeUrl) { $storeUrl =
 Invoke-Native { psql "$storeUrl" -v ON_ERROR_STOP=1 -c "BEGIN READ ONLY; SELECT class, kind, count(*) FROM shadow_pair GROUP BY class, kind ORDER BY 1, 2; SELECT key, value FROM shadow_state ORDER BY key; COMMIT;" }
 
 # ---- STEP 5: stop, put the new exe in place, start, read the startup lines ----
-$log = (& $Nssm get vyxtrader-engine AppStdout).Trim(); $err = (& $Nssm get vyxtrader-engine AppStderr).Trim()
+# nssm prints UTF-16: in PowerShell its output carries NUL characters (and can be several lines), which made
+# Test-Path / Get-Content fail with "Illegal characters in path" (owner, 2026-09-28). Join, strip NULs, trim.
+function Get-NssmValue([string]$Svc, [string]$Key) { ((& $Nssm get $Svc $Key) -join "" -replace "`0", "").Trim() }
+$log = Get-NssmValue vyxtrader-engine AppStdout; $err = Get-NssmValue vyxtrader-engine AppStderr
 Invoke-Native { & $Nssm stop vyxtrader-engine }
 # the process can take a moment to release the exe after the service reports stopped
 $copied = $false
@@ -103,7 +106,7 @@ Invoke-Native { & $Nssm start vyxtrader-engine }
 Start-Sleep 20
 & $Nssm status vyxtrader-engine
 $pattern = 'read-only role verified|shadow reconciler|order management SHADOW|risk hook backstop|risk hook margin trigger|risk hook enabled|risk hook OFF|SHADOW REFUSED|USING 60|idle gate'
-foreach ($f in @($log, $err) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique) {
+foreach ($f in @($log, $err) | Where-Object { $_ -and (Test-Path -LiteralPath $_ -ErrorAction SilentlyContinue) } | Select-Object -Unique) {
   "---- $f ----"
   Get-Content $f -Tail 400 | Select-String -Pattern $pattern | ForEach-Object { $_.Line }
 }

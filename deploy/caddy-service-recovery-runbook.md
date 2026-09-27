@@ -5,7 +5,7 @@
 holds ports 80/443), so a Caddyfile change silently never takes effect. Every Caddyfile change goes:
 ```powershell
 $N  = "C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe"
-$CE = (& $N get vyxtrader-caddy Application).Trim()      # caddy.exe
+$CE = ((& $N get vyxtrader-caddy Application) -join "" -replace "`0", "").Trim()   # caddy.exe (nssm prints UTF-16: strip NULs)
 $CF = "<the Caddyfile path from: & $N get vyxtrader-caddy AppParameters>"
 Copy-Item $CF "C:\vyxtrader\backup\Caddyfile.pre-<change>-$(Get-Date -Format yyyyMMdd-HHmmss)"
 # edit $CF, then:
