@@ -12,6 +12,11 @@ import ordersRouter from "./routes/orders.js";
 import positionsRouter from "./routes/positions.js";
 import { attachPriceStream, attachTradingEventStream, attachAdminEventStream, gatewayStats, orderAckStats } from "./ws.js";
 import { BOOK_SEQ_SUBJECT, newBookSeqState, stampBookEvent } from "./book-seq.js";
+import { internalSecretOk, rotationInProgress } from "./internal-secret.js";
+
+if (rotationInProgress()) {
+  console.warn("secret rotation in progress: INTERNAL_SERVICE_SECRET_PREVIOUS is still accepted; unset it and restart once every caller has switched");
+}
 
 const app = express();
 app.use(express.json());
@@ -25,7 +30,7 @@ app.get("/health", (_req, res) => {
 // page (app/manage/(shell)/feed-health).
 app.get("/internal/gateway-stats", (req, res) => {
   const provided = req.headers["x-internal-secret"];
-  if (provided !== (process.env.INTERNAL_SERVICE_SECRET ?? "")) {
+  if (!internalSecretOk(provided)) {
     res.status(401).json({ error: "unauthorized" });
     return;
   }
@@ -77,7 +82,7 @@ const bookSeq = newBookSeqState();
 
 app.post("/internal/events", async (req, res) => {
   const provided = req.headers["x-internal-secret"];
-  if (provided !== (process.env.INTERNAL_SERVICE_SECRET ?? "")) {
+  if (!internalSecretOk(provided)) {
     res.status(401).json({ error: "unauthorized" });
     return;
   }

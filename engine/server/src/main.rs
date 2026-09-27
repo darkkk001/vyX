@@ -49,6 +49,10 @@ struct AppState {
     // server's own module doc, it's designed to be reachable only from
     // the Gateway, never directly from a browser.
     internal_service_secret: String,
+    /// Secret rotation (2026-09-28): while set, the PREVIOUS value is accepted too, so the web, the gateway and Caddy
+    /// can switch one at a time without a refused call. Unset it (and restart) once every caller has switched.
+    internal_service_secret_previous: Option<String>,
+    market_data_read_secret_previous: Option<String>,
     // Neon→VPS migration: a DEDICATED read-only secret for the two
     // market-data read routes (/internal/candles, /internal/prices), so
     // the web app never has to hold INTERNAL_SERVICE_SECRET (which also
@@ -186,10 +190,17 @@ async fn require_internal_secret(
         .headers()
         .get("x-internal-secret")
         .and_then(|v| v.to_str().ok());
-    if provided != Some(state.internal_service_secret.as_str()) {
+    if !secret_matches(provided, &state.internal_service_secret, state.internal_service_secret_previous.as_deref()) {
         return Err((StatusCode::UNAUTHORIZED, "unauthorized".to_string()));
     }
     Ok(next.run(req).await)
+}
+
+/// The provided header equals the current secret, or -- during a rotation -- the previous one. An empty expected
+/// value never matches (a missing env var must not open a route to an empty header).
+fn secret_matches(provided: Option<&str>, current: &str, previous: Option<&str>) -> bool {
+    let Some(p) = provided else { return false };
+    (!current.is_empty() && p == current) || previous.is_some_and(|prev| !prev.is_empty() && p == prev)
 }
 
 /// The market-data READ routes accept either the internal secret
@@ -204,10 +215,10 @@ async fn require_market_data_read_secret(
 ) -> Result<Response, (StatusCode, String)> {
     let internal_provided: Option<String> = req.headers().get("x-internal-secret").and_then(|v| v.to_str().ok()).map(str::to_owned);
     let read_provided: Option<String> = req.headers().get("x-market-data-secret").and_then(|v| v.to_str().ok()).map(str::to_owned);
-    let internal_ok = internal_provided.as_deref() == Some(state.internal_service_secret.as_str());
-    let read_ok = match (&state.market_data_read_secret, read_provided) {
-        (Some(expected), Some(provided)) => !expected.is_empty() && provided == *expected,
-        _ => false,
+    let internal_ok = secret_matches(internal_provided.as_deref(), &state.internal_service_secret, state.internal_service_secret_previous.as_deref());
+    let read_ok = match &state.market_data_read_secret {
+        Some(expected) => secret_matches(read_provided.as_deref(), expected, state.market_data_read_secret_previous.as_deref()),
+        None => false,
     };
     if !internal_ok && !read_ok {
         return Err((StatusCode::UNAUTHORIZED, "unauthorized".to_string()));
@@ -1329,6 +1340,15 @@ async fn main() {
     let internal_service_secret =
         std::env::var("INTERNAL_SERVICE_SECRET").expect("INTERNAL_SERVICE_SECRET must be set");
     let market_data_read_secret = std::env::var("MARKET_DATA_READ_SECRET").ok().filter(|s| !s.trim().is_empty());
+    let internal_service_secret_previous = std::env::var("INTERNAL_SERVICE_SECRET_PREVIOUS").ok().filter(|s| !s.trim().is_empty());
+    let market_data_read_secret_previous = std::env::var("MARKET_DATA_READ_SECRET_PREVIOUS").ok().filter(|s| !s.trim().is_empty());
+    if internal_service_secret_previous.is_some() || market_data_read_secret_previous.is_some() {
+        tracing::warn!(
+            internal_previous = internal_service_secret_previous.is_some(),
+            read_previous = market_data_read_secret_previous.is_some(),
+            "secret rotation in progress: the PREVIOUS secret is still accepted; unset *_PREVIOUS and restart once every caller has switched"
+        );
+    }
     if market_data_read_secret.is_none() {
         tracing::info!("MARKET_DATA_READ_SECRET not set -- /internal/candles and /internal/prices accept the internal secret only");
     }
@@ -1672,6 +1692,8 @@ async fn main() {
         nats,
         price_feed_secret,
         internal_service_secret,
+        internal_service_secret_previous,
+        market_data_read_secret_previous,
         market_data_read_secret,
         tick_cache,
         feed_stats: feed_stats_registry,
@@ -1727,4 +1749,21 @@ async fn main() {
         .expect("failed to bind port");
     tracing::info!("trading-core-server listening on {bind_addr}:{port}");
     axum::serve(listener, app).await.expect("server error");
+}
+
+#[cfg(test)]
+mod secret_rotation_tests {
+    use super::secret_matches;
+
+    #[test]
+    fn current_or_previous_during_a_rotation_never_empty() {
+        assert!(secret_matches(Some("new"), "new", None));
+        assert!(!secret_matches(Some("old"), "new", None), "no previous configured: the old value is refused");
+        assert!(secret_matches(Some("old"), "new", Some("old")), "rotation: the previous value is accepted");
+        assert!(secret_matches(Some("new"), "new", Some("old")));
+        assert!(!secret_matches(Some("other"), "new", Some("old")));
+        assert!(!secret_matches(None, "new", Some("old")), "no header: refused");
+        assert!(!secret_matches(Some(""), "", None), "an empty expected value never opens a route");
+        assert!(!secret_matches(Some(""), "new", Some("")), "an empty previous never matches an empty header");
+    }
 }

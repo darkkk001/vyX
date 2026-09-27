@@ -22,6 +22,7 @@ import { WebSocket, WebSocketServer } from "ws";
 import { getTraderSession, getTraderSessionByTicket } from "./auth.js";
 import { getAdminSession } from "./admin-auth.js";
 import { getEnabledSymbolNames } from "./db.js";
+import { internalSecretOk } from "./internal-secret.js";
 
 const PRICE_STREAM_PATH = "/v1/prices/stream";
 const TRADING_STREAM_PATH = "/v1/trading/stream";
@@ -579,8 +580,7 @@ export async function attachAdminEventStream(server: Server, natsUrl: string): P
     // own access by also sending a stale/mismatched cookie.
     const internalSecretHeader = req.headers["x-internal-secret"];
     const providedSecret = Array.isArray(internalSecretHeader) ? internalSecretHeader[0] : internalSecretHeader;
-    const expectedSecret = process.env.INTERNAL_SERVICE_SECRET ?? "";
-    if (expectedSecret && providedSecret === expectedSecret) {
+    if (internalSecretOk(providedSecret)) {
       const brokerId = url.searchParams.get("brokerId");
       if (!brokerId) {
         socket.write("HTTP/1.1 400 Bad Request\r\n\r\n");

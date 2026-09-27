@@ -293,5 +293,49 @@ Order (the 2026-09-26 rotation after both values were exposed in a chat):
 
 The gap between steps 2/3 and 4 is covered: the Vercel cron (every 5 min) keeps running stop-outs with the new
 secret, and the shadow only reads. A rollback of start-engine.cmd alone does not help once Neon and Vercel have the new
-values: fix forward. `PRICE_FEED_SECRET` / `INTERNAL_SERVICE_SECRET` rotate with `scripts/rotate-secrets.ps1`;
-`MARKET_DATA_READ_SECRET` with Vercel + Caddy (deploy/caddy-service-recovery-runbook.md).
+values: fix forward. `PRICE_FEED_SECRET` rotates with `scripts/rotate-secrets.ps1`; `INTERNAL_SERVICE_SECRET` and
+`MARKET_DATA_READ_SECRET` with the overlap procedure below (no refused call).
+
+## Rotating INTERNAL_SERVICE_SECRET and MARKET_DATA_READ_SECRET (2026-09-28)
+
+Both were exposed in a chat. Where each one lives (every copy must end on the same NEW value):
+
+| Secret | Holders | Senders |
+|---|---|---|
+| `INTERNAL_SERVICE_SECRET` | start-engine.cmd, start-gateway.cmd, Vercel (Production) | web -> gateway `/internal/events`; web -> engine `/internal/feed-stats`, `/internal/alert-stats` via Caddy; gateway -> engine orders; Caddy `header_up x-internal-secret` -> engine price reads; web middleware -> its own `/api/internal/resolve-broker`; also the HMAC key of the Super Admin desktop-gate cookie (lib/desktop-gate.ts) |
+| `MARKET_DATA_READ_SECRET` | start-engine.cmd, Caddy's `X-Market-Data-Secret` matcher, Vercel (Production) | web -> Caddy -> engine `/internal/prices`, `/internal/candles` (lib/market-data-client.ts) |
+
+Price reads have **no Neon fallback** any more (a failed read refuses the order and alerts), so no step may refuse a
+current caller. During a rotation the engine and the gateway accept `INTERNAL_SERVICE_SECRET_PREVIOUS` /
+`MARKET_DATA_READ_SECRET_PREVIOUS` as well (engine `secret_matches`, gateway `src/internal-secret.ts`; both log
+"secret rotation in progress" while one is set), and Caddy's matcher holds both read values. An engine restart is still
+~10-20 s without price reads: run the two VPS phases in the daily break (XAUUSD, 21:00-22:00 UTC in summer time).
+
+1. **Admin PC:** generate two 48-hex values into a file OUTSIDE the repo; never echo them.
+2. **VPS, Overlap** (elevated PowerShell):
+   ```powershell
+   cd C:\vyxtrader\repo; git pull --ff-only
+   powershell -ExecutionPolicy Bypass -File C:\vyxtrader\repo\deploy\rotate-internal-read-secrets-2026-09-28.ps1 -Phase Overlap
+   powershell -ExecutionPolicy Bypass -File C:\vyxtrader\repo\deploy\caddy-rotate-secrets-2026-09-28.ps1 -Phase Overlap
+   ```
+   The first builds the engine (engine\build-tmp) and the gateway, prompts for the two NEW values (hidden), writes NEW
+   as current and OLD as `*_PREVIOUS` into both .cmd files, and restarts each service once. Its checks: OLD and NEW
+   accepted on both. The second edits the Caddyfile by value (`header_up` -> NEW internal; the read matcher gains a NEW
+   line next to OLD), `caddy validate`, `caddy reload` (never `nssm restart vyxtrader-caddy`), then checks through
+   https://feed.vyxtrader.com: OLD read 200, NEW read 200, wrong 401; any wrong check puts the backup back and reloads.
+3. **Vercel:** `MARKET_DATA_READ_SECRET` and `INTERNAL_SERVICE_SECRET` (Production) = NEW
+   (`vercel env rm <NAME> production -y`, then `vercel env add <NAME> production < <file holding only the value>`), then
+   `vercel redeploy <current production deployment>` so no new code ships with it. Check: Feed health shows numbers,
+   a chart loads, the terminal quotes move. The Super Admin app re-mints its gate cookie at the next launch
+   (the old cookie's signature no longer verifies): relaunch it.
+4. **VPS, Finish** (Caddy FIRST: it reads the OLD values from the `*_PREVIOUS` lines the second script removes):
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File C:\vyxtrader\repo\deploy\caddy-rotate-secrets-2026-09-28.ps1 -Phase Finish
+   powershell -ExecutionPolicy Bypass -File C:\vyxtrader\repo\deploy\rotate-internal-read-secrets-2026-09-28.ps1 -Phase Finish
+   ```
+   Checks: OLD refused (Caddy 401, engine 401, gateway 401), NEW accepted; the engine log's newest start has no
+   "secret rotation in progress".
+5. Delete the generated file on the admin PC.
+
+Rollback: Overlap can be undone from the backup directory each script prints (the engine script lists the commands at
+its bottom). After Vercel is on NEW, fix forward: the NEW values are the ones every caller now sends.

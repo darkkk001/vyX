@@ -7,7 +7,7 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
-    "test": "node --import tsx --test src/book-seq.test.ts"
+    "test": "node --import tsx --test src/book-seq.test.ts src/internal-secret.test.ts"
   },
   "dependencies": {
     "decimal.js": "^10.6.0",

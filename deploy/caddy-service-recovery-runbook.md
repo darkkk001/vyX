@@ -1,5 +1,22 @@
 # Caddy service "Paused" + missing MARKET_DATA_READ_SECRET: recovery runbook (2026-09-26)
 
+## ALWAYS `caddy reload`, never `nssm restart vyxtrader-caddy` (owner, 2026-09-28)
+`nssm restart vyxtrader-caddy` does NOT stop the running Caddy process: the old one keeps serving the OLD config (and
+holds ports 80/443), so a Caddyfile change silently never takes effect. Every Caddyfile change goes:
+```powershell
+$N  = "C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe"
+$CE = (& $N get vyxtrader-caddy Application).Trim()      # caddy.exe
+$CF = "<the Caddyfile path from: & $N get vyxtrader-caddy AppParameters>"
+Copy-Item $CF "C:\vyxtrader\backup\Caddyfile.pre-<change>-$(Get-Date -Format yyyyMMdd-HHmmss)"
+# edit $CF, then:
+& $CE validate --config $CF        # must say "Valid configuration"
+& $CE reload   --config $CF        # zero downtime: the running Caddy swaps to the new config
+curl.exe -s -o NUL -w "%{http_code}`n" https://feed.vyxtrader.com/health   # 200
+```
+Rollback = copy the backup back over `$CF` and `caddy reload` again. Secret changes in the Caddyfile go through
+`deploy/caddy-rotate-secrets-2026-09-28.ps1` (edits by value, never prints one; market-data-vps-runbook.md). (Used for the /internal/alert-stats route on
+2026-09-28: live with no downtime.)
+
 ## Outcome (2026-09-26, run by the owner on the VPS)
 - **Cause: the `vyxtrader-caddy` service was simply paused.** Step 1 found a single caddy.exe, a child of nssm, and
   no stray instance. The "second Caddy / nssm throttling" hypothesis below was wrong. Pausing an nssm service does
@@ -19,11 +36,12 @@
   & "C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe" set vyxtrader-caddy AppRotateFiles 1
   & "C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe" set vyxtrader-caddy AppRotateOnline 1
   & "C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe" set vyxtrader-caddy AppRotateBytes 10485760      # rotate at 10 MB
-  & "C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe" restart vyxtrader-caddy                           # do it while markets are closed
+  # these nssm settings apply to the NEXT process nssm starts; a plain `nssm restart vyxtrader-caddy` does not
+  # replace the running Caddy (see the rule at the top), so apply them at the next planned stop/start of the service
   curl.exe -s -o NUL -w "%{http_code}`n" https://feed.vyxtrader.com/health   # 200
   Get-Content C:\vyxtrader\logs\caddy.err.log -Tail 20                      # Caddy writes its log to stderr
   ```
-  Rollback: `nssm reset vyxtrader-caddy AppStdout; nssm reset vyxtrader-caddy AppStderr; & "C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe" restart vyxtrader-caddy`.
+  Rollback: `nssm reset vyxtrader-caddy AppStdout; nssm reset vyxtrader-caddy AppStderr` (effective at the next start).
 - **If it shows Paused again:** `& "C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe" status vyxtrader-caddy`. If PAUSED, run `& "C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe" continue vyxtrader-caddy` (no
   downtime) and check who paused it: `Get-WinEvent -FilterHashtable @{LogName='System'; Id=7036} -MaxEvents 50 |
   ? Message -match 'caddy'` shows the service state changes with their times.
@@ -51,7 +69,7 @@ The rest of this file is the original diagnosis and procedure, kept for referenc
   Feed health, with no log line), so the logs can't tell. Open the backoffice Feed health screen: numbers = OK.
 
 ## Why the service shows "Paused" (original hypothesis: turned out WRONG, see Outcome)
-When the program & "C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe" starts exits right away, nssm throttles the restart, and Windows shows the service as
+When the program nssm starts exits right away, nssm throttles the restart, and Windows shows the service as
 **Paused** meanwhile. Caddy is still serving, so the most likely cause: a second Caddy, started outside the service
 (a console, `caddy start`, or a scheduled task), holds ports 80/443. The service's own Caddy then dies at once with
 "address already in use", over and over.
