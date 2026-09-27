@@ -57,6 +57,8 @@ yarn-error.log*
 
 # rust (engine/, desktop-tauri/)
 /engine/target/
+# the VPS deploy builds here while the running exe (engine/target) is locked (deploy/neon-idle-gate-engine-2026-09-26.ps1)
+/engine/build-tmp/
 **/target/
 Cargo.lock
 

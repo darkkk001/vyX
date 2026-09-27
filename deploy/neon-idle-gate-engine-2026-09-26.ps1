@@ -41,11 +41,24 @@ Invoke-Native { git log --oneline -3 }
 if (-not (Select-String -Path "$Repo\engine\market-data\src\activity.rs" -Pattern "pub fn book_gate" -Quiet)) { throw "main does not carry the idle gate yet (engine\market-data\src\activity.rs) -- nothing touched" }
 
 # ---- STEP 2: build (the running exe keeps serving until the restart) ----
-Copy-Item "$Repo\engine\target\release\trading-core-server.exe" "$Bk\trading-core-server.pre.exe"
+# The service runs engine\target\release\trading-core-server.exe and Windows locks a running exe, so cargo cannot
+# overwrite it ("Access is denied", owner 2026-09-27). Build into engine\build-tmp instead (its own cargo target
+# directory: the first build there is a full one, later ones are incremental); step 5 stops the service, copies the
+# new exe into place, and starts it.
+$LiveExe  = "$Repo\engine\target\release\trading-core-server.exe"
+$BuildDir = "$Repo\engine\build-tmp"
+$BuiltExe = "$BuildDir\release\trading-core-server.exe"
+Copy-Item $LiveExe "$Bk\trading-core-server.pre.exe"
 Copy-Item $Cmd "$Bk\start-engine.cmd.pre"
 Set-Location "$Repo\engine"
+$env:CARGO_TARGET_DIR = $BuildDir
 Invoke-Native { cargo build --release -p server } -Tail 3
-if ($LASTEXITCODE -ne 0) { throw "build failed (exit $LASTEXITCODE) -- the old engine is still running, nothing restarted" }
+$buildExit = $LASTEXITCODE
+Remove-Item Env:\CARGO_TARGET_DIR
+if ($buildExit -ne 0) { throw "build failed (exit $buildExit) -- the old engine is still running, nothing restarted" }
+if (-not (Test-Path $BuiltExe)) { throw "build reported success but $BuiltExe is missing -- nothing restarted" }
+$newHash = (Get-FileHash $BuiltExe -Algorithm SHA256).Hash
+"built: $BuiltExe (sha256 $($newHash.Substring(0,16)))"
 
 # ---- STEP 3: the two timer values (update in place, else insert above the launch line; no duplicates) ----
 $lines = [System.Collections.Generic.List[string]](Get-Content $Cmd)
@@ -72,9 +85,21 @@ function Get-CmdVar($name) { ($envLines | Where-Object { $_ -match ('^\s*set\s+"
 $storeUrl = Get-CmdVar "VYX_SHADOW_STORE_URL"; if (-not $storeUrl) { $storeUrl = Get-CmdVar "MARKET_DATA_DATABASE_URL" }
 Invoke-Native { psql "$storeUrl" -v ON_ERROR_STOP=1 -c "BEGIN READ ONLY; SELECT class, kind, count(*) FROM shadow_pair GROUP BY class, kind ORDER BY 1, 2; SELECT key, value FROM shadow_state ORDER BY key; COMMIT;" }
 
-# ---- STEP 5: restart and read the startup lines ----
+# ---- STEP 5: stop, put the new exe in place, start, read the startup lines ----
 $log = (& $Nssm get vyxtrader-engine AppStdout).Trim(); $err = (& $Nssm get vyxtrader-engine AppStderr).Trim()
-& $Nssm restart vyxtrader-engine
+Invoke-Native { & $Nssm stop vyxtrader-engine }
+# the process can take a moment to release the exe after the service reports stopped
+$copied = $false
+foreach ($try in 1..10) {
+  try { Copy-Item $BuiltExe $LiveExe -Force -ErrorAction Stop; $copied = $true; break } catch { Start-Sleep 1 }
+}
+if (-not $copied -or (Get-FileHash $LiveExe -Algorithm SHA256).Hash -ne $newHash) {
+  Copy-Item "$Bk\trading-core-server.pre.exe" $LiveExe -Force -ErrorAction SilentlyContinue
+  Invoke-Native { & $Nssm start vyxtrader-engine }
+  throw "could not put the new exe in place (still locked?) -- the previous exe was restored and started"
+}
+"new exe in place: $LiveExe (sha256 $($newHash.Substring(0,16)))"
+Invoke-Native { & $Nssm start vyxtrader-engine }
 Start-Sleep 20
 & $Nssm status vyxtrader-engine
 $pattern = 'read-only role verified|shadow reconciler|order management SHADOW|risk hook backstop|risk hook margin trigger|risk hook enabled|risk hook OFF|SHADOW REFUSED|USING 60|idle gate'
