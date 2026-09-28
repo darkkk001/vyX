@@ -25,7 +25,6 @@ import {
   riskCode,
   checkGroupTradingRestriction,
   checkGroupTradingHalted,
-  checkAccountStatusForOpen,
   checkGroupCloseOnly,
   checkGroupAllowedSymbol,
   checkMaxOpenPositions,
@@ -36,6 +35,7 @@ import {
   checkPriceFreshness,
   checkSlippage,
   PENDING_TRIGGER_MAX_SLIPPAGE_POINTS,
+  checkAccountTradingRights,
 } from "@/lib/risk";
 
 // ---------------------------------------------------------------------------
@@ -149,9 +149,9 @@ export async function triggerPendingOrder(orderId: string, triggerPrice: string,
     (account.group ? checkGroupMaxLot(order.volume, account.group.maxLotSize) : null) ??
     (account.group ? checkGroupMinLot(order.volume, account.group.minLotSize, brokerSymbol.minLot) : null) ??
     (account.group ? checkGroupTradingRestriction(account.group.tradingRestriction, order.side) : null) ??
+    // per-account trading rights + status (2026-09-28): a close-only / read-only / suspended account opens nothing
+    checkAccountTradingRights(account, "open") ??
     (account.group ? checkGroupTradingHalted(account.group) : null) ??
-    // account status (2026-09-29): a suspended / closed account opens nothing
-    checkAccountStatusForOpen(account) ??
     (account.group ? checkGroupCloseOnly(account.group) : null) ??
     (account.group ? checkGroupAllowedSymbol(account.group.restrictSymbols, account.group.allowedSymbols.map((s) => s.symbolId), order.symbolId) : null) ??
     (await checkMaxOpenPositions(prisma, order.accountId, broker.maxOpenPositionsPerAccount)) ??

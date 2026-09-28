@@ -15,6 +15,9 @@ const BALANCE_TYPES: TransactionType[] = [
   TransactionType.CREDIT,
   TransactionType.ADJUSTMENT,
   TransactionType.NEGATIVE_BALANCE_PROTECTION,
+  // 2026-09-28: staff added / removed Credit ($) -- the trader sees it in the balance history too
+  TransactionType.CREDIT_IN,
+  TransactionType.CREDIT_OUT,
 ];
 
 export async function GET(_request: NextRequest) {

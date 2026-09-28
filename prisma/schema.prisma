@@ -90,6 +90,17 @@ enum AccountStatus {
   CLOSED
 }
 
+// Per-account trading rights (2026-09-28, owner decision). FULL = today's behaviour. CLOSE_ONLY = no new trades
+// (orders, pending triggers, dealer / admin opens, copy-rule opens, reverse); closing and SL/TP changes still allowed.
+// READ_ONLY = the client may sign in and look, nothing more: no opens, closes, SL/TP changes or order cancels.
+// Server-side automatic actions (SL/TP triggers, stop-out, margin call, swap) run for every account regardless.
+// Enforced by lib/risk.ts checkAccountTradingRights at every gate (see lib/account-trading-rights.test.ts).
+enum TradingRights {
+  FULL
+  CLOSE_ONLY
+  READ_ONLY
+}
+
 enum KycStatus {
   PENDING
   APPROVED
@@ -113,6 +124,11 @@ enum TransactionType {
   TRADE_PNL
   TRANSFER_OUT // internal transfer -- debit side, see app/api/manage/transfers
   TRANSFER_IN // internal transfer -- credit side
+  // 2026-09-28: staff added / removed Credit ($) (lib/credit-adjustment.ts). The row's amount is the change to
+  // Account.credit (positive for CREDIT_IN, negative for CREDIT_OUT); balanceBefore = balanceAfter = the balance, which
+  // a credit change never moves. Kept apart from CREDIT, which is credit used up by a closing loss.
+  CREDIT_IN
+  CREDIT_OUT
 }
 
 enum TransactionStatus {
@@ -628,6 +644,7 @@ model Account {
   balance       Decimal       @default(0) @db.Decimal(18, 4)
   credit        Decimal       @default(0) @db.Decimal(18, 4) // non-withdrawable bonus
   status        AccountStatus @default(ACTIVE)
+  tradingRights TradingRights @default(FULL) // see enum TradingRights
   // Null = no limit. When set, new orders are rejected once today's
   // realized P&L (SUM of TRADE_PNL Transaction rows since local
   // midnight) is already at or below -maxDailyLoss -- see
@@ -2025,6 +2042,7 @@ enum BalanceRequestKind {
   ADJUSTMENT
   TRANSFER
   IB_PAYOUT
+  CREDIT // 2026-09-28: add (+) / remove (-) Credit ($); lib/credit-adjustment.ts
 }
 
 // 2026-09-06 Section D audit fix -- same maker-checker gate as

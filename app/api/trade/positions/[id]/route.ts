@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { tradingRightsRefusal } from "@/lib/account-trading-rights";
 import { accountClosePrice, loadAccountAskRules } from "@/lib/ask-markup";
 import { getLivePriceRow } from "@/lib/live-price";
 import { prisma } from "@/lib/prisma";
@@ -41,16 +42,20 @@ async function handleModify(request: NextRequest, params: Promise<{ id: string }
   // one SQL statement each); rows read for a position that is not this account's are discarded unanswered.
   const bySymbolOfPosition = { positions: { some: { id } } };
   const symbolRead = prisma.symbol.findFirst({ where: bySymbolOfPosition, select: { digits: true, name: true, category: true, contractSize: true } });
-  const [position, symbol, brokerSymbolRow, tradingSessions, live] = await Promise.all([
+  const [position, symbol, brokerSymbolRow, tradingSessions, live, rightsRow] = await Promise.all([
     prisma.position.findUnique({ where: { id } }),
     symbolRead,
     prisma.brokerSymbol.findFirst({ where: { brokerId: session.brokerId, symbol: bySymbolOfPosition }, select: { stopLevel: true } }),
     prisma.tradingSession.findMany({ where: { brokerSymbol: { brokerId: session.brokerId, symbol: bySymbolOfPosition } } }),
     symbolRead.then((s) => (s ? getLivePriceRow(s.name) : null)),
+    prisma.account.findUnique({ where: { id: session.accountId }, select: { status: true, tradingRights: true } }),
   ]);
   if (!position || position.accountId !== session.accountId) {
     return NextResponse.json({ error: "position not found" }, { status: 404 });
   }
+  // per-account trading rights (2026-09-28): a read-only account changes nothing itself
+  const rightsRefused = rightsRow ? tradingRightsRefusal(rightsRow, "modify") : null;
+  if (rightsRefused) return rightsRefused;
   if (position.status !== "OPEN") {
     return NextResponse.json({ error: "position is not open" }, { status: 409 });
   }

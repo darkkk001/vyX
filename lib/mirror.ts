@@ -13,6 +13,7 @@ import {
   checkGroupTradingHalted,
   checkAccountStatusForOpen,
   checkGroupCloseOnly,
+  checkAccountTradingRights,
 } from "@/lib/risk";
 import { getFreshPrices } from "@/lib/live-price";
 import { loadRateResolver } from "@/lib/fx";
@@ -358,6 +359,8 @@ async function mirrorFillForRule(db: Db, rule: MirrorRule, source: MirrorSourceP
     const tradabilityError =
       checkTradingHalted(broker) ??
       checkCloseOnly(broker) ??
+      // per-account trading rights + status (2026-09-28): a close-only / read-only / suspended account opens nothing
+      checkAccountTradingRights(targetAccount, "open") ??
       (targetAccount.group ? checkGroupTradingHalted(targetAccount.group) : null) ??
       // account status (2026-09-29): a suspended / closed account opens nothing
       checkAccountStatusForOpen(targetAccount) ??
