@@ -27,6 +27,24 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "scope must be one of ALL, PROFIT, LOSS, SYMBOL" }, { status: 400 });
   }
   const symbol = typeof body?.symbol === "string" ? body.symbol.trim() : undefined;
+  // Phase 2 batch 9 (issue 244): the terminal's Smart Trade Manager close ALL / PROFIT / LOSS comes through here; with
+  // source "stm_bulk" each position it closes (or queues for the dealer) gets the STM_BULK_CLOSE audit row the single
+  // close route already writes. Informational only: selection and execution are unchanged.
+  const stmBulk = body?.source === "stm_bulk";
+  const auditStm = async (rows: { positionId: string; closed: boolean; queued?: boolean; closePrice: unknown; realizedPnl: unknown }[]) => {
+    if (!stmBulk) return;
+    const done = rows.filter((r) => r.closed || r.queued);
+    if (done.length === 0) return;
+    await prisma.auditLog.createMany({
+      data: done.map((r) => ({
+        brokerId: session.brokerId,
+        action: "STM_BULK_CLOSE",
+        entityType: "Position",
+        entityId: r.positionId,
+        newValue: { scope, ...(symbol ? { symbol } : {}), ...(r.queued ? { queued: true } : { closePrice: String(r.closePrice ?? ""), realizedPnl: String(r.realizedPnl ?? "") }) },
+      })),
+    }).catch((err) => console.error("[close-bulk] STM_BULK_CLOSE audit failed", err));
+  };
   if (scope === "SYMBOL" && !symbol) {
     return NextResponse.json({ error: "symbol is required for scope SYMBOL" }, { status: 400 });
   }
@@ -92,6 +110,7 @@ export async function POST(request: NextRequest) {
         else throw err;
       }
     }
+    await auditStm(results);
     return NextResponse.json({
       requested: results.length,
       successful: 0,
@@ -107,6 +126,7 @@ export async function POST(request: NextRequest) {
     scope,
     symbol,
   });
+  await auditStm(results);
 
   return NextResponse.json({
     requested: results.length,

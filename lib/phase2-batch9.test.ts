@@ -29,6 +29,8 @@ afterAll(async () => {
   const where = { brokerId: { in: brokers } };
   await prisma.notification.deleteMany({ where }).catch(() => {});
   await prisma.auditLog.deleteMany({ where }).catch(() => {});
+  await prisma.transaction.deleteMany({ where }).catch(() => {});
+  await prisma.position.deleteMany({ where }).catch(() => {});
   await prisma.order.deleteMany({ where }).catch(() => {});
   await prisma.account.deleteMany({ where }).catch(() => {});
   await prisma.brokerSymbol.deleteMany({ where }).catch(() => {});
@@ -94,5 +96,31 @@ describe("363: /api/trade/me reports the broker's trading day and week start", (
     expect(week).toBeLessThanOrEqual(day);
     expect(day - week).toBeLessThanOrEqual(6 * 86_400_000);
     expect(["d1-candle", "fallback-22utc"]).toContain(j.tradingDaySource);
+  });
+});
+
+describe("244: STM close ALL through the bulk route is audited as STM", () => {
+  async function openBuy(symbolName: string, accountId: string) {
+    const acc = await prisma.account.findUniqueOrThrow({ where: { id: accountId } });
+    const s = await prisma.symbol.findUniqueOrThrow({ where: { name: symbolName } });
+    const o = await prisma.order.create({ data: { brokerId: acc.brokerId, accountId, symbolId: s.id, side: "BUY", type: "MARKET", volume: D("0.1"), requestedPrice: D(100), idempotencyKey: `b9:${randomUUID()}`, status: "FILLED", filledPrice: D(100), filledAt: new Date() } });
+    return prisma.position.create({ data: { brokerId: acc.brokerId, accountId, symbolId: s.id, originOrderId: o.id, side: "BUY", volume: D("0.1"), openPrice: D(100), status: "OPEN" } });
+  }
+  it("source stm_bulk writes one STM_BULK_CLOSE per closed position; a plain bulk close writes none", async () => {
+    if (!dbReachable) return;
+    const w = await world(0);
+    const p1 = await openBuy(w.symbol, w.accountId);
+    const p2 = await openBuy(w.symbol, w.accountId);
+    const { POST } = await import("@/app/api/trade/positions/close-bulk/route");
+    const call = async (body: unknown) => (await POST(new NextRequest("https://t.local/x", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }))).json();
+    const stm = await call({ scope: "ALL", source: "stm_bulk" });
+    expect(stm.successful).toBe(2);
+    const rows = await prisma.auditLog.findMany({ where: { action: "STM_BULK_CLOSE", entityId: { in: [p1.id, p2.id] } } });
+    expect(rows).toHaveLength(2);
+    expect(rows[0].newValue).toMatchObject({ scope: "ALL" });
+    const p3 = await openBuy(w.symbol, w.accountId);
+    const plain = await call({ scope: "ALL" });
+    expect(plain.successful).toBe(1);
+    expect(await prisma.auditLog.count({ where: { action: "STM_BULK_CLOSE", entityId: p3.id } })).toBe(0);
   });
 });
