@@ -756,7 +756,7 @@ pub fn spawn(pool: PgPool, nats: async_nats::Client, interval: std::time::Durati
 /// could close before the shadow's next 1 s pass ever sampled the breach: a WEB_ONLY that resets the soak clock and buries
 /// a real one in noise. Only WHEN the shadow evaluates changes: the same evaluate_account_mode (close / P&L / NBP
 /// untouched), Mode::Shadow (nothing written). Accounts queued while one is evaluated are taken together, each once.
-pub fn spawn_shadow_trigger(pool: PgPool, recorder: Arc<crate::shadow::Recorder>, prices: book::PriceSource) -> tokio::sync::mpsc::UnboundedSender<String> {
+pub fn spawn_shadow_trigger(pool: PgPool, recorder: Arc<crate::shadow::Recorder>, prices: book::PriceSource) -> tokio::sync::mpsc::UnboundedSender<crate::margin_watch::MarginFire> {
     spawn_shadow_trigger_with_snapshots(pool, recorder, prices).0
 }
 
@@ -770,7 +770,7 @@ pub async fn evaluate_snapshot(pool: &PgPool, mode: &Mode, touches: Vec<market_d
         let entry = match accounts.iter_mut().find(|(a, _)| *a == t.account_id) {
             Some(e) => e,
             None => {
-                accounts.push((t.account_id.clone(), book::Pin { at: t.at, ticks: Default::default() }));
+                accounts.push((t.account_id.clone(), book::Pin { at: t.at, ticks: Default::default(), measured: Vec::new() }));
                 accounts.last_mut().unwrap()
             }
         };
@@ -791,8 +791,8 @@ pub fn spawn_shadow_trigger_with_snapshots(
     pool: PgPool,
     recorder: Arc<crate::shadow::Recorder>,
     prices: book::PriceSource,
-) -> (tokio::sync::mpsc::UnboundedSender<String>, market_data::risk_hook::SnapshotSender) {
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+) -> (tokio::sync::mpsc::UnboundedSender<crate::margin_watch::MarginFire>, market_data::risk_hook::SnapshotSender) {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<crate::margin_watch::MarginFire>();
     let (snap_tx, mut snap_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<market_data::risk_hook::SlTpTouch>>();
     tokio::spawn(book::with_price_source(prices, async move {
         let mode = Mode::Shadow(recorder);
@@ -808,14 +808,20 @@ pub fn spawn_shadow_trigger_with_snapshots(
                     evaluate_snapshot(&pool, &mode, all).await;
                 }
                 Some(first) = rx.recv() => {
+                    // one evaluation per account, at the EARLIEST moment it fired (the moment the web was then called)
                     let mut batch = vec![first];
                     while let Ok(more) = rx.try_recv() {
-                        if !batch.contains(&more) {
-                            batch.push(more);
+                        match batch.iter_mut().find(|f| f.account_id == more.account_id) {
+                            Some(f) if more.pin.at < f.pin.at => *f = more,
+                            Some(_) => {}
+                            None => batch.push(more),
                         }
                     }
-                    for account_id in batch {
-                        if let Err(err) = evaluate_account_mode(&pool, None, &account_id, &mode).await {
+                    for fire in batch {
+                        // pinned (fan-in race, 2026-09-29): read AS IT STOOD at the fire, so a web close that has landed
+                        // since cannot hide the position; the same evaluation as the SL / TP snapshot
+                        let account_id = fire.account_id;
+                        if let Err(err) = book::with_pin(fire.pin, evaluate_account_mode(&pool, None, &account_id, &mode)).await {
                             tracing::warn!(%account_id, %err, "shadow trigger: evaluation failed (the pass will retry)");
                         }
                     }

@@ -147,12 +147,18 @@ pub async fn load_book_state(pool: &PgPool, account_id: &str) -> Result<Option<A
     let (balance, credit) = match crate::book::current_pin() {
         None => (funds.balance, funds.credit),
         Some(pin) => {
+            // rows written since the pin; plus the close rows of the positions the margin trigger measured open at it,
+            // by identity (book::Pin::measured: the database's createdAt may be stamped before the engine's `at`)
             let (since, credit_used): (Decimal, Decimal) = sqlx::query_as(
                 r#"SELECT COALESCE(sum(amount), 0), COALESCE(sum(amount) FILTER (WHERE type::text = 'CREDIT'), 0)
-                   FROM "Transaction" WHERE "accountId" = $1 AND "referenceType" = 'Position' AND "createdAt" >= $2"#,
+                   FROM "Transaction" WHERE "accountId" = $1 AND "referenceType" = 'Position'
+                     AND ("createdAt" >= $2
+                          OR ("referenceId" = ANY($3) AND type::text IN ('TRADE_PNL', 'CREDIT', 'NEGATIVE_BALANCE_PROTECTION')
+                              AND "createdAt" >= $2 - interval '5 seconds'))"#,
             )
             .bind(account_id)
             .bind(pin.at)
+            .bind(&pin.measured)
             .fetch_one(pool)
             .await?;
             (funds.balance - since, funds.credit + credit_used)

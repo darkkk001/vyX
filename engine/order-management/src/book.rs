@@ -96,11 +96,19 @@ pub async fn with_price_source<F: std::future::Future>(source: PriceSource, f: F
 /// - the hook's own tick for the touched symbols (fresh = its tick time within 15 s of `at`, the web's rule), the
 ///   engine's ticks for the rest; sessions judged at `at`.
 /// The decision logic is untouched: only the state it reads is pinned. The live path never waits for any of this.
+///
+/// `measured` (margin trigger fan-in fix, 2026-09-29): the ids of the positions the per-tick margin trigger MEASURED OPEN
+/// at `at` (margin_watch::MarginFire). They count as open at the pin BY IDENTITY, and their close rows (TRADE_PNL, CREDIT
+/// use, NEGATIVE_BALANCE_PROTECTION) as written after it, whatever the timestamps say: `at` is the engine's clock while
+/// closedAt / createdAt are the database's, and a web close landing within milliseconds of the fire could otherwise be
+/// stamped before `at` and hide the position (seen in the fan-in regression test). A 5 s bound keeps a stale book from
+/// reviving a position closed well before the fire. Empty (the SL / TP snapshot) = exactly the time-based reads above.
 #[derive(Clone, Debug)]
 pub struct Pin {
     pub at: chrono::DateTime<chrono::Utc>,
     /// symbol -> (bid, ask, tick time) as the risk hook saw it
     pub ticks: std::collections::HashMap<String, (Decimal, Decimal, chrono::DateTime<chrono::Utc>)>,
+    pub measured: Vec<String>,
 }
 
 tokio::task_local! {
@@ -172,15 +180,21 @@ pub async fn open_positions_with_market(
            ORDER BY p."openedAt", p.id"#,
         levels = market_data::ask_markup::LEVELS_COLUMNS,
         joins = market_data::ask_markup::LEVELS_JOINS,
-        // pinned (Stage 5 snapshot): what was open at the pin's moment, including a position closed since
-        open = if pin.is_some() { r#"p."openedAt" <= $2 AND (p.status = 'OPEN' OR p."closedAt" >= $2)"# } else { "p.status = 'OPEN'" },
+        // pinned (Stage 5 snapshot): what was open at the pin's moment, including a position closed since; plus the
+        // positions the margin trigger measured open at it, by identity (Pin::measured; none for an SL / TP snapshot)
+        open = if pin.is_some() {
+            r#"((p."openedAt" <= $2 AND (p.status = 'OPEN' OR p."closedAt" >= $2))
+                 OR (p.id = ANY($3) AND (p.status = 'OPEN' OR p."closedAt" >= $2 - interval '5 seconds')))"#
+        } else {
+            "p.status = 'OPEN'"
+        },
     );
     #[allow(clippy::type_complexity)]
     let rows: Vec<(String, String, String, Decimal, Decimal, Decimal, Option<Decimal>, Option<Decimal>, Option<Decimal>, Option<Decimal>, String, String, String, String, Decimal, Option<market_data::ask_markup::AskRule>)> = {
         use sqlx::Row;
         let q = sqlx::query(&sql).bind(account_id);
         let q = match &pin {
-            Some(p) => q.bind(p.at),
+            Some(p) => q.bind(p.at).bind(&p.measured),
             None => q,
         };
         let raw = q.fetch_all(pool).await?;

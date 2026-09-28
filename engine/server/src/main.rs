@@ -1489,7 +1489,7 @@ async fn main() {
     // which stopped moving when the feed's writes went VPS-local (S5).
     let tick_cache = Arc::new(TickCache::new());
     // Stage 5: the shadow's trigger inbox (monitor::spawn_shadow_trigger), handed to the per-tick margin trigger below
-    let mut shadow_trigger: Option<tokio::sync::mpsc::UnboundedSender<String>> = None;
+    let mut shadow_trigger: Option<tokio::sync::mpsc::UnboundedSender<order_management::margin_watch::MarginFire>> = None;
     // Stage 5 (2026-09-26): the same worker's SL / TP snapshot inbox, handed to the risk hook below (never waited on)
     let mut shadow_snapshot: Option<market_data::risk_hook::SnapshotSender> = None;
     // the per-tick margin trigger's book, filled in below once it exists: the shadow pass's idle gate reads it
@@ -1679,7 +1679,7 @@ async fn main() {
             let _ = margin_watch_slot.set(watch.clone());
             if let Some(tx) = &shadow_trigger {
                 watch.set_on_fire(tx.clone());
-                tracing::info!("shadow trigger: every account the margin trigger fires for is evaluated in shadow first");
+                tracing::info!("shadow trigger: every account the margin trigger fires for is evaluated in shadow first, pinned to the fire (as it stood then)");
             }
             hook.set_margin_watch(watch);
             tracing::info!("risk hook margin trigger enabled: stop-out / margin call evaluated on the tick");

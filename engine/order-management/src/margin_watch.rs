@@ -46,6 +46,8 @@ const MAX_BACKOFF_SECS: u64 = 30;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct WatchedPosition {
+    /// the position's id: named in the fire's pin (book::Pin::measured)
+    pub id: String,
     pub symbol: String,
     pub side: protocol::OrderSide,
     pub volume: Decimal,
@@ -56,6 +58,18 @@ pub struct WatchedPosition {
     pub hedged_margin_pct: Decimal,
     /// The account's ask rule (market_data::ask_markup): a SELL is valued at the account's ask. None = raw.
     pub ask_rule: Option<market_data::ask_markup::AskRule>,
+}
+
+/// What the per-tick margin trigger hands the shadow when it fires (Stage 5 fan-in race, 2026-09-29): the account AND
+/// the moment it was measured at, with the tick-cache prices of every symbol it holds (book::Pin). The shadow evaluates
+/// the account AS IT STOOD THEN, the same pinned evaluation the SL / TP snapshot uses (monitor::evaluate_snapshot),
+/// so a web close that lands before the shadow's database read no longer hides the position. (Before, only the id was
+/// sent and the shadow re-read the live book: in the 2026-09-28 S2 fan-in the web closed 49990002 first, the shadow
+/// read it second, found nothing open and recorded nothing -> WEB_ONLY.)
+#[derive(Clone, Debug)]
+pub struct MarginFire {
+    pub account_id: String,
+    pub pin: crate::book::Pin,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -98,7 +112,7 @@ pub async fn load_book<'e, E: sqlx::PgExecutor<'e>>(e: E) -> Result<Book, sqlx::
     // + the levels of each position's account ask rule (market_data::ask_markup), joined: still one query
     let sql = format!(
         r#"SELECT a.id, a.balance, a.credit, a.leverage, a.currency, g."marginCallLevel" AS call, g."stopOutLevel" AS stop_out,
-                  s.name, p.side::text AS side, p.volume, p."openPrice" AS open_price, s."contractSize" AS contract_size,
+                  p.id AS position_id, s.name, p.side::text AS side, p.volume, p."openPrice" AS open_price, s."contractSize" AS contract_size,
                   s."quoteCurrency" AS quote_ccy, COALESCE(bs."hedgedMarginPct", 200) AS hedged_margin_pct,
                   {levels}
            FROM "Position" p
@@ -114,17 +128,17 @@ pub async fn load_book<'e, E: sqlx::PgExecutor<'e>>(e: E) -> Result<Book, sqlx::
     );
     let raw = sqlx::query(&sql).fetch_all(e).await?;
     #[allow(clippy::type_complexity)]
-    let mut rows: Vec<(String, Decimal, Decimal, i32, String, Option<Decimal>, Option<Decimal>, String, String, Decimal, Decimal, Decimal, String, Decimal, Option<market_data::ask_markup::AskRule>)> = Vec::with_capacity(raw.len());
+    let mut rows: Vec<(String, Decimal, Decimal, i32, String, Option<Decimal>, Option<Decimal>, String, String, String, Decimal, Decimal, Decimal, String, Decimal, Option<market_data::ask_markup::AskRule>)> = Vec::with_capacity(raw.len());
     for r in &raw {
         rows.push((
             r.try_get("id")?, r.try_get("balance")?, r.try_get("credit")?, r.try_get("leverage")?, r.try_get("currency")?, r.try_get("call")?, r.try_get("stop_out")?,
-            r.try_get("name")?, r.try_get("side")?, r.try_get("volume")?, r.try_get("open_price")?, r.try_get("contract_size")?, r.try_get("quote_ccy")?,
+            r.try_get("position_id")?, r.try_get("name")?, r.try_get("side")?, r.try_get("volume")?, r.try_get("open_price")?, r.try_get("contract_size")?, r.try_get("quote_ccy")?,
             r.try_get("hedged_margin_pct")?, market_data::ask_markup::resolve(&market_data::ask_markup::levels_from_row(r)?),
         ));
     }
     let d = MarginThresholds::default();
     let mut accounts: Vec<WatchedAccount> = Vec::new();
-    for (id, balance, credit, leverage, currency, call, stop_out, symbol, side, volume, open_price, contract_size, quote_currency, hedged_margin_pct, ask_rule) in rows {
+    for (id, balance, credit, leverage, currency, call, stop_out, position_id, symbol, side, volume, open_price, contract_size, quote_currency, hedged_margin_pct, ask_rule) in rows {
         if accounts.last().map(|a| a.id != id).unwrap_or(true) {
             accounts.push(WatchedAccount {
                 id,
@@ -137,7 +151,7 @@ pub async fn load_book<'e, E: sqlx::PgExecutor<'e>>(e: E) -> Result<Book, sqlx::
             });
         }
         let side = if side == "SELL" { protocol::OrderSide::Sell } else { protocol::OrderSide::Buy };
-        accounts.last_mut().unwrap().positions.push(WatchedPosition { symbol, side, volume, open_price, contract_size, quote_currency, hedged_margin_pct, ask_rule });
+        accounts.last_mut().unwrap().positions.push(WatchedPosition { id: position_id, symbol, side, volume, open_price, contract_size, quote_currency, hedged_margin_pct, ask_rule });
     }
     Ok(Book::new(accounts))
 }
@@ -191,7 +205,7 @@ pub struct MarginWatch {
     /// Stage 5 (2026-09-25): every account this trigger fires for is handed to the shadow FIRST, before the hook
     /// calls the web, so the shadow samples the breached state instead of racing the web's close. Unset (live, no
     /// shadow) = nothing changes. A send never blocks and never delays the web call.
-    on_fire: Mutex<Option<tokio::sync::mpsc::UnboundedSender<String>>>,
+    on_fire: Mutex<Option<tokio::sync::mpsc::UnboundedSender<MarginFire>>>,
     /// The book has been set at least once: until then book_symbols() is None (unknown), never "flat".
     loaded: AtomicBool,
 }
@@ -216,7 +230,7 @@ impl MarginWatch {
     }
 
     /// Stage 5: hand every fired account to the shadow (monitor::spawn_shadow_trigger) before the web is called.
-    pub fn set_on_fire(&self, tx: tokio::sync::mpsc::UnboundedSender<String>) {
+    pub fn set_on_fire(&self, tx: tokio::sync::mpsc::UnboundedSender<MarginFire>) {
         *self.on_fire.lock().unwrap() = Some(tx);
     }
 
@@ -309,9 +323,10 @@ impl MarginWatch {
                     }
                 };
                 if fire {
-                    // to the shadow first (a non-blocking send), then the symbol goes back to the hook for the web call
+                    // to the shadow first (a non-blocking send), then the symbol goes back to the hook for the web call.
+                    // The pin: this moment and the prices this decision was measured at (every symbol of the account).
                     if let Some(tx) = self.on_fire.lock().unwrap().as_ref() {
-                        let _ = tx.send(account.id.clone());
+                        let _ = tx.send(MarginFire { account_id: account.id.clone(), pin: pin_for(account, cache) });
                     }
                 }
                 if fire && !out.contains(&t.symbol) {
@@ -321,6 +336,23 @@ impl MarginWatch {
         }
         out
     }
+}
+
+/// The account's moment: now, and the tick-cache quote (bid, ask, tick time) of every symbol it holds: what measure()
+/// just used. A symbol with no quote is left out (the pinned book then treats it as unpriced, like measure()).
+fn pin_for(account: &WatchedAccount, cache: &TickCache) -> crate::book::Pin {
+    let mut ticks = HashMap::new();
+    for p in &account.positions {
+        if ticks.contains_key(&p.symbol) {
+            continue;
+        }
+        if let Some((t, received)) = cache.latest(&p.symbol) {
+            ticks.insert(p.symbol.clone(), (t.bid, t.ask, crate::book::tick_time(&t, received)));
+        }
+    }
+    // the positions this measurement counted: open at the fire by construction (book::Pin::measured)
+    let measured = account.positions.iter().map(|p| p.id.clone()).collect();
+    crate::book::Pin { at: chrono::Utc::now(), ticks, measured }
 }
 
 impl market_data::risk_hook::MarginWatch for MarginWatch {
@@ -365,6 +397,7 @@ mod tests {
             thresholds: MarginThresholds { call_level: dec!(100), stop_out_level: dec!(99) },
             positions: (0..10)
                 .map(|_| WatchedPosition {
+                    id: "p".into(),
                     symbol: "XAUUSD".into(),
                     side: protocol::OrderSide::Buy,
                     volume: dec!(0.01),
@@ -489,7 +522,7 @@ mod tests {
             leverage: 100,
             currency: "USD".into(),
             thresholds: MarginThresholds { call_level: dec!(100), stop_out_level: dec!(50) },
-            positions: vec![WatchedPosition { symbol: "USDJPY".into(), side: protocol::OrderSide::Sell, volume: dec!(0.1), open_price: dec!(150), contract_size: dec!(100000), quote_currency: "JPY".into(), hedged_margin_pct: dec!(200), ask_rule: None }],
+            positions: vec![WatchedPosition { id: "p".into(), symbol: "USDJPY".into(), side: protocol::OrderSide::Sell, volume: dec!(0.1), open_price: dec!(150), contract_size: dec!(100000), quote_currency: "JPY".into(), hedged_margin_pct: dec!(200), ask_rule: None }],
         };
         let cache = cache_with(&[(tick("USDJPY", dec!(151), dec!(151)), 0)]);
         let (equity, used) = measure(&a, &cache);
