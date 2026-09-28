@@ -85,6 +85,7 @@ export async function GET() {
         balance: a.balance.toString(),
         credit: a.credit.toString(),
         status: a.status,
+        tradingRights: a.tradingRights,
         groupId: a.groupId,
         groupName: a.group?.name ?? null,
         // The ROUTING axis, for the backoffice clients table. Broker-side

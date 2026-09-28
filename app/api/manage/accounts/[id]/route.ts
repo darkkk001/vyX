@@ -6,6 +6,10 @@ import { publishAccountUpdated } from "@/lib/account-events";
 import { checkAccountStructure } from "@/lib/account-structure";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { hasPermission } from "@/lib/permissions";
+import { setAccountTradingRights, tradingRightsNotice, pendingCancelReason, type TradingRightsChange } from "@/lib/account-trading-rights";
+import { revokeAllAccountSessions } from "@/lib/account-auth";
+import { createNotification } from "@/lib/notifications";
+import { publishTradingEvent } from "@/lib/nats";
 
 async function requireManager() {
   const session = await getAdminSession();
@@ -49,8 +53,11 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   // (see Account.swapFree's own schema comment), not a balance/leverage
   // magnitude, so MANAGER can toggle it same as group/type.
   const hasSwapFreeChange = body != null && "swapFree" in body;
+  // Per-account trading rights (2026-09-28, owner decision 4): a risk control, BROKER_ADMIN or the Client trading
+  // permission, applied at once (no second admin).
+  const hasRightsChange = body != null && "tradingRights" in body;
 
-  if (!hasGroupChange && !hasAccountTypeChange && !hasFinanceChange && !hasSwapFreeChange) {
+  if (!hasGroupChange && !hasAccountTypeChange && !hasFinanceChange && !hasSwapFreeChange && !hasRightsChange) {
     return NextResponse.json({ error: "nothing to update" }, { status: 400 });
   }
   if (hasFinanceChange && session.role !== "BROKER_ADMIN" && !(await hasPermission(session, "ACCOUNT_FINANCE"))) {
@@ -58,6 +65,17 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       { error: "forbidden: leverage/status/maxDailyLoss changes require BROKER_ADMIN or ACCOUNT_FINANCE" },
       { status: 403 }
     );
+  }
+
+  let tradingRights: "FULL" | "CLOSE_ONLY" | "READ_ONLY" | undefined;
+  if (hasRightsChange) {
+    if (session.role !== "BROKER_ADMIN" && !(await hasPermission(session, "CLIENT_TRADING"))) {
+      return NextResponse.json({ error: "forbidden: trading rights changes require BROKER_ADMIN or the Client trading permission", permission: "CLIENT_TRADING" }, { status: 403 });
+    }
+    if (body.tradingRights !== "FULL" && body.tradingRights !== "CLOSE_ONLY" && body.tradingRights !== "READ_ONLY") {
+      return NextResponse.json({ error: "tradingRights must be FULL, CLOSE_ONLY or READ_ONLY" }, { status: 400 });
+    }
+    tradingRights = body.tradingRights;
   }
 
   // Stage 3b: Account.groupId is NOT NULL, so an account can no longer be
@@ -160,6 +178,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     );
   }
 
+  let rightsChange: TradingRightsChange | null = null;
   const updated = await prisma.$transaction(async (tx) => {
     const data: {
       groupId?: string;
@@ -233,6 +252,11 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     }
 
     const result = await tx.account.update({ where: { id }, data });
+    // trading rights: its own locked change + audit; dropping below FULL cancels the pending orders at once (owner
+    // decision 2026-09-28), each audited with the reason the trader sees
+    if (tradingRights !== undefined) {
+      rightsChange = await setAccountTradingRights(tx, { brokerId, accountId: id, to: tradingRights, adminId: session.adminId, note: typeof body.note === "string" ? body.note.trim().slice(0, 500) : undefined });
+    }
 
     for (const entry of auditEntries) {
       await tx.auditLog.create({
@@ -248,8 +272,30 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       });
     }
 
-    return result;
+    return tradingRights !== undefined ? tx.account.findUniqueOrThrow({ where: { id } }) : result;
   });
+
+  // Suspension hole (2026-09-28): a suspended / closed account's open sessions end at once (the order routes also
+  // refuse it now), so a client signed in before the change cannot keep trading
+  if (status !== undefined && status !== "ACTIVE" && account.status === "ACTIVE") {
+    await revokeAllAccountSessions(id).catch((err) => console.error("[accounts] session revoke after suspend failed", err));
+  }
+  const change = rightsChange as TradingRightsChange | null;
+  if (change?.changed) {
+    const reason = pendingCancelReason(change.to);
+    for (const orderId of change.cancelledOrderIds) {
+      await publishTradingEvent("OrderCancelled", { order_id: orderId, account_id: id, broker_id: brokerId, reason }).catch(() => {});
+    }
+    await createNotification(prisma, {
+      brokerId,
+      accountId: id,
+      type: "TRADING_RIGHTS_CHANGED",
+      title: tradingRightsNotice(change),
+      body: tradingRightsNotice(change),
+      entityType: "Account",
+      entityId: id,
+    }).catch((err) => console.error("[accounts] trading rights notification failed", err));
+  }
 
   // after commit: an open terminal / WebTrader picks up the new leverage / status / group / type at once
   await publishAccountUpdated(brokerId, id, "account");
@@ -262,5 +308,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     accountTypeId: updated.accountTypeId,
     maxDailyLoss: updated.maxDailyLoss?.toString() ?? null,
     swapFree: updated.swapFree,
+    tradingRights: updated.tradingRights,
+    cancelledPendingOrders: change?.cancelledOrderIds.length ?? 0,
   });
 }

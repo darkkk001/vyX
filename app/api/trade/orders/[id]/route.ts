@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { tradingRightsRefusal } from "@/lib/account-trading-rights";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
@@ -49,7 +50,7 @@ export async function PATCH(
     where: { id },
     include: {
       symbol: { select: { name: true, category: true } },
-      account: { select: { accountNumber: true, fullName: true, group: { select: { groupType: true, dealingMode: true, forceDealingMode: true, category: true } } } },
+      account: { select: { accountNumber: true, fullName: true, status: true, tradingRights: true, group: { select: { groupType: true, dealingMode: true, forceDealingMode: true, category: true } } } },
     },
   });
   if (!order || order.accountId !== session.accountId) {
@@ -58,6 +59,10 @@ export async function PATCH(
   if (order.status !== "PENDING") {
     return NextResponse.json({ error: `cannot edit an order in status ${order.status}` }, { status: 409 });
   }
+  // per-account trading rights (2026-09-28): read-only changes nothing; below FULL an order that would OPEN a position
+  // cannot be changed (a queued close can: closing stays allowed on a close-only account)
+  const rightsRefused = tradingRightsRefusal(order.account, order.closesPositionId ? "modify" : "open");
+  if (rightsRefused) return rightsRefused;
   if (requestedPrice !== undefined && order.type === "MARKET") {
     return NextResponse.json({ error: "MARKET orders have no entry price to edit" }, { status: 400 });
   }
@@ -213,7 +218,7 @@ export async function DELETE(
     where: { id },
     include: {
       symbol: { select: { name: true } },
-      account: { select: { accountNumber: true, fullName: true, group: { select: { groupType: true, dealingMode: true, forceDealingMode: true, category: true } } } },
+      account: { select: { accountNumber: true, fullName: true, status: true, tradingRights: true, group: { select: { groupType: true, dealingMode: true, forceDealingMode: true, category: true } } } },
     },
   });
   if (!order || order.accountId !== session.accountId) {
@@ -222,6 +227,9 @@ export async function DELETE(
   if (order.status !== "PENDING") {
     return NextResponse.json({ error: `cannot cancel an order in status ${order.status}` }, { status: 409 });
   }
+  // per-account trading rights (2026-09-28): a read-only account cancels nothing itself
+  const rightsRefused = tradingRightsRefusal(order.account, "modify");
+  if (rightsRefused) return rightsRefused;
 
   const cancelled = await prisma.order.update({
     where: { id },

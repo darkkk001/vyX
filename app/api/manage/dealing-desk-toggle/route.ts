@@ -32,6 +32,7 @@ import {
   checkSymbolExposure,
   checkBrokerExposure,
   checkMaxDailyLoss,
+  checkAccountTradingRights,
 } from "@/lib/risk";
 
 // Dealer desk ON/OFF (2026-09-04) -- see Broker.dealingDeskAutoFillAt's own
@@ -208,6 +209,8 @@ async function flushDealingQueueToMarket(
       checkLotStep(order.volume, brokerSymbol.minLot, brokerSymbol.lotStep) ??
       (order.account.group ? checkGroupMaxLot(order.volume, order.account.group.maxLotSize) : null) ??
       (order.account.group ? checkGroupTradingRestriction(order.account.group.tradingRestriction, order.side) : null) ??
+      // per-account trading rights + status (2026-09-28): a close-only / read-only / suspended account opens nothing
+      checkAccountTradingRights(order.account, "open") ??
       (order.account.group ? checkGroupTradingHalted(order.account.group) : null) ??
       (order.account.group ? checkGroupCloseOnly(order.account.group) : null) ??
       (order.account.group

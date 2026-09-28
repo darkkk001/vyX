@@ -5,6 +5,7 @@ import { checkBalanceDebit } from "@/lib/margin";
 import { executeTransfer, TransferError, validateTransferAccounts } from "@/lib/transfer";
 import { executeIbPayout, IbPayoutError } from "@/lib/ib-payout";
 import { computePendingCommission } from "@/lib/commission";
+import { applyCreditAdjustment, checkCreditRemoval, CreditAdjustmentError } from "@/lib/credit-adjustment";
 
 type Tx = Prisma.TransactionClient;
 
@@ -108,7 +109,7 @@ export async function requestBalanceAdjustment(
     amount: Prisma.Decimal;
     note: string;
     adminId: string;
-    kind?: "ADJUSTMENT" | "TRANSFER" | "IB_PAYOUT";
+    kind?: "ADJUSTMENT" | "TRANSFER" | "IB_PAYOUT" | "CREDIT";
     toAccountId?: string;
     ibRelationshipId?: string;
   }
@@ -129,6 +130,11 @@ export async function requestBalanceAdjustment(
     if (open) throw new BalanceAdjustmentError("a payout for this partner is already waiting for approval");
   }
   // early feedback on money going out; approval re-checks on the locked balance
+  // a credit removal: the same early check on credit (approval re-checks on the locked credit)
+  if (kind === "CREDIT" && params.amount.lt(0)) {
+    const refused = await checkCreditRemoval(tx, { accountId: params.accountId, amount: params.amount });
+    if (refused) throw new BalanceAdjustmentError(`credit removal refused: ${refused.message}`);
+  }
   const outgoing = kind === "TRANSFER" ? params.amount : kind === "ADJUSTMENT" && params.amount.lt(0) ? params.amount.neg() : null;
   if (outgoing) {
     const debit = await checkBalanceDebit(tx, { accountId: params.accountId, amount: outgoing });
@@ -151,7 +157,7 @@ export async function requestBalanceAdjustment(
     data: {
       brokerId: params.brokerId,
       actorAdminId: params.adminId,
-      action: kind === "TRANSFER" ? "TRANSFER_REQUESTED" : kind === "IB_PAYOUT" ? "IB_PAYOUT_REQUESTED" : "BALANCE_ADJUSTMENT_REQUESTED",
+      action: kind === "TRANSFER" ? "TRANSFER_REQUESTED" : kind === "IB_PAYOUT" ? "IB_PAYOUT_REQUESTED" : kind === "CREDIT" ? "CREDIT_REQUESTED" : "BALANCE_ADJUSTMENT_REQUESTED",
       entityType: "Account",
       entityId: params.accountId,
       newValue: { requestId: request.id, kind, amount: params.amount.toString(), note: params.note, toAccountId: request.toAccountId, ibRelationshipId: request.ibRelationshipId },
@@ -200,6 +206,12 @@ export async function approveBalanceAdjustmentRequest(
       transactionId = t.outTxn.id;
       balanceAfter = t.outTxn.balanceAfter!;
       affectedAccountIds = [request.accountId, request.toAccountId!];
+    } else if (request.kind === "CREDIT") {
+      // Credit ($): the balance does not move; balanceAfter reports the (unchanged) balance
+      const c = await applyCreditAdjustment(tx, { accountId: request.accountId, brokerId: params.brokerId, amount: request.amount, note: request.note, adminId: params.adminId, requestId: request.id });
+      transactionId = c.transactionId;
+      balanceAfter = (await tx.account.findUniqueOrThrow({ where: { id: request.accountId }, select: { balance: true } })).balance;
+      affectedAccountIds = [request.accountId];
     } else if (request.kind === "IB_PAYOUT") {
       const p = await executeIbPayout(tx, { relationshipId: request.ibRelationshipId!, brokerId: params.brokerId, adminId: params.adminId, requestId: request.id });
       transactionId = p.transaction.id;
@@ -212,7 +224,7 @@ export async function approveBalanceAdjustmentRequest(
       affectedAccountIds = [request.accountId];
     }
   } catch (e) {
-    if (e instanceof TransferError || e instanceof IbPayoutError) throw new BalanceAdjustmentError(e.message);
+    if (e instanceof TransferError || e instanceof IbPayoutError || e instanceof CreditAdjustmentError) throw new BalanceAdjustmentError(e.message);
     throw e;
   }
 
@@ -220,7 +232,7 @@ export async function approveBalanceAdjustmentRequest(
     data: {
       brokerId: params.brokerId,
       actorAdminId: params.adminId,
-      action: request.kind === "TRANSFER" ? "TRANSFER_APPROVED" : request.kind === "IB_PAYOUT" ? "IB_PAYOUT_APPROVED" : "BALANCE_ADJUSTMENT_APPROVED",
+      action: request.kind === "TRANSFER" ? "TRANSFER_APPROVED" : request.kind === "IB_PAYOUT" ? "IB_PAYOUT_APPROVED" : request.kind === "CREDIT" ? "CREDIT_APPROVED" : "BALANCE_ADJUSTMENT_APPROVED",
       entityType: "Account",
       entityId: request.accountId,
       newValue: { requestId: request.id, kind: request.kind, transactionId },
@@ -255,7 +267,7 @@ export async function rejectBalanceAdjustmentRequest(
     data: {
       brokerId: params.brokerId,
       actorAdminId: params.adminId,
-      action: "BALANCE_ADJUSTMENT_REJECTED",
+      action: request.kind === "CREDIT" ? "CREDIT_REJECTED" : "BALANCE_ADJUSTMENT_REJECTED",
       entityType: "Account",
       entityId: request.accountId,
       newValue: { requestId: request.id, kind: request.kind, reviewNote: params.reviewNote },

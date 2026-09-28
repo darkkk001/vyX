@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { tradingRightsRefusal } from "@/lib/account-trading-rights";
 import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
 import { closeBulkForAccount, selectBulkCloseTargets, type BulkCloseScope, type BulkClosePositionResult } from "@/lib/bulk-close";
@@ -55,8 +56,11 @@ export async function POST(request: NextRequest) {
   // bulk close (app/api/manage/positions/close-bulk) keeps executing directly.
   const account = await prisma.account.findUniqueOrThrow({
     where: { id: session.accountId },
-    select: { accountNumber: true, fullName: true, group: { select: { groupType: true, dealingMode: true, forceDealingMode: true, category: true } } },
+    select: { accountNumber: true, fullName: true, status: true, tradingRights: true, group: { select: { groupType: true, dealingMode: true, forceDealingMode: true, category: true } } },
   });
+  // per-account trading rights (2026-09-28): a read-only account closes nothing itself
+  const rightsRefused = tradingRightsRefusal(account, "close");
+  if (rightsRefused) return rightsRefused;
   const routing = await accountWantsDealingQueue(prisma, session.brokerId, account.group);
   if (routing.wantsQueue) {
     const clientPlatformHeader = request.headers.get("x-client-platform");

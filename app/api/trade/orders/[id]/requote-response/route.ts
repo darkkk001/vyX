@@ -26,6 +26,7 @@ import {
   checkSymbolExposure,
   checkBrokerExposure,
   checkMaxDailyLoss,
+  checkAccountTradingRights,
 } from "@/lib/risk";
 
 // The client's answer to a dealer's requote -- see
@@ -163,6 +164,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     checkLotStep(order.volume, brokerSymbol.minLot, brokerSymbol.lotStep) ??
     (account.group ? checkGroupMaxLot(order.volume, account.group.maxLotSize) : null) ??
     (account.group ? checkGroupTradingRestriction(account.group.tradingRestriction, order.side) : null) ??
+    // per-account trading rights + status (2026-09-28): a close-only / read-only / suspended account opens nothing
+    checkAccountTradingRights(account, "open") ??
     (account.group ? checkGroupTradingHalted(account.group) : null) ??
     (account.group ? checkGroupCloseOnly(account.group) : null) ??
     (account.group

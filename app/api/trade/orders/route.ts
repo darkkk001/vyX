@@ -39,6 +39,7 @@ import {
   computeNextSessionOpen,
   effectiveMaxSlippagePips,
   isValidMaxSlippageInput,
+  checkAccountTradingRights,
 } from "@/lib/risk";
 
 async function logHotkeyOrder(brokerId: string, orderId: string) {
@@ -225,6 +226,8 @@ async function handlePlaceOrder(request: NextRequest, session: Session) {
     checkLotStep(volume, brokerSymbol.minLot, brokerSymbol.lotStep) ??
     (account.group ? checkGroupMaxLot(volume, account.group.maxLotSize) : null) ??
     (account.group ? checkGroupTradingRestriction(account.group.tradingRestriction, side) : null) ??
+    // per-account trading rights + status (2026-09-28): a close-only / read-only / suspended account opens nothing
+    checkAccountTradingRights(account, "open") ??
     (account.group ? checkGroupTradingHalted(account.group) : null) ??
     (account.group ? checkGroupCloseOnly(account.group) : null) ??
     (account.group

@@ -26,6 +26,7 @@ import {
   checkSymbolExposure,
   checkBrokerExposure,
   checkMaxDailyLoss,
+  checkAccountTradingRights,
 } from "@/lib/risk";
 import * as mirror from "@/lib/mirror";
 
@@ -323,6 +324,8 @@ export async function POST(request: NextRequest) {
     checkLotStep(volume, brokerSymbol.minLot, brokerSymbol.lotStep) ??
     (account.group ? checkGroupMaxLot(volume, account.group.maxLotSize) : null) ??
     (account.group ? checkGroupTradingRestriction(account.group.tradingRestriction, side) : null) ??
+    // per-account trading rights + status (2026-09-28): a close-only / read-only / suspended account opens nothing
+    checkAccountTradingRights(account, "open") ??
     (account.group ? checkGroupTradingHalted(account.group) : null) ??
     (account.group ? checkGroupCloseOnly(account.group) : null) ??
     (account.group

@@ -32,6 +32,7 @@ import {
   checkPriceFreshness,
   checkSlippage,
   PENDING_TRIGGER_MAX_SLIPPAGE_PIPS,
+  checkAccountTradingRights,
 } from "@/lib/risk";
 
 // ---------------------------------------------------------------------------
@@ -139,6 +140,8 @@ export async function triggerPendingOrder(orderId: string, triggerPrice: string,
     checkPriceFreshness(livePrice) ??
     (account.group ? checkGroupMaxLot(order.volume, account.group.maxLotSize) : null) ??
     (account.group ? checkGroupTradingRestriction(account.group.tradingRestriction, order.side) : null) ??
+    // per-account trading rights + status (2026-09-28): a close-only / read-only / suspended account opens nothing
+    checkAccountTradingRights(account, "open") ??
     (account.group ? checkGroupTradingHalted(account.group) : null) ??
     (account.group ? checkGroupCloseOnly(account.group) : null) ??
     (account.group ? checkGroupAllowedSymbol(account.group.restrictSymbols, account.group.allowedSymbols.map((s) => s.symbolId), order.symbolId) : null) ??

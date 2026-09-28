@@ -1373,6 +1373,28 @@ Statements for that account show credit without a grant line. It is a bot accoun
 
 ### Stage 6: cutover with a warm fallback (1-2 days + drill)
 
+**Cutover gate added 2026-09-28 (owner): the engine's order paths must enforce every web order gate first.** Today the
+engine's order routes (`engine/server/src/main.rs` `/v1/orders/market`, `/v1/orders/pending`, `/v1/orders/{id}/cancel`,
+`/v1/positions/{id}/modify`, `/v1/positions/{id}/close`; `engine/order-management/src/lib.rs`) and its tick-driven
+pending trigger (`pending_orders.rs` `trigger_order`, which only checks max open positions) check NONE of these. They
+are closed in production only because `ENGINE_ORDER_MANAGEMENT` is not `1` (the thresholds guard refuses every order).
+Before any broker is switched to `RUST`, each of these must exist in Rust, with a parity scenario per gate (the web's
+refusal and the engine's refusal on the same input):
+
+| Gate | Web source | Engine: must refuse on |
+|---|---|---|
+| Account status (ACTIVE only) | `lib/risk.ts` `checkAccountTradingRights` (open) | market, pending placement, pending trigger |
+| Account trading rights FULL / CLOSE_ONLY / READ_ONLY | same (open / close / modify intents) | open paths; READ_ONLY also close, modify, cancel |
+| Broker halt / close-only | `checkTradingHalted`, `checkCloseOnly` | open paths |
+| Group halt / close-only | `checkGroupTradingHalted`, `checkGroupCloseOnly` | open paths |
+| Group side restriction, max lot, allowed symbols | `checkGroupTradingRestriction`, `checkGroupMaxLot`, `checkGroupAllowedSymbol` | open paths |
+| Symbol mode, session, lot step | `checkSymbolTradingMode`, `checkTradingSession`, `checkLotStep` | open paths (session also on close) |
+| Max daily loss, exposure, max positions | `checkMaxDailyLoss`, `checkSymbolExposure`, `checkBrokerExposure`, `checkMaxOpenPositions` | open paths |
+| Rights drop cancels pending opens at once | `lib/account-trading-rights.ts` `setAccountTradingRights` | the engine's pending book must drop them too (it reads PENDING rows; no stale cache) |
+
+The static test `lib/account-trading-rights.test.ts` lists the web's gate sites; the Rust side gets the same kind of
+list test before cutover. Automatic actions (SL/TP triggers, stop-out, margin call, swap) stay ungated in both.
+
 Per-broker `riskAuthority = WEB | SHADOW | RUST`, read by both sides so exactly one acts. Futurix demo
 first; in RUST mode every web evaluator (cron, hook, backstop, price-feed) skips that broker. Drill:
 flip back to WEB and watch the web take the next stop-out. The Vercel cron stays until then.

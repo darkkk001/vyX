@@ -47,6 +47,33 @@ export function checkGroupCloseOnly(group: { closeOnlyAt: Date | null }): string
   return null;
 }
 
+// Per-account trading rights + account status (2026-09-28, owner decisions). One check for every trader- or
+// staff-initiated action on a client account, by intent:
+//   open   -- a new position or an order that can open one (placement, pending trigger, requote accept, dealer accept,
+//             desk flush, admin manual open, copy-rule open, reverse). Refused unless the account is ACTIVE and FULL.
+//   close  -- the client's own close / close-by / bulk close. Refused only when READ_ONLY.
+//   modify -- the client's own SL/TP change, pending-order change or cancel. Refused only when READ_ONLY.
+// Staff closes and SL/TP changes (the desk managing risk) and the automatic actions (SL/TP triggers, stop-out, margin
+// call, swap) never call this. A SUSPENDED / CLOSED account is refused on open (the status hole found 2026-09-28:
+// the order routes never looked at status); its sessions are also revoked when it is suspended.
+export type TradeIntent = "open" | "close" | "modify";
+export const TRADING_RIGHTS_CLOSE_ONLY_MESSAGE = "Your account is close-only: you can close positions but not open new ones";
+export const TRADING_RIGHTS_READ_ONLY_MESSAGE = "Your account is read-only: trading is disabled";
+export function checkAccountTradingRights(
+  account: { status: "ACTIVE" | "SUSPENDED" | "CLOSED"; tradingRights: "FULL" | "CLOSE_ONLY" | "READ_ONLY" },
+  intent: TradeIntent
+): string | null {
+  if (intent === "open") {
+    if (account.status === "SUSPENDED") return "this account is suspended";
+    if (account.status === "CLOSED") return "this account is closed";
+    if (account.tradingRights === "READ_ONLY") return TRADING_RIGHTS_READ_ONLY_MESSAGE;
+    if (account.tradingRights === "CLOSE_ONLY") return TRADING_RIGHTS_CLOSE_ONLY_MESSAGE;
+    return null;
+  }
+  if (account.tradingRights === "READ_ONLY") return TRADING_RIGHTS_READ_ONLY_MESSAGE;
+  return null;
+}
+
 // BOTH (default) never blocks. BUY_ONLY/SELL_ONLY reject the disallowed
 // side even when the symbol is otherwise enabled -- a stronger
 // restriction than `enabled`, not a replacement for it.
