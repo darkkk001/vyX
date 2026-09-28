@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
-import { validateSlTp, validatePendingOrderDirection } from "@/lib/trading";
+import { validateSlTp, validatePendingOrderDirection, validatePendingPriceDistance } from "@/lib/trading";
 import { createNotification } from "@/lib/notifications";
 import { openPositionFromOrder } from "@/lib/dealing";
 import { resolveBookType, applySpreadMarkup, pipSize, chargeCommission } from "@/lib/group-pricing";
@@ -346,6 +346,12 @@ async function handlePlaceOrder(request: NextRequest, session: Session) {
     const directionError = validatePendingOrderDirection({ type, side, entryPrice: price, marketPrice: marketRef });
     if (directionError) {
       return NextResponse.json({ error: directionError }, { status: 400 });
+    }
+    // Phase 2 batch 9 (issue 270): the symbol's stop level also applies to a pending entry at PLACEMENT (it was only
+    // checked when the order was modified): the entry must sit at least stopLevel points from the market
+    const distanceError = validatePendingPriceDistance({ type, side, entryPrice: new Prisma.Decimal(price), marketPrice: marketRef, digits: brokerSymbol.symbol.digits, stopLevel: brokerSymbol.stopLevel });
+    if (distanceError) {
+      return NextResponse.json({ error: distanceError }, { status: 400 });
     }
   }
 

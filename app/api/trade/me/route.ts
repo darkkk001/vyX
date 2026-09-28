@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
+import { tradingDayStart, tradingWeekStart } from "@/lib/trading-day";
 
 export async function GET() {
   const session = await getAccountSession();
@@ -44,7 +45,10 @@ export async function GET() {
   // re-read by the terminal on every ConfigChanged so a halt shows at once
   const tradingState = broker?.tradingHaltedAt || group?.tradingHaltedAt ? "halted" : broker?.closeOnlyAt || group?.closeOnlyAt ? "close_only" : "open";
   // stopOutLevel (audit 2026-09-24): the terminal shows and warns at stop-out too, not only at margin call
-  return NextResponse.json({ ...rest, marginCallLevel: (group?.marginCallLevel ?? 100).toString(), stopOutLevel: (group?.stopOutLevel ?? 50).toString(), groupName: group?.name ?? null, tradingState,
+  // Phase 2 batch 9 (issue 363, owner decision): the broker's trading day / week start (the charts' D1 boundary), so the
+  // terminal's DAY P/L and WEEK P/L are counted from the same instants the server and the charts use
+  const day = await tradingDayStart();
+  return NextResponse.json({ ...rest, tradingDayStart: day.start.toISOString(), tradingWeekStart: tradingWeekStart(day.start).toISOString(), tradingDaySource: day.source, marginCallLevel: (group?.marginCallLevel ?? 100).toString(), stopOutLevel: (group?.stopOutLevel ?? 50).toString(), groupName: group?.name ?? null, tradingState,
     // Phase 2 batch 3: the group's side restriction (BOTH / BUY_ONLY / SELL_ONLY), so the ticket disables the side the server refuses
     tradingRestriction: group?.tradingRestriction ?? "BOTH" });
 }

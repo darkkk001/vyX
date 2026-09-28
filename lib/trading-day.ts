@@ -33,6 +33,15 @@ export function fallbackDayStart(now: Date): Date {
   return d;
 }
 
+/** Pure (Phase 2 batch 9, owner decision 2026-09-28 on DAY / WEEK P/L): the start of the broker's trading WEEK
+ * containing a trading day that starts at `dayStart` -- the start of that week's Monday. The broker's local date of a
+ * day starting at 21:00 / 22:00 UTC is the next UTC date, so its weekday is read 3 h after the start. */
+export function tradingWeekStart(dayStart: Date): Date {
+  const brokerWeekday = new Date(dayStart.getTime() + 3 * 3_600_000).getUTCDay(); // 0 = Sunday ... 6 = Saturday
+  const daysSinceMonday = (brokerWeekday + 6) % 7;
+  return new Date(dayStart.getTime() - daysSinceMonday * DAY_MS);
+}
+
 export async function tradingDayStart(now = new Date()): Promise<TradingDay> {
   for (const symbol of REFERENCE_SYMBOLS) {
     try {
