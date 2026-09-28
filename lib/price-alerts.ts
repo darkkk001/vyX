@@ -1,4 +1,5 @@
 import "server-only";
+import { canonicalSymbolName } from "@/lib/synthetic-symbols";
 import { Prisma } from "@prisma/client";
 
 // Phase 1 trust pack §3 -- pure validation/limit logic extracted out of
@@ -27,7 +28,8 @@ export type ValidateAlertResult = { ok: false; error: string } | { ok: true; val
 
 export function validateAlertInput(body: unknown): ValidateAlertResult {
   const b = body as Record<string, unknown> | null;
-  const symbol = typeof b?.symbol === "string" ? b.symbol.trim().toUpperCase() : "";
+  // synthetic names keep their case (lib/synthetic-symbols.ts); every other name is upper-cased as before
+  const symbol = typeof b?.symbol === "string" ? canonicalSymbolName(b.symbol) : "";
   const condition = ALERT_CONDITIONS.includes(b?.condition as AlertConditionInput) ? (b!.condition as AlertConditionInput) : null;
   const priceRaw = b?.price != null ? String(b.price) : null;
   const expiresAtRaw = typeof b?.expiresAt === "string" ? b.expiresAt : null;

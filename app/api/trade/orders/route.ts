@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { canonicalSymbolName } from "@/lib/synthetic-symbols";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
@@ -88,7 +89,8 @@ type Session = { accountId: string; brokerId: string };
 
 async function handlePlaceOrder(request: NextRequest, session: Session) {
   const body = await request.json().catch(() => null);
-  const symbolName = typeof body?.symbol === "string" ? body.symbol.trim().toUpperCase() : "";
+  // synthetic names keep their case (lib/synthetic-symbols.ts); every other name is upper-cased as before
+  const symbolName = typeof body?.symbol === "string" ? canonicalSymbolName(body.symbol) : "";
   const side = body?.side === "SELL" ? "SELL" : body?.side === "BUY" ? "BUY" : null;
   const type = ["MARKET", "LIMIT", "STOP"].includes(body?.type) ? body.type : null;
   const idempotencyKey = typeof body?.idempotencyKey === "string" ? body.idempotencyKey.trim() : "";

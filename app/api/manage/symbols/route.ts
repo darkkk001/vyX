@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { brokerMaySeeSynthetic, isSyntheticSymbol } from "@/lib/synthetic-symbols";
 import { withConfigEvent } from "@/lib/config-events";
 import { Prisma, TradingMode, BookType } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
@@ -48,10 +49,15 @@ export async function GET() {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
 
-  const symbols = await prisma.symbol.findMany({
-    orderBy: { name: "asc" },
-    include: { brokerSymbols: { where: { brokerId: session.brokerId! } } },
-  });
+  const [allSymbols, seesSynthetic] = await Promise.all([
+    prisma.symbol.findMany({
+      orderBy: { name: "asc" },
+      include: { brokerSymbols: { where: { brokerId: session.brokerId! } } },
+    }),
+    brokerMaySeeSynthetic(prisma, session.brokerId!),
+  ]);
+  // synthetic symbols (lib/synthetic-symbols.ts) exist for the shadow-bot tenant only: hidden from every other broker
+  const symbols = seesSynthetic ? allSymbols : allSymbols.filter((s) => !isSyntheticSymbol(s.name));
 
   const rows = symbols.map((symbol) => {
     const cfg = symbol.brokerSymbols[0];
@@ -136,7 +142,8 @@ async function patchHandler(request: NextRequest) {
   }
 
   const symbol = await prisma.symbol.findUnique({ where: { id: symbolId } });
-  if (!symbol) {
+  // a synthetic symbol is refused exactly like an unknown one for every broker but the shadow-bot tenant
+  if (!symbol || (isSyntheticSymbol(symbol.name) && !(await brokerMaySeeSynthetic(prisma, session.brokerId!)))) {
     return NextResponse.json({ error: "unknown symbolId" }, { status: 400 });
   }
 

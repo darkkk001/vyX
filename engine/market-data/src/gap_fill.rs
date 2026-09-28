@@ -147,7 +147,8 @@ fn in_daily_break(t: DateTime<Utc>) -> bool {
 // fix is the same TradingSession-config lookup noted above, scoped per
 // symbol instead of a hardcoded list -- Phase 3 scope, not this patch.
 fn is_continuously_traded(symbol: &str) -> bool {
-    matches!(symbol, "BTCUSD" | "ETHUSD" | "SOLUSD" | "XRPUSD")
+    // synthetic symbols (the shadow-bot's v* names, crate::synthetic) are driven around the clock, weekends included
+    matches!(symbol, "BTCUSD" | "ETHUSD" | "SOLUSD" | "XRPUSD") || crate::synthetic::is_synthetic(symbol)
 }
 
 // The one place "is this symbol's market open at this instant" gets

@@ -22,6 +22,7 @@ pub mod risk_hook;
 pub mod sink;
 pub mod stats;
 pub mod symbol_activity;
+pub mod synthetic;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Timeframe {

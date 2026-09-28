@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server";
+import { brokerMaySeeSynthetic, isSyntheticSymbol } from "@/lib/synthetic-symbols";
+import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 
 // Field names match engine/server's FeedStatsResponse exactly (the
@@ -41,6 +43,8 @@ type PerSymbolStat = {
 type FeedStatsResponse = FeedStatsSnapshot & {
   queue_len: number;
   per_symbol: PerSymbolStat[];
+  // the synthetic feed's own counters (engine, 2026-09-28)
+  synth?: FeedStatsSnapshot;
 };
 
 // Field names match engine/server's alert_stats handler exactly
@@ -106,5 +110,12 @@ export async function GET() {
     fetchStats<AlertStats>(`${TRADING_CORE_URL}/internal/alert-stats`),
   ]);
 
+  // synthetic symbols (lib/synthetic-symbols.ts): their rows and the synth feed's counters are the shadow-bot tenant's
+  // only; every other broker sees the real feed exactly as before
+  if (feedStats && !(await brokerMaySeeSynthetic(prisma, session!.brokerId!))) {
+    const { synth: _synth, ...real } = feedStats;
+    void _synth;
+    return NextResponse.json({ feedStats: { ...real, per_symbol: (real.per_symbol ?? []).filter((r) => !isSyntheticSymbol(r.symbol)) }, gatewayStats, alertStats });
+  }
   return NextResponse.json({ feedStats, gatewayStats, alertStats });
 }

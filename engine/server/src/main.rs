@@ -43,6 +43,14 @@ struct AppState {
     market_pools: Arc<MarketDataPools>,
     nats: async_nats::Client,
     price_feed_secret: String,
+    // Synthetic symbols (market_data::synthetic, 2026-09-28): the shadow-bot's own feed secret. None = the synth route
+    // answers 503. Never accepted by the real MT5 ingest, and PRICE_FEED_SECRET is never accepted by the synth route.
+    synth_feed_secret: Option<String>,
+    // The synth feed's OWN counters (synth_ticks_in and the rest), so the real feed's ticks_in / latency / feed health
+    // never count a synthetic tick and a dead MT5 feed stays visible.
+    synth_feed_stats: Arc<FeedStats>,
+    // An empty alert book for synthetic ticks: price alerts are not evaluated on synthetic symbols (no DB writes).
+    synth_alert_cache: market_data::alerts::AlertCache,
     // Distinct from price_feed_secret -- gates the 4 order routes instead
     // of the MT5 ingest route, checked by require_internal_secret below.
     // Only services/api-gateway should ever hold this value; per this
@@ -620,7 +628,14 @@ async fn ingest_price_feed(
 
     let all = body.into_vec();
     let total = all.len();
-    let ticks: Vec<Tick> = all.into_iter().filter(|t| !t.symbol.is_empty()).collect();
+    // Reserved synthetic names (market_data::synthetic, prefix "v", case-sensitive, leading only) are never taken from
+    // the real feed: those ticks are dropped and logged, every other tick of the batch is ingested exactly as before.
+    // No real instrument name starts with a lowercase "v", so no real price is affected.
+    let synthetic_in_real_feed = all.iter().filter(|t| market_data::synthetic::is_synthetic(&t.symbol)).count();
+    if synthetic_in_real_feed > 0 {
+        tracing::warn!(count = synthetic_in_real_feed, "real price feed sent reserved synthetic (v*) symbol names; dropped");
+    }
+    let ticks: Vec<Tick> = all.into_iter().filter(|t| !t.symbol.is_empty() && !market_data::synthetic::is_synthetic(&t.symbol)).collect();
     let dropped = total - ticks.len();
     if dropped > 0 {
         state.feed_stats.record_dropped_invalid(dropped as u64);
@@ -682,6 +697,61 @@ async fn ingest_price_feed(
         }
     }
 
+    Ok(Json(PriceFeedResponse { ok: true, count }))
+}
+
+/// Synthetic symbols' price feed (shadow bot, 2026-09-28). Reached through the VPS Caddy route
+/// `feed.vyxtrader.com/internal/synth-feed` (header x-synth-feed-secret), never through the web. Guards, in order:
+/// 1. SYNTH_FEED_SECRET unset -> 503 (the kill switch);
+/// 2. x-synth-feed-secret must equal it (constant-time) -> else 401;
+/// 3. EVERY tick's symbol must start with the reserved prefix (market_data::synthetic) -> else the whole batch 403 +
+///    logged, nothing ingested -- this route can never move a real symbol's price;
+/// 4. the producer's clock fields are dropped (server time), so nothing here touches latency / clock stats.
+/// Then the SAME ingest as the real feed (tick cache -> LivePrice -> candles -> risk hook -> NATS), with the synth
+/// feed's own counters and an empty alert book.
+async fn ingest_synth_feed(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<TicksBody>,
+) -> Result<Json<PriceFeedResponse>, (StatusCode, String)> {
+    let Some(expected) = state.synth_feed_secret.as_deref() else {
+        return Err((StatusCode::SERVICE_UNAVAILABLE, "synthetic feed disabled".to_string()));
+    };
+    let provided = headers.get("x-synth-feed-secret").and_then(|v| v.to_str().ok()).unwrap_or("");
+    if !market_data::synthetic::secret_eq(provided, expected) {
+        return Err((StatusCode::UNAUTHORIZED, "unauthorized".to_string()));
+    }
+
+    let mut ticks = body.into_vec();
+    if ticks.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "no ticks in body".to_string()));
+    }
+    let foreign: Vec<&str> = ticks.iter().filter(|t| !market_data::synthetic::is_synthetic(&t.symbol)).map(|t| t.symbol.as_str()).collect();
+    if !foreign.is_empty() {
+        tracing::warn!(symbols = ?foreign, "synthetic feed batch refused: symbol(s) without the reserved prefix");
+        return Err((StatusCode::FORBIDDEN, format!("only symbols starting with \"{}\" are accepted here", market_data::synthetic::SYNTH_PREFIX)));
+    }
+    for t in ticks.iter_mut() {
+        t.t0 = None;
+        t.clock_offset_ms = None;
+        t.rtt_ms = None;
+        t.tick_ms = None;
+    }
+
+    let count = ticks.len();
+    market_data::ingest::ingest_ticks(
+        &state.nats,
+        &state.tick_cache,
+        &state.synth_feed_stats,
+        &state.symbol_activity,
+        &state.synth_alert_cache,
+        &ticks,
+    )
+    .await
+    .map_err(|err| {
+        tracing::error!(?err, "synthetic ingest_ticks failed");
+        (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
+    })?;
     Ok(Json(PriceFeedResponse { ok: true, count }))
 }
 
@@ -765,6 +835,11 @@ async fn ingest_history(
     let provided = headers.get("x-price-feed-secret").and_then(|v| v.to_str().ok());
     if provided != Some(state.price_feed_secret.as_str()) {
         return Err((StatusCode::UNAUTHORIZED, "unauthorized".to_string()));
+    }
+    // reserved synthetic names (market_data::synthetic) never take history from the real feed
+    if market_data::synthetic::is_synthetic(&body.symbol) {
+        tracing::warn!(symbol = %body.symbol, "real history feed sent a reserved synthetic (v*) symbol; refused");
+        return Err((StatusCode::FORBIDDEN, "reserved synthetic symbol".to_string()));
     }
 
     let Some(timeframe) = timeframe_from_str(&body.timeframe) else {
@@ -899,6 +974,9 @@ struct FeedStatsResponse {
     stats: FeedStatsSnapshot,
     queue_len: usize,
     per_symbol: Vec<PerSymbolStat>,
+    // Synthetic feed (2026-09-28): its own counters (ticks_in here = synth_ticks_in); the fields above never count
+    // synthetic ticks
+    synth: FeedStatsSnapshot,
     // Neon→VPS migration (market_data::sink): which store(s) the flushes
     // write to and which one /internal/candles reads -- the S2 soak
     // checks these together with local_db_ok / local_db_fail.
@@ -940,6 +1018,7 @@ async fn feed_stats(State(state): State<Arc<AppState>>) -> Json<FeedStatsRespons
         stats: state.feed_stats.snapshot(),
         queue_len: state.tick_cache.snapshot().len(),
         per_symbol,
+        synth: state.synth_feed_stats.snapshot(),
         market_data_write: state.market_pools.mode().as_str(),
         market_data_reader: state.market_pools.reader_name(),
     })
@@ -1337,6 +1416,11 @@ async fn main() {
     let nats_url = std::env::var("NATS_URL").unwrap_or_else(|_| "nats://127.0.0.1:4222".to_string());
     let port: u16 = std::env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(8081);
     let price_feed_secret = std::env::var("PRICE_FEED_SECRET").expect("PRICE_FEED_SECRET must be set");
+    // optional: unset = the synthetic feed is off (503); must never equal PRICE_FEED_SECRET
+    let synth_feed_secret = std::env::var("SYNTH_FEED_SECRET").ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    if synth_feed_secret.as_deref() == Some(price_feed_secret.as_str()) {
+        panic!("SYNTH_FEED_SECRET must differ from PRICE_FEED_SECRET");
+    }
     let internal_service_secret =
         std::env::var("INTERNAL_SERVICE_SECRET").expect("INTERNAL_SERVICE_SECRET must be set");
     let market_data_read_secret = std::env::var("MARKET_DATA_READ_SECRET").ok().filter(|s| !s.trim().is_empty());
@@ -1691,6 +1775,9 @@ async fn main() {
         market_pools,
         nats,
         price_feed_secret,
+        synth_feed_secret,
+        synth_feed_stats: Arc::new(FeedStats::new()),
+        synth_alert_cache: market_data::alerts::AlertCache::new(),
         internal_service_secret,
         internal_service_secret_previous,
         market_data_read_secret_previous,
@@ -1734,6 +1821,7 @@ async fn main() {
         .route("/internal/time", get(server_time))
         .route("/internal/price-feed", post(ingest_price_feed))
         .route("/internal/history", post(ingest_history))
+        .route("/internal/synth-feed", post(ingest_synth_feed))
         .merge(order_routes)
         .merge(market_data_routes)
         .with_state(state);

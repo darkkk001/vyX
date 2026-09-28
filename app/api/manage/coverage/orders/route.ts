@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { canonicalSymbolName } from "@/lib/synthetic-symbols";
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
@@ -43,7 +44,8 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "only MARKET orders can be placed on the coverage account (limit / stop need the coverage bridge)" }, { status: 400 });
   }
   const side = body.side === "BUY" || body.side === "SELL" ? body.side : null;
-  const symbolName = typeof body.symbol === "string" ? body.symbol.trim().toUpperCase() : "";
+  // synthetic names keep their case (lib/synthetic-symbols.ts); every other name is upper-cased as before
+  const symbolName = typeof body.symbol === "string" ? canonicalSymbolName(body.symbol) : "";
   let volume: Prisma.Decimal;
   try {
     volume = new Prisma.Decimal(body.volume ?? 0);
