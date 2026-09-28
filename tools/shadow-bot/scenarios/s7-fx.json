@@ -1,0 +1,72 @@
+{
+  "name": "s7-fx",
+  "title": "FX path: EUR account 49990003 on USD-quoted vEUR and JPY-quoted vJPY (conversion at the real rates), stop-out on vJPY",
+  "accounts": [
+    "49990003"
+  ],
+  "symbols": [
+    "vEUR",
+    "vJPY"
+  ],
+  "steps": [
+    {
+      "op": "price.set",
+      "symbol": "vEUR",
+      "bid": 1.1,
+      "spread": 0.0001
+    },
+    {
+      "op": "price.set",
+      "symbol": "vJPY",
+      "bid": 150.0,
+      "spread": 0.02
+    },
+    {
+      "op": "hold",
+      "secs": 3
+    },
+    {
+      "op": "open",
+      "account": "49990003",
+      "symbol": "vEUR",
+      "side": "BUY",
+      "volume": 0.1,
+      "as": "e1"
+    },
+    {
+      "op": "observe",
+      "account": "49990003"
+    },
+    {
+      "op": "close",
+      "ref": "e1"
+    },
+    {
+      "op": "open",
+      "account": "49990003",
+      "symbol": "vJPY",
+      "side": "BUY",
+      "marginPctOfEquity": 60,
+      "as": "j1"
+    },
+    {
+      "op": "rampUntil",
+      "symbol": "vJPY",
+      "direction": "down",
+      "pctPerSec": 0.2,
+      "maxPct": 5,
+      "timeoutSecs": 120,
+      "until": {
+        "closed": [
+          "j1"
+        ]
+      }
+    },
+    {
+      "op": "expect",
+      "stoppedOut": [
+        "j1"
+      ]
+    }
+  ]
+}

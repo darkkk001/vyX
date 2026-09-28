@@ -1,0 +1,172 @@
+{
+  "_comment": "Shadow bot config. Hosts, tenant, account range and symbol prefix are ALSO hard-coded in src/guards.ts: this file can only narrow them. The account values are the SEED values, used by the dry run only; a live run reads each account from /api/trade/me.",
+  "tradeHost": "https://zzshadowbot.vyxtrader.com",
+  "feedUrl": "https://feed.vyxtrader.com/internal/synth-feed",
+  "tenant": "zzshadowbot",
+  "symbols": [
+    "vGOLD",
+    "vEUR",
+    "vGBP",
+    "vJPY",
+    "vIDX"
+  ],
+  "symbolMeta": {
+    "vGOLD": {
+      "contractSize": 100,
+      "quoteCurrency": "USD",
+      "hedgedMarginPct": 0
+    },
+    "vEUR": {
+      "contractSize": 100000,
+      "quoteCurrency": "USD",
+      "hedgedMarginPct": 50
+    },
+    "vGBP": {
+      "contractSize": 100000,
+      "quoteCurrency": "USD",
+      "hedgedMarginPct": 100
+    },
+    "vJPY": {
+      "contractSize": 100000,
+      "quoteCurrency": "JPY",
+      "hedgedMarginPct": 200
+    },
+    "vIDX": {
+      "contractSize": 1,
+      "quoteCurrency": "USD",
+      "hedgedMarginPct": 200
+    }
+  },
+  "dryRunFxRates": {
+    "EURUSD": 1.08,
+    "USDJPY": 150.0
+  },
+  "limits": {
+    "maxOpenAccounts": 4,
+    "tickMs": 1000,
+    "pollMs": 1000,
+    "maxRampPctPerSec": 0.2,
+    "maxJumpPct": 5,
+    "settleSecs": 90,
+    "logEveryTick": false
+  },
+  "accounts": {
+    "49990001": {
+      "group": "SB Standard",
+      "currency": "USD",
+      "balance": 10000,
+      "leverage": 100,
+      "credit": 0,
+      "marginCallLevel": 100,
+      "stopOutLevel": 50
+    },
+    "49990002": {
+      "group": "SB Standard",
+      "currency": "USD",
+      "balance": 2000,
+      "leverage": 200,
+      "credit": 0,
+      "marginCallLevel": 100,
+      "stopOutLevel": 50
+    },
+    "49990003": {
+      "group": "SB Standard",
+      "currency": "EUR",
+      "balance": 5000,
+      "leverage": 100,
+      "credit": 0,
+      "marginCallLevel": 100,
+      "stopOutLevel": 50
+    },
+    "49990004": {
+      "group": "SB Standard",
+      "currency": "USD",
+      "balance": 1000,
+      "leverage": 50,
+      "credit": 0,
+      "marginCallLevel": 100,
+      "stopOutLevel": 50
+    },
+    "49990005": {
+      "group": "SB Pro",
+      "currency": "USD",
+      "balance": 25000,
+      "leverage": 500,
+      "credit": 0,
+      "marginCallLevel": 100,
+      "stopOutLevel": 30
+    },
+    "49990006": {
+      "group": "SB Pro",
+      "currency": "USD",
+      "balance": 3000,
+      "leverage": 300,
+      "credit": 0,
+      "marginCallLevel": 100,
+      "stopOutLevel": 30
+    },
+    "49990007": {
+      "group": "SB Dealing Desk",
+      "currency": "USD",
+      "balance": 5000,
+      "leverage": 200,
+      "credit": 0,
+      "marginCallLevel": 120,
+      "stopOutLevel": 80
+    },
+    "49990008": {
+      "group": "SB Dealing Desk",
+      "currency": "USD",
+      "balance": 800,
+      "leverage": 100,
+      "credit": 0,
+      "marginCallLevel": 120,
+      "stopOutLevel": 80
+    },
+    "49990009": {
+      "group": "SB Reversal",
+      "currency": "USD",
+      "balance": 10000,
+      "leverage": 100,
+      "credit": 0,
+      "marginCallLevel": 100,
+      "stopOutLevel": 50
+    },
+    "49990010": {
+      "group": "SB Reversal",
+      "currency": "USD",
+      "balance": 2500,
+      "leverage": 100,
+      "credit": 0,
+      "marginCallLevel": 100,
+      "stopOutLevel": 50
+    },
+    "49990011": {
+      "group": "SB Mirror Master",
+      "currency": "USD",
+      "balance": 100000,
+      "leverage": 1000,
+      "credit": 0,
+      "marginCallLevel": 100,
+      "stopOutLevel": 20
+    },
+    "49990012": {
+      "group": "SB Mirror Master",
+      "currency": "USD",
+      "balance": 50000,
+      "leverage": 1000,
+      "credit": 0,
+      "marginCallLevel": 100,
+      "stopOutLevel": 20
+    },
+    "49990013": {
+      "group": "SB Hedge NBP",
+      "currency": "USD",
+      "balance": 600,
+      "leverage": 1000,
+      "credit": 0,
+      "marginCallLevel": 100,
+      "stopOutLevel": 20
+    }
+  }
+}

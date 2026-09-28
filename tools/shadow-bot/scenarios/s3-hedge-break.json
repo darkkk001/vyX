@@ -1,0 +1,69 @@
+{
+  "name": "s3-hedge-break",
+  "title": "Hedge-break: a 50%-hedged vEUR pair, one leg closed, margin jumps, then stop-out",
+  "accounts": [
+    "49990004"
+  ],
+  "symbols": [
+    "vEUR"
+  ],
+  "steps": [
+    {
+      "op": "price.set",
+      "symbol": "vEUR",
+      "bid": 1.1,
+      "spread": 0.0001
+    },
+    {
+      "op": "hold",
+      "secs": 3
+    },
+    {
+      "op": "open",
+      "account": "49990004",
+      "symbol": "vEUR",
+      "side": "BUY",
+      "volume": 0.3,
+      "as": "buy"
+    },
+    {
+      "op": "open",
+      "account": "49990004",
+      "symbol": "vEUR",
+      "side": "SELL",
+      "volume": 0.3,
+      "as": "sell"
+    },
+    {
+      "op": "observe",
+      "account": "49990004"
+    },
+    {
+      "op": "close",
+      "ref": "sell"
+    },
+    {
+      "op": "observe",
+      "account": "49990004"
+    },
+    {
+      "op": "rampUntil",
+      "symbol": "vEUR",
+      "direction": "down",
+      "pctPerSec": 0.2,
+      "maxPct": 5,
+      "timeoutSecs": 120,
+      "until": {
+        "closed": [
+          "buy"
+        ]
+      }
+    },
+    {
+      "op": "expect",
+      "stoppedOut": [
+        "buy"
+      ]
+    }
+  ]
+}

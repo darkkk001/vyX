@@ -1,0 +1,101 @@
+{
+  "name": "s6-mirror",
+  "title": "Copy rules: group rule (SB Reversal to 49990011, reversed) and account rule (49990006 to 49990012, x0.5, max 5 lots) incl. its kill-switch",
+  "accounts": [
+    "49990009",
+    "49990011",
+    "49990006",
+    "49990012"
+  ],
+  "symbols": [
+    "vEUR",
+    "vIDX"
+  ],
+  "steps": [
+    {
+      "op": "price.set",
+      "symbol": "vEUR",
+      "bid": 1.1,
+      "spread": 0.0001
+    },
+    {
+      "op": "price.set",
+      "symbol": "vIDX",
+      "bid": 20000.0,
+      "spread": 2.0
+    },
+    {
+      "op": "hold",
+      "secs": 3
+    },
+    {
+      "op": "open",
+      "account": "49990009",
+      "symbol": "vEUR",
+      "side": "BUY",
+      "volume": 0.5,
+      "as": "g1"
+    },
+    {
+      "op": "expectMirror",
+      "sourceRef": "g1",
+      "targetAccount": "49990011",
+      "factor": 1,
+      "reversed": true,
+      "timeoutSecs": 20,
+      "as": "g1copy",
+      "liveOnly": true
+    },
+    {
+      "op": "close",
+      "ref": "g1"
+    },
+    {
+      "op": "waitUntil",
+      "until": {
+        "closed": [
+          "g1copy"
+        ]
+      },
+      "timeoutSecs": 30,
+      "liveOnly": true
+    },
+    {
+      "op": "open",
+      "account": "49990006",
+      "symbol": "vIDX",
+      "side": "BUY",
+      "volume": 4.0,
+      "as": "k1"
+    },
+    {
+      "op": "expectMirror",
+      "sourceRef": "k1",
+      "targetAccount": "49990012",
+      "factor": 0.5,
+      "reversed": true,
+      "timeoutSecs": 20,
+      "as": "k1copy",
+      "liveOnly": true
+    },
+    {
+      "op": "note",
+      "text": "kill-switch: copying 8 more lots would take the copy to 6 lots, over the max of 5, so the rule stops"
+    },
+    {
+      "op": "open",
+      "account": "49990006",
+      "symbol": "vIDX",
+      "side": "BUY",
+      "volume": 8.0,
+      "as": "k2"
+    },
+    {
+      "op": "expectNoNewPosition",
+      "account": "49990012",
+      "symbol": "vIDX",
+      "secs": 15,
+      "liveOnly": true
+    }
+  ]
+}

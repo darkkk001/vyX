@@ -1,0 +1,84 @@
+{
+  "name": "s4-hedged-nbp",
+  "title": "0%-hedged vGOLD pair on 49990013: equity below zero with no used margin, never stopped out, then the write-off",
+  "accounts": [
+    "49990013"
+  ],
+  "symbols": [
+    "vGOLD"
+  ],
+  "steps": [
+    {
+      "op": "price.set",
+      "symbol": "vGOLD",
+      "bid": 2000.0,
+      "spread": 0.3
+    },
+    {
+      "op": "hold",
+      "secs": 3
+    },
+    {
+      "op": "open",
+      "account": "49990013",
+      "symbol": "vGOLD",
+      "side": "SELL",
+      "volume": 1.0,
+      "as": "s"
+    },
+    {
+      "op": "open",
+      "account": "49990013",
+      "symbol": "vGOLD",
+      "side": "BUY",
+      "volume": 1.0,
+      "as": "b"
+    },
+    {
+      "op": "observe",
+      "account": "49990013"
+    },
+    {
+      "op": "ramp",
+      "symbol": "vGOLD",
+      "direction": "down",
+      "pctPerSec": 0.2,
+      "pct": 2
+    },
+    {
+      "op": "ramp",
+      "symbol": "vGOLD",
+      "direction": "up",
+      "pctPerSec": 0.2,
+      "pct": 2
+    },
+    {
+      "op": "hold",
+      "secs": 20,
+      "expectOpen": [
+        "s",
+        "b"
+      ]
+    },
+    {
+      "op": "expect",
+      "stillOpen": [
+        "s",
+        "b"
+      ]
+    },
+    {
+      "op": "close",
+      "ref": "b"
+    },
+    {
+      "op": "close",
+      "ref": "s"
+    },
+    {
+      "op": "expect",
+      "nbpWriteOff": "49990013",
+      "liveOnly": true
+    }
+  ]
+}

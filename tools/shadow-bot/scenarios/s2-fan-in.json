@@ -1,0 +1,86 @@
+{
+  "name": "s2-fan-in",
+  "title": "Fan-in: three accounts on vIDX, each sized to stop out at 1.5%, stop out in the same risk pass after one 1.6% gap",
+  "accounts": [
+    "49990001",
+    "49990002",
+    "49990004"
+  ],
+  "symbols": [
+    "vIDX"
+  ],
+  "allowJump": true,
+  "steps": [
+    {
+      "op": "price.set",
+      "symbol": "vIDX",
+      "bid": 20000.0,
+      "spread": 2.0
+    },
+    {
+      "op": "hold",
+      "secs": 3
+    },
+    {
+      "op": "open",
+      "account": "49990001",
+      "symbol": "vIDX",
+      "side": "BUY",
+      "as": "a1",
+      "stopOutAtPct": 1.5
+    },
+    {
+      "op": "open",
+      "account": "49990002",
+      "symbol": "vIDX",
+      "side": "BUY",
+      "as": "a2",
+      "stopOutAtPct": 1.5
+    },
+    {
+      "op": "open",
+      "account": "49990004",
+      "symbol": "vIDX",
+      "side": "BUY",
+      "as": "a4",
+      "stopOutAtPct": 1.5
+    },
+    {
+      "op": "hold",
+      "secs": 5,
+      "expectOpen": [
+        "a1",
+        "a2",
+        "a4"
+      ]
+    },
+    {
+      "op": "note",
+      "text": "every account is sized to stop out at a 1.5% move; one 1.6% gap passes all three stop-outs and stays under the nearest wipe-out (1:200 at 1.75%)"
+    },
+    {
+      "op": "price.jump",
+      "symbol": "vIDX",
+      "pct": -1.6
+    },
+    {
+      "op": "waitUntil",
+      "until": {
+        "closed": [
+          "a1",
+          "a2",
+          "a4"
+        ]
+      },
+      "timeoutSecs": 60
+    },
+    {
+      "op": "expect",
+      "stoppedOut": [
+        "a1",
+        "a2",
+        "a4"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,60 @@
+{
+  "name": "s1-single-stopout",
+  "title": "Single-account margin stop-out (49990008, SB Dealing Desk, stop-out 80%)",
+  "accounts": [
+    "49990008"
+  ],
+  "symbols": [
+    "vGOLD"
+  ],
+  "steps": [
+    {
+      "op": "note",
+      "text": "49990008 is in SB Dealing Desk: the fill is also auto-hedged onto the broker hedge account (an expected side effect, visible in shadow)"
+    },
+    {
+      "op": "price.set",
+      "symbol": "vGOLD",
+      "bid": 2000.0,
+      "spread": 0.3
+    },
+    {
+      "op": "hold",
+      "secs": 3
+    },
+    {
+      "op": "open",
+      "account": "49990008",
+      "symbol": "vGOLD",
+      "side": "BUY",
+      "marginPctOfEquity": 60,
+      "as": "p1"
+    },
+    {
+      "op": "hold",
+      "secs": 5,
+      "expectOpen": [
+        "p1"
+      ]
+    },
+    {
+      "op": "rampUntil",
+      "symbol": "vGOLD",
+      "direction": "down",
+      "pctPerSec": 0.2,
+      "maxPct": 5,
+      "timeoutSecs": 120,
+      "until": {
+        "closed": [
+          "p1"
+        ]
+      }
+    },
+    {
+      "op": "expect",
+      "stoppedOut": [
+        "p1"
+      ]
+    }
+  ]
+}

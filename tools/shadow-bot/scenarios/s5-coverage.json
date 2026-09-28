@@ -1,0 +1,42 @@
+{
+  "name": "s5-coverage",
+  "title": "Coverage: a Dealing Desk fill is auto-hedged onto the broker hedge account (needs the read-only staff observer)",
+  "accounts": [
+    "49990007"
+  ],
+  "symbols": [
+    "vGOLD"
+  ],
+  "needsObserver": true,
+  "steps": [
+    {
+      "op": "price.set",
+      "symbol": "vGOLD",
+      "bid": 2000.0,
+      "spread": 0.3
+    },
+    {
+      "op": "hold",
+      "secs": 3
+    },
+    {
+      "op": "open",
+      "account": "49990007",
+      "symbol": "vGOLD",
+      "side": "BUY",
+      "volume": 0.1,
+      "as": "c"
+    },
+    {
+      "op": "hold",
+      "secs": 10,
+      "expectOpen": [
+        "c"
+      ]
+    },
+    {
+      "op": "close",
+      "ref": "c"
+    }
+  ]
+}
