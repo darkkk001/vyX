@@ -10,6 +10,11 @@
 #   5. shadow health since the step-1 restart: 'order management SHADOW' pass_secs, 'read-only role verified', no
 #      'SHADOW REFUSED'.
 # Secrets are read from start-engine.cmd and never printed.
+#
+#   -RestartEngine : first stop + start the engine (owner, 2026-09-28: so VYX_SHADOW_PASS_SECS=4, edited in
+#                    start-engine.cmd after step 1, takes effect), wait for /health, then run the proof; check 5a2 then
+#                    requires the startup line's pass_secs to equal the value in start-engine.cmd.
+param([switch]$RestartEngine)
 $ErrorActionPreference = "Stop"
 $Nssm   = "C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe"
 $Engine = "C:\vyxtrader\scripts\start-engine.cmd"
@@ -39,6 +44,19 @@ function NssmGet([string]$Svc, [string]$Key) { ((& $Nssm get $Svc $Key) -join ""
 $synth = Get-CmdVar "SYNTH_FEED_SECRET"; $internal = Get-CmdVar "INTERNAL_SERVICE_SECRET"
 if (-not $synth -or -not $internal) { throw "SYNTH_FEED_SECRET / INTERNAL_SERVICE_SECRET missing in start-engine.cmd" }
 $ih = @{ "x-internal-secret" = $internal }
+$wantPass = Get-CmdVar "VYX_SHADOW_PASS_SECS"
+
+if ($RestartEngine) {
+  "restarting the engine (5-20 s without prices; clients reconnect by themselves)"
+  & $Nssm stop vyxtrader-engine | Out-Null
+  Start-Sleep 2
+  & $Nssm start vyxtrader-engine | Out-Null
+  $up = $false
+  foreach ($i in 1..30) { if ((Get-Resp GET "$Local/health" @{} $null).Code -eq 200) { $up = $true; break }; Start-Sleep 1 }
+  if (-not $up) { throw "the engine did not answer /health within 30 s after the restart -- check the service before anything else" }
+  "engine up again; waiting 20 s for the startup lines and the first ticks"
+  Start-Sleep 20
+}
 function Stats { $r = Get-Resp GET "$Local/internal/feed-stats" $ih $null; if ($r.Code -ne 200) { throw "feed-stats answered $($r.Code)" }; $r.Body | ConvertFrom-Json }
 $fail = 0
 function Check([string]$what, [bool]$ok, [string]$detail) { if (-not $ok) { $script:fail++ }; "{0,-58} {1}  {2}" -f $what, $(if ($ok) { "OK" } else { "FAIL" }), $detail }
@@ -99,6 +117,7 @@ foreach ($f in @($log, $err) | Where-Object { $_ -and (Test-Path -LiteralPath $_
   $drops += @($t | Where-Object { $_ -match 'real price feed sent reserved synthetic' }).Count
 }
 Check "5a. latest start: order management SHADOW running" ($lastState.Count -gt 0 -and -not ($lastState -match 'SHADOW REFUSED')) "pass_secs=$passShown"
+Check "5a2. pass_secs = start-engine.cmd's VYX_SHADOW_PASS_SECS" ([string]$passShown -eq [string]$wantPass) "running $passShown, start-engine.cmd $wantPass$(if (-not $RestartEngine) { ' (no restart in this run: a changed value needs -RestartEngine)' })"
 Check "5b. read-only role verified" ($null -ne $ro) "$(if ($ro) { $ro.Trim() } else { 'not found' })"
 Check "5c. no SHADOW REFUSED as the latest verdict" (-not ($lastState -match 'SHADOW REFUSED')) "$($lastState.Count) verdict line(s) checked"
 "   (real feed v* drops in the recent log: $drops)"
