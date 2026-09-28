@@ -18,7 +18,8 @@ export type Step = Common & (
   | { op: "note"; text: string }
   | { op: "price.set"; symbol: string; bid: number; spread: number }
   | { op: "price.jump"; symbol: string; pct: number }
-  | { op: "open"; account: string; symbol: string; side: Side; volume?: number; marginPctOfEquity?: number; stopOutAtPct?: number; as: string }
+  | { op: "open"; account: string; symbol: string; side: Side; volume?: number; marginPctOfEquity?: number; stopOutAtPct?: number; volumeOf?: string; as: string }
+  | { op: "require"; account: string; minEquity: number }
   | { op: "close"; ref: string }
   | { op: "closeAccount"; account: string }
   | { op: "rampUntil"; symbol: string; direction: "up" | "down"; pctPerSec: number; maxPct: number; timeoutSecs: number; until: Until }
@@ -101,6 +102,13 @@ export class Runner {
         return;
       }
       case "observe": { await this.observe(step.account); return; }
+      case "require": {
+        // fail up front (before any order) when an earlier scenario left the account too low for this one
+        const e = await this.observe(step.account, true);
+        this.journal.write({ kind: "require", account: step.account, equity: e.equity, minEquity: step.minEquity });
+        if (e.equity < step.minEquity) throw new ScenarioFailed(`${step.account} equity ${e.equity} is below ${step.minEquity}: reset the tenant's balances (scripts/seed-zzshadowbot.ts --reset-trading) or pick another account`);
+        return;
+      }
       case "ramp": {
         // a fixed move with no stop condition (e.g. S4, where used margin is 0 and no margin condition can trigger)
         await this.price.ramp(step.symbol, step.direction, step.pctPerSec, step.pct, 3600, async () => false);
@@ -146,6 +154,7 @@ export class Runner {
       const m = this.opts.meta[s.symbol];
       volume = lotsForMarginPct(s.marginPctOfEquity, e.equity, me.leverage, m.contractSize, (q.bid + q.ask) / 2, this.opts.fx(m.quoteCurrency, me.currency));
     }
+    if (s.volumeOf) volume = this.ref(s.volumeOf).volume;   // the other leg of a hedged pair: exactly the same lots
     if (s.stopOutAtPct != null) {
       const e = estimate(me, await this.trade.positions(s.account), { [s.symbol]: q }, this.opts.meta, this.opts.fx);
       const m = this.opts.meta[s.symbol];

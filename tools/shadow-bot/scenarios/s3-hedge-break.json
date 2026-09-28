@@ -1,6 +1,6 @@
 {
   "name": "s3-hedge-break",
-  "title": "Hedge-break: a 50%-hedged vEUR pair, one leg closed, margin jumps, then stop-out",
+  "title": "Hedge-break: a 50%-hedged vEUR pair sized from equity, one leg closed, margin back to full, then stop-out",
   "accounts": [
     "49990004"
   ],
@@ -8,6 +8,15 @@
     "vEUR"
   ],
   "steps": [
+    {
+      "op": "note",
+      "text": "BUY sized so its FULL margin is 50% of equity (the first leg is checked at full margin, the hedge discount starts with the second leg). SELL = the same lots. Pair margin at 50% hedged = half of full (about 25% of equity); after the SELL closes the BUY is back at full (50%, margin level about 200%); stop-out 50% is then about a 3% move against the BUY."
+    },
+    {
+      "op": "require",
+      "account": "49990004",
+      "minEquity": 150
+    },
     {
       "op": "price.set",
       "symbol": "vEUR",
@@ -23,7 +32,7 @@
       "account": "49990004",
       "symbol": "vEUR",
       "side": "BUY",
-      "volume": 0.3,
+      "marginPctOfEquity": 50,
       "as": "buy"
     },
     {
@@ -31,12 +40,20 @@
       "account": "49990004",
       "symbol": "vEUR",
       "side": "SELL",
-      "volume": 0.3,
+      "volumeOf": "buy",
       "as": "sell"
     },
     {
       "op": "observe",
       "account": "49990004"
+    },
+    {
+      "op": "hold",
+      "secs": 5,
+      "expectOpen": [
+        "buy",
+        "sell"
+      ]
     },
     {
       "op": "close",
@@ -45,6 +62,13 @@
     {
       "op": "observe",
       "account": "49990004"
+    },
+    {
+      "op": "hold",
+      "secs": 5,
+      "expectOpen": [
+        "buy"
+      ]
     },
     {
       "op": "rampUntil",

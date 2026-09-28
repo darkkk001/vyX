@@ -24,7 +24,7 @@ type Config = {
 
 /** A command-line flag (two leading dashes). */
 const FLAG = /^-{2}\w/;
-const OPS = new Set(["note", "price.set", "price.jump", "open", "close", "closeAccount", "rampUntil", "hold", "observe", "expect", "ramp", "waitUntil", "expectMirror", "expectNoNewPosition"]);
+const OPS = new Set(["note", "price.set", "price.jump", "open", "close", "closeAccount", "rampUntil", "hold", "observe", "expect", "ramp", "waitUntil", "expectMirror", "expectNoNewPosition", "require"]);
 
 export function loadConfig(): Config {
   const cfg = JSON.parse(readFileSync(path.join(ROOT, "config", "bot.json"), "utf8")) as Config;
@@ -69,7 +69,14 @@ async function main() {
   if (dryRun) {
     const sink = new RecordingSink();
     price = new PriceDriver(sink, journal, { ...cfg.limits, logEveryTick: false });
-    trade = new SimTradeBackend(cfg.accounts, price, cfg.symbolMeta, cfg.dryRunFxRates);
+    // --dry-balance=<account>:<amount> (dry run only): start an account from another balance than the seed value
+    const accounts = structuredClone(cfg.accounts);
+    for (const f of rest.filter((x) => x.startsWith("-" + "-dry-balance="))) {
+      const [acct, amt] = f.split("=")[1].split(":"); assertAccount(acct);
+      if (!accounts[acct] || !(Number(amt) >= 0)) throw new Error(`bad ${f}`);
+      accounts[acct].balance = Number(amt);
+    }
+    trade = new SimTradeBackend(accounts, price, cfg.symbolMeta, cfg.dryRunFxRates);
   } else {
     const password = process.env.SHADOWBOT_PASSWORD;
     const secretFile = process.env.SYNTH_FEED_SECRET_FILE;
