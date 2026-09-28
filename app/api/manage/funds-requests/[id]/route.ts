@@ -3,7 +3,8 @@ import { prisma } from "@/lib/prisma";
 import { getAdminSession } from "@/lib/auth";
 import { forbidUnlessBrokerAdminOrPermission } from "@/lib/permissions";
 import { publishTradingEvent } from "@/lib/nats";
-import { publishFundsRequestChanged } from "@/lib/funds-events";
+import { publishFundsRequestChanged, notifyFundsRequestResolved } from "@/lib/funds-events";
+import { withdrawalKycApproved, WITHDRAWAL_KYC_ADMIN_MESSAGE, WITHDRAWAL_KYC_CODE } from "@/lib/withdrawal-kyc";
 import {
   resolveFundsApprovalStep,
   markFundsRequestForApproval,
@@ -51,11 +52,16 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   if (!action) {
     return NextResponse.json({ error: "action must be APPROVE, REJECT, or CANCEL_MARK" }, { status: 400 });
   }
-  const note = typeof body?.note === "string" ? body.note.trim().slice(0, 500) : null;
+  // issue 109: an empty note is no note ("" used to erase the trader's own note)
+  const note = typeof body?.note === "string" && body.note.trim() ? body.note.trim().slice(0, 500) : null;
 
   if (action === "CANCEL_MARK") {
     if (!existing.markedByAdminId) {
       return NextResponse.json({ error: "request is not marked" }, { status: 409 });
+    }
+    // Phase 2 batch 8 (issue 111, owner decision): only the admin who marked it may withdraw the mark
+    if (existing.markedByAdminId !== session!.adminId) {
+      return NextResponse.json({ error: "only the staff member who marked this withdrawal can cancel the mark" }, { status: 403 });
     }
     await prisma.$transaction((tx) =>
       cancelFundsRequestMark(tx, {
@@ -71,10 +77,11 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
   if (action === "REJECT") {
     const rejected = await prisma
-      .$transaction((tx) => rejectFundsRequest(tx, { transactionId: id, brokerId, adminId: session!.adminId, note: note ?? existing.note }))
+      .$transaction((tx) => rejectFundsRequest(tx, { transactionId: id, brokerId, adminId: session!.adminId, note }))
       .catch(raced);
     if (!rejected) return racedResponse();
     await publishFundsRequestChanged({ brokerId, accountId: existing.accountId, transactionId: id, change: "rejected" });
+    await notifyFundsRequestResolved({ brokerId, accountId: existing.accountId, transactionId: id, kind: existing.type as "DEPOSIT" | "WITHDRAWAL", outcome: "REJECTED", amount: existing.amount.abs().toString(), reviewNote: note });
     return NextResponse.json(rejected);
   }
 
@@ -89,6 +96,11 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   });
   if (step.step === "error") {
     return NextResponse.json({ error: step.error }, { status: 400 });
+  }
+  // Phase 2 batch 8 (issue 132): no withdrawal is marked or paid without approved KYC (approveFundsRequest checks it
+  // again inside the paying transaction)
+  if (existing.type === "WITHDRAWAL" && !(await withdrawalKycApproved(prisma, existing.accountId))) {
+    return NextResponse.json({ error: WITHDRAWAL_KYC_ADMIN_MESSAGE, code: WITHDRAWAL_KYC_CODE }, { status: 409 });
   }
   if (step.step === "mark") {
     const marked = await prisma
@@ -107,7 +119,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         accountId: existing.accountId,
         amount: existing.amount,
         adminId: session!.adminId,
-        note: note ?? existing.note,
+        note,
         type: existing.type as "DEPOSIT" | "WITHDRAWAL",
         approvalMode: step.single ? "SINGLE" : "DUAL",
         markedByAdminId: existing.markedByAdminId,
@@ -123,5 +135,6 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     (err) => console.error("[funds-requests] BalanceChanged publish failed", err)
   );
   await publishFundsRequestChanged({ brokerId, accountId: existing.accountId, transactionId: id, change: "approved" });
+  await notifyFundsRequestResolved({ brokerId, accountId: existing.accountId, transactionId: id, kind: existing.type as "DEPOSIT" | "WITHDRAWAL", outcome: "APPROVED", amount: existing.amount.abs().toString(), reviewNote: note });
   return NextResponse.json({ id: approved.transactionId, status: "COMPLETED", balanceAfter: approved.balanceAfter.toString() });
 }

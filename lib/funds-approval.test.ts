@@ -77,6 +77,8 @@ async function createFixture(tx: Prisma.TransactionClient, balance = "1000") {
       passwordHash: "x",
       fullName: "Funds Approval Test",
       accountMode: "LIVE",
+      // Phase 2 batch 8 (issue 132): withdrawals need approved KYC; these fixtures test the other withdrawal rules
+      kycRecord: { create: { status: "APPROVED", documentType: "passport", documentFrontUrl: "test" } },
       balance: D(balance),
     },
   });
@@ -191,7 +193,8 @@ describe("rejectFundsRequest and cancelFundsRequestMark (live DB, rolled back)",
 
       const txn = await tx.transaction.findUniqueOrThrow({ where: { id: req.id } });
       expect(txn.markedByAdminId).toBeNull();
-      expect(txn.note).toBe("insufficient documentation");
+      // Phase 2 batch 8 (issue 109): the admin's note is the reviewNote; the trader's own note is never overwritten
+      expect(txn.reviewNote).toBe("insufficient documentation");
       const acct = await tx.account.findUniqueOrThrow({ where: { id: fx.accountId } });
       expect(acct.balance.toString()).toBe("1000");
     });

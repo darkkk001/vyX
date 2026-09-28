@@ -5,6 +5,7 @@ import { getAccountSession } from "@/lib/account-auth";
 import { createNotification } from "@/lib/notifications";
 import { resolvePspAdapter } from "@/lib/psp/adapter";
 import { publishFundsRequestChanged } from "@/lib/funds-events";
+import { withdrawalKycApproved, WITHDRAWAL_KYC_CODE, WITHDRAWAL_KYC_MESSAGE } from "@/lib/withdrawal-kyc";
 
 // Deposit/withdrawal requests -- see components/webtrader/WebTrader.tsx's
 // funds modal, previously stubbed with a "not yet available" toast.
@@ -42,6 +43,8 @@ export async function GET() {
       status: t.status,
       amount: t.amount.toString(),
       note: t.note,
+      // Phase 2 batch 8 (issue 109): the broker's approve / reject note, shown to the trader beside their own
+      reviewNote: t.reviewNote,
       createdAt: t.createdAt.toISOString(),
       paymentMethodType: t.paymentMethod?.type ?? null,
       pspStatus: t.pspStatus,
@@ -77,6 +80,11 @@ export async function POST(request: NextRequest) {
   const account = await prisma.account.findUniqueOrThrow({ where: { id: session.accountId } });
   if (account.status !== "ACTIVE") {
     return NextResponse.json({ error: "account is not active" }, { status: 400 });
+  }
+
+  // Phase 2 batch 8 (issue 132, owner decision): a withdrawal needs approved KYC; deposits never do
+  if (type === "WITHDRAWAL" && !(await withdrawalKycApproved(prisma, session.accountId))) {
+    return NextResponse.json({ error: WITHDRAWAL_KYC_MESSAGE, code: WITHDRAWAL_KYC_CODE }, { status: 403 });
   }
 
   const paymentMethodId = typeof body?.paymentMethodId === "string" ? body.paymentMethodId : null;

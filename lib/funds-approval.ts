@@ -3,6 +3,7 @@ import { Prisma } from "@prisma/client";
 import { nextPspStatusOnMark, nextPspStatusOnApprove } from "@/lib/psp/adapter";
 import { lockAccountBalance } from "@/lib/account-lock";
 import { checkBalanceDebit } from "@/lib/margin";
+import { withdrawalKycApproved, WITHDRAWAL_KYC_ADMIN_MESSAGE } from "@/lib/withdrawal-kyc";
 
 type Tx = Prisma.TransactionClient;
 
@@ -106,7 +107,8 @@ export async function rejectFundsRequest(
   // status-guarded (audit 2026-09-24): a reject racing an approval can never flip a COMPLETED payout to REJECTED
   const claimed = await tx.transaction.updateMany({
     where: { id: params.transactionId, status: "PENDING" },
-    data: { status: "REJECTED", reviewedByAdminId: params.adminId, markedByAdminId: null, markedAt: null, note: params.note },
+    // Phase 2 batch 8 (issue 109): the admin's note goes to reviewNote; the trader's own request note is never touched
+    data: { status: "REJECTED", reviewedByAdminId: params.adminId, markedByAdminId: null, markedAt: null, reviewNote: params.note },
   });
   if (claimed.count === 0) throw new FundsRequestRaceError();
   const updated = { id: params.transactionId, status: "REJECTED" };
@@ -118,7 +120,7 @@ export async function rejectFundsRequest(
       entityType: "Transaction",
       entityId: params.transactionId,
       oldValue: { status: "PENDING" },
-      newValue: { status: "REJECTED", note: params.note },
+      newValue: { status: "REJECTED", reviewNote: params.note },
     },
   });
   return { id: updated.id, status: updated.status };
@@ -152,6 +154,9 @@ export async function approveFundsRequest(
   const balanceAfter = balanceBefore.add(params.amount); // amount already signed (negative for withdrawal)
 
   if (params.type === "WITHDRAWAL") {
+    // Phase 2 batch 8 (issue 132, owner decision): no payout without approved KYC -- checked here, inside the paying
+    // transaction, so every path to COMPLETED goes through it
+    if (!(await withdrawalKycApproved(tx, params.accountId))) return { ok: false, error: WITHDRAWAL_KYC_ADMIN_MESSAGE };
     // Audit 2026-09-24 (money): not only balance >= 0 -- a payout must not leave open positions under-margined.
     // Checked on the LOCKED balance (lib/margin.ts checkBalanceDebit).
     const debit = await checkBalanceDebit(tx, { accountId: params.accountId, amount: params.amount.neg(), balance: balanceBefore });
@@ -175,7 +180,7 @@ export async function approveFundsRequest(
       balanceBefore,
       balanceAfter,
       reviewedByAdminId: params.adminId,
-      note: params.note,
+      reviewNote: params.note, // issue 109: never the trader's own note
       pspStatus: nextPspStatusOnApprove(params.type),
     },
   });

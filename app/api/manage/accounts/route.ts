@@ -286,6 +286,17 @@ async function createAccount(request: NextRequest, session: NonNullable<Awaited<
       return NextResponse.json({ error: `leverage must be ${LEVERAGE_RULE}` }, { status: 400 });
     }
     leverage = n;
+  } else if (!canSetFinancials && body?.leverage != null && body.leverage !== "") {
+    // Phase 2 batch 8 (issue 94): a typed leverage from a caller without the finance permission used to be dropped
+    // silently (the account got the group's). Same rule as the starting balance below: say so. The group's own value
+    // is accepted (a form may always send it).
+    const n = parseLeverage(body.leverage);
+    if (n !== leverage) {
+      return NextResponse.json(
+        { error: `forbidden: a custom leverage (1:${n ?? body.leverage}) needs BROKER_ADMIN or ACCOUNT_FINANCE; leave it empty to use the group's 1:${leverage}`, code: "LEVERAGE_NEEDS_FINANCE" },
+        { status: 403 }
+      );
+    }
   }
 
   // Audit 2026-09-24 (money): a starting balance is enforced here, not only hidden in the form.

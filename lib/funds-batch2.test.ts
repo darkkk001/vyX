@@ -60,7 +60,9 @@ async function admin(fx: Fx, role: Role, perms: string[] = []) {
 async function account(fx: Fx, balance: number, email?: string) {
   const n = `9${randomUUID().replace(/\D/g, "").slice(0, 7).padEnd(7, "3")}`;
   return prisma.account.create({
-    data: { groupId: fx.groupId, brokerId: fx.brokerId, accountNumber: n, email: email ?? `c-${n}@test.local`, passwordHash: "x", fullName: "Funds B2 Client", accountMode: "LIVE", balance: D(balance) },
+    data: { groupId: fx.groupId, brokerId: fx.brokerId, accountNumber: n, email: email ?? `c-${n}@test.local`, passwordHash: "x", fullName: "Funds B2 Client", accountMode: "LIVE", balance: D(balance),
+      // Phase 2 batch 8 (issue 132): withdrawals need approved KYC; these fixtures test the other withdrawal rules
+      kycRecord: { create: { status: "APPROVED", documentType: "passport", documentFrontUrl: "test" } } },
   });
 }
 
@@ -100,6 +102,7 @@ afterAll(async () => {
     await prisma.transaction.deleteMany({ where });
     await prisma.position.deleteMany({ where });
     await prisma.order.deleteMany({ where });
+    await prisma.kycRecord.deleteMany({ where: { account: where } });
     await prisma.account.deleteMany({ where });
     await prisma.brokerSymbol.deleteMany({ where });
     await prisma.adminUser.deleteMany({ where });

@@ -55,6 +55,8 @@ afterAll(async () => {
     await prisma.accountType.deleteMany({ where });
     await prisma.adminUser.deleteMany({ where });
     await prisma.group.deleteMany({ where: { brokerId: { in: createdBrokerIds } } }).catch(() => {});
+  // rows a parallel test file may have written for these brokers (full-suite run) would block the broker delete
+  await prisma.notification.deleteMany({ where: { brokerId: { in: createdBrokerIds } } }).catch(() => {});
     await prisma.broker.deleteMany({ where: { id: { in: createdBrokerIds } } });
   }
   await prisma.$disconnect();

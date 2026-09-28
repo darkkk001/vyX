@@ -1934,6 +1934,15 @@ export default function WebTrader({
         return;
       }
 
+      // Phase 2 batch 8 (issue 112): the broker approved or rejected one of this trader's deposit / withdrawal requests
+      if (parsed?.type === "FundsRequestResolved") {
+        const p = parsed as { outcome?: string; message?: string };
+        pushToast(p.message || "Your funds request was reviewed", p.outcome === "REJECTED");
+        refreshFundsHistory();
+        refreshAccount();
+        return;
+      }
+
       if (parsed?.type === "MarginCall") {
         if (parsed.state === "margin_call") pushToast("Margin call, your margin level is below the margin call level", true);
         refreshAccount();
@@ -2012,7 +2021,7 @@ export default function WebTrader({
       if (reconnectTimer) clearTimeout(reconnectTimer);
       socket?.close();
     };
-  }, [refreshOrders, refreshPositions, refreshAccount, refreshAlerts, pushToast]);
+  }, [refreshOrders, refreshPositions, refreshAccount, refreshAlerts, pushToast, refreshFundsHistory]);
 
   // fix/realtime-sync §7 -- F5/Ctrl+R (Cmd+R on Mac) refetches this tab's
   // own data instead of a full page reload, which used to throw away
@@ -4875,7 +4884,7 @@ export default function WebTrader({
                           <div className="history-row" key={f.id}>
                             <span className="pos-cell mono" style={{ color: "var(--text-3)", fontSize: 11 }}>{f.id.slice(-8)}</span>
                             <span className="pos-cell" style={{ color: "var(--text-3)" }}>-</span>
-                            <span className="pos-cell" title={f.note ?? undefined}>{label}</span>
+                            <span className="pos-cell" title={[f.note, f.reviewNote ? `Broker: ${f.reviewNote}` : null].filter(Boolean).join(" · ") || undefined}>{label}</span>
                             <span className="pos-cell" style={{ color: "var(--text-3)" }}>-</span>
                             <span className="pos-cell" style={{ color: "var(--text-3)" }}>-</span>
                             <span className="pos-cell" style={{ color: "var(--text-3)" }}>-</span>

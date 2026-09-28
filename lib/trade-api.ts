@@ -139,6 +139,8 @@ export type ApiFundsRequest = {
   status: "PENDING" | "COMPLETED" | "REJECTED" | "CANCELLED";
   amount: string;
   note: string | null;
+  // Phase 2 batch 8 (issue 109): the broker's approve / reject note (the trader's own note stays in `note`)
+  reviewNote?: string | null;
   createdAt: string;
   // PSP adapter fields (lib/psp/adapter.ts) -- null for ADJUSTMENT rows
   // and any pre-existing request made before this feature.

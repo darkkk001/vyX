@@ -1420,6 +1420,9 @@ model Transaction {
   referenceType     String? // "Position" | "Order" | null for manual/deposit/withdrawal
   referenceId       String?
   note              String?
+  // Phase 2 batch 8 (issue 109): the reviewing admin's approve / reject note. `note` stays the trader's own request
+  // note (or the admin's note on an adjustment), never overwritten by a review.
+  reviewNote        String?
   createdByAdminId  String?
   createdByAdmin    AdminUser?        @relation("TransactionCreatedBy", fields: [createdByAdminId], references: [id])
   // Who approved/rejected a PENDING request (deposit/withdrawal) --

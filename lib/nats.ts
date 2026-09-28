@@ -77,6 +77,10 @@ const SUBJECTS = {
   // under account.> the trader stream would forward it and the installed terminal would print the raw type in its LOG.
   // The backoffice's funds queue and dashboard refresh at once instead of on the 20 s poll.
   FundsRequestChanged: "dealing.funds_request",
+  // Phase 2 batch 8 (issue 112): the trader's own deposit / withdrawal request was approved or rejected. Account-scoped
+  // under account.> (no gateway change): the trader's terminal / WebTrader tells them at once; the backoffice sees it
+  // as the "funds" family too.
+  FundsRequestResolved: "account.funds_resolved",
 } as const satisfies Record<string, string>;
 
 export type TradingEventType = keyof typeof SUBJECTS;

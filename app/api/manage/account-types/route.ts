@@ -3,6 +3,7 @@ import { withConfigEvent } from "@/lib/config-events";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
+import { forbidUnlessBrokerAdminOrPermission, PERMISSION_LABELS } from "@/lib/permissions";
 import { parseTypePricing, typePricingJson } from "@/lib/account-type-pricing";
 
 async function requireManager() {
@@ -74,6 +75,11 @@ async function postHandler(request: NextRequest) {
   const pricing = parseTypePricing(body);
   if ("error" in pricing) {
     return NextResponse.json({ error: pricing.error }, { status: 400 });
+  }
+  // Phase 2 batch 8 (issue 75): a type's flat pricing moves money on every fill of its accounts -- the same PRICING
+  // permission a symbol's pricing needs (a MANAGER without it may still rename, reorder, enable or disable a type)
+  if (JSON.stringify(typePricingJson(pricing)) !== JSON.stringify(typePricingJson(parseTypePricing({}) as Exclude<ReturnType<typeof parseTypePricing>, { error: string }>)) && (await forbidUnlessBrokerAdminOrPermission(session, "PRICING"))) {
+    return NextResponse.json({ error: "forbidden", permission: "PRICING", permissionLabel: PERMISSION_LABELS.PRICING }, { status: 403 });
   }
 
   try {

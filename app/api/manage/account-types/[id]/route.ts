@@ -4,6 +4,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { publishAccountsUpdatedAfterResponse } from "@/lib/account-events";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
+import { forbidUnlessBrokerAdminOrPermission, PERMISSION_LABELS } from "@/lib/permissions";
 import { parseTypePricing, typePricingJson } from "@/lib/account-type-pricing";
 
 async function requireManager() {
@@ -75,6 +76,11 @@ async function patchHandler(request: NextRequest, { params }: { params: Promise<
   const pricing = parseTypePricing(body, existing);
   if ("error" in pricing) {
     return NextResponse.json({ error: pricing.error }, { status: 400 });
+  }
+  // Phase 2 batch 8 (issue 75): a type's flat pricing moves money on every fill of its accounts -- the same PRICING
+  // permission a symbol's pricing needs (a MANAGER without it may still rename, reorder, enable or disable a type)
+  if (JSON.stringify(typePricingJson(pricing)) !== JSON.stringify(typePricingJson(existing)) && (await forbidUnlessBrokerAdminOrPermission(session, "PRICING"))) {
+    return NextResponse.json({ error: "forbidden", permission: "PRICING", permissionLabel: PERMISSION_LABELS.PRICING }, { status: 403 });
   }
 
   // A broker must always have exactly one default (app/api/manage/

@@ -104,6 +104,8 @@ const LABELS: Record<string, string> = {
   LEAD_CREATED: "Created lead",
   LEAD_UPDATED: "Updated lead",
   LEAD_CONVERTED: "Converted lead",
+  GROUP_LEVERAGE_APPLIED: "Applied group leverage to its accounts",
+  COVERAGE_ACCOUNT_SET: "Set the dealer coverage account",
   LIVE_ACCOUNT_REQUEST_APPROVED: "Approved live account request",
   LIVE_ACCOUNT_REQUEST_REJECTED: "Rejected live account request",
   RISK_HALT_TOGGLED: "Toggled trading halt",

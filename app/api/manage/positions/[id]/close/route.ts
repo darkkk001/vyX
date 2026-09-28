@@ -4,7 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { forbidUnlessBrokerAdminOrPermission, PERMISSION_LABELS } from "@/lib/permissions";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { getFreshPrice } from "@/lib/live-price";
-import { checkTradingSession, computeNextSessionOpen } from "@/lib/risk";
+import { checkTradingSession, computeNextSessionOpen, checkLotStep } from "@/lib/risk";
 import { executeAdminCloseInTx } from "@/lib/position-actions";
 import * as mirror from "@/lib/mirror";
 import * as coverage from "@/lib/coverage";
@@ -95,6 +95,19 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         { error: `volume must be between 0 and ${position.volume}` },
         { status: 400 }
       );
+    }
+    // Phase 2 batch 8 (issue 121): an admin partial close follows the trader route's rule -- the closed part is a
+    // tradeable lot size and the remainder is not below the minimum; a full close is always allowed
+    if (!requested.equals(position.volume) && brokerSymbol) {
+      const stepError = checkLotStep(requested, brokerSymbol.minLot, brokerSymbol.lotStep);
+      if (stepError) return NextResponse.json({ error: `partial close amount ${stepError}` }, { status: 400 });
+      const remaining = position.volume.sub(requested);
+      if (remaining.gt(0) && remaining.lt(brokerSymbol.minLot)) {
+        return NextResponse.json(
+          { error: `closing this amount would leave ${remaining} lots open, below this symbol's minimum of ${brokerSymbol.minLot}. Close the full position instead` },
+          { status: 400 }
+        );
+      }
     }
     closeVolume = requested;
   }

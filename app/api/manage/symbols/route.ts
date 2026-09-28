@@ -31,6 +31,7 @@ const DEFAULTS = {
   tradingMode: "BOTH" as TradingMode,
   defaultBookType: "B_BOOK" as BookType,
   hedgedMarginPct: "200",
+  stopLevel: 0,
 };
 
 async function requireManager() {
@@ -72,6 +73,8 @@ export async function GET() {
       tradingMode: cfg ? cfg.tradingMode : DEFAULTS.tradingMode,
       defaultBookType: cfg ? cfg.defaultBookType : DEFAULTS.defaultBookType,
       hedgedMarginPct: cfg ? cfg.hedgedMarginPct.toString() : DEFAULTS.hedgedMarginPct,
+      // Phase 2 batch 8 (issue 188): minimum SL/TP distance from the price, in points (validateSlTp); 0 = none
+      stopLevel: cfg ? cfg.stopLevel : DEFAULTS.stopLevel,
     };
   });
 
@@ -209,6 +212,18 @@ async function patchHandler(request: NextRequest) {
     }
   }
 
+  // Phase 2 batch 8 (issue 188) stop level, OPTIONAL like hedgedMarginPct: not sent = the stored value stays (an older
+  // backoffice never resets it). A whole number of points, 0 (no minimum) to 100000.
+  const stopLevelRaw = (body as Record<string, unknown> | null)?.stopLevel;
+  let stopLevel: number | null = null;
+  if (stopLevelRaw != null && stopLevelRaw !== "") {
+    const n = typeof stopLevelRaw === "number" ? stopLevelRaw : typeof stopLevelRaw === "string" && /^\d+$/.test(stopLevelRaw.trim()) ? Number(stopLevelRaw.trim()) : NaN;
+    if (!Number.isInteger(n) || n < 0 || n > 100000) {
+      return NextResponse.json({ error: "stopLevel must be a whole number of points from 0 to 100000 (0 = no minimum SL/TP distance)" }, { status: 400 });
+    }
+    stopLevel = n;
+  }
+
   if (
     !spreadMarkup ||
     !minLot ||
@@ -279,6 +294,7 @@ async function patchHandler(request: NextRequest) {
     // time a 1.0.10 saved any unrelated field on it.
     ...(defaultBookType === null ? {} : { defaultBookType }),
     ...(hedgedMarginPct === null ? {} : { hedgedMarginPct }),
+    ...(stopLevel === null ? {} : { stopLevel }),
   };
 
   const updated = await prisma.brokerSymbol.upsert({
@@ -308,6 +324,7 @@ async function patchHandler(request: NextRequest) {
             tradingMode: existing.tradingMode,
             defaultBookType: existing.defaultBookType,
             hedgedMarginPct: existing.hedgedMarginPct.toString(),
+            stopLevel: existing.stopLevel,
           }
         : DEFAULTS,
       newValue: {
@@ -323,6 +340,7 @@ async function patchHandler(request: NextRequest) {
         tradingMode: updated.tradingMode,
         defaultBookType: updated.defaultBookType,
         hedgedMarginPct: updated.hedgedMarginPct.toString(),
+        stopLevel: updated.stopLevel,
         ...(confirmBelowFloor ? { confirmedBelowHedgedFloor: true } : {}),
       },
     },
@@ -343,6 +361,7 @@ async function patchHandler(request: NextRequest) {
     tradingMode: updated.tradingMode,
     defaultBookType: updated.defaultBookType,
     hedgedMarginPct: updated.hedgedMarginPct.toString(),
+    stopLevel: updated.stopLevel,
   });
 }
 

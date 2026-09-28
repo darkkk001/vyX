@@ -6,7 +6,9 @@ import { forbidUnlessBrokerAdminOrPermission } from "@/lib/permissions";
 import { generateTemporaryPassword } from "@/lib/passwords";
 import { hashPassword } from "@/lib/client-auth";
 import { provisionAccount } from "@/lib/account-provisioning";
-import { AccountStructureError } from "@/lib/account-structure";
+import { AccountStructureError, checkAccountStructure } from "@/lib/account-structure";
+import { hasPermission } from "@/lib/permissions";
+import { LEVERAGE_RULE, parseLeverage } from "@/lib/leverage";
 import { stashRevealedCredentials } from "@/lib/live-account-credentials";
 import { sendBrokerEmail } from "@/lib/email/adapter";
 import { renderBrokerEmail } from "@/lib/email/template";
@@ -73,6 +75,32 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     return NextResponse.json({ id: updated.id, status: updated.status });
   }
 
+  // Phase 2 batch 8 (issue 137): the approver may choose the group, the leverage and the account type (each optional;
+  // not sent = the old behaviour: broker default group, its leverage, the type the client asked for). Validated
+  // BEFORE the claim below, so a bad choice changes nothing. Same rules as creating an account by hand
+  // (app/api/manage/accounts POST): a client-selectable group that passes the structure check, and a leverage other
+  // than the group's needs BROKER_ADMIN or ACCOUNT_FINANCE.
+  let chosenGroup: { id: string; leverage: number } | null = null;
+  if (typeof body?.groupId === "string" && body.groupId) {
+    const found = await prisma.group.findUnique({ where: { id: body.groupId } });
+    if (!found || found.brokerId !== brokerId) return NextResponse.json({ error: "group not found" }, { status: 404 });
+    const structural = checkAccountStructure({ accountMode: "LIVE", group: found, allowCoverage: false });
+    if (structural) return NextResponse.json({ error: structural.message, code: structural.code }, { status: 400 });
+    if (!found.isClientSelectable) return NextResponse.json({ error: "that group is not available for client accounts", code: "GROUP_NOT_CLIENT_SELECTABLE" }, { status: 400 });
+    chosenGroup = { id: found.id, leverage: found.leverage };
+  }
+  let chosenTypeId: string | null = null;
+  if (typeof body?.accountTypeId === "string" && body.accountTypeId) {
+    const t = await prisma.accountType.findUnique({ where: { id: body.accountTypeId } });
+    if (!t || t.brokerId !== brokerId || !t.enabled) return NextResponse.json({ error: "account type not found or disabled" }, { status: 404 });
+    chosenTypeId = t.id;
+  }
+  let chosenLeverage: number | null = null;
+  if (body?.leverage != null && body.leverage !== "") {
+    chosenLeverage = parseLeverage(body.leverage);
+    if (chosenLeverage == null) return NextResponse.json({ error: `leverage must be ${LEVERAGE_RULE}` }, { status: 400 });
+  }
+
   // Claim the request BEFORE creating the account (audit 2026-09-24, money): two admins approving at once used to
   // create two live accounts. reviewedAt set while status is still PENDING = "being approved"; the loser gets 409.
   // If creating the account fails, the claim is released.
@@ -98,6 +126,15 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     }),
   ]);
   const defaultGroup = await prisma.group.findFirst({ where: { brokerId, isDefault: true } });
+  const group = chosenGroup ?? (defaultGroup ? { id: defaultGroup.id, leverage: defaultGroup.leverage } : null);
+  const groupLeverage = group?.leverage ?? broker.defaultAccountLeverage;
+  if (chosenLeverage != null && chosenLeverage !== groupLeverage && session!.role !== "BROKER_ADMIN" && !(await hasPermission(session, "ACCOUNT_FINANCE"))) {
+    await releaseClaim().catch(() => {});
+    return NextResponse.json(
+      { error: `forbidden: a custom leverage (1:${chosenLeverage}) needs BROKER_ADMIN or ACCOUNT_FINANCE; leave it empty to use the group's 1:${groupLeverage}`, code: "LEVERAGE_NEEDS_FINANCE" },
+      { status: 403 }
+    );
+  }
 
   const password = generateTemporaryPassword();
   const passwordHash = await hashPassword(password);
@@ -114,10 +151,10 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       email: client.email,
       passwordHash,
       accountMode: "LIVE",
-      accountTypeId: existing.accountTypeId,
+      accountTypeId: chosenTypeId ?? existing.accountTypeId,
       currency: broker.defaultAccountCurrency,
-      leverage: defaultGroup?.leverage ?? broker.defaultAccountLeverage,
-      groupId: defaultGroup?.id ?? null,
+      leverage: chosenLeverage ?? groupLeverage,
+      groupId: group?.id ?? null,
       initialBalance: new Prisma.Decimal(0),
       country: client.country,
       phone: client.phone,
@@ -146,7 +183,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         entityType: "LiveAccountRequest",
         entityId: id,
         oldValue: { status: "PENDING" },
-        newValue: { status: "APPROVED", accountId: account.id, accountNumber: account.accountNumber },
+        newValue: { status: "APPROVED", accountId: account.id, accountNumber: account.accountNumber, groupId: group?.id ?? null, leverage: chosenLeverage ?? groupLeverage, accountTypeId: chosenTypeId ?? existing.accountTypeId, chosenByApprover: { group: chosenGroup != null, leverage: chosenLeverage != null, accountType: chosenTypeId != null } },
       },
     });
     return r;
