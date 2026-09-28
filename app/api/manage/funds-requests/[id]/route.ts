@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { getAdminSession } from "@/lib/auth";
 import { forbidUnlessBrokerAdminOrPermission } from "@/lib/permissions";
 import { publishTradingEvent } from "@/lib/nats";
+import { publishFundsRequestChanged } from "@/lib/funds-events";
 import {
   resolveFundsApprovalStep,
   markFundsRequestForApproval,
@@ -64,6 +65,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         actorAdminId: session!.adminId,
       })
     );
+    await publishFundsRequestChanged({ brokerId, accountId: existing.accountId, transactionId: id, change: "unmarked" });
     return NextResponse.json({ id, status: existing.status, marked: false });
   }
 
@@ -72,6 +74,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       .$transaction((tx) => rejectFundsRequest(tx, { transactionId: id, brokerId, adminId: session!.adminId, note: note ?? existing.note }))
       .catch(raced);
     if (!rejected) return racedResponse();
+    await publishFundsRequestChanged({ brokerId, accountId: existing.accountId, transactionId: id, change: "rejected" });
     return NextResponse.json(rejected);
   }
 
@@ -92,6 +95,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       .$transaction((tx) => markFundsRequestForApproval(tx, { transactionId: id, brokerId, adminId: session!.adminId }))
       .catch(raced);
     if (!marked) return racedResponse();
+    await publishFundsRequestChanged({ brokerId, accountId: existing.accountId, transactionId: id, change: "marked" });
     return NextResponse.json({ id: marked.transactionId, status: existing.status, marked: true });
   }
 
@@ -118,5 +122,6 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   await publishTradingEvent("BalanceChanged", { account_id: existing.accountId, broker_id: brokerId, transaction_id: approved.transactionId }).catch(
     (err) => console.error("[funds-requests] BalanceChanged publish failed", err)
   );
+  await publishFundsRequestChanged({ brokerId, accountId: existing.accountId, transactionId: id, change: "approved" });
   return NextResponse.json({ id: approved.transactionId, status: "COMPLETED", balanceAfter: approved.balanceAfter.toString() });
 }

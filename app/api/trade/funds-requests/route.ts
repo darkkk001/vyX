@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
 import { createNotification } from "@/lib/notifications";
 import { resolvePspAdapter } from "@/lib/psp/adapter";
+import { publishFundsRequestChanged } from "@/lib/funds-events";
 
 // Deposit/withdrawal requests -- see components/webtrader/WebTrader.tsx's
 // funds modal, previously stubbed with a "not yet available" toast.
@@ -161,6 +162,7 @@ export async function POST(request: NextRequest) {
     entityType: "Transaction",
     entityId: created.id,
   });
+  await publishFundsRequestChanged({ brokerId: session.brokerId, accountId: session.accountId, transactionId: created.id, change: "created" });
 
   return NextResponse.json(
     {

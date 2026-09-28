@@ -72,6 +72,11 @@ const SUBJECTS = {
   ConfigChanged: "config.changed",
   // An account crossed its margin-call / stop-out level (or recovered): account-scoped, both streams.
   MarginCall: "margin.call",
+  // Phase 2 batch 7 (issue 298): a deposit / withdrawal request was filed, marked, unmarked, rejected or approved.
+  // Backoffice-only, so under dealing.> like DealerActivity (only the admin stream subscribes it; no gateway change):
+  // under account.> the trader stream would forward it and the installed terminal would print the raw type in its LOG.
+  // The backoffice's funds queue and dashboard refresh at once instead of on the 20 s poll.
+  FundsRequestChanged: "dealing.funds_request",
 } as const satisfies Record<string, string>;
 
 export type TradingEventType = keyof typeof SUBJECTS;

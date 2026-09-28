@@ -16,18 +16,49 @@ import { humanizeAction, auditEntityHref, excludeSuperAdminActor, summarizeAudit
 // orderAuditFields (there's no dedicated column for either on AuditLog),
 // plus a plain entityId match so a non-order row like an Account or
 // AdminUser id still finds its own log rows the way it always could.
+const AUDIT_PAGE = 200;
+
 export async function GET(request: NextRequest) {
   const session = await getAdminSession();
   if (!requireAdminRole(session, ["MANAGER", "BROKER_ADMIN"]) || !session!.brokerId) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
 
-  const q = new URL(request.url).searchParams.get("q")?.trim();
+  const sp = new URL(request.url).searchParams;
+  const q = sp.get("q")?.trim();
+
+  // Phase 2 batch 7 (issue 79): a date range and paging. from / to (ISO date or datetime; a bare `to` date includes
+  // that whole day, like the deals route) and the keyset `before` + `beforeId` (the `createdAt` and `id` of the last
+  // row already shown: the next page is everything older, ties on the same millisecond broken by id). The body stays
+  // the bare array; x-truncated says whether an older page exists.
+  const createdAt: Prisma.DateTimeFilter = {};
+  const fromRaw = sp.get("from")?.trim();
+  if (fromRaw) {
+    const d = new Date(fromRaw);
+    if (!Number.isNaN(d.getTime())) createdAt.gte = d;
+  }
+  const toRaw = sp.get("to")?.trim();
+  if (toRaw) {
+    const d = new Date(toRaw);
+    if (!Number.isNaN(d.getTime())) {
+      if (/^\d{4}-\d{2}-\d{2}$/.test(toRaw)) d.setUTCDate(d.getUTCDate() + 1);
+      createdAt.lt = d;
+    }
+  }
+  const beforeRaw = sp.get("before")?.trim();
+  const beforeId = sp.get("beforeId")?.trim() || null;
+  const before = beforeRaw ? new Date(beforeRaw) : null;
+  const keyset: Prisma.AuditLogWhereInput | null =
+    before && !Number.isNaN(before.getTime())
+      ? { OR: [{ createdAt: { lt: before } }, ...(beforeId ? [{ createdAt: before, id: { lt: beforeId } }] : [])] }
+      : null;
 
   const logs = await prisma.auditLog.findMany({
     where: {
       brokerId: session!.brokerId!,
       ...excludeSuperAdminActor,
+      ...(createdAt.gte || createdAt.lt ? { createdAt } : {}),
+      ...(keyset ? { AND: [keyset] } : {}),
       ...(q
         ? {
             OR: [
@@ -44,10 +75,12 @@ export async function GET(request: NextRequest) {
           }
         : {}),
     },
-    orderBy: { createdAt: "desc" },
-    take: 200,
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    take: AUDIT_PAGE + 1,
     include: { actorAdmin: { select: { email: true } } },
   });
+  const truncated = logs.length > AUDIT_PAGE;
+  if (truncated) logs.length = AUDIT_PAGE;
 
   const entityLabels = await resolveEntityLabels(session!.brokerId!, logs.map((l) => ({ entityType: l.entityType, entityId: l.entityId })));
   return NextResponse.json(
@@ -64,6 +97,9 @@ export async function GET(request: NextRequest) {
       order: extractOrderIdentity(log.oldValue, log.newValue),
       diffLines: summarizeAuditDiff(log.oldValue, log.newValue),
       createdAtLabel: log.createdAt.toISOString().replace("T", " ").slice(0, 19),
-    }))
+      // the keyset cursor for the next page (full precision, with `id` as beforeId)
+      createdAt: log.createdAt.toISOString(),
+    })),
+    { headers: { "x-row-limit": String(AUDIT_PAGE), "x-truncated": truncated ? "true" : "false" } }
   );
 }

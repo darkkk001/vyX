@@ -101,6 +101,8 @@ export async function GET(request: NextRequest) {
       swap: p.swap.toFixed(2),
       realizedPnl: p.realizedPnl ? p.realizedPnl.toFixed(2) : "-",
       closedAt: p.closedAt ? p.closedAt.toISOString().replace("T", " ").slice(0, 19) : "-",
+      // Phase 2 batch 7 (issue 284): the open time, same format, so a closed row's OPENED cell is filled
+      openedAt: p.openedAt.toISOString().replace("T", " ").slice(0, 19),
       // dealer coverage (2026-09-22): a booked client trade keeps its hedge-leg id after closing so the
       // Smart Dealer Manager can show the closing side with both P&Ls
       covered: p.covered,

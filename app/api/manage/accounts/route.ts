@@ -32,7 +32,7 @@ export async function GET() {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
 
-  const [accounts, mirrorRules] = await Promise.all([
+  const [accounts, mirrorRules, broker] = await Promise.all([
     prisma.account.findMany({
       where: { brokerId: session.brokerId! },
       include: {
@@ -50,6 +50,7 @@ export async function GET() {
       where: { brokerId: session.brokerId!, enabled: true, killedAt: null },
       select: { sourceType: true, sourceId: true, direction: true, multiplier: true },
     }),
+    prisma.broker.findUnique({ where: { id: session.brokerId! }, select: { coverageAccountId: true } }),
   ]);
   const mirrorByAccountId = new Map(mirrorRules.filter((r) => r.sourceType === "ACCOUNT").map((r) => [r.sourceId, r]));
   const mirrorByGroupId = new Map(mirrorRules.filter((r) => r.sourceType === "GROUP").map((r) => [r.sourceId, r]));
@@ -97,6 +98,10 @@ export async function GET() {
         kycStatus: a.kycRecord?.status ?? null,
         mirror: mirror ? { direction: mirror.direction, multiplier: mirror.multiplier.toString() } : null,
         hasCustomPricing: accountIdsWithPricing.has(a.id),
+        // Phase 2 batch 7 (issue 91): the broker's own dealer-coverage hedge account (Broker.coverageAccountId) is
+        // listed with the clients but is not a client: the backoffice hides client actions (funds, KYC, password,
+        // mirror) on it
+        isCoverage: broker?.coverageAccountId === a.id,
       };
     })
   );

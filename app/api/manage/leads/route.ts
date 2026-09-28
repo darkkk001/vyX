@@ -59,8 +59,22 @@ export async function POST(request: NextRequest) {
   const source = typeof body?.source === "string" && body.source.trim() ? body.source.trim() : null;
   const notes = typeof body?.notes === "string" && body.notes.trim() ? body.notes.trim() : null;
 
-  const lead = await prisma.lead.create({
-    data: { brokerId: session.brokerId!, fullName, email, phone, country, source, notes },
+  // Phase 2 batch 7 (issue 286): a new lead writes an audit row in the same transaction
+  const lead = await prisma.$transaction(async (tx) => {
+    const created = await tx.lead.create({
+      data: { brokerId: session.brokerId!, fullName, email, phone, country, source, notes },
+    });
+    await tx.auditLog.create({
+      data: {
+        brokerId: session.brokerId!,
+        actorAdminId: session.adminId,
+        action: "LEAD_CREATED",
+        entityType: "Lead",
+        entityId: created.id,
+        newValue: { fullName, email, phone, country, source, notes, status: created.status },
+      },
+    });
+    return created;
   });
   await createNotification(prisma, {
     brokerId: session.brokerId!,
