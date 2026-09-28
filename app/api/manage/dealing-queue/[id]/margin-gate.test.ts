@@ -48,7 +48,12 @@ async function createBroker(opts?: { groupType?: "DEALING" | "LP"; dealingMode?:
   await prisma.brokerSymbol.create({ data: { brokerId: broker.id, symbolId: symbol.id, minLot: D(0.01), maxLot: D(100), lotStep: D(0.01), tradingMode: "BOTH" } });
   await prisma.livePrice.create({ data: { symbol: symbol.name, bid: D("100.00"), ask: D("100.10") } });
   const group = await prisma.group.create({
-    data: { brokerId: broker.id, name: `MG-${suffix}`, dealingMode: opts?.dealingMode ?? "AUTO", groupType: opts?.groupType ?? "DEALING" },
+    // category is the routing axis since 2026-09-21 and decides auto-hedge scope since Phase 2 batch 3 (DEALING DESK
+    // groups only); set it to match the legacy groupType, or the group defaults to B_BOOK and is never auto-hedged
+    data: {
+      brokerId: broker.id, name: `MG-${suffix}`, dealingMode: opts?.dealingMode ?? "AUTO", groupType: opts?.groupType ?? "DEALING",
+      category: (opts?.groupType ?? "DEALING") === "LP" ? "A_BOOK" : "DEALING",
+    },
   });
   return { brokerId: broker.id, adminId: admin.id, groupId: group.id, symbolId: symbol.id, symbolName: symbol.name };
 }
