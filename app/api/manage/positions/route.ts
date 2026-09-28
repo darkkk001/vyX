@@ -54,16 +54,19 @@ async function requireReader() {
 // from an unfiltered read of ibRelationship, not the IB_PAYOUTS-gated
 // /api/manage/ib-relationships GET, since any Manager reaching this page
 // (not just one with IB_PAYOUTS) needs the read-only IB filter dropdown.
-export async function GET() {
+export async function GET(request: NextRequest) {
   const session = await requireReader();
   if (!session) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
   const brokerId = session.brokerId!;
+  // Phase 2 batch 7 (issue 93): ?accountId= narrows the open positions to one account (the backoffice's Client 360
+  // reloaded every open position of the broker on each event); the pickers below stay broker-wide
+  const accountId = request.nextUrl.searchParams.get("accountId")?.trim() || null;
 
   const [positions, accountRows, brokerSymbolRows, groupRows, ibRelationships] = await Promise.all([
     prisma.position.findMany({
-      where: { brokerId, status: "OPEN" },
+      where: { brokerId, status: "OPEN", ...(accountId ? { accountId } : {}) },
       include: {
         account: {
           select: {

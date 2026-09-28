@@ -24,10 +24,13 @@ export async function GET() {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
 
-  const types = await prisma.accountType.findMany({
-    where: { brokerId: session.brokerId! },
-    orderBy: { sortOrder: "asc" },
-  });
+  const [types, broker] = await Promise.all([
+    prisma.accountType.findMany({
+      where: { brokerId: session.brokerId! },
+      orderBy: { sortOrder: "asc" },
+    }),
+    prisma.broker.findUnique({ where: { id: session.brokerId! }, select: { pricingEngineEnabled: true } }),
+  ]);
 
   return NextResponse.json(
     types.map((t) => ({
@@ -44,7 +47,10 @@ export async function GET() {
       swapLong: t.swapLong?.toString() ?? null,
       swapShort: t.swapShort?.toString() ?? null,
       swapFree: t.swapFree, // real tri-state (2026-09-07 Stage 5) -- null means "inherit from Group"
-    }))
+    })),
+    // Phase 2 batch 7 (issue 74): whether per-symbol account-type pricing is applied at fill (lib/pricing-engine.ts);
+    // a header, so the body stays the bare array every client parses
+    { headers: { "x-pricing-engine-enabled": broker?.pricingEngineEnabled ? "true" : "false" } }
   );
 }
 

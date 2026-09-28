@@ -273,3 +273,62 @@ describe("deals open time (284) and the coverage flag (91)", () => {
     expect(flags).toEqual({ [acc.id]: false, [cov.id]: true });
   });
 });
+
+describe("follow-ups the backoffice needs (306, 93, 82, 74)", () => {
+  async function openPosition(brokerId: string, accountId: string) {
+    const name = `B7${randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase()}`;
+    symbols.push(name);
+    const s = await prisma.symbol.create({ data: { name, baseCurrency: "TST", quoteCurrency: "USD", category: "CRYPTO", digits: 2, contractSize: D(1) } });
+    await prisma.brokerSymbol.create({ data: { brokerId, symbolId: s.id, minLot: D(0.01), maxLot: D(100), lotStep: D(0.01), enabled: true } });
+    const o = await prisma.order.create({ data: { brokerId, accountId, symbolId: s.id, side: "BUY", type: "MARKET", volume: D(1), requestedPrice: D(100), idempotencyKey: `b7:${randomUUID()}`, status: "FILLED", filledPrice: D(100), filledAt: new Date() } });
+    return prisma.position.create({ data: { brokerId, accountId, symbolId: s.id, originOrderId: o.id, side: "BUY", volume: D(1), openPrice: D(100), status: "OPEN" } });
+  }
+
+  it("306: a MANAGER's reverse request carries the typed reason (trimmed, capped at 500)", async () => {
+    if (!dbReachable) return;
+    const b = await broker();
+    await admin(b, "MANAGER");
+    const acc = await account(b);
+    const p = await openPosition(b, acc.id);
+    const { POST } = await import("@/app/api/manage/positions/[id]/reverse/route");
+    const res = await call(POST, "/x", "POST", { reason: `  client asked by phone ${"x".repeat(600)}` }, { id: p.id });
+    expect(res.status).toBe(202);
+    const req = await prisma.positionActionRequest.findUniqueOrThrow({ where: { id: res.json.requestId } });
+    expect(req.reason?.startsWith("client asked by phone")).toBe(true);
+    expect(req.reason).toHaveLength(500);
+    await prisma.positionActionRequest.deleteMany({ where: { brokerId: b } });
+  });
+
+  it("93: positions?accountId= returns only that account's open positions", async () => {
+    if (!dbReachable) return;
+    const b = await broker();
+    await admin(b, "BROKER_ADMIN");
+    const a1 = await account(b);
+    const a2 = await account(b);
+    const p1 = await openPosition(b, a1.id);
+    const p2 = await openPosition(b, a2.id);
+    const { GET } = await import("@/app/api/manage/positions/route");
+    const all = await call(GET, "/api/manage/positions");
+    const one = await call(GET, `/api/manage/positions?accountId=${a1.id}`);
+    const ids = (r: { json: unknown }) => {
+      const j = r.json as { rows: { id: string }[] };
+      return j.rows.map((x) => x.id).sort();
+    };
+    expect(ids(all)).toEqual([p1.id, p2.id].sort());
+    expect(ids(one)).toEqual([p1.id]);
+  });
+
+  it("82: settings report negative balance protection; 74: account types report the pricing engine in a header", async () => {
+    if (!dbReachable) return;
+    const b = await broker();
+    await admin(b, "BROKER_ADMIN");
+    await prisma.broker.update({ where: { id: b }, data: { negativeBalanceProtection: false, pricingEngineEnabled: true } });
+    const { GET: settings } = await import("@/app/api/manage/settings/route");
+    expect((await call(settings, "/api/manage/settings")).json.negativeBalanceProtection).toBe(false);
+    const { GET: types } = await import("@/app/api/manage/account-types/route");
+    const t = await call(types, "/api/manage/account-types");
+    expect(t.status).toBe(200);
+    expect(t.headers.get("x-pricing-engine-enabled")).toBe("true");
+    expect(Array.isArray(t.json)).toBe(true);
+  });
+});

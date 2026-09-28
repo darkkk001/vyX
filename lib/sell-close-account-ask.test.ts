@@ -242,7 +242,7 @@ describe("the backoffice rows carry the account's price and rule", () => {
     await tick(fx);
     await asAdmin(fx);
     const { GET } = await import("@/app/api/manage/positions/route");
-    const res = await GET();
+    const res = await GET(new NextRequest("https://t.local/api/manage/positions"));
     expect(res.status).toBe(200);
     const body = await res.json();
     const rows = (body.positions ?? body.rows ?? body) as { id: string; currentPrice: string; floatingPnl: string; askMarkup: string; spreadRule: string }[];

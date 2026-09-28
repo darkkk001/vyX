@@ -40,11 +40,13 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   const body = await request.json().catch(() => ({}));
   const mode = body?.mode === "CLOSE_REOPEN" ? "CLOSE_REOPEN" : "IN_PLACE";
   const actionType = mode === "CLOSE_REOPEN" ? "REVERSE_CLOSE_REOPEN" : "REVERSE_IN_PLACE";
+  // Phase 2 batch 7 (issue 306): the backoffice reverse dialog asks why; a MANAGER's request carries it to the approver
+  const reason = typeof body?.reason === "string" && body.reason.trim() ? body.reason.trim().slice(0, 500) : null;
 
   if (positionActionNeedsApproval(session.role as "MANAGER" | "BROKER_ADMIN")) {
     try {
       const created = await prisma.$transaction((tx) =>
-        requestPositionAction(tx, { brokerId, positionId: id, adminId: session.adminId, actionType, reason: null })
+        requestPositionAction(tx, { brokerId, positionId: id, adminId: session.adminId, actionType, reason })
       );
       return NextResponse.json({ pending: true, requestId: created.id }, { status: 202 });
     } catch (err) {

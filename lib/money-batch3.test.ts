@@ -215,7 +215,7 @@ describe("positions list flags the broker's hedge legs", () => {
     await position(fx, cov.id, 1, { bookType: "A_BOOK" });
     await as(fx, ba);
     const { GET } = await import("@/app/api/manage/positions/route");
-    const j = await (await GET()).json();
+    const j = await (await GET(new NextRequest("https://t.local/api/manage/positions"))).json();
     const rows = j.rows as { accountId: string; isCoverageLeg: boolean; accountMode: string }[];
     expect(rows.find((r) => r.accountId === cov.id)?.isCoverageLeg).toBe(true);
     const c = rows.find((r) => r.accountId === client.id);

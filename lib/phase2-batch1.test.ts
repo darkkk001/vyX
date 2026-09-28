@@ -88,7 +88,7 @@ describe("1. backoffice FX: server P/L in the account's currency", () => {
     await openPosition(w, priced.id, "BUY", "1", "90.00"); // +10 x 100 = +1000 QB -> +10 ACC
     await openPosition(w, unpriced.id, "BUY", "1", "40.00");
     const { GET } = await import("@/app/api/manage/positions/route");
-    const body = await (await (GET as unknown as () => Promise<Response>)()).json();
+    const body = await (await GET(new NextRequest("https://t.local/api/manage/positions"))).json();
     const p = body.rows.find((r: { symbolName: string }) => r.symbolName === priced.name);
     expect(p).toMatchObject({ quoteCurrency: QB, accountCurrency: ACC, floatingPnl: "10.00" });
     expect(Number(p.fxRate)).toBeCloseTo(0.01, 12);

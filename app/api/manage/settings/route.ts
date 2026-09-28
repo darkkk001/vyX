@@ -32,6 +32,8 @@ export async function GET() {
     defaultAccountLeverage: broker.defaultAccountLeverage,
     // owner decision D5: SINGLE = one BROKER_ADMIN completes a withdrawal; DUAL = two different admins
     withdrawalApproval: broker.withdrawalApproval,
+    // Phase 2 batch 7 (issue 82): shown read-only in the backoffice's Settings screen; applied on every stop-out close
+    negativeBalanceProtection: broker.negativeBalanceProtection,
   });
 }
 
