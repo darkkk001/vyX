@@ -250,7 +250,8 @@ export async function seedShadowBot(db: Db, opts: SeedOptions): Promise<SeedResu
       notifications: await db.notification.count({ where }),
       priceAlerts: await db.priceAlert.count({ where }),
       loginEvents: await db.loginEvent.count({ where }),
-      auditLogs: await db.auditLog.count({ where }),
+      // the seed scripts' own records (SHADOWBOT_SEED, SHADOWBOT_SYNTH_SEED, ...) are kept: the tenant's setup history
+      auditLogs: await db.auditLog.count({ where: { ...where, NOT: { action: { startsWith: "SHADOWBOT_" } } } }),
     };
     const total = Object.values(counts).reduce((s, n) => s + n, 0);
     if (total === 0) log("ok     reset trading: nothing to delete");
@@ -268,7 +269,7 @@ export async function seedShadowBot(db: Db, opts: SeedOptions): Promise<SeedResu
         await db.notification.deleteMany({ where });
         await db.priceAlert.deleteMany({ where });
         await db.loginEvent.deleteMany({ where });
-        await db.auditLog.deleteMany({ where });
+        await db.auditLog.deleteMany({ where: { ...where, NOT: { action: { startsWith: "SHADOWBOT_" } } } });
       });
     }
   }
