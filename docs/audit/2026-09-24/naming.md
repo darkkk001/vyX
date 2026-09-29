@@ -914,45 +914,44 @@ The labels come from `ui-map.md` (the bo-* and term-* sections). They were check
 
 | Screen | Current label | Proposed name | Unit | Tooltip (one line) |
 |---|---|---|---|---|
-| RISK | OPEN EXPOSURE (KPI) | Exposure ($) | $ | Value of all open client volume. |
+| RISK | OPEN EXPOSURE (KPI) | Open lots | lots | Sum of all open client volume in lots (decision D7) (owner 2026-09-30). |
 | RISK | FLOATING P/L · CLIENTS (KPI) | Client floating P/L ($) | $ | Clients' profit/loss on open positions now. |
 | RISK | OPEN POSITIONS (KPI) | keep | — | Open positions across all accounts. |
 | RISK | ACCOUNTS AT RISK (KPI) | Accounts at margin call | — | Accounts at or below margin call level. |
 | RISK | <n> AT STOP-OUT (KPI sub) | {n} at stop-out | — | Accounts at or below stop-out level. |
 | RISK | 1) RISK  BROKER RISK SETTINGS | Broker risk settings | — | Dealing, limits and trading state. |
-| RISK | DEALING MODE (section) | Dealing | — | Manual or automatic dealing. |
-| RISK | Manual dealing (ON · orders wait for a dealer / OFF · auto-fill) | Manual dealing (On · orders wait for dealer / Off · automatic dealing) | — | Broker-wide dealing switch. |
-| RISK | TURN ON / TURN OFF | Turn on / Turn off | — | Switch manual dealing. |
+| RISK | DEALING MODE (section) | Dealing | — | Slippage rules; dealer review lives on DEAL (owner 2026-09-30). |
+| RISK | Dealer review · DEAL › | keep | — | Link to the Dealing screen (the desk switch lives there) (owner 2026-09-30). |
 | RISK | Smart dealer accept % | Auto-accept slippage (%) | % | Orders with less slippage fill without a dealer. |
 | RISK | Smart dealer reject % | Auto-reject slippage (%) | % | Orders with more slippage are rejected without a dealer. |
-| RISK | EDIT | keep | — | Change the value. |
+| RISK | EDIT | ⋯ (settings menu) | — | No EDIT buttons: Edit auto-accept / auto-reject slippage…, Edit limits…, Clear slippage rules…, Remove limits… in the menu (owner 2026-09-30). |
 | RISK | EXPOSURE & POSITION LIMITS (section) | Limits | — | Broker-wide caps. |
 | RISK | Total exposure limit | Max open volume (lots) | lots | The most lots all clients may hold open together. |
 | RISK | Max open positions / account | Max positions per account | — | Cap on open positions per account. |
 | RISK | TRADING STATE (section) | Trading state | — | Open, close-only or halted. |
 | RISK | Trading (OPEN / HALTED) | Trading (Open / Trading halted) | — | Whether new trades are allowed. |
-| RISK | EMERGENCY | Trading halt | — | Go to the Trading halt screen. |
+| RISK | EMERGENCY | Trading halt › | — | Link beside the trading state, to the Trading halt screen (owner 2026-09-30). |
 | RISK | Close-only (ON / OFF) | keep | — | Only closing allowed. |
-| RISK | DEALING MODE ON / OFF (dialog) | Manual dealing on / off | — | Confirm dialog title. |
 | RISK | SMART DEALER (dialog) | Auto-accept / Auto-reject slippage | — | Dialog title. |
-| RISK | ACCEPT % · REJECT % | Accept (%) · Reject (%) | % | Two numbers, e.g. 0.5 2. |
+| RISK | ACCEPT % · REJECT % | Accept (%) · Reject (%) | % | Two labelled fields (owner 2026-09-30). |
 | RISK | LIMITS (dialog) | Limits | — | Dialog title. |
-| RISK | EXPOSURE USD · MAX POSITIONS | Max open volume (lots) · Max positions per account | lots | Two numbers; 0 = no limit. |
+| RISK | EXPOSURE USD · MAX POSITIONS | Max open volume (lots) · Max positions per account | lots | Two labelled fields; 0 = no limit (owner 2026-09-30). |
 | RISK | 2) MRG  MARGIN WATCH · LOWEST FIRST | Margin | — | Accounts with positions, lowest margin level first. |
 | RISK | <n> WITH POSITIONS · <n> AT RISK | {n} with positions · {n} at margin call | — | Totals. |
 | RISK | FULL MARGIN SCREEN | Open Margin screen | — | Go to the full Margin screen. |
 | RISK | ACCOUNT / CLIENT | keep | — | Account number / client name. |
-| RISK | EQUITY | Equity ($) | $ | Balance + credit + floating P/L. |
-| RISK | USED MARGIN | Used margin ($) | $ | Margin held by open positions. |
-| RISK | FREE MARGIN | Free margin ($) | $ | Equity minus used margin. |
+| RISK | EQUITY | Equity | account ccy | Balance + credit + floating P/L, in the account's own currency; see CCY (owner 2026-09-30). |
+| RISK | USED MARGIN | Used margin | account ccy | Margin held by open positions, in the account's own currency; see CCY (owner 2026-09-30). |
+| RISK | FREE MARGIN | Free margin | account ccy | Equity minus used margin, in the account's own currency; see CCY (owner 2026-09-30). |
 | RISK | POSITIONS | keep | — | Open positions. |
 | RISK | EXPOSURE | Open volume (lots) | lots | Total volume of open positions. |
-| RISK | FLOATING PROFIT / LOSS | Floating P/L ($) | $ | Profit/loss of open positions. |
+| RISK | FLOATING PROFIT / LOSS | Floating P/L | account ccy | Profit/loss of open positions, in the account's own currency; see CCY (owner 2026-09-30). |
+| RISK | CCY (column, new) | Ccy | — | The account's currency (narrow column; also in the inspector) (owner 2026-09-30). |
 | RISK | MARGIN LEVEL | Margin level (%) | % | Equity ÷ used margin × 100. |
 | RISK | STATUS (NO POSITIONS / NO PRICE / STOP-OUT / MARGIN CALL / OK) | keep | — | Where the margin level sits. |
 | RISK | Open client 360 | Open client | — | Open the client's account page. |
 | RISK | Live exposure · this account | Live exposure for this account | — | Open Live Exposure filtered to it. |
-| RISK | Close all <n> positions… | keep | — | Close every position of the account at market. |
+| RISK | Close all <n> positions… | keep | — | Close every position of the account at market; disabled for the broker hedge account (hedges are closed from DEAL) (owner 2026-09-30). |
 | RISK | CLOSE ALL POSITIONS (dialog) | keep | — | Confirm dialog title. |
 
 ### Risk radar (RDR)
@@ -1042,17 +1041,18 @@ The labels come from `ui-map.md` (the bo-* and term-* sections). They were check
 | MRG | 1) MRG  MARGIN · LOWEST LEVEL FIRST | Margin | — | Accounts with positions, lowest margin level first. |
 | MRG | <n> ACCOUNTS · <n> AT OR BELOW MARGIN CALL | {n} accounts · {k} at margin call | — | Totals. |
 | MRG | ACCOUNT / CLIENT | keep | — | Account number / client name. |
-| MRG | EQUITY | Equity ($) | $ | Balance + credit + floating P/L. |
-| MRG | USED MARGIN | Used margin ($) | $ | Margin held by open positions. |
-| MRG | FREE MARGIN | Free margin ($) | $ | Equity minus used margin. |
+| MRG | EQUITY | Equity | account ccy | Balance + credit + floating P/L, in the account's own currency; see CCY (owner 2026-09-30). |
+| MRG | USED MARGIN | Used margin | account ccy | Margin held by open positions, in the account's own currency; see CCY (owner 2026-09-30). |
+| MRG | FREE MARGIN | Free margin | account ccy | Equity minus used margin, in the account's own currency; see CCY (owner 2026-09-30). |
 | MRG | POSITIONS | keep | — | Open positions. |
 | MRG | EXPOSURE | Open volume (lots) | lots | Total volume of open positions. |
-| MRG | FLOATING PROFIT / LOSS | Floating P/L ($) | $ | Profit/loss of open positions. |
+| MRG | FLOATING PROFIT / LOSS | Floating P/L | account ccy | Profit/loss of open positions, in the account's own currency; see CCY (owner 2026-09-30). |
+| MRG | CCY (column, new) | Ccy | — | The account's currency (narrow column; also in the inspector) (owner 2026-09-30). |
 | MRG | MARGIN LEVEL | Margin level (%) | % | Equity ÷ used margin × 100. |
 | MRG | STATUS (NO POSITIONS / NO PRICE / STOP-OUT / MARGIN CALL / OK) | keep | — | Where the margin level sits. |
 | MRG | Open client 360 | Open client | — | Open the client's account page. |
 | MRG | Live exposure · this account | Live exposure for this account | — | Open Live Exposure filtered to it. |
-| MRG | Close all <n> positions… | keep | — | Close every position of the account. |
+| MRG | Close all <n> positions… | keep | — | Close every position of the account; disabled for the broker hedge account (hedges are closed from DEAL) (owner 2026-09-30). |
 
 ### Liquidity providers (LP)
 
