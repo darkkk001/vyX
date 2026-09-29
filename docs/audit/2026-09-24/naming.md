@@ -747,7 +747,7 @@ The labels come from `ui-map.md` (the bo-* and term-* sections). They were check
 | SYM | MAXIMUM EXPOSURE | Max lots per account (lots) | lots | The most lots one account may hold open in this symbol (buys and sells added up). |
 | SYM | HEDGED MARGIN % | Hedged margin (%) | % | Margin charged on opposite positions. |
 | SYM | TRADING MODE | Allowed sides | — | Both sides, buy only or sell only. |
-| SYM | SESSIONS / EDIT… | Trading hours (UTC) | UTC | Cell is a plain summary: "Custom" or "24/7"; editing only from the row menu (Trading hours…) (owner 2026-09-29). |
+| SYM | SESSIONS / EDIT… | Trading hours (UTC) | UTC | Cell is a plain summary: "Custom" (own sessions), "Default week" (no own sessions: the FX week, closed at weekends) or "24/7" (crypto); editing only from the row menu (Trading hours…) (owner 2026-09-29). |
 | SYM | ENABLED (ON/OFF) | keep | — | Whether clients can trade it. |
 | SYM | STOP LVL | Stop level (points) | points | Minimum distance of SL / TP from the price (owner 2026-09-29). (10 points = 1 pip) |
 | SYM | SAVE STATUS (column) | Save status | — | Holds the Not saved chip for rows with unsaved edits (owner 2026-09-29). |
@@ -827,7 +827,7 @@ The labels come from `ui-map.md` (the bo-* and term-* sections). They were check
 | GRP | Symbols this group may trade | keep | — | Tick the symbols allowed. |
 | GRP | HALT GROUP / RESUME GROUP (dialog) | Halt group trading / Resume group trading | — | Confirm dialog title. |
 | GRP | DELETE GROUP (dialog) | Delete group | — | Confirm dialog title. |
-| GRP | TENANT NAME (<x>) | Broker name | — | Type the broker name to confirm. |
+| GRP | TENANT NAME (<x>) | Type <host> to confirm | — | Shows the exact text to type, e.g. "Type futurix.vyxtrader.com to confirm" (the broker's host) (owner 2026-09-29). |
 | GRP | PRICING · <OWNER> · <SYM> (form) | Pricing · <group> · <symbol> | — | Pricing editor title. |
 | GRP | Spread | Spread setting | — | Same as symbol / Spread markup / Fixed spread. |
 | GRP | INHERIT (next level decides) | Same as symbol | — | The next level decides. |
@@ -1004,36 +1004,36 @@ The labels come from `ui-map.md` (the bo-* and term-* sections). They were check
 | EMG | status (TRADING NORMALLY / HALTED · NO NEW TRADING) | Status (Trading normally / Trading halted: no new trades) | — | Broker-wide trading state. |
 | EMG | HALT ALL NEW TRADING | Halt all new trading | — | Refuse every new order broker-wide. |
 | EMG | RESUME ALL TRADING | keep | — | Allow new orders again. |
-| EMG | type the tenant name to confirm | Type the broker name to confirm | — | Safety check. |
+| EMG | type the tenant name to confirm | Type <host> to confirm | — | Safety check. Shows the exact text to type, e.g. "Type futurix.vyxtrader.com to confirm" (the broker's host) (owner 2026-09-29). |
 | EMG | KICK ALL CLIENT SESSIONS · INCIDENT TIMELINE — not available yet | Sign out all clients · Incident log (not available yet) | — | Planned controls. |
 | EMG | 2) CLOSE-ONLY  CLOSE-ONLY MODE | Close-only | — | Clients can only close positions. |
 | EMG | status (OPENS ALLOWED / CLOSE-ONLY · OPENS BLOCKED) | Status (New trades allowed / Close-only) | — | Close-only state. |
 | EMG | ENABLE CLOSE-ONLY | Turn on close-only | — | Block new trades, allow closes. |
 | EMG | RESUME NORMAL TRADING | keep | — | End close-only. |
-| EMG | manual dealing (ON · orders wait for a dealer / OFF · auto-fill) | Manual dealing (On / Off · automatic dealing) | — | Broker-wide dealing switch. |
-| EMG | RISK › | Risk screen › | — | Change it on the Risk screen. |
 | EMG | 3) GROUPS  HALT ONE GROUP | Halt a group | — | Stop new trades for one group. |
 | EMG | {n} OF {m} HALTED | {n} of {m} halted | — | Groups halted. |
 | EMG | GROUP (· default) | Group | — | Group name; default group marked. |
 | EMG | TYPE | Trade handling | — | Broker book, Market book… |
 | EMG | LEVERAGE | keep | — | 1:N. |
-| EMG | STATUS (TRADING / HALTED) | Status (Trading / Trading halted) | — | Group state. |
-| EMG | ACTIONS (HALT / RESUME) | Actions (Halt / Resume) | — | Toggle on double-click. |
-| EMG | Halt group… / Resume group… | keep | — | Stop or restart the group. |
+| EMG | STATUS (TRADING / CLOSE-ONLY / HALTED) | Status (Trading / Close-only / Trading halted) | — | Group state (owner 2026-09-29). |
+| EMG | Set close-only… / Allow new trades again… | keep (Groups words) | — | Group close-only on or off (owner 2026-09-29). |
+| EMG | SET GROUP CLOSE-ONLY / ALLOW NEW TRADES AGAIN (dialog) | Set group close-only / Allow new trades again | — | Confirm dialog title (owner 2026-09-29). |
+| EMG | ACTIONS (HALT / RESUME) | ⋯ (row menu) | — | No actions column: the row menu holds Halt / Resume; double-click toggles (owner 2026-09-29). |
+| EMG | Halt group… / Resume group… | Halt group trading… / Resume group trading… | — | Same words as Groups (owner 2026-09-29). |
 | EMG | 4) SYMBOLS  DISABLE ONE SYMBOL | Disable a symbol | — | Stop new trades on one symbol. |
 | EMG | {n} OF {m} DISABLED | {n} of {m} disabled | — | Symbols disabled. |
 | EMG | search "symbol" | Search symbol | — | Search box. |
 | EMG | SYMBOL | keep | — | Symbol. |
 | EMG | CATEGORY | Asset class | — | Metals, FX, indices… |
-| EMG | TRADING MODE (BOTH / BUY ONLY / SELL ONLY) | Allowed sides (Both / Buy only / Sell only) | — | Which sides can open. |
+| EMG | TRADING MODE (BOTH / BUY ONLY / SELL ONLY) | Allowed sides (Both sides / Buy only / Sell only) | — | Which sides can open; as on Symbols and Groups (owner 2026-09-29). |
 | EMG | STATUS (ENABLED / DISABLED) | keep | — | Symbol state. |
-| EMG | ACTIONS (HALT / RE-ENABLE) | Actions (Disable / Enable) | — | Toggle on double-click. |
+| EMG | ACTIONS (HALT / RE-ENABLE) | ⋯ (row menu) | — | No actions column: the row menu holds Disable / Enable; double-click toggles (owner 2026-09-29). |
 | EMG | Halt symbol… / Re-enable symbol… | Disable symbol… / Enable symbol… | — | Stop or restart new trades on it. |
 | EMG | HALT ALL NEW TRADING / RESUME ALL TRADING (dialog) | Halt all new trading / Resume all trading | — | Confirm dialog title. |
 | EMG | ENABLE CLOSE-ONLY MODE / RESUME NORMAL TRADING (dialog) | Turn on close-only / Resume normal trading | — | Confirm dialog title. |
-| EMG | HALT GROUP / RESUME GROUP (dialog) | Halt group / Resume group | — | Confirm dialog title. |
+| EMG | HALT GROUP / RESUME GROUP (dialog) | Halt group trading / Resume group trading | — | Confirm dialog title; same as Groups (owner 2026-09-29). |
 | EMG | DISABLE SYMBOL / RE-ENABLE SYMBOL (dialog) | Disable symbol / Enable symbol | — | Confirm dialog title. |
-| EMG | TENANT NAME (<x>) | Broker name | — | Type the broker name to confirm. |
+| EMG | TENANT NAME (<x>) | Type <host> to confirm | — | Shows the exact text to type, e.g. "Type futurix.vyxtrader.com to confirm" (the broker's host) (owner 2026-09-29). |
 
 ### Margin (MRG)
 
