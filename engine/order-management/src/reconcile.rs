@@ -28,10 +28,16 @@
 //! open episode. Before the first MARGIN_CALL_CLEARED row exists anywhere the episode cannot be known and (3) never
 //! applies.
 //!
-//! VALUE / ENGINE_ONLY / WEB_ONLY are UNEXPLAINED: each resets the soak clock (shadow_state.clock_started_at) and is
-//! logged at ERROR with both sides.
+//! VALUE / ENGINE_ONLY / WEB_ONLY are UNEXPLAINED: each resets the soak clock and is logged at ERROR with both sides.
+//! The clock (2026-09-29, owner) is DERIVED, never overwritten: max(the soak start shadow_state.clock_started_at, the
+//! newest unexplained pair NOT excused). The soak start is set on the first run; deleting the key starts a clean clock.
+//! An excuse (shadow_excuse: pair, reason, who, when) lifts a known harness artifact's reset; ONLY the owner writes
+//! it (the engine role has SELECT on that table and nothing else, deploy/shadow-store.sql), every excuse is logged
+//! once by the reconciler, and deleting an excuse puts the reset back.
 //!
-//! Soak exit (user, 2026-09-24, widened 2026-09-25): at least 30 real risk actions paired MATCH / TIMING, 7 consecutive
+//! Soak exit (user, 2026-09-24, widened 2026-09-25, counted per broker 2026-09-29): at least 30 risk actions paired
+//! MATCH / TIMING SINCE THE CLOCK STARTED on REAL brokers (a "zz" test tenant such as the shadow bot's zzshadowbot is
+//! reported apart and never counts; is_test_broker), 7 consecutive
 //! days with no unexplained class, and inside that clean run the shadow was ALIVE through at least 2 weekend reopens
 //! and 1 NFP window (see coverage_event: recorded while reconciling, so an engine that was down does not count). The daily summary goes to the log (primary) and to shadow_daily (for the backoffice page).
 
@@ -80,7 +86,25 @@ CREATE TABLE IF NOT EXISTS shadow_daily (
 ALTER TABLE shadow_daily ADD COLUMN IF NOT EXISTS weekend_opens INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE shadow_daily ADD COLUMN IF NOT EXISTS nfp_windows INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE shadow_daily ADD COLUMN IF NOT EXISTS exit_met BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE shadow_pair ADD COLUMN IF NOT EXISTS broker TEXT;
+CREATE TABLE IF NOT EXISTS shadow_excuse (
+  pair_id     BIGINT PRIMARY KEY REFERENCES shadow_pair (id),
+  reason      TEXT NOT NULL CHECK (length(btrim(reason)) >= 10),
+  excused_by  TEXT NOT NULL CHECK (length(btrim(excused_by)) >= 2),
+  excused_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE shadow_daily ADD COLUMN IF NOT EXISTS paired_real BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE shadow_daily ADD COLUMN IF NOT EXISTS paired_bot BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE shadow_daily ADD COLUMN IF NOT EXISTS paired_unknown BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE shadow_daily ADD COLUMN IF NOT EXISTS excused INTEGER NOT NULL DEFAULT 0;
 "#;
+
+/// Test tenants (the shadow bot's zzshadowbot, the seed tests' zz* tenants) start with this: their pairs are reported
+/// apart and never count toward the soak exit's 30 real risk actions.
+pub const TEST_BROKER_PREFIX: &str = "zz";
+pub fn is_test_broker(subdomain: &str) -> bool {
+    subdomain.starts_with(TEST_BROKER_PREFIX)
+}
 
 /// A market event the soak must live through (user exit gate, 2026-09-25), or None. Checked on every reconcile run;
 /// the first sighting is recorded in shadow_state, so it only counts if the shadow was running during it.
@@ -206,6 +230,8 @@ pub struct Reconciler {
     window_secs: i64,
     /// a web row must be this old before it is read (its transaction and follow-ups settled)
     settle_secs: i64,
+    /// account -> its broker's subdomain (read once from the book; None = not found)
+    brokers: std::sync::Mutex<std::collections::HashMap<String, Option<String>>>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -216,8 +242,15 @@ pub struct RunReport {
 impl Reconciler {
     pub async fn new(book: PgPool, recorder: Arc<Recorder>) -> Result<Self, String> {
         let store = recorder.store().cloned().ok_or("reconciler needs the shadow store (local database)")?;
-        crate::shadow::ensure_schema(&store, SCHEMA, &["shadow_pair", "shadow_state", "shadow_daily"]).await?;
-        Ok(Reconciler { book, store, recorder, window_secs: WINDOW_SECS, settle_secs: 5 })
+        crate::shadow::ensure_schema(&store, SCHEMA, &["shadow_pair", "shadow_state", "shadow_daily", "shadow_excuse"]).await?;
+        // the 2026-09-29 columns must be there (the VPS engine role cannot add them: deploy/shadow-store.sql as postgres);
+        // refusing here is loud ("shadow reconciler NOT running"), a missing column would silently drop every pair
+        for probe in ["SELECT broker FROM shadow_pair LIMIT 0", "SELECT pair_id, reason, excused_by, excused_at FROM shadow_excuse LIMIT 0", "SELECT paired_real, paired_bot, paired_unknown, excused FROM shadow_daily LIMIT 0"] {
+            if let Err(e) = sqlx::query(probe).execute(&store).await {
+                return Err(format!("shadow store is missing the soak-gate columns ({e}): run deploy/shadow-store.sql as postgres"));
+            }
+        }
+        Ok(Reconciler { book, store, recorder, window_secs: WINDOW_SECS, settle_secs: 5, brokers: Default::default() })
     }
 
     /// How long runs continue after the idle gate closes: the pairing window + the settle time + a margin + one run,
@@ -269,8 +302,9 @@ impl Reconciler {
         let _ = sqlx::query("INSERT INTO shadow_state (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2").bind(key).bind(value).execute(&self.store).await;
     }
 
-    /// The soak clock: when the current run of clean days started (set on first run, reset by an unexplained class).
-    pub async fn clock_started_at(&self) -> DateTime<Utc> {
+    /// The soak start (shadow_state.clock_started_at): set on the first run, or again after the owner deletes the key
+    /// (a clean clock). Never moved by a pair.
+    pub async fn soak_started_at(&self) -> DateTime<Utc> {
         match self.state("clock_started_at").await.and_then(|v| DateTime::parse_from_rfc3339(&v).ok()) {
             Some(t) => t.with_timezone(&Utc),
             None => {
@@ -281,6 +315,72 @@ impl Reconciler {
         }
     }
 
+    /// The soak clock: when the current run of clean days started = the soak start, or the newest unexplained pair that
+    /// the owner has NOT excused, whichever is later. Derived on every read, so an excuse lifts a reset and deleting the
+    /// excuse restores it.
+    pub async fn clock_started_at(&self) -> DateTime<Utc> {
+        let start = self.soak_started_at().await;
+        let latest: Result<(Option<DateTime<Utc>>,), sqlx::Error> = sqlx::query_as(
+            r#"SELECT max(p.created_at) FROM shadow_pair p
+               WHERE p.class IN ('VALUE', 'ENGINE_ONLY', 'WEB_ONLY')
+                 AND NOT EXISTS (SELECT 1 FROM shadow_excuse e WHERE e.pair_id = p.id)"#,
+        )
+        .fetch_one(&self.store)
+        .await;
+        match latest {
+            Ok((Some(t),)) if t > start => t,
+            Ok(_) => start,
+            Err(err) => {
+                tracing::warn!(%err, "shadow soak: could not read the unexplained pairs; clock = the soak start");
+                start
+            }
+        }
+    }
+
+    /// The account's broker subdomain, read once from the book (the same read-only connection the shadow uses).
+    async fn broker_of(&self, account_id: &str) -> Option<String> {
+        if let Some(b) = self.brokers.lock().unwrap().get(account_id) {
+            return b.clone();
+        }
+        let row: Result<Option<(String,)>, sqlx::Error> = sqlx::query_as(r#"SELECT b.subdomain FROM "Account" a JOIN "Broker" b ON b.id = a."brokerId" WHERE a.id = $1"#)
+            .bind(account_id)
+            .fetch_optional(&self.book)
+            .await;
+        match row {
+            Ok(r) => {
+                let b = r.map(|x| x.0);
+                self.brokers.lock().unwrap().insert(account_id.to_string(), b.clone());
+                b
+            }
+            Err(err) => {
+                tracing::warn!(%err, account_id, "shadow reconcile: could not read the account's broker (pair stored without it)");
+                None
+            }
+        }
+    }
+
+    /// Every excuse the owner has written that this reconciler has not announced yet: logged once each (WARN), with the
+    /// pair it covers, so no excuse goes by unseen.
+    async fn announce_excuses(&self) {
+        let rows: Result<Vec<(i64, String, String, String, String, String, DateTime<Utc>)>, sqlx::Error> = sqlx::query_as(
+            r#"SELECT e.pair_id, p.class, p.kind, p.account_id, e.reason, e.excused_by, e.excused_at
+               FROM shadow_excuse e JOIN shadow_pair p ON p.id = e.pair_id
+               WHERE NOT EXISTS (SELECT 1 FROM shadow_state s WHERE s.key = 'excuse_logged:' || e.pair_id)
+               ORDER BY e.excused_at"#,
+        )
+        .fetch_all(&self.store)
+        .await;
+        match rows {
+            Ok(rows) => {
+                for (pair_id, class, kind, account_id, reason, excused_by, excused_at) in rows {
+                    tracing::warn!(pair_id, class, kind, account_id, reason, excused_by, %excused_at, "shadow soak: pair EXCUSED by the owner, it no longer resets the clock");
+                    self.set_state(&format!("excuse_logged:{pair_id}"), &Utc::now().to_rfc3339()).await;
+                }
+            }
+            Err(err) => tracing::warn!(%err, "shadow soak: could not read the excuses"),
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn write_pair(&self, class: Class, kind: &str, account_id: &str, position_id: Option<&str>, web_ref: Option<&str>, decision_key: Option<&str>,
         web_at: Option<DateTime<Utc>>, shadow_at: Option<DateTime<Utc>>, known_fan_in: bool, detail: serde_json::Value, report: &mut RunReport) {
@@ -288,19 +388,21 @@ impl Reconciler {
             (Some(w), Some(s)) => Some((w - s).num_milliseconds()),
             _ => None,
         };
+        let broker = self.broker_of(account_id).await;
         let res = sqlx::query(
-            r#"INSERT INTO shadow_pair (class, kind, account_id, position_id, web_ref, decision_key, web_at, shadow_at, skew_ms, known_fan_in, detail)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) ON CONFLICT DO NOTHING"#,
+            r#"INSERT INTO shadow_pair (class, kind, account_id, position_id, web_ref, decision_key, web_at, shadow_at, skew_ms, known_fan_in, detail, broker)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) ON CONFLICT DO NOTHING"#,
         )
-        .bind(class.as_str()).bind(kind).bind(account_id).bind(position_id).bind(web_ref).bind(decision_key).bind(web_at).bind(shadow_at).bind(skew).bind(known_fan_in).bind(&detail)
+        .bind(class.as_str()).bind(kind).bind(account_id).bind(position_id).bind(web_ref).bind(decision_key).bind(web_at).bind(shadow_at).bind(skew).bind(known_fan_in).bind(&detail).bind(&broker)
         .execute(&self.store)
         .await;
         match res {
             Ok(r) if r.rows_affected() == 1 => {
                 report.classified.push((class, account_id.to_string()));
                 if class.unexplained() {
-                    tracing::error!(class = class.as_str(), kind, account_id, ?position_id, ?skew, %detail, "shadow reconcile: UNEXPLAINED difference, soak clock reset");
-                    self.set_state("clock_started_at", &Utc::now().to_rfc3339()).await;
+                    // the pair itself resets the clock (clock_started_at is derived from it); a known harness artifact
+                    // can be excused by the owner (shadow_excuse), never by the engine
+                    tracing::error!(class = class.as_str(), kind, account_id, ?position_id, ?skew, ?broker, %detail, "shadow reconcile: UNEXPLAINED difference, soak clock reset");
                 } else {
                     tracing::info!(class = class.as_str(), kind, account_id, ?position_id, ?skew, "shadow reconcile");
                 }
@@ -324,7 +426,8 @@ impl Reconciler {
         let mut report = RunReport::default();
         let window = ChronoDuration::seconds(self.window_secs);
         let settle = self.settle_secs as f64;
-        self.clock_started_at().await;
+        self.soak_started_at().await;
+        self.announce_excuses().await;
         if let Some(event) = coverage_event(Utc::now()) {
             let _ = sqlx::query("INSERT INTO shadow_state (key, value) VALUES ($1, $2) ON CONFLICT (key) DO NOTHING")
                 .bind(format!("event:{event}")).bind(Utc::now().to_rfc3339()).execute(&self.store).await;
@@ -509,6 +612,15 @@ impl Reconciler {
         let pct = |p: f64| skews.get(((skews.len() as f64 - 1.0) * p).round() as usize).map(|r| r.0);
         let (paired,): (i64,) = sqlx::query_as("SELECT count(*) FROM shadow_pair WHERE class IN ('MATCH','TIMING')").fetch_one(&self.store).await?;
         let clock_start = self.clock_started_at().await;
+        // the exit counts risk actions paired SINCE THE CLOCK STARTED, on real brokers only (test tenants apart)
+        let by_origin: Vec<(String, i64)> = sqlx::query_as(
+            r#"SELECT CASE WHEN broker IS NULL THEN 'unknown' WHEN starts_with(broker, $2) THEN 'bot' ELSE 'real' END, count(*)
+               FROM shadow_pair WHERE class IN ('MATCH','TIMING') AND created_at >= $1 GROUP BY 1"#,
+        )
+        .bind(clock_start).bind(TEST_BROKER_PREFIX).fetch_all(&self.store).await?;
+        let origin = |o: &str| by_origin.iter().find(|r| r.0 == o).map(|r| r.1).unwrap_or(0);
+        let (paired_real, paired_bot, paired_unknown) = (origin("real"), origin("bot"), origin("unknown"));
+        let (excused,): (i64,) = sqlx::query_as("SELECT count(*) FROM shadow_excuse").fetch_one(&self.store).await?;
         let clock = Utc::now() - clock_start;
         let clock_days = Decimal::new(clock.num_minutes(), 0) / Decimal::new(1440, 0);
         // coverage events lived through inside the CURRENT clean run (a reset clock drops the earlier ones)
@@ -517,19 +629,22 @@ impl Reconciler {
             events.iter().filter(|(k, v)| k.starts_with(prefix) && DateTime::parse_from_rfc3339(v).map(|t| t.with_timezone(&Utc) >= clock_start).unwrap_or(false)).count() as i64
         };
         let (weekend_opens, nfp_windows) = (in_run("event:weekend_open:"), in_run("event:nfp:"));
-        let exit = exit_met(paired, clock_days, weekend_opens, nfp_windows);
+        let exit = exit_met(paired_real, clock_days, weekend_opens, nfp_windows);
         let counts_json: serde_json::Map<String, serde_json::Value> = counts.iter().map(|(c, n)| (c.clone(), serde_json::json!(n))).collect();
         let summary = serde_json::json!({
             "day": day.to_string(), "counts": counts_json, "skewP50Ms": pct(0.5), "skewP95Ms": pct(0.95), "skewMaxMs": skews.last().map(|r| r.0),
-            "pairedTotal": paired, "clockDays": clock_days.round_dp(2).to_string(), "weekendOpens": weekend_opens, "nfpWindows": nfp_windows,
+            "pairedTotal": paired, "pairedReal": paired_real, "pairedBot": paired_bot, "pairedUnknown": paired_unknown, "excused": excused,
+            "clockStartedAt": clock_start.to_rfc3339(), "clockDays": clock_days.round_dp(2).to_string(), "weekendOpens": weekend_opens, "nfpWindows": nfp_windows,
             "exitMet": exit,
         });
         let _ = sqlx::query(
-            r#"INSERT INTO shadow_daily (day, counts, skew_p50_ms, skew_p95_ms, skew_max_ms, paired_total, clock_days, weekend_opens, nfp_windows, exit_met) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-               ON CONFLICT (day) DO UPDATE SET counts = $2, skew_p50_ms = $3, skew_p95_ms = $4, skew_max_ms = $5, paired_total = $6, clock_days = $7, weekend_opens = $8, nfp_windows = $9, exit_met = $10, created_at = now()"#,
+            r#"INSERT INTO shadow_daily (day, counts, skew_p50_ms, skew_p95_ms, skew_max_ms, paired_total, clock_days, weekend_opens, nfp_windows, exit_met, paired_real, paired_bot, paired_unknown, excused)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+               ON CONFLICT (day) DO UPDATE SET counts = $2, skew_p50_ms = $3, skew_p95_ms = $4, skew_max_ms = $5, paired_total = $6, clock_days = $7, weekend_opens = $8, nfp_windows = $9, exit_met = $10,
+                 paired_real = $11, paired_bot = $12, paired_unknown = $13, excused = $14, created_at = now()"#,
         )
         .bind(day).bind(serde_json::Value::Object(counts_json)).bind(pct(0.5)).bind(pct(0.95)).bind(skews.last().map(|r| r.0)).bind(paired).bind(clock_days.round_dp(2))
-        .bind(weekend_opens as i32).bind(nfp_windows as i32).bind(exit)
+        .bind(weekend_opens as i32).bind(nfp_windows as i32).bind(exit).bind(paired_real).bind(paired_bot).bind(paired_unknown).bind(excused as i32)
         .execute(&self.store).await;
         tracing::info!(summary = %summary, "shadow daily summary");
         Ok(summary)

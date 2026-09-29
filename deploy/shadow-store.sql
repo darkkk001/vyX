@@ -54,5 +54,21 @@ ALTER TABLE shadow_daily ADD COLUMN IF NOT EXISTS weekend_opens INTEGER NOT NULL
 ALTER TABLE shadow_daily ADD COLUMN IF NOT EXISTS nfp_windows INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE shadow_daily ADD COLUMN IF NOT EXISTS exit_met BOOLEAN NOT NULL DEFAULT false;
 
+-- soak gate by broker + owner excuses (2026-09-29): each pair's broker; the owner's excuses; the daily split
+ALTER TABLE shadow_pair ADD COLUMN IF NOT EXISTS broker TEXT;
+CREATE TABLE IF NOT EXISTS shadow_excuse (
+  pair_id     BIGINT PRIMARY KEY REFERENCES shadow_pair (id),
+  reason      TEXT NOT NULL CHECK (length(btrim(reason)) >= 10),
+  excused_by  TEXT NOT NULL CHECK (length(btrim(excused_by)) >= 2),
+  excused_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE shadow_daily ADD COLUMN IF NOT EXISTS paired_real BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE shadow_daily ADD COLUMN IF NOT EXISTS paired_bot BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE shadow_daily ADD COLUMN IF NOT EXISTS paired_unknown BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE shadow_daily ADD COLUMN IF NOT EXISTS excused INTEGER NOT NULL DEFAULT 0;
+
 GRANT SELECT, INSERT, UPDATE, DELETE ON shadow_decision, shadow_pair, shadow_state, shadow_daily TO engine;
+-- the engine may only READ excuses: an excuse is the owner's act (psql as postgres), never the engine's
+GRANT SELECT ON shadow_excuse TO engine;
+REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON shadow_excuse FROM engine;
 GRANT USAGE, SELECT ON SEQUENCE shadow_decision_id_seq, shadow_pair_id_seq TO engine;
