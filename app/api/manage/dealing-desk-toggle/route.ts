@@ -26,6 +26,7 @@ import {
   checkGroupMaxLot,
   checkGroupTradingRestriction,
   checkGroupTradingHalted,
+  checkAccountStatusForOpen,
   checkGroupCloseOnly,
   checkGroupAllowedSymbol,
   checkMaxOpenPositions,
@@ -209,6 +210,8 @@ async function flushDealingQueueToMarket(
       (order.account.group ? checkGroupMaxLot(order.volume, order.account.group.maxLotSize) : null) ??
       (order.account.group ? checkGroupTradingRestriction(order.account.group.tradingRestriction, order.side) : null) ??
       (order.account.group ? checkGroupTradingHalted(order.account.group) : null) ??
+      // account status (2026-09-29): a suspended / closed account opens nothing
+      checkAccountStatusForOpen(order.account) ??
       (order.account.group ? checkGroupCloseOnly(order.account.group) : null) ??
       (order.account.group
         ? checkGroupAllowedSymbol(

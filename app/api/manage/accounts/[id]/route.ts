@@ -3,6 +3,7 @@ import { Prisma, RoutingCategory, GroupModeRestriction } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { LEVERAGE_RULE, parseLeverage } from "@/lib/leverage";
 import { publishAccountUpdated } from "@/lib/account-events";
+import { revokeAllAccountSessions } from "@/lib/account-auth";
 import { checkAccountStructure } from "@/lib/account-structure";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { hasPermission } from "@/lib/permissions";
@@ -250,6 +251,14 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
     return result;
   });
+
+  // Suspension (2026-09-29): an account leaving ACTIVE (suspended / closed) is signed out everywhere at once -- every
+  // session of it (terminal, WebTrader, mobile) is revoked, and the open gates refuse it (lib/risk.ts
+  // checkAccountStatusForOpen), so a client signed in before the change cannot keep trading. Sign-in itself already
+  // refuses an inactive account (lib/account-auth.ts).
+  if (status !== undefined && status !== "ACTIVE" && account.status === "ACTIVE") {
+    await revokeAllAccountSessions(id).catch((err) => console.error("[accounts] session revoke after suspend failed", err));
+  }
 
   // after commit: an open terminal / WebTrader picks up the new leverage / status / group / type at once
   await publishAccountUpdated(brokerId, id, "account");

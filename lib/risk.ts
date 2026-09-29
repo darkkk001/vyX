@@ -47,6 +47,17 @@ export function checkGroupCloseOnly(group: { closeOnlyAt: Date | null }): string
   return null;
 }
 
+// Account status at every OPEN gate (2026-09-29, split out of the held trading-rights batch, owner decision): the
+// order routes never looked at Account.status, so a client signed in before a suspension could keep opening. A
+// SUSPENDED / CLOSED account now opens nothing (placement, pending trigger, requote accept, dealer accept, desk flush,
+// staff manual open, copy-rule open, reverse); its sessions are also revoked when it is suspended
+// (app/api/manage/accounts/[id]/route.ts). Closing and the automatic closes are unaffected: risk must still unwind.
+export function checkAccountStatusForOpen(account: { status: "ACTIVE" | "SUSPENDED" | "CLOSED" }): string | null {
+  if (account.status === "SUSPENDED") return "this account is suspended";
+  if (account.status === "CLOSED") return "this account is closed";
+  return null;
+}
+
 // BOTH (default) never blocks. BUY_ONLY/SELL_ONLY reject the disallowed
 // side even when the symbol is otherwise enabled -- a stronger
 // restriction than `enabled`, not a replacement for it.

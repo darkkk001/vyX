@@ -20,6 +20,7 @@ import {
   checkGroupMaxLot,
   checkGroupTradingRestriction,
   checkGroupTradingHalted,
+  checkAccountStatusForOpen,
   checkGroupCloseOnly,
   checkGroupAllowedSymbol,
   checkMaxOpenPositions,
@@ -164,6 +165,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     (account.group ? checkGroupMaxLot(order.volume, account.group.maxLotSize) : null) ??
     (account.group ? checkGroupTradingRestriction(account.group.tradingRestriction, order.side) : null) ??
     (account.group ? checkGroupTradingHalted(account.group) : null) ??
+    // account status (2026-09-29): a suspended / closed account opens nothing
+    checkAccountStatusForOpen(account) ??
     (account.group ? checkGroupCloseOnly(account.group) : null) ??
     (account.group
       ? checkGroupAllowedSymbol(

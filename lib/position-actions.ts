@@ -1,7 +1,7 @@
 import "server-only";
 import { Prisma, PositionActionType, type Position, type OrderSide } from "@prisma/client";
 import { getFreshPrice } from "@/lib/live-price";
-import { checkTradingSession, computeNextSessionOpen } from "@/lib/risk";
+import { checkAccountStatusForOpen, checkTradingSession, computeNextSessionOpen } from "@/lib/risk";
 import { loadRateResolver } from "@/lib/fx";
 import { computeRealizedPnl } from "@/lib/trading";
 import { resolveBookType } from "@/lib/group-pricing";
@@ -46,12 +46,19 @@ export async function isAccountMirrored(tx: Tx, accountId: string, groupId: stri
 
 export class PositionActionError extends Error {}
 
+// Account status (2026-09-29): a reverse opens the opposite side, so it is an OPEN for the gate -- a suspended / closed
+// account cannot be reversed (both modes). Closing it stays possible.
+function assertMayOpen(position: { account: { status: "ACTIVE" | "SUSPENDED" | "CLOSED" } }) {
+  const refused = checkAccountStatusForOpen(position.account);
+  if (refused) throw new PositionActionError(`reverse refused: ${refused}`);
+}
+
 async function loadOpenPosition(tx: Tx, brokerId: string, positionId: string) {
   const position = await tx.position.findUnique({
     where: { id: positionId },
     include: {
       symbol: { select: { name: true, category: true, contractSize: true, quoteCurrency: true } },
-      account: { select: { accountNumber: true, groupId: true, currency: true } },
+      account: { select: { accountNumber: true, groupId: true, currency: true, status: true } },
     },
   });
   if (!position || position.brokerId !== brokerId) throw new PositionActionError("position not found");
@@ -148,6 +155,7 @@ export async function executeReverseInPlace(
   params: { brokerId: string; positionId: string; adminId: string }
 ): Promise<ReverseInPlaceResult> {
   const position = await loadOpenPosition(tx, params.brokerId, params.positionId);
+  assertMayOpen(position);
   const oldSide = position.side;
   const newSide: OrderSide = oldSide === "BUY" ? "SELL" : "BUY";
 
@@ -262,6 +270,7 @@ export async function executeReverseCloseReopen(
   params: { brokerId: string; positionId: string; adminId: string }
 ): Promise<ReverseCloseReopenResult> {
   const position = await loadOpenPosition(tx, params.brokerId, params.positionId);
+  assertMayOpen(position);
 
   // 2026-09-06 Section E audit fix -- this mode actually fills a close
   // and a new open at live market prices (unlike REVERSE_IN_PLACE, which

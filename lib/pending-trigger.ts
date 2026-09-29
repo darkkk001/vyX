@@ -22,6 +22,7 @@ import {
   checkGroupMaxLot,
   checkGroupTradingRestriction,
   checkGroupTradingHalted,
+  checkAccountStatusForOpen,
   checkGroupCloseOnly,
   checkGroupAllowedSymbol,
   checkMaxOpenPositions,
@@ -140,6 +141,8 @@ export async function triggerPendingOrder(orderId: string, triggerPrice: string,
     (account.group ? checkGroupMaxLot(order.volume, account.group.maxLotSize) : null) ??
     (account.group ? checkGroupTradingRestriction(account.group.tradingRestriction, order.side) : null) ??
     (account.group ? checkGroupTradingHalted(account.group) : null) ??
+    // account status (2026-09-29): a suspended / closed account opens nothing
+    checkAccountStatusForOpen(account) ??
     (account.group ? checkGroupCloseOnly(account.group) : null) ??
     (account.group ? checkGroupAllowedSymbol(account.group.restrictSymbols, account.group.allowedSymbols.map((s) => s.symbolId), order.symbolId) : null) ??
     (await checkMaxOpenPositions(prisma, order.accountId, broker.maxOpenPositionsPerAccount)) ??

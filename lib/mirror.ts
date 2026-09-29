@@ -11,6 +11,7 @@ import {
   checkTradingHalted,
   checkCloseOnly,
   checkGroupTradingHalted,
+  checkAccountStatusForOpen,
   checkGroupCloseOnly,
 } from "@/lib/risk";
 import { getFreshPrices } from "@/lib/live-price";
@@ -338,6 +339,8 @@ async function mirrorFillForRule(db: Db, rule: MirrorRule, source: MirrorSourceP
       checkTradingHalted(broker) ??
       checkCloseOnly(broker) ??
       (targetAccount.group ? checkGroupTradingHalted(targetAccount.group) : null) ??
+      // account status (2026-09-29): a suspended / closed account opens nothing
+      checkAccountStatusForOpen(targetAccount) ??
       (targetAccount.group ? checkGroupCloseOnly(targetAccount.group) : null) ??
       checkSymbolTradingMode(brokerSymbol.tradingMode, mirrorSide) ??
       checkTradingSession(brokerSymbol.tradingSessions, new Date(), brokerSymbol.symbol.category);
