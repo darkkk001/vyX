@@ -1,6 +1,6 @@
 {
   "name": "s5-coverage",
-  "title": "Coverage: a Dealing Desk fill is auto-hedged onto the broker hedge account (needs the read-only staff observer)",
+  "title": "Coverage: a Dealing Desk fill is auto-hedged onto the broker hedge account, and the leg closes with it (read-only staff observer)",
   "accounts": [
     "49990007"
   ],
@@ -9,6 +9,15 @@
   ],
   "needsObserver": true,
   "steps": [
+    {
+      "op": "note",
+      "text": "49990007 is in SB Dealing Desk (desk auto-fill on, auto-hedge on): its fill is covered at once by a SAME-side, same-volume A-book leg on the coverage account 49990099 (lib/coverage.ts), which closes when the client position closes. The bot never trades 49990099; it reads that account's open positions through the read-only staff observer (role SUPPORT)."
+    },
+    {
+      "op": "require",
+      "account": "49990007",
+      "minEquity": 1000
+    },
     {
       "op": "price.set",
       "symbol": "vGOLD",
@@ -20,12 +29,20 @@
       "secs": 3
     },
     {
+      "op": "coverageBaseline"
+    },
+    {
       "op": "open",
       "account": "49990007",
       "symbol": "vGOLD",
       "side": "BUY",
       "volume": 0.1,
       "as": "c"
+    },
+    {
+      "op": "expectCoverageLeg",
+      "ref": "c",
+      "timeoutSecs": 20
     },
     {
       "op": "hold",
@@ -37,6 +54,11 @@
     {
       "op": "close",
       "ref": "c"
+    },
+    {
+      "op": "expectCoverageClosed",
+      "ref": "c",
+      "timeoutSecs": 20
     }
   ]
 }

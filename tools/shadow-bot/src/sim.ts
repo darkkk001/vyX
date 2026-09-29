@@ -5,6 +5,10 @@
 import type { Closed, Me, OrderResult, Pos, Quote, Side, TradeBackend, Txn } from "./trade-client";
 import type { PriceDriver, TickSink, Tick } from "./price-driver";
 import { estimate, type SymbolMeta } from "./margin";
+import type { CoveragePos, Observer } from "./observer";
+
+/** Groups whose fills the broker auto-hedges onto its coverage account (the seed: SB Dealing Desk, desk auto-fill). */
+const AUTO_HEDGED_GROUPS = new Set(["SB Dealing Desk"]);
 
 export type SimAccount = { currency: string; leverage: number; balance: number; credit: number; marginCallLevel: number; stopOutLevel: number; group: string };
 
@@ -19,6 +23,8 @@ export class SimTradeBackend implements TradeBackend {
   private readonly closed = new Map<string, Closed[]>();
   private readonly txns = new Map<string, Txn[]>();
   private seq = 0;
+  /** the coverage account's legs (lib/coverage.ts: same side and volume as the client), keyed by the client position */
+  private readonly coverage = new Map<string, CoveragePos>();
   constructor(accounts: Record<string, SimAccount>, private readonly price: PriceDriver, private readonly meta: Record<string, SymbolMeta>, private readonly fxRates: Record<string, number>) {
     for (const [n, a] of Object.entries(accounts)) this.accounts.set(n, { ...a });
   }
@@ -41,6 +47,7 @@ export class SimTradeBackend implements TradeBackend {
     const pnl = (p.side === "BUY" ? closePrice - p.openPrice : p.openPrice - closePrice) * p.volume * m.contractSize * this.fx(m.quoteCurrency, a.currency);
     a.balance = Math.round((a.balance + pnl) * 100) / 100;
     this.open.set(acct, (this.open.get(acct) ?? []).filter((x) => x.id !== p.id));
+    this.coverage.delete(p.id); // the leg closes with the client position
     this.closed.set(acct, [...(this.closed.get(acct) ?? []), { id: p.id, symbol: p.symbol, side: p.side, volume: p.volume, closePrice, realizedPnl: Math.round(pnl * 100) / 100, closedAt: new Date().toISOString() }]);
     if (a.balance < 0) {
       this.txns.set(acct, [...(this.txns.get(acct) ?? []), { id: `sim-nbp-${++this.seq}`, type: "NEGATIVE_BALANCE_PROTECTION", amount: -a.balance, note: `simulated (${why})`, createdAt: new Date().toISOString() }]);
@@ -67,6 +74,9 @@ export class SimTradeBackend implements TradeBackend {
   async market(acct: string, symbol: string, side: Side, volume: number, _price: number): Promise<OrderResult> {
     const q = this.price.quote(symbol), fill = side === "BUY" ? q.ask : q.bid, id = `sim-pos-${++this.seq}`;
     this.open.set(acct, [...(this.open.get(acct) ?? []), { id, ticket: 100000 + this.seq, symbol, side, volume, openPrice: fill, contractSize: this.meta[symbol].contractSize }]);
+    if (AUTO_HEDGED_GROUPS.has(this.accounts.get(acct)?.group ?? "")) {
+      this.coverage.set(id, { id: `sim-cov-${this.seq}`, ticket: 900000 + this.seq, symbol, side, volume, openPrice: fill, openedAt: new Date().toISOString() });
+    }
     return { status: 201, orderId: `sim-ord-${this.seq}`, orderStatus: "FILLED", positionId: id, fillPrice: fill, error: null, idempotencyKey: `sim:${this.seq}` };
   }
   async close(acct: string, positionId: string): Promise<{ status: number; error: string | null }> {
@@ -83,4 +93,11 @@ export class SimTradeBackend implements TradeBackend {
   }
   async history(acct: string): Promise<Closed[]> { return [...(this.closed.get(acct) ?? [])]; }
   async transactions(acct: string): Promise<Txn[]> { return [...(this.txns.get(acct) ?? [])]; }
+  coveragePositions(): CoveragePos[] { return [...this.coverage.values()]; }
+}
+
+/** The dry run's observer: the simulated coverage account. */
+export class SimObserver implements Observer {
+  constructor(private readonly sim: SimTradeBackend) {}
+  async coveragePositions(): Promise<CoveragePos[]> { return this.sim.coveragePositions(); }
 }

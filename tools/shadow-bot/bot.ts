@@ -11,7 +11,8 @@ import { assertConfig, assertAccount, GuardRefused } from "./src/guards";
 import { Journal } from "./src/journal";
 import { HttpTickSink, PriceDriver } from "./src/price-driver";
 import { HttpTradeClient, type TradeBackend } from "./src/trade-client";
-import { RecordingSink, SimTradeBackend, type SimAccount } from "./src/sim";
+import { RecordingSink, SimObserver, SimTradeBackend, type SimAccount } from "./src/sim";
+import { DEFAULT_OBSERVER_FILE, HttpObserver, loadObserverCreds, type Observer } from "./src/observer";
 import { Runner, type Scenario } from "./src/runner";
 import type { SymbolMeta } from "./src/margin";
 
@@ -24,7 +25,7 @@ type Config = {
 
 /** A command-line flag (two leading dashes). */
 const FLAG = /^-{2}\w/;
-const OPS = new Set(["note", "price.set", "price.jump", "open", "close", "closeBy", "closeAccount", "rampUntil", "hold", "observe", "expect", "ramp", "waitUntil", "expectMirror", "expectNoNewPosition", "require"]);
+const OPS = new Set(["note", "price.set", "price.jump", "open", "close", "closeBy", "coverageBaseline", "expectCoverageLeg", "expectCoverageClosed", "closeAccount", "rampUntil", "hold", "observe", "expect", "ramp", "waitUntil", "expectMirror", "expectNoNewPosition", "require"]);
 
 export function loadConfig(): Config {
   const cfg = JSON.parse(readFileSync(path.join(ROOT, "config", "bot.json"), "utf8")) as Config;
@@ -93,7 +94,18 @@ async function main() {
     return;
   }
   const sc = loadScenario(rest.find((x) => !FLAG.test(x)) ?? "", cfg);
-  if (sc.needsObserver && !dryRun) throw new GuardRefused(`${sc.name} needs the read-only staff observer, which is not set up yet`);
+  // the read-only staff observer (S5): simulated in the dry run; live, signed in from its credentials file
+  // (SHADOWBOT_OBSERVER_FILE, default %USERPROFILE%/.vyx/shadowbot-observer.json, from scripts/seed-zzshadowbot-observer.ts)
+  let observer: Observer | undefined;
+  if (sc.needsObserver) {
+    if (dryRun) observer = new SimObserver(trade as SimTradeBackend);
+    else {
+      const file = process.env.SHADOWBOT_OBSERVER_FILE || DEFAULT_OBSERVER_FILE;
+      observer = new HttpObserver(loadObserverCreds(file));
+      const open = await observer.coveragePositions(); // signs in now: a bad credential stops the run before any order
+      journal.write({ kind: "observer.ready", coverageOpen: open.length, credentials: "file (not logged)" });
+    }
+  }
   journal.write({ kind: "run.start", mode: dryRun ? "DRY RUN (offline, simulated backend: nothing is sent)" : "LIVE", scenario: sc.name, journal: journal.file, limits: cfg.limits });
 
   if (!dryRun) {
@@ -118,7 +130,7 @@ async function main() {
     process.exit(130);
   });
 
-  const runner = new Runner(trade, price, journal, { maxOpenAccounts: cfg.limits.maxOpenAccounts, settleSecs: cfg.limits.settleSecs, pollMs: cfg.limits.pollMs, dryRun, meta: cfg.symbolMeta, fx: fxFrom(cfg.dryRunFxRates) });
+  const runner = new Runner(trade, price, journal, { maxOpenAccounts: cfg.limits.maxOpenAccounts, settleSecs: cfg.limits.settleSecs, pollMs: cfg.limits.pollMs, dryRun, meta: cfg.symbolMeta, fx: fxFrom(cfg.dryRunFxRates), observer });
   const ok = await runner.run(sc);
   price.stopAll();
   journal.write({ kind: "run.end", result: ok ? "PASS" : "FAIL", journal: journal.file });

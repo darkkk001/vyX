@@ -37,3 +37,13 @@ export function assertConfig(cfg: { tradeHost: string; feedUrl: string; tenant: 
   for (const s of cfg.symbols) assertSymbol(s);
   for (const a of Object.keys(cfg.accounts)) assertAccount(a);
 }
+
+/** The broker's coverage (auto-hedge) account: never a trade account; the read-only observer may read its positions. */
+export const COVERAGE_ACCOUNT = "49990099";
+/** Every request the read-only staff observer may send (src/observer.ts): sign-in, the 2FA step, one read. */
+export const OBSERVER_REQUESTS = ["POST /api/manage/login", "POST /api/manage/login/verify-2fa", `GET /api/manage/accounts/${COVERAGE_ACCOUNT}/positions`] as const;
+export function assertObserverRequest(method: string, url: string): void {
+  const u = new URL(url);
+  const key = `${method.toUpperCase()} ${u.pathname}`;
+  if (u.origin !== TRADE_HOST || u.search || !(OBSERVER_REQUESTS as readonly string[]).includes(key)) throw new GuardRefused(`observer request ${key} to ${u.origin} refused`);
+}

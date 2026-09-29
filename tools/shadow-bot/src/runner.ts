@@ -11,6 +11,7 @@ import type { PriceDriver } from "./price-driver";
 import { sleep } from "./price-driver";
 import type { Pos, Side, TradeBackend } from "./trade-client";
 import { assertAccount, assertSymbol } from "./guards";
+import type { Observer } from "./observer";
 import { estimate, lotsForMarginPct, lotsForStopOutAt, type SymbolMeta } from "./margin";
 
 type Common = { liveOnly?: boolean };
@@ -26,6 +27,9 @@ export type Step = Common & (
   | { op: "hold"; secs: number; expectOpen?: string[] }
   | { op: "observe"; account: string }
   | { op: "closeBy"; ref: string; against: string }
+  | { op: "coverageBaseline" }
+  | { op: "expectCoverageLeg"; ref: string; timeoutSecs: number }
+  | { op: "expectCoverageClosed"; ref: string; timeoutSecs: number }
   | { op: "expect"; stoppedOut?: string[]; nbpWriteOff?: string; stillOpen?: string[] }
   | { op: "ramp"; symbol: string; direction: "up" | "down"; pctPerSec: number; pct: number }
   | { op: "waitUntil"; until: Until; timeoutSecs: number }
@@ -34,13 +38,16 @@ export type Step = Common & (
 );
 export type Until = { closed: string[] } | { marginLevelAtOrBelow: { account: string; level: number } };
 export type Scenario = { name: string; title: string; accounts: string[]; symbols: string[]; allowJump?: boolean; needsObserver?: boolean; steps: Step[] };
-export type RunnerOpts = { maxOpenAccounts: number; settleSecs: number; pollMs: number; dryRun: boolean; meta: Record<string, SymbolMeta>; fx: (q: string, a: string) => number };
+export type RunnerOpts = { maxOpenAccounts: number; settleSecs: number; pollMs: number; dryRun: boolean; meta: Record<string, SymbolMeta>; fx: (q: string, a: string) => number; observer?: Observer };
 
 export class ScenarioFailed extends Error {}
 
 export class Runner {
   private readonly refs = new Map<string, { account: string; positionId: string; symbol: string; side: Side; volume: number }>();
   private readonly closedByBot = new Set<string>();
+  /** the coverage account's positions before the scenario's order, and each client ref's leg found there */
+  private coverageBefore = new Set<string>();
+  private readonly legOf = new Map<string, string>();
   private startedAt = new Date().toISOString();
   constructor(private readonly trade: TradeBackend, private readonly price: PriceDriver, private readonly journal: Journal, private readonly opts: RunnerOpts) {}
 
@@ -147,6 +154,14 @@ export class Runner {
         return;
       }
       case "expect": return this.expect(step);
+      case "coverageBaseline": {
+        const ps = await this.observer().coveragePositions();
+        this.coverageBefore = new Set(ps.map((p) => p.id));
+        this.journal.write({ kind: "coverage.baseline", open: ps.length });
+        return;
+      }
+      case "expectCoverageLeg": return this.expectCoverageLeg(step);
+      case "expectCoverageClosed": return this.expectCoverageClosed(step);
     }
   }
 
@@ -220,6 +235,43 @@ export class Runner {
       const w = (await this.trade.transactions(s.nbpWriteOff)).filter((t) => t.type === "NEGATIVE_BALANCE_PROTECTION" && t.createdAt >= this.startedAt);
       if (w.length === 0) throw new ScenarioFailed(`no negative-balance write-off on ${s.nbpWriteOff}`);
       this.journal.write({ kind: "nbp.confirmed", account: s.nbpWriteOff, writeOffs: w.map((t) => ({ amount: t.amount, note: t.note, at: t.createdAt })) });
+    }
+  }
+
+  private observer(): Observer {
+    if (!this.opts.observer) throw new ScenarioFailed("this step needs the read-only staff observer");
+    return this.opts.observer;
+  }
+
+  /** The auto-hedge leg of `ref` on the coverage account: a position that was not there before the order, on the same
+   *  symbol, side and volume as the client's (lib/coverage.ts). */
+  private async expectCoverageLeg(s: Extract<Step, { op: "expectCoverageLeg" }>): Promise<void> {
+    const r = this.ref(s.ref);
+    const end = Date.now() + s.timeoutSecs * 1000;
+    for (;;) {
+      const leg = (await this.observer().coveragePositions()).find((p) => !this.coverageBefore.has(p.id) && ![...this.legOf.values()].includes(p.id) && p.symbol === r.symbol && p.side === r.side && Math.abs(p.volume - r.volume) < 1e-9);
+      if (leg) {
+        this.legOf.set(s.ref, leg.id);
+        this.journal.write({ kind: "coverage.leg", ref: s.ref, clientPositionId: r.positionId, legId: leg.id, ticket: leg.ticket, symbol: leg.symbol, side: leg.side, volume: leg.volume, openPrice: leg.openPrice, openedAt: leg.openedAt });
+        return;
+      }
+      if (Date.now() > end) throw new ScenarioFailed(`no auto-hedge leg for ${s.ref} (${r.side} ${r.volume} ${r.symbol}) on the coverage account within ${s.timeoutSecs} s`);
+      await sleep(this.opts.pollMs);
+    }
+  }
+
+  /** The leg found by expectCoverageLeg is gone from the coverage account (closed with the client position). */
+  private async expectCoverageClosed(s: Extract<Step, { op: "expectCoverageClosed" }>): Promise<void> {
+    const leg = this.legOf.get(s.ref);
+    if (!leg) throw new ScenarioFailed(`expectCoverageClosed ${s.ref}: no leg recorded (expectCoverageLeg first)`);
+    const end = Date.now() + s.timeoutSecs * 1000;
+    for (;;) {
+      if (!(await this.observer().coveragePositions()).some((p) => p.id === leg)) {
+        this.journal.write({ kind: "coverage.closed", ref: s.ref, legId: leg });
+        return;
+      }
+      if (Date.now() > end) throw new ScenarioFailed(`the auto-hedge leg ${leg} of ${s.ref} is still open on the coverage account after ${s.timeoutSecs} s`);
+      await sleep(this.opts.pollMs);
     }
   }
 
