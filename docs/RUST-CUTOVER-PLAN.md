@@ -1389,13 +1389,30 @@ flip back to WEB and watch the web take the next stop-out. The Vercel cron stays
 - Open question before cutover (owner, 2026-09-29): the hook's 1 s per-symbol limit on web calls (after_flush
   `last_fired`). A margin-call fire and a stop-out fire on the same symbol less than 1 s apart make ONE web call; the
   shadow is unaffected (the fire is sent before the limit). What it means in RUST mode depends on the route above.
+- Follow-up, not blocking (owner, 2026-09-29): **evaluate an account on its fill event.** Today a new position reaches
+  the margin trigger only after the web's fill announcement reloads the book (a query) and the next 250 ms tick. The
+  first S4 run's 1.0-lot SELL on 49990013 opened already at -39.87 % (its own 6.00 markup valuation) and the web's 5 s
+  backstop closed it before the engine's book had it: a WEB_ONLY with no shadow sample (shadow-only blind spot, not an
+  engine gap). In RUST mode the engine would stop it out after the reload; evaluating the account as soon as the fill
+  event arrives removes that latency and lets the shadow see these cases. NOT BUILT.
 
 #### 6.2 Found during the soak, not risk-engine items
+
+- **Product decision: opening cost in the web's pre-trade check (owner, 2026-09-29).** The pre-trade margin check
+  (lib/margin.ts evaluatePreTradeMargin) weighs the new order's margin against the current equity, but not the order's
+  own opening cost: the account's spread markup (a SELL is valued at ask + markup from the first tick, a BUY fills
+  there) and its commission. On SB Hedge NBP (markup 60 pips = 6.00, commission 50/lot) a 1.0-lot vGOLD SELL on a 600
+  account passed the check and opened straight into stop-out (equity 600 - 680 = -80 on 200 margin). Decide whether
+  the check should include the opening cost. Not a risk-engine item; the engine's check_free_margin mirrors the web.
 
 - **41 s SELL close lag (web side, to investigate, 2026-09-29).** S3 re-run on 49990004: the bot's close of the SELL
   leg was sent at 02:05:45 UTC and the position closed at 02:06:27.155 (live DB). Not margin-call related and not an
   engine path (the web closes manual orders). Look at the close route's timing for that request (Vercel logs, Neon
   latency at the time) before the soak volume grows.
+- **Possible future scenario: hedge-break write-off (logged 2026-09-29, not planned).** S4 proves a 0 %-hedged pair at
+  negative equity (used margin 0, level null) is never stopped out, but close-by settles both legs at one raw price, so
+  no write-off happens (balance 213.10 on the 2026-09-29 run). A separate scenario could close the SELL alone at the
+  marked ask and let the lone BUY stop out at about -121, comparing the shadow's simulated write-off (NBP) to the web's.
 
 ## Effort
 
