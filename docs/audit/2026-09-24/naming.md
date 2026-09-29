@@ -727,8 +727,8 @@ The labels come from `ui-map.md` (the bo-* and term-* sections). They were check
 | SYM | 1) LIM  EXPOSURE LIMITS · NET LOTS PER SYMBOL | Lot limits per symbol | — | Each symbol's per-account lot limit and the largest single account against it. |
 | SYM | SYMBOL | keep | — | Symbol. |
 | SYM | NET LIMIT | Max lots per account (lots) | lots | The most lots one account may hold open in this symbol. |
-| SYM | NOW | Net volume now (lots) | lots | Current buy minus sell volume. |
-| SYM | STATUS (OK / NEAR LIMIT / OVER LIMIT / NO LIMIT) | keep | — | How the net volume compares with the limit. |
+| SYM | NOW | Largest account (lots) | lots | The largest single account's open lots in this symbol (audit fix D7; owner 2026-09-29: naming follows the screen). |
+| SYM | STATUS (OK / NEAR LIMIT / AT LIMIT / NO LIMIT) | keep | — | How the largest account compares with the limit (owner 2026-09-29: AT LIMIT, as on screen). |
 | SYM | 2) SYM  SYMBOLS · SPREADS · SESSIONS | Symbols | — | Symbol pricing, sizes and trading hours. |
 | SYM | <n> ENABLED · <n> TOTAL | {n} enabled · {n} total | — | Symbols clients can trade. |
 | SYM | <n> SYMBOL(S) CHANGED · NOT SAVED | {n} symbols changed, not saved | — | Unsaved edits. |
@@ -737,7 +737,7 @@ The labels come from `ui-map.md` (the bo-* and term-* sections). They were check
 | SYM | ALL · <CATEGORY> · ENABLED · DISABLED (chips) | keep | — | Filter symbols. |
 | SYM | CATEGORY | Asset class | — | Metals, FX, indices… |
 | SYM | DIGITS | Price digits | — | Decimals in the price; 1 point = the last digit. |
-| SYM | MARKUP | Spread markup (points) | points | Extra spread the broker adds. (10 points = 1 pip) |
+| SYM | MARKUP | Your markup (points) | points | Extra spread the broker adds, shown as "+N" (e.g. +1.2), matching the pricing panel (owner 2026-09-29). (10 points = 1 pip) |
 | SYM | COMMISSION / LOT | Commission ($ per lot) | $ per lot | Fee per lot traded. |
 | SYM | SWAP LONG | Swap long ($ per lot) | $ per lot | Overnight fee for buy positions. |
 | SYM | SWAP SHORT | Swap short ($ per lot) | $ per lot | Overnight fee for sell positions. |
@@ -747,8 +747,10 @@ The labels come from `ui-map.md` (the bo-* and term-* sections). They were check
 | SYM | MAXIMUM EXPOSURE | Max lots per account (lots) | lots | The most lots one account may hold open in this symbol (buys and sells added up). |
 | SYM | HEDGED MARGIN % | Hedged margin (%) | % | Margin charged on opposite positions. |
 | SYM | TRADING MODE | Allowed sides | — | Both sides, buy only or sell only. |
-| SYM | SESSIONS / EDIT… | Trading hours (UTC) | UTC | When the symbol can trade. |
+| SYM | SESSIONS / EDIT… | Trading hours (UTC) | UTC | Cell is a plain summary: "Custom" or "24/7"; editing only from the row menu (Trading hours…) (owner 2026-09-29). |
 | SYM | ENABLED (ON/OFF) | keep | — | Whether clients can trade it. |
+| SYM | STOP LVL | Stop level (points) | points | Minimum distance of SL / TP from the price (owner 2026-09-29). (10 points = 1 pip) |
+| SYM | SAVE STATUS (column) | Save status | — | Holds the Not saved chip for rows with unsaved edits (owner 2026-09-29). |
 | SYM | CHANGED (chip) | Not saved | — | Row has unsaved edits. |
 | SYM | Trading sessions… | Trading hours… | — | Edit the trading hours. |
 | SYM | Disable (stage) / Enable (stage) | Disable / Enable (unsaved) | — | Marks the change; save to apply. |
