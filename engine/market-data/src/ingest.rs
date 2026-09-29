@@ -241,6 +241,7 @@ pub fn spawn_periodic_flush(
 /// stop-out-crossing tick lost to "live-price flush timed out", the web's 5 s poll closed it -> WEB_ONLY, and in RUST
 /// mode a late stop-out. Nothing in this loop awaits a database: after_flush is synchronous (the web call is spawned).
 pub fn spawn_risk_trigger(cache: Arc<TickCache>, hook: Arc<crate::risk_hook::RiskHook>, every: StdDuration) -> tokio::task::JoinHandle<()> {
+    tracing::info!(every_ms = every.as_millis() as u64, "risk trigger loop: decoupled from the LivePrice write (evaluates from the tick cache)");
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(every);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
