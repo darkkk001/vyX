@@ -183,6 +183,8 @@ pub fn spawn_periodic_flush(
     gap_fill: Arc<GapFillTracker>,
     broker_offset: Arc<BrokerOffsetTracker>,
     risk_hook: Option<Arc<crate::risk_hook::RiskHook>>,
+    // the risk trigger's OWN cadence (VYX_RISK_TRIGGER_MS, risk_trigger_interval_from), never the flush interval
+    risk_trigger_interval: StdDuration,
 ) {
     {
         let pools = pools.clone();
@@ -203,7 +205,7 @@ pub fn spawn_periodic_flush(
     }
 
     if let Some(hook) = risk_hook {
-        spawn_risk_trigger(cache.clone(), hook, live_price_interval);
+        spawn_risk_trigger(cache.clone(), hook, risk_trigger_interval);
     }
 
     {
@@ -229,6 +231,33 @@ pub fn spawn_periodic_flush(
     }
 
     spawn_gap_sweep(pools, stats, gap_fill, broker_offset);
+}
+
+/// The risk trigger's cadence when VYX_RISK_TRIGGER_MS is unset (2026-09-29, owner): 250 ms. It used to be the
+/// LivePrice flush interval (2000 on the VPS, deliberately, for write load), so a breach could sit up to 2 s before
+/// the trigger looked: a 2 s late stop-out / SL / TP in RUST mode. The loop touches no database, so its cadence costs
+/// nothing but a cache scan.
+pub const RISK_TRIGGER_DEFAULT: StdDuration = StdDuration::from_millis(250);
+
+/// VYX_RISK_TRIGGER_MS -> the risk trigger's interval, plus a message when the value was SET but unusable (not a
+/// whole number of milliseconds, or 0): then the default, loudly (the VYX_RISK_HOOK_BACKSTOP_SECS lesson: a bad
+/// `set` line must never fall back silently). Unset = the default, quietly.
+pub fn risk_trigger_interval_from(raw: Option<String>) -> (StdDuration, Option<String>) {
+    let Some(raw) = raw else { return (RISK_TRIGGER_DEFAULT, None) };
+    match raw.trim().parse::<u64>() {
+        Ok(ms) if ms > 0 => (StdDuration::from_millis(ms), None),
+        _ => {
+            let chars: Vec<String> = raw.chars().map(|c| format!("U+{:04X}", c as u32)).collect();
+            (
+                RISK_TRIGGER_DEFAULT,
+                Some(format!(
+                    "VYX_RISK_TRIGGER_MS={raw:?} is not a positive whole number of milliseconds (characters: {}); USING {}. Write it as: set VYX_RISK_TRIGGER_MS=250 (no quotes, no spaces around =, ASCII digits)",
+                    chars.join(" "),
+                    RISK_TRIGGER_DEFAULT.as_millis()
+                )),
+            )
+        }
+    }
 }
 
 /// The per-tick risk trigger (SL / TP touches, the margin trigger, resting-order crossings), DECOUPLED from
@@ -652,6 +681,20 @@ mod tests {
     // do with the logic under test.
     fn truncate_to_ms(t: DateTime<Utc>) -> DateTime<Utc> {
         DateTime::from_timestamp_millis(t.timestamp_millis()).unwrap()
+    }
+
+    #[test]
+    fn the_risk_trigger_interval_is_its_own_setting_defaulting_to_250_ms_and_a_bad_value_is_reported() {
+        let p = |v: &str| risk_trigger_interval_from(Some(v.to_string()));
+        assert_eq!(risk_trigger_interval_from(None), (StdDuration::from_millis(250), None));
+        assert_eq!(p("250"), (StdDuration::from_millis(250), None));
+        assert_eq!(p(" 100 \r"), (StdDuration::from_millis(100), None));
+        for bad in ["0", "\"250\"", "250ms", "", "-5", "\u{6F5}"] {
+            let (every, problem) = p(bad);
+            assert_eq!(every, StdDuration::from_millis(250), "{bad:?}");
+            let msg = problem.unwrap_or_else(|| panic!("{bad:?} must be reported"));
+            assert!(msg.contains("USING 250") && msg.contains("VYX_RISK_TRIGGER_MS="), "{msg}");
+        }
     }
 
     // The exact scenario this fix closes: a frozen weekend price whose

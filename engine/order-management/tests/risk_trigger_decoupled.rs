@@ -31,8 +31,12 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
-const TRIGGER_EVERY: Duration = Duration::from_millis(250); // the VPS LIVE_PRICE_FLUSH_INTERVAL_MS
-/// fired ON the crossing tick: within one trigger interval plus scheduling slack, far below the 2 s write timeout
+/// the VPS settings: the LivePrice flush every 2000 ms (deliberate, write load), the risk trigger on its own 250 ms
+/// (VYX_RISK_TRIGGER_MS, 2026-09-29). Every test here runs with BOTH, so a pass shows the trigger follows its own.
+const FLUSH_EVERY: Duration = Duration::from_millis(2000);
+const TRIGGER_EVERY: Duration = Duration::from_millis(250);
+/// fired ON the crossing tick: within one trigger interval plus scheduling slack, far below the 2 s flush interval
+/// and the 2 s write timeout
 const MAX_LATENCY: Duration = Duration::from_millis(700);
 
 /// 49990004 after the SELL leg closed (live rows): balance 354.635, leverage 50, SO 50 / MC 100, one BUY 0.08 vEUR
@@ -142,15 +146,64 @@ async fn rig(write: Write) -> Rig {
     market_data::ingest::spawn_periodic_flush(
         pools,
         cache.clone(),
-        TRIGGER_EVERY,
+        FLUSH_EVERY,
         Duration::from_millis(1000),
         stats.clone(),
         Arc::new(GapFillTracker::new()),
         Arc::new(BrokerOffsetTracker::new()),
         Some(hook),
+        TRIGGER_EVERY,
     );
     let (keep, _) = tokio::sync::mpsc::unbounded_channel();
     Rig { cache, stats, fires, web, account, _keep: keep }
+}
+
+/// Records when the risk trigger looked (every symbols_to_evaluate call), fires nothing.
+struct Clock(std::sync::Mutex<Vec<Instant>>);
+
+impl market_data::risk_hook::MarginWatch for Clock {
+    fn symbols_to_evaluate(&self, _flushed: &[Tick], _cache: &TickCache) -> Vec<String> {
+        self.0.lock().unwrap().push(Instant::now());
+        Vec::new()
+    }
+    fn evaluated(&self) {}
+}
+
+/// The cadence itself: with the LivePrice flush at 2000 ms and the trigger at 250 ms, a symbol ticking every 50 ms
+/// for 3 s is looked at every ~250 ms (about 12 times), not every 2 s (about 2 times). The trigger follows its OWN
+/// interval, never the flush's.
+#[tokio::test]
+async fn the_risk_trigger_follows_its_own_250_ms_interval_while_the_live_price_flush_runs_every_2000_ms() {
+    let (url, _web) = stub_web().await;
+    let hook = RiskHook::new(url, "s3cret".into(), Duration::from_secs(5)).unwrap();
+    let clock = Arc::new(Clock(std::sync::Mutex::new(Vec::new())));
+    hook.set_margin_watch(clock.clone());
+    let cache = Arc::new(TickCache::new());
+    let pools = Arc::new(MarketDataPools::new(failing_db(Write::Refused).await, None, WriteMode::Neon));
+    market_data::ingest::spawn_periodic_flush(
+        pools,
+        cache.clone(),
+        FLUSH_EVERY,
+        Duration::from_millis(1000),
+        Arc::new(FeedStats::new()),
+        Arc::new(GapFillTracker::new()),
+        Arc::new(BrokerOffsetTracker::new()),
+        Some(hook),
+        TRIGGER_EVERY,
+    );
+    let start = Instant::now();
+    let mut bid = dec!(1.1000);
+    while start.elapsed() < Duration::from_secs(3) {
+        cache.set(&veur(bid), chrono::Utc::now());
+        bid += dec!(0.0001);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let looks = clock.0.lock().unwrap().clone();
+    let gaps: Vec<u128> = looks.windows(2).map(|w| (w[1] - w[0]).as_millis()).collect();
+    eprintln!("trigger looked {} times in 3 s; gaps ms {gaps:?}", looks.len());
+    assert!(looks.len() >= 10, "the trigger looked only {} times in 3 s: it is not on its own 250 ms interval", looks.len());
+    let worst = *gaps.iter().max().unwrap();
+    assert!(worst <= 450, "a {worst} ms gap between looks: the trigger waited on something (the flush is every 2000 ms)");
 }
 
 impl Rig {
@@ -212,7 +265,7 @@ async fn crossing_tick_with(write: Write) {
     let fired = r.fire_at(crossing, Duration::from_secs(3)).await.unwrap_or_else(|| panic!("{write:?}: the trigger never fired on the crossing tick"));
     let latency = fired - at;
     eprintln!("{write:?}: crossing tick {crossing} -> trigger fired after {} ms", latency.as_millis());
-    assert!(latency <= MAX_LATENCY, "{write:?}: stop-out delayed {} ms (the write, not the trigger, set the pace)", latency.as_millis());
+    assert!(latency <= MAX_LATENCY, "{write:?}: stop-out delayed {} ms (the trigger did not look within one interval)", latency.as_millis());
     let called = r.web_call_after(at, Duration::from_secs(2)).await.unwrap_or_else(|| panic!("{write:?}: the web was never called"));
     assert!(called - at <= MAX_LATENCY + Duration::from_millis(300), "{write:?}: web called {} ms after the crossing tick", (called - at).as_millis());
     r.assert_every_write_failed().await;

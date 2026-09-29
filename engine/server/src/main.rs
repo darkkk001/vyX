@@ -1729,6 +1729,11 @@ async fn main() {
         Ok(n) => tracing::info!(seeded = n, "gap-fill tracker seeded from the reader store"),
         Err(err) => tracing::warn!(?err, "gap-fill tracker seed failed -- starting empty (restart gap will need the EA backfill)"),
     }
+    // the per-tick risk trigger's own cadence (default 250 ms), independent of the LivePrice flush interval
+    let (risk_trigger_every, problem) = market_data::ingest::risk_trigger_interval_from(std::env::var_os("VYX_RISK_TRIGGER_MS").map(|v| v.to_string_lossy().into_owned()));
+    if let Some(problem) = problem {
+        tracing::error!("{problem}");
+    }
     market_data::ingest::spawn_periodic_flush(
         market_pools.clone(),
         tick_cache.clone(),
@@ -1738,6 +1743,7 @@ async fn main() {
         gap_fill_tracker.clone(),
         broker_offset_tracker.clone(),
         risk_hook.clone(),
+        risk_trigger_every,
     );
 
     // Nightly Candle retention -- Contabo DB hygiene audit (M1 was 68% of
