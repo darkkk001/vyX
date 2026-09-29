@@ -196,16 +196,14 @@ pub fn spawn_periodic_flush(
                 if dirty.is_empty() {
                     continue;
                 }
-                let ok = flush_live_prices(&pools, &cache, &dirty, &stats).await;
-                // the row is written: if one of these ticks touches an open SL / TP, have the web app
-                // evaluate that symbol NOW (see risk_hook.rs) instead of at the next minute cron
-                if ok {
-                    if let Some(hook) = &risk_hook {
-                        hook.after_flush(&dirty, &cache);
-                    }
-                }
+                // persistence only: the risk trigger runs in its own loop (spawn_risk_trigger), never behind this write
+                flush_live_prices(&pools, &cache, &dirty, &stats).await;
             }
         });
+    }
+
+    if let Some(hook) = risk_hook {
+        spawn_risk_trigger(cache.clone(), hook, live_price_interval);
     }
 
     {
@@ -231,6 +229,29 @@ pub fn spawn_periodic_flush(
     }
 
     spawn_gap_sweep(pools, stats, gap_fill, broker_offset);
+}
+
+/// The per-tick risk trigger (SL / TP touches, the margin trigger, resting-order crossings), DECOUPLED from
+/// persistence (2026-09-29): every `every` it claims the symbols that ticked since the last claim straight from the
+/// in-memory cache (TickCache::take_dirty_risk) and hands them to the hook, whatever the LivePrice write is doing.
+///
+/// Before, the hook ran only after a SUCCESSFUL LivePrice flush, in the same sequential loop: a write that failed or
+/// hit its 2 s timeout skipped the batch, and a slow one held every later batch back. The web (MARKET_DATA_PRICES=vps)
+/// reads this same cache, so it still acted on the tick the trigger never saw: S3 2026-09-28 22:26:00, a slow ramp's
+/// stop-out-crossing tick lost to "live-price flush timed out", the web's 5 s poll closed it -> WEB_ONLY, and in RUST
+/// mode a late stop-out. Nothing in this loop awaits a database: after_flush is synchronous (the web call is spawned).
+pub fn spawn_risk_trigger(cache: Arc<TickCache>, hook: Arc<crate::risk_hook::RiskHook>, every: StdDuration) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(every);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            ticker.tick().await;
+            let dirty = cache.take_dirty_risk();
+            if !dirty.is_empty() {
+                hook.after_flush(&dirty, &cache);
+            }
+        }
+    })
 }
 
 /// Runs one write (its own transaction, its own DB_FLUSH_TIMEOUT) against

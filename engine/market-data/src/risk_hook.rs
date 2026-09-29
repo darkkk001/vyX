@@ -157,8 +157,14 @@ impl RiskHook {
     pub fn from_env() -> Option<Arc<RiskHook>> {
         let url = std::env::var("VYX_RISK_HOOK_URL").ok().filter(|s| !s.trim().is_empty())?;
         let secret = std::env::var("VYX_RISK_HOOK_SECRET").ok().filter(|s| !s.trim().is_empty())?;
-        let client = reqwest::Client::builder().timeout(Duration::from_secs(12)).build().ok()?;
-        tracing::info!(url = %url, "risk hook enabled: SL/TP evaluation fires on the tick that touches a level");
+        let hook = Self::new(url, secret, Duration::from_secs(12))?;
+        tracing::info!(url = %hook.url, "risk hook enabled: SL/TP evaluation fires on the tick that touches a level");
+        Some(hook)
+    }
+
+    /// A hook calling `url` with bearer `secret` (from_env; tests). None only if the HTTP client cannot be built.
+    pub fn new(url: String, secret: String, timeout: Duration) -> Option<Arc<RiskHook>> {
+        let client = reqwest::Client::builder().timeout(timeout).build().ok()?;
         Some(Arc::new(RiskHook {
             url,
             secret,

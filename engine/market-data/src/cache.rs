@@ -77,6 +77,11 @@ struct TickEntry {
     // finer-grained flag would have handled differently.
     live_price_dirty: bool,
     candle_dirty: bool,
+    // The per-tick risk trigger's own bit (ingest::spawn_risk_trigger, 2026-09-29): it used to ride on
+    // live_price_dirty and run only after a SUCCESSFUL LivePrice write, so a write that failed or timed out
+    // (2 s) hid the tick from the trigger while the web, reading this cache, still acted on it (S3 WEB_ONLY:
+    // a slow ramp's stop-out-crossing tick never reached the trigger). Independent of every persistence flag.
+    risk_dirty: bool,
 }
 
 pub struct TickCache {
@@ -134,6 +139,7 @@ impl TickCache {
                 e.at = at;
                 e.live_price_dirty = true;
                 e.candle_dirty = true;
+                e.risk_dirty = true;
             }
             None => {
                 guard.insert(
@@ -148,6 +154,7 @@ impl TickCache {
                         closed_segments: Vec::new(),
                         live_price_dirty: true,
                         candle_dirty: true,
+                        risk_dirty: true,
                     },
                 );
             }
@@ -248,6 +255,25 @@ impl TickCache {
             .filter(|e| e.live_price_dirty)
             .map(|e| {
                 e.live_price_dirty = false;
+                e.tick.clone()
+            })
+            .collect()
+    }
+
+    /// Claims every symbol that ticked since the last claim, for the per-tick risk trigger
+    /// (ingest::spawn_risk_trigger), clearing its bit in the same lock acquisition (the same no-loss argument as
+    /// take_dirty_live_prices). Never touched by any persistence path: a failed or slow database write cannot hold
+    /// a tick back from risk evaluation.
+    pub fn take_dirty_risk(&self) -> Vec<Tick> {
+        let mut guard = match self.inner.write() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        guard
+            .values_mut()
+            .filter(|e| e.risk_dirty)
+            .map(|e| {
+                e.risk_dirty = false;
                 e.tick.clone()
             })
             .collect()
