@@ -1377,6 +1377,26 @@ Per-broker `riskAuthority = WEB | SHADOW | RUST`, read by both sides so exactly 
 first; in RUST mode every web evaluator (cron, hook, backstop, price-feed) skips that broker. Drill:
 flip back to WEB and watch the web take the next stop-out. The Vercel cron stays until then.
 
+#### 6.1 Cutover gates (must hold before a broker goes RUST)
+
+- **Margin-trigger fires evaluated by the engine, unpinned and live (owner, 2026-09-29).** Today a margin-trigger fire
+  (market_data::risk_hook::after_flush -> MarginWatch::decide) only calls the web's `margin-monitor?symbols=` route and
+  hands the shadow a pinned snapshot; in RUST mode the web skips the broker, so a fire would do nothing and the
+  margin-call notice (and the stop-out) would wait for the engine's next 4 s pass. In RUST mode every fire must route to
+  the engine's own `evaluate_account` in Mode::Live, UNPINNED (live read, the `marginCallNotifiedAt` edge and
+  `apply_margin_call_edge` -> outbox), so the notice goes out on the tick. Gate test: an S3-shaped ramp in RUST mode
+  sends the margin-call notice from the fire (not the pass) and stops out on the crossing tick. NOT BUILT.
+- Open question before cutover (owner, 2026-09-29): the hook's 1 s per-symbol limit on web calls (after_flush
+  `last_fired`). A margin-call fire and a stop-out fire on the same symbol less than 1 s apart make ONE web call; the
+  shadow is unaffected (the fire is sent before the limit). What it means in RUST mode depends on the route above.
+
+#### 6.2 Found during the soak, not risk-engine items
+
+- **41 s SELL close lag (web side, to investigate, 2026-09-29).** S3 re-run on 49990004: the bot's close of the SELL
+  leg was sent at 02:05:45 UTC and the position closed at 02:06:27.155 (live DB). Not margin-call related and not an
+  engine path (the web closes manual orders). Look at the close route's timing for that request (Vercel logs, Neon
+  latency at the time) before the soak volume grows.
+
 ## Effort
 
 Build ~3-4 weeks after the pre-stage, then 1-2 weeks of soak.
