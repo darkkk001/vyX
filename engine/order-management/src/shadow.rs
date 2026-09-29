@@ -271,7 +271,17 @@ impl Recorder {
             if !changed {
                 return;
             }
-            let ep = prev.map(|(_, n)| n).unwrap_or(0) + u64::from(d.kind == Kind::MarginCallIn);
+            // The episode number is part of the stored dedupe key, so it must be unique across engine restarts: an
+            // "in" edge takes its own time in ms (strictly after the account's previous episode). It used to be a
+            // counter from 1 per process, so after a restart the first episode reused a stored key: ON CONFLICT kept
+            // the OLD row's first_seen (already paired, days away) and the web's notice found no edge in its window ->
+            // WEB_ONLY (S3 re-run 2026-09-29 02:07:29, the shadow's edge logged at 02:07:32 but never paired).
+            let ep = if d.kind == Kind::MarginCallIn {
+                let floor = prev.map(|(_, n)| n + 1).unwrap_or(0);
+                (Utc::now().timestamp_millis().max(0) as u64).max(floor)
+            } else {
+                prev.map(|(_, n)| n).unwrap_or(0)
+            };
             edges.insert(d.account_id.clone(), (d.kind, ep));
             ep
         };
@@ -323,6 +333,11 @@ impl Recorder {
         if let Err(err) = res {
             tracing::warn!(error = %err, key, "shadow: could not store a decision (kept in memory)");
         }
+    }
+
+    /// The accounts whose last recorded edge is "in" (the shadow pass re-evaluates the ones that went flat, to close it).
+    pub fn accounts_in_call(&self) -> Vec<String> {
+        self.edges.lock().unwrap().iter().filter(|(_, (k, _))| *k == Kind::MarginCallIn).map(|(a, _)| a.clone()).collect()
     }
 
     /// Every shadow evaluation of an account: its level and thresholds now (kept SAMPLE_KEEP_MINUTES, memory only).

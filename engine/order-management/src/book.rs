@@ -125,6 +125,15 @@ pub fn current_pin() -> Option<Pin> {
     PIN.try_with(|p| p.clone()).ok()
 }
 
+/// May this evaluation record a margin-call edge (shadow)? Unpinned: yes. Pinned by the MARGIN TRIGGER (a fire names
+/// the positions it measured, Pin::measured): yes, the fire is "now", the moment the account crossed. Pinned by an
+/// SL / TP snapshot (measured empty): no, that pin looks at a past touch and an edge from it would reorder the
+/// account's edge history behind the pass that already saw later states. (2026-09-29, S3 re-run: since the fires were
+/// pinned, the trigger's margin-call fire recorded no edge and only the 4 s pass could, seconds late.)
+pub fn edges_recordable() -> bool {
+    PIN.try_with(|p| !p.measured.is_empty()).unwrap_or(true)
+}
+
 fn current_price_source() -> Result<PriceSource, sqlx::Error> {
     match PRICE_SOURCE.try_with(|s| s.clone()) {
         Ok(s) => Ok(s),

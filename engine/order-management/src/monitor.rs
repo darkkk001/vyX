@@ -401,6 +401,28 @@ async fn evaluate_account_checked(
         return Ok(None);
     };
     if state.positions.is_empty() {
+        // shadow (2026-09-29): an account evaluated FLAT is out of margin call. Without this its in-memory edge stayed
+        // "in" after a stop-out the web closed first, and its next episode in the same run was taken for the old one.
+        // record_edge writes nothing unless the account was "in".
+        if let Mode::Shadow(recorder) = mode {
+            if book::edges_recordable() {
+                recorder
+                    .record_edge(crate::shadow::Decision {
+                        kind: crate::shadow::Kind::MarginCallOut,
+                        account_id: account_id.to_string(),
+                        position_id: None,
+                        level_before: None,
+                        level: None,
+                        close_price: None,
+                        pnl: None,
+                        balance_after: Some(state.effective_balance),
+                        credit_after: Some(state.credit),
+                        write_off: None,
+                        prices: price_snapshot(&state),
+                    })
+                    .await;
+            }
+        }
         return Ok(None);
     }
     let mut report = EvalReport {
@@ -529,10 +551,11 @@ async fn evaluate_account_checked(
     };
     if let Mode::Shadow(recorder) = mode {
         // shadow: its OWN edge per account (the web's flag moves with the web's decisions, not ours); recorded on
-        // change only, nothing written to the book. A pinned evaluation (book::Pin, the SL / TP snapshot) looks at a
-        // PAST moment: it decides the SL / TP (and any stop-out) of that moment but records no margin-call edge, which
-        // would reorder the account's edge history behind the pass that already saw later states.
-        if let Some(e) = edge.filter(|_| book::current_pin().is_none()) {
+        // change only, nothing written to the book. An SL / TP snapshot pin looks at a PAST moment: it decides the
+        // SL / TP (and any stop-out) of that moment but records no margin-call edge, which would reorder the account's
+        // edge history behind the pass that already saw later states. A MARGIN-TRIGGER pin is the crossing itself and
+        // records it (book::edges_recordable).
+        if let Some(e) = edge.filter(|_| book::edges_recordable()) {
             let (kind, level) = match e {
                 book::MarginCallEdge::In { margin_level, .. } => (crate::shadow::Kind::MarginCallIn, Some(margin_level)),
                 book::MarginCallEdge::Out => (crate::shadow::Kind::MarginCallOut, risk::margin_level(equity(&state), used_margin(&state))),
@@ -698,6 +721,17 @@ pub async fn run_pass_mode(pool: &PgPool, nats: Option<&async_nats::Client>, cur
             Err(err) => {
                 report.errors += 1;
                 tracing::error!(?err, account_id, "margin monitor: failed to evaluate account");
+            }
+        }
+    }
+    // shadow (2026-09-29): an account the shadow still has IN margin call but that holds nothing now is not in the list
+    // above (only accounts with open positions are); evaluate it once so its edge closes (MarginCallOut when flat)
+    if let Mode::Shadow(recorder) = mode {
+        for account_id in recorder.accounts_in_call() {
+            if !account_ids.contains(&account_id) {
+                if let Err(err) = evaluate_account_checked(pool, nats, &account_id, false, mode).await {
+                    tracing::warn!(?err, account_id, "shadow pass: could not re-evaluate an account leaving margin call");
+                }
             }
         }
     }
