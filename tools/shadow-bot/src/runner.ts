@@ -25,6 +25,7 @@ export type Step = Common & (
   | { op: "rampUntil"; symbol: string; direction: "up" | "down"; pctPerSec: number; maxPct: number; timeoutSecs: number; until: Until }
   | { op: "hold"; secs: number; expectOpen?: string[] }
   | { op: "observe"; account: string }
+  | { op: "closeBy"; ref: string; against: string }
   | { op: "expect"; stoppedOut?: string[]; nbpWriteOff?: string; stillOpen?: string[] }
   | { op: "ramp"; symbol: string; direction: "up" | "down"; pctPerSec: number; pct: number }
   | { op: "waitUntil"; until: Until; timeoutSecs: number }
@@ -85,6 +86,16 @@ export class Runner {
         this.closedByBot.add(r.positionId); return;
       }
       case "closeAccount": return this.closeAll(step.account);
+      case "closeBy": {
+        // a hedged pair closed against each other in one request: closing one leg first would leave the other alone
+        // (full margin) on an account whose equity may be negative, and the stop-out would take it before the second close
+        const a = this.ref(step.ref), b = this.ref(step.against);
+        if (a.account !== b.account) throw new ScenarioFailed(`closeBy ${step.ref} / ${step.against}: different accounts`);
+        const res = await this.trade.closeBy(a.account, a.positionId, b.positionId);
+        this.journal.write({ kind: "closeBy", ref: step.ref, against: step.against, account: a.account, positionIds: [a.positionId, b.positionId], status: res.status, error: res.error });
+        if (res.status !== 200) throw new ScenarioFailed(`closeBy ${step.ref} / ${step.against} answered ${res.status}: ${res.error}${res.status === 202 ? " (queued for a dealer, not closed)" : ""}`);
+        this.closedByBot.add(a.positionId); this.closedByBot.add(b.positionId); return;
+      }
       case "rampUntil": {
         const why = await this.price.ramp(step.symbol, step.direction, step.pctPerSec, step.maxPct, step.timeoutSecs, () => this.met(step.until));
         if (why !== "condition") throw new ScenarioFailed(`rampUntil ${JSON.stringify(step.until)} not met (${why})`);

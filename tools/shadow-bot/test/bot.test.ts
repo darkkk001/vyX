@@ -77,6 +77,34 @@ describe("sizing", () => {
   });
 });
 
+describe("S4 sizing (SB Hedge NBP on vGOLD, the live config)", () => {
+  // markup 60 pips x 0.1 (2 digits) = 6.00: a BUY fills at ask + 6.00, an open SELL is valued at ask + 6.00
+  // (lib/ask-markup.ts accountClosePrice); commission 50 per lot; contract 100; leverage 1000; stop-out 20
+  const cs = 100, lev = 1000, markup = 6.0, commission = 50, spread = 0.3, bid = 2000;
+  const legCost = (lots: number) => lots * (commission + (spread + markup) * cs); // what one leg costs on opening
+  const sellMargin = (lots: number) => (lots * cs * (bid + spread + markup)) / lev; // the web prices it at the marked ask
+  it("the first leg alone stays above the margin call (far from stop-out); the pair ends clearly below zero", () => {
+    expect(lotsForMarginPct(18, 600, lev, cs, bid + spread / 2, 1)).toBe(0.53); // 108 / 200.015 = 0.5399, floored to the lot step
+    for (const equity of [580, 600, 650]) {
+      const lots = lotsForMarginPct(18, equity, lev, cs, bid + spread / 2, 1);
+      expect(((equity - legCost(lots)) / sellMargin(lots)) * 100).toBeGreaterThan(100);
+      expect(equity - 2 * legCost(lots)).toBeLessThan(-50);
+    }
+  });
+  it("the old fixed 1.0 lot could not survive its own first leg on 600 (the failed run: stopped out, then 0 funds)", () => {
+    expect(((600 - legCost(1)) / sellMargin(1)) * 100).toBeLessThan(20);
+  });
+  it("S4 closes the pair by each other and requires fresh equity", () => {
+    const sc = loadScenario("s4-hedged-nbp", loadConfig());
+    const ops = sc.steps.map((s) => s.op);
+    expect(ops).toContain("closeBy");
+    expect(ops).not.toContain("close");
+    const req = sc.steps.find((s) => s.op === "require") as { minEquity: number } | undefined;
+    expect(req?.minEquity).toBe(580);
+    expect(ops.indexOf("require")).toBeLessThan(ops.indexOf("open"));
+  });
+});
+
 describe("journal", () => {
   it("never writes a secret, cookie or password", () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), "sbj-"));

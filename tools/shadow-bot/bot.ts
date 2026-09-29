@@ -24,7 +24,7 @@ type Config = {
 
 /** A command-line flag (two leading dashes). */
 const FLAG = /^-{2}\w/;
-const OPS = new Set(["note", "price.set", "price.jump", "open", "close", "closeAccount", "rampUntil", "hold", "observe", "expect", "ramp", "waitUntil", "expectMirror", "expectNoNewPosition", "require"]);
+const OPS = new Set(["note", "price.set", "price.jump", "open", "close", "closeBy", "closeAccount", "rampUntil", "hold", "observe", "expect", "ramp", "waitUntil", "expectMirror", "expectNoNewPosition", "require"]);
 
 export function loadConfig(): Config {
   const cfg = JSON.parse(readFileSync(path.join(ROOT, "config", "bot.json"), "utf8")) as Config;

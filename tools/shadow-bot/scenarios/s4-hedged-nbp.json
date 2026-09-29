@@ -1,6 +1,6 @@
 {
   "name": "s4-hedged-nbp",
-  "title": "0%-hedged vGOLD pair on 49990013: equity below zero with no used margin, never stopped out, then the write-off",
+  "title": "0%-hedged vGOLD pair on 49990013, sized from equity: negative equity with no used margin, never stopped out, closed by each other, then the write-off",
   "accounts": [
     "49990013"
   ],
@@ -8,6 +8,15 @@
     "vGOLD"
   ],
   "steps": [
+    {
+      "op": "note",
+      "text": "SB Hedge NBP on vGOLD: leverage 1000, stop-out 20, markup 60 pips (6.00: a BUY fills 6.00 above the ask and an open SELL is valued at the ask + 6.00), commission 50 per lot, hedged margin 0. So EACH leg costs about 680 per lot the moment it opens (630 valuation + 50 commission) and the pair about 1360. SELL sized so its FULL margin is 18% of equity: 600 -> 0.53 lot, after it equity ~240 on margin ~106 = level ~225% (clear of the 20% stop-out AND of the 100% margin call, so the lone first leg is never closed). BUY = the same lots: the pair's used margin is 0 (level null) and equity ~ 600 - 0.53 x 1360 = -121. A hedging order that does not raise used margin is always accepted (lib/margin.ts), so the second leg is not refused at negative equity. The ramps move both legs equally: equity stays negative, level stays null, nothing is stopped out. The pair is closed BY EACH OTHER in one request (closing one leg first would leave the other alone on negative equity and the stop-out would take it); the realized loss takes the balance below 0 and the write-off (its amount = how far below 0) proves the equity was negative."
+    },
+    {
+      "op": "require",
+      "account": "49990013",
+      "minEquity": 580
+    },
     {
       "op": "price.set",
       "symbol": "vGOLD",
@@ -23,15 +32,26 @@
       "account": "49990013",
       "symbol": "vGOLD",
       "side": "SELL",
-      "volume": 1.0,
+      "marginPctOfEquity": 18,
       "as": "s"
+    },
+    {
+      "op": "observe",
+      "account": "49990013"
+    },
+    {
+      "op": "hold",
+      "secs": 3,
+      "expectOpen": [
+        "s"
+      ]
     },
     {
       "op": "open",
       "account": "49990013",
       "symbol": "vGOLD",
       "side": "BUY",
-      "volume": 1.0,
+      "volumeOf": "s",
       "as": "b"
     },
     {
@@ -68,12 +88,9 @@
       ]
     },
     {
-      "op": "close",
-      "ref": "b"
-    },
-    {
-      "op": "close",
-      "ref": "s"
+      "op": "closeBy",
+      "ref": "s",
+      "against": "b"
     },
     {
       "op": "expect",

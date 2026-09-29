@@ -19,6 +19,8 @@ export interface TradeBackend {
   quote(acct: string, symbol: string): Promise<Quote>;
   market(acct: string, symbol: string, side: Side, volume: number, price: number, maxSlippagePips: number | "unlimited"): Promise<OrderResult>;
   close(acct: string, positionId: string, closePrice: number): Promise<{ status: number; error: string | null }>;
+  /** MT5 close-by: a hedged pair closed against each other in ONE request (both legs or neither). */
+  closeBy(acct: string, positionId: string, againstPositionId: string): Promise<{ status: number; error: string | null }>;
   history(acct: string, sinceIso: string): Promise<Closed[]>;
   transactions(acct: string): Promise<Txn[]>;
 }
@@ -94,6 +96,10 @@ export class HttpTradeClient implements TradeBackend {
   }
   async close(acct: string, positionId: string, closePrice: number): Promise<{ status: number; error: string | null }> {
     const r = await this.req(acct, "POST", `/api/trade/positions/${encodeURIComponent(positionId)}/close`, { closePrice: String(closePrice), maxSlippagePips: "unlimited" });
+    return { status: r.status, error: r.status >= 300 ? String(r.json?.error ?? r.status) : null };
+  }
+  async closeBy(acct: string, positionId: string, againstPositionId: string): Promise<{ status: number; error: string | null }> {
+    const r = await this.req(acct, "POST", "/api/trade/positions/close-by", { positionId, againstPositionId });
     return { status: r.status, error: r.status >= 300 ? String(r.json?.error ?? r.status) : null };
   }
   async history(acct: string, sinceIso: string): Promise<Closed[]> {

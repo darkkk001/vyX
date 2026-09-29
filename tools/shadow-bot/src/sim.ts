@@ -74,6 +74,13 @@ export class SimTradeBackend implements TradeBackend {
     if (!p) return { status: 409, error: "position is not open" };
     this.realize(acct, p, "close"); return { status: 200, error: null };
   }
+  async closeBy(acct: string, positionId: string, againstPositionId: string): Promise<{ status: number; error: string | null }> {
+    const open = this.open.get(acct) ?? [];
+    const a = open.find((x) => x.id === positionId), b = open.find((x) => x.id === againstPositionId);
+    if (!a || !b) return { status: 409, error: "one of the positions is not open" };
+    if (a.symbol !== b.symbol || a.side === b.side) return { status: 400, error: "close-by needs opposite positions on the same symbol" };
+    this.realize(acct, a, "close"); this.realize(acct, b, "close"); return { status: 200, error: null };
+  }
   async history(acct: string): Promise<Closed[]> { return [...(this.closed.get(acct) ?? [])]; }
   async transactions(acct: string): Promise<Txn[]> { return [...(this.txns.get(acct) ?? [])]; }
 }
