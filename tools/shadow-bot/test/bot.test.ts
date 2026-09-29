@@ -102,6 +102,16 @@ describe("S4 sizing (SB Hedge NBP on vGOLD, the live config)", () => {
     const req = sc.steps.find((s) => s.op === "require") as { minEquity: number } | undefined;
     expect(req?.minEquity).toBe(580);
     expect(ops.indexOf("require")).toBeLessThan(ops.indexOf("open"));
+    // close-by leaves the balance positive (below): S4 must not expect a write-off
+    expect(sc.steps.some((s) => s.op === "expect" && "nbpWriteOff" in s)).toBe(false);
+  });
+  it("close-by settles both legs at ONE raw price: only the BUY's markup is realized (the 2026-09-29 run, balance 213.10)", () => {
+    const lots = 0.53, sellOpen = 2000, buyOpen = 2006.3, close = 1996.07; // the live rows
+    const realized = (sellOpen - close) * lots * cs + (close - buyOpen) * lots * cs;
+    expect(realized).toBeCloseTo(-(spread + markup) * lots * cs, 6); // -333.90, whatever the close price
+    expect(600 - 2 * commission * lots + realized).toBeCloseTo(213.1, 6); // positive: no write-off
+    // while open, the server valued the SELL at ask + 6.00 too: equity ~-121 (negative) at used margin 0
+    expect(600 - 2 * legCost(lots)).toBeCloseTo(-120.8, 6);
   });
 });
 
