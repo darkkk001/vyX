@@ -1849,6 +1849,8 @@ Hidden until an LP bridge exists: the screen is merged into Liquidity providers,
 
 | Screen | Current label | Proposed name | Unit | Tooltip (one line) |
 |---|---|---|---|---|
+| T·chart | P/L on SL/TP tags (chart setting) | P/L on SL/TP tags: Always (off = on hover) | — | Default off: the tags show the level alone and the P/L appears on hover / while selected or dragged (owner 2026-09-30). |
+| T·chart | SL / TP tag P/L | {level} · {±#,##0.00} {account currency code} (e.g. SL 4485.00 · −61.08 USD) | account ccy | No "$": the account's currency code after the value (owner 2026-09-30). |
 | T·chart | 2) GP | Chart | — | Price chart for the selected symbol. |
 | T·chart | {SYMBOL} · {description} | keep | — | — |
 | T·chart | LAYOUT · SINGLE / LAYOUT · 2×2 | Layout: Single chart / 2×2 grid | — | Click to switch; right-click for options. |
@@ -1937,6 +1939,7 @@ Hidden until an LP bridge exists: the screen is merged into Liquidity providers,
 | T·ticket | MARKET / LIMIT / STOP | Market / Limit / Stop | — | Order type. |
 | T·ticket | SYMBOL | Symbol | — | Pick the symbol; also switches the chart. |
 | T·ticket | PRICE | Price | — | Price for a limit or stop order. |
+| T·ticket | order-type guidance (under Price) | {Above the market / Below the market / Inside the spread}: Buy {limit/stop} · Sell {limit/stop} [· on the {TYPE} tab only BUY / SELL fits] | — | Which pending type fits each side at the typed price; the same line on the docked ticket and F9 (owner 2026-09-30). |
 | T·ticket | VOLUME LOTS | Volume (lots) | lots | Trade size. |
 | T·ticket | STOP LOSS (wm SL) | Stop loss | — | Price that closes the position at a loss. |
 | T·ticket | TAKE PROFIT (wm TP) | Take profit | — | Price that closes the position at a profit. |
@@ -1986,9 +1989,12 @@ Hidden until an LP bridge exists: the screen is merged into Liquidity providers,
 |---|---|---|---|---|
 | T·positions | 4) TRADE | Positions | — | Your open positions. |
 | T·positions | stream warning (amber) | Prices not updating | — | Price feed is down; values may be old. |
+| T·positions | stream warning, short form | STREAM ⚠ | — | Shown when the full warning does not fit beside the tabs and the close buttons; the full text on hover (owner 2026-09-30). |
 | T·positions | CLOSE PROFIT | Close profitable | — | Close every position in profit. |
 | T·positions | CLOSE LOSS | Close losing | — | Close every position in loss. |
 | T·positions | CLOSE ALL | Close all | — | Close every open position. |
+| T·positions | bulk-close scope menu (right-click on Close profitable / losing / all) | Close {profitable/losing/all}: every symbol / Buy only / Sell only / {symbol} only | — | Narrows a bulk close; always confirmed with the count (owner 2026-09-30). |
+| T·positions | bulk-close confirm (scoped) | Close every {profitable/losing} {Buy/Sell} position [on {symbol}] ({n})? | — | (owner 2026-09-30) |
 | T·positions | TICKET | Ticket # | — | Position number. |
 | T·positions | OPENED | Opened (UTC) | UTC | Open time. |
 | T·positions | SYMBOL | Symbol | — | — |
@@ -2010,8 +2016,10 @@ Hidden until an LP bridge exists: the screen is merged into Liquidity providers,
 | T·positions | MOD | Modify | — | Change stop loss / take profit or close. |
 | T·positions | SHARE | Share | — | Make a picture card of this position. |
 | T·positions | REV | Reverse | — | Close and open the opposite side at the same volume. |
+| T·positions | Reverse (row menu) | Reverse (Sell → Buy)… / Reverse (Buy → Sell)… | — | The row menu names the direction (owner 2026-09-30). |
 | T·positions | ✕ | Close position | — | Close at market. |
 | T·positions | close awaiting dealer (amber status) | Close waiting for dealer | — | Your close request is with the dealer. |
+| T·positions | row status in the actions cell | WAITING / REQUOTED | — | Short status on a close with the dealer (full text on hover; the row menu heads with CLOSE WAITING FOR DEALER) (owner 2026-09-30). |
 | T·positions | CANCEL (withdraw close) | Withdraw close | — | Cancel your close request; the position stays open. |
 | T·positions | origin hint (hotkey / 1-click / reverse / source) | Opened by: hotkey / one-click trading / reverse / copy | — | How this position was opened. |
 | T·positions | Modify / close #TICKET SYMBOL… | Modify or close #TICKET SYMBOL… | — | — |
@@ -2059,6 +2067,7 @@ Hidden until an LP bridge exists: the screen is merged into Liquidity providers,
 | Screen | Current label | Proposed name | Unit | Tooltip (one line) |
 |---|---|---|---|---|
 | T·tabs | PENDING | Pending orders | — | Limit/stop orders not filled yet. |
+| T·tabs | dock tab labels | keep TRADE / PENDING / ORDERS / HISTORY / BALANCE / LOG for now | — | The long names do not fit beside the close buttons at 1366; they move with the terminal text batch (owner 2026-09-30). |
 | T·tabs | ORDERS | Order history | — | Every order you sent and what happened. |
 | T·tabs | HISTORY | Closed trades | — | Positions you have closed. |
 | T·tabs | BALANCE | Deposits & withdrawals | — | Money in and out of the account. |
