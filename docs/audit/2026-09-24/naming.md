@@ -893,7 +893,7 @@ The labels come from `ui-map.md` (the bo-* and term-* sections). They were check
 | MIR | LIMITS | keep | — | Max open lots and max daily loss. |
 | MIR | STATUS (ACTIVE / DISABLED / KILLED) | Status (Active / Disabled / Stopped by limit) | — | Rule state. |
 | MIR | SINCE | Created (UTC) | UTC | When the rule was created. |
-| MIR | ACTIONS (DISABLE / ENABLE) | keep | — | Toggle the rule. |
+| MIR | ACTIONS (DISABLE / ENABLE) | ⋯ (row menu) | — | No actions column: the row menu holds Enable / Disable (owner 2026-09-30). |
 | MIR | Disable… / Enable… | keep | — | Stop or start the rule. |
 | MIR | Edit multiplier / fill / symbols… | Edit copy rule… | — | Change multiplier, fill price, symbols. |
 | MIR | Add new mirror rule… | Add copy rule… | — | Create a new copy rule. |
@@ -907,7 +907,14 @@ The labels come from `ui-map.md` (the bo-* and term-* sections). They were check
 | MIR | Fill price | keep | — | Original price or current price. |
 | MIR | Symbol filter | Symbols | — | Comma-separated; empty = all. |
 | MIR | Max open lots | Max open volume (lots) | lots | Empty = no cap. |
-| MIR | Max daily loss | Max daily loss ($) | $ | Rule stops after this loss; empty = no cap. |
+| MIR | Max daily loss | Max daily loss (<ccy>) | copied-into account currency | Rule stops after this loss, compared in the copied-into account's currency, e.g. "Max daily loss (EUR)"; empty = no cap (owner 2026-09-30). |
+| MIR | CCY (column, new) | Ccy | — | The copied-into account's currency; also in the inspector (owner 2026-09-30). |
+| MIR | Edit limits… | keep | — | Change max open volume and max daily loss (owner 2026-09-30). |
+| MIR | COPY RULE LIMITS (form) | Copy rule limits | — | Form title (owner 2026-09-30). |
+| MIR | Re-enable (stopped by limit)… | keep | — | Restart a rule its limit stopped (owner 2026-09-30). |
+| MIR | RE-ENABLE STOPPED COPY RULE (dialog) | Re-enable stopped copy rule | — | Safety confirm: when it stopped, at which limits, the loss with its currency (owner 2026-09-30). |
+| MIR | Created / Stopped (inspector) | Created (UTC) / Stopped (UTC) | UTC | When the rule was created / stopped by its limit (owner 2026-09-30). |
+| MIR | Delete copy rule… | keep | — | Backend needed: no delete endpoint yet (docs/BACKEND-NEEDED.md); shown disabled (owner 2026-09-30). |
 | MIR | DISABLE / ENABLE MIRROR RULE (dialog) | Disable / Enable copy rule | — | Confirm dialog title. |
 
 ### Risk (RISK)
@@ -951,7 +958,7 @@ The labels come from `ui-map.md` (the bo-* and term-* sections). They were check
 | RISK | STATUS (NO POSITIONS / NO PRICE / STOP-OUT / MARGIN CALL / OK) | keep | — | Where the margin level sits. |
 | RISK | Open client 360 | Open client | — | Open the client's account page. |
 | RISK | Live exposure · this account | Live exposure for this account | — | Open Live Exposure filtered to it. |
-| RISK | Close all <n> positions… | keep | — | Close every position of the account at market; disabled for the broker hedge account (hedges are closed from DEAL) (owner 2026-09-30). |
+| RISK | Close all <n> positions… | keep | — | Close every position of the account at market; disabled for the broker hedge account with the reason "hedge: close from Dealing" (full text on hover) (owner 2026-09-30). |
 | RISK | CLOSE ALL POSITIONS (dialog) | keep | — | Confirm dialog title. |
 
 ### Risk radar (RDR)
@@ -1052,7 +1059,7 @@ The labels come from `ui-map.md` (the bo-* and term-* sections). They were check
 | MRG | STATUS (NO POSITIONS / NO PRICE / STOP-OUT / MARGIN CALL / OK) | keep | — | Where the margin level sits. |
 | MRG | Open client 360 | Open client | — | Open the client's account page. |
 | MRG | Live exposure · this account | Live exposure for this account | — | Open Live Exposure filtered to it. |
-| MRG | Close all <n> positions… | keep | — | Close every position of the account; disabled for the broker hedge account (hedges are closed from DEAL) (owner 2026-09-30). |
+| MRG | Close all <n> positions… | keep | — | Close every position of the account; disabled for the broker hedge account with the reason "hedge: close from Dealing" (full text on hover) (owner 2026-09-30). |
 
 ### Liquidity providers (LP)
 
