@@ -1319,7 +1319,9 @@ The labels come from `ui-map.md` (the bo-* and term-* sections). They were check
 | CRM | NOTES | keep | — | Staff notes. |
 | CRM | CREATED | Created | — | Age of the lead. |
 | CRM | Mark NEW / CONTACTED / QUALIFIED / LOST | Mark new / contacted / qualified / lost | — | Change the sales stage. |
-| CRM | Mark CONVERTED → account… | Mark as client… | — | Link the lead to its account. |
+| CRM | Mark CONVERTED → account… | Mark as client: create account… / Mark as client: link an account… | — | Two menu items: open a new account for the lead, or link one that exists (owner 2026-09-30). |
+| CRM | Assign to staff… | keep | — | Backend needed: shown disabled (owner 2026-09-30). |
+| CRM | MARK <n> LEADS LOST (dialog) | Mark {n} leads lost | — | Bulk title; open leads only (owner 2026-09-30). |
 | CRM | Add new lead… | Add lead… | — | Create a lead. |
 | CRM | NEW LEAD (form) | New lead | — | Form title. |
 | CRM | Full name / E-mail / Phone / Country / Source / Notes | Full name / E-mail / Phone / Country / Came from / Notes | — | Form fields. |
@@ -1332,7 +1334,7 @@ The labels come from `ui-map.md` (the bo-* and term-* sections). They were check
 | Screen | Current label | Proposed name | Unit | Tooltip (one line) |
 |---|---|---|---|---|
 | IB | 1) IB  PARTNERS · INTRODUCING BROKERS | Partners (IB) | — | Partners who refer clients for commission. |
-| IB | {n} PARTNERS · {n} CLIENTS · PAYABLE {x} | {n} partners · {n} referred clients · Partner pay owed ($) | $ | Totals. |
+| IB | {n} PARTNERS · {n} CLIENTS · PAYABLE {x} | {n} partners · {n} referred clients · Partner pay owed | account ccy | Totals, per currency (owner 2026-09-30). |
 | IB | PAYOUT RUN | Pay all partners | — | Pay every owed partner commission. |
 | IB | + PARTNER | Add partner | — | Link a partner to a client. |
 | IB | ALL · PAYOUT DUE · PER LOT · PERCENTAGE | All · Owed · $ per lot · % of commission | — | Filters. |
@@ -1342,23 +1344,24 @@ The labels come from `ui-map.md` (the bo-* and term-* sections). They were check
 | IB | CLIENTS | Referred clients | — | Clients the partner brought. |
 | IB | ACTIVE | Active clients | — | Referred clients trading this month. |
 | IB | LOTS · MONTH TO DATE | Volume this month (lots) | lots | Referred clients' lots this month. |
-| IB | NET DEP · MTD | Net deposits this month ($) | $ | Referred clients' deposits minus withdrawals. |
-| IB | COMMISSION · MONTH TO DATE | Partner pay this month ($) | $ | Earned this month. |
-| IB | PENDING COMMISSION | Partner pay owed ($) | $ | Earned and not paid yet. |
-| IB | ACTIONS (VIEW PAY / VIEW) | Actions (View and pay / View) | — | Row actions. |
+| IB | NET DEP · MTD | Net deposits this month | account ccy | Referred clients' deposits minus withdrawals; backend needed, not drawn yet (owner 2026-09-30). |
+| IB | COMMISSION · MONTH TO DATE | Partner pay this month | account ccy | Earned this month; backend needed, not drawn yet (owner 2026-09-30). |
+| IB | PENDING COMMISSION | Partner pay owed | account ccy | Earned and not paid yet; CCY column beside it (owner 2026-09-30). |
+| IB | ACTIONS (VIEW PAY / VIEW) | ⋯ (row menu) | — | Show referred clients (Enter) · Open partner account · Copy · MONEY: Pay {x} owed… · Edit pay plan… · MANAGE: Suspend partner… (last, backend needed) (owner 2026-09-30). |
+| IB | PAY <n> PARTNERS (dialog) | Pay {n} partners | — | Bulk pay title (owner 2026-09-30). |
 | IB | Referred clients (detail) | Show referred clients | — | Open the detail panel. |
 | IB | Pay {x} pending… | Pay {x} owed… | — | Pay the partner now. |
 | IB | Edit commission plan… | Edit pay plan… | — | Change $ per lot or %. |
 | IB | Open IB account 360 | Open partner account | — | Open the partner's account page. |
 | IB | Add new partner… | Add partner… | — | Link a partner to a client. |
 | IB | 2) IB  {no} · {NAME} / SELECT A PARTNER | {no} · {name} / Select a partner | — | Detail panel title. |
-| IB | Owner / Plan / Referred clients / Payable now / Last payout | Owner / Pay plan / Referred clients / Partner pay owed ($) / Last paid (UTC) | $ | Partner summary. |
+| IB | Owner / Plan / Referred clients / Payable now / Last payout | Owner / Pay plan / Referred clients / Partner pay owed / Last paid (UTC) | account ccy | Partner summary, with the currency (owner 2026-09-30). |
 | IB | Sub-IB levels · link · schedule — NOT AVAILABLE | Sub-partners · Referral link · Pay schedule (not available yet) | — | Planned. |
 | IB | FUNNEL · MTD — NOT AVAILABLE YET | Referral funnel this month (not available yet) | — | Planned. |
 | IB | REFERRED CLIENTS (section) | Referred clients | — | Clients brought by the partner. |
 | IB | PAY {amount} | Pay {amount} | $ | Pay everything owed. |
 | IB | EDIT PLAN | Edit pay plan | — | Change $ per lot or %. |
-| IB | CLIENT / NAME / PENDING COMMISSION / ACTIONS (PAY) | Client / Name / Partner pay owed ($) / Actions (Pay) | $ | Referred-clients table. |
+| IB | CLIENT / NAME / PENDING COMMISSION / ACTIONS (PAY) | Client / Name / Partner pay owed / CCY / ⋯ (Pay {x} owed…) | account ccy | Referred-clients table (owner 2026-09-30). |
 | IB | Open client {number} | keep | — | Open the client's account page. |
 | IB | NEW IB RELATIONSHIP (form) | New partner link | — | Form title. |
 | IB | IB account number | Partner account number | — | Partner's account. |
@@ -1378,14 +1381,14 @@ The labels come from `ui-map.md` (the bo-* and term-* sections). They were check
 | KYC | IN-APP · <n> (tab) | In-app · {n} | — | Checks sent from the trading app. |
 | KYC | CLIENT PORTAL · <n> (tab) | Client portal · {n} | — | Checks sent from the website. |
 | KYC | WAITING · APPROVED · REJECTED · ALL | keep | — | Status filters. |
-| KYC | ID | Check # | — | ID check number. |
+| KYC | ID | Account | — | The client's account number (portal checks: —); the check ID itself is in the CSV as "Check ID" (owner 2026-09-30). |
 | KYC | CLIENT | keep | — | Client name. |
 | KYC | COUNTRY | keep | — | Client's country. |
 | KYC | LEVEL | ID check level | — | Level requested/granted. |
 | KYC | DOCUMENTS | keep | — | Documents uploaded. |
 | KYC | STATUS | keep | — | Waiting, approved or rejected. |
 | KYC | AGE | Waiting time | — | How long it has waited. |
-| KYC | ACTIONS (REVIEW) | Actions (Review) | — | Open the documents. |
+| KYC | ACTIONS (REVIEW) | ⋯ (row menu) | — | Review documents (Enter) · Open client · Copy · DECISION: Approve… · Reject… (last) (owner 2026-09-30). |
 | KYC | Review (documents + decision) | Review documents | — | Open the documents and decide. |
 | KYC | Approve… / Reject… | keep | — | Decide the ID check. |
 | KYC | Open client 360 | Open client | — | Open the client's account page. |
@@ -1407,22 +1410,24 @@ The labels come from `ui-map.md` (the bo-* and term-* sections). They were check
 
 | Screen | Current label | Proposed name | Unit | Tooltip (one line) |
 |---|---|---|---|---|
-| LAR | 1) LAR  LIVE ACCOUNT REQUESTS | Live account applications | — | Clients asking for a live account. |
+| LAR | 1) LAR  LIVE ACCOUNT REQUESTS | Live account applications (panel title) · Account applications (sidebar) | — | Clients asking for a live account; the sidebar drops "Live" to fit beside its badge (owner 2026-09-30). |
 | LAR | NONE PENDING / <n> PENDING | None waiting / {n} waiting | — | Applications to decide. |
 | LAR | PENDING · APPROVED · REJECTED · ALL | Waiting · Approved · Rejected · All | — | Status filters. |
 | LAR | CLIENT | keep | — | Client name. |
 | LAR | E-MAIL / COUNTRY / PHONE | keep | — | Contact details. |
-| LAR | ACCOUNT TYPE | keep | — | Account type requested. |
+| LAR | ACCOUNT TYPE | keep | — | Account type the client requested (read-only). The approve form has no Account type field: the group is the tier (D4) (owner 2026-09-30). |
 | LAR | STATUS | keep | — | Waiting, approved or rejected. |
 | LAR | CREATED ACCOUNT | Live account | — | Account created on approval. |
 | LAR | REJECTION REASON | keep | — | Reason sent to the client. |
 | LAR | REQUESTED | Requested (UTC) | UTC | When the client applied. |
-| LAR | ACTIONS | keep | — | Row actions. |
+| LAR | ACTIONS | ⋯ (row menu) | — | DECISION: Approve and create live account… (Enter) · Reject… · then Open account · Copy (owner 2026-09-30). |
 | LAR | Approve · create the live account | Approve and create live account | — | Creates the live account. |
 | LAR | Reject… | keep | — | Refuse with a reason. |
 | LAR | Open account <no> | keep | — | Open the created account. |
 | LAR | APPROVE LIVE ACCOUNT (dialog) | Approve live account application | — | Confirm dialog title. |
 | LAR | REJECT LIVE ACCOUNT REQUEST (dialog) | Reject live account application | — | Confirm dialog title. |
+| LAR / KYC | REJECT <n> APPLICATIONS / REJECT <n> ID CHECKS (dialog) | Reject {n} applications / Reject {n} ID checks | — | Bulk reject titles; one reason for all; decided ones skipped (owner 2026-09-30). |
+| all screens | row-menu section headings | DECISION · LEAD · MONEY · TRADING · MANAGE · ACCOUNT · SECURITY | — | A heading names what is under it: approve/reject under DECISION, lead stages under LEAD, delete/suspend under MANAGE (Delete group…, Delete copy rule…, Suspend partner…); ACCOUNT only for account actions (owner 2026-09-30). |
 | LAR | REASON (SENT TO THE CLIENT) | Reason (sent to the client) | — | Why it was refused. |
 
 ### Deposits & withdrawals (DEP)

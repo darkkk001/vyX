@@ -16,6 +16,11 @@ does them yet. Each row is what the screen needs from the web API before the act
 | EMG | Sign out all clients | A broker-wide session revoke, audited | 2026-09-29 |
 | EMG | Incident log | An incident record / timeline | 2026-09-29 |
 | MIR | Delete copy rule… | `DELETE /api/manage/mirror-rules/{id}` (today rules can only be disabled) | 2026-09-30, owner |
+| CRM | Assign to staff… | A lead owner field + endpoint to set it | 2026-09-30, owner |
+| IB | Suspend partner… | An endpoint that suspends a partner (stops new referrals / pay), audited | 2026-09-30, owner |
+| IB | Per-partner stats: active clients, volume this month, net deposits this month, partner pay this month | Per-partner aggregates on `GET /api/manage/ib-relationships` (the columns are not drawn until then) | 2026-09-30, owner |
+| IB | Sub-partners, referral link, pay schedule, referral funnel | Partner hierarchy, referral links, a payout schedule and funnel counts | 2026-09-30, owner |
+| KYC | Sanctions / PEP and duplicate-identity screening ("not available yet") | A screening provider or an internal duplicate check on the ID check | 2026-09-30, owner |
 
 ## Web changes queued for the next web deploy
 
@@ -28,4 +33,10 @@ Not blocking any screen (each works today with an extra read); ship them with th
 | `GET /api/manage/balance-adjustment-requests` | Add `currency` per request | Same, for APR | 2026-09-30, owner |
 | `GET /api/manage/transfers` | Add `currency` per entry | Same, for TRX history | 2026-09-30, owner |
 | funds view KPIs (DEP) | Totals per currency instead of one sum | The DEP tiles add all currencies together today (noted MIXED CCY) | 2026-09-30, owner |
+| `GET /api/manage/ib-relationships` | Add `currency` per row (the partner account's) | IB reads the accounts list a second time for CCY | 2026-09-30, owner |
 | `GET /api/manage/symbols` | Add `sessionCount` per symbol | SYM's trading-hours summary ("Custom" / "Default week" / "24/7") reads each symbol's sessions separately (6 at a time) | suggested 2026-09-29, not yet decided |
+
+## D4 (Account types removal): open item
+
+- 2026-09-30, owner: the backoffice approve form for a live account application no longer has an Account type field (the group is the tier). The web route still applies the type the client asked for (`accountTypeId: chosenTypeId ?? existing.accountTypeId` in `app/api/manage/live-account-requests/[id]/route.ts`).
+- The existing Standard / Pro / Zero types carry `swapFree = true`, so an account WITH one of those types is swap-free, while an account WITHOUT a type takes swap from its group. Which one wins for new and existing accounts is to be settled in the D4 cleanup, before the type layer is removed.
