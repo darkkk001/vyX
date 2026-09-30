@@ -27,6 +27,12 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "scope must be one of ALL, PROFIT, LOSS, SYMBOL" }, { status: 400 });
   }
   const symbol = typeof body?.symbol === "string" ? body.symbol.trim() : undefined;
+  // web3 (owner 2026-09-30): optional "BUY" | "SELL" -- close only that side within the scope. Absent = both sides,
+  // exactly as before. Anything else is refused rather than silently ignored.
+  if (body?.side !== undefined && body?.side !== null && body.side !== "BUY" && body.side !== "SELL") {
+    return NextResponse.json({ error: "side must be BUY or SELL" }, { status: 400 });
+  }
+  const side = body?.side === "BUY" || body?.side === "SELL" ? (body.side as "BUY" | "SELL") : undefined;
   // Phase 2 batch 9 (issue 244): the terminal's Smart Trade Manager close ALL / PROFIT / LOSS comes through here; with
   // source "stm_bulk" each position it closes (or queues for the dealer) gets the STM_BULK_CLOSE audit row the single
   // close route already writes. Informational only: selection and execution are unchanged.
@@ -41,7 +47,7 @@ export async function POST(request: NextRequest) {
         action: "STM_BULK_CLOSE",
         entityType: "Position",
         entityId: r.positionId,
-        newValue: { scope, ...(symbol ? { symbol } : {}), ...(r.queued ? { queued: true } : { closePrice: String(r.closePrice ?? ""), realizedPnl: String(r.realizedPnl ?? "") }) },
+        newValue: { scope, ...(symbol ? { symbol } : {}), ...(side ? { side } : {}), ...(r.queued ? { queued: true } : { closePrice: String(r.closePrice ?? ""), realizedPnl: String(r.realizedPnl ?? "") }) },
       })),
     }).catch((err) => console.error("[close-bulk] STM_BULK_CLOSE audit failed", err));
   };
@@ -62,7 +68,7 @@ export async function POST(request: NextRequest) {
     const clientPlatformHeader = request.headers.get("x-client-platform");
     const orderSource: "WEB" | "DESKTOP_NATIVE" | "MOBILE" | "API" =
       clientPlatformHeader === "DESKTOP_NATIVE" || clientPlatformHeader === "MOBILE" || clientPlatformHeader === "API" ? clientPlatformHeader : "WEB";
-    const { matching, priceBySymbol, nextOpenBySymbolName, closePriceOf } = await selectBulkCloseTargets(prisma, { accountId: session.accountId, brokerId: session.brokerId, scope, symbol });
+    const { matching, priceBySymbol, nextOpenBySymbolName, closePriceOf } = await selectBulkCloseTargets(prisma, { accountId: session.accountId, brokerId: session.brokerId, scope, symbol, side });
     const results: BulkClosePositionResult[] = [];
     const batch = Date.now();
     for (const p of matching) {
@@ -125,6 +131,7 @@ export async function POST(request: NextRequest) {
     brokerId: session.brokerId,
     scope,
     symbol,
+    side,
   });
   await auditStm(results);
 

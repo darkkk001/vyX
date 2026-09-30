@@ -152,7 +152,7 @@ async function patchHandler(request: NextRequest) {
 
   // owner decision 2026-09-25 (audit Batch 4, line 16): spread markup, commission, swaps and hedged margin need PRICING
   // (BROKER_ADMIN, or a MANAGER granted it). Only when one of them actually changes: the form resends every field,
-  // so disabling a symbol or editing its lot sizes stays open to any MANAGER.
+  // so editing lot sizes stays open to any MANAGER (disabling a symbol needs EMERGENCY_CONTROLS, below).
   {
     const current = await prisma.brokerSymbol.findUnique({ where: { brokerId_symbolId: { brokerId: session.brokerId!, symbolId } } });
     const num = (v: unknown) => {
@@ -176,6 +176,14 @@ async function patchHandler(request: NextRequest) {
       (b.hedgedMarginPct !== undefined && differs(b.hedgedMarginPct, current?.hedgedMarginPct ?? new Prisma.Decimal(200)));
     if (pricingChanged && (await forbidUnlessBrokerAdminOrPermission(session, "PRICING"))) {
       return NextResponse.json({ error: "forbidden", permission: "PRICING", permissionLabel: PERMISSION_LABELS.PRICING }, { status: 403 });
+    }
+    // web3 (issues.md 117/198, owner 2026-09-30): turning a symbol off (or back on) is an emergency control, the same
+    // gate as a group halt (groups/[id]/halt) and a broker halt (risk PATCH tradingHalted): BROKER_ADMIN or a MANAGER
+    // with EMERGENCY_CONTROLS. Only when `enabled` actually changes (a symbol with no row yet counts as enabled), so
+    // any MANAGER can still save the rest of the form as before.
+    const enabledChanged = typeof b.enabled === "boolean" && b.enabled !== (current?.enabled ?? DEFAULTS.enabled);
+    if (enabledChanged && (await forbidUnlessBrokerAdminOrPermission(session, "EMERGENCY_CONTROLS"))) {
+      return NextResponse.json({ error: "forbidden", permission: "EMERGENCY_CONTROLS", permissionLabel: PERMISSION_LABELS.EMERGENCY_CONTROLS }, { status: 403 });
     }
   }
 

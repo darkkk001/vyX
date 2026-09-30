@@ -19,6 +19,16 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     return NextResponse.json({ error: "read must be true" }, { status: 400 });
   }
 
-  await prisma.notification.update({ where: { id }, data: { readAt: new Date() } });
+  // web3 (issues.md 324): marks it read for the CALLER only (their own NotificationRead row; idempotent), audited.
+  // Nobody else's read state changes.
+  const already = notification.readAt != null || (await prisma.notificationRead.findUnique({ where: { notificationId_adminId: { notificationId: id, adminId: session!.adminId } } })) != null;
+  if (!already) {
+    await prisma.$transaction([
+      prisma.notificationRead.create({ data: { notificationId: id, adminId: session!.adminId } }),
+      prisma.auditLog.create({
+        data: { brokerId: session!.brokerId!, actorAdminId: session!.adminId, action: "NOTIFICATION_MARKED_READ", entityType: "Notification", entityId: id, newValue: { type: notification.type, title: notification.title } },
+      }),
+    ]);
+  }
   return NextResponse.json({ ok: true });
 }

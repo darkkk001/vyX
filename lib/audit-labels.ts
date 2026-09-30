@@ -145,6 +145,9 @@ const LABELS: Record<string, string> = {
   IB_PARTNER_RESUMED: "Resumed partner",
   IB_PARTNER_OWED_RELEASED: "Released frozen partner pay",
   IB_FROZEN_PAY_RELEASED: "Paid frozen partner pay",
+  // web3 (owner 2026-09-30)
+  NOTIFICATION_MARKED_READ: "Marked notification read",
+  NOTIFICATIONS_MARKED_ALL_READ: "Marked all notifications read",
 };
 
 export function humanizeAction(action: string): string {

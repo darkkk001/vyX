@@ -572,6 +572,7 @@ model AdminUser {
   createdMirrorRules          MirrorRule[]
   backupCodes                 AdminBackupCode[]
   assignedLeads               Lead[]                     @relation("LeadAssignee")
+  notificationReads           NotificationRead[]
   reviewedClientKyc           ClientKycRecord[]          @relation("ClientKycReviewedBy")
   reviewedLiveAccountRequests LiveAccountRequest[]       @relation("LiveAccountRequestReviewedBy")
 
@@ -2287,9 +2288,9 @@ model EconomicCalendarCache {
 // marks it for the whole team, same "one dealing desk" mental model
 // the rest of Manager already assumes). See lib/notifications.ts.
 model Notification {
-  id         String    @id @default(cuid())
+  id         String             @id @default(cuid())
   brokerId   String
-  broker     Broker    @relation(fields: [brokerId], references: [id])
+  broker     Broker             @relation(fields: [brokerId], references: [id])
   // Phase 1 trust pack §3 -- null for every existing row/type (all
   // backoffice-staff-facing: "NEW_LEAD" | "KYC_SUBMITTED" |
   // "FUNDS_REQUEST" | "DEALING_ORDER_PENDING"). Set only for
@@ -2300,13 +2301,17 @@ model Notification {
   // trigger as a toast + the PriceAlert's own triggeredAt/triggeredPrice
   // serve as history); this is queued for Phase 2's stated email step.
   accountId  String?
-  account    Account?  @relation(fields: [accountId], references: [id])
+  account    Account?           @relation(fields: [accountId], references: [id])
   type       String // "NEW_LEAD" | "KYC_SUBMITTED" | "FUNDS_REQUEST" | "DEALING_ORDER_PENDING" | "PRICE_ALERT_TRIGGERED"
   title      String
   body       String
   entityType String?
   entityId   String?
-  readAt     DateTime? @db.Timestamptz(3)
+  readAt     DateTime?          @db.Timestamptz(3)
+  // web3 (issues.md 324, owner 2026-09-30): who of the staff has read this row (per staff member, not shared).
+  // readAt above stays as the older shared mark (and "handled for everyone", e.g. a resolved password-reset request):
+  // a staff member has read a row when readAt is set OR they have their own NotificationRead row.
+  reads      NotificationRead[]
 
   createdAt DateTime @default(now()) @db.Timestamptz(3)
 
@@ -2407,4 +2412,18 @@ model PostCloseEffect {
   doneAt        DateTime? @db.Timestamptz(3)
 
   @@index([status, nextAttemptAt])
+}
+
+// web3 (issues.md 324, owner 2026-09-30): per-staff read state of a staff notification. One row per (notification,
+// staff member); marking read for one person never marks it for anyone else. Rows go with their notification or
+// staff member (cascade).
+model NotificationRead {
+  notificationId String
+  notification   Notification @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+  adminId        String
+  admin          AdminUser    @relation(fields: [adminId], references: [id], onDelete: Cascade)
+  readAt         DateTime     @default(now()) @db.Timestamptz(3)
+
+  @@id([notificationId, adminId])
+  @@index([adminId])
 }

@@ -99,6 +99,9 @@ export async function GET() {
         mirror: mirror ? { direction: mirror.direction, multiplier: mirror.multiplier.toString() } : null,
         hasCustomPricing: accountIdsWithPricing.has(a.id),
         createdAt: a.createdAt.toISOString(), // Step 2 (owner 2026-09-30): the account's opening date (DASH NEW 7D)
+        // web3 (owner 2026-09-30): whether the client has two-step sign-in on (CLI Reset 2FA). The boolean only: the
+        // secret is never put in this response (every field here is listed by name, nothing is spread).
+        twoFactorEnabled: a.twoFactorEnabled,
         // Phase 2 batch 7 (issue 91): the broker's own dealer-coverage hedge account (Broker.coverageAccountId) is
         // listed with the clients but is not a client: the backoffice hides client actions (funds, KYC, password,
         // mirror) on it

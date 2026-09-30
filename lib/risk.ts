@@ -203,15 +203,28 @@ export function checkTradingSession(
 
   const day = now.getUTCDay();
   const minutes = now.getUTCHours() * 60 + now.getUTCMinutes();
-  const toMinutes = (hhmm: string) => {
-    const [h, m] = hhmm.split(":").map(Number);
-    return h * 60 + m;
-  };
-  const open = sessions.some((s) => {
-    if (s.dayOfWeek !== day) return false;
-    return minutes >= toMinutes(s.openTime) && minutes < toMinutes(s.closeTime);
-  });
+  const open = sessions.some((s) => sessionCovers(s, day, minutes));
   return open ? null : "MARKET_CLOSED";
+}
+
+// web3 (issues.md 335/343, owner 2026-09-30): one trading-session row, all times UTC (no DST: a broker who wants a
+// New-York-anchored window edits the rows twice a year, as the SYM editor says). dayOfWeek is the day the window
+// OPENS (0 = Sunday). openTime is inclusive, closeTime exclusive:
+//   close > open   -> same day, e.g. 08:00-17:00
+//   close = "24:00"-> to the end of that day (the old "23:59" left the last minute closed)
+//   close < open   -> crosses midnight into the next day, e.g. Mon 22:00-02:00 = Mon 22:00 to Tue 02:00
+// open = close is refused by the sessions editor route (ambiguous: empty or 24 h).
+export function sessionMinutes(hhmm: string): number {
+  const [h, m] = hhmm.split(":").map(Number);
+  return h * 60 + m;
+}
+export function sessionCovers(s: { dayOfWeek: number; openTime: string; closeTime: string }, day: number, minutes: number): boolean {
+  const open = sessionMinutes(s.openTime);
+  const close = sessionMinutes(s.closeTime);
+  if (!Number.isFinite(open) || !Number.isFinite(close)) return false; // malformed row: never open
+  if (close > open) return s.dayOfWeek === day && minutes >= open && minutes < close;
+  if (close < open) return (s.dayOfWeek === day && minutes >= open) || ((s.dayOfWeek + 1) % 7 === day && minutes < close);
+  return false;
 }
 
 // Companion to checkTradingSession -- when it returns "MARKET_CLOSED",

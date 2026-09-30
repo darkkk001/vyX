@@ -41,6 +41,9 @@ export type ChartSettings = {
   // The terminal's MT5 Ask line (terminal 1.0.52). The web chart does not draw it; stored here so the trader's
   // choice survives a save from either client (the PUT keeps only known keys, issue 254).
   showAskLine: boolean;
+  // web3 (terminal 1.0.58, Phase 5 batch A): the SL / TP line tags always show the P/L the order would realise, not
+  // only while the line is selected or dragged. Stored here so the choice follows the trader across devices.
+  slTpTagPnlAlways: boolean;
   // Only "UTC" is offered today -- groundwork for a real TZ selector, per
   // the chart interaction pack spec ("timezone display (UTC default --
   // groundwork for the TZ selector)").
@@ -120,6 +123,7 @@ export const DEFAULT_CHART_SETTINGS: ChartSettings = {
   showSessionMap: false,
   showOhlcBar: true,
   showAskLine: true,
+  slTpTagPnlAlways: false,
   timezone: "UTC",
   soundsEnabled: true,
   soundOrderFilled: true,

@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server";
+import { brokerHosts } from "@/lib/broker-hosts";
+import { unreadStaffNotificationsFor } from "@/lib/notification-read";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole, TWO_FACTOR_SETUP_REQUIRED } from "@/lib/auth";
 import { allowedBackofficeScreens } from "@/lib/backoffice-screens";
@@ -31,13 +33,17 @@ export async function GET() {
   const brokerId = session!.brokerId!;
 
   const [broker, admin] = await Promise.all([
-    prisma.broker.findUnique({ where: { id: brokerId }, select: { name: true, logoUrl: true, primaryColor: true } }),
+    prisma.broker.findUnique({ where: { id: brokerId }, select: { name: true, logoUrl: true, primaryColor: true, subdomain: true, customDomain: true } }),
     prisma.adminUser.findUnique({ where: { id: session!.adminId }, select: { email: true, theme: true, extraPermissions: true, twoFactorEnabled: true } }),
   ]);
   const identity = {
     brokerName: broker?.name ?? "Backoffice",
     brokerLogoUrl: broker?.logoUrl ?? null,
     brokerPrimaryColor: broker?.primaryColor ?? null,
+    // web3 (owner 2026-09-30): the broker's canonical web address, exactly the value a broker-wide typed confirm expects
+    // (emergency/sign-out-clients, lib/broker-hosts.ts, first entry = the subdomain host). Every role, so EMG can show
+    // the real address to anyone who opens it.
+    brokerAddress: broker ? brokerHosts(broker)[0] : null,
     adminEmail: admin?.email ?? null,
     role: session!.role,
     // Bundled shells (manager-shell) have no Server Component to read
@@ -67,7 +73,8 @@ export async function GET() {
   const extraPermissions = session!.role === "MANAGER" ? admin.extraPermissions : [];
   const permissions =
     session!.role === "BROKER_ADMIN" ? [...PERMISSIONS] : extraPermissions.filter((p) => (PERMISSIONS as readonly string[]).includes(p));
-  const unreadNotifications = await prisma.notification.count({ where: { brokerId, accountId: null, readAt: null } }); // staff rows only (issue 145)
+  // staff rows only (issue 145), unread FOR THIS staff member (web3, issues.md 324)
+  const unreadNotifications = await prisma.notification.count({ where: unreadStaffNotificationsFor(brokerId, session!.adminId) });
 
   return NextResponse.json({
     ...identity,

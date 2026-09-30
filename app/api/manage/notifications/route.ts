@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { resolveEntityLabels } from "@/lib/entity-labels";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { canReadAsManagerOrSupport } from "@/lib/permissions";
+import { unreadStaffNotificationsFor } from "@/lib/notification-read";
 
 async function requireManager() {
   const session = await getAdminSession();
@@ -31,6 +32,8 @@ export async function GET() {
     where: { brokerId: session.brokerId!, accountId: null },
     orderBy: { createdAt: "desc" },
     take: 100,
+    // web3 (issues.md 324): the caller's own read mark only
+    include: { reads: { where: { adminId: session.adminId }, select: { readAt: true } } },
   });
 
   const entityLabels = await resolveEntityLabels(session.brokerId!, notifications.map((n) => ({ entityType: n.entityType, entityId: n.entityId })));
@@ -43,13 +46,15 @@ export async function GET() {
       entityType: n.entityType,
       entityId: n.entityId,
       entityLabel: entityLabels.get(n.entityId ?? "") ?? "",
-      read: n.readAt != null,
+      // web3: read FOR THE CALLER -- their own mark, or the older shared / "handled for everyone" readAt
+      read: n.readAt != null || n.reads.length > 0,
       createdAt: n.createdAt.toISOString(),
     }))
   );
 }
 
-// Bulk mark-all-read -- shared read state, see Notification's schema comment.
+// Bulk mark-all-read FOR THE CALLER only (web3, issues.md 324): writes the caller's own NotificationRead rows for every
+// staff notification they have not read; nobody else's read state changes. One audit row with the count.
 export async function PATCH(request: NextRequest) {
   const session = await requireManager();
   if (!session) {
@@ -59,9 +64,15 @@ export async function PATCH(request: NextRequest) {
   if (!body?.markAllRead) {
     return NextResponse.json({ error: "markAllRead must be true" }, { status: 400 });
   }
-  await prisma.notification.updateMany({
-    where: { brokerId: session.brokerId!, accountId: null, readAt: null },
-    data: { readAt: new Date() },
+  const brokerId = session.brokerId!;
+  const marked = await prisma.$transaction(async (tx) => {
+    const unread = await tx.notification.findMany({ where: unreadStaffNotificationsFor(brokerId, session.adminId), select: { id: true } });
+    if (unread.length === 0) return 0;
+    const r = await tx.notificationRead.createMany({ data: unread.map((n) => ({ notificationId: n.id, adminId: session.adminId })), skipDuplicates: true });
+    await tx.auditLog.create({
+      data: { brokerId, actorAdminId: session.adminId, action: "NOTIFICATIONS_MARKED_ALL_READ", entityType: "AdminUser", entityId: session.adminId, newValue: { count: r.count } },
+    });
+    return r.count;
   });
-  return NextResponse.json({ ok: true });
+  return NextResponse.json({ ok: true, marked });
 }

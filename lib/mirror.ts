@@ -153,6 +153,10 @@ async function triggerKillSwitch(db: Db, rule: MirrorRule, reason: string): Prom
     entityType: "MirrorRule",
     entityId: rule.id,
   });
+  // web3 (issues.md 348): a kill-switch trip is a copy-rule state change like a PATCH from MIR, so it announces
+  // itself the same way (lib/config-events.ts publishConfigChanged, scope "mirror"). Buffered by deferTradingEvents
+  // when this runs inside a fill, so it goes out after that work finishes.
+  await publishTradingEvent("ConfigChanged", { broker_id: rule.brokerId, scope: "mirror", rule_id: rule.id }).catch(() => {});
 }
 
 // "Before each mirror fill" (the brief's own wording) -- checks the

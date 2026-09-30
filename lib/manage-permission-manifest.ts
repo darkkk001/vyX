@@ -130,6 +130,7 @@ export const MANIFEST: Row[] = [
   { mod: "kyc-requests/route", method: "GET", perm: "KYC_REVIEW", supportRead: true },
   { mod: "leads/[id]/route", method: "PATCH", perm: "ANY_MANAGER", needsId: true, body: {} },
   { mod: "leads/route", method: "GET", perm: "ANY_MANAGER" },
+  { mod: "leads/assignees/route", method: "GET", perm: "ANY_MANAGER" }, // web3 (owner 2026-09-30); SUPPORT 403
   { mod: "liquidity-providers/[id]/route", method: "PATCH", perm: "BROKER_ADMIN_ONLY", needsId: true, body: {} },
   { mod: "liquidity-providers/route", method: "GET", perm: "BROKER_ADMIN_ONLY" },
   { mod: "liquidity/route", method: "GET", perm: "BROKER_ADMIN_ONLY" },

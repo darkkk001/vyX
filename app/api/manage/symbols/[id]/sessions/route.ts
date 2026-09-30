@@ -12,6 +12,9 @@ async function requireManager() {
 }
 
 const TIME_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
+// web3 (issues.md 335/343): a window may end at "24:00" (the end of its day) or cross midnight (close before open, e.g.
+// 22:00-02:00 = to 02:00 the next day). All times UTC. lib/risk.ts sessionCovers is the one reader of these rules.
+const CLOSE_RE = /^(([01]\d|2[0-3]):([0-5]\d)|24:00)$/;
 
 // `id` here is BrokerSymbol.id (not Symbol.id) -- this is per-broker
 // config, same scoping as every other field on that model. Enforcement
@@ -66,11 +69,11 @@ async function putHandler(request: NextRequest, { params }: { params: Promise<{ 
     if (!Number.isInteger(dayOfWeek) || dayOfWeek < 0 || dayOfWeek > 6) {
       return NextResponse.json({ error: "dayOfWeek must be 0-6" }, { status: 400 });
     }
-    if (!TIME_RE.test(openTime) || !TIME_RE.test(closeTime)) {
-      return NextResponse.json({ error: "openTime/closeTime must be HH:MM" }, { status: 400 });
+    if (!TIME_RE.test(openTime) || !CLOSE_RE.test(closeTime)) {
+      return NextResponse.json({ error: "openTime must be HH:MM (00:00-23:59) and closeTime HH:MM or 24:00" }, { status: 400 });
     }
-    if (openTime >= closeTime) {
-      return NextResponse.json({ error: "closeTime must be after openTime" }, { status: 400 });
+    if (openTime === closeTime) {
+      return NextResponse.json({ error: "closeTime must differ from openTime (use 00:00-24:00 for the whole day)" }, { status: 400 });
     }
     sessions.push({ dayOfWeek, openTime, closeTime });
   }

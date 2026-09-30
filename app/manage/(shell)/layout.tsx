@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { headers } from "next/headers";
 import { getAdminSession, requireAdminRole, shouldForceAdminTwoFactorSetup } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { unreadStaffNotificationsFor } from "@/lib/notification-read";
 import { NextAdminShell } from "@/components/admin/NextAdminShell";
 import type { AdminNavGroup } from "@/components/admin/AdminShell";
 import { TopbarSearch } from "@/components/admin/TopbarSearch";
@@ -45,7 +46,8 @@ export default async function ManageShellLayout({ children }: { children: React.
   const [broker, admin, unreadNotifications] = await Promise.all([
     prisma.broker.findUnique({ where: { id: session!.brokerId! }, select: { name: true, primaryColor: true, logoUrl: true } }),
     prisma.adminUser.findUnique({ where: { id: session!.adminId }, select: { email: true, twoFactorEnabled: true } }),
-    prisma.notification.count({ where: { brokerId: session!.brokerId!, readAt: null } }),
+    // unread FOR THIS staff member, staff rows only (web3, issues.md 324; same rule as shell-info)
+    prisma.notification.count({ where: unreadStaffNotificationsFor(session!.brokerId!, session!.adminId) }),
   ]);
 
   // Both redirects land on the same page, so the forced-setup query param

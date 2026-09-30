@@ -198,7 +198,9 @@ describe("staff notifications (145 / 146)", () => {
     const one = await import("@/app/api/manage/notifications/[id]/route");
     expect((await call(one.PATCH, `/api/manage/notifications/${trader.id}`, "PATCH", {}, { id: trader.id })).status).toBe(404);
     expect((await call(list.PATCH, "/api/manage/notifications", "PATCH", { markAllRead: true })).status).toBe(200);
-    expect((await prisma.notification.findUniqueOrThrow({ where: { id: staff.id } })).readAt).not.toBeNull();
+    // web3 (issues.md 324): marked read for THIS staff member (own NotificationRead row), never the shared readAt
+    expect(await prisma.notificationRead.count({ where: { notificationId: staff.id, adminId: a.id } })).toBe(1);
+    expect((await prisma.notification.findUniqueOrThrow({ where: { id: staff.id } })).readAt).toBeNull();
     expect(await prisma.notification.count({ where: { brokerId: w.brokerId, accountId: w.accountId, readAt: null } })).toBe(2);
   });
 });
