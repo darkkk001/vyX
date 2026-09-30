@@ -386,7 +386,7 @@ describe("94 / 137: leverage and group choices on account creation", () => {
     const ok = await call(PATCH, "/x", "PATCH", { action: "APPROVE", groupId: pro.id, accountTypeId: raw.id }, { id: req.id });
     expect(ok.status).toBe(200);
     const acc = await prisma.account.findFirstOrThrow({ where: { clientId: c.id } });
-    expect(acc).toMatchObject({ groupId: pro.id, leverage: 200, accountTypeId: raw.id, accountMode: "LIVE" });
+    expect(acc).toMatchObject({ groupId: pro.id, leverage: 200, accountTypeId: null, accountMode: "LIVE" }); // D4: an approver-sent type is ignored
   });
 });
 
@@ -419,17 +419,17 @@ describe("202 / 188 / 75", () => {
     expect(row?.stopLevel).toBe(30);
   });
 
-  it("75: a manager without PRICING cannot change a type's pricing, but can still rename it", async () => {
+  it("75 + D4: nobody can set a type's pricing any more (400), a manager can still rename it", async () => {
     if (!dbReachable) return;
     const b = await broker();
     const t = await prisma.accountType.create({ data: { brokerId: b, name: "Std", isDefault: true, enabled: true } });
     const { PATCH } = await import("@/app/api/manage/account-types/[id]/route");
     as(await admin(b, "MANAGER"));
     const refused = await call(PATCH, "/x", "PATCH", { name: "Std", isDefault: true, spreadMarkup: "5" }, { id: t.id });
-    expect(refused).toMatchObject({ status: 403, json: { permission: "PRICING" } });
+    expect(refused.status).toBe(400); // D4: account types no longer carry pricing
     expect((await prisma.accountType.findUniqueOrThrow({ where: { id: t.id } })).spreadMarkup).toBeNull();
     expect((await call(PATCH, "/x", "PATCH", { name: "Standard", isDefault: true }, { id: t.id })).status).toBe(200);
     as(await admin(b, "MANAGER", ["PRICING"]));
-    expect((await call(PATCH, "/x", "PATCH", { name: "Standard", isDefault: true, spreadMarkup: "5" }, { id: t.id })).status).toBe(200);
+    expect((await call(PATCH, "/x", "PATCH", { name: "Standard", isDefault: true, spreadMarkup: "5" }, { id: t.id })).status).toBe(400); // even with PRICING
   });
 });

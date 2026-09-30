@@ -115,6 +115,11 @@ async function patchHandler(request: NextRequest, { params }: { params: Promise<
     return NextResponse.json({ error: parsed }, { status: 400 });
   }
 
+  // D4 (owner 2026-09-30): per-symbol account-type pricing is no longer read by any price or fill -- only removing a
+  // row is accepted, setting one is refused
+  if (!(body?.reset === true || isEmptyPricingPatch(parsed))) {
+    return NextResponse.json({ error: "account types no longer carry pricing (D4: the group is the pricing tier), set it on the group" }, { status: 409 });
+  }
   if (body?.reset === true || isEmptyPricingPatch(parsed)) {
     await prisma.$transaction(async (tx) => {
       await tx.accountTypeSymbolConfig.deleteMany({ where: { accountTypeId: id, symbolId } });

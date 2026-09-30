@@ -37,25 +37,23 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
     return NextResponse.json({ error: "account not found" }, { status: 404 });
   }
 
-  const [brokerSymbols, overrides, accountType, typeSymbolConfigs] = await Promise.all([
+  const [brokerSymbols, overrides, groupSymbolConfigs] = await Promise.all([
     prisma.brokerSymbol.findMany({
       where: { brokerId, enabled: true },
       include: { symbol: { select: { id: true, name: true, category: true } } },
       orderBy: { symbol: { name: "asc" } },
     }),
     prisma.accountSymbolConfig.findMany({ where: { accountId: id } }),
-    account.accountTypeId ? prisma.accountType.findUnique({ where: { id: account.accountTypeId } }) : Promise.resolve(null),
-    account.accountTypeId
-      ? prisma.accountTypeSymbolConfig.findMany({ where: { accountTypeId: account.accountTypeId } })
-      : Promise.resolve([]),
+    // D4: one hop down is the account's GROUP (the pricing tier), no longer its account type
+    account.groupId ? prisma.groupSymbolConfig.findMany({ where: { groupId: account.groupId } }) : Promise.resolve([]),
   ]);
   const overrideBySymbolId = new Map(overrides.map((o) => [o.symbolId, o]));
-  const typeSymbolConfigBySymbolId = new Map(typeSymbolConfigs.map((c) => [c.symbolId, c]));
+  const groupSymbolConfigBySymbolId = new Map(groupSymbolConfigs.map((c) => [c.symbolId, c]));
 
   return NextResponse.json(
     brokerSymbols.map((bs) => {
       const override = overrideBySymbolId.get(bs.symbolId);
-      const typeSymbolConfig = typeSymbolConfigBySymbolId.get(bs.symbolId);
+      const groupConfig = groupSymbolConfigBySymbolId.get(bs.symbolId);
       return {
         symbolId: bs.symbol.id,
         symbolName: bs.symbol.name,
@@ -66,15 +64,12 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
         commissionPerLot: decimalOrNull(override?.commissionPerLot ?? null),
         swapLong: decimalOrNull(override?.swapLong ?? null),
         swapShort: decimalOrNull(override?.swapShort ?? null),
-        // One hop down: this account's own type's per-symbol row for this
-        // symbol, falling back to the type's flat default -- null means
-        // neither is set (inherits further, from Group/Broker).
-        // Unified "default" field naming (2026-09-07 Stage 5) -- see
-        // components/manage/SymbolPricingEditor.tsx.
-        defaultSpreadMarkup: decimalOrNull(typeSymbolConfig?.spreadMarkup ?? accountType?.spreadMarkup ?? null),
-        defaultCommissionPerLot: decimalOrNull(typeSymbolConfig?.commissionPerLot ?? accountType?.commissionPerLot ?? null),
-        defaultSwapLong: decimalOrNull(typeSymbolConfig?.swapLong ?? accountType?.swapLong ?? null),
-        defaultSwapShort: decimalOrNull(typeSymbolConfig?.swapShort ?? accountType?.swapShort ?? null),
+        // One hop down (D4): this account's GROUP per-symbol row -- null means the group sets nothing (inherits
+        // further, from the broker's symbol). Unified "default" field naming (2026-09-07 Stage 5).
+        defaultSpreadMarkup: decimalOrNull(groupConfig?.spreadMarkup ?? null),
+        defaultCommissionPerLot: decimalOrNull(groupConfig?.commissionPerLot ?? null),
+        defaultSwapLong: decimalOrNull(groupConfig?.swapLong ?? null),
+        defaultSwapShort: decimalOrNull(groupConfig?.swapShort ?? null),
       };
     })
   );

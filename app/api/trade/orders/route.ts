@@ -40,6 +40,8 @@ import {
   checkSlippage,
   computeNextSessionOpen,
   effectiveMaxSlippagePips,
+  traderSlippagePoints,
+  brokerSlippageCapPoints,
   isValidMaxSlippageInput,
 } from "@/lib/risk";
 
@@ -103,6 +105,10 @@ async function handlePlaceOrder(request: NextRequest, session: Session) {
   const maxSlippagePips = body?.maxSlippagePips != null ? String(body.maxSlippagePips) : null;
   if (!isValidMaxSlippageInput(maxSlippagePips)) {
     return NextResponse.json({ error: "maxSlippagePips must be a non-negative number or \"unlimited\"" }, { status: 400 });
+  }
+  // owner 2026-09-30: clients may send the same value in points (maxSlippagePoints wins when both are sent)
+  if (!isValidMaxSlippageInput(body?.maxSlippagePoints != null ? String(body.maxSlippagePoints) : null)) {
+    return NextResponse.json({ error: "maxSlippagePoints must be a non-negative number or \"unlimited\"" }, { status: 400 });
   }
   // Optional, client-asserted, informational only -- doesn't change
   // validation/risk/execution at all (every branch below runs identically
@@ -257,7 +263,6 @@ async function handlePlaceOrder(request: NextRequest, session: Session) {
     ? {
         pricingEngineEnabled: broker.pricingEngineEnabled,
         accountId: account.id,
-        accountTypeId: account.accountTypeId,
         groupId: account.groupId,
         symbolId: brokerSymbol.symbolId,
         brokerSpreadMarkup: brokerSymbol.spreadMarkup,
@@ -609,8 +614,8 @@ async function handlePlaceOrder(request: NextRequest, session: Session) {
       const slippageError = checkSlippage({
         clientReferencePrice: price,
         serverFillPrice: fillPrice,
-        // the smaller of the trader's value and the broker's cap (lib/risk.ts effectiveMaxSlippagePips)
-        maxSlippagePips: effectiveMaxSlippagePips(maxSlippagePips, broker.defaultMaxSlippagePips),
+        // the smaller of the trader's value and the broker's cap, in POINTS (owner 2026-09-30; lib/risk.ts)
+        maxSlippagePoints: effectiveMaxSlippagePips(traderSlippagePoints(body, brokerSymbol.symbol.digits), brokerSlippageCapPoints(broker)),
         digits: brokerSymbol.symbol.digits,
       });
       if (slippageError) {

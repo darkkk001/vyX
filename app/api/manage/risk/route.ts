@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { brokerSlippageCapPoints } from "@/lib/risk";
 import { withConfigEvent } from "@/lib/config-events";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
@@ -36,7 +37,9 @@ export async function GET() {
     maxOpenPositionsPerAccount: broker.maxOpenPositionsPerAccount,
     smartDealerAcceptPct: broker.smartDealerAcceptPct ? broker.smartDealerAcceptPct.toString() : null,
     smartDealerRejectPct: broker.smartDealerRejectPct ? broker.smartDealerRejectPct.toString() : null,
-    defaultMaxSlippagePips: broker.defaultMaxSlippagePips ? broker.defaultMaxSlippagePips.toString() : null,
+    // owner 2026-09-30: the cap in POINTS (the unit the screens show); defaultMaxSlippagePips = points / 10, kept for
+    // backoffice 1.0.58 and older until they read points
+    ...slippageFields(broker),
     coverageAccountId: broker.coverageAccountId ?? null,
     coverageAccountNumber: coverageAccount?.accountNumber ?? null,
   });
@@ -71,7 +74,8 @@ async function patchHandler(request: NextRequest) {
     "maxOpenPositionsPerAccount" in body ||
     "smartDealerAcceptPct" in body ||
     "smartDealerRejectPct" in body ||
-    "defaultMaxSlippagePips" in body;
+    "defaultMaxSlippagePips" in body ||
+    "defaultMaxSlippagePoints" in body;
   if (touchesRiskFields && permissions.forbidUnless("RISK_SETTINGS")) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
@@ -164,16 +168,19 @@ async function patchHandler(request: NextRequest) {
     auditNewValue.smartDealerRejectPct = pct ? pct.toString() : null;
   }
 
-  if ("defaultMaxSlippagePips" in body) {
-    // Same positive-Decimal-or-blank shape as the pct fields (parsePct
-    // returns null for blank, undefined for invalid, a positive Decimal
-    // otherwise). Read back at app/api/trade/orders/route.ts's checkSlippage.
-    const pips = parsePct(body.defaultMaxSlippagePips);
-    if (pips === undefined) {
-      return NextResponse.json({ error: "defaultMaxSlippagePips must be a positive number or blank" }, { status: 400 });
+  if ("defaultMaxSlippagePoints" in body || "defaultMaxSlippagePips" in body) {
+    // owner 2026-09-30: stored in POINTS. A client may send points (preferred) or, like backoffice 1.0.58 and older,
+    // pips (converted x 10: a pip is 10 points on every symbol with 1+ digits). Both columns are written so the old
+    // pips column stays true until it is dropped. Positive number or blank (= no broker cap).
+    const usePoints = "defaultMaxSlippagePoints" in body;
+    const v = parsePct(usePoints ? body.defaultMaxSlippagePoints : body.defaultMaxSlippagePips);
+    if (v === undefined) {
+      return NextResponse.json({ error: `${usePoints ? "defaultMaxSlippagePoints" : "defaultMaxSlippagePips"} must be a positive number or blank` }, { status: 400 });
     }
-    data.defaultMaxSlippagePips = pips;
-    auditNewValue.defaultMaxSlippagePips = pips ? pips.toString() : null;
+    const points = v == null ? null : usePoints ? v : v.mul(10);
+    data.defaultMaxSlippagePoints = points;
+    data.defaultMaxSlippagePips = points == null ? null : points.div(10);
+    auditNewValue.defaultMaxSlippagePoints = points ? points.toString() : null;
   }
 
   {
@@ -232,8 +239,13 @@ async function patchHandler(request: NextRequest) {
     maxOpenPositionsPerAccount: updated.maxOpenPositionsPerAccount,
     smartDealerAcceptPct: updated.smartDealerAcceptPct ? updated.smartDealerAcceptPct.toString() : null,
     smartDealerRejectPct: updated.smartDealerRejectPct ? updated.smartDealerRejectPct.toString() : null,
-    defaultMaxSlippagePips: updated.defaultMaxSlippagePips ? updated.defaultMaxSlippagePips.toString() : null,
+    ...slippageFields(updated),
   });
+}
+
+function slippageFields(b: { defaultMaxSlippagePoints: Prisma.Decimal | null; defaultMaxSlippagePips: Prisma.Decimal | null }) {
+  const points = brokerSlippageCapPoints(b);
+  return { defaultMaxSlippagePoints: points ? points.toString() : null, defaultMaxSlippagePips: points ? points.div(10).toString() : null };
 }
 
 // Batch 5 (real-time): a successful write announces the change to every open client (lib/config-events.ts)

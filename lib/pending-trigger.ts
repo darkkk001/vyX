@@ -32,7 +32,7 @@ import {
   evaluateLiveMarketPrice,
   checkPriceFreshness,
   checkSlippage,
-  PENDING_TRIGGER_MAX_SLIPPAGE_PIPS,
+  PENDING_TRIGGER_MAX_SLIPPAGE_POINTS,
 } from "@/lib/risk";
 
 // ---------------------------------------------------------------------------
@@ -219,7 +219,6 @@ export async function triggerPendingOrder(orderId: string, triggerPrice: string,
   const pricing = await resolveFillPricing(prisma, {
     pricingEngineEnabled: broker.pricingEngineEnabled,
     accountId: account.id,
-    accountTypeId: account.accountTypeId,
     groupId: account.groupId,
     symbolId: order.symbolId,
     brokerSpreadMarkup: brokerSymbol.spreadMarkup,
@@ -231,7 +230,7 @@ export async function triggerPendingOrder(orderId: string, triggerPrice: string,
   logSpreadWarning({ accountId: account.id, symbolId: order.symbolId, brokerId: order.brokerId }, pricing.warning);
   const serverRef = livePrice ? (order.side === "BUY" ? livePrice.ask : livePrice.bid) : new Prisma.Decimal(triggerPrice);
   const fillPrice = applySpreadMarkup({ side: order.side, price: serverRef, spreadMarkup: pricing.spreadMarkup, digits: brokerSymbol.symbol.digits });
-  const slippageError = checkSlippage({ clientReferencePrice: triggerPrice, serverFillPrice: fillPrice, maxSlippagePips: PENDING_TRIGGER_MAX_SLIPPAGE_PIPS, digits: brokerSymbol.symbol.digits });
+  const slippageError = checkSlippage({ clientReferencePrice: triggerPrice, serverFillPrice: fillPrice, maxSlippagePoints: PENDING_TRIGGER_MAX_SLIPPAGE_POINTS, digits: brokerSymbol.symbol.digits });
   if (slippageError) {
     // the market jumped past the entry: MT5 fills at the next price; here the order waits for the next pass
     return { kind: "kept", reason: slippageError };

@@ -6,8 +6,6 @@
       "digits": 2,
       "broker": "0.5",
       "group": null,
-      "accountType": null,
-      "accountTypeSymbol": null,
       "accountSymbol": null,
       "name": "engine off: broker default",
       "pricingEngineEnabled": false,
@@ -24,8 +22,6 @@
         "spreadMarkup": "1.5",
         "targetTotalSpreadPips": null
       },
-      "accountType": null,
-      "accountTypeSymbol": null,
       "accountSymbol": null,
       "name": "engine off: group markup wins (Futurix Standard XAUUSD +1.5 pips)",
       "pricingEngineEnabled": false,
@@ -42,8 +38,6 @@
         "spreadMarkup": null,
         "targetTotalSpreadPips": "3"
       },
-      "accountType": null,
-      "accountTypeSymbol": null,
       "accountSymbol": null,
       "name": "engine off: group row with a null markup falls through to the broker",
       "pricingEngineEnabled": false,
@@ -60,8 +54,6 @@
         "spreadMarkup": "1",
         "targetTotalSpreadPips": "3"
       },
-      "accountType": null,
-      "accountTypeSymbol": null,
       "accountSymbol": null,
       "name": "engine off: a target on the group is ignored (flag-off fill never reads it)",
       "pricingEngineEnabled": false,
@@ -78,8 +70,6 @@
         "spreadMarkup": "1.5",
         "targetTotalSpreadPips": null
       },
-      "accountType": null,
-      "accountTypeSymbol": null,
       "accountSymbol": {
         "spreadMarkup": "9",
         "targetTotalSpreadPips": null
@@ -96,8 +86,6 @@
       "digits": 2,
       "broker": "0.5",
       "group": null,
-      "accountType": null,
-      "accountTypeSymbol": null,
       "accountSymbol": null,
       "name": "engine on: broker default",
       "pricingEngineEnabled": true,
@@ -114,8 +102,6 @@
         "spreadMarkup": "1.5",
         "targetTotalSpreadPips": null
       },
-      "accountType": null,
-      "accountTypeSymbol": null,
       "accountSymbol": null,
       "name": "engine on: group markup",
       "pricingEngineEnabled": true,
@@ -132,8 +118,6 @@
         "spreadMarkup": "1",
         "targetTotalSpreadPips": "3"
       },
-      "accountType": null,
-      "accountTypeSymbol": null,
       "accountSymbol": null,
       "name": "engine on: group target, with its own fallback",
       "pricingEngineEnabled": true,
@@ -148,62 +132,14 @@
       "digits": 2,
       "broker": "0.5",
       "group": {
-        "spreadMarkup": "1",
-        "targetTotalSpreadPips": "3"
-      },
-      "accountType": {
-        "spreadMarkup": "2"
-      },
-      "accountTypeSymbol": null,
-      "accountSymbol": null,
-      "name": "engine on: account type flat markup beats the group",
-      "pricingEngineEnabled": true,
-      "expected": {
-        "mode": "markup",
-        "markupPips": "2"
-      }
-    },
-    {
-      "coverage": false,
-      "digits": 2,
-      "broker": "0.5",
-      "group": null,
-      "accountType": {
-        "spreadMarkup": "2"
-      },
-      "accountTypeSymbol": {
-        "spreadMarkup": null,
-        "targetTotalSpreadPips": "2.5"
-      },
-      "accountSymbol": null,
-      "name": "engine on: account type symbol target beats the flat type",
-      "pricingEngineEnabled": true,
-      "expected": {
-        "mode": "target",
-        "targetPips": "2.5",
-        "fallbackPips": null
-      }
-    },
-    {
-      "coverage": false,
-      "digits": 2,
-      "broker": "0.5",
-      "group": {
         "spreadMarkup": "1.5",
         "targetTotalSpreadPips": null
-      },
-      "accountType": {
-        "spreadMarkup": "2"
-      },
-      "accountTypeSymbol": {
-        "spreadMarkup": null,
-        "targetTotalSpreadPips": "2.5"
       },
       "accountSymbol": {
         "spreadMarkup": "0.2",
         "targetTotalSpreadPips": null
       },
-      "name": "engine on: account symbol config beats everything",
+      "name": "engine on: account symbol config beats the group",
       "pricingEngineEnabled": true,
       "expected": {
         "mode": "markup",
@@ -218,8 +154,6 @@
         "spreadMarkup": "1.5",
         "targetTotalSpreadPips": null
       },
-      "accountType": null,
-      "accountTypeSymbol": null,
       "accountSymbol": {
         "spreadMarkup": null,
         "targetTotalSpreadPips": null
@@ -239,8 +173,6 @@
         "spreadMarkup": "1.5",
         "targetTotalSpreadPips": null
       },
-      "accountType": null,
-      "accountTypeSymbol": null,
       "accountSymbol": {
         "spreadMarkup": "3",
         "targetTotalSpreadPips": null
@@ -260,8 +192,6 @@
         "spreadMarkup": "1.2",
         "targetTotalSpreadPips": null
       },
-      "accountType": null,
-      "accountTypeSymbol": null,
       "accountSymbol": null,
       "name": "5-digit FX group markup",
       "pricingEngineEnabled": false,

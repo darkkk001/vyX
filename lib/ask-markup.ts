@@ -10,7 +10,7 @@ import { resolvePricingV2, resolveEffectiveSpreadMarkup, type ResolvedSpread } f
 // This module is the one definition of "this account's ask for this symbol". The rule is resolved with EXACTLY the
 // fill path's precedence (lib/pricing-engine.ts resolveFillPricing):
 //   - pricing engine off: GroupSymbolConfig.spreadMarkup, else BrokerSymbol.spreadMarkup (resolveSymbolPricing);
-//   - pricing engine on: AccountSymbolConfig > AccountTypeSymbolConfig > AccountType > GroupSymbolConfig > BrokerSymbol,
+//   - pricing engine on: AccountSymbolConfig > GroupSymbolConfig > BrokerSymbol (D4: no account-type level),
 //     target-total-spread mode included (resolvePricingV2 + resolveEffectiveSpreadMarkup);
 //   - the broker's coverage account (a COVERAGE group) is always raw: its legs mirror the real market, never the
 //     broker's own markup (lib/coverage.ts).
@@ -82,7 +82,7 @@ export async function loadAskRules(db: Db, pairs: AskRuleKey[]): Promise<AskRule
   const symbolIds = [...new Set(pairs.map((p) => p.symbolId))];
 
   const [accounts, symbols] = await Promise.all([
-    db.account.findMany({ where: { id: { in: accountIds } }, select: { id: true, brokerId: true, groupId: true, accountTypeId: true, group: { select: { category: true } } } }),
+    db.account.findMany({ where: { id: { in: accountIds } }, select: { id: true, brokerId: true, groupId: true, group: { select: { category: true } } } }),
     db.symbol.findMany({ where: { id: { in: symbolIds } }, select: { id: true, digits: true } }),
   ]);
   const brokerIds = [...new Set(accounts.map((a) => a.brokerId))];
@@ -94,12 +94,9 @@ export async function loadAskRules(db: Db, pairs: AskRuleKey[]): Promise<AskRule
   ]);
   const brokerById = new Map(brokers.map((b) => [b.id, b]));
   const engineAccounts = accounts.filter((a) => brokerById.get(a.brokerId)?.pricingEngineEnabled);
-  const typeIds = [...new Set(engineAccounts.map((a) => a.accountTypeId).filter((t): t is string => t != null))];
-  const [types, typeConfigs, accountConfigs] = engineAccounts.length === 0
-    ? [[], [], []]
+  const [accountConfigs] = engineAccounts.length === 0
+    ? [[]]
     : await Promise.all([
-        typeIds.length ? db.accountType.findMany({ where: { id: { in: typeIds } }, select: { id: true, spreadMarkup: true, commissionPerLot: true, swapLong: true, swapShort: true, swapFree: true } }) : Promise.resolve([]),
-        typeIds.length ? db.accountTypeSymbolConfig.findMany({ where: { accountTypeId: { in: typeIds }, symbolId: { in: symbolIds } }, select: { accountTypeId: true, symbolId: true, spreadMarkup: true, targetTotalSpreadPips: true, commissionPerLot: true, swapLong: true, swapShort: true } }) : Promise.resolve([]),
         db.accountSymbolConfig.findMany({ where: { accountId: { in: engineAccounts.map((a) => a.id) }, symbolId: { in: symbolIds } }, select: { accountId: true, symbolId: true, spreadMarkup: true, targetTotalSpreadPips: true, commissionPerLot: true, swapLong: true, swapShort: true } }),
       ]);
 
@@ -107,8 +104,6 @@ export async function loadAskRules(db: Db, pairs: AskRuleKey[]): Promise<AskRule
   const digitsBySymbol = new Map(symbols.map((s) => [s.id, s.digits]));
   const brokerSymbolBy = new Map(brokerSymbols.map((b) => [`${b.brokerId}|${b.symbolId}`, b]));
   const groupConfigBy = new Map(groupConfigs.map((c) => [`${c.groupId}|${c.symbolId}`, c]));
-  const typeById = new Map(types.map((t) => [t.id, t]));
-  const typeConfigBy = new Map(typeConfigs.map((c) => [`${c.accountTypeId}|${c.symbolId}`, c]));
   const accountConfigBy = new Map(accountConfigs.map((c) => [`${c.accountId}|${c.symbolId}`, c]));
 
   for (const { accountId, symbolId } of pairs) {
@@ -130,8 +125,6 @@ export async function loadAskRules(db: Db, pairs: AskRuleKey[]): Promise<AskRule
     }
     const resolved = resolvePricingV2({
       accountSymbolConfig: accountConfigBy.get(`${accountId}|${symbolId}`) ?? null,
-      accountTypeSymbolConfig: a.accountTypeId ? (typeConfigBy.get(`${a.accountTypeId}|${symbolId}`) ?? null) : null,
-      accountType: a.accountTypeId ? (typeById.get(a.accountTypeId) ?? null) : null,
       groupSymbolConfig: gsc,
       brokerSpreadMarkup: bs.spreadMarkup,
       brokerCommissionPerLot: bs.commissionPerLot,

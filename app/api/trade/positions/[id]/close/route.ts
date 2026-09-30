@@ -6,7 +6,7 @@ import { closePositionInTx } from "@/lib/position-close";
 import { publishTradingEvent } from "@/lib/nats";
 import { recordDealerActivity } from "@/lib/dealer-activity";
 import { isDealingManagedAccount, resolveWantsDealingQueue } from "@/lib/dealing-routing";
-import { checkLotStep, checkPriceFreshness, checkSlippage, checkTradingSession, computeNextSessionOpen, evaluateLiveMarketPrice, effectiveMaxSlippagePips, isValidMaxSlippageInput } from "@/lib/risk";
+import { checkLotStep, checkPriceFreshness, checkSlippage, checkTradingSession, computeNextSessionOpen, evaluateLiveMarketPrice, effectiveMaxSlippagePips, isValidMaxSlippageInput, traderSlippagePoints, brokerSlippageCapPoints } from "@/lib/risk";
 import { accountClosePrice, loadAccountAskRules } from "@/lib/ask-markup";
 import * as mirror from "@/lib/mirror";
 import * as coverage from "@/lib/coverage";
@@ -67,6 +67,10 @@ async function handleClose(request: NextRequest, params: Promise<{ id: string }>
   if (!isValidMaxSlippageInput(maxSlippagePips)) {
     return NextResponse.json({ error: "maxSlippagePips must be a non-negative number or \"unlimited\"" }, { status: 400 });
   }
+  // owner 2026-09-30: the same value may come in points (maxSlippagePoints wins when both are sent)
+  if (!isValidMaxSlippageInput(body?.maxSlippagePoints != null ? String(body.maxSlippagePoints) : null)) {
+    return NextResponse.json({ error: "maxSlippagePoints must be a non-negative number or \"unlimited\"" }, { status: 400 });
+  }
   // Informational only, doesn't change validation/execution -- flags this
   // close for the STM_BULK_CLOSE audit trail. See
   // components/webtrader/SmartTradeManager.tsx's runBulk/partialCloseOne/
@@ -86,7 +90,7 @@ async function handleClose(request: NextRequest, params: Promise<{ id: string }>
     prisma.group.findFirst({ where: { accounts: { some: { positions: { some: { id } } } } }, select: { groupType: true, dealingMode: true, forceDealingMode: true, category: true } }),
     prisma.brokerSymbol.findFirst({ where: { brokerId: session.brokerId, symbol: bySymbolOfPosition } }),
     prisma.tradingSession.findMany({ where: { brokerSymbol: { brokerId: session.brokerId, symbol: bySymbolOfPosition } } }),
-    prisma.broker.findUniqueOrThrow({ where: { id: session.brokerId }, select: { dealingModeAt: true, dealingDeskAutoFillAt: true, defaultMaxSlippagePips: true } }),
+    prisma.broker.findUniqueOrThrow({ where: { id: session.brokerId }, select: { dealingModeAt: true, dealingDeskAutoFillAt: true, defaultMaxSlippagePips: true, defaultMaxSlippagePoints: true } }),
     // S4 (docs/market-data.md §8): the engine's own in-memory tick when MARKET_DATA_PRICES=vps, Neon otherwise
     symbolRead.then((s) => (s ? getLivePriceRow(s.name) : null)),
     // the account's ask rule for this symbol (lib/ask-markup.ts): a SELL closes at the marked-up ask a BUY opens at
@@ -241,8 +245,9 @@ async function handleClose(request: NextRequest, params: Promise<{ id: string }>
   // and the broker's cap (lib/risk.ts effectiveMaxSlippagePips), the same rule as the open path.
   // A SELL's reference may be the raw ask (a client from before the account-ask close, 2026-09-26) or the account's ask:
   // the markup is not market movement, so the close is refused only when the reference is off BOTH.
-  const maxSlip = effectiveMaxSlippagePips(maxSlippagePips, broker.defaultMaxSlippagePips);
-  const slippageTo = (fill: Prisma.Decimal) => checkSlippage({ clientReferencePrice, serverFillPrice: fill, maxSlippagePips: maxSlip, digits: position.symbol.digits });
+  // in POINTS (owner 2026-09-30): the smaller of the trader's value and the broker's cap
+  const maxSlip = effectiveMaxSlippagePips(traderSlippagePoints(body, position.symbol.digits), brokerSlippageCapPoints(broker));
+  const slippageTo = (fill: Prisma.Decimal) => checkSlippage({ clientReferencePrice, serverFillPrice: fill, maxSlippagePoints: maxSlip, digits: position.symbol.digits });
   const offAccountAsk = slippageTo(closePrice);
   const slippageError = offAccountAsk && position.side === "SELL" && !closePrice.equals(livePrice.ask) && !slippageTo(livePrice.ask) ? null : offAccountAsk;
   if (slippageError) {

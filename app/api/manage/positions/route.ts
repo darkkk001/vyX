@@ -368,7 +368,6 @@ export async function POST(request: NextRequest) {
   const pricing = await resolveFillPricing(prisma, {
     pricingEngineEnabled: broker.pricingEngineEnabled,
     accountId: account.id,
-    accountTypeId: account.accountTypeId,
     groupId: account.groupId,
     symbolId: brokerSymbol.symbolId,
     brokerSpreadMarkup: brokerSymbol.spreadMarkup,

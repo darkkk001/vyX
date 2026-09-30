@@ -3,19 +3,17 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { resolvePricingV2, resolveEffectiveSpreadMarkup, resolveSymbolPricingV2, resolveFillPricing, type SymbolConfigLevel, type AccountTypeFlatLevel } from "@/lib/pricing-engine";
+import { resolvePricingV2, resolveEffectiveSpreadMarkup, resolveSymbolPricingV2, resolveFillPricing, type SymbolConfigLevel } from "@/lib/pricing-engine";
 
 // Phase 2 pricing engine (docs/pricing-engine.md) -- exhaustive precedence
 // coverage for resolvePricingV2 (pure, no DB) plus a handful of DB-backed
 // tests proving resolveSymbolPricingV2's queries actually wire up to real
 // Prisma models. Real numbers throughout, not placeholders, so a wrong
 // fallthrough shows up as a wrong number, not just a wrong branch taken.
+// D4 (owner: the group is the pricing tier): the account-type levels are gone -- Account > Group > broker.
 
 const D = (v: string | number) => new Prisma.Decimal(v);
 
-// Base params with every override level empty (null) -- every test starts
-// here and fills in only the levels it cares about, so each test's
-// intent (which level is being exercised) stays visible at a glance.
 const BROKER_BASE = {
   brokerSpreadMarkup: D("3"),
   brokerCommissionPerLot: D("7"),
@@ -24,13 +22,10 @@ const BROKER_BASE = {
 };
 
 const EMPTY_SYMBOL_LEVEL: SymbolConfigLevel = null;
-const EMPTY_TYPE_LEVEL: AccountTypeFlatLevel = null;
 
 function baseParams(overrides: Partial<Parameters<typeof resolvePricingV2>[0]> = {}) {
   return {
     accountSymbolConfig: EMPTY_SYMBOL_LEVEL,
-    accountTypeSymbolConfig: EMPTY_SYMBOL_LEVEL,
-    accountType: EMPTY_TYPE_LEVEL,
     groupSymbolConfig: EMPTY_SYMBOL_LEVEL,
     accountSwapFree: null,
     groupSwapFree: null,
@@ -50,17 +45,6 @@ function symbolLevel(fields: Partial<NonNullable<SymbolConfigLevel>>): NonNullab
   };
 }
 
-function typeLevel(fields: Partial<NonNullable<AccountTypeFlatLevel>>): NonNullable<AccountTypeFlatLevel> {
-  return {
-    spreadMarkup: null,
-    commissionPerLot: null,
-    swapLong: null,
-    swapShort: null,
-    swapFree: null,
-    ...fields,
-  };
-}
-
 describe("resolvePricingV2 -- no overrides anywhere", () => {
   it("falls all the way through to the broker/symbol base for every field", () => {
     const r = resolvePricingV2(baseParams());
@@ -72,13 +56,11 @@ describe("resolvePricingV2 -- no overrides anywhere", () => {
   });
 });
 
-describe("resolvePricingV2 -- account override wins over every other level", () => {
-  it("account symbol config beats type, group, and base for all 4 numeric fields at once", () => {
+describe("resolvePricingV2 -- account > group > broker", () => {
+  it("account symbol config beats group and base for all 4 numeric fields at once", () => {
     const r = resolvePricingV2(
       baseParams({
         accountSymbolConfig: symbolLevel({ spreadMarkup: D("0.1"), commissionPerLot: D("0"), swapLong: D("1"), swapShort: D("1") }),
-        accountTypeSymbolConfig: symbolLevel({ spreadMarkup: D("1"), commissionPerLot: D("5"), swapLong: D("-9"), swapShort: D("-9") }),
-        accountType: typeLevel({ spreadMarkup: D("2"), commissionPerLot: D("6"), swapLong: D("-8"), swapShort: D("-8") }),
         groupSymbolConfig: symbolLevel({ spreadMarkup: D("0.5"), commissionPerLot: D("2"), swapLong: D("-7"), swapShort: D("-7") }),
       })
     );
@@ -87,33 +69,8 @@ describe("resolvePricingV2 -- account override wins over every other level", () 
     expect(r.swapLong.toString()).toBe("1");
     expect(r.swapShort.toString()).toBe("1");
   });
-});
 
-describe("resolvePricingV2 -- falls through one level at a time", () => {
-  it("no account override -> uses AccountTypeSymbolConfig (per-symbol type pricing)", () => {
-    const r = resolvePricingV2(
-      baseParams({
-        accountTypeSymbolConfig: symbolLevel({ spreadMarkup: D("1.2"), commissionPerLot: D("4") }),
-        accountType: typeLevel({ spreadMarkup: D("9"), commissionPerLot: D("9") }), // must be ignored -- per-symbol type config outranks flat type default
-        groupSymbolConfig: symbolLevel({ spreadMarkup: D("0.5"), commissionPerLot: D("2") }),
-      })
-    );
-    expect(r.spread).toEqual({ mode: "markup", spreadMarkup: D("1.2") });
-    expect(r.commissionPerLot.toString()).toBe("4");
-  });
-
-  it("no account or per-symbol-type override -> uses AccountType's flat type-wide default", () => {
-    const r = resolvePricingV2(
-      baseParams({
-        accountType: typeLevel({ spreadMarkup: D("1.75"), commissionPerLot: D("5") }),
-        groupSymbolConfig: symbolLevel({ spreadMarkup: D("0.5"), commissionPerLot: D("2") }),
-      })
-    );
-    expect(r.spread).toEqual({ mode: "markup", spreadMarkup: D("1.75") });
-    expect(r.commissionPerLot.toString()).toBe("5");
-  });
-
-  it("no account or type override at all -> uses GroupSymbolConfig", () => {
+  it("no account override -> uses GroupSymbolConfig", () => {
     const r = resolvePricingV2(baseParams({ groupSymbolConfig: symbolLevel({ spreadMarkup: D("0.5"), commissionPerLot: D("2") }) }));
     expect(r.spread).toEqual({ mode: "markup", spreadMarkup: D("0.5") });
     expect(r.commissionPerLot.toString()).toBe("2");
@@ -124,27 +81,32 @@ describe("resolvePricingV2 -- falls through one level at a time", () => {
     expect(r.spread).toEqual({ mode: "markup", spreadMarkup: D("3") });
     expect(r.commissionPerLot.toString()).toBe("7");
   });
+
+  it("D4: the resolver has no account-type input at all (an old caller passing one is ignored)", () => {
+    const withStray = { ...baseParams({ groupSymbolConfig: symbolLevel({ spreadMarkup: D("0.5") }) }), accountType: { spreadMarkup: D("9"), commissionPerLot: D("9"), swapLong: D("9"), swapShort: D("9"), swapFree: true } };
+    const r = resolvePricingV2(withStray as Parameters<typeof resolvePricingV2>[0]);
+    expect({ spread: r.spread, commission: r.commissionPerLot.toString(), swapFree: r.swapFree }).toEqual({ spread: { mode: "markup", spreadMarkup: D("0.5") }, commission: "7", swapFree: false });
+  });
 });
 
 describe("resolvePricingV2 -- per-field independence (the bug this migration fixed)", () => {
-  it("account sets spread only -> commission/swap fall through independently to type/group, not forced to 0", () => {
+  it("account sets spread only -> commission/swap fall through independently to group/base, not forced to 0", () => {
     const r = resolvePricingV2(
       baseParams({
-        accountSymbolConfig: symbolLevel({ spreadMarkup: D("0.2") }), // commissionPerLot/swapLong/swapShort left null
-        accountType: typeLevel({ commissionPerLot: D("4") }), // type sets commission only
-        groupSymbolConfig: symbolLevel({ swapLong: D("-3"), swapShort: D("-3") }), // group sets swap only
+        accountSymbolConfig: symbolLevel({ spreadMarkup: D("0.2") }),
+        groupSymbolConfig: symbolLevel({ swapLong: D("-3"), swapShort: D("-3") }),
       })
     );
-    expect(r.spread).toEqual({ mode: "markup", spreadMarkup: D("0.2") }); // from account
-    expect(r.commissionPerLot.toString()).toBe("4"); // from type, NOT clobbered to 0 by the account row existing
-    expect(r.swapLong.toString()).toBe("-3"); // from group, NOT clobbered to 0 by account or type rows existing
+    expect(r.spread).toEqual({ mode: "markup", spreadMarkup: D("0.2") });
+    expect(r.commissionPerLot.toString()).toBe("7");
+    expect(r.swapLong.toString()).toBe("-3");
     expect(r.swapShort.toString()).toBe("-3");
   });
 
   it("a GroupSymbolConfig row overriding only spread no longer clobbers commission to 0 (the pre-migration bug)", () => {
     const r = resolvePricingV2(baseParams({ groupSymbolConfig: symbolLevel({ spreadMarkup: D("1") }) }));
     expect(r.spread).toEqual({ mode: "markup", spreadMarkup: D("1") });
-    expect(r.commissionPerLot.toString()).toBe("7"); // broker base, not 0
+    expect(r.commissionPerLot.toString()).toBe("7");
   });
 
   it("commission set to a real zero (not null) is honored as an explicit zero, not treated as unset", () => {
@@ -153,40 +115,24 @@ describe("resolvePricingV2 -- per-field independence (the bug this migration fix
   });
 });
 
-describe("resolvePricingV2 -- swapFree resolution (account > type > group > false)", () => {
-  it("account explicit true wins even when type and group are both false", () => {
-    const r = resolvePricingV2(baseParams({ accountSwapFree: true, accountType: typeLevel({ swapFree: false }), groupSwapFree: false }));
-    expect(r.swapFree).toBe(true);
+describe("resolvePricingV2 -- swapFree resolution (account > group > false)", () => {
+  it("account explicit true wins when the group is false", () => {
+    expect(resolvePricingV2(baseParams({ accountSwapFree: true, groupSwapFree: false })).swapFree).toBe(true);
   });
-
-  it("account explicit false wins even when type and group are both true (the one-off exception case)", () => {
-    const r = resolvePricingV2(baseParams({ accountSwapFree: false, accountType: typeLevel({ swapFree: true }), groupSwapFree: true }));
-    expect(r.swapFree).toBe(false);
+  it("account explicit false wins when the group is true (the one-off exception case)", () => {
+    expect(resolvePricingV2(baseParams({ accountSwapFree: false, groupSwapFree: true })).swapFree).toBe(false);
   });
-
-  it("account unset -> type wins over group", () => {
-    const r = resolvePricingV2(baseParams({ accountSwapFree: null, accountType: typeLevel({ swapFree: true }), groupSwapFree: false }));
-    expect(r.swapFree).toBe(true);
+  it("account unset -> the group decides", () => {
+    expect(resolvePricingV2(baseParams({ accountSwapFree: null, groupSwapFree: true })).swapFree).toBe(true);
+    expect(resolvePricingV2(baseParams({ accountSwapFree: null, groupSwapFree: false })).swapFree).toBe(false);
   });
-
-  it("account and type unset -> group wins", () => {
-    const r = resolvePricingV2(baseParams({ accountSwapFree: null, accountType: typeLevel({ swapFree: null }), groupSwapFree: true }));
-    expect(r.swapFree).toBe(true);
-  });
-
   it("nothing set anywhere -> defaults to false (swap charged normally)", () => {
-    const r = resolvePricingV2(baseParams());
-    expect(r.swapFree).toBe(false);
-  });
-
-  it("no accountType at all (null) is treated the same as an unset accountType.swapFree", () => {
-    const r = resolvePricingV2(baseParams({ accountType: null, groupSwapFree: true }));
-    expect(r.swapFree).toBe(true);
+    expect(resolvePricingV2(baseParams()).swapFree).toBe(false);
   });
 });
 
 describe("resolvePricingV2 -- target-total-spread mode", () => {
-  it("account-level target beats a type/group markup", () => {
+  it("account-level target beats a group markup", () => {
     const r = resolvePricingV2(
       baseParams({
         accountSymbolConfig: symbolLevel({ targetTotalSpreadPips: D("2") }),
@@ -196,44 +142,28 @@ describe("resolvePricingV2 -- target-total-spread mode", () => {
     expect(r.spread).toEqual({ mode: "target", targetTotalSpreadPips: D("2"), fallbackSpreadMarkup: null });
   });
 
-  it("type-level (per-symbol) target is honored when account sets nothing", () => {
-    const r = resolvePricingV2(baseParams({ accountTypeSymbolConfig: symbolLevel({ targetTotalSpreadPips: D("1.5") }) }));
-    expect(r.spread).toEqual({ mode: "target", targetTotalSpreadPips: D("1.5"), fallbackSpreadMarkup: null });
-  });
-
-  it("group-level target is honored when neither account nor type set anything", () => {
+  it("group-level target is honored when the account sets nothing", () => {
     const r = resolvePricingV2(baseParams({ groupSymbolConfig: symbolLevel({ targetTotalSpreadPips: D("0.8") }) }));
     expect(r.spread).toEqual({ mode: "target", targetTotalSpreadPips: D("0.8"), fallbackSpreadMarkup: null });
   });
 
   // 2026-09-07 Q2: spreadMarkup and targetTotalSpreadPips are no longer
   // mutually exclusive per level -- a level with BOTH set wins the whole
-  // spread decision (same "first level with either field set" rule as
-  // before) and target is the primary mode, with that level's own
+  // spread decision and target is the primary mode, with that level's own
   // spreadMarkup riding along as the no-live-base fallback (Q1).
   it("a level with both set: target is primary, its own spreadMarkup becomes the fallback, not a competing value", () => {
     const r = resolvePricingV2(baseParams({ accountSymbolConfig: symbolLevel({ spreadMarkup: D("0.3"), targetTotalSpreadPips: D("9") }) }));
     expect(r.spread).toEqual({ mode: "target", targetTotalSpreadPips: D("9"), fallbackSpreadMarkup: D("0.3") });
   });
 
-  it("account-level plain markup beats a type-level target (precedence is by level, not by mode)", () => {
+  it("account-level plain markup beats a group-level target (precedence is by level, not by mode)", () => {
     const r = resolvePricingV2(
       baseParams({
         accountSymbolConfig: symbolLevel({ spreadMarkup: D("0.4") }),
-        accountTypeSymbolConfig: symbolLevel({ targetTotalSpreadPips: D("2") }),
+        groupSymbolConfig: symbolLevel({ targetTotalSpreadPips: D("2") }),
       })
     );
     expect(r.spread).toEqual({ mode: "markup", spreadMarkup: D("0.4") });
-  });
-
-  it("type-level target beats a group-level markup", () => {
-    const r = resolvePricingV2(
-      baseParams({
-        accountTypeSymbolConfig: symbolLevel({ targetTotalSpreadPips: D("1.5") }),
-        groupSymbolConfig: symbolLevel({ spreadMarkup: D("5") }),
-      })
-    );
-    expect(r.spread).toEqual({ mode: "target", targetTotalSpreadPips: D("1.5"), fallbackSpreadMarkup: null });
   });
 });
 
@@ -358,7 +288,6 @@ describe("resolveSymbolPricingV2 (live DB, rolled back)", () => {
       const { symbol, account, accountType } = await makeFixture(tx);
       const result = await resolveSymbolPricingV2(tx, {
         accountId: account.id,
-        accountTypeId: accountType.id,
         groupId: account.groupId,
         symbolId: symbol.id,
         brokerSpreadMarkup: D("3"),
@@ -381,7 +310,6 @@ describe("resolveSymbolPricingV2 (live DB, rolled back)", () => {
 
       const result = await resolveSymbolPricingV2(tx, {
         accountId: account.id,
-        accountTypeId: accountType.id,
         groupId: account.groupId,
         symbolId: symbol.id,
         brokerSpreadMarkup: D("3"),
@@ -394,16 +322,34 @@ describe("resolveSymbolPricingV2 (live DB, rolled back)", () => {
     });
   });
 
-  it("Account.swapFree=true overrides an explicit AccountType.swapFree=false", async () => {
+  it("D4: the account's type is never read -- a type swapFree=true does not make the account swap-free (group false)", async () => {
     if (!dbReachable) return;
     await withRollback(async (tx) => {
       const { symbol, account, accountType } = await makeFixture(tx);
-      await tx.accountType.update({ where: { id: accountType.id }, data: { swapFree: false } });
+      await tx.accountType.update({ where: { id: accountType.id }, data: { swapFree: true, spreadMarkup: D("0.05"), commissionPerLot: D("0") } });
+      await tx.group.update({ where: { id: account.groupId! }, data: { swapFree: false } });
+
+      const result = await resolveSymbolPricingV2(tx, {
+        accountId: account.id,
+        groupId: account.groupId,
+        symbolId: symbol.id,
+        brokerSpreadMarkup: D("3"),
+        brokerCommissionPerLot: D("7"),
+        brokerSwapLong: D("-2"),
+        brokerSwapShort: D("-2"),
+      });
+      expect({ swapFree: result.swapFree, spread: result.spread, commission: result.commissionPerLot.toString() }).toEqual({ swapFree: false, spread: { mode: "markup", spreadMarkup: D("3") }, commission: "7" });
+    });
+  });
+
+  it("Account.swapFree=true wins over the group", async () => {
+    if (!dbReachable) return;
+    await withRollback(async (tx) => {
+      const { symbol, account } = await makeFixture(tx);
       await tx.account.update({ where: { id: account.id }, data: { swapFree: true } });
 
       const result = await resolveSymbolPricingV2(tx, {
         accountId: account.id,
-        accountTypeId: accountType.id,
         groupId: account.groupId,
         symbolId: symbol.id,
         brokerSpreadMarkup: D("3"),
@@ -449,7 +395,6 @@ describe("resolveFillPricing -- the Stage 4 flag-gated shim (live DB, rolled bac
       const result = await resolveFillPricing(tx, {
         pricingEngineEnabled: false,
         accountId: account.id,
-        accountTypeId: accountType.id,
         groupId: account.groupId,
         symbolId: symbol.id,
         brokerSpreadMarkup: D("3"),
@@ -464,18 +409,36 @@ describe("resolveFillPricing -- the Stage 4 flag-gated shim (live DB, rolled bac
     });
   });
 
-  it("flag ON picks up the same AccountType override and collapses target mode against the passed live base", async () => {
+  it("D4: flag ON ignores an AccountType / AccountTypeSymbolConfig override entirely (broker base wins)", async () => {
     if (!dbReachable) return;
     await withRollback(async (tx) => {
       const { symbol, account, accountType } = await makeFixture(tx);
-      await tx.accountTypeSymbolConfig.create({
-        data: { accountTypeId: accountType.id, symbolId: symbol.id, targetTotalSpreadPips: D("2") },
+      await tx.accountType.update({ where: { id: accountType.id }, data: { spreadMarkup: D("0.05"), commissionPerLot: D("0") } });
+      await tx.accountTypeSymbolConfig.create({ data: { accountTypeId: accountType.id, symbolId: symbol.id, targetTotalSpreadPips: D("2") } });
+      const result = await resolveFillPricing(tx, {
+        pricingEngineEnabled: true,
+        accountId: account.id,
+        groupId: account.groupId,
+        symbolId: symbol.id,
+        brokerSpreadMarkup: D("3"),
+        brokerCommissionPerLot: D("7"),
+        brokerSwapLong: D("-2"),
+        brokerSwapShort: D("-2"),
+        liveBaseSpreadPips: "1.2",
       });
+      expect({ spread: result.spreadMarkup.toString(), commission: result.commissionPerLot.toString() }).toEqual({ spread: "3", commission: "7" });
+    });
+  });
+
+  it("flag ON picks up a GROUP per-symbol target and collapses it against the passed live base", async () => {
+    if (!dbReachable) return;
+    await withRollback(async (tx) => {
+      const { symbol, account, group } = await makeFixture(tx);
+      await tx.groupSymbolConfig.create({ data: { groupId: group.id, symbolId: symbol.id, targetTotalSpreadPips: D("2") } });
 
       const result = await resolveFillPricing(tx, {
         pricingEngineEnabled: true,
         accountId: account.id,
-        accountTypeId: accountType.id,
         groupId: account.groupId,
         symbolId: symbol.id,
         brokerSpreadMarkup: D("3"),
@@ -492,15 +455,12 @@ describe("resolveFillPricing -- the Stage 4 flag-gated shim (live DB, rolled bac
   it("flag ON with no live base available still fills (Q1) -- falls back to 0 with no fallback markup configured", async () => {
     if (!dbReachable) return;
     await withRollback(async (tx) => {
-      const { symbol, account, accountType } = await makeFixture(tx);
-      await tx.accountTypeSymbolConfig.create({
-        data: { accountTypeId: accountType.id, symbolId: symbol.id, targetTotalSpreadPips: D("2") },
-      });
+      const { symbol, account, group } = await makeFixture(tx);
+      await tx.groupSymbolConfig.create({ data: { groupId: group.id, symbolId: symbol.id, targetTotalSpreadPips: D("2") } });
 
       const result = await resolveFillPricing(tx, {
         pricingEngineEnabled: true,
         accountId: account.id,
-        accountTypeId: accountType.id,
         groupId: account.groupId,
         symbolId: symbol.id,
         brokerSpreadMarkup: D("3"),

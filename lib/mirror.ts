@@ -388,7 +388,6 @@ async function mirrorFillForRule(db: Db, rule: MirrorRule, source: MirrorSourceP
     const pricing = await resolveFillPricing(db, {
       pricingEngineEnabled: broker.pricingEngineEnabled,
       accountId: targetAccount.id,
-      accountTypeId: targetAccount.accountTypeId,
       groupId: targetAccount.groupId,
       symbolId: source.symbolId,
       brokerSpreadMarkup: brokerSymbol.spreadMarkup,

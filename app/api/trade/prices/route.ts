@@ -30,7 +30,7 @@ export async function GET(request: Request) {
   }
 
   const [account, broker] = await Promise.all([
-    prisma.account.findUnique({ where: { id: session.accountId }, select: { groupId: true, accountTypeId: true, currency: true } }),
+    prisma.account.findUnique({ where: { id: session.accountId }, select: { groupId: true, currency: true } }),
     prisma.broker.findUnique({ where: { id: session.brokerId }, select: { pricingEngineEnabled: true } }),
   ]);
 
@@ -100,13 +100,11 @@ export async function GET(request: Request) {
   // that a real fill would use -- previously this route always quoted the
   // old group-only markup regardless of the flag, so a flag-on broker's
   // trader could see one number and fill at another. Batched exactly like
-  // the flag-off path above (accountType flat + AccountTypeSymbolConfig +
-  // AccountSymbolConfig fetched ONCE for every symbol, never per-symbol)
+  // the flag-off path above (AccountSymbolConfig + the group's own configs fetched ONCE for every symbol, never
+  // per-symbol; D4: no account-type level)
   // -- pure resolvePricingV2 is then called in-memory per symbol, no
   // further I/O, so this stays a small constant number of queries
   // regardless of how many symbols the broker carries.
-  let accountTypeFlat: { spreadMarkup: Prisma.Decimal | null; commissionPerLot: Prisma.Decimal | null; swapLong: Prisma.Decimal | null; swapShort: Prisma.Decimal | null; swapFree: boolean | null } | null = null;
-  let accountTypeSymbolConfigBySymbolId = new Map<string, Awaited<ReturnType<typeof prisma.accountTypeSymbolConfig.findMany>>[number]>();
   let accountSymbolConfigBySymbolId = new Map<string, Awaited<ReturnType<typeof prisma.accountSymbolConfig.findMany>>[number]>();
   // Full-shape group overrides (targetTotalSpreadPips included), fetched
   // separately from the narrowed `overrides` above -- only reachable when
@@ -116,18 +114,12 @@ export async function GET(request: Request) {
   // flag is meant to be verified with before ever being flipped on).
   let groupSymbolConfigBySymbolId = new Map<string, Awaited<ReturnType<typeof prisma.groupSymbolConfig.findMany>>[number]>();
   if (broker?.pricingEngineEnabled) {
-    const [typeFlat, typeSymbolConfigs, accountSymbolConfigs, groupSymbolConfigsFull] = await Promise.all([
-      account?.accountTypeId ? prisma.accountType.findUnique({ where: { id: account.accountTypeId } }) : Promise.resolve(null),
-      account?.accountTypeId
-        ? prisma.accountTypeSymbolConfig.findMany({ where: { accountTypeId: account.accountTypeId, symbolId: { in: symbolIds } } })
-        : Promise.resolve([]),
+    const [accountSymbolConfigs, groupSymbolConfigsFull] = await Promise.all([
       prisma.accountSymbolConfig.findMany({ where: { accountId: session.accountId, symbolId: { in: symbolIds } } }),
       account?.groupId
         ? prisma.groupSymbolConfig.findMany({ where: { groupId: account.groupId, symbolId: { in: symbolIds } } })
         : Promise.resolve([]),
     ]);
-    accountTypeFlat = typeFlat;
-    accountTypeSymbolConfigBySymbolId = new Map(typeSymbolConfigs.map((c) => [c.symbolId, c]));
     accountSymbolConfigBySymbolId = new Map(accountSymbolConfigs.map((c) => [c.symbolId, c]));
     groupSymbolConfigBySymbolId = new Map(groupSymbolConfigsFull.map((c) => [c.symbolId, c]));
   }
@@ -142,8 +134,6 @@ export async function GET(request: Request) {
     if (broker?.pricingEngineEnabled) {
       const resolved = resolvePricingV2({
         accountSymbolConfig: accountSymbolConfigBySymbolId.get(bs.symbolId) ?? null,
-        accountTypeSymbolConfig: accountTypeSymbolConfigBySymbolId.get(bs.symbolId) ?? null,
-        accountType: accountTypeFlat,
         // Full-shape row (targetTotalSpreadPips included), not the
         // narrowed `override` above -- see groupSymbolConfigBySymbolId's
         // own comment.

@@ -455,6 +455,32 @@ export function checkPriceFreshness(livePrice: { tickAt: Date } | null): string 
 // the trigger price it saw, and this tolerance is how far the live price may be from it before the fill is
 // refused. Deliberately unchanged by the market-execution default above.
 export const PENDING_TRIGGER_MAX_SLIPPAGE_PIPS = "5";
+// The same tolerance in points (5 pips = 50 points on every symbol with 1+ digits) -- what the trigger path uses.
+export const PENDING_TRIGGER_MAX_SLIPPAGE_POINTS = "50";
+
+// ---- slippage in POINTS (owner 2026-09-30) ----
+// A point is 10^-digits (the price's last digit); the older pip is 10^-(digits-1) (lib/group-pricing.ts pipSize, which
+// floors at 1 for a 0-digit symbol). So one pip = 10 points for digits >= 1, and 1 point for digits = 0.
+export function pointsPerPip(digits: number): number {
+  return digits >= 1 ? 10 : 1;
+}
+/** A trader's maxSlippagePips value ("unlimited" / number / nothing) in points for a symbol with `digits`. */
+export function slippagePipsToPoints(v: string | null | undefined, digits: number): string | null {
+  if (v == null || v === "" || v === "unlimited") return v ?? null;
+  return new Prisma.Decimal(v).mul(pointsPerPip(digits)).toString();
+}
+/** The broker's cap in points: the points column, else (before the backfill) the old pips column x 10. */
+export function brokerSlippageCapPoints(broker: { defaultMaxSlippagePoints?: Prisma.Decimal | null; defaultMaxSlippagePips?: Prisma.Decimal | null }): Prisma.Decimal | null {
+  if (broker.defaultMaxSlippagePoints != null) return new Prisma.Decimal(broker.defaultMaxSlippagePoints);
+  if (broker.defaultMaxSlippagePips != null) return new Prisma.Decimal(broker.defaultMaxSlippagePips).mul(10);
+  return null;
+}
+/** The request's trader value in points: `maxSlippagePoints` when sent, else `maxSlippagePips` converted. */
+export function traderSlippagePoints(body: { maxSlippagePoints?: unknown; maxSlippagePips?: unknown } | null, digits: number): string | null {
+  if (body?.maxSlippagePoints != null) return String(body.maxSlippagePoints);
+  if (body?.maxSlippagePips != null) return slippagePipsToPoints(String(body.maxSlippagePips), digits);
+  return null;
+}
 
 // Owner decision (2026-09-26, Phase 2 batch 3): the EFFECTIVE max slippage is the smaller of the trader's own value
 // and the broker's cap (Broker.defaultMaxSlippagePips) -- the broker's number is a ceiling a trader can tighten but
@@ -489,9 +515,17 @@ export function effectiveMaxSlippagePips(
 export function checkSlippage(params: {
   clientReferencePrice: Prisma.Decimal | string;
   serverFillPrice: Prisma.Decimal;
-  maxSlippagePips: Prisma.Decimal | number | string | null | undefined;
+  maxSlippagePips?: Prisma.Decimal | number | string | null | undefined;
+  // owner 2026-09-30: the tolerance in POINTS (10^-digits each); wins over maxSlippagePips when given
+  maxSlippagePoints?: Prisma.Decimal | number | string | null | undefined;
   digits: number;
 }): string | null {
+  if (params.maxSlippagePoints !== undefined) {
+    if (params.maxSlippagePoints === "unlimited" || params.maxSlippagePoints == null) return null;
+    const tolerance = new Prisma.Decimal(params.maxSlippagePoints).mul(new Prisma.Decimal(10).pow(-params.digits));
+    const deviation = params.serverFillPrice.sub(new Prisma.Decimal(params.clientReferencePrice)).abs();
+    return deviation.gt(tolerance) ? "SLIPPAGE_EXCEEDED" : null;
+  }
   // Explicit client opt-out -- the native terminal's "M" / unlimited SLIPPAGE MAX
   // sends the literal "unlimited": the client accepts any fill price, so never reject.
   // This deliberately does NOT fall back to the broker default (that fallback is only

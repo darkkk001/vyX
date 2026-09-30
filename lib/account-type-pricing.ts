@@ -50,6 +50,13 @@ export function parseTypePricing(body: unknown, existing?: TypePricing): { error
     out[field] = d;
   }
   if (b.swapFree !== undefined) out.swapFree = typeof b.swapFree === "boolean" ? b.swapFree : null;
+  // D4 (owner 2026-09-30): the resolver no longer reads account-type pricing, so a value set here would silently do
+  // nothing. Refused instead; clearing a stored value (null / blank) stays allowed.
+  for (const field of [...DECIMAL_FIELDS, "swapFree"] as const) {
+    if (b[field] !== undefined && b[field] !== null && !(typeof b[field] === "string" && (b[field] as string).trim() === "")) {
+      return { error: "account types no longer carry pricing (D4: the group is the pricing tier), set it on the group" };
+    }
+  }
   return out;
 }
 

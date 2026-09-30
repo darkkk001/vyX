@@ -232,7 +232,6 @@ async function flushDealingQueueToMarket(
     const pricing = await resolveFillPricing(prisma, {
       pricingEngineEnabled: broker.pricingEngineEnabled,
       accountId: order.accountId,
-      accountTypeId: order.account.accountTypeId,
       groupId: order.account.groupId,
       symbolId: order.symbolId,
       brokerSpreadMarkup: brokerSymbol.spreadMarkup,

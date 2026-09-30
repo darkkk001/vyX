@@ -130,7 +130,6 @@ export async function runShadowPricingComparison(db: PrismaClient, brokerId: str
         }),
         resolveSymbolPricingV2(db, {
           accountId: account.id,
-          accountTypeId: account.accountTypeId,
           groupId: account.groupId,
           symbolId: bs.symbolId,
           brokerSpreadMarkup: bs.spreadMarkup,

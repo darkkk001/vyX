@@ -90,13 +90,13 @@ describe("GET /api/trade/prices -- flag consistency (live DB)", () => {
     expect(row.askMarkup).toBe("0.3");
   });
 
-  it("flag ON quotes the AccountType's own override, matching what a real fill would charge", async () => {
+  it("D4: flag ON ignores the AccountType override too and quotes the broker markup, matching a real fill", async () => {
     if (!dbReachable) return;
     const { broker, symbol, account } = await createFixture(true);
     const json = await getPrices(account.id, broker.id);
     const row = json.find((p: { symbol: string }) => p.symbol === symbol.name);
     expect(row).toBeTruthy();
-    // AccountType.spreadMarkup = 0.05 pips, pip size 0.1 -> 0.005
-    expect(row.askMarkup).toBe("0.005");
+    // broker spreadMarkup = 3 pips, pip size 0.1 -> 0.3 (the type's 0.05 is no longer read)
+    expect(row.askMarkup).toBe("0.3");
   });
 });

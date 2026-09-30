@@ -95,7 +95,6 @@ type DueRow = {
   side: "BUY" | "SELL";
   volume: Prisma.Decimal;
   groupId: string | null;
-  accountTypeId: string | null;
   accountSwapFree: boolean | null;
 };
 
@@ -135,7 +134,7 @@ export async function runSwapRollover(
 
   const due = await db.$queryRaw<DueRow[]>`
     SELECT p.id, p."brokerId", p."accountId", p."symbolId", p.side::text as side, p.volume,
-      a."groupId", a."accountTypeId", a."swapFree" as "accountSwapFree"
+      a."groupId", a."swapFree" as "accountSwapFree"
     FROM "Position" p
     JOIN "Account" a ON a.id = p."accountId"
     WHERE p.status = 'OPEN' AND (p."lastSwapAt" IS NULL OR p."lastSwapAt"::date < CURRENT_DATE)
@@ -148,31 +147,20 @@ export async function runSwapRollover(
   // run's positions could possibly need -- one query each, not one per
   // position, same "fetch once, reuse via a Map" shape as
   // lib/bulk-close.ts's own fresh-price fetch. Phase 2 pricing engine
-  // (2026-09-07) additions: accountTypes/accountTypeSymbolConfigs/
-  // accountSymbolConfigs/groups/brokers, needed only for a broker with
+  // (2026-09-07) additions: accountSymbolConfigs/groups/brokers (D4: no account-type level), needed only for a broker with
   // Broker.pricingEngineEnabled true -- see the per-position branch below.
   const groupIds = [...new Set(due.map((p) => p.groupId).filter((g): g is string => g != null))];
-  const accountTypeIds = [...new Set(due.map((p) => p.accountTypeId).filter((t): t is string => t != null))];
   const accountIds = [...new Set(due.map((p) => p.accountId))];
   const symbolIds = [...new Set(due.map((p) => p.symbolId))];
   const brokerIds = [...new Set(due.map((p) => p.brokerId))];
 
-  const [groupOverrides, brokerSymbols, brokers, groups, accountTypes, accountTypeSymbolConfigs, accountSymbolConfigs] = await Promise.all([
+  const [groupOverrides, brokerSymbols, brokers, groups, accountSymbolConfigs] = await Promise.all([
     groupIds.length > 0
       ? db.groupSymbolConfig.findMany({ where: { groupId: { in: groupIds }, symbolId: { in: symbolIds } } })
       : Promise.resolve([]),
     db.brokerSymbol.findMany({ where: { brokerId: { in: brokerIds }, symbolId: { in: symbolIds } } }),
     db.broker.findMany({ where: { id: { in: brokerIds } }, select: { id: true, pricingEngineEnabled: true } }),
     groupIds.length > 0 ? db.group.findMany({ where: { id: { in: groupIds } }, select: { id: true, swapFree: true } }) : Promise.resolve([]),
-    accountTypeIds.length > 0
-      ? db.accountType.findMany({
-          where: { id: { in: accountTypeIds } },
-          select: { id: true, spreadMarkup: true, commissionPerLot: true, swapLong: true, swapShort: true, swapFree: true },
-        })
-      : Promise.resolve([]),
-    accountTypeIds.length > 0
-      ? db.accountTypeSymbolConfig.findMany({ where: { accountTypeId: { in: accountTypeIds }, symbolId: { in: symbolIds } } })
-      : Promise.resolve([]),
     db.accountSymbolConfig.findMany({ where: { accountId: { in: accountIds }, symbolId: { in: symbolIds } } }),
   ]);
 
@@ -180,8 +168,6 @@ export async function runSwapRollover(
   const brokerSymbolMap = new Map(brokerSymbols.map((b) => [`${b.brokerId}:${b.symbolId}`, b]));
   const brokerPricingEnabledMap = new Map(brokers.map((b) => [b.id, b.pricingEngineEnabled]));
   const groupSwapFreeMap = new Map(groups.map((g) => [g.id, g.swapFree]));
-  const accountTypeMap = new Map(accountTypes.map((t) => [t.id, t]));
-  const accountTypeSymbolConfigMap = new Map(accountTypeSymbolConfigs.map((c) => [`${c.accountTypeId}:${c.symbolId}`, c]));
   const accountSymbolConfigMap = new Map(accountSymbolConfigs.map((c) => [`${c.accountId}:${c.symbolId}`, c]));
 
   const byAccount = new Map<string, DueRow[]>();
@@ -228,8 +214,6 @@ export async function runSwapRollover(
           // old resolveSwapRate path below, byte-for-byte unchanged.
           const resolved = resolvePricingV2({
             accountSymbolConfig: accountSymbolConfigMap.get(`${p.accountId}:${p.symbolId}`) ?? null,
-            accountTypeSymbolConfig: p.accountTypeId ? (accountTypeSymbolConfigMap.get(`${p.accountTypeId}:${p.symbolId}`) ?? null) : null,
-            accountType: p.accountTypeId ? (accountTypeMap.get(p.accountTypeId) ?? null) : null,
             groupSymbolConfig: p.groupId ? (groupOverrideMap.get(`${p.groupId}:${p.symbolId}`) ?? null) : null,
             brokerSpreadMarkup: brokerSymbol?.spreadMarkup ?? new Prisma.Decimal(0),
             brokerCommissionPerLot: brokerSymbol?.commissionPerLot ?? new Prisma.Decimal(0),

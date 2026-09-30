@@ -16,8 +16,9 @@ export type ResolutionInput = {
   digits: number;
   broker: string; // BrokerSymbol.spreadMarkup
   group: Lvl; // GroupSymbolConfig
-  accountType: { spreadMarkup: string | null } | null; // AccountType (flat)
-  accountTypeSymbol: Lvl; // AccountTypeSymbolConfig
+  // D4 (owner: the group is the pricing tier): no account-type levels. The engine's reader (engine/market-data
+  // ask_markup.rs) still has them; with no vector setting them it reads them as absent (null) -- they must go there too
+  // with the D8 engine work. No live account type sets a spread (checked 2026-09-30).
   accountSymbol: Lvl; // AccountSymbolConfig
 };
 export type PriceInput = { name: string; rule: { mode: "markup"; markupPips: string } | { mode: "target"; targetPips: string; fallbackPips: string | null }; digits: number; bid: string; ask: string };
@@ -35,8 +36,6 @@ export function resolveRule(i: ResolutionInput): AskRule {
   }
   const resolved = resolvePricingV2({
     accountSymbolConfig: lvl(i.accountSymbol),
-    accountTypeSymbolConfig: lvl(i.accountTypeSymbol),
-    accountType: i.accountType ? { spreadMarkup: i.accountType.spreadMarkup == null ? null : D(i.accountType.spreadMarkup), commissionPerLot: null, swapLong: null, swapShort: null, swapFree: null } : null,
     groupSymbolConfig: lvl(i.group),
     brokerSpreadMarkup: D(i.broker),
     brokerCommissionPerLot: D("0"),
@@ -54,7 +53,7 @@ const ruleJson = (r: AskRule) =>
 const none: Lvl = null;
 const m = (x: string): Lvl => ({ spreadMarkup: x, targetTotalSpreadPips: null });
 const t = (x: string, fb: string | null = null): Lvl => ({ spreadMarkup: fb, targetTotalSpreadPips: x });
-const base = { coverage: false, digits: 2, broker: "0.5", group: none, accountType: null, accountTypeSymbol: none, accountSymbol: none };
+const base = { coverage: false, digits: 2, broker: "0.5", group: none, accountSymbol: none };
 
 export const RESOLUTION_INPUTS: ResolutionInput[] = [
   { ...base, name: "engine off: broker default", pricingEngineEnabled: false },
@@ -65,9 +64,7 @@ export const RESOLUTION_INPUTS: ResolutionInput[] = [
   { ...base, name: "engine on: broker default", pricingEngineEnabled: true },
   { ...base, name: "engine on: group markup", pricingEngineEnabled: true, group: m("1.5") },
   { ...base, name: "engine on: group target, with its own fallback", pricingEngineEnabled: true, group: t("3", "1") },
-  { ...base, name: "engine on: account type flat markup beats the group", pricingEngineEnabled: true, group: t("3", "1"), accountType: { spreadMarkup: "2" } },
-  { ...base, name: "engine on: account type symbol target beats the flat type", pricingEngineEnabled: true, accountType: { spreadMarkup: "2" }, accountTypeSymbol: t("2.5") },
-  { ...base, name: "engine on: account symbol config beats everything", pricingEngineEnabled: true, group: m("1.5"), accountType: { spreadMarkup: "2" }, accountTypeSymbol: t("2.5"), accountSymbol: m("0.2") },
+  { ...base, name: "engine on: account symbol config beats the group", pricingEngineEnabled: true, group: m("1.5"), accountSymbol: m("0.2") },
   { ...base, name: "engine on: a level with both nulls does not win", pricingEngineEnabled: true, group: m("1.5"), accountSymbol: { spreadMarkup: null, targetTotalSpreadPips: null } },
   { ...base, name: "coverage account: always raw", pricingEngineEnabled: true, coverage: true, group: m("1.5"), accountSymbol: m("3") },
   { ...base, name: "5-digit FX group markup", pricingEngineEnabled: false, digits: 5, broker: "0", group: m("1.2") },

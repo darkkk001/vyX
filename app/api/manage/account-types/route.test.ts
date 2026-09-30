@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { Prisma } from "@prisma/client";
 
 // Same "no injectable tx client, real fixtures + own cleanup" shape as
 // app/api/manage/dealing-queue/[id]/route.test.ts -- this route reads
@@ -157,16 +158,15 @@ describe("account-type flat pricing: null = inherit, never 0 by default (live DB
     expect((audit.newValue as Record<string, unknown>).spreadMarkup).toBeNull();
   });
 
-  it("POST with blank fields (the web form's inherit) stores null; a typed 0 is a real explicit 0", async () => {
+  it("D4: POST with blank fields stores null; any typed value (0 included) is refused, the type is not created", async () => {
     if (!dbReachable) return;
     const fx = await createFixture();
-    const { json } = await post(fx, { name: "Raw", spreadMarkup: "", commissionPerLot: "0", swapLong: "", swapShort: "-1.5", swapFree: null });
+    const { json } = await post(fx, { name: "Raw", spreadMarkup: "", swapLong: "", swapFree: null });
     const row = await prisma.accountType.findUniqueOrThrow({ where: { id: json.id } });
-    expect(row.spreadMarkup).toBeNull();
-    expect(row.commissionPerLot?.toString()).toBe("0");
-    expect(row.swapLong).toBeNull();
-    expect(row.swapShort?.toString()).toBe("-1.5");
-    expect(row.swapFree).toBeNull();
+    for (const f of FIELDS) expect(row[f]).toBeNull();
+    const refused = await post(fx, { name: "Raw2", commissionPerLot: "0" });
+    expect(refused.status).toBe(400);
+    expect(await prisma.accountType.count({ where: { brokerId: fx.brokerId, name: "Raw2" } })).toBe(0);
   });
 
   it("POST with an unparseable number is refused (400), not zeroed", async () => {
@@ -192,17 +192,15 @@ describe("account-type flat pricing: null = inherit, never 0 by default (live DB
     for (const f of FIELDS) expect(r2.json[f]).toBeNull();
   });
 
-  it("PATCH sets a value, keeps it when absent, and a blank / null puts it back to inherit", async () => {
+  it("D4: PATCH may clear a stored value back to inherit, never set one", async () => {
     if (!dbReachable) return;
     const fx = await createFixture();
     const { json } = await post(fx, { name: "Std", isDefault: true });
-    await patchType(fx, json.id, { name: "Std", isDefault: true, spreadMarkup: "1.2", swapFree: true });
-    await patchType(fx, json.id, { name: "Std", isDefault: true });
-    let row = await prisma.accountType.findUniqueOrThrow({ where: { id: json.id } });
-    expect(row.spreadMarkup?.toString()).toBe("1.2");
-    expect(row.swapFree).toBe(true);
+    await prisma.accountType.update({ where: { id: json.id }, data: { spreadMarkup: new Prisma.Decimal("1.2"), swapFree: true } }); // a pre-D4 stored value
+    const set = await patchType(fx, json.id, { name: "Std", isDefault: true, commissionPerLot: "3" });
+    expect(set.status).toBe(400);
     await patchType(fx, json.id, { name: "Std", isDefault: true, spreadMarkup: "", swapFree: null });
-    row = await prisma.accountType.findUniqueOrThrow({ where: { id: json.id } });
+    const row = await prisma.accountType.findUniqueOrThrow({ where: { id: json.id } });
     expect(row.spreadMarkup).toBeNull();
     expect(row.swapFree).toBeNull();
     const bad = await patchType(fx, json.id, { name: "Std", isDefault: true, commissionPerLot: "x" });

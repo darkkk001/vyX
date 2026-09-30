@@ -397,6 +397,12 @@ model Broker {
   // Read at app/api/trade/orders/route.ts's checkSlippage call; edited via
   // app/api/manage/risk (the dealer settings gear).
   defaultMaxSlippagePips     Decimal?        @db.Decimal(8, 2)
+  // Slippage in POINTS (owner 2026-09-30, D4/slippage batch): the same broker cap stored in the unit the screens show.
+  // A point is the symbol's last digit (10^-digits); the old pip was 10 points on every symbol with 1+ digits
+  // (lib/group-pricing.ts pipSize), so the backfill is pips x 10 (no live symbol has 0 digits). Every reader uses this
+  // column and falls back to pips x 10 only while it is null (before the backfill); the pips column is kept, and
+  // written alongside, until the conversion is verified -- then dropped in a later batch.
+  defaultMaxSlippagePoints   Decimal?        @db.Decimal(10, 2)
   // Sum of open volume (lots) across every symbol for this broker. Null
   // = no limit -- see lib/risk.ts's checkBrokerExposure.
   totalExposureLimit         Decimal?        @db.Decimal(18, 2)

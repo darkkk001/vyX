@@ -68,12 +68,7 @@ beforeAll(async () => {
     const group = await prisma.group.create({ data: { brokerId: broker.id, name: `g${n}`, category: input.coverage ? "COVERAGE" : "B_BOOK" } });
     const lvl = (l: ResolutionInput["group"]) => ({ spreadMarkup: l?.spreadMarkup == null ? null : D(l.spreadMarkup), targetTotalSpreadPips: l?.targetTotalSpreadPips == null ? null : D(l.targetTotalSpreadPips) });
     if (input.group) await prisma.groupSymbolConfig.create({ data: { groupId: group.id, symbolId: sym.id, ...lvl(input.group) } });
-    let accountTypeId: string | null = null;
-    if (input.accountType || input.accountTypeSymbol) {
-      const t = await prisma.accountType.create({ data: { brokerId: broker.id, name: `t${n}`, spreadMarkup: input.accountType?.spreadMarkup == null ? null : D(input.accountType.spreadMarkup) } });
-      accountTypeId = t.id;
-      if (input.accountTypeSymbol) await prisma.accountTypeSymbolConfig.create({ data: { accountTypeId: t.id, symbolId: sym.id, ...lvl(input.accountTypeSymbol) } });
-    }
+    const accountTypeId: string | null = null; // D4: the resolution vectors carry no account-type level
     const account = await prisma.account.create({ data: { brokerId: broker.id, accountNumber: `4666${String(Date.now() % 10000).padStart(4, "0")}${n}`, email: `a${n}@x.local`, passwordHash: "x", fullName: "a", accountMode: "LIVE", groupId: group.id, accountTypeId } });
     if (input.accountSymbol) await prisma.accountSymbolConfig.create({ data: { accountId: account.id, symbolId: sym.id, ...lvl(input.accountSymbol) } });
     made.push({ input, accountId: account.id, symbolId: sym.id, brokerId: broker.id, groupId: group.id, accountTypeId });
@@ -103,7 +98,7 @@ describe("loadAskRules (scratch DB)", () => {
       const bs = await prisma.brokerSymbol.findFirstOrThrow({ where: { brokerId: m.brokerId, symbolId: m.symbolId } });
       const digits = m.input.digits;
       const fill = await resolveFillPricing(prisma, {
-        pricingEngineEnabled: m.input.pricingEngineEnabled, accountId: m.accountId, accountTypeId: m.accountTypeId, groupId: m.groupId, symbolId: m.symbolId,
+        pricingEngineEnabled: m.input.pricingEngineEnabled, accountId: m.accountId, groupId: m.groupId, symbolId: m.symbolId,
         brokerSpreadMarkup: bs.spreadMarkup, brokerCommissionPerLot: bs.commissionPerLot, brokerSwapLong: bs.swapLong, brokerSwapShort: bs.swapShort,
         liveBaseSpreadPips: ask.sub(bid).div(pipSize(digits)),
       });

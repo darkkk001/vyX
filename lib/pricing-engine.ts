@@ -4,16 +4,16 @@ import { resolveSymbolPricing } from "@/lib/group-pricing";
 type Tx = Prisma.TransactionClient;
 
 // Phase 2 pricing engine (2026-09-07) -- the full per-field precedence
-// resolver approved in docs/pricing-engine.md: for spreadMarkup,
-// commissionPerLot, swapLong, and swapShort independently,
+// resolver approved in docs/pricing-engine.md. D4 (owner 2026-09-25/30: the GROUP is the pricing tier, MT5 model)
+// removed the two account-type levels, so for spreadMarkup, commissionPerLot, swapLong, and swapShort independently:
 //
-//   AccountSymbolConfig > AccountTypeSymbolConfig > AccountType (flat) >
-//   GroupSymbolConfig > BrokerSymbol (base)
+//   AccountSymbolConfig > GroupSymbolConfig > BrokerSymbol (base)
 //
-// and for swapFree (no per-symbol level -- swap-free is an all-symbols
-// setting, see AccountType.swapFree's own schema comment):
+// and for swapFree (no per-symbol level -- swap-free is an all-symbols setting):
 //
-//   Account.swapFree > AccountType.swapFree > Group.swapFree > false
+//   Account.swapFree > Group.swapFree > false
+//
+// AccountType / AccountTypeSymbolConfig rows stay in the database as read-only history; nothing here reads them.
 //
 // NULL at any level means "not set here, fall through to the next level,"
 // never "explicitly zero" -- see GroupSymbolConfig's own schema comment
@@ -66,8 +66,8 @@ export type ResolvedPricingV2 = {
   swapFree: boolean;
 };
 
-// Shape shared by the three per-symbol override tables (AccountSymbolConfig,
-// AccountTypeSymbolConfig, GroupSymbolConfig) -- only the fields this
+// Shape shared by the per-symbol override tables (AccountSymbolConfig,
+// GroupSymbolConfig) -- only the fields this
 // resolver actually reads, so a real Prisma row satisfies this structurally
 // without any mapping at the call site.
 export type SymbolConfigLevel = {
@@ -78,21 +78,8 @@ export type SymbolConfigLevel = {
   swapShort: Prisma.Decimal | null;
 } | null;
 
-// AccountType's own flat (type-wide, no per-symbol targetTotalSpreadPips --
-// see AccountTypeSymbolConfig's own doc comment for why target mode is
-// per-symbol-table only, not on the flat fallback) fields.
-export type AccountTypeFlatLevel = {
-  spreadMarkup: Prisma.Decimal | null;
-  commissionPerLot: Prisma.Decimal | null;
-  swapLong: Prisma.Decimal | null;
-  swapShort: Prisma.Decimal | null;
-  swapFree: boolean | null;
-} | null;
-
 export type ResolvePricingV2Params = {
   accountSymbolConfig: SymbolConfigLevel;
-  accountTypeSymbolConfig: SymbolConfigLevel;
-  accountType: AccountTypeFlatLevel;
   groupSymbolConfig: SymbolConfigLevel;
   brokerSpreadMarkup: Prisma.Decimal;
   brokerCommissionPerLot: Prisma.Decimal;
@@ -134,38 +121,28 @@ function resolveSpreadAtSymbolLevel(level: SymbolConfigLevel): ResolvedSpread | 
 export function resolvePricingV2(params: ResolvePricingV2Params): ResolvedPricingV2 {
   const spread: ResolvedSpread =
     resolveSpreadAtSymbolLevel(params.accountSymbolConfig) ??
-    resolveSpreadAtSymbolLevel(params.accountTypeSymbolConfig) ??
-    (params.accountType?.spreadMarkup !== null && params.accountType?.spreadMarkup !== undefined
-      ? { mode: "markup", spreadMarkup: params.accountType.spreadMarkup }
-      : null) ??
     resolveSpreadAtSymbolLevel(params.groupSymbolConfig) ??
     { mode: "markup", spreadMarkup: params.brokerSpreadMarkup };
 
   const commissionPerLot =
     firstNonNull(
       params.accountSymbolConfig?.commissionPerLot,
-      params.accountTypeSymbolConfig?.commissionPerLot,
-      params.accountType?.commissionPerLot,
       params.groupSymbolConfig?.commissionPerLot
     ) ?? params.brokerCommissionPerLot;
 
   const swapLong =
     firstNonNull(
       params.accountSymbolConfig?.swapLong,
-      params.accountTypeSymbolConfig?.swapLong,
-      params.accountType?.swapLong,
       params.groupSymbolConfig?.swapLong
     ) ?? params.brokerSwapLong;
 
   const swapShort =
     firstNonNull(
       params.accountSymbolConfig?.swapShort,
-      params.accountTypeSymbolConfig?.swapShort,
-      params.accountType?.swapShort,
       params.groupSymbolConfig?.swapShort
     ) ?? params.brokerSwapShort;
 
-  const swapFree = firstNonNull(params.accountSwapFree, params.accountType?.swapFree, params.groupSwapFree) ?? false;
+  const swapFree = firstNonNull(params.accountSwapFree, params.groupSwapFree) ?? false;
 
   return { spread, commissionPerLot, swapLong, swapShort, swapFree };
 }
@@ -221,16 +198,14 @@ export function resolveEffectiveSpreadMarkup(
   return { markup: diff, warning: null };
 }
 
-// DB-fetching wrapper -- Stage 4's real call sites will use this (passing
-// the same account/group/symbol ids they already fetch today, plus
-// account.accountTypeId), not resolvePricingV2 directly. One query per
+// DB-fetching wrapper -- Stage 4's real call sites use this (passing the same account/group/symbol ids they already
+// fetch today), not resolvePricingV2 directly. One query per
 // level, same "fetch what this fill needs, resolve in memory" shape as
 // lib/group-pricing.ts's own resolveSymbolPricing.
 export async function resolveSymbolPricingV2(
   tx: Tx,
   params: {
     accountId: string;
-    accountTypeId: string | null | undefined;
     groupId: string | null | undefined;
     symbolId: string;
     brokerSpreadMarkup: Prisma.Decimal;
@@ -239,17 +214,11 @@ export async function resolveSymbolPricingV2(
     brokerSwapShort: Prisma.Decimal;
   }
 ): Promise<ResolvedPricingV2> {
-  const [account, accountSymbolConfig, accountType, accountTypeSymbolConfig, group, groupSymbolConfig] = await Promise.all([
+  const [account, accountSymbolConfig, group, groupSymbolConfig] = await Promise.all([
     tx.account.findUniqueOrThrow({ where: { id: params.accountId }, select: { swapFree: true } }),
     tx.accountSymbolConfig.findUnique({
       where: { accountId_symbolId: { accountId: params.accountId, symbolId: params.symbolId } },
     }),
-    params.accountTypeId ? tx.accountType.findUnique({ where: { id: params.accountTypeId } }) : Promise.resolve(null),
-    params.accountTypeId
-      ? tx.accountTypeSymbolConfig.findUnique({
-          where: { accountTypeId_symbolId: { accountTypeId: params.accountTypeId, symbolId: params.symbolId } },
-        })
-      : Promise.resolve(null),
     params.groupId ? tx.group.findUnique({ where: { id: params.groupId }, select: { swapFree: true } }) : Promise.resolve(null),
     params.groupId
       ? tx.groupSymbolConfig.findUnique({ where: { groupId_symbolId: { groupId: params.groupId, symbolId: params.symbolId } } })
@@ -258,8 +227,6 @@ export async function resolveSymbolPricingV2(
 
   return resolvePricingV2({
     accountSymbolConfig,
-    accountTypeSymbolConfig,
-    accountType,
     groupSymbolConfig,
     brokerSpreadMarkup: params.brokerSpreadMarkup,
     brokerCommissionPerLot: params.brokerCommissionPerLot,
@@ -301,7 +268,6 @@ export async function resolveFillPricing(
   params: {
     pricingEngineEnabled: boolean;
     accountId: string;
-    accountTypeId: string | null | undefined;
     groupId: string | null | undefined;
     symbolId: string;
     brokerSpreadMarkup: Prisma.Decimal;
@@ -323,7 +289,6 @@ export async function resolveFillPricing(
 
   const resolved = await resolveSymbolPricingV2(tx, {
     accountId: params.accountId,
-    accountTypeId: params.accountTypeId,
     groupId: params.groupId,
     symbolId: params.symbolId,
     brokerSpreadMarkup: params.brokerSpreadMarkup,

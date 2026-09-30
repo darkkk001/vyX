@@ -89,12 +89,9 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     if (!found.isClientSelectable) return NextResponse.json({ error: "that group is not available for client accounts", code: "GROUP_NOT_CLIENT_SELECTABLE" }, { status: 400 });
     chosenGroup = { id: found.id, leverage: found.leverage };
   }
-  let chosenTypeId: string | null = null;
-  if (typeof body?.accountTypeId === "string" && body.accountTypeId) {
-    const t = await prisma.accountType.findUnique({ where: { id: body.accountTypeId } });
-    if (!t || t.brokerId !== brokerId || !t.enabled) return NextResponse.json({ error: "account type not found or disabled" }, { status: 404 });
-    chosenTypeId = t.id;
-  }
+  // D4 (owner 2026-09-30): the group is the pricing tier -- a new live account gets NO account type, whatever the client
+  // asked for or an older backoffice still sends (body.accountTypeId is ignored). The request's own accountTypeId stays
+  // on the request row as history.
   let chosenLeverage: number | null = null;
   if (body?.leverage != null && body.leverage !== "") {
     chosenLeverage = parseLeverage(body.leverage);
@@ -151,7 +148,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       email: client.email,
       passwordHash,
       accountMode: "LIVE",
-      accountTypeId: chosenTypeId ?? existing.accountTypeId,
+      accountTypeId: null,
       currency: broker.defaultAccountCurrency,
       leverage: chosenLeverage ?? groupLeverage,
       groupId: group?.id ?? null,
@@ -183,7 +180,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         entityType: "LiveAccountRequest",
         entityId: id,
         oldValue: { status: "PENDING" },
-        newValue: { status: "APPROVED", accountId: account.id, accountNumber: account.accountNumber, groupId: group?.id ?? null, leverage: chosenLeverage ?? groupLeverage, accountTypeId: chosenTypeId ?? existing.accountTypeId, chosenByApprover: { group: chosenGroup != null, leverage: chosenLeverage != null, accountType: chosenTypeId != null } },
+        newValue: { status: "APPROVED", accountId: account.id, accountNumber: account.accountNumber, groupId: group?.id ?? null, leverage: chosenLeverage ?? groupLeverage, accountTypeId: null, requestedAccountTypeId: existing.accountTypeId, chosenByApprover: { group: chosenGroup != null, leverage: chosenLeverage != null } },
       },
     });
     return r;
