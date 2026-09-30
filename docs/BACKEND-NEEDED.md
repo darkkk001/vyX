@@ -26,6 +26,8 @@ Not blocking any screen (each works today with an extra read); ship them with th
 
 | Route | Change | Why | Decided |
 |---|---|---|---|
+| New read route (e.g. `GET /api/manage/leads/assignees`) | A staff list managers can read, for CRM Assign to staff: name + e-mail only (no role, permissions, 2FA or status fields), same broker, ACTIVE assignable staff only | Only a broker admin can read `GET /api/manage/admins` today, so a manager cannot pick anyone (the item says "staff list: broker admin only") | 2026-09-30, owner |
+| `GET /api/manage/accounts` | Add `twoFactorEnabled` per account | CLI Reset two-step sign-in (2FA) can then be disabled "2FA not set up" up front instead of the server's 409 after the click | 2026-09-30, owner |
 | symbol disable | Gate disabling one symbol behind the emergency-controls permission | issues.md 117/198 | 2026-09-30, owner: web deploy after step 2 |
 | notifications read | Mark read per staff member (not for everyone) + an audit row | issues.md 324 | 2026-09-30, owner |
 | trading sessions | Sessions that cross midnight | issues.md 335/343 | 2026-09-30, owner |

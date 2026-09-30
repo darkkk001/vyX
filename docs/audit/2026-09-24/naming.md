@@ -1208,6 +1208,7 @@ Hidden until an LP bridge exists: the screen is merged into Liquidity providers,
 
 | Screen | Current label | Proposed name | Unit | Tooltip (one line) |
 |---|---|---|---|---|
+| CLI | Force sign-out (new) | Force sign-out… | — | Signs every device of the account out now; opens a confirm (step 2, backoffice 1.0.57) (owner 2026-09-30). |
 | CLI | 1) CLI  CLIENTS & ACCOUNTS | Clients & accounts | — | All client accounts. |
 | CLI | {n} TOTAL | keep | — | — |
 | CLI | + ACCOUNT | Add account | — | Open a new client account. |
@@ -1374,6 +1375,7 @@ Hidden until an LP bridge exists: the screen is merged into Liquidity providers,
 
 | Screen | Current label | Proposed name | Unit | Tooltip (one line) |
 |---|---|---|---|---|
+| IB | suspended: pay frozen (menu reason) | keep | — | Why Pay … owed is disabled for a suspended partner; short form of the server's "partner suspended: pay is frozen" (cut off in the menu) (owner 2026-09-30). |
 | IB | 1) IB  PARTNERS · INTRODUCING BROKERS | Partners (IB) | — | Partners who refer clients for commission. |
 | IB | {n} PARTNERS · {n} CLIENTS · PAYABLE {x} | {n} partners · {n} referred clients · Partner pay owed | account ccy | Totals, per currency (owner 2026-09-30). |
 | IB | PAYOUT RUN | Pay all partners | — | Pay every owed partner commission. |
