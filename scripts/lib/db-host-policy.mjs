@@ -18,7 +18,10 @@
 //      ep-old-night-b1tiwh7m: cloned from production ~2026-09-07, no production traffic since.)
 
 export const PRODUCTION_DB_HOST_MARKERS = [
-  // e.g. "ep-xxxx-yyyy" -- production Neon endpoint id (read it from the Neon console / Vercel env)
+  // Live production Neon endpoint since 2026-09-24 (owner 2026-09-30: tests and QA scripts must never run here).
+  "ep-morning-glade",
+  // Previous production endpoint (retired 2026-09-24); still never a test target.
+  "ep-flat-boat",
 ];
 
 function productionMarkers() {
