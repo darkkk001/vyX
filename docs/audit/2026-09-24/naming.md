@@ -217,10 +217,10 @@ The labels come from `ui-map.md` (the bo-* and term-* sections). They were check
 | SHELL | Payment methods | keep | — | Deposit and withdrawal methods. |
 | SHELL | Transfers | Internal transfers | — | Move money between two accounts. |
 | SHELL | Wallets | Account balances | — | Balance, credit and equity of every account. |
-| SHELL | Team | Staff | — | Staff logins and roles. |
+| SHELL | Team | Staff | — | Staff logins and roles (owner 2026-09-30). |
 | SHELL | Audit log | keep | — | Every staff action, who and when. |
 | SHELL | Security | keep | — | Staff sign-in protection and two-step sign-in. |
-| SHELL | Settings | Broker settings | — | Broker-wide settings. |
+| SHELL | Settings | Broker settings | — | Broker-wide settings (owner 2026-09-30). |
 | SHELL | Nav badge (count) | keep | — | Items waiting on that screen. |
 | SHELL | TENANT {host} | Broker server {host} | — | Server you are signed in to. |
 | SHELL | NOT SIGNED IN | keep | — | — |
@@ -236,7 +236,7 @@ The labels come from `ui-map.md` (the bo-* and term-* sections). They were check
 | SHELL | F9 RISK | keep | — | Go to Risk. |
 | SHELL | F10 REPORTS | keep | — | Go to Reports. |
 | SHELL | F11 AUDIT | F11 Audit log | — | Go to Audit log. |
-| SHELL | F12 SETTINGS | F12 Broker settings | — | Go to Broker settings. |
+| SHELL | F12 SETTINGS | keep (F12 SETTINGS) | — | Go to Broker settings; "BROKER SETTINGS" is cut off at 1366, the nav says Broker settings (owner 2026-09-30). |
 | SHELL | HH:mm:ss UTC (clock) | keep | UTC | Server time. |
 | SHELL | SEARCH (popover header) | keep | — | — |
 | SHELL | searching… / {n} results / no match | keep | — | — |
@@ -1602,7 +1602,7 @@ Hidden until an LP bridge exists: the screen is merged into Liquidity providers,
 | USR | ROLE | keep | — | Admin, manager or support. |
 | USR | LAST ACTIVE | Last active (UTC) | UTC | Last sign-in. |
 | USR | STATUS (ACTIVE / DISABLED) | keep | — | Can sign in or not. |
-| USR | ACTIONS (LOCKED / EDIT DISABLE / EDIT ACTIVATE) | Actions (Your own row / Edit · Disable / Edit · Re-activate) | — | Row actions. |
+| USR | ACTIONS (LOCKED / EDIT DISABLE / EDIT ACTIVATE) | remove | — | No per-row links: the staff menu (row ⋯, right-click, side panel) holds these actions (owner 2026-09-30). |
 | USR | Edit… | keep | — | Open the staff editor. |
 | USR | Disable access… / Re-activate… | keep | — | Block or restore sign-in. |
 | USR | Invite a team member… | Add staff… | — | Create a staff login. |
@@ -1614,7 +1614,7 @@ Hidden until an LP bridge exists: the screen is merged into Liquidity providers,
 | USR | Risk settings / Emergency controls / Internal transfers | Risk settings / Trading halt / Internal transfers | — | Permissions. |
 | USR | Funds approval | Deposit & withdrawal approval | — | Permission. |
 | USR | IB payouts | Partner payouts | — | Permission. |
-| USR | Account finance | Add / deduct funds | — | Permission. |
+| USR | Account finance | Add / deduct funds | — | Permission; the side panel adds "(also leverage and account status)" on the line under it, the matrix shows the short name (owner 2026-09-30). |
 | USR | Reverse mirror rules | Copy rules | — | Permission. |
 | USR | 3) EDIT  STAFF MEMBER | Edit staff | — | Staff editor. |
 | USR | BACK TO CFG | Back to Broker settings | — | Return to Broker settings. |
@@ -1625,11 +1625,19 @@ Hidden until an LP bridge exists: the screen is merged into Liquidity providers,
 | USR | ACCESS (section) | Access | — | Disable or restore sign-in. |
 | USR | DISABLE ACCESS / RE-ACTIVATE | Disable access / Re-activate | — | Buttons. |
 | USR | PASSWORD RESET · ROLE CHANGE — not available yet | keep | — | Planned. |
-| USR | 3) INVITE  ADD STAFF | Add staff | — | New staff form. |
+| USR | 3) INVITE  ADD STAFF | 3) ADD  Add staff | — | New staff form (owner 2026-09-30). |
 | USR | NEW STAFF MEMBER (section) | New staff | — | Form section. |
 | USR | e-mail / ROLE (ADMIN · MANAGER · SUPPORT) | E-mail / Role (Admin · Manager · Support) | — | Form fields. |
 | USR | CREATE / CANCEL | Create / Cancel | — | Form buttons. |
 | USR | DELEGATE PERMISSIONS (dialog) | Give extra permissions | — | Confirm dialog title. |
+| USR | Can edit pricing (permission) | Pricing | — | Permission: spread, commission, swap, hedged margin; matrix, side panel, CSV (owner 2026-09-30). |
+| USR | Can trade on client accounts (permission) | Trade on client accounts | — | Permission: close, bulk close, SL/TP, open for a client (owner 2026-09-30). |
+| USR | INITIAL PASSWORD · SHOWN ONCE (dialog) | FIRST PASSWORD (SHOWN ONCE) | — | Dialog title, like NTF's NEW PASSWORD (SHOWN ONCE) (owner 2026-09-30). |
+| USR | 2FA (column, new) | 2FA: Set up / At next sign-in | — | Whether the staff member's two-step sign-in is set up (owner 2026-09-30). |
+| USR | ROLE / SECURITY / ACCESS (menu headings, new) | keep | — | Headings over the role items, the password / 2FA / sign-out items, and Re-activate / Disable (owner 2026-09-30). |
+| USR | Reset two-step sign-in (2FA)… / Sign out everywhere… (new) | keep | — | Shown disabled, backend needed (owner 2026-09-30). |
+| USR | RE-ACTIVATE SELECTED… / DISABLE SELECTED… (selection bar, new) | keep | — | Disable is red, last, a typed confirm; you, those already in that state and the last active admin are skipped (owner 2026-09-30). |
+| USR | Disabled-item reasons (new) | your own row / the broker must keep one active admin / current role / your own: change it in Security | — | The server's rules, mirrored (owner 2026-09-30). |
 | USR | DISABLE STAFF ACCESS / RE-ACTIVATE STAFF ACCESS (dialog) | Disable staff access / Re-activate staff access | — | Confirm dialog titles. |
 | USR | ADD STAFF MEMBER (dialog) | Add staff | — | Confirm dialog title. |
 | USR | INITIAL PASSWORD · SHOWN ONCE | First password (Shown Once) | — | Copy it now; it cannot be shown again. |
@@ -1671,8 +1679,8 @@ Hidden until an LP bridge exists: the screen is merged into Liquidity providers,
 | SEC | 1) ME  THIS SIGN-IN | This sign-in | — | Your current session. |
 | SEC | signed in as | keep | — | Your e-mail. |
 | SEC | role | keep | — | Your role. |
-| SEC | tenant | Broker | — | Broker you are signed in to. |
-| SEC | broker | Broker ID | — | Broker's internal name. |
+| SEC | tenant | Web address | — | The host you are signed in to (owner 2026-09-30). |
+| SEC | broker | Broker | — | The broker's name (owner 2026-09-30). |
 | SEC | since | Signed in (UTC) | UTC | When you signed in. |
 | SEC | 2FA challenged this sign-in (YES · AUTHENTICATOR CODE / NO) | Two-step sign-in used (Yes / No) | — | Whether a code was asked. |
 | SEC | finance rights (YES/NO) | Can approve money (Yes / No) | — | Deposit/withdrawal/fund rights. |
@@ -1682,7 +1690,7 @@ Hidden until an LP bridge exists: the screen is merged into Liquidity providers,
 | SEC | 2) SEC  ACCOUNT SECURITY | Account security | — | Sign-in protection. |
 | SEC | TWO-FACTOR (Enrolment; Enrol · reset · backup codes) | Two-step sign-in (2FA) (Set up; reset; backup codes) | — | Authenticator codes. |
 | SEC | PASSKEYS · HARDWARE KEYS (Registered keys) | Passkeys & security keys | — | Not available yet. |
-| SEC | ACTIVE SESSIONS (Other devices; Sign out everywhere) | keep | — | Not available yet. |
+| SEC | ACTIVE SESSIONS (Other devices; Sign out everywhere) | keep | — | Your devices as a table: DEVICE / IP ADDRESS / SIGNED IN (UTC); menu Copy, Sign out this device… (not this device); SIGN OUT SELECTED… (owner 2026-09-30). |
 | SEC | API KEYS (Personal tokens) | keep | — | Not available yet. |
 | SEC | IP ALLOWLIST (Allowed addresses) | Allowed IP addresses | — | Not available yet. |
 | SEC | ORG POLICY (Staff 2FA mandatory; Session timeout; Password rotation) | Staff policy (Two-step sign-in required; session timeout; password change interval) | — | Not available yet. |
@@ -1710,11 +1718,11 @@ Hidden until an LP bridge exists: the screen is merged into Liquidity providers,
 | CFG | Hedging allowed | keep | — | Not available yet. |
 | CFG | Max slippage | keep until the stored value is converted from pips to points; then Max slippage (points) | pips today → points | Not available yet. |
 | CFG | FUNDING (section) | Deposits & withdrawals | — | Money defaults. |
-| CFG | Min deposit (PER METHOD · PSP) | Min deposit ($) (set per payment method) | $ | Set on Payment Methods. |
-| CFG | Withdrawal auto-approve ≤ | Auto-approve withdrawals up to ($) | $ | Not available yet. |
+| CFG | Min deposit (PER METHOD · PSP) | Min deposit ({CCY}) (set per payment method) | broker currency | Money labels carry the broker's own currency code (Broker.defaultAccountCurrency), e.g. "Min deposit (USD)"; no suffix when unknown; never "($)" (owner 2026-09-30). |
+| CFG | Withdrawal auto-approve ≤ | Auto-approve withdrawals up to ({CCY}) | broker currency | Not available yet (owner 2026-09-30). |
 | CFG | Require KYC L1 to deposit | Require ID check level 1 to deposit | — | Not available yet. |
-| CFG | Require KYC L2 above | Require ID check level 2 above ($) | $ | Not available yet. |
-| CFG | BRANDING · TENANT (section): Broker · Domain · Tier · status · Accent · Terminal theme · Desktop build | Branding: Broker · Domain · Plan · Status · Accent colour · Terminal theme · Desktop app version | — | Look of the client apps. |
+| CFG | Require KYC L2 above | Require ID check level 2 above ({CCY}) | broker currency | Not available yet (owner 2026-09-30). |
+| CFG | BRANDING · TENANT (section): Broker · Domain · Tier · status · Accent · Terminal theme · Desktop build | Branding: Accent colour · Terminal theme · Backoffice app version (Broker · Domain · Plan · Status only on the Staff page's panel; the CFG screen shows them once, in THIS BROKER) | — | No duplicate rows; the version is this backoffice app's own release version, "development build" for an unreleased build (owner 2026-09-30). |
 | CFG | SECURITY (section): Staff 2FA mandatory · Session timeout · Audit retention | Security: Two-step sign-in required · Session timeout · Audit log kept for | — | Not available yet. |
 | CFG | note "Default leverage and currency…" | keep | — | Only new accounts get these defaults. |
 | CFG | SETTINGS UNAVAILABLE / LOADING SETTINGS… | keep | — | Error / loading states. |

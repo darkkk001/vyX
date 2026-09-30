@@ -26,6 +26,8 @@ does them yet. Each row is what the screen needs from the web API before the act
 | LP | Status "Connected" | Set by the LP bridge when a session is live, not by hand | 2026-09-30, owner |
 | LP | Routing rules (add / delete / priority; hidden) | The LP bridge reading `lp-routing`; until then rules are saved but never read | 2026-09-30, owner |
 | FEED | Restart price feed | An audited endpoint that restarts the MT5 price-feed program on the server (will later live in VyX Connect's Feed Manager) | 2026-09-30, owner |
+| USR | Reset two-step sign-in (2FA)… | A broker-level, audited endpoint that resets a staff member's 2FA (today only the platform administrator can) | 2026-09-30, owner |
+| USR | Sign out everywhere… | An endpoint that revokes one staff member's sessions on request (role change, password reset and disable already do) | 2026-09-30, owner |
 
 ## Web changes queued for the next web deploy
 
