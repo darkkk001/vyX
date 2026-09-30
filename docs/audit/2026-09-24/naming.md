@@ -1851,6 +1851,8 @@ Hidden until an LP bridge exists: the screen is merged into Liquidity providers,
 
 | Screen | Current label | Proposed name | Unit | Tooltip (one line) |
 |---|---|---|---|---|
+| T·chart | Position labels (chart right-click) | Position labels ▸ Grouped / All / Off | — | Grouped (default): one tag per side and price cluster; All: one tag per position; Off: no entry lines or tags (SL / TP lines stay) (owner 2026-09-30). |
+| T·chart | cluster tag | {Buy/Sell} {lots} ×{n} · {±#,##0.00} {CCY} (e.g. Buy 0.4 ×3 · +175.00 USD) | account ccy | Hover it: one line per position, {Side} {lots} @ {open price} · {P/L} (owner 2026-09-30). |
 | T·chart | P/L on SL/TP tags (chart setting) | P/L on SL/TP tags: Always (off = on hover) | — | Default off: the tags show the level alone and the P/L appears on hover / while selected or dragged (owner 2026-09-30). |
 | T·chart | SL / TP tag P/L | {level} · {±#,##0.00} {account currency code} (e.g. SL 4485.00 · −61.08 USD) | account ccy | No "$": the account's currency code after the value (owner 2026-09-30). |
 | T·chart | 2) GP | Chart | — | Price chart for the selected symbol. |
@@ -2011,6 +2013,7 @@ Hidden until an LP bridge exists: the screen is merged into Liquidity providers,
 | T·positions | COMM | Commission ($) | $ | Commission charged on this position. |
 | T·positions | PTS | Move (points) | points | Price move since open, in your favour or against. (10 points = 1 pip) |
 | T·positions | P/L USD | Floating P/L ($) | $ | Profit or loss if closed now. |
+| T·positions | P/L header before sign-in | P/L | — | No currency until the account's is known; then P/L {CCY} (owner 2026-09-30). |
 | T·positions | COMMENT ✎ | Comment ✎ | — | Your note; click to edit. |
 | T·positions | ACTIONS | Actions | — | — |
 | T·positions | BE | Break-even | — | Move stop loss to the open price. |
@@ -2124,6 +2127,7 @@ Hidden until an LP bridge exists: the screen is merged into Liquidity providers,
 
 | Screen | Current label | Proposed name | Unit | Tooltip (one line) |
 |---|---|---|---|---|
+| T·stm | SMART TRADE MANAGER (panel header, window title, messages) | TRADE ASSISTANT / Trade assistant | — | The right-column panel; off = its header line only (owner 2026-09-30). |
 | T·stm | SMART TRADE MANAGER | Trade assistant | — | Hotkeys and bulk actions for your positions. |
 | T·stm | ENABLED / DISABLED (pill) | On / Off | — | Turn the trade assistant on or off. |
 | T·stm | Smart Trade Manager (tooltip) | Trade assistant | — | — |
