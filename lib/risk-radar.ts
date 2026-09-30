@@ -1,4 +1,5 @@
-import type { PrismaClient, Prisma } from "@prisma/client";
+import { Prisma, type PrismaClient } from "@prisma/client";
+import { newsHistoryFrom } from "@/lib/economic-events";
 
 // Impression Pack #4 -- Client Risk Radar v1. No ML: every metric here is
 // a plain aggregate or a documented threshold rule over each account's
@@ -24,15 +25,25 @@ export type RiskRadarRow = {
   scalpFlag: boolean;
   martingaleFlag: boolean;
   latencyArbFlag: boolean;
-  // Always false today -- see this file's own top-of-function comment on
-  // why (no historical economic-calendar data source exists in this
-  // codebase; /api/trade/news is forward-looking only, and Finnhub's
-  // configured key doesn't have access to that endpoint at all -- see
-  // lib/economic-calendar.ts's own note). The column stays visible and
-  // clearly labeled rather than silently omitted, since "we don't have
-  // this data yet" is itself useful information for whoever's looking at
-  // this table.
+  // web4 (issues.md 151, owner 2026-09-30): computed from the high-impact event history (EconomicEvent), see
+  // computeNewsTraderFlag below. false while nothing qualifies, and always false for trades before the history starts.
   newsTraderFlag: boolean;
+  // web4: the evidence behind newsTraderFlag (absent / null when there is no event history yet)
+  news?: NewsTraderEvidence | null;
+};
+
+export type NewsTrade = { openedAt: Date; currencies: string[]; closed: boolean; realizedPnl: Prisma.Decimal | null };
+export type NewsEvent = { eventAt: Date; currency: string };
+export type NewsTraderEvidence = {
+  flag: boolean;
+  newsTrades: number; // trades opened within +/-2 min of a matching high-impact event
+  totalTrades: number; // trades opened in the window
+  sharePct: number | null;
+  netPnl: string; // realized P/L of the CLOSED news trades, in the account currency, 2 dp
+  currency: string;
+  openNewsTrades: number; // news trades still open: counted in newsTrades / sharePct, not in netPnl
+  windowFrom: string; // ISO: the start actually used (the later of 30 days ago and the history start)
+  collectingHistory: boolean; // true while the history is shorter than the 30-day window
 };
 
 const WINDOW_DAYS = 30;
@@ -84,6 +95,50 @@ export function computeLatencyArbFlag(positions: RiskRadarPosition[]): boolean {
   const fastWinRate = (fastWins / fastTrades.length) * 100;
 
   return fastWinRate >= overallWinRate + LATENCY_ARB_WIN_RATE_DELTA_PCT;
+}
+
+// web4 (issues.md 151, owner 2026-09-30): news trading. Over the window, a trade is a NEWS trade when it was OPENED
+// within +/-2 minutes (inclusive, to the millisecond: 2:00 counts, 2:01 does not) of a HIGH-impact economic event
+// whose currency is one of the symbol's currencies (see symbolNewsCurrencies). Flag = at least 5 news trades AND
+// news trades are at least 30% of all trades opened in the window AND the realized P/L of the closed news trades is
+// above 0 (net profitable). A news trade still open counts toward the 5 and the 30% but not toward the P/L.
+export const NEWS_WINDOW_MS = 2 * 60_000;
+export const NEWS_MIN_TRADES = 5;
+export const NEWS_MIN_SHARE_PCT = 30;
+
+// The currencies whose news moves a symbol: its stored base and quote currency (Symbol.baseCurrency /
+// quoteCurrency), kept only when they are currency codes the calendar publishes (ForexFactory: USD EUR GBP JPY AUD
+// NZD CAD CHF CNY). EURUSD -> EUR + USD; XAUUSD / XAGUSD / XPTUSD (metals, base XAU/XAG/XPT) -> USD; BTCUSD / ETHUSD
+// (crypto) -> USD; US30 / NAS100 / US500 (indices, stored USD/USD) -> USD. A symbol with neither (a synthetic test
+// symbol) matches no event. Calendar rows for "All" (not one currency) are never recorded, so they never match.
+export const NEWS_CURRENCIES = new Set(["USD", "EUR", "GBP", "JPY", "AUD", "NZD", "CAD", "CHF", "CNY"]);
+export function symbolNewsCurrencies(symbol: { baseCurrency: string; quoteCurrency: string }): string[] {
+  return [...new Set([symbol.baseCurrency, symbol.quoteCurrency].map((c) => c.toUpperCase()))].filter((c) => NEWS_CURRENCIES.has(c));
+}
+
+export function computeNewsTraderFlag(
+  trades: NewsTrade[],
+  events: NewsEvent[],
+  ctx: { currency: string; windowFrom: Date; collectingHistory: boolean }
+): NewsTraderEvidence {
+  const inWindow = trades.filter((t) => t.openedAt.getTime() >= ctx.windowFrom.getTime());
+  const news = inWindow.filter((t) =>
+    events.some((e) => t.currencies.includes(e.currency) && Math.abs(t.openedAt.getTime() - e.eventAt.getTime()) <= NEWS_WINDOW_MS)
+  );
+  const net = news.filter((t) => t.closed).reduce((sum, t) => sum.add(t.realizedPnl ?? 0), new Prisma.Decimal(0));
+  const total = inWindow.length;
+  const flag = news.length >= NEWS_MIN_TRADES && news.length * 100 >= NEWS_MIN_SHARE_PCT * total && net.gt(0);
+  return {
+    flag,
+    newsTrades: news.length,
+    totalTrades: total,
+    sharePct: total > 0 ? Math.round((news.length / total) * 1000) / 10 : null,
+    netPnl: net.toFixed(2),
+    currency: ctx.currency,
+    openNewsTrades: news.filter((t) => !t.closed).length,
+    windowFrom: ctx.windowFrom.toISOString(),
+    collectingHistory: ctx.collectingHistory,
+  };
 }
 
 export function computeRiskRadarRow(accountId: string, accountNumber: string, positions: RiskRadarPosition[]): RiskRadarRow {
@@ -144,9 +199,51 @@ export async function computeRiskRadar(prisma: PrismaClient, brokerId: string): 
     byAccount.set(p.accountId, list);
   }
 
-  return accounts
+  const rows = accounts
     .map((a) => computeRiskRadarRow(a.id, a.accountNumber, byAccount.get(a.id) ?? []))
     .filter((r) => r.trades30d > 0);
+
+  // web4: the news-trading flag, from the high-impact event history (global, market-wide data) matched against THIS
+  // broker's own positions only.
+  const news = await computeNewsEvidence(prisma, brokerId, since);
+  for (const r of rows) {
+    const e = news.byAccount.get(r.accountId) ?? null;
+    r.news = e;
+    r.newsTraderFlag = e?.flag ?? false;
+  }
+  return rows;
+}
+
+export type NewsHistoryStatus = { historyFrom: string | null; windowFrom: string | null; collectingHistory: boolean };
+
+// The window is the last 30 days, but never earlier than where the history starts (lib/economic-events.ts
+// newsHistoryFrom): trades opened before the history cannot be judged, so they are neither news trades nor counted in
+// the 30% share. While the history is younger than 30 days the flag uses what exists and says so
+// (collectingHistory: true). With no history at all nothing is computed (every flag false, news null).
+export async function computeNewsEvidence(prisma: PrismaClient, brokerId: string, since: Date) {
+  const historyFrom = await newsHistoryFrom(prisma);
+  const byAccount = new Map<string, NewsTraderEvidence>();
+  if (!historyFrom) return { byAccount, status: { historyFrom: null, windowFrom: null, collectingHistory: true } as NewsHistoryStatus };
+  const windowFrom = historyFrom > since ? historyFrom : since;
+  const collectingHistory = historyFrom > since;
+  const [positions, events] = await Promise.all([
+    prisma.position.findMany({
+      where: { brokerId, openedAt: { gte: windowFrom }, deletedAt: null },
+      select: { accountId: true, openedAt: true, status: true, realizedPnl: true, symbol: { select: { baseCurrency: true, quoteCurrency: true } }, account: { select: { currency: true } } },
+    }),
+    prisma.economicEvent.findMany({
+      where: { impact: "high", eventAt: { gte: new Date(windowFrom.getTime() - NEWS_WINDOW_MS), lte: new Date(Date.now() + NEWS_WINDOW_MS) } },
+      select: { eventAt: true, currency: true },
+    }),
+  ]);
+  const grouped = new Map<string, { currency: string; trades: NewsTrade[] }>();
+  for (const p of positions) {
+    const g = grouped.get(p.accountId) ?? { currency: p.account.currency, trades: [] };
+    g.trades.push({ openedAt: p.openedAt, currencies: symbolNewsCurrencies(p.symbol), closed: p.status === "CLOSED", realizedPnl: p.realizedPnl });
+    grouped.set(p.accountId, g);
+  }
+  for (const [accountId, g] of grouped) byAccount.set(accountId, computeNewsTraderFlag(g.trades, events, { currency: g.currency, windowFrom, collectingHistory }));
+  return { byAccount, status: { historyFrom: historyFrom.toISOString(), windowFrom: windowFrom.toISOString(), collectingHistory } as NewsHistoryStatus };
 }
 
 // Same-IP multi-account detection -- a cross-account query (unlike every

@@ -2277,6 +2277,27 @@ model LoginEvent {
 // One row per source (id is the source name, e.g. "forexfactory") --
 // not broker-scoped, since market-wide economic events are the same
 // for every broker. See lib/economic-calendar-source.ts.
+// web4 (issues.md 151, owner 2026-09-30): the HISTORY of high-impact economic events, kept from the web4 deploy
+// forward, for the risk radar's news-trading flag. EconomicCalendarCache below only ever holds the current week
+// (ForexFactory's weekly feed, overwritten hourly), so without this there is no past to compare trades against.
+// Global (market-wide), not broker-scoped: it holds nothing about any broker. Written only by
+// lib/economic-events.ts recordHighImpactEvents (never deleted); `sourceKey` makes the upsert idempotent and lets a
+// re-timed event update its eventAt.
+model EconomicEvent {
+  id          String   @id @default(cuid())
+  sourceKey   String   @unique
+  source      String // "forexfactory"
+  eventAt     DateTime @db.Timestamptz(3) // UTC
+  currency    String // ForexFactory's `country`, which is the currency code (USD, EUR, ...)
+  impact      String // "high" (only high-impact events are kept)
+  title       String
+  firstSeenAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(3)
+
+  @@index([eventAt])
+  @@index([currency, eventAt])
+}
+
 model EconomicCalendarCache {
   id        String   @id
   events    Json

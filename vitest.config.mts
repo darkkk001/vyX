@@ -11,7 +11,10 @@ export default defineConfig({
   test: {
     environment: "node",
     // Hard production guard for every test file, host-based (scripts/lib/db-host-policy.mjs).
-    setupFiles: ["./vitest.setup.db-guard.ts"],
+    // web4: each test file runs against its own clone of the local test DB (vitest.global.isolated-db.ts explains
+    // why); the guard runs first so a production / non-allowlisted DATABASE_URL still refuses the whole run.
+    globalSetup: ["./vitest.global.isolated-db.ts"],
+    setupFiles: ["./vitest.setup.db-guard.ts", "./vitest.setup.isolated-db.ts"],
     include: ["**/*.test.ts"],
     exclude: ["node_modules/**", "services/**", "engine/**", "desktop-tauri/**", "manager-tauri/**", "admin-tauri/**"],
     // Default 5s is tight for lib/mirror.test.ts's live-DB-gated tests

@@ -1,6 +1,7 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import type { CalendarEvent } from "./economic-calendar";
+import { recordHighImpactEvents } from "@/lib/economic-events";
 
 // VYX-CALENDAR-FALLBACK-V0 -- Finnhub's economic calendar isn't included
 // in this deployment's configured key/plan tier (confirmed with a direct
@@ -83,6 +84,9 @@ export async function getEconomicCalendar(): Promise<CalendarFetchResult> {
       create: { id: CACHE_ID, events: events as unknown as object, fetchedAt: new Date() },
       update: { events: events as unknown as object, fetchedAt: new Date() },
     });
+    // web4 (issues.md 151): keep this week's high-impact events for good (the news-trading flag's history). Best-effort:
+    // a failure here never breaks the calendar the traders see.
+    await recordHighImpactEvents(prisma, events).catch((e) => console.warn("[economic-calendar] recording event history failed", e instanceof Error ? e.message : e));
     return { events, source: "forexfactory" };
   } catch (err) {
     console.warn("[economic-calendar] ForexFactory fetch failed", err instanceof Error ? err.message : err);
