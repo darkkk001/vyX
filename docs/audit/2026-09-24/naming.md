@@ -415,23 +415,27 @@ The labels come from `ui-map.md` (the bo-* and term-* sections). They were check
 | NTF | TYPE | keep | — | Kind of notification. |
 | NTF | TITLE | keep | — | Short headline. |
 | NTF | BODY | Message | — | Full notification text. |
-| NTF | ENTITY | Related record | — | The account/request it is about. |
-| NTF | Open the record | keep | — | Go to the screen for the related record. |
-| NTF | Mark read | keep | — | Mark this notification as read. |
+| NTF | ENTITY | Related record | — | The account/request it is about; hidden by default so the table fits at 1366 (in Columns and the side panel) (owner 2026-09-30). |
+| NTF | Open the record | Open {record} | — | One label naming the record (Open client, Open closed trade, Review ID check …) in the menu, right-click and side panel; "Open the record" only as the disabled item when there is no screen (owner 2026-09-30). |
+| NTF | Mark read | keep | — | Mark this notification as read; disabled "already read" when read (owner 2026-09-30). |
 | NTF | Reset trader password… | Reset client password… | — | Generate a new password for the client (shown once). |
 | NTF | 2) DETAIL  NOTIFICATION | Notification | — | The selected notification. |
 | NTF | state · type · entity · created | Status · Type · Related record · Received (UTC) | UTC | Details of the notification. |
-| NTF | OPEN {CODE} | Open {screen name} | — | Go to the related screen (no code shown). |
+| NTF | OPEN {CODE} | Open {record} | — | Same label as the menu item (owner 2026-09-30). |
 | NTF | REVIEW KYC | Review ID check | — | Open the ID check (KYC) for this client. |
 | NTF | MARK READ | Mark read | — | Mark this notification as read. |
 | NTF | RESET PASSWORD | Reset client password | — | Generate a new client password. |
-| NTF | NO LINKED SCREEN | No related screen | — | This notification has nothing to open. |
+| NTF | NO LINKED SCREEN | no related screen | — | Reason on the disabled "Open the record" item (owner 2026-09-30). |
 | NTF | SELECT A NOTIFICATION | keep | — | Empty detail state. |
 | NTF | MARK ALL READ (confirm) | Mark all read | — | Confirm dialog title. |
 | NTF | MARK ALL (button) | Mark all read | — | Confirm button. |
 | NTF | RESET TRADER PASSWORD (confirm) | Reset client password | — | Confirm dialog title. |
 | NTF | RESET (button) | Reset password | — | Confirm button. |
-| NTF | NEW PASSWORD · SHOWN ONCE | New password (Shown Once) | — | Copy it now; it cannot be shown again. |
+| NTF | NEW PASSWORD · SHOWN ONCE | NEW PASSWORD (SHOWN ONCE) | — | Dialog title, upper case like every dialog title; copy it now, it cannot be shown again (owner 2026-09-30). |
+| NTF | MESSAGE (side panel section, new) | Message | — | The full notification text (owner 2026-09-30). |
+| NTF | MARK SELECTED READ (selection bar, new) | Mark selected read | — | Marks the ticked unread notifications read; read ones are skipped and counted (owner 2026-09-30). |
+| NTF | already read (reason, new) | keep | — | Why Mark read is disabled (owner 2026-09-30). |
+| NTF | Copy ▸ (new) | Copy: Title / Message / Related record | — | Row menu, right-click, side panel (owner 2026-09-30). |
 
 ### Live exposure (EXP)
 
@@ -1641,18 +1645,24 @@ Hidden until an LP bridge exists: the screen is merged into Liquidity providers,
 | AUD | WHEN | When (UTC) | UTC | Time of the change. |
 | AUD | ACTOR | Done by | — | Staff or system that made the change. |
 | AUD | ACTION | keep | — | What was done. |
-| AUD | ENTITY | Record type | — | Kind of record changed. |
+| AUD | ENTITY | Record type | — | Kind of record changed; hidden by default so the table fits at 1366 (in Columns and the side panel) (owner 2026-09-30). |
 | AUD | ORDER | Ticket # | — | Related order, if any. |
-| AUD | ACCOUNT | keep | — | Related account. |
-| AUD | FIELDS CHANGED | keep | — | Number of values changed. |
-| AUD | Before → after (detail) | Show changes | — | Open the before/after panel. |
-| AUD | Open the record | keep | — | Go to the changed record. |
+| AUD | ACCOUNT | keep | — | Related account: the order's, else the record's own account number (an account, or a position / order / transaction label ending in its account) (owner 2026-09-30). |
+| AUD | FIELDS CHANGED | keep | — | Number of values changed; hidden by default so the table fits at 1366 (owner 2026-09-30). |
+| AUD | Before → after (detail) | Show changes | — | Open the before/after panel (menu, right-click, side panel) (owner 2026-09-30). |
+| AUD | Open the record | Open {record} | — | One label naming the record (Open client, Open closed trade, Open Liquidity providers …); "Open the record" only as the disabled item with "no related screen" (owner 2026-09-30). |
 | AUD | Open client | keep | — | Open the related client. |
-| AUD | 2) DIFF  BEFORE → AFTER | Changes | — | Values before and after. |
+| AUD | 2) DIFF  BEFORE → AFTER | Changes | — | Panel title CHANGES; values before and after as the server recorded them (no money format / CCY) (owner 2026-09-30). |
 | AUD | actor · action · entity · record · order · when | Done by · Action · Record type · Record · Ticket # · When (UTC) | UTC | Entry details. |
 | AUD | CHANGES (section) · (removed) | Changes · (removed) | — | Each changed value. |
-| AUD | OPEN {CODE} | Open {screen name} | — | Go to the related screen. |
+| AUD | OPEN {CODE} | Open {record} | — | Same label as the menu item (owner 2026-09-30). |
 | AUD | SELECT AN ENTRY / NO FIELD CHANGES RECORDED | keep | — | Empty states. |
+| AUD | Done by: no staff member (new) | System | — | The server's "system": an automatic change or a client's own action (the server does not tell them apart yet) (owner 2026-09-30). |
+| AUD | Done by: direct database change (new) | Direct database change | — | An owner-approved direct database write (no staff member, a source text); also a DIRECT DATABASE CHANGE tag (owner 2026-09-30). |
+| AUD | SOURCE (side panel section, new) | Source | — | The full source text of a direct database change (owner 2026-09-30). |
+| AUD | Empty value in Changes (new) | (blank: inherits) / (empty) | — | The server's null ("-"): (blank: inherits) for an inheritable setting (swapFree, spreadMarkup, targetTotalSpreadPips, commissionPerLot, swapLong, swapShort), (empty) otherwise; same in the CSV (owner 2026-09-30). |
+| AUD | no related screen (reason, new) | keep | — | Why Open the record is disabled (owner 2026-09-30). |
+| AUD | Copy ▸ (new) | Copy: Record / Ticket # / Account / Changes / Entry ID | — | Row menu, right-click, side panel (owner 2026-09-30). |
 
 ### Security (SEC)
 

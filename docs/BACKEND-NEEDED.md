@@ -40,6 +40,9 @@ Not blocking any screen (each works today with an extra read); ship them with th
 | funds view KPIs (DEP) | Totals per currency instead of one sum | The DEP tiles add all currencies together today (noted MIXED CCY) | 2026-09-30, owner |
 | `GET /api/manage/ib-relationships` | Add `currency` per row (the partner account's) | IB reads the accounts list a second time for CCY | 2026-09-30, owner |
 | `GET /api/manage/symbols` | Add `sessionCount` per symbol | SYM's trading-hours summary ("Custom" / "Default week" / "24/7") reads each symbol's sessions separately (6 at a time) | suggested 2026-09-29, not yet decided |
+| `GET /api/manage/audit` | Add `actorKind` (staff / system / client / direct database change) and `source` per row | The server sends "system" for every row with no staff member, so AUD cannot tell a client's own change from an automatic one; the direct-change source is read from the change lines today | 2026-09-30, owner |
+| `GET /api/manage/audit` (entity labels) | A screen or a label for "Client" (portal profile) records | Those rows have no screen to open (Open is disabled "no related screen") and no readable record label | 2026-09-30, owner |
+| `/manager/login`, `/manage/login` | The page `<title>` says the broker's name, not "VyXTrader" | Seen on futurixglobal.com and the futurixglobal subdomain | 2026-09-30, owner: "goes in the next web deploy" |
 
 ## D4 (Account types removal): open item
 
