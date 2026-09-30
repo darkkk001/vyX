@@ -25,6 +25,7 @@ does them yet. Each row is what the screen needs from the web API before the act
 | LP | Delete provider… | `DELETE /api/manage/liquidity-providers/{id}` (records can only be edited today) | 2026-09-30, owner |
 | LP | Status "Connected" | Set by the LP bridge when a session is live, not by hand | 2026-09-30, owner |
 | LP | Routing rules (add / delete / priority; hidden) | The LP bridge reading `lp-routing`; until then rules are saved but never read | 2026-09-30, owner |
+| FEED | Restart price feed | An audited endpoint that restarts the MT5 price-feed program on the server (will later live in VyX Connect's Feed Manager) | 2026-09-30, owner |
 
 ## Web changes queued for the next web deploy
 

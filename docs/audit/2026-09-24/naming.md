@@ -206,7 +206,7 @@ The labels come from `ui-map.md` (the bo-* and term-* sections). They were check
 | SHELL | Margin | keep | — | Accounts near margin call or stop-out. |
 | SHELL | Liquidity | Liquidity providers | — | Liquidity provider records and how orders fill today; no provider is connected until an LP bridge exists (owner 2026-09-30). |
 | SHELL | Liquidity routing | remove | — | Merged into Liquidity providers and hidden until an LP bridge exists; no nav entry (owner 2026-09-30). |
-| SHELL | Feed health | Price feed health | — | Is the price feed live, per symbol. |
+| SHELL | Feed health | Price feed health | — | Is the price feed live, per symbol (owner 2026-09-30). |
 | SHELL | Clients | keep | — | All client accounts. |
 | SHELL | Leads | keep | — | Prospects not yet clients. |
 | SHELL | IB partners | Partners (IB) | — | Introducing brokers and their clients. |
@@ -1132,16 +1132,17 @@ Hidden until an LP bridge exists: the screen is merged into Liquidity providers,
 
 | Screen | Current label | Proposed name | Unit | Tooltip (one line) |
 |---|---|---|---|---|
-| FEED | TRADING CORE (KPI) | Trading server | — | Whether the trading server answers. |
-| FEED | GATEWAY (KPI) | Client connection server | — | Whether the server clients connect to answers. |
+| FEED | TRADING CORE (KPI) | Trading server | — | Whether the trading server answers (owner 2026-09-30). |
+| FEED | GATEWAY (KPI) | Client server | — | Whether the server clients connect to answers; short so eight tiles fit at 1366, the panel keeps "Client connection server" (owner 2026-09-30). |
 | FEED | PRICE ALERTS (KPI) | Price alerts | — | Whether client price alerts are running. |
-| FEED | SYMBOLS TICKING (KPI) | Symbols with live prices | — | Symbols receiving prices now. |
-| FEED | STALE · > 60 S (KPI) | Stale prices (> 60 s) | — | Symbols with no new price for over 60 seconds. |
+| FEED | SYMBOLS TICKING (KPI) | Live symbols | — | Symbols with a price at most 15 s old; short so eight tiles fit at 1366 (owner 2026-09-30). |
+| FEED | STALE · > 60 S (KPI) | Stale prices (> 15 s) | — | Symbols with no new price for over 15 seconds: the server's own rule, such a price cannot fill an order or trigger a stop-out (replaces > 60 s) (owner 2026-09-30). |
 | FEED | EA → ENGINE p50 / p95 (KPI) | Price delay (ms, typical / slow) | — | Time from price source to trading server. |
-| FEED | ROUND TRIP (KPI) | Server round trip (ms) | — | Time for a request to the trading server and back. |
-| FEED | ORDER ACK p50 / p95 (KPI) | Order confirmation time (ms, typical / slow) | — | Time to confirm an order. |
+| FEED | ROUND TRIP (KPI) | Round trip (ms) | ms | Time for a request to the trading server and back; short so eight tiles fit at 1366, the panel keeps "Server round trip (ms)" (owner 2026-09-30). |
+| FEED | ORDER ACK p50 / p95 (KPI) | Order confirm (ms) | ms | Time to confirm an order; "typical / slow" in the note under the value; the panel keeps the full words (owner 2026-09-30). |
 | FEED | 1) CORE  TRADING CORE · FEED STATS | Trading server | — | Price feed statistics on the trading server. |
-| FEED | EA → engine last / p50 / p95; p99 / max | Price delay (ms): last / typical / slow / slowest | — | Delay from price source. |
+| FEED | EA → engine last / p50 / p95 | Price delay (ms): last / typical / slow | ms | Delay from the price source (owner 2026-09-30). |
+| FEED | p99 / max | Price delay (ms): slowest / max | ms | Slowest 1% and the largest delay (owner 2026-09-30). |
 | FEED | samples | Samples | — | Prices measured. |
 | FEED | ticks in | Prices received | — | Price updates received. |
 | FEED | queue length | Waiting prices | — | Prices not processed yet. |
@@ -1151,28 +1152,36 @@ Hidden until an LP bridge exists: the screen is merged into Liquidity providers,
 | FEED | DB ok / fail (lag) | Database saves ok / failed (delay) | — | Database writes. |
 | FEED | round-trip time | Server round trip (ms) | — | Request time to the server. |
 | FEED | mono → UTC offset | Clock offset (ms) | — | Server clock vs UTC. |
-| FEED | NO SNAPSHOT · trading core not reachable | No data: trading server not reachable | — | Error state. |
+| FEED | NO SNAPSHOT · trading core not reachable | No data (title) / trading server not reachable (reason under it) | — | Error state: title + reason in the panels, one line "No data: trading server not reachable" in the table (owner 2026-09-30). |
 | FEED | 2) GW  API GATEWAY | Client connection server | — | Stats of the server clients connect to. |
 | FEED | WS connections / disconnections | Client connections / disconnections | — | Live client links. |
 | FEED | ticks forwarded | Prices sent to clients | — | Price updates forwarded. |
 | FEED | NATS messages received | Internal messages received | — | Messages from the trading server. |
 | FEED | order-ack p50 / p95 / samples | Order confirmation time (ms, typical / slow) / samples | — | Order confirmation speed. |
-| FEED | NO SNAPSHOT · gateway not reachable | No data: client connection server not reachable | — | Error state. |
+| FEED | NO SNAPSHOT · gateway not reachable | No data (title) / client connection server not reachable (reason under it) | — | Error state (owner 2026-09-30). |
 | FEED | 3) ALERTS  PRICE-ALERT ENGINE | Price alerts | — | Client price-alert service. |
 | FEED | active alerts / triggered (total) | Active alerts / Triggered (total) | — | Alert counts. |
 | FEED | persist failures | Save failures | — | Alerts that failed to save. |
 | FEED | hot-reload add / cancel / malformed | Alert updates: added / cancelled / invalid | — | Live alert changes. |
 | FEED | 4) SYM  PER-SYMBOL FEED | Price feed per symbol | — | Price updates for each symbol. |
-| FEED | <n> LIVE · <n> STALE / CORE NOT REACHABLE | {n} live · {n} stale / Trading server not reachable | — | Totals. |
+| FEED | <n> LIVE · <n> STALE / CORE NOT REACHABLE | {n} live · {n} stale / Trading server not reachable | — | Totals; stale = older than 15 s (owner 2026-09-30). |
 | FEED | SYMBOL | keep | — | Symbol. |
-| FEED | TICKS | Price updates | — | Updates since start. |
+| FEED | TICKS | remove | — | Updates since start: the server sends only the 60 s count, so only Updates (60 s) is shown (owner 2026-09-30). |
 | FEED | 60 S | Updates (60 s) | — | Updates in the last minute. |
 | FEED | LAST TICK | Last price update | — | Seconds since the last price. |
 | FEED | BID / ASK | keep | — | Latest prices. |
-| FEED | SOURCE | Price origin | — | Where the price comes from. |
-| FEED | FEED (LIVE / STALE) | Price feed (Live / Stale) | — | Whether prices are arriving. |
+| FEED | SOURCE | Price origin | — | Where the price comes from: MT5 (interim), or Synthetic (test) for the shadow-bot test symbols only (owner 2026-09-30). |
+| FEED | FEED (LIVE / STALE) | Price feed (Live / Stale) | — | Live = a price at most 15 s old; Stale = older (the server's own rule) (owner 2026-09-30). |
 | FEED | Symbol settings | keep | — | Open the symbol's settings. |
 | FEED | Live exposure · this symbol | Live exposure for this symbol | — | Open Live Exposure filtered to it. |
+| FEED | Price-source line (new) | Price source: the MT5 price feed (interim) · one MT5 terminal on the server sends every symbol's price · no paid or liquidity-provider feed is connected · a price older than 15 s cannot fill an order or trigger a stop-out | — | Always shown under the KPIs (owner 2026-09-30). |
+| FEED | Price origin values (new) | MT5 (interim) / Synthetic (test) | — | Synthetic only for the shadow-bot tenant's test symbols (owner 2026-09-30). |
+| FEED | Price alerts empty state (new) | No data (title) / price alerts not answering (reason under it) | — | Trading server up, price alerts not answering (owner 2026-09-30). |
+| FEED | Symbol table empty state (new) | No prices received since the trading server started | — | Trading server up, no symbol priced yet (owner 2026-09-30). |
+| FEED | Last price update (UTC) (side panel, new) | keep | UTC | When the last price arrived (owner 2026-09-30). |
+| FEED | Orders (side panel, new) | can fill at this price / wait for a fresh price (older than 15 s) | — | What an order on this symbol can do now (owner 2026-09-30). |
+| FEED | RESTART PRICE FEED (new) | Restart price feed | — | Shown disabled, backend needed; will later live in VyX Connect's Feed Manager (owner 2026-09-30). |
+| FEED | Copy ▸ (symbol menu) | Copy: Symbol / Bid / Ask / Bid / ask | — | Row menu, right-click and side panel (owner 2026-09-30). |
 
 ### Clients (CLI)
 
