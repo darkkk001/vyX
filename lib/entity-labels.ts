@@ -101,6 +101,15 @@ export async function resolveEntityLabels(brokerId: string, refs: EntityRef[]): 
         .then((rows) => rows.filter((r) => r.client.brokerId === brokerId).forEach((r) => out.set(r.id, `${r.client.fullName || r.client.email}`)))
     );
   }
+  if (ids("CLIENT").length) {
+    // Step 2 (owner 2026-09-30): a client-portal person (Client), e.g. CLIENT_PROFILE_UPDATED rows; the readable label
+    // is the name, else the e-mail, plus the first trading account number when there is one.
+    jobs.push(
+      prisma.client
+        .findMany({ where: { id: { in: ids("CLIENT") }, brokerId }, select: { id: true, fullName: true, email: true, accounts: { select: { accountNumber: true }, orderBy: { accountNumber: "asc" }, take: 1 } } })
+        .then((rows) => rows.forEach((c) => out.set(c.id, `Client ${c.fullName || c.email}${c.accounts[0] ? ` · ${c.accounts[0].accountNumber}` : ""}`)))
+    );
+  }
   if (ids("IBRELATIONSHIP").length) {
     jobs.push(
       prisma.ibRelationship

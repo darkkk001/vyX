@@ -3,7 +3,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { resolveEntityLabels } from "@/lib/entity-labels";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
-import { humanizeAction, auditEntityHref, excludeSuperAdminActor, summarizeAuditDiff, extractOrderIdentity } from "@/lib/audit-labels";
+import { humanizeAction, auditEntityHref, excludeSuperAdminActor, summarizeAuditDiff, extractOrderIdentity, auditActorKind, auditSource } from "@/lib/audit-labels";
 
 // Same query app/manage/(shell)/audit/page.tsx's Server Component used
 // to do inline -- exposed as JSON so AuditLogTable.tsx can fetch it
@@ -87,6 +87,9 @@ export async function GET(request: NextRequest) {
     logs.map((log) => ({
       id: log.id,
       actorEmail: log.actorAdmin?.email ?? "system",
+      // Step 2 (owner 2026-09-30): STAFF / SYSTEM / CLIENT / DIRECT (lib/audit-labels.ts auditActorKind) + the direct change's note
+      actorKind: auditActorKind(log),
+      source: auditSource(log.newValue),
       actionLabel: humanizeAction(log.action),
       // Phase 2 batch 6 (issue 78): the raw action, so a client can route a row (RISK_* / DEALING_* -> their screens)
       action: log.action,

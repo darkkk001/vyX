@@ -571,6 +571,7 @@ model AdminUser {
   reviewedBalanceAdjustments  BalanceAdjustmentRequest[] @relation("BalanceAdjustmentReviewedBy")
   createdMirrorRules          MirrorRule[]
   backupCodes                 AdminBackupCode[]
+  assignedLeads               Lead[]                     @relation("LeadAssignee")
   reviewedClientKyc           ClientKycRecord[]          @relation("ClientKycReviewedBy")
   reviewedLiveAccountRequests LiveAccountRequest[]       @relation("LiveAccountRequestReviewedBy")
 
@@ -752,8 +753,17 @@ model Account {
   positions    Position[]
   loginEvents  LoginEvent[]
 
-  ibLinkAsIb     IbRelationship[] @relation("IbAccount")
-  ibLinkAsClient IbRelationship?  @relation("ClientAccount")
+  ibLinkAsIb IbRelationship[] @relation("IbAccount")
+
+  // Step 2 (owner 2026-09-30, IB "Suspend partner"): set while this account, as a PARTNER (it has ibLinkAsIb links),
+  // is suspended. Suspended = no new partner pay accrues for any of its clients (lib/commission.ts stops counting at
+  // this moment) and every payout is refused, except an explicit, audited admin release of the frozen owed amount
+  // (POST /api/manage/ib-partners/{ibAccountId}/release-owed). Owed pay is kept, never zeroed. null = not suspended.
+  // A partner-level flag on the partner's own account (not per link), so every link, including a new one, reads the
+  // same state. Unrelated to Account.status (the account can still trade and log in).
+  ibSuspendedAt           DateTime?                  @db.Timestamptz(3)
+  ibSuspendedById         String?
+  ibLinkAsClient          IbRelationship?            @relation("ClientAccount")
   balanceRequestsAsTarget BalanceAdjustmentRequest[] @relation("BalanceRequestTarget")
 
   convertedFromLead Lead?
@@ -938,6 +948,11 @@ model Lead {
 
   convertedAccountId String?  @unique
   convertedAccount   Account? @relation(fields: [convertedAccountId], references: [id])
+
+  // Step 2 (owner 2026-09-30, CRM "Assign to staff"): the staff member who owns this lead. Same broker, ACTIVE staff
+  // only (app/api/manage/leads/[id] PATCH). null = unassigned. Removing the staff row un-assigns, never deletes.
+  assignedAdminId String?
+  assignedAdmin   AdminUser? @relation("LeadAssignee", fields: [assignedAdminId], references: [id], onDelete: SetNull)
 
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)

@@ -242,3 +242,60 @@ async function patchHandler(request: NextRequest, { params }: { params: Promise<
 
 // Batch 5 (real-time): a successful write announces the change to every open client (lib/config-events.ts)
 export const PATCH = withConfigEvent("mirror", patchHandler);
+
+// Step 2 (owner 2026-09-30): MIR "Delete copy rule…". Only a rule that is not copying (DISABLED, or stopped by a limit)
+// and none of whose copies is still live: every link's source AND copied position must be closed, else 409 with the
+// reason. The rule and its links go; every position stays (trades are never deleted). The audit row keeps a full
+// snapshot of the rule and every source -> copy pair, so the history is not lost. Row-locked, so a concurrent
+// re-enable or a new copy cannot slip in between the check and the delete.
+async function deleteHandler(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const session = await requireMirrorManage();
+  if (!session) return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  const { id } = await params;
+  const brokerId = session.brokerId!;
+
+  const result = await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM "MirrorRule" WHERE id = ${id} FOR UPDATE`;
+    const rule = await tx.mirrorRule.findFirst({ where: { id, brokerId } });
+    if (!rule) return { status: 404 as const, error: "not found" };
+    if (ruleStatus(rule) === "ACTIVE") return { status: 409 as const, error: "disable the copy rule before deleting it" };
+    const links = await tx.mirrorLink.findMany({ where: { ruleId: id }, select: { sourcePositionId: true, targetPositionId: true } });
+    const positionIds = links.flatMap((l) => [l.sourcePositionId, l.targetPositionId]);
+    const open = positionIds.length ? await tx.position.count({ where: { id: { in: positionIds }, status: "OPEN" } }) : 0;
+    if (open > 0) {
+      return { status: 409 as const, error: `${open} copied position${open === 1 ? " is" : "s are"} still open: close ${open === 1 ? "it" : "them"} before deleting the rule` };
+    }
+    await tx.mirrorLink.deleteMany({ where: { ruleId: id } });
+    await tx.mirrorRule.delete({ where: { id } });
+    await tx.auditLog.create({
+      data: {
+        brokerId,
+        actorAdminId: session.adminId,
+        action: "MIRROR_RULE_DELETED",
+        entityType: "MirrorRule",
+        entityId: id,
+        oldValue: {
+          sourceType: rule.sourceType,
+          sourceId: rule.sourceId,
+          targetAccountId: rule.targetAccountId,
+          direction: rule.direction,
+          multiplier: rule.multiplier.toString(),
+          fillPriceMode: rule.fillPriceMode,
+          symbolFilter: rule.symbolFilter,
+          maxOpenLots: rule.maxOpenLots?.toString() ?? null,
+          maxDailyLoss: rule.maxDailyLoss?.toString() ?? null,
+          status: ruleStatus(rule),
+          createdAt: rule.createdAt.toISOString(),
+          links,
+        },
+        newValue: { deleted: true, linksRemoved: links.length },
+      },
+    });
+    return { status: 200 as const, linksRemoved: links.length };
+  });
+
+  if (result.status !== 200) return NextResponse.json({ error: result.error }, { status: result.status });
+  return NextResponse.json({ id, deleted: true, linksRemoved: result.linksRemoved });
+}
+
+export const DELETE = withConfigEvent("mirror", deleteHandler);

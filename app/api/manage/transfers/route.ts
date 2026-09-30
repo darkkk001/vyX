@@ -26,7 +26,7 @@ export async function GET() {
 
   const transfers = await prisma.transaction.findMany({
     where: { brokerId: session.brokerId!, type: { in: ["TRANSFER_OUT", "TRANSFER_IN"] } },
-    include: { account: { select: { accountNumber: true } } },
+    include: { account: { select: { accountNumber: true, currency: true } } },
     orderBy: { createdAt: "desc" },
     take: 200,
   });
@@ -37,6 +37,7 @@ export async function GET() {
       accountNumber: t.account.accountNumber,
       type: t.type,
       amount: t.amount.toString(),
+      currency: t.account.currency, // Step 2 (owner 2026-09-30): the entry's account currency
       note: t.note,
       createdAt: t.createdAt.toISOString(),
     }))

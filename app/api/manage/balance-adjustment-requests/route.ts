@@ -21,7 +21,7 @@ export async function GET(request: Request) {
   const rows = await prisma.balanceAdjustmentRequest.findMany({
     where: { brokerId, ...(statusFilter ? { status: statusFilter } : {}) },
     include: {
-      account: { select: { accountNumber: true, fullName: true, balance: true } },
+      account: { select: { accountNumber: true, fullName: true, balance: true, currency: true } },
       toAccount: { select: { accountNumber: true, fullName: true } },
       ibRelationship: { select: { clientAccount: { select: { accountNumber: true } } } },
       requestedByAdmin: { select: { email: true } },
@@ -40,6 +40,7 @@ export async function GET(request: Request) {
       toAccount: r.toAccount ? { id: r.toAccountId, accountNumber: r.toAccount.accountNumber, fullName: r.toAccount.fullName } : null,
       ibClientAccountNumber: r.ibRelationship?.clientAccount.accountNumber ?? null,
       amount: r.amount.toString(),
+      currency: r.account.currency, // Step 2 (owner 2026-09-30): amount + balance are in the account's currency
       note: r.note,
       reviewNote: r.reviewNote,
       createdAt: r.createdAt,
@@ -52,6 +53,7 @@ export async function GET(request: Request) {
         accountNumber: r.account.accountNumber,
         fullName: r.account.fullName,
         balance: r.account.balance.toString(),
+        currency: r.account.currency,
       },
     }))
   );

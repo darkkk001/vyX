@@ -20,7 +20,7 @@ export async function GET() {
     where: { brokerId, type: { in: ["DEPOSIT", "WITHDRAWAL"] } },
     include: {
       // issue 132: whether a withdrawal could be paid (the account's own KYC, or its portal client's)
-      account: { select: { accountNumber: true, fullName: true, balance: true, kycRecord: { select: { status: true } }, client: { select: { kycRecord: { select: { status: true } } } } } },
+      account: { select: { accountNumber: true, fullName: true, balance: true, currency: true, kycRecord: { select: { status: true } }, client: { select: { kycRecord: { select: { status: true } } } } } },
       markedByAdmin: { select: { email: true } },
     },
     orderBy: [{ status: "asc" }, { createdAt: "desc" }],
@@ -28,12 +28,14 @@ export async function GET() {
   });
 
   const broker = await prisma.broker.findUniqueOrThrow({ where: { id: session!.brokerId! }, select: { withdrawalApproval: true } });
-  const kpis = await fundsKpis(brokerId);
+  const [kpis, kpisByCurrency] = await Promise.all([fundsKpis(brokerId), fundsKpisByCurrency(brokerId)]);
   return NextResponse.json({
     currentAdminId: session!.adminId,
     // D5: SINGLE = a BROKER_ADMIN's APPROVE completes a withdrawal at once; DUAL = mark + a second admin confirms
     withdrawalApproval: broker.withdrawalApproval,
     kpis,
+    // Step 2 (owner 2026-09-30): the same tiles per account currency, never summed across currencies. `kpis` stays for older clients.
+    kpisByCurrency,
     rows: requests.map((t) => ({
       id: t.id,
       type: t.type,
@@ -46,6 +48,7 @@ export async function GET() {
       accountNumber: t.account.accountNumber,
       accountFullName: t.account.fullName,
       currentBalance: t.account.balance.toString(),
+      currency: t.account.currency, // Step 2: the account's currency (amount and balance are in it)
       markedByAdminId: t.markedByAdminId,
       markedByAdminEmail: t.markedByAdmin?.email ?? null,
       createdAt: t.createdAt.toISOString(),
@@ -79,4 +82,42 @@ async function fundsKpis(brokerId: string) {
     avgDeposit30d: dep30.count > 0 ? new Prisma.Decimal(dep30.amount).div(dep30.count).toFixed(2) : null,
     rejectedAllTime: rejected,
   };
+}
+
+// Step 2 (owner 2026-09-30): fundsKpis split by the account's currency. Transaction has no currency of its own; its
+// amount is in the account's currency, so the split joins Account. Same windows and sign rule as fundsKpis.
+type CcyRow = { currency: string; type: "DEPOSIT" | "WITHDRAWAL"; status: string; recent: boolean; n: bigint; total: Prisma.Decimal | null };
+async function fundsKpisByCurrency(brokerId: string) {
+  const since30 = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+  const rows = await prisma.$queryRaw<CcyRow[]>`
+    SELECT a.currency, t.type::text AS type, t.status::text AS status, (t."createdAt" >= ${since30}) AS recent,
+           COUNT(*)::bigint AS n, SUM(t.amount) AS total
+    FROM "Transaction" t JOIN "Account" a ON a.id = t."accountId"
+    WHERE t."brokerId" = ${brokerId} AND t.type IN ('DEPOSIT', 'WITHDRAWAL') AND t.status IN ('PENDING', 'COMPLETED')
+    GROUP BY 1, 2, 3, 4`;
+  const out = new Map<string, { count: number; sum: Prisma.Decimal }[]>();
+  const slot = (ccy: string) => {
+    if (!out.has(ccy)) out.set(ccy, [0, 1, 2, 3].map(() => ({ count: 0, sum: new Prisma.Decimal(0) })));
+    return out.get(ccy)!;
+  };
+  for (const r of rows) {
+    const s = slot(r.currency);
+    const add = (i: number) => {
+      s[i].count += Number(r.n);
+      s[i].sum = s[i].sum.add(new Prisma.Decimal(r.total ?? 0).abs());
+    };
+    if (r.status === "PENDING") add(r.type === "DEPOSIT" ? 0 : 1);
+    else if (r.recent) add(r.type === "DEPOSIT" ? 2 : 3);
+  }
+  const f = (x: { count: number; sum: Prisma.Decimal }) => ({ count: x.count, amount: x.sum.toFixed(2) });
+  return [...out.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([currency, s]) => ({
+      currency,
+      pendingDeposits: f(s[0]),
+      pendingWithdrawals: f(s[1]),
+      deposits30d: f(s[2]),
+      withdrawals30d: f(s[3]),
+      avgDeposit30d: s[2].count > 0 ? s[2].sum.div(s[2].count).toFixed(2) : null,
+    }));
 }

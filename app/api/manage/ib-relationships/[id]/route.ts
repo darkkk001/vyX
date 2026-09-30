@@ -4,7 +4,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession } from "@/lib/auth";
 import { forbidUnlessBrokerAdminOrPermission } from "@/lib/permissions";
-import { executeIbPayout, IbPayoutError } from "@/lib/ib-payout";
+import { executeIbPayout, IbPayoutError, IbPayoutRefusedError, ibPayoutRefusal } from "@/lib/ib-payout";
 import { lockAccruedCommission } from "@/lib/commission";
 import { balanceAdjustmentNeedsApproval, requestBalanceAdjustment, pendingIbCommission, BalanceAdjustmentError } from "@/lib/balance-adjustment";
 
@@ -30,6 +30,10 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   const body = await request.json().catch(() => null);
 
   if (body?.action === "PAY") {
+    // Step 2: refuse up front when the partner's state forbids a payout (account not ACTIVE, partner suspended), so a
+    // MANAGER is not left with a request that can only fail at approval. Execution re-checks on the locked row.
+    const refusal = await ibPayoutRefusal(prisma, existing.ibAccountId);
+    if (refusal) return NextResponse.json({ error: refusal }, { status: 409 });
     // Audit 2026-09-24 (money): the same maker-checker rule as a balance adjustment -- a MANAGER (IB_PAYOUTS) files
     // the payout for a second admin's approval (lib/balance-adjustment.ts, kind IB_PAYOUT); BROKER_ADMIN pays
     // directly. The amount is recomputed at execution either way (lib/ib-payout.ts).
@@ -61,6 +65,9 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         lastPayoutAt: result.lastPayoutAt.toISOString(),
       });
     } catch (error) {
+      if (error instanceof IbPayoutRefusedError) {
+        return NextResponse.json({ error: error.message }, { status: 409 });
+      }
       if (error instanceof IbPayoutError) {
         return NextResponse.json({ error: error.message }, { status: 400 });
       }

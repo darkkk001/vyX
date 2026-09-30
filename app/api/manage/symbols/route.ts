@@ -52,7 +52,7 @@ export async function GET() {
   const [allSymbols, seesSynthetic] = await Promise.all([
     prisma.symbol.findMany({
       orderBy: { name: "asc" },
-      include: { brokerSymbols: { where: { brokerId: session.brokerId! } } },
+      include: { brokerSymbols: { where: { brokerId: session.brokerId! }, include: { _count: { select: { tradingSessions: true } } } } },
     }),
     brokerMaySeeSynthetic(prisma, session.brokerId!),
   ]);
@@ -81,6 +81,9 @@ export async function GET() {
       hedgedMarginPct: cfg ? cfg.hedgedMarginPct.toString() : DEFAULTS.hedgedMarginPct,
       // Phase 2 batch 8 (issue 188): minimum SL/TP distance from the price, in points (validateSlTp); 0 = none
       stopLevel: cfg ? cfg.stopLevel : DEFAULTS.stopLevel,
+      // Step 2 (owner 2026-09-30): how many trading-hours rows this broker has for the symbol (0 = the default week),
+      // so SYM's hours summary needs no per-symbol sessions read.
+      sessionCount: cfg ? cfg._count.tradingSessions : 0,
     };
   });
 

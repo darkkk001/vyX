@@ -38,7 +38,7 @@ async function serializeRule(rule: {
   failureCount: number;
   createdAt: Date;
   createdBy: { email: string };
-}, groupsById: Map<string, string>, accountsById: Map<string, { accountNumber: string; fullName: string }>) {
+}, groupsById: Map<string, string>, accountsById: Map<string, { accountNumber: string; fullName: string; currency?: string }>) {
   const sourceLabel =
     rule.sourceType === "GROUP"
       ? (groupsById.get(rule.sourceId) ?? "(deleted group)")
@@ -55,6 +55,8 @@ async function serializeRule(rule: {
     sourceLabel,
     targetAccountId: rule.targetAccountId,
     targetAccountLabel: target ? `${target.accountNumber}, ${target.fullName}` : "(deleted account)",
+    // Step 2 (owner 2026-09-30): the copied-into account's currency, so MIR needs no second accounts read. null = deleted account.
+    targetCurrency: target?.currency ?? null,
     direction: rule.direction,
     multiplier: rule.multiplier.toString(),
     fillPriceMode: rule.fillPriceMode,
@@ -85,11 +87,11 @@ export async function GET() {
       orderBy: { createdAt: "desc" },
     }),
     prisma.group.findMany({ where: { brokerId }, select: { id: true, name: true } }),
-    prisma.account.findMany({ where: { brokerId }, select: { id: true, accountNumber: true, fullName: true, kycRecord: { select: { id: true } } } }),
+    prisma.account.findMany({ where: { brokerId }, select: { id: true, accountNumber: true, fullName: true, currency: true, kycRecord: { select: { id: true } } } }),
   ]);
 
   const groupsById = new Map(groups.map((g) => [g.id, g.name]));
-  const accountsById = new Map(accounts.map((a) => [a.id, { accountNumber: a.accountNumber, fullName: a.fullName }]));
+  const accountsById = new Map(accounts.map((a) => [a.id, { accountNumber: a.accountNumber, fullName: a.fullName, currency: a.currency }]));
 
   return NextResponse.json({
     rows: await Promise.all(rules.map((r) => serializeRule(r, groupsById, accountsById))),

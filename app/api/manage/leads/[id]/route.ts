@@ -48,6 +48,24 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     }
     data.convertedAccount = { connect: { id: body.convertedAccountId } };
   }
+  // Step 2 (owner 2026-09-30): CRM "Assign to staff…". { assignedAdminId: "<id>" | null }. Same broker, ACTIVE staff
+  // who can work leads (MANAGER or BROKER_ADMIN; SUPPORT is read-only and has no CRM screen). null = unassign.
+  if ("assignedAdminId" in (body ?? {})) {
+    if (body.assignedAdminId === null) {
+      data.assignedAdmin = { disconnect: true };
+    } else if (typeof body.assignedAdminId === "string" && body.assignedAdminId) {
+      const staff = await prisma.adminUser.findUnique({ where: { id: body.assignedAdminId }, select: { id: true, brokerId: true, status: true, role: true } });
+      if (!staff || staff.brokerId !== session.brokerId) {
+        return NextResponse.json({ error: "staff member not found" }, { status: 404 });
+      }
+      if (staff.status !== "ACTIVE" || (staff.role !== "MANAGER" && staff.role !== "BROKER_ADMIN")) {
+        return NextResponse.json({ error: "leads can only be assigned to active staff who work leads (admin or manager)" }, { status: 409 });
+      }
+      data.assignedAdmin = { connect: { id: staff.id } };
+    } else {
+      return NextResponse.json({ error: "assignedAdminId must be a staff id or null" }, { status: 400 });
+    }
+  }
   if ("notes" in (body ?? {})) {
     const notes = typeof body.notes === "string" ? body.notes.trim() || null : null;
     if (notes && notes.length > 2000) {
@@ -69,12 +87,18 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     if (row.status !== lead.status) { before.status = lead.status; after.status = row.status; }
     if (row.convertedAccountId !== lead.convertedAccountId) { before.convertedAccountId = lead.convertedAccountId; after.convertedAccountId = row.convertedAccountId; }
     if (row.notes !== lead.notes) { before.notes = lead.notes; after.notes = row.notes; }
+    if (row.assignedAdminId !== lead.assignedAdminId) { before.assignedAdminId = lead.assignedAdminId; after.assignedAdminId = row.assignedAdminId; }
     if (Object.keys(after).length > 0) {
       await tx.auditLog.create({
         data: {
           brokerId: session.brokerId!,
           actorAdminId: session.adminId,
-          action: row.status === "CONVERTED" && lead.status !== "CONVERTED" ? "LEAD_CONVERTED" : "LEAD_UPDATED",
+          action:
+            row.status === "CONVERTED" && lead.status !== "CONVERTED"
+              ? "LEAD_CONVERTED"
+              : Object.keys(after).length === 1 && "assignedAdminId" in after
+                ? "LEAD_ASSIGNED"
+                : "LEAD_UPDATED",
           entityType: "Lead",
           entityId: id,
           oldValue: { fullName: lead.fullName, ...before } as Prisma.InputJsonValue,
@@ -84,5 +108,5 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     }
     return row;
   });
-  return NextResponse.json({ id: updated.id, status: updated.status, convertedAccountId: updated.convertedAccountId, notes: updated.notes });
+  return NextResponse.json({ id: updated.id, status: updated.status, convertedAccountId: updated.convertedAccountId, notes: updated.notes, assignedAdminId: updated.assignedAdminId });
 }

@@ -98,6 +98,7 @@ export async function GET() {
         kycStatus: a.kycRecord?.status ?? null,
         mirror: mirror ? { direction: mirror.direction, multiplier: mirror.multiplier.toString() } : null,
         hasCustomPricing: accountIdsWithPricing.has(a.id),
+        createdAt: a.createdAt.toISOString(), // Step 2 (owner 2026-09-30): the account's opening date (DASH NEW 7D)
         // Phase 2 batch 7 (issue 91): the broker's own dealer-coverage hedge account (Broker.coverageAccountId) is
         // listed with the clients but is not a client: the backoffice hides client actions (funds, KYC, password,
         // mirror) on it

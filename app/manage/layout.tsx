@@ -3,6 +3,18 @@ import "../admin-theme.css";
 import { getAdminSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { AdminThemeSurface, type AdminThemeMode } from "@/lib/admin-theme";
+import { headers } from "next/headers";
+import type { Metadata } from "next";
+
+// Step 2 (owner 2026-09-30): every /manage page (the login included, which /manager/login is an alias of) titles the
+// browser tab with the broker's own name, e.g. "Futurix Global Backoffice", instead of app/layout.tsx's platform-wide
+// "VyXTrader" (seen on futurixglobal.com). Same per-request broker lookup app/(broker)/layout.tsx uses for trader pages.
+export async function generateMetadata(): Promise<Metadata> {
+  const brokerId = (await headers()).get("x-broker-id");
+  if (!brokerId) return {};
+  const broker = await prisma.broker.findUnique({ where: { id: brokerId }, select: { name: true } });
+  return broker ? { title: `${broker.name} Backoffice` } : {};
+}
 
 const adminSans = Inter({
   variable: "--font-admin-sans",

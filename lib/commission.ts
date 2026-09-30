@@ -4,6 +4,9 @@ type Db = PrismaClient | Prisma.TransactionClient;
 
 type Relationship = {
   clientAccountId: string;
+  ibAccountId?: string;
+  // Step 2: the partner's suspension moment (Account.ibSuspendedAt). undefined = look it up from ibAccountId.
+  frozenAt?: Date | null;
   commissionType: "PER_LOT" | "PERCENTAGE";
   commissionRate: Prisma.Decimal;
   lastPayoutAt: Date | null;
@@ -11,13 +14,17 @@ type Relationship = {
   accruedThrough?: Date | null;
 };
 
-// Commission on the client's CLOSED trades after `since`, at the relationship's CURRENT rate/type.
-async function commissionSince(db: Db, relationship: Relationship, since: Date | null): Promise<Prisma.Decimal> {
+// Commission on the client's CLOSED trades after `since` (and, for a suspended partner, up to `until`), at the
+// relationship's CURRENT rate/type.
+async function commissionSince(db: Db, relationship: Relationship, since: Date | null, until: Date | null = null): Promise<Prisma.Decimal> {
+  const closedAt: Prisma.DateTimeNullableFilter = {};
+  if (since) closedAt.gt = since;
+  if (until) closedAt.lte = until;
   const agg = await db.position.aggregate({
     where: {
       accountId: relationship.clientAccountId,
       status: "CLOSED",
-      ...(since ? { closedAt: { gt: since } } : {}),
+      ...(since || until ? { closedAt } : {}),
     },
     _sum: { volume: true, commission: true },
   });
@@ -39,9 +46,23 @@ async function commissionSince(db: Db, relationship: Relationship, since: Date |
 // rate edit never re-prices trades already closed. What was locked in at earlier rates (accruedUnpaid, up to
 // accruedThrough) plus trades closed since then at the current rate. Callers must re-run this inside the same
 // $transaction that performs a payout (never trust a client-supplied amount).
+//
+// Step 2 (owner 2026-09-30): while the partner is suspended (Account.ibSuspendedAt) nothing new accrues -- only trades
+// closed up to the suspension moment count. Owed pay is kept (frozen), never zeroed. On resume the accrual clock
+// restarts at the resume moment (app/api/manage/ib-partners/[id]/resume), so trades closed while suspended never count.
 export async function computePendingCommission(db: Db, relationship: Relationship): Promise<Prisma.Decimal> {
   const locked = relationship.accruedUnpaid ?? new Prisma.Decimal(0);
   const since = relationship.accruedThrough ?? relationship.lastPayoutAt;
+  const frozenAt =
+    relationship.frozenAt !== undefined
+      ? relationship.frozenAt
+      : relationship.ibAccountId
+        ? ((await db.account.findUnique({ where: { id: relationship.ibAccountId }, select: { ibSuspendedAt: true } }))?.ibSuspendedAt ?? null)
+        : null;
+  if (frozenAt) {
+    if (since && since >= frozenAt) return locked;
+    return locked.add(await commissionSince(db, relationship, since, frozenAt));
+  }
   return locked.add(await commissionSince(db, relationship, since));
 }
 

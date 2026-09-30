@@ -132,6 +132,19 @@ const LABELS: Record<string, string> = {
   MIRROR_SKIPPED_RULE_DISABLED: "Mirror skipped: rule disabled",
   MIRROR_KILL_SWITCH: "Mirror rule kill switch triggered",
   SWAP_ROLLOVER_RUN: "Ran daily swap rollover",
+  // Step 2 (owner 2026-09-30)
+  ACCOUNT_SESSIONS_REVOKED: "Signed the client out everywhere",
+  ACCOUNT_2FA_RESET: "Reset client two-step sign-in",
+  ADMIN_2FA_RESET: "Reset staff two-step sign-in",
+  ADMIN_SESSIONS_REVOKED: "Signed the staff member out everywhere",
+  BROKER_CLIENT_SESSIONS_REVOKED: "Signed out all clients",
+  MIRROR_RULE_DELETED: "Deleted copy rule",
+  LP_DELETED: "Deleted liquidity provider",
+  LEAD_ASSIGNED: "Assigned lead to staff",
+  IB_PARTNER_SUSPENDED: "Suspended partner (pay frozen)",
+  IB_PARTNER_RESUMED: "Resumed partner",
+  IB_PARTNER_OWED_RELEASED: "Released frozen partner pay",
+  IB_FROZEN_PAY_RELEASED: "Paid frozen partner pay",
 };
 
 export function humanizeAction(action: string): string {
@@ -253,4 +266,43 @@ export function summarizeAuditDiff(oldValue: Prisma.JsonValue | null, newValue: 
     else lines.push(`${key}: ${formatDiffValue(beforeValue)} → ${formatDiffValue(afterValue)}`);
   }
   return lines;
+}
+
+// Step 2 (owner 2026-09-30): who a row came from, so AUD / DASH never have to guess from actorEmail "system".
+//   STAFF   = a staff member (actorAdminId set)
+//   DIRECT  = a direct, owner-approved database change: no staff member and a newValue.source text (e.g. the
+//             2026-09-30 swap-free cleanup, 15 rows)
+//   CLIENT  = the client did it from the trading app or client portal. Only the actions written by app/api/trade/**
+//             and app/api/portal/** with no staff member (every writer checked 2026-09-30); POSITION_CLOSED is NOT in
+//             the list because the same action is also written by stop-outs / SL / TP (lib/post-close.ts).
+//   SYSTEM  = everything else with no staff member (engine fills, stop-outs, scheduled jobs)
+export type AuditActorKind = "STAFF" | "SYSTEM" | "CLIENT" | "DIRECT";
+const CLIENT_ACTIONS = new Set([
+  "ORDER_PLACED",
+  "ORDER_MODIFIED",
+  "ORDER_CANCELLED",
+  "TRADER_CANCELLED_PENDING_ORDER",
+  "STM_BULK_CLOSE",
+  "STM_HOTKEY_ORDER",
+  "WEBTRADER_SESSION_REVOKED",
+  "DEALING_ORDER_REQUOTE_ACCEPTED",
+  "DEALING_ORDER_REQUOTE_REJECTED",
+  "DEALING_CLOSE_REQUOTE_ACCEPTED",
+  "CLIENT_PROFILE_UPDATED",
+  "CLIENT_PASSWORD_CHANGED",
+]);
+
+export function auditSource(newValue: Prisma.JsonValue | null): string | null {
+  if (newValue && typeof newValue === "object" && !Array.isArray(newValue)) {
+    const v = (newValue as Record<string, unknown>).source;
+    if (typeof v === "string" && v.trim()) return v.trim();
+  }
+  return null;
+}
+
+export function auditActorKind(row: { actorAdminId: string | null; action: string; newValue: Prisma.JsonValue | null }): AuditActorKind {
+  if (row.actorAdminId) return "STAFF";
+  if (auditSource(row.newValue)) return "DIRECT";
+  if (CLIENT_ACTIONS.has(row.action)) return "CLIENT";
+  return "SYSTEM";
 }

@@ -19,7 +19,7 @@ export async function GET() {
 
   const leads = await prisma.lead.findMany({
     where: { brokerId: session.brokerId! },
-    include: { convertedAccount: { select: { accountNumber: true } } },
+    include: { convertedAccount: { select: { accountNumber: true } }, assignedAdmin: { select: { email: true } } },
     orderBy: { createdAt: "desc" },
   });
 
@@ -34,6 +34,9 @@ export async function GET() {
       status: l.status,
       notes: l.notes,
       convertedAccountNumber: l.convertedAccount?.accountNumber ?? null,
+      // Step 2 (owner 2026-09-30): who owns the lead (null = unassigned)
+      assignedAdminId: l.assignedAdminId,
+      assignedAdminEmail: l.assignedAdmin?.email ?? null,
       createdAt: l.createdAt.toISOString(),
     }))
   );

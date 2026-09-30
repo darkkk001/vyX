@@ -27,7 +27,7 @@ export async function GET() {
   const relationships = await prisma.ibRelationship.findMany({
     where: { brokerId },
     include: {
-      ibAccount: { select: { accountNumber: true, fullName: true } },
+      ibAccount: { select: { accountNumber: true, fullName: true, currency: true, status: true, ibSuspendedAt: true } },
       clientAccount: { select: { accountNumber: true, fullName: true } },
     },
     orderBy: { createdAt: "desc" },
@@ -39,12 +39,16 @@ export async function GET() {
       ibAccountId: r.ibAccountId,
       ibAccountNumber: r.ibAccount.accountNumber,
       ibAccountFullName: r.ibAccount.fullName,
+      currency: r.ibAccount.currency, // Step 2 (owner 2026-09-30): partner pay is credited in the partner account's currency
       clientAccountId: r.clientAccountId,
       clientAccountNumber: r.clientAccount.accountNumber,
       clientAccountFullName: r.clientAccount.fullName,
       commissionType: r.commissionType,
       commissionRate: r.commissionRate.toString(),
-      pendingCommission: (await computePendingCommission(prisma, r)).toFixed(4),
+      pendingCommission: (await computePendingCommission(prisma, { ...r, frozenAt: r.ibAccount.ibSuspendedAt })).toFixed(4),
+      // Step 2: the partner's state -- suspended = no new pay accrues and payouts are refused (owed pay is kept, frozen)
+      partnerSuspendedAt: r.ibAccount.ibSuspendedAt ? r.ibAccount.ibSuspendedAt.toISOString() : null,
+      partnerAccountStatus: r.ibAccount.status,
       lastPayoutAt: r.lastPayoutAt ? r.lastPayoutAt.toISOString() : null,
       createdAt: r.createdAt.toISOString(),
     }))
@@ -98,6 +102,10 @@ export async function POST(request: NextRequest) {
   // audit 2026-09-24 (money): demo trading must never accrue real partner commission
   if (ibAccount.accountMode !== "LIVE" || clientAccount.accountMode !== "LIVE") {
     return NextResponse.json({ error: "partner links are only allowed between LIVE accounts (no demo)" }, { status: 400 });
+  }
+  // Step 2 (owner 2026-09-30): a suspended partner takes no new clients until resumed (nothing may accrue to it).
+  if (ibAccount.ibSuspendedAt) {
+    return NextResponse.json({ error: "partner suspended: resume the partner before linking new clients" }, { status: 409 });
   }
 
   try {
