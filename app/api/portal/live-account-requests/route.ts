@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { publishTradingEvent } from "@/lib/nats";
 import { prisma } from "@/lib/prisma";
 import { getClientSession } from "@/lib/client-auth";
 import { createNotification } from "@/lib/notifications";
@@ -82,6 +83,8 @@ export async function POST(request: NextRequest) {
     entityType: "LiveAccountRequest",
     entityId: created.id,
   });
+  // web5 (issues.md 318): the broker's account-applications queue updates at once (best-effort)
+  await publishTradingEvent("LiveAccountRequested", { broker_id: session.brokerId, request_id: created.id }).catch(() => {});
 
   return NextResponse.json({ id: created.id, status: created.status }, { status: 201 });
 }

@@ -5,6 +5,7 @@ import { checkBalanceDebit } from "@/lib/margin";
 import { executeTransfer, TransferError, validateTransferAccounts } from "@/lib/transfer";
 import { executeIbPayout, IbPayoutError } from "@/lib/ib-payout";
 import { computePendingCommission } from "@/lib/commission";
+import { hasEligibleApprover, NEEDS_BROKER_ADMIN } from "@/lib/approvers";
 
 type Tx = Prisma.TransactionClient;
 
@@ -114,6 +115,8 @@ export async function requestBalanceAdjustment(
   }
 ) {
   const kind = params.kind ?? "ADJUSTMENT";
+  // web5 (issues.md 71): never file a request nobody can approve (a manager-only broker) -- refused at filing
+  if (!(await hasEligibleApprover(tx, params.brokerId, params.adminId, "ACCOUNT_FINANCE"))) throw new BalanceAdjustmentError(NEEDS_BROKER_ADMIN);
   const account = await tx.account.findUnique({ where: { id: params.accountId } });
   if (!account || account.brokerId !== params.brokerId) throw new BalanceAdjustmentError("account not found");
   if (kind === "TRANSFER") {

@@ -44,6 +44,9 @@ export type ChartSettings = {
   // web3 (terminal 1.0.58, Phase 5 batch A): the SL / TP line tags always show the P/L the order would realise, not
   // only while the line is selected or dragged. Stored here so the choice follows the trader across devices.
   slTpTagPnlAlways: boolean;
+  // web5 (terminal Phase 5 batch B): how the chart labels open positions: one label per side / price cluster
+  // ("Grouped", hover to expand), every position ("All"), or none ("Off").
+  positionLabels: "Grouped" | "All" | "Off";
   // Only "UTC" is offered today -- groundwork for a real TZ selector, per
   // the chart interaction pack spec ("timezone display (UTC default --
   // groundwork for the TZ selector)").
@@ -124,6 +127,7 @@ export const DEFAULT_CHART_SETTINGS: ChartSettings = {
   showOhlcBar: true,
   showAskLine: true,
   slTpTagPnlAlways: false,
+  positionLabels: "Grouped",
   timezone: "UTC",
   soundsEnabled: true,
   soundOrderFilled: true,
@@ -150,7 +154,7 @@ export const DEFAULT_CHART_SETTINGS: ChartSettings = {
 // default's type, the two fixed-value keys at their allowed values, colours as #RRGGBB / #RGB, and a size cap.
 export const CHART_SETTINGS_MAX_BYTES = 8 * 1024;
 const COLOR_RE = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/;
-const ENUMS: Partial<Record<keyof ChartSettings, readonly string[]>> = { theme: ["dark", "light"], timezone: ["UTC"] };
+const ENUMS: Partial<Record<keyof ChartSettings, readonly string[]>> = { theme: ["dark", "light"], timezone: ["UTC"], positionLabels: ["Grouped", "All", "Off"] };
 
 export function validateChartSettings(body: unknown): { ok: true; settings: Partial<ChartSettings> } | { ok: false; error: string } {
   if (!body || typeof body !== "object" || Array.isArray(body)) return { ok: false, error: "a settings object is required" };

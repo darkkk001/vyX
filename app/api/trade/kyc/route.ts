@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { publishTradingEvent } from "@/lib/nats";
 import { put } from "@vercel/blob";
 import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
@@ -121,6 +122,8 @@ export async function POST(request: NextRequest) {
     entityType: "KycRecord",
     entityId: record.id,
   });
+  // web5 (issues.md 314): the broker's KYC queue updates at once (best-effort, never fails the submission)
+  await publishTradingEvent("KycSubmitted", { broker_id: session.brokerId, kyc_id: record.id, queue: "IN_APP" }).catch(() => {});
 
   return NextResponse.json({ status: record.status, documentType: record.documentType }, { status: 201 });
 }

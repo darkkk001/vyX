@@ -11,7 +11,7 @@ import { newsHistoryFrom } from "@/lib/economic-events";
 // acceptable per spec, not a correctness concern worth a real cache
 // layer (Redis etc.) for v1.
 const CACHE_TTL_MS = 5 * 60 * 1000;
-type CachedPayload = { rows: RiskRadarRow[]; sameIpClusters: SameIpCluster[]; newsHistory: NewsHistoryStatus };
+type CachedPayload = { rows: RiskRadarRow[]; sameIpClusters: SameIpCluster[]; newsHistory: NewsHistoryStatus; computedAt: string };
 const cache = new Map<string, { payload: CachedPayload; expiresAt: number }>();
 
 export async function GET() {
@@ -39,7 +39,8 @@ export async function GET() {
   const newsHistory: NewsHistoryStatus = historyFrom
     ? { historyFrom: historyFrom.toISOString(), windowFrom: (historyFrom > since ? historyFrom : since).toISOString(), collectingHistory: historyFrom > since }
     : { historyFrom: null, windowFrom: null, collectingHistory: true };
-  const payload: CachedPayload = { rows, sameIpClusters, newsHistory };
+  // web5 (issues.md 328): when these numbers were computed (the 5-minute cache serves the same time until it expires)
+  const payload: CachedPayload = { rows, sameIpClusters, newsHistory, computedAt: new Date().toISOString() };
   cache.set(brokerId, { payload, expiresAt: Date.now() + CACHE_TTL_MS });
   return NextResponse.json(payload);
 }

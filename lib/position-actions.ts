@@ -1,6 +1,7 @@
 import "server-only";
 import { Prisma, PositionActionType, type Position, type OrderSide } from "@prisma/client";
 import { getFreshPrice } from "@/lib/live-price";
+import { hasEligibleApprover, NEEDS_BROKER_ADMIN } from "@/lib/approvers";
 import { checkAccountStatusForOpen, checkTradingSession, computeNextSessionOpen } from "@/lib/risk";
 import { loadRateResolver } from "@/lib/fx";
 import { computeRealizedPnl } from "@/lib/trading";
@@ -555,6 +556,8 @@ export async function requestPositionAction(
   tx: Tx,
   params: { brokerId: string; positionId: string; adminId: string; actionType: PositionActionType; reason: string | null }
 ) {
+  // web5 (issues.md 71): never file a request nobody can approve (a manager-only broker) -- refused at filing
+  if (!(await hasEligibleApprover(tx, params.brokerId, params.adminId, "ACCOUNT_FINANCE"))) throw new PositionActionError(NEEDS_BROKER_ADMIN);
   // Same-shape existence/status guard as the direct-execute path, so a
   // MANAGER gets the same "not found"/"not open" error at request time
   // instead of only discovering it once a checker tries to approve.

@@ -76,20 +76,36 @@ const TRADING_CORE_URL = process.env.TRADING_CORE_URL ?? "http://127.0.0.1:8081"
 const GATEWAY_URL = process.env.GATEWAY_URL ?? "http://127.0.0.1:8080";
 const INTERNAL_SERVICE_SECRET = process.env.INTERNAL_SERVICE_SECRET ?? "";
 
-async function fetchStats<T>(url: string): Promise<T | null> {
+// web5 (issues.md 124 / 216 / 308): why a probe failed, not just that it did. Only a fixed kind and the HTTP status
+// code leave this server -- never the upstream URL, a header, or an error message (a fetch error message can carry
+// the URL, and the URL could carry credentials).
+type UpstreamKind = "ok" | "timeout" | "unauthorized" | "not_found" | "http_error" | "network" | "invalid_response";
+type UpstreamStatus = { kind: UpstreamKind; httpStatus: number | null };
+
+async function fetchStatsDetailed<T>(url: string): Promise<{ data: T | null; status: UpstreamStatus }> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 2000);
+  let res: Response;
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 2000);
-    const res = await fetch(url, {
+    res = await fetch(url, {
       headers: { "x-internal-secret": INTERNAL_SERVICE_SECRET },
       signal: controller.signal,
       cache: "no-store",
     });
+  } catch (e) {
     clearTimeout(timeout);
-    if (!res.ok) return null;
-    return (await res.json()) as T;
+    const aborted = controller.signal.aborted || (e instanceof Error && e.name === "AbortError");
+    return { data: null, status: { kind: aborted ? "timeout" : "network", httpStatus: null } };
+  }
+  clearTimeout(timeout);
+  if (!res.ok) {
+    const kind: UpstreamKind = res.status === 401 || res.status === 403 ? "unauthorized" : res.status === 404 ? "not_found" : "http_error";
+    return { data: null, status: { kind, httpStatus: res.status } };
+  }
+  try {
+    return { data: (await res.json()) as T, status: { kind: "ok", httpStatus: res.status } };
   } catch {
-    return null;
+    return { data: null, status: { kind: "invalid_response", httpStatus: res.status } };
   }
 }
 
@@ -104,18 +120,23 @@ export async function GET() {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
 
-  const [feedStats, gatewayStats, alertStats] = await Promise.all([
-    fetchStats<FeedStatsResponse>(`${TRADING_CORE_URL}/internal/feed-stats`),
-    fetchStats<GatewayStats>(`${GATEWAY_URL}/internal/gateway-stats`),
-    fetchStats<AlertStats>(`${TRADING_CORE_URL}/internal/alert-stats`),
+  const [feed, gateway, alerts] = await Promise.all([
+    fetchStatsDetailed<FeedStatsResponse>(`${TRADING_CORE_URL}/internal/feed-stats`),
+    fetchStatsDetailed<GatewayStats>(`${GATEWAY_URL}/internal/gateway-stats`),
+    fetchStatsDetailed<AlertStats>(`${TRADING_CORE_URL}/internal/alert-stats`),
   ]);
+  const feedStats = feed.data;
+  const gatewayStats = gateway.data;
+  const alertStats = alerts.data;
+  // web5: additive -- the three stats objects keep their shape (null on failure) for backoffice 1.0.58
+  const upstream = { feedStats: feed.status, gatewayStats: gateway.status, alertStats: alerts.status };
 
   // synthetic symbols (lib/synthetic-symbols.ts): their rows and the synth feed's counters are the shadow-bot tenant's
   // only; every other broker sees the real feed exactly as before
   if (feedStats && !(await brokerMaySeeSynthetic(prisma, session!.brokerId!))) {
     const { synth: _synth, ...real } = feedStats;
     void _synth;
-    return NextResponse.json({ feedStats: { ...real, per_symbol: (real.per_symbol ?? []).filter((r) => !isSyntheticSymbol(r.symbol)) }, gatewayStats, alertStats });
+    return NextResponse.json({ feedStats: { ...real, per_symbol: (real.per_symbol ?? []).filter((r) => !isSyntheticSymbol(r.symbol)) }, gatewayStats, alertStats, upstream });
   }
-  return NextResponse.json({ feedStats, gatewayStats, alertStats });
+  return NextResponse.json({ feedStats, gatewayStats, alertStats, upstream });
 }

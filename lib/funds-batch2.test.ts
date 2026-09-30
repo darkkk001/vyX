@@ -171,6 +171,7 @@ describe("withdrawals (funds-requests route)", () => {
     const { PATCH } = await import("@/app/api/manage/funds-requests/[id]/route");
     const dual = await broker("DUAL");
     const ba = await admin(dual, "BROKER_ADMIN");
+    await admin(dual, "BROKER_ADMIN"); // web5 (issues.md 71): a second admin who can confirm, else the mark is refused
     const a1 = await account(dual, 1000);
     const w1 = await withdrawal(dual, a1.id, 100);
     await as(dual, { id: ba.id, role: "BROKER_ADMIN" });
@@ -180,6 +181,7 @@ describe("withdrawals (funds-requests route)", () => {
 
     const single = await broker("SINGLE");
     const mgr = await admin(single, "MANAGER", ["FUNDS_APPROVAL"]);
+    await admin(single, "BROKER_ADMIN"); // web5 (issues.md 71): someone who can complete the manager's mark
     const a2 = await account(single, 1000);
     const w2 = await withdrawal(single, a2.id, 100);
     await as(single, { id: mgr.id, role: "MANAGER" });

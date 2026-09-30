@@ -6,6 +6,7 @@ import { LEVERAGE_RULE, parseLeverage } from "@/lib/leverage";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { canReadAsManagerOrSupport, hasPermission } from "@/lib/permissions";
 import { balanceAdjustmentNeedsApproval, requestBalanceAdjustment } from "@/lib/balance-adjustment";
+import { hasEligibleApprover, NEEDS_BROKER_ADMIN } from "@/lib/approvers";
 import { provisionAccount } from "@/lib/account-provisioning";
 import { isCountryCode } from "@/lib/countries";
 import { checkAccountStructure } from "@/lib/account-structure";
@@ -322,6 +323,10 @@ async function createAccount(request: NextRequest, session: NonNullable<Awaited<
   }
   const initialBalanceNeedsApproval = requestedBalance.gt(0) && accountMode === "LIVE" && balanceAdjustmentNeedsApproval(session.role as "MANAGER" | "BROKER_ADMIN");
   const initialBalance = initialBalanceNeedsApproval ? new Prisma.Decimal(0) : requestedBalance;
+  // web5 (issues.md 71): the starting balance would wait for an approver who does not exist -- refuse before creating
+  if (initialBalanceNeedsApproval && !(await hasEligibleApprover(prisma, brokerId, session.adminId, "ACCOUNT_FINANCE"))) {
+    return NextResponse.json({ error: NEEDS_BROKER_ADMIN }, { status: 409 });
+  }
 
   const passwordHash = await bcrypt.hash(password, 10);
 

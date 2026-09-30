@@ -195,6 +195,21 @@ async function patchHandler(request: NextRequest, { params }: { params: Promise<
     oldValue.symbolFilter = existing.symbolFilter;
     newValue.symbolFilter = symbolFilter;
   }
+  // web5 (issues.md 191, owner 2026-09-30): the direction can be changed after creation. Refused (409) while any
+  // position this rule copied is still open on either side -- those copies were opened for the OLD direction and a
+  // close would mirror against the new one. Checked again under a row lock inside the write below.
+  let directionChanged = false;
+  if ("direction" in body) {
+    if (body.direction !== "REVERSE" && body.direction !== "SAME") {
+      return NextResponse.json({ error: "direction must be REVERSE or SAME" }, { status: 400 });
+    }
+    if (body.direction !== existing.direction) {
+      directionChanged = true;
+      data.direction = body.direction;
+      oldValue.direction = existing.direction;
+      newValue.direction = body.direction;
+    }
+  }
   for (const field of ["maxOpenLots", "maxDailyLoss"] as const) {
     if (field in body) {
       const v = body[field];
@@ -221,7 +236,15 @@ async function patchHandler(request: NextRequest, { params }: { params: Promise<
     return NextResponse.json({ error: "no recognized fields to update" }, { status: 400 });
   }
 
+  let openCopies = 0;
   const updated = await prisma.$transaction(async (tx) => {
+    if (directionChanged) {
+      await tx.$queryRaw`SELECT id FROM "MirrorRule" WHERE id = ${id} FOR UPDATE`;
+      const links = await tx.mirrorLink.findMany({ where: { ruleId: id }, select: { sourcePositionId: true, targetPositionId: true } });
+      const ids = links.flatMap((l) => [l.sourcePositionId, l.targetPositionId]);
+      openCopies = ids.length ? await tx.position.count({ where: { id: { in: ids }, status: "OPEN" } }) : 0;
+      if (openCopies > 0) return null;
+    }
     const u = await tx.mirrorRule.update({ where: { id }, data });
     await tx.auditLog.create({
       data: {
@@ -237,7 +260,13 @@ async function patchHandler(request: NextRequest, { params }: { params: Promise<
     return u;
   });
 
-  return NextResponse.json({ id: updated.id, status: ruleStatus(updated) });
+  if (!updated) {
+    return NextResponse.json(
+      { error: `${openCopies} copied position${openCopies === 1 ? " is" : "s are"} still open: disable the rule and close ${openCopies === 1 ? "it" : "them"} before changing the direction` },
+      { status: 409 }
+    );
+  }
+  return NextResponse.json({ id: updated.id, status: ruleStatus(updated), direction: updated.direction });
 }
 
 // Batch 5 (real-time): a successful write announces the change to every open client (lib/config-events.ts)

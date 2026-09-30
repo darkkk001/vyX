@@ -287,6 +287,8 @@ describe("follow-ups the backoffice needs (306, 93, 82, 74)", () => {
   it("306: a MANAGER's reverse request carries the typed reason (trimmed, capped at 500)", async () => {
     if (!dbReachable) return;
     const b = await broker();
+    // web5 (issues.md 71): a broker admin exists to approve it, else the request is refused at filing
+    await prisma.adminUser.create({ data: { brokerId: b, email: `b7-${randomUUID().slice(0, 8)}@test.local`, passwordHash: "x", role: "BROKER_ADMIN" } });
     await admin(b, "MANAGER");
     const acc = await account(b);
     const p = await openPosition(b, acc.id);

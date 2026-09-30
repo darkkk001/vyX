@@ -67,7 +67,7 @@ export async function GET(request: NextRequest) {
   const positions = await prisma.position.findMany({
     where: dealsWhere,
     include: {
-      account: { select: { accountNumber: true, fullName: true } },
+      account: { select: { accountNumber: true, fullName: true, currency: true } },
       // the hedge leg this trade was booked against: whether the platform opened it (auto-hedge) or
       // the dealer did (BOOK NOW) decides who closes it, so it decides how a still-open leg reads
       // in the Smart Dealer Manager -- AWAITING DEALER vs a real ORPHAN (lib/coverage.ts onClose)
@@ -89,6 +89,7 @@ export async function GET(request: NextRequest) {
       id: p.id,
       ticket: p.ticket,
       accountNumber: p.account.accountNumber,
+      currency: p.account.currency, // web5 (owner 2026-09-30): the deal's account currency (P/L, swap, commission are in it)
       accountFullName: p.account.fullName,
       symbol: p.symbol.name,
       digits: p.symbol.digits,

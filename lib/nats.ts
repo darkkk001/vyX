@@ -81,6 +81,12 @@ const SUBJECTS = {
   // under account.> (no gateway change): the trader's terminal / WebTrader tells them at once; the backoffice sees it
   // as the "funds" family too.
   FundsRequestResolved: "account.funds_resolved",
+  // web5 (issues.md 314 / 318): a client submitted an ID check (in-app or client portal) / applied for a live account.
+  // Backoffice-only, so under dealing.> like FundsRequestChanged: only the admin stream subscribes it (per broker_id),
+  // the trader stream never does -- no gateway change. Ids only (no name, e-mail or document): the backoffice
+  // refetches its KYC / LAR queue and badge.
+  KycSubmitted: "dealing.kyc_submitted",
+  LiveAccountRequested: "dealing.live_account_requested",
 } as const satisfies Record<string, string>;
 
 export type TradingEventType = keyof typeof SUBJECTS;

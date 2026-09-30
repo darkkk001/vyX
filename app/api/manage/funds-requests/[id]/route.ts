@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession } from "@/lib/auth";
 import { forbidUnlessBrokerAdminOrPermission } from "@/lib/permissions";
+import { hasEligibleApprover, NEEDS_BROKER_ADMIN } from "@/lib/approvers";
 import { publishTradingEvent } from "@/lib/nats";
 import { publishFundsRequestChanged, notifyFundsRequestResolved } from "@/lib/funds-events";
 import { withdrawalKycApproved, WITHDRAWAL_KYC_ADMIN_MESSAGE, WITHDRAWAL_KYC_CODE } from "@/lib/withdrawal-kyc";
@@ -103,6 +104,11 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     return NextResponse.json({ error: WITHDRAWAL_KYC_ADMIN_MESSAGE, code: WITHDRAWAL_KYC_CODE }, { status: 409 });
   }
   if (step.step === "mark") {
+    // web5 (issues.md 71): marking starts a two-person approval; with no other eligible staff member it could never
+    // be completed -- refused with the same words as every other maker-checker request
+    if (!(await hasEligibleApprover(prisma, brokerId, session!.adminId, "FUNDS_APPROVAL"))) {
+      return NextResponse.json({ error: NEEDS_BROKER_ADMIN }, { status: 409 });
+    }
     const marked = await prisma
       .$transaction((tx) => markFundsRequestForApproval(tx, { transactionId: id, brokerId, adminId: session!.adminId }))
       .catch(raced);
