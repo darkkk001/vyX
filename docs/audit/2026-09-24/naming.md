@@ -335,6 +335,23 @@ The labels come from `ui-map.md` (the bo-* and term-* sections). They were check
 | DASH | Open in Deposits · withdrawals (approve / reject) | Open in Deposits & withdrawals (approve / reject) | — | — |
 | DASH | COLUMNS (header menu) | keep | — | Show or hide columns. |
 | DASH | Reset columns | keep | — | — |
+| DASH | KPI tiles (layout, new) | Net deposits · 7D / Deposits · 30D / Withdrawals waiting / Active traders / Open volume / Broker book P/L / Margin calls / New clients · 7D / Waiting for dealer / Risk flags | — | Short labels; the full naming.md words are each tile's tooltip; ten tiles in one row from 1600 px, two rows of five below; every tile opens its screen (DEP, DEP, DEP, CLI, EXP, EXP, MRG, CLI, DEAL, RDR) and ends in "›" (owner 2026-09-30). |
+| DASH | KPI money notes (new) | {CCY} · … / MIXED CCY · … | — | The server's money totals add currencies together: a tile names the one currency, or says MIXED CCY; never "($)" (owner 2026-09-30). |
+| DASH | 1) CLI  CLIENTS (panel) | remove | — | The full client list is replaced by 1) ATT Needs attention; the Clients screen holds the full list (owner 2026-09-30). |
+| DASH | 1) ATT  NEEDS ATTENTION (panel, new) | Needs attention | — | Live client accounts with a reason; header link "All clients in CLI ›"; each row carries the Clients Account menu (owner 2026-09-30). |
+| DASH | Needs attention chips (new) | All / Margin / Risk flags / ID check / New 7D / Largest open | — | Filters, with counts (owner 2026-09-30). |
+| DASH | Needs attention columns (new) | Account / Client / Group (hidden by default) / Balance / Equity / Open (lots) / Floating P/L / Ccy / Margin level (%) / Why | — | Money in the account's currency (the Ccy column) (owner 2026-09-30). |
+| DASH | WHY tag (new) | Stop-out / Margin call / Martingale / Scalping / Latency arbitrage / News trading / ID check waiting / New 7D / Largest open; "{reason} +{n} more" | — | The tag's tooltip lists every reason: "Why: Margin call · Martingale · Largest open" (owner 2026-09-30). |
+| DASH | 2) EXP  OPEN BOOK (panel) | Open book | — | Client exposure per symbol and account currency; stat "Lots · Broker book {x}%" (owner 2026-09-30). |
+| DASH | Open book columns (new) | Symbol / Buy / Sell / Net / Client P/L / Ccy | lots in the panel stat | "(lots)" is in the panel stat, not each header, to fit 1366 (owner 2026-09-30). |
+| DASH | Open book facts (new) | Nearest stop-out / Market book (A-book): 0.00 lots · no liquidity provider connected / Totals: broker hedge account excluded | — | Nothing implies a connected LP (owner 2026-09-30). |
+| DASH | 3) APR  APPROVALS (panel) | Approvals | — | Waiting deposits and withdrawals; header link "APR ›"; one line "Nothing waiting for approval." when empty (owner 2026-09-30). |
+| DASH | MARKED (status chip) | Marked sent | — | Short form of "Client marked sent"; the Waiting column is hidden by default (owner 2026-09-30). |
+| DASH | 4) FLOW  DEPOSITS VS WITHDRAWALS · 7D | keep | — | Header link "DEP ›"; one line "No deposits or withdrawals in the last 7 days." when empty; day labels "24 Sep" (invariant, UTC) (owner 2026-09-30). |
+| DASH | 5) ACT  STAFF ACTIVITY (panel) | Staff activity | — | Chips STAFF (default: staff actions and direct database changes) / ALL (adds the system's fills, stop-outs, client actions); header link "AUD ›"; a row opens the entry in the Audit log (owner 2026-09-30). |
+| DASH | Activity kind tags (new) | Settings / Withdraw / Deposit / Funds / Account / Trade / Stop-out / ID check / Apply / Lead / Partner / Client / Staff | — | By the kind of record changed: any broker / group / symbol / pricing / approval-mode / routing change is Settings; Withdraw and Deposit only for money requests and payouts (owner 2026-09-30). |
+| DASH | Empty panels (new) | one line: Nothing needs attention. / No open client positions. / Nothing waiting for approval. / No deposits or withdrawals in the last 7 days. / No staff activity yet. | — | An empty panel collapses to its header and one line (owner 2026-09-30). |
+| DASH | System accounts (new) | broker hedge account excluded | — | The broker hedge account is left out of every DASH tile, list and total (owner 2026-09-30). |
 
 ### Reports (RPT)
 

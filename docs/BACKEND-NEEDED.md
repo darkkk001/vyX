@@ -45,6 +45,8 @@ Not blocking any screen (each works today with an extra read); ship them with th
 | `GET /api/manage/audit` | Add `actorKind` (staff / system / client / direct database change) and `source` per row | The server sends "system" for every row with no staff member, so AUD cannot tell a client's own change from an automatic one; the direct-change source is read from the change lines today | 2026-09-30, owner |
 | `GET /api/manage/audit` (entity labels) | A screen or a label for "Client" (portal profile) records | Those rows have no screen to open (Open is disabled "no related screen") and no readable record label | 2026-09-30, owner |
 | `/manager/login`, `/manage/login` | The page `<title>` says the broker's name, not "VyXTrader" | Seen on futurixglobal.com and the futurixglobal subdomain | 2026-09-30, owner: "goes in the next web deploy" |
+| `GET /api/manage/accounts` | Add `createdAt` per account | DASH's NEW 7D chip needs each account's opening date (it says so until the field arrives, then works with no app change) | 2026-09-30, owner |
+| `GET /api/manage/dashboard` | Money totals per currency, and counts that leave out the broker hedge account | The tiles add every currency together (DASH names the one currency or says MIXED CCY) and the server's active-trader count includes the hedge account (DASH counts client-side today) | 2026-09-30, owner |
 
 ## D4 (Account types removal): open item
 
