@@ -36,6 +36,11 @@ Not blocking any screen (each works today with an extra read); ship them with th
 | live refresh | Halt, copy-rule kill and symbol-limit changes publish a live event | issues.md 347/348/349 | 2026-09-30, owner |
 | risk radar | Compute the news-trader flag | issues.md 151 | 2026-09-30, owner |
 | `lib/chart-settings.ts` | Accept `slTpTagPnlAlways` (terminal: P/L on SL/TP tags) | Terminal stores it locally until then | proposed 2026-09-30 (terminal batch A) |
+| `PATCH /api/manage/mirror-rules/{id}` | Accept `direction` (REVERSE / SAME) | issues.md 191: a copy rule's direction cannot be changed after it is created (the caps already can); today the only way is delete + recreate | 2026-09-30, owner |
+| `GET /api/manage/feed-health` | Return the upstream status code and an error kind (timeout / 401 / 404 / network) with PRICE ALERTS | issues.md 124 / 216 / 308: every failure shows the same "NOT REACHABLE"; the route drops the status | 2026-09-30, owner |
+| admin event stream | Publish `KycSubmitted` and `LiveAccountRequested` | issues.md 314 / 318: the KYC and LAR queues (and their badges) only update on the 30 s poll | 2026-09-30, owner |
+| `GET /api/manage/risk-radar` | Add `computedAt` (the time of the 5-minute server cache) | issues.md 328: RDR shows no "as of" time | 2026-09-30, owner |
+| balance / position requests (`lib/balance-adjustment.ts`, approve routes) | Never self- or peer-approve: when no eligible approver exists (e.g. a manager-only broker) the request is refused with "needs a broker admin" | issues.md 71: a manager-only tenant files requests nobody can approve | 2026-09-30, owner |
 
 ## D4 (Account types removal): open item
 
