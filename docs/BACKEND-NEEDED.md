@@ -21,6 +21,10 @@ does them yet. Each row is what the screen needs from the web API before the act
 | IB | Per-partner stats: active clients, volume this month, net deposits this month, partner pay this month | Per-partner aggregates on `GET /api/manage/ib-relationships` (the columns are not drawn until then) | 2026-09-30, owner |
 | IB | Sub-partners, referral link, pay schedule, referral funnel | Partner hierarchy, referral links, a payout schedule and funnel counts | 2026-09-30, owner |
 | KYC | Sanctions / PEP and duplicate-identity screening ("not available yet") | A screening provider or an internal duplicate check on the ID check | 2026-09-30, owner |
+| LP | Connect (FIX session)… | The LP bridge: a real session to a provider (status, heartbeat) | 2026-09-30, owner |
+| LP | Delete provider… | `DELETE /api/manage/liquidity-providers/{id}` (records can only be edited today) | 2026-09-30, owner |
+| LP | Status "Connected" | Set by the LP bridge when a session is live, not by hand | 2026-09-30, owner |
+| LP | Routing rules (add / delete / priority; hidden) | The LP bridge reading `lp-routing`; until then rules are saved but never read | 2026-09-30, owner |
 
 ## Web changes queued for the next web deploy
 

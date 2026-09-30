@@ -204,8 +204,8 @@ The labels come from `ui-map.md` (the bo-* and term-* sections). They were check
 | SHELL | Risk radar | keep | — | Accounts and IP addresses flagged as risky. |
 | SHELL | Trading halt | keep | — | Stop all trading or allow close-only. |
 | SHELL | Margin | keep | — | Accounts near margin call or stop-out. |
-| SHELL | Liquidity | Liquidity providers | — | Liquidity provider connections. |
-| SHELL | Liquidity routing | Routing rules | — | Which liquidity provider gets each symbol (planned). |
+| SHELL | Liquidity | Liquidity providers | — | Liquidity provider records and how orders fill today; no provider is connected until an LP bridge exists (owner 2026-09-30). |
+| SHELL | Liquidity routing | remove | — | Merged into Liquidity providers and hidden until an LP bridge exists; no nav entry (owner 2026-09-30). |
 | SHELL | Feed health | Price feed health | — | Is the price feed live, per symbol. |
 | SHELL | Clients | keep | — | All client accounts. |
 | SHELL | Leads | keep | — | Prospects not yet clients. |
@@ -1065,33 +1065,44 @@ The labels come from `ui-map.md` (the bo-* and term-* sections). They were check
 
 | Screen | Current label | Proposed name | Unit | Tooltip (one line) |
 |---|---|---|---|---|
-| LP | 1) LP  LIQUIDITY PROVIDERS | Liquidity providers | — | Providers that can take market-book trades. |
-| LP | <n> LPS · <n> ACTIVE | {n} providers · {n} connected | — | Totals. |
-| LP | ROUTING | Routing rules | — | Open the routing rules screen. |
+| LP | 1) LP  LIQUIDITY PROVIDERS | Liquidity providers | — | Provider records; none is connected until an LP bridge exists (owner 2026-09-30). |
+| LP | Banner (new) | No liquidity provider is connected · every order is filled in the broker book (market-book groups are refused) · the status below is your record of each relationship | — | Always shown while there is no LP bridge (owner 2026-09-30). |
+| LP | <n> LPS · <n> ACTIVE | {n} providers · none connected | — | Totals; a record status is not a connection, so it always reads none connected until an LP bridge exists (owner 2026-09-30). |
+| LP | ROUTING | remove | — | Routing rules are merged into this screen and hidden until an LP bridge exists (owner 2026-09-30). |
+| LP | Routing rules line (new) | Routing rules: hidden until an LP bridge exists ({n} saved, not used for trading) | — | Count only; "none saved" when there are none (owner 2026-09-30). |
 | LP | + LP | Add liquidity provider | — | Create a provider record. |
 | LP | PROVIDER | keep | — | Provider name. |
 | LP | PROTOCOL | Connection type | — | FIX, REST… |
-| LP | STATUS | keep | — | Prospective, negotiating, contracted or connected. |
-| LP | ROUTING RULES | keep | — | Rules sending trades to this provider. |
+| LP | STATUS | keep | — | Prospective, negotiating or contracted; a record already set to connected shows "Connected · no bridge" (owner 2026-09-30). |
+| LP | ROUTING RULES | keep | — | Rules saved for this provider; hidden by default (can be shown from Columns) while there is no LP bridge (owner 2026-09-30). |
 | LP | CONTACT | keep | — | Person at the provider. |
 | LP | SINCE | Added (UTC) | UTC | When the provider was added. |
-| LP | Status: PROSPECTIVE / NEGOTIATING / CONTRACTED / CONNECTED | Status: Prospective / Negotiating / Contracted / Connected | — | Set the provider's status. |
+| LP | Status: PROSPECTIVE / NEGOTIATING / CONTRACTED / CONNECTED | Status: Prospective / Negotiating / Contracted / Connected | — | Set the provider's status, under the STATUS menu heading; Connected is shown disabled with the reason "needs the LP bridge", the current status is disabled as "current status" (owner 2026-09-30). |
+| LP | STATUS (menu heading, new) | Status | — | Heading over the status items in the row menu, right-click and inspector (owner 2026-09-30). |
 | LP | Notes… | keep | — | Edit notes. |
 | LP | Add new LP… | Add liquidity provider… | — | Create a provider record. |
-| LP | 2) BOOK  BOOK EXPOSURE · OPEN LOTS | Exposure by trade handling | — | Open volume in the market book vs the broker book. |
+| LP | 2) NOW  HOW ORDERS FILL TODAY (panel, new) | How orders fill today | — | One row per group: what happens to a client order today (replaces the routing screen's "how orders route today · by group") (owner 2026-09-30). |
+| LP | GROUP / TRADE HANDLING / WHAT HAPPENS TO A CLIENT ORDER | Group / Trade handling / What happens to a client order | — | Columns; trade handling uses the Groups names (owner 2026-09-30). |
+| LP | What happens to a client order (values) | Filled at once (broker book) / Queued for the dealer (desk on) / Filled at once (desk off) / Always sent to the dealer / Refused until a liquidity provider is connected / Filled at once, then copied reversed (copy rule) / System only (broker hedge account) | — | Only the variant for the actual desk state is shown (owner 2026-09-30). |
+| LP | DEALER DESK (stat) | Dealer desk: On · reviewing orders / Off · filled at once | — | Only the actual desk state is shown (owner 2026-09-30). |
+| LP | Open in Groups / Copy group name (group row menu) | keep | — | Group row menu (owner 2026-09-30). |
+| LP | 2) BOOK  BOOK EXPOSURE · OPEN LOTS | Exposure by trade handling | — | Open volume in the market book vs the broker book; panel 3 now (owner 2026-09-30). |
 | LP | A <x> / B <x> | Market book {x} lots / Broker book {x} lots | lots | Totals (shown as money today; should be lots). |
 | LP | SYMBOL | keep | — | Symbol. |
 | LP | A-BOOK LOTS | Market book (lots) | lots | Open volume passed to a liquidity provider. |
 | LP | B-BOOK LOTS | Broker book (lots) | lots | Open volume the broker keeps. |
 | LP | TOTAL | Total (lots) | lots | Both books. |
-| LP | A-BOOK % | Market book (%) | % | Share of volume in the market book. |
+| LP | A-BOOK % | Market book (%) | % | Share of volume in the market book; hidden by default (can be shown from Columns), it reads 0 while there is no LP bridge (owner 2026-09-30). |
 | LP | Live exposure · this symbol | Live exposure for this symbol | — | Open Live Exposure filtered to it. |
 | LP | Symbol settings | keep | — | Open the symbol's settings. |
 | LP | NEW LIQUIDITY PROVIDER (form) | New liquidity provider | — | Form title. |
 | LP | Name / Protocol / Contact / Contact e-mail / Contact phone / Notes | Name / Connection type / Contact / Contact e-mail / Contact phone / Notes | — | Form fields. |
-| LP | LP NOTES (form) | Liquidity provider notes | — | Form title. |
+| LP | LP NOTES (form) | Liquidity provider notes | — | Form title (owner 2026-09-30). |
+| LP | Connect (FIX session)… / Delete provider… (MANAGE) | keep | — | Shown disabled, backend needed; Delete provider… is last and red (owner 2026-09-30). |
 
 ### Routing rules (ROUTE)
+
+Hidden until an LP bridge exists: the screen is merged into Liquidity providers, has no nav entry, and the rows below stay as the names to use when it returns (owner 2026-09-30).
 
 | Screen | Current label | Proposed name | Unit | Tooltip (one line) |
 |---|---|---|---|---|
