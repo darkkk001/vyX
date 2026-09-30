@@ -1429,31 +1429,37 @@ The labels come from `ui-map.md` (the bo-* and term-* sections). They were check
 
 | Screen | Current label | Proposed name | Unit | Tooltip (one line) |
 |---|---|---|---|---|
-| DEP | PENDING DEPOSITS (KPI) | Deposits waiting ($) | $ | Deposit requests to decide. |
-| DEP | PENDING WITHDRAWALS (KPI) | Withdrawals waiting ($) | $ | Withdrawal requests to decide. |
+| DEP | PENDING DEPOSITS (KPI) | Deposits waiting | account ccy | Deposit requests to decide; in the account's currency, CCY column beside it, totals per currency (owner 2026-09-30). |
+| DEP | PENDING WITHDRAWALS (KPI) | Withdrawals waiting | account ccy | Withdrawal requests to decide; in the account's currency, CCY column beside it, totals per currency (owner 2026-09-30). |
 | DEP | AWAITING 2ND ADMIN (KPI) | Needs a second admin | — | Marked withdrawals waiting for the second approval. |
-| DEP | DEPOSITS · 30D (KPI) | Deposits, 30 days ($) | $ | Completed deposits. |
-| DEP | WITHDRAWALS · 30D (KPI) | Withdrawals, 30 days ($) | $ | Completed withdrawals. |
-| DEP | AVG TICKET · 30D (KPI) | Average Amount, 30 days ($) | $ | Average request size. |
+| DEP | DEPOSITS · 30D (KPI) | Deposits, 30 days | account ccy | Completed deposits; in the account's currency, CCY column beside it, totals per currency (owner 2026-09-30). |
+| DEP | WITHDRAWALS · 30D (KPI) | Withdrawals, 30 days | account ccy | Completed withdrawals; in the account's currency, CCY column beside it, totals per currency (owner 2026-09-30). |
+| DEP | AVG TICKET · 30D (KPI) | Average Amount, 30 days | account ccy | Average request size; in the account's currency, CCY column beside it, totals per currency (owner 2026-09-30). |
 | DEP | REJECTED (KPI) | Rejected | — | Rejected requests. |
-| DEP | PSP COST · MTD (KPI) | Payment method fees this month ($) | $ | Fees charged by payment methods. |
+| DEP | PSP COST · MTD (KPI) | Payment method fees this month | account ccy | Fees charged by payment methods; in the account's currency, CCY column beside it, totals per currency (owner 2026-09-30). |
 | DEP | 1) DEP  DEPOSITS & WITHDRAWALS | Deposits & withdrawals | — | Money requests from clients. |
-| DEP | NONE PENDING / <n> PENDING · <sum> USD | None waiting / {n} waiting · {x} ($) | $ | Waiting total. |
+| DEP | NONE PENDING / <n> PENDING · <sum> USD | None waiting / {n} waiting · {x} | account ccy | Waiting total; in the account's currency, CCY column beside it, totals per currency (owner 2026-09-30). |
 | DEP | PENDING · DEPOSITS · WITHDRAWALS · MARKED · COMPLETED · REJECTED · ALL | Waiting · Deposits · Withdrawals · Approved by first admin · Completed · Rejected · All | — | Filters. |
 | DEP | search "account · client" | Search account or client | — | Search box. |
 | DEP | CLIENT / ACCOUNT | keep | — | Client name / account number. |
 | DEP | TYPE | keep | — | Deposit or withdrawal. |
-| DEP | AMOUNT | Amount ($) | $ | Requested amount. |
-| DEP | BALANCE | Balance ($) | $ | Account balance now. |
+| DEP | AMOUNT | Amount | account ccy | Requested amount; in the account's currency, CCY column beside it, totals per currency (owner 2026-09-30). |
+| DEP | BALANCE | Balance | account ccy | Account balance now; in the account's currency, CCY column beside it, totals per currency (owner 2026-09-30). |
 | DEP | STATUS | keep | — | Waiting, completed or rejected. |
 | DEP | STEP | Approval step | — | Next step needed. |
 | DEP | MARKED BY | Approved by (first admin) | — | First admin who approved. |
 | DEP | NOTE | keep | — | Staff note. |
 | DEP | CREATED | Requested (UTC) | UTC | When the client asked. |
-| DEP | ACTIONS (<PRIMARY> · REJECT) | keep | — | Row actions. |
+| DEP | ACTIONS (<PRIMARY> · REJECT) | ⋯ (row menu) | — | No actions column: the row menu holds the actions (owner 2026-09-30). |
 | DEP | Approve · complete the deposit | Approve deposit | — | Adds the money to the balance. |
-| DEP | Mark for approval (1st admin) | Approve (first admin) | — | A second admin must confirm. |
-| DEP | Confirm · complete the withdrawal (2nd admin) | Confirm withdrawal (second admin) | — | Pays out the withdrawal. |
+| DEP | Mark for approval (1st admin) | Approve withdrawal (first admin)… | — | DUAL approval only: a second admin must confirm (owner 2026-09-30). |
+| DEP | Confirm · complete the withdrawal (2nd admin) | Confirm withdrawal (second admin)… | — | DUAL approval only: pays out; disabled "you approved it" for the first approver (full text on hover) (owner 2026-09-30). |
+| DEP | Pay out (single approval) | Approve & pay out… | — | SINGLE approval (the broker's setting, e.g. Futurix): one action that approves and pays out; no first / second admin wording anywhere on the screen (owner 2026-09-30). |
+| DEP | Approval wording rule | keep | — | Two-step words (first admin, second admin, Approved by first admin, Needs a second admin) appear ONLY when the broker is on DUAL withdrawal approval (owner 2026-09-30). |
+| DEP | APPROVAL STEP values | Waiting for approval · First admin approves · Second admin confirms · Approved by you · second admin needed · KYC not approved | — | DUAL shows all; SINGLE shows Waiting for approval · KYC not approved (owner 2026-09-30). |
+| DEP | Open account balances | keep | — | Row menu: opens Account balances for the account (owner 2026-09-30). |
+| DEP / APR | REJECT <n> REQUESTS (dialog) | Reject {n} requests | — | Bulk reject title; one note for all; decided (and your own) requests skipped (owner 2026-09-30). |
+| DEP / APR / TRX / WAL | side panel figures | keep (as on screen) | — | The inspector figures for the focused row (owner 2026-09-30). |
 | DEP | Cancel my mark | Cancel my approval | — | Remove your first approval. |
 | DEP | Reject… | keep | — | Refuse the request. |
 | DEP | Open client <acc> | keep | — | Open the client's account page. |
@@ -1470,17 +1476,17 @@ The labels come from `ui-map.md` (the bo-* and term-* sections). They were check
 | Screen | Current label | Proposed name | Unit | Tooltip (one line) |
 |---|---|---|---|---|
 | APR | 1) BAL  BALANCE ADJUSTMENTS · AWAITING A SECOND ADMIN | Balance changes needing a second admin | — | Add/deduct funds requests to approve. |
-| APR | <n> PENDING · <±sum> | {n} waiting · {x} ($) | $ | Waiting total. |
+| APR | <n> PENDING · <±sum> | {n} waiting · {x} | account ccy | Waiting total; in the account's currency, CCY column beside it, totals per currency (owner 2026-09-30). |
 | APR | PENDING · ALL | Waiting · All | — | Filters both panels. |
 | APR | REQUESTED | Requested (UTC) | UTC | When it was requested. |
 | APR | ACCOUNT / CLIENT | keep | — | Account number / client name. |
-| APR | AMOUNT | Amount ($) | $ | + adds funds, − deducts funds. |
-| APR | BALANCE NOW | Balance now ($) | $ | Account balance before the change. |
+| APR | AMOUNT | Amount | account ccy | + adds funds, − deducts funds; in the account's currency, CCY column beside it, totals per currency (owner 2026-09-30). |
+| APR | BALANCE NOW | Balance now | account ccy | Account balance before the change; in the account's currency, CCY column beside it, totals per currency (owner 2026-09-30). |
 | APR | NOTE | keep | — | Requester's note. |
 | APR | REQUESTED BY ( (you) ) | keep | — | Staff who asked. |
 | APR | STATUS (PENDING / APPROVED / REJECTED) | Status (Waiting / Approved / Rejected) | — | Request state. |
 | APR | REVIEW | Review note | — | Second admin's note. |
-| APR | ACTIONS (APPROVE · REJECT / AWAITING OTHER ADMIN) | Actions (Approve · Reject / Needs another admin) | — | You cannot approve your own request. |
+| APR | ACTIONS (APPROVE · REJECT / AWAITING OTHER ADMIN) | ⋯ (row menu) | — | Approve… / Reject…; on your own request both disabled with "your own request: another admin decides" and the row shows "(you)" (owner 2026-09-30). |
 | APR | Approve… / Reject… | keep | — | Decide the request. |
 | APR | Open client <acc> | keep | — | Open the client's account page. |
 | APR | 2) POS  POSITION ACTIONS · DELETE / VOID / REVERSE | Position changes needing a second admin | — | Delete / void / reverse requests. |
@@ -1520,7 +1526,7 @@ The labels come from `ui-map.md` (the bo-* and term-* sections). They were check
 | TRX | 1) TRX  INTERNAL TRANSFER | Internal transfer | — | Move money between two accounts. |
 | TRX | FROM | From account | — | Account the money leaves. |
 | TRX | TO | To account | — | Account the money goes to. |
-| TRX | AMOUNT | Amount ($) | $ | Money to move. |
+| TRX | AMOUNT | Amount | account ccy | Money to move; in the account's currency, CCY column beside it, totals per currency (owner 2026-09-30). |
 | TRX | NOTE | keep | — | Kept in the audit log. |
 | TRX | PREVIEW | keep | — | Show balances before and after. |
 | TRX | TRANSFER | keep | — | Move the money. |
@@ -1530,7 +1536,7 @@ The labels come from `ui-map.md` (the bo-* and term-* sections). They were check
 | TRX | WHEN | When (UTC) | UTC | Time of the transfer. |
 | TRX | ACCOUNT | keep | — | Account number. |
 | TRX | TYPE (OUT / IN) | Direction (Out / In) | — | Money left or arrived. |
-| TRX | AMOUNT | Amount ($) | $ | Money moved. |
+| TRX | AMOUNT | Amount | account ccy | Money moved; in the account's currency, CCY column beside it, totals per currency (owner 2026-09-30). |
 | TRX | Open client 360 | Open client | — | Open the client's account page. |
 | TRX | Use as FROM account / Use as TO account | Use as From account / Use as To account | — | Fill the form. |
 | TRX | INTERNAL TRANSFER (dialog) | keep | — | Confirm dialog title. |
@@ -1540,16 +1546,16 @@ The labels come from `ui-map.md` (the bo-* and term-* sections). They were check
 | Screen | Current label | Proposed name | Unit | Tooltip (one line) |
 |---|---|---|---|---|
 | WAL | 1) WAL  WALLETS · ACCOUNT BALANCES | Account balances | — | Money on every account. |
-| WAL | <n> ACCOUNTS · LIVE BALANCE <x> · CREDIT <x> · EQUITY <x> | {n} accounts · Live balance ($) · Credit ($) · Equity ($) | $ | Totals. |
+| WAL | <n> ACCOUNTS · LIVE BALANCE <x> · CREDIT <x> · EQUITY <x> | {n} accounts · Live balance · Credit · Equity | account ccy | Totals; in the account's currency, CCY column beside it, totals per currency (owner 2026-09-30). |
 | WAL | ALL · LIVE · DEMO · WITH CREDIT · NEGATIVE | All · Live · Demo · With credit · Negative balance | — | Filters. |
 | WAL | ACCOUNT / CLIENT | keep | — | Account number / client name. |
 | WAL | ACCOUNT MODE (LIVE/DEMO) | Live / Demo | — | Account kind. |
 | WAL | CURRENCY | keep | — | Account currency. |
-| WAL | BALANCE | Balance ($) | $ | Deposited money. |
-| WAL | CREDIT | Credit ($) | $ | Bonus money lent to trade with. |
-| WAL | EQUITY | Equity ($) | $ | Balance + credit + floating P/L. |
-| WAL | FREE MARGIN | Free margin ($) | $ | Equity minus used margin. |
-| WAL | FLOATING PROFIT / LOSS | Floating P/L ($) | $ | Profit/loss of open positions. |
+| WAL | BALANCE | Balance | account ccy | Deposited money; in the account's currency, CCY column beside it, totals per currency (owner 2026-09-30). |
+| WAL | CREDIT | Credit | account ccy | Bonus money lent to trade with; in the account's currency, CCY column beside it, totals per currency (owner 2026-09-30). |
+| WAL | EQUITY | Equity | account ccy | Balance + credit + floating P/L; in the account's currency, CCY column beside it, totals per currency (owner 2026-09-30). |
+| WAL | FREE MARGIN | Free margin | account ccy | Equity minus used margin; in the account's currency, CCY column beside it, totals per currency (owner 2026-09-30). |
+| WAL | FLOATING PROFIT / LOSS | Floating P/L | account ccy | Profit/loss of open positions; in the account's currency, CCY column beside it, totals per currency (owner 2026-09-30). |
 | WAL | STATUS | keep | — | Account state. |
 | WAL | Open client 360 (credit / debit · leverage · risk limits) | Open client (funds, leverage, limits) | — | Open the client's account page. |
 | WAL | Live exposure | keep | — | Open Live Exposure for this account. |

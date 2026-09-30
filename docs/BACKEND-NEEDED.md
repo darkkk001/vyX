@@ -24,4 +24,8 @@ Not blocking any screen (each works today with an extra read); ship them with th
 | Route | Change | Why | Decided |
 |---|---|---|---|
 | `GET /api/manage/mirror-rules` | Add `targetCurrency` per rule (the copied-into account's currency) | MIR reads the accounts list a second time to find it | 2026-09-30, owner: "bundle with the next web deploy" |
+| `GET /api/manage/funds-requests` | Add `currency` per request (the account's) | DEP reads the accounts list a second time for CCY | 2026-09-30, owner |
+| `GET /api/manage/balance-adjustment-requests` | Add `currency` per request | Same, for APR | 2026-09-30, owner |
+| `GET /api/manage/transfers` | Add `currency` per entry | Same, for TRX history | 2026-09-30, owner |
+| funds view KPIs (DEP) | Totals per currency instead of one sum | The DEP tiles add all currencies together today (noted MIXED CCY) | 2026-09-30, owner |
 | `GET /api/manage/symbols` | Add `sessionCount` per symbol | SYM's trading-hours summary ("Custom" / "Default week" / "24/7") reads each symbol's sessions separately (6 at a time) | suggested 2026-09-29, not yet decided |
