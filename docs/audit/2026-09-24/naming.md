@@ -1754,6 +1754,7 @@ Hidden until an LP bridge exists: the screen is merged into Liquidity providers,
 
 | Screen | Current label | Proposed name | Unit | Tooltip (one line) |
 |---|---|---|---|---|
+| T·shell | panel splitter (tooltip) | Drag to resize · double-click to reset | — | Sizes are saved per account; the Workspace tab's note: "Drag a line between panels to resize it; double-click the line to put that one back. Sizes are saved for this account." (owner 2026-09-30) |
 | T·shell | FUTURIX (brand text) | keep | — | Your broker's name. |
 | T·shell | `FXG> {SYMBOL} {description}` (command line) | {SYMBOL} · {description} | — | Current chart symbol; click or press F2 to search symbols. |
 | T·shell | Symbol search (F2) (tooltip) | keep | — | Opens symbol search. |
@@ -2193,7 +2194,7 @@ Hidden until an LP bridge exists: the screen is merged into Liquidity providers,
 | T·eco | {n} EVENTS · {h} HIGH · UTC | {n} events · {h} high impact · times in UTC | UTC | — |
 | T·eco | CALENDAR OFFLINE | Calendar unavailable | — | Could not load events. |
 | T·eco | USD · XAU (before load) | Loading… | — | — |
-| T·eco | time column | Time (UTC) | UTC | — |
+| T·eco | time column | Time (UTC): HH:mm today, weekday + time on another day (e.g. Thu 02:05) | UTC | Never "01 02:05", which reads like a time (owner 2026-09-30). |
 | T·eco | HIGH / MED / LOW | High / Medium / Low | — | Expected market impact. |
 | T·eco | NEWS (fixture rows) | News | — | Headline, not a scheduled event. |
 
@@ -2201,6 +2202,7 @@ Hidden until an LP bridge exists: the screen is merged into Liquidity providers,
 
 | Screen | Current label | Proposed name | Unit | Tooltip (one line) |
 |---|---|---|---|---|
+| T·alerts | triggered-alert chart marker (new) | ALERT ≥ {level} / ALERT ≤ {level} | price | Amber flag at the trigger time, kept for the session (up to 20 per symbol) (owner 2026-09-30). |
 | T·alerts | Price Alerts (window title) | Price alerts | — | — |
 | T·alerts | PRICE ALERTS · F8 | Price alerts (F8) | — | — |
 | T·alerts | SYMBOL | Symbol | — | — |
@@ -2218,15 +2220,18 @@ Hidden until an LP bridge exists: the screen is merged into Liquidity providers,
 
 | Screen | Current label | Proposed name | Unit | Tooltip (one line) |
 |---|---|---|---|---|
+| T·settings | tab strip | TRADING / CHART / NOTIFICATIONS / WORKSPACE | — | Every setting sits in exactly one tab; a fixed-size dialog without maximize (owner 2026-09-30). |
 | T·settings | Settings (window title) | keep | — | — |
 | T·settings | CONFIRMATIONS | Confirmations | — | Which actions ask before sending. |
-| T·settings | Confirm ticket / New Order / dock closes before sending | Confirm orders and closes from the ticket, New order and Positions | — | — |
+| T·settings | Confirm ticket / New Order / dock closes before sending | Confirm orders from the ticket and New order (F9), closes, partial closes and cancels | — | Says what it gates (owner 2026-09-30). |
 | T·settings | Confirm chart right-click orders | Confirm orders from the chart menu | — | — |
-| T·settings | Confirm SL/TP drags and inline edits | Confirm stop loss / take profit changes | — | Drags on the chart and edits in the table. |
+| T·settings | Confirm SL/TP drags and inline edits | Confirm stop loss / take profit changes (chart drags, inline edits, break-even) | — | Says what it gates (owner 2026-09-30). |
 | T·settings | Confirm price alerts | keep | — | — |
+| T·settings | confirmations note | Close by, reverse and every bulk close always ask. Trade assistant hotkeys send at once, without a confirmation, and only while the Trade assistant is ON. | — | (owner 2026-09-30) |
+| T·settings | saved-where note | The confirmations, the max slippage and the hotkeys are saved for this account only; 1-click is saved to your account on the server. | — | (owner 2026-09-30) |
 | T·settings | Slippage max (points · M = unlimited) | Max slippage (points) · M = no limit | points | Largest price change you accept on fill. (10 points = 1 pip) |
 | T·settings | ⚠ With market volatility or price movement, your entries/orders may be rejected. | ⚠ When prices move fast, orders may be rejected with this limit. | — | — |
-| T·settings | I understand — apply this slippage limit | keep | — | — |
+| T·settings | I understand — apply this slippage limit | I understand, apply this slippage limit | — | No long dash as sentence punctuation (owner 2026-09-30). |
 | T·settings | ACCOUNT | Account | — | — |
 | T·settings | 1-click trading ON by default (skips only the human confirm) | One-click trading on at start (skips the confirm only) | — | — |
 | T·settings | CHART | Chart | — | — |
@@ -2234,7 +2239,9 @@ Hidden until an LP bridge exists: the screen is merged into Liquidity providers,
 | T·settings | CHART APPEARANCE… | Chart appearance… | — | Candle colours and display. |
 | T·settings | WORKSPACE | Workspace | — | — |
 | T·settings | RESET GRID SYMBOLS | Reset grid symbols | — | Put the default symbols back in the 2×2 grid. |
-| T·settings | Sounds and keyboard remapping: coming soon. | keep | — | — |
+| T·settings | RESET PANEL SIZES (Workspace tab, new) | RESET PANEL SIZES | — | Every panel back to its default size for this account (owner 2026-09-30). |
+| T·settings | footer before sign-in | Not signed in: server settings unavailable. | — | (owner 2026-09-30) |
+| T·settings | Sounds and keyboard remapping: coming soon. | removed | — | No "coming soon" text anywhere (owner 2026-09-30). |
 | T·settings | CANCEL / SAVE | Cancel / Save | — | — |
 
 ### Hotkeys & sounds (term-hotkeys-sounds)
