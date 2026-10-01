@@ -11,8 +11,9 @@
 //! - the broker's coverage account (its group is COVERAGE, or Broker.coverageAccountId): raw, always;
 //! - pricing engine off: GroupSymbolConfig.spreadMarkup, else BrokerSymbol.spreadMarkup (a target is never read);
 //! - pricing engine on: the first level that sets a spread (markup or target; target wins within a level, its markup
-//!   rides along as the fallback) of AccountSymbolConfig, AccountTypeSymbolConfig, then AccountType.spreadMarkup (flat,
-//!   markup only), then GroupSymbolConfig, then BrokerSymbol.spreadMarkup.
+//!   rides along as the fallback) of AccountSymbolConfig, then GroupSymbolConfig, then BrokerSymbol.spreadMarkup.
+//!   D4 (web 2026-10-01, engine D8): account types no longer take part in pricing -- AccountType.spreadMarkup and
+//!   AccountTypeSymbolConfig are not read (the web's lib/ask-markup.ts / pricing-engine.ts dropped them in 58b077a).
 //!
 //! Price: pip = 10^-(digits-1) (digits <= 1: 1). markup mode: ask + markup x pip. target mode: markup = target - the live
 //! raw spread in pips, floored at 0 -> ask + markup x pip.
@@ -47,9 +48,6 @@ pub struct AskLevels {
     /// BrokerSymbol.spreadMarkup; None = no BrokerSymbol row for this broker and symbol.
     pub broker: Option<Decimal>,
     pub group: Level,
-    /// AccountType.spreadMarkup (the flat level: markup only).
-    pub account_type: Option<Decimal>,
-    pub account_type_symbol: Level,
     pub account_symbol: Level,
 }
 
@@ -72,8 +70,6 @@ pub fn resolve(l: &AskLevels) -> Option<AskRule> {
     }
     Some(
         level_rule(&l.account_symbol, digits)
-            .or_else(|| level_rule(&l.account_type_symbol, digits))
-            .or_else(|| l.account_type.map(|markup_pips| AskRule::Markup { markup_pips, digits }))
             .or_else(|| level_rule(&l.group, digits))
             .unwrap_or(AskRule::Markup { markup_pips: broker, digits }),
     )
@@ -119,8 +115,6 @@ pub const LEVELS_JOINS: &str = r#"
     LEFT JOIN "Group" am_g ON am_g.id = a."groupId"
     LEFT JOIN "BrokerSymbol" am_bs ON am_bs."brokerId" = a."brokerId" AND am_bs."symbolId" = s.id
     LEFT JOIN "GroupSymbolConfig" am_gsc ON am_gsc."groupId" = a."groupId" AND am_gsc."symbolId" = s.id
-    LEFT JOIN "AccountType" am_at ON am_at.id = a."accountTypeId"
-    LEFT JOIN "AccountTypeSymbolConfig" am_atsc ON am_atsc."accountTypeId" = a."accountTypeId" AND am_atsc."symbolId" = s.id
     LEFT JOIN "AccountSymbolConfig" am_asc ON am_asc."accountId" = a.id AND am_asc."symbolId" = s.id "#;
 
 /// The columns those joins provide, read back by `levels_from_row`.
@@ -130,8 +124,6 @@ pub const LEVELS_COLUMNS: &str = r#"
     s.digits AS am_digits,
     am_bs."spreadMarkup" AS am_broker,
     am_gsc."spreadMarkup" AS am_g_m, am_gsc."targetTotalSpreadPips" AS am_g_t,
-    am_at."spreadMarkup" AS am_at_m,
-    am_atsc."spreadMarkup" AS am_ats_m, am_atsc."targetTotalSpreadPips" AS am_ats_t,
     am_asc."spreadMarkup" AS am_as_m, am_asc."targetTotalSpreadPips" AS am_as_t "#;
 
 /// The levels of one row of a query that selected `LEVELS_COLUMNS` (with `LEVELS_JOINS`).
@@ -144,8 +136,6 @@ pub fn levels_from_row(row: &sqlx::postgres::PgRow) -> Result<AskLevels, sqlx::E
         digits: row.try_get("am_digits")?,
         broker: row.try_get("am_broker")?,
         group: lvl("am_g_m", "am_g_t")?,
-        account_type: row.try_get("am_at_m")?,
-        account_type_symbol: lvl("am_ats_m", "am_ats_t")?,
         account_symbol: lvl("am_as_m", "am_as_t")?,
     })
 }
@@ -178,8 +168,11 @@ mod tests {
     fn every_resolution_case_of_the_vectors() {
         let v = vectors();
         let cases = v["resolution"].as_array().unwrap();
-        assert!(cases.len() >= 14);
+        // D8: exactly the web's current contract (12 cases since D4 dropped the account-type ones); a changed file must
+        // change this number on purpose, and no case may carry an account-type level any more
+        assert_eq!(cases.len(), 12, "the contract file changed: re-check the engine against it");
         for c in cases {
+            assert!(c.get("accountType").is_none() && c.get("accountTypeSymbol").is_none(), "account types take no part in pricing (D4)");
             let name = c["name"].as_str().unwrap();
             let l = AskLevels {
                 pricing_engine: c["pricingEngineEnabled"].as_bool().unwrap(),
@@ -187,8 +180,6 @@ mod tests {
                 digits: c["digits"].as_i64().unwrap() as i32,
                 broker: dec_opt(&c["broker"]),
                 group: level(&c["group"]),
-                account_type: if c["accountType"].is_null() { None } else { dec_opt(&c["accountType"]["spreadMarkup"]) },
-                account_type_symbol: level(&c["accountTypeSymbol"]),
                 account_symbol: level(&c["accountSymbol"]),
             };
             let got = resolve(&l).unwrap();
@@ -211,7 +202,7 @@ mod tests {
     fn every_price_case_of_the_vectors() {
         let v = vectors();
         let cases = v["prices"].as_array().unwrap();
-        assert!(cases.len() >= 9);
+        assert_eq!(cases.len(), 9, "the contract file changed: re-check the engine against it");
         for c in cases {
             let name = c["name"].as_str().unwrap();
             let digits = c["digits"].as_i64().unwrap() as i32;

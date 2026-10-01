@@ -57,6 +57,15 @@ still reads `AccountType.spreadMarkup` and `AccountTypeSymbolConfig` (the `am_at
 `.or_else` levels), and every other engine pricing reader must match. Until then web and engine agree only because
 no live account type sets a spread (checked 2026-09-30, and the web now refuses to set one). No broker leaves LEGACY
 before this is done.
+**Status (2026-10-01): DONE on branch `d8/ask-markup-vectors`, pending deploy.**
+- `ask_markup.rs` no longer reads either AccountType level (the `am_at` / `am_atsc` joins, the two fields and the two
+  `.or_else` levels are gone).
+- `every_resolution_case_of_the_vectors` pins the exact 12-case contract and refuses any account-type key.
+- No other engine pricing reader touches AccountType (grep of `engine/`): every reader goes through
+  `LEVELS_JOINS` / `levels_from_row`.
+- Engine workspace with the DB tests: 347 passed, 0 failed. Parity `run-db.sh`: 27/27 MATCH.
+
+The engine exe still has to be deployed for this to count.
 
 **D8 cutover gate, hedge-aware pre-trade margin (owner 2026-10-01):** the engine's order admission
 (`engine/order-management/src/lib.rs:212`, `pending_orders.rs:90`, `risk/src/lib.rs:90`) charges the new leg's FULL margin,
