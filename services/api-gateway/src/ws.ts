@@ -21,7 +21,8 @@ import { connect, type NatsConnection } from "nats";
 import { WebSocket, WebSocketServer } from "ws";
 import { getTraderSession, getTraderSessionByTicket } from "./auth.js";
 import { getAdminSession } from "./admin-auth.js";
-import { getEnabledSymbolNames } from "./db.js";
+import { getEnabledSymbolNames, query } from "./db.js";
+import { loadAccountAskState, rewriteTick, type AccountAskState } from "./client-ask.js";
 import { internalSecretOk } from "./internal-secret.js";
 
 const PRICE_STREAM_PATH = "/v1/prices/stream";
@@ -214,9 +215,34 @@ export async function attachPriceStream(server: Server, natsUrl: string): Promis
   // getEnabledSymbolsHot above) -- was a bare Set<WebSocket> before
   // the per-tenant filtering this map exists for.
   const clients = new Map<WebSocket, string>();
+  // markup-leak fix (client-ask.ts): the trader account behind each TRADER socket (staff sockets are absent: they get
+  // the raw tick), and each account's ask rules, cached 15 s (pricing changes reach the stream within that).
+  const accountBySocket = new Map<WebSocket, string>();
+  const askState = new Map<string, { state: AccountAskState; at: number }>();
+  const askLoading = new Set<string>();
+  const ASK_TTL_MS = 15_000;
+  function refreshAskState(accountId: string, brokerId: string): void {
+    if (askLoading.has(accountId)) return;
+    askLoading.add(accountId);
+    loadAccountAskState(query, accountId, brokerId)
+      .then((state) => {
+        if (state) askState.set(accountId, { state, at: Date.now() });
+      })
+      .catch((err) => console.error("price stream: ask rules load failed", err))
+      .finally(() => askLoading.delete(accountId));
+  }
+  function askStateHot(accountId: string, brokerId: string): AccountAskState | null {
+    const hit = askState.get(accountId);
+    if (!hit || Date.now() - hit.at > ASK_TTL_MS) refreshAskState(accountId, brokerId);
+    return hit?.state ?? null;
+  }
 
-  function registerClient(ws: WebSocket, brokerId: string) {
+  function registerClient(ws: WebSocket, brokerId: string, accountId?: string) {
     clients.set(ws, brokerId);
+    if (accountId) {
+      accountBySocket.set(ws, accountId);
+      refreshAskState(accountId, brokerId);
+    }
     gatewayStats.wsConnectionsTotal += 1;
     // Pre-warm this broker's enabled-symbol set off the hot path, so the
     // first ticks after a connection are filtered against the real set
@@ -240,10 +266,12 @@ export async function attachPriceStream(server: Server, natsUrl: string): Promis
     });
     ws.on("close", () => {
       clients.delete(ws);
+      accountBySocket.delete(ws);
       gatewayStats.wsDisconnectionsTotal += 1;
     });
     ws.on("error", () => {
       clients.delete(ws);
+      accountBySocket.delete(ws);
       gatewayStats.wsDisconnectionsTotal += 1;
     });
   }
@@ -256,7 +284,7 @@ export async function attachPriceStream(server: Server, natsUrl: string): Promis
       .then((session) => {
         if (session) {
           wss.handleUpgrade(req, socket, head, (ws) => {
-            registerClient(ws, session.brokerId);
+            registerClient(ws, session.brokerId, session.accountId);
           });
           return;
         }
@@ -297,7 +325,7 @@ export async function attachPriceStream(server: Server, natsUrl: string): Promis
   // against that client's own broker's cached enabled-symbol set.
   // One pass over one tick. Entirely synchronous and fully guarded: nothing
   // in here can reject, so nothing in here can end the subscription.
-  function fanOutTick(text: string, symbol: string): void {
+  function fanOutTick(text: string, symbol: string, tick: Record<string, unknown>): void {
     for (const [client, brokerId] of clients) {
       if (client.readyState !== WebSocket.OPEN) continue;
       // In-memory only. Unknown broker (nothing cached yet) = forward
@@ -306,8 +334,25 @@ export async function attachPriceStream(server: Server, natsUrl: string): Promis
       // broker's symbols, so the closed direction is the safe one.
       const enabled = getEnabledSymbolsHot(brokerId);
       if (!enabled || !enabled.has(symbol)) continue;
+      // markup-leak fix: a trader socket gets its account's ask once the broker is switched to server-side asks; until
+      // the account's rules are loaded it gets nothing (never the raw ask by accident).
+      let out = text;
+      const accountId = accountBySocket.get(client);
+      if (accountId) {
+        const state = askStateHot(accountId, brokerId);
+        if (!state) continue;
+        if (state.serverSide) {
+          const rule = state.rules.get(symbol);
+          if (!rule) continue;
+          try {
+            out = rewriteTick(tick, rule);
+          } catch {
+            continue;
+          }
+        }
+      }
       try {
-        client.send(text);
+        client.send(out);
         gatewayStats.ticksForwardedTotal += 1;
         gatewayStats.lastTickForwardedAtMs = Date.now();
       } catch (err) {
@@ -335,13 +380,15 @@ export async function attachPriceStream(server: Server, natsUrl: string): Promis
       try {
         const text = Buffer.from(msg.data).toString("utf-8");
         let symbol: string | undefined;
+        let tick: Record<string, unknown>;
         try {
-          symbol = JSON.parse(text)?.symbol;
+          tick = JSON.parse(text);
+          symbol = tick?.symbol as string | undefined;
         } catch {
           continue; // malformed tick -- nothing to filter or forward
         }
         if (!symbol) continue;
-        fanOutTick(text, symbol);
+        fanOutTick(text, symbol, tick);
       } catch (err) {
         console.error("price stream: failed to handle one tick (skipping it, subscription stays up)", err);
       }

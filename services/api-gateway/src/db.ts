@@ -18,6 +18,12 @@ import { randomUUID } from "node:crypto";
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 
+/** Read-only parameterized query on the main database (client-ask.ts loads ask rules with it). */
+export async function query(sql: string, params: unknown[]): Promise<{ rows: Record<string, unknown>[] }> {
+  const r = await pool.query(sql, params as unknown[]);
+  return { rows: r.rows as Record<string, unknown>[] };
+}
+
 // Neon -> VPS market-data migration (docs/market-data.md §8, S4): LivePrice
 // lives on the VPS Postgres once MARKET_DATA_DATABASE_URL is set (the same
 // value the engine's start-engine.cmd carries -- this service runs on the

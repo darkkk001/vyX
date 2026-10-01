@@ -31,7 +31,7 @@ export async function GET(request: Request) {
 
   const [account, broker] = await Promise.all([
     prisma.account.findUnique({ where: { id: session.accountId }, select: { groupId: true, currency: true } }),
-    prisma.broker.findUnique({ where: { id: session.brokerId }, select: { pricingEngineEnabled: true } }),
+    prisma.broker.findUnique({ where: { id: session.brokerId }, select: { pricingEngineEnabled: true, clientAskServerSideAt: true } }),
   ]);
 
   // 2026-09-05 P0 fix -- scoped to this broker's own enabled symbol
@@ -161,13 +161,24 @@ export async function GET(request: Request) {
     if (markupPips.isZero()) continue;
     askMarkupByName.set(bs.symbol.name, markupPips.mul(pipSize(bs.symbol.digits)).toString());
   }
-  const rows = [...priceByName.values()].map((p) => ({
-    ...p,
-    marketClosed: closedByName.get(p.symbol) ?? false,
-    askMarkup: askMarkupByName.get(p.symbol) ?? "0",
-    spreadRule: targetSpreadByName.has(p.symbol) ? "target" : "markup",
-    ...(targetSpreadByName.has(p.symbol) ? { targetSpread: targetSpreadByName.get(p.symbol) } : {}),
-  }));
+  // markup-leak fix (owner 2026-10-01: traders never see the broker's markup). Once the broker is switched to
+  // server-side asks (Broker.clientAskServerSideAt, set together with the price stream's own switch,
+  // services/api-gateway/src/client-ask.ts), `ask` IS this account's ask (raw ask + its markup at this tick) and the rule
+  // fields say "nothing to add": askMarkup "0", spreadRule "markup", no targetSpread -- so an installed terminal /
+  // WebTrader that still adds them prices exactly right, and the raw ask and the markup never leave the server.
+  const serverSide = broker?.clientAskServerSideAt != null;
+  const clientAskOf = (symbol: string, bid: Prisma.Decimal, ask: Prisma.Decimal) => (askMarkupByName.has(symbol) ? ask.add(new Prisma.Decimal(askMarkupByName.get(symbol)!)) : ask);
+  const rows = [...priceByName.values()].map((p) =>
+    serverSide
+      ? { ...p, ask: clientAskOf(p.symbol, p.bid, p.ask), marketClosed: closedByName.get(p.symbol) ?? false, askMarkup: "0", spreadRule: "markup" }
+      : {
+          ...p,
+          marketClosed: closedByName.get(p.symbol) ?? false,
+          askMarkup: askMarkupByName.get(p.symbol) ?? "0",
+          spreadRule: targetSpreadByName.has(p.symbol) ? "target" : "markup",
+          ...(targetSpreadByName.has(p.symbol) ? { targetSpread: targetSpreadByName.get(p.symbol) } : {}),
+        }
+  );
   const headers = { "Cache-Control": "no-store", "x-market-data-source": priceSource };
 
   // FX batch (2026-09-26, docs/contracts/fx-and-market-week.md §2): `?fx=1` answers { prices, fx } -- the conversion
@@ -182,7 +193,9 @@ export async function GET(request: Request) {
     const now = Date.now();
     const quotes = [...fxRows.values()]
       .filter((r) => r.tickAt.getTime() > now - FX_RATE_MAX_AGE_MS)
-      .map((r) => ({ symbol: r.symbol, bid: r.bid.toString(), ask: r.ask.toString(), tickAt: r.tickAt.toISOString() }));
+      // server-side asks: a conversion quote of a symbol this account trades carries the account's ask too, so the raw ask
+      // cannot be read off the FX block either
+      .map((r) => ({ symbol: r.symbol, bid: r.bid.toString(), ask: (serverSide ? clientAskOf(r.symbol, r.bid, r.ask) : r.ask).toString(), tickAt: r.tickAt.toISOString() }));
     const lookup = fxLookupFromQuotes(fxRows.values(), now);
     const rates: Record<string, string> = {};
     for (const q of quoteCurrencies) {

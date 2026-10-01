@@ -49,7 +49,7 @@ export async function GET(request: Request) {
       swapFree: true,
       isDefault: true,
       symbolConfigs: {
-        select: { spreadMarkup: true, commissionPerLot: true, symbol: { select: { name: true } } },
+        select: { commissionPerLot: true, symbol: { select: { name: true } } },
         orderBy: { symbol: { name: "asc" } },
       },
     },
@@ -68,11 +68,12 @@ export async function GET(request: Request) {
       // "standard pricing", never as "0", so a client is not told a spread is
       // zero when it simply is not set here.
       pricing: g.symbolConfigs
-        .filter((c) => c.spreadMarkup !== null || c.commissionPerLot !== null)
+        // markup-leak fix (owner 2026-10-01): the broker's spread markup is never shown to a client -- only the
+        // commission a trade is charged per lot
+        .filter((c) => c.commissionPerLot !== null)
         .map((c) => ({
           symbol: c.symbol.name,
-          spreadMarkup: c.spreadMarkup?.toString() ?? null,
-          commissionPerLot: c.commissionPerLot?.toString() ?? null,
+          commissionPerLot: c.commissionPerLot!.toString(),
         })),
     }))
   );
