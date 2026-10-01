@@ -1,6 +1,6 @@
 # Markup-leak hotfix: VPS gateway runbook (rollout step 3)
 
-Commits `0e95d8e` + the Neon-quiet follow-up (branch `markup-leak`; `main` must contain both). This page covers only the **api-gateway** on the VPS
+Commits `0e95d8e` + the Neon-quiet follow-up `3c4a126` (`main` must contain both). This page covers only the **api-gateway** on the VPS
 (nssm service `vyxtrader-gateway`, `node dist\index.js` from `C:\vyxtrader\repo\services\api-gateway`, port 8080).
 The engine is not rebuilt or restarted.
 
@@ -87,8 +87,10 @@ if ($LASTEXITCODE -ne 0) { throw "git pull --ff-only failed -- nothing touched" 
 git log --oneline -3
 Invoke-Native { git merge-base --is-ancestor 0e95d8e HEAD }
 if ($LASTEXITCODE -ne 0) { throw "main does not contain 0e95d8e yet -- wait for the push, nothing touched" }
+Invoke-Native { git merge-base --is-ancestor 3c4a126 HEAD }
+if ($LASTEXITCODE -ne 0) { throw "main does not contain 3c4a126 (the Neon-quiet gateway fix) yet -- nothing touched" }
 if (-not (Test-Path "$Gw\src\client-ask.ts")) { throw "src\client-ask.ts missing -- nothing touched" }
-"OK: main contains 0e95d8e"
+"OK: main contains 0e95d8e and 3c4a126"
 ```
 
 ## 2. Back up the running build (for rollback)
