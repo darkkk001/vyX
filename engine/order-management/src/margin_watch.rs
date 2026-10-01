@@ -27,6 +27,9 @@
 //! the watch remembers the last state it FIRED, and once the 5 s are over, the first evaluation that finds the account
 //! in a different state fires it. So a flap that ends inside the 5 s (in -> out -> in) is coalesced into the state the
 //! account is in when the window ends, and a change that stays is always announced, at most 5 s late.
+//! Margin-call notices (owner 2026-10-01): no real warning is lost;
+//! the account's final state is announced within 5 s; sub-5 s flickers are not repeated
+//! (for the 11-flap replay: 8 in/out pairs vs the web's 11, all 11 web notices explained, 0 WEB_ONLY).
 
 use crate::{calc, db, fx};
 use market_data::cache::TickCache;
@@ -42,7 +45,9 @@ use tokio::sync::Notify;
 
 /// The web's price freshness rule (lib/live-price.ts getFreshPrices, book.rs: tickAt under 15 s).
 const FRESH: i64 = 15;
-/// A margin-call edge (in or out) fires at most this often per account.
+/// A margin-call edge (in or out) fires at most this often per account; a change inside it is deferred, not dropped
+/// (Track::fired_in_call). Damping option A, kept at 5 s. The rule:
+/// "Margin-call notices (owner 2026-10-01): no real warning is lost; the account's final state is announced within 5 s; sub-5 s flickers are not repeated (for the 11-flap replay: 8 in/out pairs vs the web's 11, all 11 web notices explained, 0 WEB_ONLY)."
 const EDGE_EVERY: Duration = Duration::from_secs(5);
 /// Cap of the re-fire backoff for a stop-out that stays.
 const MAX_BACKOFF_SECS: u64 = 30;

@@ -1423,6 +1423,7 @@ flip back to WEB and watch the web take the next stop-out. The Vercel cron stays
 
   For the 11-flap sequence the engine fires 8 IN + 8 OUT where the web sent 11 + 11: episodes 3 and 5 began and ended
   inside a damping window, and 9 merged into 8. The final state is always announced, at most 5 s late.
+  **Margin-call notices (owner 2026-10-01):** "no real warning is lost; the account's final state is announced within 5 s; sub-5 s flickers are not repeated (for the 11-flap replay: 8 in/out pairs vs the web's 11, all 11 web notices explained, 0 WEB_ONLY)." (damping option A, EDGE_EVERY kept at 5 s).
   Follow-up, NOT BUILT: **re-check the margin-call level on the account's own fill.** A margin call reached by OPENING a
   position (not by a price move) is seen only on the next tick after the book reloads, on both sides. This is the same
   latency as the "evaluate an account on its fill event" item above, and the same fix covers the margin-call notice.
