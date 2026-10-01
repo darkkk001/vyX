@@ -198,7 +198,7 @@ The labels come from `ui-map.md` (the bo-* and term-* sections). They were check
 | SHELL | Trade history | Closed trades | — | Closed trades for all clients. |
 | SHELL | Symbols | keep | — | Symbol settings. |
 | SHELL | Groups | keep | — | Client groups: pricing, leverage and trade handling. |
-| SHELL | Account types | keep | — | Account types offered to clients. |
+| SHELL | Account types | removed (D4, owner 2026-10-01) | — | The Account types screen and its sidebar entry are gone: the group is the tier. |
 | SHELL | Mirror rules | Copy rules | — | Rules that copy or reverse trades into another account. |
 | SHELL | Risk | keep | — | Risk settings. |
 | SHELL | Risk radar | keep | — | Accounts and IP addresses flagged as risky. |
@@ -659,9 +659,9 @@ The labels come from `ui-map.md` (the bo-* and term-* sections). They were check
 | DEAL | Dealing-group accounts | Accounts in manual-dealing groups | — | — |
 | DEAL | Smart dealer | Auto-accept / auto-reject slippage (%) | % | Accept or reject orders automatically by how far the price moved. |
 | DEAL | accept ≤ a% · reject ≥ r% | keep | % | — |
-| DEAL | MAX SLIPPAGE | keep until the stored value is converted from pips to points; then Max slippage (points) | pips today → points | Largest price change allowed on fill, broker-wide. |
+| DEAL | MAX SLIPPAGE | Max slippage (points) | points | Largest price change allowed on fill, broker-wide; "unlimited" when no cap is set (stored in points since 2026-10-01). |
 | DEAL | EDIT | keep | — | — |
-| DEAL | MAX SLIPPAGE (form) · "Pips (blank = platform default…, 0 = reject any slippage)" | keep until the stored value is converted from pips to points; then Max slippage (points) · "blank = platform default, 0 = no slippage" | pips today → points | — |
+| DEAL | MAX SLIPPAGE (form) · "Pips (blank = platform default…, 0 = reject any slippage)" | Max slippage (points) · "above 0 · blank = unlimited (no broker cap)" | points | No "platform default" text anywhere (issues.md 424 / 466 / 472; owner 2026-10-01). |
 | DEAL | COVERAGE ACCOUNT (section / form) / Coverage account | Broker hedge account | — | — |
 | DEAL | not set | keep | — | — |
 | DEAL | SET / CHANGE COVERAGE ACCOUNT | Set / Change broker hedge account | — | — |
@@ -813,7 +813,7 @@ The labels come from `ui-map.md` (the bo-* and term-* sections). They were check
 | GRP | Halt trading… / Resume trading… | Halt group trading… / Resume group trading… | — | Stop or restart new trades for this group. |
 | GRP | Add new group… | Add group… | — | Create a new group. |
 | GRP | 2) PRC  PRICING OVERRIDES | Group pricing | — | Spreads, commission and swaps for this group. |
-| GRP | precedence text line | Who decides the client spread | — | Order: account › group › symbol. |
+| GRP | precedence text line | Who decides the client spread | — | Order: account › this group › symbol (no account-type level: D4, owner 2026-10-01). |
 | GRP | RAW + PTS | Source spread (points) | points | Spread from the price feed before your markup. (10 points = 1 pip) (owner 2026-09-29, was Market spread) |
 | GRP | MODE (TARGET / MARKUP / INHERIT) + VALUE + PTS | Your markup (points) | points | ONE column (owner 2026-09-29): "+N" = spread markup, "Fixed N" = fixed spread; blank = the symbol decides. |
 | GRP | VALUE + PTS | merged into Your markup (points) | — | See the row above. |
@@ -862,41 +862,43 @@ The labels come from `ui-map.md` (the bo-* and term-* sections). They were check
 
 ### Account types (ATY)
 
+> Removed (D4, owner 2026-10-01): the group is the pricing tier; the Account types screen, its sidebar entry and every account-type picker are gone from the backoffice. An AccountType audit row opens nothing ("no related screen"). The rows below are kept as history.
+
 | Screen | Current label | Proposed name | Unit | Tooltip (one line) |
 |---|---|---|---|---|
-| ATY | 1) ATY  ACCOUNT TYPES | Account types | — | Types clients choose (Standard, Raw…). |
-| ATY | <n> TYPES · <n> ENABLED | {n} types · {n} enabled | — | Totals. |
-| ATY | + TYPE | Add account type | — | Create a new type. |
-| ATY | NAME | keep | — | Type name. |
-| ATY | DESCRIPTION | keep | — | Staff note. |
-| ATY | PRICING | Pricing hint | — | Text shown to clients. |
-| ATY | MARKUP + PTS | Spread markup (points) | points | Default markup for this type. (10 points = 1 pip) |
-| ATY | COMMISSION / LOT | Commission ($ per lot) | $ per lot | Default commission. |
-| ATY | SWAP LONG / SWAP SHORT | Swap long ($ per lot) / Swap short ($ per lot) | $ per lot | Default swaps. |
-| ATY | ORDER | Sort order | — | Position in the client's list. |
-| ATY | DEFAULT | keep | — | Chosen for new accounts. |
-| ATY | STATUS (ENABLED / DISABLED) | keep | — | Whether new accounts can pick it. |
-| ATY | Edit… | keep | — | Change the type. |
-| ATY | Disable… / Enable… | keep | — | Stop or allow new accounts on this type. |
-| ATY | Add new type… | Add account type… | — | Create a new type. |
-| ATY | 2) PRC  PRICING OVERRIDES | Account type pricing | — | Per-symbol pricing for this type. |
-| ATY | WHO DECIDES A CLIENT'S SPREAD… | Who decides the client spread | — | Order: account › type per symbol › type default › group › symbol. |
-| ATY | RAW + PTS | Source spread (points) | points | Spread from the price feed before your markup. (10 points = 1 pip) (owner 2026-09-29) |
-| ATY | MODE + VALUE + PTS | Your markup (points) | points | ONE column (owner 2026-09-29): "+N" = markup, "Fixed N" = fixed spread; blank = next level decides. |
-| ATY | VALUE + PTS | merged into Your markup (points) | — | See the row above. |
-| ATY | CLIENT SPREAD + PTS | Client spread (points) | points | Spread the client sees. (10 points = 1 pip) |
-| ATY | per group | Same as group | — | The client's group decides. |
-| ATY | SOURCE (THIS TYPE · SYMBOL / TYPE DEFAULT / CLIENT'S GROUP) | Set by (This type, per symbol / Type default / Client's group) | — | Which level decides. |
-| ATY | <x> (type) / inherits | <x> (type) / (blank) | — | Owner 2026-09-29: blank = next level decides; this type's own values are highlighted. |
-| ATY | COMMISSION / LOT, SWAP LONG, SWAP SHORT (pricing) | Commission ($ per lot) / Swap long ($ per lot) / Swap short ($ per lot) | $ per lot | Per-symbol values. |
-| ATY | Edit pricing… | keep | — | Change this symbol's pricing. |
-| ATY | Reset override (inherit)… | Reset to next level… | — | Remove this type's own pricing. |
-| ATY | NEW ACCOUNT TYPE / EDIT ACCOUNT TYPE (form) | New account type / Edit account type | — | Form title. |
-| ATY | Name / Description | keep | — | Form fields. |
-| ATY | Pricing hint | keep | — | Shown to clients, e.g. "spreads from 0.0 + $3.5/lot". |
-| ATY | Sort order | keep | — | Position in the client's list. |
-| ATY | Default for new accounts | keep | — | New accounts get this type. |
-| ATY | DISABLE / ENABLE ACCOUNT TYPE (dialog) | Disable / Enable account type | — | Confirm dialog title. |
+| ATY | 1) ATY  ACCOUNT TYPES | removed (D4, owner 2026-10-01) | — | Types clients choose (Standard, Raw…). |
+| ATY | <n> TYPES · <n> ENABLED | removed (D4, owner 2026-10-01) | — | Totals. |
+| ATY | + TYPE | removed (D4, owner 2026-10-01) | — | Create a new type. |
+| ATY | NAME | removed (D4, owner 2026-10-01) | — | Type name. |
+| ATY | DESCRIPTION | removed (D4, owner 2026-10-01) | — | Staff note. |
+| ATY | PRICING | removed (D4, owner 2026-10-01) | — | Text shown to clients. |
+| ATY | MARKUP + PTS | removed (D4, owner 2026-10-01) | points | Default markup for this type. (10 points = 1 pip) |
+| ATY | COMMISSION / LOT | removed (D4, owner 2026-10-01) | $ per lot | Default commission. |
+| ATY | SWAP LONG / SWAP SHORT | removed (D4, owner 2026-10-01) | $ per lot | Default swaps. |
+| ATY | ORDER | removed (D4, owner 2026-10-01) | — | Position in the client's list. |
+| ATY | DEFAULT | removed (D4, owner 2026-10-01) | — | Chosen for new accounts. |
+| ATY | STATUS (ENABLED / DISABLED) | removed (D4, owner 2026-10-01) | — | Whether new accounts can pick it. |
+| ATY | Edit… | removed (D4, owner 2026-10-01) | — | Change the type. |
+| ATY | Disable… / Enable… | removed (D4, owner 2026-10-01) | — | Stop or allow new accounts on this type. |
+| ATY | Add new type… | removed (D4, owner 2026-10-01) | — | Create a new type. |
+| ATY | 2) PRC  PRICING OVERRIDES | removed (D4, owner 2026-10-01) | — | Per-symbol pricing for this type. |
+| ATY | WHO DECIDES A CLIENT'S SPREAD… | removed (D4, owner 2026-10-01) | — | Order: account › type per symbol › type default › group › symbol. |
+| ATY | RAW + PTS | removed (D4, owner 2026-10-01) | points | Spread from the price feed before your markup. (10 points = 1 pip) (owner 2026-09-29) |
+| ATY | MODE + VALUE + PTS | removed (D4, owner 2026-10-01) | points | ONE column (owner 2026-09-29): "+N" = markup, "Fixed N" = fixed spread; blank = next level decides. |
+| ATY | VALUE + PTS | removed (D4, owner 2026-10-01) | — | See the row above. |
+| ATY | CLIENT SPREAD + PTS | removed (D4, owner 2026-10-01) | points | Spread the client sees. (10 points = 1 pip) |
+| ATY | per group | removed (D4, owner 2026-10-01) | — | The client's group decides. |
+| ATY | SOURCE (THIS TYPE · SYMBOL / TYPE DEFAULT / CLIENT'S GROUP) | removed (D4, owner 2026-10-01) | — | Which level decides. |
+| ATY | <x> (type) / inherits | removed (D4, owner 2026-10-01) | — | Owner 2026-09-29: blank = next level decides; this type's own values are highlighted. |
+| ATY | COMMISSION / LOT, SWAP LONG, SWAP SHORT (pricing) | removed (D4, owner 2026-10-01) | $ per lot | Per-symbol values. |
+| ATY | Edit pricing… | removed (D4, owner 2026-10-01) | — | Change this symbol's pricing. |
+| ATY | Reset override (inherit)… | removed (D4, owner 2026-10-01) | — | Remove this type's own pricing. |
+| ATY | NEW ACCOUNT TYPE / EDIT ACCOUNT TYPE (form) | removed (D4, owner 2026-10-01) | — | Form title. |
+| ATY | Name / Description | removed (D4, owner 2026-10-01) | — | Form fields. |
+| ATY | Pricing hint | removed (D4, owner 2026-10-01) | — | Shown to clients, e.g. "spreads from 0.0 + $3.5/lot". |
+| ATY | Sort order | removed (D4, owner 2026-10-01) | — | Position in the client's list. |
+| ATY | Default for new accounts | removed (D4, owner 2026-10-01) | — | New accounts get this type. |
+| ATY | DISABLE / ENABLE ACCOUNT TYPE (dialog) | removed (D4, owner 2026-10-01) | — | Confirm dialog title. |
 
 ### Copy rules (MIR)
 
@@ -1221,7 +1223,7 @@ Hidden until an LP bridge exists: the screen is merged into Liquidity providers,
 | CLI | CLIENT | keep | — | — |
 | CLI | E-MAIL | keep | — | — |
 | CLI | ACCOUNT MODE | Live / Demo | — | Live or demo account. |
-| CLI | ACCOUNT TYPE | keep | — | — |
+| CLI | ACCOUNT TYPE | removed (D4, owner 2026-10-01) | — | — |
 | CLI | COUNTRY | keep | — | — |
 | CLI | KYC | ID check | — | ID check status. |
 | CLI | GROUP | keep | — | — |
@@ -1295,7 +1297,7 @@ Hidden until an LP bridge exists: the screen is merged into Liquidity providers,
 | CLI·360 | CUSTOM PRICING (tag) | keep | — | This account has its own pricing. |
 | CLI·360 | Email | E-mail | — | — |
 | CLI·360 | Group | keep | — | — |
-| CLI·360 | Account type | keep | — | — |
+| CLI·360 | Account type | removed (D4, owner 2026-10-01) | — | Not shown: the group is the tier (an account type is a label with no effect); it stays readable in the audit log only. |
 | CLI·360 | Leverage | keep | — | — |
 | CLI·360 | Balance | Balance ($) | $ | — |
 | CLI·360 | Credit | Credit ($) | $ | Bonus money the broker lends to trade with. |
@@ -1458,7 +1460,7 @@ Hidden until an LP bridge exists: the screen is merged into Liquidity providers,
 | LAR | PENDING · APPROVED · REJECTED · ALL | Waiting · Approved · Rejected · All | — | Status filters. |
 | LAR | CLIENT | keep | — | Client name. |
 | LAR | E-MAIL / COUNTRY / PHONE | keep | — | Contact details. |
-| LAR | ACCOUNT TYPE | keep | — | Account type the client requested (read-only). The approve form has no Account type field: the group is the tier (D4) (owner 2026-09-30). |
+| LAR | ACCOUNT TYPE | removed (D4, owner 2026-10-01) | — | Not shown: the group is the tier (an account type is a label with no effect); it stays readable in the audit log only. |
 | LAR | STATUS | keep | — | Waiting, approved or rejected. |
 | LAR | CREATED ACCOUNT | Live account | — | Account created on approval. |
 | LAR | REJECTION REASON | keep | — | Reason sent to the client. |
@@ -1554,10 +1556,10 @@ Hidden until an LP bridge exists: the screen is merged into Liquidity providers,
 | PSP | <n> OF 5 ENABLED · <n> UNSAVED | {n} of 5 enabled · {n} not saved | — | Totals. |
 | PSP | METHOD (USDT · TRC20 / USDT · BEP20 / BTC / ETH / BANK TRANSFER) | Payment method | — | Method name. |
 | PSP | ENABLED (ON/OFF) | keep | — | Clients can use it. |
-| PSP | MINIMUM | Minimum ($) | $ | Smallest amount allowed. |
-| PSP | MAXIMUM | Maximum ($) | $ | Largest amount allowed. |
+| PSP | MINIMUM | Minimum (USD) | broker currency | Smallest amount allowed; the code is the broker's currency (Broker.defaultAccountCurrency), none when unknown (owner 2026-10-01). |
+| PSP | MAXIMUM | Maximum (USD) | broker currency | Largest amount allowed; the broker's currency code, as on CFG (owner 2026-10-01). |
 | PSP | FEE % | Fee (%) | % | Percentage fee. |
-| PSP | FEE FIXED | Fixed fee ($) | $ | Flat fee per request. |
+| PSP | FEE FIXED | Fixed fee (USD) | broker currency | Flat fee per request; the broker's currency code, as on CFG (owner 2026-10-01). |
 | PSP | WALLET ADDRESS | keep | — | Where clients send crypto. |
 | PSP | INSTRUCTIONS | keep | — | Text shown to clients. |
 | PSP | (blank) CHANGED / DEFAULTS | Not saved / Default | — | Row state. |
@@ -1735,7 +1737,7 @@ Hidden until an LP bridge exists: the screen is merged into Liquidity providers,
 | CFG | Stop-out (PER GROUP · GRP) | Stop-out level (%) (set per group) | % | Set on the Groups screen. |
 | CFG | Negative balance protection | keep | — | Not available yet. |
 | CFG | Hedging allowed | keep | — | Not available yet. |
-| CFG | Max slippage | keep until the stored value is converted from pips to points; then Max slippage (points) | pips today → points | Not available yet. |
+| CFG | Max slippage | Max slippage (points) | points | The broker's cap, edited on DEAL; "unlimited" when none is set. |
 | CFG | FUNDING (section) | Deposits & withdrawals | — | Money defaults. |
 | CFG | Min deposit (PER METHOD · PSP) | Min deposit ({CCY}) (set per payment method) | broker currency | Money labels carry the broker's own currency code (Broker.defaultAccountCurrency), e.g. "Min deposit (USD)"; no suffix when unknown; never "($)" (owner 2026-09-30). |
 | CFG | Withdrawal auto-approve ≤ | Auto-approve withdrawals up to ({CCY}) | broker currency | Not available yet (owner 2026-09-30). |
@@ -2332,7 +2334,7 @@ Each item lists the old variants, then the final word. The glossary above is the
 38. **Units in the name**: terminal `Points` → `Move (points)`, DEAL `+1 / +2 / +3` → `+1 / +2 / +3 steps`, CLI·360 `<first> → <last>` → `<first> → <last> ($)`, DASH `Market book / Broker book` stat → `… (lots)`.
 39. **Margin panel**: RISK `Margin Watch` → `Margin`, the same name as the MRG screen it summarises.
 
-One caveat, not a naming change: broker-wide **Max slippage** (DEAL, CFG) is labelled in points, but the value is still stored in pips. Convert the stored value before this label ships.
+Resolved 2026-10-01 (owner): broker-wide **Max slippage** (DEAL, CFG) is stored in points (Broker.defaultMaxSlippagePoints, web 58b077a) and labelled Max slippage (points); no cap reads "unlimited".
 
 ## Note (2026-09-25, after Batch 3)
 - The symbol limit is enforced per account as the total of its open lots (lib/risk.ts checkSymbolExposure), not as a broker-wide net: rows above were corrected to "Max lots per account (lots)". Backoffice 1.0.26 already shows the largest account against it.
