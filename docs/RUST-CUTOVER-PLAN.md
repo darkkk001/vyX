@@ -1436,6 +1436,25 @@ flip back to WEB and watch the web take the next stop-out. The Vercel cron stays
   Follow-up, NOT BUILT: **re-check the margin-call level on the account's own fill.** A margin call reached by OPENING a
   position (not by a price move) is seen only on the next tick after the book reloads, on both sides. This is the same
   latency as the "evaluate an account on its fill event" item above, and the same fix covers the margin-call notice.
+- **Torn pinned read (owner, 2026-10-01). Shadow-only artifact, FIXED on shadow/torn-read, ships in the same engine
+  deploy as the flap fix. Soak gate: its old WEB_ONLY row is excused, not re-paired.** In S2 at 07:00:10 UTC, one
+  fire handed a1, a2 and a4 (49990004) to the shadow, which evaluated them serially at about 180 ms each. The web
+  closed a4 at 10.871 (TRADE_PNL −643.765 at 10.883), during the shadow's pinned evaluation of a4.
+  `calc::load_book_state` made three separate reads:
+  - funds: saw balance 1000, before the close;
+  - positions: the pin kept a4 open by identity;
+  - pinned ledger: already saw the −643.765.
+
+  The pinned balance came out 1643.765 and the level 127.67 % instead of 45.48 %, so the shadow decided no stop-out
+  (WEB_ONLY). The engine would have stopped the position out; the web did.
+
+  Fix: every read of an evaluation (funds, positions, sessions, fx quotes, ledger) runs in ONE
+  `REPEATABLE READ, READ ONLY` transaction. It works under the read-only shadow role. The live path takes the same
+  snapshot: its funds and positions reads could tear the same way, and its closes still lock and re-check in their own
+  transaction.
+
+  Regression test `tests/torn_read_db.rs` commits the web's close between the funds read and the ledger read. Without
+  the snapshot there is no decision (127.67 %); with it, a stop-out at 45.48 % and a balance after of 356.235.
 
 #### 6.2 Found during the soak, not risk-engine items
 

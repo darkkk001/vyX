@@ -137,10 +137,43 @@ pub async fn load_account_state(pool: &PgPool, account_id: &str) -> Result<Optio
 /// writes the balance would count every close twice. `load_account_state` above stays for the order path
 /// (pending_orders.rs), which is out of the Phase 3 scope and still on the engine's own tables.
 pub async fn load_book_state(pool: &PgPool, account_id: &str) -> Result<Option<AccountState>, sqlx::Error> {
-    let Some(funds) = db::get_account_funds(pool, account_id).await? else {
+    // The torn read (2026-10-01, S2 07:00:10 UTC, 49990004): the funds, the positions and the pinned ledger used to be
+    // three separate reads. The web closed a4 between the funds read (balance 1000, before the close) and the ledger
+    // read (which already held the close's -643.765 TRADE_PNL): the pinned balance came out 1643.765, the level 127.67 %
+    // instead of 45.48 %, and the shadow decided nothing (WEB_ONLY). Every read below now runs in ONE
+    // REPEATABLE READ, READ ONLY transaction: one snapshot, one commit seen by all of them. The live (unpinned) path
+    // takes the same snapshot: its funds and positions reads could tear the same way (a close between them = the loss
+    // counted nowhere), and a read-only snapshot changes nothing else (the closes themselves lock and re-check in their
+    // own transaction). Works under the shadow's read-only role: no write, no lock.
+    let mut tx = pool.begin().await?;
+    sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY").execute(&mut *tx).await?;
+    let state = load_book_state_on(&mut tx, account_id).await;
+    // read only: nothing to commit
+    let _ = tx.rollback().await;
+    state
+}
+
+/// Test-only barrier between the funds read and the ledger read of `load_book_state` (the torn-read regression test,
+/// tests/torn_read_db.rs): when set, the next evaluation signals the first Notify and waits for the second, once.
+/// Never set in production (one uncontended lock per evaluation).
+#[doc(hidden)]
+pub static BETWEEN_READS_HOOK: std::sync::Mutex<Option<(std::sync::Arc<tokio::sync::Notify>, std::sync::Arc<tokio::sync::Notify>)>> = std::sync::Mutex::new(None);
+
+async fn load_book_state_on(conn: &mut sqlx::PgConnection, account_id: &str) -> Result<Option<AccountState>, sqlx::Error> {
+    let Some(funds) = sqlx::query_as::<_, (Decimal, Decimal, i32)>(r#"SELECT balance, credit, leverage FROM "Account" WHERE id = $1"#)
+        .bind(account_id)
+        .fetch_optional(&mut *conn)
+        .await?
+        .map(|(balance, credit, leverage)| db::AccountFunds { balance, credit, leverage })
+    else {
         return Ok(None);
     };
-    let positions = crate::book::open_positions_with_market(pool, account_id).await?;
+    let positions = crate::book::open_positions_with_market_on(conn, account_id).await?;
+    let hook = BETWEEN_READS_HOOK.lock().unwrap().take();
+    if let Some((reached, go)) = hook {
+        reached.notify_one();
+        go.notified().await;
+    }
     // Stage 5 snapshot (book::Pin): the funds before every position-referenced ledger row written since the pin's moment
     // (a close's TRADE_PNL / CREDIT use / negative-balance write-off, a later position's commission). A CREDIT row's
     // amount went INTO the balance and OUT of credit.
@@ -159,7 +192,7 @@ pub async fn load_book_state(pool: &PgPool, account_id: &str) -> Result<Option<A
             .bind(account_id)
             .bind(pin.at)
             .bind(&pin.measured)
-            .fetch_one(pool)
+            .fetch_one(&mut *conn)
             .await?;
             (funds.balance - since, funds.credit + credit_used)
         }

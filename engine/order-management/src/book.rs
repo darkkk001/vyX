@@ -171,6 +171,16 @@ pub async fn open_positions_with_market(
     pool: &PgPool,
     account_id: &str,
 ) -> Result<Vec<OpenPositionWithMarket>, sqlx::Error> {
+    let mut conn = pool.acquire().await?;
+    open_positions_with_market_on(&mut conn, account_id).await
+}
+
+/// `open_positions_with_market` on a given connection: calc::load_book_state runs it inside its one snapshot
+/// transaction, together with the funds and ledger reads (2026-10-01, the torn read).
+pub async fn open_positions_with_market_on(
+    conn: &mut sqlx::PgConnection,
+    account_id: &str,
+) -> Result<Vec<OpenPositionWithMarket>, sqlx::Error> {
     let pin = current_pin();
     // one row per open position, with the levels of its account's ask rule (market_data::ask_markup, 2026-09-26: a SELL
     // closes, triggers and is valued at the account's ask) -- joined here, never a query per position
@@ -206,7 +216,7 @@ pub async fn open_positions_with_market(
             Some(p) => q.bind(p.at).bind(&p.measured),
             None => q,
         };
-        let raw = q.fetch_all(pool).await?;
+        let raw = q.fetch_all(&mut *conn).await?;
         let mut out = Vec::with_capacity(raw.len());
         for r in &raw {
             out.push((
@@ -234,7 +244,7 @@ pub async fn open_positions_with_market(
     )
     .bind(&broker_id)
     .bind(&names)
-    .fetch_all(pool)
+    .fetch_all(&mut *conn)
     .await?;
     let mut sessions: std::collections::HashMap<String, Vec<crate::session::SessionWindow>> = std::collections::HashMap::new();
     for (name, day, open, close) in session_rows {
@@ -265,7 +275,7 @@ pub async fn open_positions_with_market(
     } else {
         let q: Vec<(String, Decimal, Decimal)> = sqlx::query_as(r#"SELECT symbol, bid, ask FROM "LivePrice" WHERE symbol = ANY($1) AND "tickAt" > now() - interval '72 hours'"#)
             .bind(&fx_symbols)
-            .fetch_all(pool)
+            .fetch_all(&mut *conn)
             .await?;
         q.into_iter().map(|(s, b, a)| (s, (b, a))).collect()
     };
