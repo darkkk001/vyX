@@ -21,8 +21,8 @@ import { connect, type NatsConnection } from "nats";
 import { WebSocket, WebSocketServer } from "ws";
 import { getTraderSession, getTraderSessionByTicket } from "./auth.js";
 import { getAdminSession } from "./admin-auth.js";
-import { getEnabledSymbolNames, query } from "./db.js";
-import { loadAccountAskState, rewriteTick, type AccountAskState } from "./client-ask.js";
+import { getBrokerStreamConfig, query } from "./db.js";
+import { ClientAskRegistry } from "./client-ask.js";
 import { internalSecretOk } from "./internal-secret.js";
 
 const PRICE_STREAM_PATH = "/v1/prices/stream";
@@ -109,19 +109,27 @@ function getEnabledSymbolsHot(brokerId: string): Set<string> | null {
 
 // Off-hot-path refresh. At most one in flight per broker; a failure leaves
 // the previous entry in place (stale beats dark) and is logged, not thrown.
+// markup-leak fix: the same read carries the broker's server-side-ask switch (no extra query); returns true when it saw
+// the switch turn on (the registry then loaded that broker's connected traders already).
 const symbolFilterRefreshing = new Set<string>();
-async function refreshSymbolFilter(brokerId: string): Promise<void> {
-  if (symbolFilterRefreshing.has(brokerId)) return;
+async function refreshSymbolFilter(brokerId: string): Promise<boolean> {
+  if (symbolFilterRefreshing.has(brokerId)) return false;
   symbolFilterRefreshing.add(brokerId);
   try {
-    const names = await getEnabledSymbolNames(brokerId);
-    symbolFilterCache.set(brokerId, { symbols: new Set(names), fetchedAt: Date.now() });
+    const cfg = await getBrokerStreamConfig(brokerId);
+    symbolFilterCache.set(brokerId, { symbols: new Set(cfg.symbols), fetchedAt: Date.now() });
+    return askRegistry.setBrokerFlag(brokerId, cfg.clientAskServerSide);
   } catch (err) {
     console.error(`price stream: enabled-symbol refresh failed for broker ${brokerId} (keeping the previous set)`, err);
+    return false;
   } finally {
     symbolFilterRefreshing.delete(brokerId);
   }
 }
+
+// markup-leak fix (client-ask.ts): each trader account's ask rules, event-driven (never per tick, never on a short
+// timer). Shared by the price stream (sockets, ticks) and the trading event stream (ConfigChanged, AccountUpdated).
+export const askRegistry = new ClientAskRegistry(query);
 
 // Phase 4 of the tick-pipeline audit -- exported so index.ts's stats
 // route can read it without this module needing its own HTTP route.
@@ -216,32 +224,14 @@ export async function attachPriceStream(server: Server, natsUrl: string): Promis
   // the per-tenant filtering this map exists for.
   const clients = new Map<WebSocket, string>();
   // markup-leak fix (client-ask.ts): the trader account behind each TRADER socket (staff sockets are absent: they get
-  // the raw tick), and each account's ask rules, cached 15 s (pricing changes reach the stream within that).
+  // the raw tick); the rules themselves live in askRegistry.
   const accountBySocket = new Map<WebSocket, string>();
-  const askState = new Map<string, { state: AccountAskState; at: number }>();
-  const askLoading = new Set<string>();
-  const ASK_TTL_MS = 15_000;
-  function refreshAskState(accountId: string, brokerId: string): void {
-    if (askLoading.has(accountId)) return;
-    askLoading.add(accountId);
-    loadAccountAskState(query, accountId, brokerId)
-      .then((state) => {
-        if (state) askState.set(accountId, { state, at: Date.now() });
-      })
-      .catch((err) => console.error("price stream: ask rules load failed", err))
-      .finally(() => askLoading.delete(accountId));
-  }
-  function askStateHot(accountId: string, brokerId: string): AccountAskState | null {
-    const hit = askState.get(accountId);
-    if (!hit || Date.now() - hit.at > ASK_TTL_MS) refreshAskState(accountId, brokerId);
-    return hit?.state ?? null;
-  }
 
   function registerClient(ws: WebSocket, brokerId: string, accountId?: string) {
     clients.set(ws, brokerId);
     if (accountId) {
       accountBySocket.set(ws, accountId);
-      refreshAskState(accountId, brokerId);
+      askRegistry.addSocket(accountId, brokerId);
     }
     gatewayStats.wsConnectionsTotal += 1;
     // Pre-warm this broker's enabled-symbol set off the hot path, so the
@@ -264,14 +254,20 @@ export async function attachPriceStream(server: Server, natsUrl: string): Promis
         // the client, so just ignore it
       }
     });
-    ws.on("close", () => {
+    const forget = () => {
       clients.delete(ws);
-      accountBySocket.delete(ws);
+      const acc = accountBySocket.get(ws);
+      if (acc) {
+        accountBySocket.delete(ws);
+        askRegistry.removeSocket(acc); // once per socket ("close" may follow "error")
+      }
+    };
+    ws.on("close", () => {
+      forget();
       gatewayStats.wsDisconnectionsTotal += 1;
     });
     ws.on("error", () => {
-      clients.delete(ws);
-      accountBySocket.delete(ws);
+      forget();
       gatewayStats.wsDisconnectionsTotal += 1;
     });
   }
@@ -336,21 +332,9 @@ export async function attachPriceStream(server: Server, natsUrl: string): Promis
       if (!enabled || !enabled.has(symbol)) continue;
       // markup-leak fix: a trader socket gets its account's ask once the broker is switched to server-side asks; until
       // the account's rules are loaded it gets nothing (never the raw ask by accident).
-      let out = text;
       const accountId = accountBySocket.get(client);
-      if (accountId) {
-        const state = askStateHot(accountId, brokerId);
-        if (!state) continue;
-        if (state.serverSide) {
-          const rule = state.rules.get(symbol);
-          if (!rule) continue;
-          try {
-            out = rewriteTick(tick, rule);
-          } catch {
-            continue;
-          }
-        }
-      }
+      const out = accountId ? askRegistry.frameFor(accountId, brokerId, symbol, tick, text) : text;
+      if (out === null) continue;
       try {
         client.send(out);
         gatewayStats.ticksForwardedTotal += 1;
@@ -546,8 +530,14 @@ export async function attachTradingEventStream(server: Server, natsUrl: string):
         if (!accountId) {
           // broker-wide configuration change (Batch 5): every trader socket of that broker
           if (parsed?.type === "ConfigChanged" && parsed.broker_id) {
-            // a symbol enable / disable must also reach the price stream's enabled-symbol filter now, not in 10 min
-            if (parsed.scope === "symbols") void refreshSymbolFilter(parsed.broker_id);
+            // a symbol enable / disable must also reach the price stream's enabled-symbol filter now, not in 10 min;
+            // markup-leak fix: that same read carries the server-side-ask switch, so ANY config change re-reads it (a
+            // config change is a database write, the database is awake anyway), then the switched-on broker's
+            // connected traders reload their ask rules (one read) unless the switch just turned on (already loaded)
+            const brokerId = parsed.broker_id;
+            void refreshSymbolFilter(brokerId).then((turnedOn) => {
+              if (!turnedOn) askRegistry.onConfigChanged(brokerId);
+            });
             for (const client of clientsByBroker.get(parsed.broker_id) ?? []) {
               if (client.readyState === WebSocket.OPEN) {
                 client.send(text);
@@ -558,6 +548,8 @@ export async function attachTradingEventStream(server: Server, natsUrl: string):
           continue;
         }
 
+        // markup-leak fix: a group change / account or group pricing edit changes this account's ask rules
+        if (parsed?.type === "AccountUpdated") askRegistry.onAccountUpdated(accountId);
         const clients = clientsByAccount.get(accountId);
         if (!clients) continue;
         for (const client of clients) {

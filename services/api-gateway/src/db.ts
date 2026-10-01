@@ -189,14 +189,36 @@ export async function writeAuditLog(entry: {
 // group pricing, etc.) -- not a new concept, just the first place it's
 // read outside the Next.js app. src/ws.ts caches this per broker for 30s
 // (see WsSymbolFilterCacheEntry there) rather than querying on every tick.
-export async function getEnabledSymbolNames(brokerId: string): Promise<string[]> {
-  const { rows } = await pool.query(
-    `SELECT s.name FROM "BrokerSymbol" bs
-     JOIN "Symbol" s ON s.id = bs."symbolId"
-     WHERE bs."brokerId" = $1 AND bs.enabled = true`,
-    [brokerId]
-  );
-  return rows.map((r) => r.name as string);
+/** markup-leak fix: the broker's enabled symbols AND its server-side-ask switch in ONE read -- the price stream's
+ *  existing per-broker refresh (first socket, ConfigChanged, every 10 min), so the switch costs no extra query. */
+export async function getBrokerStreamConfig(brokerId: string): Promise<{ symbols: string[]; clientAskServerSide: boolean }> {
+  let rows: Record<string, unknown>[];
+  try {
+    rows = (
+      await pool.query(
+        `SELECT (b."clientAskServerSideAt" IS NOT NULL) AS server_side, s.name
+         FROM "Broker" b
+         LEFT JOIN "BrokerSymbol" bs ON bs."brokerId" = b.id AND bs.enabled = true
+         LEFT JOIN "Symbol" s ON s.id = bs."symbolId"
+         WHERE b.id = $1`,
+        [brokerId]
+      )
+    ).rows;
+  } catch (err) {
+    // the switch's column not migrated yet (42703 undefined_column): keep the feed alive with the switch off, exactly
+    // the pre-markup-leak behaviour, instead of leaving every socket of the broker without ticks
+    if ((err as { code?: string }).code !== "42703") throw err;
+    console.error("price stream: Broker.clientAskServerSideAt missing (migration not applied?), server-side asks stay off");
+    rows = (await pool.query(
+      `SELECT false AS server_side, s.name FROM "BrokerSymbol" bs JOIN "Symbol" s ON s.id = bs."symbolId"
+       WHERE bs."brokerId" = $1 AND bs.enabled = true`,
+      [brokerId]
+    )).rows;
+  }
+  return {
+    symbols: rows.filter((r) => r.name != null).map((r) => r.name as string),
+    clientAskServerSide: rows.length > 0 && rows[0].server_side === true,
+  };
 }
 
 export async function getLedgerSum(accountId: string): Promise<Decimal> {

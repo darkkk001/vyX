@@ -10,7 +10,7 @@ import express from "express";
 import { connect, StringCodec, type NatsConnection } from "nats";
 import ordersRouter from "./routes/orders.js";
 import positionsRouter from "./routes/positions.js";
-import { attachPriceStream, attachTradingEventStream, attachAdminEventStream, gatewayStats, orderAckStats } from "./ws.js";
+import { attachPriceStream, attachTradingEventStream, attachAdminEventStream, askRegistry, gatewayStats, orderAckStats } from "./ws.js";
 import { BOOK_SEQ_SUBJECT, newBookSeqState, stampBookEvent } from "./book-seq.js";
 import { internalSecretOk, rotationInProgress } from "./internal-secret.js";
 
@@ -34,7 +34,7 @@ app.get("/internal/gateway-stats", (req, res) => {
     res.status(401).json({ error: "unauthorized" });
     return;
   }
-  res.json({ ...gatewayStats, ...orderAckStats() });
+  res.json({ ...gatewayStats, ...orderAckStats(), ...askRegistry.stats() });
 });
 
 // Publish relay for the legacy Vercel-hosted Next.js trade routes
