@@ -58,8 +58,8 @@ The labels come from `ui-map.md` (the bo-* and term-* sections). They were check
 | Extra spread the broker adds | Spread markup (points) | points | MU, markup (without unit) |
 | Total client spread set whatever the market spread | Fixed spread (points) | points | TARGET |
 | How a spread is set | Spread setting | — | MODE, pricing mode |
-| Overnight fee | Swap long ($ per lot) / Swap short ($ per lot); per trade: Swap ($) | $ per lot | rollover, Swap Long / Swap Short without unit |
-| Fee per trade | Commission ($ per lot); per trade: Commission ($) | $ per lot | COMM |
+| Overnight fee | Swap long (per lot) / Swap short (per lot); per trade: Swap ($) | per lot (account currency) | rollover, Swap Long / Swap Short without unit |
+| Fee per trade | Commission (per lot); per trade: Commission ($) | per lot (account currency) | COMM |
 | Price change limit on fill | Max slippage (points) (broker-wide value: after the pips → points conversion) | points | SLIP, deviation, pips |
 | Automatic accept/reject by slippage | Auto-accept slippage (%) / Auto-reject slippage (%) | % | Smart dealer, Auto accept / reject |
 | Stop loss / take profit | Stop loss / Take profit (SL / TP only in narrow table headers) | — | S/L, T/P |
@@ -101,7 +101,7 @@ The labels come from `ui-map.md` (the bo-* and term-* sections). They were check
 | Deposit/withdrawal method | Payment method | — | PSP |
 | Introducing broker | Partner (IB) on first use, then Partner | — | IB alone, introducing broker |
 | Clients a partner brought in | Referred clients / Referred client | — | IB (chip), Partner clients |
-| What a partner earns | Partner pay / Partner pay owed ($) / Partner pay rate ($ per lot or %) | $ | COMMISSION (for IB), PENDING COMMISSION, PAYABLE, Owed alone |
+| What a partner earns | Partner pay / Partner pay owed ($) / Partner pay rate (per lot or %) | $ | COMMISSION (for IB), PENDING COMMISSION, PAYABLE, Owed alone |
 | Lead that became a client / where a lead came from | Became client / Came from | — | CONVERTED, SOURCE |
 | Maker-checker queue | Approvals (needs a second admin) | — | APR, maker-checker |
 | Maker-checker steps | Approve (first admin) / Confirm (second admin) / Approved by (first admin) | — | MARK, MARKED BY |
@@ -396,8 +396,8 @@ The labels come from `ui-map.md` (the bo-* and term-* sections). They were check
 | RPT | CREATED AT | Created (UTC) | UTC | When the account was created. |
 | RPT | IB ACCOUNT | Partner account | — | Partner's (IB) own account number. |
 | RPT | CLIENT ACCOUNT | Referred client | — | Account the partner brought in. |
-| RPT | COMMISSION TYPE | Partner pay type | — | $ per lot, or % of commission. |
-| RPT | COMMISSION RATE | Partner pay rate ($ per lot or %) | $ per lot / % | Amount per lot, or percent when the type is %. |
+| RPT | COMMISSION TYPE | Partner pay type | — | per lot, or % of commission. |
+| RPT | COMMISSION RATE | Partner pay rate (per lot or %) | per lot / % | Amount per lot, or percent when the type is %. |
 | RPT | PENDING COMMISSION | Partner pay owed ($) | $ | Earned by the partner and not paid yet. |
 | RPT | LAST PAYOUT AT | Last paid (UTC) | UTC | When the partner was last paid. |
 | RPT | NAME | Provider | — | Liquidity provider name. |
@@ -759,9 +759,10 @@ The labels come from `ui-map.md` (the bo-* and term-* sections). They were check
 | SYM | CATEGORY | Asset class | — | Metals, FX, indices… |
 | SYM | DIGITS | Price digits | — | Decimals in the price; 1 point = the last digit. |
 | SYM | MARKUP | Your markup (points) | points | Extra spread the broker adds, shown as "+N" (e.g. +1.2), matching the pricing panel (owner 2026-09-29). (10 points = 1 pip) |
-| SYM | COMMISSION / LOT | Commission ($ per lot) | $ per lot | Fee per lot traded. |
-| SYM | SWAP LONG | Swap long ($ per lot) | $ per lot | Overnight fee for buy positions. |
-| SYM | SWAP SHORT | Swap short ($ per lot) | $ per lot | Overnight fee for sell positions. |
+| SYM | COMMISSION / LOT | Commission (per lot) | per lot (account currency) | Fee per lot traded. |
+| SYM | SWAP LONG | Swap long (per lot) | per lot (account currency) | Overnight fee for buy positions. |
+| SYM | SWAP SHORT | Swap short (per lot) | per lot (account currency) | Overnight fee for sell positions. |
+| SYM | (note under the filters) | Commission and swap are charged in each account's currency. | — | No "$" on per-lot money (owner 2026-10-01). |
 | SYM | MINIMUM LOT | Min volume (lots) | lots | Smallest trade size. |
 | SYM | MAXIMUM LOT | Max volume (lots) | lots | Largest trade size. |
 | SYM | STEP | Volume step (lots) | lots | Size increment. |
@@ -814,13 +815,14 @@ The labels come from `ui-map.md` (the bo-* and term-* sections). They were check
 | GRP | Add new group… | Add group… | — | Create a new group. |
 | GRP | 2) PRC  PRICING OVERRIDES | Group pricing | — | Spreads, commission and swaps for this group. |
 | GRP | precedence text line | Who decides the client spread | — | Order: account › this group › symbol (no account-type level: D4, owner 2026-10-01). |
+| GRP | (note after the precedence line) | Commission and swap are charged in each account's currency. | — | No "$" on per-lot money (owner 2026-10-01). |
 | GRP | RAW + PTS | Source spread (points) | points | Spread from the price feed before your markup. (10 points = 1 pip) (owner 2026-09-29, was Market spread) |
 | GRP | MODE (TARGET / MARKUP / INHERIT) + VALUE + PTS | Your markup (points) | points | ONE column (owner 2026-09-29): "+N" = spread markup, "Fixed N" = fixed spread; blank = the symbol decides. |
 | GRP | VALUE + PTS | merged into Your markup (points) | — | See the row above. |
 | GRP | CLIENT SPREAD + PTS | Client spread (points) | points | Spread the client sees. (10 points = 1 pip) |
 | GRP | SOURCE (THIS GROUP / BROKER SYMBOL) | Set by (This group / Symbol) | — | Which level decides the spread. |
-| GRP | COMMISSION / LOT | Commission ($ per lot) | $ per lot | Fee per lot; blank = the symbol decides. |
-| GRP | SWAP LONG / SWAP SHORT | Swap long ($ per lot) / Swap short ($ per lot) | $ per lot | Overnight fee per side. |
+| GRP | COMMISSION / LOT | Commission (per lot) | per lot (account currency) | Fee per lot; blank = the symbol decides. |
+| GRP | SWAP LONG / SWAP SHORT | Swap long (per lot) / Swap short (per lot) | per lot (account currency) | Overnight fee per side. |
 | GRP | inherits | (blank) | — | Owner 2026-09-29: no text; a blank cell means the symbol decides, and the group's own values are highlighted. |
 | GRP | ACTIONS / EDIT | ⋯ (row menu) | — | Owner 2026-09-29: the per-row EDIT is replaced by the ⋯ menu (Edit pricing…, Reset to symbol pricing…). |
 | GRP | Edit pricing… | keep | — | Change this symbol's pricing for the group. |
@@ -855,8 +857,8 @@ The labels come from `ui-map.md` (the bo-* and term-* sections). They were check
 | GRP | MARKUP (+ points on the raw spread) | Spread markup | points | Points added to the market spread. (10 points = 1 pip) |
 | GRP | TARGET (total client spread) | Fixed spread | points | Total client spread, whatever the market spread. (10 points = 1 pip) |
 | GRP | Points | Value (points) | points | 1 point = the last price digit. (10 points = 1 pip) |
-| GRP | Commission per lot | Commission ($ per lot) | $ per lot | Empty = same as symbol. |
-| GRP | Swap long / Swap short | Swap long ($ per lot) / Swap short ($ per lot) | $ per lot | Empty = same as symbol. |
+| GRP | Commission per lot | Commission (per lot) | per lot (account currency) | Empty = same as symbol. |
+| GRP | Swap long / Swap short | Swap long (per lot) / Swap short (per lot) | per lot (account currency) | Empty = same as symbol. |
 | GRP | RESET PRICING OVERRIDE (dialog) | Reset to symbol pricing | — | Confirm dialog title. |
 | GRP | RESET (button) | Reset | — | Confirm button. |
 
@@ -1382,10 +1384,10 @@ Hidden until an LP bridge exists: the screen is merged into Liquidity providers,
 | IB | {n} PARTNERS · {n} CLIENTS · PAYABLE {x} | {n} partners · {n} referred clients · Partner pay owed | account ccy | Totals, per currency (owner 2026-09-30). |
 | IB | PAYOUT RUN | Pay all partners | — | Pay every owed partner commission. |
 | IB | + PARTNER | Add partner | — | Link a partner to a client. |
-| IB | ALL · PAYOUT DUE · PER LOT · PERCENTAGE | All · Owed · $ per lot · % of commission | — | Filters. |
+| IB | ALL · PAYOUT DUE · PER LOT · PERCENTAGE | All · Owed · per lot · % of commission | — | Filters. |
 | IB | INTRODUCING BROKER ACCOUNT | Partner account | — | Partner's account number. |
 | IB | NAME | keep | — | Partner's name. |
-| IB | COMMISSION PLAN | Partner pay plan | — | $ per lot or % of commission. |
+| IB | COMMISSION PLAN | Partner pay plan | — | per lot or % of commission. |
 | IB | CLIENTS | Referred clients | — | Clients the partner brought. |
 | IB | ACTIVE | Active clients | — | Referred clients trading this month. |
 | IB | LOTS · MONTH TO DATE | Volume this month (lots) | lots | Referred clients' lots this month. |
@@ -1396,7 +1398,7 @@ Hidden until an LP bridge exists: the screen is merged into Liquidity providers,
 | IB | PAY <n> PARTNERS (dialog) | Pay {n} partners | — | Bulk pay title (owner 2026-09-30). |
 | IB | Referred clients (detail) | Show referred clients | — | Open the detail panel. |
 | IB | Pay {x} pending… | Pay {x} owed… | — | Pay the partner now. |
-| IB | Edit commission plan… | Edit pay plan… | — | Change $ per lot or %. |
+| IB | Edit commission plan… | Edit pay plan… | — | Change per lot or %. |
 | IB | Open IB account 360 | Open partner account | — | Open the partner's account page. |
 | IB | Add new partner… | Add partner… | — | Link a partner to a client. |
 | IB | 2) IB  {no} · {NAME} / SELECT A PARTNER | {no} · {name} / Select a partner | — | Detail panel title. |
@@ -1405,17 +1407,17 @@ Hidden until an LP bridge exists: the screen is merged into Liquidity providers,
 | IB | FUNNEL · MTD — NOT AVAILABLE YET | Referral funnel this month (not available yet) | — | Planned. |
 | IB | REFERRED CLIENTS (section) | Referred clients | — | Clients brought by the partner. |
 | IB | PAY {amount} | Pay {amount} | $ | Pay everything owed. |
-| IB | EDIT PLAN | Edit pay plan | — | Change $ per lot or %. |
+| IB | EDIT PLAN | Edit pay plan | — | Change per lot or %. |
 | IB | CLIENT / NAME / PENDING COMMISSION / ACTIONS (PAY) | Client / Name / Partner pay owed / CCY / ⋯ (Pay {x} owed…) | account ccy | Referred-clients table (owner 2026-09-30). |
 | IB | Open client {number} | keep | — | Open the client's account page. |
 | IB | NEW IB RELATIONSHIP (form) | New partner link | — | Form title. |
 | IB | IB account number | Partner account number | — | Partner's account. |
 | IB | Referred client account number | keep | — | Client the partner brought. |
-| IB | Commission (PER LOT (USD) / % OF COMMISSION) | Partner pay ($ per lot / % of commission) | — | How the partner is paid. |
-| IB | Rate | Rate ($ per lot or %) | $ per lot / % | $ per lot, or % when % of commission. |
+| IB | Commission (PER LOT (USD) / % OF COMMISSION) | Partner pay (per lot / % of commission) | — | How the partner is paid. |
+| IB | Rate | Rate (per lot or %) | per lot / % | per lot, or % when % of commission. |
 | IB | PAY IB COMMISSION / PAY PARTNER / PAYOUT RUN (dialogs) | Pay partner / Pay partner / Pay all partners | — | Confirm dialog titles. |
 | IB | PAY (button) | Pay | — | Confirm button. |
-| IB | EDIT PLAN (dialog) + TYPE · RATE + APPLY | Edit pay plan · Type and rate · Apply | — | Type ($ per lot or % of commission) and rate, e.g. $5 per lot or 40%. |
+| IB | EDIT PLAN (dialog) + TYPE · RATE + APPLY | Edit pay plan · Type and rate · Apply | — | Type (per lot or % of commission) and rate, e.g. 5 per lot or 40%. |
 
 ### ID checks (KYC)
 
