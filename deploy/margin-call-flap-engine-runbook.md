@@ -1,5 +1,8 @@
 # Margin-call flapping: VPS engine runbook
 
+**SUPERSEDED (2026-10-01) by `deploy/engine-2026-10-01-runbook.md` and `deploy/engine-2026-10-01.ps1`.** They
+deploy this fix together with the torn-read fix in one build. Do not run this page or its script.
+
 **Status: final.** The owner's read-only VPS query confirmed the diagnosis on 2026-10-01. Damping option A is
 confirmed, with EDGE_EVERY kept at 5 s.
 
