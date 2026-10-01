@@ -1,12 +1,12 @@
 # Engine deploy 2026-10-01 (owner go): BOTH shadow fixes in one build, supersedes margin-call-flap-engine-2026-10-01.ps1.
 #   1. margin-call flapping (4e9bb50 + ee3bb23): overlapping-episode matcher, deferred margin-call edges (damping A, 5 s);
-#   2. the torn pinned read (97b04af): every read of an evaluation in one REPEATABLE READ, READ ONLY snapshot.
+#   2. the torn pinned read (51de153): every read of an evaluation in one REPEATABLE READ, READ ONLY snapshot.
 # Runbook: deploy\engine-2026-10-01-runbook.md. Run on the VPS in an elevated PowerShell, from the repo, AFTER checking
 # out the new main:
 #   cd C:\vyxtrader\repo; git fetch --all; git checkout --detach <remote>/main
 #   powershell -ExecutionPolicy Bypass -File C:\vyxtrader\repo\deploy\engine-2026-10-01.ps1
 #
-# What changes: the engine exe only (built from the checked-out HEAD, whose engine\ must be byte-identical to 97b04af's).
+# What changes: the engine exe only (built from the checked-out HEAD, whose engine\ must be byte-identical to 51de153's).
 # No schema change, no env change: start-engine.cmd, ENGINE_ORDER_MANAGEMENT (stays shadow), every DB URL, every secret,
 # VYX_SHADOW_PASS_SECS, VYX_RISK_TRIGGER_MS all untouched.
 # The running engine keeps serving during the build (separate target dir); downtime = the stop / swap / start only.
@@ -14,7 +14,7 @@
 # answer, or the startup log shows SHADOW REFUSED / reconciler NOT running / a missing required line.
 $ErrorActionPreference = "Stop"
 $Nssm   = "C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe"   # nssm is not on the VPS PATH: always the full path
-$Fix    = "97b04af84fbf1fa88137e8ca30f7d4ed037f8c5d"
+$Fix    = "51de15332822a4959868cb59db9a0bde6dadc95a"
 $Repo   = "C:\vyxtrader\repo"
 $Stamp  = Get-Date -Format yyyyMMdd-HHmmss
 $Bk     = "C:\vyxtrader\backup\engine-2026-10-01-$Stamp"

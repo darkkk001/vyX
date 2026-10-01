@@ -3,8 +3,8 @@
 **This supersedes `deploy/margin-call-flap-engine-runbook.md` and its script.** One engine build carries both shadow
 fixes. The script is `deploy/engine-2026-10-01.ps1`.
 
-**What ships:** commits `4e9bb50` + `ee3bb23` (margin-call flap) and `97b04af` (torn read), all in `main`. The script
-requires HEAD's `engine\` to be byte-identical to `97b04af`'s. It changes the engine binary `trading-core-server.exe`
+**What ships:** commits `4e9bb50` + `ee3bb23` (margin-call flap) and `51de153` (torn read), all in `main`. The script
+requires HEAD's `engine\` to be byte-identical to `51de153`'s. It changes the engine binary `trading-core-server.exe`
 only. There is no schema change and no env change. These stay as they are:
 - `start-engine.cmd`;
 - `ENGINE_ORDER_MANAGEMENT`, which stays `shadow`;
@@ -71,7 +71,7 @@ cd C:\vyxtrader\repo
 if (git status --porcelain) { throw "working tree not clean: stop and report" }
 git fetch --all
 git checkout --detach origin/main          # use the remote name `git remote -v` shows for darkkk001/vyX
-foreach ($c in "4e9bb50", "ee3bb23", "97b04af") { git merge-base --is-ancestor $c HEAD; if ($LASTEXITCODE -ne 0) { throw "main does not contain $c yet" } }
+foreach ($c in "4e9bb50", "ee3bb23", "51de153") { git merge-base --is-ancestor $c HEAD; if ($LASTEXITCODE -ne 0) { throw "main does not contain $c yet" } }
 git log --oneline -5
 ```
 
@@ -83,7 +83,7 @@ powershell -ExecutionPolicy Bypass -File C:\vyxtrader\repo\deploy\engine-2026-10
 ```
 
 The script:
-1. Checks that HEAD carries `97b04af` with an identical `engine\`, and that all three changes are present
+1. Checks that HEAD carries `51de153` with an identical `engine\`, and that all three changes are present
    (`fired_in_call`, `call_evidence_around`, `REPEATABLE READ, READ ONLY`).
 2. Backs up the live exe to `C:\vyxtrader\backup\engine-2026-10-01-<stamp>\trading-core-server.pre.exe`.
 3. Runs `cargo build --release -p server` into the separate target dir `engine\build-tmp`. The old engine keeps
@@ -182,7 +182,7 @@ SELECT id, 'margin-call flap 2026-10-01 04:20:04.94 UTC (account 50005708): 11 f
 ON CONFLICT (pair_id) DO NOTHING;
 -- (b) 49990004 stop_out 2026-10-01 07:00:10.871 / 10.883 UTC, position cmup6pjmo000ll004h45kcfob
 INSERT INTO shadow_excuse (pair_id, reason, excused_by)
-SELECT id, 'torn pinned read 2026-10-01 07:00:10.871 UTC (49990004, position cmup6pjmo000ll004h45kcfob): shadow-only artifact, the web close landed between the shadow''s funds and ledger reads; the engine would have stopped it out; fixed in 97b04af (deployed 2026-10-01)', 'owner'
+SELECT id, 'torn pinned read 2026-10-01 07:00:10.871 UTC (49990004, position cmup6pjmo000ll004h45kcfob): shadow-only artifact, the web close landed between the shadow''s funds and ledger reads; the engine would have stopped it out; fixed in 51de153 (deployed 2026-10-01)', 'owner'
   FROM shadow_pair WHERE position_id = 'cmup6pjmo000ll004h45kcfob' AND kind = 'stop_out' AND class = 'WEB_ONLY'
 ON CONFLICT (pair_id) DO NOTHING;
 SELECT e.pair_id, p.class, p.kind, p.account_id, e.excused_by, e.excused_at FROM shadow_excuse e JOIN shadow_pair p ON p.id = e.pair_id
