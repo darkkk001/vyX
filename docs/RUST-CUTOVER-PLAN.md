@@ -1407,7 +1407,16 @@ flip back to WEB and watch the web take the next stop-out. The Vercel cron stays
 - Open question before cutover (owner, 2026-09-29): the hook's 1 s per-symbol limit on web calls (after_flush
   `last_fired`). A margin-call fire and a stop-out fire on the same symbol less than 1 s apart make ONE web call; the
   shadow is unaffected (the fire is sent before the limit). What it means in RUST mode depends on the route above.
-- Follow-up, not blocking (owner, 2026-09-29): **evaluate an account on its fill event.** Today a new position reaches
+- **CUTOVER GATE (owner, 2026-10-01; was a non-blocking follow-up since 2026-09-29): evaluate an account on its own
+  fill event / put the new position in the trigger's book immediately.** Evidence 2026-10-01: S2 07:00 UTC, 49990004 (a4)
+  BUY 1.99 vIDX opened 07:00:04.129, stopped out by the web at 07:00:10.871 at 19680 (level 45.48 %) on the jump tick;
+  the shadow got NO fire for a4 (its position was not yet in the trigger's in-memory book: fill event -> reload, else the
+  5 s safety poll; S2 holds 5 s after the third open) -> WEB_ONLY stop_out (a1 / a2, opened earlier, MATCHed). The pin
+  (27bf7a9) has no gap: a fire on the jump tick carries the price and the measured positions. In RUST mode the engine
+  would stop a4 out only at its next pass / backstop, seconds late (same price only if the market holds). Gate test: a
+  position opened < 1 s before a gap is stopped out on the gap tick by the engine and paired MATCH by the shadow.
+  Also check (owner VPS query pending) whether the book event feed was healthy after the 2026-10-01 ~03:5x UTC gateway
+  restart; if not, that regression is fixed first. Original note: Today a new position reaches
   the margin trigger only after the web's fill announcement reloads the book (a query) and the next 250 ms tick. The
   first S4 run's 1.0-lot SELL on 49990013 opened already at -39.87 % (its own 6.00 markup valuation) and the web's 5 s
   backstop closed it before the engine's book had it: a WEB_ONLY with no shadow sample (shadow-only blind spot, not an
