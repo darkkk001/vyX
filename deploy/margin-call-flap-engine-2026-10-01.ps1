@@ -1,11 +1,11 @@
-# DRAFT (not final until the owner's VPS query confirms the diagnosis). Margin-call flapping (2026-10-01, owner go to
-# build, 4e9bb50): the shadow reconciler pairs margin-call notices by overlapping episodes and the margin trigger defers
+# FINAL (owner's VPS query confirmed the diagnosis, damping option A). Margin-call flapping (2026-10-01, owner go,
+# 4e9bb50 + the rule text ee3bb23): the shadow reconciler pairs margin-call notices by overlapping episodes and the margin trigger defers
 # a damped margin-call edge instead of dropping it. Runbook: deploy\margin-call-flap-engine-runbook.md.
 # Run on the VPS in an elevated PowerShell, from the repo, AFTER checking out the new main:
 #   cd C:\vyxtrader\repo; git fetch --all; git checkout --detach <remote>/main
 #   powershell -ExecutionPolicy Bypass -File C:\vyxtrader\repo\deploy\margin-call-flap-engine-2026-10-01.ps1
 #
-# What changes: the engine exe only (built from the checked-out HEAD, which must carry 4e9bb50's engine\ exactly).
+# What changes: the engine exe only (built from the checked-out HEAD, which must carry ee3bb23's engine\ exactly).
 # No schema change (shadow_pair / shadow_decision unchanged), no env change: start-engine.cmd, ENGINE_ORDER_MANAGEMENT
 # (stays shadow), every DB URL, every secret, VYX_SHADOW_PASS_SECS, VYX_RISK_TRIGGER_MS all untouched.
 # The running engine keeps serving during the build (separate target dir); downtime = the stop / swap / start only.
@@ -13,7 +13,7 @@
 # answer, or the startup log shows SHADOW REFUSED / reconciler NOT running / a missing required line.
 $ErrorActionPreference = "Stop"
 $Nssm   = "C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe"   # nssm is not on the VPS PATH: always the full path
-$Fix    = "4e9bb50040d55422f5348044f0087358a7618c9e"
+$Fix    = "ee3bb235c5513fe5ca9943ba362e17ebc68357b1"
 $Repo   = "C:\vyxtrader\repo"
 $Stamp  = Get-Date -Format yyyyMMdd-HHmmss
 $Bk     = "C:\vyxtrader\backup\margin-call-flap-$Stamp"
