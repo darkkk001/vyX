@@ -68,4 +68,12 @@ describe("GET /api/manage/candles", () => {
     expect(r.header).toBe("neon");
     expect(r.json).toEqual(SAMPLE);
   });
+
+  it("web6: ?before= and ?limit= pass through for paging back; a bad before is a 400", async () => {
+    expect((await call("https://test.local/api/manage/candles?symbol=XAUUSD&tf=M1&before=abc", admin)).status).toBe(400);
+    const r = await call("https://test.local/api/manage/candles?symbol=XAUUSD&tf=M1&limit=1200&before=1790000000000", admin);
+    expect(r.status).toBe(200);
+    const { fetchCandleHistory } = await import("@/lib/candles");
+    expect(vi.mocked(fetchCandleHistory).mock.calls.at(-1)).toEqual(["XAUUSD", "M1", 1200, new Date(1790000000000)]);
+  });
 });

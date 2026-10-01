@@ -14,12 +14,27 @@ export type CandleTimeframe = "M1" | "M5" | "M15" | "M30" | "H1" | "H4" | "D1" |
 // the native terminal's forming-candle reconcile (E:\vyxtrader
 // fix/chart-open-reconcile) asks for `?limit=3` after every bucket rollover,
 // so honouring a smaller limit turns that from a ~30 KB fetch into a 3-row
-// one. Anything missing, non-numeric or larger still gets the full window.
+// one. Anything missing or non-numeric gets the default window.
+// web6 (owner 2026-10-01, issue 17: "M1/M5 history before 30 Sep is missing"): a chart scrolling left pages back with
+// `?before=<ms>` and may ask for up to CANDLE_LIMIT_MAX bars per page (the engine's own cap is 5000). A page the VPS store
+// answers empty (older than its retention: M1 30 days, M5 180 days) falls back to Neon as before, which still holds
+// the history up to 2026-09-14, so paging keeps going into that.
 export const CANDLE_LIMIT_DEFAULT = 300;
+export const CANDLE_LIMIT_MAX = 1500;
 export function candleLimitFrom(raw: string | null): number {
   const n = raw === null ? NaN : Number(raw);
   if (!Number.isInteger(n) || n < 1) return CANDLE_LIMIT_DEFAULT;
-  return Math.min(n, CANDLE_LIMIT_DEFAULT);
+  return Math.min(n, CANDLE_LIMIT_MAX);
+}
+
+/** `?before=` (ms since epoch, exclusive upper bound on bucketStart): absent = the newest page; a value that is not a
+ *  positive integer = "invalid" (the route answers 400 rather than silently serving the newest page). */
+export function candleBeforeFrom(raw: string | null): Date | null | "invalid" {
+  if (raw === null || raw === "") return null;
+  const n = Number(raw);
+  if (!Number.isSafeInteger(n) || n <= 0) return "invalid";
+  const d = new Date(n);
+  return Number.isNaN(d.getTime()) ? "invalid" : d;
 }
 
 export type CandleSource = "vps" | "neon" | "neon-fallback";
@@ -37,16 +52,17 @@ export type CandleSource = "vps" | "neon" | "neon-fallback";
 export async function fetchCandleHistory(
   symbol: string,
   timeframe: CandleTimeframe,
-  limit = 300
+  limit = 300,
+  before: Date | null = null
 ): Promise<{ candles: unknown[]; source: CandleSource }> {
   const vpsSymbol = isVpsSymbol(symbol);
   if (vpsSymbol) {
-    const vps = await fetchVpsCandles(symbol, timeframe, limit);
+    const vps = await fetchVpsCandles(symbol, timeframe, limit, before);
     if (vps) return { candles: vps, source: "vps" };
   }
 
   const candles = await prisma.candle.findMany({
-    where: { symbol, timeframe: timeframe as CandleTimeframe },
+    where: { symbol, timeframe: timeframe as CandleTimeframe, ...(before ? { bucketStart: { lt: before } } : {}) },
     orderBy: { bucketStart: "desc" },
     take: limit,
   });

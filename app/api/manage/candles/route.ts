@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { brokerMaySeeSynthetic, isSyntheticSymbol } from "@/lib/synthetic-symbols";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
-import { CANDLE_TIMEFRAMES, candleLimitFrom, fetchCandleHistory, type CandleTimeframe } from "@/lib/candles";
+import { CANDLE_TIMEFRAMES, candleBeforeFrom, candleLimitFrom, fetchCandleHistory, type CandleTimeframe } from "@/lib/candles";
 
 // Admin-authed OHLC history for the backoffice Dealing chart (panel 4 of
 // the dealer workstation). Same global market data the account-authed
@@ -26,11 +26,16 @@ export async function GET(request: NextRequest) {
   if (!symbol || !timeframe || !CANDLE_TIMEFRAMES.has(timeframe)) {
     return NextResponse.json({ error: "symbol and a valid tf are required" }, { status: 400 });
   }
+  // web6 (issue 17): paging back for a chart scrolled left
+  const before = candleBeforeFrom(searchParams.get("before"));
+  if (before === "invalid") {
+    return NextResponse.json({ error: "before must be a positive integer (ms since epoch)" }, { status: 400 });
+  }
 
   // synthetic symbols (lib/synthetic-symbols.ts): the shadow-bot tenant's staff only; others get an empty history
   if (isSyntheticSymbol(symbol) && !(await brokerMaySeeSynthetic(prisma, session!.brokerId!))) {
     return NextResponse.json([], { headers: { "x-market-data-source": "none" } });
   }
-  const { candles, source } = await fetchCandleHistory(symbol, timeframe as CandleTimeframe, candleLimitFrom(searchParams.get("limit")));
+  const { candles, source } = await fetchCandleHistory(symbol, timeframe as CandleTimeframe, candleLimitFrom(searchParams.get("limit")), before);
   return NextResponse.json(candles, { headers: { "x-market-data-source": source } });
 }

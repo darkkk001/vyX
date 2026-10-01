@@ -169,8 +169,9 @@ export function toPrismaCandle(c: EngineCandle): Candle | null {
  * NextResponse.json serialises both branches byte-for-byte the same.
  * null = use Neon.
  */
-export async function fetchVpsCandles(symbol: string, timeframe: string, limit = 300): Promise<Candle[] | null> {
-  const q = new URLSearchParams({ symbol, tf: timeframe, limit: String(limit) });
+export async function fetchVpsCandles(symbol: string, timeframe: string, limit = 300, before: Date | null = null): Promise<Candle[] | null> {
+  // `before` = the engine's paging bound (ms, exclusive on bucketStart; engine/server CandlesQuery)
+  const q = new URLSearchParams({ symbol, tf: timeframe, limit: String(limit), ...(before ? { before: String(before.getTime()) } : {}) });
   const body = await getJson(`/internal/candles?${q.toString()}`);
   if (body === null) return null;
   if (!Array.isArray(body) || !body.every(isEngineCandle)) {
