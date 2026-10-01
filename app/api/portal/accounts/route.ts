@@ -85,17 +85,9 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "client not found" }, { status: 404 });
   }
 
-  let accountTypeId: string | null = null;
-  if (typeof body?.accountTypeId === "string" && body.accountTypeId) {
-    const found = await prisma.accountType.findUnique({ where: { id: body.accountTypeId } });
-    if (!found || found.brokerId !== session.brokerId || !found.enabled) {
-      return NextResponse.json({ error: "account type not found" }, { status: 404 });
-    }
-    accountTypeId = found.id;
-  } else {
-    const defaultType = await prisma.accountType.findFirst({ where: { brokerId: session.brokerId, isDefault: true } });
-    accountTypeId = defaultType?.id ?? null;
-  }
+  // D4 (owner 2026-10-01): the group is the pricing tier -- a new account gets no account type. A sent accountTypeId is
+  // ignored (no lookup, no refusal) and only kept in the creation audit row (lib/account-provisioning.ts).
+  const accountTypeId: string | null = typeof body?.accountTypeId === "string" && body.accountTypeId ? body.accountTypeId : null;
 
   const defaultGroup = await prisma.group.findFirst({ where: { brokerId: session.brokerId, isDefault: true } });
 

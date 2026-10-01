@@ -50,6 +50,14 @@ The web path after b5dc33c + 55b86da + 8b5f60b is the spec. Each row is pinned b
 
 Every stage ends at a gate; the next does not start until the gate is green.
 
+**D8 cutover gate, account types (owner 2026-10-01):** porting group pricing to the engine must also drop the
+AccountType levels. Web D4 (branch `d4-slippage`) already prices Account > Group > broker only, and
+`docs/contracts/ask-markup-vectors.json` no longer carries account-type cases. `engine/market-data/src/ask_markup.rs`
+still reads `AccountType.spreadMarkup` and `AccountTypeSymbolConfig` (the `am_at` / `am_atsc` joins and the two
+`.or_else` levels), and every other engine pricing reader must match. Until then web and engine agree only because
+no live account type sets a spread (checked 2026-09-30, and the web now refuses to set one). No broker leaves LEGACY
+before this is done.
+
 ### Pre-stage: web money bugs. DONE (b5dc33c + 55b86da deployed 2026-09-23; 8b5f60b committed)
 
 - 8b5f60b: every read-modify-write of `Account.balance` locks the row first (`lib/account-lock.ts`):

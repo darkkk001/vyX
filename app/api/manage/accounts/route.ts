@@ -173,17 +173,9 @@ async function createAccount(request: NextRequest, session: NonNullable<Awaited<
   // describes for the Settings CRUD page); omitted entirely falls back
   // to the broker's isDefault type, matching the migration's own
   // backfill convention for every pre-existing account.
-  let accountTypeId: string | null = null;
-  if (typeof body?.accountTypeId === "string" && body.accountTypeId) {
-    const found = await prisma.accountType.findUnique({ where: { id: body.accountTypeId } });
-    if (!found || found.brokerId !== brokerId || !found.enabled) {
-      return NextResponse.json({ error: "account type not found" }, { status: 404 });
-    }
-    accountTypeId = found.id;
-  } else {
-    const defaultType = await prisma.accountType.findFirst({ where: { brokerId, isDefault: true } });
-    accountTypeId = defaultType?.id ?? null;
-  }
+  // D4 (owner 2026-10-01): the group is the pricing tier -- a new account gets no account type. A sent accountTypeId is
+  // ignored (no lookup, no refusal) and only kept in the creation audit row (lib/account-provisioning.ts).
+  const accountTypeId: string | null = typeof body?.accountTypeId === "string" && body.accountTypeId ? body.accountTypeId : null;
 
   const currency = typeof body?.currency === "string" && body.currency.trim() ? body.currency.trim().toUpperCase() : broker.defaultAccountCurrency;
   // 2026-09-06 interim guard (Section B audit finding #2): every P/L,

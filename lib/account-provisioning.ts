@@ -101,7 +101,8 @@ export async function provisionAccount(params: ProvisionAccountParams) {
             passwordHash: params.passwordHash,
             fullName: params.fullName,
             accountMode: params.accountMode,
-            accountTypeId: params.accountTypeId,
+            // D4 (owner 2026-10-01): no new account gets an account type, whatever the caller asked for
+            accountTypeId: null,
             currency: params.currency,
             leverage: params.leverage,
             groupId: params.groupId!,  // non-null: guarded at the top of this function
@@ -141,7 +142,8 @@ export async function provisionAccount(params: ProvisionAccountParams) {
               accountNumber,
               email: params.email,
               accountMode: params.accountMode,
-              accountTypeId: params.accountTypeId,
+              accountTypeId: null,
+              ...(params.accountTypeId ? { requestedAccountTypeId: params.accountTypeId } : {}),
               initialBalance: params.initialBalance.toString(),
             },
           },

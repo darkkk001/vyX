@@ -45,6 +45,15 @@ Not blocking any screen (each works today with an extra read); ship them with th
 
 ## D4 (Account types removal): open item
 
+- **Next item after the D4 + slippage batch (owner 2026-10-01):** portal Standard / Pro / ECN -> client-selectable groups.
+  Today the client portal still lets a client pick an account TYPE for a demo account and for a live application
+  (`app/(broker)/portal/(shell)/accounts/AccountsView.tsx`, `GET /api/portal/account-types`), and since D4 that pick
+  does nothing. Needs: the portal UI to offer the broker's client-selectable groups (`GET /api/portal/groups`) with a
+  client-facing label, and a `groupId` field on live-account applications (migration) that the approver sees
+  pre-selected.
+- Since 2026-10-01 (branch `d4-slippage`): no creation path assigns an account type (staff create, portal demo,
+  application approve); a sent `accountTypeId` is ignored and kept as `requestedAccountTypeId` in the audit row.
+
 - 2026-09-30, owner: the backoffice approve form for a live account application no longer has an Account type field (the group is the tier). The web route still applies the type the client asked for (`accountTypeId: chosenTypeId ?? existing.accountTypeId` in `app/api/manage/live-account-requests/[id]/route.ts`).
 - DONE 2026-09-30 (owner-approved live write on ep-morning-glade, one transaction, 15 audit rows with newValue.source "owner-approved direct write 2026-09-30…"): Futurix Standard / Pro / Zero `AccountType.swapFree` true -> NULL (inherit); groups Dealing and Reverse Trading `swapFree` true -> false; their 10 accounts' own `swapFree` false -> NULL. The group is now the swap-free source. Effective swap-free changed for one account only (50005708, true -> false, no open positions); the other 15 touched accounts were and stay not swap-free.
 
