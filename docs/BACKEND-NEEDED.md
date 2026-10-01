@@ -26,6 +26,7 @@ Not blocking any screen (each works today with an extra read); ship them with th
 
 | Route | Change | Why | Decided |
 |---|---|---|---|
+| `GET /api/trade/audit` (`lib/order-audit.ts` describeOrderAuditEvent) | Name the position / order by its TICKET (`#100002513`) instead of `orderNumber.slice(-8)` (`#xq50yzjq`) | The terminal LOG shows one line per trade by ticket and strips the internal tag; server-only lines (another device, dealer) then carry no ticket at all | 2026-10-01, owner |
 | `GET /api/manage/deals` | Add `currency` per deal (the account's) | DLS loads the accounts list a second time to fill its CCY column | 2026-09-30, owner: web5 |
 | `lib/chart-settings.ts` (GET / PUT /api/trade/chart-settings) | Add `positionLabels` ("Grouped" / "All" / "Off", default "Grouped") to the stored keys | The terminal's chart position labels (Phase 5 batch B) are kept on each computer until the server stores the key | 2026-09-30, owner |
 | `GET /api/manage/shell-info` | Add the broker's canonical address (the host `emergency/sign-out-clients` expects) | EMG typed confirms use it for every role, no fallback (today a manager can't ask sign-out-clients, so the app falls back to its own server host) | 2026-09-30, owner |

@@ -1833,7 +1833,7 @@ Hidden until an LP bridge exists: the screen is merged into Liquidity providers,
 | T·marketwatch | no match | No matching symbol | — | — |
 | T·marketwatch | REMOVE FROM WATCHLIST (confirm title) | Remove from Market Watch | — | Confirms removing the symbol. |
 | T·marketwatch | REMOVE (confirm button) | Remove | — | — |
-| T·marketwatch | Symbol Specification (window title) | Symbol details | — | — |
+| T·marketwatch | Symbol Specification (window title) | Symbol details | — | Rows: … Bid / Ask (the trader's own prices), Client spread (points); never markup, raw ask or the spread rule (owner 2026-10-01). |
 | T·marketwatch | {SYMBOL} · {CATEGORY} (dialog title row) | keep | — | — |
 | T·marketwatch | Symbol id | remove | — | Internal code; not useful to traders. |
 | T·marketwatch | Digits | Price digits | — | Decimal places in the price. |
@@ -1856,6 +1856,7 @@ Hidden until an LP bridge exists: the screen is merged into Liquidity providers,
 
 | Screen | Current label | Proposed name | Unit | Tooltip (one line) |
 |---|---|---|---|---|
+| T·chart | position / order line labels | SL · TP · BUY 0.40 at 4451.97 · BUY LIMIT 0.25 at 4446.00 | price | Plain text at the left edge, no boxes; P/L added on hover / drag (or always: setting); a group = total lots at the weighted average; crowded labels stack with a leader to their line (owner 2026-10-01). |
 | T·chart | Position labels (chart right-click) | Position labels ▸ Grouped / All / Off | — | Grouped (default): one tag per side and price cluster; All: one tag per position; Off: no entry lines or tags (SL / TP lines stay) (owner 2026-09-30). |
 | T·chart | cluster tag | {Buy/Sell} {lots} ×{n} · {±#,##0.00} {CCY} (e.g. Buy 0.4 ×3 · +175.00 USD) | account ccy | Hover it: one line per position, {Side} {lots} @ {open price} · {P/L} (owner 2026-09-30). |
 | T·chart | P/L on SL/TP tags (chart setting) | P/L on SL/TP tags: Always (off = on hover) | — | Default off: the tags show the level alone and the P/L appears on hover / while selected or dragged (owner 2026-09-30). |
@@ -1982,7 +1983,7 @@ Hidden until an LP bridge exists: the screen is merged into Liquidity providers,
 | T·neworder | STOP LOSS | Stop loss | — | — |
 | T·neworder | TAKE PROFIT | Take profit | — | — |
 | T·neworder | RISK % | Risk (% of equity) | % | Sets volume so the stop loss loses this share of equity. |
-| T·neworder | SLIPPAGE MAX (wm M = unlimited) | Max slippage (points) · M = no limit | points | Largest price change you accept on fill. (10 points = 1 pip) |
+| T·neworder | SLIPPAGE MAX (wm M = unlimited) | MAX SLIPPAGE (POINTS) · empty value reads Unlimited | points | Largest price change you accept on fill (10 points = 1 pip); Unlimited = no limit of your own (owner 2026-10-01). |
 | T·neworder | EXPIRY | Expiry: Until cancelled | — | — |
 | T·neworder | LEVERAGE | keep | — | — |
 | T·neworder | MARGIN REQ | Margin needed ($) | $ | Margin this order will hold. |
@@ -2100,7 +2101,10 @@ Hidden until an LP bridge exists: the screen is merged into Liquidity providers,
 | T·tabs | FILLED | Fill price | — | Price the order filled at. |
 | T·tabs | STATUS | Status | — | Filled, rejected, cancelled, waiting for dealer. |
 | T·tabs | RANGE | Period | — | — |
-| T·tabs | 1D 1W 1M 3M 6M ALL CUSTOM | Day / Week / Month / 3 months / 6 months / All / Custom | — | — |
+| T·tabs | 1D 1W 1M 3M 6M ALL CUSTOM | 1D · THIS WEEK · LAST 7 DAYS · 1M · 3M · 6M · ALL · CUSTOM | — | THIS WEEK = since the broker's trading week start (WEEK P/L's window); LAST 7 DAYS = the last 7 × 24 h (was 1W) (owner 2026-10-01). |
+| T·tabs | HISTORY footer | {n} TRADES · {lots} LOTS · P/L ±x · COMMISSION −x · SWAP ±x … NET ±#,##0.00 CCY | account ccy | Totals of the trades shown (range + symbol); NET = P/L + swap − commission; no live open P/L on HISTORY (owner 2026-10-01). |
+| T·tabs | LOG trade lines | BUY 0.01 XAUUSD filled @ 4161.50 · #100002513 · 266 ms / SELL 0.05 XAUUSD closed @ 4456.68 · #100001171 · 300 ms | — | One line per trade, by its ticket; never an internal id, no server ms (owner 2026-10-01). |
+
 | T·tabs | FROM / TO | From (UTC) / To (UTC) | UTC | — |
 | T·tabs | SYMBOL (ALL) | Symbol: All | — | — |
 | T·tabs | summary text | keep | $ | Totals for the selected period. |
@@ -2194,6 +2198,8 @@ Hidden until an LP bridge exists: the screen is merged into Liquidity providers,
 
 | Screen | Current label | Proposed name | Unit | Tooltip (one line) |
 |---|---|---|---|---|
+| T·eco | header on a failed read | CALENDAR UNAVAILABLE · RETRYING | — | Retries after 30 s, 2 min, then every 5 min (owner 2026-10-01). |
+| T·eco | impact filter | ALL IMPACT / HIGH · MED … (button) · All impacts / High / Medium / Low (checkboxes) | — | Like the currency filter (owner 2026-10-01). |
 | T·eco | 5) ECO CALENDAR · NEWS | Calendar & news | — | Economic events that can move prices. |
 | T·eco | {n} EVENTS · {h} HIGH · UTC | {n} events · {h} high impact · times in UTC | UTC | — |
 | T·eco | CALENDAR OFFLINE | Calendar unavailable | — | Could not load events. |
@@ -2224,6 +2230,8 @@ Hidden until an LP bridge exists: the screen is merged into Liquidity providers,
 
 | Screen | Current label | Proposed name | Unit | Tooltip (one line) |
 |---|---|---|---|---|
+| T·settings | Workspace: time zone | TIME ZONE · Show times in · UTC / My computer / Broker (New York) | — | Every time on screen; the zone is named beside the clock (UTC, PKT, EDT) with the details on hover (owner 2026-10-01). |
+| T·settings | Trading: max slippage | Max slippage (points) · Unlimited | points | Unlimited = no limit of your own (owner 2026-10-01). |
 | T·settings | tab strip | TRADING / CHART / NOTIFICATIONS / WORKSPACE | — | Every setting sits in exactly one tab; a fixed-size dialog without maximize (owner 2026-09-30). |
 | T·settings | Settings (window title) | keep | — | — |
 | T·settings | CONFIRMATIONS | Confirmations | — | Which actions ask before sending. |
