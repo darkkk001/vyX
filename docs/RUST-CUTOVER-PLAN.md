@@ -58,6 +58,16 @@ still reads `AccountType.spreadMarkup` and `AccountTypeSymbolConfig` (the `am_at
 no live account type sets a spread (checked 2026-09-30, and the web now refuses to set one). No broker leaves LEGACY
 before this is done.
 
+**D8 cutover gate, hedge-aware pre-trade margin (owner 2026-10-01):** the engine's order admission
+(`engine/order-management/src/lib.rs:212`, `pending_orders.rs:90`, `risk/src/lib.rs:90`) charges the new leg's FULL margin,
+prices it at the bid for both sides and admits at level-after >= 100%. The web (`lib/margin.ts:340-375`, the live path)
+charges only the used-margin INCREASE after hedging (`BrokerSymbol.hedgedMarginPct`, `lib/margin.ts:149-163`), always admits
+an order that does not raise used margin (a hedge, at any margin level), prices margin at the account's own side price and
+refuses at level-after <= 100%. The engine's used-margin / margin-watch already apply the hedged % (`calc.rs:55`,
+`margin_watch.rs:116`); its pre-trade must match the web exactly (same formula, price side, boundary) with parity vectors,
+before any broker's order admission moves to the engine. Context: Futurix set hedgedMarginPct = 50 on all 30 symbols on
+2026-10-01 (owner-approved direct write, 30 audit rows) so hedges go through in margin call.
+
 ### Pre-stage: web money bugs. DONE (b5dc33c + 55b86da deployed 2026-09-23; 8b5f60b committed)
 
 - 8b5f60b: every read-modify-write of `Account.balance` locks the row first (`lib/account-lock.ts`):
