@@ -1413,6 +1413,19 @@ flip back to WEB and watch the web take the next stop-out. The Vercel cron stays
   backstop closed it before the engine's book had it: a WEB_ONLY with no shadow sample (shadow-only blind spot, not an
   engine gap). In RUST mode the engine would stop it out after the reload; evaluating the account as soon as the fill
   event arrives removes that latency and lets the shadow see these cases. NOT BUILT.
+- **Margin-call flapping must not reset the soak clock (owner, 2026-10-01). BUILT on shadow/margin-call-flap, not
+  deployed.** 50005708 crossed its 100 % call level 11 times in 2.5 min (04:19:08-04:21:40 UTC); one web notice
+  (04:20:04.94, a 0.58 s episode) came out WEB_ONLY. Fixed:
+  - the matcher pairs a notice with its nearest unused edge only when it is also that edge's nearest notice, and
+    explains the rest by OVERLAPPING EPISODES (any shadow edge in the window, samples in a call / crossing the level,
+    the sample closest to the level, not the lowest; a lone shadow edge also by a web clear in the window);
+  - the trigger's 5 s margin-call damping DEFERS a change instead of dropping it (last FIRED state per account).
+
+  For the 11-flap sequence the engine fires 8 IN + 8 OUT where the web sent 11 + 11: episodes 3 and 5 began and ended
+  inside a damping window, and 9 merged into 8. The final state is always announced, at most 5 s late.
+  Follow-up, NOT BUILT: **re-check the margin-call level on the account's own fill.** A margin call reached by OPENING a
+  position (not by a price move) is seen only on the next tick after the book reloads, on both sides. This is the same
+  latency as the "evaluate an account on its fill event" item above, and the same fix covers the margin-call notice.
 
 #### 6.2 Found during the soak, not risk-engine items
 

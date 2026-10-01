@@ -23,7 +23,10 @@
 //!
 //! Damping: a stop-out that stays (the web disagrees, e.g. a session it treats as closed) re-fires after
 //! 1, 2, 4 ... 30 s, reset once the account is back above; a margin-call edge fires at most every 5 s per
-//! account.
+//! account. A margin-call change inside those 5 s is DEFERRED, not lost (2026-10-01, the 11-flap episode of 50005708):
+//! the watch remembers the last state it FIRED, and once the 5 s are over, the first evaluation that finds the account
+//! in a different state fires it. So a flap that ends inside the 5 s (in -> out -> in) is coalesced into the state the
+//! account is in when the window ends, and a change that stays is always announced, at most 5 s late.
 
 use crate::{calc, db, fx};
 use market_data::cache::TickCache;
@@ -193,6 +196,9 @@ pub fn measure(account: &WatchedAccount, cache: &TickCache) -> (Decimal, Decimal
 #[derive(Default, Debug)]
 struct Track {
     in_call: bool,
+    /// The margin-call state the last FIRED edge announced (false = out; an account starts out of a call). Compared,
+    /// not `in_call`, once the damping is over: a change seen inside the 5 s is fired then, not dropped.
+    fired_in_call: bool,
     stop_out_fires: u32,
     last_stop_out_fire: Option<Instant>,
     last_edge_fire: Option<Instant>,
@@ -308,16 +314,21 @@ impl MarginWatch {
                             tracing::info!(account_id = %account.id, %equity, used_margin = %used, stop_out = %account.thresholds.stop_out_level, "margin trigger: at or below stop-out, evaluating now");
                         }
                         track.in_call = true;
+                        // a stop-out fire is a full evaluation of an account below its call level: it stands for "in"
+                        track.fired_in_call = true;
                         due
                     }
                     MonitorAction::MarginCall | MonitorAction::Ok => {
                         track.stop_out_fires = 0;
                         track.last_stop_out_fire = None;
                         let in_call = action == MonitorAction::MarginCall;
-                        let edge = in_call != track.in_call && track.last_edge_fire.is_none_or(|l| now.duration_since(l) >= EDGE_EVERY);
                         track.in_call = in_call;
+                        // against the last FIRED state: a change inside the damping window waits for the window to end
+                        // (deferred), it is not overwritten and lost
+                        let edge = in_call != track.fired_in_call && track.last_edge_fire.is_none_or(|l| now.duration_since(l) >= EDGE_EVERY);
                         if edge {
                             track.last_edge_fire = Some(now);
+                            track.fired_in_call = in_call;
                         }
                         edge
                     }
@@ -510,6 +521,65 @@ mod tests {
         a.balance = dec!(160);
         w.set_book(Book::new(vec![a]));
         assert!(!w.decide(std::slice::from_ref(&t), &cache, t0 + Duration::from_secs(12)).is_empty(), "edge out");
+    }
+
+    /// Account 50005708, 2026-10-01 04:19:08-04:21:40 UTC: the web's 11 margin-call episodes (MARGIN_CALL /
+    /// MARGIN_CALL_CLEARED notices, seconds after 04:19:00), including the 0.58 s episode 5 at 04:20:04.94.
+    pub(crate) const FLAP_50005708: [(f64, f64); 11] = [
+        (8.943, 14.889), (43.717, 49.877), (51.806, 54.866), (57.888, 59.869), (64.940, 65.520),
+        (75.133, 82.492), (84.937, 88.130), (95.701, 100.236), (102.287, 108.631), (127.105, 153.198), (155.018, 160.068),
+    ];
+
+    /// Replays the 11 flaps through decide() on a tick every 100 ms: which margin-call edges fire, and when.
+    fn replay_flaps() -> Vec<(f64, bool)> {
+        let w = MarginWatch::new();
+        let acc = |balance| {
+            let mut a = gold_account("a", balance);
+            a.thresholds = MarginThresholds { call_level: dec!(110), stop_out_level: dec!(99) };
+            a
+        };
+        let t = tick("XAUUSD", dec!(4280), dec!(4280.30));
+        let cache = cache_with(&[(t.clone(), 0)]);
+        let t0 = Instant::now();
+        let mut fired = Vec::new();
+        let mut was_in: Option<bool> = None;
+        for step in 0..=1800u64 {
+            let secs = step as f64 / 10.0;
+            let is_in = FLAP_50005708.iter().any(|(i, o)| secs >= *i && secs < *o);
+            if was_in != Some(is_in) {
+                // 144 -> 102.8 % (in a call at 110, above the 99 stop-out); 160 -> out
+                w.set_book(Book::new(vec![acc(if is_in { dec!(144) } else { dec!(160) })]));
+                was_in = Some(is_in);
+            }
+            if !w.decide(std::slice::from_ref(&t), &cache, t0 + Duration::from_millis(step * 100)).is_empty() {
+                fired.push((secs, is_in));
+            }
+        }
+        fired
+    }
+
+    #[test]
+    fn the_11_flap_sequence_fires_deferred_edges_never_loses_the_final_state() {
+        let fired = replay_flaps();
+        eprintln!("trigger fires for the 11 web episodes (s after 04:19:00, in?): {fired:?}");
+        // alternating in / out, starting in, ending out (the account left its margin call at 04:21:40)
+        for (k, (_, is_in)) in fired.iter().enumerate() {
+            assert_eq!(*is_in, k % 2 == 0, "edges alternate: {fired:?}");
+        }
+        assert!(!fired.last().unwrap().1, "the final OUT is announced, not lost: {fired:?}");
+        // never two edges within 5 s
+        for w in fired.windows(2) {
+            assert!(w[1].0 - w[0].0 >= 5.0 - 1e-9, "damped to one edge per 5 s: {fired:?}");
+        }
+        // The exact sequence (deterministic): 8 IN + 8 OUT for the web's 11 + 11. Episodes 3 (3.1 s) and 5 (0.58 s,
+        // 04:20:04.94) began and ended inside the 5 s after an OUT fire, and episode 9 began inside the 5 s after episode
+        // 8's IN fire while 8's OUT was still deferred: they are coalesced, never left stale -- every state the account
+        // is in when a damping window ends is announced (at most 5 s late) and the last one (OUT) always is.
+        let expected = [
+            (9.0, true), (14.9, false), (43.8, true), (49.9, false), (57.9, true), (62.9, false), (75.2, true), (82.5, false),
+            (87.5, true), (92.5, false), (97.5, true), (108.7, false), (127.2, true), (153.2, false), (158.2, true), (163.2, false),
+        ];
+        assert_eq!(fired, expected, "{fired:?}");
     }
 
     #[test]

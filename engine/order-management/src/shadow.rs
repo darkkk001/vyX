@@ -31,6 +31,21 @@ struct Sample {
     call: Decimal,
 }
 
+/// See Recorder::call_evidence_around.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CallEvidence {
+    pub any_in: bool,
+    pub any_out: bool,
+    /// (level, call level) of the sample closest to the call level
+    pub closest: (Decimal, Decimal),
+}
+
+impl CallEvidence {
+    pub fn crossed(&self) -> bool {
+        self.any_in && self.any_out
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Copy)]
 pub enum Kind {
     StopLoss,
@@ -374,9 +389,27 @@ impl Recorder {
     pub fn min_level_around(&self, account_id: &str, at: DateTime<Utc>, window: ChronoDuration) -> Option<(Decimal, Decimal)> {
         self.around(account_id, at, window, |it| it.filter_map(|s| s.level.map(|l| (l, s.stop_out))).min_by(|a, b| a.0.cmp(&b.0)))
     }
-    /// The lowest level the shadow saw around `at`, with the margin-call level then.
-    pub fn min_call_around(&self, account_id: &str, at: DateTime<Utc>, window: ChronoDuration) -> Option<(Decimal, Decimal)> {
-        self.around(account_id, at, window, |it| it.filter_map(|s| s.level.map(|l| (l, s.call))).min_by(|a, b| a.0.cmp(&b.0)))
+    /// The shadow's margin-call view of an account around `at` (2026-10-01, the 11-flap episode of 50005708): whether
+    /// any sample was IN a margin call (at or below its call level), whether the samples CROSSED the call level (some at or
+    /// below, some above), and the sample CLOSEST to the call level (not the lowest: an account bouncing between 97 % and
+    /// 104 % has its lowest sample 3 % away although it sat on the level). None = not sampled in the window.
+    pub fn call_evidence_around(&self, account_id: &str, at: DateTime<Utc>, window: ChronoDuration) -> Option<CallEvidence> {
+        self.around(account_id, at, window, |it| {
+            let mut ev: Option<CallEvidence> = None;
+            for s in it {
+                let Some(level) = s.level else { continue };
+                let e = ev.get_or_insert(CallEvidence { any_in: false, any_out: false, closest: (level, s.call) });
+                if level <= s.call {
+                    e.any_in = true;
+                } else {
+                    e.any_out = true;
+                }
+                if (level - s.call).abs() < (e.closest.0 - e.closest.1).abs() {
+                    e.closest = (level, s.call);
+                }
+            }
+            ev
+        })
     }
     pub fn stop_out_level(&self, account_id: &str) -> Option<Decimal> {
         self.samples.lock().unwrap().get(account_id).and_then(|q| q.back()).map(|s| s.stop_out)

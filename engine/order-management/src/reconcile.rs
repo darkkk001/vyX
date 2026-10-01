@@ -27,6 +27,14 @@
 //! a MARGIN_CALL_CLEARED notification when it ends one -- a notice newer than the last clear before the edge is an
 //! open episode. Before the first MARGIN_CALL_CLEARED row exists anywhere the episode cannot be known and (3) never
 //! applies.
+//! Overlapping episodes (2026-10-01, account 50005708 flapping across 100 % 11 times in 2.5 min; one web notice came
+//! out WEB_ONLY): a web notice left without an edge of its own is explained (SNAPSHOT) when the SHADOW had the account
+//! in a margin call around it -- (4) any shadow "in" edge within the window, even one another notice took, or (5) its
+//! samples were in a call / crossed the call level within the window, or the sample closest to the level sat within
+//! EDGE_PCT of it (it used to test the LOWEST sample, which an account bouncing 97-104 % never passes). A notice pairs
+//! with its nearest unused edge only when it is also that edge's nearest notice (no cascade). And a lone
+//! shadow edge is also explained when (6) the web CLEARED a margin call for the account within the window (the web
+//! was in one there: the shadow saw a flap the web merged). Stop-out / SL / TP pairing is unchanged.
 //!
 //! VALUE / ENGINE_ONLY / WEB_ONLY are UNEXPLAINED: each resets the soak clock and is logged at ERROR with both sides.
 //! The clock (2026-09-29, owner) is DERIVED, never overwritten: max(the soak start shadow_state.clock_started_at, the
@@ -501,6 +509,21 @@ impl Reconciler {
                    ORDER BY abs(extract(epoch FROM (d.first_seen - $4))), d.first_seen LIMIT 1"#,
             )
             .bind(account).bind(*at - window).bind(*at + window).bind(*at).fetch_optional(&self.store).await?;
+            // ... and only when THIS notice is that edge's nearest web notice (2026-10-01): with the two sides counting a
+            // flapping account's episodes differently, "nearest unused" alone cascades (each notice takes the next
+            // episode's edge, 50 s apart). A notice whose nearest edge belongs to another notice is left to the
+            // overlapping-episode rule below.
+            let decision = match decision {
+                Some((key, first)) => {
+                    let (nearest,): (Option<String>,) = sqlx::query_as(
+                        r#"SELECT id FROM "Notification" WHERE type = 'MARGIN_CALL' AND "accountId" = $1 AND "createdAt" BETWEEN $2 AND $3
+                           ORDER BY abs(extract(epoch FROM ("createdAt" - $4))), "createdAt" LIMIT 1"#,
+                    )
+                    .bind(account).bind(first - window).bind(first + window).bind(first).fetch_optional(&self.book).await?.unwrap_or((None,));
+                    if nearest.as_deref().is_none_or(|n| n == nid) { Some((key, first)) } else { None }
+                }
+                None => None,
+            };
             let fan = self.fan_in(account).await;
             match decision {
                 Some((key, first)) => {
@@ -508,10 +531,36 @@ impl Reconciler {
                     self.write_pair(class, "margin_call_in", account, None, Some(nid), Some(&key), Some(*at), Some(first), fan, serde_json::json!({ "webBody": body }), &mut report).await;
                 }
                 None => {
-                    let near = self.recorder.min_call_around(account, *at, window).map(|(lvl, call)| at_edge(lvl, call)).unwrap_or(false)
-                        || level_in(body).zip(self.recorder.call_level(account)).is_some_and(|(w, c)| at_edge(w, c));
-                    let class = if near { Class::Snapshot } else { Class::WebOnly };
-                    self.write_pair(class, "margin_call_in", account, None, Some(nid), None, Some(*at), None, fan, serde_json::json!({ "webBody": body }), &mut report).await;
+                    // (4) the shadow had its own episode here (an edge another notice already took counts too)
+                    let overlapping: Option<(String, DateTime<Utc>)> = sqlx::query_as(
+                        r#"SELECT d.dedupe_key, d.first_seen FROM shadow_decision d
+                           WHERE d.kind = 'margin_call_in' AND d.account_id = $1 AND d.first_seen BETWEEN $2 AND $3
+                           ORDER BY abs(extract(epoch FROM (d.first_seen - $4))) LIMIT 1"#,
+                    )
+                    .bind(account).bind(*at - window).bind(*at + window).bind(*at).fetch_optional(&self.store).await?;
+                    // (5) its samples were in a call / crossed the level / sat at it
+                    let ev = self.recorder.call_evidence_around(account, *at, window);
+                    let samples_explain = ev.is_some_and(|e| e.any_in || at_edge(e.closest.0, e.closest.1));
+                    let body_at_edge = level_in(body).zip(self.recorder.call_level(account)).is_some_and(|(w, c)| at_edge(w, c));
+                    let reason = if let Some((k, t)) = &overlapping {
+                        Some(serde_json::json!({ "reason": "overlapping shadow margin-call episode", "shadowEdge": k, "shadowAt": t }))
+                    } else if samples_explain {
+                        let e = ev.unwrap();
+                        Some(serde_json::json!({ "reason": if e.crossed() { "shadow samples crossed the call level" } else if e.any_in { "shadow samples in a margin call" } else { "shadow samples at the call level" },
+                            "closestLevel": e.closest.0.round_dp(2), "callLevel": e.closest.1 }))
+                    } else if body_at_edge {
+                        Some(serde_json::json!({ "reason": "web level at the call level" }))
+                    } else {
+                        None
+                    };
+                    let class = if reason.is_some() { Class::Snapshot } else { Class::WebOnly };
+                    let samples: Vec<serde_json::Value> = self.recorder.samples_around(account, *at, window).into_iter()
+                        .map(|(ms, level, _)| serde_json::json!({ "ms": ms, "level": level })).collect();
+                    let mut detail = serde_json::json!({ "webBody": body, "shadowSamples": samples });
+                    if let Some(r) = reason {
+                        detail["shadow"] = r;
+                    }
+                    self.write_pair(class, "margin_call_in", account, None, Some(nid), None, Some(*at), None, fan, detail, &mut report).await;
                 }
             }
         }
@@ -580,6 +629,15 @@ impl Reconciler {
         .bind(account).bind(at - window).bind(at + window).bind(at).fetch_optional(&self.book).await?;
         if let Some((id, when)) = near {
             return Ok(Some(serde_json::json!({ "reason": "web margin-call notice within the window", "webNotice": id, "webAt": when })));
+        }
+        // (6) the web LEFT a margin call within the window: it was in one there, and merged the shadow's flap
+        let cleared: Option<(String, DateTime<Utc>)> = sqlx::query_as(
+            r#"SELECT id, "createdAt" FROM "Notification" WHERE type = 'MARGIN_CALL_CLEARED' AND "accountId" = $1 AND "createdAt" BETWEEN $2 AND $3
+               ORDER BY abs(extract(epoch FROM ("createdAt" - $4))) LIMIT 1"#,
+        )
+        .bind(account).bind(at - window).bind(at + window).bind(at).fetch_optional(&self.book).await?;
+        if let Some((id, when)) = cleared {
+            return Ok(Some(serde_json::json!({ "reason": "web left a margin call within the window", "webNotice": id, "webAt": when })));
         }
         let (tracking_since,): (Option<DateTime<Utc>>,) =
             sqlx::query_as(r#"SELECT min("createdAt") FROM "Notification" WHERE type = 'MARGIN_CALL_CLEARED'"#).fetch_one(&self.book).await?;
