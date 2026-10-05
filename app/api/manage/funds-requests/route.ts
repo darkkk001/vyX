@@ -1,30 +1,36 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession } from "@/lib/auth";
 import { forbidUnlessPermissionOrSupportReader } from "@/lib/permissions";
+import { paymentMethodName, STAFF_PSP_ADAPTER } from "@/lib/staff-funds";
 
 // BROKER_ADMIN by default -- same finance carve-out as balance
 // adjustment/leverage edits (AdminRole.MANAGER's own schema comment: "not
 // KYC/finance") -- delegatable via FUNDS_APPROVAL (see
 // lib/permissions.ts). Lists PENDING requests first (what needs action),
 // then recent resolved ones for context.
-export async function GET() {
+// ?accountId= (DEP item, owner 2026-10-05): one account's history ("Deposit & withdrawal history" on the Account menu),
+// filtered on the server and not cut at the broker-wide 200 (capped at 1000 rows for one account).
+export async function GET(request?: NextRequest) {
   const session = await getAdminSession();
   if (await forbidUnlessPermissionOrSupportReader(session, "FUNDS_APPROVAL") /* SUPPORT reads (view only) */) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
   const brokerId = session!.brokerId!;
+  const accountId = request?.nextUrl.searchParams.get("accountId")?.trim() || null;
 
   const requests = await prisma.transaction.findMany({
-    where: { brokerId, type: { in: ["DEPOSIT", "WITHDRAWAL"] } },
+    where: { brokerId, type: { in: ["DEPOSIT", "WITHDRAWAL"] }, ...(accountId ? { accountId } : {}) },
     include: {
       // issue 132: whether a withdrawal could be paid (the account's own KYC, or its portal client's)
       account: { select: { accountNumber: true, fullName: true, balance: true, currency: true, kycRecord: { select: { status: true } }, client: { select: { kycRecord: { select: { status: true } } } } } },
       markedByAdmin: { select: { email: true } },
+      createdByAdmin: { select: { email: true } },
+      paymentMethod: { select: { type: true } },
     },
     orderBy: [{ status: "asc" }, { createdAt: "desc" }],
-    take: 200,
+    take: accountId ? 1000 : 200,
   });
 
   const broker = await prisma.broker.findUniqueOrThrow({ where: { id: session!.brokerId! }, select: { withdrawalApproval: true } });
@@ -52,6 +58,11 @@ export async function GET() {
       markedByAdminId: t.markedByAdminId,
       markedByAdminEmail: t.markedByAdmin?.email ?? null,
       createdAt: t.createdAt.toISOString(),
+      // DEP item: who entered it, how it was paid, and its reference
+      source: t.pspAdapter === STAFF_PSP_ADAPTER && t.createdByAdminId ? "STAFF" : "CLIENT",
+      createdByAdminName: t.pspAdapter === STAFF_PSP_ADAPTER ? (t.createdByAdmin?.email ?? null) : null,
+      paymentMethodName: paymentMethodName(t),
+      reference: t.pspReference,
     })),
   });
 }

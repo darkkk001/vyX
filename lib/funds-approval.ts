@@ -128,7 +128,7 @@ export async function rejectFundsRequest(
 
 export type ApproveResult =
   | { ok: true; transactionId: string; balanceAfter: Prisma.Decimal }
-  | { ok: false; error: string };
+  | { ok: false; error: string; code: "KYC_REQUIRED" | "INSUFFICIENT_BALANCE" | "MARGIN_TOO_LOW" | "NO_CONVERSION_RATE" };
 
 // The step that actually moves money -- a DEPOSIT's only approval, or a
 // WITHDRAWAL's second (different-admin) confirm. Re-reads the account's
@@ -156,7 +156,7 @@ export async function approveFundsRequest(
   if (params.type === "WITHDRAWAL") {
     // Phase 2 batch 8 (issue 132, owner decision): no payout without approved KYC -- checked here, inside the paying
     // transaction, so every path to COMPLETED goes through it
-    if (!(await withdrawalKycApproved(tx, params.accountId))) return { ok: false, error: WITHDRAWAL_KYC_ADMIN_MESSAGE };
+    if (!(await withdrawalKycApproved(tx, params.accountId))) return { ok: false, error: WITHDRAWAL_KYC_ADMIN_MESSAGE, code: "KYC_REQUIRED" };
     // Audit 2026-09-24 (money): not only balance >= 0 -- a payout must not leave open positions under-margined.
     // Checked on the LOCKED balance (lib/margin.ts checkBalanceDebit).
     const debit = await checkBalanceDebit(tx, { accountId: params.accountId, amount: params.amount.neg(), balance: balanceBefore });
@@ -167,6 +167,8 @@ export async function approveFundsRequest(
           debit.error === "BALANCE_BELOW_ZERO"
             ? "account balance is no longer sufficient for this withdrawal, reject or ask the trader to resubmit"
             : `withdrawal refused: ${debit.message}. Reject it or ask the trader to close positions first`,
+        // staff-recorded withdrawals (lib/staff-funds.ts) answer with these codes
+        code: debit.error === "BALANCE_BELOW_ZERO" ? "INSUFFICIENT_BALANCE" : debit.error === "NO_CONVERSION_RATE" ? "NO_CONVERSION_RATE" : "MARGIN_TOO_LOW",
       };
     }
   }

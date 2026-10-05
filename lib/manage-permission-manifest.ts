@@ -73,6 +73,9 @@ export const MANIFEST: Row[] = [
   { mod: "account-types/route", method: "GET", perm: "ANY_MANAGER" },
   { mod: "accounts/[id]/activity/route", method: "GET", perm: "ANY_MANAGER", needsId: true, supportRead: true },
   { mod: "accounts/[id]/adjust-balance/route", method: "POST", perm: "ACCOUNT_FINANCE", needsId: true, body: {} },
+  // DEP item (owner 2026-10-05): staff record a deposit / withdrawal (and the form's data)
+  { mod: "accounts/[id]/funds/route", method: "GET", perm: "FUNDS_APPROVAL", needsId: true },
+  { mod: "accounts/[id]/funds/route", method: "POST", perm: "FUNDS_APPROVAL", needsId: true, body: {} },
   { mod: "accounts/[id]/positions/route", method: "GET", perm: "ANY_MANAGER", needsId: true, supportRead: true },
   { mod: "accounts/[id]/equity-curve/route", method: "GET", perm: "ANY_MANAGER", needsId: true, supportRead: true },
   { mod: "accounts/[id]/kyc/route", method: "POST", perm: "ANY_MANAGER", needsId: true, body: {} },

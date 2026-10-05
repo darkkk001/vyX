@@ -86,6 +86,12 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     return NextResponse.json(rejected);
   }
 
+  // DEP item (owner 2026-10-05): a request staff recorded (lib/staff-funds.ts) is never approved by the person who
+  // recorded it; a different admin decides. Client requests have no createdByAdminId, so this never touches them.
+  if (existing.createdByAdminId && existing.createdByAdminId === session!.adminId) {
+    return NextResponse.json({ error: "you recorded this request: another admin must approve it", code: "OWN_REQUEST" }, { status: 403 });
+  }
+
   // APPROVE -- Broker.withdrawalApproval (owner decision D5): SINGLE lets one BROKER_ADMIN complete a withdrawal
   const broker = await prisma.broker.findUniqueOrThrow({ where: { id: brokerId }, select: { withdrawalApproval: true } });
   const step = resolveFundsApprovalStep({
