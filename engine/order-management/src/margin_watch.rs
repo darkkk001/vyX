@@ -30,6 +30,14 @@
 //! Margin-call notices (owner 2026-10-01): no real warning is lost;
 //! the account's final state is announced within 5 s; sub-5 s flickers are not repeated
 //! (for the 11-flap replay: 8 in/out pairs vs the web's 11, all 11 web notices explained, 0 WEB_ONLY).
+//!
+//! Targeted calls (2026-10-05, owner): the watch names ACCOUNTS (targets_to_evaluate), not just symbols, so the hook's
+//! web call evaluates those accounts only. Besides the stop-out / margin-call fires above (urgent: sent on the trigger
+//! pass), an account inside the near-level band -- margin level at or below margin call + VYX_RISK_BAND_PCT percentage
+//! points (default 10; 0 = off) -- is named too (not urgent: the hook coalesces it per symbol), so a small difference
+//! between this math and the web's never leaves a web stop-out unasked. An account that stays in the band is re-named
+//! after 1, 2, 4 ... 30 s, not on every tick; leaving the band resets it. Band fires are not handed to the shadow (the
+//! shadow pairs decisions, and a band fire decides nothing).
 
 use crate::{calc, db, fx};
 use market_data::cache::TickCache;
@@ -51,6 +59,22 @@ const FRESH: i64 = 15;
 const EDGE_EVERY: Duration = Duration::from_secs(5);
 /// Cap of the re-fire backoff for a stop-out that stays.
 const MAX_BACKOFF_SECS: u64 = 30;
+/// VYX_RISK_BAND_PCT when unset: 10 percentage points above the margin-call level.
+pub const BAND_DEFAULT: Decimal = Decimal::from_parts(10, 0, 0, false, 0);
+
+/// VYX_RISK_BAND_PCT -> the near-level band (percentage points above margin call; 0 = off), plus a message when the
+/// value was SET but unusable (then the default, loudly). Unset = the default, quietly.
+pub fn band_from(raw: Option<String>) -> (Option<Decimal>, Option<String>) {
+    let Some(raw) = raw else { return (Some(BAND_DEFAULT), None) };
+    match raw.trim().parse::<Decimal>() {
+        Ok(v) if v.is_zero() => (None, None),
+        Ok(v) if v > Decimal::ZERO && v <= Decimal::from(1000) => (Some(v), None),
+        _ => (
+            Some(BAND_DEFAULT),
+            Some(format!("VYX_RISK_BAND_PCT={raw:?} is not a number of percentage points between 0 and 1000; USING {BAND_DEFAULT}. Write it as: set VYX_RISK_BAND_PCT=10")),
+        ),
+    }
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct WatchedPosition {
@@ -221,6 +245,9 @@ struct Track {
     stop_out_fires: u32,
     last_stop_out_fire: Option<Instant>,
     last_edge_fire: Option<Instant>,
+    /// near-level band (targeted calls): how often the account was named while it stayed in the band, and when
+    band_fires: u32,
+    last_band_fire: Option<Instant>,
 }
 
 pub struct MarginWatch {
@@ -235,6 +262,8 @@ pub struct MarginWatch {
     loaded: AtomicBool,
     /// the shared pricing cache (account ask rules); unset = read per reload (tests)
     pricing: std::sync::OnceLock<Arc<market_data::pricing::PricingCache>>,
+    /// the near-level band in percentage points above margin call (None = off: only stop-out / margin-call fires)
+    band: RwLock<Option<Decimal>>,
 }
 
 impl MarginWatch {
@@ -246,7 +275,13 @@ impl MarginWatch {
             on_fire: Mutex::new(None),
             loaded: AtomicBool::new(false),
             pricing: std::sync::OnceLock::new(),
+            band: RwLock::new(None),
         })
+    }
+
+    /// Name accounts inside `band` percentage points above their margin-call level too (targeted calls); None = off.
+    pub fn set_band(&self, band: Option<Decimal>) {
+        *self.band.write().unwrap() = band;
     }
 
     /// The symbols of every open position in the book; None until the book has loaded once.
@@ -326,10 +361,23 @@ impl MarginWatch {
 
     /// The decision, testable with an explicit `now`. Returns the flushed symbols to evaluate.
     pub fn decide(&self, flushed: &[Tick], cache: &TickCache, now: Instant) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for t in self.decide_targets(flushed, cache, now) {
+            if !out.contains(&t.symbol) {
+                out.push(t.symbol);
+            }
+        }
+        out
+    }
+
+    /// The decision per account: every account to evaluate, under the flushed symbol that moved it. Urgent = at or below
+    /// stop-out, or a margin-call edge (exactly the fires decide() always made); not urgent = inside the near-level band.
+    pub fn decide_targets(&self, flushed: &[Tick], cache: &TickCache, now: Instant) -> Vec<market_data::risk_hook::MarginTarget> {
         let book = Arc::clone(&self.book.read().unwrap());
+        let band = *self.band.read().unwrap();
         let mut tracks = self.tracks.lock().unwrap();
         let mut seen: HashSet<usize> = HashSet::new();
-        let mut out: Vec<String> = Vec::new();
+        let mut out: Vec<market_data::risk_hook::MarginTarget> = Vec::new();
         for t in flushed {
             let Some(idxs) = book.by_symbol.get(&t.symbol) else { continue };
             for &i in idxs {
@@ -370,14 +418,29 @@ impl MarginWatch {
                     }
                 };
                 if fire {
-                    // to the shadow first (a non-blocking send), then the symbol goes back to the hook for the web call.
+                    // to the shadow first (a non-blocking send), then the account goes back to the hook for the web call.
                     // The pin: this moment and the prices this decision was measured at (every symbol of the account).
                     if let Some(tx) = self.on_fire.lock().unwrap().as_ref() {
                         let _ = tx.send(MarginFire { account_id: account.id.clone(), pin: pin_for(account, cache) });
                     }
+                    out.push(market_data::risk_hook::MarginTarget { account_id: account.id.clone(), symbol: t.symbol.clone(), urgent: true });
+                    continue;
                 }
-                if fire && !out.contains(&t.symbol) {
-                    out.push(t.symbol.clone());
+                // the near-level band (targeted calls): at or below margin call + band, not already fired above
+                let in_band = match (band, risk::margin_level(equity, used)) {
+                    (Some(b), Some(level)) => action != MonitorAction::StopOut && level <= account.thresholds.call_level + b,
+                    _ => false,
+                };
+                if !in_band {
+                    track.band_fires = 0;
+                    track.last_band_fire = None;
+                    continue;
+                }
+                let wait = if track.band_fires == 0 { 0 } else { (1u64 << (track.band_fires - 1).min(5)).min(MAX_BACKOFF_SECS) };
+                if track.last_band_fire.is_none_or(|l| now.duration_since(l) >= Duration::from_secs(wait)) {
+                    track.band_fires += 1;
+                    track.last_band_fire = Some(now);
+                    out.push(market_data::risk_hook::MarginTarget { account_id: account.id.clone(), symbol: t.symbol.clone(), urgent: false });
                 }
             }
         }
@@ -405,6 +468,10 @@ fn pin_for(account: &WatchedAccount, cache: &TickCache) -> crate::book::Pin {
 impl market_data::risk_hook::MarginWatch for MarginWatch {
     fn symbols_to_evaluate(&self, flushed: &[Tick], cache: &TickCache) -> Vec<String> {
         self.decide(flushed, cache, Instant::now())
+    }
+
+    fn targets_to_evaluate(&self, flushed: &[Tick], cache: &TickCache, now: Instant) -> Vec<market_data::risk_hook::MarginTarget> {
+        self.decide_targets(flushed, cache, now)
     }
 
     fn evaluated(&self) {

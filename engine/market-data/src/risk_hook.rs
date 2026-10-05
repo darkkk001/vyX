@@ -68,10 +68,27 @@ use crate::activity::{self, GateLog};
 use crate::ask_markup::{self as ask_markup, AskRule};
 use crate::cache::TickCache;
 
+/// One account the margin trigger wants the web to evaluate, under the flushed symbol that moved it (targeted calls,
+/// 2026-10-05). `account_id` empty = the trigger cannot name the account: the web evaluates every holder of the symbol.
+/// `urgent` = at or below stop-out, or a margin-call edge: sent on this trigger pass, never held for the per-symbol
+/// coalesce window. Not urgent = inside the near-level band (MarginWatch's VYX_RISK_BAND_PCT): coalesced.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MarginTarget {
+    pub account_id: String,
+    pub symbol: String,
+    pub urgent: bool,
+}
+
 /// The per-tick margin trigger (see the module doc). Pure in-memory on the flush path: no I/O.
 pub trait MarginWatch: Send + Sync {
     /// After a LivePrice flush: the flushed symbols whose accounts the web must evaluate now.
     fn symbols_to_evaluate(&self, flushed: &[Tick], cache: &TickCache) -> Vec<String>;
+    /// The accounts the web must evaluate now, each under its flushed symbol (targeted calls). `now` = the trigger
+    /// pass's moment (tests replay it). The default names no account: every symbol becomes a whole-symbol evaluation,
+    /// all of them urgent, which is exactly the per-symbol behaviour.
+    fn targets_to_evaluate(&self, flushed: &[Tick], cache: &TickCache, _now: Instant) -> Vec<MarginTarget> {
+        self.symbols_to_evaluate(flushed, cache).into_iter().map(|symbol| MarginTarget { account_id: String::new(), symbol, urgent: true }).collect()
+    }
     /// A margin-triggered evaluation came back (closes may have happened): refresh the watched book.
     fn evaluated(&self);
     /// The symbols of every open position in the watched book; None until the book has loaded once.
@@ -114,8 +131,11 @@ struct Level {
 /// crosses the entry fires the same `?symbols=` call; the web (lib/pending-trigger.ts) re-checks the trigger on its
 /// own price and fills. A BUY trades at the ask -- its ACCOUNT's ask (2026-09-26: the fill already used it, the
 /// trigger now does too) -- a SELL at the bid.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 struct PendingLevel {
+    /// the resting order and its account (targeted calls name the order: the web triggers only it)
+    order_id: String,
+    account_id: String,
     is_buy: bool,
     is_limit: bool,
     entry: Decimal,
@@ -134,13 +154,155 @@ impl PendingLevel {
     }
 }
 
+/// How the hook calls the web (2026-10-05, owner: the per-tick hook was 97 % of the web's traffic, 17.2 calls/s with
+/// markets open).
+///
+/// Targeted (the default): a call names the accounts (`accounts=`) and resting orders (`orders=`) that need the web, not
+/// just the symbol, so the web evaluates those and nothing else:
+/// - an SL / TP this tick crossed, a resting order whose entry it crossed (the touch's position account / the order);
+/// - from the margin trigger: an account at or below stop-out or crossing margin call (urgent), or inside the
+///   near-level band above margin call (MarginWatch, VYX_RISK_BAND_PCT).
+/// Per symbol, the first call goes out at once and later ones within `coalesce` are held and merged into ONE trailing call
+/// at the window's end, so the final state is always sent and never dropped (the old one-per-second limit dropped them).
+/// Urgent margin targets never wait: they go out on the trigger pass that found them (the 250 ms trigger), together with
+/// whatever that symbol had queued. A touch that is STILL touched after it was sent (the web kept the order, refused the
+/// close) is re-sent after 1, 2, 4 ... `max_backoff` s, not every second, and forgotten once its symbol ticks without
+/// touching it. The 5 s backstop full pass underneath is unchanged.
+///
+/// Legacy (`VYX_RISK_HOOK_TARGETED=0`): the exact pre-2026-10-05 behaviour (whole symbols, one per second, extras
+/// dropped): the switch back without a redeploy.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HookPolicy {
+    pub targeted: bool,
+    pub coalesce: Duration,
+    pub max_backoff: Duration,
+}
+
+impl Default for HookPolicy {
+    fn default() -> Self {
+        HookPolicy { targeted: true, coalesce: Duration::from_millis(1000), max_backoff: Duration::from_secs(30) }
+    }
+}
+
+impl HookPolicy {
+    /// VYX_RISK_HOOK_TARGETED (1 = default, 0 = legacy) and VYX_RISK_HOOK_COALESCE_MS (default 1000), each reported
+    /// loudly when set but unusable (the default is used then).
+    pub fn from_env() -> HookPolicy {
+        let get = |k: &str| std::env::var_os(k).map(|v| v.to_string_lossy().into_owned());
+        let (policy, problems) = Self::parse(get("VYX_RISK_HOOK_TARGETED"), get("VYX_RISK_HOOK_COALESCE_MS"));
+        for p in problems {
+            tracing::error!("{p}");
+        }
+        policy
+    }
+
+    pub fn parse(targeted: Option<String>, coalesce_ms: Option<String>) -> (HookPolicy, Vec<String>) {
+        let mut policy = HookPolicy::default();
+        let mut problems = Vec::new();
+        if let Some(raw) = targeted {
+            match raw.trim() {
+                "1" | "true" => policy.targeted = true,
+                "0" | "false" => policy.targeted = false,
+                _ => problems.push(format!("VYX_RISK_HOOK_TARGETED={raw:?} is not 0 or 1; USING 1 (targeted). Write it as: set VYX_RISK_HOOK_TARGETED=0")),
+            }
+        }
+        if let Some(raw) = coalesce_ms {
+            match raw.trim().parse::<u64>() {
+                Ok(ms) if ms > 0 => policy.coalesce = Duration::from_millis(ms),
+                _ => problems.push(format!("VYX_RISK_HOOK_COALESCE_MS={raw:?} is not a positive whole number of milliseconds; USING 1000. Write it as: set VYX_RISK_HOOK_COALESCE_MS=1000")),
+            }
+        }
+        (policy, problems)
+    }
+
+    fn backoff(&self, fires: u32) -> Duration {
+        if fires == 0 {
+            return Duration::ZERO;
+        }
+        Duration::from_secs(1u64 << (fires - 1).min(10)).min(self.max_backoff)
+    }
+}
+
+/// What one web call carries for its symbols (targeted mode).
+#[derive(Default, Debug, Clone)]
+struct Targets {
+    /// an account could not be named (or too many): the web evaluates every holder of these symbols
+    whole: bool,
+    accounts: std::collections::BTreeSet<String>,
+    orders: std::collections::BTreeSet<String>,
+    /// the SL / TP touches in this call (the shadow snapshot goes out when the call does)
+    touches: Vec<SlTpTouch>,
+    /// a margin target is in it: refresh the watched book once the web answered
+    margin: bool,
+}
+
+impl Targets {
+    fn is_empty(&self) -> bool {
+        !self.whole && self.accounts.is_empty() && self.orders.is_empty()
+    }
+    fn merge(&mut self, other: Targets) {
+        self.whole |= other.whole;
+        self.accounts.extend(other.accounts);
+        self.orders.extend(other.orders);
+        for t in other.touches {
+            if !self.touches.iter().any(|x| x.position_id == t.position_id) {
+                self.touches.push(t);
+            }
+        }
+        self.margin |= other.margin;
+    }
+}
+
+/// The per-symbol coalesce state (targeted mode).
+#[derive(Default, Debug)]
+struct SymbolQueue {
+    last_sent: Option<tokio::time::Instant>,
+    queued: Targets,
+    trailing: bool,
+}
+
+/// A touch that was sent and may still be touched: its re-send backoff.
+#[derive(Debug)]
+struct Retry {
+    symbol: String,
+    fires: u32,
+    last: tokio::time::Instant,
+}
+
+/// An SL / TP level as replays hand it to RiskHook::replace_book (reload() reads the same from the database).
+#[derive(Clone, Debug)]
+pub struct LevelSpec {
+    pub symbol: String,
+    pub position_id: String,
+    pub account_id: String,
+    pub is_buy: bool,
+    pub sl: Option<Decimal>,
+    pub tp: Option<Decimal>,
+    pub ask_rule: Option<AskRule>,
+}
+
+/// A resting LIMIT / STOP order as replays hand it to RiskHook::replace_book.
+#[derive(Clone, Debug)]
+pub struct PendingSpec {
+    pub symbol: String,
+    pub order_id: String,
+    pub account_id: String,
+    pub is_buy: bool,
+    pub is_limit: bool,
+    pub entry: Decimal,
+    pub ask_rule: Option<AskRule>,
+}
+
+/// The most accounts / orders one call names; beyond it the call evaluates the whole symbol (always correct).
+pub const MAX_TARGETS_PER_CALL: usize = 200;
+
 pub struct RiskHook {
     url: String,
     secret: String,
     client: reqwest::Client,
     levels: Mutex<HashMap<String, Vec<Level>>>,
     pending: Mutex<HashMap<String, Vec<PendingLevel>>>,
-    last_fired: Mutex<HashMap<String, Instant>>,
+    last_fired: Mutex<HashMap<String, tokio::time::Instant>>,
     margin_watch: std::sync::OnceLock<Arc<dyn MarginWatch>>,
     /// The levels / pending entries have been read at least once (the idle gate never skips the first load).
     loaded: AtomicBool,
@@ -152,6 +314,13 @@ pub struct RiskHook {
     pricing: std::sync::OnceLock<Arc<crate::pricing::PricingCache>>,
     /// how many reloads have run (tests, diagnostics: a lost event must force one, an in-order stream must not)
     pub reload_count: std::sync::atomic::AtomicU64,
+    /// targeted / legacy, coalesce window, re-send backoff cap (HookPolicy)
+    policy: HookPolicy,
+    /// targeted mode: per-symbol coalesce state, and the re-send backoff of touches already sent ("p:" position, "o:" order)
+    queues: Mutex<HashMap<String, SymbolQueue>>,
+    retries: Mutex<HashMap<String, Retry>>,
+    /// replays / tests: every call's path + query goes here INSTEAD of over HTTP (the route then counts as answered)
+    recorder: std::sync::OnceLock<tokio::sync::mpsc::UnboundedSender<String>>,
 }
 
 impl RiskHook {
@@ -159,15 +328,30 @@ impl RiskHook {
     pub fn from_env() -> Option<Arc<RiskHook>> {
         let url = std::env::var("VYX_RISK_HOOK_URL").ok().filter(|s| !s.trim().is_empty())?;
         let secret = std::env::var("VYX_RISK_HOOK_SECRET").ok().filter(|s| !s.trim().is_empty())?;
-        let hook = Self::new(url, secret, Duration::from_secs(12))?;
-        tracing::info!(url = %hook.url, "risk hook enabled: SL/TP evaluation fires on the tick that touches a level");
+        let policy = HookPolicy::from_env();
+        let hook = Self::with_policy(url, secret, Duration::from_secs(12), policy)?;
+        tracing::info!(
+            url = %hook.url,
+            targeted = policy.targeted,
+            coalesce_ms = policy.coalesce.as_millis() as u64,
+            "risk hook enabled: SL/TP evaluation fires on the tick that touches a level"
+        );
         Some(hook)
     }
 
     /// A hook calling `url` with bearer `secret` (from_env; tests). None only if the HTTP client cannot be built.
     pub fn new(url: String, secret: String, timeout: Duration) -> Option<Arc<RiskHook>> {
+        Self::with_policy(url, secret, timeout, HookPolicy::default())
+    }
+
+    /// As new, with an explicit HookPolicy (from_env; replays compare legacy and targeted).
+    pub fn with_policy(url: String, secret: String, timeout: Duration, policy: HookPolicy) -> Option<Arc<RiskHook>> {
         let client = reqwest::Client::builder().timeout(timeout).build().ok()?;
         Some(Arc::new(RiskHook {
+            policy,
+            queues: Mutex::new(HashMap::new()),
+            retries: Mutex::new(HashMap::new()),
+            recorder: std::sync::OnceLock::new(),
             url,
             secret,
             client,
@@ -181,6 +365,11 @@ impl RiskHook {
             pricing: std::sync::OnceLock::new(),
             reload_count: std::sync::atomic::AtomicU64::new(0),
         }))
+    }
+
+    /// The calling policy (targeted / legacy, coalesce window).
+    pub fn policy(&self) -> HookPolicy {
+        self.policy
     }
 
     /// Stage 5: hand every SL / TP touch to the shadow as a snapshot (once; a second call is ignored). Never waited on.
@@ -240,7 +429,7 @@ impl RiskHook {
         // resting LIMIT / STOP orders (the web's own "Order" table: PENDING, not the engine's orders table), with the
         // order's account ask rule for a BUY entry
         let pending_rows = sqlx::query(
-            r#"SELECT s.name, s.id AS symbol_id, s.digits, o."accountId" AS account_id, o.side::text AS side, o.type::text AS kind,
+            r#"SELECT s.name, s.id AS symbol_id, s.digits, o.id AS order_id, o."accountId" AS account_id, o.side::text AS side, o.type::text AS kind,
                       o."requestedPrice" AS entry, a."brokerId" AS a_broker, a."groupId" AS a_group
                FROM "Order" o JOIN "Symbol" s ON s.id = o."symbolId" JOIN "Account" a ON a.id = o."accountId"
                WHERE o.status = 'PENDING' AND o.type IN ('LIMIT', 'STOP') AND o."requestedPrice" IS NOT NULL"#,
@@ -280,7 +469,14 @@ impl RiskHook {
             let side: String = r.try_get("side")?;
             let kind: String = r.try_get("kind")?;
             let ask_rule = rules.next().flatten();
-            pending.entry(r.try_get("name")?).or_default().push(PendingLevel { is_buy: side == "BUY", is_limit: kind == "LIMIT", entry: r.try_get("entry")?, ask_rule });
+            pending.entry(r.try_get("name")?).or_default().push(PendingLevel {
+                order_id: r.try_get("order_id")?,
+                account_id: r.try_get("account_id")?,
+                is_buy: side == "BUY",
+                is_limit: kind == "LIMIT",
+                entry: r.try_get("entry")?,
+                ask_rule,
+            });
         }
         Ok((levels, pending))
     }
@@ -357,9 +553,50 @@ impl RiskHook {
         (out, touches)
     }
 
+    /// Pending-order touches of these ticks: (symbol, order id, account id) of every resting order whose entry a tick
+    /// crosses (targeted mode names the order).
+    fn touched_orders(&self, ticks: &[Tick]) -> Vec<(String, String, String)> {
+        let pending = self.pending.lock().unwrap();
+        let mut out: Vec<(String, String, String)> = Vec::new();
+        for t in ticks {
+            let Some(ps) = pending.get(&t.symbol) else { continue };
+            for p in ps {
+                if p.triggered(t.bid, t.ask) && !out.iter().any(|(_, o, _)| *o == p.order_id) {
+                    out.push((t.symbol.clone(), p.order_id.clone(), p.account_id.clone()));
+                }
+            }
+        }
+        out
+    }
+
+    /// Replays / tests: replace the watched SL / TP levels and resting orders (what reload() reads from the database).
+    pub fn replace_book(&self, levels: Vec<LevelSpec>, orders: Vec<PendingSpec>) {
+        let mut l: HashMap<String, Vec<Level>> = HashMap::new();
+        for s in levels {
+            l.entry(s.symbol).or_default().push(Level { position_id: s.position_id, account_id: s.account_id, is_buy: s.is_buy, sl: s.sl, tp: s.tp, ask_rule: s.ask_rule });
+        }
+        let mut p: HashMap<String, Vec<PendingLevel>> = HashMap::new();
+        for s in orders {
+            p.entry(s.symbol).or_default().push(PendingLevel { order_id: s.order_id, account_id: s.account_id, is_buy: s.is_buy, is_limit: s.is_limit, entry: s.entry, ask_rule: s.ask_rule });
+        }
+        *self.levels.lock().unwrap() = l;
+        *self.pending.lock().unwrap() = p;
+        self.loaded.store(true, Ordering::Relaxed);
+    }
+
+    /// Replays / tests: record every call's path + query on `tx` instead of calling the route.
+    pub fn set_recorder(&self, tx: tokio::sync::mpsc::UnboundedSender<String>) {
+        let _ = self.recorder.set(tx);
+    }
+
     /// After a LivePrice flush: fire the evaluation for every symbol whose ticks touched an SL / TP, or put
     /// an account holding it at or below stop-out / across margin call (max once a second each).
     pub fn after_flush(self: &Arc<Self>, ticks: &[Tick], cache: &TickCache) {
+        self.after_flush_at(ticks, cache, tokio::time::Instant::now());
+    }
+
+    /// after_flush at an explicit moment (replays run on tokio's paused clock).
+    pub fn after_flush_at(self: &Arc<Self>, ticks: &[Tick], cache: &TickCache, at: tokio::time::Instant) {
         // A resend of a quote that has not moved for FRESH_SECS (a closed market's heartbeat) carries nothing new: the web
         // would refuse it as stale (its tickAt rule) or closed (its session rule), so it is not evaluated again and again.
         // (2026-10-05: a frozen Friday quote sitting beyond a level re-fired the web and the shadow on every 5 s heartbeat
@@ -370,8 +607,206 @@ impl RiskHook {
         if ticks.is_empty() {
             return;
         }
+        if self.policy.targeted {
+            self.after_flush_targeted(ticks, cache, now, at);
+        } else {
+            self.after_flush_legacy(ticks, cache, now, at);
+        }
+    }
+
+    /// Targeted mode (HookPolicy): name the accounts / orders, coalesce per symbol, back off what stays touched.
+    fn after_flush_targeted(self: &Arc<Self>, ticks: &[Tick], cache: &TickCache, now: chrono::DateTime<chrono::Utc>, at: tokio::time::Instant) {
+        let (_, touches) = self.touched_with_positions(ticks, now);
+        let orders = self.touched_orders(ticks);
+        let ticked: HashSet<&str> = ticks.iter().map(|t| t.symbol.as_str()).collect();
+
+        // what is touched now; a retry whose symbol ticked without touching it is forgotten (the next touch is new)
+        let mut by_symbol: HashMap<String, Targets> = HashMap::new();
+        {
+            let mut retries = self.retries.lock().unwrap();
+            let touched_keys: HashSet<String> =
+                touches.iter().map(|t| format!("p:{}", t.position_id)).chain(orders.iter().map(|(_, o, _)| format!("o:{o}"))).collect();
+            retries.retain(|k, r| touched_keys.contains(k) || !ticked.contains(r.symbol.as_str()));
+            let mut due = |key: String, symbol: &str| -> bool {
+                match retries.get_mut(&key) {
+                    Some(r) if at.duration_since(r.last) < self.policy.backoff(r.fires) => false,
+                    Some(r) => {
+                        r.fires += 1;
+                        r.last = at;
+                        true
+                    }
+                    None => {
+                        retries.insert(key, Retry { symbol: symbol.to_string(), fires: 1, last: at });
+                        true
+                    }
+                }
+            };
+            for t in touches {
+                if due(format!("p:{}", t.position_id), &t.symbol) {
+                    let e = by_symbol.entry(t.symbol.clone()).or_default();
+                    e.accounts.insert(t.account_id.clone());
+                    e.touches.push(t);
+                }
+            }
+            for (symbol, order, account) in orders {
+                if due(format!("o:{order}"), &symbol) {
+                    let _ = account;
+                    by_symbol.entry(symbol).or_default().orders.insert(order);
+                }
+            }
+        }
+        let mut urgent: HashSet<String> = HashSet::new();
+        if let Some(w) = self.margin_watch.get() {
+            for m in w.targets_to_evaluate(ticks, cache, at.into_std()) {
+                let e = by_symbol.entry(m.symbol.clone()).or_default();
+                e.margin = true;
+                if m.account_id.is_empty() {
+                    e.whole = true;
+                } else {
+                    e.accounts.insert(m.account_id);
+                }
+                if m.urgent {
+                    urgent.insert(m.symbol);
+                }
+            }
+        }
+        if by_symbol.is_empty() {
+            return;
+        }
+
+        // per symbol: urgent or outside the window -> now (with whatever was queued); else queue for the trailing call
+        let mut send_now: Vec<(String, Targets)> = Vec::new();
+        {
+            let mut queues = self.queues.lock().unwrap();
+            for (symbol, targets) in by_symbol {
+                let q = queues.entry(symbol.clone()).or_default();
+                let open = q.last_sent.is_none_or(|l| at.duration_since(l) >= self.policy.coalesce);
+                if urgent.contains(&symbol) || open {
+                    let mut all = std::mem::take(&mut q.queued);
+                    all.merge(targets);
+                    q.last_sent = Some(at);
+                    send_now.push((symbol, all));
+                } else {
+                    q.queued.merge(targets);
+                    if !q.trailing {
+                        q.trailing = true;
+                        let due = q.last_sent.map_or(at, |l| l + self.policy.coalesce);
+                        let hook = Arc::clone(self);
+                        tokio::spawn(async move {
+                            tokio::time::sleep_until(due).await;
+                            let batch = {
+                                let mut queues = hook.queues.lock().unwrap();
+                                let q = queues.entry(symbol.clone()).or_default();
+                                q.trailing = false;
+                                let batch = std::mem::take(&mut q.queued);
+                                if !batch.is_empty() {
+                                    q.last_sent = Some(due);
+                                }
+                                batch
+                            };
+                            if !batch.is_empty() {
+                                hook.send_targeted(vec![(symbol, batch)]);
+                            }
+                        });
+                    }
+                }
+            }
+        }
+        if !send_now.is_empty() {
+            self.send_targeted(send_now);
+        }
+    }
+
+    /// One targeted web call for these symbols (two when some must be evaluated whole): the shadow snapshot of their
+    /// SL / TP touches first (a send, never a wait), then the call.
+    fn send_targeted(self: &Arc<Self>, batch: Vec<(String, Targets)>) {
+        let mut whole = Targets::default();
+        let mut whole_syms: Vec<String> = Vec::new();
+        let mut named = Targets::default();
+        let mut named_syms: Vec<String> = Vec::new();
+        for (symbol, t) in batch {
+            let overflow = t.accounts.len() > MAX_TARGETS_PER_CALL || t.orders.len() > MAX_TARGETS_PER_CALL;
+            if t.whole || overflow {
+                whole.merge(t);
+                whole_syms.push(symbol);
+            } else {
+                named.merge(t);
+                named_syms.push(symbol);
+            }
+        }
+        if named.accounts.len() > MAX_TARGETS_PER_CALL || named.orders.len() > MAX_TARGETS_PER_CALL {
+            whole.merge(named);
+            whole_syms.append(&mut named_syms);
+            named = Targets::default();
+        }
+        let mut calls: Vec<(String, Targets)> = Vec::new();
+        if !whole_syms.is_empty() {
+            calls.push((format!("symbols={}", whole_syms.join(",")), whole));
+        }
+        if !named_syms.is_empty() {
+            let mut q = format!("symbols={}&accounts={}", named_syms.join(","), named.accounts.iter().cloned().collect::<Vec<_>>().join(","));
+            if !named.orders.is_empty() {
+                q.push_str(&format!("&orders={}", named.orders.iter().cloned().collect::<Vec<_>>().join(",")));
+            }
+            calls.push((q, named));
+        }
+        for (query, t) in calls {
+            if let Some(tx) = self.shadow_snapshot.get() {
+                if !t.touches.is_empty() {
+                    let _ = tx.send(t.touches.clone());
+                }
+            }
+            self.call(query, t.margin);
+        }
+    }
+
+    /// GET {url}?{query} (bearer secret), spawned; then, for a margin-triggered call, ask the watch to refresh its book.
+    fn call(self: &Arc<Self>, query: String, by_margin: bool) {
+        if let Some(rec) = self.recorder.get() {
+            let path = self.url.splitn(4, '/').nth(3).map_or(String::new(), |p| format!("/{p}"));
+            let _ = rec.send(format!("{path}?{query}"));
+            if by_margin {
+                if let Some(w) = self.margin_watch.get() {
+                    w.evaluated();
+                }
+            }
+            return;
+        }
+        let hook = Arc::clone(self);
+        tokio::spawn(async move {
+            let url = format!("{}?{}", hook.url, query);
+            match hook.client.get(&url).bearer_auth(&hook.secret).send().await {
+                Ok(resp) if resp.status().is_success() => tracing::info!(call = %query, margin = by_margin, "risk hook fired"),
+                Ok(resp) => tracing::warn!(status = %resp.status(), "risk hook rejected"),
+                Err(err) => tracing::warn!(error = %err, "risk hook failed"),
+            }
+            if by_margin {
+                if let Some(w) = hook.margin_watch.get() {
+                    w.evaluated();
+                }
+            }
+        });
+    }
+
+    /// Legacy mode: the pre-2026-10-05 behaviour, unchanged (whole symbols, at most one call per symbol per second, a
+    /// touch inside that second dropped).
+    fn after_flush_legacy(self: &Arc<Self>, ticks: &[Tick], cache: &TickCache, now: chrono::DateTime<chrono::Utc>, at: tokio::time::Instant) {
         let (mut symbols, touches) = self.touched_with_positions(ticks, now);
-        let margin: Vec<String> = self.margin_watch.get().map(|w| w.symbols_to_evaluate(ticks, cache)).unwrap_or_default();
+        // the margin trigger's symbols (targets_to_evaluate at this pass's moment; legacy runs with no near-level band, so
+        // every target is a stop-out / margin-call edge, exactly what symbols_to_evaluate returned)
+        let margin: Vec<String> = self
+            .margin_watch
+            .get()
+            .map(|w| {
+                let mut out: Vec<String> = Vec::new();
+                for m in w.targets_to_evaluate(ticks, cache, at.into_std()) {
+                    if !out.contains(&m.symbol) {
+                        out.push(m.symbol);
+                    }
+                }
+                out
+            })
+            .unwrap_or_default();
         let by_margin = !margin.is_empty();
         for s in margin {
             if !symbols.contains(&s) {
@@ -383,11 +818,10 @@ impl RiskHook {
         }
         {
             let mut last = self.last_fired.lock().unwrap();
-            let now = Instant::now();
             symbols.retain(|s| match last.get(s) {
-                Some(t) if now.duration_since(*t) < Duration::from_secs(1) => false,
+                Some(t) if at.duration_since(*t) < Duration::from_secs(1) => false,
                 _ => {
-                    last.insert(s.clone(), now);
+                    last.insert(s.clone(), at);
                     true
                 }
             });
@@ -403,20 +837,7 @@ impl RiskHook {
                 let _ = tx.send(handed);
             }
         }
-        let hook = Arc::clone(self);
-        tokio::spawn(async move {
-            let url = format!("{}?symbols={}", hook.url, symbols.join(","));
-            match hook.client.get(&url).bearer_auth(&hook.secret).send().await {
-                Ok(resp) if resp.status().is_success() => tracing::info!(symbols = %symbols.join(","), margin = by_margin, "risk hook fired"),
-                Ok(resp) => tracing::warn!(status = %resp.status(), "risk hook rejected"),
-                Err(err) => tracing::warn!(error = %err, "risk hook failed"),
-            }
-            if by_margin {
-                if let Some(w) = hook.margin_watch.get() {
-                    w.evaluated();
-                }
-            }
-        });
+        self.call(format!("symbols={}", symbols.join(",")), by_margin);
     }
 
     /// `VYX_RISK_HOOK_BACKSTOP_SECS` (default 60); None when set to 0 (backstop off).
@@ -529,16 +950,16 @@ mod tests {
 
     #[test]
     fn pending_entries_trigger_on_the_side_they_trade() {
-        let buy_limit = super::PendingLevel { is_buy: true, is_limit: true, entry: dec!(100), ask_rule: None };
+        let buy_limit = super::PendingLevel { order_id: "o".into(), account_id: "a".into(), is_buy: true, is_limit: true, entry: dec!(100), ask_rule: None };
         assert!(buy_limit.triggered(dec!(99.8), dec!(100.0)));
         assert!(!buy_limit.triggered(dec!(99.9), dec!(100.1)));
-        let buy_stop = super::PendingLevel { is_buy: true, is_limit: false, entry: dec!(100), ask_rule: None };
+        let buy_stop = super::PendingLevel { order_id: "o".into(), account_id: "a".into(), is_buy: true, is_limit: false, entry: dec!(100), ask_rule: None };
         assert!(buy_stop.triggered(dec!(99.9), dec!(100.1)));
         assert!(!buy_stop.triggered(dec!(99.7), dec!(99.9)));
-        let sell_limit = super::PendingLevel { is_buy: false, is_limit: true, entry: dec!(100), ask_rule: None };
+        let sell_limit = super::PendingLevel { order_id: "o".into(), account_id: "a".into(), is_buy: false, is_limit: true, entry: dec!(100), ask_rule: None };
         assert!(sell_limit.triggered(dec!(100.0), dec!(100.2)));
         assert!(!sell_limit.triggered(dec!(99.9), dec!(100.1)));
-        let sell_stop = super::PendingLevel { is_buy: false, is_limit: false, entry: dec!(100), ask_rule: None };
+        let sell_stop = super::PendingLevel { order_id: "o".into(), account_id: "a".into(), is_buy: false, is_limit: false, entry: dec!(100), ask_rule: None };
         assert!(sell_stop.triggered(dec!(99.9), dec!(100.1)));
         assert!(!sell_stop.triggered(dec!(100.1), dec!(100.3)));
     }
@@ -549,13 +970,13 @@ mod tests {
         // +1.5 pips on a 2-digit symbol = +0.15
         let rule = Some(AskRule::Markup { markup_pips: dec!(1.5), digits: 2 });
         // BUY STOP at 100.10: raw ask 100.00 has not reached it, the account ask 100.15 has
-        let buy_stop = super::PendingLevel { is_buy: true, is_limit: false, entry: dec!(100.10), ask_rule: rule };
+        let buy_stop = super::PendingLevel { order_id: "o".into(), account_id: "a".into(), is_buy: true, is_limit: false, entry: dec!(100.10), ask_rule: rule };
         assert!(buy_stop.triggered(dec!(99.90), dec!(100.00)));
         // BUY LIMIT at 100.00: raw ask 99.95 would fill it raw; the account ask 100.10 is above the entry
-        let buy_limit = super::PendingLevel { is_buy: true, is_limit: true, entry: dec!(100.00), ask_rule: rule };
+        let buy_limit = super::PendingLevel { order_id: "o".into(), account_id: "a".into(), is_buy: true, is_limit: true, entry: dec!(100.00), ask_rule: rule };
         assert!(!buy_limit.triggered(dec!(99.80), dec!(99.95)));
         // a SELL entry never reads the ask
-        let sell_stop = super::PendingLevel { is_buy: false, is_limit: false, entry: dec!(99.90), ask_rule: rule };
+        let sell_stop = super::PendingLevel { order_id: "o".into(), account_id: "a".into(), is_buy: false, is_limit: false, entry: dec!(99.90), ask_rule: rule };
         assert!(!sell_stop.triggered(dec!(99.95), dec!(100.00)));
     }
 
@@ -620,6 +1041,10 @@ mod tests {
             reload_now: Notify::new(),
             pricing: std::sync::OnceLock::new(),
             reload_count: std::sync::atomic::AtomicU64::new(0),
+            policy: HookPolicy { targeted: false, ..HookPolicy::default() },
+            queues: Mutex::new(HashMap::new()),
+            retries: Mutex::new(HashMap::new()),
+            recorder: std::sync::OnceLock::new(),
         })
     }
 
@@ -821,7 +1246,7 @@ mod tests {
         // a resting order's symbol counts as held
         let pend = hook("http://127.0.0.1:1/x".into());
         pend.set_margin_watch(Arc::new(BookWatch(Some(HashSet::new()))));
-        pend.pending.lock().unwrap().insert("BTCUSD".into(), vec![PendingLevel { is_buy: true, is_limit: true, entry: Decimal::ONE, ask_rule: None }]);
+        pend.pending.lock().unwrap().insert("BTCUSD".into(), vec![PendingLevel { order_id: "o".into(), account_id: "a".into(), is_buy: true, is_limit: true, entry: Decimal::ONE, ask_rule: None }]);
         assert_eq!(pend.idle_gate_header(&cache_ticked("BTCUSD", 0), now), "running");
     }
 
@@ -854,7 +1279,7 @@ mod tests {
         // a resting order on a ticking symbol reopens the gate even with no position open
         let pending = hook(url);
         pending.set_margin_watch(Arc::new(BookWatch(Some(HashSet::new()))));
-        pending.pending.lock().unwrap().insert("BTCUSD".into(), vec![PendingLevel { is_buy: true, is_limit: true, entry: Decimal::ONE, ask_rule: None }]);
+        pending.pending.lock().unwrap().insert("BTCUSD".into(), vec![PendingLevel { order_id: "o".into(), account_id: "a".into(), is_buy: true, is_limit: true, entry: Decimal::ONE, ask_rule: None }]);
         pending.spawn_backstop_loop(Duration::from_millis(50), cache_ticked("BTCUSD", 0));
         let (line, _) = tokio::time::timeout(Duration::from_secs(3), rx.recv()).await.expect("pass").unwrap();
         assert!(!line.contains("symbols"), "{line}");
@@ -928,7 +1353,7 @@ mod tests {
             ],
         );
         // a resting order on another symbol: touched as a symbol, never snapshotted
-        h.pending.lock().unwrap().insert("EURUSD".into(), vec![PendingLevel { is_buy: false, is_limit: true, entry: dec!(1.1), ask_rule: None }]);
+        h.pending.lock().unwrap().insert("EURUSD".into(), vec![PendingLevel { order_id: "o".into(), account_id: "a".into(), is_buy: false, is_limit: true, entry: dec!(1.1), ask_rule: None }]);
         let gold: Tick = serde_json::from_value(serde_json::json!({ "symbol": "XAUUSD", "bid": "4298.96", "ask": "4299.13", "tick_ms": 1_790_000_000_000i64 })).unwrap();
         let eur: Tick = serde_json::from_value(serde_json::json!({ "symbol": "EURUSD", "bid": "1.2", "ask": "1.2001" })).unwrap();
         let now = chrono::Utc::now();
@@ -963,7 +1388,7 @@ mod tests {
     async fn a_resting_order_trigger_is_not_snapshotted() {
         let (url, mut rx) = mock_route(200).await;
         let h = hook(url);
-        h.pending.lock().unwrap().insert("XAUUSD".into(), vec![PendingLevel { is_buy: false, is_limit: true, entry: dec!(4270), ask_rule: None }]);
+        h.pending.lock().unwrap().insert("XAUUSD".into(), vec![PendingLevel { order_id: "o".into(), account_id: "a".into(), is_buy: false, is_limit: true, entry: dec!(4270), ask_rule: None }]);
         let (tx, mut shadow) = tokio::sync::mpsc::unbounded_channel::<Vec<SlTpTouch>>();
         h.set_shadow_snapshot(tx);
         h.after_flush(&[tick("XAUUSD")], &cache_ticked("XAUUSD", 0)); // bid 4280 >= SELL LIMIT 4270
@@ -1009,5 +1434,179 @@ mod tests {
         std::env::set_var("VYX_RISK_HOOK_BACKSTOP_SECS", "junk");
         assert_eq!(RiskHook::backstop_interval_from_env(), Some(Duration::from_secs(60)));
         std::env::remove_var("VYX_RISK_HOOK_BACKSTOP_SECS");
+    }
+
+    // ---- targeted calls (2026-10-05) -------------------------------------------------------------------------------
+
+    fn targeted() -> (Arc<RiskHook>, tokio::sync::mpsc::UnboundedReceiver<String>) {
+        let h = RiskHook::with_policy("http://engine.test/api/internal/margin-monitor".into(), "s".into(), Duration::from_secs(1), HookPolicy::default()).unwrap();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        h.set_recorder(tx);
+        (h, rx)
+    }
+
+    fn quote(symbol: &str, bid: &str, ask: &str) -> Tick {
+        serde_json::from_value(serde_json::json!({ "symbol": symbol, "bid": bid, "ask": ask })).unwrap()
+    }
+
+    /// The tick, in a cache where it just moved (a live market).
+    fn flushed(t: &Tick) -> TickCache {
+        let c = TickCache::new();
+        c.set(t, chrono::Utc::now());
+        c
+    }
+
+    fn drain(rx: &mut tokio::sync::mpsc::UnboundedReceiver<String>) -> Vec<String> {
+        let mut out = Vec::new();
+        while let Ok(c) = rx.try_recv() {
+            out.push(c);
+        }
+        out
+    }
+
+    fn spec(symbol: &str, position: &str, account: &str, is_buy: bool, sl: Option<Decimal>) -> LevelSpec {
+        LevelSpec { symbol: symbol.into(), position_id: position.into(), account_id: account.into(), is_buy, sl, tp: None, ask_rule: None }
+    }
+
+    struct Targets(Vec<MarginTarget>);
+    impl MarginWatch for Targets {
+        fn symbols_to_evaluate(&self, _flushed: &[Tick], _cache: &TickCache) -> Vec<String> {
+            Vec::new()
+        }
+        fn targets_to_evaluate(&self, _flushed: &[Tick], _cache: &TickCache, _now: Instant) -> Vec<MarginTarget> {
+            self.0.clone()
+        }
+        fn evaluated(&self) {}
+    }
+
+    #[test]
+    fn the_hook_policy_env_defaults_to_targeted_1_s_and_reports_a_bad_value() {
+        assert_eq!(HookPolicy::parse(None, None), (HookPolicy::default(), vec![]));
+        assert!(HookPolicy::default().targeted);
+        assert_eq!(HookPolicy::parse(Some("0".into()), Some("500".into())).0, HookPolicy { targeted: false, coalesce: Duration::from_millis(500), ..HookPolicy::default() });
+        let (p, problems) = HookPolicy::parse(Some("off".into()), Some("1s".into()));
+        assert_eq!(p, HookPolicy::default());
+        assert_eq!(problems.len(), 2, "{problems:?}");
+        assert_eq!(HookPolicy::default().backoff(1), Duration::from_secs(1));
+        assert_eq!(HookPolicy::default().backoff(3), Duration::from_secs(4));
+        assert_eq!(HookPolicy::default().backoff(9), Duration::from_secs(30));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_sl_touch_names_its_account_and_goes_out_at_once_with_its_snapshot() {
+        let (h, mut rx) = targeted();
+        let (stx, mut shadow) = tokio::sync::mpsc::unbounded_channel::<Vec<SlTpTouch>>();
+        h.set_shadow_snapshot(stx);
+        h.replace_book(vec![spec("XAUUSD", "pos-1", "acc-1", true, Some(dec!(4280))), spec("XAUUSD", "pos-2", "acc-2", true, Some(dec!(4000)))], vec![]);
+        let t = quote("XAUUSD", "4279", "4279.3");
+        h.after_flush_at(&[t.clone()], &flushed(&t), tokio::time::Instant::now());
+        assert_eq!(drain(&mut rx), vec!["/api/internal/margin-monitor?symbols=XAUUSD&accounts=acc-1".to_string()]);
+        let snap = shadow.try_recv().expect("snapshot");
+        assert_eq!(snap.iter().map(|s| s.position_id.as_str()).collect::<Vec<_>>(), vec!["pos-1"]);
+    }
+
+    /// The old one-per-second limit DROPPED a second touch inside the second; now it is held and sent at the window's end.
+    #[tokio::test(start_paused = true)]
+    async fn a_second_touch_inside_the_window_is_sent_at_its_end_never_dropped() {
+        let (h, mut rx) = targeted();
+        h.replace_book(vec![spec("XAUUSD", "pos-1", "acc-1", true, Some(dec!(4280))), spec("XAUUSD", "pos-2", "acc-2", true, Some(dec!(4278)))], vec![]);
+        let t0 = tokio::time::Instant::now();
+        let a = quote("XAUUSD", "4279", "4279.3");
+        h.after_flush_at(&[a.clone()], &flushed(&a), t0);
+        tokio::time::advance(Duration::from_millis(300)).await;
+        let b = quote("XAUUSD", "4277", "4277.3");
+        h.after_flush_at(&[b.clone()], &flushed(&b), t0 + Duration::from_millis(300));
+        assert_eq!(drain(&mut rx), vec!["/api/internal/margin-monitor?symbols=XAUUSD&accounts=acc-1".to_string()], "the second waits");
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        assert_eq!(drain(&mut rx), vec!["/api/internal/margin-monitor?symbols=XAUUSD&accounts=acc-2".to_string()], "trailing call at the window's end");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_touch_that_stays_touched_is_re_sent_with_backoff_not_every_second_and_resets_once_released() {
+        let (h, mut rx) = targeted();
+        h.replace_book(vec![spec("EURUSD", "pos-1", "acc-1", true, Some(dec!(1.1)))], vec![]);
+        let t0 = tokio::time::Instant::now();
+        let below = quote("EURUSD", "1.0999", "1.1001");
+        let mut sent_at = Vec::new();
+        // 20 s of 4 ticks a second, every one of them still beyond the SL (the web refuses the close)
+        for step in 0..80u64 {
+            let at = t0 + Duration::from_millis(step * 250);
+            tokio::time::advance(if step == 0 { Duration::ZERO } else { Duration::from_millis(250) }).await;
+            h.after_flush_at(&[below.clone()], &flushed(&below), at);
+            tokio::task::yield_now().await;
+            if !drain(&mut rx).is_empty() {
+                sent_at.push(step * 250);
+            }
+        }
+        // at once, then 1, 2, 4, 8 s after each previous send
+        assert_eq!(sent_at, vec![0, 1000, 3000, 7000, 15000], "{sent_at:?}");
+        // released (a tick above the SL), then touched again: a new touch, sent at once
+        let above = quote("EURUSD", "1.1005", "1.1007");
+        let at = t0 + Duration::from_millis(20_000);
+        h.after_flush_at(&[above.clone()], &flushed(&above), at);
+        tokio::time::advance(Duration::from_millis(1250)).await;
+        h.after_flush_at(&[below.clone()], &flushed(&below), at + Duration::from_millis(1250));
+        tokio::task::yield_now().await;
+        assert_eq!(drain(&mut rx).len(), 1, "a new touch after a release goes out at once");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_crossed_resting_order_is_named_by_id_with_no_account_evaluation() {
+        let (h, mut rx) = targeted();
+        let order = PendingSpec { symbol: "EURUSD".into(), order_id: "ord-1".into(), account_id: "acc-9".into(), is_buy: false, is_limit: true, entry: dec!(1.1), ask_rule: None };
+        h.replace_book(vec![], vec![order]);
+        let t = quote("EURUSD", "1.1001", "1.1003");
+        h.after_flush_at(&[t.clone()], &flushed(&t), tokio::time::Instant::now());
+        assert_eq!(drain(&mut rx), vec!["/api/internal/margin-monitor?symbols=EURUSD&accounts=&orders=ord-1".to_string()]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_urgent_margin_target_never_waits_for_the_window_and_takes_the_queue_along() {
+        let (h, mut rx) = targeted();
+        h.replace_book(vec![spec("XAUUSD", "pos-1", "acc-1", true, Some(dec!(4280))), spec("XAUUSD", "pos-2", "acc-2", true, Some(dec!(4278)))], vec![]);
+        let t0 = tokio::time::Instant::now();
+        let a = quote("XAUUSD", "4279", "4279.3");
+        h.after_flush_at(&[a.clone()], &flushed(&a), t0);
+        assert_eq!(drain(&mut rx).len(), 1);
+        // 250 ms later: a second SL touch (queued) and an account at its stop-out (urgent)
+        h.set_margin_watch(Arc::new(Targets(vec![MarginTarget { account_id: "acc-so".into(), symbol: "XAUUSD".into(), urgent: true }])));
+        tokio::time::advance(Duration::from_millis(250)).await;
+        let b = quote("XAUUSD", "4277", "4277.3");
+        h.after_flush_at(&[b.clone()], &flushed(&b), t0 + Duration::from_millis(250));
+        assert_eq!(drain(&mut rx), vec!["/api/internal/margin-monitor?symbols=XAUUSD&accounts=acc-2,acc-so".to_string()], "on the trigger pass, not 750 ms later");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_margin_trigger_that_names_no_account_evaluates_the_whole_symbol() {
+        let (h, mut rx) = targeted();
+        h.set_margin_watch(Arc::new(StubWatch { symbols: vec!["XAUUSD".into()], evaluated: Default::default() }));
+        let t = quote("XAUUSD", "4279", "4279.3");
+        h.after_flush_at(&[t.clone()], &flushed(&t), tokio::time::Instant::now());
+        assert_eq!(drain(&mut rx), vec!["/api/internal/margin-monitor?symbols=XAUUSD".to_string()]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn more_accounts_than_one_call_names_falls_back_to_the_whole_symbol() {
+        let (h, mut rx) = targeted();
+        let many: Vec<MarginTarget> = (0..=MAX_TARGETS_PER_CALL).map(|i| MarginTarget { account_id: format!("acc-{i}"), symbol: "XAUUSD".into(), urgent: true }).collect();
+        h.set_margin_watch(Arc::new(Targets(many)));
+        let t = quote("XAUUSD", "4279", "4279.3");
+        h.after_flush_at(&[t.clone()], &flushed(&t), tokio::time::Instant::now());
+        assert_eq!(drain(&mut rx), vec!["/api/internal/margin-monitor?symbols=XAUUSD".to_string()]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn legacy_mode_keeps_the_old_whole_symbol_once_a_second_behaviour() {
+        let h = RiskHook::with_policy("http://engine.test/api/internal/margin-monitor".into(), "s".into(), Duration::from_secs(1), HookPolicy { targeted: false, ..HookPolicy::default() }).unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        h.set_recorder(tx);
+        h.replace_book(vec![spec("XAUUSD", "pos-1", "acc-1", true, Some(dec!(4280))), spec("XAUUSD", "pos-2", "acc-2", true, Some(dec!(4278)))], vec![]);
+        let t0 = tokio::time::Instant::now();
+        let a = quote("XAUUSD", "4279", "4279.3");
+        h.after_flush_at(&[a.clone()], &flushed(&a), t0);
+        let b = quote("XAUUSD", "4277", "4277.3");
+        h.after_flush_at(&[b.clone()], &flushed(&b), t0 + Duration::from_millis(300));
+        tokio::time::sleep(Duration::from_millis(900)).await;
+        assert_eq!(drain(&mut rx), vec!["/api/internal/margin-monitor?symbols=XAUUSD".to_string()], "one call, the second touch dropped (the old rule)");
     }
 }

@@ -1715,6 +1715,16 @@ async fn main() {
         } else {
             let watch = order_management::margin_watch::MarginWatch::new();
             watch.set_pricing(pricing.clone());
+            // targeted calls (2026-10-05): name accounts inside the near-level band too (VYX_RISK_BAND_PCT, default 10;
+            // 0 = off). Legacy mode (VYX_RISK_HOOK_TARGETED=0) calls whole symbols, so no band there.
+            if hook.policy().targeted {
+                let (band, problem) = order_management::margin_watch::band_from(std::env::var_os("VYX_RISK_BAND_PCT").map(|v| v.to_string_lossy().into_owned()));
+                if let Some(problem) = problem {
+                    tracing::error!("{problem}");
+                }
+                watch.set_band(band);
+                tracing::info!(band_pct = %band.map_or("off".to_string(), |b| b.to_string()), "margin trigger: near-level band");
+            }
             watch.spawn_reload_loop_with(pool.clone(), tick_cache.clone(), safety_interval.clone());
             let _ = margin_watch_slot.set(watch.clone());
             if let Some(tx) = &shadow_trigger {
