@@ -1407,6 +1407,20 @@ flip back to WEB and watch the web take the next stop-out. The Vercel cron stays
 
 #### 6.1 Cutover gates (must hold before a broker goes RUST)
 
+- **CUTOVER GATE (owner, 2026-10-05): swap-free.** The engine's swap charge (`engine/order-management/src/swap.rs`
+  with `db.rs`) uses the BrokerSymbol swap rates and never reads `Account.swapFree` / `Group.swapFree`, so in RUST mode a
+  swap-free account would be charged. Today the web's nightly `lib/swap-rollover.ts` resolves swap-free (account >
+  group, only when `Broker.pricingEngineEnabled`; after the next backoffice batch: the group alone, owner S1). Either the
+  engine resolves swap-free exactly like the web, or swap rollover stays on the web for RUST brokers. Gate test: a
+  swap-free group's position pays 0 at rollover in RUST mode; a non-swap-free one pays the symbol rate. NOT BUILT.
+- **CUTOVER GATE (owner, 2026-10-05): group volume limits.** The engine checks only the symbol's volume range
+  (`engine/order-management/src/lib.rs` -> `engine/risk/src/lib.rs`); it does not check `Group.maxLotSize`, nor the new
+  group minimum volume (next backoffice batch, owner S3: effective min = max(symbol min, group min), on the symbol's
+  lot-step grid). The web checks the max at 6 places (client order, requote accept, pending trigger, dealer accept, desk
+  flush, staff open: `lib/risk.ts checkGroupMaxLot`). Either the engine enforces both at every open path, or those paths
+  stay on the web for RUST brokers. Gate test: an order above the group max / below the group min is refused by the
+  engine with the same code as the web. NOT BUILT.
+
 - **Margin-trigger fires evaluated by the engine, unpinned and live (owner, 2026-09-29).** Today a margin-trigger fire
   (market_data::risk_hook::after_flush -> MarginWatch::decide) only calls the web's `margin-monitor?symbols=` route and
   hands the shadow a pinned snapshot; in RUST mode the web skips the broker, so a fire would do nothing and the
