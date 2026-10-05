@@ -818,8 +818,8 @@ never clipped and never overlap. When the panel is too narrow for all columns, t
 | GRP | REVERSAL | Reverse trading | — | Trades reversed into a master account. |
 | GRP | COVERAGE · SYS | Broker hedge account | — | Group holding the broker's own hedge account. |
 | GRP | PRICING ("Source" / "Custom (n symbols)") | Pricing ("Source" / "Custom · n symbols") | — | Whether the group has its own spreads. Owner 2026-10-05 (broker tester): "Source" when the group uses the symbol settings, "Custom · 1 symbol" / "Custom · 5 symbols" otherwise. |
-| GRP | SYMBOLS (column, new) | Symbols ("All 30" / "5 of 30") | — | How many of the broker's enabled symbols the group trades; click opens Allowed symbols (owner 2026-10-05). |
-| GRP | Allowed symbols (side panel, new) | Allowed symbols | — | Checklist in the group's side panel: one row per enabled symbol, search, Select all / Select none, Restrict to the chosen symbols; Save applies it live to terminals and is audited (owner 2026-10-05). |
+| GRP | SYMBOLS (column, new) | Symbols ("All 30" / "5 of 30") | — | How many of the broker's enabled symbols the group trades; click opens the group's pricing panel, where each row has Show (owner 2026-10-05). |
+| GRP | Allowed symbols (side panel) | removed | — | Superseded by the Show column in Group pricing (owner 2026-10-05). |
 | GRP | DEALER | Dealing | — | How this group's orders are filled. |
 | GRP | AUTO-FILL | Automatic dealing | — | Orders fill automatically. |
 | GRP | MANUAL | Manual dealing | — | Dealer reviews every order. |
@@ -834,17 +834,20 @@ never clipped and never overlap. When the panel is too narrow for all columns, t
 | GRP | Delete group… | keep | — | Delete (only when empty). |
 | GRP | Halt trading… / Resume trading… | Halt group trading… / Resume group trading… | — | Stop or restart new trades for this group. |
 | GRP | Add new group… | Add group… | — | Create a new group. |
-| GRP | 2) PRC  PRICING OVERRIDES | Group pricing | — | Spreads, commission and swaps for this group. |
+| GRP | 2) PRC  PRICING OVERRIDES | Group pricing | — | Which symbols this group trades, and its spreads, commission and swaps. |
+| GRP | Group pricing column order (new) | Show · Symbol · Source spread (points) · Your markup (points) · Commission (per lot) · Swap long (per lot) · Swap short (per lot) · Set by · Client spread (points) | — | Client spread is the last column and visually emphasised: the result the group's traders get (owner 2026-10-05). |
+| GRP | Show (column, new) | Show | — | Per-row toggle, first column: on = this group's traders see and trade the symbol; hidden rows are dimmed. Writes the group's allowed symbols (audited, live to terminals) (owner 2026-10-05). |
+| GRP | Show all / Hide all (panel header, new) | Show all / Hide all | — | Turn Show on or off for every row; hiding every symbol is refused (owner 2026-10-05). |
 | GRP | precedence text line | Who decides the client spread | — | Order: account › this group › symbol (no account-type level: D4, owner 2026-10-01). |
 | GRP | (note after the precedence line) | Commission and swap are charged in each account's currency. | — | No "$" on per-lot money (owner 2026-10-01). |
 | GRP | RAW + PTS | Source spread (points) | points | Spread from the price feed before your markup. (10 points = 1 pip) (owner 2026-09-29, was Market spread) |
-| GRP | MODE (TARGET / MARKUP / INHERIT) + VALUE + PTS | Your markup (points) | points | ONE column (owner 2026-09-29): "+N" = spread markup, "Fixed N" = fixed spread; blank = the symbol decides. |
+| GRP | MODE (TARGET / MARKUP / INHERIT) + VALUE + PTS | Your markup (points) | points | ONE column (owner 2026-09-29): "+N" = spread markup, "Fixed N" = fixed spread. Shows the effective value: the symbol's value dimmed when inherited (owner 2026-10-05, was blank). |
 | GRP | VALUE + PTS | merged into Your markup (points) | — | See the row above. |
 | GRP | CLIENT SPREAD + PTS | Client spread (points) | points | Spread the client sees. (10 points = 1 pip) |
 | GRP | SOURCE (THIS GROUP / BROKER SYMBOL) | Set by (This group / Symbol) | — | Which level decides the spread. |
-| GRP | COMMISSION / LOT | Commission (per lot) | per lot (account currency) | Fee per lot; blank = the symbol decides. |
-| GRP | SWAP LONG / SWAP SHORT | Swap long (per lot) / Swap short (per lot) | per lot (account currency) | Overnight fee per side. |
-| GRP | inherits | (blank) | — | Owner 2026-09-29: no text; a blank cell means the symbol decides, and the group's own values are highlighted. |
+| GRP | COMMISSION / LOT | Commission (per lot) | per lot (account currency) | Fee per lot. Always the effective value: dimmed when it comes from the symbol, highlighted when this group sets it; zero shows 0.00 (owner 2026-10-05). |
+| GRP | SWAP LONG / SWAP SHORT | Swap long (per lot) / Swap short (per lot) | per lot (account currency) | Overnight fee per side. Always the effective value, dimmed when inherited; zero shows 0.00 (owner 2026-10-05). |
+| GRP | inherits | (effective value, dimmed) | — | REPLACES the 2026-09-29 blank-cell rule (owner 2026-10-05): every pricing cell shows what the group's traders actually pay; inherited values dimmed, this group's own values highlighted; Set by names the level. |
 | GRP | ACTIONS / EDIT | ⋯ (row menu) | — | Owner 2026-09-29: the per-row EDIT is replaced by the ⋯ menu (Edit pricing…, Reset to symbol pricing…). |
 | GRP | Edit pricing… | keep | — | Change this symbol's pricing for the group. |
 | GRP | Reset override (inherit)… | Reset to symbol pricing… | — | Remove the group's own pricing. |
@@ -878,8 +881,8 @@ never clipped and never overlap. When the panel is too narrow for all columns, t
 | GRP | MARKUP (+ points on the raw spread) | Spread markup | points | Points added to the market spread. (10 points = 1 pip) |
 | GRP | TARGET (total client spread) | Fixed spread | points | Total client spread, whatever the market spread. (10 points = 1 pip) |
 | GRP | Points | Value (points) | points | 1 point = the last price digit. (10 points = 1 pip) |
-| GRP | Commission per lot | Commission (per lot) | per lot (account currency) | Empty = same as symbol. |
-| GRP | Swap long / Swap short | Swap long (per lot) / Swap short (per lot) | per lot (account currency) | Empty = same as symbol. |
+| GRP | Commission per lot | Commission (per lot) | per lot (account currency) | Edit form: empty = same as symbol (the table shows the effective value, owner 2026-10-05). |
+| GRP | Swap long / Swap short | Swap long (per lot) / Swap short (per lot) | per lot (account currency) | Edit form: empty = same as symbol (the table shows the effective value, owner 2026-10-05). |
 | GRP | RESET PRICING OVERRIDE (dialog) | Reset to symbol pricing | — | Confirm dialog title. |
 | GRP | RESET (button) | Reset | — | Confirm button. |
 
