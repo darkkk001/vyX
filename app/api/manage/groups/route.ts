@@ -6,6 +6,7 @@ import { prisma } from "@/lib/prisma";
 import { LEVERAGE_RULE, parseLeverage } from "@/lib/leverage";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { resolveGroupRouting, legacyGroupTypeFor } from "@/lib/group-routing";
+import { brokerMaySeeSynthetic, isSyntheticSymbol } from "@/lib/synthetic-symbols";
 
 const GROUP_TIERS: GroupTier[] = ["STANDARD", "PRO", "ECN", "ZERO"];
 const GROUP_DEALING_MODES: GroupDealingMode[] = ["INHERIT", "AUTO", "MANUAL"];
@@ -58,6 +59,31 @@ export async function GET() {
     ).map((r) => [r.groupId, r._count._all])
   );
 
+  // Groups screen SYMBOLS column (owner 2026-10-05, contract docs/contracts/groups-symbol-counts.md): how many of the
+  // broker's enabled symbols each group trades. Synthetic v* symbols are hidden exactly as GET /api/manage/symbols
+  // hides them from every broker but the shadow-bot tenant. Two queries in total, not one per group.
+  const [enabledRows, seesSynthetic] = await Promise.all([
+    prisma.brokerSymbol.findMany({
+      where: { brokerId: session.brokerId!, enabled: true },
+      select: { symbolId: true, symbol: { select: { name: true } } },
+    }),
+    brokerMaySeeSynthetic(prisma, session.brokerId!),
+  ]);
+  const enabledSymbolIds = enabledRows.filter((r) => seesSynthetic || !isSyntheticSymbol(r.symbol.name)).map((r) => r.symbolId);
+  const enabledSymbolCount = enabledSymbolIds.length;
+  const restrictedGroupIds = groups.filter((g) => g.restrictSymbols).map((g) => g.id);
+  const allowedCounts = new Map(
+    restrictedGroupIds.length && enabledSymbolIds.length
+      ? (
+          await prisma.groupSymbol.groupBy({
+            by: ["groupId"],
+            where: { groupId: { in: restrictedGroupIds }, symbolId: { in: enabledSymbolIds } },
+            _count: { _all: true },
+          })
+        ).map((r) => [r.groupId, r._count._all])
+      : []
+  );
+
   return NextResponse.json(
     groups.map((g) => ({
       id: g.id,
@@ -90,6 +116,10 @@ export async function GET() {
       dealingMode: g.dealingMode,
       tier: g.tier,
       hasMirrorRule: mirrorSourceGroupIds.has(g.id),
+      restrictSymbols: g.restrictSymbols,
+      enabledSymbolCount,
+      // a restricted group trades only its allow-list rows whose symbol the broker still has enabled
+      allowedSymbolCount: g.restrictSymbols ? (allowedCounts.get(g.id) ?? 0) : enabledSymbolCount,
     }))
   );
 }
