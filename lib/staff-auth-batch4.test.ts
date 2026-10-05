@@ -275,7 +275,7 @@ describe("SUPPORT is read-only; the menu follows role + permissions", () => {
       ["/api/manage/client-kyc-requests", async () => (await import("@/app/api/manage/client-kyc-requests/route")).GET()],
       ["/api/manage/notifications", async () => (await import("@/app/api/manage/notifications/route")).GET()],
       ["/api/manage/deals", async () => (await import("@/app/api/manage/deals/route")).GET(req("/api/manage/deals"))],
-      ["/api/manage/funds-requests", async () => (await import("@/app/api/manage/funds-requests/route")).GET()],
+      ["/api/manage/funds-requests", async () => (await import("@/app/api/manage/funds-requests/route")).GET(req("/api/manage/funds-requests"))],
     ];
     for (const [path, call] of reads) {
       as(token, path);
