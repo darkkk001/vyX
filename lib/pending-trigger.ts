@@ -246,7 +246,7 @@ export async function triggerPendingOrder(orderId: string, triggerPrice: string,
     newOrderSide: order.side,
     newOrderSymbolId: order.symbolId,
   });
-  if (marginError) return fail(marginError.error, { required: marginError.required, available: marginError.available });
+  if (marginError) return fail(marginError.error, marginError.required != null && marginError.available != null ? { required: marginError.required, available: marginError.available } : undefined);
 
   const bookType = resolveBookType(account.group.category);
   const result = await prisma.$transaction(async (tx) => {

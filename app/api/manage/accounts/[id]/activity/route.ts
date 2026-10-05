@@ -72,7 +72,7 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
       time: p.openedAt.toISOString(),
       kind: "Position",
       tone: p.status === "OPEN" ? "warning" : "neutral",
-      summary: `${p.side} ${p.volume} ${p.symbol.name} opened @ ${p.openPrice.toString()}${p.status === "CLOSED" ? `, closed @ ${p.closePrice?.toString() ?? "-"}, P&L ${p.realizedPnl?.toString() ?? "-"}` : ", OPEN"}`,
+      summary: `${p.side} ${p.volume} ${p.symbol.name} opened @ ${p.openPrice.toString()}${p.status === "CLOSED" ? `, closed${p.closePrice != null ? ` @ ${p.closePrice.toString()}` : ""}${p.realizedPnl != null ? `, P&L ${p.realizedPnl.toFixed(2)}` : ""}` : ", OPEN"}`,
       entityId: p.id,
     })),
   ].sort((a, b) => (a.time < b.time ? 1 : -1));

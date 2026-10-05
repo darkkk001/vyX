@@ -149,7 +149,7 @@ export default function LpRoutingManager() {
                 <TableCell>
                   {row.liquidityProviderName} <Badge tone="neutral">{row.liquidityProviderStatus}</Badge>
                 </TableCell>
-                <TableCell className="text-xs text-[var(--text-3)]">{row.notes ?? "-"}</TableCell>
+                <TableCell className="text-xs text-[var(--text-3)]">{row.notes ?? ""}</TableCell>
                 <TableCell>
                   <Button size="sm" variant="ghost" disabled={deletingId === row.id} onClick={() => deleteRule(row.id)}>
                     Remove

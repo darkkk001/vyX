@@ -421,7 +421,7 @@ async function mirrorFillForRule(db: Db, rule: MirrorRule, source: MirrorSourceP
       newOrderSymbolId: brokerSymbol.symbolId,
     });
     if (marginError) {
-      await recordMirrorFailure(db, rule, `insufficient margin (required ${marginError.required}, available ${marginError.available})`);
+      await recordMirrorFailure(db, rule, marginError.required != null && marginError.available != null ? `insufficient margin (required ${marginError.required}, available ${marginError.available})` : "insufficient margin (an open position cannot be valued right now)");
       return;
     }
 

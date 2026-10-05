@@ -836,17 +836,17 @@ export default function PositionsManager() {
         ) : null}
         {(colVisible.currentPrice ?? true) ? (
           <TableCell align="right" mono style={{ width: colWidths.currentPrice }}>
-            {p.currentPrice != null ? formatPrice(p.currentPrice, p.digits) : "-"}
+            {p.currentPrice != null ? formatPrice(p.currentPrice, p.digits) : ""}
           </TableCell>
         ) : null}
         {(colVisible.sl ?? true) ? (
           <TableCell align="right" mono className="text-[var(--text-3)]" style={{ width: colWidths.sl }}>
-            {p.slPrice != null ? formatPrice(p.slPrice, p.digits) : "-"}
+            {p.slPrice != null ? formatPrice(p.slPrice, p.digits) : ""}
           </TableCell>
         ) : null}
         {(colVisible.tp ?? true) ? (
           <TableCell align="right" mono className="text-[var(--text-3)]" style={{ width: colWidths.tp }}>
-            {p.tpPrice != null ? formatPrice(p.tpPrice, p.digits) : "-"}
+            {p.tpPrice != null ? formatPrice(p.tpPrice, p.digits) : ""}
           </TableCell>
         ) : null}
         {(colVisible.floatingPnl ?? true) ? (
@@ -856,7 +856,7 @@ export default function PositionsManager() {
             style={{ width: colWidths.floatingPnl }}
             className={!p.floatingPnl ? "" : formatPnl(p.floatingPnl).toneClass}
           >
-            {p.floatingPnl != null ? formatPnl(p.floatingPnl).text : "-"}
+            {p.floatingPnl != null ? formatPnl(p.floatingPnl).text : ""}
           </TableCell>
         ) : null}
         <TableCell className="text-xs text-[var(--text-3)]" style={{ width: colWidths.opened }}>{formatDateTime(p.openedAt)}</TableCell>
@@ -1082,13 +1082,13 @@ export default function PositionsManager() {
                     {formatNumber(e.netExposure)}
                   </TableCell>
                   <TableCell align="right" mono>
-                    {e.netAvgPrice != null ? formatPrice(e.netAvgPrice, e.digits) : "-"}
+                    {e.netAvgPrice != null ? formatPrice(e.netAvgPrice, e.digits) : ""}
                   </TableCell>
                   <TableCell align="right" mono className={formatPnl(e.floatingPnl).toneClass}>
                     {formatPnl(e.floatingPnl).text}
                   </TableCell>
                   <TableCell align="right" mono>
-                    {e.currentPrice != null ? formatPrice(e.currentPrice, e.digits) : "-"}
+                    {e.currentPrice != null ? formatPrice(e.currentPrice, e.digits) : ""}
                   </TableCell>
                 </TableRow>
               ))
@@ -1285,10 +1285,10 @@ export default function PositionsManager() {
       >
         <div className="flex flex-col gap-3">
           <FormField label="Stop loss">
-            <Input type="text" inputMode="decimal" mono placeholder="-" value={modSl} onChange={(e) => setModSl(e.target.value)} />
+            <Input type="text" inputMode="decimal" mono placeholder="" value={modSl} onChange={(e) => setModSl(e.target.value)} />
           </FormField>
           <FormField label="Take profit">
-            <Input type="text" inputMode="decimal" mono placeholder="-" value={modTp} onChange={(e) => setModTp(e.target.value)} />
+            <Input type="text" inputMode="decimal" mono placeholder="" value={modTp} onChange={(e) => setModTp(e.target.value)} />
           </FormField>
           <FormField label="Reason (required, logged in audit trail)">
             <textarea
@@ -1454,20 +1454,20 @@ export default function PositionsManager() {
               </div>
               <div>
                 <p className="text-xs text-[var(--text-3)]">Current price</p>
-                <p className="font-mono text-[var(--text-1)]">{detailsTarget.currentPrice != null ? formatPrice(detailsTarget.currentPrice, detailsTarget.digits) : "-"}</p>
+                <p className="font-mono text-[var(--text-1)]">{detailsTarget.currentPrice != null ? formatPrice(detailsTarget.currentPrice, detailsTarget.digits) : ""}</p>
               </div>
               <div>
                 <p className="text-xs text-[var(--text-3)]">S/L</p>
-                <p className="font-mono text-[var(--text-1)]">{detailsTarget.slPrice != null ? formatPrice(detailsTarget.slPrice, detailsTarget.digits) : "-"}</p>
+                <p className="font-mono text-[var(--text-1)]">{detailsTarget.slPrice != null ? formatPrice(detailsTarget.slPrice, detailsTarget.digits) : ""}</p>
               </div>
               <div>
                 <p className="text-xs text-[var(--text-3)]">T/P</p>
-                <p className="font-mono text-[var(--text-1)]">{detailsTarget.tpPrice != null ? formatPrice(detailsTarget.tpPrice, detailsTarget.digits) : "-"}</p>
+                <p className="font-mono text-[var(--text-1)]">{detailsTarget.tpPrice != null ? formatPrice(detailsTarget.tpPrice, detailsTarget.digits) : ""}</p>
               </div>
               <div>
                 <p className="text-xs text-[var(--text-3)]">Floating P&L</p>
                 <p className={`font-mono font-semibold ${!detailsTarget.floatingPnl ? "text-[var(--text-1)]" : formatPnl(detailsTarget.floatingPnl).toneClass}`}>
-                  {detailsTarget.floatingPnl != null ? formatPnl(detailsTarget.floatingPnl).text : "-"}
+                  {detailsTarget.floatingPnl != null ? formatPnl(detailsTarget.floatingPnl).text : ""}
                 </p>
               </div>
               <div>

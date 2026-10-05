@@ -132,7 +132,7 @@ export default function TransfersManager() {
                   <Badge tone={row.type === "TRANSFER_IN" ? "success" : "neutral"}>{row.type === "TRANSFER_IN" ? "IN" : "OUT"}</Badge>
                 </TableCell>
                 <TableCell align="right" mono>{row.amount}</TableCell>
-                <TableCell className="text-xs text-[var(--text-3)]">{row.note ?? "-"}</TableCell>
+                <TableCell className="text-xs text-[var(--text-3)]">{row.note ?? ""}</TableCell>
                 <TableCell className="text-xs text-[var(--text-3)]">{formatDateTime(row.createdAt)}</TableCell>
               </TableRow>
             ))

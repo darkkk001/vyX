@@ -266,7 +266,7 @@ export default function SettingsManager() {
           <dt className="text-[var(--text-3)]">Subdomain</dt>
           <dd className="font-mono text-[var(--text-1)]">{data.subdomain}</dd>
           <dt className="text-[var(--text-3)]">Custom domain</dt>
-          <dd className="font-mono text-[var(--text-1)]">{data.customDomain ?? "-"}</dd>
+          <dd className="font-mono text-[var(--text-1)]">{data.customDomain ?? ""}</dd>
           <dt className="text-[var(--text-3)]">Tier</dt>
           <dd className="text-[var(--text-1)]">{data.tier}</dd>
           <dt className="text-[var(--text-3)]">Status</dt>
@@ -320,7 +320,7 @@ export default function SettingsManager() {
               accountTypes.map((t) => (
                 <TableRow key={t.id}>
                   <TableCell primary>{t.name}</TableCell>
-                  <TableCell className="text-[var(--text-3)]">{t.description ?? "-"}</TableCell>
+                  <TableCell className="text-[var(--text-3)]">{t.description ?? ""}</TableCell>
                   <TableCell align="right" mono>{t.spreadMarkup == null ? "inherit" : `${t.spreadMarkup}p`}</TableCell>
                   <TableCell align="right" mono>{t.commissionPerLot == null ? "inherit" : `$${t.commissionPerLot}`}</TableCell>
                   <TableCell>

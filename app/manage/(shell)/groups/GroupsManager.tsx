@@ -253,7 +253,7 @@ export default function GroupsManager() {
                     {row.stopOutLevel}
                   </TableCell>
                   <TableCell align="right" mono className="min-w-[75px]">
-                    {row.maxLotSize || "-"}
+                    {row.maxLotSize || ""}
                   </TableCell>
                   <TableCell className="min-w-[95px]">{RESTRICTION_LABELS[row.tradingRestriction]}</TableCell>
                   <TableCell className="min-w-[175px]">{routingBadge(row)}</TableCell>
@@ -261,7 +261,7 @@ export default function GroupsManager() {
                     {row.swapFree === null ? "-" : row.swapFree ? "✓" : "✗"}
                   </TableCell>
                   <TableCell align="center" className="min-w-[70px]">
-                    {row.isDefault ? "✓" : "-"}
+                    {row.isDefault ? "✓" : ""}
                   </TableCell>
                   <TableCell className="min-w-[145px] whitespace-nowrap">
                     <div className="flex items-center gap-2">

@@ -63,8 +63,8 @@ function bodyFor(params: { accountNumber: string; symbol: string; side: "BUY" | 
   else if (v.requestedPrice) parts.push(`@ ${v.requestedPrice}`);
   if (v.slPrice !== undefined || v.tpPrice !== undefined) {
     const slTp: string[] = [];
-    if (v.oldSlPrice !== undefined || v.newSlPrice !== undefined) slTp.push(`SL ${v.oldSlPrice ?? "-"}→${v.newSlPrice ?? "-"}`);
-    if (v.oldTpPrice !== undefined || v.newTpPrice !== undefined) slTp.push(`TP ${v.oldTpPrice ?? "-"}→${v.newTpPrice ?? "-"}`);
+    if (v.oldSlPrice !== undefined || v.newSlPrice !== undefined) slTp.push(`SL ${v.oldSlPrice ?? "not set"}→${v.newSlPrice ?? "not set"}`);
+    if (v.oldTpPrice !== undefined || v.newTpPrice !== undefined) slTp.push(`TP ${v.oldTpPrice ?? "not set"}→${v.newTpPrice ?? "not set"}`);
     if (slTp.length) parts.push(slTp.join(", "));
   }
   return parts.join(" ");

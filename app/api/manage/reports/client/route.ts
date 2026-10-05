@@ -23,7 +23,7 @@ export async function GET() {
       email: a.email,
       accountMode: a.accountMode,
       currency: a.currency,
-      balance: a.balance.toString(),
+      balance: a.balance.toFixed(2),
       group: a.group?.name ?? "",
       status: a.status,
       createdAt: a.createdAt.toISOString(),

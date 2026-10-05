@@ -216,9 +216,9 @@ export default function DealingDeskPanel() {
                     <Badge tone={r.side === "BUY" ? "success" : "danger"}>{r.side}</Badge>
                   </TableCell>
                   <TableCell align="right" mono>{r.volume}</TableCell>
-                  <TableCell align="right" mono>{r.requestedPrice ?? "-"}</TableCell>
-                  <TableCell align="right" mono>{r.slPrice ?? "-"}</TableCell>
-                  <TableCell align="right" mono>{r.tpPrice ?? "-"}</TableCell>
+                  <TableCell align="right" mono>{r.requestedPrice ?? ""}</TableCell>
+                  <TableCell align="right" mono>{r.slPrice ?? ""}</TableCell>
+                  <TableCell align="right" mono>{r.tpPrice ?? ""}</TableCell>
                   <TableCell className="text-xs text-[var(--text-3)]">{formatDateTime(r.createdAt)}</TableCell>
                 </TableRow>
               ))

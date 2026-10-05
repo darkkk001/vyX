@@ -170,23 +170,23 @@ export default function ClientKycRequestsManager() {
                       <div className="grid grid-cols-2 gap-x-8 gap-y-2 py-1 text-xs sm:grid-cols-3 lg:grid-cols-5">
                         <div>
                           <div className="text-[var(--text-3)]">Annual income</div>
-                          <div>{row.annualIncome ?? "-"}</div>
+                          <div>{row.annualIncome ?? ""}</div>
                         </div>
                         <div>
                           <div className="text-[var(--text-3)]">Source of funds</div>
-                          <div>{row.sourceOfFunds ?? "-"}</div>
+                          <div>{row.sourceOfFunds ?? ""}</div>
                         </div>
                         <div>
                           <div className="text-[var(--text-3)]">Trading experience</div>
-                          <div>{row.tradingExperience ?? "-"}</div>
+                          <div>{row.tradingExperience ?? ""}</div>
                         </div>
                         <div>
                           <div className="text-[var(--text-3)]">Employment status</div>
-                          <div>{row.employmentStatus ?? "-"}</div>
+                          <div>{row.employmentStatus ?? ""}</div>
                         </div>
                         <div>
                           <div className="text-[var(--text-3)]">Risk tolerance</div>
-                          <div>{row.riskTolerance ?? "-"}</div>
+                          <div>{row.riskTolerance ?? ""}</div>
                         </div>
                       </div>
                     </TableCell>

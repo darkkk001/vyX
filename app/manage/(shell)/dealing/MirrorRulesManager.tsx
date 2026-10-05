@@ -188,7 +188,7 @@ export default function MirrorRulesManager() {
                 </TableCell>
                 <TableCell align="right" mono>×{r.multiplier}</TableCell>
                 <TableCell mono className="text-xs">
-                  {r.maxOpenLots ? `${r.maxOpenLots} lots` : "-"}
+                  {r.maxOpenLots ? `${r.maxOpenLots} lots` : ""}
                   {r.maxDailyLoss ? ` / -${r.maxDailyLoss}` : ""}
                 </TableCell>
                 <TableCell>
@@ -362,11 +362,11 @@ function MirrorRuleDetail({ id, onClose }: { id: string; onClose: () => void }) 
               ) : (
                 data.positions.map((p) => (
                   <TableRow key={p.sourcePositionId}>
-                    <TableCell primary>{p.symbol ?? "-"}</TableCell>
+                    <TableCell primary>{p.symbol ?? ""}</TableCell>
                     <TableCell mono>{p.sourceSide} {p.sourceVolume} ({p.sourceStatus})</TableCell>
-                    <TableCell align="right" mono>{p.sourcePnl ?? "-"}</TableCell>
+                    <TableCell align="right" mono>{p.sourcePnl ?? ""}</TableCell>
                     <TableCell mono>{p.targetSide} {p.targetVolume} ({p.targetStatus})</TableCell>
-                    <TableCell align="right" mono>{p.targetPnl ?? "-"}</TableCell>
+                    <TableCell align="right" mono>{p.targetPnl ?? ""}</TableCell>
                   </TableRow>
                 ))
               )}
@@ -385,7 +385,7 @@ function MirrorRuleDetail({ id, onClose }: { id: string; onClose: () => void }) 
                 data.recentFailures.map((f, i) => (
                   <TableRow key={i}>
                     <TableCell mono className="text-xs">{formatDateTime(f.createdAt)}</TableCell>
-                    <TableCell className="text-xs">{f.reason ?? "-"}</TableCell>
+                    <TableCell className="text-xs">{f.reason ?? ""}</TableCell>
                   </TableRow>
                 ))
               )}

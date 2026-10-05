@@ -184,7 +184,7 @@ export default function AccountsView() {
                 <tr key={a.id} style={{ borderTop: "1px solid var(--border)" }}>
                   <td style={{ padding: "10px 0", fontFamily: "monospace" }}>{a.accountNumber}</td>
                   <td style={{ padding: "10px 0" }}>{a.accountMode}</td>
-                  <td style={{ padding: "10px 0" }}>{a.accountTypeName ?? "-"}</td>
+                  <td style={{ padding: "10px 0" }}>{a.accountTypeName ?? ""}</td>
                   <td style={{ padding: "10px 0" }}>{a.currency}</td>
                   <td style={{ padding: "10px 0" }}>{a.status}</td>
                   <td style={{ padding: "10px 0", textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{parseFloat(a.balance).toFixed(2)}</td>

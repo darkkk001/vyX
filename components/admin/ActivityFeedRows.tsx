@@ -62,31 +62,31 @@ export function describeActivityValues(row: ActivityFeedRow): string {
     case "ORDER_MODIFIED": {
       const parts: string[] = [];
       if (fmt(v.oldSlPrice) !== fmt(v.newSlPrice) && (fmt(v.oldSlPrice) || fmt(v.newSlPrice))) {
-        parts.push(`SL ${fmt(v.oldSlPrice) ?? "-"} → ${fmt(v.newSlPrice) ?? "-"}`);
+        parts.push(`SL ${fmt(v.oldSlPrice) ?? "not set"} → ${fmt(v.newSlPrice) ?? "not set"}`);
       }
       if (fmt(v.oldTpPrice) !== fmt(v.newTpPrice) && (fmt(v.oldTpPrice) || fmt(v.newTpPrice))) {
-        parts.push(`TP ${fmt(v.oldTpPrice) ?? "-"} → ${fmt(v.newTpPrice) ?? "-"}`);
+        parts.push(`TP ${fmt(v.oldTpPrice) ?? "not set"} → ${fmt(v.newTpPrice) ?? "not set"}`);
       }
       if (fmt(v.oldRequestedPrice) !== fmt(v.newRequestedPrice) && (fmt(v.oldRequestedPrice) || fmt(v.newRequestedPrice))) {
-        parts.push(`Entry ${fmt(v.oldRequestedPrice) ?? "-"} → ${fmt(v.newRequestedPrice) ?? "-"}`);
+        parts.push(`Entry ${fmt(v.oldRequestedPrice) ?? "market"} → ${fmt(v.newRequestedPrice) ?? "market"}`);
       }
       return parts.join(", ");
     }
     case "ORDER_CANCELLED":
       return fmt(v.requestedPrice) ? `@ ${v.requestedPrice}` : "";
     case "ORDER_TRIGGERED":
-      return `triggered @ ${fmt(v.triggerPrice) ?? "-"}, now in approval queue`;
+      return fmt(v.triggerPrice) != null ? `triggered @ ${fmt(v.triggerPrice)}, now in approval queue` : "triggered, now in approval queue";
     case "POSITION_OPENED":
-      return `@ ${fmt(v.openPrice) ?? fmt(v.filledPrice) ?? "-"}`;
+      return (fmt(v.openPrice) ?? fmt(v.filledPrice)) != null ? `@ ${fmt(v.openPrice) ?? fmt(v.filledPrice)}` : "";
     case "POSITION_CLOSED": {
-      const parts = [`@ ${fmt(v.closePrice) ?? "-"}`];
+      const parts = fmt(v.closePrice) != null ? [`@ ${fmt(v.closePrice)}`] : [];
       if (v.partial) parts.push("(partial)");
       if (fmt(v.realizedPnl)) parts.push(`P&L ${v.realizedPnl}`);
       if (fmt(v.closeReason) && v.closeReason !== "MANUAL") parts.push(String(v.closeReason).toLowerCase().replace(/_/g, " "));
       return parts.join(" ");
     }
     case "CLOSE_REQUESTED": {
-      const parts = [`@ ${fmt(v.requestedPrice) ?? "-"}`];
+      const parts = fmt(v.requestedPrice) != null ? [`@ ${fmt(v.requestedPrice)}`] : [];
       if (fmt(v.closesTicket)) parts.push(`#${v.closesTicket}`);
       if (v.partial) parts.push("(partial)");
       return parts.join(" ");
@@ -132,7 +132,7 @@ export function ActivityFeedRows({ rows, showDealingChip = false }: { rows: Acti
             ) : null}
           </span>
           <Badge tone={ACTIVITY_ACTION_TONE[row.action]}>{ACTIVITY_ACTION_LABEL[row.action]}</Badge>
-          <span className="w-[70px] shrink-0 font-mono text-xs">{row.symbol ?? "-"}</span>
+          <span className="w-[70px] shrink-0 font-mono text-xs">{row.symbol ?? ""}</span>
           {row.side ? <Badge tone={row.side === "BUY" ? "success" : "danger"}>{row.side}</Badge> : null}
           <span className="shrink-0 font-mono text-xs">{row.volume ?? ""}</span>
           <span className="min-w-0 flex-1 truncate text-xs text-[var(--text-2)]">{describeActivityValues(row)}</span>

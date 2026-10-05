@@ -227,7 +227,7 @@ export function checkPreTradeMargin(params: {
 // "NO_CONVERSION_RATE" (2026-09-23): the new order's symbol, or one already open, is quoted in a currency
 // other than the account's and no price exists to convert it with (lib/fx.ts). Margin cannot be known, so
 // the order is refused rather than sized as if JPY were USD.
-export type PreTradeMarginRejection = { error: "INSUFFICIENT_BALANCE" | "INSUFFICIENT_MARGIN" | "NO_CONVERSION_RATE"; required: string; available: string; balance: string };
+export type PreTradeMarginRejection = { error: "INSUFFICIENT_BALANCE" | "INSUFFICIENT_MARGIN" | "NO_CONVERSION_RATE"; required: string | null; available: string | null; balance: string }; // null: cannot be valued now (NO_CONVERSION_RATE)
 
 // DB-touching wrapper around checkPreTradeMargin above -- computes this
 // one account's current equity/used-margin (same per-position formulas
@@ -340,7 +340,7 @@ export async function checkAccountPreTradeMargin(
   const state = await loadAccountMarginState(prisma, params.accountId, params.leverage, [params.newOrderQuoteCurrency]);
   if (!state) {
     const acc = await prisma.account.findUniqueOrThrow({ where: { id: params.accountId }, select: { balance: true } });
-    return { error: "NO_CONVERSION_RATE", required: "-", available: "-", balance: acc.balance.toFixed(2) };
+    return { error: "NO_CONVERSION_RATE", required: null, available: null, balance: acc.balance.toFixed(2) };
   }
   return evaluatePreTradeMargin(state, params);
 }

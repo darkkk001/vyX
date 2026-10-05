@@ -155,11 +155,11 @@ export default function LiquidityManager() {
                   {row.notes ? <div className="text-xs font-normal text-[var(--text-3)]">{row.notes}</div> : null}
                 </TableCell>
                 <TableCell className="text-xs text-[var(--text-3)]">
-                  {row.contactName ?? "-"}
+                  {row.contactName ?? ""}
                   {row.contactEmail ? <div>{row.contactEmail}</div> : null}
                   {row.contactPhone ? <div>{row.contactPhone}</div> : null}
                 </TableCell>
-                <TableCell mono>{row.protocol ?? "-"}</TableCell>
+                <TableCell mono>{row.protocol ?? ""}</TableCell>
                 <TableCell>
                   <Select value={row.status} disabled={busyId === row.id} onChange={(e) => changeStatus(row, e.target.value)} className="w-36">
                     <option value="PROSPECTIVE">PROSPECTIVE</option>

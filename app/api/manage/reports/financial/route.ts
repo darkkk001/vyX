@@ -26,7 +26,7 @@ export async function GET() {
       type: t.type,
       status: t.status,
       account: t.account.accountNumber,
-      amount: t.amount.toString(),
+      amount: t.amount.toFixed(2),
       note: t.note ?? "",
     })),
     [

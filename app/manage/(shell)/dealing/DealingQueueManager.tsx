@@ -318,7 +318,7 @@ export default function DealingQueueManager() {
                   <Badge tone={row.side === "BUY" ? "success" : "danger"}>{row.side}</Badge>
                 </TableCell>
                 <TableCell align="right" mono>{row.volume}</TableCell>
-                <TableCell align="right" mono>{row.requestedPrice ?? "-"}</TableCell>
+                <TableCell align="right" mono>{row.requestedPrice ?? ""}</TableCell>
                 <TableCell align="right" mono>
                   {row.liveBid && row.liveAsk ? `${row.liveBid} / ${row.liveAsk}` : "no feed"}
                 </TableCell>
@@ -370,8 +370,8 @@ export default function DealingQueueManager() {
                     <Badge tone={row.side === "BUY" ? "success" : "danger"}>{row.side}</Badge>
                   </TableCell>
                   <TableCell align="right" mono>{row.volume}</TableCell>
-                  <TableCell align="right" mono>{row.requestedPrice ?? "-"}</TableCell>
-                  <TableCell align="right" mono>{row.requotedPrice ?? "-"}</TableCell>
+                  <TableCell align="right" mono>{row.requestedPrice ?? ""}</TableCell>
+                  <TableCell align="right" mono>{row.requotedPrice ?? ""}</TableCell>
                   <TableCell className="text-xs text-[var(--text-3)]">{row.createdAt}</TableCell>
                   <TableCell className="whitespace-nowrap">
                     <Button size="sm" variant="danger" disabled={busyId === row.id} onClick={() => openReject(row)}>
@@ -389,7 +389,7 @@ export default function DealingQueueManager() {
         <div className="flex flex-col gap-3">
           <p className="text-sm text-[var(--text-2)]">
             {acceptTarget
-              ? `${acceptTarget.side} ${acceptTarget.volume} lots of ${acceptTarget.symbol} at the client's own requested price, ${acceptTarget.requestedPrice ?? "-"}, exactly, no live-price check. Use Requote instead to offer a different price.`
+              ? `${acceptTarget.side} ${acceptTarget.volume} lots of ${acceptTarget.symbol} at the client's own requested price, ${acceptTarget.requestedPrice ?? ""}, exactly, no live-price check. Use Requote instead to offer a different price.`
               : ""}
           </p>
           {acceptError ? <p className="text-sm text-[var(--sell)]">{acceptError}</p> : null}
@@ -408,7 +408,7 @@ export default function DealingQueueManager() {
         <div className="flex flex-col gap-3">
           <p className="text-sm text-[var(--text-2)]">
             {requoteTarget
-              ? `${requoteTarget.side} ${requoteTarget.volume} lots of ${requoteTarget.symbol}. Requested ${requoteTarget.requestedPrice ?? "-"}. Pre-filled with the current live price, edit if needed. The client must accept before it fills.`
+              ? `${requoteTarget.side} ${requoteTarget.volume} lots of ${requoteTarget.symbol}. Requested ${requoteTarget.requestedPrice ?? ""}. Pre-filled with the current live price, edit if needed. The client must accept before it fills.`
               : ""}
           </p>
           <FormField label="Requote price">

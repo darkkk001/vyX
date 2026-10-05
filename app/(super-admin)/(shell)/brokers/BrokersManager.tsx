@@ -477,7 +477,7 @@ export default function BrokersManager() {
                   <div className="text-xs font-normal text-[var(--text-3)]">{broker.subdomain}.vyxtrader.com</div>
                 </TableCell>
                 <TableCell mono className="text-[var(--text-3)]">
-                  {broker.customDomain ?? "-"}
+                  {broker.customDomain ?? ""}
                 </TableCell>
                 <TableCell>
                   <Badge tone={broker.tier === "WHITE_LABEL" ? "accent" : "neutral"}>

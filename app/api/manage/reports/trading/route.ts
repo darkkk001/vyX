@@ -29,9 +29,9 @@ export async function GET() {
       volume: p.volume.toString(),
       openPrice: p.openPrice.toString(),
       closePrice: p.closePrice?.toString() ?? "",
-      commission: p.commission.toString(),
-      swap: p.swap.toString(),
-      realizedPnl: p.realizedPnl?.toString() ?? "",
+      commission: p.commission.toFixed(2),
+      swap: p.swap.toFixed(2),
+      realizedPnl: p.realizedPnl?.toFixed(2) ?? "",
     })),
     [
       { key: "closedAt", label: "Closed At" },

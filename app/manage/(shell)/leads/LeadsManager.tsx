@@ -174,9 +174,9 @@ export default function LeadsManager() {
                   {row.fullName}
                   <div className="text-xs font-normal text-[var(--text-3)]">{row.email}</div>
                 </TableCell>
-                <TableCell>{row.phone ?? "-"}</TableCell>
-                <TableCell>{row.country ?? "-"}</TableCell>
-                <TableCell>{row.source ?? "-"}</TableCell>
+                <TableCell>{row.phone ?? ""}</TableCell>
+                <TableCell>{row.country ?? ""}</TableCell>
+                <TableCell>{row.source ?? ""}</TableCell>
                 <TableCell>
                   {row.status === "CONVERTED" ? (
                     <div>

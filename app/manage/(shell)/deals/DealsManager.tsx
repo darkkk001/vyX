@@ -50,7 +50,7 @@ function getDealSortValue(row: DealRow, key: string): string | number | null {
     case "swap":
       return Number(row.swap);
     case "realizedPnl":
-      return row.realizedPnl === "-" ? null : Number(row.realizedPnl);
+      return row.realizedPnl == null ? null : Number(row.realizedPnl);
     case "closedAt":
       return row.closedAt;
     default:
@@ -205,10 +205,10 @@ export default function DealsManager() {
                 <TableCell align="right" mono>{formatPrice(row.closePrice, row.digits)}</TableCell>
                 <TableCell align="right" mono>{formatNumber(row.commission)}</TableCell>
                 <TableCell align="right" mono>{formatNumber(row.swap)}</TableCell>
-                <TableCell align="right" mono className={row.realizedPnl === "-" ? "" : formatPnl(row.realizedPnl).toneClass}>
-                  {row.realizedPnl === "-" ? "-" : formatPnl(row.realizedPnl).text}
+                <TableCell align="right" mono className={row.realizedPnl == null ? "" : formatPnl(row.realizedPnl).toneClass}>
+                  {row.realizedPnl == null ? "" : formatPnl(row.realizedPnl).text}
                 </TableCell>
-                <TableCell className="text-xs text-[var(--text-3)]">{row.closedAt === "-" ? row.closedAt : formatDateTime(row.closedAt)}</TableCell>
+                <TableCell className="text-xs text-[var(--text-3)]">{row.closedAt == null ? "" : formatDateTime(row.closedAt)}</TableCell>
                 <TableCell align="right">
                   <div className="flex justify-end gap-1">
                     <Button variant="ghost" onClick={() => setReplayPositionId(row.id)}>Replay</Button>

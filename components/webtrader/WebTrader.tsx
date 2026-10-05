@@ -1403,13 +1403,16 @@ export default function WebTrader({
     }
   }
 
+  // naming.md "Empty and zero values": money is always 2 decimals (0.00), a value that does not exist is empty
+  const money2 = (v: string | number) => (Number.isFinite(Number(v)) ? Number(v).toFixed(2) : "");
+
   function exportReportCsv() {
     if (!reportRows || reportRows.length === 0) return;
     const header = ["Symbol", "Side", "Volume", "Open Price", "Close Price", "Swap", "Commission", "P&L", "Opened At", "Closed At"];
     const lines = reportRows.map((p) =>
       [
         p.symbol.name, p.side, p.volume, p.openPrice, p.closePrice ?? "",
-        p.swap, p.commission, p.realizedPnl ?? "", p.openedAt, p.closedAt ?? "",
+        money2(p.swap), money2(p.commission), p.realizedPnl != null ? money2(p.realizedPnl) : "", p.openedAt, p.closedAt ?? "",
       ].map((v) => `"${String(v).replace(/"/g, '""')}"`).join(",")
     );
     const csv = [header.join(","), ...lines].join("\n");
@@ -2780,11 +2783,11 @@ export default function WebTrader({
     const pnlPct = account ? (pnl / parseFloat(account.balance)) * 100 : 0;
     const sl = p.slPrice ? parseFloat(p.slPrice) : null;
     const tp = p.tpPrice ? parseFloat(p.tpPrice) : null;
-    const rr = sl && tp ? Math.abs((tp - parseFloat(p.openPrice)) / (parseFloat(p.openPrice) - sl)).toFixed(1) : "-";
+    const rr = sl && tp ? Math.abs((tp - parseFloat(p.openPrice)) / (parseFloat(p.openPrice) - sl)).toFixed(1) : "";
     setShareData({
       symbolLabel: p.symbol.name, pnl, pnlPct,
       entryLabel: fmt(parseFloat(p.openPrice), p.symbol.digits), currentLabel: fmt(mm.bid, p.symbol.digits),
-      rrLabel: rr === "-" ? "-" : `1 : ${rr}`, rrTitle: "RR",
+      rrLabel: rr === "" ? "" : `1 : ${rr}`, rrTitle: "RR",
     });
   }
 
@@ -3667,8 +3670,8 @@ export default function WebTrader({
     netBySymbol.set(symbolName, {
       buyLots: e.buyLots, sellLots: e.sellLots, pnl: e.pnl, count: e.count, digits: e.digits,
       avgPrice: e.volSum > 0 ? e.priceWeightedSum / e.volSum : 0,
-      slLabel: sl ? fmt(parseFloat(sl), e.digits) : "-",
-      tpLabel: tp ? fmt(parseFloat(tp), e.digits) : "-",
+      slLabel: sl ? fmt(parseFloat(sl), e.digits) : "",
+      tpLabel: tp ? fmt(parseFloat(tp), e.digits) : "",
     });
   }
 
@@ -3952,7 +3955,7 @@ export default function WebTrader({
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9" /><path d="M13.73 21a2 2 0 0 1-3.46 0" /></svg>
               {alerts.length > 0 ? <span className="bell-count">{alerts.length}</span> : null}
             </button>
-            <div className="avatar">{account?.accountNumber?.slice(-2) ?? "-"}</div>
+            <div className="avatar">{account?.accountNumber?.slice(-2) ?? ""}</div>
           </div>
         </div>
 
@@ -4090,10 +4093,10 @@ export default function WebTrader({
                         <span className="wl-price mono" style={{ color: "var(--text-3)" }}>-</span>
                       )}
                     </span>
-                    {columnPrefs.change ? <span className={`wl-cell mono ${changePct !== null && changePct >= 0 ? "wl-pos" : "wl-neg"}`}>{changePct !== null ? (changePct >= 0 ? "+" : "") + changePct.toFixed(2) + "%" : "-"}</span> : null}
-                    {columnPrefs.spread ? <span className="wl-cell mono" style={{ textAlign: "right" }}>{hasEverTicked ? spreadPoints(effectiveAsk(askMarkupBySymbol, name, row.ask, row.bid), row.bid, row.def.digits) : "-"}</span> : null}
-                    {columnPrefs.high ? <span className="wl-cell mono">{hasEverTicked ? fmt(row.high, row.def.digits) : "-"}</span> : null}
-                    {columnPrefs.low ? <span className="wl-cell mono">{hasEverTicked ? fmt(row.low, row.def.digits) : "-"}</span> : null}
+                    {columnPrefs.change ? <span className={`wl-cell mono ${changePct !== null && changePct >= 0 ? "wl-pos" : "wl-neg"}`}>{changePct !== null ? (changePct >= 0 ? "+" : "") + changePct.toFixed(2) + "%" : ""}</span> : null}
+                    {columnPrefs.spread ? <span className="wl-cell mono" style={{ textAlign: "right" }}>{hasEverTicked ? spreadPoints(effectiveAsk(askMarkupBySymbol, name, row.ask, row.bid), row.bid, row.def.digits) : ""}</span> : null}
+                    {columnPrefs.high ? <span className="wl-cell mono">{hasEverTicked ? fmt(row.high, row.def.digits) : ""}</span> : null}
+                    {columnPrefs.low ? <span className="wl-cell mono">{hasEverTicked ? fmt(row.low, row.def.digits) : ""}</span> : null}
                     <button className={`wl-alert-btn${alerts.some((a) => a.symbol === name) ? " active" : ""}`} onClick={(e) => { e.stopPropagation(); openPriceAlert(name); }} title="Set price alert">
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9" /></svg>
                     </button>
@@ -4629,16 +4632,16 @@ export default function WebTrader({
                               <input autoFocus className="inline-edit-input mono" defaultValue={p.slPrice ? fmt(parseFloat(p.slPrice), p.symbol.digits) : ""}
                                 onBlur={(e) => { commitInlineEdit(p.id, "sl", e.target.value); setInlineEditing(null); }}
                                 onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); if (e.key === "Escape") setInlineEditing(null); }} />
-                            ) : <span className="mono">{p.slPrice ? fmt(parseFloat(p.slPrice), p.symbol.digits) : "-"}</span>}
+                            ) : <span className="mono">{p.slPrice ? fmt(parseFloat(p.slPrice), p.symbol.digits) : ""}</span>}
                           </span>
                           <span className="pos-cell sltp-pill" onClick={() => !isTpEditing && setInlineEditing({ id: p.id, field: "tp", value: p.tpPrice ?? "" })}>
                             {isTpEditing ? (
                               <input autoFocus className="inline-edit-input mono" defaultValue={p.tpPrice ? fmt(parseFloat(p.tpPrice), p.symbol.digits) : ""}
                                 onBlur={(e) => { commitInlineEdit(p.id, "tp", e.target.value); setInlineEditing(null); }}
                                 onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); if (e.key === "Escape") setInlineEditing(null); }} />
-                            ) : <span className="mono">{p.tpPrice ? fmt(parseFloat(p.tpPrice), p.symbol.digits) : "-"}</span>}
+                            ) : <span className="mono">{p.tpPrice ? fmt(parseFloat(p.tpPrice), p.symbol.digits) : ""}</span>}
                           </span>
-                          <span className="pos-cell pos-comment" onClick={() => editComment(p.id)}>{comments[p.id] || "-"}</span>
+                          <span className="pos-cell pos-comment" onClick={() => editComment(p.id)}>{comments[p.id] || ""}</span>
                           <span className="pos-cell pos-swap mono">{parseFloat(p.swap) >= 0 ? "+" : ""}{parseFloat(p.swap).toFixed(2)}</span>
                           <span className="pos-cell pos-commission mono">{parseFloat(p.commission).toFixed(2)}</span>
                           <span className={`pos-cell pos-pnl mono ${pnl >= 0 ? "pos" : "neg"}`}>{pnl >= 0 ? "+" : ""}{pnl.toFixed(2)}</span>
@@ -4739,13 +4742,13 @@ export default function WebTrader({
                             <span className="pos-cell pos-symbol">{o.symbol.name}</span>
                             <span className="pos-cell"><span className={`pos-side ${o.side === "BUY" ? "buy" : "sell"}`}>{typeLabel}</span></span>
                             <span className="pos-cell mono">{parseFloat(o.volume).toFixed(2)}</span>
-                            <span className="pos-cell mono" title={o.status === "REQUOTED" ? `requoted from ${o.requestedPrice ? fmt(parseFloat(o.requestedPrice), o.symbol.digits) : "-"}` : undefined} style={o.status === "REQUOTED" ? { color: "var(--warn)" } : undefined}>
+                            <span className="pos-cell mono" title={o.status === "REQUOTED" ? (o.requestedPrice ? `requoted from ${fmt(parseFloat(o.requestedPrice), o.symbol.digits)}` : "requoted") : undefined} style={o.status === "REQUOTED" ? { color: "var(--warn)" } : undefined}>
                               {o.status === "REQUOTED"
-                                ? (o.requotedPrice ? fmt(parseFloat(o.requotedPrice), o.symbol.digits) : "-")
-                                : (o.requestedPrice ? fmt(parseFloat(o.requestedPrice), o.symbol.digits) : "-")}
+                                ? (o.requotedPrice ? fmt(parseFloat(o.requotedPrice), o.symbol.digits) : "")
+                                : (o.requestedPrice ? fmt(parseFloat(o.requestedPrice), o.symbol.digits) : "")}
                             </span>
-                            <span className="pos-cell mono">{o.slPrice ? fmt(parseFloat(o.slPrice), o.symbol.digits) : "-"}</span>
-                            <span className="pos-cell mono">{o.tpPrice ? fmt(parseFloat(o.tpPrice), o.symbol.digits) : "-"}</span>
+                            <span className="pos-cell mono">{o.slPrice ? fmt(parseFloat(o.slPrice), o.symbol.digits) : ""}</span>
+                            <span className="pos-cell mono">{o.tpPrice ? fmt(parseFloat(o.tpPrice), o.symbol.digits) : ""}</span>
                             <span className="pos-cell" style={{ fontSize: 11 }}>
                               {isDealingPending ? (
                                 <span className="pending-approval-badge" title="Awaiting dealer review. You can still trade this or any other symbol while you wait.">
@@ -4867,9 +4870,9 @@ export default function WebTrader({
                               <span className="pos-cell"><span className={`pos-side ${h.side.toLowerCase()}`}>{h.side === "BUY" ? "Buy" : "Sell"}</span></span>
                               <span className="pos-cell mono">{parseFloat(h.volume).toFixed(2)}</span>
                               <span className="pos-cell mono">{fmt(parseFloat(h.openPrice), h.symbol.digits)}</span>
-                              <span className="pos-cell mono">{h.closePrice ? fmt(parseFloat(h.closePrice), h.symbol.digits) : "-"}</span>
+                              <span className="pos-cell mono">{h.closePrice ? fmt(parseFloat(h.closePrice), h.symbol.digits) : ""}</span>
                               <span className="pos-cell" style={{ color: "var(--text-3)", fontSize: 11 }}>{new Date(h.openedAt).toLocaleDateString([], { month: "short", day: "numeric" })} {new Date(h.openedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
-                              <span className="pos-cell" style={{ color: "var(--text-3)", fontSize: 11 }}>{h.closedAt ? `${new Date(h.closedAt).toLocaleDateString([], { month: "short", day: "numeric" })} ${new Date(h.closedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "-"}</span>
+                              <span className="pos-cell" style={{ color: "var(--text-3)", fontSize: 11 }}>{h.closedAt ? `${new Date(h.closedAt).toLocaleDateString([], { month: "short", day: "numeric" })} ${new Date(h.closedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : ""}</span>
                               <span className="pos-cell pos-swap mono">{parseFloat(h.swap) >= 0 ? "+" : ""}{parseFloat(h.swap).toFixed(2)}</span>
                               <span className="pos-cell pos-commission mono">{parseFloat(h.commission).toFixed(2)}</span>
                               <span className={`pos-cell pos-pnl mono ${pnl >= 0 ? "pos" : "neg"}`}>{pnl >= 0 ? "+" : ""}{pnl.toFixed(2)}</span>
@@ -5002,11 +5005,11 @@ export default function WebTrader({
                 <div className="sentiment-prices">
                   <button className={`sentiment-price-btn sell${pendingMarketSide === "SELL" ? " selected" : ""}`} disabled={sellDisabled} title={staleTicketTitle} onClick={() => confirmAndPlace("SELL")}>
                     <span className="sp-label">Sell</span>
-                    <span className="sp-value mono">{m.lastTickAt > 0 ? fmt(m.bid, m.def.digits) : "-"}</span>
+                    <span className="sp-value mono">{m.lastTickAt > 0 ? fmt(m.bid, m.def.digits) : ""}</span>
                   </button>
                   <button className={`sentiment-price-btn buy${pendingMarketSide === "BUY" ? " selected" : ""}`} disabled={buyDisabled} title={staleTicketTitle} onClick={() => confirmAndPlace("BUY")}>
                     <span className="sp-label">Buy</span>
-                    <span className="sp-value mono">{m.lastTickAt > 0 ? fmt(effectiveAsk(askMarkupBySymbol, activeSymbol, m.ask, m.bid), m.def.digits) : "-"}</span>
+                    <span className="sp-value mono">{m.lastTickAt > 0 ? fmt(effectiveAsk(askMarkupBySymbol, activeSymbol, m.ask, m.bid), m.def.digits) : ""}</span>
                   </button>
                 </div>
               </div>
@@ -5039,19 +5042,19 @@ export default function WebTrader({
               </div>
               <div className="field">
                 <span className="field-label">Risk %</span>
-                <input className="mono" placeholder="-" value={riskPct} onChange={(e) => { setRiskPct(e.target.value); updateRiskVolume(e.target.value, slInput); }} />
+                <input className="mono" placeholder="" value={riskPct} onChange={(e) => { setRiskPct(e.target.value); updateRiskVolume(e.target.value, slInput); }} />
               </div>
               <div className="field">
                 <span className="field-label">Stop loss</span>
                 <span className="input-with-clear">
-                  <input className="mono" placeholder="-" value={slInput} onChange={(e) => { setSlInput(e.target.value); if (riskPct) updateRiskVolume(riskPct, e.target.value); }} />
+                  <input className="mono" placeholder="" value={slInput} onChange={(e) => { setSlInput(e.target.value); if (riskPct) updateRiskVolume(riskPct, e.target.value); }} />
                   <button className="clear-input-btn" onClick={() => setSlInput("")}>✕</button>
                 </span>
               </div>
               <div className="field">
                 <span className="field-label">Take profit</span>
                 <span className="input-with-clear">
-                  <input className="mono" placeholder="-" value={tpInput} onChange={(e) => setTpInput(e.target.value)} />
+                  <input className="mono" placeholder="" value={tpInput} onChange={(e) => setTpInput(e.target.value)} />
                   <button className="clear-input-btn" onClick={() => setTpInput("")}>✕</button>
                 </span>
               </div>
@@ -5062,7 +5065,7 @@ export default function WebTrader({
               <div className="field"><span className="field-label">Leverage</span><span className="mono" style={{ fontSize: 12.5 }}>1:{account?.leverage ?? 100}</span></div>
             </div>
 
-            <div className="margin-note">Margin required <span className="mono">{account ? fmt(newOrderMarginInAccount(volume, m.def.contractSize, m.bid, account.leverage, rateFor(m.def.name)) ?? NaN, 2) : "-"}</span> {(account?.currency ?? "USD").toUpperCase()}</div>
+            <div className="margin-note">Margin required <span className="mono">{account ? fmt(newOrderMarginInAccount(volume, m.def.contractSize, m.bid, account.leverage, rateFor(m.def.name)) ?? NaN, 2) : ""}</span> {(account?.currency ?? "USD").toUpperCase()}</div>
             {ticketHintLines.length > 0 ? <div className="sltp-preview" dangerouslySetInnerHTML={{ __html: ticketHintLines.join("<br>") }} /> : null}
 
             {orderMode === "market" && pendingMarketSide ? (
@@ -5143,8 +5146,8 @@ export default function WebTrader({
                   : `Reconnecting… ${Math.max(0, Math.floor((dealingPendingNowMs - (disconnectedSince ?? dealingPendingNowMs)) / 1000))}s`}
               </span>
             </div>
-            <div className="status-item"><span className="status-label">Ping</span><span className="status-value mono">{pingMs != null ? `${pingMs}ms` : "-"}</span></div>
-            <div className="status-item"><span className="status-label">Balance</span><span className="status-value mono">{balanceHidden ? "••••••" : account ? fmt(parseFloat(account.balance), 2) : "-"}</span></div>
+            <div className="status-item"><span className="status-label">Ping</span><span className="status-value mono">{pingMs != null ? `${pingMs}ms` : ""}</span></div>
+            <div className="status-item"><span className="status-label">Balance</span><span className="status-value mono">{balanceHidden ? "••••••" : account ? fmt(parseFloat(account.balance), 2) : ""}</span></div>
             <div className="status-item">
               <span className="status-label">Equity</span><span className="status-value mono">{balanceHidden ? "••••••" : fmt(equity, 2)}</span>
               <canvas ref={sparklineRef} width={70} height={20} className="equity-spark" />
@@ -5152,7 +5155,7 @@ export default function WebTrader({
           </div>
           <div className="status-item statusbar-center"><span className="status-label">Open P/L</span><span className="status-value mono" style={{ color: floatingPnl === 0 ? "var(--text-1)" : floatingPnl >= 0 ? "var(--buy)" : "var(--sell)" }}>{balanceHidden ? "••••" : (floatingPnl >= 0 ? "+" : "") + floatingPnl.toFixed(2)}</span></div>
           <div className="statusbar-right">
-            <div className="status-item"><span className="status-label">Margin level</span><span className="status-value mono" style={{ color: !isFinite(marginLevel) ? "var(--text-1)" : marginLevel < marginCallLevel ? "var(--sell)" : marginLevel < marginCallLevel * 2 ? "#FAC775" : "var(--buy)" }}>{balanceHidden ? "••••" : isFinite(marginLevel) ? marginLevel.toFixed(0) + "%" : "-"}</span></div>
+            <div className="status-item"><span className="status-label">Margin level</span><span className="status-value mono" style={{ color: !isFinite(marginLevel) ? "var(--text-1)" : marginLevel < marginCallLevel ? "var(--sell)" : marginLevel < marginCallLevel * 2 ? "#FAC775" : "var(--buy)" }}>{balanceHidden ? "••••" : isFinite(marginLevel) ? marginLevel.toFixed(0) + "%" : ""}</span></div>
             <div className="status-item"><span className="status-label">Free margin</span><span className="status-value mono">{balanceHidden ? "••••••" : fmt(freeMargin, 2)}</span></div>
           </div>
         </div>
@@ -5164,7 +5167,7 @@ export default function WebTrader({
           <div className="modal-wrap">
             <button className="modal-close" aria-label="Close" onClick={() => setQuickOrder(null)}>✕</button>
             <div className="generic-modal-card">
-              <div className="quick-order-header"><span>{quickOrder.symbol}</span><span className="mono">{market[quickOrder.symbol].lastTickAt > 0 ? fmt(market[quickOrder.symbol].bid, market[quickOrder.symbol].def.digits) : "-"}</span></div>
+              <div className="quick-order-header"><span>{quickOrder.symbol}</span><span className="mono">{market[quickOrder.symbol].lastTickAt > 0 ? fmt(market[quickOrder.symbol].bid, market[quickOrder.symbol].def.digits) : ""}</span></div>
               <div className="field-group">
                 <div className="field">
                   <span className="field-label">Order type</span>
@@ -5178,12 +5181,12 @@ export default function WebTrader({
                 </div>
                 <div className="field"><span className="field-label">Volume</span><input className="mono" style={{ width: 70 }} value={quickOrderVolume} onChange={(e) => setQuickOrderVolume(e.target.value)} /></div>
                 {quickOrderType === "MARKET" ? (
-                  <div className="field"><span className="field-label">Risk %</span><input className="mono" style={{ width: 70 }} placeholder="-" value={quickOrderRisk} onChange={(e) => setQuickOrderRisk(e.target.value)} /></div>
+                  <div className="field"><span className="field-label">Risk %</span><input className="mono" style={{ width: 70 }} placeholder="" value={quickOrderRisk} onChange={(e) => setQuickOrderRisk(e.target.value)} /></div>
                 ) : (
                   <div className="field"><span className="field-label">Price</span><input className="mono" style={{ width: 90 }} placeholder={pendingPriceRuleText(quickOrderType)} value={quickOrderPrice} onChange={(e) => setQuickOrderPrice(e.target.value)} /></div>
                 )}
-                <div className="field"><span className="field-label">Stop loss</span><input className="mono" placeholder="-" value={quickOrderSl} onChange={(e) => setQuickOrderSl(e.target.value)} /></div>
-                <div className="field"><span className="field-label">Take profit</span><input className="mono" placeholder="-" value={quickOrderTp} onChange={(e) => setQuickOrderTp(e.target.value)} /></div>
+                <div className="field"><span className="field-label">Stop loss</span><input className="mono" placeholder="" value={quickOrderSl} onChange={(e) => setQuickOrderSl(e.target.value)} /></div>
+                <div className="field"><span className="field-label">Take profit</span><input className="mono" placeholder="" value={quickOrderTp} onChange={(e) => setQuickOrderTp(e.target.value)} /></div>
                 <div className="field"><span className="field-label">Comment</span><input className="mono" style={{ width: 110 }} placeholder="Optional" value={quickOrderComment} onChange={(e) => setQuickOrderComment(e.target.value)} /></div>
               </div>
               {quickOrderType === "MARKET" ? (
@@ -5252,8 +5255,8 @@ export default function WebTrader({
                 <span className="sltp-edit-side">{sltpEdit.netSymbol ? `All ${positions.filter((p) => p.symbol.name === sltpEdit.netSymbol).length} positions` : `${positions.find((p) => p.id === sltpEdit.posId)?.side} ${positions.find((p) => p.id === sltpEdit.posId)?.volume}`}</span>
               </div>
               <div className="field-group">
-                <div className="field"><span className="field-label">Stop loss</span><span className="input-with-clear"><input className="mono" placeholder="-" value={sltpEdit.sl} onChange={(e) => setSltpEdit({ ...sltpEdit, sl: e.target.value })} /><button className="clear-input-btn" onClick={() => setSltpEdit({ ...sltpEdit, sl: "" })}>✕</button></span></div>
-                <div className="field"><span className="field-label">Take profit</span><span className="input-with-clear"><input className="mono" placeholder="-" value={sltpEdit.tp} onChange={(e) => setSltpEdit({ ...sltpEdit, tp: e.target.value })} /><button className="clear-input-btn" onClick={() => setSltpEdit({ ...sltpEdit, tp: "" })}>✕</button></span></div>
+                <div className="field"><span className="field-label">Stop loss</span><span className="input-with-clear"><input className="mono" placeholder="" value={sltpEdit.sl} onChange={(e) => setSltpEdit({ ...sltpEdit, sl: e.target.value })} /><button className="clear-input-btn" onClick={() => setSltpEdit({ ...sltpEdit, sl: "" })}>✕</button></span></div>
+                <div className="field"><span className="field-label">Take profit</span><span className="input-with-clear"><input className="mono" placeholder="" value={sltpEdit.tp} onChange={(e) => setSltpEdit({ ...sltpEdit, tp: e.target.value })} /><button className="clear-input-btn" onClick={() => setSltpEdit({ ...sltpEdit, tp: "" })}>✕</button></span></div>
               </div>
               <button className="modal-btn primary" style={{ width: "100%", justifyContent: "center" }} onClick={saveSltpEdit}>Update position</button>
             </div>
@@ -5665,7 +5668,7 @@ export default function WebTrader({
                             <div key={p.id} className="simple-row" style={{ padding: "6px 10px" }}>
                               <div className="simple-left">
                                 <span className="pos-symbol">{p.symbol.name}</span>
-                                <span className="net-pos-detail mono">{p.side} {parseFloat(p.volume).toFixed(2)} @ {p.openPrice} → {p.closePrice ?? "-"}</span>
+                                <span className="net-pos-detail mono">{p.side} {parseFloat(p.volume).toFixed(2)} @ {p.openPrice}{p.closePrice != null ? ` → ${p.closePrice}` : ""}</span>
                               </div>
                               <div className="simple-right mono" style={{ color: parseFloat(p.realizedPnl ?? "0") >= 0 ? "var(--buy)" : "var(--sell)" }}>
                                 {money(parseFloat(p.realizedPnl ?? "0"))}
@@ -5920,7 +5923,7 @@ export default function WebTrader({
                         Est. fee: {money(estimateFee(selectedMethod, parseFloat(fundsAmount) || 0))} (not deducted from your requested amount, shown for reference)
                       </div>
                     ) : null}
-                    {fundsTab === "withdraw" ? <div className="margin-note">Available: {account ? money(parseFloat(account.balance)) : "-"}</div> : null}
+                    {fundsTab === "withdraw" ? <div className="margin-note">Available: {account ? money(parseFloat(account.balance)) : ""}</div> : null}
                   </>
                 );
               })()}
@@ -6036,7 +6039,7 @@ function AnalyticsGrid({ trades }: { trades: ApiPosition[] }) {
   const totalPnl = pnls.reduce((s, p) => s + p, 0);
   const grossProfit = wins.reduce((s, p) => s + p, 0);
   const grossLoss = Math.abs(losses.reduce((s, p) => s + p, 0));
-  const profitFactor = grossLoss === 0 ? (grossProfit > 0 ? "∞" : "-") : (grossProfit / grossLoss).toFixed(2);
+  const profitFactor = grossLoss === 0 ? (grossProfit > 0 ? "∞" : "") : (grossProfit / grossLoss).toFixed(2);
   const best = Math.max(...pnls);
   const worst = Math.min(...pnls);
   const avgTrade = totalPnl / pnls.length;

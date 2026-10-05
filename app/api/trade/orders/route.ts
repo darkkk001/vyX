@@ -299,7 +299,7 @@ async function handlePlaceOrder(request: NextRequest, session: Session) {
           newOrderSide: side,
           newOrderSymbolId: brokerSymbol.symbolId,
         })
-      : { error: "NO_CONVERSION_RATE" as const, required: "-", available: "-", balance: account.balance.toFixed(2) };
+      : { error: "NO_CONVERSION_RATE" as const, required: null, available: null, balance: account.balance.toFixed(2) };
 
   if (!price) {
     return NextResponse.json({ error: "price is required" }, { status: 400 });

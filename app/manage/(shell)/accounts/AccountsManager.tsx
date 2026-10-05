@@ -482,7 +482,7 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
                       ))}
                   </Select>
                 </TableCell>
-                <TableCell className="min-w-[90px]">{row.country ?? "-"}</TableCell>
+                <TableCell className="min-w-[90px]">{row.country ?? ""}</TableCell>
                 <TableCell className="min-w-[90px]">{row.kycStatus ? <Badge tone={kycTone[row.kycStatus]}>{row.kycStatus}</Badge> : <Badge tone="neutral">NO KYC</Badge>}</TableCell>
                 <TableCell className="min-w-[160px]">
                   <Select
@@ -540,7 +540,7 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
                       className="w-full text-right"
                     />
                   ) : (
-                    row.maxDailyLoss ?? "-"
+                    row.maxDailyLoss ?? ""
                   )}
                 </TableCell>
                 <TableCell align="center" className="min-w-[110px]">

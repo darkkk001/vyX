@@ -92,7 +92,7 @@ export default function LiveAccountRequestsManager() {
                     {row.clientPhone ? `, ${row.clientPhone}` : ""}
                   </div>
                 </TableCell>
-                <TableCell>{row.accountTypeName ?? "-"}</TableCell>
+                <TableCell>{row.accountTypeName ?? ""}</TableCell>
                 <TableCell>
                   <Badge tone={statusTone[row.status as keyof typeof statusTone] ?? "neutral"}>{row.status}</Badge>
                   {row.status === "REJECTED" && row.rejectionReason ? (
