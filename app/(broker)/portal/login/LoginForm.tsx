@@ -4,6 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import styles from "../PortalAuth.module.css";
+import ResendVerification from "../ResendVerification";
 
 export default function LoginForm({ brokerName, brokerLogoUrl }: { brokerName: string; brokerLogoUrl: string | null }) {
   const router = useRouter();
@@ -15,6 +16,8 @@ export default function LoginForm({ brokerName, brokerLogoUrl }: { brokerName: s
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  // Login refused because the address is not verified yet: offer a new link.
+  const [needsVerification, setNeedsVerification] = useState(false);
   const [showVerifyNotice, setShowVerifyNotice] = useState(verifyParam === "success");
   const [showVerifyInvalid, setShowVerifyInvalid] = useState(verifyParam === "invalid");
 
@@ -22,6 +25,7 @@ export default function LoginForm({ brokerName, brokerLogoUrl }: { brokerName: s
     event.preventDefault();
     setSubmitting(true);
     setError(null);
+    setNeedsVerification(false);
 
     const response = await fetch("/api/portal/login", {
       method: "POST",
@@ -33,6 +37,7 @@ export default function LoginForm({ brokerName, brokerLogoUrl }: { brokerName: s
 
     if (!response.ok) {
       setError(body.error ?? "login failed");
+      setNeedsVerification(response.status === 403 && typeof body.error === "string" && body.error.includes("verify your email"));
       return;
     }
 
@@ -106,6 +111,7 @@ export default function LoginForm({ brokerName, brokerLogoUrl }: { brokerName: s
           </div>
 
           {error ? <div className={styles.formError}>{error}</div> : null}
+          {needsVerification || showVerifyInvalid ? <ResendVerification email={email} /> : null}
 
           <button type="submit" className={styles.btnPrimary} disabled={submitting}>
             {submitting ? "Logging in…" : "Log in"}

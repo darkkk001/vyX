@@ -2338,6 +2338,15 @@ Hidden until an LP bridge exists: the screen is merged into Liquidity providers,
 | T·session | update banner | Update ready · restart to install | — | — |
 | T·session | vX | Version X | — | — |
 
+### Client portal sign-in and registration (portal, new 2026-10-05)
+
+| Screen | Label in the app | Approved label | Unit | Tooltip / note |
+|---|---|---|---|---|
+| PORTAL | Resend verification e-mail (link button, new) | Resend verification e-mail | — | Register page after "an account with this email already exists, check your inbox for the verification link"; login page after "please verify your email before logging in" or an expired link (owner 2026-10-05). While waiting: "Resend verification e-mail (60 s)". |
+| PORTAL | sent line (new) | If an unverified account exists for that address, we've sent a new link. | — | Same line for every address: never says whether the address is registered. |
+| PORTAL | rate limit line (new) | Too many attempts, try again later. | — | 3 per address and 10 per IP per hour. |
+| PORTAL | empty address line (new) | Enter your e-mail address above first. | — | — |
+
 ## Consistency changes
 
 Each item lists the old variants, then the final word. The glossary above is the result.

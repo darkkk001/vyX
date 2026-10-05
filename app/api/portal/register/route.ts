@@ -1,10 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { checkRateLimit } from "@/lib/rate-limit";
-import { hashPassword, issueEmailVerificationToken } from "@/lib/client-auth";
-import { sendBrokerEmail } from "@/lib/email/adapter";
-import { renderBrokerEmail } from "@/lib/email/template";
-import { brokerPublicOrigin, requestOrigin } from "@/lib/request-origin";
+import { hashPassword } from "@/lib/client-auth";
+import { sendClientVerificationEmail } from "@/lib/email/verification-email";
+import { requestOrigin } from "@/lib/request-origin";
 
 // Client Portal self-registration (Stage 1) -- email + password, not an
 // account number (that's Account's own, separate credential -- see
@@ -56,52 +55,14 @@ export async function POST(request: NextRequest) {
     data: { brokerId, email, passwordHash, fullName },
   });
 
-  const token = await issueEmailVerificationToken(client.id);
-
-  const broker = await prisma.broker.findUnique({
-    where: { id: brokerId },
-    select: {
-      name: true, subdomain: true, customDomain: true, logoUrl: true, primaryColor: true, supportEmail: true,
-      emailEnabled: true, emailFromAddress: true, emailFromName: true,
-    },
+  // The verification e-mail lives in lib/email/verification-email.ts, shared with
+  // app/api/portal/resend-verification so the two can never drift apart.
+  const { usedMock, verifyUrl } = await sendClientVerificationEmail({
+    brokerId,
+    clientId: client.id,
+    email,
+    fallbackOrigin: () => requestOrigin(request),
   });
-  const brokerName = broker?.name ?? "your broker";
-
-  // A mailed link has to be the broker's own real public domain, not
-  // whatever origin this particular API request happened to arrive on
-  // -- see brokerPublicOrigin's own comment. Points straight at the API
-  // route, not a /portal/... page -- clicking it needs no user input
-  // (unlike a password reset), so there's nothing a page would add
-  // except an extra hop. GET /api/portal/verify-email itself redirects
-  // to /portal/login?verify=... once Stage 2 builds that page; today
-  // (Stage 1, no pages yet) that last hop 404s, which is expected -- the
-  // verification itself still completes correctly before that redirect
-  // fires, and this link needs no changes once Stage 2 lands.
-  const origin = broker ? brokerPublicOrigin(broker) : requestOrigin(request);
-  const verifyUrl = `${origin}/api/portal/verify-email?token=${token}`;
-
-  const { html, text } = renderBrokerEmail(
-    { name: brokerName, logoUrl: broker?.logoUrl ?? null, primaryColor: broker?.primaryColor ?? null, supportEmail: broker?.supportEmail ?? null },
-    {
-      preheader: `Verify your email to finish setting up your ${brokerName} account.`,
-      heading: `Welcome to ${brokerName}`,
-      bodyLines: [
-        `Thanks for creating an account with ${brokerName}. Confirm your email address to activate your account and get started.`,
-      ],
-      cta: { label: "Verify Email", url: verifyUrl },
-      extraNote: "This link expires in 24 hours.",
-    }
-  );
-
-  const { usedMock } = await sendBrokerEmail(
-    { name: brokerName, emailEnabled: broker?.emailEnabled ?? false, emailFromAddress: broker?.emailFromAddress ?? null, emailFromName: broker?.emailFromName ?? null },
-    {
-      to: email,
-      subject: `Verify your email for ${brokerName}`,
-      html,
-      text,
-    }
-  );
 
   return NextResponse.json({
     clientId: client.id,

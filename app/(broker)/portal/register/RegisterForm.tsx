@@ -3,6 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import styles from "../PortalAuth.module.css";
+import ResendVerification from "../ResendVerification";
 
 export default function RegisterForm({ brokerName, brokerLogoUrl }: { brokerName: string; brokerLogoUrl: string | null }) {
   const [email, setEmail] = useState("");
@@ -11,6 +12,8 @@ export default function RegisterForm({ brokerName, brokerLogoUrl }: { brokerName
   const [fullName, setFullName] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  // The address exists but was never verified (409): offer a new link.
+  const [needsVerification, setNeedsVerification] = useState(false);
   // Set once registration succeeds -- swaps the form for a "check your
   // email" state rather than navigating anywhere. There's no page to
   // land on yet besides /portal/login, and the whole point of this step
@@ -22,6 +25,7 @@ export default function RegisterForm({ brokerName, brokerLogoUrl }: { brokerName
     event.preventDefault();
     setSubmitting(true);
     setError(null);
+    setNeedsVerification(false);
 
     const response = await fetch("/api/portal/register", {
       method: "POST",
@@ -33,6 +37,7 @@ export default function RegisterForm({ brokerName, brokerLogoUrl }: { brokerName
 
     if (!response.ok) {
       setError(body.error ?? "registration failed");
+      setNeedsVerification(response.status === 409 && typeof body.error === "string" && body.error.includes("verification link"));
       return;
     }
 
@@ -142,6 +147,7 @@ export default function RegisterForm({ brokerName, brokerLogoUrl }: { brokerName
           </div>
 
           {error ? <div className={styles.formError}>{error}</div> : null}
+          {needsVerification ? <ResendVerification email={email} /> : null}
 
           <button type="submit" className={styles.btnPrimary} disabled={submitting}>
             {submitting ? "Creating account…" : "Create account"}
