@@ -240,7 +240,12 @@ pub struct Reconciler {
     settle_secs: i64,
     /// account -> its broker's subdomain (read once from the book; None = not found)
     brokers: std::sync::Mutex<std::collections::HashMap<String, Option<String>>>,
+    /// when backfill_brokers last ran (at most once per BACKFILL_EVERY)
+    backfilled_at: std::sync::Mutex<Option<std::time::Instant>>,
 }
+
+/// How often the reconciler retries filling in the broker of pairs stored without one (backfill_brokers).
+pub const BACKFILL_EVERY: std::time::Duration = std::time::Duration::from_secs(600);
 
 #[derive(Debug, Default, Clone)]
 pub struct RunReport {
@@ -258,7 +263,7 @@ impl Reconciler {
                 return Err(format!("shadow store is missing the soak-gate columns ({e}): run deploy/shadow-store.sql as postgres"));
             }
         }
-        Ok(Reconciler { book, store, recorder, window_secs: WINDOW_SECS, settle_secs: 5, brokers: Default::default() })
+        Ok(Reconciler { book, store, recorder, window_secs: WINDOW_SECS, settle_secs: 5, brokers: Default::default(), backfilled_at: Default::default() })
     }
 
     /// How long runs continue after the idle gate closes: the pairing window + the settle time + a margin + one run,
@@ -367,6 +372,60 @@ impl Reconciler {
         }
     }
 
+    /// The broker of the pairs stored without one since the soak start (2026-10-05, the "30 real paired" counter): the
+    /// read-only role could not read Broker.subdomain, so every broker read failed and every pair was stored with broker
+    /// NULL ("unknown", never "real" or "bot"). Once the owner grants the column (deploy/neon-shadow-readonly.sql) this
+    /// fills them in from the book, one read per account (cached), so nobody edits the store by hand. Only `broker` is
+    /// set: no pair is re-classified, no excuse touched. Runs at most once per BACKFILL_EVERY; with nothing to fill it
+    /// costs one local query (the store, never the book). A read that still fails leaves the rows for the next attempt.
+    pub async fn backfill_brokers(&self) -> u64 {
+        {
+            let mut last = self.backfilled_at.lock().unwrap();
+            if last.is_some_and(|t| t.elapsed() < BACKFILL_EVERY) {
+                return 0;
+            }
+            *last = Some(std::time::Instant::now());
+        }
+        let since = self.soak_started_at().await;
+        let accounts: Vec<(String,)> = match sqlx::query_as("SELECT DISTINCT account_id FROM shadow_pair WHERE broker IS NULL AND created_at >= $1 LIMIT 500")
+            .bind(since)
+            .fetch_all(&self.store)
+            .await
+        {
+            Ok(a) => a,
+            Err(err) => {
+                tracing::warn!(%err, "shadow reconcile: could not list the pairs stored without a broker");
+                return 0;
+            }
+        };
+        if accounts.is_empty() {
+            return 0;
+        }
+        let (mut filled, mut unresolved) = (0u64, 0usize);
+        for (account,) in &accounts {
+            let Some(broker) = self.broker_of(account).await else {
+                unresolved += 1;
+                continue;
+            };
+            match sqlx::query("UPDATE shadow_pair SET broker = $1 WHERE account_id = $2 AND broker IS NULL AND created_at >= $3")
+                .bind(&broker)
+                .bind(account)
+                .bind(since)
+                .execute(&self.store)
+                .await
+            {
+                Ok(r) => filled += r.rows_affected(),
+                Err(err) => tracing::warn!(%err, account_id = %account, "shadow reconcile: could not fill in the broker"),
+            }
+        }
+        if unresolved > 0 {
+            tracing::warn!(filled, accounts_unresolved = unresolved, "shadow reconcile: broker backfill incomplete (is SELECT (subdomain) ON \"Broker\" granted to the read-only role?)");
+        } else {
+            tracing::info!(filled, accounts = accounts.len(), "shadow reconcile: broker filled in on the pairs stored without it");
+        }
+        filled
+    }
+
     /// Every excuse the owner has written that this reconciler has not announced yet: logged once each (WARN), with the
     /// pair it covers, so no excuse goes by unseen.
     async fn announce_excuses(&self) {
@@ -436,6 +495,7 @@ impl Reconciler {
         let settle = self.settle_secs as f64;
         self.soak_started_at().await;
         self.announce_excuses().await;
+        self.backfill_brokers().await;
         if let Some(event) = coverage_event(Utc::now()) {
             let _ = sqlx::query("INSERT INTO shadow_state (key, value) VALUES ($1, $2) ON CONFLICT (key) DO NOTHING")
                 .bind(format!("event:{event}")).bind(Utc::now().to_rfc3339()).execute(&self.store).await;

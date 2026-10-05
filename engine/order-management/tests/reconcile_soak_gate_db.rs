@@ -159,3 +159,50 @@ async fn the_gate_counts_real_brokers_since_the_clock_and_only_the_owner_can_exc
     body.await;
     fx.cleanup().await;
 }
+
+/// The broker counter (2026-10-05): every pair since the soak start was stored with broker NULL (the read-only role
+/// could not read Broker.subdomain), so "30 real paired" counted nothing. Once the column is readable the reconciler
+/// fills the broker in itself: pairs since the soak start get their account's broker, an older pair is left alone,
+/// nothing is re-classified, and the backfill does not run again within BACKFILL_EVERY.
+#[tokio::test]
+async fn pairs_stored_without_a_broker_since_the_soak_start_get_it_filled_in() {
+    let Some(url) = url() else { return };
+    let pool = PgPool::connect(&url).await.unwrap();
+    let recorder = Arc::new(Recorder::connect(&url).await.expect("local store"));
+    let tag = Uuid::new_v4().simple().to_string()[..10].to_string();
+    let mut fx = Fx { pool: pool.clone(), tag: tag.clone(), brokers: Vec::new() };
+    let sub = format!("realbf{}", &tag[..6]);
+    let broker = fx.broker(&sub).await;
+    let account = fx.account(&broker, "bf").await;
+    let reconciler = Reconciler::new(pool.clone(), recorder.clone()).await.expect("reconciler");
+    let since = reconciler.soak_started_at().await;
+    let pair = |created: DateTime<Utc>, n: &str| {
+        let (pool, account, tag) = (pool.clone(), account.clone(), tag.clone());
+        let n = n.to_string();
+        async move {
+            let (id,): (i64,) = sqlx::query_as("INSERT INTO shadow_pair (class, kind, account_id, web_ref, created_at) VALUES ('MATCH', 'stop_out', $1, $2, $3) RETURNING id")
+                .bind(&account).bind(format!("bf-{tag}-{n}")).bind(created).fetch_one(&pool).await.unwrap();
+            id
+        }
+    };
+    let new_pair = pair(Utc::now().max(since), "new").await;
+    let old_pair = pair(since - chrono::Duration::days(1), "old").await;
+    let result = async {
+        let first = reconciler.backfill_brokers().await;
+        let again = reconciler.backfill_brokers().await;
+        let get = |id: i64| {
+            let pool = pool.clone();
+            async move { sqlx::query_as::<_, (Option<String>, String)>("SELECT broker, class FROM shadow_pair WHERE id = $1").bind(id).fetch_one(&pool).await.unwrap() }
+        };
+        (first, again, get(new_pair).await, get(old_pair).await)
+    }
+    .await;
+    fx.cleanup().await;
+    let (first, again, (new_broker, new_class), (old_broker, _)) = result;
+    assert!(first >= 1, "the pair since the soak start was filled in: {first}");
+    assert_eq!(new_broker.as_deref(), Some(sub.as_str()));
+    assert_eq!(new_class, "MATCH", "nothing re-classified");
+    assert_eq!(old_broker, None, "a pair from before the soak start is left alone");
+    assert_eq!(again, 0, "not again within BACKFILL_EVERY");
+    assert!(!is_test_broker(&sub), "a real broker: it counts toward the 30 real paired");
+}
