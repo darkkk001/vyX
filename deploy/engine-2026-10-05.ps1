@@ -58,7 +58,10 @@ if (-not (Select-String -Path "$Repo\engine\order-management\src\calc.rs" -Patte
 if (-not (Select-String -Path "$Repo\engine\market-data\src\cache.rs" -Pattern 'pub fn any_moved_at' -Quiet)) { throw "idle-gate moved-at rule missing: nothing built" }
 if (-not (Select-String -Path "$Repo\engine\market-data\src\pricing.rs" -Pattern 'pub struct PricingCache' -Quiet)) { throw "pricing cache missing: nothing built" }
 if (-not (Select-String -Path "$Repo\engine\order-management\src\book.rs" -Pattern 'pub async fn load_pass_book' -Quiet)) { throw "one-snapshot pass book missing: nothing built" }
-if (Select-String -Path "$Repo\engine\market-data\src\ask_markup.rs" -Pattern 'LEVELS_JOINS|am_at\b|AccountTypeSymbolConfig am_' -Quiet) { throw "pricing joins / account-type levels still present (pricing cache or D8 not in): nothing built" }
+# code lines only: the file's doc comments name the removed LEVELS_JOINS on purpose (fixed 2026-10-05: the first run
+# stopped here on those comments)
+$joins = Select-String -Path "$Repo\engine\market-data\src\ask_markup.rs" -Pattern 'LEVELS_JOINS|am_at\b|AccountTypeSymbolConfig am_' | Where-Object { $_.Line -notmatch '^\s*//' }
+if ($joins) { throw "pricing joins / account-type levels still present (pricing cache or D8 not in), line(s) $(($joins | ForEach-Object { $_.LineNumber }) -join ', '): nothing built" }
 $broker = Select-String -Path "$Repo\engine\order-management\src\reconcile.rs" -Pattern 'pub async fn backfill_brokers' -Quiet
 "broker backfill (b5c1a2a, droppable): $(if ($broker) { 'in this build' } else { 'NOT in this build (dropped): skip runbook section 5' })"
 $cmdLine = Get-Content "C:\vyxtrader\scripts\start-engine.cmd" | Where-Object { $_ -match '^\s*set\s+"?VYX_RISK_TRIGGER_MS=' } | Select-Object -First 1
