@@ -26,6 +26,15 @@ export async function GET() {
   const fourteenDaysAgo = new Date(now.getTime() - 14 * DAY_MS);
   const thirtyDaysAgo = new Date(now.getTime() - 30 * DAY_MS);
 
+  // Owner 2026-10-05: the money figures (depositsSum30d, netDeposits7d / Prior7d and the deposits-vs-withdrawals chart)
+  // count exactly the accounts the per-currency tiles count (clientTotals: LIVE, not a COVERAGE group, not the broker
+  // hedge account), so a demo or system-account entry can never move the chart but not the tiles (or the reverse).
+  // Staff-recorded deposits / withdrawals are ordinary DEPOSIT / WITHDRAWAL rows and count the same once COMPLETED.
+  const brokerRow = await prisma.broker.findUniqueOrThrow({ where: { id: brokerId }, select: { coverageAccountId: true } });
+  const liveClientTx: Prisma.TransactionWhereInput = {
+    account: { accountMode: "LIVE", group: { category: { not: "COVERAGE" } } },
+    ...(brokerRow.coverageAccountId ? { accountId: { not: brokerRow.coverageAccountId } } : {}),
+  };
   const [
     totalClients,
     newClients7d,
@@ -40,7 +49,7 @@ export async function GET() {
     prisma.account.count({ where: { brokerId } }),
     prisma.account.count({ where: { brokerId, createdAt: { gte: sevenDaysAgo } } }),
     prisma.transaction.aggregate({
-      where: { brokerId, type: "DEPOSIT", status: "COMPLETED", createdAt: { gte: thirtyDaysAgo } },
+      where: { brokerId, type: "DEPOSIT", status: "COMPLETED", createdAt: { gte: thirtyDaysAgo }, ...liveClientTx },
       _sum: { amount: true },
     }),
     // 2026-09-06 interim demo-exclusion (Section C audit) -- "Active
@@ -81,7 +90,7 @@ export async function GET() {
     // 7d sum and the prior-7d comparator come from the same read, bucketed
     // in JS below rather than 14 separate day-range queries.
     prisma.transaction.findMany({
-      where: { brokerId, type: { in: ["DEPOSIT", "WITHDRAWAL"] }, status: "COMPLETED", createdAt: { gte: fourteenDaysAgo } },
+      where: { brokerId, type: { in: ["DEPOSIT", "WITHDRAWAL"] }, status: "COMPLETED", createdAt: { gte: fourteenDaysAgo }, ...liveClientTx },
       select: { type: true, amount: true, createdAt: true },
     }),
   ]);
@@ -115,7 +124,6 @@ export async function GET() {
   // Batch 4 (owner decision): the charts' own D1 boundary, DST-aware (lib/trading-day.ts); 22:00 UTC only as fallback
   const tradingDay = await tradingDayStart(now);
   const tradingDayStartAt = tradingDay.start;
-  const brokerRow = await prisma.broker.findUniqueOrThrow({ where: { id: brokerId }, select: { coverageAccountId: true } });
   const closedToday = await prisma.position.aggregate({
     where: {
       brokerId,
