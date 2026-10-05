@@ -1487,3 +1487,22 @@ Build ~3-4 weeks after the pre-stage, then 1-2 weeks of soak.
 - Neon compute if the engine polls the book instead of holding it in memory.
 - A rate for every non-account-currency symbol must exist in LivePrice, or those positions are unpriced
   (not stopped out) and their closes are refused; the symbol setup should enforce it.
+
+## Post-cutover features (logged 2026-10-05)
+
+### Backoffice "Add / remove symbol" from the live feed (owner 2026-10-05)
+
+**Today:** a symbol that appears on the price feed (the EA sends it, the engine stores its LivePrice automatically)
+cannot be added from the backoffice. No route creates a global `Symbol` row; SYM only edits rows that exist, and
+`PATCH /api/manage/symbols` creates a `BrokerSymbol` only for an existing `Symbol`. Stop-gap:
+`scripts/add-feed-symbol.ts` (guarded, dry run first; used for USDX on Futurix).
+
+**Wanted:** symbol management from one place, live, so a broker never needs a script:
+- SYM lists the symbols currently on the feed (from the engine's live prices) that are not yet on the platform.
+- One click adds one: creates the global `Symbol` (spec from the feed / MT5 contract spec: digits, contract size,
+  asset class, currencies), the broker's `BrokerSymbol` (enabled, broker defaults) and a default `GroupSymbolConfig`,
+  and publishes ConfigChanged so terminals see it at once.
+- Remove: disable for the broker (and hide), refused while positions or pending orders are open on it.
+- Ties into the planned VyX feed app (the feed tells the platform its symbol list and specs).
+- Needs: a manage route (BROKER_ADMIN + PRICING, audit), the engine's feed symbol list exposed read-only to the web,
+  backoffice UI, and adversarial tests (case twins, synthetic prefix, other brokers' symbols, open positions).
