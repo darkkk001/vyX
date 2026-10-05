@@ -710,6 +710,35 @@ mod tests {
         assert!(shadow.try_recv().is_ok());
     }
 
+    /// The gate is v*-blind (86a4adc): a book holding only v* never opens the timers. The FIRES still evaluate it: a
+    /// moving v* quote that touches an SL calls the web, snapshots the shadow and runs the margin trigger.
+    #[tokio::test]
+    async fn a_moving_synthetic_quote_still_fires_although_it_never_opens_a_gate() {
+        let (url, mut rx) = mock_route(200).await;
+        let h = hook(url);
+        h.levels.lock().unwrap().insert("vGOLD".into(), vec![lvl("pos-v", "acc-v", false, Some(dec!(4280.2)), None, None)]);
+        let watch = Arc::new(StubWatch { symbols: vec!["vGOLD".into()], evaluated: Default::default() });
+        h.set_margin_watch(watch.clone());
+        let (tx, mut shadow) = tokio::sync::mpsc::unbounded_channel::<Vec<SlTpTouch>>();
+        h.set_shadow_snapshot(tx);
+        let cache = cache_ticked("vGOLD", 0);
+        let book: std::collections::HashSet<String> = ["vGOLD".to_string()].into();
+        assert_eq!(crate::activity::book_gate(&cache, Some(&book), chrono::Utc::now()), crate::activity::Gate::FeedQuiet, "v* never opens a timer");
+        assert!(!crate::activity::reload_due(&cache, chrono::Utc::now()));
+        h.after_flush(&[tick("vGOLD")], &cache);
+        let (line, _) = tokio::time::timeout(Duration::from_secs(2), rx.recv()).await.expect("the v* touch fires the web").unwrap();
+        assert!(line.contains("symbols=vGOLD"), "{line}");
+        let touches = shadow.try_recv().expect("the v* touch is snapshotted for the shadow");
+        assert_eq!(touches[0].position_id, "pos-v");
+        for _ in 0..50 {
+            if watch.evaluated.load(std::sync::atomic::Ordering::SeqCst) == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(watch.evaluated.load(std::sync::atomic::Ordering::SeqCst), 1, "the margin trigger evaluated vGOLD");
+    }
+
     #[tokio::test]
     async fn without_a_margin_watch_or_a_touched_level_nothing_fires() {
         let (url, mut rx) = mock_route(200).await;

@@ -111,19 +111,24 @@ impl PricingCache {
             let mut last: Option<tokio::time::Instant> = None;
             loop {
                 let due = last.is_none_or(|l| l.elapsed() >= safety);
+                // a failed reload that was asked for is retried next second (never left to the 10 min safety reload)
+                let mut retry = false;
                 if asked || !me.is_loaded() || (due && crate::activity::reload_due(&cache, chrono::Utc::now())) {
                     match me.reload(&pool).await {
                         Ok(s) => {
-                            if !asked && last.is_none() {
+                            if last.is_none() {
                                 tracing::info!(rows = s.len(), "pricing cache loaded");
                             }
                             last = Some(tokio::time::Instant::now());
                         }
-                        Err(err) => tracing::warn!(error = %err, "pricing cache: reload failed (keeping the last snapshot)"),
+                        Err(err) => {
+                            tracing::warn!(error = %err, "pricing cache: reload failed (keeping the last snapshot)");
+                            retry = asked;
+                        }
                     }
                 }
                 asked = tokio::select! {
-                    _ = tokio::time::sleep(Duration::from_secs(1)) => false,
+                    _ = tokio::time::sleep(Duration::from_secs(1)) => retry,
                     _ = me.reload_now.notified() => true,
                 };
             }

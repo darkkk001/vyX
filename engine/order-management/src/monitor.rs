@@ -560,13 +560,7 @@ async fn evaluate_account_checked(
     // may have changed this account since our copy was taken, and clearing the edge on stale numbers would make the
     // next pass notify the same episode twice (caught by the load harness with 2 walkers). Steady state costs one
     // cheap read of the column instead of an UPDATE per account per pass.
-    let notified = book::margin_call_notified(pool, account_id).await?;
     let mut edge = margin_call_edge(&state, thresholds);
-    let transition = |e: Option<book::MarginCallEdge>| match e {
-        Some(book::MarginCallEdge::In { .. }) => !notified,
-        Some(book::MarginCallEdge::Out) => notified,
-        None => false,
-    };
     if let Mode::Shadow(recorder) = mode {
         // shadow: its OWN edge per account (the web's flag moves with the web's decisions, not ours); recorded on
         // change only, nothing written to the book. An SL / TP snapshot pin looks at a PAST moment: it decides the
@@ -596,6 +590,14 @@ async fn evaluate_account_checked(
         }
         return Ok(Some(report));
     }
+    // live only (the shadow keeps its own edge above and never reads the web's flag: 2026-10-05, one statement per
+    // account per shadow pass saved)
+    let notified = book::margin_call_notified(pool, account_id).await?;
+    let transition = |e: Option<book::MarginCallEdge>| match e {
+        Some(book::MarginCallEdge::In { .. }) => !notified,
+        Some(book::MarginCallEdge::Out) => notified,
+        None => false,
+    };
     if transition(edge) {
         if let Some(fresh) = load_book_state(pool, account_id).await? {
             state = fresh;
