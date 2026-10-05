@@ -76,6 +76,9 @@ async fn run(stop_file: &str, out: &str) -> Result<usize, String> {
         });
     }
     let source = order_management::book::PriceSource::Ticks(ticks.clone());
+    // ...and its ask rules from the pricing cache, as production (2026-10-05): loaded once (the seed set the pricing)
+    let pricing = market_data::pricing::PricingCache::new();
+    pricing.reload(&book).await.map_err(|e| e.to_string())?;
     // the feeder's first copy is in before the first pass
     tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -85,13 +88,13 @@ async fn run(stop_file: &str, out: &str) -> Result<usize, String> {
     // ALREADY breached, and "ready" used to be printed before the shadow's first pass, so whenever the web reached an
     // account first the shadow only ever sampled it after the close (samples all later than the web's close = WEB_ONLY).
     // In production the shadow is running long before any breach; this makes the gate start the same way.
-    order_management::book::with_price_source(source.clone(), monitor::run_pass_mode(&book, None, &mut cursor, &mode)).await;
+    order_management::book::with_book_sources(source.clone(), Some(pricing.clone()), monitor::run_pass_mode(&book, None, &mut cursor, &mode)).await;
     println!("[shadow-gate] shadow ready");
     let started = Instant::now();
     let mut passes = 0usize;
     let mut stop_seen: Option<Instant> = None;
     loop {
-        order_management::book::with_price_source(source.clone(), monitor::run_pass_mode(&book, None, &mut cursor, &mode)).await;
+        order_management::book::with_book_sources(source.clone(), Some(pricing.clone()), monitor::run_pass_mode(&book, None, &mut cursor, &mode)).await;
         passes += 1;
         if stop_seen.is_none() && std::path::Path::new(stop_file).exists() {
             stop_seen = Some(Instant::now());

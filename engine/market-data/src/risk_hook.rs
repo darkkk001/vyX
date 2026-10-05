@@ -148,6 +148,8 @@ pub struct RiskHook {
     shadow_snapshot: std::sync::OnceLock<SnapshotSender>,
     /// a book change was announced: reload now (request_reload)
     reload_now: Notify,
+    /// the shared pricing cache (account ask rules); unset = read per reload (tests)
+    pricing: std::sync::OnceLock<Arc<crate::pricing::PricingCache>>,
     /// how many reloads have run (tests, diagnostics: a lost event must force one, an in-order stream must not)
     pub reload_count: std::sync::atomic::AtomicU64,
 }
@@ -176,6 +178,7 @@ impl RiskHook {
             loaded: AtomicBool::new(false),
             shadow_snapshot: std::sync::OnceLock::new(),
             reload_now: Notify::new(),
+            pricing: std::sync::OnceLock::new(),
             reload_count: std::sync::atomic::AtomicU64::new(0),
         }))
     }
@@ -201,71 +204,85 @@ impl RiskHook {
         let _ = self.margin_watch.set(watch);
     }
 
-    /// Reload the open positions' levels (symbol -> [side, sl, tp, account ask rule]) from the Prisma table.
+    /// Plug in the shared pricing cache (once; a second call is ignored). Without one (tests) every reload reads the
+    /// pricing configuration of the rows it loaded, in the same snapshot.
+    pub fn set_pricing(&self, pricing: Arc<crate::pricing::PricingCache>) {
+        let _ = self.pricing.set(pricing);
+    }
+
+    /// Reload the open positions' levels (symbol -> [side, sl, tp, account ask rule]) and the resting orders' entries from
+    /// the Prisma tables. The account ask rule comes from the pricing cache (2026-10-05): the two reads join only Symbol
+    /// and Account, never the pricing tables.
     pub async fn reload(&self, pool: &PgPool) {
-        use sqlx::Row;
         self.reload_count.fetch_add(1, Ordering::Relaxed);
-        let sql = format!(
-            r#"SELECT s.name, p.id AS position_id, p."accountId" AS account_id, p.side::text AS side, p."slPrice" AS sl, p."tpPrice" AS tp, {levels}
-               FROM "Position" p JOIN "Symbol" s ON s.id = p."symbolId" JOIN "Account" a ON a.id = p."accountId"
-               {joins}
-               WHERE p.status = 'OPEN' AND (p."slPrice" IS NOT NULL OR p."tpPrice" IS NOT NULL)"#,
-            levels = ask_markup::LEVELS_COLUMNS,
-            joins = ask_markup::LEVELS_JOINS,
-        );
-        let rows = sqlx::query(&sql).fetch_all(pool).await.and_then(|rows| {
-            rows.iter()
-                .map(|r| -> Result<(String, Level), sqlx::Error> {
-                    let side: String = r.try_get("side")?;
-                    let ask_rule = ask_markup::resolve(&ask_markup::levels_from_row(r)?);
-                    Ok((
-                        r.try_get("name")?,
-                        Level { position_id: r.try_get("position_id")?, account_id: r.try_get("account_id")?, is_buy: side == "BUY", sl: r.try_get("sl")?, tp: r.try_get("tp")?, ask_rule },
-                    ))
-                })
-                .collect::<Result<Vec<_>, _>>()
-        });
-        match rows {
-            Ok(rows) => {
-                let mut map: HashMap<String, Vec<Level>> = HashMap::new();
-                for (symbol, level) in rows {
-                    map.entry(symbol).or_default().push(level);
-                }
-                *self.levels.lock().unwrap() = map;
+        match self.load(pool).await {
+            Ok((levels, pending)) => {
+                *self.levels.lock().unwrap() = levels;
+                *self.pending.lock().unwrap() = pending;
+                self.loaded.store(true, Ordering::Relaxed);
             }
-            Err(err) => tracing::warn!(error = %err, "risk hook: could not reload SL/TP levels"),
+            Err(err) => tracing::warn!(error = %err, "risk hook: could not reload SL/TP levels / pending order entries"),
         }
+    }
+
+    #[allow(clippy::type_complexity)]
+    async fn load(&self, pool: &PgPool) -> Result<(HashMap<String, Vec<Level>>, HashMap<String, Vec<PendingLevel>>), sqlx::Error> {
+        use sqlx::Row;
+        let mut conn = pool.acquire().await?;
+        let level_rows = sqlx::query(
+            r#"SELECT s.name, s.id AS symbol_id, s.digits, p.id AS position_id, p."accountId" AS account_id, p.side::text AS side,
+                      p."slPrice" AS sl, p."tpPrice" AS tp, a."brokerId" AS a_broker, a."groupId" AS a_group
+               FROM "Position" p JOIN "Symbol" s ON s.id = p."symbolId" JOIN "Account" a ON a.id = p."accountId"
+               WHERE p.status = 'OPEN' AND (p."slPrice" IS NOT NULL OR p."tpPrice" IS NOT NULL)"#,
+        )
+        .fetch_all(&mut *conn)
+        .await?;
         // resting LIMIT / STOP orders (the web's own "Order" table: PENDING, not the engine's orders table), with the
         // order's account ask rule for a BUY entry
-        let sql = format!(
-            r#"SELECT s.name, o.side::text AS side, o.type::text AS kind, o."requestedPrice" AS entry, {levels}
+        let pending_rows = sqlx::query(
+            r#"SELECT s.name, s.id AS symbol_id, s.digits, o."accountId" AS account_id, o.side::text AS side, o.type::text AS kind,
+                      o."requestedPrice" AS entry, a."brokerId" AS a_broker, a."groupId" AS a_group
                FROM "Order" o JOIN "Symbol" s ON s.id = o."symbolId" JOIN "Account" a ON a.id = o."accountId"
-               {joins}
                WHERE o.status = 'PENDING' AND o.type IN ('LIMIT', 'STOP') AND o."requestedPrice" IS NOT NULL"#,
-            levels = ask_markup::LEVELS_COLUMNS,
-            joins = ask_markup::LEVELS_JOINS,
-        );
-        let pending = sqlx::query(&sql).fetch_all(pool).await.and_then(|rows| {
-            rows.iter()
-                .map(|r| -> Result<(String, PendingLevel), sqlx::Error> {
-                    let side: String = r.try_get("side")?;
-                    let kind: String = r.try_get("kind")?;
-                    let ask_rule = ask_markup::resolve(&ask_markup::levels_from_row(r)?);
-                    Ok((r.try_get("name")?, PendingLevel { is_buy: side == "BUY", is_limit: kind == "LIMIT", entry: r.try_get("entry")?, ask_rule }))
-                })
-                .collect::<Result<Vec<_>, _>>()
-        });
-        match pending {
-            Ok(rows) => {
-                let mut map: HashMap<String, Vec<PendingLevel>> = HashMap::new();
-                for (symbol, level) in rows {
-                    map.entry(symbol).or_default().push(level);
-                }
-                *self.pending.lock().unwrap() = map;
-            }
-            Err(err) => tracing::warn!(error = %err, "risk hook: could not reload pending order entries"),
+        )
+        .fetch_all(&mut *conn)
+        .await?;
+        // (account, broker, group, symbol, digits) of every row, levels first
+        let mut keys: Vec<(String, String, Option<String>, String, i32)> = Vec::with_capacity(level_rows.len() + pending_rows.len());
+        for r in level_rows.iter().chain(pending_rows.iter()) {
+            keys.push((r.try_get("account_id")?, r.try_get("a_broker")?, r.try_get("a_group")?, r.try_get("symbol_id")?, r.try_get("digits")?));
         }
-        self.loaded.store(true, Ordering::Relaxed);
+        let rule_keys: Vec<ask_markup::RuleKey<'_>> = keys
+            .iter()
+            .map(|(a, b, g, s, d)| ask_markup::RuleKey { account_id: a, broker_id: b, group_id: g.as_deref(), symbol_id: s, digits: *d })
+            .collect();
+        let snap = match self.pricing.get() {
+            Some(cache) => Some(cache.snapshot_or_load(&mut conn).await?),
+            None => None,
+        };
+        let rules = ask_markup::rules_for(&mut conn, snap.as_deref(), &rule_keys).await?;
+        let mut rules = rules.into_iter();
+        let mut levels: HashMap<String, Vec<Level>> = HashMap::new();
+        for r in &level_rows {
+            let side: String = r.try_get("side")?;
+            let ask_rule = rules.next().flatten();
+            levels.entry(r.try_get("name")?).or_default().push(Level {
+                position_id: r.try_get("position_id")?,
+                account_id: r.try_get("account_id")?,
+                is_buy: side == "BUY",
+                sl: r.try_get("sl")?,
+                tp: r.try_get("tp")?,
+                ask_rule,
+            });
+        }
+        let mut pending: HashMap<String, Vec<PendingLevel>> = HashMap::new();
+        for r in &pending_rows {
+            let side: String = r.try_get("side")?;
+            let kind: String = r.try_get("kind")?;
+            let ask_rule = rules.next().flatten();
+            pending.entry(r.try_get("name")?).or_default().push(PendingLevel { is_buy: side == "BUY", is_limit: kind == "LIMIT", entry: r.try_get("entry")?, ask_rule });
+        }
+        Ok((levels, pending))
     }
 
     /// The `x-vyx-idle-gate` value of GET /internal/prices (2026-09-26): the book gate exactly as this hook's backstop
@@ -601,6 +618,7 @@ mod tests {
             loaded: AtomicBool::new(false),
             shadow_snapshot: std::sync::OnceLock::new(),
             reload_now: Notify::new(),
+            pricing: std::sync::OnceLock::new(),
             reload_count: std::sync::atomic::AtomicU64::new(0),
         })
     }

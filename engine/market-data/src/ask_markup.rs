@@ -108,36 +108,172 @@ pub fn close_price(side: OrderSide, bid: Decimal, ask: Decimal, rule: Option<&As
     }
 }
 
-/// The joins a query adds to read the levels of its rows' (account, symbol). The query must alias the account `a` and
-/// the symbol `s`; every joined table is prefixed `am_` so it never clashes with the query's own aliases.
-pub const LEVELS_JOINS: &str = r#"
-    LEFT JOIN "Broker" am_b ON am_b.id = a."brokerId"
-    LEFT JOIN "Group" am_g ON am_g.id = a."groupId"
-    LEFT JOIN "BrokerSymbol" am_bs ON am_bs."brokerId" = a."brokerId" AND am_bs."symbolId" = s.id
-    LEFT JOIN "GroupSymbolConfig" am_gsc ON am_gsc."groupId" = a."groupId" AND am_gsc."symbolId" = s.id
-    LEFT JOIN "AccountSymbolConfig" am_asc ON am_asc."accountId" = a.id AND am_asc."symbolId" = s.id "#;
+/// One broker's pricing switches (lib/pricing-engine.ts): the engine flag, and its coverage account (always raw).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BrokerPricing {
+    pub pricing_engine: bool,
+    pub coverage_account: Option<String>,
+}
 
-/// The columns those joins provide, read back by `levels_from_row`.
-pub const LEVELS_COLUMNS: &str = r#"
-    COALESCE(am_b."pricingEngineEnabled", false) AS am_engine,
-    (COALESCE(am_g.category::text = 'COVERAGE', false) OR COALESCE(am_b."coverageAccountId" = a.id, false)) AS am_coverage,
-    s.digits AS am_digits,
-    am_bs."spreadMarkup" AS am_broker,
-    am_gsc."spreadMarkup" AS am_g_m, am_gsc."targetTotalSpreadPips" AS am_g_t,
-    am_asc."spreadMarkup" AS am_as_m, am_asc."targetTotalSpreadPips" AS am_as_t "#;
+/// The pricing configuration every ask rule is resolved from, held in memory (2026-10-05, Neon load): the broker
+/// switches, the COVERAGE groups and the three per-symbol levels. Before, every book query joined Broker / Group /
+/// BrokerSymbol / GroupSymbolConfig / AccountSymbolConfig for every row (`LEVELS_JOINS`, removed): ~2.3 M scans each
+/// in 45 h. The account's broker and group are NOT held here -- they come from the book row itself (the Account it
+/// joins anyway), so an account moved to another group prices by its new group at once; only the configuration of
+/// those levels is cached, reloaded when the web announces a change (config.changed / account.updated, see
+/// crate::pricing).
+#[derive(Clone, Debug, Default)]
+pub struct PricingSnapshot {
+    brokers: std::collections::HashMap<String, BrokerPricing>,
+    coverage_groups: std::collections::HashSet<String>,
+    /// (brokerId, symbolId) -> BrokerSymbol.spreadMarkup (NOT NULL); a missing key = no BrokerSymbol row
+    broker_symbol: std::collections::HashMap<(String, String), Decimal>,
+    /// (groupId, symbolId) -> GroupSymbolConfig
+    group_symbol: std::collections::HashMap<(String, String), Level>,
+    /// (accountId, symbolId) -> AccountSymbolConfig
+    account_symbol: std::collections::HashMap<(String, String), Level>,
+}
 
-/// The levels of one row of a query that selected `LEVELS_COLUMNS` (with `LEVELS_JOINS`).
-pub fn levels_from_row(row: &sqlx::postgres::PgRow) -> Result<AskLevels, sqlx::Error> {
-    use sqlx::Row;
-    let lvl = |m: &str, t: &str| -> Result<Level, sqlx::Error> { Ok(Level { markup: row.try_get(m)?, target: row.try_get(t)? }) };
-    Ok(AskLevels {
-        pricing_engine: row.try_get("am_engine")?,
-        coverage: row.try_get("am_coverage")?,
-        digits: row.try_get("am_digits")?,
-        broker: row.try_get("am_broker")?,
-        group: lvl("am_g_m", "am_g_t")?,
-        account_symbol: lvl("am_as_m", "am_as_t")?,
-    })
+/// What a book row must carry to resolve its ask rule from a snapshot: the ACCOUNT's broker and group (not the
+/// position's), the symbol's id and digits.
+#[derive(Clone, Copy, Debug)]
+pub struct RuleKey<'a> {
+    pub account_id: &'a str,
+    pub broker_id: &'a str,
+    pub group_id: Option<&'a str>,
+    pub symbol_id: &'a str,
+    pub digits: i32,
+}
+
+/// Which rows a scoped load reads (the fallback when no cache is in scope: tests, harnesses).
+#[derive(Clone, Debug, Default)]
+pub struct PricingScope {
+    pub broker_ids: Vec<String>,
+    pub group_ids: Vec<String>,
+    pub account_ids: Vec<String>,
+}
+
+impl PricingScope {
+    /// The scope of these keys (deduplicated).
+    pub fn of<'a>(keys: impl IntoIterator<Item = RuleKey<'a>>) -> Self {
+        let mut s = PricingScope::default();
+        for k in keys {
+            if !s.broker_ids.iter().any(|b| b == k.broker_id) {
+                s.broker_ids.push(k.broker_id.to_string());
+            }
+            if let Some(g) = k.group_id {
+                if !s.group_ids.iter().any(|x| x == g) {
+                    s.group_ids.push(g.to_string());
+                }
+            }
+            if !s.account_ids.iter().any(|a| a == k.account_id) {
+                s.account_ids.push(k.account_id.to_string());
+            }
+        }
+        s
+    }
+}
+
+impl PricingSnapshot {
+    /// The levels of one (account, symbol), exactly what the old `LEVELS_JOINS` row gave: a missing broker = engine off
+    /// and no coverage account (its LEFT JOIN's COALESCE), a missing group = not coverage and no group level.
+    pub fn levels(&self, k: RuleKey<'_>) -> AskLevels {
+        let broker = self.brokers.get(k.broker_id);
+        let key = |a: &str| (a.to_string(), k.symbol_id.to_string());
+        AskLevels {
+            pricing_engine: broker.is_some_and(|b| b.pricing_engine),
+            coverage: k.group_id.is_some_and(|g| self.coverage_groups.contains(g))
+                || broker.and_then(|b| b.coverage_account.as_deref()) == Some(k.account_id),
+            digits: k.digits,
+            broker: self.broker_symbol.get(&key(k.broker_id)).copied(),
+            group: k.group_id.and_then(|g| self.group_symbol.get(&key(g)).copied()).unwrap_or_default(),
+            account_symbol: self.account_symbol.get(&key(k.account_id)).copied().unwrap_or_default(),
+        }
+    }
+
+    /// The account's ask rule for the symbol (None = the raw ask).
+    pub fn rule(&self, k: RuleKey<'_>) -> Option<AskRule> {
+        resolve(&self.levels(k))
+    }
+
+    /// Reads the pricing configuration on `conn`: every row (`scope` None), or only `scope`'s. Five plain reads of the
+    /// config tables, no join with the book; the caller owns the snapshot (a cache reload runs them in one read-only
+    /// transaction, a scoped book read inside its own).
+    pub async fn load(conn: &mut sqlx::PgConnection, scope: Option<&PricingScope>) -> Result<Self, sqlx::Error> {
+        let (brokers, groups, accounts) = match scope {
+            Some(s) => (Some(s.broker_ids.clone()), Some(s.group_ids.clone()), Some(s.account_ids.clone())),
+            None => (None, None, None),
+        };
+        let mut snap = PricingSnapshot::default();
+        let rows: Vec<(String, bool, Option<String>)> = sqlx::query_as(
+            r#"SELECT id, "pricingEngineEnabled", "coverageAccountId" FROM "Broker" WHERE $1::text[] IS NULL OR id = ANY($1)"#,
+        )
+        .bind(&brokers)
+        .fetch_all(&mut *conn)
+        .await?;
+        for (id, pricing_engine, coverage_account) in rows {
+            snap.brokers.insert(id, BrokerPricing { pricing_engine, coverage_account });
+        }
+        let rows: Vec<(String,)> =
+            sqlx::query_as(r#"SELECT id FROM "Group" WHERE category::text = 'COVERAGE' AND ($1::text[] IS NULL OR id = ANY($1))"#)
+                .bind(&groups)
+                .fetch_all(&mut *conn)
+                .await?;
+        snap.coverage_groups = rows.into_iter().map(|(id,)| id).collect();
+        let rows: Vec<(String, String, Decimal)> = sqlx::query_as(
+            r#"SELECT "brokerId", "symbolId", "spreadMarkup" FROM "BrokerSymbol" WHERE $1::text[] IS NULL OR "brokerId" = ANY($1)"#,
+        )
+        .bind(&brokers)
+        .fetch_all(&mut *conn)
+        .await?;
+        snap.broker_symbol = rows.into_iter().map(|(b, s, m)| ((b, s), m)).collect();
+        let rows: Vec<(String, String, Option<Decimal>, Option<Decimal>)> = sqlx::query_as(
+            r#"SELECT "groupId", "symbolId", "spreadMarkup", "targetTotalSpreadPips" FROM "GroupSymbolConfig" WHERE $1::text[] IS NULL OR "groupId" = ANY($1)"#,
+        )
+        .bind(&groups)
+        .fetch_all(&mut *conn)
+        .await?;
+        snap.group_symbol = rows.into_iter().map(|(g, s, markup, target)| ((g, s), Level { markup, target })).collect();
+        let rows: Vec<(String, String, Option<Decimal>, Option<Decimal>)> = sqlx::query_as(
+            r#"SELECT "accountId", "symbolId", "spreadMarkup", "targetTotalSpreadPips" FROM "AccountSymbolConfig" WHERE $1::text[] IS NULL OR "accountId" = ANY($1)"#,
+        )
+        .bind(&accounts)
+        .fetch_all(&mut *conn)
+        .await?;
+        snap.account_symbol = rows.into_iter().map(|(a, s, markup, target)| ((a, s), Level { markup, target })).collect();
+        Ok(snap)
+    }
+
+    /// Configured rows held (diagnostics: the reload log line).
+    pub fn len(&self) -> usize {
+        self.brokers.len() + self.coverage_groups.len() + self.broker_symbol.len() + self.group_symbol.len() + self.account_symbol.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+/// The ask rules of a set of book rows: from `snapshot` when given (the cache), else read on `conn` for exactly these
+/// rows' brokers / groups / accounts (tests and harnesses without a cache: the configuration as it is NOW, inside the
+/// caller's own snapshot, as the old per-row joins read it).
+pub async fn rules_for(
+    conn: &mut sqlx::PgConnection,
+    snapshot: Option<&PricingSnapshot>,
+    keys: &[RuleKey<'_>],
+) -> Result<Vec<Option<AskRule>>, sqlx::Error> {
+    if keys.is_empty() {
+        return Ok(Vec::new());
+    }
+    let loaded;
+    let snap = match snapshot {
+        Some(s) => s,
+        None => {
+            loaded = PricingSnapshot::load(conn, Some(&PricingScope::of(keys.iter().copied()))).await?;
+            &loaded
+        }
+    };
+    Ok(keys.iter().map(|k| snap.rule(*k)).collect())
 }
 
 #[cfg(test)]

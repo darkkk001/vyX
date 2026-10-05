@@ -1230,6 +1230,7 @@ async fn spawn_tick_driven_triggers(
     nats: async_nats::Client,
     guard: order_management::monitor::RunGuard,
     prices: order_management::book::PriceSource,
+    pricing: Arc<market_data::pricing::PricingCache>,
 ) -> Result<(), async_nats::SubscribeError> {
     let mut sub = nats.subscribe("price.tick.*").await?;
     tracing::info!("tick-driven triggers: subscribed to price.tick.*");
@@ -1264,7 +1265,7 @@ async fn spawn_tick_driven_triggers(
             };
             if run_monitor {
                 let (pool1, nats1, guard1) = (pool.clone(), nats.clone(), guard.clone());
-                tokio::spawn(order_management::book::with_price_source(prices.clone(), async move {
+                tokio::spawn(order_management::book::with_book_sources(prices.clone(), Some(pricing.clone()), async move {
                     order_management::monitor::run_once_guarded(&pool1, &nats1, &guard1).await;
                 }));
             }
@@ -1324,6 +1325,25 @@ async fn spawn_book_change_reload(
         });
     }
     market_data::book_events::spawn_debounced(rx, market_data::book_events::DEBOUNCE, on_change);
+    Ok(())
+}
+
+/// The pricing cache's reload on change (market_data::pricing): config.changed / account.updated, debounced like the book
+/// reloads, one reload per burst.
+async fn spawn_pricing_reload(nats: async_nats::Client, pricing: Arc<market_data::pricing::PricingCache>) -> Result<(), async_nats::SubscribeError> {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    for subject in market_data::pricing::PRICING_CHANGE_SUBJECTS {
+        let mut sub = nats.subscribe(subject.to_string()).await?;
+        let tx = tx.clone();
+        tokio::spawn(async move {
+            while let Some(msg) = sub.next().await {
+                if tx.send(msg.subject.to_string()).is_err() {
+                    break;
+                }
+            }
+        });
+    }
+    market_data::book_events::spawn_debounced(rx, market_data::book_events::DEBOUNCE, Arc::new(move || pricing.request_reload()));
     Ok(())
 }
 
@@ -1488,6 +1508,11 @@ async fn main() {
     // book's price source whenever order management runs (live or shadow), instead of the database's LivePrice,
     // which stopped moving when the feed's writes went VPS-local (S5).
     let tick_cache = Arc::new(TickCache::new());
+    // The pricing cache (2026-10-05, market_data::pricing): the account ask rules of the risk hook, the margin trigger and
+    // every order-management book read, from memory. Reloaded on config.changed / account.updated (below), on a lost
+    // event or a reconnect, and every 10 min while anything real moves. Its loop starts only if something uses it.
+    let pricing = market_data::pricing::PricingCache::new();
+    let mut pricing_used = false;
     // Stage 5: the shadow's trigger inbox (monitor::spawn_shadow_trigger), handed to the per-tick margin trigger below
     let mut shadow_trigger: Option<tokio::sync::mpsc::UnboundedSender<order_management::margin_watch::MarginFire>> = None;
     // Stage 5 (2026-09-26): the same worker's SL / TP snapshot inbox, handed to the risk hook below (never waited on)
@@ -1507,6 +1532,8 @@ async fn main() {
         );
         let monitor_guard = order_management::monitor::new_run_guard();
         order_management::book::require_tick_source();
+        order_management::book::require_pricing_cache();
+        pricing_used = true;
         let prices = order_management::book::PriceSource::Ticks(tick_cache.clone());
         order_management::monitor::spawn(
             pool.clone(),
@@ -1514,8 +1541,9 @@ async fn main() {
             std::time::Duration::from_secs(monitor_interval_secs),
             monitor_guard.clone(),
             prices.clone(),
+            Some(pricing.clone()),
         );
-        spawn_tick_driven_triggers(pool.clone(), nats.clone(), monitor_guard, prices)
+        spawn_tick_driven_triggers(pool.clone(), nats.clone(), monitor_guard, prices, pricing.clone())
             .await
             .expect("failed to subscribe tick-driven triggers to price.tick.*");
 
@@ -1595,14 +1623,23 @@ async fn main() {
         let recorder = Arc::new(recorder);
         tracing::warn!(pass_secs, "order management SHADOW: the monitor evaluates every account and records what it would do; it writes nothing and publishes nothing. The web owns every close.");
         order_management::book::require_tick_source();
+        // the shadow's ask rules come from the pricing cache; a book read without it in scope is refused
+        order_management::book::require_pricing_cache();
+        pricing_used = true;
         order_management::monitor::spawn_shadow(
             book_pool.clone(),
             recorder.clone(),
             std::time::Duration::from_secs(pass_secs),
             order_management::book::PriceSource::Ticks(tick_cache.clone()),
+            Some(pricing.clone()),
             order_management::monitor::ShadowGate { cache: tick_cache.clone(), watch: margin_watch_slot.clone() },
         );
-        let (inbox, snapshots) = order_management::monitor::spawn_shadow_trigger_with_snapshots(book_pool.clone(), recorder.clone(), order_management::book::PriceSource::Ticks(tick_cache.clone()));
+        let (inbox, snapshots) = order_management::monitor::spawn_shadow_trigger_with_snapshots(
+            book_pool.clone(),
+            recorder.clone(),
+            order_management::book::PriceSource::Ticks(tick_cache.clone()),
+            Some(pricing.clone()),
+        );
         shadow_trigger = Some(inbox);
         shadow_snapshot = Some(snapshots);
         // §5.3: pairs the web's real risk actions with the shadow's decisions every minute (reads the book, writes only
@@ -1656,6 +1693,8 @@ async fn main() {
     // the full-book backstop (stop-out on positions with no SL / TP) runs every minute from here.
     let risk_hook = market_data::risk_hook::RiskHook::from_env();
     if let Some(hook) = &risk_hook {
+        hook.set_pricing(pricing.clone());
+        pricing_used = true;
         // Stage 5: every SL / TP touch goes to the shadow as a snapshot (a send; the web call never waits)
         if let Some(tx) = &shadow_snapshot {
             hook.set_shadow_snapshot(tx.clone());
@@ -1675,6 +1714,7 @@ async fn main() {
             tracing::warn!("risk hook margin trigger OFF (VYX_RISK_HOOK_MARGIN=0): stop-out on positions without SL/TP waits for the backstop");
         } else {
             let watch = order_management::margin_watch::MarginWatch::new();
+            watch.set_pricing(pricing.clone());
             watch.spawn_reload_loop_with(pool.clone(), tick_cache.clone(), safety_interval.clone());
             let _ = margin_watch_slot.set(watch.clone());
             if let Some(tx) = &shadow_trigger {
@@ -1688,11 +1728,14 @@ async fn main() {
         // once (debounced), not only on the 5 s poll -- a just-set SL / TP is watched before the next tick
         let reload_hook = hook.clone();
         let reload_watch = margin_watch_slot.clone();
+        let reload_pricing = pricing.clone();
         let full_reload: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
             reload_hook.request_reload();
             if let Some(w) = reload_watch.get() {
                 w.request_reload();
             }
+            // a lost event or a reconnect may have hidden a configuration change too
+            reload_pricing.request_reload();
         });
         match spawn_book_change_reload(nats.clone(), book_feed.clone(), full_reload.clone()).await {
             Ok(()) => {
@@ -1718,6 +1761,13 @@ async fn main() {
         }
     } else {
         tracing::warn!("risk hook OFF (VYX_RISK_HOOK_URL / VYX_RISK_HOOK_SECRET unset): no engine-driven SL/TP or stop-out evaluation");
+    }
+    if pricing_used {
+        pricing.spawn_reload_loop(pool.clone(), tick_cache.clone(), market_data::book_events::SAFETY_IDLE);
+        match spawn_pricing_reload(nats.clone(), pricing.clone()).await {
+            Ok(()) => tracing::info!(subjects = ?market_data::pricing::PRICING_CHANGE_SUBJECTS, safety_secs = market_data::book_events::SAFETY_IDLE.as_secs(), "pricing cache: reload on change subscribed"),
+            Err(err) => tracing::warn!(?err, "pricing cache: NATS subscribe failed -- pricing follows the 10 min safety reload only"),
+        }
     }
     // fix/candle-gaps §3: resume the gap-fill tracker from what actually
     // persisted, so the first tick after this restart flat-fills the

@@ -16,6 +16,7 @@ pub mod broker_offset;
 pub mod cache;
 pub mod db;
 pub mod gap_fill;
+pub mod pricing;
 pub mod ingest;
 pub mod retention;
 pub mod risk_hook;

@@ -167,6 +167,259 @@ fn fresh_from_ticks(cache: &market_data::cache::TickCache, symbol: &str, now: ch
     }
 }
 
+// ---- The account ask rules (2026-10-05, Neon load) ----
+// The rules come from the in-memory pricing cache (market_data::pricing) the server keeps current, put in scope with
+// `with_pricing` like the price source. A book query joins no pricing table any more. Without a cache in scope (tests,
+// harnesses) a read loads the configuration of exactly its rows, in its own snapshot: the configuration as it is now,
+// as the old per-row joins read it. Once the server has called `require_pricing_cache`, a read without a cache in
+// scope is an ERROR (never a silent per-read load on the production database).
+
+tokio::task_local! {
+    static PRICING: std::sync::Arc<market_data::pricing::PricingCache>;
+}
+
+static REQUIRE_PRICING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn require_pricing_cache() {
+    REQUIRE_PRICING.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Runs `f` with `cache` as the source of every account ask rule the book reads.
+pub async fn with_pricing<F: std::future::Future>(cache: std::sync::Arc<market_data::pricing::PricingCache>, f: F) -> F::Output {
+    PRICING.scope(cache, f).await
+}
+
+/// The price source and the pricing cache in one scope (what the server's order-management tasks run under).
+pub async fn with_book_sources<F: std::future::Future>(
+    prices: PriceSource,
+    pricing: Option<std::sync::Arc<market_data::pricing::PricingCache>>,
+    f: F,
+) -> F::Output {
+    match pricing {
+        Some(p) => PRICE_SOURCE.scope(prices, PRICING.scope(p, f)).await,
+        None => PRICE_SOURCE.scope(prices, f).await,
+    }
+}
+
+/// The cached snapshot in scope (loaded on `conn` if the cache has not loaded yet), None = read per call (no cache).
+async fn pricing_snapshot(conn: &mut sqlx::PgConnection) -> Result<Option<std::sync::Arc<market_data::ask_markup::PricingSnapshot>>, sqlx::Error> {
+    match PRICING.try_with(|c| c.clone()) {
+        Ok(cache) => Ok(Some(cache.snapshot_or_load(conn).await?)),
+        Err(_) if REQUIRE_PRICING.load(std::sync::atomic::Ordering::SeqCst) => {
+            Err(sqlx::Error::Protocol("book read without the pricing cache in scope (would read the pricing tables per read)".into()))
+        }
+        Err(_) => Ok(None),
+    }
+}
+
+/// One OPEN position as the book query returns it, before pricing: everything the evaluation needs except the price.
+#[derive(Clone, Debug)]
+pub struct RawPosition {
+    pub id: String,
+    pub account_id: String,
+    pub symbol_id: String,
+    pub symbol: String,
+    side: String,
+    volume: Decimal,
+    open_price: Decimal,
+    contract_size: Decimal,
+    sl_price: Option<Decimal>,
+    tp_price: Option<Decimal>,
+    category: String,
+    /// the POSITION's broker (sessions)
+    broker_id: String,
+    quote_ccy: String,
+    account_ccy: String,
+    hedged_margin_pct: Decimal,
+    digits: i32,
+    /// the ACCOUNT's broker and group (the ask rule)
+    account_broker_id: String,
+    account_group_id: Option<String>,
+    ask_rule: Option<market_data::ask_markup::AskRule>,
+}
+
+/// The columns of a RawPosition (aliases p, s, a, bs), shared by the per-account read and the pass's read.
+const RAW_COLUMNS: &str = r#"p.id, p."accountId" AS account_id, s.id AS symbol_id, s.name, p.side::text AS side, p.volume, p."openPrice" AS open_price,
+    s."contractSize" AS contract_size, p."slPrice" AS sl_price, p."tpPrice" AS tp_price, s.category::text AS category, p."brokerId" AS broker_id,
+    s."quoteCurrency" AS quote_ccy, a.currency AS account_ccy, COALESCE(bs."hedgedMarginPct", 200) AS hedged_margin_pct, s.digits,
+    a."brokerId" AS account_broker_id, a."groupId" AS account_group_id"#;
+
+/// FROM ... of a RawPosition read: the position, its symbol, its account, its BrokerSymbol (hedged margin %). No price,
+/// no pricing table.
+const RAW_FROM: &str = r#"FROM "Position" p
+    JOIN "Symbol" s ON s.id = p."symbolId"
+    JOIN "Account" a ON a.id = p."accountId"
+    LEFT JOIN "BrokerSymbol" bs ON bs."brokerId" = p."brokerId" AND bs."symbolId" = p."symbolId""#;
+
+fn raw_from_row(r: &sqlx::postgres::PgRow) -> Result<RawPosition, sqlx::Error> {
+    use sqlx::Row;
+    Ok(RawPosition {
+        id: r.try_get("id")?,
+        account_id: r.try_get("account_id")?,
+        symbol_id: r.try_get("symbol_id")?,
+        symbol: r.try_get("name")?,
+        side: r.try_get("side")?,
+        volume: r.try_get("volume")?,
+        open_price: r.try_get("open_price")?,
+        contract_size: r.try_get("contract_size")?,
+        sl_price: r.try_get("sl_price")?,
+        tp_price: r.try_get("tp_price")?,
+        category: r.try_get("category")?,
+        broker_id: r.try_get("broker_id")?,
+        quote_ccy: r.try_get("quote_ccy")?,
+        account_ccy: r.try_get("account_ccy")?,
+        hedged_margin_pct: r.try_get("hedged_margin_pct")?,
+        digits: r.try_get("digits")?,
+        account_broker_id: r.try_get("account_broker_id")?,
+        account_group_id: r.try_get("account_group_id")?,
+        ask_rule: None,
+    })
+}
+
+/// Fills each row's ask rule: from the cache in scope, else from the configuration of these rows read on `conn`.
+async fn resolve_rules(conn: &mut sqlx::PgConnection, rows: &mut [RawPosition]) -> Result<(), sqlx::Error> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let snap = pricing_snapshot(conn).await?;
+    let rules = {
+        let keys: Vec<market_data::ask_markup::RuleKey<'_>> = rows
+            .iter()
+            .map(|r| market_data::ask_markup::RuleKey {
+                account_id: &r.account_id,
+                broker_id: &r.account_broker_id,
+                group_id: r.account_group_id.as_deref(),
+                symbol_id: &r.symbol_id,
+                digits: r.digits,
+            })
+            .collect();
+        market_data::ask_markup::rules_for(conn, snap.as_deref(), &keys).await?
+    };
+    for (r, rule) in rows.iter_mut().zip(rules) {
+        r.ask_rule = rule;
+    }
+    Ok(())
+}
+
+/// (broker, symbol name) -> its configured sessions (an entry with no window = a BrokerSymbol without sessions).
+type Sessions = std::collections::HashMap<(String, String), Vec<crate::session::SessionWindow>>;
+
+/// The configured sessions of these brokers' symbols, in one query.
+async fn load_sessions(conn: &mut sqlx::PgConnection, broker_ids: &[String], names: &[String]) -> Result<Sessions, sqlx::Error> {
+    let mut sessions = Sessions::new();
+    if broker_ids.is_empty() || names.is_empty() {
+        return Ok(sessions);
+    }
+    let rows: Vec<(String, String, Option<i32>, Option<String>, Option<String>)> = sqlx::query_as(
+        r#"SELECT bs."brokerId", s.name, ts."dayOfWeek", ts."openTime", ts."closeTime"
+           FROM "BrokerSymbol" bs
+           JOIN "Symbol" s ON s.id = bs."symbolId"
+           LEFT JOIN "TradingSession" ts ON ts."brokerSymbolId" = bs.id
+           WHERE bs."brokerId" = ANY($1) AND s.name = ANY($2)"#,
+    )
+    .bind(broker_ids)
+    .bind(names)
+    .fetch_all(&mut *conn)
+    .await?;
+    for (broker, name, day, open, close) in rows {
+        let list = sessions.entry((broker, name)).or_default();
+        if let (Some(day_of_week), Some(open_time), Some(close_time)) = (day, open, close) {
+            list.push(crate::session::SessionWindow { day_of_week, open_time, close_time });
+        }
+    }
+    Ok(sessions)
+}
+
+/// The FX conversion symbols these rows may need (quote -> account currency, fx.rs), deduplicated.
+fn fx_symbols_of<'a>(rows: impl IntoIterator<Item = &'a RawPosition>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for r in rows {
+        for s in crate::fx::conversion_symbols_for(&r.quote_ccy, &r.account_ccy) {
+            if !out.contains(&s) {
+                out.push(s);
+            }
+        }
+    }
+    out
+}
+
+/// The database's prices (PriceSource::Db only: tests, parity, the scratch harnesses): fresh LivePrice (tickAt under
+/// 15 s) of `symbols`, and the FX quotes (tickAt under 72 h, lib/fx.ts) of `fx`. Production never runs this.
+#[derive(Default)]
+struct DbPrices {
+    fresh: std::collections::HashMap<String, (Decimal, Decimal)>,
+    fx: std::collections::HashMap<String, (Decimal, Decimal)>,
+}
+
+async fn load_db_prices(conn: &mut sqlx::PgConnection, symbols: &[String], fx: &[String]) -> Result<DbPrices, sqlx::Error> {
+    let mut out = DbPrices::default();
+    if !symbols.is_empty() {
+        let q: Vec<(String, Decimal, Decimal)> =
+            sqlx::query_as(r#"SELECT symbol, bid, ask FROM "LivePrice" WHERE symbol = ANY($1) AND "tickAt" > now() - interval '15 seconds'"#)
+                .bind(symbols)
+                .fetch_all(&mut *conn)
+                .await?;
+        out.fresh = q.into_iter().map(|(s, b, a)| (s, (b, a))).collect();
+    }
+    if !fx.is_empty() {
+        let q: Vec<(String, Decimal, Decimal)> =
+            sqlx::query_as(r#"SELECT symbol, bid, ask FROM "LivePrice" WHERE symbol = ANY($1) AND "tickAt" > now() - interval '72 hours'"#)
+                .bind(fx)
+                .fetch_all(&mut *conn)
+                .await?;
+        out.fx = q.into_iter().map(|(s, b, a)| (s, (b, a))).collect();
+    }
+    Ok(out)
+}
+
+/// One account's rows priced at `now` (Stage 2 F4: usable = a fresh price under the web's 15 s rule, the session open
+/// for the account's broker, a conversion rate). The account's broker for sessions = its first row's (one account = one
+/// broker, as the web assumes).
+fn price_rows(rows: &[RawPosition], sessions: &Sessions, source: &PriceSource, pin: Option<&Pin>, now: chrono::DateTime<chrono::Utc>, db: &DbPrices) -> Vec<OpenPositionWithMarket> {
+    let Some(first) = rows.first() else { return Vec::new() };
+    let broker_id = first.broker_id.clone();
+    let fx_quotes: std::collections::HashMap<String, crate::fx::Quote> = match source {
+        // same age limit as lib/fx.ts FX_RATE_MAX_AGE_MS: older = no rate = the position is unpriced
+        PriceSource::Ticks(cache) => fx_symbols_of(rows).into_iter().filter_map(|s| fx_quote_from_ticks(cache, &s, now).map(|q| (s, q))).collect(),
+        PriceSource::Db => db.fx.clone(),
+    };
+    rows.iter()
+        .map(|r| {
+            // the SOURCE of bid / ask: the database's LivePrice or the engine's ticks
+            let (bid, ask) = match (source, pin.and_then(|p| p.ticks.get(&r.symbol))) {
+                // pinned: the risk hook's own tick for a touched symbol, under the web's 15 s rule at the pin's moment
+                (_, Some(&(b, a, tick_at))) if now - tick_at < chrono::Duration::seconds(15) => (Some(b), Some(a)),
+                (_, Some(_)) => (None, None),
+                (PriceSource::Db, None) => db.fresh.get(&r.symbol).map_or((None, None), |&(b, a)| (Some(b), Some(a))),
+                (PriceSource::Ticks(cache), None) => fresh_from_ticks(cache, &r.symbol, now),
+            };
+            let closed = sessions
+                .get(&(broker_id.clone(), r.symbol.clone()))
+                .is_some_and(|windows| crate::session::is_market_closed(windows, now, &r.category));
+            let rate = crate::fx::conversion_rate(&r.quote_ccy, &r.account_ccy, |s| fx_quotes.get(s).copied());
+            if rate.is_none() {
+                tracing::error!(position_id = %r.id, symbol = %r.symbol, quote_ccy = %r.quote_ccy, account_ccy = %r.account_ccy, "no conversion rate: position treated as unpriced");
+            }
+            let usable = !closed && rate.is_some();
+            OpenPositionWithMarket {
+                id: r.id.clone(),
+                symbol: r.symbol.clone(),
+                side: side_from_prisma(&r.side),
+                volume: r.volume,
+                open_price: r.open_price,
+                contract_size: r.contract_size,
+                bid: if usable { bid } else { None },
+                ask: if usable { ask } else { None },
+                sl_price: r.sl_price,
+                tp_price: r.tp_price,
+                fx_rate: rate.unwrap_or(Decimal::ONE),
+                hedged_margin_pct: r.hedged_margin_pct,
+                ask_rule: r.ask_rule,
+            }
+        })
+        .collect()
+}
+
 pub async fn open_positions_with_market(
     pool: &PgPool,
     account_id: &str,
@@ -176,29 +429,17 @@ pub async fn open_positions_with_market(
 }
 
 /// `open_positions_with_market` on a given connection: calc::load_book_state runs it inside its one snapshot
-/// transaction, together with the funds and ledger reads (2026-10-01, the torn read).
+/// transaction, together with the funds and ledger reads (2026-10-01, the torn read). Used per account by the pinned
+/// evaluations (the margin trigger's fires, the SL / TP snapshots) and the live monitor; the shadow PASS reads the whole
+/// book at once (load_pass_book).
 pub async fn open_positions_with_market_on(
     conn: &mut sqlx::PgConnection,
     account_id: &str,
 ) -> Result<Vec<OpenPositionWithMarket>, sqlx::Error> {
     let pin = current_pin();
-    // one row per open position, with the levels of its account's ask rule (market_data::ask_markup, 2026-09-26: a SELL
-    // closes, triggers and is valued at the account's ask) -- joined here, never a query per position
+    let source = current_price_source()?;
     let sql = format!(
-        r#"SELECT p.id, s.name, p.side::text AS side, p.volume, p."openPrice" AS open_price, s."contractSize" AS contract_size,
-                  lp.bid, lp.ask, p."slPrice" AS sl_price, p."tpPrice" AS tp_price, s.category::text AS category, p."brokerId" AS broker_id,
-                  s."quoteCurrency" AS quote_ccy, a.currency AS account_ccy, COALESCE(bs."hedgedMarginPct", 200) AS hedged_margin_pct,
-                  {levels}
-           FROM "Position" p
-           JOIN "Symbol" s ON s.id = p."symbolId"
-           JOIN "Account" a ON a.id = p."accountId"
-           LEFT JOIN "BrokerSymbol" bs ON bs."brokerId" = p."brokerId" AND bs."symbolId" = p."symbolId"
-           LEFT JOIN "LivePrice" lp ON lp.symbol = s.name AND lp."tickAt" > now() - interval '15 seconds'
-           {joins}
-           WHERE p."accountId" = $1 AND {open}
-           ORDER BY p."openedAt", p.id"#,
-        levels = market_data::ask_markup::LEVELS_COLUMNS,
-        joins = market_data::ask_markup::LEVELS_JOINS,
+        "SELECT {RAW_COLUMNS} {RAW_FROM} WHERE p.\"accountId\" = $1 AND {open} ORDER BY p.\"openedAt\", p.id",
         // pinned (Stage 5 snapshot): what was open at the pin's moment, including a position closed since; plus the
         // positions the margin trigger measured open at it, by identity (Pin::measured; none for an SL / TP snapshot)
         open = if pin.is_some() {
@@ -208,112 +449,181 @@ pub async fn open_positions_with_market_on(
             "p.status = 'OPEN'"
         },
     );
-    #[allow(clippy::type_complexity)]
-    let rows: Vec<(String, String, String, Decimal, Decimal, Decimal, Option<Decimal>, Option<Decimal>, Option<Decimal>, Option<Decimal>, String, String, String, String, Decimal, Option<market_data::ask_markup::AskRule>)> = {
-        use sqlx::Row;
-        let q = sqlx::query(&sql).bind(account_id);
-        let q = match &pin {
-            Some(p) => q.bind(p.at).bind(&p.measured),
-            None => q,
-        };
-        let raw = q.fetch_all(&mut *conn).await?;
-        let mut out = Vec::with_capacity(raw.len());
-        for r in &raw {
-            out.push((
-                r.try_get("id")?, r.try_get("name")?, r.try_get("side")?, r.try_get("volume")?, r.try_get("open_price")?, r.try_get("contract_size")?,
-                r.try_get("bid")?, r.try_get("ask")?, r.try_get("sl_price")?, r.try_get("tp_price")?, r.try_get("category")?, r.try_get("broker_id")?,
-                r.try_get("quote_ccy")?, r.try_get("account_ccy")?, r.try_get("hedged_margin_pct")?,
-                market_data::ask_markup::resolve(&market_data::ask_markup::levels_from_row(r)?),
-            ));
-        }
-        out
+    let q = sqlx::query(&sql).bind(account_id);
+    let q = match &pin {
+        Some(p) => q.bind(p.at).bind(&p.measured),
+        None => q,
     };
+    let mut rows = q.fetch_all(&mut *conn).await?.iter().map(raw_from_row).collect::<Result<Vec<_>, _>>()?;
     if rows.is_empty() {
         return Ok(Vec::new());
     }
-
-    // the broker's configured sessions for these symbols (one account = one broker, as the web assumes)
-    let broker_id = rows[0].11.clone();
-    let names: Vec<String> = rows.iter().map(|r| r.1.clone()).collect();
-    let session_rows: Vec<(String, Option<i32>, Option<String>, Option<String>)> = sqlx::query_as(
-        r#"SELECT s.name, ts."dayOfWeek", ts."openTime", ts."closeTime"
-           FROM "BrokerSymbol" bs
-           JOIN "Symbol" s ON s.id = bs."symbolId"
-           LEFT JOIN "TradingSession" ts ON ts."brokerSymbolId" = bs.id
-           WHERE bs."brokerId" = $1 AND s.name = ANY($2)"#,
-    )
-    .bind(&broker_id)
-    .bind(&names)
-    .fetch_all(&mut *conn)
-    .await?;
-    let mut sessions: std::collections::HashMap<String, Vec<crate::session::SessionWindow>> = std::collections::HashMap::new();
-    for (name, day, open, close) in session_rows {
-        let list = sessions.entry(name).or_default();
-        if let (Some(day_of_week), Some(open_time), Some(close_time)) = (day, open, close) {
-            list.push(crate::session::SessionWindow { day_of_week, open_time, close_time });
-        }
-    }
+    resolve_rules(conn, &mut rows).await?;
+    let names: Vec<String> = rows.iter().map(|r| r.symbol.clone()).collect();
+    let sessions = load_sessions(conn, std::slice::from_ref(&rows[0].broker_id), &names).await?;
+    let db = match source {
+        PriceSource::Db => load_db_prices(conn, &names, &fx_symbols_of(&rows)).await?,
+        PriceSource::Ticks(_) => DbPrices::default(),
+    };
     // pinned: sessions, freshness and conversion quotes judged at the pin's moment
     let now = pin.as_ref().map_or_else(chrono::Utc::now, |p| p.at);
+    Ok(price_rows(&rows, &sessions, &source, pin.as_ref(), now, &db))
+}
 
-    // quote -> account conversion (Stage 2 F2, fx.rs = lib/fx.ts): every symbol a needed conversion may read,
-    // latest quote whatever its age, in one query; nothing is read when every pair is same-currency.
-    let mut fx_symbols: Vec<String> = Vec::new();
+// ---- The shadow pass's book in one read (2026-10-05, Neon load) ----
+// The pass used to read every account on its own: its funds, its positions (joined with the pricing tables and
+// LivePrice), its sessions, its thresholds -- ~7 statements per account per pass, every VYX_SHADOW_PASS_SECS. It now
+// reads the whole book in ONE REPEATABLE READ, READ ONLY snapshot (the torn-read rule of 51de153, for the whole pass):
+// every open position with its account's funds, thresholds and negative-balance flag (one query), the sessions of every
+// held symbol (one query), and -- only for accounts the shadow still has in margin call that hold nothing any more --
+// their funds (one query). Every account is then evaluated in memory; the "re-read after a close" of an evaluation
+// re-prices the snapshot's rows from the ticks at that moment (the shadow writes nothing, so the database would show
+// the same rows). Pinned evaluations (fires, SL / TP snapshots) still read their one account.
+
+/// One account of the pass's book.
+#[derive(Clone, Debug)]
+pub struct PassAccount {
+    pub balance: Decimal,
+    pub credit: Decimal,
+    pub leverage: i32,
+    pub thresholds: margin::MarginThresholds,
+    /// the broker's negativeBalanceProtection
+    pub nbp: bool,
+    rows: Vec<RawPosition>,
+}
+
+/// The whole book of one shadow pass (load_pass_book).
+pub struct PassBook {
+    /// accountId -> account, in byte order (= COLLATE "C", the pass order)
+    accounts: std::collections::BTreeMap<String, PassAccount>,
+    sessions: Sessions,
+    db: DbPrices,
+}
+
+impl PassBook {
+    /// Every account holding an open position, in pass order (accountId byte order).
+    pub fn account_ids_with_open_positions(&self) -> Vec<String> {
+        self.accounts.iter().filter(|(_, a)| !a.rows.is_empty()).map(|(id, _)| id.clone()).collect()
+    }
+
+    pub fn account(&self, account_id: &str) -> Option<&PassAccount> {
+        self.accounts.get(account_id)
+    }
+
+    /// The account's state priced from `source` at `now` (calc::load_book_state's result for this snapshot).
+    pub fn state(&self, account_id: &str, source: &PriceSource, now: chrono::DateTime<chrono::Utc>) -> Option<crate::calc::AccountState> {
+        let a = self.accounts.get(account_id)?;
+        Some(crate::calc::AccountState {
+            effective_balance: a.balance,
+            credit: a.credit,
+            leverage: a.leverage.max(1) as u32,
+            positions: price_rows(&a.rows, &self.sessions, source, None, now, &self.db),
+        })
+    }
+
+    /// Positions in the book (diagnostics, tests).
+    pub fn position_count(&self) -> usize {
+        self.accounts.values().map(|a| a.rows.len()).sum()
+    }
+}
+
+/// The pass's whole book in one read-only snapshot (see above). `extra_accounts`: accounts to include even when they
+/// hold nothing (the shadow's accounts still in margin call). Must run inside the price source's scope.
+pub async fn load_pass_book(pool: &PgPool, extra_accounts: &[String]) -> Result<PassBook, sqlx::Error> {
+    let source = current_price_source()?;
+    let mut tx = pool.begin().await?;
+    sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY").execute(&mut *tx).await?;
+    let book = load_pass_book_on(&mut tx, extra_accounts, &source).await;
+    // read only: nothing to commit
+    let _ = tx.rollback().await;
+    book
+}
+
+async fn load_pass_book_on(conn: &mut sqlx::PgConnection, extra_accounts: &[String], source: &PriceSource) -> Result<PassBook, sqlx::Error> {
+    use sqlx::Row;
+    let d = margin::MarginThresholds::default();
+    let sql = format!(
+        r#"SELECT {RAW_COLUMNS}, a.balance, a.credit, a.leverage, g."marginCallLevel" AS call, g."stopOutLevel" AS stop_out,
+                  COALESCE(b."negativeBalanceProtection", false) AS nbp
+           {RAW_FROM}
+           LEFT JOIN "Group" g ON g.id = a."groupId"
+           LEFT JOIN "Broker" b ON b.id = a."brokerId"
+           WHERE p.status = 'OPEN'
+           ORDER BY a.id COLLATE "C", p."openedAt", p.id"#
+    );
+    let raw = sqlx::query(&sql).fetch_all(&mut *conn).await?;
+    let mut accounts: std::collections::BTreeMap<String, PassAccount> = std::collections::BTreeMap::new();
+    let mut rows: Vec<RawPosition> = Vec::with_capacity(raw.len());
+    for r in &raw {
+        let row = raw_from_row(r)?;
+        if !accounts.contains_key(&row.account_id) {
+            let (call, stop_out): (Option<Decimal>, Option<Decimal>) = (r.try_get("call")?, r.try_get("stop_out")?);
+            accounts.insert(
+                row.account_id.clone(),
+                PassAccount {
+                    balance: r.try_get("balance")?,
+                    credit: r.try_get("credit")?,
+                    leverage: r.try_get("leverage")?,
+                    thresholds: margin::MarginThresholds { call_level: call.unwrap_or(d.call_level), stop_out_level: stop_out.unwrap_or(d.stop_out_level) },
+                    nbp: r.try_get("nbp")?,
+                    rows: Vec::new(),
+                },
+            );
+        }
+        rows.push(row);
+    }
+    resolve_rules(conn, &mut rows).await?;
+    // sessions of every (broker, symbol) the book holds, and (database prices only) LivePrice, each in one query
+    let mut broker_ids: Vec<String> = Vec::new();
+    let mut names: Vec<String> = Vec::new();
     for r in &rows {
-        for s in crate::fx::conversion_symbols_for(&r.12, &r.13) {
-            if !fx_symbols.contains(&s) {
-                fx_symbols.push(s);
-            }
+        if !broker_ids.contains(&r.broker_id) {
+            broker_ids.push(r.broker_id.clone());
+        }
+        if !names.contains(&r.symbol) {
+            names.push(r.symbol.clone());
         }
     }
-    let source = current_price_source()?;
-    let fx_quotes: std::collections::HashMap<String, crate::fx::Quote> = if fx_symbols.is_empty() {
-        std::collections::HashMap::new()
-    } else if let PriceSource::Ticks(cache) = &source {
-        // same age limit as lib/fx.ts FX_RATE_MAX_AGE_MS: older = no rate = the position is unpriced
-        fx_symbols.iter().filter_map(|s| fx_quote_from_ticks(cache, s, now).map(|q| (s.clone(), q))).collect()
-    } else {
-        let q: Vec<(String, Decimal, Decimal)> = sqlx::query_as(r#"SELECT symbol, bid, ask FROM "LivePrice" WHERE symbol = ANY($1) AND "tickAt" > now() - interval '72 hours'"#)
-            .bind(&fx_symbols)
-            .fetch_all(&mut *conn)
-            .await?;
-        q.into_iter().map(|(s, b, a)| (s, (b, a))).collect()
+    let sessions = load_sessions(conn, &broker_ids, &names).await?;
+    let db = match source {
+        PriceSource::Db => load_db_prices(conn, &names, &fx_symbols_of(&rows)).await?,
+        PriceSource::Ticks(_) => DbPrices::default(),
     };
-
-    Ok(rows
-        .into_iter()
-        .map(|(id, symbol, side, volume, open_price, contract_size, bid, ask, sl_price, tp_price, category, _, quote_ccy, account_ccy, hedged_margin_pct, ask_rule)| {
-            // the SOURCE of bid / ask: the database's LivePrice (the SQL above) or the engine's ticks
-            let (bid, ask) = match (&source, pin.as_ref().and_then(|p| p.ticks.get(&symbol))) {
-                // pinned: the risk hook's own tick for a touched symbol, under the web's 15 s rule at the pin's moment
-                (_, Some(&(b, a, tick_at))) if now - tick_at < chrono::Duration::seconds(15) => (Some(b), Some(a)),
-                (_, Some(_)) => (None, None),
-                (PriceSource::Db, None) => (bid, ask),
-                (PriceSource::Ticks(cache), None) => fresh_from_ticks(cache, &symbol, now),
-            };
-            let closed = sessions.get(&symbol).is_some_and(|windows| crate::session::is_market_closed(windows, now, &category));
-            let rate = crate::fx::conversion_rate(&quote_ccy, &account_ccy, |s| fx_quotes.get(s).copied());
-            if rate.is_none() {
-                tracing::error!(position_id = %id, %symbol, %quote_ccy, %account_ccy, "no conversion rate: position treated as unpriced");
-            }
-            let usable = !closed && rate.is_some();
-            OpenPositionWithMarket {
+    for row in rows {
+        if let Some(a) = accounts.get_mut(&row.account_id) {
+            a.rows.push(row);
+        }
+    }
+    let flat: Vec<String> = extra_accounts.iter().filter(|id| !accounts.contains_key(*id)).cloned().collect();
+    if !flat.is_empty() {
+        let funds: Vec<(String, Decimal, Decimal, i32, Option<Decimal>, Option<Decimal>, bool)> = sqlx::query_as(
+            r#"SELECT a.id, a.balance, a.credit, a.leverage, g."marginCallLevel", g."stopOutLevel", COALESCE(b."negativeBalanceProtection", false)
+               FROM "Account" a LEFT JOIN "Group" g ON g.id = a."groupId" LEFT JOIN "Broker" b ON b.id = a."brokerId"
+               WHERE a.id = ANY($1)"#,
+        )
+        .bind(&flat)
+        .fetch_all(&mut *conn)
+        .await?;
+        for (id, balance, credit, leverage, call, stop_out, nbp) in funds {
+            accounts.insert(
                 id,
-                symbol,
-                side: side_from_prisma(&side),
-                volume,
-                open_price,
-                contract_size,
-                bid: if usable { bid } else { None },
-                ask: if usable { ask } else { None },
-                sl_price,
-                tp_price,
-                fx_rate: rate.unwrap_or(Decimal::ONE),
-                hedged_margin_pct,
-                ask_rule,
-            }
-        })
-        .collect())
+                PassAccount {
+                    balance,
+                    credit,
+                    leverage,
+                    thresholds: margin::MarginThresholds { call_level: call.unwrap_or(d.call_level), stop_out_level: stop_out.unwrap_or(d.stop_out_level) },
+                    nbp,
+                    rows: Vec::new(),
+                },
+            );
+        }
+    }
+    Ok(PassBook { accounts, sessions, db })
+}
+
+/// The price source in scope (the pass book prices its rows with it at each evaluation).
+pub fn price_source_in_scope() -> Result<PriceSource, sqlx::Error> {
+    current_price_source()
 }
 
 /// The account's stop-out / margin-call thresholds, read from its OWN Group in the same database, every
