@@ -327,16 +327,13 @@ export async function evaluateAccountRisk(accountId: string): Promise<RiskMonito
       const inMarginCall = marginLevel.lte(marginCallLevel);
       if (inMarginCall && !latestAccount.marginCallNotifiedAt) {
         const body = `Account ${latestAccount.accountNumber}'s margin level is ${marginLevel.toFixed(2)}%, at or below the ${marginCallLevel}% margin-call level. Deposit funds or close positions to avoid stop-out.`;
-        // Trader-facing copy (accountId set) and a separate dealer/broker-
-        // staff-facing copy (accountId omitted) -- same "two audiences, two
-        // rows" shape the funds-request/KYC notification types already use
-        // implicitly by being staff-only; MARGIN_CALL is the first type
-        // that needs both.
-        await createNotification(prisma, { brokerId: latestAccount.brokerId, type: "MARGIN_CALL", title: "Margin call", body, entityType: "Account", entityId: accountId, accountId });
-        await createNotification(prisma, { brokerId: latestAccount.brokerId, type: "MARGIN_CALL", title: "Margin call", body, entityType: "Account", entityId: accountId });
-        await prisma.account.update({ where: { id: accountId }, data: { marginCallNotifiedAt: new Date() } });
-        // Batch 5: the trader's terminal and the broker's backoffice learn at once (MarginCall, both streams)
-        await publishTradingEvent("MarginCall", { account_id: accountId, broker_id: latestAccount.brokerId, level: marginLevel.toFixed(2), state: "margin_call" }).catch(() => {});
+        // Only the evaluation that actually flips the flag notifies (see setMarginCall): two concurrent evaluations of
+        // one account both read marginCallNotifiedAt = null above, and both used to notify (prod 2026-10-02: two
+        // MARGIN_CALL rows 82 ms apart for one episode).
+        if (await setMarginCall(accountId, latestAccount.brokerId, body)) {
+          // Batch 5: the trader's terminal and the broker's backoffice learn at once (MarginCall, both streams)
+          await publishTradingEvent("MarginCall", { account_id: accountId, broker_id: latestAccount.brokerId, level: marginLevel.toFixed(2), state: "margin_call" }).catch(() => {});
+        }
       } else if (!inMarginCall && latestAccount.marginCallNotifiedAt) {
         const body = `Account ${latestAccount.accountNumber}'s margin level is ${marginLevel.toFixed(2)}%, back above the ${marginCallLevel}% margin-call level.`;
         if (await clearMarginCall(accountId, latestAccount.brokerId, body)) {
@@ -352,6 +349,23 @@ export async function evaluateAccountRisk(accountId: string): Promise<RiskMonito
   }
 
   return { evaluated: true, slTpClosed, stopOutClosed };
+}
+
+// The START of a margin-call episode: an atomic conditional set (WHERE marginCallNotifiedAt IS NULL), so of two
+// concurrent evaluations exactly one wins (the loser's UPDATE re-checks the row after the winner commits and matches
+// nothing). Only the winner writes the two MARGIN_CALL rows, in the same transaction as the flag, so the flag and the
+// notifications commit together. Returns whether this call started the episode (the caller then publishes MarginCall).
+async function setMarginCall(accountId: string, brokerId: string, body: string): Promise<boolean> {
+  return prisma.$transaction(async (tx) => {
+    const set = await tx.account.updateMany({ where: { id: accountId, marginCallNotifiedAt: null }, data: { marginCallNotifiedAt: new Date() } });
+    if (set.count !== 1) return false;
+    // Trader-facing copy (accountId set) and a separate dealer/broker-staff-facing copy (accountId omitted) -- same
+    // "two audiences, two rows" shape the funds-request/KYC notification types already use implicitly by being
+    // staff-only; MARGIN_CALL is the first type that needs both.
+    await createNotification(tx, { brokerId, type: "MARGIN_CALL", title: "Margin call", body, entityType: "Account", entityId: accountId, accountId });
+    await createNotification(tx, { brokerId, type: "MARGIN_CALL", title: "Margin call", body, entityType: "Account", entityId: accountId });
+    return true;
+  });
 }
 
 // Item 3 (2026-09-26): the END of a margin-call episode is recorded too, not only its start. The flag clear and a
