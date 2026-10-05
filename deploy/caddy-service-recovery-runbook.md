@@ -1,6 +1,69 @@
-# Caddy service "Paused" + missing MARKET_DATA_READ_SECRET: recovery runbook (2026-09-26)
+# Caddy service: rules, recovery and the periodic check (runbook started 2026-09-26)
 
-## ALWAYS `caddy reload`, never `nssm restart vyxtrader-caddy` (owner, 2026-09-28)
+## Incident 2026-10-05: nssm restart loop with an orphan Caddy
+What the owner found on the VPS:
+- `nssm status vyxtrader-caddy` said **SERVICE_PAUSED**.
+- An **orphan caddy.exe, pid 4820, started 23 Sep**, was still serving the feed. It was not a child of nssm, so the
+  service did not manage it.
+- `caddy-err.log` held **4,024 `127.0.0.1:2019 bind` errors**. Port 2019 is Caddy's admin endpoint. The orphan held
+  it, so every Caddy that nssm started died at once on the bind, nssm restarted it again and again, and finally
+  throttled the service into Paused. The feed stayed up only because the orphan kept serving the old process's
+  config; if it had died (or the VPS rebooted), `feed.vyxtrader.com` would have gone down with nothing to replace it.
+- Nobody was alerted. That is why the periodic check below exists.
+
+The fix the owner ran (about 5 s of feed downtime; clients reconnect on their own):
+```powershell
+$N  = "C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe"
+$CE = ((& $N get vyxtrader-caddy Application) -join "" -replace "`0", "").Trim()   # nssm prints UTF-16: strip NULs
+$CF = "<the Caddyfile path from: & $N get vyxtrader-caddy AppParameters>"
+& $CE validate --config $CF                                    # "Valid configuration"
+& $N stop vyxtrader-caddy
+Get-Process caddy -ErrorAction SilentlyContinue | Stop-Process -Force   # ALL caddy.exe, the orphan included
+& $N start vyxtrader-caddy
+Get-CimInstance Win32_Process -Filter "Name='caddy.exe'" | Select-Object ProcessId, ParentProcessId, CreationDate
+#   -> exactly one (new pid 52020), its ParentProcessId = the service's nssm pid:
+(Get-CimInstance Win32_Service -Filter "Name='vyxtrader-caddy'").ProcessId
+curl.exe -s -o NUL -w "%{http_code}`n" https://feed.vyxtrader.com/health   # 200
+& $N continue vyxtrader-caddy                                  # clears the Paused state
+& $N status vyxtrader-caddy                                    # SERVICE_RUNNING
+```
+
+## RULES (owner, 2026-09-28 and 2026-10-05)
+1. **Config changes only via `caddy validate` + `caddy reload`.** Zero downtime; the running, service-managed Caddy
+   swaps to the new config. Procedure in the next section.
+2. **Never `nssm restart vyxtrader-caddy`.** It does not replace a running Caddy (the old process keeps serving the
+   old config and holds the ports), so a change silently never takes effect.
+3. **Never start Caddy by hand:** no `caddy run`, no `caddy start`, no double-click, no scheduled task that launches
+   caddy.exe. A Caddy outside the service holds ports 80/443/2019 and turns the service into a restart loop (the
+   2026-10-05 incident).
+4. **A recovery that really needs a fresh process** = stop the service, kill EVERY caddy.exe, start the service, then
+   verify a single caddy.exe whose parent is the service's nssm process, `/health` 200, `nssm continue` if it shows
+   Paused. Exactly the block above.
+5. The periodic check (below) must stay installed; it is what tells us next time.
+
+## Periodic check: "VyX Caddy health" (every 5 minutes)
+- **What runs:** the scheduled task `VyX Caddy health`, as SYSTEM, every 5 minutes, running
+  `C:\vyxtrader\scripts\caddy-health-check.ps1` (a copy of `deploy/vps/caddy-health-check.ps1`, installed by
+  `deploy/vps/install-caddy-health-task.ps1`; `-Uninstall` removes it).
+- **What it checks:** exactly one caddy.exe; its parent is the `vyxtrader-caddy` nssm process (no orphan); service
+  SERVICE_RUNNING; no NEW `bind` / `address already in use` lines in Caddy's stderr log since the last run (the first
+  run only records where the log ends, so old errors never alert; log rotation is handled); `/health` 200 within 5 s.
+- **Where it reports:**
+  - `C:\vyxtrader\status\caddy-health.json`: the last result (checks, reasons, whether the report reached the web).
+  - POST `https://www.vyxtrader.com/api/internal/infra-health` with `x-internal-secret` (INTERNAL_SERVICE_SECRET from
+    `start-gateway.cmd`, never printed). The web stores it, sends ONE alert e-mail when the state goes OK -> FAIL and
+    ONE when it recovers (never repeated while unchanged), to the addresses in Vercel env `OPS_ALERT_EMAIL`.
+  - Backoffice Feed health data (`GET /api/manage/feed-health` -> `infra.caddy`): OK / FAIL with the reasons, or
+    NO_REPORT when no report arrived for 15 minutes (the check itself stopped).
+- **How to read it on the VPS:**
+  ```powershell
+  Get-Content C:\vyxtrader\status\caddy-health.json                      # last result
+  Get-ScheduledTaskInfo -TaskName "VyX Caddy health" | Select-Object LastRunTime, LastTaskResult, NextRunTime   # 0 = OK, 1 = FAIL
+  powershell -NoProfile -ExecutionPolicy Bypass -File C:\vyxtrader\scripts\caddy-health-check.ps1   # run once by hand
+  ```
+  A report `NOT delivered (HTTP 401)` means the VPS's INTERNAL_SERVICE_SECRET and Vercel's differ.
+
+## Config change procedure: ALWAYS `caddy reload` (owner, 2026-09-28)
 `nssm restart vyxtrader-caddy` does NOT stop the running Caddy process: the old one keeps serving the OLD config (and
 holds ports 80/443), so a Caddyfile change silently never takes effect. Every Caddyfile change goes:
 ```powershell
