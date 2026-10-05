@@ -27,22 +27,22 @@ export async function GET() {
   // Reporting v2 module -- this is intentionally narrow.
   const [volumeAgg, commissionAgg, depositsAgg, withdrawalsAgg, newClients] = await Promise.all([
     prisma.position.aggregate({
-      where: { brokerId, openedAt: { gte: thirtyDaysAgo }, account: { accountMode: "LIVE" } },
+      where: { brokerId, openedAt: { gte: thirtyDaysAgo }, account: { accountMode: "LIVE", isInternal: false } },
       _sum: { volume: true },
     }),
     prisma.position.aggregate({
-      where: { brokerId, status: "CLOSED", closedAt: { gte: thirtyDaysAgo }, account: { accountMode: "LIVE" } },
+      where: { brokerId, status: "CLOSED", closedAt: { gte: thirtyDaysAgo }, account: { accountMode: "LIVE", isInternal: false } },
       _sum: { commission: true },
     }),
     prisma.transaction.aggregate({
-      where: { brokerId, type: "DEPOSIT", status: "COMPLETED", createdAt: { gte: thirtyDaysAgo }, account: { accountMode: "LIVE" } },
+      where: { brokerId, type: "DEPOSIT", status: "COMPLETED", createdAt: { gte: thirtyDaysAgo }, account: { accountMode: "LIVE", isInternal: false } },
       _sum: { amount: true },
     }),
     prisma.transaction.aggregate({
-      where: { brokerId, type: "WITHDRAWAL", status: "COMPLETED", createdAt: { gte: thirtyDaysAgo }, account: { accountMode: "LIVE" } },
+      where: { brokerId, type: "WITHDRAWAL", status: "COMPLETED", createdAt: { gte: thirtyDaysAgo }, account: { accountMode: "LIVE", isInternal: false } },
       _sum: { amount: true },
     }),
-    prisma.account.count({ where: { brokerId, accountMode: "LIVE", createdAt: { gte: thirtyDaysAgo } } }),
+    prisma.account.count({ where: { brokerId, accountMode: "LIVE", isInternal: false, createdAt: { gte: thirtyDaysAgo } } }),
   ]);
 
   const netDeposits = (depositsAgg._sum.amount?.toNumber() ?? 0) - Math.abs(withdrawalsAgg._sum.amount?.toNumber() ?? 0);

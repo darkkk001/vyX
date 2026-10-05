@@ -32,7 +32,7 @@ export async function GET() {
   // Staff-recorded deposits / withdrawals are ordinary DEPOSIT / WITHDRAWAL rows and count the same once COMPLETED.
   const brokerRow = await prisma.broker.findUniqueOrThrow({ where: { id: brokerId }, select: { coverageAccountId: true } });
   const liveClientTx: Prisma.TransactionWhereInput = {
-    account: { accountMode: "LIVE", group: { category: { not: "COVERAGE" } } },
+    account: { accountMode: "LIVE", isInternal: false, group: { category: { not: "COVERAGE" } } },
     ...(brokerRow.coverageAccountId ? { accountId: { not: brokerRow.coverageAccountId } } : {}),
   };
   const [
@@ -131,7 +131,7 @@ export async function GET() {
       deletedAt: null,
       bookType: "B_BOOK",
       closedAt: { gte: tradingDayStartAt },
-      account: { accountMode: "LIVE", group: { category: { not: "COVERAGE" } } },
+      account: { accountMode: "LIVE", isInternal: false, group: { category: { not: "COVERAGE" } } },
       ...(brokerRow.coverageAccountId ? { accountId: { not: brokerRow.coverageAccountId } } : {}),
     },
     _sum: { realizedPnl: true },
@@ -183,7 +183,7 @@ type MoneyRow = { currency: string; bucket: string; n: bigint; total: Prisma.Dec
 // Step 2: "a client" = a LIVE account that is not the broker's hedge (coverage) account and whose group, if any, is not
 // in the COVERAGE category. Demo accounts are left out of every count and sum here.
 function clientAccountSql(brokerId: string, coverageAccountId: string | null) {
-  return Prisma.sql`a."brokerId" = ${brokerId} AND a."accountMode" = 'LIVE'
+  return Prisma.sql`a."brokerId" = ${brokerId} AND a."accountMode" = 'LIVE' AND a."isInternal" = false
     AND (${coverageAccountId}::text IS NULL OR a.id <> ${coverageAccountId})
     AND NOT EXISTS (SELECT 1 FROM "Group" g WHERE g.id = a."groupId" AND g.category = 'COVERAGE')`;
 }

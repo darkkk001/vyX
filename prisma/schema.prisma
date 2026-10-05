@@ -697,6 +697,11 @@ model Account {
   // priority: account override > type > group.
   swapFree Boolean?
 
+  // Owner 2026-10-05: a broker's own test / staff account. Left out of every broker-wide figure exactly like the
+  // system accounts (coverage account / COVERAGE groups): dashboard, total exposure limit, risk radar, reports.
+  // Never e-mailed credentials. Set by a BROKER_ADMIN (PATCH /api/manage/accounts/[id] {isInternal}).
+  isInternal Boolean @default(false)
+
   // 2026-09-05 P0 fix -- edge-detection state for the standing margin-call
   // warning (lib/risk-monitor.ts's evaluateAccountRisk, Pass 3): set to
   // "now" the moment this account's live margin level first drops to/below

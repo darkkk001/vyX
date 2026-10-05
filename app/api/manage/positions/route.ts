@@ -75,6 +75,7 @@ export async function GET(request: NextRequest) {
             fullName: true,
             groupId: true,
             accountMode: true,
+            isInternal: true,
             currency: true,
             group: { select: { name: true, category: true } },
             ibLinkAsClient: { select: { ibAccountId: true } },
@@ -180,6 +181,8 @@ export async function GET(request: NextRequest) {
       covered: p.covered,
       // the broker's own hedge leg (not a client position) / a demo account: excluded from client money totals
       isCoverageLeg: isCoverageLeg(p),
+      // owner 2026-10-05: an internal (test / staff) account's position; the exposure screen leaves it out like a hedge leg
+      isInternal: p.account.isInternal,
       accountMode: p.account.accountMode,
       // the hedge leg on the coverage account (BOOK NOW), so the dealing screen can pair a client
       // position with its coverage P&L; null on an unbooked position and on the leg itself

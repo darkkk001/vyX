@@ -175,13 +175,14 @@ export function computeRiskRadarRow(accountId: string, accountNumber: string, po
 export async function computeRiskRadar(prisma: PrismaClient, brokerId: string): Promise<RiskRadarRow[]> {
   const since = new Date(Date.now() - WINDOW_DAYS * 24 * 60 * 60 * 1000);
 
+  // owner 2026-10-05: internal (test / staff) accounts are left out of the radar like the broker's system accounts
   const accounts = await prisma.account.findMany({
-    where: { brokerId },
+    where: { brokerId, isInternal: false },
     select: { id: true, accountNumber: true },
   });
 
   const positions = await prisma.position.findMany({
-    where: { brokerId, status: "CLOSED", closedAt: { gte: since, not: null } },
+    where: { brokerId, status: "CLOSED", closedAt: { gte: since, not: null }, account: { isInternal: false } },
     select: { accountId: true, volume: true, realizedPnl: true, openedAt: true, closedAt: true },
   });
 
@@ -228,7 +229,7 @@ export async function computeNewsEvidence(prisma: PrismaClient, brokerId: string
   const collectingHistory = historyFrom > since;
   const [positions, events] = await Promise.all([
     prisma.position.findMany({
-      where: { brokerId, openedAt: { gte: windowFrom }, deletedAt: null },
+      where: { brokerId, openedAt: { gte: windowFrom }, deletedAt: null, account: { isInternal: false } },
       select: { accountId: true, openedAt: true, status: true, realizedPnl: true, symbol: { select: { baseCurrency: true, quoteCurrency: true } }, account: { select: { currency: true } } },
     }),
     prisma.economicEvent.findMany({
@@ -264,7 +265,7 @@ export async function computeSameIpClusters(prisma: PrismaClient, brokerId: stri
   const since = new Date(Date.now() - SAME_IP_WINDOW_DAYS * 24 * 60 * 60 * 1000);
 
   const events = await prisma.loginEvent.findMany({
-    where: { brokerId, createdAt: { gte: since } },
+    where: { brokerId, createdAt: { gte: since }, account: { isInternal: false } },
     select: {
       ipAddress: true,
       account: { select: { id: true, accountNumber: true, fullName: true, email: true } },
