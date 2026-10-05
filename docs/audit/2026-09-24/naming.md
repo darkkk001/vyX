@@ -18,6 +18,11 @@ This rule applies to every app (backoffice, terminal, WebTrader) and every CSV e
 - **CSV exports follow the same rule:** zero money is `0.00`, a value that does not exist is an empty field.
 - In this document's tables, the "—" in the Unit column only means "no unit". It is never a value shown in an app.
 
+## Column widths (owner 2026-10-05)
+
+Every table in every app: a column's default width fits its full header text and its content. Headers and cells are
+never clipped and never overlap. When the panel is too narrow for all columns, the table scrolls horizontally.
+
 ## Glossary
 
 | Concept | Word | Unit | Never use |
@@ -79,7 +84,7 @@ This rule applies to every app (backoffice, terminal, WebTrader) and every CSV e
 | Stop loss / take profit | Stop loss / Take profit (SL / TP only in narrow table headers) | — | S/L, T/P |
 | Minimum SL/TP distance | Min stop distance (points) | points | stop level |
 | Setting that takes the group's value | Same as group | — | INHERIT, inherit, GROUP DEFAULT, per group |
-| Setting that takes the symbol's value | Same as symbol | — | INHERIT, Source |
+| Setting that takes the symbol's value | Same as symbol (exception: the GRP Pricing column says Source, owner 2026-10-05) | — | INHERIT |
 | Group setting that follows the broker-wide dealing switch | Same as broker dealing switch | — | BROKER DEFAULT, DESK-CONTROLLED, Same as broker switch |
 | Group ignores the broker dealing switch | Ignore broker dealing switch | — | Force dealer mode, FORCED |
 | Broker keeps the client's risk | Broker book (B-book) on first use, then Broker book | — | B_BOOK, BOOK, B-BOOK alone, dealing-group |
@@ -812,7 +817,9 @@ This rule applies to every app (backoffice, terminal, WebTrader) and every CSV e
 | GRP | DEALING DESK | Broker book · Manual dealing | — | Broker book where a dealer reviews every order. |
 | GRP | REVERSAL | Reverse trading | — | Trades reversed into a master account. |
 | GRP | COVERAGE · SYS | Broker hedge account | — | Group holding the broker's own hedge account. |
-| GRP | PRICING ("Source" / "Custom (n symbols)") | Pricing ("Same as symbol" / "Custom on n symbols") | — | Whether the group has its own spreads. |
+| GRP | PRICING ("Source" / "Custom (n symbols)") | Pricing ("Source" / "Custom · n symbols") | — | Whether the group has its own spreads. Owner 2026-10-05 (broker tester): "Source" when the group uses the symbol settings, "Custom · 1 symbol" / "Custom · 5 symbols" otherwise. |
+| GRP | SYMBOLS (column, new) | Symbols ("All 30" / "5 of 30") | — | How many of the broker's enabled symbols the group trades; click opens Allowed symbols (owner 2026-10-05). |
+| GRP | Allowed symbols (side panel, new) | Allowed symbols | — | Checklist in the group's side panel: one row per enabled symbol, search, Select all / Select none, Restrict to the chosen symbols; Save applies it live to terminals and is audited (owner 2026-10-05). |
 | GRP | DEALER | Dealing | — | How this group's orders are filled. |
 | GRP | AUTO-FILL | Automatic dealing | — | Orders fill automatically. |
 | GRP | MANUAL | Manual dealing | — | Dealer reviews every order. |
