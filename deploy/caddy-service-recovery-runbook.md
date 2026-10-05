@@ -28,6 +28,38 @@ curl.exe -s -o NUL -w "%{http_code}`n" https://feed.vyxtrader.com/health   # 200
 & $N status vyxtrader-caddy                                    # SERVICE_RUNNING
 ```
 
+## Incident 2026-10-05, second finding: Caddy under an ORPHAN nssm
+After the fix above, the service still was not really managing Caddy. What the owner found:
+- The running caddy.exe was the child of an **old, orphan nssm.exe (pid 2984)**, while the service
+  `vyxtrader-caddy` pointed at a different nssm (pid 48180), which sat **Paused** with no Caddy of its own.
+- So "exactly one caddy.exe" was true, but its parent was not the service's nssm. Stopping or restarting the service
+  could not reach that Caddy; only killing its orphan nssm parent could.
+- The periodic check catches this case: its parent check compares caddy.exe's parent with the service's own process id
+  (`Win32_Service.ProcessId`) and fails on any other nssm.
+
+The fix the owner ran (never touch the engine's or the gateway's nssm: each service has its own nssm process):
+```powershell
+$N   = "C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe"
+$svc = (Get-CimInstance Win32_Service -Filter "Name='vyxtrader-caddy'").ProcessId           # the service's nssm pid
+$caddy = Get-CimInstance Win32_Process -Filter "Name='caddy.exe'"
+$caddy | Select-Object ProcessId, ParentProcessId, CreationDate                              # parent <> $svc = orphan
+# the nssm processes that are a caddy.exe parent but NOT the service's own nssm (safe to kill; engine/gateway nssm are
+# never a caddy parent):
+$orphanNssm = $caddy.ParentProcessId | Where-Object { $_ -ne $svc } | ForEach-Object {
+  Get-CimInstance Win32_Process -Filter "ProcessId=$_" } | Where-Object Name -eq 'nssm.exe'
+$orphanNssm | Select-Object ProcessId, CommandLine, CreationDate                             # check before killing
+& $N stop vyxtrader-caddy
+$orphanNssm | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+Get-Process caddy -ErrorAction SilentlyContinue | Stop-Process -Force
+& $N start vyxtrader-caddy
+& $N continue vyxtrader-caddy
+& $N status vyxtrader-caddy                                                                  # SERVICE_RUNNING
+$svc = (Get-CimInstance Win32_Service -Filter "Name='vyxtrader-caddy'").ProcessId
+Get-CimInstance Win32_Process -Filter "Name='caddy.exe'" | Select-Object ProcessId, ParentProcessId   # one; parent = $svc
+curl.exe -s -o NUL -w "%{http_code}`n" https://feed.vyxtrader.com/health                    # 200
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\vyxtrader\scripts\caddy-health-check.ps1   # "caddy health OK"
+```
+
 ## RULES (owner, 2026-09-28 and 2026-10-05)
 1. **Config changes only via `caddy validate` + `caddy reload`.** Zero downtime; the running, service-managed Caddy
    swaps to the new config. Procedure in the next section.
@@ -36,9 +68,10 @@ curl.exe -s -o NUL -w "%{http_code}`n" https://feed.vyxtrader.com/health   # 200
 3. **Never start Caddy by hand:** no `caddy run`, no `caddy start`, no double-click, no scheduled task that launches
    caddy.exe. A Caddy outside the service holds ports 80/443/2019 and turns the service into a restart loop (the
    2026-10-05 incident).
-4. **A recovery that really needs a fresh process** = stop the service, kill EVERY caddy.exe, start the service, then
-   verify a single caddy.exe whose parent is the service's nssm process, `/health` 200, `nssm continue` if it shows
-   Paused. Exactly the block above.
+4. **A recovery that really needs a fresh process** = stop the service, kill EVERY caddy.exe AND any orphan nssm.exe
+   that is a caddy parent but not the service's own nssm (never the engine's or gateway's nssm), start the service,
+   then verify a single caddy.exe whose parent is the service's nssm process, `/health` 200, `nssm continue` if it
+   shows Paused, and the health check says OK. The two blocks above.
 5. The periodic check (below) must stay installed; it is what tells us next time.
 
 ## Periodic check: "VyX Caddy health" (every 5 minutes)
