@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { evaluateAccountRisk, evaluateRiskForSymbol } from "@/lib/risk-monitor";
+import { evaluateAccountsRisk, evaluateRiskForSymbol } from "@/lib/risk-monitor";
 import { bearerMatches } from "@/lib/internal-auth";
 import { drainPostCloseBackstop } from "@/lib/post-close";
 import { evaluatePendingTriggers } from "@/lib/pending-trigger";
@@ -107,15 +107,8 @@ export async function GET(request: NextRequest) {
     distinct: ["accountId"],
   });
 
-  let errors = 0;
-  for (const { accountId } of openAccounts) {
-    try {
-      await evaluateAccountRisk(accountId);
-    } catch (err) {
-      errors++;
-      console.error("margin-monitor: evaluation failed for account", accountId, err);
-    }
-  }
+  // one shared read per batch of accounts, not one per account (lib/risk-monitor.ts evaluateAccountsRisk)
+  const errors = await evaluateAccountsRisk(openAccounts.map((a) => a.accountId), "margin-monitor: evaluation failed for account");
 
   return NextResponse.json({ accountsEvaluated: openAccounts.length, errors, outbox, pending });
 }

@@ -60,25 +60,36 @@ type OpenPositionWithMarket = {
 };
 
 async function loadOpenPositionsWithMarket(accountId: string): Promise<OpenPositionWithMarket[]> {
+  return (await loadMarketBook([accountId])).get(accountId) ?? [];
+}
+
+// The open positions of several accounts with everything their valuation needs (prices, broker symbols + sessions,
+// FX, the SELL ask rules), in the same constant number of queries whatever the number of accounts (margin-monitor
+// load, 2026-10-05: a per-symbol pass used to re-read all of it once per account). One account is the same queries
+// the single-account path always made.
+async function loadMarketBook(accountIds: string[]): Promise<Map<string, OpenPositionWithMarket[]>> {
+  const byAccount = new Map<string, OpenPositionWithMarket[]>(accountIds.map((id) => [id, []]));
+  if (accountIds.length === 0) return byAccount;
   const positions = await prisma.position.findMany({
-    where: { accountId, status: "OPEN" },
+    where: { accountId: accountIds.length === 1 ? accountIds[0] : { in: accountIds }, status: "OPEN" },
     include: { symbol: { select: { name: true, contractSize: true, quoteCurrency: true } }, account: { select: { currency: true } } },
     // Stage 2 F5: a fixed order (oldest first), the same one the engine uses. Several SL/TP closes in one
     // pass interact through negative-balance protection and credit, so their order can change the final
-    // balance; it used to be whatever order Postgres returned.
+    // balance; it used to be whatever order Postgres returned. Each account's own positions keep this order.
     orderBy: [{ openedAt: "asc" }, { id: "asc" }],
   });
-  if (positions.length === 0) return [];
+  if (positions.length === 0) return byAccount;
 
   const symbolNames = [...new Set(positions.map((p) => p.symbol.name))];
-  // Every position for one account shares that account's own brokerId
-  // (a position can only ever be opened under its own account's broker).
+  // A position is always opened under its own account's broker, so one broker per account; several accounts can
+  // span brokers, hence the broker symbols are keyed by broker AND symbol below.
+  const brokerIds = [...new Set(positions.map((p) => p.brokerId))];
   // Owner decision (2026-09-26, lib/ask-markup.ts): a SELL closes -- SL / TP trigger, stop-out, P/L, margin -- at its
   // account's ask (the marked-up one a BUY opens at); a BUY at the raw bid. Resolved only when a SELL is open.
   const [prices, brokerSymbols, fx, askRules] = await Promise.all([
     getFreshPrices(symbolNames),
     prisma.brokerSymbol.findMany({
-      where: { brokerId: positions[0].brokerId, symbol: { name: { in: symbolNames } } },
+      where: { brokerId: brokerIds.length === 1 ? brokerIds[0] : { in: brokerIds }, symbol: { name: { in: symbolNames } } },
       include: { symbol: { select: { name: true, category: true } }, tradingSessions: true },
     }),
     loadFxLookup(prisma, positions.map((p) => [p.symbol.quoteCurrency, p.account.currency] as const)),
@@ -92,18 +103,21 @@ async function loadOpenPositionsWithMarket(accountId: string): Promise<OpenPosit
   // closed-session symbol is treated exactly like "no live price," the
   // same tolerant path getFreshPrices' own staleness gate already uses.
   const now = new Date();
+  const key = (brokerId: string, symbol: string) => `${brokerId}|${symbol}`;
   const closedSymbols = new Set(
     brokerSymbols
       .filter((bs) => checkTradingSession(bs.tradingSessions, now, bs.symbol.category) != null)
-      .map((bs) => bs.symbol.name)
+      .map((bs) => key(bs.brokerId, bs.symbol.name))
   );
 
-  const hedgedPctBySymbol = new Map(brokerSymbols.map((bs) => [bs.symbol.name, bs.hedgedMarginPct] as const));
-  return positions.map((p) => {
+  const hedgedPctBySymbol = new Map(brokerSymbols.map((bs) => [key(bs.brokerId, bs.symbol.name), bs.hedgedMarginPct] as const));
+  for (const p of positions) {
     const rate = conversionRate(p.symbol.quoteCurrency, p.account.currency, fx);
     if (!rate) console.error(`risk monitor: no ${p.symbol.quoteCurrency}->${p.account.currency} rate for ${p.symbol.name} position ${p.id}; treated as unpriced`);
-    const live = closedSymbols.has(p.symbol.name) || !rate ? undefined : prices.get(p.symbol.name);
-    return {
+    const live = closedSymbols.has(key(p.brokerId, p.symbol.name)) || !rate ? undefined : prices.get(p.symbol.name);
+    let list = byAccount.get(p.accountId);
+    if (!list) byAccount.set(p.accountId, (list = []));
+    list.push({
       fxRate: rate ?? new Prisma.Decimal(1),
       id: p.id,
       brokerId: p.brokerId,
@@ -119,10 +133,14 @@ async function loadOpenPositionsWithMarket(accountId: string): Promise<OpenPosit
       bid: live?.bid ?? null,
       // the close-side ask of THIS account (every reader below uses `ask` only as a SELL's close price)
       ask: live ? valuationAsk(askRules, p, live.bid, live.ask) : null,
-      hedgedMarginPct: hedgedPctBySymbol.get(p.symbol.name) ?? DEFAULT_HEDGED_MARGIN_PCT,
-    };
-  });
+      hedgedMarginPct: hedgedPctBySymbol.get(key(p.brokerId, p.symbol.name)) ?? DEFAULT_HEDGED_MARGIN_PCT,
+    });
+  }
+  return byAccount;
 }
+
+const RISK_ACCOUNT_INCLUDE = { group: { select: { stopOutLevel: true, marginCallLevel: true, category: true } } } as const;
+type RiskAccount = Prisma.AccountGetPayload<{ include: typeof RISK_ACCOUNT_INCLUDE }>;
 
 type SlTpReason = "stop_loss" | "take_profit";
 
@@ -187,7 +205,11 @@ export type RiskMonitorResult = {
   stopOutClosed: string[];
 };
 
-export async function evaluateAccountRisk(accountId: string): Promise<RiskMonitorResult> {
+/** One account's state as a batched pass read it (evaluateAccountsRisk); evaluateAccountRisk then skips its own first
+ *  read. Anything it re-reads after a close is read fresh, as always. */
+type PreloadedAccount = { positions: OpenPositionWithMarket[]; account: RiskAccount | null };
+
+export async function evaluateAccountRisk(accountId: string, preloaded?: PreloadedAccount): Promise<RiskMonitorResult> {
   const slTpClosed: string[] = [];
   const stopOutClosed: string[] = [];
 
@@ -195,8 +217,8 @@ export async function evaluateAccountRisk(accountId: string): Promise<RiskMonito
   // only after something closed -- a close is the only thing in here that changes them. Before, every account was
   // read three times over on every pass (pass 1, the stop-out loop, pass 3: ~22 queries) even when nothing closed,
   // which is the common case the engine's backstop runs every 5 s.
-  const readAccount = () => prisma.account.findUnique({ where: { id: accountId }, include: { group: { select: { stopOutLevel: true, marginCallLevel: true, category: true } } } });
-  let [positions, account] = await Promise.all([loadOpenPositionsWithMarket(accountId), readAccount()]);
+  const readAccount = () => prisma.account.findUnique({ where: { id: accountId }, include: RISK_ACCOUNT_INCLUDE });
+  let [positions, account] = preloaded ? [preloaded.positions, preloaded.account] : await Promise.all([loadOpenPositionsWithMarket(accountId), readAccount()]);
   let changed = false;
   const refresh = async () => {
     if (!changed) return;
@@ -393,11 +415,47 @@ export async function evaluateRiskForSymbol(symbolName: string): Promise<void> {
     select: { accountId: true },
     distinct: ["accountId"],
   });
-  for (const { accountId } of accountIds) {
-    try {
-      await evaluateAccountRisk(accountId);
-    } catch (err) {
-      console.error("risk-monitor: evaluation failed for account", accountId, err);
+  await evaluateAccountsRisk(accountIds.map((a) => a.accountId), "risk-monitor: evaluation failed for account");
+}
+
+const PASS_CHUNK = 50;
+
+/**
+ * evaluateAccountRisk for every account given, in order, with one shared read instead of one per account (margin-monitor
+ * load, 2026-10-05: the engine's per-tick `?symbols=` hook and the backstop used to re-read positions, broker symbols,
+ * sessions, FX and ask rules for every account, ~8-15 queries each). Up to PASS_CHUNK accounts are read together, right
+ * before they are evaluated. The shared read is thrown away the moment an evaluation closed anything (or failed): a
+ * close can move OTHER accounts too (mirror followers, the coverage account), so the next account starts from a fresh
+ * shared read of whatever is left, never from the state before that close. If the shared read itself fails, each
+ * account falls back to reading its own, exactly as before. Returns the number of accounts whose evaluation threw (each
+ * one logged with `failLabel`).
+ */
+export async function evaluateAccountsRisk(accountIds: string[], failLabel: string): Promise<number> {
+  let errors = 0;
+  for (let start = 0; start < accountIds.length; start += PASS_CHUNK) {
+    const chunk = accountIds.slice(start, start + PASS_CHUNK);
+    let shared: { book: Map<string, OpenPositionWithMarket[]>; accounts: Map<string, RiskAccount> } | null = null;
+    for (let i = 0; i < chunk.length; i++) {
+      const accountId = chunk[i];
+      if (!shared) {
+        const rest = chunk.slice(i);
+        shared = await Promise.all([loadMarketBook(rest), prisma.account.findMany({ where: { id: { in: rest } }, include: RISK_ACCOUNT_INCLUDE })])
+          .then(([book, accounts]) => ({ book, accounts: new Map(accounts.map((a) => [a.id, a])) }))
+          .catch((err) => {
+            console.error("risk-monitor: shared read failed, reading per account", err);
+            return null;
+          });
+      }
+      const preloaded: PreloadedAccount | undefined = shared ? { positions: shared.book.get(accountId) ?? [], account: shared.accounts.get(accountId) ?? null } : undefined;
+      try {
+        const r = await evaluateAccountRisk(accountId, preloaded);
+        if (r.slTpClosed.length > 0 || r.stopOutClosed.length > 0) shared = null;
+      } catch (err) {
+        errors++;
+        shared = null;
+        console.error(failLabel, accountId, err);
+      }
     }
   }
+  return errors;
 }
