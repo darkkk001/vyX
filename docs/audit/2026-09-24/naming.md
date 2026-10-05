@@ -1790,6 +1790,28 @@ Hidden until an LP bridge exists: the screen is merged into Liquidity providers,
 | CFG | WITHDRAWAL APPROVAL · <x> (dialog) / SWITCH TO <x> | Withdrawal approval · <x> / Switch to <x> | — | One-admin or two-admin payouts. |
 | CFG | SAVE BROKER SETTINGS (dialog) | keep | — | Confirm dialog title. |
 
+### Backoffice 1.0.61 additions (owner 2026-10-05)
+
+| Screen | Was | Label | Unit | Notes |
+|---|---|---|---|---|
+| CLI | Deposit… / Withdraw… (Account menu, two items) | Deposit / Withdraw… | — | One item; opens one window with tabs DEPOSIT · WITHDRAW. "Deposit & withdrawal history" stays as it is (owner 2026-10-05). |
+| CLI | (window tabs, new) | DEPOSIT · WITHDRAW | — | The window opens on the tab of the action the user chose. |
+| DEP | NEW DEPOSIT… · NEW WITHDRAWAL… (header, two buttons) | NEW DEPOSIT / WITHDRAWAL… | — | One button; opens the account picker, then the same window (owner 2026-10-05). |
+| CLI | Withdraw: ID check not approved (status bar only) | Withdrawals need an approved ID check | — | Shown inside the WITHDRAW tab with the submit button disabled; never only in the status bar (owner 2026-10-05, rule: every refusal shows where the user clicked). |
+| CLI | (link, new) | Open ID check | — | Next to the line above; opens the client's ID check. |
+| CLI | (action, new) | Resend verification e-mail | — | Client-portal login whose e-mail is not verified; Account menu and the client page. Hidden when there is no portal login or it is verified (owner 2026-10-05). |
+| CLI | (result, new) | Verification e-mail sent to z***@gmail.com | — | Toast after a send. |
+| CLI | (refusals, new) | Already verified · This client is not active · E-mail is not set up for this broker · Too many resends for this client, try again in an hour · The e-mail could not be sent: <reason> | — | Shown in the action's own dialog or as the disabled item's reason, never only in the status bar. |
+| CLI | NEW PASSWORD / password shown once (dialogs: Reset client password, Add account, staff first password) | Sign-in details | — | Details card (owner 2026-10-05): rows Account · Name · Group · Live / Demo · Server · Web login · Password (masked, Show); a copy icon on every row. |
+| CLI | (buttons, new) | COPY ALL DETAILS · E-MAIL TO CLIENT · DONE | — | No CANCEL: the change has already happened. E-MAIL TO CLIENT is enabled only when the broker's e-mail works. |
+| CLI | It was NOT e-mailed (e-mail is not set up for this broker, or sending failed) | Not e-mailed: <reason> | — | One line; the reason names which (e-mail off for this broker / the provider's error). |
+| CLI | (copy block, new) | Account: … / Name: … / Group: … (Live) / Server: … / Web login: … / Password: … | — | What COPY ALL DETAILS puts on the clipboard, one item per line, ready to paste to the client. |
+| SHELL | UPDATE vX READY · click to restart (before sign-in) | Updating to vX · restarting | — | Before sign-in a downloaded update installs and restarts on its own (owner 2026-10-05). |
+| SHELL | UPDATE vX READY (signed in) | Update vX installs when you close | — | Signed in: never interrupts; "Restart now" stays in the cell's menu (owner 2026-10-05). |
+| FEED | (row, new) | Caddy | — | The VPS web server in front of the feed. States: OK · FAIL (with the reasons) · No report for 15 min (the check itself is not running) (owner 2026-10-05). |
+| FEED | (sub-labels, new) | Last check (UTC) · Reasons | — | Under the Caddy row. |
+| SHELL | VYXTRADER BACKOFFICE (login window of a broker build) | <BROKER> BACKOFFICE | — | Login window title, logo, colours and window title come from the build's brand pin before sign-in (owner 2026-10-05); same for the terminal login. |
+
 ## Terminal
 
 ### Shell (term-shell)
