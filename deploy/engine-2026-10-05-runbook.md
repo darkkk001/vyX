@@ -44,6 +44,9 @@ web risk closes, MATCH 133 / PREEMPTED 45 / TIMING 43, 0 unexplained.
 
 ## Rules
 
+> psql on Windows ignores every option placed AFTER the connection URL, so options always go first and the URL goes
+> last as `-d <url>` (fixed 2026-10-05: section 3b's read returned nothing with the URL first).
+
 - Run in an **elevated** Windows PowerShell on the VPS, except section 5 and the pg_stat_statements check in section
   3, which run on the owner's PC against live Neon.
 - Nothing below prints a secret: URLs are read into variables, and only lengths, host or database names and counts
@@ -206,7 +209,7 @@ foreach ($n in "DATABASE_URL", "DIRECT_URL") {
 }
 $Psql = "D:\pg-scratch\pgsql\bin\psql.exe"
 $q = "SET default_transaction_read_only = on; SELECT userid::regrole::text, queryid, calls, left(regexp_replace(query,'\s+',' ','g'),110) FROM pg_stat_statements;"
-function Read-Stats { $h = @{}; foreach ($r in (& $Psql $env:DIRECT_URL -X -A -t -F "|" -c $q | Where-Object { $_ -match '\|' })) { $f = $r -split '\|', 4; $h["$($f[0])|$($f[1])"] = @{ role = $f[0]; calls = [long]$f[2]; q = $f[3] } }; $h }
+function Read-Stats { $h = @{}; foreach ($r in (& $Psql -X -A -t -F "|" -c $q -d $env:DIRECT_URL | Where-Object { $_ -match '\|' })) { $f = $r -split '\|', 4; $h["$($f[0])|$($f[1])"] = @{ role = $f[0]; calls = [long]$f[2]; q = $f[3] } }; $h }
 $a = Read-Stats; "first read: $($a.Count) statements; waiting 600 s"; Start-Sleep 600; $b = Read-Stats
 $d = foreach ($k in $b.Keys) { $was = if ($a.ContainsKey($k)) { $a[$k].calls } else { 0 }; [pscustomobject]@{ role = $b[$k].role; calls = $b[$k].calls - $was; q = $b[$k].q } }
 "--- calls per minute by role (10 min)"; $d | Group-Object role | ForEach-Object { "{0,-16} {1,8:N1}/min" -f $_.Name, (($_.Group | Measure-Object calls -Sum).Sum / 10) } 
@@ -311,7 +314,7 @@ $env:DIRECT_URL = ($l -replace "^\s*DIRECT_URL\s*=\s*", "").Trim().Trim('"').Tri
 GRANT SELECT (subdomain) ON "Broker" TO vyx_shadow_ro;
 SELECT has_column_privilege('vyx_shadow_ro', '"Broker"', 'subdomain', 'SELECT') AS subdomain_readable,
        has_column_privilege('vyx_shadow_ro', '"Account"', 'passwordHash', 'SELECT') AS password_hash_readable;
-'@ | & "D:\pg-scratch\pgsql\bin\psql.exe" $env:DIRECT_URL -X -q
+'@ | & "D:\pg-scratch\pgsql\bin\psql.exe" -X -q -d $env:DIRECT_URL
 Remove-Item env:DIRECT_URL
 ```
 Expected: `GRANT`, then `subdomain_readable = t`, `password_hash_readable = f`.
