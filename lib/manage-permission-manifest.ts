@@ -81,6 +81,8 @@ export const MANIFEST: Row[] = [
   { mod: "accounts/[id]/kyc/route", method: "POST", perm: "ANY_MANAGER", needsId: true, body: {} },
   { mod: "accounts/[id]/pricing/route", method: "GET", perm: "ANY_MANAGER", needsId: true },
   { mod: "accounts/[id]/reset-password/route", method: "POST", perm: "ANY_MANAGER", needsId: true, body: {} },
+  // owner 2026-10-05: staff "Resend verification e-mail" on a client-portal login (same gate as the password reset)
+  { mod: "clients/[id]/resend-verification/route", method: "POST", perm: "ANY_MANAGER", needsId: true, body: {} },
   // Step 2 (owner 2026-09-30)
   { mod: "accounts/[id]/sign-out/route", method: "POST", perm: "ANY_MANAGER", needsId: true, body: {} },
   { mod: "accounts/[id]/reset-2fa/route", method: "POST", perm: "BROKER_ADMIN_ONLY", needsId: true, body: {} },

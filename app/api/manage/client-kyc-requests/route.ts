@@ -18,7 +18,7 @@ export async function GET() {
   const brokerId = session!.brokerId!;
 
   // Phase 2 batch 6 (issue 135): every PENDING record, then the latest 200 reviewed ones (same shape and order)
-  const include = { client: { select: { fullName: true, email: true, country: true, phone: true } } };
+  const include = { client: { select: { id: true, fullName: true, email: true, country: true, phone: true, emailVerifiedAt: true } } };
   const [pending, reviewed] = await Promise.all([
     prisma.clientKycRecord.findMany({ where: { client: { brokerId }, status: "PENDING" }, include, orderBy: { createdAt: "desc" } }),
     prisma.clientKycRecord.findMany({ where: { client: { brokerId }, status: { not: "PENDING" } }, include, orderBy: [{ status: "asc" }, { createdAt: "desc" }], take: 200 }),
@@ -39,6 +39,9 @@ export async function GET() {
       riskTolerance: r.riskTolerance,
       clientFullName: r.client.fullName,
       clientEmail: r.client.email,
+      // owner 2026-10-05 (staff "Resend verification e-mail"): additive
+      clientId: r.client.id,
+      clientEmailVerified: !!r.client.emailVerifiedAt,
       clientCountry: r.client.country,
       clientPhone: r.client.phone,
       createdAt: r.createdAt.toISOString(),
