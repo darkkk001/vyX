@@ -1,3 +1,5 @@
+# SUPERSEDED (2026-10-05): do not run. Use deploy\engine-2026-10-05.ps1 (deploy\engine-2026-10-05-runbook.md).
+throw "superseded by deploy\engine-2026-10-05.ps1: nothing touched"
 # Engine deploy 2026-10-01 (owner go): BOTH shadow fixes in one build, supersedes margin-call-flap-engine-2026-10-01.ps1.
 #   1. margin-call flapping (4e9bb50 + ee3bb23): overlapping-episode matcher, deferred margin-call edges (damping A, 5 s);
 #   2. the torn pinned read (51de153): every read of an evaluation in one REPEATABLE READ, READ ONLY snapshot.
