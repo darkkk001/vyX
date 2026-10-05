@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { verifyDesktopGateToken } from "@/lib/desktop-gate";
+import { createBrokerResolver } from "@/lib/broker-resolve-cache";
 
 // Resolves which Broker a request belongs to, from the Host header:
 //   - subdomain:      brokername.<ROOT_DOMAIN>
@@ -87,16 +88,17 @@ type BrokerInfo = {
 // round trip for almost every request without going stale in any way a user
 // would notice.
 //
-// FRESH_MS: served instantly, no fetch at all.
-// STALE_MS: still used as a fallback if a re-fetch fails, instead of
+// Fresh (5 min, was 30 s until 2026-10-05): served instantly, no fetch at all.
+// Concurrent misses for one hostname share ONE lookup (2026-10-05; parallel
+//   backoffice requests used to make one lookup each).
+// Stale (30 min): still used as a fallback if a re-fetch fails, instead of
 //   rewriting to /broker-not-found -- this is the same failure mode that hit
 //   production during the Prisma plan-limit outage (every broker's site
 //   404ing at once because the lookup fetch failed). A transient DB/network
 //   blip now degrades to "serving slightly-stale broker info" instead of
 //   "site down."
-const FRESH_MS = 30_000;
-const STALE_MS = 30 * 60_000;
-const brokerCache = new Map<string, { broker: BrokerInfo; fetchedAt: number }>();
+// lib/broker-resolve-cache.ts holds the rules and their tests.
+const brokerResolver = createBrokerResolver<BrokerInfo>();
 
 // 2026-09-08 TEMPORARY, requested directly -- Futurix's customDomain
 // (futurixglobal.com) is correctly configured in the database and
@@ -202,23 +204,17 @@ export async function middleware(request: NextRequest) {
     ? hostname.slice(0, -(rootDomain.length + 1))
     : null;
 
-  const cacheKey = hostname;
-  const cached = brokerCache.get(cacheKey);
-  const now = Date.now();
-
   let broker: BrokerInfo;
 
-  if (cached && now - cached.fetchedAt < FRESH_MS) {
-    broker = cached.broker;
-  } else {
-    const lookupUrl = new URL("/api/internal/resolve-broker", request.url);
-    if (subdomain) {
-      lookupUrl.searchParams.set("subdomain", subdomain);
-    } else {
-      lookupUrl.searchParams.set("customDomain", hostname);
-    }
+  try {
+    broker = await brokerResolver.resolve(hostname, async () => {
+      const lookupUrl = new URL("/api/internal/resolve-broker", request.url);
+      if (subdomain) {
+        lookupUrl.searchParams.set("subdomain", subdomain);
+      } else {
+        lookupUrl.searchParams.set("customDomain", hostname);
+      }
 
-    try {
       // 2026-09-05 security fix -- resolve-broker now requires this same
       // shared secret every other internal-only route on the platform
       // already checks (see that route's own comment for the finding).
@@ -237,18 +233,12 @@ export async function middleware(request: NextRequest) {
         throw new Error(`resolve-broker returned ${resolveResponse.status}`);
       }
 
-      broker = (await resolveResponse.json()) as BrokerInfo;
-      brokerCache.set(cacheKey, { broker, fetchedAt: now });
-    } catch (err) {
-      // Fall back to a stale-but-recent cache entry rather than taking the
-      // whole broker's site down on a transient DB/network blip -- see the
-      // brokerCache comment above.
-      if (cached && now - cached.fetchedAt < STALE_MS) {
-        broker = cached.broker;
-      } else {
-        return NextResponse.rewrite(new URL("/broker-not-found", request.url));
-      }
-    }
+      return (await resolveResponse.json()) as BrokerInfo;
+    });
+  } catch {
+    // No broker and no stale-but-recent entry to fall back on (the resolver
+    // already tried that, see the brokerResolver comment above).
+    return NextResponse.rewrite(new URL("/broker-not-found", request.url));
   }
 
   // 2026-09-08 TEMPORARY REVERSAL -- see the top-of-function comment.
