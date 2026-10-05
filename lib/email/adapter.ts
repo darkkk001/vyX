@@ -131,6 +131,22 @@ export async function sendBrokerEmail(
   return { usedMock: true };
 }
 
+// Platform (not broker) mail, e.g. ops alerts (lib/infra-health.ts). From = OPS_ALERT_FROM, e.g.
+// "VyX Ops <ops@vyxtrader.com>"; it must be on a domain verified in the Resend account RESEND_API_KEY belongs to.
+// Unset: falls back to Futurix's verified noreply (the only verified domain today) under a neutral "VyX Ops" name.
+// No RESEND_API_KEY = Mock (logged only), like every other send.
+export const DEFAULT_PLATFORM_FROM = "VyX Ops <noreply@futurixglobal.com>";
+export async function sendPlatformEmail(message: MailMessage): Promise<{ usedMock: boolean }> {
+  const from = process.env.OPS_ALERT_FROM?.trim() || DEFAULT_PLATFORM_FROM;
+  const resend = getResendAdapter();
+  if (resend) {
+    await resend.send({ ...message, from });
+    return { usedMock: false };
+  }
+  await getMockAdapter().send({ ...message, from });
+  return { usedMock: true };
+}
+
 // Dev/test-only convenience -- see MockEmailAdapter's own comment. Only
 // ever finds something for a send that actually went through Mock.
 export function getMockLastSentTo(to: string): MailMessage | null {

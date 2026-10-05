@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { brokerMaySeeSynthetic, isSyntheticSymbol } from "@/lib/synthetic-symbols";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
+import { readInfraSummary } from "@/lib/infra-health";
 
 // Field names match engine/server's FeedStatsResponse exactly (the
 // #[serde(flatten)] FeedStatsSnapshot plus queue_len/per_symbol) --
@@ -130,13 +131,16 @@ export async function GET() {
   const alertStats = alerts.data;
   // web5: additive -- the three stats objects keep their shape (null on failure) for backoffice 1.0.58
   const upstream = { feedStats: feed.status, gatewayStats: gateway.status, alertStats: alerts.status };
+  // owner 2026-10-05: VPS infrastructure checks (deploy/vps/caddy-health-check.ps1 -> /api/internal/infra-health);
+  // additive, NO_REPORT when the check stopped reporting for 15 minutes
+  const infra = { caddy: await readInfraSummary("caddy") };
 
   // synthetic symbols (lib/synthetic-symbols.ts): their rows and the synth feed's counters are the shadow-bot tenant's
   // only; every other broker sees the real feed exactly as before
   if (feedStats && !(await brokerMaySeeSynthetic(prisma, session!.brokerId!))) {
     const { synth: _synth, ...real } = feedStats;
     void _synth;
-    return NextResponse.json({ feedStats: { ...real, per_symbol: (real.per_symbol ?? []).filter((r) => !isSyntheticSymbol(r.symbol)) }, gatewayStats, alertStats, upstream });
+    return NextResponse.json({ feedStats: { ...real, per_symbol: (real.per_symbol ?? []).filter((r) => !isSyntheticSymbol(r.symbol)) }, gatewayStats, alertStats, upstream, infra });
   }
-  return NextResponse.json({ feedStats, gatewayStats, alertStats, upstream });
+  return NextResponse.json({ feedStats, gatewayStats, alertStats, upstream, infra });
 }
