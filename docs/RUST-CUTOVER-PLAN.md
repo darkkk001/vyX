@@ -1154,7 +1154,8 @@ Verified: the scratch gate now runs the shadow THROUGH a read-only role (a write
 path fails it); a writable role and a different database are both refused.
 
 **Soak exit (widened).** At least 30 paired MATCH / TIMING, 7 clean days, and, inside that clean run, the shadow was
-alive through at least 2 weekend reopens (Sunday 22:00-23:00 UTC) and 1 NFP window (the first Friday, 08:30 New York
+alive through at least 2 weekend reopens (the first hour after Sunday 17:00 New York: 21:00-22:00 UTC during US daylight time,
+22:00-23:00 UTC from the first Sunday of November; the 2026-10-04 reopen was recorded at 21:00:54 UTC) and 1 NFP window (the first Friday, 08:30 New York
 plus 1 h). Events are recorded while reconciling, so an engine that was down does not count. The daily summary and
 `shadow_daily` carry `weekendOpens`, `nfpWindows`, `exitMet`.
 
