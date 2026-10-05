@@ -23,6 +23,12 @@ This rule applies to every app (backoffice, terminal, WebTrader) and every CSV e
 Every table in every app: a column's default width fits its full header text and its content. Headers and cells are
 never clipped and never overlap. When the panel is too narrow for all columns, the table scrolls horizontally.
 
+## Short dialogs (owner 2026-10-05)
+
+Every dialog, toast and confirm in every app (backoffice, terminal, WebTrader, portal) is short and direct: one line
+where possible. Say what happened or what will happen, nothing else. Longer text only when something went wrong and
+the user must act, and then say exactly what to do.
+
 ## Glossary
 
 | Concept | Word | Unit | Never use |
@@ -1789,6 +1795,39 @@ Hidden until an LP bridge exists: the screen is merged into Liquidity providers,
 | CFG | SETTINGS UNAVAILABLE / LOADING SETTINGS… | keep | — | Error / loading states. |
 | CFG | WITHDRAWAL APPROVAL · <x> (dialog) / SWITCH TO <x> | Withdrawal approval · <x> / Switch to <x> | — | One-admin or two-admin payouts. |
 | CFG | SAVE BROKER SETTINGS (dialog) | keep | — | Confirm dialog title. |
+
+### Backoffice 1.0.61 additions (owner 2026-10-05)
+
+| Screen | Was | Label | Unit | Notes |
+|---|---|---|---|---|
+| CLI | Deposit… / Withdraw… (Account menu, two items) | Deposit / Withdraw… | — | One item; opens one window with tabs DEPOSIT · WITHDRAW. "Deposit & withdrawal history" stays as it is (owner 2026-10-05). |
+| CLI | (window tabs, new) | DEPOSIT · WITHDRAW | — | The window opens on the tab of the action the user chose. |
+| DEP | NEW DEPOSIT… · NEW WITHDRAWAL… (header, two buttons) | NEW DEPOSIT / WITHDRAWAL… | — | One button; opens the account picker, then the same window (owner 2026-10-05). |
+| CLI | Withdraw: ID check not approved (status bar only) | Withdrawals need an approved ID check | — | Shown inside the WITHDRAW tab with the submit button disabled; never only in the status bar (owner 2026-10-05, rule: every refusal shows where the user clicked). |
+| CLI | (link, new) | Open ID check | — | Next to the line above; opens the client's ID check. |
+| CLI | (action, new) | Resend verification e-mail | — | Client-portal login whose e-mail is not verified; Account menu and the client page. Hidden when there is no portal login or it is verified (owner 2026-10-05). |
+| CLI | (result, new) | Verification e-mail sent to z***@gmail.com | — | Toast after a send. |
+| CLI | (refusals, new) | Already verified · This client is not active · E-mail is not set up for this broker · Too many resends for this client, try again in an hour · The e-mail could not be sent: <reason> | — | Shown in the action's own dialog or as the disabled item's reason, never only in the status bar. |
+| CLI | NEW PASSWORD / password shown once (dialogs: Reset client password, Add account, staff first password) | Sign-in details | — | Details card (owner 2026-10-05): rows Account · Name · Group · Live / Demo · Server · Web login · Password (masked, Show); a copy icon on every row. |
+| CLI | (buttons, new) | COPY ALL DETAILS · E-MAIL TO CLIENT · DONE | — | No CANCEL: the change has already happened. E-MAIL TO CLIENT is enabled only when the broker's e-mail works. |
+| CLI | It was NOT e-mailed (e-mail is not set up for this broker, or sending failed) | Not e-mailed: <reason> | — | One line; the reason names which (e-mail off for this broker / the provider's error). |
+| CLI | (copy block, new) | Account: … / Name: … / Group: … (Live) / Server: … / Web login: … / Password: … | — | What COPY ALL DETAILS puts on the clipboard, one item per line, ready to paste to the client. |
+| SHELL | UPDATE vX READY · click to restart (before sign-in) | Updating to vX · restarting | — | Before sign-in a downloaded update installs and restarts on its own (owner 2026-10-05). |
+| SHELL | UPDATE vX READY (signed in) | Update vX installs when you close | — | Signed in: never interrupts; "Restart now" stays in the cell's menu (owner 2026-10-05). |
+| FEED | (row, new) | Caddy | — | The VPS web server in front of the feed. States: OK · FAIL (with the reasons) · No report for 15 min (the check itself is not running) (owner 2026-10-05). |
+| FEED | (sub-labels, new) | Last check (UTC) · Reasons | — | Under the Caddy row. |
+| CLI | (password card title) | PASSWORD RESET | — | The card after Reset password / Set password (owner 2026-10-05). |
+| CLI | (e-mailed line) | ✓ New password sent to <email> | — | One line when the e-mail went out. |
+| CLI | (reveal button) | SHOW PASSWORD | — | Shows the masked password; each reveal is on the audit log (Password revealed). |
+| CLI | (not e-mailed lines) | Not e-mailed: e-mail is unavailable · Internal account: not e-mailed · No e-mail address on this account | — | One line each; the password is on the card either way. |
+| CLI | (action, new) | Set password… | — | Staff choose the client's password (owner 2026-10-05). |
+| CLI | (Set password form) | New password · E-mail it to the client · SET PASSWORD | — | The e-mail switch is off and locked on an internal account. |
+| CLI | (weak password) | Use at least 8 characters with letters and digits. | — | The form's refusal (code WEAK_PASSWORD). |
+| CLI | (flag, new) | Internal account | — | A broker's own test / staff account: left out of the dashboard, risk radar, reports and the exposure limit; never e-mailed credentials. BROKER_ADMIN only (owner 2026-10-05). |
+| CLI | (menu items, new) | Mark as internal account · Unmark internal account | — | Account menu, ACCOUNT section. |
+| AUD | PASSWORD_REVEALED | Password revealed | — | Who clicked SHOW PASSWORD on whose account, and when. |
+| AUD | ACCOUNT_PASSWORD_SET · ACCOUNT_INTERNAL_FLAG_CHANGED · STAFF_VERIFICATION_RESENT | Set trader password · Changed internal account flag · Resent verification e-mail | — | Audit log wording (owner 2026-10-05). |
+| SHELL | VYXTRADER BACKOFFICE (login window of a broker build) | <BROKER> BACKOFFICE | — | Login window title, logo, colours and window title come from the build's brand pin before sign-in (owner 2026-10-05); same for the terminal login. |
 
 ## Terminal
 

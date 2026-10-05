@@ -15,7 +15,7 @@ export async function GET() {
 
   const transactions = await prisma.transaction.findMany({
     // LIVE accounts only, to reconcile with the summary tiles (which are LIVE-only); demo movements were inflating the table
-    where: { brokerId, createdAt: { gte: thirtyDaysAgo }, account: { accountMode: "LIVE" } },
+    where: { brokerId, createdAt: { gte: thirtyDaysAgo }, account: { accountMode: "LIVE", isInternal: false } },
     include: { account: { select: { accountNumber: true } } },
     orderBy: { createdAt: "desc" },
   });

@@ -41,6 +41,7 @@ export async function GET() {
         ibLinkAsClient: { select: { id: true } },
         kycRecord: { select: { status: true } },
         accountType: { select: { id: true, name: true } },
+        client: { select: { id: true, email: true, emailVerifiedAt: true } },
       },
       orderBy: { accountNumber: "asc" },
     }),
@@ -107,6 +108,11 @@ export async function GET() {
         // listed with the clients but is not a client: the backoffice hides client actions (funds, KYC, password,
         // mirror) on it
         isCoverage: broker?.coverageAccountId === a.id,
+        // owner 2026-10-05: a broker's own test / staff account, left out of broker-wide figures like isCoverage
+        isInternal: a.isInternal,
+        // Owner 2026-10-05: the client-portal login behind this account (if any), so the backoffice can offer
+        // "Resend verification e-mail" (POST /api/manage/clients/{id}/resend-verification). Additive.
+        client: a.client ? { id: a.client.id, email: a.client.email, emailVerified: !!a.client.emailVerifiedAt } : null,
       };
     })
   );

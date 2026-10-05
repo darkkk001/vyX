@@ -68,6 +68,12 @@ const LABELS: Record<string, string> = {
   ADMIN_2FA_ENABLED: "Enabled two-factor authentication",
   ADMIN_2FA_DISABLED: "Disabled two-factor authentication",
   ACCOUNT_PASSWORD_RESET: "Reset trader password",
+  // owner 2026-10-05 (docs/contracts/staff-credentials.md, staff-resend-verification.md)
+  ACCOUNT_PASSWORD_SET: "Set trader password",
+  PASSWORD_REVEALED: "Password revealed",
+  ACCOUNT_INTERNAL_FLAG_CHANGED: "Changed internal account flag",
+  STAFF_VERIFICATION_RESENT: "Resent verification e-mail",
+  CLIENT_VERIFICATION_RESENT: "Client asked for a new verification e-mail",
   ADMIN_PASSWORD_RESET_BY_SUPER_ADMIN: "Reset backoffice staff password",
   WEBTRADER_SESSION_REVOKED: "Revoked WebTrader session",
   STM_HOTKEY_ORDER: "Placed order via Smart Trade Manager hotkey",

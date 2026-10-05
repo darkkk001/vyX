@@ -18,7 +18,7 @@ export async function GET() {
 
   // Phase 2 batch 6 (issue 138): every PENDING request, then the latest 200 decided ones (same shape and order)
   const include = {
-    client: { select: { fullName: true, email: true, country: true, phone: true } },
+    client: { select: { id: true, fullName: true, email: true, country: true, phone: true, emailVerifiedAt: true } },
     accountType: { select: { name: true } },
     createdAccount: { select: { accountNumber: true } },
   };
@@ -37,6 +37,9 @@ export async function GET() {
       createdAccountNumber: r.createdAccount?.accountNumber ?? null,
       clientFullName: r.client.fullName,
       clientEmail: r.client.email,
+      // owner 2026-10-05 (staff "Resend verification e-mail"): additive
+      clientId: r.client.id,
+      clientEmailVerified: !!r.client.emailVerifiedAt,
       clientCountry: r.client.country,
       clientPhone: r.client.phone,
       createdAt: r.createdAt.toISOString(),

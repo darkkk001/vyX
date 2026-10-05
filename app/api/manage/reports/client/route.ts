@@ -10,8 +10,9 @@ export async function GET() {
   }
   const brokerId = session!.brokerId!;
 
+  // owner 2026-10-05: internal (test / staff) accounts are not clients of the broker
   const accounts = await prisma.account.findMany({
-    where: { brokerId },
+    where: { brokerId, isInternal: false },
     include: { group: { select: { name: true } } },
     orderBy: { accountNumber: "asc" },
   });

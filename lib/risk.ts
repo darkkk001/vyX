@@ -341,7 +341,7 @@ export async function checkBrokerExposure(
     where: {
       brokerId,
       status: "OPEN",
-      account: { group: { category: { not: "COVERAGE" } } },
+      account: { isInternal: false, group: { category: { not: "COVERAGE" } } },
       ...(broker?.coverageAccountId ? { accountId: { not: broker.coverageAccountId } } : {}),
     },
     _sum: { volume: true },

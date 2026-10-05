@@ -34,12 +34,17 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   const brokerId = session.brokerId!;
   const { id } = await params;
 
+  const body = await request.json().catch(() => null);
+  // The internal flag is BROKER_ADMIN only, checked before the account lookup (no existence oracle for a MANAGER).
+  if (body != null && "isInternal" in body && session.role !== "BROKER_ADMIN") {
+    return NextResponse.json({ error: "only a broker admin can change the internal flag", code: "BROKER_ADMIN_ONLY" }, { status: 403 });
+  }
+
   const account = await prisma.account.findUnique({ where: { id } });
   if (!account || account.brokerId !== brokerId) {
     return NextResponse.json({ error: "account not found" }, { status: 404 });
   }
 
-  const body = await request.json().catch(() => null);
   const hasGroupChange = body != null && "groupId" in body;
   // Same permission tier as groupId -- a pricing-tier LABEL (see
   // AccountType's own schema comment), not itself a balance/leverage
@@ -50,9 +55,14 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   // (see Account.swapFree's own schema comment), not a balance/leverage
   // magnitude, so MANAGER can toggle it same as group/type.
   const hasSwapFreeChange = body != null && "swapFree" in body;
+  // Owner 2026-10-05: the internal (test / staff) account flag, left out of every broker-wide figure. BROKER_ADMIN only.
+  const hasInternalChange = body != null && "isInternal" in body;
 
-  if (!hasGroupChange && !hasAccountTypeChange && !hasFinanceChange && !hasSwapFreeChange) {
+  if (!hasGroupChange && !hasAccountTypeChange && !hasFinanceChange && !hasSwapFreeChange && !hasInternalChange) {
     return NextResponse.json({ error: "nothing to update" }, { status: 400 });
+  }
+  if (hasInternalChange && typeof body.isInternal !== "boolean") {
+    return NextResponse.json({ error: "isInternal must be true or false", code: "INVALID_BODY" }, { status: 400 });
   }
   if (hasFinanceChange && session.role !== "BROKER_ADMIN" && !(await hasPermission(session, "ACCOUNT_FINANCE"))) {
     return NextResponse.json(
@@ -169,6 +179,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       status?: typeof status;
       maxDailyLoss?: Prisma.Decimal | null;
       swapFree?: boolean | null;
+      isInternal?: boolean;
     } = {};
     const auditEntries: { action: string; oldValue: Prisma.InputJsonValue; newValue: Prisma.InputJsonValue }[] = [];
 
@@ -233,6 +244,15 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       });
     }
 
+    if (hasInternalChange && body.isInternal !== account.isInternal) {
+      data.isInternal = body.isInternal;
+      auditEntries.push({
+        action: "ACCOUNT_INTERNAL_FLAG_CHANGED",
+        oldValue: { isInternal: account.isInternal },
+        newValue: { isInternal: body.isInternal },
+      });
+    }
+
     const result = await tx.account.update({ where: { id }, data });
 
     for (const entry of auditEntries) {
@@ -271,5 +291,6 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     accountTypeId: updated.accountTypeId,
     maxDailyLoss: updated.maxDailyLoss?.toString() ?? null,
     swapFree: updated.swapFree,
+    isInternal: updated.isInternal,
   });
 }

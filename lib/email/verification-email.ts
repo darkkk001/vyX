@@ -76,3 +76,13 @@ export async function sendClientVerificationEmail(args: {
   );
   return { usedMock, verifyUrl };
 }
+
+// app/api/manage/clients/[id]/resend-verification (staff action, owner 2026-10-05).
+export const STAFF_RESEND_PER_CLIENT_PER_HOUR = 5;
+
+// "z***@gmail.com": what a response may echo back without repeating the full address.
+export function maskEmail(email: string): string {
+  const at = email.indexOf("@");
+  if (at <= 0) return "***";
+  return `${email[0]}***${email.slice(at)}`;
+}
