@@ -1,3 +1,4 @@
+import { NextRequest } from "next/server";
 // GET /api/manage/badges (2026-10-05): every backoffice badge count in one cheap request. Proven here against the
 // real handlers on the per-file scratch DB:
 //   1. each count equals what the native backoffice used to count from the old list endpoints (same seeded data,
@@ -166,7 +167,7 @@ async function oldCounts(f: Fixture) {
     rdr: flagged + radar.sameIpClusters.length,
     kyc: pending(await json(await kycGET())) + pending(await json(await clientKycGET())),
     lar: pending(await json(await larGET())),
-    dep: pending((await json(await fundsGET())).rows),
+    dep: pending((await json(await fundsGET(new NextRequest("https://t.local/api/manage/funds-requests")))).rows),
     unread: shell.unreadNotifications as number,
   };
 }

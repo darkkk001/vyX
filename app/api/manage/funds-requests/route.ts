@@ -12,13 +12,13 @@ import { paymentMethodName, STAFF_PSP_ADAPTER } from "@/lib/staff-funds";
 // then recent resolved ones for context.
 // ?accountId= (DEP item, owner 2026-10-05): one account's history ("Deposit & withdrawal history" on the Account menu),
 // filtered on the server and not cut at the broker-wide 200 (capped at 1000 rows for one account).
-export async function GET(request?: NextRequest) {
+export async function GET(request: NextRequest) {
   const session = await getAdminSession();
   if (await forbidUnlessPermissionOrSupportReader(session, "FUNDS_APPROVAL") /* SUPPORT reads (view only) */) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
   const brokerId = session!.brokerId!;
-  const accountId = request?.nextUrl.searchParams.get("accountId")?.trim() || null;
+  const accountId = request.nextUrl.searchParams.get("accountId")?.trim() || null;
 
   const requests = await prisma.transaction.findMany({
     where: { brokerId, type: { in: ["DEPOSIT", "WITHDRAWAL"] }, ...(accountId ? { accountId } : {}) },
