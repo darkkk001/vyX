@@ -41,10 +41,24 @@ fn url() -> Option<String> {
 
 // ---- statement counter: sqlx logs every statement it runs as one `sqlx::query` event ----
 
+// One GLOBAL subscriber counting only the events of the measuring test's own thread (#[tokio::test] runs every query of
+// that test on its thread): a thread-local subscriber misses events while another test thread runs without one
+// (tracing caches each callsite's interest across threads).
 #[derive(Clone, Default)]
 struct Counter {
     n: Arc<AtomicUsize>,
     seen: Arc<Mutex<Vec<String>>>,
+    thread: Arc<Mutex<Option<std::thread::ThreadId>>>,
+}
+
+fn counter() -> Counter {
+    static C: std::sync::OnceLock<Counter> = std::sync::OnceLock::new();
+    C.get_or_init(|| {
+        let c = Counter::default();
+        tracing::subscriber::set_global_default(tracing_subscriber::registry().with(c.clone())).expect("the only global subscriber of this test binary");
+        c
+    })
+    .clone()
 }
 
 struct Text(String);
@@ -56,7 +70,7 @@ impl tracing::field::Visit for Text {
 
 impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Counter {
     fn on_event(&self, e: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
-        if e.metadata().target() != "sqlx::query" {
+        if e.metadata().target() != "sqlx::query" || *self.thread.lock().unwrap() != Some(std::thread::current().id()) {
             return;
         }
         let mut t = Text(String::new());
@@ -165,24 +179,18 @@ impl World {
     }
 }
 
-/// Only this world's accounts may hold open positions while the pass is measured (the pass reads the whole book).
-async fn assert_book_is_only(pool: &PgPool, w: &World) {
-    let (others,): (i64,) = sqlx::query_as(r#"SELECT count(*) FROM "Position" WHERE status = 'OPEN' AND "brokerId" <> $1"#)
-        .bind(&w.broker).fetch_one(pool).await.unwrap();
-    assert_eq!(others, 0, "another test left open positions in the scratch DB: the pass would measure them too");
-}
-
-/// Statements of one shadow pass the OLD way (the 86a4adc structure: list, then every account read on its own), and
-/// of run_pass_mode (load_pass_book), counted on this thread. The cache is loaded first in both, as in production.
-async fn measure(pool: &PgPool, w: &World, recorder: &Arc<Recorder>, cache: &Arc<TickCache>, pricing: &Arc<PricingCache>, counter: &Counter) -> (usize, usize) {
+/// Statements of one shadow pass the OLD way (the 86a4adc structure: the list query, then every account read on its
+/// own -- this world's accounts only, so other tests' rows in the shared scratch DB never change the number), and of
+/// run_pass_mode (load_pass_book: constant whatever the book holds), counted on this thread. The cache is loaded first
+/// in both, as in production. Returns (before, after, pass errors). Never panics: the caller cleans up first.
+async fn measure(pool: &PgPool, w: &World, recorder: &Arc<Recorder>, cache: &Arc<TickCache>, pricing: &Arc<PricingCache>, counter: &Counter) -> (usize, usize, usize) {
     let mode = Mode::Shadow(recorder.clone());
     let src = PriceSource::Ticks(cache.clone());
     counter.take();
     with_book_sources(src.clone(), Some(pricing.clone()), async {
-        let ids = book::account_ids_with_open_positions(pool).await.unwrap();
-        assert_eq!(ids.len(), w.accounts.len());
-        for id in &ids {
-            evaluate_account_mode(pool, None, id, &mode).await.unwrap();
+        let _ = book::account_ids_with_open_positions(pool).await;
+        for id in &w.accounts {
+            let _ = evaluate_account_mode(pool, None, id, &mode).await;
         }
     })
     .await;
@@ -194,20 +202,18 @@ async fn measure(pool: &PgPool, w: &World, recorder: &Arc<Recorder>, cache: &Arc
         eprintln!("{seen:#?}");
     }
     let after = counter.take();
-    assert_eq!(report.errors, 0, "the pass evaluated every account: {seen:#?}");
-    (before, after)
+    (before, after, report.errors)
 }
 
 #[tokio::test]
 async fn a_shadow_pass_reads_a_constant_number_of_statements_and_decides_on_the_same_numbers() {
     let Some(url) = url() else { return };
-    let counter = Counter::default();
-    let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(counter.clone()));
+    let counter = counter();
+    *counter.thread.lock().unwrap() = Some(std::thread::current().id());
     let pool = PgPool::connect(&url).await.unwrap();
     let recorder = Arc::new(Recorder::connect(&url).await.expect("local store"));
     let mut w = world(&pool, 4).await;
     let result = async {
-        assert_book_is_only(&pool, &w).await;
         let cache = Arc::new(TickCache::new());
         w.tick(&cache);
         let pricing = PricingCache::new();
@@ -218,22 +224,39 @@ async fn a_shadow_pass_reads_a_constant_number_of_statements_and_decides_on_the_
 
         // the pass book's numbers are load_book_state's, account by account (funds, prices, ask rules)
         let src = PriceSource::Ticks(cache.clone());
-        let pb = with_book_sources(src.clone(), Some(pricing.clone()), book::load_pass_book(&pool, &[])).await.unwrap();
+        let pb = with_book_sources(src.clone(), Some(pricing.clone()), book::load_pass_book(&pool, &[])).await;
+        let mut mismatches: Vec<String> = Vec::new();
         let mut rules = 0;
-        for id in &w.accounts {
-            let old = with_book_sources(src.clone(), Some(pricing.clone()), load_book_state(&pool, id)).await.unwrap().unwrap();
-            let new = pb.state(id, &src, chrono::Utc::now()).unwrap();
-            assert_eq!((old.effective_balance, old.credit, old.leverage), (new.effective_balance, new.credit, new.leverage), "{id}");
-            assert_eq!(format!("{:?}", old.positions), format!("{:?}", new.positions), "{id}: the same rows, prices and ask rules");
-            rules += new.positions.iter().filter(|p| p.ask_rule.is_some()).count();
+        match pb {
+            Err(e) => mismatches.push(format!("load_pass_book failed: {e}")),
+            Ok(pb) => {
+                for id in &w.accounts {
+                    let old = with_book_sources(src.clone(), Some(pricing.clone()), load_book_state(&pool, id)).await;
+                    let (Ok(Some(old)), Some(new)) = (old, pb.state(id, &src, chrono::Utc::now())) else {
+                        mismatches.push(format!("{id}: missing on one side"));
+                        continue;
+                    };
+                    if (old.effective_balance, old.credit, old.leverage) != (new.effective_balance, new.credit, new.leverage) {
+                        mismatches.push(format!("{id}: funds differ"));
+                    }
+                    if format!("{:?}", old.positions) != format!("{:?}", new.positions) {
+                        mismatches.push(format!("{id}: rows / prices / ask rules differ:
+  old {:?}
+  new {:?}", old.positions, new.positions));
+                    }
+                    rules += new.positions.iter().filter(|p| p.ask_rule.is_some()).count();
+                }
+            }
         }
-        // every position carries the resolved rule (engine on, broker + group levels set): the cache resolved them
-        assert_eq!(rules, w.accounts.len() * 2);
-        (small, large)
+        (small, large, mismatches, rules)
     }
     .await;
     w.cleanup().await;
-    let ((b4, a4), (b20, a20)) = result;
+    let ((b4, a4, e4), (b20, a20, e20), mismatches, rules) = result;
+    assert_eq!((e4, e20), (0, 0), "the pass evaluated every account without an error");
+    assert!(mismatches.is_empty(), "the pass book must decide on load_book_state's numbers: {mismatches:#?}");
+    // every position carries the resolved rule (engine on, broker + group levels set): the cache resolved them
+    assert_eq!(rules, w.accounts.len() * 2);
     eprintln!("statements per shadow pass: 4 accounts: before {b4}, after {a4}; 20 accounts: before {b20}, after {a20}");
     assert_eq!(a4, a20, "after: the same number of statements whatever the number of accounts");
     assert!(a20 <= 8, "after: a handful of statements per pass, got {a20}");
@@ -261,7 +284,7 @@ async fn the_cache_reloads_when_a_change_is_announced_and_reads_nothing_otherwis
                 false
             }
         };
-        assert!(wait_for(1).await, "the first load runs at once");
+        let first = wait_for(1).await;
         // no tick: a real quote moving would make the safety reload due (that is its job); ask rules don't need prices
         let src = PriceSource::Ticks(ticks.clone());
         let rule_of = |pricing: Arc<PricingCache>| {
@@ -278,18 +301,21 @@ async fn the_cache_reloads_when_a_change_is_announced_and_reads_nothing_otherwis
         let quiet = pricing.reload_count.load(Ordering::Relaxed) - loaded;
         // the web changes the group's markup and announces it (config.changed)
         sqlx::query(r#"UPDATE "GroupSymbolConfig" SET "spreadMarkup" = 9 WHERE "groupId" = $1"#).bind(&w.group).execute(&pool).await.unwrap();
-        assert_eq!(rule_of(pricing.clone()).await, before, "not announced yet: the cached rule is kept");
+        let kept = rule_of(pricing.clone()).await == before;
         pricing.request_reload();
         pricing.request_reload(); // a burst makes at most one more reload than asked once
-        assert!(wait_for(loaded + 1).await, "an announced change reloads");
+        let reloaded = wait_for(loaded + 1).await;
         tokio::time::sleep(Duration::from_millis(100)).await;
         let after = rule_of(pricing.clone()).await;
         let reloads = pricing.reload_count.load(Ordering::Relaxed) - loaded;
-        (quiet, before, after, reloads)
+        (first, quiet, before, kept, reloaded, after, reloads)
     }
     .await;
     w.cleanup().await;
-    let (quiet, before, after, reloads) = result;
+    let (first, quiet, before, kept, reloaded, after, reloads) = result;
+    assert!(first, "the first load runs at once");
+    assert!(kept, "not announced yet: the cached rule is kept");
+    assert!(reloaded, "an announced change reloads");
     eprintln!("quiet reloads {quiet}; rule before {before:?}, after {after:?}; reloads for the burst {reloads}");
     assert_eq!(quiet, 0, "nothing moved, nothing asked: no reload");
     assert_ne!(before, after, "the announced markup reached the book read");
