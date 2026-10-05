@@ -1251,9 +1251,15 @@ Hidden until an LP bridge exists: the screen is merged into Liquidity providers,
 | CLI | VERIFIED / NONE (ID check value) | Verified / Not started | — | — |
 | CLI | Open client 360 | Open client | — | Open the client's account page. |
 | CLI | Live exposure | keep | — | — |
-| CLI | Deposits · withdrawals | Deposits & withdrawals | — | — |
+| CLI | Deposits · withdrawals | Deposit & withdrawal history | — | Opens Deposits & withdrawals filtered to this account (owner 2026-10-05). |
 | CLI | Wallet | Account balance | — | This client's balance, credit and equity. |
 | CLI | Credit / debit… | Add / deduct funds… | — | Change the balance by hand; does not touch Credit. |
+| CLI | Deposit… (new) | Deposit… | — | Record a deposit on this account; counts in the deposit totals (owner 2026-10-05). |
+| CLI | Withdraw… (new) | Withdraw… | — | Record a withdrawal from this account; needs approved KYC and enough free margin (owner 2026-10-05). |
+| CLI | Deposit / withdraw form: payment method | Payment method | — | Built-in first choice "Manual / Bank transfer", always available, then the broker's enabled methods (owner 2026-10-05). |
+| CLI | Deposit / withdraw form: built-in method | Manual / Bank transfer | — | For brokers with no payment methods set up (owner 2026-10-05). |
+| CLI | Deposit / withdraw form: reference | Reference | — | Optional, e.g. the bank reference (owner 2026-10-05). |
+| CLI | Deposit / withdraw form: reason | Reason | — | Required; saved to the ledger and the audit log (owner 2026-10-05). |
 | CLI | Change group… | keep | — | — |
 | CLI | Leverage… | Change leverage… | — | — |
 | CLI | Risk limits… | keep | — | Swap-free and max daily loss. |
@@ -1529,6 +1535,14 @@ Hidden until an LP bridge exists: the screen is merged into Liquidity providers,
 | DEP | Cancel my mark | Cancel my approval | — | Remove your first approval. |
 | DEP | Reject… | keep | — | Refuse the request. |
 | DEP | Open client <acc> | keep | — | Open the client's account page. |
+| DEP | header button (new) | New deposit… | — | The screen's one orange button: pick an account, then record a deposit (owner 2026-10-05). |
+| DEP | header button (new) | New withdrawal… | — | Pick an account, then record a withdrawal (owner 2026-10-05). |
+| DEP | account filter chip (new) | Account {account} × | — | Shown when opened from an account's Deposit & withdrawal history; × clears it (owner 2026-10-05). |
+| DEP | staff-recorded row (new) | Recorded by {name} | — | The entry was recorded by staff, not requested by the client (owner 2026-10-05). |
+| DEP | empty: no rows at all | No deposits or withdrawals yet | — | With the link New deposit… (owner 2026-10-05). |
+| DEP | empty: Waiting filter | Nothing waiting for a decision. | — | (owner 2026-10-05) |
+| DEP | empty: filters or search | No requests match these filters | — | With the link Clear filters (owner 2026-10-05). |
+| DEP | empty: one account | No deposits or withdrawals for {account} yet | — | With the link New deposit… (owner 2026-10-05). |
 | DEP | APPROVE DEPOSIT (dialog) | keep | — | Confirm dialog title. |
 | DEP | PAY OUT WITHDRAWAL (dialog) + PAY OUT | Pay out withdrawal / Pay out | — | Single-admin payout. |
 | DEP | MARK WITHDRAWAL FOR APPROVAL (dialog) + MARK | Approve withdrawal (First Admin) / Approve | — | A second admin confirms. |
