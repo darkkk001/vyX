@@ -3,7 +3,7 @@
 **This supersedes `deploy/engine-2026-10-01-runbook.md` and its script, which were never run.** Everything the 10-01
 deploy carried is in this build. The script is `deploy/engine-2026-10-05.ps1`.
 
-**What ships** (branch `engine/pricing-cache` on darkkk001/vyX, not yet in `main`):
+**What ships** (branch `engine/pricing-cache` on darkkk001/vyX, merged into `main` as `44f7a51` on 2026-10-05):
 
 | # | Change | Commits |
 |---|---|---|
@@ -14,9 +14,10 @@ deploy carried is in this build. The script is `deploy/engine-2026-10-05.ps1`.
 | 5 | D8: account types take no part in the engine's ask rule (web D4 parity); the vectors test pins the web's 12 cases | `76fe899` (= `3338c72`, merged `d554292`) |
 | 6 | Broker counter (**droppable**): the reconciler fills in the broker of pairs stored without one since the soak start; grant file carries `Broker.subdomain` | `b5c1a2a` |
 
-**The pin.** The script requires HEAD's `engine\` to be byte-identical to **`b5c1a2a`**'s. If the branch is rebased or
-merged onto `main` together with any other engine change, or `b5c1a2a` is dropped (revert it alone; its parent
-`08ce631` is then the pin), **re-pin** `$Fix` in the script and the commit list in section 1 before running. A pin that
+**The pin.** Re-pinned on 2026-10-05 to **`44f7a51`**, the merge of `engine/pricing-cache` into `main` (the owner
+chose "merge to main first"; `b5c1a2a` kept). Its `engine\` is byte-identical to `b5c1a2a`'s, the reviewed and tested
+code (`git diff --quiet b5c1a2a 44f7a51 -- engine` is empty). The script requires HEAD to contain `44f7a51` and HEAD's
+`engine\` to equal its. Any later engine change on `main` means re-pinning `$Fix` and section 1 first. A pin that
 doesn't match makes the script stop with "Nothing touched".
 
 It changes the engine binary `trading-core-server.exe` only. There is no schema change and no env change. These stay
@@ -24,8 +25,7 @@ as they are: `start-engine.cmd`; `ENGINE_ORDER_MANAGEMENT` (stays `shadow`); eve
 `VYX_SHADOW_PASS_SECS` and `VYX_RISK_TRIGGER_MS`. The only database step is the optional one-line grant of section 5.
 
 **The web.** Not touched by this deploy. #123's root cause, the web sending MARGIN_CALL twice, is fixed on the web
-side by `ce25b5d` (branch `web/badges-margin-notice`). Until that web deploy, a duplicate notice can still leave a new
-WEB_ONLY row. Deploy the web first, or expect to excuse one more such row.
+side by `ce25b5d`, live in production since 2026-10-05 04:49 UTC (main `c691bf1`).
 
 **Before / after:**
 
@@ -90,11 +90,11 @@ nothing for it, and that row needs a decision first.
 cd C:\vyxtrader\repo
 if (git status --porcelain) { throw "working tree not clean: stop and report" }
 git fetch --all
-git checkout --detach newrepo/engine/pricing-cache   # the remote name `git remote -v` shows for darkkk001/vyX; or main once merged
-foreach ($c in "4e9bb50", "ee3bb23", "51de153", "86a4adc", "65d1908", "3338c72", "b5c1a2a") { git merge-base --is-ancestor $c HEAD; if ($LASTEXITCODE -ne 0) { throw "HEAD does not contain $c" } }
+git checkout --detach newrepo/main   # use the remote name `git remote -v` shows for darkkk001/vyX
+foreach ($c in "4e9bb50", "ee3bb23", "51de153", "86a4adc", "65d1908", "3338c72", "b5c1a2a", "44f7a51") { git merge-base --is-ancestor $c HEAD; if ($LASTEXITCODE -ne 0) { throw "HEAD does not contain $c" } }
 git log --oneline -8
 ```
-(Drop `"b5c1a2a"` from the list only if the owner dropped it, and re-pin the script, see "The pin".)
+(The owner kept `b5c1a2a` on 2026-10-05, so it stays in the list.)
 
 ## 2. Build, back up, swap, start, check (one script)
 
@@ -104,7 +104,7 @@ powershell -ExecutionPolicy Bypass -File C:\vyxtrader\repo\deploy\engine-2026-10
 ```
 
 The script:
-1. Checks that HEAD's `engine\` is identical to the pin `b5c1a2a`, and that every change is present:
+1. Checks that HEAD's `engine\` is identical to the pin `44f7a51` (= `b5c1a2a`'s engine code), and that every change is present:
    - the flap and torn-read code (as 10-01);
    - `any_moved_at` (gate);
    - `PricingCache` and `load_pass_book`;

@@ -8,12 +8,12 @@
 #   5. the broker counter (b5c1a2a, DROPPABLE): the reconciler backfills the broker of pairs since the soak start.
 # Runbook: deploy\engine-2026-10-05-runbook.md. Run on the VPS in an elevated PowerShell, from the repo, AFTER checking
 # out the pinned code:
-#   cd C:\vyxtrader\repo; git fetch --all; git checkout --detach <remote>/engine/pricing-cache   (or main, once merged)
+#   cd C:\vyxtrader\repo; git fetch --all; git checkout --detach <remote>/main
 #   powershell -ExecutionPolicy Bypass -File C:\vyxtrader\repo\deploy\engine-2026-10-05.ps1
 #
-# PIN: HEAD's engine\ must be byte-identical to b5c1a2a's (the last engine commit of engine/pricing-cache). If the
-# branch is rebased or merged onto main with any other engine change, or b5c1a2a is dropped, $Fix below MUST be
-# re-pinned to the new commit (and the runbook's section 1 with it) before this runs.
+# PIN (re-pinned 2026-10-05 after the owner's "merge to main first"): $Fix is 44f7a51, the merge of
+# engine/pricing-cache into main. Its engine\ is byte-identical to b5c1a2a's (the reviewed and tested code). HEAD must
+# contain 44f7a51 and its engine\ must equal 44f7a51's; any later engine change on main means re-pinning first.
 #
 # What changes: the engine exe only. No schema change, no env change: start-engine.cmd, ENGINE_ORDER_MANAGEMENT
 # (stays shadow), every DB URL, every secret, VYX_SHADOW_PASS_SECS, VYX_RISK_TRIGGER_MS all untouched.
@@ -22,7 +22,7 @@
 # answer, or the startup log shows SHADOW REFUSED / reconciler NOT running / a missing required line.
 $ErrorActionPreference = "Stop"
 $Nssm   = "C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe"   # nssm is not on the VPS PATH: always the full path
-$Fix    = "b5c1a2adc9b3c70832de28713568c20449860e44"   # b5c1a2a: re-pin if rebased / merged / dropped
+$Fix    = "44f7a51071d1bcc24ac291a52964957c455b4e5c"   # 44f7a51: engine/pricing-cache merged into main (engine\ = b5c1a2a's)
 $Repo   = "C:\vyxtrader\repo"
 $Stamp  = Get-Date -Format yyyyMMdd-HHmmss
 $Bk     = "C:\vyxtrader\backup\engine-2026-10-05-$Stamp"
