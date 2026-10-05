@@ -147,24 +147,45 @@ describe("alerts: one per state change", () => {
   });
 });
 
-describe("feed health", () => {
-  async function feedHealth() {
-    vi.mocked(getAdminSession).mockResolvedValue({ role: "BROKER_ADMIN", brokerId: "b_test", adminId: "a_test" } as never);
+describe("feed health (broker-facing): never shows our infrastructure", () => {
+  async function feedHealthBody(role: "BROKER_ADMIN" | "MANAGER") {
+    vi.mocked(getAdminSession).mockResolvedValue({ role, brokerId: "b_test", adminId: "a_test" } as never);
     process.env.TRADING_CORE_URL = "http://127.0.0.1:1";
     process.env.GATEWAY_URL = "http://127.0.0.1:1";
     const { GET } = await import("@/app/api/manage/feed-health/route");
     const res = await GET();
     expect(res.status).toBe(200);
-    return (await res.json()).infra.caddy;
+    return (await res.json()) as Record<string, unknown>;
   }
+  for (const role of ["BROKER_ADMIN", "MANAGER"] as const) {
+    it(`${role}: no infra field, whatever the Caddy state is`, async () => {
+      expect(await feedHealthBody(role)).not.toHaveProperty("infra");
+      await post(report(true));
+      expect(await feedHealthBody(role)).not.toHaveProperty("infra");
+      await post(report(false, ["service SERVICE_PAUSED"]));
+      const body = await feedHealthBody(role);
+      expect(body).not.toHaveProperty("infra");
+      expect(JSON.stringify(body)).not.toMatch(/caddy|SERVICE_PAUSED/i);
+    });
+  }
+  it("SUPPORT and non-staff are refused (403)", async () => {
+    vi.mocked(getAdminSession).mockResolvedValue({ role: "SUPPORT", brokerId: "b_test", adminId: "a_test" } as never);
+    const { GET } = await import("@/app/api/manage/feed-health/route");
+    expect((await GET()).status).toBe(403);
+    vi.mocked(getAdminSession).mockResolvedValue(null as never);
+    expect((await GET()).status).toBe(403);
+  });
+});
+
+describe("infra state (ops only, unchanged)", () => {
   it("NO_REPORT when nothing was ever reported", async () => {
-    expect(await feedHealth()).toMatchObject({ state: "NO_REPORT", checkedAt: null });
+    expect(await readInfraSummary("caddy")).toMatchObject({ state: "NO_REPORT", checkedAt: null });
   });
   it("OK, then FAIL with the reasons", async () => {
     await post(report(true));
-    expect(await feedHealth()).toMatchObject({ state: "OK" });
+    expect(await readInfraSummary("caddy")).toMatchObject({ state: "OK" });
     await post(report(false, ["service SERVICE_PAUSED"]));
-    expect(await feedHealth()).toMatchObject({ state: "FAIL", reasons: ["service SERVICE_PAUSED"] });
+    expect(await readInfraSummary("caddy")).toMatchObject({ state: "FAIL", reasons: ["service SERVICE_PAUSED"] });
   });
   it("NO_REPORT when the last report is older than 15 minutes", async () => {
     await post(report(true));
