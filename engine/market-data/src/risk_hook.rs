@@ -343,7 +343,17 @@ impl RiskHook {
     /// After a LivePrice flush: fire the evaluation for every symbol whose ticks touched an SL / TP, or put
     /// an account holding it at or below stop-out / across margin call (max once a second each).
     pub fn after_flush(self: &Arc<Self>, ticks: &[Tick], cache: &TickCache) {
-        let (mut symbols, touches) = self.touched_with_positions(ticks, chrono::Utc::now());
+        // A resend of a quote that has not moved for FRESH_SECS (a closed market's heartbeat) carries nothing new: the web
+        // would refuse it as stale (its tickAt rule) or closed (its session rule), so it is not evaluated again and again.
+        // (2026-10-05: a frozen Friday quote sitting beyond a level re-fired the web and the shadow on every 5 s heartbeat
+        // all weekend.) A quote that moved within the window is evaluated as before, resends included (a retry).
+        let now = chrono::Utc::now();
+        let live: Vec<Tick> = ticks.iter().filter(|t| cache.moved_within(&t.symbol, now, chrono::Duration::seconds(activity::FRESH_SECS))).cloned().collect();
+        let ticks = live.as_slice();
+        if ticks.is_empty() {
+            return;
+        }
+        let (mut symbols, touches) = self.touched_with_positions(ticks, now);
         let margin: Vec<String> = self.margin_watch.get().map(|w| w.symbols_to_evaluate(ticks, cache)).unwrap_or_default();
         let by_margin = !margin.is_empty();
         for s in margin {
@@ -644,7 +654,7 @@ mod tests {
         let watch = Arc::new(StubWatch { symbols: vec!["XAUUSD".into()], evaluated: Default::default() });
         h.set_margin_watch(watch.clone());
         // no SL / TP levels at all: only the margin watch can fire this
-        h.after_flush(&[tick("XAUUSD")], &TickCache::new());
+        h.after_flush(&[tick("XAUUSD")], &cache_ticked("XAUUSD", 0));
         let (line, auth) = tokio::time::timeout(Duration::from_secs(3), rx.recv()).await.expect("fired").unwrap();
         assert_eq!(line, "GET /api/internal/margin-monitor?symbols=XAUUSD HTTP/1.1");
         assert_eq!(auth, "Bearer s3cret");
@@ -656,14 +666,36 @@ mod tests {
         }
         assert_eq!(watch.evaluated.load(std::sync::atomic::Ordering::SeqCst), 1);
         // the per-symbol limit still holds: a second flush within the second does not call again
-        h.after_flush(&[tick("XAUUSD")], &TickCache::new());
+        h.after_flush(&[tick("XAUUSD")], &cache_ticked("XAUUSD", 0));
         assert!(tokio::time::timeout(Duration::from_millis(300), rx.recv()).await.is_err());
+    }
+
+    /// A heartbeat resend of a quote that has not moved for 15 s is not evaluated (a closed market's frozen quote beyond a
+    /// level used to re-fire the web and the shadow on every heartbeat); the same tick with a quote that moved just now is.
+    #[tokio::test]
+    async fn a_heartbeat_of_a_quote_frozen_beyond_a_level_does_not_re_fire() {
+        let (url, mut rx) = mock_route(200).await;
+        let h = hook(url);
+        h.levels.lock().unwrap().insert("XAUUSD".into(), vec![lvl("pos-1", "acc-1", false, Some(dec!(4280.2)), None, None)]);
+        let watch = Arc::new(StubWatch { symbols: vec!["XAUUSD".into()], evaluated: Default::default() });
+        h.set_margin_watch(watch);
+        let (tx, mut shadow) = tokio::sync::mpsc::unbounded_channel::<Vec<SlTpTouch>>();
+        h.set_shadow_snapshot(tx);
+        // the quote last moved 20 s ago; the resend arrives now (no tick_ms: the arrival time)
+        let frozen = cache_ticked("XAUUSD", 20);
+        frozen.set(&tick("XAUUSD"), chrono::Utc::now());
+        h.after_flush(&[tick("XAUUSD")], &frozen);
+        assert!(tokio::time::timeout(Duration::from_millis(300), rx.recv()).await.is_err(), "frozen: no web call");
+        assert!(shadow.try_recv().is_err(), "frozen: no shadow evaluation");
+        h.after_flush(&[tick("XAUUSD")], &cache_ticked("XAUUSD", 0));
+        tokio::time::timeout(Duration::from_secs(2), rx.recv()).await.expect("a moving quote fires").unwrap();
+        assert!(shadow.try_recv().is_ok());
     }
 
     #[tokio::test]
     async fn without_a_margin_watch_or_a_touched_level_nothing_fires() {
         let (url, mut rx) = mock_route(200).await;
-        hook(url).after_flush(&[tick("XAUUSD")], &TickCache::new());
+        hook(url).after_flush(&[tick("XAUUSD")], &cache_ticked("XAUUSD", 0));
         assert!(tokio::time::timeout(Duration::from_millis(300), rx.recv()).await.is_err());
     }
 
@@ -781,6 +813,44 @@ mod tests {
         assert!(!line.contains("symbols"), "{line}");
     }
 
+    /// The weekend of 3-4 Oct 2026: closed metals held (with an SL level), gold's frozen Friday quote resent every 5 s by
+    /// the feed in every shape it can take (no tick_ms, a future-dated tick_ms, two feeds), crypto and v* really moving.
+    /// The backstop must not call the web once.
+    #[tokio::test]
+    async fn a_weekend_of_gold_heartbeats_makes_zero_backstop_calls() {
+        let (url, mut rx) = mock_route(200).await;
+        let now = chrono::Utc::now();
+        let friday = now - chrono::Duration::hours(40);
+        let gold = |tick_ms: Option<i64>, offset: Option<i64>| -> Tick {
+            serde_json::from_value(serde_json::json!({ "symbol": "XAUUSD", "bid": "3871.20", "ask": "3871.45", "tick_ms": tick_ms, "broker_offset_sec": offset })).unwrap()
+        };
+        let c = TickCache::new();
+        let first = gold(Some(friday.timestamp_millis()), Some(0));
+        c.set(&first, crate::ingest::resolve_tick_time(&first, friday));
+        for (i, back) in [20i64, 15, 10, 5, 0].into_iter().enumerate() {
+            let at = now - chrono::Duration::seconds(back);
+            let hb = match i % 3 {
+                0 => gold(None, None),
+                1 => gold(Some(friday.timestamp_millis() + 3 * 3_600_000), Some(-3 * 3600)),
+                _ => gold(Some(friday.timestamp_millis()), Some(0)),
+            };
+            c.set(&hb, crate::ingest::resolve_tick_time(&hb, at));
+            for (k, sym) in ["BTCUSD", "vGOLD"].into_iter().enumerate() {
+                let bid = Decimal::from(60_000 + i as i64 * 10 + k as i64);
+                let t: Tick = serde_json::from_value(serde_json::json!({ "symbol": sym, "bid": bid, "ask": bid + Decimal::ONE, "tick_ms": at.timestamp_millis() })).unwrap();
+                c.set(&t, crate::ingest::resolve_tick_time(&t, at));
+            }
+        }
+        let h = hook(url);
+        h.set_margin_watch(Arc::new(BookWatch(Some(["XAUUSD".to_string()].into()))));
+        h.levels.lock().unwrap().insert("XAUUSD".into(), vec![lvl("p1", "a1", true, Some(dec!(3800)), None, None)]);
+        let c = Arc::new(c);
+        assert_eq!(h.book_gate(&c), activity::Gate::BookClosed);
+        assert_eq!(h.idle_gate_header(&c, chrono::Utc::now()), "book-closed", "the web's cron is told to skip too");
+        h.spawn_backstop_loop(Duration::from_millis(50), c);
+        assert!(tokio::time::timeout(Duration::from_millis(500), rx.recv()).await.is_err(), "no backstop call on a closed weekend");
+    }
+
     #[tokio::test]
     async fn an_unloaded_book_is_unknown_so_only_a_quiet_feed_skips() {
         let (url, mut rx) = mock_route(200).await;
@@ -833,7 +903,7 @@ mod tests {
         let (tx, mut shadow) = tokio::sync::mpsc::unbounded_channel::<Vec<SlTpTouch>>();
         h.set_shadow_snapshot(tx);
         let started = Instant::now();
-        h.after_flush(&[tick("XAUUSD")], &TickCache::new()); // ask 4280.3 >= SL 4280.2
+        h.after_flush(&[tick("XAUUSD")], &cache_ticked("XAUUSD", 0)); // ask 4280.3 >= SL 4280.2
         let (line, _) = tokio::time::timeout(Duration::from_secs(3), rx.recv()).await.expect("web called").unwrap();
         assert_eq!(line, "GET /api/internal/margin-monitor?symbols=XAUUSD HTTP/1.1");
         assert!(started.elapsed() < Duration::from_millis(500), "the web call went out at once: {:?}", started.elapsed());
@@ -849,7 +919,7 @@ mod tests {
         h.pending.lock().unwrap().insert("XAUUSD".into(), vec![PendingLevel { is_buy: false, is_limit: true, entry: dec!(4270), ask_rule: None }]);
         let (tx, mut shadow) = tokio::sync::mpsc::unbounded_channel::<Vec<SlTpTouch>>();
         h.set_shadow_snapshot(tx);
-        h.after_flush(&[tick("XAUUSD")], &TickCache::new()); // bid 4280 >= SELL LIMIT 4270
+        h.after_flush(&[tick("XAUUSD")], &cache_ticked("XAUUSD", 0)); // bid 4280 >= SELL LIMIT 4270
         tokio::time::timeout(Duration::from_secs(1), rx.recv()).await.expect("web called at once").unwrap();
         assert!(shadow.try_recv().is_err(), "no snapshot for a resting order");
     }
@@ -861,8 +931,8 @@ mod tests {
         h.levels.lock().unwrap().insert("XAUUSD".into(), vec![lvl("pos-1", "acc-1", false, Some(dec!(4280.2)), None, None)]);
         let (tx, mut shadow) = tokio::sync::mpsc::unbounded_channel::<Vec<SlTpTouch>>();
         h.set_shadow_snapshot(tx);
-        h.after_flush(&[tick("XAUUSD")], &TickCache::new());
-        h.after_flush(&[tick("XAUUSD")], &TickCache::new()); // inside the per-symbol 1 s limit: no call, no snapshot
+        h.after_flush(&[tick("XAUUSD")], &cache_ticked("XAUUSD", 0));
+        h.after_flush(&[tick("XAUUSD")], &cache_ticked("XAUUSD", 0)); // inside the per-symbol 1 s limit: no call, no snapshot
         tokio::time::timeout(Duration::from_secs(1), rx.recv()).await.expect("web called").unwrap();
         assert!(shadow.try_recv().is_ok());
         assert!(shadow.try_recv().is_err(), "one snapshot per call");
