@@ -98,6 +98,7 @@ export const MANIFEST: Row[] = [
   { mod: "admins/route", method: "POST", perm: "BROKER_ADMIN_ONLY", body: {} },
   // Phase 2 batch 4: broker-side staff password reset (temporary password shown once)
   { mod: "admins/[id]/reset-password/route", method: "POST", perm: "BROKER_ADMIN_ONLY", needsId: true, body: {} },
+  { mod: "badges/route", method: "GET", perm: "ANY_MANAGER", supportRead: true },
   { mod: "audit/route", method: "GET", perm: "ANY_MANAGER" },
   { mod: "balance-adjustment-requests/[id]/approve/route", method: "POST", perm: "ACCOUNT_FINANCE", needsId: true, body: {} },
   // reject needs the same authority as approve (audit 2026-09-24 line 19)
