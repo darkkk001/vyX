@@ -23,6 +23,12 @@ This rule applies to every app (backoffice, terminal, WebTrader) and every CSV e
 Every table in every app: a column's default width fits its full header text and its content. Headers and cells are
 never clipped and never overlap. When the panel is too narrow for all columns, the table scrolls horizontally.
 
+## Short dialogs (owner 2026-10-05)
+
+Every dialog, toast and confirm in every app (backoffice, terminal, WebTrader, portal) is short and direct: one line
+where possible. Say what happened or what will happen, nothing else. Longer text only when something went wrong and
+the user must act, and then say exactly what to do.
+
 ## Glossary
 
 | Concept | Word | Unit | Never use |
@@ -1810,6 +1816,17 @@ Hidden until an LP bridge exists: the screen is merged into Liquidity providers,
 | SHELL | UPDATE vX READY (signed in) | Update vX installs when you close | — | Signed in: never interrupts; "Restart now" stays in the cell's menu (owner 2026-10-05). |
 | FEED | (row, new) | Caddy | — | The VPS web server in front of the feed. States: OK · FAIL (with the reasons) · No report for 15 min (the check itself is not running) (owner 2026-10-05). |
 | FEED | (sub-labels, new) | Last check (UTC) · Reasons | — | Under the Caddy row. |
+| CLI | (password card title) | PASSWORD RESET | — | The card after Reset password / Set password (owner 2026-10-05). |
+| CLI | (e-mailed line) | ✓ New password sent to <email> | — | One line when the e-mail went out. |
+| CLI | (reveal button) | SHOW PASSWORD | — | Shows the masked password; each reveal is on the audit log (Password revealed). |
+| CLI | (not e-mailed lines) | Not e-mailed: e-mail is unavailable · Internal account: not e-mailed · No e-mail address on this account | — | One line each; the password is on the card either way. |
+| CLI | (action, new) | Set password… | — | Staff choose the client's password (owner 2026-10-05). |
+| CLI | (Set password form) | New password · E-mail it to the client · SET PASSWORD | — | The e-mail switch is off and locked on an internal account. |
+| CLI | (weak password) | Use at least 8 characters with letters and digits. | — | The form's refusal (code WEAK_PASSWORD). |
+| CLI | (flag, new) | Internal account | — | A broker's own test / staff account: left out of the dashboard, risk radar, reports and the exposure limit; never e-mailed credentials. BROKER_ADMIN only (owner 2026-10-05). |
+| CLI | (menu items, new) | Mark as internal account · Unmark internal account | — | Account menu, ACCOUNT section. |
+| AUD | PASSWORD_REVEALED | Password revealed | — | Who clicked SHOW PASSWORD on whose account, and when. |
+| AUD | ACCOUNT_PASSWORD_SET · ACCOUNT_INTERNAL_FLAG_CHANGED · STAFF_VERIFICATION_RESENT | Set trader password · Changed internal account flag · Resent verification e-mail | — | Audit log wording (owner 2026-10-05). |
 | SHELL | VYXTRADER BACKOFFICE (login window of a broker build) | <BROKER> BACKOFFICE | — | Login window title, logo, colours and window title come from the build's brand pin before sign-in (owner 2026-10-05); same for the terminal login. |
 
 ## Terminal
