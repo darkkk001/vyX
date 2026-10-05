@@ -93,7 +93,7 @@ pub enum IngestError {
 // PAST it can be: a large positive gap is exactly "this price is stale,"
 // the real condition this whole fix exists to preserve rather than
 // clamp away.
-fn resolve_tick_time(tick: &Tick, fallback: DateTime<Utc>) -> DateTime<Utc> {
+pub(crate) fn resolve_tick_time(tick: &Tick, fallback: DateTime<Utc>) -> DateTime<Utc> {
     match tick.tick_ms.and_then(chrono::DateTime::from_timestamp_millis) {
         Some(t) if (fallback - t).num_milliseconds() >= T0_MIN_PLAUSIBLE_DELTA_MS => t,
         _ => fallback,

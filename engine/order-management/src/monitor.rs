@@ -64,9 +64,13 @@ struct Overlay {
     funds: Option<(Decimal, Decimal)>,
 }
 
-/// load_book_state, plus the shadow overlay (Live: the database as it is).
-async fn load(pool: &PgPool, account_id: &str, mode: &Mode, ov: &Overlay) -> Result<Option<AccountState>, sqlx::Error> {
-    let state = load_book_state(pool, account_id).await?;
+/// load_book_state, plus the shadow overlay (Live: the database as it is). With the pass's book (shadow pass), the
+/// account's rows from that one snapshot, priced from the ticks now: no database read.
+async fn load(pool: &PgPool, account_id: &str, mode: &Mode, ov: &Overlay, pass: Option<&book::PassBook>) -> Result<Option<AccountState>, sqlx::Error> {
+    let state = match pass {
+        Some(pb) => pb.state(account_id, &book::price_source_in_scope()?, chrono::Utc::now()),
+        None => load_book_state(pool, account_id).await?,
+    };
     if !mode.is_shadow() {
         return Ok(state);
     }
@@ -107,6 +111,7 @@ async fn apply_close(
     note: &str,
     reason: book::CloseReason,
     level_before: Option<Decimal>,
+    pass: Option<&book::PassBook>,
 ) -> Result<Option<(Decimal, Decimal)>, sqlx::Error> {
     match mode {
         Mode::Live => {
@@ -125,6 +130,9 @@ async fn apply_close(
             // the broker's negative-balance protection is read only when it can matter, as in the real close
             let unprotected = book::close_money(state.effective_balance, state.credit, pnl, false);
             let protect = if unprotected.after_credit < Decimal::ZERO {
+                if let Some(a) = pass.and_then(|pb| pb.account(account_id)) {
+                    a.nbp
+                } else {
                 let (p,): (bool,) = sqlx::query_as(
                     r#"SELECT b."negativeBalanceProtection" FROM "Account" a JOIN "Broker" b ON b.id = a."brokerId" WHERE a.id = $1"#,
                 )
@@ -132,6 +140,7 @@ async fn apply_close(
                 .fetch_one(pool)
                 .await?;
                 p
+                }
             } else {
                 false
             };
@@ -223,6 +232,7 @@ async fn close_sl_tp_triggered(
     mode: &Mode,
     ov: &mut Overlay,
     level_before: Option<Decimal>,
+    pass: Option<&book::PassBook>,
 ) -> Result<Vec<(String, &'static str)>, sqlx::Error> {
     let mut closed = Vec::new();
     let triggered: Vec<(String, SlTpReason, Decimal, Decimal)> = state
@@ -254,7 +264,7 @@ async fn close_sl_tp_triggered(
             SlTpReason::StopLoss => book::CloseReason::StopLoss,
             SlTpReason::TakeProfit => book::CloseReason::TakeProfit,
         };
-        let Some((balance, credit)) = apply_close(pool, mode, ov, state, account_id, &position, close_price, pnl, note, why, level_before).await? else {
+        let Some((balance, credit)) = apply_close(pool, mode, ov, state, account_id, &position, close_price, pnl, note, why, level_before, pass).await? else {
             continue; // already closed by a concurrent pass — nothing to credit or publish
         };
         state.effective_balance = balance; // after any credit use and negative-balance floor
@@ -306,6 +316,7 @@ async fn force_close_worst(
     ov: &mut Overlay,
     account_id: &str,
     level_before: Option<Decimal>,
+    pass: Option<&book::PassBook>,
 ) -> Result<CloseAttempt, sqlx::Error> {
     let worst = state
         .positions
@@ -326,7 +337,7 @@ async fn force_close_worst(
         state.positions[idx].fx_rate,
     );
     // the snapshot / funds are taken with the position still in the book (shadow records what it was decided on)
-    let applied = apply_close(pool, mode, ov, state, account_id, &state.positions[idx].clone(), close_price, pnl, note, reason, level_before).await?;
+    let applied = apply_close(pool, mode, ov, state, account_id, &state.positions[idx].clone(), close_price, pnl, note, reason, level_before, pass).await?;
     let position = state.positions.remove(idx);
 
     let Some((balance, credit)) = applied else {
@@ -359,7 +370,7 @@ pub async fn evaluate_account(
     nats: Option<&async_nats::Client>,
     account_id: &str,
 ) -> Result<Option<EvalReport>, sqlx::Error> {
-    evaluate_account_checked(pool, nats, account_id, true, &Mode::Live).await
+    evaluate_account_checked(pool, nats, account_id, true, &Mode::Live, None).await
 }
 
 /// One account in a given mode (Stage 5: the shadow harness gate evaluates single accounts in `Mode::Shadow`).
@@ -369,17 +380,20 @@ pub async fn evaluate_account_mode(
     account_id: &str,
     mode: &Mode,
 ) -> Result<Option<EvalReport>, sqlx::Error> {
-    evaluate_account_checked(pool, nats, account_id, !mode.is_shadow(), mode).await
+    evaluate_account_checked(pool, nats, account_id, !mode.is_shadow(), mode, None).await
 }
 
 /// `check_deferral` false = the caller knows no follow-up can be pending (run_pass's precheck): skip the query.
+/// `pass` = the shadow pass's book (load_pass_book): every read of this evaluation comes from it (shadow only).
 async fn evaluate_account_checked(
     pool: &PgPool,
     nats: Option<&async_nats::Client>,
     account_id: &str,
     check_deferral: bool,
     mode: &Mode,
+    pass: Option<&book::PassBook>,
 ) -> Result<Option<EvalReport>, sqlx::Error> {
+    let pass = pass.filter(|_| mode.is_shadow());
     // shadow queues nothing, so nothing is ever pending for it: the web runs mirror / coverage inline and the
     // shadow sees their results on its next read
     let check_deferral = check_deferral && !mode.is_shadow();
@@ -397,7 +411,7 @@ async fn evaluate_account_checked(
         }
         book::FollowUpOwed::No => {}
     }
-    let Some(mut state) = load(pool, account_id, mode, &ov).await? else {
+    let Some(mut state) = load(pool, account_id, mode, &ov, pass).await? else {
         return Ok(None);
     };
     if state.positions.is_empty() {
@@ -439,7 +453,11 @@ async fn evaluate_account_checked(
     // succeeds, rather than evaluated once against the wrong number.
     // Stage 2 F3: the account's own Group, read now from the same database (defaults 100 / 50 without one).
     // Replaces the per-pass cached map, which skipped an account whose group was "not loaded yet".
-    let Some(thresholds) = book::account_thresholds(pool, account_id).await? else {
+    let thresholds = match pass {
+        Some(pb) => pb.account(account_id).map(|a| a.thresholds),
+        None => book::account_thresholds(pool, account_id).await?,
+    };
+    let Some(thresholds) = thresholds else {
         return Ok(None);
     };
     if let Mode::Shadow(recorder) = mode {
@@ -453,7 +471,7 @@ async fn evaluate_account_checked(
     // open.
     let before_sl_tp = state.positions.len();
     let level_before = report.margin_level_before;
-    report.closed = close_sl_tp_triggered(pool, nats, account_id, &mut state, mode, &mut ov, level_before).await?;
+    report.closed = close_sl_tp_triggered(pool, nats, account_id, &mut state, mode, &mut ov, level_before, pass).await?;
 
     // Stage 4 BEHAVIOR CHANGE (engine): after ANY close attempt (ours, or one a concurrent pass got to first) the
     // account and its positions are read again from the database before the next decision, exactly as
@@ -468,7 +486,7 @@ async fn evaluate_account_checked(
     let max_iterations = state.positions.len();
     for _ in 0..max_iterations {
         if dirty {
-            match load(pool, account_id, mode, &ov).await? {
+            match load(pool, account_id, mode, &ov, pass).await? {
                 Some(fresh) => state = fresh,
                 None => break,
             }
@@ -502,7 +520,7 @@ async fn evaluate_account_checked(
                     thresholds.stop_out_level.normalize()
                 );
                 let reason = book::CloseReason::StopOut { margin_level: level, stop_out_level: thresholds.stop_out_level };
-                match force_close_worst(pool, &mut state, &note, reason, mode, &mut ov, account_id, level_before).await? {
+                match force_close_worst(pool, &mut state, &note, reason, mode, &mut ov, account_id, level_before, pass).await? {
                     CloseAttempt::Closed(closed_id) => {
                         report.closed.push((closed_id.clone(), "stop_out"));
                         closed_ids.push(closed_id);
@@ -534,7 +552,7 @@ async fn evaluate_account_checked(
     // open positions but no usable price has no level: nothing changes, as on the web. Re-read after any close, as
     // the web's pass 3 does.
     if dirty {
-        if let Some(fresh) = load(pool, account_id, mode, &ov).await? {
+        if let Some(fresh) = load(pool, account_id, mode, &ov, pass).await? {
             state = fresh;
         }
     }
@@ -542,13 +560,7 @@ async fn evaluate_account_checked(
     // may have changed this account since our copy was taken, and clearing the edge on stale numbers would make the
     // next pass notify the same episode twice (caught by the load harness with 2 walkers). Steady state costs one
     // cheap read of the column instead of an UPDATE per account per pass.
-    let notified = book::margin_call_notified(pool, account_id).await?;
     let mut edge = margin_call_edge(&state, thresholds);
-    let transition = |e: Option<book::MarginCallEdge>| match e {
-        Some(book::MarginCallEdge::In { .. }) => !notified,
-        Some(book::MarginCallEdge::Out) => notified,
-        None => false,
-    };
     if let Mode::Shadow(recorder) = mode {
         // shadow: its OWN edge per account (the web's flag moves with the web's decisions, not ours); recorded on
         // change only, nothing written to the book. An SL / TP snapshot pin looks at a PAST moment: it decides the
@@ -578,6 +590,14 @@ async fn evaluate_account_checked(
         }
         return Ok(Some(report));
     }
+    // live only (the shadow keeps its own edge above and never reads the web's flag: 2026-10-05, one statement per
+    // account per shadow pass saved)
+    let notified = book::margin_call_notified(pool, account_id).await?;
+    let transition = |e: Option<book::MarginCallEdge>| match e {
+        Some(book::MarginCallEdge::In { .. }) => !notified,
+        Some(book::MarginCallEdge::Out) => notified,
+        None => false,
+    };
     if transition(edge) {
         if let Some(fresh) = load_book_state(pool, account_id).await? {
             state = fresh;
@@ -676,7 +696,25 @@ pub async fn run_pass(pool: &PgPool, nats: Option<&async_nats::Client>, cursor: 
 /// One pass in a given mode. Shadow: no deferral (it queues nothing), so no precheck and no resume point.
 pub async fn run_pass_mode(pool: &PgPool, nats: Option<&async_nats::Client>, cursor: &mut PassCursor, mode: &Mode) -> PassReport {
     let mut report = PassReport::default();
-    let account_ids = match book::account_ids_with_open_positions(pool).await {
+    // Shadow (2026-10-05, Neon load): the whole pass's book in ONE read-only snapshot (book::load_pass_book: a constant
+    // number of statements whatever the number of accounts), every account then evaluated from it. Live keeps reading
+    // each account (its closes write, and each decision must see the closes before it).
+    let pass_book = match mode {
+        Mode::Shadow(recorder) => match book::load_pass_book(pool, &recorder.accounts_in_call()).await {
+            Ok(pb) => Some(pb),
+            Err(err) => {
+                tracing::error!(?err, "shadow pass: failed to read the book");
+                report.errors += 1;
+                return report;
+            }
+        },
+        Mode::Live => None,
+    };
+    let listed = match &pass_book {
+        Some(pb) => Ok(pb.account_ids_with_open_positions()),
+        None => book::account_ids_with_open_positions(pool).await,
+    };
+    let account_ids = match listed {
         Ok(ids) => ids,
         Err(err) => {
             tracing::error!(?err, "margin monitor: failed to list accounts with open positions");
@@ -703,7 +741,7 @@ pub async fn run_pass_mode(pool: &PgPool, nats: Option<&async_nats::Client>, cur
     // thresholds are read per account inside evaluate_account (Stage 2 F3), not cached per pass
     for account_id in &account_ids[start..] {
         maybe_pending = !mode.is_shadow() && (maybe_pending || book::FOLLOW_UPS_QUEUED.load(std::sync::atomic::Ordering::Relaxed) != queued_at_start);
-        match evaluate_account_checked(pool, nats, account_id, maybe_pending, mode).await {
+        match evaluate_account_checked(pool, nats, account_id, maybe_pending, mode, pass_book.as_ref()).await {
             Ok(Some(r)) if r.deferred => {
                 report.deferred.push(account_id.clone());
                 if cursor.stops < MAX_CASCADE_STOPS && cursor.stopped_at.insert(account_id.clone()) {
@@ -729,7 +767,7 @@ pub async fn run_pass_mode(pool: &PgPool, nats: Option<&async_nats::Client>, cur
     if let Mode::Shadow(recorder) = mode {
         for account_id in recorder.accounts_in_call() {
             if !account_ids.contains(&account_id) {
-                if let Err(err) = evaluate_account_checked(pool, nats, &account_id, false, mode).await {
+                if let Err(err) = evaluate_account_checked(pool, nats, &account_id, false, mode, pass_book.as_ref()).await {
                     tracing::warn!(?err, account_id, "shadow pass: could not re-evaluate an account leaving margin call");
                 }
             }
@@ -775,8 +813,15 @@ pub async fn run_once_guarded(pool: &PgPool, nats: &async_nats::Client, guard: &
 /// Spawns the polling-timer trigger as a background task — the safety
 /// net described in the module doc comment, not the primary trigger path
 /// once a tick-driven subscription is also running alongside it.
-pub fn spawn(pool: PgPool, nats: async_nats::Client, interval: std::time::Duration, guard: RunGuard, prices: book::PriceSource) {
-    tokio::spawn(book::with_price_source(prices, async move {
+pub fn spawn(
+    pool: PgPool,
+    nats: async_nats::Client,
+    interval: std::time::Duration,
+    guard: RunGuard,
+    prices: book::PriceSource,
+    pricing: Option<Arc<market_data::pricing::PricingCache>>,
+) {
+    tokio::spawn(book::with_book_sources(prices, pricing, async move {
         let mut ticker = tokio::time::interval(interval);
         loop {
             ticker.tick().await;
@@ -791,7 +836,7 @@ pub fn spawn(pool: PgPool, nats: async_nats::Client, interval: std::time::Durati
 /// a real one in noise. Only WHEN the shadow evaluates changes: the same evaluate_account_mode (close / P&L / NBP
 /// untouched), Mode::Shadow (nothing written). Accounts queued while one is evaluated are taken together, each once.
 pub fn spawn_shadow_trigger(pool: PgPool, recorder: Arc<crate::shadow::Recorder>, prices: book::PriceSource) -> tokio::sync::mpsc::UnboundedSender<crate::margin_watch::MarginFire> {
-    spawn_shadow_trigger_with_snapshots(pool, recorder, prices).0
+    spawn_shadow_trigger_with_snapshots(pool, recorder, prices, None).0
 }
 
 /// The SL / TP snapshot inbox's work (Stage 5, 2026-09-26): evaluate each touched account in shadow, PINNED to the
@@ -825,10 +870,11 @@ pub fn spawn_shadow_trigger_with_snapshots(
     pool: PgPool,
     recorder: Arc<crate::shadow::Recorder>,
     prices: book::PriceSource,
+    pricing: Option<Arc<market_data::pricing::PricingCache>>,
 ) -> (tokio::sync::mpsc::UnboundedSender<crate::margin_watch::MarginFire>, market_data::risk_hook::SnapshotSender) {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<crate::margin_watch::MarginFire>();
     let (snap_tx, mut snap_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<market_data::risk_hook::SlTpTouch>>();
-    tokio::spawn(book::with_price_source(prices, async move {
+    tokio::spawn(book::with_book_sources(prices, pricing, async move {
         let mode = Mode::Shadow(recorder);
         loop {
             tokio::select! {
@@ -887,8 +933,15 @@ impl ShadowGate {
 
 /// Stage 5: the shadow monitor. A pass every `interval` in `Mode::Shadow`, one at a time (a slow pass delays the
 /// next, never overlaps it), skipped while `gate` is closed. No NATS, no dispatcher, no writes to the book.
-pub fn spawn_shadow(pool: PgPool, recorder: Arc<crate::shadow::Recorder>, interval: std::time::Duration, prices: book::PriceSource, gate: ShadowGate) {
-    tokio::spawn(book::with_price_source(prices, async move {
+pub fn spawn_shadow(
+    pool: PgPool,
+    recorder: Arc<crate::shadow::Recorder>,
+    interval: std::time::Duration,
+    prices: book::PriceSource,
+    pricing: Option<Arc<market_data::pricing::PricingCache>>,
+    gate: ShadowGate,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(book::with_book_sources(prices, pricing, async move {
         static LOG: market_data::activity::GateLog = market_data::activity::GateLog::new("shadow pass");
         let mode = Mode::Shadow(recorder);
         let mut ticker = tokio::time::interval(interval);
@@ -904,7 +957,7 @@ pub fn spawn_shadow(pool: PgPool, recorder: Arc<crate::shadow::Recorder>, interv
                 tracing::warn!(errors = report.errors, "shadow pass: some accounts failed to evaluate");
             }
         }
-    }));
+    }))
 }
 
 #[cfg(test)]

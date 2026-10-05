@@ -82,6 +82,30 @@ struct TickEntry {
     // (2 s) hid the tick from the trigger while the web, reading this cache, still acted on it (S3 WEB_ONLY:
     // a slow ramp's stop-out-crossing tick never reached the trigger). Independent of every persistence flag.
     risk_dirty: bool,
+    // The idle gate's own clock (2026-10-05, weekend gate): when this symbol's QUOTE last moved -- the resolved time of
+    // the first tick carrying the current (bid, ask, broker-server tick time). A heartbeat resend of an unchanged quote
+    // does not move it, whatever time the resend resolves to: an EA build without tick_ms, a tick_ms the engine had to
+    // reject as future-dated (a wrong broker offset after a weekend restart), or a broker offset recomputed between two
+    // resends all used to make a FROZEN Friday quote look fresh every 5 s (the heartbeat) -- `at` falls back to the
+    // arrival time in each of those cases. Only the gate reads this; prices and their freshness (`at`, tick_ms) for
+    // every decision are untouched.
+    quote_key: QuoteKey,
+    moved_at: DateTime<Utc>,
+}
+
+/// (bid, ask, the broker server's own tick time in ms = tick_ms + broker_offset_sec x 1000). The server time is used,
+/// not tick_ms, so an EA recomputing its broker offset between two resends of the same tick is still "the same quote".
+type QuoteKey = (Decimal, Decimal, Option<i64>);
+
+/// A new quote: bid or ask changed, or both sides carry a server tick time and it changed. A resend that carries no
+/// time (an older EA, or a second feed instance without tick_ms alongside a current one) never counts as a move by
+/// itself, so two feeds resending one frozen quote cannot keep it "moving".
+fn quote_moved(old: &QuoteKey, new: &QuoteKey) -> bool {
+    old.0 != new.0 || old.1 != new.1 || matches!((old.2, new.2), (Some(a), Some(b)) if a != b)
+}
+
+fn quote_key(tick: &Tick) -> QuoteKey {
+    (tick.bid, tick.ask, tick.tick_ms.map(|ms| ms.saturating_add(tick.broker_offset_sec.unwrap_or(0).saturating_mul(1000))))
 }
 
 pub struct TickCache {
@@ -135,6 +159,11 @@ impl TickCache {
                     e.candle_low = tick.bid;
                     e.candle_minute = minute;
                 }
+                let key = quote_key(tick);
+                if quote_moved(&e.quote_key, &key) {
+                    e.quote_key = key;
+                    e.moved_at = at;
+                }
                 e.tick = tick.clone();
                 e.at = at;
                 e.live_price_dirty = true;
@@ -155,6 +184,8 @@ impl TickCache {
                         live_price_dirty: true,
                         candle_dirty: true,
                         risk_dirty: true,
+                        quote_key: quote_key(tick),
+                        moved_at: at,
                     },
                 );
             }
@@ -220,6 +251,39 @@ impl TickCache {
 
     /// True when any symbol's latest tick is at most `max_age` old as of `now` (the tick's own time, as
     /// `get_if_fresh` measures it: a weekend heartbeat re-sending a frozen price does not count).
+    /// The idle gate's rule (crate::activity): true when at least one REAL symbol's quote MOVED (see TickEntry::moved_at)
+    /// at most `max_age` before `now`. Synthetic v* symbols (crate::synthetic: the shadow bot's 24/7 feed) never count,
+    /// and neither does a heartbeat resend of an unchanged quote.
+    pub fn any_moved_at(&self, now: DateTime<Utc>, max_age: Duration) -> bool {
+        let guard = match self.inner.read() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        guard.iter().any(|(s, e)| !crate::synthetic::is_synthetic(s) && now - e.moved_at <= max_age)
+    }
+
+    /// Whether `symbol`'s quote moved at most `max_age` before `now` (unknown symbol: false). Synthetic symbols are not
+    /// special here: the risk trigger asks this per tick, and the v* feed's quotes really move.
+    pub fn moved_within(&self, symbol: &str, now: DateTime<Utc>, max_age: Duration) -> bool {
+        let guard = match self.inner.read() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        guard.get(symbol).is_some_and(|e| now - e.moved_at <= max_age)
+    }
+
+    /// As `any_moved_at`, over `symbols` only (synthetic ones are skipped).
+    pub fn any_of_moved_at<'a>(&self, symbols: impl IntoIterator<Item = &'a String>, now: DateTime<Utc>, max_age: Duration) -> bool {
+        let guard = match self.inner.read() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        symbols
+            .into_iter()
+            .filter(|s| !crate::synthetic::is_synthetic(s))
+            .any(|s| guard.get(s).is_some_and(|e| now - e.moved_at <= max_age))
+    }
+
     pub fn any_fresh_at(&self, now: DateTime<Utc>, max_age: Duration) -> bool {
         let guard = match self.inner.read() {
             Ok(g) => g,

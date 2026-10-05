@@ -114,34 +114,48 @@ impl Book {
 
 /// Every account holding an OPEN position, with its positions and its group's thresholds. One query. (Every
 /// account has a group and both levels are NOT NULL today; the LEFT JOIN + 100 / 50 fallback mirror
-/// book::account_thresholds, so a row can never be dropped for a missing group.)
-pub async fn load_book<'e, E: sqlx::PgExecutor<'e>>(e: E) -> Result<Book, sqlx::Error> {
+/// book::account_thresholds, so a row can never be dropped for a missing group.) Without a pricing cache the ask rules
+/// are read for exactly these rows on the same connection (tests); see load_book_on.
+pub async fn load_book<'c, A: sqlx::Acquire<'c, Database = sqlx::Postgres>>(a: A) -> Result<Book, sqlx::Error> {
+    let mut conn = a.acquire().await?;
+    load_book_on(&mut conn, None).await
+}
+
+/// load_book with the account ask rules from `pricing` (the shared cache's snapshot, 2026-10-05): the query joins no
+/// pricing table.
+pub async fn load_book_on(conn: &mut sqlx::PgConnection, pricing: Option<&market_data::ask_markup::PricingSnapshot>) -> Result<Book, sqlx::Error> {
     use sqlx::Row;
-    // + the levels of each position's account ask rule (market_data::ask_markup), joined: still one query
-    let sql = format!(
+    let raw = sqlx::query(
         r#"SELECT a.id, a.balance, a.credit, a.leverage, a.currency, g."marginCallLevel" AS call, g."stopOutLevel" AS stop_out,
-                  p.id AS position_id, s.name, p.side::text AS side, p.volume, p."openPrice" AS open_price, s."contractSize" AS contract_size,
-                  s."quoteCurrency" AS quote_ccy, COALESCE(bs."hedgedMarginPct", 200) AS hedged_margin_pct,
-                  {levels}
+                  a."brokerId" AS a_broker, a."groupId" AS a_group,
+                  p.id AS position_id, s.id AS symbol_id, s.digits, s.name, p.side::text AS side, p.volume, p."openPrice" AS open_price,
+                  s."contractSize" AS contract_size, s."quoteCurrency" AS quote_ccy, COALESCE(bs."hedgedMarginPct", 200) AS hedged_margin_pct
            FROM "Position" p
            JOIN "Account" a ON a.id = p."accountId"
            JOIN "Symbol" s ON s.id = p."symbolId"
            LEFT JOIN "BrokerSymbol" bs ON bs."brokerId" = p."brokerId" AND bs."symbolId" = p."symbolId"
            LEFT JOIN "Group" g ON g.id = a."groupId"
-           {joins}
            WHERE p.status = 'OPEN'
            ORDER BY a.id COLLATE "C", p."openedAt", p.id"#,
-        levels = market_data::ask_markup::LEVELS_COLUMNS,
-        joins = market_data::ask_markup::LEVELS_JOINS,
-    );
-    let raw = sqlx::query(&sql).fetch_all(e).await?;
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut keys: Vec<(String, String, Option<String>, String, i32)> = Vec::with_capacity(raw.len());
+    for r in &raw {
+        keys.push((r.try_get("id")?, r.try_get("a_broker")?, r.try_get("a_group")?, r.try_get("symbol_id")?, r.try_get("digits")?));
+    }
+    let rule_keys: Vec<market_data::ask_markup::RuleKey<'_>> = keys
+        .iter()
+        .map(|(a, b, g, s, d)| market_data::ask_markup::RuleKey { account_id: a, broker_id: b, group_id: g.as_deref(), symbol_id: s, digits: *d })
+        .collect();
+    let rules = market_data::ask_markup::rules_for(conn, pricing, &rule_keys).await?;
     #[allow(clippy::type_complexity)]
     let mut rows: Vec<(String, Decimal, Decimal, i32, String, Option<Decimal>, Option<Decimal>, String, String, String, Decimal, Decimal, Decimal, String, Decimal, Option<market_data::ask_markup::AskRule>)> = Vec::with_capacity(raw.len());
-    for r in &raw {
+    for (r, ask_rule) in raw.iter().zip(rules) {
         rows.push((
             r.try_get("id")?, r.try_get("balance")?, r.try_get("credit")?, r.try_get("leverage")?, r.try_get("currency")?, r.try_get("call")?, r.try_get("stop_out")?,
             r.try_get("position_id")?, r.try_get("name")?, r.try_get("side")?, r.try_get("volume")?, r.try_get("open_price")?, r.try_get("contract_size")?, r.try_get("quote_ccy")?,
-            r.try_get("hedged_margin_pct")?, market_data::ask_markup::resolve(&market_data::ask_markup::levels_from_row(r)?),
+            r.try_get("hedged_margin_pct")?, ask_rule,
         ));
     }
     let d = MarginThresholds::default();
@@ -219,6 +233,8 @@ pub struct MarginWatch {
     on_fire: Mutex<Option<tokio::sync::mpsc::UnboundedSender<MarginFire>>>,
     /// The book has been set at least once: until then book_symbols() is None (unknown), never "flat".
     loaded: AtomicBool,
+    /// the shared pricing cache (account ask rules); unset = read per reload (tests)
+    pricing: std::sync::OnceLock<Arc<market_data::pricing::PricingCache>>,
 }
 
 impl MarginWatch {
@@ -229,6 +245,7 @@ impl MarginWatch {
             reload_now: Notify::new(),
             on_fire: Mutex::new(None),
             loaded: AtomicBool::new(false),
+            pricing: std::sync::OnceLock::new(),
         })
     }
 
@@ -253,8 +270,22 @@ impl MarginWatch {
         self.loaded.store(true, Ordering::Release);
     }
 
+    /// Plug in the shared pricing cache (once; a second call is ignored).
+    pub fn set_pricing(&self, pricing: Arc<market_data::pricing::PricingCache>) {
+        let _ = self.pricing.set(pricing);
+    }
+
+    async fn load(&self, pool: &PgPool) -> Result<Book, sqlx::Error> {
+        let mut conn = pool.acquire().await?;
+        let snap = match self.pricing.get() {
+            Some(cache) => Some(cache.snapshot_or_load(&mut conn).await?),
+            None => None,
+        };
+        load_book_on(&mut conn, snap.as_deref()).await
+    }
+
     pub async fn reload(&self, pool: &PgPool) {
-        match load_book(pool).await {
+        match self.load(pool).await {
             Ok(book) => self.set_book(book),
             Err(err) => tracing::warn!(error = %err, "margin trigger: could not reload the book (keeping the last one)"),
         }

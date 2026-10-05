@@ -1,3 +1,6 @@
+> **SUPERSEDED (2026-10-05): do not run.** Use `deploy/engine-2026-10-05-runbook.md`, which carries these fixes plus the idle
+> gate, the pricing cache and D8.
+
 # Engine deploy 2026-10-01: margin-call flap + torn pinned read (VPS runbook)
 
 **This supersedes `deploy/margin-call-flap-engine-runbook.md` and its script.** One engine build carries both shadow

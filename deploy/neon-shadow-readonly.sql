@@ -31,16 +31,21 @@ GRANT USAGE ON SCHEMA public TO vyx_shadow_ro;
 -- start from nothing (a re-run never keeps an older, wider grant)
 REVOKE ALL ON ALL TABLES IN SCHEMA public FROM vyx_shadow_ro;
 
--- book tables with no personal data: whole table, SELECT only. ("LivePrice" stays: the loader's SQL still joins it,
--- but in production the book's prices come from the engine's in-memory ticks and the joined values are ignored.)
+-- book tables with no personal data: whole table, SELECT only. ("LivePrice" stays for a rollback: since 2026-10-05 the
+-- engine reads it only for the database price source, never in production; the engine before that deploy joined it.)
 GRANT SELECT ON "Position", "Symbol", "BrokerSymbol", "TradingSession", "Group", "LivePrice",
                 "MirrorRule", "MirrorLink", "PostCloseEffect" TO vyx_shadow_ro;
 
 -- tables with personal or secret data: only the columns the shadow reads
 GRANT SELECT (id, "brokerId", "groupId", "accountTypeId", balance, credit, leverage, currency, "marginCallNotifiedAt") ON "Account" TO vyx_shadow_ro;
 GRANT SELECT (id, "negativeBalanceProtection", "pricingEngineEnabled", "coverageAccountId") ON "Broker" TO vyx_shadow_ro;
+-- the reconciler attributes each pair to its broker by subdomain (2026-10-05: without this column every broker read
+-- failed, every pair was stored with broker NULL and the soak exit's "30 real paired" counted nothing; the engine
+-- fills in the pairs since the soak start itself, Reconciler::backfill_brokers). Not personal data.
+GRANT SELECT (subdomain) ON "Broker" TO vyx_shadow_ro;
 -- the account's ask (2026-09-26, deploy/shadow-ro-ask-markup-grants.sql): a SELL closes at its account's marked-up ask,
--- resolved group -> account type -> account (market_data::ask_markup, lib/ask-markup.ts)
+-- resolved group -> account type -> account (market_data::ask_markup, lib/ask-markup.ts). Since D8 (2026-10-05) the engine
+-- no longer reads AccountType / AccountTypeSymbolConfig; the two grants stay so a rollback to the earlier exe still runs.
 GRANT SELECT ("groupId", "symbolId", "spreadMarkup", "targetTotalSpreadPips") ON "GroupSymbolConfig" TO vyx_shadow_ro;
 GRANT SELECT (id, "spreadMarkup") ON "AccountType" TO vyx_shadow_ro;
 GRANT SELECT ("accountTypeId", "symbolId", "spreadMarkup", "targetTotalSpreadPips") ON "AccountTypeSymbolConfig" TO vyx_shadow_ro;
