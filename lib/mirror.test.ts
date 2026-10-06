@@ -469,6 +469,11 @@ describe("lib/mirror.ts onFill (live DB, rolled back)", () => {
       expect(killAudit).not.toBeNull();
       const notification = await tx.notification.findFirst({ where: { brokerId: fx.brokerId, type: "MIRROR_KILL_SWITCH", entityId: rule.id } });
       expect(notification).not.toBeNull();
+      // step 2: plain wording, the accounts staff know it by, never the rule's internal id or the field name
+      expect(notification!.title).toBe("Copy rule stopped");
+      expect(notification!.body).toMatch(/^Copy rule .+ → \S+ stopped: open volume reached its limit \(1\.00 of 0\.50 lots\)\.$/);
+      expect(notification!.body).not.toContain(rule.id);
+      expect(notification!.body).not.toMatch(/maxOpenLots|breached/);
     });
   });
 

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { toCsv } from "@/lib/csv";
+import { formatCsvNumber } from "@/lib/format";
 
 export async function GET() {
   const session = await getAdminSession();
@@ -24,7 +25,7 @@ export async function GET() {
       email: a.email,
       accountMode: a.accountMode,
       currency: a.currency,
-      balance: a.balance.toFixed(2),
+      balance: formatCsvNumber(a.balance.toString()),
       group: a.group?.name ?? "",
       status: a.status,
       createdAt: a.createdAt.toISOString(),

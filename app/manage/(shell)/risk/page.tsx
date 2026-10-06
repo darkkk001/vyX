@@ -22,7 +22,7 @@ export default async function ManagerRiskPage() {
     <main className="mx-auto max-w-4xl">
       <PageHeader
         title="Risk"
-        description="Broker-wide trading controls. Existing open positions are never touched by these, they only affect new orders."
+        description="Trading controls for all clients. Open positions are never touched; these only affect new orders."
       />
       <RiskSettingsManager />
     </main>

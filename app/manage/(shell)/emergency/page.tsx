@@ -21,7 +21,7 @@ export default async function ManagerEmergencyPage() {
 
   return (
     <main className="mx-auto max-w-2xl">
-      <PageHeader title="Emergency controls" description="The broker-wide kill switch. Existing open positions are never touched by this - it only blocks new orders." />
+      <PageHeader title="Emergency controls" description="Stops new orders for all clients. Open positions are never touched." />
       <EmergencyControls />
     </main>
   );

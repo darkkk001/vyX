@@ -229,7 +229,7 @@ async function clientTotals(brokerId: string, coverageAccountId: string | null, 
     new7d: Number(counts?.new7d ?? 0),
     activeAccounts: Number(counts?.activeAccounts ?? 0),
     openPositions: Number(counts?.openPositions ?? 0),
-    excludes: "demo accounts, the broker hedge account and COVERAGE groups",
+    excludes: "demo accounts, the hedge account and coverage groups",
     byCurrency: [...byCcy.entries()]
       .sort(([x], [y]) => x.localeCompare(y))
       .map(([currency, r]) => ({

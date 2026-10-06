@@ -5,6 +5,7 @@ import { tradeApi } from "@/lib/trade-api";
 import DesktopTitleBar from "@/components/webtrader/DesktopTitleBar";
 import "../webtrader.css";
 import styles from "./TradeLoginForm.module.css";
+import { plainError } from "@/lib/plain-error";
 
 type ServerOption = { name: string; type: "LIVE" | "DEMO" };
 
@@ -159,7 +160,7 @@ export default function TradeLoginForm({
       setConnStatus(`Connected · ${selectedServer.name}`);
       onAuthenticated(remember);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "login failed");
+      setError(plainError(err, "Sign-in failed. Try again."));
       setConnStatus("Not connected");
     } finally {
       setSubmitting(false);
@@ -175,7 +176,7 @@ export default function TradeLoginForm({
       await tradeApi.verifyTwoFactor(pendingToken, twoFactorCode, remember);
       onAuthenticated(remember);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "verification failed");
+      setError(plainError(err, "Verification failed. Try again."));
     } finally {
       setSubmitting(false);
     }

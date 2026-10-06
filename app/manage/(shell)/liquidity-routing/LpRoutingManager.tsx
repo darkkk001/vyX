@@ -105,7 +105,7 @@ export default function LpRoutingManager() {
               )}
             </Select>
           </FormField>
-          <FormField label="Symbol (blank = broker-wide default)">
+          <FormField label="Symbol (blank = all symbols)">
             <Select value={symbolId} onChange={(e) => setSymbolId(e.target.value)} className="w-40">
               <option value="">Default</option>
               {symbolOptions.map((s) => (

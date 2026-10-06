@@ -14,6 +14,7 @@ import { SegmentedControl } from "@/components/ui/SegmentedControl";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
 import { TableSkeleton, TableErrorState } from "@/components/ui/TableExtras";
 import { useToast } from "@/lib/toast";
+import { formatMoney, formatSigned } from "@/lib/format";
 
 export type AccountRow = {
   id: string;
@@ -375,11 +376,10 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
                 <div className="text-sm">
                   <Badge tone={Number(req.amount) >= 0 ? "success" : "danger"}>{Number(req.amount) >= 0 ? "Credit" : "Debit"}</Badge>{" "}
                   <span className="text-[var(--text-1)] font-mono">
-                    {Number(req.amount) >= 0 ? "+" : ""}
-                    {req.amount}
+                    {formatSigned(req.amount)}
                   </span>{" "}
                   <span className="text-[var(--text-1)]">
-                    {req.account.accountNumber}, {req.account.fullName} (balance {req.account.balance})
+                    {req.account.accountNumber}, {req.account.fullName} (balance {formatMoney(req.account.balance)})
                   </span>
                   <span className="block text-xs text-[var(--text-3)] mt-0.5">
                     Requested by {req.requestedByName} · {new Date(req.createdAt).toLocaleString()} · &quot;{req.note}&quot;
@@ -420,7 +420,7 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
           <TableHeaderCell
             align="center"
             className="min-w-[110px]"
-            title="Per-account swap-free override (Account.swapFree). Resolution order is this account > its Account Type > its Group > charged. Applied at fill/swap-rollover time once your broker's pricing engine is enabled."
+            title="Per-account swap-free override (Account.swapFree). Resolution order is this account > its Account Type > its Group > charged. Applied at fill and swap time once custom pricing is enabled."
           >
             Swap-free
           </TableHeaderCell>
@@ -511,7 +511,7 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
                   )}
                 </TableCell>
                 <TableCell align="right" mono className="min-w-[100px]">
-                  {row.balance}
+                  {formatMoney(row.balance)}
                 </TableCell>
                 <TableCell align="right" mono className="min-w-[100px]">
                   {row.credit}

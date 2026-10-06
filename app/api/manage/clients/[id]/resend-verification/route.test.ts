@@ -122,7 +122,7 @@ describe("POST /api/manage/clients/{id}/resend-verification", () => {
     expect(await audits(c.id)).toHaveLength(STAFF_RESEND_PER_CLIENT_PER_HOUR);
   });
 
-  it("a provider refusal is SEND_FAILED (502) with the provider's message, logged, and not audited", async () => {
+  it("a provider refusal is SEND_FAILED (502) with a plain message (the provider's text only in the log), not audited", async () => {
     if (!dbReachable) return;
     const { broker, adminId } = await makeBroker("fail");
     const c = await makeClient(broker.id, "fail");
@@ -133,7 +133,8 @@ describe("POST /api/manage/clients/{id}/resend-verification", () => {
       const r = await resend({ adminId, role: "BROKER_ADMIN", brokerId: broker.id }, c.id);
       expect(r.status).toBe(502);
       expect(r.body.code).toBe("SEND_FAILED");
-      expect(r.body.error).toContain("domain is not verified");
+      expect(r.body.error).toBe("The e-mail could not be sent. Try again later.");
+      expect(r.body.error).not.toMatch(/domain|Resend|403/);
       expect(errSpy.mock.calls.some((x) => String(x[0]).includes("[staff-resend-verification] email send failed"))).toBe(true);
       expect(await audits(c.id)).toHaveLength(0);
     } finally {

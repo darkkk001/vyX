@@ -1,4 +1,5 @@
 import "server-only";
+import { plainError } from "@/lib/plain-error";
 import { loadAskRules, markedUpAsk, RAW_ASK } from "@/lib/ask-markup";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
@@ -97,12 +98,17 @@ async function rejectPending(
     accountId: order.accountId,
     type: "PENDING_ORDER_REJECTED",
     title: `Pending order rejected: ${order.symbol.name}`,
-    body: `Your ${order.side} ${order.type} ${order.volume.toString()} ${order.symbol.name} at ${order.requestedPrice?.toString() ?? "?"} reached its price but could not be filled: ${reason}.`,
+    // step 2: the reason is a sentence, never a machine code (LP_NOT_CONNECTED, INSUFFICIENT_MARGIN...); lib/plain-error.ts
+    body: `Your ${order.side} ${order.type} ${order.volume.toFixed(2)} ${order.symbol.name}${order.requestedPrice ? ` at ${order.requestedPrice.toString()}` : ""} reached its price but could not be filled. ${withStop(plainError(reason, "It was rejected."))}`,
     entityType: "Order",
     entityId: order.id,
   }).catch((err) => console.error("[pending-trigger] notification failed", err));
   await publishTradingEvent("OrderRejected", { order_id: order.id, account_id: order.accountId, broker_id: order.brokerId, reason }).catch(() => {});
   return true;
+}
+
+function withStop(sentence: string): string {
+  return /[.!?]$/.test(sentence) ? sentence : `${sentence}.`;
 }
 
 /**

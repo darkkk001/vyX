@@ -198,7 +198,7 @@ async function flushDealingQueueToMarket(
         results.push({ orderId: order.id, accountNumber: order.account.accountNumber, status: "filled" });
       } catch (err) {
         console.error("dealing-desk-toggle: auto-flush of a queued close failed", order.id, err);
-        results.push({ orderId: order.id, accountNumber: order.account.accountNumber, status: "skipped", reason: "internal error" });
+        results.push({ orderId: order.id, accountNumber: order.account.accountNumber, status: "skipped", reason: "could not be processed" });
       }
       continue;
     }
@@ -315,7 +315,7 @@ async function flushDealingQueueToMarket(
         results.push({ orderId: order.id, accountNumber: order.account.accountNumber, status: "skipped", reason: "already actioned" });
       } else {
         console.error("dealing-desk-toggle: auto-flush failed for order", order.id, err);
-        results.push({ orderId: order.id, accountNumber: order.account.accountNumber, status: "skipped", reason: "internal error" });
+        results.push({ orderId: order.id, accountNumber: order.account.accountNumber, status: "skipped", reason: "could not be processed" });
       }
     }
   }

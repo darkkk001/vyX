@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import styles from "@/components/portal/PortalShell.module.css";
+import { formatMoney } from "@/lib/format";
 
 type Account = {
   id: string;
@@ -73,7 +74,7 @@ export default function WebTraderLauncher() {
         <select className={styles.select} value={selectedId} onChange={(e) => setSelectedId(e.target.value)}>
           {accounts.map((a) => (
             <option key={a.id} value={a.id}>
-              {a.accountNumber} ({a.accountMode}{a.accountTypeName ? ` ${a.accountTypeName}` : ""}) {a.currency} {parseFloat(a.balance).toFixed(2)}
+              {a.accountNumber} ({a.accountMode}{a.accountTypeName ? ` ${a.accountTypeName}` : ""}) {a.currency} {formatMoney(a.balance)}
             </option>
           ))}
         </select>

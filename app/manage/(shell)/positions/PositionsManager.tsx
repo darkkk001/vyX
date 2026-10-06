@@ -29,7 +29,7 @@ import {
 } from "@/components/ui/TableExtras";
 import { useAdminEventStream, ADMIN_STREAM_RECONNECTED, type AdminEvent } from "@/lib/admin-realtime";
 import { useLiveTicks } from "@/lib/price-stream";
-import { formatPrice, formatNumber, formatPnl, formatDateTime } from "@/lib/format";
+import { formatDateTime, formatNumber, formatPnl, formatPrice, formatVolume } from "@/lib/format";
 import { useUnsavedChangesWarning } from "@/lib/use-unsaved-changes-warning";
 import { effectiveAsk, spreadRuleFromPrice } from "@/lib/trade-api";
 
@@ -819,14 +819,14 @@ export default function PositionsManager() {
           <TableCell
             className="text-xs text-[var(--text-3)]"
             style={{ width: colWidths.source }}
-            title="Which surface placed this position's originating order (MT5-style order-origin tracking)."
+            title="Which app placed the order that opened this position."
           >
             {SOURCE_LABELS[p.source] ?? p.source}
           </TableCell>
         ) : null}
         {(colVisible.volume ?? true) ? (
           <TableCell align="right" mono style={{ width: colWidths.volume }}>
-            {formatNumber(p.volume)}
+            {formatVolume(p.volume)}
           </TableCell>
         ) : null}
         {(colVisible.openPrice ?? true) ? (
@@ -1068,10 +1068,10 @@ export default function PositionsManager() {
                   <TableCell mono>{e.symbol}</TableCell>
                   <TableCell align="right">{e.count}</TableCell>
                   <TableCell align="right" mono>
-                    {formatNumber(e.buyVolume)}
+                    {formatVolume(e.buyVolume)}
                   </TableCell>
                   <TableCell align="right" mono>
-                    {formatNumber(e.sellVolume)}
+                    {formatVolume(e.sellVolume)}
                   </TableCell>
                   <TableCell
                     align="right"
@@ -1445,7 +1445,7 @@ export default function PositionsManager() {
               <div>
                 <p className="text-xs text-[var(--text-3)]">Side / Volume</p>
                 <p className="font-mono">
-                  <Badge tone={detailsTarget.side === "BUY" ? "success" : "danger"}>{detailsTarget.side}</Badge> {formatNumber(detailsTarget.volume)}
+                  <Badge tone={detailsTarget.side === "BUY" ? "success" : "danger"}>{detailsTarget.side}</Badge> {formatVolume(detailsTarget.volume)}
                 </p>
               </div>
               <div>

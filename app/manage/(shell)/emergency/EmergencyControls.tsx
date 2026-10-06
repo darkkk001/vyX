@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { Alert } from "@/components/ui/Alert";
 import { Modal, ModalActions } from "@/components/ui/Modal";
+import { plainError } from "@/lib/plain-error";
 
 // Extracted from RiskSettingsManager.tsx (same PATCH /api/manage/risk
 // endpoint, same tradingHalted field) into its own page -- the target IA
@@ -50,7 +51,7 @@ export default function EmergencyControls() {
       setTradingHalted(result.tradingHalted);
       setConfirming(false);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "update failed");
+      setError(plainError(e, "Could not save the change. Try again."));
     } finally {
       setBusy(false);
     }

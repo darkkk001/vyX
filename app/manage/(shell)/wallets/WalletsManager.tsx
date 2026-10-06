@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { Input } from "@/components/ui/Input";
 import { Badge } from "@/components/ui/Badge";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
+import { formatMoney } from "@/lib/format";
 
 export type WalletRow = {
   id: string;
@@ -50,8 +51,8 @@ export default function WalletsManager() {
       <div className="flex items-center justify-between gap-3">
         <Input type="text" placeholder="Search by account number or name..." value={search} onChange={(e) => setSearch(e.target.value)} className="max-w-sm" />
         <div className="text-sm text-[var(--text-3)]">
-          Total balance: <span className="font-mono text-[var(--text-1)]">{totalBalance.toFixed(2)}</span> · Total credit:{" "}
-          <span className="font-mono text-[var(--text-1)]">{totalCredit.toFixed(2)}</span>
+          Total balance: <span className="font-mono text-[var(--text-1)]">{formatMoney(totalBalance)}</span> · Total credit:{" "}
+          <span className="font-mono text-[var(--text-1)]">{formatMoney(totalCredit)}</span>
         </div>
       </div>
       <Table>

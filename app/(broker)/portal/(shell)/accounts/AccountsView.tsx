@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import styles from "@/components/portal/PortalShell.module.css";
+import { formatMoney } from "@/lib/format";
 
 type Account = {
   id: string;
@@ -187,7 +188,7 @@ export default function AccountsView() {
                   <td style={{ padding: "10px 0" }}>{a.accountTypeName ?? ""}</td>
                   <td style={{ padding: "10px 0" }}>{a.currency}</td>
                   <td style={{ padding: "10px 0" }}>{a.status}</td>
-                  <td style={{ padding: "10px 0", textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{parseFloat(a.balance).toFixed(2)}</td>
+                  <td style={{ padding: "10px 0", textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{formatMoney(a.balance)}</td>
                 </tr>
               ))}
             </tbody>

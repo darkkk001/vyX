@@ -1,4 +1,5 @@
 import { isWeeklyClosed } from "@/lib/market-week";
+import { MINUS, formatMoney, roundClean } from "@/lib/format";
 // Client-side price simulation — same approach as the vyx-webtrader.html
 // prototype and the Phase 2 plan ("keep price simulation client-side for
 // now, do not build the real execution engine yet"). Phase 5 replaces this
@@ -536,9 +537,11 @@ export function resolveDayOpenFromD1(
   return best;
 }
 
-// A figure that can't be valued (an unpriced position: no quote -> account conversion rate) is NaN and shows "–".
+// A figure that can't be valued (an unpriced position: no quote -> account conversion rate) is NaN and shows an empty
+// cell (step 2: no dash placeholder, naming.md "Empty and zero values"). Price text that may go back into an input, so
+// no thousands separators; never "-0.00" (lib/format.ts roundClean).
 export function fmt(value: number, digits: number): string {
-  return Number.isFinite(value) ? value.toFixed(digits) : "\u2013";
+  return Number.isFinite(value) ? roundClean(value, digits).toFixed(digits) : "";
 }
 
 // FX batch: money is shown in the ACCOUNT currency -- "$1,234.00" for USD, "1,234.00 EUR" otherwise. WebTrader sets
@@ -550,9 +553,11 @@ export function setMoneyCurrency(code: string | null | undefined): void {
 export function moneyCurrencyCode(): string {
   return moneyCurrency;
 }
+// step 2: the shared number rules (lib/format.ts): never "-0.00", U+2212 for a negative amount, "" when unpriced
 export function money(value: number): string {
-  if (!Number.isFinite(value)) return "\u2013";
-  const sign = value < 0 ? "-" : "";
-  const amount = Math.abs(value).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  if (!Number.isFinite(value)) return "";
+  const text = formatMoney(value);
+  const sign = text.startsWith(MINUS) ? MINUS : "";
+  const amount = sign ? text.slice(1) : text;
   return moneyCurrency === "USD" ? sign + "$" + amount : sign + amount + " " + moneyCurrency;
 }

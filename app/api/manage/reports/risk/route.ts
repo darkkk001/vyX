@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { computeAccountMarginSnapshots } from "@/lib/margin";
 import { toCsv } from "@/lib/csv";
+import { formatCsvNumber } from "@/lib/format";
 
 // Per-account open-exposure/margin snapshot -- same computation as the
 // Risk Dashboard stats and the Margin monitoring page (lib/margin.ts),
@@ -18,11 +19,11 @@ export async function GET() {
   const rows = snapshots.map((s) => ({
     accountNumber: s.accountNumber,
     openPositions: String(s.positionCount),
-    exposure: s.exposure.toFixed(2),
-    floatingPnl: s.floatingPnl.toFixed(2), // equity - balance would include credit (Stage 2 F1)
-    marginLevel: s.marginLevel != null ? s.marginLevel.toFixed(1) : "",
-    marginCallLevel: s.marginCallLevel.toFixed(1),
-    stopOutLevel: s.stopOutLevel.toFixed(1),
+    exposure: formatCsvNumber(s.exposure.toString(), 2),
+    floatingPnl: formatCsvNumber(s.floatingPnl.toString()), // equity - balance would include credit (Stage 2 F1)
+    marginLevel: formatCsvNumber(s.marginLevel?.toString(), 1), // no positions: empty, never 0
+    marginCallLevel: formatCsvNumber(s.marginCallLevel.toString(), 1),
+    stopOutLevel: formatCsvNumber(s.stopOutLevel.toString(), 1),
   }));
 
   const csv = toCsv(rows, [

@@ -207,7 +207,7 @@ async function handlePlaceOrder(request: NextRequest, session: Session) {
     if (err instanceof Prisma.PrismaClientKnownRequestError && (err.code === "P2022" || err.code === "P2021")) {
       console.error("trade/orders: schema drift on broker/account load", err.code, err.meta);
       return NextResponse.json(
-        { error: "trading is temporarily unavailable (the database is being updated); please try again shortly" },
+        { error: "Trading is briefly unavailable. Try again in a moment." },
         { status: 503 }
       );
     }
