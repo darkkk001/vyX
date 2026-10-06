@@ -1420,6 +1420,19 @@ flip back to WEB and watch the web take the next stop-out. The Vercel cron stays
   flush, staff open: `lib/risk.ts checkGroupMaxLot`). Either the engine enforces both at every open path, or those paths
   stay on the web for RUST brokers. Gate test: an order above the group max / below the group min is refused by the
   engine with the same code as the web. NOT BUILT.
+  Update 2026-10-06 (web side BUILT, branch `batch/s1-bookpnl-minvol`): `Group.minLotSize` exists; the web refuses below
+  the effective minimum next to each of the 6 max-lot checks (`lib/risk.ts checkGroupMinLot`, code `GROUP_MIN_VOLUME`)
+  and refuses an off-grid group minimum at save (`MIN_VOLUME_STEP`). The engine must match: same rule, same code.
+- **CUTOVER GATE (owner, 2026-10-06): Position.groupCategoryAtOpen on every engine open.** Book P/L
+  (`lib/book-pnl.ts`) counts only positions whose group was B_BOOK or DEALING when they OPENED, read from
+  `Position.groupCategoryAtOpen`. A `BEFORE INSERT` trigger on "Position" (migration
+  `20261006090000_book_pnl_group_min_volume`) fills it from the account's current group when the insert leaves it NULL,
+  so an engine INSERT is covered as long as it goes through "Position" normally. In RUST mode the engine must set
+  `groupCategoryAtOpen` on every open it performs (client fill, pending trigger, dealer accept, requote accept, desk
+  flush, staff open, copy-rule opens, hedge legs), or leave it NULL so the trigger fills it. It must never write a
+  different category, and it must never bypass the trigger (no `session_replication_role = replica`, no `COPY` with
+  triggers off). Gate test: a position opened by the engine in RUST mode carries the account's group category at open,
+  and moving the account to another group afterwards does not change it. NOT BUILT on the engine side.
 
 - **Margin-trigger fires evaluated by the engine, unpinned and live (owner, 2026-09-29).** Today a margin-trigger fire
   (market_data::risk_hook::after_flush -> MarginWatch::decide) only calls the web's `margin-monitor?symbols=` route and
