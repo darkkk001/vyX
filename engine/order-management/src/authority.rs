@@ -246,9 +246,28 @@ fn since_epoch_ms() -> u64 {
     BEAT_EPOCH.get_or_init(std::time::Instant::now).elapsed().as_millis() as u64 + 1
 }
 
+/// The drill switch (runbook section 7): while the file named by `VYX_RISK_HEARTBEAT_PAUSE_FILE` exists the engine writes NO heartbeat (neither the
+/// timer nor [`touch`]), so it counts as down for the web and for its own transactions after `staleAfterSecs`, while its market data and everything
+/// else keep running. Unset = the switch does not exist. It can only move ownership toward the WEB (the safe direction).
+fn paused() -> bool {
+    match std::env::var("VYX_RISK_HEARTBEAT_PAUSE_FILE").ok().filter(|p| !p.trim().is_empty()) {
+        Some(path) if std::path::Path::new(path.trim()).exists() => {
+            static WARNED: AtomicBool = AtomicBool::new(false);
+            if !WARNED.swap(true, Ordering::Relaxed) {
+                tracing::warn!(%path, "risk heartbeat PAUSED by the drill file: the engine counts as down for the web after staleAfterSecs until the file is removed");
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
 /// Writes the heartbeat NOW: one upsert of the row `risk` (`beatAt = clock_timestamp()`, the database's clock, the one both sides judge by).
 /// Waits for any transaction holding the row FOR SHARE (an action decided on the previous reading): by design.
 pub async fn beat(pool: &PgPool) -> Result<(), sqlx::Error> {
+    if paused() {
+        return Ok(());
+    }
     let instance = std::env::var("COMPUTERNAME").or_else(|_| std::env::var("HOSTNAME")).unwrap_or_default();
     sqlx::query(
         r#"INSERT INTO "RiskEngineHeartbeat" (name, "beatAt", "engineVersion", instance) VALUES ('risk', clock_timestamp(), $1, $2)

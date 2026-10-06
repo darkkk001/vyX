@@ -712,3 +712,26 @@ async fn an_engine_stall_the_web_stops_out_once_and_the_returning_engine_duplica
     assert!(trace_lines().iter().filter(|t| t["accountId"] == account.as_str() && t["actor"] == "RUST" && t["ref"] == positions[0].as_str()).count() == 0, "the engine took no action on position 0");
     cleanup(&pool, &w).await;
 }
+
+/// The drill switch of the runbook: while the pause file exists the engine writes no heartbeat (the timer and touch both go through beat), so the
+/// accounts fall to the web after the window; removing the file brings the engine back with its next beat.
+#[tokio::test]
+async fn the_pause_file_stops_the_heartbeat_and_removing_it_resumes_it() {
+    let Some(pool) = pool().await else { return };
+    let _x = exclusive(&pool).await;
+    let mut w = broker_and_symbol(&pool, "RUST", false).await;
+    let (account, positions) = add_account(&pool, &w, "LIVE", dec!(1000), None, 1).await;
+    w.accounts.push(Acct { id: account.clone(), mode: "LIVE", kind: Kind::StopOut, position: positions[0].clone() });
+    set_heartbeat(&pool, 31, 30).await;
+    let file = std::env::temp_dir().join(format!("risk-heartbeat-pause-{}", Uuid::new_v4()));
+    std::fs::write(&file, b"drill").unwrap();
+    std::env::set_var("VYX_RISK_HEARTBEAT_PAUSE_FILE", &file);
+    authority::beat(&pool).await.unwrap();
+    authority::touch(&pool, Duration::from_millis(0)).await;
+    assert_eq!(authority::owner_of_account(&pool, &account).await.unwrap(), Some(RiskOwner::Web), "paused: no beat was written, the engine counts as down");
+    std::fs::remove_file(&file).unwrap();
+    authority::beat(&pool).await.unwrap();
+    assert_eq!(authority::owner_of_account(&pool, &account).await.unwrap(), Some(RiskOwner::Rust), "the file is gone: the next beat brings the engine back");
+    std::env::remove_var("VYX_RISK_HEARTBEAT_PAUSE_FILE");
+    cleanup(&pool, &w).await;
+}
