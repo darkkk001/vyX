@@ -2,7 +2,7 @@ import "server-only";
 import { Prisma, type LivePrice, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { readVpsPrice, readVpsPrices, type EnginePrice } from "@/lib/market-data-client";
-import { reportPriceSourceDown } from "@/lib/price-source-alert";
+import { reportPriceSourceDown, reportPriceSourceOk } from "@/lib/price-source-alert";
 
 export type FreshPrice = { symbol: string; bid: Prisma.Decimal; ask: Prisma.Decimal };
 
@@ -81,6 +81,7 @@ export async function getLivePriceRow(symbolName: string, db: Db = prisma): Prom
       await reportPriceSourceDown({ where: "getLivePriceRow", symbol: symbolName, reason: r.reason });
       return null; // no price -- never Neon's frozen row
     }
+    await reportPriceSourceOk();
     return r.value ? toLivePriceRow(r.value) : null;
   }
   return db.livePrice.findUnique({ where: { symbol: symbolName } });
@@ -103,6 +104,7 @@ export async function getLivePriceRowsWithSource(symbolNames: string[], db: Db =
       await reportPriceSourceDown({ where: "getLivePriceRows", reason: r.reason });
       return { rows: new Map(), source: "vps-unavailable" }; // no price -- never Neon's frozen rows
     }
+    await reportPriceSourceOk();
     const map = new Map<string, LivePrice>();
     for (const p of r.value) {
       if (!wanted.has(p.symbol)) continue;
@@ -139,6 +141,7 @@ export async function marginPassGate(): Promise<{ run: boolean | null; reason: s
     await reportPriceSourceDown({ where: "margin-monitor idle gate", reason: r.reason });
     return { run: null, reason: "engine unreadable" };
   }
+  await reportPriceSourceOk();
   if (r.idleGate && r.idleGate !== "unknown") return { run: r.idleGate === "running", reason: `engine book gate: ${r.idleGate}` };
   const cutoff = Date.now() - FRESH_MAX_AGE_MS;
   const anyFresh = r.value.some((p) => {

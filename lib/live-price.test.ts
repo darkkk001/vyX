@@ -20,6 +20,7 @@ vi.mock("@/lib/prisma", () => ({
 
 import { getFreshPrices, getLivePriceRow, getLivePriceRowsWithSource } from "./live-price";
 import { resetPriceSourceAlertThrottle } from "./price-source-alert";
+import { getRedis } from "./redis";
 
 const nowIso = () => new Date().toISOString();
 const engineRow = (symbol: string, bid: string, ask: string, tickAt = nowIso()) => ({ symbol, bid, ask, tickAt, updatedAt: nowIso(), ageMs: 120 });
@@ -27,14 +28,16 @@ const neonRow = (symbol: string, bid: string) => ({ symbol, bid: new Prisma.Deci
 
 describe("lib/live-price with MARKET_DATA_PRICES=vps", () => {
   const env = { ...process.env };
-  beforeEach(() => {
+  beforeEach(async () => {
     process.env.MARKET_DATA_URL = "https://feed.example.test";
     process.env.MARKET_DATA_READ_SECRET = "read-secret";
     process.env.MARKET_DATA_PRICES = "vps";
+    process.env.PRICE_READ_RETRY_DELAY_MS = "0";
     findUnique.mockReset(); findMany.mockReset(); queryRaw.mockReset();
     notificationFindFirst.mockReset(); notificationCreateMany.mockReset();
     notificationFindFirst.mockResolvedValue(null);
     resetPriceSourceAlertThrottle();
+    await getRedis().del("price-source:first-fail", "price-source:last-ok", "price-source:outage");
     vi.spyOn(console, "error").mockImplementation(() => {});
   });
   afterEach(() => {
@@ -61,24 +64,13 @@ describe("lib/live-price with MARKET_DATA_PRICES=vps", () => {
     expect(notificationCreateMany).not.toHaveBeenCalled();
   });
 
-  it("getLivePriceRow: engine unreachable / 5xx -> no price, Neon untouched, one staff alert per broker", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("boom", { status: 502 }));
+  it("getLivePriceRow: engine unreachable / 5xx (also on the one retry) -> no price, Neon untouched, no alert on a first failure", async () => {
+    const f = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response("boom", { status: 502 }));
     findUnique.mockResolvedValue(neonRow("XAUUSD", "4500.00"));
     expect(await getLivePriceRow("XAUUSD")).toBeNull();
+    expect(f).toHaveBeenCalledTimes(2); // the read and its one retry
     expect(findUnique).not.toHaveBeenCalled();
-    expect(notificationCreateMany).toHaveBeenCalledTimes(1);
-    const rows = notificationCreateMany.mock.calls[0][0].data as { brokerId: string; type: string; title: string }[];
-    expect(rows.map((r) => [r.brokerId, r.type, r.title])).toEqual([["b1", "PRICE_SOURCE_DOWN", "Live prices unavailable"], ["b2", "PRICE_SOURCE_DOWN", "Live prices unavailable"]]);
-    // a second failure right after: throttled, no second alert
-    await getLivePriceRow("XAUUSD");
-    expect(notificationCreateMany).toHaveBeenCalledTimes(1);
-  });
-
-  it("the alert is not repeated while one from the last 5 minutes exists (any serverless instance)", async () => {
-    vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("ECONNREFUSED"));
-    notificationFindFirst.mockResolvedValue({ id: "recent" });
-    expect(await getLivePriceRow("XAUUSD")).toBeNull();
-    expect(notificationCreateMany).not.toHaveBeenCalled();
+    expect(notificationCreateMany).not.toHaveBeenCalled(); // alerts only after 20 s of continuous failure (price-source-alert.test.ts)
   });
 
   it("getLivePriceRowsWithSource: filters the engine's list to the wanted symbols and reports vps", async () => {
@@ -91,14 +83,14 @@ describe("lib/live-price with MARKET_DATA_PRICES=vps", () => {
     expect(findMany).not.toHaveBeenCalled();
   });
 
-  it("getLivePriceRowsWithSource: engine down -> NO rows (source vps-unavailable), Neon untouched, alerted", async () => {
+  it("getLivePriceRowsWithSource: engine down -> NO rows (source vps-unavailable), Neon untouched", async () => {
     vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("ECONNREFUSED"));
     findMany.mockResolvedValue([neonRow("XAUUSD", "4500.00")]);
     const { rows, source } = await getLivePriceRowsWithSource(["XAUUSD"]);
     expect(source).toBe("vps-unavailable");
     expect(rows.size).toBe(0);
     expect(findMany).not.toHaveBeenCalled();
-    expect(notificationCreateMany).toHaveBeenCalledTimes(1);
+    expect(notificationCreateMany).not.toHaveBeenCalled();
   });
 
   it("getFreshPrices: engine down -> empty (every caller refuses to act), Neon's raw query never runs", async () => {

@@ -202,6 +202,23 @@ export type PriceRead<T> = { ok: true; value: T; idleGate?: EngineIdleGate } | {
 export type EngineIdleGate = "running" | "feed-quiet" | "flat-book" | "book-closed" | "unknown";
 const IDLE_GATES = new Set<EngineIdleGate>(["running", "feed-quiet", "flat-book", "book-closed", "unknown"]);
 
+/** Owner 2026-10-05: a failed price read (unreachable, timeout, 5xx; never a 404) is retried ONCE after this delay
+ *  before the caller treats prices as unavailable. Exactly one retry, no loop: the stop-out trigger path waits at most
+ *  this delay plus one more read. Env override for tests only. */
+export function priceReadRetryDelayMs(): number {
+  const v = Number(process.env.PRICE_READ_RETRY_DELAY_MS);
+  return Number.isFinite(v) && v >= 0 ? v : 300;
+}
+
+async function getJsonResultWithRetry(path: string): Promise<PriceRead<unknown>> {
+  const first = await getJsonResult(path);
+  if (first.ok || first.notFound) return first;
+  await new Promise((resolve) => setTimeout(resolve, priceReadRetryDelayMs()));
+  const second = await getJsonResult(path);
+  if (second.ok || second.notFound) return second;
+  return { ok: false, notFound: false, reason: `${second.reason} (after one retry; first: ${first.reason})` };
+}
+
 async function getJsonResult(path: string): Promise<PriceRead<unknown>> {
   const base = baseUrl();
   const secret = readSecret();
@@ -223,7 +240,7 @@ async function getJsonResult(path: string): Promise<PriceRead<unknown>> {
 
 /** One symbol's live tick, or why there is none. */
 export async function readVpsPrice(symbol: string): Promise<PriceRead<EnginePrice | null>> {
-  const r = await getJsonResult(`/internal/prices/${encodeURIComponent(symbol)}`);
+  const r = await getJsonResultWithRetry(`/internal/prices/${encodeURIComponent(symbol)}`);
   if (!r.ok) return r.notFound ? { ok: true, value: null } : r;
   const row = r.value as EnginePrice | null;
   return { ok: true, value: row && typeof row.bid === "string" && typeof row.ask === "string" ? row : null };
@@ -231,7 +248,7 @@ export async function readVpsPrice(symbol: string): Promise<PriceRead<EnginePric
 
 /** Every symbol's live tick, or why there is none. */
 export async function readVpsPrices(): Promise<PriceRead<EnginePrice[]>> {
-  const r = await getJsonResult("/internal/prices");
+  const r = await getJsonResultWithRetry("/internal/prices");
   if (!r.ok) return r;
   return Array.isArray(r.value) ? { ok: true, value: r.value as EnginePrice[], idleGate: r.idleGate } : { ok: false, notFound: false, reason: "malformed answer (not a list)" };
 }
