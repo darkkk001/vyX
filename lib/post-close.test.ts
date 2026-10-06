@@ -372,6 +372,44 @@ describe("Stage 3 gate: margin call set / stay / clear / fire again", () => {
     expect(await count.notes(w.mc, "MARGIN_CALL")).toBe(4); // trader + staff, twice
     const body = (await prisma.notification.findFirstOrThrow({ where: { entityId: w.mc, type: "MARGIN_CALL" } })).body;
     expect(body).toMatch(/margin level is 90\.91%, at or below the 100% margin-call level/);
+    // Stage 6: the start of an episode also publishes the real-time MarginCall event (lib/risk-monitor.ts does), once per row
+    for (const r of all) {
+      const events = ((await prisma.postCloseEffect.findUniqueOrThrow({ where: { id: r.id } })).pendingEvents as { type: string; payload: Record<string, unknown> }[]).filter((e) => e.type === "MarginCall");
+      expect(events).toHaveLength(1);
+      expect(events[0].payload).toEqual({ account_id: w.mc, broker_id: w.brokerId, level: "90.91", state: "margin_call" });
+    }
+
+    // Stage 6: the END of the first episode was queued too (one CLEARED row per episode), and delivers what the web's
+    // clearMarginCall does: the trader's "Margin call over" notification and the real-time "cleared" event, each once
+    const ended = await prisma.postCloseEffect.findMany({ where: { brokerId: w.brokerId, kind: "MARGIN_CALL_CLEARED" } });
+    expect(ended).toHaveLength(1);
+    expect(ended[0].payload).toEqual({ marginCallLevel: "100", marginLevel: "180.18" });
+    expect((await runPostClose(ended[0].id)).status).toBe("done");
+    expect((await runPostClose(ended[0].id)).status).toBe("gone");
+    expect(await prisma.notification.count({ where: { entityId: w.mc, type: "MARGIN_CALL_CLEARED", accountId: w.mc } })).toBe(1);
+    expect(await prisma.notification.count({ where: { entityId: w.mc, type: "MARGIN_CALL_CLEARED", accountId: null } })).toBe(0); // the trader's copy only, as on the web
+    expect((await prisma.notification.findFirstOrThrow({ where: { entityId: w.mc, type: "MARGIN_CALL_CLEARED" } })).body).toMatch(/margin level is 180\.18%, back above the 100% margin-call level/);
+    const done = await prisma.postCloseEffect.findUniqueOrThrow({ where: { id: ended[0].id } });
+    expect(done.status).toBe("DONE");
+    expect((done.pendingEvents as { type: string; payload: Record<string, unknown> }[]).filter((e) => e.type === "MarginCall")).toEqual([
+      { type: "MarginCall", payload: { account_id: w.mc, broker_id: w.brokerId, level: "180.18", state: "cleared" } },
+    ]);
+  });
+
+  it("an episode that ends because nothing is left open: the notification only (no cleared event), as on the web", async () => {
+    if (!ready) return;
+    const w = await seedWorld();
+    // the client was in margin call; the engine stops its only position out, so nothing is left open and the episode is over
+    await prisma.account.update({ where: { id: w.client }, data: { marginCallNotifiedAt: new Date() } });
+    engineEvaluate(w.client);
+    expect((await prisma.account.findUniqueOrThrow({ where: { id: w.client } })).marginCallNotifiedAt).toBeNull();
+    const ended = await prisma.postCloseEffect.findMany({ where: { brokerId: w.brokerId, kind: "MARGIN_CALL_CLEARED", accountId: w.client } });
+    expect(ended).toHaveLength(1);
+    expect(ended[0].payload).toEqual({ marginCallLevel: "100" });
+    expect((await runPostClose(ended[0].id)).status).toBe("done");
+    expect((await prisma.notification.findFirstOrThrow({ where: { entityId: w.client, type: "MARGIN_CALL_CLEARED" } })).body).toMatch(/has no open position left; the margin call is over/);
+    const done = await prisma.postCloseEffect.findUniqueOrThrow({ where: { id: ended[0].id } });
+    expect((done.pendingEvents as { type: string }[]).filter((e) => e.type === "MarginCall")).toHaveLength(0);
   });
 });
 

@@ -181,6 +181,8 @@ pub async fn record_failure(pool: &PgPool, id: &str, error: &str) -> Result<Fail
     // the same text as lib/post-close.ts outboxDeadNotification
     let what = if kind == "MARGIN_CALL" {
         format!("the margin-call notice for account {account_id}")
+    } else if kind == "MARGIN_CALL_CLEARED" {
+        format!("the margin-call-over notice for account {account_id}")
     } else {
         format!("the follow-up of automatic close {}", position_id.as_deref().unwrap_or(""))
     };

@@ -1098,6 +1098,28 @@ pub async fn apply_margin_call_edge_as(
     account_id: &str,
     edge: MarginCallEdge,
 ) -> Result<bool, sqlx::Error> {
+    apply_margin_call_edge_with(pool, actor, account_id, edge, None).await
+}
+
+/// What the end of a margin-call episode says (Stage 6): the account's level now (None = nothing left open, or no used margin)
+/// and the group's margin-call level. The web writes a trader notification "Margin call over" and, when the account
+/// recovered by price (a level), a real-time `MarginCall` "cleared" event; RUST mode has to deliver the same.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MarginCallEnd {
+    pub margin_level: Option<Decimal>,
+    pub call_level: Decimal,
+}
+
+/// apply_margin_call_edge_as, plus (Stage 6) the END of an episode as an outbox row: with `end` set, an `Out` edge that really
+/// cleared the flag queues ONE "MARGIN_CALL_CLEARED" row in the same transaction (the web's route writes the notification and
+/// publishes the event), and the call returns true like an `In` that queued a notice. `end = None` = the flag only (legacy / tests).
+pub async fn apply_margin_call_edge_with(
+    pool: &PgPool,
+    actor: Option<crate::authority::RiskOwner>,
+    account_id: &str,
+    edge: MarginCallEdge,
+    end: Option<MarginCallEnd>,
+) -> Result<bool, sqlx::Error> {
     match edge {
         MarginCallEdge::Out => {
             let mut tx = pool.begin().await?;
@@ -1107,15 +1129,40 @@ pub async fn apply_margin_call_edge_as(
                     return Ok(false);
                 }
             }
-            let cleared = sqlx::query(r#"UPDATE "Account" SET "marginCallNotifiedAt" = NULL WHERE id = $1 AND "marginCallNotifiedAt" IS NOT NULL"#)
+            // the episode's start (its identity: one CLEARED row per episode) is read WITH the clear, in one statement
+            let cleared: Option<(String, i64)> = sqlx::query_as(
+                r#"WITH old AS (SELECT id, "brokerId", "marginCallNotifiedAt" AS at FROM "Account" WHERE id = $1 AND "marginCallNotifiedAt" IS NOT NULL FOR UPDATE)
+                   UPDATE "Account" a SET "marginCallNotifiedAt" = NULL FROM old WHERE a.id = old.id
+                   RETURNING old."brokerId", (extract(epoch from old.at) * 1000)::bigint"#,
+            )
+            .bind(account_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+            let mut queued = false;
+            if let (Some((broker_id, started_ms)), Some(end)) = (&cleared, end) {
+                let mut payload = serde_json::json!({ "marginCallLevel": end.call_level.normalize().to_string() });
+                if let Some(level) = end.margin_level {
+                    payload["marginLevel"] = serde_json::Value::String(fixed2(level));
+                }
+                sqlx::query(
+                    r#"INSERT INTO "PostCloseEffect" (id, kind, "dedupeKey", "brokerId", "accountId", payload)
+                       VALUES ($1, 'MARGIN_CALL_CLEARED', $2, $3, $4, $5::jsonb)
+                       ON CONFLICT ("dedupeKey") DO NOTHING"#,
+                )
+                .bind(Uuid::new_v4().to_string())
+                .bind(format!("mcc:{}:{}", account_id, started_ms))
+                .bind(broker_id)
                 .bind(account_id)
+                .bind(payload.to_string())
                 .execute(&mut *tx)
                 .await?;
+                queued = true;
+            }
             tx.commit().await?;
-            if cleared.rows_affected() > 0 {
+            if cleared.is_some() {
                 crate::authority::trace_action(actor.unwrap_or(crate::authority::RiskOwner::Rust), "margin_call_out", account_id, "");
             }
-            Ok(false)
+            Ok(queued)
         }
         MarginCallEdge::In { margin_level, call_level } => {
             let mut tx = pool.begin().await?;

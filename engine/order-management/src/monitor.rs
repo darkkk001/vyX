@@ -687,7 +687,10 @@ async fn evaluate_account_checked(
         }
     }
     if let Some(e) = edge.filter(|e| transition(Some(*e))) {
-        if book::apply_margin_call_edge_as(pool, crate::authority::live_actor(), account_id, e).await? {
+        // Stage 6: the END of an episode is delivered like its start (the web writes "Margin call over" and publishes the
+        // cleared event): the level it ended at (None when nothing is left open) and the call level go with the outbox row
+        let end = book::MarginCallEnd { margin_level: risk::margin_level(equity(&state), used_margin(&state)), call_level: thresholds.call_level };
+        if book::apply_margin_call_edge_with(pool, crate::authority::live_actor(), account_id, e, Some(end)).await? {
             crate::outbox::wake();
         }
     }
