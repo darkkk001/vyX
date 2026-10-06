@@ -21,6 +21,15 @@
 #   M14 the watchdog: the engine's heartbeat row is read without the share lock (a beat can land between the reading and the action)
 #   M15 the watchdog: same on the web side
 #   M16 the startup WARNING for a live mode without a flip marker is never produced
+#   M17 (a) the engine's fire worker no longer beats before it evaluates (the first fire after an idle gap is refused as stale)
+#   M18 (a) the engine's pass no longer beats before it lists its accounts (the first pass after an idle gap sees none)
+#   M19 (b) the 1-minute fallback runs its pass although the engine's heartbeat is fresh
+#   M20 (b) the fallback ignores the idle gate (reads the database while the market is quiet)
+#   M21 (b) the "any broker RUST" answer is never cached (a database read every minute)
+#   M22 (c) the stale-heartbeat alert fires on the first stale check (no debounce)
+#   M23 (c) the alert counts an idle market (a weekend's stale heartbeat alerts)
+#   M24 (c) the recovery notice needs no continuous fresh minute (flapping spams)
+#   M25 (c) the alert is sent on every stale check, not once per incident
 #
 # Needs a clean working tree for the files it touches; restores them on exit. Scratch database only (vyx_test).
 set -uo pipefail
@@ -30,7 +39,7 @@ export ENGINE_TEST_DATABASE_URL="${ENGINE_TEST_DATABASE_URL:-postgresql://postgr
 export VYX_REQUIRE_DB_TESTS=1
 WEBENV="DATABASE_URL=postgresql://postgres@127.0.0.1:5499/vyx_test DIRECT_URL=postgresql://postgres@127.0.0.1:5499/vyx_test REDIS_URL=redis://localhost:6379"
 MUT="node scripts/stage6/mutate.mjs"
-FILES="lib/risk-monitor.ts lib/risk-owner.ts lib/position-close.ts lib/risk-authority.ts engine/order-management/src/authority.rs engine/order-management/src/book.rs engine/order-management/src/monitor.rs engine/order-management/src/margin_watch.rs"
+FILES="lib/risk-fallback.ts lib/risk-engine-alert.ts app/api/internal/risk-fallback/route.ts lib/risk-monitor.ts lib/risk-owner.ts lib/position-close.ts lib/risk-authority.ts engine/order-management/src/authority.rs engine/order-management/src/book.rs engine/order-management/src/monitor.rs engine/order-management/src/margin_watch.rs"
 git diff --quiet -- $FILES || { echo "[mutation] refusing: uncommitted changes in $FILES"; exit 2; }
 restore() { git checkout -q -- $FILES; }
 # a mutated engine test panics before its own cleanup: remove the rows the engine split tests leave (a leftover RUST broker would be acted on
@@ -44,7 +53,7 @@ db_cleanup() {
 finish() { restore; db_cleanup; }
 trap finish EXIT
 
-WANT="${*:-M1 M2 M3 M4 M5 M6 M7 M8 M9 M10 M11 M12 M13 M14 M15 M16}"
+WANT="${*:-M1 M2 M3 M4 M5 M6 M7 M8 M9 M10 M11 M12 M13 M14 M15 M16 M17 M18 M19 M20 M21 M22 M23 M24 M25}"
 MISSED=0
 web_tests() { env $WEBENV npx vitest run "$@" > /tmp/mutation-web.log 2>&1; }
 engine_tests() { (cd engine && cargo test -q -p order-management "$@" -- --test-threads=1) >> /tmp/mutation-engine.log 2>&1; }
@@ -158,6 +167,44 @@ if want M16; then
     }' \
   && engine_tests --lib authority
   report "M16 the startup warning is never produced" $?; restore
+fi
+if want M17; then
+  $MUT engine/order-management/src/monitor.rs "            // the engine is alive and about to act: assert it (the idle gate may have stopped the timer's beats)
+            crate::authority::touch(&pool, std::time::Duration::from_secs(1)).await;" "            // MUTATION: no beat before the fire batch"   && engine_tests --test risk_split_db
+  report "M17 the fire worker does not beat before it evaluates" $?; restore
+fi
+if want M18; then
+  $MUT engine/order-management/src/monitor.rs "            crate::authority::touch(&pool, std::time::Duration::from_secs(1)).await;
+            run_pass_guarded(&pool, None, &guard).await;" "            run_pass_guarded(&pool, None, &guard).await;"   && engine_tests --test risk_split_db
+  report "M18 the pass does not beat before it lists the engine's accounts" $?; restore
+fi
+if want M19; then
+  $MUT app/api/internal/risk-fallback/route.ts 'if (heartbeat.alive) return' 'if (false) return'   && web_tests lib/risk-fallback.test.ts
+  report "M19 the fallback runs its pass although the heartbeat is fresh" $?; restore
+fi
+if want M20; then
+  $MUT app/api/internal/risk-fallback/route.ts 'if (gate.run === false) return' 'if (false) return'   && web_tests lib/risk-fallback.test.ts
+  report "M20 the fallback ignores the idle gate" $?; restore
+fi
+if want M21; then
+  $MUT lib/risk-fallback.ts 'if (cache && now - cache.at' 'if (false && cache && now - cache.at'   && web_tests lib/risk-fallback.test.ts
+  report "M21 the RUST-broker answer is not cached" $?; restore
+fi
+if want M22; then
+  $MUT lib/risk-engine-alert.ts 'export const STALE_CHECKS_TO_ALERT = 2;' 'export const STALE_CHECKS_TO_ALERT = 1;'   && web_tests lib/risk-engine-alert.test.ts
+  report "M22 the alert fires on the first stale check" $?; restore
+fi
+if want M23; then
+  $MUT lib/risk-engine-alert.ts 'if (!input.active) {' 'if (false) {'   && web_tests lib/risk-engine-alert.test.ts
+  report "M23 the alert counts an idle market" $?; restore
+fi
+if want M24; then
+  $MUT lib/risk-engine-alert.ts 'export const RECOVER_AFTER_SECS = 60;' 'export const RECOVER_AFTER_SECS = 0;'   && web_tests lib/risk-engine-alert.test.ts
+  report "M24 the recovery notice needs no continuous fresh minute" $?; restore
+fi
+if want M25; then
+  $MUT lib/risk-engine-alert.ts 'if ((await redis.set(K.open, "1", "NX")) !== "OK") return { action: null, emailed: false };' ''   && web_tests lib/risk-engine-alert.test.ts
+  report "M25 the alert is sent on every stale check" $?; restore
 fi
 echo
 [ $MISSED -eq 0 ] && echo "every mutation was detected" || echo "AT LEAST ONE MUTATION WAS MISSED"
