@@ -20,6 +20,8 @@ import {
   checkTradingSession,
   checkLotStep,
   checkGroupMaxLot,
+  checkGroupMinLot,
+  riskCode,
   checkGroupTradingRestriction,
   checkGroupTradingHalted,
   checkAccountStatusForOpen,
@@ -139,6 +141,7 @@ export async function triggerPendingOrder(orderId: string, triggerPrice: string,
     evaluateLiveMarketPrice(livePrice, brokerSymbol.symbol.name, triggerPrice) ??
     checkPriceFreshness(livePrice) ??
     (account.group ? checkGroupMaxLot(order.volume, account.group.maxLotSize) : null) ??
+    (account.group ? checkGroupMinLot(order.volume, account.group.minLotSize, brokerSymbol.minLot) : null) ??
     (account.group ? checkGroupTradingRestriction(account.group.tradingRestriction, order.side) : null) ??
     (account.group ? checkGroupTradingHalted(account.group) : null) ??
     // account status (2026-09-29): a suspended / closed account opens nothing

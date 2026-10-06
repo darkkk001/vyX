@@ -7,6 +7,7 @@ import { LEVERAGE_RULE, parseLeverage } from "@/lib/leverage";
 import { publishAccountsUpdatedAfterResponse } from "@/lib/account-events";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { resolveGroupRouting, legacyGroupTypeFor } from "@/lib/group-routing";
+import { parseGroupMinLot } from "@/lib/group-min-volume";
 
 const GROUP_TIERS: GroupTier[] = ["STANDARD", "PRO", "ECN", "ZERO"];
 const GROUP_DEALING_MODES: GroupDealingMode[] = ["INHERIT", "AUTO", "MANUAL"];
@@ -68,6 +69,10 @@ async function patchHandler(request: NextRequest, { params }: { params: Promise<
       return NextResponse.json({ error: "maxLotSize must be positive when set" }, { status: 400 });
     }
   }
+  // group minimum volume (owner 2026-10-06): absent = keep (forms older than the field), lib/group-min-volume.ts
+  const minLot = await parseGroupMinLot(body, { brokerId, maxLotSize, existing });
+  if (!minLot.ok) return NextResponse.json(minLot.body, { status: minLot.status });
+  const minLotSize = minLot.value;
   const tradingRestriction = ["BOTH", "BUY_ONLY", "SELL_ONLY"].includes(body?.tradingRestriction) ? body.tradingRestriction : "BOTH";
   // Tri-state (2026-09-07 Stage 5, now that Group.swapFree is nullable and
   // actually read at fill time -- lib/pricing-engine.ts): explicit null
@@ -134,7 +139,7 @@ async function patchHandler(request: NextRequest, { params }: { params: Promise<
       }
       const updated = await tx.group.update({
         where: { id },
-        data: { name, leverage, marginCallLevel, stopOutLevel, isDefault, maxLotSize, tradingRestriction, swapFree, forceDealingMode, category, modeRestriction, groupType, dealingMode, tier, isClientSelectable },
+        data: { name, leverage, marginCallLevel, stopOutLevel, isDefault, maxLotSize, minLotSize, tradingRestriction, swapFree, forceDealingMode, category, modeRestriction, groupType, dealingMode, tier, isClientSelectable },
       });
       await tx.auditLog.create({
         data: {
@@ -150,6 +155,7 @@ async function patchHandler(request: NextRequest, { params }: { params: Promise<
             stopOutLevel: existing.stopOutLevel.toString(),
             isDefault: existing.isDefault,
             maxLotSize: existing.maxLotSize?.toString() ?? null,
+            minLotSize: existing.minLotSize?.toString() ?? null,
             tradingRestriction: existing.tradingRestriction,
             swapFree: existing.swapFree,
             forceDealingMode: existing.forceDealingMode,
@@ -167,6 +173,7 @@ async function patchHandler(request: NextRequest, { params }: { params: Promise<
             stopOutLevel: stopOutLevel.toString(),
             isDefault,
             maxLotSize: maxLotSize?.toString() ?? null,
+            minLotSize: minLotSize?.toString() ?? null,
             tradingRestriction,
             swapFree,
             forceDealingMode,
@@ -198,6 +205,7 @@ async function patchHandler(request: NextRequest, { params }: { params: Promise<
       stopOutLevel: group.stopOutLevel.toString(),
       isDefault: group.isDefault,
       maxLotSize: group.maxLotSize ? group.maxLotSize.toString() : null,
+      minLotSize: group.minLotSize ? group.minLotSize.toString() : null,
       tradingRestriction: group.tradingRestriction,
       swapFree: group.swapFree,
       forceDealingMode: group.forceDealingMode,

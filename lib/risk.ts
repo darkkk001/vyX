@@ -78,6 +78,32 @@ export function checkGroupMaxLot(volume: Prisma.Decimal, groupMaxLot: Prisma.Dec
   return null;
 }
 
+// Group minimum volume (owner 2026-10-06). The smallest order an account may place is the larger of the symbol's own
+// minimum and its group's minimum (Group.minLotSize, null = none). The symbol minimum keeps its own inline check; this
+// one refuses what is above the symbol minimum but below the group's, with code GROUP_MIN_VOLUME (riskCode below).
+export const GROUP_MIN_VOLUME = "GROUP_MIN_VOLUME";
+const GROUP_MIN_VOLUME_TEXT = "The smallest trade allowed for this account is ";
+export function effectiveMinLot(symbolMinLot: Prisma.Decimal, groupMinLot: Prisma.Decimal | null): Prisma.Decimal {
+  return groupMinLot != null && groupMinLot.gt(symbolMinLot) ? groupMinLot : symbolMinLot;
+}
+export function checkGroupMinLot(volume: Prisma.Decimal, groupMinLot: Prisma.Decimal | null, symbolMinLot: Prisma.Decimal): string | null {
+  const min = effectiveMinLot(symbolMinLot, groupMinLot);
+  if (volume.lt(min)) return `${GROUP_MIN_VOLUME_TEXT}${min.toFixed(2)} lots.`;
+  return null;
+}
+/** The machine-readable code for a risk refusal, when it has one (spread into the JSON error body). */
+export function riskCode(error: string): { code: string } | Record<string, never> {
+  return error.startsWith(GROUP_MIN_VOLUME_TEXT) ? { code: GROUP_MIN_VOLUME } : {};
+}
+
+// A group minimum has to sit on each symbol's volume grid (minLot + n x lotStep), or no order could ever meet it
+// exactly. Returns the symbols it does not fit; the group save is refused with code MIN_VOLUME_STEP when any do.
+export function groupMinOffGrid(groupMinLot: Prisma.Decimal, symbols: { name: string; minLot: Prisma.Decimal; lotStep: Prisma.Decimal }[]): string[] {
+  return symbols
+    .filter((s) => groupMinLot.gt(s.minLot) && checkLotStep(groupMinLot, s.minLot, s.lotStep) != null)
+    .map((s) => s.name);
+}
+
 // Same shape/semantics as checkSymbolTradingMode, applied at the
 // account's group level instead of the symbol level -- both can block
 // independently.

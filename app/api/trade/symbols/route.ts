@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
-import { checkGroupAllowedSymbol } from "@/lib/risk";
+import { checkGroupAllowedSymbol, effectiveMinLot } from "@/lib/risk";
 
 // The trader terminal's own symbol universe -- every symbol this broker
 // has enabled, full stop. Replaces lib/market-simulator.ts's hardcoded
@@ -22,7 +22,7 @@ export async function GET() {
   // order is checked with (lib/risk.ts checkGroupAllowedSymbol); the picker used to list symbols the order then refused
   const account = await prisma.account.findUnique({
     where: { id: session.accountId },
-    select: { group: { select: { restrictSymbols: true, allowedSymbols: { select: { symbolId: true } } } } },
+    select: { group: { select: { restrictSymbols: true, minLotSize: true, allowedSymbols: { select: { symbolId: true } } } } },
   });
   const allowedIds = account?.group?.allowedSymbols.map((s) => s.symbolId) ?? [];
   const allowed = (symbolId: string) => !account?.group || checkGroupAllowedSymbol(account.group.restrictSymbols, allowedIds, symbolId) === null;
@@ -74,7 +74,11 @@ export async function GET() {
       // above (lib/risk.ts's checkLotStep is what actually gates a real
       // order; this just lets the dialog reject an invalid amount before
       // a round trip instead of after).
-      minLot: bs.minLot.toString(),
+      // Owner 2026-10-06: the smallest NEW order this account may place = the larger of the symbol minimum and its
+      // group's minimum (lib/risk.ts effectiveMinLot, the same rule the order paths refuse with GROUP_MIN_VOLUME).
+      // symbolMinLot is the symbol's own minimum: the step grid and partial closes still count from it.
+      minLot: effectiveMinLot(bs.minLot, account?.group?.minLotSize ?? null).toString(),
+      symbolMinLot: bs.minLot.toString(),
       maxLot: bs.maxLot.toString(),
       lotStep: bs.lotStep.toString(),
       // MT5 hedged margin (lib/margin.ts hedgedUsedMargin): the terminal / WebTrader account panel uses it so the

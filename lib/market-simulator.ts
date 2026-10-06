@@ -119,6 +119,7 @@ export function buildSymbolDef(row: {
   contractSize: string | number;
   stopLevel?: number;
   minLot?: string | number;
+  symbolMinLot?: string | number;
   maxLot?: string | number;
   lotStep?: string | number;
   hedgedMarginPct?: string | number;
@@ -139,7 +140,8 @@ export function buildSymbolDef(row: {
     base: hint?.base ?? 1,
     vol: hint?.vol ?? (row.digits >= 3 ? 0.01 : 0.0001),
     stopLevel: row.stopLevel ?? 0,
-    minLot: toNum(row.minLot, 0.01),
+    // the SYMBOL minimum (partial closes count from it); /api/trade/symbols minLot is the account's order minimum
+    minLot: toNum(row.symbolMinLot ?? row.minLot, 0.01),
     maxLot: toNum(row.maxLot, 100),
     lotStep: toNum(row.lotStep, 0.01),
     hedgedMarginPct: toNum(row.hedgedMarginPct, 200),

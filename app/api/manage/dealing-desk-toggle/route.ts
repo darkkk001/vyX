@@ -24,6 +24,8 @@ import {
   checkTradingSession,
   checkLotStep,
   checkGroupMaxLot,
+  checkGroupMinLot,
+  riskCode,
   checkGroupTradingRestriction,
   checkGroupTradingHalted,
   checkAccountStatusForOpen,
@@ -208,6 +210,7 @@ async function flushDealingQueueToMarket(
       checkTradingSession(brokerSymbol.tradingSessions, new Date(), order.symbol.category) ??
       checkLotStep(order.volume, brokerSymbol.minLot, brokerSymbol.lotStep) ??
       (order.account.group ? checkGroupMaxLot(order.volume, order.account.group.maxLotSize) : null) ??
+      (order.account.group ? checkGroupMinLot(order.volume, order.account.group.minLotSize, brokerSymbol.minLot) : null) ??
       (order.account.group ? checkGroupTradingRestriction(order.account.group.tradingRestriction, order.side) : null) ??
       (order.account.group ? checkGroupTradingHalted(order.account.group) : null) ??
       // account status (2026-09-29): a suspended / closed account opens nothing
@@ -225,7 +228,7 @@ async function flushDealingQueueToMarket(
       (await checkBrokerExposure(prisma, brokerId, order.volume, broker.totalExposureLimit)) ??
       (await checkMaxDailyLoss(prisma, order.accountId, order.account.maxDailyLoss));
     if (riskError) {
-      results.push({ orderId: order.id, accountNumber: order.account.accountNumber, status: "skipped", reason: riskError });
+      results.push({ orderId: order.id, accountNumber: order.account.accountNumber, status: "skipped", reason: riskError, ...riskCode(riskError) });
       continue;
     }
 

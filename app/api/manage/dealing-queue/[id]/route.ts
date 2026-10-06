@@ -23,6 +23,8 @@ import {
   checkTradingSession,
   checkLotStep,
   checkGroupMaxLot,
+  checkGroupMinLot,
+  riskCode,
   checkGroupTradingRestriction,
   checkGroupTradingHalted,
   checkAccountStatusForOpen,
@@ -290,6 +292,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     checkTradingSession(brokerSymbol.tradingSessions, new Date(), order.symbol.category) ??
     checkLotStep(order.volume, brokerSymbol.minLot, brokerSymbol.lotStep) ??
     (order.account.group ? checkGroupMaxLot(order.volume, order.account.group.maxLotSize) : null) ??
+    (order.account.group ? checkGroupMinLot(order.volume, order.account.group.minLotSize, brokerSymbol.minLot) : null) ??
     (order.account.group ? checkGroupTradingRestriction(order.account.group.tradingRestriction, order.side) : null) ??
     (order.account.group ? checkGroupTradingHalted(order.account.group) : null) ??
     // account status (2026-09-29): a suspended / closed account opens nothing
@@ -307,7 +310,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     (await checkBrokerExposure(prisma, brokerId, order.volume, broker.totalExposureLimit)) ??
     (await checkMaxDailyLoss(prisma, order.accountId, order.account.maxDailyLoss));
   if (riskError) {
-    return NextResponse.json({ error: riskError }, { status: 400 });
+    return NextResponse.json({ error: riskError, ...riskCode(riskError) }, { status: 400 });
   }
 
   // See lib/group-pricing.ts's own comments -- markup applied on top of

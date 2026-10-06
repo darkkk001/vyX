@@ -26,6 +26,8 @@ import {
   checkTradingSession,
   checkLotStep,
   checkGroupMaxLot,
+  checkGroupMinLot,
+  riskCode,
   checkGroupTradingRestriction,
   checkGroupTradingHalted,
   checkAccountStatusForOpen,
@@ -221,7 +223,7 @@ async function handlePlaceOrder(request: NextRequest, session: Session) {
       return NextResponse.json({ error: riskError, symbol: symbolName, nextOpenAt: nextOpenAt.toISOString() }, { status: 400 });
     }
     // the lot-step / group-max-lot rules are volume rejections too: same code for the sound
-    const volumeCode = riskError.startsWith("volume ") ? { code: "INVALID_VOLUME" } : {};
+    const volumeCode = riskError.startsWith("volume ") ? { code: "INVALID_VOLUME" } : riskCode(riskError);
     return NextResponse.json({ error: riskError, ...volumeCode }, { status: 400 });
   };
 
@@ -233,6 +235,7 @@ async function handlePlaceOrder(request: NextRequest, session: Session) {
     checkTradingSession(brokerSymbol.tradingSessions, new Date(), brokerSymbol.symbol.category) ??
     checkLotStep(volume, brokerSymbol.minLot, brokerSymbol.lotStep) ??
     (account.group ? checkGroupMaxLot(volume, account.group.maxLotSize) : null) ??
+    (account.group ? checkGroupMinLot(volume, account.group.minLotSize, brokerSymbol.minLot) : null) ??
     (account.group ? checkGroupTradingRestriction(account.group.tradingRestriction, side) : null) ??
     (account.group ? checkGroupTradingHalted(account.group) : null) ??
     // account status (2026-09-29): a suspended / closed account opens nothing

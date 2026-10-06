@@ -6,6 +6,7 @@ import { prisma } from "@/lib/prisma";
 import { LEVERAGE_RULE, parseLeverage } from "@/lib/leverage";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { resolveGroupRouting, legacyGroupTypeFor } from "@/lib/group-routing";
+import { parseGroupMinLot } from "@/lib/group-min-volume";
 import { brokerMaySeeSynthetic, isSyntheticSymbol } from "@/lib/synthetic-symbols";
 
 const GROUP_TIERS: GroupTier[] = ["STANDARD", "PRO", "ECN", "ZERO"];
@@ -100,6 +101,8 @@ export async function GET() {
       // the system coverage group, and not an A_BOOK group while no liquidity provider is connected (lib/liquidity.ts)
       acceptsAccounts: g.isClientSelectable && g.category !== "COVERAGE" && (g.category !== "A_BOOK" || isLpConnected(g)),
       maxLotSize: g.maxLotSize ? g.maxLotSize.toString() : "",
+      // group minimum volume per order ("" = none: the symbol minimum applies)
+      minLotSize: g.minLotSize ? g.minLotSize.toString() : "",
       tradingRestriction: g.tradingRestriction,
       tradingHalted: g.tradingHaltedAt != null,
       // per-group close-only (2026-09-23): the dealing desk scopes its own emergency controls with it
@@ -169,6 +172,10 @@ async function postHandler(request: NextRequest) {
       return NextResponse.json({ error: "maxLotSize must be positive when set" }, { status: 400 });
     }
   }
+  // group minimum volume (owner 2026-10-06), lib/group-min-volume.ts
+  const minLot = await parseGroupMinLot(body, { brokerId, maxLotSize, existing: null });
+  if (!minLot.ok) return NextResponse.json(minLot.body, { status: minLot.status });
+  const minLotSize = minLot.value;
   const tradingRestriction = ["BOTH", "BUY_ONLY", "SELL_ONLY"].includes(body?.tradingRestriction) ? body.tradingRestriction : "BOTH";
   // Tri-state (2026-09-07 Stage 5) -- explicit null means "inherit from
   // the hardcoded false floor" (nothing below Group in the chain).
@@ -200,7 +207,7 @@ async function postHandler(request: NextRequest) {
         await tx.group.updateMany({ where: { brokerId, isDefault: true }, data: { isDefault: false } });
       }
       const created = await tx.group.create({
-        data: { brokerId, name, leverage, marginCallLevel, stopOutLevel, isDefault, maxLotSize, tradingRestriction, swapFree, forceDealingMode, category, modeRestriction, groupType, dealingMode, tier, isClientSelectable },
+        data: { brokerId, name, leverage, marginCallLevel, stopOutLevel, isDefault, maxLotSize, minLotSize, tradingRestriction, swapFree, forceDealingMode, category, modeRestriction, groupType, dealingMode, tier, isClientSelectable },
       });
       await tx.auditLog.create({
         data: {
@@ -216,6 +223,7 @@ async function postHandler(request: NextRequest) {
             stopOutLevel: stopOutLevel.toString(),
             isDefault,
             maxLotSize: maxLotSize?.toString() ?? null,
+            minLotSize: minLotSize?.toString() ?? null,
             tradingRestriction,
             swapFree,
             forceDealingMode,
@@ -239,6 +247,7 @@ async function postHandler(request: NextRequest) {
         stopOutLevel: group.stopOutLevel.toString(),
         isDefault: group.isDefault,
         maxLotSize: group.maxLotSize ? group.maxLotSize.toString() : "",
+        minLotSize: group.minLotSize ? group.minLotSize.toString() : "",
         tradingRestriction: group.tradingRestriction,
         swapFree: group.swapFree,
         forceDealingMode: group.forceDealingMode,
