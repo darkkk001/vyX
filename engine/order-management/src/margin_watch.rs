@@ -95,6 +95,9 @@ pub struct WatchedAccount {
 pub struct Book {
     pub accounts: Vec<WatchedAccount>,
     by_symbol: HashMap<String, Vec<usize>>,
+    /// accountId -> (brokerId, accountMode): the inputs of the Stage 6 owner rule (market_data::risk_hook::RiskOwnerOracle).
+    /// Empty (tests, a book built by hand) = no account has a known owner = every account is WEB's.
+    owners: HashMap<String, (String, String)>,
 }
 
 impl Book {
@@ -108,7 +111,13 @@ impl Book {
                 }
             }
         }
-        Book { accounts, by_symbol }
+        Book { accounts, by_symbol, owners: HashMap::new() }
+    }
+
+    /// The same book with each account's (brokerId, accountMode) -- load_book_on fills it from the query.
+    pub fn with_owners(mut self, owners: HashMap<String, (String, String)>) -> Self {
+        self.owners = owners;
+        self
     }
 }
 
@@ -127,7 +136,7 @@ pub async fn load_book_on(conn: &mut sqlx::PgConnection, pricing: Option<&market
     use sqlx::Row;
     let raw = sqlx::query(
         r#"SELECT a.id, a.balance, a.credit, a.leverage, a.currency, g."marginCallLevel" AS call, g."stopOutLevel" AS stop_out,
-                  a."brokerId" AS a_broker, a."groupId" AS a_group,
+                  a."brokerId" AS a_broker, a."groupId" AS a_group, a."accountMode"::text AS a_mode,
                   p.id AS position_id, s.id AS symbol_id, s.digits, s.name, p.side::text AS side, p.volume, p."openPrice" AS open_price,
                   s."contractSize" AS contract_size, s."quoteCurrency" AS quote_ccy, COALESCE(bs."hedgedMarginPct", 200) AS hedged_margin_pct
            FROM "Position" p
@@ -159,6 +168,13 @@ pub async fn load_book_on(conn: &mut sqlx::PgConnection, pricing: Option<&market
         ));
     }
     let d = MarginThresholds::default();
+    let mut owners: HashMap<String, (String, String)> = HashMap::new();
+    for r in &raw {
+        let id: String = r.try_get("id")?;
+        if !owners.contains_key(&id) {
+            owners.insert(id, (r.try_get("a_broker")?, r.try_get("a_mode")?));
+        }
+    }
     let mut accounts: Vec<WatchedAccount> = Vec::new();
     for (id, balance, credit, leverage, currency, call, stop_out, position_id, symbol, side, volume, open_price, contract_size, quote_currency, hedged_margin_pct, ask_rule) in rows {
         if accounts.last().map(|a| a.id != id).unwrap_or(true) {
@@ -175,7 +191,7 @@ pub async fn load_book_on(conn: &mut sqlx::PgConnection, pricing: Option<&market
         let side = if side == "SELL" { protocol::OrderSide::Sell } else { protocol::OrderSide::Buy };
         accounts.last_mut().unwrap().positions.push(WatchedPosition { id: position_id, symbol, side, volume, open_price, contract_size, quote_currency, hedged_margin_pct, ask_rule });
     }
-    Ok(Book::new(accounts))
+    Ok(Book::new(accounts).with_owners(owners))
 }
 
 /// Equity and used margin of one watched account at the tick cache's prices, with the canonical math: a
@@ -231,6 +247,10 @@ pub struct MarginWatch {
     /// calls the web, so the shadow samples the breached state instead of racing the web's close. Unset (live, no
     /// shadow) = nothing changes. A send never blocks and never delays the web call.
     on_fire: Mutex<Option<tokio::sync::mpsc::UnboundedSender<MarginFire>>>,
+    /// Stage 6 risk mode: the owner oracle and the fire channel of the ENGINE. A fire for an account the oracle says the engine
+    /// owns goes there (unpinned live evaluation, carrying the tick) and is NOT returned for the web call nor handed to the
+    /// shadow. Unset = every fire goes the pre-Stage-6 way, unchanged.
+    live: std::sync::OnceLock<(Arc<dyn market_data::risk_hook::RiskOwnerOracle>, market_data::risk_hook::LiveSender)>,
     /// The book has been set at least once: until then book_symbols() is None (unknown), never "flat".
     loaded: AtomicBool,
     /// the shared pricing cache (account ask rules); unset = read per reload (tests)
@@ -244,6 +264,7 @@ impl MarginWatch {
             tracks: Mutex::new(HashMap::new()),
             reload_now: Notify::new(),
             on_fire: Mutex::new(None),
+            live: std::sync::OnceLock::new(),
             loaded: AtomicBool::new(false),
             pricing: std::sync::OnceLock::new(),
         })
@@ -255,6 +276,11 @@ impl MarginWatch {
             return None;
         }
         Some(self.book.read().unwrap().by_symbol.keys().cloned().collect())
+    }
+
+    /// Stage 6 (once; a second call is ignored): fires of engine-owned accounts go to `sender` as LiveFires.
+    pub fn set_live(&self, oracle: Arc<dyn market_data::risk_hook::RiskOwnerOracle>, sender: market_data::risk_hook::LiveSender) {
+        let _ = self.live.set((oracle, sender));
     }
 
     /// Stage 5: hand every fired account to the shadow (monitor::spawn_shadow_trigger) before the web is called.
@@ -369,6 +395,20 @@ impl MarginWatch {
                         edge
                     }
                 };
+                // Stage 6: an account the ENGINE owns is evaluated by the engine itself, unpinned and live, with this tick's
+                // prices; it is neither handed to the shadow nor returned for the web call (the web skips it anyway)
+                if fire {
+                    if let Some((oracle, tx)) = self.live.get() {
+                        if book.owners.get(&account.id).is_some_and(|(broker, mode)| oracle.engine_owns(broker, mode)) {
+                            let _ = tx.send(market_data::risk_hook::LiveFire {
+                                account_id: account.id.clone(),
+                                ticks: pin_for(account, cache).ticks,
+                                source: market_data::risk_hook::FireSource::Margin,
+                            });
+                            continue;
+                        }
+                    }
+                }
                 if fire {
                     // to the shadow first (a non-blocking send), then the symbol goes back to the hook for the web call.
                     // The pin: this moment and the prices this decision was measured at (every symbol of the account).

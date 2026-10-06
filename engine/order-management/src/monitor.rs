@@ -95,9 +95,25 @@ fn price_snapshot(state: &AccountState) -> serde_json::Value {
     serde_json::Value::Object(m)
 }
 
+/// Test-only barrier right AFTER a live close committed (the Stage 6 flip-during-a-pass test, tests/risk_split_db.rs): when set, the
+/// next live close signals the first Notify and waits for the second, once. Never set in production (one uncontended lock per close).
+#[doc(hidden)]
+pub static AFTER_CLOSE_HOOK: std::sync::Mutex<Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>> = std::sync::Mutex::new(None);
+
+/// What one close came to (apply_close).
+enum Applied {
+    /// closed: (final balance, final credit) after any credit use and negative-balance floor
+    Closed(Decimal, Decimal),
+    /// already closed (or reduced) by a concurrent pass: nothing was written
+    Lost,
+    /// Stage 6: the account is not ours (any more) -- the close was rolled back and this evaluation stops acting on it
+    NotOwner,
+}
+
 /// The funds after closing `position` at `close_price` with `pnl`: Live writes the close (and queues its follow-up)
-/// in one transaction; Shadow simulates it and records the decision. None = the position was already closed by a
-/// concurrent pass (Live only). Returns (final balance, final credit).
+/// in one transaction; Shadow simulates it and records the decision. `Lost` = the position was already closed by a
+/// concurrent pass (Live only). Under the Stage 6 split (authority::enforced) a Live close re-checks that the engine owns
+/// the account INSIDE its transaction (book::close_position_as) and answers `NotOwner` when it does not.
 #[allow(clippy::too_many_arguments)]
 async fn apply_close(
     pool: &PgPool,
@@ -112,19 +128,37 @@ async fn apply_close(
     reason: book::CloseReason,
     level_before: Option<Decimal>,
     pass: Option<&book::PassBook>,
-) -> Result<Option<(Decimal, Decimal)>, sqlx::Error> {
+) -> Result<Applied, sqlx::Error> {
     match mode {
         Mode::Live => {
             let mut tx = pool.begin().await?;
-            let closed = book::close_position_in_tx(&mut tx, &position.id, position.volume, close_price, pnl, note).await?;
-            if let Some(outcome) = &closed {
-                // Stage 3: the web's post-close follow-up, queued in the close's own transaction
-                book::enqueue_post_close(&mut tx, &position.id, outcome, reason, position.volume, close_price).await?;
-            }
+            let closed = book::close_position_as(&mut tx, crate::authority::live_actor(), &position.id, position.volume, close_price, pnl, note).await?;
+            let outcome = match closed {
+                book::CloseResult::Closed(outcome) => {
+                    // Stage 3: the web's post-close follow-up, queued in the close's own transaction
+                    book::enqueue_post_close(&mut tx, &position.id, &outcome, reason, position.volume, close_price).await?;
+                    outcome
+                }
+                book::CloseResult::Lost => {
+                    tx.commit().await?;
+                    return Ok(Applied::Lost);
+                }
+                book::CloseResult::NotOwner(owner) => {
+                    // nothing of this close is written: roll the whole transaction back
+                    tx.rollback().await?;
+                    tracing::warn!(account_id, position_id = %position.id, owner = owner.as_str(), "risk close refused: the account is not owned by the engine (flipped meanwhile?)");
+                    return Ok(Applied::NotOwner);
+                }
+            };
             tx.commit().await?;
-            let Some(outcome) = closed else { return Ok(None) };
+            crate::authority::trace_action(crate::authority::RiskOwner::Rust, "close", account_id, &position.id);
             crate::outbox::wake();
-            Ok(Some((outcome.final_balance, outcome.final_credit))) // after any credit use and negative-balance floor
+            let hook = AFTER_CLOSE_HOOK.lock().unwrap().take();
+            if let Some((reached, go)) = hook {
+                reached.notify_one();
+                go.notified().await;
+            }
+            Ok(Applied::Closed(outcome.final_balance, outcome.final_credit)) // after any credit use and negative-balance floor
         }
         Mode::Shadow(recorder) => {
             // the broker's negative-balance protection is read only when it can matter, as in the real close
@@ -167,7 +201,7 @@ async fn apply_close(
                     prices: price_snapshot(state),
                 })
                 .await;
-            Ok(Some((money.final_balance, money.final_credit)))
+            Ok(Applied::Closed(money.final_balance, money.final_credit))
         }
     }
 }
@@ -233,6 +267,7 @@ async fn close_sl_tp_triggered(
     ov: &mut Overlay,
     level_before: Option<Decimal>,
     pass: Option<&book::PassBook>,
+    not_owner: &mut bool,
 ) -> Result<Vec<(String, &'static str)>, sqlx::Error> {
     let mut closed = Vec::new();
     let triggered: Vec<(String, SlTpReason, Decimal, Decimal)> = state
@@ -264,8 +299,13 @@ async fn close_sl_tp_triggered(
             SlTpReason::StopLoss => book::CloseReason::StopLoss,
             SlTpReason::TakeProfit => book::CloseReason::TakeProfit,
         };
-        let Some((balance, credit)) = apply_close(pool, mode, ov, state, account_id, &position, close_price, pnl, note, why, level_before, pass).await? else {
-            continue; // already closed by a concurrent pass — nothing to credit or publish
+        let (balance, credit) = match apply_close(pool, mode, ov, state, account_id, &position, close_price, pnl, note, why, level_before, pass).await? {
+            Applied::Closed(balance, credit) => (balance, credit),
+            Applied::Lost => continue, // already closed by a concurrent pass — nothing to credit or publish
+            Applied::NotOwner => {
+                *not_owner = true;
+                break;
+            }
         };
         state.effective_balance = balance; // after any credit use and negative-balance floor
         state.credit = credit;
@@ -301,6 +341,8 @@ enum CloseAttempt {
     /// stuck state. `state.positions` already had it removed, so the
     /// caller should just retry with the next-worst position.
     AlreadyClosedConcurrently,
+    /// Stage 6: the account changed hands; the close was rolled back, the caller stops acting on the account.
+    NotOwner,
 }
 
 /// Force-closes the account's single worst (most negative floating P&L)
@@ -340,8 +382,10 @@ async fn force_close_worst(
     let applied = apply_close(pool, mode, ov, state, account_id, &state.positions[idx].clone(), close_price, pnl, note, reason, level_before, pass).await?;
     let position = state.positions.remove(idx);
 
-    let Some((balance, credit)) = applied else {
-        return Ok(CloseAttempt::AlreadyClosedConcurrently);
+    let (balance, credit) = match applied {
+        Applied::Closed(balance, credit) => (balance, credit),
+        Applied::Lost => return Ok(CloseAttempt::AlreadyClosedConcurrently),
+        Applied::NotOwner => return Ok(CloseAttempt::NotOwner),
     };
     state.effective_balance = balance; // after any credit use and negative-balance floor
     state.credit = credit;
@@ -361,6 +405,9 @@ pub struct EvalReport {
     /// Stage 4.5: not evaluated in this pass -- a pending post-close follow-up (a mirror close, a coverage leg
     /// close) will close one of its positions first; the next pass evaluates it, as the web does after it
     pub deferred: bool,
+    /// Stage 6: the engine does not own this account (the database says WEB), or it changed hands while this evaluation
+    /// was acting: nothing further was written (a close already committed before the flip stays, it was the owner's)
+    pub not_owner: bool,
 }
 
 /// One account, one pass. `None` = not evaluated (no account / no open position / its group's thresholds
@@ -370,7 +417,17 @@ pub async fn evaluate_account(
     nats: Option<&async_nats::Client>,
     account_id: &str,
 ) -> Result<Option<EvalReport>, sqlx::Error> {
-    evaluate_account_checked(pool, nats, account_id, true, &Mode::Live, None).await
+    evaluate_account_checked(pool, nats, account_id, true, &Mode::Live, None, false).await
+}
+
+/// Stage 6: a fire for an ENGINE-OWNED account (market_data::risk_hook::LiveFire): the account is evaluated UNPINNED and
+/// LIVE -- its CURRENT positions, funds and ledger read inside the evaluation in one snapshot (calc::load_book_state),
+/// priced at the fired tick for the symbols the fire carries (book::with_tick_hint) and at the engine's ticks for the
+/// rest. The closes, the margin-call edge and the post-close outbox are the pass's own (apply_close, apply_margin_call_edge).
+/// Must run inside the book's price source / pricing scope, like every evaluation.
+pub async fn evaluate_live_fire(pool: &PgPool, nats: Option<&async_nats::Client>, fire: market_data::risk_hook::LiveFire) -> Result<Option<EvalReport>, sqlx::Error> {
+    let hint = book::TickHint { ticks: fire.ticks };
+    book::with_tick_hint(hint, evaluate_account_checked(pool, nats, &fire.account_id, true, &Mode::Live, None, false)).await
 }
 
 /// One account in a given mode (Stage 5: the shadow harness gate evaluates single accounts in `Mode::Shadow`).
@@ -380,7 +437,7 @@ pub async fn evaluate_account_mode(
     account_id: &str,
     mode: &Mode,
 ) -> Result<Option<EvalReport>, sqlx::Error> {
-    evaluate_account_checked(pool, nats, account_id, !mode.is_shadow(), mode, None).await
+    evaluate_account_checked(pool, nats, account_id, !mode.is_shadow(), mode, None, false).await
 }
 
 /// `check_deferral` false = the caller knows no follow-up can be pending (run_pass's precheck): skip the query.
@@ -392,8 +449,18 @@ async fn evaluate_account_checked(
     check_deferral: bool,
     mode: &Mode,
     pass: Option<&book::PassBook>,
+    owner_checked: bool,
 ) -> Result<Option<EvalReport>, sqlx::Error> {
     let pass = pass.filter(|_| mode.is_shadow());
+    // Stage 6 prefilter (authority.rs): a LIVE evaluation under the split acts only on accounts the DATABASE says are
+    // RUST-owned (the pass lists exactly those: owner_checked). A fire routed here by a stale cache is dropped here. The
+    // acting transactions re-check inside themselves, so this read can be a moment stale and nothing double-acts.
+    if !mode.is_shadow() && crate::authority::enforced() && !owner_checked {
+        match crate::authority::owner_of_account(pool, account_id).await? {
+            Some(crate::authority::RiskOwner::Rust) => {}
+            _ => return Ok(Some(EvalReport { not_owner: true, ..EvalReport::default() })),
+        }
+    }
     // shadow queues nothing, so nothing is ever pending for it: the web runs mirror / coverage inline and the
     // shadow sees their results on its next read
     let check_deferral = check_deferral && !mode.is_shadow();
@@ -471,7 +538,14 @@ async fn evaluate_account_checked(
     // open.
     let before_sl_tp = state.positions.len();
     let level_before = report.margin_level_before;
-    report.closed = close_sl_tp_triggered(pool, nats, account_id, &mut state, mode, &mut ov, level_before, pass).await?;
+    let mut handed_over = false;
+    report.closed = close_sl_tp_triggered(pool, nats, account_id, &mut state, mode, &mut ov, level_before, pass, &mut handed_over).await?;
+    if handed_over {
+        // Stage 6: the account changed hands during this evaluation. Whatever committed before stays (it was the owner's);
+        // nothing else is written -- the new owner evaluates the rest.
+        report.not_owner = true;
+        return Ok(Some(report));
+    }
 
     // Stage 4 BEHAVIOR CHANGE (engine): after ANY close attempt (ours, or one a concurrent pass got to first) the
     // account and its positions are read again from the database before the next decision, exactly as
@@ -534,6 +608,11 @@ async fn evaluate_account_checked(
                         tracing::warn!(account_id, "stop-out triggered but no closeable position has a live price");
                         break;
                     }
+                    CloseAttempt::NotOwner => {
+                        // Stage 6: changed hands mid-evaluation: stop acting, write no margin-call edge either
+                        report.not_owner = true;
+                        break;
+                    }
                 }
             }
         }
@@ -545,6 +624,9 @@ async fn evaluate_account_checked(
             &TradingEvent::StopOut { account_id: account_id.to_string(), closed_position_ids: closed_ids },
         )
         .await;
+    }
+    if report.not_owner {
+        return Ok(Some(report));
     }
 
     // Stage 3: the standing margin-call notice, lib/risk-monitor.ts pass 3 -- measured on what is still open after
@@ -605,7 +687,7 @@ async fn evaluate_account_checked(
         }
     }
     if let Some(e) = edge.filter(|e| transition(Some(*e))) {
-        if book::apply_margin_call_edge(pool, account_id, e).await? {
+        if book::apply_margin_call_edge_as(pool, crate::authority::live_actor(), account_id, e).await? {
             crate::outbox::wake();
         }
     }
@@ -710,8 +792,12 @@ pub async fn run_pass_mode(pool: &PgPool, nats: Option<&async_nats::Client>, cur
         },
         Mode::Live => None,
     };
+    // Stage 6: under the split a LIVE pass lists only what the database says the engine owns (the web's accounts are not its
+    // to evaluate); the shadow pass and the unenforced legacy / harness pass list every account as before
+    let owned_only = !mode.is_shadow() && crate::authority::enforced();
     let listed = match &pass_book {
         Some(pb) => Ok(pb.account_ids_with_open_positions()),
+        None if owned_only => crate::authority::rust_owned_account_ids_with_open_positions(pool).await,
         None => book::account_ids_with_open_positions(pool).await,
     };
     let account_ids = match listed {
@@ -741,7 +827,7 @@ pub async fn run_pass_mode(pool: &PgPool, nats: Option<&async_nats::Client>, cur
     // thresholds are read per account inside evaluate_account (Stage 2 F3), not cached per pass
     for account_id in &account_ids[start..] {
         maybe_pending = !mode.is_shadow() && (maybe_pending || book::FOLLOW_UPS_QUEUED.load(std::sync::atomic::Ordering::Relaxed) != queued_at_start);
-        match evaluate_account_checked(pool, nats, account_id, maybe_pending, mode, pass_book.as_ref()).await {
+        match evaluate_account_checked(pool, nats, account_id, maybe_pending, mode, pass_book.as_ref(), owned_only).await {
             Ok(Some(r)) if r.deferred => {
                 report.deferred.push(account_id.clone());
                 if cursor.stops < MAX_CASCADE_STOPS && cursor.stopped_at.insert(account_id.clone()) {
@@ -767,7 +853,7 @@ pub async fn run_pass_mode(pool: &PgPool, nats: Option<&async_nats::Client>, cur
     if let Mode::Shadow(recorder) = mode {
         for account_id in recorder.accounts_in_call() {
             if !account_ids.contains(&account_id) {
-                if let Err(err) = evaluate_account_checked(pool, nats, &account_id, false, mode, pass_book.as_ref()).await {
+                if let Err(err) = evaluate_account_checked(pool, nats, &account_id, false, mode, pass_book.as_ref(), false).await {
                     tracing::warn!(?err, account_id, "shadow pass: could not re-evaluate an account leaving margin call");
                 }
             }
@@ -804,10 +890,16 @@ pub fn new_run_guard() -> RunGuard {
 /// overlapping full-account-table scans when ticks arrive faster than a
 /// pass completes -- and it carries the resume point.
 pub async fn run_once_guarded(pool: &PgPool, nats: &async_nats::Client, guard: &RunGuard) {
+    run_pass_guarded(pool, Some(nats), guard).await;
+}
+
+/// run_once_guarded with an optional NATS client (Stage 6 risk mode runs without one: the web's post-close route
+/// publishes the events of an engine close).
+pub async fn run_pass_guarded(pool: &PgPool, nats: Option<&async_nats::Client>, guard: &RunGuard) {
     let Ok(mut cursor) = guard.try_lock() else {
         return;
     };
-    run_pass(pool, Some(nats), &mut cursor).await;
+    run_pass(pool, nats, &mut cursor).await;
 }
 
 /// Spawns the polling-timer trigger as a background task — the safety
@@ -911,6 +1003,89 @@ pub fn spawn_shadow_trigger_with_snapshots(
         }
     }));
     (tx, snap_tx)
+}
+
+/// Stage 6 risk mode: the engine's LIVE pass. A pass every `interval` over the accounts the database says the engine owns
+/// (run_pass under authority::enforce), one at a time (a slow pass delays the next, never overlaps it: the run guard), skipped
+/// while `gate` is closed (the same idle gate as the shadow pass: nothing can be decided without a fresh price, and a quiet
+/// weekend must not keep Neon awake). The floor under the per-tick fires, exactly as the web's backstop is under its hook.
+pub fn spawn_risk_passes(
+    pool: PgPool,
+    interval: std::time::Duration,
+    guard: RunGuard,
+    prices: book::PriceSource,
+    pricing: Option<Arc<market_data::pricing::PricingCache>>,
+    gate: ShadowGate,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(book::with_book_sources(prices, pricing, async move {
+        static LOG: market_data::activity::GateLog = market_data::activity::GateLog::new("risk pass");
+        let mut ticker = tokio::time::interval(interval);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            ticker.tick().await;
+            if !LOG.observe(gate.gate()) {
+                continue;
+            }
+            run_pass_guarded(&pool, None, &guard).await;
+        }
+    }))
+}
+
+/// How many engine-owned accounts one fire batch evaluates at once (the pass proved concurrent walkers safe in Stage 4).
+const LIVE_PARALLEL: usize = 8;
+
+/// Stage 6 risk mode: the worker behind the fire channel (market_data::risk_hook::LiveSender). Fires queued while a batch is
+/// evaluated are taken together, one evaluation per account (its tick prices merged, the newer tick of a symbol wins), up
+/// to LIVE_PARALLEL accounts at a time, each UNPINNED and LIVE (evaluate_live_fire). `after` runs once per batch: the
+/// server uses it to reload the margin trigger's book and the hook's levels, which a close has changed.
+pub fn spawn_live_trigger(
+    pool: PgPool,
+    prices: book::PriceSource,
+    pricing: Option<Arc<market_data::pricing::PricingCache>>,
+    after: Arc<dyn Fn() + Send + Sync>,
+) -> market_data::risk_hook::LiveSender {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<market_data::risk_hook::LiveFire>();
+    tokio::spawn(async move {
+        while let Some(first) = rx.recv().await {
+            let mut batch: Vec<market_data::risk_hook::LiveFire> = vec![first];
+            while let Ok(more) = rx.try_recv() {
+                match batch.iter_mut().find(|f| f.account_id == more.account_id) {
+                    Some(f) => {
+                        for (symbol, tick) in more.ticks {
+                            match f.ticks.get(&symbol) {
+                                Some(have) if have.2 >= tick.2 => {}
+                                _ => {
+                                    f.ticks.insert(symbol, tick);
+                                }
+                            }
+                        }
+                    }
+                    None => batch.push(more),
+                }
+            }
+            for chunk in batch.chunks(LIVE_PARALLEL) {
+                let handles: Vec<_> = chunk
+                    .iter()
+                    .cloned()
+                    .map(|fire| {
+                        let pool = pool.clone();
+                        let account_id = fire.account_id.clone();
+                        let task = book::with_book_sources(prices.clone(), pricing.clone(), async move { evaluate_live_fire(&pool, None, fire).await });
+                        (account_id, tokio::spawn(task))
+                    })
+                    .collect();
+                for (account_id, handle) in handles {
+                    match handle.await {
+                        Ok(Ok(_)) => {}
+                        Ok(Err(err)) => tracing::warn!(%account_id, %err, "live fire: evaluation failed (the pass will retry)"),
+                        Err(err) => tracing::error!(%account_id, %err, "live fire: evaluation task panicked"),
+                    }
+                }
+            }
+            after();
+        }
+    });
+    tx
 }
 
 /// The shadow pass's idle gate (2026-09-26, market_data::activity): the engine's tick cache, and the per-tick margin

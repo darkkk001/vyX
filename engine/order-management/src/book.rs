@@ -134,6 +134,31 @@ pub fn edges_recordable() -> bool {
     PIN.try_with(|p| !p.measured.is_empty()).unwrap_or(true)
 }
 
+/// Stage 6 (2026-10-06): the tick prices a LIVE, unpinned evaluation was fired with (market_data::risk_hook::LiveFire).
+/// While a hint is in scope the book prices the symbols it names at THAT tick -- the one that crossed the SL / TP or put
+/// the account under its stop-out -- as long as the tick is fresh (the web's 15 s rule, judged against NOW), and every
+/// other symbol from the engine's ticks as usual. The positions themselves are NOT in the hint: the evaluation reads the
+/// account's CURRENT positions, funds and ledger in one snapshot (calc::load_book_state). That is the difference from a
+/// Pin (the shadow's), which reads the account as it stood at a past moment.
+#[derive(Clone, Debug, Default)]
+pub struct TickHint {
+    /// symbol -> (bid, ask, tick time)
+    pub ticks: std::collections::HashMap<String, (Decimal, Decimal, chrono::DateTime<chrono::Utc>)>,
+}
+
+tokio::task_local! {
+    static TICK_HINT: TickHint;
+}
+
+/// Runs `f` with the book's prices hinted by `hint` (see TickHint).
+pub async fn with_tick_hint<F: std::future::Future>(hint: TickHint, f: F) -> F::Output {
+    TICK_HINT.scope(hint, f).await
+}
+
+fn current_tick_hint() -> Option<TickHint> {
+    TICK_HINT.try_with(|h| h.clone()).ok()
+}
+
 fn current_price_source() -> Result<PriceSource, sqlx::Error> {
     match PRICE_SOURCE.try_with(|s| s.clone()) {
         Ok(s) => Ok(s),
@@ -378,6 +403,7 @@ async fn load_db_prices(conn: &mut sqlx::PgConnection, symbols: &[String], fx: &
 fn price_rows(rows: &[RawPosition], sessions: &Sessions, source: &PriceSource, pin: Option<&Pin>, now: chrono::DateTime<chrono::Utc>, db: &DbPrices) -> Vec<OpenPositionWithMarket> {
     let Some(first) = rows.first() else { return Vec::new() };
     let broker_id = first.broker_id.clone();
+    let hint = current_tick_hint();
     let fx_quotes: std::collections::HashMap<String, crate::fx::Quote> = match source {
         // same age limit as lib/fx.ts FX_RATE_MAX_AGE_MS: older = no rate = the position is unpriced
         PriceSource::Ticks(cache) => fx_symbols_of(rows).into_iter().filter_map(|s| fx_quote_from_ticks(cache, &s, now).map(|q| (s, q))).collect(),
@@ -386,10 +412,13 @@ fn price_rows(rows: &[RawPosition], sessions: &Sessions, source: &PriceSource, p
     rows.iter()
         .map(|r| {
             // the SOURCE of bid / ask: the database's LivePrice or the engine's ticks
+            // Stage 6: a live fire's own tick for this symbol, while it is still fresh (judged against `now`)
+            let hinted = hint.as_ref().and_then(|h| h.ticks.get(&r.symbol)).filter(|(_, _, at)| now - *at < chrono::Duration::seconds(15));
             let (bid, ask) = match (source, pin.and_then(|p| p.ticks.get(&r.symbol))) {
                 // pinned: the risk hook's own tick for a touched symbol, under the web's 15 s rule at the pin's moment
                 (_, Some(&(b, a, tick_at))) if now - tick_at < chrono::Duration::seconds(15) => (Some(b), Some(a)),
                 (_, Some(_)) => (None, None),
+                (_, None) if hinted.is_some() => hinted.map_or((None, None), |&(b, a, _)| (Some(b), Some(a))),
                 (PriceSource::Db, None) => db.fresh.get(&r.symbol).map_or((None, None), |&(b, a)| (Some(b), Some(a))),
                 (PriceSource::Ticks(cache), None) => fresh_from_ticks(cache, &r.symbol, now),
             };
@@ -700,6 +729,17 @@ pub struct CloseOutcome {
     pub trade_txn_id: String,
 }
 
+/// What a close attempt came to (close_position_as).
+#[derive(Debug)]
+pub enum CloseResult {
+    Closed(CloseOutcome),
+    /// no longer OPEN with the volume the caller read: a concurrent close got there first (benign)
+    Lost,
+    /// Stage 6: the acting side does not own this account's risk (any more). NOTHING is committed unless the caller
+    /// commits anyway: the caller must roll the transaction back.
+    NotOwner(crate::authority::RiskOwner),
+}
+
 /// Closes one position in full at `close_price`, crediting `realized_pnl` (account currency), inside the
 /// caller's transaction. `expected_volume` is the volume the caller read the position with; if the row is
 /// no longer OPEN with exactly that volume, nothing is written and `None` comes back (a benign race).
@@ -711,6 +751,26 @@ pub async fn close_position_in_tx(
     realized_pnl: Decimal,
     note: &str,
 ) -> Result<Option<CloseOutcome>, sqlx::Error> {
+    Ok(match close_position_as(tx, None, position_id, expected_volume, close_price, realized_pnl, note).await? {
+        CloseResult::Closed(outcome) => Some(outcome),
+        CloseResult::Lost | CloseResult::NotOwner(_) => None,
+    })
+}
+
+/// close_position_in_tx for the RISK path under the Stage 6 split: `actor` = Some(side) re-checks, inside this
+/// transaction and after the account row is locked, that `side` owns the account's risk (authority::lock_owner_in_tx),
+/// and answers `NotOwner` (the caller rolls back) when it does not. `None` = no check (every non-risk caller, and the
+/// engine before the server enforces ownership).
+#[allow(clippy::too_many_arguments)]
+pub async fn close_position_as(
+    tx: &mut sqlx::PgTransaction<'_>,
+    actor: Option<crate::authority::RiskOwner>,
+    position_id: &str,
+    expected_volume: Decimal,
+    close_price: Decimal,
+    realized_pnl: Decimal,
+    note: &str,
+) -> Result<CloseResult, sqlx::Error> {
     let claimed: Option<(String, String)> = sqlx::query_as(
         r#"UPDATE "Position"
            SET status = 'CLOSED', "closePrice" = $1, "realizedPnl" = $2, "closedAt" = now()
@@ -724,13 +784,21 @@ pub async fn close_position_in_tx(
     .fetch_optional(&mut **tx)
     .await?;
     let Some((account_id, broker_id)) = claimed else {
-        return Ok(None);
+        return Ok(CloseResult::Lost);
     };
 
     let (balance_before, credit_before): (Decimal, Decimal) = sqlx::query_as(r#"SELECT balance, credit FROM "Account" WHERE id = $1 FOR UPDATE"#)
         .bind(&account_id)
         .fetch_one(&mut **tx)
         .await?;
+    // Stage 6 handoff: the owner is read HERE, inside the transaction, with the account row locked and the broker row
+    // locked FOR SHARE -- a flip waits for this transaction, a later one is seen by the next (authority.rs module doc)
+    if let Some(actor) = actor {
+        let owner = crate::authority::lock_owner_in_tx(tx, &account_id).await?.unwrap_or(crate::authority::RiskOwner::Web);
+        if owner != actor {
+            return Ok(CloseResult::NotOwner(owner));
+        }
+    }
     // the money rules live in close_money (shared with the Stage 5 shadow's simulated close); the broker's
     // negative-balance protection flag is read only when the result would go below zero, as before
     let unprotected = close_money(balance_before, credit_before, realized_pnl, false);
@@ -837,7 +905,7 @@ pub async fn close_position_in_tx(
         .await?;
     }
 
-    Ok(Some(CloseOutcome {
+    Ok(CloseResult::Closed(CloseOutcome {
         realized_pnl,
         raw_balance_after,
         final_balance,
@@ -1018,16 +1086,45 @@ pub async fn margin_call_notified(pool: &PgPool, account_id: &str) -> Result<boo
 /// trader's and the staff's notification), in one transaction; staying in does nothing; leaving clears the column
 /// so the next episode notifies again. Returns true when this call queued a notice.
 pub async fn apply_margin_call_edge(pool: &PgPool, account_id: &str, edge: MarginCallEdge) -> Result<bool, sqlx::Error> {
+    apply_margin_call_edge_as(pool, None, account_id, edge).await
+}
+
+/// apply_margin_call_edge for the RISK path under the Stage 6 split: `actor` = Some(side) re-checks inside the
+/// transaction (account row locked, broker row `FOR SHARE`) that `side` owns the account, and writes nothing when it does
+/// not (returns false). `None` = no check.
+pub async fn apply_margin_call_edge_as(
+    pool: &PgPool,
+    actor: Option<crate::authority::RiskOwner>,
+    account_id: &str,
+    edge: MarginCallEdge,
+) -> Result<bool, sqlx::Error> {
     match edge {
         MarginCallEdge::Out => {
-            sqlx::query(r#"UPDATE "Account" SET "marginCallNotifiedAt" = NULL WHERE id = $1 AND "marginCallNotifiedAt" IS NOT NULL"#)
+            let mut tx = pool.begin().await?;
+            if let Some(actor) = actor {
+                if crate::authority::lock_owner_in_tx(&mut tx, account_id).await? != Some(actor) {
+                    tx.rollback().await?;
+                    return Ok(false);
+                }
+            }
+            let cleared = sqlx::query(r#"UPDATE "Account" SET "marginCallNotifiedAt" = NULL WHERE id = $1 AND "marginCallNotifiedAt" IS NOT NULL"#)
                 .bind(account_id)
-                .execute(pool)
+                .execute(&mut *tx)
                 .await?;
+            tx.commit().await?;
+            if cleared.rows_affected() > 0 {
+                crate::authority::trace_action(actor.unwrap_or(crate::authority::RiskOwner::Rust), "margin_call_out", account_id, "");
+            }
             Ok(false)
         }
         MarginCallEdge::In { margin_level, call_level } => {
             let mut tx = pool.begin().await?;
+            if let Some(actor) = actor {
+                if crate::authority::lock_owner_in_tx(&mut tx, account_id).await? != Some(actor) {
+                    tx.rollback().await?;
+                    return Ok(false);
+                }
+            }
             let entered: Option<(String, i64)> = sqlx::query_as(
                 r#"UPDATE "Account" SET "marginCallNotifiedAt" = now()
                    WHERE id = $1 AND "marginCallNotifiedAt" IS NULL
@@ -1057,6 +1154,7 @@ pub async fn apply_margin_call_edge(pool: &PgPool, account_id: &str, edge: Margi
             .execute(&mut *tx)
             .await?;
             tx.commit().await?;
+            crate::authority::trace_action(actor.unwrap_or(crate::authority::RiskOwner::Rust), "margin_call_in", account_id, "");
             Ok(true)
         }
     }

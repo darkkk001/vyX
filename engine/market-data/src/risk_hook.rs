@@ -80,6 +80,50 @@ pub trait MarginWatch: Send + Sync {
     }
 }
 
+/// Stage 6 (2026-10-06): who owns an account's risk. Implemented by order_management::authority::AuthorityCache (the
+/// per-broker `riskAuthority` read from the database, the same rule as lib/risk-authority.ts riskOwnerOf). This crate
+/// cannot depend on order-management, so the hook and the margin trigger only see this trait. `true` = the ENGINE acts on
+/// the account (and the web does not); anything the oracle does not know is `false`, i.e. WEB (the fallback).
+pub trait RiskOwnerOracle: Send + Sync {
+    fn engine_owns(&self, broker_id: &str, account_mode: &str) -> bool;
+}
+
+/// What set an engine-owned evaluation off.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FireSource {
+    /// the per-tick margin trigger (stop-out / margin-call edge)
+    Margin,
+    /// a tick touched an open position's SL / TP
+    SlTp,
+    /// a resting order of the account was handed to the web's fill routine after its entry was crossed; the account
+    /// (and any position the fill opened) is evaluated afterwards
+    Pending,
+}
+
+/// A fire for an ENGINE-OWNED account (Stage 6): the account, and the tick prices that triggered it, symbol -> (bid, ask,
+/// tick time). It carries NO position list: the engine re-reads the account's CURRENT positions inside the evaluation
+/// (order_management::monitor::evaluate_live_fire), in one snapshot, and prices the symbols named here at the fired
+/// tick (order_management::book::with_tick_hint). The unpinned counterpart of the shadow's pinned evaluation.
+#[derive(Clone, Debug)]
+pub struct LiveFire {
+    pub account_id: String,
+    pub ticks: HashMap<String, (Decimal, Decimal, chrono::DateTime<chrono::Utc>)>,
+    pub source: FireSource,
+}
+
+/// Where engine-owned fires go (never awaited: a send on an unbounded channel).
+pub type LiveSender = tokio::sync::mpsc::UnboundedSender<LiveFire>;
+
+/// The engine side of the Stage 6 split, set only in risk mode: the owner oracle, the fire channel, and the web route
+/// that fills resting orders of engine-owned accounts.
+struct LiveEngine {
+    oracle: Arc<dyn RiskOwnerOracle>,
+    sender: LiveSender,
+    /// GET {url}?symbols=X: lib/pending-trigger.ts evaluatePendingTriggers(symbols, "RUST"): the web's fill routine for
+    /// resting orders of RUST-owned accounts only (the fill is an ORDER action, with every order gate, and stays web code)
+    pending_url: String,
+}
+
 /// One SL / TP touch as the risk hook saw it (the shadow snapshot, see the module doc): the position, its account, and
 /// the tick that crossed. `tick_at` = the tick's own time (tick_ms, else when the hook saw it); `at` = when the hook saw
 /// it (the moment the snapshot pins the account to).
@@ -102,6 +146,9 @@ struct Level {
     /// the position and its account (the shadow snapshot names them)
     position_id: String,
     account_id: String,
+    /// the account's broker and mode: the Stage 6 owner rule's inputs
+    broker_id: String,
+    mode: String,
     is_buy: bool,
     sl: Option<Decimal>,
     tp: Option<Decimal>,
@@ -114,15 +161,25 @@ struct Level {
 /// crosses the entry fires the same `?symbols=` call; the web (lib/pending-trigger.ts) re-checks the trigger on its
 /// own price and fills. A BUY trades at the ask -- its ACCOUNT's ask (2026-09-26: the fill already used it, the
 /// trigger now does too) -- a SELL at the bid.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 struct PendingLevel {
     is_buy: bool,
     is_limit: bool,
     entry: Decimal,
     ask_rule: Option<AskRule>,
+    /// the order's account, broker and mode (Stage 6: who handles the crossing)
+    account_id: String,
+    broker_id: String,
+    mode: String,
 }
 
 impl PendingLevel {
+    /// An entry with no account (tests of the crossing rule alone).
+    #[cfg(test)]
+    fn bare(is_buy: bool, is_limit: bool, entry: Decimal, ask_rule: Option<AskRule>) -> Self {
+        PendingLevel { is_buy, is_limit, entry, ask_rule, account_id: String::new(), broker_id: String::new(), mode: String::new() }
+    }
+
     fn triggered(&self, bid: Decimal, raw_ask: Decimal) -> bool {
         let ask = if self.is_buy { self.ask_rule.as_ref().map_or(raw_ask, |r| ask_markup::account_ask(r, bid, raw_ask)) } else { raw_ask };
         match (self.is_buy, self.is_limit) {
@@ -152,6 +209,11 @@ pub struct RiskHook {
     pricing: std::sync::OnceLock<Arc<crate::pricing::PricingCache>>,
     /// how many reloads have run (tests, diagnostics: a lost event must force one, an in-order stream must not)
     pub reload_count: std::sync::atomic::AtomicU64,
+    /// Stage 6 risk mode: the owner oracle + fire channel. Unset = nothing is engine-owned: the hook behaves exactly as
+    /// before Stage 6 (every touch and crossing goes to the web).
+    live: std::sync::OnceLock<LiveEngine>,
+    /// engine fires are limited per (account, symbol) to one a second, like the web call per symbol
+    last_engine_fire: Mutex<HashMap<(String, String), Instant>>,
 }
 
 impl RiskHook {
@@ -180,7 +242,21 @@ impl RiskHook {
             reload_now: Notify::new(),
             pricing: std::sync::OnceLock::new(),
             reload_count: std::sync::atomic::AtomicU64::new(0),
+            live: std::sync::OnceLock::new(),
+            last_engine_fire: Mutex::new(HashMap::new()),
         }))
+    }
+
+    /// Stage 6 risk mode (once; a second call is ignored): touches and crossings of ENGINE-OWNED accounts (per `oracle`)
+    /// go to `sender` as LiveFires and no longer to the web; resting orders of those accounts are filled by the web's
+    /// routine through `pending_url` (see LiveEngine). Every other account is untouched by this.
+    pub fn set_live(&self, oracle: Arc<dyn RiskOwnerOracle>, sender: LiveSender, pending_url: String) {
+        let _ = self.live.set(LiveEngine { oracle, sender, pending_url });
+    }
+
+    /// Whether the engine owns the account whose broker / mode these are (false without a live engine).
+    fn engine_owns(&self, broker_id: &str, mode: &str) -> bool {
+        self.live.get().is_some_and(|l| l.oracle.engine_owns(broker_id, mode))
     }
 
     /// Stage 5: hand every SL / TP touch to the shadow as a snapshot (once; a second call is ignored). Never waited on.
@@ -231,7 +307,7 @@ impl RiskHook {
         let mut conn = pool.acquire().await?;
         let level_rows = sqlx::query(
             r#"SELECT s.name, s.id AS symbol_id, s.digits, p.id AS position_id, p."accountId" AS account_id, p.side::text AS side,
-                      p."slPrice" AS sl, p."tpPrice" AS tp, a."brokerId" AS a_broker, a."groupId" AS a_group
+                      p."slPrice" AS sl, p."tpPrice" AS tp, a."brokerId" AS a_broker, a."groupId" AS a_group, a."accountMode"::text AS a_mode
                FROM "Position" p JOIN "Symbol" s ON s.id = p."symbolId" JOIN "Account" a ON a.id = p."accountId"
                WHERE p.status = 'OPEN' AND (p."slPrice" IS NOT NULL OR p."tpPrice" IS NOT NULL)"#,
         )
@@ -241,7 +317,7 @@ impl RiskHook {
         // order's account ask rule for a BUY entry
         let pending_rows = sqlx::query(
             r#"SELECT s.name, s.id AS symbol_id, s.digits, o."accountId" AS account_id, o.side::text AS side, o.type::text AS kind,
-                      o."requestedPrice" AS entry, a."brokerId" AS a_broker, a."groupId" AS a_group
+                      o."requestedPrice" AS entry, a."brokerId" AS a_broker, a."groupId" AS a_group, a."accountMode"::text AS a_mode
                FROM "Order" o JOIN "Symbol" s ON s.id = o."symbolId" JOIN "Account" a ON a.id = o."accountId"
                WHERE o.status = 'PENDING' AND o.type IN ('LIMIT', 'STOP') AND o."requestedPrice" IS NOT NULL"#,
         )
@@ -269,6 +345,8 @@ impl RiskHook {
             levels.entry(r.try_get("name")?).or_default().push(Level {
                 position_id: r.try_get("position_id")?,
                 account_id: r.try_get("account_id")?,
+                broker_id: r.try_get("a_broker")?,
+                mode: r.try_get("a_mode")?,
                 is_buy: side == "BUY",
                 sl: r.try_get("sl")?,
                 tp: r.try_get("tp")?,
@@ -280,7 +358,15 @@ impl RiskHook {
             let side: String = r.try_get("side")?;
             let kind: String = r.try_get("kind")?;
             let ask_rule = rules.next().flatten();
-            pending.entry(r.try_get("name")?).or_default().push(PendingLevel { is_buy: side == "BUY", is_limit: kind == "LIMIT", entry: r.try_get("entry")?, ask_rule });
+            pending.entry(r.try_get("name")?).or_default().push(PendingLevel {
+                is_buy: side == "BUY",
+                is_limit: kind == "LIMIT",
+                entry: r.try_get("entry")?,
+                ask_rule,
+                account_id: r.try_get("account_id")?,
+                broker_id: r.try_get("a_broker")?,
+                mode: r.try_get("a_mode")?,
+            });
         }
         Ok((levels, pending))
     }
@@ -320,6 +406,10 @@ impl RiskHook {
         for t in ticks {
             let Some(ls) = levels.get(&t.symbol) else { continue };
             for l in ls {
+                // Stage 6: a level of an ENGINE-OWNED account is not the web's (engine_touches handles it)
+                if self.engine_owns(&l.broker_id, &l.mode) {
+                    continue;
+                }
                 // close price: a BUY closes at the raw bid, a SELL at its account's ask (lib/ask-markup.ts)
                 let cp = if l.is_buy { t.bid } else { ask_markup::close_price(protocol::OrderSide::Sell, t.bid, t.ask, l.ask_rule.as_ref()) };
                 let sl_hit = l.sl.map_or(false, |sl| if l.is_buy { cp <= sl } else { cp >= sl });
@@ -350,11 +440,138 @@ impl RiskHook {
             if out.contains(&t.symbol) {
                 continue;
             }
-            if pending.get(&t.symbol).map_or(false, |ps| ps.iter().any(|p| p.triggered(t.bid, t.ask))) {
+            if pending.get(&t.symbol).map_or(false, |ps| ps.iter().any(|p| !self.engine_owns(&p.broker_id, &p.mode) && p.triggered(t.bid, t.ask))) {
                 out.push(t.symbol.clone());
             }
         }
         (out, touches)
+    }
+
+    /// Stage 6: the SL / TP touches (first list) and resting-order crossings (second) of ENGINE-OWNED accounts among these
+    /// ticks, one LiveFire per account and source, each carrying the tick that crossed. Empty without a live engine.
+    /// The web path (touched_with_positions) skips exactly these levels, so a touch has ONE handler.
+    fn engine_touches(&self, ticks: &[Tick], now: chrono::DateTime<chrono::Utc>) -> (Vec<LiveFire>, Vec<LiveFire>) {
+        let mut sl_tp: Vec<LiveFire> = Vec::new();
+        let mut pending: Vec<LiveFire> = Vec::new();
+        if self.live.get().is_none() {
+            return (sl_tp, pending);
+        }
+        let tick_at = |t: &Tick| t.tick_ms.and_then(chrono::DateTime::from_timestamp_millis).unwrap_or(now);
+        let add = |list: &mut Vec<LiveFire>, account_id: &str, t: &Tick, source: FireSource| {
+            let fire = match list.iter_mut().position(|f| f.account_id == account_id) {
+                Some(i) => &mut list[i],
+                None => {
+                    list.push(LiveFire { account_id: account_id.to_string(), ticks: HashMap::new(), source });
+                    list.last_mut().unwrap()
+                }
+            };
+            fire.ticks.insert(t.symbol.clone(), (t.bid, t.ask, tick_at(t)));
+        };
+        {
+            let levels = self.levels.lock().unwrap();
+            for t in ticks {
+                let Some(ls) = levels.get(&t.symbol) else { continue };
+                for l in ls {
+                    if !self.engine_owns(&l.broker_id, &l.mode) {
+                        continue;
+                    }
+                    let cp = if l.is_buy { t.bid } else { ask_markup::close_price(protocol::OrderSide::Sell, t.bid, t.ask, l.ask_rule.as_ref()) };
+                    let sl_hit = l.sl.map_or(false, |sl| if l.is_buy { cp <= sl } else { cp >= sl });
+                    let tp_hit = l.tp.map_or(false, |tp| if l.is_buy { cp >= tp } else { cp <= tp });
+                    if sl_hit || tp_hit {
+                        add(&mut sl_tp, &l.account_id, t, FireSource::SlTp);
+                    }
+                }
+            }
+        }
+        let resting = self.pending.lock().unwrap();
+        for t in ticks {
+            let Some(ps) = resting.get(&t.symbol) else { continue };
+            for p in ps {
+                if self.engine_owns(&p.broker_id, &p.mode) && p.triggered(t.bid, t.ask) {
+                    add(&mut pending, &p.account_id, t, FireSource::Pending);
+                }
+            }
+        }
+        (sl_tp, pending)
+    }
+
+    /// True when a resting order of an engine-owned account is being watched (the backstop's pending sweep).
+    fn has_engine_pending(&self) -> bool {
+        self.live.get().is_some() && self.pending.lock().unwrap().values().any(|ps| ps.iter().any(|p| self.engine_owns(&p.broker_id, &p.mode)))
+    }
+
+    /// One fire per (account, symbol) per second: drops the symbols of a fire that were fired less than a second ago,
+    /// returns None when nothing is left.
+    fn limit_engine_fire(&self, mut fire: LiveFire) -> Option<LiveFire> {
+        let mut last = self.last_engine_fire.lock().unwrap();
+        let now = Instant::now();
+        let account = fire.account_id.clone();
+        fire.ticks.retain(|symbol, _| match last.get(&(account.clone(), symbol.clone())) {
+            Some(t) if now.duration_since(*t) < Duration::from_secs(1) => false,
+            _ => {
+                last.insert((account.clone(), symbol.clone()), now);
+                true
+            }
+        });
+        if fire.ticks.is_empty() { None } else { Some(fire) }
+    }
+
+    /// Resting orders of engine-owned accounts whose entry a tick crossed: the web's fill routine runs for them
+    /// (GET pending_url?symbols=, RUST scope), then each account is evaluated by the engine (the fill may have opened a
+    /// position already at a stop-out level). Rate limited per symbol like the web call.
+    fn spawn_pending_trigger(self: &Arc<Self>, fires: Vec<LiveFire>) {
+        let Some(live) = self.live.get() else { return };
+        let mut symbols: Vec<String> = fires.iter().flat_map(|f| f.ticks.keys().cloned()).collect();
+        symbols.sort();
+        symbols.dedup();
+        {
+            let mut last = self.last_fired.lock().unwrap();
+            let now = Instant::now();
+            symbols.retain(|s| {
+                let key = format!("pending:{s}");
+                match last.get(&key) {
+                    Some(t) if now.duration_since(*t) < Duration::from_secs(1) => false,
+                    _ => {
+                        last.insert(key, now);
+                        true
+                    }
+                }
+            });
+        }
+        if symbols.is_empty() {
+            return;
+        }
+        let fires: Vec<LiveFire> = fires.into_iter().filter(|f| f.ticks.keys().any(|s| symbols.contains(s))).collect();
+        let hook = Arc::clone(self);
+        let sender = live.sender.clone();
+        let url = format!("{}?symbols={}", live.pending_url, symbols.join(","));
+        tokio::spawn(async move {
+            match hook.client.get(&url).bearer_auth(&hook.secret).send().await {
+                Ok(resp) if resp.status().is_success() => tracing::info!(symbols = %symbols.join(","), "risk hook: resting orders of engine-owned accounts handed to the web's fill routine"),
+                Ok(resp) => tracing::warn!(status = %resp.status(), "pending trigger rejected"),
+                Err(err) => tracing::warn!(error = %err, "pending trigger failed"),
+            }
+            for fire in fires {
+                let _ = sender.send(fire);
+            }
+        });
+    }
+
+    /// The pending-order sweep of engine-owned accounts (no symbols: every resting order of theirs), run by the backstop.
+    pub async fn fire_pending_sweep(&self) -> bool {
+        let Some(live) = self.live.get() else { return false };
+        match self.client.get(&live.pending_url).bearer_auth(&self.secret).send().await {
+            Ok(resp) if resp.status().is_success() => true,
+            Ok(resp) => {
+                tracing::warn!(status = %resp.status(), "pending sweep rejected");
+                false
+            }
+            Err(err) => {
+                tracing::warn!(error = %err, "pending sweep failed");
+                false
+            }
+        }
     }
 
     /// After a LivePrice flush: fire the evaluation for every symbol whose ticks touched an SL / TP, or put
@@ -369,6 +586,18 @@ impl RiskHook {
         let ticks = live.as_slice();
         if ticks.is_empty() {
             return;
+        }
+        // Stage 6: engine-owned accounts' touches and crossings go to the engine, never to the web
+        if let Some(live) = self.live.get() {
+            let (sl_tp, pending) = self.engine_touches(ticks, now);
+            for fire in sl_tp {
+                if let Some(fire) = self.limit_engine_fire(fire) {
+                    let _ = live.sender.send(fire);
+                }
+            }
+            if !pending.is_empty() {
+                self.spawn_pending_trigger(pending);
+            }
         }
         let (mut symbols, touches) = self.touched_with_positions(ticks, now);
         let margin: Vec<String> = self.margin_watch.get().map(|w| w.symbols_to_evaluate(ticks, cache)).unwrap_or_default();
@@ -482,6 +711,10 @@ impl RiskHook {
                 let book = hook.book_symbols();
                 if LOG.observe(activity::book_gate(&cache, book.as_ref(), chrono::Utc::now())) {
                     hook.fire_full_pass().await;
+                    // Stage 6: the web's own sweeps skip engine-owned accounts' resting orders; this one covers them
+                    if hook.has_engine_pending() {
+                        hook.fire_pending_sweep().await;
+                    }
                 }
             }
         });
@@ -529,16 +762,16 @@ mod tests {
 
     #[test]
     fn pending_entries_trigger_on_the_side_they_trade() {
-        let buy_limit = super::PendingLevel { is_buy: true, is_limit: true, entry: dec!(100), ask_rule: None };
+        let buy_limit = super::PendingLevel::bare(true, true, dec!(100), None);
         assert!(buy_limit.triggered(dec!(99.8), dec!(100.0)));
         assert!(!buy_limit.triggered(dec!(99.9), dec!(100.1)));
-        let buy_stop = super::PendingLevel { is_buy: true, is_limit: false, entry: dec!(100), ask_rule: None };
+        let buy_stop = super::PendingLevel::bare(true, false, dec!(100), None);
         assert!(buy_stop.triggered(dec!(99.9), dec!(100.1)));
         assert!(!buy_stop.triggered(dec!(99.7), dec!(99.9)));
-        let sell_limit = super::PendingLevel { is_buy: false, is_limit: true, entry: dec!(100), ask_rule: None };
+        let sell_limit = super::PendingLevel::bare(false, true, dec!(100), None);
         assert!(sell_limit.triggered(dec!(100.0), dec!(100.2)));
         assert!(!sell_limit.triggered(dec!(99.9), dec!(100.1)));
-        let sell_stop = super::PendingLevel { is_buy: false, is_limit: false, entry: dec!(100), ask_rule: None };
+        let sell_stop = super::PendingLevel::bare(false, false, dec!(100), None);
         assert!(sell_stop.triggered(dec!(99.9), dec!(100.1)));
         assert!(!sell_stop.triggered(dec!(100.1), dec!(100.3)));
     }
@@ -549,13 +782,13 @@ mod tests {
         // +1.5 pips on a 2-digit symbol = +0.15
         let rule = Some(AskRule::Markup { markup_pips: dec!(1.5), digits: 2 });
         // BUY STOP at 100.10: raw ask 100.00 has not reached it, the account ask 100.15 has
-        let buy_stop = super::PendingLevel { is_buy: true, is_limit: false, entry: dec!(100.10), ask_rule: rule };
+        let buy_stop = super::PendingLevel::bare(true, false, dec!(100.10), rule);
         assert!(buy_stop.triggered(dec!(99.90), dec!(100.00)));
         // BUY LIMIT at 100.00: raw ask 99.95 would fill it raw; the account ask 100.10 is above the entry
-        let buy_limit = super::PendingLevel { is_buy: true, is_limit: true, entry: dec!(100.00), ask_rule: rule };
+        let buy_limit = super::PendingLevel::bare(true, true, dec!(100.00), rule);
         assert!(!buy_limit.triggered(dec!(99.80), dec!(99.95)));
         // a SELL entry never reads the ask
-        let sell_stop = super::PendingLevel { is_buy: false, is_limit: false, entry: dec!(99.90), ask_rule: rule };
+        let sell_stop = super::PendingLevel::bare(false, false, dec!(99.90), rule);
         assert!(!sell_stop.triggered(dec!(99.95), dec!(100.00)));
     }
 
@@ -564,11 +797,11 @@ mod tests {
         use crate::ask_markup::AskRule;
         let h = hook("http://127.0.0.1:1/x".into());
         // SELL SL at 4299.25: raw ask 4299.13 has not reached it, the account ask 4299.28 (+1.5 pips) has
-        h.levels.lock().unwrap().insert("XAUUSD".into(), vec![Level { position_id: "p1".into(), account_id: "a1".into(), is_buy: false, sl: Some(dec!(4299.25)), tp: None, ask_rule: Some(AskRule::Markup { markup_pips: dec!(1.5), digits: 2 }) }]);
+        h.levels.lock().unwrap().insert("XAUUSD".into(), vec![Level { position_id: "p1".into(), account_id: "a1".into(), broker_id: String::new(), mode: String::new(), is_buy: false, sl: Some(dec!(4299.25)), tp: None, ask_rule: Some(AskRule::Markup { markup_pips: dec!(1.5), digits: 2 }) }]);
         let t: Tick = serde_json::from_value(serde_json::json!({ "symbol": "XAUUSD", "bid": "4298.96", "ask": "4299.13" })).unwrap();
         assert_eq!(h.touched(std::slice::from_ref(&t)), vec!["XAUUSD".to_string()]);
         // the same level on the raw ask (no rule) is not touched
-        h.levels.lock().unwrap().insert("XAUUSD".into(), vec![Level { position_id: "p1".into(), account_id: "a1".into(), is_buy: false, sl: Some(dec!(4299.25)), tp: None, ask_rule: None }]);
+        h.levels.lock().unwrap().insert("XAUUSD".into(), vec![Level { position_id: "p1".into(), account_id: "a1".into(), broker_id: String::new(), mode: String::new(), is_buy: false, sl: Some(dec!(4299.25)), tp: None, ask_rule: None }]);
         assert!(h.touched(std::slice::from_ref(&t)).is_empty());
     }
 
@@ -620,6 +853,8 @@ mod tests {
             reload_now: Notify::new(),
             pricing: std::sync::OnceLock::new(),
             reload_count: std::sync::atomic::AtomicU64::new(0),
+            live: std::sync::OnceLock::new(),
+            last_engine_fire: Mutex::new(HashMap::new()),
         })
     }
 
@@ -821,7 +1056,7 @@ mod tests {
         // a resting order's symbol counts as held
         let pend = hook("http://127.0.0.1:1/x".into());
         pend.set_margin_watch(Arc::new(BookWatch(Some(HashSet::new()))));
-        pend.pending.lock().unwrap().insert("BTCUSD".into(), vec![PendingLevel { is_buy: true, is_limit: true, entry: Decimal::ONE, ask_rule: None }]);
+        pend.pending.lock().unwrap().insert("BTCUSD".into(), vec![PendingLevel::bare(true, true, Decimal::ONE, None)]);
         assert_eq!(pend.idle_gate_header(&cache_ticked("BTCUSD", 0), now), "running");
     }
 
@@ -854,7 +1089,7 @@ mod tests {
         // a resting order on a ticking symbol reopens the gate even with no position open
         let pending = hook(url);
         pending.set_margin_watch(Arc::new(BookWatch(Some(HashSet::new()))));
-        pending.pending.lock().unwrap().insert("BTCUSD".into(), vec![PendingLevel { is_buy: true, is_limit: true, entry: Decimal::ONE, ask_rule: None }]);
+        pending.pending.lock().unwrap().insert("BTCUSD".into(), vec![PendingLevel::bare(true, true, Decimal::ONE, None)]);
         pending.spawn_backstop_loop(Duration::from_millis(50), cache_ticked("BTCUSD", 0));
         let (line, _) = tokio::time::timeout(Duration::from_secs(3), rx.recv()).await.expect("pass").unwrap();
         assert!(!line.contains("symbols"), "{line}");
@@ -908,7 +1143,7 @@ mod tests {
     }
 
     fn lvl(position: &str, account: &str, is_buy: bool, sl: Option<Decimal>, tp: Option<Decimal>, ask_rule: Option<AskRule>) -> Level {
-        Level { position_id: position.into(), account_id: account.into(), is_buy, sl, tp, ask_rule }
+        Level { position_id: position.into(), account_id: account.into(), broker_id: String::new(), mode: String::new(), is_buy, sl, tp, ask_rule }
     }
 
     #[test]
@@ -928,7 +1163,7 @@ mod tests {
             ],
         );
         // a resting order on another symbol: touched as a symbol, never snapshotted
-        h.pending.lock().unwrap().insert("EURUSD".into(), vec![PendingLevel { is_buy: false, is_limit: true, entry: dec!(1.1), ask_rule: None }]);
+        h.pending.lock().unwrap().insert("EURUSD".into(), vec![PendingLevel::bare(false, true, dec!(1.1), None)]);
         let gold: Tick = serde_json::from_value(serde_json::json!({ "symbol": "XAUUSD", "bid": "4298.96", "ask": "4299.13", "tick_ms": 1_790_000_000_000i64 })).unwrap();
         let eur: Tick = serde_json::from_value(serde_json::json!({ "symbol": "EURUSD", "bid": "1.2", "ask": "1.2001" })).unwrap();
         let now = chrono::Utc::now();
@@ -963,12 +1198,144 @@ mod tests {
     async fn a_resting_order_trigger_is_not_snapshotted() {
         let (url, mut rx) = mock_route(200).await;
         let h = hook(url);
-        h.pending.lock().unwrap().insert("XAUUSD".into(), vec![PendingLevel { is_buy: false, is_limit: true, entry: dec!(4270), ask_rule: None }]);
+        h.pending.lock().unwrap().insert("XAUUSD".into(), vec![PendingLevel::bare(false, true, dec!(4270), None)]);
         let (tx, mut shadow) = tokio::sync::mpsc::unbounded_channel::<Vec<SlTpTouch>>();
         h.set_shadow_snapshot(tx);
         h.after_flush(&[tick("XAUUSD")], &cache_ticked("XAUUSD", 0)); // bid 4280 >= SELL LIMIT 4270
         tokio::time::timeout(Duration::from_secs(1), rx.recv()).await.expect("web called at once").unwrap();
         assert!(shadow.try_recv().is_err(), "no snapshot for a resting order");
+    }
+
+    // ---- Stage 6: the split between the engine and the web, at the hook ----
+
+    /// The engine owns accounts of broker "bR" in mode DEMO and every account of "bA"; nothing else.
+    struct StubOracle;
+    impl RiskOwnerOracle for StubOracle {
+        fn engine_owns(&self, broker_id: &str, account_mode: &str) -> bool {
+            (broker_id == "bR" && account_mode == "DEMO") || broker_id == "bA"
+        }
+    }
+
+    fn lvl_of(position: &str, account: &str, broker: &str, mode: &str, sl: Decimal) -> Level {
+        Level { position_id: position.into(), account_id: account.into(), broker_id: broker.into(), mode: mode.into(), is_buy: false, sl: Some(sl), tp: None, ask_rule: None }
+    }
+
+    fn pending_of(account: &str, broker: &str, mode: &str) -> PendingLevel {
+        PendingLevel { is_buy: false, is_limit: true, entry: dec!(4270), ask_rule: None, account_id: account.into(), broker_id: broker.into(), mode: mode.into() }
+    }
+
+    fn live_hook(url: String) -> (Arc<RiskHook>, tokio::sync::mpsc::UnboundedReceiver<LiveFire>) {
+        let h = hook(url.clone());
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        h.set_live(Arc::new(StubOracle), tx, url.replace("margin-monitor", "pending-trigger"));
+        (h, rx)
+    }
+
+    /// An SL touch of an ENGINE-owned account goes to the engine (a LiveFire carrying the tick), never to the web, never to the
+    /// shadow; a touch of a WEB-owned account on the SAME symbol still goes to the web exactly as before.
+    #[tokio::test]
+    async fn a_touch_of_an_engine_owned_account_goes_to_the_engine_and_a_web_owned_one_to_the_web() {
+        let (url, mut rx) = mock_route(200).await;
+        let (h, mut live) = live_hook(url);
+        let (snap_tx, mut shadow) = tokio::sync::mpsc::unbounded_channel::<Vec<SlTpTouch>>();
+        h.set_shadow_snapshot(snap_tx);
+        // SELL SL 4280.2: the tick (ask 4280.3) touches all three
+        h.levels.lock().unwrap().insert(
+            "XAUUSD".into(),
+            vec![lvl_of("p-engine", "a-engine", "bR", "DEMO", dec!(4280.2)), lvl_of("p-web", "a-web", "bR", "LIVE", dec!(4280.2)), lvl_of("p-all", "a-all", "bA", "LIVE", dec!(4280.2))],
+        );
+        h.after_flush(&[tick("XAUUSD")], &cache_ticked("XAUUSD", 0));
+
+        // the engine: one fire per account, carrying the tick that crossed
+        let mut fires = vec![live.try_recv().expect("fire 1"), live.try_recv().expect("fire 2")];
+        fires.sort_by(|a, b| a.account_id.cmp(&b.account_id));
+        assert_eq!(fires.iter().map(|f| f.account_id.as_str()).collect::<Vec<_>>(), vec!["a-all", "a-engine"]);
+        for f in &fires {
+            assert_eq!(f.source, FireSource::SlTp);
+            let (bid, ask, _) = f.ticks["XAUUSD"];
+            assert_eq!((bid, ask), (dec!(4280), dec!(4280.3)), "the fire carries the crossing tick");
+        }
+        assert!(live.try_recv().is_err(), "the web-owned account is not the engine's");
+        // the web: called once for the symbol (its own account is touched); the shadow snapshots ONLY the web-owned touch
+        let (line, _) = tokio::time::timeout(Duration::from_secs(3), rx.recv()).await.expect("web called").unwrap();
+        assert_eq!(line, "GET /api/internal/margin-monitor?symbols=XAUUSD HTTP/1.1");
+        let handed = shadow.try_recv().expect("a snapshot");
+        assert_eq!(handed.iter().map(|t| t.account_id.as_str()).collect::<Vec<_>>(), vec!["a-web"], "engine-owned touches are not the shadow's");
+    }
+
+    /// When EVERY touched account of the symbol is the engine's, the web is not called at all.
+    #[tokio::test]
+    async fn the_web_is_not_called_for_a_symbol_whose_touched_accounts_are_all_the_engines() {
+        let (url, mut rx) = mock_route(200).await;
+        let (h, mut live) = live_hook(url);
+        h.levels.lock().unwrap().insert("XAUUSD".into(), vec![lvl_of("p-engine", "a-engine", "bA", "LIVE", dec!(4280.2))]);
+        h.after_flush(&[tick("XAUUSD")], &cache_ticked("XAUUSD", 0));
+        assert_eq!(live.try_recv().expect("fire").account_id, "a-engine");
+        assert!(tokio::time::timeout(Duration::from_millis(400), rx.recv()).await.is_err(), "no web call");
+    }
+
+    /// Without set_live nothing is engine-owned: a touch goes to the web exactly as before Stage 6, whatever the levels' brokers are.
+    #[tokio::test]
+    async fn without_a_live_engine_every_touch_goes_to_the_web() {
+        let (url, mut rx) = mock_route(200).await;
+        let h = hook(url);
+        h.levels.lock().unwrap().insert("XAUUSD".into(), vec![lvl_of("p", "a", "bA", "DEMO", dec!(4280.2))]);
+        h.after_flush(&[tick("XAUUSD")], &cache_ticked("XAUUSD", 0));
+        let (line, _) = tokio::time::timeout(Duration::from_secs(3), rx.recv()).await.expect("web called").unwrap();
+        assert_eq!(line, "GET /api/internal/margin-monitor?symbols=XAUUSD HTTP/1.1");
+    }
+
+    /// One engine fire per (account, symbol) per second.
+    #[tokio::test]
+    async fn an_engine_fire_is_limited_to_one_per_account_and_symbol_per_second() {
+        let (url, _rx) = mock_route(200).await;
+        let (h, mut live) = live_hook(url);
+        h.levels.lock().unwrap().insert("XAUUSD".into(), vec![lvl_of("p", "a", "bA", "LIVE", dec!(4280.2))]);
+        h.after_flush(&[tick("XAUUSD")], &cache_ticked("XAUUSD", 0));
+        h.after_flush(&[tick("XAUUSD")], &cache_ticked("XAUUSD", 0));
+        assert!(live.try_recv().is_ok());
+        assert!(live.try_recv().is_err(), "the second flush inside the second does not fire again");
+    }
+
+    /// A resting order of an engine-owned account whose entry a tick crossed: the web's fill routine is called on the RUST-scope
+    /// route (never margin-monitor), and only AFTER it the account is handed to the engine for evaluation (the fill may have opened
+    /// a position already at a stop-out level). A resting order of a web-owned account on the same symbol still goes to margin-monitor.
+    #[tokio::test]
+    async fn an_engine_owned_resting_order_is_filled_by_the_rust_scope_route_then_the_account_is_evaluated() {
+        let (url, mut rx) = mock_route(200).await;
+        let (h, mut live) = live_hook(url);
+        h.pending.lock().unwrap().insert("XAUUSD".into(), vec![pending_of("a-engine", "bR", "DEMO")]);
+        h.after_flush(&[tick("XAUUSD")], &cache_ticked("XAUUSD", 0)); // bid 4280 >= SELL LIMIT 4270
+        let (line, auth) = tokio::time::timeout(Duration::from_secs(3), rx.recv()).await.expect("route called").unwrap();
+        assert_eq!(line, "GET /api/internal/pending-trigger?symbols=XAUUSD HTTP/1.1");
+        assert_eq!(auth, "Bearer s3cret");
+        let fire = tokio::time::timeout(Duration::from_secs(3), live.recv()).await.expect("evaluated after the fill").unwrap();
+        assert_eq!((fire.account_id.as_str(), fire.source), ("a-engine", FireSource::Pending));
+        assert!(tokio::time::timeout(Duration::from_millis(300), rx.recv()).await.is_err(), "margin-monitor is not called for it");
+
+        // a web-owned resting order: the web's own call
+        let (url2, mut rx2) = mock_route(200).await;
+        let (h2, mut live2) = live_hook(url2);
+        h2.pending.lock().unwrap().insert("XAUUSD".into(), vec![pending_of("a-web", "bR", "LIVE")]);
+        h2.after_flush(&[tick("XAUUSD")], &cache_ticked("XAUUSD", 0));
+        let (line2, _) = tokio::time::timeout(Duration::from_secs(3), rx2.recv()).await.expect("web called").unwrap();
+        assert_eq!(line2, "GET /api/internal/margin-monitor?symbols=XAUUSD HTTP/1.1");
+        assert!(live2.try_recv().is_err());
+    }
+
+    /// The backstop also sweeps the engine-owned accounts' resting orders (the web's sweeps skip them) -- and only when there are any.
+    #[tokio::test]
+    async fn the_backstop_sweeps_engine_owned_resting_orders_only_when_there_are_any() {
+        let (url, mut rx) = mock_route(200).await;
+        let (h, _live) = live_hook(url);
+        h.set_margin_watch(Arc::new(BookWatch(None)));
+        h.spawn_backstop_loop(Duration::from_millis(80), cache_ticked("XAUUSD", 0));
+        let (line, _) = tokio::time::timeout(Duration::from_secs(3), rx.recv()).await.expect("full pass").unwrap();
+        assert_eq!(line, "GET /api/internal/margin-monitor HTTP/1.1");
+        assert!(tokio::time::timeout(Duration::from_millis(400), async { loop { let (l, _) = rx.recv().await.unwrap(); if l.contains("pending-trigger") { return l; } } }).await.is_err(), "no engine-owned resting order: no sweep");
+        h.pending.lock().unwrap().insert("XAUUSD".into(), vec![pending_of("a-engine", "bA", "LIVE")]);
+        let swept = tokio::time::timeout(Duration::from_secs(3), async { loop { let (l, _) = rx.recv().await.unwrap(); if l.contains("pending-trigger") { return l; } } }).await.expect("swept");
+        assert_eq!(swept, "GET /api/internal/pending-trigger HTTP/1.1");
     }
 
     #[tokio::test]

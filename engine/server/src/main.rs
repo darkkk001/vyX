@@ -1519,6 +1519,13 @@ async fn main() {
     let mut shadow_snapshot: Option<market_data::risk_hook::SnapshotSender> = None;
     // the per-tick margin trigger's book, filled in below once it exists: the shadow pass's idle gate reads it
     let margin_watch_slot: Arc<std::sync::OnceLock<Arc<order_management::margin_watch::MarginWatch>>> = Arc::new(std::sync::OnceLock::new());
+    // Stage 6 risk mode (ENGINE_ORDER_MANAGEMENT=risk): the engine owns the risk of the accounts the per-broker `riskAuthority`
+    // hands it, and ONLY those. The pieces the hook block below wires in.
+    let mut authority_cache: Option<Arc<order_management::authority::AuthorityCache>> = None;
+    let mut live_fire_tx: Option<market_data::risk_hook::LiveSender> = None;
+    // the live trigger worker's "a batch is done" callback, filled in once the hook and the margin trigger exist
+    let live_after_slot: Arc<std::sync::OnceLock<Arc<dyn Fn() + Send + Sync>>> = Arc::new(std::sync::OnceLock::new());
+    let risk_mode_requested = std::env::var("ENGINE_ORDER_MANAGEMENT").map(|v| v.trim().eq_ignore_ascii_case("risk")).unwrap_or(false);
     let order_management_on = std::env::var("ENGINE_ORDER_MANAGEMENT")
         .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "on" | "yes"))
         .unwrap_or(false);
@@ -1530,6 +1537,8 @@ async fn main() {
             monitor_interval_secs,
             "order management ENABLED: margin monitor, per-tick triggers, thresholds guard and swap roller running against the engine's own tables"
         );
+        // Stage 6: every live mode acts only on the accounts the database says the engine owns (all brokers are WEB by default)
+        order_management::authority::enforce();
         let monitor_guard = order_management::monitor::new_run_guard();
         order_management::book::require_tick_source();
         order_management::book::require_pricing_cache();
@@ -1578,7 +1587,77 @@ async fn main() {
             .and_then(|v| v.parse().ok())
             .unwrap_or(300);
         order_management::swap::spawn(pool.clone(), std::time::Duration::from_secs(swap_poll_interval_secs));
-    } else if std::env::var("ENGINE_ORDER_MANAGEMENT").map(|v| v.trim().eq_ignore_ascii_case("shadow")).unwrap_or(false) { 'shadow: {
+    } else if risk_mode_requested { 'risk: {
+        // Rust cutover Stage 6 (docs/STAGE6-PLAN.md): the engine is AUTHORITATIVE for the risk (SL / TP, margin call,
+        // stop-out, resting-order triggers) of the accounts `Broker.riskAuthority` hands it (RUST; demo-only until the flag
+        // says otherwise), and ONLY those: authority::enforce makes every live pass, fire and write check the database's
+        // own answer. The web skips exactly those accounts (lib/risk-owner.ts). Every other path stays as it is: orders,
+        // fills, swap and the order routes are NOT started here (they stay on the web; the thresholds guard stays empty, so
+        // the engine's own order routes keep refusing). WEB fallback = set riskAuthority back to WEB (runbook).
+        let reason: Option<String> = 'check: {
+            if std::env::var("VYX_POST_CLOSE_URL").ok().filter(|v| !v.trim().is_empty()).is_none() || std::env::var("VYX_POST_CLOSE_SECRET").ok().filter(|v| !v.trim().is_empty()).is_none() {
+                break 'check Some("VYX_POST_CLOSE_URL / VYX_POST_CLOSE_SECRET are not set: an engine close must be delivered to the web (mirror, coverage, notices, events)".into());
+            }
+            if std::env::var("VYX_SHADOW_DATABASE_URL").ok().filter(|v| !v.trim().is_empty()).is_some() {
+                // the shadow's read-only URL must not be what this mode runs on; the shadow itself is not run in risk mode
+                tracing::warn!("VYX_SHADOW_DATABASE_URL is set but risk mode does not run the shadow (the live pass, fires and writes use DATABASE_URL)");
+            }
+            match order_management::authority::verify_risk_pool(&pool).await {
+                Ok(role) => {
+                    tracing::info!(%role, "risk mode: the pool is writable");
+                    None
+                }
+                Err(why) => Some(why),
+            }
+        };
+        if let Some(reason) = reason {
+            tracing::error!(%reason, "RISK MODE REFUSED: the engine acts on nothing (the web owns every close for brokers still WEB; a broker already set to RUST would have NO owner -- set it back to WEB now)");
+            break 'risk;
+        }
+        order_management::authority::enforce();
+        order_management::book::require_tick_source();
+        order_management::book::require_pricing_cache();
+        pricing_used = true;
+        let prices = order_management::book::PriceSource::Ticks(tick_cache.clone());
+        // 1. who owns what: the per-broker authority, in memory (routing only) and reloaded on a config change
+        let authority = order_management::authority::AuthorityCache::new();
+        let safety_secs: u64 = std::env::var("VYX_AUTHORITY_RELOAD_SECS").ok().and_then(|v| v.trim().parse().ok()).filter(|s| *s > 0).unwrap_or(5);
+        authority.spawn_reload_loop(pool.clone(), tick_cache.clone(), std::time::Duration::from_secs(safety_secs));
+        authority_cache = Some(authority.clone());
+        // 2. the per-tick fires of engine-owned accounts: unpinned live evaluation (monitor::evaluate_live_fire)
+        let after_slot = live_after_slot.clone();
+        live_fire_tx = Some(order_management::monitor::spawn_live_trigger(
+            pool.clone(),
+            prices.clone(),
+            Some(pricing.clone()),
+            Arc::new(move || {
+                if let Some(f) = after_slot.get() {
+                    f();
+                }
+            }),
+        ));
+        // 3. the floor under the fires: a live pass over the engine-owned accounts every MARGIN_MONITOR_INTERVAL_SECS
+        order_management::monitor::spawn_risk_passes(
+            pool.clone(),
+            std::time::Duration::from_secs(monitor_interval_secs),
+            order_management::monitor::new_run_guard(),
+            prices,
+            Some(pricing.clone()),
+            order_management::monitor::ShadowGate { cache: tick_cache.clone(), watch: margin_watch_slot.clone() },
+        );
+        // 4. post-close delivery ON: an engine close queues its follow-up in the close's own transaction; this hands it to the web
+        match order_management::outbox::DispatcherConfig::from_env() {
+            Some(cfg) => {
+                tracing::info!(url = %cfg.url, sweep_secs = cfg.sweep_interval.as_secs(), "post-close outbox dispatcher running");
+                order_management::outbox::spawn(pool.clone(), cfg);
+            }
+            None => {
+                tracing::error!("risk mode: the post-close dispatcher could not be configured");
+                break 'risk;
+            }
+        }
+        tracing::warn!(monitor_interval_secs, authority_reload_secs = safety_secs, "RISK MODE ACTIVE: the engine is authoritative for the risk of RUST-owned accounts (per Broker.riskAuthority and its demo-only scope); the web skips them. No broker is RUST until the owner flips one.");
+    } } else if std::env::var("ENGINE_ORDER_MANAGEMENT").map(|v| v.trim().eq_ignore_ascii_case("shadow")).unwrap_or(false) { 'shadow: {
         // Rust cutover Stage 5 (docs/RUST-CUTOVER-PLAN.md §5): the monitor evaluates every account exactly as at
         // cutover but ACTS ON NOTHING (monitor::Mode::Shadow): no close, no follow-up row, no margin-call edge, no
         // NATS event, no dispatcher; the thresholds guard stays empty, so the order routes keep refusing. The web
@@ -1695,6 +1774,16 @@ async fn main() {
     if let Some(hook) = &risk_hook {
         hook.set_pricing(pricing.clone());
         pricing_used = true;
+        // Stage 6 risk mode: SL / TP touches and resting-order crossings of engine-owned accounts go to the engine
+        if let (Some(authority), Some(tx)) = (&authority_cache, &live_fire_tx) {
+            let url = std::env::var("VYX_RISK_HOOK_URL").unwrap_or_default();
+            let pending_url = std::env::var("VYX_PENDING_TRIGGER_URL").ok().filter(|v| !v.trim().is_empty()).unwrap_or_else(|| match url.strip_suffix("/margin-monitor") {
+                Some(base) => format!("{base}/pending-trigger"),
+                None => format!("{}/pending-trigger", url.trim_end_matches('/')),
+            });
+            hook.set_live(authority.clone(), tx.clone(), pending_url.clone());
+            tracing::warn!(%pending_url, "risk mode: the hook sends SL / TP touches and crossings of engine-owned accounts to the engine; the web call skips them");
+        }
         // Stage 5: every SL / TP touch goes to the shadow as a snapshot (a send; the web call never waits)
         if let Some(tx) = &shadow_snapshot {
             hook.set_shadow_snapshot(tx.clone());
@@ -1721,6 +1810,16 @@ async fn main() {
                 watch.set_on_fire(tx.clone());
                 tracing::info!("shadow trigger: every account the margin trigger fires for is evaluated in shadow first, pinned to the fire (as it stood then)");
             }
+            if let (Some(authority), Some(tx)) = (&authority_cache, &live_fire_tx) {
+                watch.set_live(authority.clone(), tx.clone());
+                // a live evaluation may have closed something: reload the trigger's book and the hook's levels once the batch is done
+                let (after_hook, after_watch) = (hook.clone(), watch.clone());
+                let _ = live_after_slot.set(Arc::new(move || {
+                    after_hook.request_reload();
+                    after_watch.request_reload();
+                }));
+                tracing::warn!("risk mode: margin fires of engine-owned accounts are evaluated by the engine on the tick (unpinned, live)");
+            }
             hook.set_margin_watch(watch);
             tracing::info!("risk hook margin trigger enabled: stop-out / margin call evaluated on the tick");
         }
@@ -1729,7 +1828,11 @@ async fn main() {
         let reload_hook = hook.clone();
         let reload_watch = margin_watch_slot.clone();
         let reload_pricing = pricing.clone();
+        let reload_authority = authority_cache.clone();
         let full_reload: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+            if let Some(a) = &reload_authority {
+                a.request_reload();
+            }
             reload_hook.request_reload();
             if let Some(w) = reload_watch.get() {
                 w.request_reload();
