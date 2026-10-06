@@ -14,7 +14,8 @@ import { loadSellAskRules, valuationAsk } from "@/lib/ask-markup";
 //     (Position.groupCategoryAtOpen, stamped by a database trigger; rows from before that column existed fall back to
 //     the account's current group until the backfill fills them);
 //   - live accounts only, never internal accounts, never the broker's hedge (coverage) account;
-//   - never A-book / bridge-routed, reverse-trading or hedge (COVERAGE) groups;
+//   - never A-book / bridge-routed, reverse-trading or hedge (COVERAGE) groups, and never a position that was itself
+//     routed to the market (bookType A_BOOK) whatever its group;
 //   - never voided / deleted positions;
 //   - commission and swap are NOT part of it: they are revenue lines of their own.
 // Money is kept per account currency and never summed across currencies.
@@ -31,7 +32,8 @@ function heldSql(s: BookScope) {
     AND a."accountMode" = 'LIVE' AND a."isInternal" = false
     AND (${s.coverageAccountId}::text IS NULL OR a.id <> ${s.coverageAccountId})
     AND (g.category IS NULL OR g.category <> 'COVERAGE')
-    AND COALESCE(p."groupCategoryAtOpen"::text, g.category::text) IN ('B_BOOK', 'DEALING')`;
+    AND COALESCE(p."groupCategoryAtOpen"::text, g.category::text) IN ('B_BOOK', 'DEALING')
+    AND p."bookType" = 'B_BOOK'`;
 }
 
 /** Realized Book P/L of positions CLOSED in [from, to) (to = null: up to now), per account currency. */

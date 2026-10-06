@@ -112,6 +112,8 @@ describe("bookPnlRealized: what counts", () => {
     await pos(fx, bb.id, { pnl: 1000 }, { status: "VOIDED" });
     await pos(fx, bb.id, { pnl: 1000 }, { deleted: true });
     await pos(fx, bb.id, { pnl: 1000, at: new Date(Date.now() - 3 * HOUR) }); // before the range
+    const routed = await pos(fx, bb.id, { pnl: 1000 }); // routed to the market itself (bookType A_BOOK) in a Book group
+    await prisma.position.update({ where: { id: routed.id }, data: { bookType: "A_BOOK" } });
     const hedge = await account(fx, "B_BOOK");
     await prisma.broker.update({ where: { id: fx.brokerId }, data: { coverageAccountId: hedge.id } });
     await pos(fx, hedge.id, { pnl: 1000 }); // the broker's hedge account
