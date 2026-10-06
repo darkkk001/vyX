@@ -13,6 +13,10 @@
       "schedule": "*/5 * * * *"
     },
     {
+      "path": "/api/internal/risk-fallback",
+      "schedule": "* * * * *"
+    },
+    {
       "path": "/api/internal/economic-events",
       "schedule": "20 */6 * * *"
     }

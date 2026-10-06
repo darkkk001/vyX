@@ -45,7 +45,7 @@ export function parseInfraReport(body: unknown): { component: InfraComponent; re
   return { component: b.component as InfraComponent, report: { ok: b.ok, checks, reasons: reasons as string[], checkedAt: new Date(b.checkedAt).toISOString(), host: b.host } };
 }
 
-function recipients(): string[] {
+export function recipients(): string[] {
   return (process.env.OPS_ALERT_EMAIL ?? "").split(",").map((s) => s.trim()).filter((s) => s.includes("@"));
 }
 
