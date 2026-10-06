@@ -152,7 +152,7 @@ export async function triggerPendingOrder(orderId: string, triggerPrice: string,
     (await checkSymbolExposure(prisma, order.accountId, order.symbolId, order.volume, brokerSymbol.maxExposure)) ??
     (await checkBrokerExposure(prisma, order.brokerId, order.volume, broker.totalExposureLimit)) ??
     (await checkMaxDailyLoss(prisma, order.accountId, account.maxDailyLoss));
-  if (riskError) return fail(riskError);
+  if (riskError) return fail(riskError, riskCode(riskError));
 
   // Phase 2 batch 2: an A_BOOK group without a connected LP / the system coverage account never fills a trigger
   const route = orderRoute(account.group, deskIsOn(broker));
