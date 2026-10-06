@@ -735,3 +735,182 @@ async fn the_pause_file_stops_the_heartbeat_and_removing_it_resumes_it() {
     std::env::remove_var("VYX_RISK_HEARTBEAT_PAUSE_FILE");
     cleanup(&pool, &w).await;
 }
+
+// ---- (a) heartbeat only while trading is active: an idle gap never flaps ownership into a harmful state (docs/STAGE6-PLAN.md section 14.1) ----
+
+async fn heartbeat_age_secs(pool: &PgPool) -> f64 {
+    sqlx::query_as::<_, (f64,)>(r#"SELECT extract(epoch FROM clock_timestamp() - "beatAt")::float8 FROM "RiskEngineHeartbeat" WHERE name = 'risk'"#).fetch_one(pool).await.unwrap().0
+}
+
+async fn wait_closed(pool: &PgPool, positions: &[String]) -> bool {
+    for _ in 0..400 {
+        let mut all = true;
+        for p in positions {
+            if status(pool, p).await != "CLOSED" {
+                all = false;
+            }
+        }
+        if all {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    false
+}
+
+/// The beat rate limit is per process (1 s): wait it out so a test that rewinds the row by hand is judged like production, where only this
+/// process writes the row.
+async fn past_the_touch_gap() {
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+}
+
+fn gap_fire(w: &World, account: &str) -> LiveFire {
+    LiveFire { account_id: account.to_string(), ticks: HashMap::from([(w.symbol_name.clone(), (dec!(90), dec!(90), chrono::Utc::now()))]), source: FireSource::Margin }
+}
+
+/// The idle gate stopped the beats all weekend: the heartbeat is two days old. The first fire after the reopen gaps through a stop-out. The
+/// engine's worker beats BEFORE it evaluates (within the same batch), so the account is the engine's when the evaluation reads it: it acts as the
+/// owner, once per position, and its beat is older than its first close.
+#[tokio::test]
+async fn the_first_fire_after_an_idle_gap_beats_before_it_evaluates_and_acts_as_the_owner() {
+    let Some(pool) = pool().await else { return };
+    let _x = exclusive(&pool).await;
+    let mut w = broker_and_symbol(&pool, "RUST", false).await;
+    let (account, positions) = add_account(&pool, &w, "LIVE", dec!(20), None, 2).await;
+    w.accounts.push(Acct { id: account.clone(), mode: "LIVE", kind: Kind::StopOut, position: positions[0].clone() });
+    set_heartbeat(&pool, 172_800, 30).await;
+    past_the_touch_gap().await;
+    assert_eq!(authority::owner_of_account(&pool, &account).await.unwrap(), Some(RiskOwner::Web), "during the idle gap the heartbeat is stale: WEB");
+
+    let cache = cache_at(&w.symbol_name, dec!(90));
+    let sender = monitor::spawn_live_trigger(pool.clone(), book::PriceSource::Ticks(cache), None, Arc::new(|| {}));
+    sender.send(gap_fire(&w, &account)).unwrap();
+    assert!(wait_closed(&pool, &positions).await, "the engine stopped the gapped account out from the first fire");
+    assert!(heartbeat_age_secs(&pool).await < 15.0, "the first fire after the idle gap restored the heartbeat");
+    let (later,): (bool,) = sqlx::query_as(
+        r#"SELECT bool_and(t."createdAt" >= (SELECT "beatAt" FROM "RiskEngineHeartbeat" WHERE name = 'risk')) FROM "Transaction" t WHERE t."accountId" = $1 AND t.type = 'TRADE_PNL'"#,
+    )
+    .bind(&account).fetch_one(&pool).await.unwrap();
+    assert!(later, "every close started after the beat (the beat came first)");
+    for p in &positions {
+        assert_eq!(count(&pool, r#"SELECT count(*) FROM "Transaction" WHERE "referenceId" = $1 AND type = 'TRADE_PNL'"#, p).await, 1, "one close per position");
+    }
+    assert!(trace_lines().iter().filter(|t| t["accountId"] == account.as_str()).all(|t| t["actor"] == "RUST"), "every action on the account was the engine's");
+    cleanup(&pool, &w).await;
+}
+
+/// The same idle gap, ended by the first PASS (the floor under the fires) instead of a fire: the pass touches before it lists the engine's accounts, so
+/// a stale heartbeat does not hide them from the first pass.
+#[tokio::test]
+async fn the_first_pass_after_an_idle_gap_beats_before_it_lists_and_acts_as_the_owner() {
+    let Some(pool) = pool().await else { return };
+    let _x = exclusive(&pool).await;
+    let mut w = broker_and_symbol(&pool, "RUST", false).await;
+    let (account, positions) = add_account(&pool, &w, "LIVE", dec!(20), None, 2).await;
+    w.accounts.push(Acct { id: account.clone(), mode: "LIVE", kind: Kind::StopOut, position: positions[0].clone() });
+    set_heartbeat(&pool, 172_800, 30).await;
+    past_the_touch_gap().await;
+
+    let cache = cache_at(&w.symbol_name, dec!(90));
+    let gate = monitor::ShadowGate { cache: cache.clone(), watch: Arc::new(std::sync::OnceLock::new()) };
+    let handle = monitor::spawn_risk_passes(pool.clone(), Duration::from_millis(100), monitor::new_run_guard(), book::PriceSource::Ticks(cache), None, gate);
+    let closed = wait_closed(&pool, &positions).await;
+    handle.abort();
+    assert!(closed, "the first pass after the idle gap stopped the account out");
+    assert!(heartbeat_age_secs(&pool).await < 15.0, "the pass restored the heartbeat before it acted");
+    assert!(trace_lines().iter().filter(|t| t["accountId"] == account.as_str()).all(|t| t["actor"] == "RUST"));
+    cleanup(&pool, &w).await;
+}
+
+/// WEEKEND GAP, THE RACE: positions held over the weekend (heartbeat two days stale, so the web counts as the owner), the first Sunday tick gaps
+/// through the stop-out, and the engine's fire and a web evaluation run at the same moment. Whoever the account lock serializes first acts; the
+/// other reads what was left and never repeats it. Repeated: exactly one close per position and the account ends fully closed. The margin-call
+/// notice (the edge) is one row however many sides tried.
+#[tokio::test]
+async fn weekend_gap_the_engine_fire_and_a_web_pass_race_and_exactly_one_side_acts_once() {
+    let Some(pool) = pool().await else { return };
+    let _x = exclusive(&pool).await;
+    let mut w = broker_and_symbol(&pool, "RUST", false).await;
+    let cache = cache_at(&w.symbol_name, dec!(90));
+    let sender = monitor::spawn_live_trigger(pool.clone(), book::PriceSource::Ticks(cache), None, Arc::new(|| {}));
+    let (mut web_first, mut engine_first) = (0, 0);
+    for round in 0..8 {
+        // three positions of 1 lot at 100, the gap to 90, balance 20: a stop-out; plus an account in the margin-call band only (balance 98, one lot at 90: 97.8 %)
+        let (account, positions) = add_account(&pool, &w, "LIVE", dec!(20), None, 3).await;
+        let (calling, calling_pos) = add_account(&pool, &w, "LIVE", dec!(98), None, 1).await;
+        w.accounts.push(Acct { id: account.clone(), mode: "LIVE", kind: Kind::StopOut, position: positions[0].clone() });
+        w.accounts.push(Acct { id: calling.clone(), mode: "LIVE", kind: Kind::MarginCall, position: calling_pos[0].clone() });
+        set_heartbeat(&pool, 172_800, 30).await;
+        past_the_touch_gap().await;
+
+        let web = {
+            let pool = pool.clone();
+            let (positions, calling) = (positions.clone(), calling.clone());
+            tokio::spawn(async move {
+                // the web's evaluation of both accounts at the same instant (its stand-in: the web actor of the same routines)
+                let mut acted = 0;
+                for p in &positions {
+                    let mut tx = pool.begin().await.unwrap();
+                    match book::close_position_as(&mut tx, Some(RiskOwner::Web), p, dec!(1), dec!(90), dec!(-10), "Stop-out (automatic): web").await.unwrap() {
+                        book::CloseResult::Closed(_) => {
+                            tx.commit().await.unwrap();
+                            acted += 1;
+                        }
+                        _ => {
+                            tx.rollback().await.unwrap();
+                            break;
+                        }
+                    }
+                }
+                let edge = book::apply_margin_call_edge_as(&pool, Some(RiskOwner::Web), &calling, book::MarginCallEdge::In { margin_level: dec!(95), call_level: dec!(100) }).await.unwrap();
+                (acted, edge)
+            })
+        };
+        // the engine's fire arrives at a different moment each round: together with the web's pass, a little after it, well after it
+        tokio::time::sleep(Duration::from_millis([0, 2, 6, 15, 40, 80, 1, 25][round])).await;
+        sender.send(gap_fire(&w, &account)).unwrap();
+        sender.send(gap_fire(&w, &calling)).unwrap();
+        let (web_closes, web_edge) = web.await.unwrap();
+        assert!(wait_closed(&pool, &positions).await, "round {round}: the account ended fully closed");
+        for _ in 0..200 {
+            if flag(&pool, &calling).await {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await; // let the engine's batch finish
+        let dup: Vec<(String, i64)> = sqlx::query_as(r#"SELECT "referenceId", count(*) FROM "Transaction" WHERE "accountId" = $1 AND type = 'TRADE_PNL' GROUP BY 1 HAVING count(*) > 1"#).bind(&account).fetch_all(&pool).await.unwrap();
+        assert!(dup.is_empty(), "round {round}: a position was closed twice: {dup:?}");
+        for p in &positions {
+            assert_eq!(count(&pool, r#"SELECT count(*) FROM "Transaction" WHERE "referenceId" = $1 AND type = 'TRADE_PNL'"#, p).await, 1, "round {round}: one close per position");
+        }
+        assert_eq!(count(&pool, r#"SELECT count(*) FROM "PostCloseEffect" WHERE "accountId" = $1 AND kind = 'MARGIN_CALL'"#, &calling).await, 1, "round {round}: one margin-call notice (web edge {web_edge})");
+        if web_closes > 0 { web_first += 1 } else { engine_first += 1 }
+    }
+    eprintln!("weekend-gap race over 8 rounds: the web closed first in {web_first}, the engine in {engine_first}; never both on one position");
+    cleanup(&pool, &w).await;
+}
+
+/// The idle gap itself acts on nothing: the heartbeat going stale and coming back hands a healthy account over and back with no action in between.
+#[tokio::test]
+async fn an_idle_gap_with_nothing_to_do_acts_on_nothing_on_either_side_and_ownership_returns_with_the_first_beat() {
+    let Some(pool) = pool().await else { return };
+    let _x = exclusive(&pool).await;
+    let mut w = broker_and_symbol(&pool, "RUST", false).await;
+    let (account, positions) = add_account(&pool, &w, "LIVE", dec!(1000), None, 1).await;
+    w.accounts.push(Acct { id: account.clone(), mode: "LIVE", kind: Kind::StopOut, position: positions[0].clone() });
+    let cache = cache_at(&w.symbol_name, dec!(100));
+    for _ in 0..3 {
+        set_heartbeat(&pool, 172_800, 30).await;
+        let r = book::with_price_source(book::PriceSource::Ticks(cache.clone()), monitor::evaluate_account(&pool, None, &account)).await.unwrap().unwrap();
+        assert!(r.not_owner && r.closed.is_empty(), "stale: the engine's own evaluation is refused inside its transaction and writes nothing: {r:?}");
+        authority::beat(&pool).await.unwrap();
+        let r = book::with_price_source(book::PriceSource::Ticks(cache.clone()), monitor::evaluate_account(&pool, None, &account)).await.unwrap().unwrap();
+        assert!(!r.not_owner && r.closed.is_empty(), "after the beat the engine owns the healthy account and has nothing to do: {r:?}");
+        assert_eq!(authority::owner_of_account(&pool, &account).await.unwrap(), Some(RiskOwner::Rust));
+    }
+    assert_eq!(status(&pool, &positions[0]).await, "OPEN");
+    assert_eq!(count(&pool, r#"SELECT count(*) FROM "Transaction" WHERE "accountId" = $1 AND type = 'TRADE_PNL'"#, &account).await, 0);
+    assert_eq!(count(&pool, r#"SELECT count(*) FROM "PostCloseEffect" WHERE "accountId" = $1"#, &account).await, 0);
+    cleanup(&pool, &w).await;
+}
