@@ -148,6 +148,8 @@ export async function approveFundsRequest(
     /** SINGLE = completed by one BROKER_ADMIN under Broker.withdrawalApproval SINGLE (recorded in the audit row) */
     approvalMode?: "SINGLE" | "DUAL";
     markedByAdminId?: string | null;
+    /** false only for a row staff recorded themselves (lib/staff-funds.ts, owner 2026-10-06): no KYC gate. Default true. */
+    requireKyc?: boolean;
   }
 ): Promise<ApproveResult> {
   const balanceBefore = await lockAccountBalance(tx, params.accountId); // row lock: lib/account-lock.ts
@@ -155,8 +157,9 @@ export async function approveFundsRequest(
 
   if (params.type === "WITHDRAWAL") {
     // Phase 2 batch 8 (issue 132, owner decision): no payout without approved KYC -- checked here, inside the paying
-    // transaction, so every path to COMPLETED goes through it
-    if (!(await withdrawalKycApproved(tx, params.accountId))) return { ok: false, error: WITHDRAWAL_KYC_ADMIN_MESSAGE, code: "KYC_REQUIRED" };
+    // transaction, so every path to COMPLETED of a CLIENT request goes through it. Staff-recorded rows skip it (owner
+    // 2026-10-06: staff deposit/withdraw is the broker's own decision).
+    if (params.requireKyc !== false && !(await withdrawalKycApproved(tx, params.accountId))) return { ok: false, error: WITHDRAWAL_KYC_ADMIN_MESSAGE, code: "KYC_REQUIRED" };
     // Audit 2026-09-24 (money): not only balance >= 0 -- a payout must not leave open positions under-margined.
     // Checked on the LOCKED balance (lib/margin.ts checkBalanceDebit).
     const debit = await checkBalanceDebit(tx, { accountId: params.accountId, amount: params.amount.neg(), balance: balanceBefore });

@@ -104,9 +104,11 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   if (step.step === "error") {
     return NextResponse.json({ error: step.error }, { status: 400 });
   }
-  // Phase 2 batch 8 (issue 132): no withdrawal is marked or paid without approved KYC (approveFundsRequest checks it
-  // again inside the paying transaction)
-  if (existing.type === "WITHDRAWAL" && !(await withdrawalKycApproved(prisma, existing.accountId))) {
+  // Phase 2 batch 8 (issue 132): no CLIENT withdrawal request is marked or paid without approved KYC (approveFundsRequest
+  // checks it again inside the paying transaction). A row staff recorded (createdByAdminId set, lib/staff-funds.ts) is
+  // the broker's own decision and never checks KYC (owner 2026-10-06).
+  const staffRecorded = existing.createdByAdminId !== null;
+  if (existing.type === "WITHDRAWAL" && !staffRecorded && !(await withdrawalKycApproved(prisma, existing.accountId))) {
     return NextResponse.json({ error: WITHDRAWAL_KYC_ADMIN_MESSAGE, code: WITHDRAWAL_KYC_CODE }, { status: 409 });
   }
   if (step.step === "mark") {
@@ -135,6 +137,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         type: existing.type as "DEPOSIT" | "WITHDRAWAL",
         approvalMode: step.single ? "SINGLE" : "DUAL",
         markedByAdminId: existing.markedByAdminId,
+        requireKyc: !staffRecorded,
       })
     )
     .catch(raced);
