@@ -41,8 +41,10 @@ async fn pool() -> Option<PgPool> {
     Some(sqlx::postgres::PgPoolOptions::new().max_connections(16).connect(&url).await.expect("connect to the scratch DB"))
 }
 
-/// Serializes the tests of this file (a pass lists every RUST-owned account in the database) and switches enforcement on.
-async fn exclusive() -> tokio::sync::MutexGuard<'static, ()> {
+/// Serializes the tests of this file (a pass lists every RUST-owned account in the database), switches enforcement on, and removes what an
+/// earlier run left behind (a test that panics skips its own cleanup; a leftover RUST broker would be acted on by the next pass, and a
+/// leftover symbol would show up in other suites' checks of the shared database).
+async fn exclusive(pool: &PgPool) -> tokio::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
     static INIT: std::sync::Once = std::sync::Once::new();
     INIT.call_once(|| {
@@ -50,7 +52,13 @@ async fn exclusive() -> tokio::sync::MutexGuard<'static, ()> {
         let path = std::env::temp_dir().join(format!("risk-split-engine-{}.jsonl", Uuid::new_v4()));
         std::env::set_var("VYX_RISK_ACTION_TRACE", &path);
     });
-    LOCK.get_or_init(|| tokio::sync::Mutex::new(())).lock().await
+    let guard = LOCK.get_or_init(|| tokio::sync::Mutex::new(())).lock().await;
+    for table in ["PostCloseEffect", "Notification", "AuditLog", "Transaction", "Position", "Order", "Account", "BrokerSymbol", "Group"] {
+        sqlx::query(&format!(r#"DELETE FROM "{table}" WHERE "brokerId" LIKE 'split-%'"#)).execute(pool).await.unwrap();
+    }
+    sqlx::query(r#"DELETE FROM "Broker" WHERE id LIKE 'split-%'"#).execute(pool).await.unwrap();
+    sqlx::query(r#"DELETE FROM "Symbol" WHERE id LIKE 'split-s-%'"#).execute(pool).await.unwrap();
+    guard
 }
 
 fn trace_lines() -> Vec<serde_json::Value> {
@@ -91,7 +99,8 @@ const COMBINATIONS: [(&str, &str, bool); 4] = [
 async fn broker_and_symbol(pool: &PgPool, authority: &str, demo_only: bool) -> World {
     let tag = Uuid::new_v4().simple().to_string()[..10].to_string();
     let (broker, group, symbol) = (format!("split-{tag}"), format!("split-g-{tag}"), format!("split-s-{tag}"));
-    let symbol_name = format!("vSP{}", &tag[..6].to_uppercase());
+    // not a "v*" name: those are the synthetic feed's symbols (other suites check the shared database for them)
+    let symbol_name = format!("ZSP{}", &tag[..6].to_uppercase());
     sqlx::query(r#"INSERT INTO "Broker" (id, name, subdomain, "riskAuthority", "riskAuthorityDemoOnly", "updatedAt") VALUES ($1, $1, $1, $2::"RiskAuthority", $3, now())"#)
         .bind(&broker).bind(authority).bind(demo_only).execute(pool).await.unwrap();
     sqlx::query(r#"INSERT INTO "Group" (id, "brokerId", name, leverage, "marginCallLevel", "stopOutLevel", "updatedAt") VALUES ($1, $2, $1, 1, 100, 50, now())"#)
@@ -141,7 +150,21 @@ async fn world(pool: &PgPool, authority: &str, demo_only: bool) -> World {
     w
 }
 
+/// Waits until nothing is writing for this broker any more (the live worker may still be finishing the stop-out it was fired for: it closes the
+/// next position after the one a test asserted on), then deletes what the test made.
 async fn cleanup(pool: &PgPool, w: &World) {
+    let mut last = (-1i64, -1i64);
+    let mut quiet = 0;
+    for _ in 0..100 {
+        let a: (i64,) = sqlx::query_as(r#"SELECT count(*) FROM "Transaction" WHERE "brokerId" = $1"#).bind(&w.broker).fetch_one(pool).await.unwrap();
+        let b: (i64,) = sqlx::query_as(r#"SELECT count(*) FROM "PostCloseEffect" WHERE "brokerId" = $1"#).bind(&w.broker).fetch_one(pool).await.unwrap();
+        quiet = if (a.0, b.0) == last { quiet + 1 } else { 0 };
+        last = (a.0, b.0);
+        if quiet >= 3 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
     for sql in [
         r#"DELETE FROM "PostCloseEffect" WHERE "brokerId" = $1"#,
         r#"DELETE FROM "Notification" WHERE "brokerId" = $1"#,
@@ -214,7 +237,7 @@ async fn assert_engine_acted_exactly_on_its_own(pool: &PgPool, w: &World, author
 #[tokio::test]
 async fn every_combination_the_engine_pass_acts_on_exactly_the_accounts_the_rule_gives_it() {
     let Some(pool) = pool().await else { return };
-    let _x = exclusive().await;
+    let _x = exclusive(&pool).await;
     for (name, authority_name, demo_only) in COMBINATIONS {
         let w = world(&pool, authority_name, demo_only).await;
         let cache = cache_at(&w.symbol_name, dec!(90));
@@ -228,7 +251,7 @@ async fn every_combination_the_engine_pass_acts_on_exactly_the_accounts_the_rule
 #[tokio::test]
 async fn every_combination_a_fire_for_any_account_acts_only_on_the_ones_the_engine_owns() {
     let Some(pool) = pool().await else { return };
-    let _x = exclusive().await;
+    let _x = exclusive(&pool).await;
     for (name, authority_name, demo_only) in COMBINATIONS {
         let w = world(&pool, authority_name, demo_only).await;
         let cache = cache_at(&w.symbol_name, dec!(90));
@@ -250,7 +273,7 @@ async fn every_combination_a_fire_for_any_account_acts_only_on_the_ones_the_engi
 #[tokio::test]
 async fn the_sql_forms_of_the_rule_agree_with_risk_owner_of_on_every_combination() {
     let Some(pool) = pool().await else { return };
-    let _x = exclusive().await;
+    let _x = exclusive(&pool).await;
     for authority_name in ["WEB", "RUST"] {
         for demo_only in [true, false] {
             let mut w = broker_and_symbol(&pool, authority_name, demo_only).await;
@@ -294,7 +317,7 @@ async fn wait_blocked(pool: &PgPool, like: &str) -> bool {
 #[tokio::test]
 async fn a_flip_waits_for_an_engine_close_in_flight_and_the_next_engine_close_is_refused() {
     let Some(pool) = pool().await else { return };
-    let _x = exclusive().await;
+    let _x = exclusive(&pool).await;
     let mut w = broker_and_symbol(&pool, "RUST", false).await;
     let (account, positions) = add_account(&pool, &w, "LIVE", dec!(1000), None, 2).await;
     w.accounts.push(Acct { id: account.clone(), mode: "LIVE", kind: Kind::StopOut, position: positions[0].clone() });
@@ -338,7 +361,7 @@ async fn a_flip_waits_for_an_engine_close_in_flight_and_the_next_engine_close_is
 #[tokio::test]
 async fn flipping_to_web_in_the_middle_of_an_engine_evaluation_stops_it_after_the_close_that_already_committed() {
     let Some(pool) = pool().await else { return };
-    let _x = exclusive().await;
+    let _x = exclusive(&pool).await;
     let mut w = broker_and_symbol(&pool, "RUST", false).await;
     // three positions of 1 lot, 100 -> 90: equity 20 - 30 = -10: every one is stopped out in turn
     let (account, positions) = add_account(&pool, &w, "LIVE", dec!(20), None, 3).await;
@@ -375,7 +398,7 @@ async fn flipping_to_web_in_the_middle_of_an_engine_evaluation_stops_it_after_th
 #[tokio::test]
 async fn the_fire_evaluates_the_accounts_current_positions_not_the_positions_at_the_fire() {
     let Some(pool) = pool().await else { return };
-    let _x = exclusive().await;
+    let _x = exclusive(&pool).await;
     let mut w = broker_and_symbol(&pool, "RUST", false).await;
     // a healthy account at the fire: balance 1000, one 1-lot position 100 -> 90 (equity 990 on 90)
     let (account, first) = add_account(&pool, &w, "LIVE", dec!(1000), None, 1).await;
@@ -403,7 +426,7 @@ async fn the_fire_evaluates_the_accounts_current_positions_not_the_positions_at_
 #[tokio::test]
 async fn the_fire_prices_the_account_at_the_tick_it_carries() {
     let Some(pool) = pool().await else { return };
-    let _x = exclusive().await;
+    let _x = exclusive(&pool).await;
     for (carried_age_secs, expected_close) in [(0i64, dec!(60)), (20, dec!(90))] {
         let mut w = broker_and_symbol(&pool, "RUST", false).await;
         let (account, positions) = add_account(&pool, &w, "LIVE", dec!(20), None, 1).await;
@@ -428,7 +451,7 @@ async fn the_fire_prices_the_account_at_the_tick_it_carries() {
 #[tokio::test]
 async fn an_s3_ramp_sends_the_margin_call_notice_from_the_fire_and_stops_out_on_the_crossing_tick() {
     let Some(pool) = pool().await else { return };
-    let _x = exclusive().await;
+    let _x = exclusive(&pool).await;
     let mut w = broker_and_symbol(&pool, "RUST", true).await; // demo-only: DEMO is the engine's, LIVE the web's
     let (demo, demo_pos) = add_account(&pool, &w, "DEMO", dec!(20), None, 1).await;
     let (live, live_pos) = add_account(&pool, &w, "LIVE", dec!(20), None, 1).await;
@@ -497,7 +520,7 @@ async fn an_s3_ramp_sends_the_margin_call_notice_from_the_fire_and_stops_out_on_
 #[tokio::test]
 async fn a_position_opened_just_before_a_gap_is_stopped_out_by_the_engine_on_the_announced_reload() {
     let Some(pool) = pool().await else { return };
-    let _x = exclusive().await;
+    let _x = exclusive(&pool).await;
     let mut w = broker_and_symbol(&pool, "RUST", false).await;
     // a healthy account (balance 1000, leverage 10) with one 1-lot position 100: at the gap (80) it holds 12250 %
     let (account, first) = add_account(&pool, &w, "LIVE", dec!(1000), None, 1).await;

@@ -77,6 +77,13 @@ async function main() {
     if (!p || p.status !== "CLOSED") fail(`traced close of ${ref} by ${t.actor} but the position is not closed`);
   }
 
+  // E. effects (a mirror close, a coverage close) are NOT risk actions: they run once on their own guards on whichever account they land.
+  // Count where they landed: in `cross` every client is the engine's DEMO account and every master / coverage account the web's LIVE one, so
+  // every effect is a DEMO account's effect landing on a LIVE account -- the variant must have produced some, or it proved nothing.
+  const effects = Object.entries(snapshot.positions).filter(([, p]) => p.status === "CLOSED" && (p.closedBy === "mirror" || p.closedBy === "coverage_auto"));
+  const effectsOn = (side: "WEB" | "RUST") => effects.filter(([id]) => owners.get(accountOfPosition.get(id) ?? "") === side).length;
+  if (variant === "cross" && effectsOn("WEB") === 0) fail("cross: no effect landed on a web-owned account, the variant proved nothing about effects across sides");
+
   // D. a side with accounts that had risk work took action; a side with none took none
   const workAccounts = new Set(riskClosed.map(([id]) => accountOfPosition.get(id) ?? ""));
   const sideWork = (side: "WEB" | "RUST") => [...workAccounts].filter((a) => owners.get(a) === side).length;
@@ -127,7 +134,7 @@ async function main() {
     process.exit(1);
   }
   const rustOwners = [...owners.values()].filter((o) => o === "RUST").length;
-  console.log(`[load:split-check] OK variant=${variant}: ${rustOwners} engine-owned / ${owners.size - rustOwners} web-owned accounts; web ${byActor(web)}; engine ${byActor(engine)}; ${riskClosed.length} risk-closed positions, each by exactly one side, its owner${drill}`);
+  console.log(`[load:split-check] OK variant=${variant}: ${rustOwners} engine-owned / ${owners.size - rustOwners} web-owned accounts; web ${byActor(web)}; engine ${byActor(engine)}; ${riskClosed.length} risk-closed positions, each by exactly one side, its owner; ${effects.length} effect closes (mirror / coverage): ${effectsOn("WEB")} landed on web-owned accounts, ${effectsOn("RUST")} on engine-owned${drill}`);
 }
 
 main().catch((err) => {

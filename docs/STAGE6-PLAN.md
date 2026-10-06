@@ -81,6 +81,10 @@ LiveFire -> spawn_live_trigger (one worker, batches queued fires, one evaluation
   stood at the fire. Test: `risk_split_db::the_fire_evaluates_the_accounts_current_positions_not_the_positions_at_the_fire` (mutation M8 makes it fail).
 * **UNPINNED means the margin-call edge is live too:** `apply_margin_call_edge` and the outbox run from the fire, so the notice goes out on the tick,
   not at the next 5 s pass (gate test below, section 7).
+* **A fill is seen at once (the owner's 2026-10-01 fill-event gate).** The book learns of a new position by a reload the web asks for (`order.filled` and the other
+  book events); right after such a reload `MarginWatch::decide_engine_now` evaluates the engine-owned accounts of the new book at the LATEST price of every symbol,
+  with the same damping as a tick. So a position opened just before a gap, which the gap tick could not see, is stopped out at the gap price when the reload lands, not at
+  the next pass. Test: the gap tick alone does nothing; `request_reload` stops the position out (`risk_split_db`, mutation M9).
 * **Floor under the fires:** `spawn_risk_passes`, a live pass over the engine-owned accounts every `MARGIN_MONITOR_INTERVAL_SECS` (5), idle-gated like the
   shadow pass (no fresh price anywhere = no work and no database read: the Neon lesson).
 * A stale routing cache can only mis-ROUTE a fire; the evaluation reads the database's own answer first (`owner_of_account`) and drops an account that
@@ -318,9 +322,9 @@ Returning to RUST afterwards is the 9.1 / 9.3 statement again.
 | fires evaluated by the engine's own unpinned live `evaluate_account` | built here | in RUST mode the web skips the broker, so a fire that only called the web would do nothing |
 | web skips engine-owned accounts at every acting path, with the in-transaction owner check | built here | otherwise both sides act |
 | engine live mode: write pool verified, post-close delivery required, authority read from the database | built here | the engine must be able to write and deliver, and must not act on web-owned accounts |
-| the margin-call event and the end-of-episode notice and event | built here (commit `__MC_COMMIT__`) | a RUST-owned trader would silently lose real-time margin-call UI that WEB-owned traders have |
+| the margin-call event and the end-of-episode notice and event | built here (commit `9634b5d`) | a RUST-owned trader would silently lose real-time margin-call UI that WEB-owned traders have |
 | `POST_CLOSE_SECRET` on Vercel and `VYX_POST_CLOSE_URL` / `VYX_POST_CLOSE_SECRET` on the VPS | deploy step | without them an engine close is not delivered (mirror, coverage, notices); risk mode refuses to start without them |
-| fill-event evaluation (a position opened < 1 s before a gap is stopped out on the gap tick) | already deployed (`068a7dc`, 2026-10-05) | the engine's trigger book must contain a new position at once |
+| fill-event evaluation: a position opened just before a gap is stopped out at once (the 2026-10-01 owner gate) | built here (`MarginWatch::decide_engine_now`, test `risk_split_db::a_position_opened_just_before_a_gap...`, mutation M9) | in RUST mode nobody else would catch it before the engine's next 5 s pass: the web skips the account |
 | torn-read-safe snapshot, flap damping of margin-call edges, tick price source, FX age limit, idle gate | already deployed | the engine's decisions must equal the web's |
 | soak: 7 clean days, 2 weekend reopens (the 2nd is Sun 2026-10-11 21:00-22:00 UTC), 1 NFP, then the final 7-scenario sweep on the exact cutover build | the owner's gate, unchanged | evidence |
 
