@@ -14,6 +14,7 @@ import { conversionRate, loadFxLookup } from "@/lib/fx";
 import * as mirror from "@/lib/mirror";
 import * as coverage from "@/lib/coverage";
 import { loadSellAskRules, valuationAsk } from "@/lib/ask-markup";
+import { assertRiskActorInTx, loadRiskOwners, traceRiskAction, unlessNotOwner, webOwnedAccountIds } from "@/lib/risk-owner";
 
 // The legacy Next.js trading path (the one actually carrying every
 // broker's live traffic today, per docs/decisions.md ADR-003) has never
@@ -207,11 +208,18 @@ export type RiskMonitorResult = {
 
 /** One account's state as a batched pass read it (evaluateAccountsRisk); evaluateAccountRisk then skips its own first
  *  read. Anything it re-reads after a close is read fresh, as always. */
-type PreloadedAccount = { positions: OpenPositionWithMarket[]; account: RiskAccount | null };
+type PreloadedAccount = { positions: OpenPositionWithMarket[]; account: RiskAccount | null; ownerChecked?: boolean };
 
 export async function evaluateAccountRisk(accountId: string, preloaded?: PreloadedAccount): Promise<RiskMonitorResult> {
   const slTpClosed: string[] = [];
   const stopOutClosed: string[] = [];
+
+  // Stage 6 (risk authority): an account the ENGINE owns is not evaluated here at all -- not SL / TP, not stop-out, not the
+  // margin-call notice (lib/risk-owner.ts). This read is the cheap prefilter; every write below re-checks inside its own
+  // transaction, so a flip between this read and a write cannot make both sides act.
+  if (!preloaded?.ownerChecked && (await loadRiskOwners(prisma, [accountId])).get(accountId) === "RUST") {
+    return { evaluated: false, slTpClosed, stopOutClosed };
+  }
 
   // Neon load (2026-09-26): the positions (with their prices) and the account are read ONCE, together, and re-read
   // only after something closed -- a close is the only thing in here that changes them. Before, every account was
@@ -233,22 +241,28 @@ export async function evaluateAccountRisk(accountId: string, preloaded?: Preload
     const reason = slTpTrigger(p);
     if (!reason || p.bid == null || p.ask == null) continue;
     const cp = closePriceFor(p.side, p.bid, p.ask);
-    const outcome = await prisma.$transaction((tx) =>
-      closePositionInTx(tx, {
-        position: {
-          id: p.id,
-          accountId: p.accountId,
-          brokerId: p.brokerId,
-          side: p.side,
-          openPrice: p.openPrice,
-          volume: p.volume,
-          symbol: { contractSize: p.contractSize },
-        },
-        closePrice: cp,
-        note: reason === "stop_loss" ? "Stop loss hit (automatic)" : "Take profit hit (automatic)",
-      })
+    const outcome = await unlessNotOwner(() =>
+      prisma.$transaction((tx) =>
+        closePositionInTx(tx, {
+          position: {
+            id: p.id,
+            accountId: p.accountId,
+            brokerId: p.brokerId,
+            side: p.side,
+            openPrice: p.openPrice,
+            volume: p.volume,
+            symbol: { contractSize: p.contractSize },
+          },
+          closePrice: cp,
+          note: reason === "stop_loss" ? "Stop loss hit (automatic)" : "Take profit hit (automatic)",
+          riskActor: "WEB",
+        })
+      )
     );
+    // the account changed hands (the engine owns it now): this side stops acting on it
+    if (outcome === null) return { evaluated: false, slTpClosed, stopOutClosed };
     if (outcome.closed) {
+      traceRiskAction("WEB", "close", accountId, p.id);
       changed = true;
       slTpClosed.push(p.id);
       // Closes respect DEALER mode: SL / TP bypass the dealer, so a close the client had queued for
@@ -285,24 +299,30 @@ export async function evaluateAccountRisk(accountId: string, preloaded?: Preload
     if (marginLevel.gt(stopOutLevel)) break; // back above threshold -- done
     if (!worst) break; // below threshold but nothing closeable has a live price right now -- stuck, not this function's call to guess a price
 
-    const outcome = await prisma.$transaction((tx) =>
-      closePositionInTx(tx, {
-        position: {
-          id: worst!.position.id,
-          accountId,
-          brokerId: worst!.position.brokerId,
-          side: worst!.position.side,
-          openPrice: worst!.position.openPrice,
-          volume: worst!.position.volume,
-          symbol: { contractSize: worst!.position.contractSize },
-        },
-        closePrice: worst.closePrice,
-        note: `Stop-out (automatic): margin level ${marginLevel.toFixed(2)}% at or below ${stopOutLevel}%`,
-      })
+    const outcome = await unlessNotOwner(() =>
+      prisma.$transaction((tx) =>
+        closePositionInTx(tx, {
+          position: {
+            id: worst!.position.id,
+            accountId,
+            brokerId: worst!.position.brokerId,
+            side: worst!.position.side,
+            openPrice: worst!.position.openPrice,
+            volume: worst!.position.volume,
+            symbol: { contractSize: worst!.position.contractSize },
+          },
+          closePrice: worst.closePrice,
+          note: `Stop-out (automatic): margin level ${marginLevel.toFixed(2)}% at or below ${stopOutLevel}%`,
+          riskActor: "WEB",
+        })
+      )
     );
+    // the account changed hands (the engine owns it now): this side stops acting on it
+    if (outcome === null) return { evaluated: false, slTpClosed, stopOutClosed };
     stopOutClosed.push(worst.position.id);
     changed = true;
     if (outcome.closed) {
+      traceRiskAction("WEB", "close", accountId, worst.position.id);
       await cancelPendingClose(prisma, worst.position.id, "position closed by stop-out").catch((err) => console.error("cancelPendingClose failed", err));
       // docs/briefs/VYX-MIRROR-V0-BRIEF.md -- mirror hook gap fix: an
       // automatic stop-out close is a real close, same as SL/TP above.
@@ -378,7 +398,8 @@ export async function evaluateAccountRisk(accountId: string, preloaded?: Preload
 // nothing). Only the winner writes the two MARGIN_CALL rows, in the same transaction as the flag, so the flag and the
 // notifications commit together. Returns whether this call started the episode (the caller then publishes MarginCall).
 async function setMarginCall(accountId: string, brokerId: string, body: string): Promise<boolean> {
-  return prisma.$transaction(async (tx) => {
+  const done = await unlessNotOwner(() => prisma.$transaction(async (tx) => {
+    await assertRiskActorInTx(tx, accountId, "WEB");
     const set = await tx.account.updateMany({ where: { id: accountId, marginCallNotifiedAt: null }, data: { marginCallNotifiedAt: new Date() } });
     if (set.count !== 1) return false;
     // Trader-facing copy (accountId set) and a separate dealer/broker-staff-facing copy (accountId omitted) -- same
@@ -387,7 +408,9 @@ async function setMarginCall(accountId: string, brokerId: string, body: string):
     await createNotification(tx, { brokerId, type: "MARGIN_CALL", title: "Margin call", body, entityType: "Account", entityId: accountId, accountId });
     await createNotification(tx, { brokerId, type: "MARGIN_CALL", title: "Margin call", body, entityType: "Account", entityId: accountId });
     return true;
-  });
+  }));
+  if (done) traceRiskAction("WEB", "margin_call_in", accountId, "");
+  return done === true;
 }
 
 // Item 3 (2026-09-26): the END of a margin-call episode is recorded too, not only its start. The flag clear and a
@@ -395,12 +418,15 @@ async function setMarginCall(accountId: string, brokerId: string, body: string):
 // can tell an in-edge the web deliberately did not re-notify (its episode still open) from a real miss. Guarded on the
 // flag being set, so two concurrent evaluations record one end. Returns whether this call ended the episode.
 async function clearMarginCall(accountId: string, brokerId: string, body: string): Promise<boolean> {
-  return prisma.$transaction(async (tx) => {
+  const done = await unlessNotOwner(() => prisma.$transaction(async (tx) => {
+    await assertRiskActorInTx(tx, accountId, "WEB");
     const cleared = await tx.account.updateMany({ where: { id: accountId, marginCallNotifiedAt: { not: null } }, data: { marginCallNotifiedAt: null } });
     if (cleared.count === 0) return false;
     await createNotification(tx, { brokerId, type: "MARGIN_CALL_CLEARED", title: "Margin call over", body, entityType: "Account", entityId: accountId, accountId });
     return true;
-  });
+  }));
+  if (done) traceRiskAction("WEB", "margin_call_out", accountId, "");
+  return done === true;
 }
 
 // Evaluates every account that currently holds an open position in the
@@ -430,8 +456,10 @@ const PASS_CHUNK = 50;
  * account falls back to reading its own, exactly as before. Returns the number of accounts whose evaluation threw (each
  * one logged with `failLabel`).
  */
-export async function evaluateAccountsRisk(accountIds: string[], failLabel: string): Promise<number> {
+export async function evaluateAccountsRisk(accountIdsAll: string[], failLabel: string): Promise<number> {
   let errors = 0;
+  // Stage 6 (risk authority): the accounts the engine owns are not this side's to evaluate (lib/risk-owner.ts)
+  const accountIds = await webOwnedAccountIds(prisma, accountIdsAll);
   for (let start = 0; start < accountIds.length; start += PASS_CHUNK) {
     const chunk = accountIds.slice(start, start + PASS_CHUNK);
     let shared: { book: Map<string, OpenPositionWithMarket[]>; accounts: Map<string, RiskAccount> } | null = null;
@@ -446,7 +474,7 @@ export async function evaluateAccountsRisk(accountIds: string[], failLabel: stri
             return null;
           });
       }
-      const preloaded: PreloadedAccount | undefined = shared ? { positions: shared.book.get(accountId) ?? [], account: shared.accounts.get(accountId) ?? null } : undefined;
+      const preloaded: PreloadedAccount | undefined = shared ? { positions: shared.book.get(accountId) ?? [], account: shared.accounts.get(accountId) ?? null, ownerChecked: true } : undefined;
       try {
         const r = await evaluateAccountRisk(accountId, preloaded);
         if (r.slTpClosed.length > 0 || r.stopOutClosed.length > 0) shared = null;

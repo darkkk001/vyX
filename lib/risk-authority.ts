@@ -1,8 +1,12 @@
-// Rust cutover Stage 6: who acts on an account's risk (SL / TP, stop-out, margin call).
+// Rust cutover Stage 6: who acts on an account's risk (SL / TP, stop-out, margin call, resting-order triggers).
 //
 // Pure helpers on the Broker fields. WEB is the fallback for anything missing or unrecognised, so a broker row read
 // before the migration, a partial select, or a future enum value never hands risk to the engine by accident.
-// Not wired into any evaluator yet.
+//
+// THE rule, in three places that must agree: this file, engine/order-management/src/authority.rs (risk_owner_of and its
+// SQL form RUST_OWNED_SQL). lib/risk-authority-cases.json is the case matrix both implementations are tested on
+// (scripts/stage6/gen-risk-authority-cases.mjs writes it). The DB side (who may act, checked inside the acting
+// transaction) is lib/risk-owner.ts.
 
 export type RiskOwner = "WEB" | "RUST";
 
@@ -21,10 +25,12 @@ export function isRustAuthoritative(broker: RiskAuthorityFields | null | undefin
   return getRiskAuthority(broker) === "RUST";
 }
 
-/** Per-account owner: RUST only when the broker is RUST AND (not demo-only, or the account is DEMO).
- *  A missing demo-only value counts as demo-only (the safer, narrower scope). */
-export function riskOwnerOf(broker: RiskAuthorityFields | null | undefined, accountMode: "DEMO" | "LIVE"): RiskOwner {
+/** Per-account owner: RUST only when the broker is RUST AND the account mode is a known one AND (the broker is not
+ *  demo-only, or the account is DEMO). A missing demo-only value counts as demo-only (the safer, narrower scope); a
+ *  missing or unknown account mode is WEB. */
+export function riskOwnerOf(broker: RiskAuthorityFields | null | undefined, accountMode: string | null | undefined): RiskOwner {
   if (!isRustAuthoritative(broker)) return "WEB";
+  if (accountMode !== "DEMO" && accountMode !== "LIVE") return "WEB";
   const demoOnly = broker?.riskAuthorityDemoOnly !== false;
   return !demoOnly || accountMode === "DEMO" ? "RUST" : "WEB";
 }

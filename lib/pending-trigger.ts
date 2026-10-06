@@ -12,6 +12,8 @@ import { resolveBookType, applySpreadMarkup, pipSize, chargeCommission } from "@
 import { resolveFillPricing, logSpreadWarning } from "@/lib/pricing-engine";
 import { checkAccountPreTradeMargin } from "@/lib/margin";
 import { orderAuditFields } from "@/lib/order-audit";
+import { assertRiskActorInTx, loadRiskOwners, NotRiskOwnerError } from "@/lib/risk-owner";
+import type { RiskOwner } from "@/lib/risk-authority";
 import { getLivePriceRow, getFreshPrices } from "@/lib/live-price";
 import {
   checkTradingHalted,
@@ -72,9 +74,11 @@ async function rejectPending(
   order: { id: string; brokerId: string; accountId: string; side: string; volume: Prisma.Decimal; type: string; requestedPrice: Prisma.Decimal | null; symbol: { name: string } },
   accountNumber: string,
   reason: string,
-  origin: "server" | "client"
+  origin: "server" | "client",
+  actor?: RiskOwner
 ): Promise<boolean> {
   const done = await prisma.$transaction(async (tx) => {
+    if (actor) await assertRiskActorInTx(tx, order.accountId, actor);
     const claimed = await tx.order.updateMany({ where: { id: order.id, status: "PENDING" }, data: { status: "REJECTED", rejectionReason: reason } });
     if (claimed.count === 0) return false;
     await tx.auditLog.create({
@@ -108,7 +112,21 @@ async function rejectPending(
  * price that crossed the entry: the server's own bid/ask for a server trigger, the client's price for the legacy
  * route (checked against the live price as before).
  */
-export async function triggerPendingOrder(orderId: string, triggerPrice: string, origin: "server" | "client"): Promise<TriggerOutcome> {
+export async function triggerPendingOrder(orderId: string, triggerPrice: string, origin: "server" | "client", actor?: RiskOwner): Promise<TriggerOutcome> {
+  // Stage 6 (risk authority): a SERVER trigger names the side it runs for (WEB for the web's own sweeps, RUST for the route
+  // the engine calls). Each claim below re-checks that side's ownership inside its own transaction (lib/risk-owner.ts), so a
+  // resting order is claimed by the owner only; a claim that finds the account changed hands rolls back, writes nothing and
+  // reports "skipped". The legacy client fill route (origin "client") is the client's own action and is not gated: its claim
+  // is status-guarded, so a fill can never happen twice.
+  try {
+    return await triggerPendingOrderInner(orderId, triggerPrice, origin, actor);
+  } catch (err) {
+    if (err instanceof NotRiskOwnerError) return { kind: "skipped", reason: "not the risk owner of this account" };
+    throw err;
+  }
+}
+
+async function triggerPendingOrderInner(orderId: string, triggerPrice: string, origin: "server" | "client", actor?: RiskOwner): Promise<TriggerOutcome> {
   const order = await prisma.order.findUnique({ where: { id: orderId }, include: { symbol: { select: { name: true } } } });
   if (!order || order.status !== "PENDING" || (order.type !== "LIMIT" && order.type !== "STOP")) {
     return { kind: "skipped", reason: order ? `order is ${order.status}` : "order not found" };
@@ -123,7 +141,7 @@ export async function triggerPendingOrder(orderId: string, triggerPrice: string,
 
   const fail = async (reason: string, detail?: Record<string, string>): Promise<TriggerOutcome> => {
     if (isTransient(reason)) return { kind: "kept", reason };
-    const rejected = await rejectPending(order, account.accountNumber, reason, origin);
+    const rejected = await rejectPending(order, account.accountNumber, reason, origin, actor);
     return rejected ? { kind: "rejected", reason, detail } : { kind: "skipped", reason: "already handled" };
   };
 
@@ -162,6 +180,7 @@ export async function triggerPendingOrder(orderId: string, triggerPrice: string,
     const originalType = order.type;
     const originalRequestedPrice = order.requestedPrice?.toString() ?? null;
     const queued = await prisma.$transaction(async (tx) => {
+      if (actor) await assertRiskActorInTx(tx, order.accountId, actor);
       const claimed = await tx.order.updateMany({ where: { id: order.id, status: "PENDING", type: originalType }, data: { type: "MARKET", requestedPrice: triggerPrice } });
       if (claimed.count === 0) return null;
       await tx.auditLog.create({
@@ -250,6 +269,7 @@ export async function triggerPendingOrder(orderId: string, triggerPrice: string,
 
   const bookType = resolveBookType(account.group.category);
   const result = await prisma.$transaction(async (tx) => {
+    if (actor) await assertRiskActorInTx(tx, order.accountId, actor);
     // status-guarded claim: the server trigger and an older terminal's fill POST can never both fill this order
     const claimed = await tx.order.updateMany({ where: { id: order.id, status: "PENDING" }, data: { status: "FILLED", filledPrice: fillPrice, filledAt: new Date() } });
     if (claimed.count === 0) return null;
@@ -320,13 +340,18 @@ export async function triggerPendingOrder(orderId: string, triggerPrice: string,
  * Server sweep: every resting LIMIT / STOP on `symbols` (all when omitted) whose entry the current price reaches is
  * triggered. Called by the engine's tick hook (?symbols=), its 60 s full pass, and the 5-minute cron.
  */
-export async function evaluatePendingTriggers(symbols?: string[]): Promise<{ checked: number; filled: number; queued: number; rejected: number; kept: number }> {
-  const orders = await prisma.order.findMany({
+export async function evaluatePendingTriggers(symbols?: string[], scope: RiskOwner = "WEB"): Promise<{ checked: number; filled: number; queued: number; rejected: number; kept: number }> {
+  const found = await prisma.order.findMany({
     where: { status: "PENDING", type: { in: ["LIMIT", "STOP"] }, requestedPrice: { not: null }, ...(symbols && symbols.length ? { symbol: { name: { in: symbols } } } : {}) },
     select: { id: true, side: true, type: true, requestedPrice: true, accountId: true, symbolId: true, symbol: { select: { name: true } } },
     orderBy: { createdAt: "asc" },
     take: 500,
   });
+  // Stage 6 (risk authority): only the orders of accounts this scope owns. The web's own sweeps (cron, hook, backstop) run
+  // as WEB and never touch an engine-owned account's resting order; the engine's route (app/api/internal/pending-trigger)
+  // runs as RUST and touches nothing else.
+  const owners = await loadRiskOwners(prisma, [...new Set(found.map((o) => o.accountId))]);
+  const orders = found.filter((o) => (owners.get(o.accountId) ?? "WEB") === scope);
   // A BUY trades at its account's ask (lib/ask-markup.ts, owner decision 2026-09-26): its entry is reached when THAT ask
   // reaches it -- the price it then fills at -- not the raw ask (a BUY LIMIT used to trigger up to one markup early).
   const [prices, askRules] = await Promise.all([
@@ -339,7 +364,7 @@ export async function evaluatePendingTriggers(symbols?: string[]): Promise<{ che
     if (!p || !pendingTriggered(o, o.requestedPrice!, p.bid, o.side === "BUY" ? markedUpAsk(askRules.get(o.accountId, o.symbolId) ?? RAW_ASK(0), p.bid, p.ask) : p.ask)) continue;
     const triggerPrice = (o.side === "BUY" ? p.ask : p.bid).toString();
     try {
-      const r = await triggerPendingOrder(o.id, triggerPrice, "server");
+      const r = await triggerPendingOrder(o.id, triggerPrice, "server", scope);
       if (r.kind === "filled") out.filled++;
       else if (r.kind === "queued") out.queued++;
       else if (r.kind === "rejected") out.rejected++;

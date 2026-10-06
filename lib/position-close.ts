@@ -3,6 +3,8 @@ import { Prisma, type Position, type Transaction } from "@prisma/client";
 import { computeRealizedPnl } from "@/lib/trading";
 import { quoteToAccountRate } from "@/lib/fx";
 import { lockAccountFunds } from "@/lib/account-lock";
+import { assertRiskActorInTx } from "@/lib/risk-owner";
+import type { RiskOwner } from "@/lib/risk-authority";
 
 export type ClosePositionInput = {
   id: string;
@@ -42,6 +44,11 @@ export async function closePositionInTx(
     closePrice: Prisma.Decimal | number | string;
     closeVolume?: Prisma.Decimal; // defaults to the position's full volume
     note?: string | null;
+    // Stage 6 (risk authority): set ONLY by the automatic risk path (SL / TP, stop-out). The close then re-checks, inside
+    // this transaction and with the account row locked, that this actor owns the account's risk, and throws
+    // NotRiskOwnerError (the whole transaction rolls back, nothing is written) when the account has changed hands.
+    // Manual closes, mirror / coverage follow-ups and staff closes never set it: they are not risk evaluations.
+    riskActor?: RiskOwner;
   }
 ): Promise<ClosePositionOutcome> {
   const { position, closePrice, note } = params;
@@ -100,6 +107,7 @@ export async function closePositionInTx(
   // written: measured 10 concurrent closes of +1,000 landing +3,000 to +4,000. FOR UPDATE makes the second
   // close wait for the first to commit and read its result.
   const funds = await lockAccountFunds(tx, position.accountId);
+  if (params.riskActor) await assertRiskActorInTx(tx, position.accountId, params.riskActor);
   const balanceBefore = funds.balance;
   const rawBalanceAfter = balanceBefore.add(realizedPnl); // the true, uncapped result of this trade -- always what the TRADE_PNL row below records
 
