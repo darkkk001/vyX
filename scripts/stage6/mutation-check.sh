@@ -30,9 +30,18 @@ trap restore EXIT
 WANT="${*:-M1 M2 M3 M4 M5 M6 M7 M8}"
 MISSED=0
 web_tests() { env $WEBENV npx vitest run "$@" > /tmp/mutation-web.log 2>&1; }
-engine_tests() { (cd engine && cargo test -q -p order-management "$@" -- --test-threads=1) > /tmp/mutation-engine.log 2>&1; }
+engine_tests() { (cd engine && cargo test -q -p order-management "$@" -- --test-threads=1) >> /tmp/mutation-engine.log 2>&1; }
 report() { # name, exit code of the tests (non-zero = the mutation was detected)
-  if [ "$2" -ne 0 ]; then echo "DETECTED  $1"; else echo "MISSED    $1"; MISSED=1; fi
+  # a mutation that merely breaks the BUILD is not a detection: the tests never ran
+  if [ "$2" -ne 0 ] && grep -qE 'could not compile|error\[E[0-9]+\]|SyntaxError|Transform failed|Failed to resolve' /tmp/mutation-engine.log /tmp/mutation-web.log 2>/dev/null; then
+    echo "BROKEN    $1  (the mutated code does not build: fix the mutation)"; MISSED=1
+  elif [ "$2" -ne 0 ]; then
+    echo "DETECTED  $1"
+    grep -hE -- '--- FAILED| FAIL  ' /tmp/mutation-engine.log /tmp/mutation-web.log 2>/dev/null | sort -u | head -3 | sed 's/^/            by: /'
+  else
+    echo "MISSED    $1"; MISSED=1
+  fi
+  : > /tmp/mutation-engine.log; : > /tmp/mutation-web.log
 }
 want() { case " $WANT " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 
