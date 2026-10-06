@@ -54,6 +54,15 @@ enum ExecutionEngine {
   RUST
 }
 
+// Rust cutover Stage 6 (docs/STAGE6-PLAN.md): who acts on an account's risk (SL / TP, stop-out, margin call).
+// WEB = lib/risk-monitor.ts (today, every broker). RUST = the engine's own live evaluation; every web risk
+// evaluator then skips the account. Read per evaluation by both sides, and re-checked inside every risk write's
+// transaction (Broker row FOR SHARE), so exactly one side writes at any moment and a flip waits for in-flight writes.
+enum RiskAuthority {
+  WEB
+  RUST
+}
+
 enum AdminRole {
   SUPER_ADMIN // VyXTechnologies staff — brokerId is null
   BROKER_ADMIN // broker-scoped admin, full backoffice access
@@ -323,6 +332,11 @@ model Broker {
   status                     BrokerStatus    @default(ACTIVE)
   // See ExecutionEngine's own doc comment -- currently decorative.
   executionEngine            ExecutionEngine @default(LEGACY)
+  // Stage 6 risk authority (see enum RiskAuthority). An account is RUST-owned only when its broker is RUST AND
+  // (riskAuthorityDemoOnly is false OR the account is a DEMO account). Default demo-only: the first flip of a
+  // broker moves its demo accounts only; its live accounts move only when this is set to false on purpose.
+  riskAuthority              RiskAuthority   @default(WEB)
+  riskAuthorityDemoOnly      Boolean         @default(true)
   // Phase 1 trust pack -- when true, any AdminUser for this broker
   // (MANAGER/BROKER_ADMIN/SUPPORT) without twoFactorEnabled is forced
   // through 2FA setup on next login before reaching the manage shell
