@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { resolveEntityLabels } from "@/lib/entity-labels";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { tradingDayStart } from "@/lib/trading-day";
+import { bookPnlFloating, bookPnlRealized, currencyAmountsJson, legacySum, type CurrencyAmount } from "@/lib/book-pnl";
 import { humanizeAction, excludeSuperAdminActor, auditActorKind, auditSource } from "@/lib/audit-labels";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -118,29 +119,19 @@ export async function GET() {
     }
   }
 
-  // Broker-book result of trades closed since the trading day started (owner decision: 22:00 UTC rollover). The
-  // broker's side of a broker-book trade is the client's result reversed. Live client accounts only: no demo, no
-  // voided trades (status CLOSED only), no broker hedge legs (coverage account / COVERAGE groups). Audit 2026-09-24.
-  // Batch 4 (owner decision): the charts' own D1 boundary, DST-aware (lib/trading-day.ts); 22:00 UTC only as fallback
+  // Book P/L today (owner 2026-10-06): one definition, lib/book-pnl.ts, shared with Reports so the same range gives the
+  // same number. Only positions opened in a Book / Dealing desk group, live client accounts, no hedge account, no
+  // voided trades; commission and swap are not part of it. The day starts at the charts' D1 boundary (lib/trading-day.ts).
   const tradingDay = await tradingDayStart(now);
   const tradingDayStartAt = tradingDay.start;
-  const closedToday = await prisma.position.aggregate({
-    where: {
-      brokerId,
-      status: "CLOSED",
-      deletedAt: null,
-      bookType: "B_BOOK",
-      closedAt: { gte: tradingDayStartAt },
-      account: { accountMode: "LIVE", isInternal: false, group: { category: { not: "COVERAGE" } } },
-      ...(brokerRow.coverageAccountId ? { accountId: { not: brokerRow.coverageAccountId } } : {}),
-    },
-    _sum: { realizedPnl: true },
-    _count: true,
-  });
-  const brokerBookClosedToday = -(closedToday._sum.realizedPnl?.toNumber() ?? 0);
+  const scope = { brokerId, coverageAccountId: brokerRow.coverageAccountId };
+  const [bookToday, bookFloating] = await Promise.all([bookPnlRealized(prisma, scope, tradingDayStartAt), bookPnlFloating(prisma, scope)]);
+  // legacy single numbers for backoffice 1.0.61 and older (summed across currencies; new clients read bookPnl)
+  const brokerBookClosedToday = legacySum(bookToday);
+  const brokerBookClosedTodayCount = bookToday.reduce((t, r) => t + r.count, 0);
 
   const entityLabels = await resolveEntityLabels(brokerId, activity.map((a) => ({ entityType: a.entityType, entityId: a.entityId })));
-  const clients = await clientTotals(brokerId, brokerRow.coverageAccountId, { sevenDaysAgo, fourteenDaysAgo, thirtyDaysAgo, tradingDayStartAt });
+  const clients = await clientTotals(brokerId, brokerRow.coverageAccountId, { sevenDaysAgo, fourteenDaysAgo, thirtyDaysAgo }, bookToday);
   return NextResponse.json({
     // Step 2 (owner 2026-09-30): the same figures for real clients only (live accounts, no broker hedge / coverage
     // account, no COVERAGE-category group), with every money figure split by account currency and never summed across
@@ -156,7 +147,13 @@ export async function GET() {
     // a positive amount of money waiting to go out (withdrawal rows are stored negative)
     pendingWithdrawalSum: Math.abs(pendingWithdrawals._sum.amount?.toNumber() ?? 0),
     brokerBookClosedToday,
-    brokerBookClosedTodayCount: closedToday._count,
+    brokerBookClosedTodayCount,
+    bookPnl: {
+      from: tradingDayStartAt.toISOString(),
+      realized: currencyAmountsJson(bookToday),
+      floating: currencyAmountsJson(bookFloating.byCurrency),
+      floatingUnpriced: bookFloating.unpriced,
+    },
     tradingDayStart: tradingDayStartAt.toISOString(),
     tradingDaySource: tradingDay.source,
     netDeposits7d,
@@ -177,7 +174,7 @@ export async function GET() {
   });
 }
 
-type Windows = { sevenDaysAgo: Date; fourteenDaysAgo: Date; thirtyDaysAgo: Date; tradingDayStartAt: Date };
+type Windows = { sevenDaysAgo: Date; fourteenDaysAgo: Date; thirtyDaysAgo: Date };
 type MoneyRow = { currency: string; bucket: string; n: bigint; total: Prisma.Decimal | null };
 
 // Step 2: "a client" = a LIVE account that is not the broker's hedge (coverage) account and whose group, if any, is not
@@ -188,7 +185,7 @@ function clientAccountSql(brokerId: string, coverageAccountId: string | null) {
     AND NOT EXISTS (SELECT 1 FROM "Group" g WHERE g.id = a."groupId" AND g.category = 'COVERAGE')`;
 }
 
-async function clientTotals(brokerId: string, coverageAccountId: string | null, w: Windows) {
+async function clientTotals(brokerId: string, coverageAccountId: string | null, w: Windows, bookToday: CurrencyAmount[]) {
   const who = clientAccountSql(brokerId, coverageAccountId);
   const [counts] = await prisma.$queryRaw<{ total: bigint; new7d: bigint; activeAccounts: bigint; openPositions: bigint }[]>`
     SELECT COUNT(*)::bigint AS total,
@@ -209,10 +206,6 @@ async function clientTotals(brokerId: string, coverageAccountId: string | null, 
       UNION ALL
       SELECT t."accountId", t.amount, 'deposits30d' FROM "Transaction" t
       WHERE t."brokerId" = ${brokerId} AND t.type = 'DEPOSIT' AND t.status = 'COMPLETED' AND t."createdAt" >= ${w.thirtyDaysAgo}
-      UNION ALL
-      SELECT p."accountId", -p."realizedPnl", 'brokerBookClosedToday' FROM "Position" p
-      WHERE p."brokerId" = ${brokerId} AND p.status = 'CLOSED' AND p."deletedAt" IS NULL AND p."bookType" = 'B_BOOK'
-        AND p."closedAt" >= ${w.tradingDayStartAt} AND p."realizedPnl" IS NOT NULL
     ) x JOIN "Account" a ON a.id = x."accountId"
     WHERE x.bucket IS NOT NULL AND ${who}
     GROUP BY 1, 2`;
@@ -223,6 +216,12 @@ async function clientTotals(brokerId: string, coverageAccountId: string | null, 
     // pending withdrawals are money waiting to go out: shown positive (rows are stored negative)
     row[r.bucket] = { count: Number(r.n), amount: (r.bucket === "pendingWithdrawals" ? total.abs() : total).toFixed(2) };
     byCcy.set(r.currency, row);
+  }
+  // per-currency Book P/L today comes from the shared lib/book-pnl.ts, never a query of its own here
+  for (const b of bookToday) {
+    const row = byCcy.get(b.currency) ?? {};
+    row.brokerBookClosedToday = { count: b.count, amount: b.amount.toFixed(2) };
+    byCcy.set(b.currency, row);
   }
   const zero = { count: 0, amount: "0.00" };
   return {
