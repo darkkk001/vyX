@@ -166,7 +166,9 @@ export async function recordStaffFunds(
   if (prior) return outcomeOf(prior, true, []);
 
   const account = await prisma.account.findUniqueOrThrow({ where: { id: accountId }, select: { status: true, balance: true } });
-  if (account.status !== "ACTIVE") throw new StaffFundsError("ACCOUNT_NOT_ACTIVE", "the account is not active");
+  // Owner 2026-10-06: a staff WITHDRAWAL is allowed on a SUSPENDED or CLOSED account (paying the client out); a staff
+  // DEPOSIT into one is refused. Every other withdrawal guard (balance, margin, approval) still applies.
+  if (account.status !== "ACTIVE" && input.type === "DEPOSIT") throw new StaffFundsError("ACCOUNT_NOT_ACTIVE", "the account is not active: deposits are refused");
 
   // Payment method (decision 3): the built-in MANUAL method is always accepted; any other id must be one of the
   // broker's enabled methods. Its min/max are NOT enforced for staff, only reported back as warnings.

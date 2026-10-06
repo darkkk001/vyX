@@ -224,9 +224,8 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   if (!brokerSymbol) {
     return NextResponse.json({ error: "symbol no longer available for this broker" }, { status: 400 });
   }
-  if (order.account.status !== "ACTIVE") {
-    return NextResponse.json({ error: "account is not active" }, { status: 400 });
-  }
+  // Account status (owner rule 2026-09-29): a suspended / closed account can still CLOSE, it just opens nothing. So no
+  // status gate before the close branch; the open path below refuses via checkAccountStatusForOpen.
 
   const broker = await prisma.broker.findUniqueOrThrow({ where: { id: brokerId } });
 
