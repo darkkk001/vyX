@@ -2,7 +2,6 @@ import "dotenv/config";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { Prisma, RoutingCategory } from "@prisma/client";
-import { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
 
 // Book P/L (owner 2026-10-06, lib/book-pnl.ts): -sum of client trading profit on positions opened in a Book or Dealing
