@@ -23,6 +23,7 @@ vi.mock("@/lib/nats", async (importOriginal) => {
 });
 
 import { prisma } from "@/lib/prisma";
+import { setRiskHeartbeat } from "@/tests/support/risk-heartbeat";
 import { evaluateAccountRisk, evaluateAccountsRisk } from "@/lib/risk-monitor";
 import { evaluatePendingTriggers, triggerPendingOrder } from "@/lib/pending-trigger";
 import { riskOwnerOf, type RiskOwner } from "@/lib/risk-authority";
@@ -88,7 +89,8 @@ function readTrace(): { actor: string; kind: string; accountId: string; ref: str
   return fs.readFileSync(traceFile, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
 }
 
-beforeAll(() => {
+beforeAll(async () => {
+  await setRiskHeartbeat(prisma, 0); // the engine is alive for the split tests (the watchdog has its own: lib/risk-watchdog.test.ts)
   traceFile = path.join(os.tmpdir(), `risk-split-web-${randomUUID()}.jsonl`);
   process.env.VYX_RISK_ACTION_TRACE = traceFile;
 });

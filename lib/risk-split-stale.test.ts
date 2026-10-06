@@ -4,7 +4,7 @@
 // every write re-checks the owner inside its own transaction (assertRiskActorInTx), so the web still acts on nothing.
 // Remove the in-transaction check and these tests fail (scripts/stage6/mutation-check.sh, mutation M2).
 import { randomUUID } from "node:crypto";
-import { afterAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { Prisma } from "@prisma/client";
 
 vi.mock("@/lib/nats", async (importOriginal) => {
@@ -22,6 +22,7 @@ vi.mock("@/lib/risk-owner", async (importOriginal) => {
 });
 
 import { prisma } from "@/lib/prisma";
+import { setRiskHeartbeat } from "@/tests/support/risk-heartbeat";
 import { evaluateAccountRisk, evaluateAccountsRisk } from "@/lib/risk-monitor";
 import { closePositionInTx } from "@/lib/position-close";
 import { NotRiskOwnerError } from "@/lib/risk-owner";
@@ -49,6 +50,10 @@ async function scenario(kind: "SO" | "SL" | "MC") {
   const p = await prisma.position.create({ data: { brokerId: b.id, accountId: a.id, symbolId: sym.id, originOrderId: order.id, side: "BUY", volume: D(1), openPrice: D(100), slPrice: kind === "SL" ? D(95) : null } });
   return { brokerId: b.id, accountId: a.id, positionId: p.id, symbol: sym.name };
 }
+
+beforeAll(async () => {
+  await setRiskHeartbeat(prisma, 0); // the engine is alive for the split tests (the watchdog has its own: lib/risk-watchdog.test.ts)
+});
 
 afterAll(async () => {
   if (brokers.length) {

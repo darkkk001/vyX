@@ -2477,3 +2477,13 @@ model NotificationRead {
   @@id([notificationId, adminId])
   @@index([adminId])
 }
+
+// Rust cutover Stage 6, engine-down watchdog: the engine's heartbeat (one row, name 'risk'). Older than staleAfterSecs = the engine counts as DOWN
+// and every RUST-owned account is WEB-owned (lib/risk-owner.ts, engine authority.rs). Written only by the engine; read inside acting transactions.
+model RiskEngineHeartbeat {
+  name           String   @id
+  beatAt         DateTime @default(now()) @db.Timestamptz(3)
+  staleAfterSecs Int      @default(30)
+  engineVersion  String?
+  instance       String?
+}

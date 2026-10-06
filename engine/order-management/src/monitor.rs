@@ -1029,6 +1029,7 @@ pub fn spawn_risk_passes(
             if !LOG.observe(gate.gate()) {
                 continue;
             }
+            crate::authority::touch(&pool, std::time::Duration::from_secs(1)).await;
             run_pass_guarded(&pool, None, &guard).await;
         }
     }))
@@ -1050,6 +1051,8 @@ pub fn spawn_live_trigger(
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<market_data::risk_hook::LiveFire>();
     tokio::spawn(async move {
         while let Some(first) = rx.recv().await {
+            // the engine is alive and about to act: assert it (the idle gate may have stopped the timer's beats)
+            crate::authority::touch(&pool, std::time::Duration::from_secs(1)).await;
             let mut batch: Vec<market_data::risk_hook::LiveFire> = vec![first];
             while let Ok(more) = rx.try_recv() {
                 match batch.iter_mut().find(|f| f.account_id == more.account_id) {

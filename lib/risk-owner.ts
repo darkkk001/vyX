@@ -2,7 +2,7 @@ import "server-only";
 import fs from "node:fs";
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { riskOwnerOf, type RiskOwner } from "@/lib/risk-authority";
+import { effectiveRiskOwner, riskOwnerOf, type RiskOwner } from "@/lib/risk-authority";
 
 // Rust cutover Stage 6: the DATABASE side of the risk-authority split (the pure rule is lib/risk-authority.ts).
 //
@@ -45,8 +45,9 @@ async function riskColumnsPresent(): Promise<boolean> {
   if (Date.now() - columnsProbedAt < 30_000) return false;
   columnsProbedAt = Date.now();
   const rows = await prisma.$queryRaw<{ n: number }[]>`
-    SELECT count(*)::int AS n FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'Broker' AND column_name IN ('riskAuthority', 'riskAuthorityDemoOnly')`;
-  columnsPresent = Number(rows[0]?.n) === 2;
+    SELECT (count(*) FILTER (WHERE table_name = 'Broker') + 10 * count(*) FILTER (WHERE table_name = 'RiskEngineHeartbeat'))::int AS n FROM information_schema.columns
+    WHERE table_schema = current_schema() AND ((table_name = 'Broker' AND column_name IN ('riskAuthority', 'riskAuthorityDemoOnly')) OR (table_name = 'RiskEngineHeartbeat' AND column_name IN ('beatAt', 'staleAfterSecs')))`;
+  columnsPresent = Number(rows[0]?.n) === 22; // 2 Broker columns + 2 heartbeat columns (x10)
   if (!columnsPresent) console.error("risk-owner: Broker.riskAuthority is not there yet (Stage 6 migration not applied): every account is WEB-owned");
   return columnsPresent;
 }
@@ -59,10 +60,11 @@ export async function loadRiskOwners(db: Db, accountIds: string[]): Promise<Map<
     for (const id of accountIds) out.set(id, "WEB");
     return out;
   }
-  const rows = await db.$queryRaw<{ id: string; mode: string; authority: string; demoOnly: boolean }[]>`
-    SELECT a.id, a."accountMode"::text AS mode, b."riskAuthority"::text AS authority, b."riskAuthorityDemoOnly" AS "demoOnly"
+  const rows = await db.$queryRaw<{ id: string; mode: string; authority: string; demoOnly: boolean; alive: boolean }[]>`
+    SELECT a.id, a."accountMode"::text AS mode, b."riskAuthority"::text AS authority, b."riskAuthorityDemoOnly" AS "demoOnly",
+           COALESCE((SELECT clock_timestamp() - h."beatAt" <= make_interval(secs => h."staleAfterSecs") FROM "RiskEngineHeartbeat" h WHERE h.name = 'risk'), false) AS alive
     FROM "Account" a JOIN "Broker" b ON b.id = a."brokerId" WHERE a.id = ANY(${accountIds}::text[])`;
-  for (const r of rows) out.set(r.id, riskOwnerOf({ riskAuthority: r.authority, riskAuthorityDemoOnly: r.demoOnly }, r.mode));
+  for (const r of rows) out.set(r.id, effectiveRiskOwner({ riskAuthority: r.authority, riskAuthorityDemoOnly: r.demoOnly }, r.mode, r.alive));
   return out;
 }
 
@@ -89,7 +91,15 @@ export async function assertRiskActorInTx(tx: Prisma.TransactionClient, accountI
     FROM "Account" a JOIN "Broker" b ON b.id = a."brokerId" WHERE a.id = ${accountId}
     FOR NO KEY UPDATE OF a FOR SHARE OF b`;
   if (rows.length === 0) throw new Error(`account ${accountId} not found`);
-  const owner = riskOwnerOf({ riskAuthority: rows[0].authority, riskAuthorityDemoOnly: rows[0].demoOnly }, rows[0].mode);
+  let owner = riskOwnerOf({ riskAuthority: rows[0].authority, riskAuthorityDemoOnly: rows[0].demoOnly }, rows[0].mode);
+  if (owner === "RUST") {
+    // The engine-down watchdog (docs/STAGE6-PLAN.md section 14): a RUST-owned account stays with the engine only while the engine's heartbeat is fresh
+    // by the database clock. The heartbeat row is locked FOR SHARE: the engine's next beat (an UPDATE of that row) waits for this transaction, so a
+    // stale reading cannot flip to fresh under an action already decided on it. Stale or missing = the web owns the account.
+    const beat = await tx.$queryRaw<{ alive: boolean }[]>`
+      SELECT (clock_timestamp() - "beatAt" <= make_interval(secs => "staleAfterSecs")) AS alive FROM "RiskEngineHeartbeat" WHERE name = 'risk' FOR SHARE`;
+    owner = effectiveRiskOwner({ riskAuthority: rows[0].authority, riskAuthorityDemoOnly: rows[0].demoOnly }, rows[0].mode, beat[0]?.alive === true);
+  }
   if (owner !== actor) throw new NotRiskOwnerError(accountId, actor, owner);
 }
 

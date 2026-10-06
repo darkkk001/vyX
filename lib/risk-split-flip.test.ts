@@ -5,7 +5,7 @@
 // RUST (the engine takes over). The web's next close is refused inside its own transaction, the evaluation stops (no further close,
 // no margin-call write), and what is left open is the engine's. The first close stands: it was the owner's when it ran.
 import { randomUUID } from "node:crypto";
-import { afterAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { Prisma } from "@prisma/client";
 
 vi.mock("@/lib/nats", async (importOriginal) => {
@@ -30,11 +30,16 @@ vi.mock("@/lib/queued-close", async (importOriginal) => {
 });
 
 import { prisma } from "@/lib/prisma";
+import { setRiskHeartbeat } from "@/tests/support/risk-heartbeat";
 import { evaluateAccountRisk } from "@/lib/risk-monitor";
 
 const D = (v: number | string) => new Prisma.Decimal(v);
 const brokers: string[] = [];
 const symbols: string[] = [];
+
+beforeAll(async () => {
+  await setRiskHeartbeat(prisma, 0); // the engine is alive for the split tests (the watchdog has its own: lib/risk-watchdog.test.ts)
+});
 
 afterAll(async () => {
   if (brokers.length) {

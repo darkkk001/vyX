@@ -58,7 +58,23 @@ async fn exclusive(pool: &PgPool) -> tokio::sync::MutexGuard<'static, ()> {
     }
     sqlx::query(r#"DELETE FROM "Broker" WHERE id LIKE 'split-%'"#).execute(pool).await.unwrap();
     sqlx::query(r#"DELETE FROM "Symbol" WHERE id LIKE 'split-s-%'"#).execute(pool).await.unwrap();
+    // the engine-down watchdog (Stage 6): every test starts with a heartbeat that is fresh for a year, so the split tests prove the SPLIT
+    // (the watchdog tests below set their own ages)
+    set_heartbeat(pool, 0, 31_536_000).await;
     guard
+}
+
+/// The heartbeat row as a test wants it: last beat `age_secs` ago by the database clock, stale after `stale_after` seconds.
+async fn set_heartbeat(pool: &PgPool, age_secs: i64, stale_after: i32) {
+    sqlx::query(
+        r#"INSERT INTO "RiskEngineHeartbeat" (name, "beatAt", "staleAfterSecs") VALUES ('risk', clock_timestamp() - ($1 || ' seconds')::interval, $2)
+           ON CONFLICT (name) DO UPDATE SET "beatAt" = clock_timestamp() - ($1 || ' seconds')::interval, "staleAfterSecs" = $2"#,
+    )
+    .bind(age_secs.to_string())
+    .bind(stale_after)
+    .execute(pool)
+    .await
+    .unwrap();
 }
 
 fn trace_lines() -> Vec<serde_json::Value> {
@@ -571,5 +587,128 @@ async fn a_position_opened_just_before_a_gap_is_stopped_out_by_the_engine_on_the
     let (close_price,): (Decimal,) = sqlx::query_as(r#"SELECT "closePrice" FROM "Position" WHERE id = $1"#).bind(format!("gap-p-{tag}")).fetch_one(&pool).await.unwrap();
     assert_eq!(close_price, dec!(80), "at the gap price");
     // a WEB-owned account in the same situation is not looked at by this path
+    cleanup(&pool, &w).await;
+}
+
+// ---- the engine-down watchdog (docs/STAGE6-PLAN.md section 14) ---------------------------------------------------------------------
+
+/// A stale heartbeat hands EVERY account to the web, in every form the engine reads the owner in: the pass listing, the single-account
+/// read, the in-transaction read, the close and the margin-call edge (the two acting transactions), the fire. A fresh one hands them back.
+#[tokio::test]
+async fn a_stale_heartbeat_hands_every_account_to_the_web_in_every_form_and_a_beat_hands_them_back() {
+    let Some(pool) = pool().await else { return };
+    let _x = exclusive(&pool).await;
+    let mut w = broker_and_symbol(&pool, "RUST", false).await;
+    let (account, positions) = add_account(&pool, &w, "LIVE", dec!(20), None, 2).await;
+    w.accounts.push(Acct { id: account.clone(), mode: "LIVE", kind: Kind::StopOut, position: positions[0].clone() });
+    let (demo, _demo_pos) = add_account(&pool, &w, "DEMO", dec!(1000), None, 1).await;
+
+    // fresh: the engine owns both
+    set_heartbeat(&pool, 5, 30).await;
+    assert_eq!(authority::owner_of_account(&pool, &account).await.unwrap(), Some(RiskOwner::Rust));
+    assert!(authority::rust_owned_account_ids_with_open_positions(&pool).await.unwrap().contains(&account));
+
+    // stale (the last beat 31 s ago, stale after 30 s)
+    set_heartbeat(&pool, 31, 30).await;
+    for id in [&account, &demo] {
+        assert_eq!(authority::owner_of_account(&pool, id).await.unwrap(), Some(RiskOwner::Web), "prefilter read");
+        let mut tx = pool.begin().await.unwrap();
+        assert_eq!(authority::lock_owner_in_tx(&mut tx, id).await.unwrap(), Some(RiskOwner::Web), "in-transaction read");
+        tx.rollback().await.unwrap();
+    }
+    let listed = authority::rust_owned_account_ids_with_open_positions(&pool).await.unwrap();
+    assert!(!listed.contains(&account) && !listed.contains(&demo), "the pass lists nothing of a stale engine: {listed:?}");
+    // the acting transactions refuse INSIDE themselves (the prefilter is bypassed here on purpose: this is the stalled engine that
+    // decided before it stalled and acts after)
+    let mut tx = pool.begin().await.unwrap();
+    let refused = book::close_position_as(&mut tx, Some(RiskOwner::Rust), &positions[0], dec!(1), dec!(90), dec!(-10), "Stop-out (automatic): test").await.unwrap();
+    assert!(matches!(refused, book::CloseResult::NotOwner(RiskOwner::Web)), "{refused:?}");
+    tx.rollback().await.unwrap();
+    assert_eq!(status(&pool, &positions[0]).await, "OPEN", "a stale engine's close wrote nothing");
+    assert!(!book::apply_margin_call_edge_as(&pool, Some(RiskOwner::Rust), &account, book::MarginCallEdge::In { margin_level: dec!(80), call_level: dec!(100) }).await.unwrap());
+    assert!(!flag(&pool, &account).await, "a stale engine's margin-call edge wrote nothing");
+    // a whole evaluation and a fire do nothing too
+    let cache = cache_at(&w.symbol_name, dec!(90));
+    let r = book::with_price_source(book::PriceSource::Ticks(cache.clone()), monitor::evaluate_account(&pool, None, &account)).await.unwrap().unwrap();
+    assert!(r.not_owner && r.closed.is_empty(), "{r:?}");
+    let fire = LiveFire { account_id: account.clone(), ticks: HashMap::from([(w.symbol_name.clone(), (dec!(90), dec!(90), chrono::Utc::now()))]), source: FireSource::Margin };
+    let r = book::with_price_source(book::PriceSource::Ticks(cache.clone()), monitor::evaluate_live_fire(&pool, None, fire)).await.unwrap().unwrap();
+    assert!(r.not_owner && r.closed.is_empty(), "{r:?}");
+    assert_eq!(count(&pool, r#"SELECT count(*) FROM "Transaction" WHERE "accountId" = $1 AND type = 'TRADE_PNL'"#, &account).await, 0);
+    assert!(trace_lines().iter().all(|t| t["accountId"] != account.as_str()), "no traced action: the stale engine took none");
+
+    // a missing row is stale too
+    sqlx::query(r#"DELETE FROM "RiskEngineHeartbeat" WHERE name = 'risk'"#).execute(&pool).await.unwrap();
+    assert_eq!(authority::owner_of_account(&pool, &account).await.unwrap(), Some(RiskOwner::Web));
+
+    // the engine returns: the first thing it does is beat; from then on it owns the accounts again and acts
+    authority::beat(&pool).await.unwrap();
+    assert_eq!(authority::owner_of_account(&pool, &account).await.unwrap(), Some(RiskOwner::Rust));
+    let r = book::with_price_source(book::PriceSource::Ticks(cache), monitor::evaluate_account(&pool, None, &account)).await.unwrap().unwrap();
+    assert!(!r.not_owner && !r.closed.is_empty(), "after a beat the engine acts again: {r:?}");
+    cleanup(&pool, &w).await;
+}
+
+/// The lock that makes the stale reading trustworthy: a transaction that read "stale" (or "fresh") holds the heartbeat row FOR SHARE, so the
+/// engine's next beat WAITS for it. Without the lock a beat could land between the reading and the action.
+#[tokio::test]
+async fn a_beat_waits_for_a_transaction_that_has_read_the_heartbeat() {
+    let Some(pool) = pool().await else { return };
+    let _x = exclusive(&pool).await;
+    let mut w = broker_and_symbol(&pool, "RUST", false).await;
+    let (account, positions) = add_account(&pool, &w, "LIVE", dec!(1000), None, 1).await;
+    w.accounts.push(Acct { id: account.clone(), mode: "LIVE", kind: Kind::StopOut, position: positions[0].clone() });
+    set_heartbeat(&pool, 5, 30).await;
+
+    let mut tx = pool.begin().await.unwrap();
+    assert_eq!(authority::lock_owner_in_tx(&mut tx, &account).await.unwrap(), Some(RiskOwner::Rust));
+    let beat_pool = pool.clone();
+    let beating = tokio::spawn(async move { authority::beat(&beat_pool).await });
+    assert!(wait_blocked(&pool, "INSERT INTO \"RiskEngineHeartbeat\"%").await, "the beat is blocked on the acting transaction's share lock");
+    assert!(!beating.is_finished());
+    tx.commit().await.unwrap();
+    beating.await.unwrap().unwrap();
+    cleanup(&pool, &w).await;
+}
+
+/// ENGINE STALLS, THE WEB HANDLES THE NEXT STOP-OUT EXACTLY ONCE, THE ENGINE RESUMES, NOTHING IS DUPLICATED (engine half; the web half and the
+/// real web walking the same database are lib/risk-watchdog.test.ts and scripts/load/run-split.sh --stall). The web's close is stood in for here by
+/// the web actor of the same close routine (the web's own routine is lib/position-close.ts, proven in the split harness).
+#[tokio::test]
+async fn an_engine_stall_the_web_stops_out_once_and_the_returning_engine_duplicates_nothing() {
+    let Some(pool) = pool().await else { return };
+    let _x = exclusive(&pool).await;
+    let mut w = broker_and_symbol(&pool, "RUST", false).await;
+    // two positions of 1 lot, 100 -> 90, balance 20: equity -10, a stop-out
+    let (account, positions) = add_account(&pool, &w, "LIVE", dec!(20), None, 2).await;
+    w.accounts.push(Acct { id: account.clone(), mode: "LIVE", kind: Kind::StopOut, position: positions[0].clone() });
+    let cache = cache_at(&w.symbol_name, dec!(90));
+
+    // the engine is healthy, then STALLS: its last beat is 40 s old (stale after 30 s)
+    set_heartbeat(&pool, 40, 30).await;
+    // it wakes up inside an evaluation it started before the stall and acts: refused, nothing written
+    let r = book::with_price_source(book::PriceSource::Ticks(cache.clone()), monitor::evaluate_account(&pool, None, &account)).await.unwrap().unwrap();
+    assert!(r.not_owner);
+    assert_eq!(count(&pool, r#"SELECT count(*) FROM "Position" WHERE "accountId" = $1 AND status = 'OPEN'"#, &account).await, 2);
+
+    // the web takes the stop-out (the web actor passes the same in-transaction check: a stale engine's account is WEB-owned)
+    let mut tx = pool.begin().await.unwrap();
+    let web = book::close_position_as(&mut tx, Some(RiskOwner::Web), &positions[0], dec!(1), dec!(90), dec!(-10), "Stop-out (automatic): web").await.unwrap();
+    assert!(matches!(web, book::CloseResult::Closed(_)), "{web:?}");
+    tx.commit().await.unwrap();
+    // the engine returns and evaluates the same account again, in every way it can: an evaluation, a fire, a pass. Position 0 must not be closed twice
+    authority::beat(&pool).await.unwrap();
+    let r = book::with_price_source(book::PriceSource::Ticks(cache.clone()), monitor::evaluate_account(&pool, None, &account)).await.unwrap().unwrap();
+    assert!(!r.not_owner, "the engine owns the account again after its beat: {r:?}");
+    let fire = LiveFire { account_id: account.clone(), ticks: HashMap::from([(w.symbol_name.clone(), (dec!(90), dec!(90), chrono::Utc::now()))]), source: FireSource::Margin };
+    book::with_price_source(book::PriceSource::Ticks(cache.clone()), monitor::evaluate_live_fire(&pool, None, fire)).await.unwrap();
+    book::with_price_source(book::PriceSource::Ticks(cache), monitor::run_pass(&pool, None, &mut monitor::PassCursor::default())).await;
+
+    // exactly one TRADE_PNL per position, never two; position 0 was the web's (no follow-up row: only an engine close queues one)
+    let dup: Vec<(String, i64)> = sqlx::query_as(r#"SELECT "referenceId", count(*) FROM "Transaction" WHERE "accountId" = $1 AND type = 'TRADE_PNL' GROUP BY 1 HAVING count(*) > 1"#).bind(&account).fetch_all(&pool).await.unwrap();
+    assert!(dup.is_empty(), "a position was closed twice: {dup:?}");
+    assert_eq!(count(&pool, r#"SELECT count(*) FROM "Transaction" WHERE "referenceId" = $1 AND type = 'TRADE_PNL'"#, &positions[0]).await, 1);
+    assert_eq!(count(&pool, r#"SELECT count(*) FROM "PostCloseEffect" WHERE "positionId" = $1"#, &positions[0]).await, 0, "position 0 was closed by the web");
+    assert!(trace_lines().iter().filter(|t| t["accountId"] == account.as_str() && t["actor"] == "RUST" && t["ref"] == positions[0].as_str()).count() == 0, "the engine took no action on position 0");
     cleanup(&pool, &w).await;
 }

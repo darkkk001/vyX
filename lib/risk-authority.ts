@@ -34,3 +34,10 @@ export function riskOwnerOf(broker: RiskAuthorityFields | null | undefined, acco
   const demoOnly = broker?.riskAuthorityDemoOnly !== false;
   return !demoOnly || accountMode === "DEMO" ? "RUST" : "WEB";
 }
+
+/** The owner once the ENGINE'S LIVENESS is counted (the engine-down watchdog, docs/STAGE6-PLAN.md section 14): when the engine's heartbeat is stale
+ *  (or there is none) the engine counts as down and nothing is RUST-owned, so every account falls back to WEB. `engineAlive` must be exactly true to
+ *  keep an account with the engine. */
+export function effectiveRiskOwner(broker: RiskAuthorityFields | null | undefined, accountMode: string | null | undefined, engineAlive: boolean | null | undefined): RiskOwner {
+  return engineAlive === true ? riskOwnerOf(broker, accountMode) : "WEB";
+}

@@ -3,9 +3,10 @@
 // FOR SHARE lock) and is seen by every transaction that starts after it commits. So an acting transaction and a flip
 // are totally ordered: there is no instant at which both sides can pass their check.
 import { randomUUID } from "node:crypto";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { setRiskHeartbeat } from "@/tests/support/risk-heartbeat";
 import { assertRiskActorInTx, loadRiskOwners, NotRiskOwnerError, webOwnedAccountIds } from "@/lib/risk-owner";
 
 const D = (v: number | string) => new Prisma.Decimal(v);
@@ -25,6 +26,10 @@ async function broker(riskAuthority: "WEB" | "RUST", riskAuthorityDemoOnly: bool
   };
   return { id: b.id, demo: await acct("DEMO"), live: await acct("LIVE") };
 }
+
+beforeAll(async () => {
+  await setRiskHeartbeat(prisma, 0); // the engine is alive for the split tests (the watchdog has its own: lib/risk-watchdog.test.ts)
+});
 
 afterAll(async () => {
   if (brokers.length) {

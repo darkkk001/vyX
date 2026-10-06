@@ -1525,6 +1525,17 @@ async fn main() {
     let mut live_fire_tx: Option<market_data::risk_hook::LiveSender> = None;
     // the live trigger worker's "a batch is done" callback, filled in once the hook and the margin trigger exist
     let live_after_slot: Arc<std::sync::OnceLock<Arc<dyn Fn() + Send + Sync>>> = Arc::new(std::sync::OnceLock::new());
+    // Stage 6 (owner answer (e)): a live mode without an explicit flip marker is most likely a mistake; say so loudly (the engine stays in shadow until the flip)
+    if let Some(warning) = order_management::authority::flip_marker_warning(
+        std::env::var("ENGINE_ORDER_MANAGEMENT").ok().as_deref(),
+        std::env::var("VYX_RISK_FLIP_INTENT").ok().as_deref(),
+    ) {
+        tracing::warn!("{warning}");
+    } else if let Ok(intent) = std::env::var("VYX_RISK_FLIP_INTENT") {
+        if !intent.trim().is_empty() {
+            tracing::warn!(%intent, "flip marker present: a live mode is intended for this process");
+        }
+    }
     let risk_mode_requested = std::env::var("ENGINE_ORDER_MANAGEMENT").map(|v| v.trim().eq_ignore_ascii_case("risk")).unwrap_or(false);
     let order_management_on = std::env::var("ENGINE_ORDER_MANAGEMENT")
         .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "on" | "yes"))
@@ -1636,6 +1647,24 @@ async fn main() {
                 }
             }),
         ));
+        // 2b. the engine-down watchdog (docs/STAGE6-PLAN.md section 14): the heartbeat the web and the engine's own transactions judge by.
+        // The first beat is written before anything can act; the timer beats while the idle gate is open, the fire worker and the pass touch it.
+        let beat_secs: u64 = std::env::var("VYX_RISK_HEARTBEAT_SECS").ok().and_then(|v| v.trim().parse().ok()).filter(|s| *s > 0).unwrap_or(order_management::authority::DEFAULT_BEAT_SECS);
+        if let Err(err) = order_management::authority::beat(&pool).await {
+            tracing::error!(%err, "RISK MODE REFUSED: the first heartbeat could not be written");
+            break 'risk;
+        }
+        let stale_secs: Option<(i32,)> = sqlx::query_as(r#"SELECT "staleAfterSecs" FROM "RiskEngineHeartbeat" WHERE name = 'risk'"#).fetch_optional(&pool).await.ok().flatten();
+        match stale_secs {
+            Some((n,)) if (n as u64) < beat_secs * 3 => tracing::warn!(stale_after_secs = n, beat_secs, "risk heartbeat: staleAfterSecs is under three beats; one slow beat would hand the accounts to the web"),
+            Some((n,)) => tracing::info!(stale_after_secs = n, beat_secs, "risk heartbeat: written; the engine counts as down for the web when it is older than staleAfterSecs"),
+            None => {}
+        }
+        order_management::authority::spawn_heartbeat(
+            pool.clone(),
+            order_management::monitor::ShadowGate { cache: tick_cache.clone(), watch: margin_watch_slot.clone() },
+            std::time::Duration::from_secs(beat_secs),
+        );
         // 3. the floor under the fires: a live pass over the engine-owned accounts every MARGIN_MONITOR_INTERVAL_SECS
         order_management::monitor::spawn_risk_passes(
             pool.clone(),
