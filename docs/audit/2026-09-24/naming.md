@@ -4,6 +4,16 @@
 
 The labels come from `ui-map.md` (the bo-* and term-* sections). They were checked read-only against the source: `DealingScreen.cs`, `ClientsScreen.cs`, `Vyx.Backoffice.App\Screens\*.cs`, `Controls\PricingPanel.cs`, `Vyx.Trader.App` and `Vyx.Shared.Ui\Charting`. The first drafts are in `_naming-part1.md` to `_naming-part3.md` and `_naming-glossary.md`. This file merges them and adds one consistency pass across every screen. The rules: plain broker words with no internal codes (RAW, INHERIT, SOURCE, MODE, B_BOOK, COV, SDM, MU, NBP, APR, LAR, PSP, and KYC, LP or IB on their own). Every quantity carries its unit in the name: ($), (lots), (points), (%), ($ per lot), (UTC). Leverage is written 1:N. Screen codes are never the main label. One concept always gets one word (see Glossary). Names are in sentence case. **1788 rows** in total (1340 backoffice, 448 terminal): **455 keep** and **1333 renamed**. The renamed count includes 11 fixture or internal labels marked `remove` and 1 cross-reference row. The consistency pass made 39 decisions. They are listed at the end.
 
+## Number rules (owner 2026-10-05 / 2026-10-06)
+
+One shared formatter in every app (backoffice, terminal, WebTrader, statements, CSV):
+- **Never "-0.00".** A negative zero shows `0.00`.
+- **Signs:** positive values carry "+", negative values "−"; zero shows `0.00` with no sign. Colour: profit green, loss red, zero neutral.
+- **Volume** always 2 decimals (`1.00`, `0.50`, `0.02`).
+- **Prices** in each symbol's own digits (XAUUSD `4139.80`, EURUSD `1.08425`, ETHUSD `2703.00`).
+- **Whose view:** the backoffice always shows the **broker's view**: commission and swap are revenue (positive), client withdrawals are negative, deposits positive, Book P/L is the broker's side. The terminal and the account statement show the **client's view**: commission and swap are negative charges and profit is the client's.
+- **Per-trade tables** (Closed trades, positions, history, statements): default column order Account · Client · Group · Ticket · Symbol · Type · Volume · Open time · Open price · SL · TP · Close time · Close price · Commission · Swap · Profit (a client statement leaves out the Account / Client / Group columns it never shows); text left-aligned, numbers right-aligned; default sort close time, newest first; the Columns menu may hide columns but never reorders them. Aggregate tables: identifier first, then time, then amounts.
+
 ## Empty and zero values (owner 2026-10-05)
 
 This rule applies to every app (backoffice, terminal, WebTrader) and every CSV export. It overrides any row below that shows a dash as a value.
