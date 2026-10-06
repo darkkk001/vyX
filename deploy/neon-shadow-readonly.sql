@@ -38,7 +38,7 @@ GRANT SELECT ON "Position", "Symbol", "BrokerSymbol", "TradingSession", "Group",
 
 -- tables with personal or secret data: only the columns the shadow reads
 GRANT SELECT (id, "brokerId", "groupId", "accountTypeId", balance, credit, leverage, currency, "marginCallNotifiedAt") ON "Account" TO vyx_shadow_ro;
-GRANT SELECT (id, "negativeBalanceProtection", "pricingEngineEnabled", "coverageAccountId") ON "Broker" TO vyx_shadow_ro;
+GRANT SELECT (id, "negativeBalanceProtection", "pricingEngineEnabled", "coverageAccountId", "riskAuthority", "riskAuthorityDemoOnly") ON "Broker" TO vyx_shadow_ro;
 -- the reconciler attributes each pair to its broker by subdomain (2026-10-05: without this column every broker read
 -- failed, every pair was stored with broker NULL and the soak exit's "30 real paired" counted nothing; the engine
 -- fills in the pairs since the soak start itself, Reconciler::backfill_brokers). Not personal data.
