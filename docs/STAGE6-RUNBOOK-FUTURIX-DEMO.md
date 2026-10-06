@@ -502,7 +502,7 @@ Remove-Item C:\vyxtrader\risk-heartbeat.pause
 **PASS** = steps 3, 4, 6, 7 and 8 hold. **FAIL** (any duplicate, an engine close while stale, a stop-out nobody closed for more than ~40 s after the touch) = set the broker WEB (8) and tell me.
 
 Latency note, honestly: the web's fallback reaches the account at the next web risk evaluation. While the engine's process is alive that is the engine's own 5 s backstop calling the web's full pass (as in this drill). If the whole engine
-process is dead, its backstop is dead too and the only web trigger left is the Vercel cron (every 5 minutes), and its price feed is dead as well (the engine hosts the price ingest, so no fresh price reaches anyone). See plan section 14.
+process is dead, its backstop is dead too and the only web trigger left is the Vercel `risk-fallback` cron (every minute while a broker is RUST), and its price feed is dead as well (the engine hosts the price ingest, so no fresh price reaches anyone). See plan section 14.
 
 ## 8. Rollback at every step
 
@@ -542,8 +542,8 @@ Demo-only back on (step 9's undo): the 9.2 statement with `'riskAuthorityDemoOnl
 * [ ] The 7.B drill PASSED on the live system in demo, once, and 7.A too.
 * [ ] A full trading week of demo (including a Friday close and the Sunday reopen) with the section 6 checks clean: no duplicate, no wrong-side close, no `DEAD` follow-up.
 * [ ] The final 7-path sweep (10.2) is clean on the build that is running now.
-* [ ] An alert exists for a stale heartbeat during market hours (it is not built: the plan lists it as an open decision; until then someone watches `age` every few minutes on the day of the flip and the first week).
-* [ ] The owner has decided the Vercel cron cadence while any broker is RUST (plan, section 14: every 5 minutes today; the fallback latency when the whole engine process is down).
+* [ ] The stale-heartbeat ops alert (plan 14.3, built 2026-10-07) fired once and recovered once in the 7.B drill, and `OPS_ALERT_EMAIL` is set on Vercel production.
+* [ ] The 1-minute `risk-fallback` cron (owner decision (b), 2026-10-06; plan 14.2) is registered on Vercel and answered `ran: true` during the 7.B drill.
 
 ### 9.1 The statement
 
