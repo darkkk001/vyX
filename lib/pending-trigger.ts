@@ -1,4 +1,5 @@
 import "server-only";
+import { plainError } from "@/lib/plain-error";
 import { loadAskRules, markedUpAsk, RAW_ASK } from "@/lib/ask-markup";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
@@ -22,9 +23,10 @@ import {
   checkTradingSession,
   checkLotStep,
   checkGroupMaxLot,
+  checkGroupMinLot,
+  riskCode,
   checkGroupTradingRestriction,
   checkGroupTradingHalted,
-  checkAccountStatusForOpen,
   checkGroupCloseOnly,
   checkGroupAllowedSymbol,
   checkMaxOpenPositions,
@@ -35,6 +37,8 @@ import {
   checkPriceFreshness,
   checkSlippage,
   PENDING_TRIGGER_MAX_SLIPPAGE_POINTS,
+  checkAccountStatusForOpen,
+  checkAccountTradingRights,
 } from "@/lib/risk";
 
 // ---------------------------------------------------------------------------
@@ -99,12 +103,17 @@ async function rejectPending(
     accountId: order.accountId,
     type: "PENDING_ORDER_REJECTED",
     title: `Pending order rejected: ${order.symbol.name}`,
-    body: `Your ${order.side} ${order.type} ${order.volume.toString()} ${order.symbol.name} at ${order.requestedPrice?.toString() ?? "?"} reached its price but could not be filled: ${reason}.`,
+    // step 2: the reason is a sentence, never a machine code (LP_NOT_CONNECTED, INSUFFICIENT_MARGIN...); lib/plain-error.ts
+    body: `Your ${order.side} ${order.type} ${order.volume.toFixed(2)} ${order.symbol.name}${order.requestedPrice ? ` at ${order.requestedPrice.toString()}` : ""} reached its price but could not be filled. ${withStop(plainError(reason, "It was rejected."))}`,
     entityType: "Order",
     entityId: order.id,
   }).catch((err) => console.error("[pending-trigger] notification failed", err));
   await publishTradingEvent("OrderRejected", { order_id: order.id, account_id: order.accountId, broker_id: order.brokerId, reason }).catch(() => {});
   return true;
+}
+
+function withStop(sentence: string): string {
+  return /[.!?]$/.test(sentence) ? sentence : `${sentence}.`;
 }
 
 /**
@@ -157,17 +166,20 @@ async function triggerPendingOrderInner(orderId: string, triggerPrice: string, o
     evaluateLiveMarketPrice(livePrice, brokerSymbol.symbol.name, triggerPrice) ??
     checkPriceFreshness(livePrice) ??
     (account.group ? checkGroupMaxLot(order.volume, account.group.maxLotSize) : null) ??
+    (account.group ? checkGroupMinLot(order.volume, account.group.minLotSize, brokerSymbol.minLot) : null) ??
     (account.group ? checkGroupTradingRestriction(account.group.tradingRestriction, order.side) : null) ??
-    (account.group ? checkGroupTradingHalted(account.group) : null) ??
+    // per-account trading rights + status (2026-09-28): a close-only / read-only / suspended account opens nothing
+    checkAccountTradingRights(account, "open") ??
     // account status (2026-09-29): a suspended / closed account opens nothing
     checkAccountStatusForOpen(account) ??
+    (account.group ? checkGroupTradingHalted(account.group) : null) ??
     (account.group ? checkGroupCloseOnly(account.group) : null) ??
     (account.group ? checkGroupAllowedSymbol(account.group.restrictSymbols, account.group.allowedSymbols.map((s) => s.symbolId), order.symbolId) : null) ??
     (await checkMaxOpenPositions(prisma, order.accountId, broker.maxOpenPositionsPerAccount)) ??
     (await checkSymbolExposure(prisma, order.accountId, order.symbolId, order.volume, brokerSymbol.maxExposure)) ??
     (await checkBrokerExposure(prisma, order.brokerId, order.volume, broker.totalExposureLimit)) ??
     (await checkMaxDailyLoss(prisma, order.accountId, account.maxDailyLoss));
-  if (riskError) return fail(riskError);
+  if (riskError) return fail(riskError, riskCode(riskError));
 
   // Phase 2 batch 2: an A_BOOK group without a connected LP / the system coverage account never fills a trigger
   const route = orderRoute(account.group, deskIsOn(broker));

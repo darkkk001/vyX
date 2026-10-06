@@ -41,7 +41,11 @@ export function outageDurationText(ms: number): string {
 }
 
 export function unavailableText(startedAt: number): { title: string; body: string } {
-  return { title: "Live prices unavailable", body: `Live prices unavailable since ${hhmmUtc(startedAt)}.` };
+  // step 2 (owner wording 2026-10-06): say what stops while prices are out; the technical reason stays in the log
+  return {
+    title: "Live prices unavailable",
+    body: `Live prices unavailable since ${hhmmUtc(startedAt)}. Until they are back, no close, stop loss, take profit, stop-out or pending order is executed.`,
+  };
 }
 
 export function backText(backAt: number, durationMs: number): { title: string; body: string } {

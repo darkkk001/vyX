@@ -3,6 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import styles from "../PortalAuth.module.css";
+import { plainError } from "@/lib/plain-error";
 
 export default function ForgotPasswordForm({ brokerName, brokerLogoUrl }: { brokerName: string; brokerLogoUrl: string | null }) {
   const [email, setEmail] = useState("");
@@ -24,7 +25,7 @@ export default function ForgotPasswordForm({ brokerName, brokerLogoUrl }: { brok
 
     if (!response.ok) {
       const body = await response.json().catch(() => ({}));
-      setError(body.error ?? "something went wrong, please try again");
+      setError(plainError(body, "Something went wrong. Try again."));
       return;
     }
 

@@ -3,6 +3,8 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import styles from "@/components/portal/PortalShell.module.css";
+import { formatMoney } from "@/lib/format";
+import { plainError } from "@/lib/plain-error";
 
 type Account = {
   id: string;
@@ -94,7 +96,7 @@ export default function AccountsView() {
     const body = await response.json().catch(() => ({}));
     setSubmitting(false);
     if (!response.ok) {
-      setFormError(body.error ?? "failed to create account");
+      setFormError(plainError(body, "Could not create the account. Try again."));
       return;
     }
     setNewDemoCredentials({ accountNumber: body.accountNumber, password: body.password });
@@ -112,7 +114,7 @@ export default function AccountsView() {
     const body = await response.json().catch(() => ({}));
     setSubmitting(false);
     if (!response.ok) {
-      setFormError(body.error ?? "failed to submit request");
+      setFormError(plainError(body, "Could not send the request. Try again."));
       return;
     }
     setLiveRequestSubmitted(true);
@@ -187,7 +189,7 @@ export default function AccountsView() {
                   <td style={{ padding: "10px 0" }}>{a.accountTypeName ?? ""}</td>
                   <td style={{ padding: "10px 0" }}>{a.currency}</td>
                   <td style={{ padding: "10px 0" }}>{a.status}</td>
-                  <td style={{ padding: "10px 0", textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{parseFloat(a.balance).toFixed(2)}</td>
+                  <td style={{ padding: "10px 0", textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{formatMoney(a.balance)}</td>
                 </tr>
               ))}
             </tbody>

@@ -4,6 +4,7 @@ import { getAdminSession } from "@/lib/auth";
 import { forbidUnlessBrokerAdminOrPermission } from "@/lib/permissions";
 import { computePendingCommission } from "@/lib/commission";
 import { toCsv } from "@/lib/csv";
+import { formatCsvNumber } from "@/lib/format";
 
 export async function GET() {
   const session = await getAdminSession();
@@ -29,7 +30,7 @@ export async function GET() {
       clientAccount: r.clientAccount.accountNumber,
       commissionType: r.commissionType,
       commissionRate: r.commissionRate.toString(),
-      pendingCommission: (await computePendingCommission(prisma, r)).toFixed(4),
+      pendingCommission: formatCsvNumber((await computePendingCommission(prisma, r)).toString()),
       lastPayoutAt: r.lastPayoutAt ? r.lastPayoutAt.toISOString() : "",
     }))
   );

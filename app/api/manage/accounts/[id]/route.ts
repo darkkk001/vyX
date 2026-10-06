@@ -7,6 +7,9 @@ import { revokeAllAccountSessions } from "@/lib/account-auth";
 import { checkAccountStructure } from "@/lib/account-structure";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { hasPermission } from "@/lib/permissions";
+import { setAccountTradingRights, tradingRightsNotice, pendingCancelReason, type TradingRightsChange } from "@/lib/account-trading-rights";
+import { createNotification } from "@/lib/notifications";
+import { publishTradingEvent } from "@/lib/nats";
 
 async function requireManager() {
   const session = await getAdminSession();
@@ -51,14 +54,18 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   // change, so MANAGER can reassign it same as group.
   const hasAccountTypeChange = body != null && "accountTypeId" in body;
   const hasFinanceChange = body != null && ("leverage" in body || "status" in body || "maxDailyLoss" in body);
-  // Same permission tier as groupId/accountTypeId -- a rate-category flag
-  // (see Account.swapFree's own schema comment), not a balance/leverage
-  // magnitude, so MANAGER can toggle it same as group/type.
-  const hasSwapFreeChange = body != null && "swapFree" in body;
+  // Owner 2026-10-06 (S1): swap-free is decided by the GROUP only. The account-level override can no longer be set
+  // (scripts/clear-account-swapfree-overrides.ts cleared the stored ones), so a body carrying it is refused, not ignored.
+  if (body != null && "swapFree" in body) {
+    return NextResponse.json({ error: "Swap-free is set on the group, not on the account.", code: "SWAP_FREE_GROUP_ONLY" }, { status: 400 });
+  }
   // Owner 2026-10-05: the internal (test / staff) account flag, left out of every broker-wide figure. BROKER_ADMIN only.
   const hasInternalChange = body != null && "isInternal" in body;
+  // Per-account trading rights (2026-09-28, owner decision 4): a risk control, BROKER_ADMIN or the Client trading
+  // permission, applied at once (no second admin).
+  const hasRightsChange = body != null && "tradingRights" in body;
 
-  if (!hasGroupChange && !hasAccountTypeChange && !hasFinanceChange && !hasSwapFreeChange && !hasInternalChange) {
+  if (!hasGroupChange && !hasAccountTypeChange && !hasFinanceChange && !hasInternalChange && !hasRightsChange) {
     return NextResponse.json({ error: "nothing to update" }, { status: 400 });
   }
   if (hasInternalChange && typeof body.isInternal !== "boolean") {
@@ -69,6 +76,17 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       { error: "forbidden: leverage/status/maxDailyLoss changes require BROKER_ADMIN or ACCOUNT_FINANCE" },
       { status: 403 }
     );
+  }
+
+  let tradingRights: "FULL" | "CLOSE_ONLY" | "READ_ONLY" | undefined;
+  if (hasRightsChange) {
+    if (session.role !== "BROKER_ADMIN" && !(await hasPermission(session, "CLIENT_TRADING"))) {
+      return NextResponse.json({ error: "forbidden: trading rights changes require BROKER_ADMIN or the Client trading permission", permission: "CLIENT_TRADING" }, { status: 403 });
+    }
+    if (body.tradingRights !== "FULL" && body.tradingRights !== "CLOSE_ONLY" && body.tradingRights !== "READ_ONLY") {
+      return NextResponse.json({ error: "tradingRights must be FULL, CLOSE_ONLY or READ_ONLY" }, { status: 400 });
+    }
+    tradingRights = body.tradingRights;
   }
 
   // Stage 3b: Account.groupId is NOT NULL, so an account can no longer be
@@ -171,6 +189,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     );
   }
 
+  let rightsChange: TradingRightsChange | null = null;
   const updated = await prisma.$transaction(async (tx) => {
     const data: {
       groupId?: string;
@@ -178,7 +197,6 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       leverage?: number;
       status?: typeof status;
       maxDailyLoss?: Prisma.Decimal | null;
-      swapFree?: boolean | null;
       isInternal?: boolean;
     } = {};
     const auditEntries: { action: string; oldValue: Prisma.InputJsonValue; newValue: Prisma.InputJsonValue }[] = [];
@@ -232,18 +250,6 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         newValue: { maxDailyLoss: maxDailyLoss?.toString() ?? null },
       });
     }
-    if (hasSwapFreeChange) {
-      // Tri-state (2026-09-07 Stage 5) -- explicit null means "inherit
-      // from AccountType/Group," true/false are explicit overrides.
-      const swapFree: boolean | null = body.swapFree === null ? null : body.swapFree === true;
-      data.swapFree = swapFree;
-      auditEntries.push({
-        action: "ACCOUNT_SWAP_FREE_CHANGED",
-        oldValue: { swapFree: account.swapFree },
-        newValue: { swapFree },
-      });
-    }
-
     if (hasInternalChange && body.isInternal !== account.isInternal) {
       data.isInternal = body.isInternal;
       auditEntries.push({
@@ -254,6 +260,11 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     }
 
     const result = await tx.account.update({ where: { id }, data });
+    // trading rights: its own locked change + audit; dropping below FULL cancels the pending orders at once (owner
+    // decision 2026-09-28), each audited with the reason the trader sees
+    if (tradingRights !== undefined) {
+      rightsChange = await setAccountTradingRights(tx, { brokerId, accountId: id, to: tradingRights, adminId: session.adminId, note: typeof body.note === "string" ? body.note.trim().slice(0, 500) : undefined });
+    }
 
     for (const entry of auditEntries) {
       await tx.auditLog.create({
@@ -269,15 +280,29 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       });
     }
 
-    return result;
+    return tradingRights !== undefined ? tx.account.findUniqueOrThrow({ where: { id } }) : result;
   });
 
-  // Suspension (2026-09-29): an account leaving ACTIVE (suspended / closed) is signed out everywhere at once -- every
-  // session of it (terminal, WebTrader, mobile) is revoked, and the open gates refuse it (lib/risk.ts
-  // checkAccountStatusForOpen), so a client signed in before the change cannot keep trading. Sign-in itself already
-  // refuses an inactive account (lib/account-auth.ts).
+  // Suspension hole (2026-09-28): a suspended / closed account's open sessions end at once (the order routes also
+  // refuse it now), so a client signed in before the change cannot keep trading
   if (status !== undefined && status !== "ACTIVE" && account.status === "ACTIVE") {
     await revokeAllAccountSessions(id).catch((err) => console.error("[accounts] session revoke after suspend failed", err));
+  }
+  const change = rightsChange as TradingRightsChange | null;
+  if (change?.changed) {
+    const reason = pendingCancelReason(change.to);
+    for (const orderId of change.cancelledOrderIds) {
+      await publishTradingEvent("OrderCancelled", { order_id: orderId, account_id: id, broker_id: brokerId, reason }).catch(() => {});
+    }
+    await createNotification(prisma, {
+      brokerId,
+      accountId: id,
+      type: "TRADING_RIGHTS_CHANGED",
+      title: tradingRightsNotice(change),
+      body: tradingRightsNotice(change),
+      entityType: "Account",
+      entityId: id,
+    }).catch((err) => console.error("[accounts] trading rights notification failed", err));
   }
 
   // after commit: an open terminal / WebTrader picks up the new leverage / status / group / type at once
@@ -292,5 +317,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     maxDailyLoss: updated.maxDailyLoss?.toString() ?? null,
     swapFree: updated.swapFree,
     isInternal: updated.isInternal,
+    tradingRights: updated.tradingRights,
+    cancelledPendingOrders: change?.cancelledOrderIds.length ?? 0,
   });
 }

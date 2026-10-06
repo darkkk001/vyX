@@ -24,6 +24,8 @@ import {
   checkTradingSession,
   checkLotStep,
   checkGroupMaxLot,
+  checkGroupMinLot,
+  riskCode,
   checkGroupTradingRestriction,
   checkGroupTradingHalted,
   checkAccountStatusForOpen,
@@ -33,6 +35,7 @@ import {
   checkSymbolExposure,
   checkBrokerExposure,
   checkMaxDailyLoss,
+  checkAccountTradingRights,
 } from "@/lib/risk";
 
 // Dealer desk ON/OFF (2026-09-04) -- see Broker.dealingDeskAutoFillAt's own
@@ -196,7 +199,7 @@ async function flushDealingQueueToMarket(
         results.push({ orderId: order.id, accountNumber: order.account.accountNumber, status: "filled" });
       } catch (err) {
         console.error("dealing-desk-toggle: auto-flush of a queued close failed", order.id, err);
-        results.push({ orderId: order.id, accountNumber: order.account.accountNumber, status: "skipped", reason: "internal error" });
+        results.push({ orderId: order.id, accountNumber: order.account.accountNumber, status: "skipped", reason: "could not be processed" });
       }
       continue;
     }
@@ -208,7 +211,10 @@ async function flushDealingQueueToMarket(
       checkTradingSession(brokerSymbol.tradingSessions, new Date(), order.symbol.category) ??
       checkLotStep(order.volume, brokerSymbol.minLot, brokerSymbol.lotStep) ??
       (order.account.group ? checkGroupMaxLot(order.volume, order.account.group.maxLotSize) : null) ??
+      (order.account.group ? checkGroupMinLot(order.volume, order.account.group.minLotSize, brokerSymbol.minLot) : null) ??
       (order.account.group ? checkGroupTradingRestriction(order.account.group.tradingRestriction, order.side) : null) ??
+      // per-account trading rights + status (2026-09-28): a close-only / read-only / suspended account opens nothing
+      checkAccountTradingRights(order.account, "open") ??
       (order.account.group ? checkGroupTradingHalted(order.account.group) : null) ??
       // account status (2026-09-29): a suspended / closed account opens nothing
       checkAccountStatusForOpen(order.account) ??
@@ -225,7 +231,7 @@ async function flushDealingQueueToMarket(
       (await checkBrokerExposure(prisma, brokerId, order.volume, broker.totalExposureLimit)) ??
       (await checkMaxDailyLoss(prisma, order.accountId, order.account.maxDailyLoss));
     if (riskError) {
-      results.push({ orderId: order.id, accountNumber: order.account.accountNumber, status: "skipped", reason: riskError });
+      results.push({ orderId: order.id, accountNumber: order.account.accountNumber, status: "skipped", reason: riskError, ...riskCode(riskError) });
       continue;
     }
 
@@ -312,7 +318,7 @@ async function flushDealingQueueToMarket(
         results.push({ orderId: order.id, accountNumber: order.account.accountNumber, status: "skipped", reason: "already actioned" });
       } else {
         console.error("dealing-desk-toggle: auto-flush failed for order", order.id, err);
-        results.push({ orderId: order.id, accountNumber: order.account.accountNumber, status: "skipped", reason: "internal error" });
+        results.push({ orderId: order.id, accountNumber: order.account.accountNumber, status: "skipped", reason: "could not be processed" });
       }
     }
   }

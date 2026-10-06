@@ -10,6 +10,7 @@ import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, Tabl
 import { useAdminEventStream, ADMIN_STREAM_RECONNECTED, type AdminEvent } from "@/lib/admin-realtime";
 import { useLiveTicks } from "@/lib/price-stream";
 import { formatDateTime } from "@/lib/format";
+import { plainError } from "@/lib/plain-error";
 
 export type DealingOrderRow = {
   id: string;
@@ -205,7 +206,7 @@ export default function DealingQueueManager() {
       const b = await response.json().catch(() => ({}));
       setRows((prev) => (prev ? [target, ...prev] : [target]));
       setAcceptTarget(target);
-      setAcceptError(b.error ?? "accept failed");
+      setAcceptError(plainError(b, "Could not accept. Try again.", { audience: "staff" }));
     }
   }
 
@@ -232,7 +233,7 @@ export default function DealingQueueManager() {
       const b = await response.json().catch(() => ({}));
       setRows((prev) => (prev ? [target, ...prev] : [target]));
       setRequoteTarget(target);
-      setRequoteError(b.error ?? "requote failed");
+      setRequoteError(plainError(b, "Could not send the requote. Try again.", { audience: "staff" }));
     }
   }
 
@@ -267,7 +268,7 @@ export default function DealingQueueManager() {
         setRows((prev) => (prev ? [target as DealingOrderRow, ...prev] : [target as DealingOrderRow]));
       }
       setRejectTarget(target);
-      setRejectError(b.error ?? "reject failed");
+      setRejectError(plainError(b, "Could not reject. Try again.", { audience: "staff" }));
     }
   }
 

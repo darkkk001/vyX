@@ -29,9 +29,10 @@ import {
 } from "@/components/ui/TableExtras";
 import { useAdminEventStream, ADMIN_STREAM_RECONNECTED, type AdminEvent } from "@/lib/admin-realtime";
 import { useLiveTicks } from "@/lib/price-stream";
-import { formatPrice, formatNumber, formatPnl, formatDateTime } from "@/lib/format";
+import { formatDateTime, formatNumber, formatPnl, formatPrice, formatVolume } from "@/lib/format";
 import { useUnsavedChangesWarning } from "@/lib/use-unsaved-changes-warning";
 import { effectiveAsk, spreadRuleFromPrice } from "@/lib/trade-api";
+import { plainError } from "@/lib/plain-error";
 
 export type PositionRow = {
   id: string;
@@ -473,7 +474,7 @@ export default function PositionsManager() {
     setOpening(false);
     if (!response.ok) {
       const body = await response.json().catch(() => ({}));
-      setOpenError(body.error ?? "failed to open position");
+      setOpenError(plainError(body, "Could not open the position. Try again.", { audience: "staff" }));
       return;
     }
     setOpenModalOpen(false);
@@ -525,7 +526,7 @@ export default function PositionsManager() {
     setModifying(false);
     if (!response.ok) {
       const body = await response.json().catch(() => ({}));
-      setModifyError(body.error ?? "modify failed");
+      setModifyError(plainError(body, "Could not modify. Try again.", { audience: "staff" }));
       return;
     }
     setModifyTarget(null);
@@ -553,7 +554,7 @@ export default function PositionsManager() {
 
     if (!response.ok) {
       const body = await response.json().catch(() => ({}));
-      setCloseErrors((prev) => ({ ...prev, [row.id]: body.error ?? "close failed" }));
+      setCloseErrors((prev) => ({ ...prev, [row.id]: plainError(body, "Could not close. Try again.", { audience: "staff" }) }));
       return;
     }
     setCloseConfirm(null);
@@ -600,7 +601,7 @@ export default function PositionsManager() {
       return;
     }
     if (!response.ok) {
-      setReverseVoidErrors((prev) => ({ ...prev, [row.id]: body.error ?? "reverse failed" }));
+      setReverseVoidErrors((prev) => ({ ...prev, [row.id]: plainError(body, "Could not reverse. Try again.", { audience: "staff" }) }));
       return;
     }
     setReverseConfirm(null);
@@ -620,7 +621,7 @@ export default function PositionsManager() {
       return;
     }
     if (!response.ok) {
-      setReverseVoidErrors((prev) => ({ ...prev, [row.id]: body.error ?? "void failed" }));
+      setReverseVoidErrors((prev) => ({ ...prev, [row.id]: plainError(body, "Could not void. Try again.", { audience: "staff" }) }));
       return;
     }
     setVoidConfirm(null);
@@ -730,7 +731,7 @@ export default function PositionsManager() {
     setReviewingId(null);
     if (!response.ok) {
       const body = await response.json().catch(() => ({}));
-      setPendingActionErrors((prev) => ({ ...prev, [id]: body.error ?? `${decision} failed` }));
+      setPendingActionErrors((prev) => ({ ...prev, [id]: plainError(body, "Could not save the decision. Try again.", { audience: "staff" }) }));
       return;
     }
     reloadPendingActions().catch(() => {});
@@ -759,7 +760,7 @@ export default function PositionsManager() {
     setBulkClosing(false);
     if (!response.ok) {
       const body = await response.json().catch(() => ({}));
-      setBulkCloseError(body.error ?? "close failed");
+      setBulkCloseError(plainError(body, "Could not close. Try again.", { audience: "staff" }));
       return;
     }
     setBulkCloseConfirm(false);
@@ -819,14 +820,14 @@ export default function PositionsManager() {
           <TableCell
             className="text-xs text-[var(--text-3)]"
             style={{ width: colWidths.source }}
-            title="Which surface placed this position's originating order (MT5-style order-origin tracking)."
+            title="Which app placed the order that opened this position."
           >
             {SOURCE_LABELS[p.source] ?? p.source}
           </TableCell>
         ) : null}
         {(colVisible.volume ?? true) ? (
           <TableCell align="right" mono style={{ width: colWidths.volume }}>
-            {formatNumber(p.volume)}
+            {formatVolume(p.volume)}
           </TableCell>
         ) : null}
         {(colVisible.openPrice ?? true) ? (
@@ -1068,10 +1069,10 @@ export default function PositionsManager() {
                   <TableCell mono>{e.symbol}</TableCell>
                   <TableCell align="right">{e.count}</TableCell>
                   <TableCell align="right" mono>
-                    {formatNumber(e.buyVolume)}
+                    {formatVolume(e.buyVolume)}
                   </TableCell>
                   <TableCell align="right" mono>
-                    {formatNumber(e.sellVolume)}
+                    {formatVolume(e.sellVolume)}
                   </TableCell>
                   <TableCell
                     align="right"
@@ -1445,7 +1446,7 @@ export default function PositionsManager() {
               <div>
                 <p className="text-xs text-[var(--text-3)]">Side / Volume</p>
                 <p className="font-mono">
-                  <Badge tone={detailsTarget.side === "BUY" ? "success" : "danger"}>{detailsTarget.side}</Badge> {formatNumber(detailsTarget.volume)}
+                  <Badge tone={detailsTarget.side === "BUY" ? "success" : "danger"}>{detailsTarget.side}</Badge> {formatVolume(detailsTarget.volume)}
                 </p>
               </div>
               <div>

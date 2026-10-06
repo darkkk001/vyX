@@ -58,6 +58,33 @@ export function checkAccountStatusForOpen(account: { status: "ACTIVE" | "SUSPEND
   return null;
 }
 
+// Per-account trading rights + account status (2026-09-28, owner decisions). One check for every trader- or
+// staff-initiated action on a client account, by intent:
+//   open   -- a new position or an order that can open one (placement, pending trigger, requote accept, dealer accept,
+//             desk flush, admin manual open, copy-rule open, reverse). Refused unless the account is ACTIVE and FULL.
+//   close  -- the client's own close / close-by / bulk close. Refused only when READ_ONLY.
+//   modify -- the client's own SL/TP change, pending-order change or cancel. Refused only when READ_ONLY.
+// Staff closes and SL/TP changes (the desk managing risk) and the automatic actions (SL/TP triggers, stop-out, margin
+// call, swap) never call this. A SUSPENDED / CLOSED account is refused on open (the status hole found 2026-09-28:
+// the order routes never looked at status); its sessions are also revoked when it is suspended.
+export type TradeIntent = "open" | "close" | "modify";
+export const TRADING_RIGHTS_CLOSE_ONLY_MESSAGE = "Your account is close-only: you can close positions but not open new ones";
+export const TRADING_RIGHTS_READ_ONLY_MESSAGE = "Your account is read-only: trading is disabled";
+export function checkAccountTradingRights(
+  account: { status: "ACTIVE" | "SUSPENDED" | "CLOSED"; tradingRights: "FULL" | "CLOSE_ONLY" | "READ_ONLY" },
+  intent: TradeIntent
+): string | null {
+  if (intent === "open") {
+    const status = checkAccountStatusForOpen(account);
+    if (status) return status;
+    if (account.tradingRights === "READ_ONLY") return TRADING_RIGHTS_READ_ONLY_MESSAGE;
+    if (account.tradingRights === "CLOSE_ONLY") return TRADING_RIGHTS_CLOSE_ONLY_MESSAGE;
+    return null;
+  }
+  if (account.tradingRights === "READ_ONLY") return TRADING_RIGHTS_READ_ONLY_MESSAGE;
+  return null;
+}
+
 // BOTH (default) never blocks. BUY_ONLY/SELL_ONLY reject the disallowed
 // side even when the symbol is otherwise enabled -- a stronger
 // restriction than `enabled`, not a replacement for it.
@@ -76,6 +103,32 @@ export function checkGroupMaxLot(volume: Prisma.Decimal, groupMaxLot: Prisma.Dec
     return `volume exceeds this account's group max lot size of ${groupMaxLot}`;
   }
   return null;
+}
+
+// Group minimum volume (owner 2026-10-06). The smallest order an account may place is the larger of the symbol's own
+// minimum and its group's minimum (Group.minLotSize, null = none). The symbol minimum keeps its own inline check; this
+// one refuses what is above the symbol minimum but below the group's, with code GROUP_MIN_VOLUME (riskCode below).
+export const GROUP_MIN_VOLUME = "GROUP_MIN_VOLUME";
+const GROUP_MIN_VOLUME_TEXT = "The smallest trade allowed for this account is ";
+export function effectiveMinLot(symbolMinLot: Prisma.Decimal, groupMinLot: Prisma.Decimal | null): Prisma.Decimal {
+  return groupMinLot != null && groupMinLot.gt(symbolMinLot) ? groupMinLot : symbolMinLot;
+}
+export function checkGroupMinLot(volume: Prisma.Decimal, groupMinLot: Prisma.Decimal | null, symbolMinLot: Prisma.Decimal): string | null {
+  const min = effectiveMinLot(symbolMinLot, groupMinLot);
+  if (volume.lt(min)) return `${GROUP_MIN_VOLUME_TEXT}${min.toFixed(2)} lots.`;
+  return null;
+}
+/** The machine-readable code for a risk refusal, when it has one (spread into the JSON error body). */
+export function riskCode(error: string): { code: string } | Record<string, never> {
+  return error.startsWith(GROUP_MIN_VOLUME_TEXT) ? { code: GROUP_MIN_VOLUME } : {};
+}
+
+// A group minimum has to sit on each symbol's volume grid (minLot + n x lotStep), or no order could ever meet it
+// exactly. Returns the symbols it does not fit; the group save is refused with code MIN_VOLUME_STEP when any do.
+export function groupMinOffGrid(groupMinLot: Prisma.Decimal, symbols: { name: string; minLot: Prisma.Decimal; lotStep: Prisma.Decimal }[]): string[] {
+  return symbols
+    .filter((s) => groupMinLot.gt(s.minLot) && checkLotStep(groupMinLot, s.minLot, s.lotStep) != null)
+    .map((s) => s.name);
 }
 
 // Same shape/semantics as checkSymbolTradingMode, applied at the

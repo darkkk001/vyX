@@ -26,6 +26,8 @@ import {
   checkTradingSession,
   checkLotStep,
   checkGroupMaxLot,
+  checkGroupMinLot,
+  riskCode,
   checkGroupTradingRestriction,
   checkGroupTradingHalted,
   checkAccountStatusForOpen,
@@ -43,6 +45,7 @@ import {
   traderSlippagePoints,
   brokerSlippageCapPoints,
   isValidMaxSlippageInput,
+  checkAccountTradingRights,
 } from "@/lib/risk";
 
 async function logHotkeyOrder(brokerId: string, orderId: string) {
@@ -205,7 +208,7 @@ async function handlePlaceOrder(request: NextRequest, session: Session) {
     if (err instanceof Prisma.PrismaClientKnownRequestError && (err.code === "P2022" || err.code === "P2021")) {
       console.error("trade/orders: schema drift on broker/account load", err.code, err.meta);
       return NextResponse.json(
-        { error: "trading is temporarily unavailable (the database is being updated); please try again shortly" },
+        { error: "Trading is briefly unavailable. Try again in a moment." },
         { status: 503 }
       );
     }
@@ -221,7 +224,7 @@ async function handlePlaceOrder(request: NextRequest, session: Session) {
       return NextResponse.json({ error: riskError, symbol: symbolName, nextOpenAt: nextOpenAt.toISOString() }, { status: 400 });
     }
     // the lot-step / group-max-lot rules are volume rejections too: same code for the sound
-    const volumeCode = riskError.startsWith("volume ") ? { code: "INVALID_VOLUME" } : {};
+    const volumeCode = riskError.startsWith("volume ") ? { code: "INVALID_VOLUME" } : riskCode(riskError);
     return NextResponse.json({ error: riskError, ...volumeCode }, { status: 400 });
   };
 
@@ -233,7 +236,10 @@ async function handlePlaceOrder(request: NextRequest, session: Session) {
     checkTradingSession(brokerSymbol.tradingSessions, new Date(), brokerSymbol.symbol.category) ??
     checkLotStep(volume, brokerSymbol.minLot, brokerSymbol.lotStep) ??
     (account.group ? checkGroupMaxLot(volume, account.group.maxLotSize) : null) ??
+    (account.group ? checkGroupMinLot(volume, account.group.minLotSize, brokerSymbol.minLot) : null) ??
     (account.group ? checkGroupTradingRestriction(account.group.tradingRestriction, side) : null) ??
+    // per-account trading rights + status (2026-09-28): a close-only / read-only / suspended account opens nothing
+    checkAccountTradingRights(account, "open") ??
     (account.group ? checkGroupTradingHalted(account.group) : null) ??
     // account status (2026-09-29): a suspended / closed account opens nothing
     checkAccountStatusForOpen(account) ??

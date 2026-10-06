@@ -9,6 +9,7 @@ import { FormField } from "@/components/ui/FormField";
 import { Input } from "@/components/ui/Input";
 import { PasswordInput } from "@/components/ui/PasswordInput";
 import AdminSessionsCard from "@/components/admin/AdminSessionsCard";
+import { plainError } from "@/lib/plain-error";
 
 // Same enable/confirm/disable flow WebTrader.tsx's own Security modal
 // already uses for a trader's 2FA (tradeApi.setupTwoFactor/
@@ -73,7 +74,7 @@ export default function SecurityManager({
     setBusy(false);
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
-      setError(body.error ?? "failed to start 2FA setup");
+      setError(plainError(body, "Could not start two-factor setup. Try again.", { audience: "staff" }));
       return;
     }
     const body = await res.json();
@@ -92,7 +93,7 @@ export default function SecurityManager({
     setBusy(false);
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
-      setError(body.error ?? "invalid code");
+      setError(plainError(body, "Invalid code.", { audience: "staff" }));
       return;
     }
     const body = await res.json();
@@ -115,7 +116,7 @@ export default function SecurityManager({
     setBusy(false);
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
-      setError(body.error ?? "failed to disable 2FA");
+      setError(plainError(body, "Could not turn off two-factor sign-in. Try again.", { audience: "staff" }));
       return;
     }
     setEnabled(false);

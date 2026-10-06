@@ -2,6 +2,7 @@ import Link from "next/link";
 import { getClientSession } from "@/lib/client-auth";
 import { prisma } from "@/lib/prisma";
 import styles from "@/components/portal/PortalShell.module.css";
+import { formatMoney } from "@/lib/format";
 
 // Real summary once Stage 4 (Trading Accounts) and Stage 5 (client-level
 // KYC) exist -- both queries already return the correct shape today,
@@ -75,7 +76,7 @@ export default async function PortalDashboardPage() {
                   <td style={{ padding: "10px 0", fontFamily: "monospace" }}>{a.accountNumber}</td>
                   <td style={{ padding: "10px 0" }}>{a.accountMode}</td>
                   <td style={{ padding: "10px 0" }}>{a.currency}</td>
-                  <td style={{ padding: "10px 0", textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{parseFloat(a.balance.toString()).toFixed(2)}</td>
+                  <td style={{ padding: "10px 0", textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{formatMoney(a.balance)}</td>
                 </tr>
               ))}
             </tbody>

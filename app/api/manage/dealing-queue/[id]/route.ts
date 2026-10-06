@@ -23,6 +23,8 @@ import {
   checkTradingSession,
   checkLotStep,
   checkGroupMaxLot,
+  checkGroupMinLot,
+  riskCode,
   checkGroupTradingRestriction,
   checkGroupTradingHalted,
   checkAccountStatusForOpen,
@@ -32,6 +34,7 @@ import {
   checkSymbolExposure,
   checkBrokerExposure,
   checkMaxDailyLoss,
+  checkAccountTradingRights,
 } from "@/lib/risk";
 
 async function requireManager() {
@@ -224,9 +227,8 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   if (!brokerSymbol) {
     return NextResponse.json({ error: "symbol no longer available for this broker" }, { status: 400 });
   }
-  if (order.account.status !== "ACTIVE") {
-    return NextResponse.json({ error: "account is not active" }, { status: 400 });
-  }
+  // Account status (owner rule 2026-09-29): a suspended / closed account can still CLOSE, it just opens nothing. So no
+  // status gate before the close branch; the open path below refuses via checkAccountStatusForOpen.
 
   const broker = await prisma.broker.findUniqueOrThrow({ where: { id: brokerId } });
 
@@ -290,7 +292,10 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     checkTradingSession(brokerSymbol.tradingSessions, new Date(), order.symbol.category) ??
     checkLotStep(order.volume, brokerSymbol.minLot, brokerSymbol.lotStep) ??
     (order.account.group ? checkGroupMaxLot(order.volume, order.account.group.maxLotSize) : null) ??
+    (order.account.group ? checkGroupMinLot(order.volume, order.account.group.minLotSize, brokerSymbol.minLot) : null) ??
     (order.account.group ? checkGroupTradingRestriction(order.account.group.tradingRestriction, order.side) : null) ??
+    // per-account trading rights + status (2026-09-28): a close-only / read-only / suspended account opens nothing
+    checkAccountTradingRights(order.account, "open") ??
     (order.account.group ? checkGroupTradingHalted(order.account.group) : null) ??
     // account status (2026-09-29): a suspended / closed account opens nothing
     checkAccountStatusForOpen(order.account) ??
@@ -307,7 +312,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     (await checkBrokerExposure(prisma, brokerId, order.volume, broker.totalExposureLimit)) ??
     (await checkMaxDailyLoss(prisma, order.accountId, order.account.maxDailyLoss));
   if (riskError) {
-    return NextResponse.json({ error: riskError }, { status: 400 });
+    return NextResponse.json({ error: riskError, ...riskCode(riskError) }, { status: 400 });
   }
 
   // See lib/group-pricing.ts's own comments -- markup applied on top of

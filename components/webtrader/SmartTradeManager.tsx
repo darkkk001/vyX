@@ -10,6 +10,7 @@ import {
   findConflict,
   type HotkeyBinding,
 } from "@/lib/hotkeys";
+import { plainError } from "@/lib/plain-error";
 
 // Smart Trade Manager (STM): a trader configures order parameters once,
 // then repeatedly fires them via keyboard hotkeys ("Smart Execution") or
@@ -225,7 +226,7 @@ export default function SmartTradeManager({
         pushToast(`Smart Execution: ${config.symbol} order submitted, awaiting dealer approval`);
       }
     } catch (err) {
-      pushToast(err instanceof Error ? err.message : "Smart Execution order failed");
+      pushToast(plainError(err, "Smart order not placed. Try again."));
     }
   }
 

@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/Badge";
 import { Alert } from "@/components/ui/Alert";
 import { Modal, ModalActions } from "@/components/ui/Modal";
 import { StatCard, StatGrid } from "@/components/ui/StatCard";
+import { plainError } from "@/lib/plain-error";
 
 export type RiskSettings = {
   dealingMode: boolean;
@@ -27,7 +28,7 @@ async function patchRisk(body: Record<string, unknown>) {
     body: JSON.stringify(body),
   });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error ?? "update failed");
+  if (!response.ok) throw new Error(plainError(data, "Could not save the change. Try again.", { audience: "staff" }));
   return data as RiskSettings;
 }
 
@@ -95,7 +96,7 @@ export default function RiskSettingsManager() {
       setDealingMode(result.dealingMode);
       setConfirmingDealing(false);
     } catch (e) {
-      setDealingError(e instanceof Error ? e.message : "update failed");
+      setDealingError(plainError(e, "Could not save the change. Try again."));
     } finally {
       setDealingBusy(false);
     }
@@ -115,7 +116,7 @@ export default function RiskSettingsManager() {
       setMaxOpenPositionsPerAccount(result.maxOpenPositionsPerAccount != null ? String(result.maxOpenPositionsPerAccount) : "");
       setLimitsSaved(true);
     } catch (e) {
-      setLimitsError(e instanceof Error ? e.message : "update failed");
+      setLimitsError(plainError(e, "Could not save the change. Try again."));
     } finally {
       setLimitsSaving(false);
     }
@@ -135,7 +136,7 @@ export default function RiskSettingsManager() {
       setSmartDealerRejectPct(result.smartDealerRejectPct ?? "");
       setSmartDealerSaved(true);
     } catch (e) {
-      setSmartDealerError(e instanceof Error ? e.message : "update failed");
+      setSmartDealerError(plainError(e, "Could not save the change. Try again."));
     } finally {
       setSmartDealerSaving(false);
     }

@@ -18,6 +18,8 @@ import {
   checkTradingSession,
   checkLotStep,
   checkGroupMaxLot,
+  checkGroupMinLot,
+  riskCode,
   checkGroupTradingRestriction,
   checkGroupTradingHalted,
   checkAccountStatusForOpen,
@@ -27,6 +29,7 @@ import {
   checkSymbolExposure,
   checkBrokerExposure,
   checkMaxDailyLoss,
+  checkAccountTradingRights,
 } from "@/lib/risk";
 
 // The client's answer to a dealer's requote -- see
@@ -163,7 +166,10 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     checkTradingSession(brokerSymbol.tradingSessions, new Date(), brokerSymbol.symbol.category) ??
     checkLotStep(order.volume, brokerSymbol.minLot, brokerSymbol.lotStep) ??
     (account.group ? checkGroupMaxLot(order.volume, account.group.maxLotSize) : null) ??
+    (account.group ? checkGroupMinLot(order.volume, account.group.minLotSize, brokerSymbol.minLot) : null) ??
     (account.group ? checkGroupTradingRestriction(account.group.tradingRestriction, order.side) : null) ??
+    // per-account trading rights + status (2026-09-28): a close-only / read-only / suspended account opens nothing
+    checkAccountTradingRights(account, "open") ??
     (account.group ? checkGroupTradingHalted(account.group) : null) ??
     // account status (2026-09-29): a suspended / closed account opens nothing
     checkAccountStatusForOpen(account) ??
@@ -180,7 +186,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     (await checkBrokerExposure(prisma, order.brokerId, order.volume, broker.totalExposureLimit)) ??
     (await checkMaxDailyLoss(prisma, order.accountId, account.maxDailyLoss));
   if (riskError) {
-    return NextResponse.json({ error: riskError }, { status: 400 });
+    return NextResponse.json({ error: riskError, ...riskCode(riskError) }, { status: 400 });
   }
 
   // See lib/group-pricing.ts's own comments -- the requoted price was

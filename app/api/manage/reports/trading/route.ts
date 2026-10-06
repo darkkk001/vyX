@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { toCsv } from "@/lib/csv";
+import { formatCsvNumber, viewAmount } from "@/lib/format";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -16,7 +17,7 @@ export async function GET() {
   const positions = await prisma.position.findMany({
     // LIVE accounts only, to reconcile with the summary tiles (which are LIVE-only); demo trades were inflating the table
     where: { brokerId, status: "CLOSED", closedAt: { gte: thirtyDaysAgo }, account: { accountMode: "LIVE" } },
-    include: { account: { select: { accountNumber: true } }, symbol: { select: { name: true } } },
+    include: { account: { select: { accountNumber: true } }, symbol: { select: { name: true, digits: true } } },
     orderBy: { closedAt: "desc" },
   });
 
@@ -26,12 +27,13 @@ export async function GET() {
       account: p.account.accountNumber,
       symbol: p.symbol.name,
       side: p.side,
-      volume: p.volume.toString(),
-      openPrice: p.openPrice.toString(),
-      closePrice: p.closePrice?.toString() ?? "",
-      commission: p.commission.toFixed(2),
-      swap: p.swap.toFixed(2),
-      realizedPnl: p.realizedPnl?.toFixed(2) ?? "",
+      // step 2 number rules (lib/format.ts): volume 2 dp, prices in the symbol's digits, never -0.00, broker view
+      volume: formatCsvNumber(p.volume.toString(), 2),
+      openPrice: formatCsvNumber(p.openPrice.toString(), p.symbol.digits),
+      closePrice: formatCsvNumber(p.closePrice?.toString(), p.symbol.digits),
+      commission: formatCsvNumber(viewAmount("commission", p.commission.toString(), "broker")),
+      swap: formatCsvNumber(viewAmount("swap", p.swap.toString(), "broker")),
+      realizedPnl: formatCsvNumber(p.realizedPnl?.toString()),
     })),
     [
       { key: "closedAt", label: "Closed At" },

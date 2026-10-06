@@ -40,9 +40,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   try {
     await sendClientVerificationEmail({ brokerId, clientId: client.id, email: client.email, fallbackOrigin: () => requestOrigin(request) });
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+    // step 2: the provider's own error text (status, body) stays in the server log
     console.error("[staff-resend-verification] email send failed", err);
-    return NextResponse.json({ error: `the e-mail could not be sent: ${message}`, code: "SEND_FAILED" }, { status: 502 });
+    return NextResponse.json({ error: "The e-mail could not be sent. Try again later.", code: "SEND_FAILED" }, { status: 502 });
   }
 
   await prisma.auditLog.create({

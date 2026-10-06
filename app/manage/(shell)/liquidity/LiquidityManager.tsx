@@ -10,6 +10,7 @@ import { FormField } from "@/components/ui/FormField";
 import { Modal, ModalActions } from "@/components/ui/Modal";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
 import { formatDateTime } from "@/lib/format";
+import { plainError } from "@/lib/plain-error";
 
 export type LiquidityProviderRow = {
   id: string;
@@ -80,7 +81,7 @@ export default function LiquidityManager() {
     setAddBusy(false);
     if (!response.ok) {
       const b = await response.json().catch(() => ({}));
-      setAddError(b.error ?? "failed to add");
+      setAddError(plainError(b, "Could not add. Try again.", { audience: "staff" }));
       return;
     }
     setAddOpen(false);

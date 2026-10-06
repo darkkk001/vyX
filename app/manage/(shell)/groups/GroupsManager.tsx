@@ -16,6 +16,7 @@ import { Modal, ModalActions, ModalSection } from "@/components/ui/Modal";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
 import { SwapFreeSelect } from "@/components/manage/SwapFreeSelect";
 import { SymbolPricingEditor } from "@/components/manage/SymbolPricingEditor";
+import { plainError } from "@/lib/plain-error";
 
 export type GroupRow = {
   id: string;
@@ -136,8 +137,8 @@ function routingBadge(row: GroupRow) {
   const dealingLabel = row.dealingMode === "MANUAL" ? "Force" : "Dealer-managed";
   const dealingTitle =
     row.dealingMode === "MANUAL"
-      ? "Every order from this group always queues for a dealer to manually accept/reject, regardless of the broker-wide Dealer switch."
-      : "Orders queue for manual dealer review, unless the broker-wide Dealer switch is off, in which case they auto-fill.";
+      ? "Every order from this group always queues for a dealer to manually accept/reject, regardless of the dealing switch."
+      : "Orders queue for manual dealer review, unless the dealing switch is off, in which case they auto-fill.";
   return uiType === "REVERSE_MIRROR" ? (
     <span title={`Kept in-house (broker takes the other side), and this group is the SOURCE a reverse-mirror rule copies trades from. ${dealingTitle}`}>
       <Badge tone="warning">Reverse ({dealingLabel})</Badge>
@@ -193,7 +194,7 @@ export default function GroupsManager() {
       // Stays open with the block reason visible (e.g. "N accounts are
       // assigned...") instead of closing on failure -- the whole point of
       // this guard is to make the admin actually read why, not just retry.
-      setDeleteError(b.error ?? "delete failed");
+      setDeleteError(plainError(b, "Could not delete. Try again.", { audience: "staff" }));
       return;
     }
     setRows((prev) => (prev ?? []).filter((r) => r.id !== deleteTarget.id));
@@ -225,7 +226,7 @@ export default function GroupsManager() {
             <TableHeaderCell className="min-w-[175px]" title="How live orders from this group are routed">
               Routing
             </TableHeaderCell>
-            <TableHeaderCell align="center" className="min-w-[80px]" title="Applied at fill/swap-rollover time once your broker's pricing engine is enabled. Resolution order is Account > Account Type > Group > charged. '-' means this group inherits (nothing set here).">Swap-free</TableHeaderCell>
+            <TableHeaderCell align="center" className="min-w-[80px]" title="Applied at fill and swap time once custom pricing is enabled. Resolution order is Account > Account Type > Group > charged. An empty cell means this group inherits (nothing set here).">Swap-free</TableHeaderCell>
             <TableHeaderCell align="center" className="min-w-[70px]">Default</TableHeaderCell>
             <TableHeaderCell className="min-w-[145px]" />
           </TableHead>
@@ -431,7 +432,7 @@ function GroupFormModal({
     setSaving(false);
     if (!response.ok) {
       const b = await response.json().catch(() => ({}));
-      setError(b.error ?? "save failed");
+      setError(plainError(b, "Could not save. Try again.", { audience: "staff" }));
       return;
     }
     const saved: GroupRow = await response.json();
@@ -477,7 +478,7 @@ function GroupFormModal({
         {tab === "pricing" && isEdit ? (
           <SymbolPricingEditor
             apiPath={`/api/manage/groups/${initial!.id}/pricing`}
-            description={`Spread markup/target, commission, and swap set here apply to every real fill for accounts in ${initial!.name} once your broker's pricing engine is enabled, not just a label. Blank means inherit from the broker-wide default; Reset removes the whole row.`}
+            description={`Spread markup/target, commission, and swap set here apply to every real fill for accounts in ${initial!.name} once custom pricing is enabled, not just a label. Blank means inherit from the default for all clients; Reset removes the whole row.`}
           />
         ) : null}
 
@@ -660,7 +661,7 @@ function SymbolsPanel({ groupId }: { groupId: string }) {
     setSaving(false);
     if (!response.ok) {
       const b = await response.json().catch(() => ({}));
-      setError(b.error ?? "save failed");
+      setError(plainError(b, "Could not save. Try again.", { audience: "staff" }));
       return;
     }
     setSaved(true);

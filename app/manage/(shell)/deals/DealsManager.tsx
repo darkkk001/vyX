@@ -9,7 +9,8 @@ import { Modal, ModalActions } from "@/components/ui/Modal";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
 import { TableSkeleton, TableErrorState, useTableSort, SortableHeaderCell } from "@/components/ui/TableExtras";
 import DealingReplayPanel from "@/components/admin/DealingReplayPanel";
-import { formatPrice, formatNumber, formatPnl, formatDateTime } from "@/lib/format";
+import { formatDateTime, formatPnl, formatPrice, formatSigned, formatVolume, viewAmount } from "@/lib/format";
+import { plainError } from "@/lib/plain-error";
 
 export type DealRow = {
   id: string;
@@ -108,7 +109,7 @@ export default function DealsManager() {
       return;
     }
     if (!response.ok) {
-      setDeleteError(body.error ?? "delete failed");
+      setDeleteError(plainError(body, "Could not delete. Try again.", { audience: "staff" }));
       return;
     }
     setDeleteConfirm(null);
@@ -200,11 +201,11 @@ export default function DealsManager() {
                     </span>
                   ) : null}
                 </TableCell>
-                <TableCell align="right" mono>{formatNumber(row.volume)}</TableCell>
+                <TableCell align="right" mono>{formatVolume(row.volume)}</TableCell>
                 <TableCell align="right" mono>{formatPrice(row.openPrice, row.digits)}</TableCell>
                 <TableCell align="right" mono>{formatPrice(row.closePrice, row.digits)}</TableCell>
-                <TableCell align="right" mono>{formatNumber(row.commission)}</TableCell>
-                <TableCell align="right" mono>{formatNumber(row.swap)}</TableCell>
+                <TableCell align="right" mono>{formatSigned(viewAmount("commission", row.commission, "broker"))}</TableCell>
+                <TableCell align="right" mono>{formatSigned(viewAmount("swap", row.swap, "broker"))}</TableCell>
                 <TableCell align="right" mono className={row.realizedPnl == null ? "" : formatPnl(row.realizedPnl).toneClass}>
                   {row.realizedPnl == null ? "" : formatPnl(row.realizedPnl).text}
                 </TableCell>

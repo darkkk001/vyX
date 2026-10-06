@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/Button";
 import { Alert } from "@/components/ui/Alert";
 import { Checkbox } from "@/components/ui/Checkbox";
 import TwoPanelAuthShell, { twoPanelAuthShellStyles as styles } from "@/components/admin/TwoPanelAuthShell";
+import { plainError } from "@/lib/plain-error";
 
 type View = "signin" | "twoFactor" | "forgot" | "forgotSent" | "success";
 
@@ -85,7 +86,7 @@ export default function ManagerLoginForm({
 
     if (!response.ok) {
       const body = await response.json().catch(() => ({}));
-      setError(body.error ?? "login failed");
+      setError(plainError(body, "Sign-in failed. Try again.", { audience: "staff" }));
       return;
     }
 
@@ -122,7 +123,7 @@ export default function ManagerLoginForm({
 
     if (!response.ok) {
       const body = await response.json().catch(() => ({}));
-      setError(body.error ?? "verification failed");
+      setError(plainError(body, "Verification failed. Try again.", { audience: "staff" }));
       return;
     }
 

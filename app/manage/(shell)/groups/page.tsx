@@ -15,7 +15,7 @@ export default function ManagerGroupsPage() {
     <main className="mx-auto max-w-[1400px]">
       <PageHeader
         title="Groups"
-        description="Settings templates for accounts, assigning an account to a group applies the group's leverage to that account immediately. Margin-call/stop-out levels are stored here but not yet enforced by the trading engine."
+        description="Settings templates for accounts. Assigning an account to a group applies the group's leverage to that account immediately."
       />
       <GroupsManager />
     </main>

@@ -112,7 +112,7 @@ export async function checkClientBuild(brokerId: string | null, brokerSubdomain:
 export function clientBuildErrorMessage(v: Exclude<ClientBuildVerdict, { ok: true }>): string {
   switch (v.reason) {
     case "revoked":
-      return "BUILD_RETIRED: this installation has been retired by your broker. Install the latest version.";
+      return "BUILD_RETIRED: this installation has been retired. Install the latest version.";
     case "wrong-tenant":
       return "BUILD_WRONG_TENANT: this installation is not issued for this broker.";
     case "unknown":

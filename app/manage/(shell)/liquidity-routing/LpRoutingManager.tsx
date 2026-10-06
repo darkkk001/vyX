@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { FormField } from "@/components/ui/FormField";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
+import { plainError } from "@/lib/plain-error";
 
 export type RoutingRuleRow = {
   id: string;
@@ -69,7 +70,7 @@ export default function LpRoutingManager() {
     setCreating(false);
     if (!response.ok) {
       const b = await response.json().catch(() => ({}));
-      setCreateError(b.error ?? "failed to add rule");
+      setCreateError(plainError(b, "Could not add the rule. Try again.", { audience: "staff" }));
       return;
     }
     setNotes("");
@@ -105,7 +106,7 @@ export default function LpRoutingManager() {
               )}
             </Select>
           </FormField>
-          <FormField label="Symbol (blank = broker-wide default)">
+          <FormField label="Symbol (blank = all symbols)">
             <Select value={symbolId} onChange={(e) => setSymbolId(e.target.value)} className="w-40">
               <option value="">Default</option>
               {symbolOptions.map((s) => (

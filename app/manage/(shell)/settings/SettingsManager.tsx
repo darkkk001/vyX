@@ -13,6 +13,7 @@ import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, Tabl
 import { useToast } from "@/lib/toast";
 import { SwapFreeSelect } from "@/components/manage/SwapFreeSelect";
 import { SymbolPricingEditor } from "@/components/manage/SymbolPricingEditor";
+import { plainError } from "@/lib/plain-error";
 
 type SettingsData = {
   name: string;
@@ -174,7 +175,7 @@ export default function SettingsManager() {
     setTypeSaving(false);
     if (!response.ok) {
       const b = await response.json().catch(() => ({}));
-      setTypeFormError(b.error ?? "save failed");
+      setTypeFormError(plainError(b, "Could not save. Try again.", { audience: "staff" }));
       return;
     }
     setTypeModalTarget(null);
@@ -200,7 +201,7 @@ export default function SettingsManager() {
     setTypeBusyId(null);
     if (!response.ok) {
       const b = await response.json().catch(() => ({}));
-      showToast(b.error ?? "update failed", "danger");
+      showToast(plainError(b, "Could not save the change. Try again.", { audience: "staff" }), "danger");
       return;
     }
     reloadAccountTypes().catch(() => {});
@@ -225,7 +226,7 @@ export default function SettingsManager() {
     setTypeBusyId(null);
     if (!response.ok) {
       const b = await response.json().catch(() => ({}));
-      showToast(b.error ?? "update failed", "danger");
+      showToast(plainError(b, "Could not save the change. Try again.", { audience: "staff" }), "danger");
       return;
     }
     reloadAccountTypes().catch(() => {});
@@ -245,7 +246,7 @@ export default function SettingsManager() {
     setSaving(false);
     if (!response.ok) {
       const b = await response.json().catch(() => ({}));
-      setError(b.error ?? "save failed");
+      setError(plainError(b, "Could not save. Try again.", { audience: "staff" }));
       return;
     }
     const updated = await response.json();
@@ -296,7 +297,7 @@ export default function SettingsManager() {
 
       <Card
         title="Account types"
-        description="Pricing-tier labels a client account can be tagged with (Standard/Pro/Zero by default). Each type's own flat and per-symbol pricing below, and any Group-level pricing, is applied at fill time once your broker's pricing engine is enabled; until then, Group pricing (Client groups page) is what applies to a real fill."
+        description="Pricing-tier labels a client account can be tagged with (Standard/Pro/Zero by default). Each type's own flat and per-symbol pricing below, and any Group-level pricing, is applied at fill time once custom pricing is enabled; until then, Group pricing (Client groups page) is what applies to a real fill."
         action={<Button size="sm" onClick={() => openTypeModal("new")}>+ Add type</Button>}
       >
         <Table>
@@ -432,7 +433,7 @@ export default function SettingsManager() {
           <ModalSection label="Pricing">
             <Alert tone="info">
               This type-wide flat pricing is the fallback for any symbol with no per-symbol override (Per-Symbol Pricing tab, once this type
-              is saved); both are applied at fill time once your broker&apos;s pricing engine is enabled.
+              is saved); both are applied at fill time once custom pricing is enabled.
             </Alert>
           </ModalSection>
           <div className="grid grid-cols-2 gap-3">

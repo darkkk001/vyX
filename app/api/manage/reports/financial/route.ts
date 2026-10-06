@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { toCsv } from "@/lib/csv";
+import { formatCsvNumber } from "@/lib/format";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -26,7 +27,7 @@ export async function GET() {
       type: t.type,
       status: t.status,
       account: t.account.accountNumber,
-      amount: t.amount.toFixed(2),
+      amount: formatCsvNumber(t.amount.toString()),
       note: t.note ?? "",
     })),
     [

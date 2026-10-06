@@ -113,6 +113,7 @@ describe("price source alert", () => {
       }
     }
     expect(texts[1].body).toMatch(/\(<1 min\)\.$/);
+    expect(texts[0].body).toBe("Live prices unavailable since 08:00 UTC. Until they are back, no close, stop loss, take profit, stop-out or pending order is executed.");
     expect(outageDurationText(59_999)).toBe("<1 min");
     expect(outageDurationText(60_000)).toBe("1 min");
   });

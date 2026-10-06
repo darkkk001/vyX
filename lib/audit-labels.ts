@@ -38,6 +38,9 @@ const LABELS: Record<string, string> = {
   LEVERAGE_CHANGE: "Changed leverage",
   ACCOUNT_STATUS_CHANGED: "Changed account status",
   ACCOUNT_MAX_DAILY_LOSS_CHANGED: "Changed max daily loss",
+  // 2026-09-28: per-account trading rights (lib/account-trading-rights.ts)
+  ACCOUNT_TRADING_RIGHTS_CHANGED: "Changed trading rights",
+  PENDING_ORDER_CANCELLED_BY_TRADING_RIGHTS: "Cancelled pending order (trading rights changed)",
   // AccountType (pricing tier -- Standard/Pro/Zero) scaffold.
   ACCOUNT_TYPE_CREATED: "Created account type",
   ACCOUNT_TYPE_UPDATED: "Updated account type",
@@ -92,6 +95,13 @@ const LABELS: Record<string, string> = {
   BALANCE_ADJUSTMENT_REQUESTED: "Requested balance adjustment (pending approval)",
   BALANCE_ADJUSTMENT_APPROVED: "Approved balance adjustment",
   BALANCE_ADJUSTMENT_REJECTED: "Rejected balance adjustment",
+  // 2026-09-28: Credit ($) add / remove (lib/credit-adjustment.ts)
+  CREDIT_ADDED: "Added credit",
+  CREDIT_REMOVED: "Removed credit",
+  CREDIT_REQUESTED: "Requested credit change (pending approval)",
+  CREDIT_APPROVED: "Approved credit change",
+  CREDIT_REJECTED: "Rejected credit change",
+  CREDIT_CONSUMED_BY_LOSS: "Credit used to cover a loss",
   MANUAL_POSITION_OPEN: "Opened manual position",
   MANUAL_POSITION_CLOSE: "Closed manual position",
   MANUAL_POSITION_BULK_CLOSE: "Bulk-closed positions for account",

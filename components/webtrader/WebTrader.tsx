@@ -49,6 +49,10 @@ import IndicatorConfigDialog from "./IndicatorConfigDialog";
 import { playSound } from "@/lib/sounds";
 import { filterEventsForSymbol, nextHighImpactEventWithin, type CalendarEvent } from "@/lib/economic-calendar";
 import { spreadPoints, DEFAULT_WATCHLIST_COLUMN_PREFS, type WatchlistColumnPrefs } from "@/lib/watchlist-columns";
+import { plainError } from "@/lib/plain-error";
+import { formatCsvNumber, formatMarginLevel, formatMoney, formatPercent, formatSigned, formatVolume, tone, viewAmount, TONE_COLOR, type Tone } from "@/lib/format";
+// WebTrader colour classes per tone (lib/format.ts): profit green, loss red, zero neutral
+const TONE_CSS: Record<Tone, string> = { profit: "pos", loss: "neg", neutral: "" };
 
 const TF_LABELS: { key: Timeframe; label: string }[] = [
   { key: "M1", label: "1m" },
@@ -1054,7 +1058,7 @@ export default function WebTrader({
   const handleOrderError = useCallback((err: unknown, retry?: () => void) => {
     playSound("error", chartSettingsRef.current);
     if (err instanceof ApiError && (err.message === "PRICE_STALE" || err.message === "SLIPPAGE_EXCEEDED")) {
-      const reason = err.message === "PRICE_STALE" ? "Feed went stale, order not placed" : "Price moved, order not placed";
+      const reason = err.message === "PRICE_STALE" ? "The price is out of date, order not placed" : "Price moved, order not placed";
       pushToast(reason, false, retry);
       return;
     }
@@ -1085,7 +1089,7 @@ export default function WebTrader({
       );
       return;
     }
-    pushToast(err instanceof Error ? err.message : "order failed");
+    pushToast(plainError(err, "Order not placed. Try again."));
   }, [pushToast, activeSymbol]);
 
   const askPrompt = useCallback((message: string, defaultValue: string, onSubmit: (value: string) => void) => {
@@ -1274,7 +1278,7 @@ export default function WebTrader({
         );
         await Promise.all([refreshOrders(), refreshPositions(), refreshAccount()]);
       } catch (err) {
-        pushToast(err instanceof Error ? err.message : "requote response failed");
+        pushToast(plainError(err, "Could not answer the requote. Try again."));
       }
     },
     [pushToast, refreshOrders, refreshPositions, refreshAccount]
@@ -1374,7 +1378,7 @@ export default function WebTrader({
       window.location.reload();
     } catch (err) {
       setSwitching(false);
-      setSwitchError(err instanceof Error ? err.message : "switch failed");
+      setSwitchError(plainError(err, "Could not switch account. Try again."));
     }
   }
 
@@ -1388,7 +1392,7 @@ export default function WebTrader({
       window.location.reload();
     } catch (err) {
       setSwitching(false);
-      setSwitchError(err instanceof Error ? err.message : "verification failed");
+      setSwitchError(plainError(err, "Verification failed. Try again."));
     }
   }
 
@@ -1403,16 +1407,17 @@ export default function WebTrader({
     }
   }
 
-  // naming.md "Empty and zero values": money is always 2 decimals (0.00), a value that does not exist is empty
-  const money2 = (v: string | number) => (Number.isFinite(Number(v)) ? Number(v).toFixed(2) : "");
+  // naming.md "Number rules" + "Empty and zero values" (lib/format.ts): money 2 decimals (0.00), volume 2 decimals,
+  // prices in the symbol's digits, never -0.00, empty when there is no value; client view (commission is a charge, so
+  // negative). CSV numbers stay machine-readable (formatCsvNumber).
 
   function exportReportCsv() {
     if (!reportRows || reportRows.length === 0) return;
     const header = ["Symbol", "Side", "Volume", "Open Price", "Close Price", "Swap", "Commission", "P&L", "Opened At", "Closed At"];
     const lines = reportRows.map((p) =>
       [
-        p.symbol.name, p.side, p.volume, p.openPrice, p.closePrice ?? "",
-        money2(p.swap), money2(p.commission), p.realizedPnl != null ? money2(p.realizedPnl) : "", p.openedAt, p.closedAt ?? "",
+        p.symbol.name, p.side, formatCsvNumber(p.volume, 2), formatCsvNumber(p.openPrice, p.symbol.digits), formatCsvNumber(p.closePrice, p.symbol.digits),
+        formatCsvNumber(viewAmount("swap", p.swap, "client")), formatCsvNumber(viewAmount("commission", p.commission, "client")), formatCsvNumber(p.realizedPnl), p.openedAt, p.closedAt ?? "",
       ].map((v) => `"${String(v).replace(/"/g, '""')}"`).join(",")
     );
     const csv = [header.join(","), ...lines].join("\n");
@@ -1438,7 +1443,7 @@ export default function WebTrader({
       setChangePasswordOpen(false);
       setCpCurrent(""); setCpNew(""); setCpConfirm("");
     } catch (err) {
-      setCpError(err instanceof Error ? err.message : "failed to change password");
+      setCpError(plainError(err, "Could not change the password. Try again."));
     } finally {
       setCpSubmitting(false);
     }
@@ -1457,7 +1462,7 @@ export default function WebTrader({
           tradeApi.chartIndicators().then((res) => { if (!chartIndicatorsDirtyRef.current) setActiveIndicators(res.indicators.active); }).catch(() => {}),
         ]);
       } catch (err) {
-        setLoadError(err instanceof Error ? err.message : "failed to load account data");
+        setLoadError(plainError(err, "Could not load the account. Try again."));
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1489,7 +1494,7 @@ export default function WebTrader({
       const { secret, qrCodeDataUri } = await tradeApi.setupTwoFactor();
       setTfaSetupData({ secret, qrCodeDataUri });
     } catch (err) {
-      setTfaError(err instanceof Error ? err.message : "failed to start 2FA setup");
+      setTfaError(plainError(err, "Could not start two-factor setup. Try again."));
     } finally {
       setTfaBusy(false);
     }
@@ -1506,7 +1511,7 @@ export default function WebTrader({
       setTfaConfirmCode("");
       pushToast("Two-factor authentication enabled");
     } catch (err) {
-      setTfaError(err instanceof Error ? err.message : "invalid code");
+      setTfaError(plainError(err, "Invalid code."));
     } finally {
       setTfaBusy(false);
     }
@@ -1522,7 +1527,7 @@ export default function WebTrader({
       setTfaDisablePassword("");
       pushToast("Two-factor authentication disabled");
     } catch (err) {
-      setTfaError(err instanceof Error ? err.message : "failed to disable 2FA");
+      setTfaError(plainError(err, "Could not turn off two-factor sign-in. Try again."));
     } finally {
       setTfaBusy(false);
     }
@@ -1545,7 +1550,7 @@ export default function WebTrader({
       setSessions((prev) => prev?.filter((x) => x.sessionId !== s.sessionId) ?? null);
       pushToast("Session revoked");
     } catch (err) {
-      pushToast(err instanceof Error ? err.message : "failed to revoke session");
+      pushToast(plainError(err, "Could not sign out that session. Try again."));
     } finally {
       setRevokingSessionId(null);
     }
@@ -1643,7 +1648,9 @@ export default function WebTrader({
   // WebSocket itself (see the effect below and services/api-gateway/src/
   // ws.ts's registerClient) -- null/"—" whenever that socket isn't open,
   // same "never show a wrong number" rule as dayOpen's fix above.
-  const [pingMs, setPingMs] = useState<number | null>(null);
+  // Step 2 (owner rule 2026-10-06): no "ms" latency on a trader's screen, so the "Ping n ms" status item is gone. The
+  // app-level ping/pong stays as the socket keepalive; the last round trip is kept in a ref (no re-render every 5 s).
+  const pingMsRef = useRef<number | null>(null);
   // Session-enforcement pack -- per-symbol "is its trading session closed
   // right now" from the same prices poll, so the order ticket can disable
   // Buy/Sell proactively instead of only ever finding out from a rejected
@@ -1848,7 +1855,7 @@ export default function WebTrader({
         try {
           const parsed = JSON.parse(event.data);
           if (parsed?.type === "pong") {
-            setPingMs(Math.round(performance.now() - parsed.t));
+            pingMsRef.current = Math.round(performance.now() - parsed.t);
             return;
           }
           // The Gateway relays the Rust engine's raw JSON unchanged --
@@ -1870,7 +1877,7 @@ export default function WebTrader({
       };
       socket.onclose = () => {
         if (pingInterval) { clearInterval(pingInterval); pingInterval = null; }
-        setPingMs(null);
+        pingMsRef.current = null;
         if (!cancelled) {
           reconnectTimer = setTimeout(connect, backoffMs);
           backoffMs = Math.min(backoffMs * 2, RECONNECT_MAX_BACKOFF_MS);
@@ -2373,7 +2380,7 @@ export default function WebTrader({
         tradeApi.closePosition(p.id, price)
           .then((res) => {
             const pnl = (res as { transaction: { amount: string } }).transaction.amount;
-            pushToast(`${p.symbol.name} closed, ${hitType} hit, ${parseFloat(pnl) >= 0 ? "+" : ""}${parseFloat(pnl).toFixed(2)} ${moneyCurrencyCode()}`, true);
+            pushToast(`${p.symbol.name} closed, ${hitType} hit, ${formatSigned(pnl)} ${moneyCurrencyCode()}`, true);
             return Promise.all([refreshPositions(), refreshHistory(), refreshAccount()]);
           })
           .catch(() => {})
@@ -2508,12 +2515,12 @@ export default function WebTrader({
     if (!isNaN(sl) && sl !== currentPrice) {
       const side = sl < currentPrice ? "BUY" : "SELL";
       const pnl = pnlAtPrice(symbolName, side, currentPrice, vol, sl);
-      lines.push(`S/L (if hit): ${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}`);
+      lines.push(`S/L (if hit): ${formatSigned(pnl)}`);
     }
     if (!isNaN(tp) && tp !== currentPrice) {
       const side = tp > currentPrice ? "BUY" : "SELL";
       const pnl = pnlAtPrice(symbolName, side, currentPrice, vol, tp);
-      lines.push(`T/P (if hit): ${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}`);
+      lines.push(`T/P (if hit): ${formatSigned(pnl)}`);
     }
     void mm;
     return lines;
@@ -2616,7 +2623,7 @@ export default function WebTrader({
     try {
       const res = await tradeApi.closePosition(id, price);
       const pnl = parseFloat((res as { transaction: { amount: string } }).transaction.amount);
-      pushToast(`Closed ${p.symbol.name}, ${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)} ${moneyCurrencyCode()}`);
+      pushToast(`Closed ${p.symbol.name}, ${formatSigned(pnl)} ${moneyCurrencyCode()}`);
       // refreshPositions()'s own diff (see that callback) is what plays
       // the close sound -- not duplicated here, to avoid firing twice.
       await Promise.all([refreshPositions(), refreshHistory(), refreshAccount()]);
@@ -2627,7 +2634,7 @@ export default function WebTrader({
       } else if (err instanceof ApiError && err.message === "NO_LIVE_FEED") {
         pushToast("Reconnecting to price feed, try again shortly");
       } else {
-        pushToast(err instanceof Error ? err.message : "failed to close position");
+        pushToast(plainError(err, "Could not close the position. Try again."));
       }
     }
   }
@@ -2665,7 +2672,7 @@ export default function WebTrader({
     if (Math.abs(steps - Math.round(steps)) > 1e-6) return `amount must be ${minLot} plus a multiple of ${lotStep} lots`;
     const remaining = fullVolume - amount;
     if (remaining > EPS && remaining < minLot - EPS) {
-      return `closing this amount would leave ${remaining.toFixed(2)} lots open, below this symbol's minimum of ${minLot}. Close the full position instead`;
+      return `closing this amount would leave ${formatVolume(remaining)} lots open, below this symbol's minimum of ${minLot}. Close the full position instead`;
     }
     return null;
   }
@@ -2688,7 +2695,7 @@ export default function WebTrader({
     try {
       const res = await tradeApi.closePosition(id, price, amount);
       const pnl = parseFloat((res as { transaction: { amount: string } }).transaction.amount);
-      pushToast(`Closed ${amount} lots of ${p.symbol.name}, ${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)} ${moneyCurrencyCode()}`);
+      pushToast(`Closed ${formatVolume(amount)} lots of ${p.symbol.name}, ${formatSigned(pnl)} ${moneyCurrencyCode()}`);
       setPartialCloseTarget(null);
       await Promise.all([refreshPositions(), refreshHistory(), refreshAccount()]);
     } catch (err) {
@@ -2698,7 +2705,7 @@ export default function WebTrader({
       } else if (err instanceof ApiError && err.message === "NO_LIVE_FEED") {
         setPartialCloseError("Reconnecting to price feed, try again shortly");
       } else {
-        setPartialCloseError(err instanceof Error ? err.message : "failed to partially close");
+        setPartialCloseError(plainError(err, "Could not close part of the position. Try again."));
       }
     } finally {
       setPartialCloseBusy(false);
@@ -2726,11 +2733,11 @@ export default function WebTrader({
     try {
       const res = await tradeApi.closeBy(positionId, againstPositionId);
       const totalPnl = parseFloat(res.realizedPnlA) + parseFloat(res.realizedPnlB);
-      pushToast(`Closed by: ${res.closeVolume} lots netted @ ${res.closePrice}, ${totalPnl >= 0 ? "+" : ""}${totalPnl.toFixed(2)} ${moneyCurrencyCode()}`, true);
+      pushToast(`Closed by: ${formatVolume(res.closeVolume)} lots netted @ ${res.closePrice}, ${formatSigned(totalPnl)} ${moneyCurrencyCode()}`, true);
       setCloseByTarget(null);
       await Promise.all([refreshPositions(), refreshHistory(), refreshAccount()]);
     } catch (err) {
-      setCloseByError(err instanceof Error ? err.message : "failed to close by");
+      setCloseByError(plainError(err, "Could not close by. Try again."));
     } finally {
       setCloseByBusy(false);
     }
@@ -2765,7 +2772,7 @@ export default function WebTrader({
       pushToast(`${p.symbol.name} reversed to ${newSide}`);
       await Promise.all([refreshPositions(), refreshHistory(), refreshAccount()]);
     } catch (err) {
-      pushToast(err instanceof Error ? err.message : "failed to reverse");
+      pushToast(plainError(err, "Could not reverse the position. Try again."));
     }
   }
 
@@ -2808,7 +2815,7 @@ export default function WebTrader({
     const netSide = netLots > 0 ? "Buy" : netLots < 0 ? "Sell" : "Flat";
     const pnlPct = account ? (totalPnl / parseFloat(account.balance)) * 100 : 0;
     setShareData({
-      symbolLabel: `${symbolName} · net ${netSide} ${Math.abs(netLots).toFixed(2)}`,
+      symbolLabel: `${symbolName} · net ${netSide} ${formatVolume(Math.abs(netLots))}`,
       pnl: totalPnl, pnlPct,
       entryLabel: fmt(avgEntry, symPositions[0].symbol.digits), currentLabel: fmt(mm.bid, symPositions[0].symbol.digits),
       rrLabel: `${symPositions.length}`, rrTitle: "Positions",
@@ -2826,7 +2833,7 @@ export default function WebTrader({
       pushToast(`Closed all in ${symbolName}, ${result.successful} position${result.successful === 1 ? "" : "s"} closed${result.failed ? `, ${result.failed} failed` : ""}`, result.failed === 0);
       await Promise.all([refreshPositions(), refreshHistory(), refreshAccount()]);
     } catch (err) {
-      pushToast(err instanceof Error ? err.message : "failed to close positions");
+      pushToast(plainError(err, "Could not close the positions. Try again."));
     }
   }
   async function closeManyBy(scope: "ALL" | "PROFIT" | "LOSS", label: string) {
@@ -2836,7 +2843,7 @@ export default function WebTrader({
       pushToast(`${label}, Requested: ${result.requested}, Successful: ${result.successful}, Failed: ${result.failed}`, result.failed === 0);
       await Promise.all([refreshPositions(), refreshHistory(), refreshAccount()]);
     } catch (err) {
-      pushToast(err instanceof Error ? err.message : "failed to close positions");
+      pushToast(plainError(err, "Could not close the positions. Try again."));
     }
   }
 
@@ -2872,7 +2879,7 @@ export default function WebTrader({
         } else if (err instanceof ApiError && err.message === "NO_LIVE_FEED") {
           pushToast("Reconnecting to price feed, try again shortly");
         } else {
-          pushToast(err instanceof Error ? err.message : "failed to update");
+          pushToast(plainError(err, "Could not save the change. Try again."));
         }
       }
     } else if (sltpEdit.posId) {
@@ -2892,7 +2899,7 @@ export default function WebTrader({
           } else if (err instanceof ApiError && err.message === "NO_LIVE_FEED") {
             pushToast("Reconnecting to price feed, try again shortly");
           } else {
-            pushToast(err instanceof Error ? err.message : "failed to update");
+            pushToast(plainError(err, "Could not save the change. Try again."));
           }
         }
       }
@@ -2934,7 +2941,7 @@ export default function WebTrader({
       } else if (err instanceof ApiError && err.message === "NO_LIVE_FEED") {
         pushToast("Reconnecting to price feed, try again shortly");
       } else {
-        pushToast(err instanceof Error ? err.message : "failed to update");
+        pushToast(plainError(err, "Could not save the change. Try again."));
       }
       return false;
     }
@@ -2954,7 +2961,7 @@ export default function WebTrader({
       await refreshOrders();
       return true;
     } catch (err) {
-      pushToast(err instanceof Error ? err.message : "failed to update");
+      pushToast(plainError(err, "Could not save the change. Try again."));
       return false;
     }
   }
@@ -2971,7 +2978,7 @@ export default function WebTrader({
       await refreshOrders();
       return true;
     } catch (err) {
-      pushToast(err instanceof Error ? err.message : "failed to update");
+      pushToast(plainError(err, "Could not save the change. Try again."));
       return false;
     }
   }
@@ -3119,7 +3126,7 @@ export default function WebTrader({
         pushToast(`Alert set, ${symbolName} @ ${fmt(price, mm.def.digits)}`);
         await refreshAlerts();
       } catch (err) {
-        pushToast(err instanceof Error ? err.message : "failed to set alert");
+        pushToast(plainError(err, "Could not set the alert. Try again."));
       }
     });
   }
@@ -3129,7 +3136,7 @@ export default function WebTrader({
       await tradeApi.cancelAlert(id);
       await refreshAlerts();
     } catch (err) {
-      pushToast(err instanceof Error ? err.message : "failed to cancel alert");
+      pushToast(plainError(err, "Could not cancel the alert. Try again."));
     }
   }
 
@@ -3149,7 +3156,7 @@ export default function WebTrader({
       setWatchlistOrder(result.symbols.map((s) => s.name));
       pushToast(`${name} added to watchlist`);
     } catch (err) {
-      pushToast(err instanceof Error ? err.message : "failed to add symbol");
+      pushToast(plainError(err, "Could not add the symbol. Try again."));
     }
   }
   async function hideSymbolFromWatchlist(name: string) {
@@ -3159,7 +3166,7 @@ export default function WebTrader({
     try {
       await tradeApi.hideFromWatchlist(symbolId);
     } catch (err) {
-      pushToast(err instanceof Error ? err.message : "failed to hide symbol");
+      pushToast(plainError(err, "Could not hide the symbol. Try again."));
       refreshSymbolsAndWatchlist(); // reconcile with the server on failure
     }
   }
@@ -3169,7 +3176,7 @@ export default function WebTrader({
       setWatchlistOrder(result.symbols.map((s) => s.name));
       pushToast("Watchlist reset to default");
     } catch (err) {
-      pushToast(err instanceof Error ? err.message : "failed to reset watchlist");
+      pushToast(plainError(err, "Could not reset the watchlist. Try again."));
     }
   }
 
@@ -3302,7 +3309,7 @@ export default function WebTrader({
         .map((p) => {
           const pnl = positionPnl(p);
           const color = p.side === "BUY" ? "#16C784" : "#EA3943";
-          const label = `${p.side === "BUY" ? "B" : "S"} ${parseFloat(p.volume).toFixed(2)} @ ${fmt(parseFloat(p.openPrice), m.def.digits)}  P/L ${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}`;
+          const label = `${p.side === "BUY" ? "B" : "S"} ${formatVolume(p.volume)} @ ${fmt(parseFloat(p.openPrice), m.def.digits)}  P/L ${formatSigned(pnl)}`;
           return { id: `pos-${p.id}`, positionId: p.id, price: parseFloat(p.openPrice), color, label };
         }),
     [positions, activeSymbol, m.def.digits, positionPnl]
@@ -3333,7 +3340,7 @@ export default function WebTrader({
         const ghostOffset = Math.max(minDistance * 2, 100 * point);
         const makeFormatLabel = (prefix: string) => (price: number) => {
           const pnl = pnlAtPrice(p.symbol.name, p.side, openPrice, vol, price);
-          return `${prefix} ${fmt(price, mm.def.digits)}  ${pnl >= 0 ? "+" : "-"}$${Math.abs(pnl).toFixed(2)}`;
+          return `${prefix} ${fmt(price, mm.def.digits)}  ${formatSigned(pnl)} ${moneyCurrencyCode()}`;
         };
         // Ghost (drag-to-create) SL/TP handles used to render for every
         // open position unconditionally -- looked exactly like a real
@@ -3515,7 +3522,7 @@ export default function WebTrader({
       try {
         await tradeApi.saveChartSettings(next);
       } catch (err) {
-        pushToast(err instanceof Error ? err.message : "failed to save chart settings");
+        pushToast(plainError(err, "Could not save the chart settings."));
       }
     });
   }
@@ -3532,7 +3539,7 @@ export default function WebTrader({
       try {
         await tradeApi.saveChartIndicators({ active: next });
       } catch (err) {
-        pushToast(err instanceof Error ? err.message : "failed to save chart indicators");
+        pushToast(plainError(err, "Could not save the chart indicators."));
       }
     });
   }
@@ -4093,7 +4100,7 @@ export default function WebTrader({
                         <span className="wl-price mono" style={{ color: "var(--text-3)" }}>-</span>
                       )}
                     </span>
-                    {columnPrefs.change ? <span className={`wl-cell mono ${changePct !== null && changePct >= 0 ? "wl-pos" : "wl-neg"}`}>{changePct !== null ? (changePct >= 0 ? "+" : "") + changePct.toFixed(2) + "%" : ""}</span> : null}
+                    {columnPrefs.change ? <span className={`wl-cell mono ${changePct === null ? "" : { profit: "wl-pos", loss: "wl-neg", neutral: "" }[tone(changePct)]}`}>{changePct !== null ? formatPercent(changePct, 2) : ""}</span> : null}
                     {columnPrefs.spread ? <span className="wl-cell mono" style={{ textAlign: "right" }}>{hasEverTicked ? spreadPoints(effectiveAsk(askMarkupBySymbol, name, row.ask, row.bid), row.bid, row.def.digits) : ""}</span> : null}
                     {columnPrefs.high ? <span className="wl-cell mono">{hasEverTicked ? fmt(row.high, row.def.digits) : ""}</span> : null}
                     {columnPrefs.low ? <span className="wl-cell mono">{hasEverTicked ? fmt(row.low, row.def.digits) : ""}</span> : null}
@@ -4278,7 +4285,7 @@ export default function WebTrader({
                     </div>
                     {m.dayOpenKnown ? (
                       <div className="chart-change mono" style={{ background: m.bid >= m.dayOpen ? "var(--buy-bg)" : "var(--sell-bg)", color: m.bid >= m.dayOpen ? "var(--buy)" : "var(--sell)" }}>
-                        {(((m.bid - m.dayOpen) / m.dayOpen) * 100 >= 0 ? "+" : "") + (((m.bid - m.dayOpen) / m.dayOpen) * 100).toFixed(2)}%
+                        {formatPercent(((m.bid - m.dayOpen) / m.dayOpen) * 100, 2)}
                       </div>
                     ) : (
                       // hotfix/terminal-live-bugs #1 -- no trustworthy D1
@@ -4624,7 +4631,7 @@ export default function WebTrader({
                           <span className="pos-cell mono" style={{ color: "var(--text-3)", fontSize: 11 }}>{p.id.slice(-8)}</span>
                           <span className="pos-cell pos-symbol">{p.symbol.name}</span>
                           <span className="pos-cell"><span className={`pos-side ${p.side.toLowerCase()}`}>{p.side === "BUY" ? "Buy" : "Sell"}</span></span>
-                          <span className="pos-cell mono">{parseFloat(p.volume).toFixed(2)}</span>
+                          <span className="pos-cell mono">{formatVolume(p.volume)}</span>
                           <span className="pos-cell mono">{fmt(parseFloat(p.openPrice), p.symbol.digits)}</span>
                           <span className="pos-cell" style={{ color: "var(--text-3)", fontSize: 11 }}>{new Date(p.openedAt).toLocaleDateString([], { month: "short", day: "numeric" })} {new Date(p.openedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
                           <span className="pos-cell sltp-pill" onClick={() => !isSlEditing && setInlineEditing({ id: p.id, field: "sl", value: p.slPrice ?? "" })}>
@@ -4642,9 +4649,9 @@ export default function WebTrader({
                             ) : <span className="mono">{p.tpPrice ? fmt(parseFloat(p.tpPrice), p.symbol.digits) : ""}</span>}
                           </span>
                           <span className="pos-cell pos-comment" onClick={() => editComment(p.id)}>{comments[p.id] || ""}</span>
-                          <span className="pos-cell pos-swap mono">{parseFloat(p.swap) >= 0 ? "+" : ""}{parseFloat(p.swap).toFixed(2)}</span>
-                          <span className="pos-cell pos-commission mono">{parseFloat(p.commission).toFixed(2)}</span>
-                          <span className={`pos-cell pos-pnl mono ${pnl >= 0 ? "pos" : "neg"}`}>{pnl >= 0 ? "+" : ""}{pnl.toFixed(2)}</span>
+                          <span className="pos-cell pos-swap mono">{formatSigned(viewAmount("swap", p.swap, "client"))}</span>
+                          <span className="pos-cell pos-commission mono">{formatSigned(viewAmount("commission", p.commission, "client"))}</span>
+                          <span className={`pos-cell pos-pnl mono ${TONE_CSS[tone(pnl)]}`}>{formatSigned(pnl)}</span>
                           <span className="pos-cell pos-actions">
                             <button className="icon-btn" title="Trailing stop" onClick={() => openTrailingStop(p.id)}>
                               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 12h4l3 8 4-16 3 8h4" /></svg>
@@ -4697,11 +4704,11 @@ export default function WebTrader({
                                 {netSide === "flat" ? "FLAT" : netSide.toUpperCase()}
                               </span>
                             </span>
-                            <span className="pos-cell mono" title={`${g.count} position${g.count > 1 ? "s" : ""} · B ${g.buyLots.toFixed(2)} / S ${g.sellLots.toFixed(2)}`}>{Math.abs(netLots).toFixed(2)}</span>
+                            <span className="pos-cell mono" title={`${g.count} position${g.count > 1 ? "s" : ""} · B ${formatVolume(g.buyLots)} / S ${formatVolume(g.sellLots)}`}>{formatVolume(Math.abs(netLots))}</span>
                             <span className="pos-cell mono">{fmt(g.avgPrice, g.digits)}</span>
                             <span className="pos-cell sltp-pill" onClick={() => openSltpEditForNet(symbolName)}><span className="mono">{g.slLabel}</span></span>
                             <span className="pos-cell sltp-pill" onClick={() => openSltpEditForNet(symbolName)}><span className="mono">{g.tpLabel}</span></span>
-                            <span className={`pos-cell pos-pnl mono ${g.pnl >= 0 ? "pos" : "neg"}`}>{g.pnl >= 0 ? "+" : ""}{g.pnl.toFixed(2)}</span>
+                            <span className={`pos-cell pos-pnl mono ${TONE_CSS[tone(g.pnl)]}`}>{formatSigned(g.pnl)}</span>
                             <span className="pos-cell pos-actions">
                               <button className="icon-btn" title="Share" onClick={() => openShareForNet(symbolName)}>
                                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="18" cy="5" r="3" /><circle cx="6" cy="12" r="3" /><circle cx="18" cy="19" r="3" /></svg>
@@ -4741,7 +4748,7 @@ export default function WebTrader({
                             <span className="pos-cell mono" style={{ color: "var(--text-3)", fontSize: 11 }}>{o.id.slice(-8)}</span>
                             <span className="pos-cell pos-symbol">{o.symbol.name}</span>
                             <span className="pos-cell"><span className={`pos-side ${o.side === "BUY" ? "buy" : "sell"}`}>{typeLabel}</span></span>
-                            <span className="pos-cell mono">{parseFloat(o.volume).toFixed(2)}</span>
+                            <span className="pos-cell mono">{formatVolume(o.volume)}</span>
                             <span className="pos-cell mono" title={o.status === "REQUOTED" ? (o.requestedPrice ? `requoted from ${fmt(parseFloat(o.requestedPrice), o.symbol.digits)}` : "requoted") : undefined} style={o.status === "REQUOTED" ? { color: "var(--warn)" } : undefined}>
                               {o.status === "REQUOTED"
                                 ? (o.requotedPrice ? fmt(parseFloat(o.requotedPrice), o.symbol.digits) : "")
@@ -4813,7 +4820,7 @@ export default function WebTrader({
                           <div className="simple-left">
                             <span className="pos-symbol">{o.symbol.name}</span>
                             <span className={`pos-side ${o.side === "BUY" ? "buy" : "sell"}`}>
-                              {o.type} {o.side} {parseFloat(o.volume).toFixed(2)}
+                              {o.type} {o.side} {formatVolume(o.volume)}
                             </span>
                             <span className="net-pos-detail mono">{priceLabel}</span>
                             {o.status === "REJECTED" && o.rejectionReason ? (
@@ -4842,7 +4849,7 @@ export default function WebTrader({
                       {allSymbols.map((s) => <option key={s.name} value={s.name}>{s.name}</option>)}
                     </select>
                     <div className="history-summary">
-                      {history.length > 0 ? <>{history.length} trades · Total <span className={history.reduce((s, h) => s + (h.realizedPnl ? parseFloat(h.realizedPnl) : 0), 0) >= 0 ? "pos" : "neg"}>{money(history.reduce((s, h) => s + (h.realizedPnl ? parseFloat(h.realizedPnl) : 0), 0))}</span></> : null}
+                      {history.length > 0 ? <>{history.length} trades · Total <span className={TONE_CSS[tone(history.reduce((s, h) => s + (h.realizedPnl ? parseFloat(h.realizedPnl) : 0), 0))]}>{money(history.reduce((s, h) => s + (h.realizedPnl ? parseFloat(h.realizedPnl) : 0), 0))}</span></> : null}
                     </div>
                   </div>
                   {histPeriod === "custom" ? (
@@ -4868,14 +4875,14 @@ export default function WebTrader({
                               <span className="pos-cell mono" style={{ color: "var(--text-3)", fontSize: 11 }}>{h.id.slice(-8)}</span>
                               <span className="pos-cell pos-symbol">{h.symbol.name}</span>
                               <span className="pos-cell"><span className={`pos-side ${h.side.toLowerCase()}`}>{h.side === "BUY" ? "Buy" : "Sell"}</span></span>
-                              <span className="pos-cell mono">{parseFloat(h.volume).toFixed(2)}</span>
+                              <span className="pos-cell mono">{formatVolume(h.volume)}</span>
                               <span className="pos-cell mono">{fmt(parseFloat(h.openPrice), h.symbol.digits)}</span>
                               <span className="pos-cell mono">{h.closePrice ? fmt(parseFloat(h.closePrice), h.symbol.digits) : ""}</span>
                               <span className="pos-cell" style={{ color: "var(--text-3)", fontSize: 11 }}>{new Date(h.openedAt).toLocaleDateString([], { month: "short", day: "numeric" })} {new Date(h.openedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
                               <span className="pos-cell" style={{ color: "var(--text-3)", fontSize: 11 }}>{h.closedAt ? `${new Date(h.closedAt).toLocaleDateString([], { month: "short", day: "numeric" })} ${new Date(h.closedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : ""}</span>
-                              <span className="pos-cell pos-swap mono">{parseFloat(h.swap) >= 0 ? "+" : ""}{parseFloat(h.swap).toFixed(2)}</span>
-                              <span className="pos-cell pos-commission mono">{parseFloat(h.commission).toFixed(2)}</span>
-                              <span className={`pos-cell pos-pnl mono ${pnl >= 0 ? "pos" : "neg"}`}>{pnl >= 0 ? "+" : ""}{pnl.toFixed(2)}</span>
+                              <span className="pos-cell pos-swap mono">{formatSigned(viewAmount("swap", h.swap, "client"))}</span>
+                              <span className="pos-cell pos-commission mono">{formatSigned(viewAmount("commission", h.commission, "client"))}</span>
+                              <span className={`pos-cell pos-pnl mono ${TONE_CSS[tone(pnl)]}`}>{formatSigned(pnl)}</span>
                             </div>
                           );
                         }
@@ -4895,7 +4902,7 @@ export default function WebTrader({
                             <span className="pos-cell" style={{ color: "var(--text-3)" }}>-</span>
                             <span className="pos-cell" style={{ color: "var(--text-3)" }}>-</span>
                             <span className="pos-cell" style={{ color: "var(--text-3)" }}>-</span>
-                            <span className={`pos-cell pos-pnl mono ${amount >= 0 ? "pos" : "neg"}`}>{money(amount)}</span>
+                            <span className={`pos-cell pos-pnl mono ${TONE_CSS[tone(amount)]}`}>{money(amount)}</span>
                           </div>
                         );
                       })}
@@ -5146,17 +5153,16 @@ export default function WebTrader({
                   : `Reconnecting… ${Math.max(0, Math.floor((dealingPendingNowMs - (disconnectedSince ?? dealingPendingNowMs)) / 1000))}s`}
               </span>
             </div>
-            <div className="status-item"><span className="status-label">Ping</span><span className="status-value mono">{pingMs != null ? `${pingMs}ms` : ""}</span></div>
-            <div className="status-item"><span className="status-label">Balance</span><span className="status-value mono">{balanceHidden ? "••••••" : account ? fmt(parseFloat(account.balance), 2) : ""}</span></div>
+            <div className="status-item"><span className="status-label">Balance</span><span className="status-value mono">{balanceHidden ? "••••••" : account ? formatMoney(account.balance) : ""}</span></div>
             <div className="status-item">
-              <span className="status-label">Equity</span><span className="status-value mono">{balanceHidden ? "••••••" : fmt(equity, 2)}</span>
+              <span className="status-label">Equity</span><span className="status-value mono">{balanceHidden ? "••••••" : formatMoney(equity)}</span>
               <canvas ref={sparklineRef} width={70} height={20} className="equity-spark" />
             </div>
           </div>
-          <div className="status-item statusbar-center"><span className="status-label">Open P/L</span><span className="status-value mono" style={{ color: floatingPnl === 0 ? "var(--text-1)" : floatingPnl >= 0 ? "var(--buy)" : "var(--sell)" }}>{balanceHidden ? "••••" : (floatingPnl >= 0 ? "+" : "") + floatingPnl.toFixed(2)}</span></div>
+          <div className="status-item statusbar-center"><span className="status-label">Open P/L</span><span className="status-value mono" style={{ color: TONE_COLOR[tone(floatingPnl)] }}>{balanceHidden ? "••••" : formatSigned(floatingPnl)}</span></div>
           <div className="statusbar-right">
-            <div className="status-item"><span className="status-label">Margin level</span><span className="status-value mono" style={{ color: !isFinite(marginLevel) ? "var(--text-1)" : marginLevel < marginCallLevel ? "var(--sell)" : marginLevel < marginCallLevel * 2 ? "#FAC775" : "var(--buy)" }}>{balanceHidden ? "••••" : isFinite(marginLevel) ? marginLevel.toFixed(0) + "%" : ""}</span></div>
-            <div className="status-item"><span className="status-label">Free margin</span><span className="status-value mono">{balanceHidden ? "••••••" : fmt(freeMargin, 2)}</span></div>
+            <div className="status-item"><span className="status-label">Margin level</span><span className="status-value mono" style={{ color: !isFinite(marginLevel) ? "var(--text-1)" : marginLevel < marginCallLevel ? "var(--sell)" : marginLevel < marginCallLevel * 2 ? "#FAC775" : "var(--buy)" }}>{balanceHidden ? "••••" : formatMarginLevel(marginLevel)}</span></div>
+            <div className="status-item"><span className="status-label">Free margin</span><span className="status-value mono">{balanceHidden ? "••••••" : formatMoney(freeMargin)}</span></div>
           </div>
         </div>
       </div>
@@ -5225,8 +5231,8 @@ export default function WebTrader({
               </div>
               <div className="share-pnl-block">
                 <div className="share-pnl-label">Unrealized PnL</div>
-                <div className="share-pnl-value" style={{ color: shareData.pnl >= 0 ? "var(--buy)" : "var(--sell)" }}>{(shareData.pnl >= 0 ? "+" : "") + shareData.pnl.toFixed(2)}</div>
-                <div className="share-pnl-pct" style={{ color: shareData.pnl >= 0 ? "var(--buy)" : "var(--sell)" }}>{(shareData.pnlPct >= 0 ? "+" : "") + shareData.pnlPct.toFixed(2)}%</div>
+                <div className="share-pnl-value" style={{ color: TONE_COLOR[tone(shareData.pnl)] }}>{formatSigned(shareData.pnl)}</div>
+                <div className="share-pnl-pct" style={{ color: TONE_COLOR[tone(shareData.pnl)] }}>{formatPercent(shareData.pnlPct, 2)}</div>
               </div>
               <div className="share-grid">
                 <div className="share-stat"><div className="share-stat-label">Entry</div><div className="share-stat-value">{shareData.entryLabel}</div></div>
@@ -5564,7 +5570,7 @@ export default function WebTrader({
                       setKycBack(null);
                       await refreshKycStatus();
                     } catch (err) {
-                      setKycError(err instanceof Error ? err.message : "failed to submit documents");
+                      setKycError(plainError(err, "Could not send the documents. Try again."));
                     } finally {
                       setKycSubmitting(false);
                     }
@@ -5668,7 +5674,7 @@ export default function WebTrader({
                             <div key={p.id} className="simple-row" style={{ padding: "6px 10px" }}>
                               <div className="simple-left">
                                 <span className="pos-symbol">{p.symbol.name}</span>
-                                <span className="net-pos-detail mono">{p.side} {parseFloat(p.volume).toFixed(2)} @ {p.openPrice}{p.closePrice != null ? ` → ${p.closePrice}` : ""}</span>
+                                <span className="net-pos-detail mono">{p.side} {formatVolume(p.volume)} @ {p.openPrice}{p.closePrice != null ? ` → ${p.closePrice}` : ""}</span>
                               </div>
                               <div className="simple-right mono" style={{ color: parseFloat(p.realizedPnl ?? "0") >= 0 ? "var(--buy)" : "var(--sell)" }}>
                                 {money(parseFloat(p.realizedPnl ?? "0"))}
@@ -5770,7 +5776,7 @@ export default function WebTrader({
               <div className="generic-modal-card" style={{ width: 300 }}>
                 <div className="quick-order-header"><span>Partial close, {p.symbol.name}</span></div>
                 <p className="margin-note" style={{ marginTop: 0 }}>
-                  {fullVolume.toFixed(2)} lots open @ {fmt(parseFloat(p.openPrice), p.symbol.digits)}
+                  {formatVolume(fullVolume)} lots open @ {fmt(parseFloat(p.openPrice), p.symbol.digits)}
                 </p>
                 <div className="occ-toggle-row" style={{ marginBottom: 10 }}>
                   <button
@@ -5797,7 +5803,7 @@ export default function WebTrader({
                   />
                 </div>
                 <p className="margin-note">
-                  {partialCloseMode === "percent" ? `= ${previewAmount.toFixed(2)} lots` : `Remaining open: ${(fullVolume - previewAmount).toFixed(2)} lots`}
+                  {partialCloseMode === "percent" ? `= ${formatVolume(previewAmount)} lots` : `Remaining open: ${formatVolume(fullVolume - previewAmount)} lots`}
                 </p>
                 {[25, 50, 75].map((pct) => (
                   <button
@@ -5834,7 +5840,7 @@ export default function WebTrader({
               <div className="generic-modal-card" style={{ width: 320 }}>
                 <div className="quick-order-header"><span>Close by, {p.symbol.name}</span></div>
                 <p className="margin-note" style={{ marginTop: 0 }}>
-                  Net {p.side === "BUY" ? "Buy" : "Sell"} {parseFloat(p.volume).toFixed(2)} @ {fmt(parseFloat(p.openPrice), p.symbol.digits)} against an opposite position on the same symbol, at one shared price. No market spread charged on the netted amount.
+                  Net {p.side === "BUY" ? "Buy" : "Sell"} {formatVolume(p.volume)} @ {fmt(parseFloat(p.openPrice), p.symbol.digits)} against an opposite position on the same symbol, at one shared price. No market spread charged on the netted amount.
                 </p>
                 {candidates.length === 0 ? (
                   <p className="margin-note">No opposite-side {p.symbol.name} position to close against anymore.</p>
@@ -5842,12 +5848,12 @@ export default function WebTrader({
                   candidates.map((c) => (
                     <div className="simple-row" key={c.id}>
                       <div className="simple-left">
-                        <span className={`pos-side ${c.side.toLowerCase()}`}>{c.side === "BUY" ? "Buy" : "Sell"} {parseFloat(c.volume).toFixed(2)}</span>
+                        <span className={`pos-side ${c.side.toLowerCase()}`}>{c.side === "BUY" ? "Buy" : "Sell"} {formatVolume(c.volume)}</span>
                         <span className="net-pos-detail mono">@ {fmt(parseFloat(c.openPrice), c.symbol.digits)}</span>
                       </div>
                       <div className="simple-right">
                         <button className="modal-btn primary" style={{ padding: "4px 10px", fontSize: 12 }} disabled={closeByBusy} onClick={() => submitCloseBy(p.id, c.id)}>
-                          {closeByBusy ? "Closing…" : `Net ${Math.min(parseFloat(p.volume), parseFloat(c.volume)).toFixed(2)} lots`}
+                          {closeByBusy ? "Closing…" : `Net ${formatVolume(Math.min(parseFloat(p.volume), parseFloat(c.volume)))} lots`}
                         </button>
                       </div>
                     </div>
@@ -5962,7 +5968,7 @@ export default function WebTrader({
                     );
                     await refreshFundsHistory();
                   } catch (err) {
-                    pushToast(err instanceof Error ? err.message : "failed to submit request");
+                    pushToast(plainError(err, "Could not send the request. Try again."));
                   } finally {
                     setFundsSubmitting(false);
                   }
@@ -6047,11 +6053,11 @@ function AnalyticsGrid({ trades }: { trades: ApiPosition[] }) {
   const metrics: [string, string, string][] = [
     ["Total trades", String(pnls.length), "var(--text-1)"],
     ["Win rate", winRate.toFixed(1) + "%", winRate >= 50 ? "var(--buy)" : "var(--sell)"],
-    ["Total P/L", (totalPnl >= 0 ? "+" : "") + totalPnl.toFixed(2), totalPnl >= 0 ? "var(--buy)" : "var(--sell)"],
+    ["Total P/L", formatSigned(totalPnl), TONE_COLOR[tone(totalPnl)]],
     ["Profit factor", profitFactor, "var(--text-1)"],
-    ["Best trade", "+" + best.toFixed(2), "var(--buy)"],
-    ["Worst trade", worst.toFixed(2), "var(--sell)"],
-    ["Avg trade", (avgTrade >= 0 ? "+" : "") + avgTrade.toFixed(2), avgTrade >= 0 ? "var(--buy)" : "var(--sell)"],
+    ["Best trade", formatSigned(best), TONE_COLOR[tone(best)]],
+    ["Worst trade", formatSigned(worst), TONE_COLOR[tone(worst)]],
+    ["Avg trade", formatSigned(avgTrade), TONE_COLOR[tone(avgTrade)]],
     ["Wins / Losses", `${wins.length} / ${losses.length}`, "var(--text-1)"],
   ];
 

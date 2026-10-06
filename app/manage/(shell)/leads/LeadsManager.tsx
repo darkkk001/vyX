@@ -9,6 +9,7 @@ import { FormField } from "@/components/ui/FormField";
 import { Modal, ModalActions } from "@/components/ui/Modal";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
 import { formatDateTime } from "@/lib/format";
+import { plainError } from "@/lib/plain-error";
 
 export type LeadRow = {
   id: string;
@@ -90,7 +91,7 @@ export default function LeadsManager() {
     setAddBusy(false);
     if (!response.ok) {
       const b = await response.json().catch(() => ({}));
-      setAddError(b.error ?? "failed to add lead");
+      setAddError(plainError(b, "Could not add the lead. Try again.", { audience: "staff" }));
       return;
     }
     setAddOpen(false);
@@ -128,7 +129,7 @@ export default function LeadsManager() {
     if (!accountResponse.ok) {
       const b = await accountResponse.json().catch(() => ({}));
       setConvertBusy(false);
-      setConvertError(b.error ?? "failed to create account");
+      setConvertError(plainError(b, "Could not create the account. Try again.", { audience: "staff" }));
       return;
     }
     const created = await accountResponse.json();

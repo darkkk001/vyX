@@ -1401,6 +1401,28 @@ Statements for that account show credit without a grant line. It is a bot accoun
 
 ### Stage 6: cutover with a warm fallback (1-2 days + drill)
 
+**Cutover gate added 2026-09-28 (owner): the engine's order paths must enforce every web order gate first.** Today the
+engine's order routes (`engine/server/src/main.rs` `/v1/orders/market`, `/v1/orders/pending`, `/v1/orders/{id}/cancel`,
+`/v1/positions/{id}/modify`, `/v1/positions/{id}/close`; `engine/order-management/src/lib.rs`) and its tick-driven
+pending trigger (`pending_orders.rs` `trigger_order`, which only checks max open positions) check NONE of these. They
+are closed in production only because `ENGINE_ORDER_MANAGEMENT` is not `1` (the thresholds guard refuses every order).
+Before any broker is switched to `RUST`, each of these must exist in Rust, with a parity scenario per gate (the web's
+refusal and the engine's refusal on the same input):
+
+| Gate | Web source | Engine: must refuse on |
+|---|---|---|
+| Account status (ACTIVE only) | `lib/risk.ts` `checkAccountTradingRights` (open) | market, pending placement, pending trigger |
+| Account trading rights FULL / CLOSE_ONLY / READ_ONLY | same (open / close / modify intents) | open paths; READ_ONLY also close, modify, cancel |
+| Broker halt / close-only | `checkTradingHalted`, `checkCloseOnly` | open paths |
+| Group halt / close-only | `checkGroupTradingHalted`, `checkGroupCloseOnly` | open paths |
+| Group side restriction, max lot, allowed symbols | `checkGroupTradingRestriction`, `checkGroupMaxLot`, `checkGroupAllowedSymbol` | open paths |
+| Symbol mode, session, lot step | `checkSymbolTradingMode`, `checkTradingSession`, `checkLotStep` | open paths (session also on close) |
+| Max daily loss, exposure, max positions | `checkMaxDailyLoss`, `checkSymbolExposure`, `checkBrokerExposure`, `checkMaxOpenPositions` | open paths |
+| Rights drop cancels pending opens at once | `lib/account-trading-rights.ts` `setAccountTradingRights` | the engine's pending book must drop them too (it reads PENDING rows; no stale cache) |
+
+The static test `lib/account-trading-rights.test.ts` lists the web's gate sites; the Rust side gets the same kind of
+list test before cutover. Automatic actions (SL/TP triggers, stop-out, margin call, swap) stay ungated in both.
+
 Per-broker `riskAuthority = WEB | SHADOW | RUST`, read by both sides so exactly one acts. Futurix demo
 first; in RUST mode every web evaluator (cron, hook, backstop, price-feed) skips that broker. Drill:
 flip back to WEB and watch the web take the next stop-out. The Vercel cron stays until then.
@@ -1424,6 +1446,18 @@ blockers for RISK authority vs ORDERS-only). Per-broker values are `WEB | RUST` 
   flush, staff open: `lib/risk.ts checkGroupMaxLot`). Either the engine enforces both at every open path, or those paths
   stay on the web for RUST brokers. Gate test: an order above the group max / below the group min is refused by the
   engine with the same code as the web. NOT BUILT. **Stage 6 risk mode places and fills no order (the resting-order fill stays the web's routine), so this gate applies only when the engine handles ORDERS (STAGE6-PLAN section 10).**
+  the effective minimum next to each of the 6 max-lot checks (`lib/risk.ts checkGroupMinLot`, code `GROUP_MIN_VOLUME`)
+  and refuses an off-grid group minimum at save (`MIN_VOLUME_STEP`). The engine must match: same rule, same code.
+- **CUTOVER GATE (owner, 2026-10-06): Position.groupCategoryAtOpen on every engine open.** Book P/L
+  (`lib/book-pnl.ts`) counts only positions whose group was B_BOOK or DEALING when they OPENED, read from
+  `Position.groupCategoryAtOpen`. A `BEFORE INSERT` trigger on "Position" (migration
+  `20261006090000_book_pnl_group_min_volume`) fills it from the account's current group when the insert leaves it NULL,
+  so an engine INSERT is covered as long as it goes through "Position" normally. In RUST mode the engine must set
+  `groupCategoryAtOpen` on every open it performs (client fill, pending trigger, dealer accept, requote accept, desk
+  flush, staff open, copy-rule opens, hedge legs), or leave it NULL so the trigger fills it. It must never write a
+  different category, and it must never bypass the trigger (no `session_replication_role = replica`, no `COPY` with
+  triggers off). Gate test: a position opened by the engine in RUST mode carries the account's group category at open,
+  and moving the account to another group afterwards does not change it. NOT BUILT on the engine side.
 
 - **Margin-trigger fires evaluated by the engine, unpinned and live (owner, 2026-09-29).** Today a margin-trigger fire
   (market_data::risk_hook::after_flush -> MarginWatch::decide) only calls the web's `margin-monitor?symbols=` route and

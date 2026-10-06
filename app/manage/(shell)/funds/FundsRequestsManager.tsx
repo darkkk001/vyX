@@ -5,7 +5,8 @@ import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { Modal, ModalActions } from "@/components/ui/Modal";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
-import { formatDateTime } from "@/lib/format";
+import { formatDateTime, formatSigned, viewAmount } from "@/lib/format";
+import { plainError } from "@/lib/plain-error";
 
 export type FundsRequestRow = {
   id: string;
@@ -59,7 +60,7 @@ export default function FundsRequestsManager() {
     setBusyId(null);
     if (!response.ok) {
       const body = await response.json().catch(() => ({}));
-      setErrors((prev) => ({ ...prev, [row.id]: body.error ?? `${action.toLowerCase()} failed` }));
+      setErrors((prev) => ({ ...prev, [row.id]: plainError(body, "Could not save the decision. Try again.", { audience: "staff" }) }));
       setConfirmTarget(null);
       return;
     }
@@ -97,7 +98,7 @@ export default function FundsRequestsManager() {
                   <Badge tone={row.type === "DEPOSIT" ? "success" : "danger"}>{row.type}</Badge>
                 </TableCell>
                 <TableCell align="right" mono>
-                  {row.amount}
+                  {formatSigned(viewAmount(row.type === "DEPOSIT" ? "deposit" : "withdrawal", row.amount, "broker"))}
                 </TableCell>
                 <TableCell align="right" mono>
                   {row.currentBalance}

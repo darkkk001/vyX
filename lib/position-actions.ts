@@ -2,7 +2,7 @@ import "server-only";
 import { Prisma, PositionActionType, type Position, type OrderSide } from "@prisma/client";
 import { getFreshPrice } from "@/lib/live-price";
 import { hasEligibleApprover, NEEDS_BROKER_ADMIN } from "@/lib/approvers";
-import { checkAccountStatusForOpen, checkTradingSession, computeNextSessionOpen } from "@/lib/risk";
+import { checkAccountTradingRights, checkTradingSession, computeNextSessionOpen } from "@/lib/risk";
 import { loadRateResolver } from "@/lib/fx";
 import { computeRealizedPnl } from "@/lib/trading";
 import { resolveBookType } from "@/lib/group-pricing";
@@ -47,24 +47,24 @@ export async function isAccountMirrored(tx: Tx, accountId: string, groupId: stri
 
 export class PositionActionError extends Error {}
 
-// Account status (2026-09-29): a reverse opens the opposite side, so it is an OPEN for the gate -- a suspended / closed
-// account cannot be reversed (both modes). Closing it stays possible.
-function assertMayOpen(position: { account: { status: "ACTIVE" | "SUSPENDED" | "CLOSED" } }) {
-  const refused = checkAccountStatusForOpen(position.account);
-  if (refused) throw new PositionActionError(`reverse refused: ${refused}`);
-}
-
 async function loadOpenPosition(tx: Tx, brokerId: string, positionId: string) {
   const position = await tx.position.findUnique({
     where: { id: positionId },
     include: {
       symbol: { select: { name: true, category: true, contractSize: true, quoteCurrency: true } },
-      account: { select: { accountNumber: true, groupId: true, currency: true, status: true } },
+      account: { select: { accountNumber: true, groupId: true, currency: true, status: true, tradingRights: true } },
     },
   });
   if (!position || position.brokerId !== brokerId) throw new PositionActionError("position not found");
   if (position.status !== "OPEN") throw new PositionActionError("position is not open");
   return position;
+}
+
+// Per-account trading rights (2026-09-28): a reverse opens the opposite side, so it is an OPEN for the gate -- a
+// close-only / read-only / suspended account cannot be reversed (both modes). Closing it stays possible.
+function assertMayOpen(position: { account: { status: "ACTIVE" | "SUSPENDED" | "CLOSED"; tradingRights: "FULL" | "CLOSE_ONLY" | "READ_ONLY" } }) {
+  const refused = checkAccountTradingRights(position.account, "open");
+  if (refused) throw new PositionActionError(`reverse refused: ${refused}`);
 }
 
 // ---------- Admin close (app/api/manage/positions/[id]/close) ----------

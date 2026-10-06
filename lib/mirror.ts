@@ -13,6 +13,7 @@ import {
   checkGroupTradingHalted,
   checkAccountStatusForOpen,
   checkGroupCloseOnly,
+  checkAccountTradingRights,
 } from "@/lib/risk";
 import { getFreshPrices } from "@/lib/live-price";
 import { loadRateResolver } from "@/lib/fx";
@@ -23,6 +24,7 @@ import { cancelPendingClose } from "@/lib/queued-close";
 import { createNotification } from "@/lib/notifications";
 import { deferTradingEvents, publishTradingEvent } from "@/lib/nats";
 import { getLivePriceRow } from "@/lib/live-price";
+import { plainReason } from "@/lib/plain-error";
 
 // docs/briefs/VYX-MIRROR-V0-BRIEF.md -- v0 hooks the legacy order-fill and
 // position-close paths directly (see the two call sites: app/api/trade/
@@ -133,11 +135,26 @@ export function computeProportionalCloseVolume(
   return proportional.gte(targetVolume) ? targetVolume : proportional;
 }
 
-async function recordMirrorFailure(db: Db, rule: MirrorRule, reason: string): Promise<void> {
+// Step 2 (owner rule 2026-10-06): the failure reason is shown to staff (copy rule page, audit log), so a raw exception
+// message (a Prisma error, a socket error) is logged here and stored as a plain sentence instead.
+async function recordMirrorFailure(db: Db, rule: MirrorRule, err: unknown): Promise<void> {
+  if (!(typeof err === "string")) console.error(`[mirror] rule ${rule.id} failed`, err);
+  const reason = plainReason(err, "Could not be processed.");
   await db.mirrorRule.update({ where: { id: rule.id }, data: { failureCount: { increment: 1 } } });
   await db.auditLog.create({
     data: { brokerId: rule.brokerId, action: "MIRROR_FAILED", entityType: "MirrorRule", entityId: rule.id, oldValue: {}, newValue: { reason } },
   });
+}
+
+/** "group Gold VIP → 50001234" / "50000001 → 50001234": what staff know a copy rule by (never its internal id). */
+async function copyRuleLabel(db: Db, rule: MirrorRule): Promise<string> {
+  const [source, target] = await Promise.all([
+    rule.sourceType === "GROUP"
+      ? db.group.findUnique({ where: { id: rule.sourceId }, select: { name: true } }).then((g) => (g ? `group ${g.name}` : "group"))
+      : db.account.findUnique({ where: { id: rule.sourceId }, select: { accountNumber: true } }).then((a) => (a ? String(a.accountNumber) : "account")),
+    db.account.findUnique({ where: { id: rule.targetAccountId }, select: { accountNumber: true } }).then((a) => (a ? String(a.accountNumber) : "account")),
+  ]).catch(() => ["source", "target"]);
+  return `${source} → ${target}`;
 }
 
 async function triggerKillSwitch(db: Db, rule: MirrorRule, reason: string): Promise<void> {
@@ -148,8 +165,8 @@ async function triggerKillSwitch(db: Db, rule: MirrorRule, reason: string): Prom
   await createNotification(db, {
     brokerId: rule.brokerId,
     type: "MIRROR_KILL_SWITCH",
-    title: "Mirror rule kill switch triggered",
-    body: `Rule ${rule.id}: ${reason}`,
+    title: "Copy rule stopped",
+    body: `Copy rule ${await copyRuleLabel(db, rule)} stopped: ${reason}.`,
     entityType: "MirrorRule",
     entityId: rule.id,
   });
@@ -175,7 +192,7 @@ export async function checkKillSwitch(db: Db, rule: MirrorRule): Promise<{ kille
       });
       const openLots = agg._sum.volume ?? new Prisma.Decimal(0);
       if (openLots.gte(rule.maxOpenLots)) {
-        return { killed: true, reason: `maxOpenLots breached: ${openLots} >= ${rule.maxOpenLots}` };
+        return { killed: true, reason: `open volume reached its limit (${openLots.toFixed(2)} of ${rule.maxOpenLots.toFixed(2)} lots)` };
       }
     }
   }
@@ -218,7 +235,7 @@ export async function checkKillSwitch(db: Db, rule: MirrorRule): Promise<{ kille
 
     const totalPnl = realizedToday.add(floating);
     if (totalPnl.lte(rule.maxDailyLoss.neg())) {
-      return { killed: true, reason: `maxDailyLoss breached: ${totalPnl} <= -${rule.maxDailyLoss}` };
+      return { killed: true, reason: `today's loss reached its limit (${totalPnl.toFixed(2)}, limit ${rule.maxDailyLoss.toFixed(2)})` };
     }
   }
 
@@ -342,6 +359,8 @@ async function mirrorFillForRule(db: Db, rule: MirrorRule, source: MirrorSourceP
     const tradabilityError =
       checkTradingHalted(broker) ??
       checkCloseOnly(broker) ??
+      // per-account trading rights + status (2026-09-28): a close-only / read-only / suspended account opens nothing
+      checkAccountTradingRights(targetAccount, "open") ??
       (targetAccount.group ? checkGroupTradingHalted(targetAccount.group) : null) ??
       // account status (2026-09-29): a suspended / closed account opens nothing
       checkAccountStatusForOpen(targetAccount) ??
@@ -496,7 +515,7 @@ async function mirrorFillForRule(db: Db, rule: MirrorRule, source: MirrorSourceP
     if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
       return; // already mirrored -- idempotent retry, not a real failure
     }
-    await recordMirrorFailure(db, rule, err instanceof Error ? err.message : "unknown error").catch(() => {
+    await recordMirrorFailure(db, rule, err).catch(() => {
       // even the failure-recording write failed (DB down?) -- nothing
       // left to do that wouldn't risk affecting the client's own trade
     });
@@ -598,6 +617,6 @@ export async function onClose(db: Db, closeEvent: MirrorSourceClose, opts?: { re
     if (mirrorOutcome.closed) await emitPositionClosedActivity(db, { positionId: targetPosition.id, closePrice, closeVolume, partial: mirrorOutcome.partial, realizedPnl: mirrorOutcome.realizedPnl, closeReason: "MIRROR", origin: `mirror_rule_${rule.id}` });
   } catch (err) {
     if (opts?.rethrow) throw err;
-    await recordMirrorFailure(db, rule, err instanceof Error ? err.message : "unknown error").catch(() => {});
+    await recordMirrorFailure(db, rule, err).catch(() => {});
   }
 }

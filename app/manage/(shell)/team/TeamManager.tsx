@@ -11,6 +11,7 @@ import { Checkbox } from "@/components/ui/Checkbox";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
 import { PERMISSIONS, PERMISSION_LABELS, type Permission } from "@/lib/permission-labels";
 import { formatDateTime } from "@/lib/format";
+import { plainError } from "@/lib/plain-error";
 
 export type AdminRow = {
   id: string;
@@ -70,7 +71,7 @@ export default function TeamManager() {
     setCreating(false);
     if (!response.ok) {
       const body = await response.json().catch(() => ({}));
-      setCreateError(body.error ?? "failed to create admin");
+      setCreateError(plainError(body, "Could not create the staff user. Try again.", { audience: "staff" }));
       return;
     }
     setEmail("");
@@ -93,7 +94,7 @@ export default function TeamManager() {
     setBusyId(null);
     if (!response.ok) {
       const body = await response.json().catch(() => ({}));
-      setErrors((prev) => ({ ...prev, [row.id]: body.error ?? "update failed" }));
+      setErrors((prev) => ({ ...prev, [row.id]: plainError(body, "Could not save the change. Try again.", { audience: "staff" }) }));
       return;
     }
     load().catch(() => {});
@@ -114,7 +115,7 @@ export default function TeamManager() {
     setBusyId(null);
     if (!response.ok) {
       const body = await response.json().catch(() => ({}));
-      setErrors((prev) => ({ ...prev, [row.id]: body.error ?? "update failed" }));
+      setErrors((prev) => ({ ...prev, [row.id]: plainError(body, "Could not save the change. Try again.", { audience: "staff" }) }));
       return;
     }
     load().catch(() => {});

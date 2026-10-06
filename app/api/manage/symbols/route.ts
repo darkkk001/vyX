@@ -283,7 +283,7 @@ async function patchHandler(request: NextRequest) {
   if (enabled && symbol.quoteCurrency !== "USD") {
     return NextResponse.json(
       {
-        error: `${symbol.name} is quoted in ${symbol.quoteCurrency}, not USD. Enabling it for trading would mis-credit P/L, margin, swap, and commission 1:1 with no currency conversion (not yet implemented). Contact engineering once currency conversion ships.`,
+        error: `${symbol.name} cannot be enabled yet: P/L in ${symbol.quoteCurrency} is not supported.`,
       },
       { status: 400 }
     );

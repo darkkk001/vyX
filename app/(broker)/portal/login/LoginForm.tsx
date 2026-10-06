@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import styles from "../PortalAuth.module.css";
 import ResendVerification from "../ResendVerification";
+import { plainError } from "@/lib/plain-error";
 
 export default function LoginForm({ brokerName, brokerLogoUrl }: { brokerName: string; brokerLogoUrl: string | null }) {
   const router = useRouter();
@@ -36,7 +37,7 @@ export default function LoginForm({ brokerName, brokerLogoUrl }: { brokerName: s
     setSubmitting(false);
 
     if (!response.ok) {
-      setError(body.error ?? "login failed");
+      setError(plainError(body, "Sign-in failed. Try again."));
       setNeedsVerification(response.status === 403 && typeof body.error === "string" && body.error.includes("verify your email"));
       return;
     }

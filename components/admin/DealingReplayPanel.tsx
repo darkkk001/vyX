@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { Modal } from "@/components/ui/Modal";
 import { Badge } from "@/components/ui/Badge";
+import { plainError } from "@/lib/plain-error";
 
 type ReplayData = {
   position: {
@@ -44,7 +45,7 @@ export default function DealingReplayPanel({ positionId, onClose }: { positionId
         return r.json();
       })
       .then((d) => { if (!cancelled) setData(d); })
-      .catch((e) => { if (!cancelled) setError(e instanceof Error ? e.message : "failed to load"); });
+      .catch((e) => { if (!cancelled) setError(plainError(e, "Could not load. Try again.")); });
     return () => { cancelled = true; };
   }, [positionId]);
 

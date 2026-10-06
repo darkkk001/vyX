@@ -7,6 +7,7 @@ import { Select } from "@/components/ui/Select";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { Button } from "@/components/ui/Button";
 import { Modal, ModalActions } from "@/components/ui/Modal";
+import { plainError } from "@/lib/plain-error";
 
 export type TradingMode = "BOTH" | "BUY_ONLY" | "SELL_ONLY";
 export type BookType = "A_BOOK" | "B_BOOK";
@@ -116,7 +117,7 @@ export default function SymbolConfigTable() {
 
     if (!response.ok) {
       const body = await response.json().catch(() => ({}));
-      setErrors((prev) => ({ ...prev, [row.symbolId]: body.error ?? "save failed" }));
+      setErrors((prev) => ({ ...prev, [row.symbolId]: plainError(body, "Could not save. Try again.", { audience: "staff" }) }));
       return;
     }
 
@@ -249,7 +250,7 @@ function SessionsModal({ row, onClose }: { row: SymbolConfigRow; onClose: () => 
     setSaving(false);
     if (!response.ok) {
       const b = await response.json().catch(() => ({}));
-      setError(b.error ?? "save failed");
+      setError(plainError(b, "Could not save. Try again.", { audience: "staff" }));
       return;
     }
     setSessions(await response.json());

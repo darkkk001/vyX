@@ -102,29 +102,28 @@ export default function FeedHealthManager() {
   return (
     <>
       <div className="mb-6">
-        <h2 className="mb-2 text-sm font-medium text-[var(--text-2)]">Order ack</h2>
-        <StatGrid columns={4}>
-          <StatCard label="Legacy p50 (Vercel)" value={ms(orderAck?.p50 ?? null)} />
-          <StatCard label="Legacy p95 (Vercel)" value={ms(orderAck?.p95 ?? null)} />
-          <StatCard label="Rust p50 (gateway)" value={ms(gatewayStats?.order_ack_ms_p50 ?? null)} />
-          <StatCard label="Rust p95 (gateway)" value={ms(gatewayStats?.order_ack_ms_p95 ?? null)} />
+        {/* step 2 (owner rule 2026-10-06): one execution time, no per-server split (that goes to the super admin, step 4) */}
+        <h2 className="mb-2 text-sm font-medium text-[var(--text-2)]">Execution time (ms)</h2>
+        <StatGrid columns={2}>
+          <StatCard label="Typical" value={ms(orderAck?.p50 ?? null)} />
+          <StatCard label="Slow" value={ms(orderAck?.p95 ?? null)} />
         </StatGrid>
       </div>
 
       <div className="mb-6">
         <div className="mb-2 flex items-center gap-2">
-          <h2 className="text-sm font-medium text-[var(--text-2)]">Rust ingest (engine/server)</h2>
-          <Badge tone={feedStats ? "success" : "neutral"}>{feedStats ? "Reachable" : "Not monitored"}</Badge>
+          <h2 className="text-sm font-medium text-[var(--text-2)]">Price delay (ms)</h2>
+          <Badge tone={feedStats ? "success" : "neutral"}>{feedStats ? "Live" : "Unavailable"}</Badge>
         </div>
         {feedStats ? (
           <StatGrid columns={4}>
-            <StatCard label="Current latency" value={ms(feedStats.ea_to_engine_ms_last)} />
-            <StatCard label="p50" value={ms(feedStats.ea_to_engine_ms_p50)} />
-            <StatCard label="p95" value={ms(feedStats.ea_to_engine_ms_p95)} />
-            <StatCard label="p99 / max" value={`${ms(feedStats.p99_ms)} / ${ms(feedStats.max_ms)}`} />
+            <StatCard label="Last" value={ms(feedStats.ea_to_engine_ms_last)} />
+            <StatCard label="Typical" value={ms(feedStats.ea_to_engine_ms_p50)} />
+            <StatCard label="Slow" value={ms(feedStats.ea_to_engine_ms_p95)} />
+            <StatCard label="Slowest / max" value={`${ms(feedStats.p99_ms)} / ${ms(feedStats.max_ms)}`} />
           </StatGrid>
         ) : (
-          <p className="text-sm text-[var(--text-3)]">engine/server unreachable, expected until it&apos;s deployed.</p>
+          <p className="text-sm text-[var(--text-3)]">Live prices unavailable.</p>
         )}
       </div>
 
@@ -135,7 +134,7 @@ export default function FeedHealthManager() {
         </TableHead>
         <TableBody>
           <TableRow>
-            <TableCell primary>Ticks ingested (rolling)</TableCell>
+            <TableCell primary>Prices received</TableCell>
             <TableCell align="right" mono>{feedStats ? feedStats.ticks_in : <Badge tone="neutral">Not monitored</Badge>}</TableCell>
           </TableRow>
           <TableRow>
@@ -180,18 +179,18 @@ export default function FeedHealthManager() {
       </Table>
 
       <div className="mb-2 mt-6 flex items-center gap-2">
-        <h2 className="text-sm font-medium text-[var(--text-2)]">Price alerts (engine/server)</h2>
-        <Badge tone={alertStats ? "success" : "neutral"}>{alertStats ? "Reachable" : "Not monitored"}</Badge>
+        <h2 className="text-sm font-medium text-[var(--text-2)]">Price alerts</h2>
+        <Badge tone={alertStats ? "success" : "neutral"}>{alertStats ? "Live" : "Unavailable"}</Badge>
       </div>
       {alertStats ? (
         <StatGrid columns={4}>
           <StatCard label="Active alerts" value={String(alertStats.active_alerts_total)} />
-          <StatCard label="Triggered (since boot)" value={String(alertStats.triggered_total)} />
+          <StatCard label="Triggered" value={String(alertStats.triggered_total)} />
           <StatCard label="Persist failures" value={String(alertStats.persist_failures_total)} />
           <StatCard label="Hot-reload malformed" value={String(alertStats.hot_reload_malformed_total)} />
         </StatGrid>
       ) : (
-        <p className="text-sm text-[var(--text-3)]">engine/server unreachable, expected until it&apos;s deployed.</p>
+        <p className="text-sm text-[var(--text-3)]">Price alerts unavailable.</p>
       )}
       <Table>
         <TableHead>
@@ -242,8 +241,8 @@ export default function FeedHealthManager() {
       ) : null}
 
       <div className="mb-2 mt-6 flex items-center gap-2">
-        <h2 className="text-sm font-medium text-[var(--text-2)]">WebSocket gateway (services/api-gateway)</h2>
-        <Badge tone={gatewayStats ? "success" : "neutral"}>{gatewayStats ? "Reachable" : "Not monitored"}</Badge>
+        <h2 className="text-sm font-medium text-[var(--text-2)]">Clients</h2>
+        <Badge tone={gatewayStats ? "success" : "neutral"}>{gatewayStats ? "Live" : "Unavailable"}</Badge>
       </div>
       <Table>
         <TableHead>
@@ -264,7 +263,7 @@ export default function FeedHealthManager() {
             <TableCell align="right" mono>{gatewayStats ? gatewayStats.natsMessagesReceivedTotal : <Badge tone="neutral">Not monitored</Badge>}</TableCell>
           </TableRow>
           <TableRow>
-            <TableCell primary>Ticks forwarded to clients</TableCell>
+            <TableCell primary>Prices sent to clients</TableCell>
             <TableCell align="right" mono>{gatewayStats ? gatewayStats.ticksForwardedTotal : <Badge tone="neutral">Not monitored</Badge>}</TableCell>
           </TableRow>
         </TableBody>

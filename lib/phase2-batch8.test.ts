@@ -133,7 +133,7 @@ describe("132: approved KYC gates withdrawals only", () => {
     expect((await call(POST, "/x", "POST", w)).status).toBe(201);
   });
 
-  it("an already-pending withdrawal cannot be marked, approved, or paid through the paying function while KYC is not approved", async () => {
+  it("the paying function refuses a client withdrawal without approved KYC unless staff pay it as an audited override (owner 2026-10-06)", async () => {
     if (!dbReachable) return;
     const b = await broker({ withdrawalApproval: "SINGLE" });
     const g = await group(b);
@@ -141,25 +141,18 @@ describe("132: approved KYC gates withdrawals only", () => {
     const tx = await pendingWithdrawal(b, acc.id);
     const ba = await admin(b, "BROKER_ADMIN");
     as(ba);
-    const { PATCH } = await import("@/app/api/manage/funds-requests/[id]/route");
-    const approve = await call(PATCH, "/x", "PATCH", { action: "APPROVE" }, { id: tx.id });
-    expect(approve).toMatchObject({ status: 409, json: { code: "KYC_REQUIRED" } });
-    // DUAL broker: the first APPROVE (a mark) is refused too
-    await prisma.broker.update({ where: { id: b }, data: { withdrawalApproval: "DUAL" } });
-    expect((await call(PATCH, "/x", "PATCH", { action: "APPROVE" }, { id: tx.id })).status).toBe(409);
-    expect((await prisma.transaction.findUniqueOrThrow({ where: { id: tx.id } })).markedByAdminId).toBeNull();
-    // bypassing the route: the paying function itself refuses, money does not move
+    // bypassing the route: the paying function itself still refuses by default, money does not move
     const { approveFundsRequest } = await import("@/lib/funds-approval");
     const direct = await prisma.$transaction((t) => approveFundsRequest(t, { transactionId: tx.id, brokerId: b, accountId: acc.id, amount: tx.amount, adminId: ba.id, note: null, type: "WITHDRAWAL", approvalMode: "SINGLE" }));
-    expect(direct).toMatchObject({ ok: false });
+    expect(direct).toMatchObject({ ok: false, code: "KYC_REQUIRED" });
     expect((await prisma.account.findUniqueOrThrow({ where: { id: acc.id } })).balance.toString()).toBe("1000");
     expect((await prisma.transaction.findUniqueOrThrow({ where: { id: tx.id } })).status).toBe("PENDING");
-    // once KYC is approved the same request pays
-    await prisma.kycRecord.create({ data: { accountId: acc.id, status: "APPROVED", documentType: "passport", documentFrontUrl: "x" } });
-    await prisma.broker.update({ where: { id: b }, data: { withdrawalApproval: "SINGLE" } });
+    // staff on the route: paid, with the override audit row
+    const { PATCH } = await import("@/app/api/manage/funds-requests/[id]/route");
     const paid = await call(PATCH, "/x", "PATCH", { action: "APPROVE", note: "sent" }, { id: tx.id });
     expect(paid.status).toBe(200);
     expect((await prisma.account.findUniqueOrThrow({ where: { id: acc.id } })).balance.toString()).toBe("900");
+    expect(await prisma.auditLog.count({ where: { brokerId: b, action: "FUNDS_REQUEST_PAID_WITHOUT_KYC", entityId: tx.id } })).toBe(1);
   });
 });
 

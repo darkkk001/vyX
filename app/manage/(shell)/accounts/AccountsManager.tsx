@@ -6,7 +6,6 @@ import { Select } from "@/components/ui/Select";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { Card } from "@/components/ui/Card";
-import { SwapFreeSelect } from "@/components/manage/SwapFreeSelect";
 import { FormField } from "@/components/ui/FormField";
 import { LeverageInput } from "@/components/ui/LeverageInput";
 import { Modal, ModalActions } from "@/components/ui/Modal";
@@ -14,6 +13,8 @@ import { SegmentedControl } from "@/components/ui/SegmentedControl";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
 import { TableSkeleton, TableErrorState } from "@/components/ui/TableExtras";
 import { useToast } from "@/lib/toast";
+import { formatMoney, formatSigned } from "@/lib/format";
+import { plainError } from "@/lib/plain-error";
 
 export type AccountRow = {
   id: string;
@@ -168,7 +169,7 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
     setAddBusy(false);
     if (!response.ok) {
       const b = await response.json().catch(() => ({}));
-      setAddError(b.error ?? "failed to create account");
+      setAddError(plainError(b, "Could not create the account. Try again.", { audience: "staff" }));
       return;
     }
     const created = await response.json();
@@ -201,7 +202,7 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
     setBusyId(null);
     if (!response.ok) {
       const b = await response.json().catch(() => ({}));
-      setErrors((prev) => ({ ...prev, [id]: b.error ?? "update failed" }));
+      setErrors((prev) => ({ ...prev, [id]: plainError(b, "Could not save the change. Try again.", { audience: "staff" }) }));
       return false;
     }
     reloadRows().catch(() => {});
@@ -230,11 +231,6 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
 
   async function changeMaxDailyLoss(row: AccountRow, value: string) {
     await patchAccount(row.id, { maxDailyLoss: value.trim() === "" ? null : value.trim() }, `${row.accountNumber} max daily loss updated`);
-  }
-
-  async function changeSwapFree(row: AccountRow, swapFree: boolean | null) {
-    const label = swapFree === null ? "set to inherit" : swapFree ? "enabled" : "set to charge swap";
-    await patchAccount(row.id, { swapFree }, `${row.accountNumber} swap-free override ${label}`);
   }
 
   function openAdjustModal(row: AccountRow) {
@@ -276,7 +272,7 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
     }
     if (!response.ok) {
       const b = await response.json().catch(() => ({}));
-      setAdjustError(b.error ?? "adjustment failed");
+      setAdjustError(plainError(b, "Could not save the balance change. Try again.", { audience: "staff" }));
       return;
     }
     setAdjustTarget(null);
@@ -316,7 +312,7 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
     setReviewingAdjustmentId(null);
     if (!response.ok) {
       const body = await response.json().catch(() => ({}));
-      setPendingAdjustmentErrors((prev) => ({ ...prev, [id]: body.error ?? `${decision} failed` }));
+      setPendingAdjustmentErrors((prev) => ({ ...prev, [id]: plainError(body, "Could not save the decision. Try again.", { audience: "staff" }) }));
       return;
     }
     reloadPendingAdjustments().catch(() => {});
@@ -375,11 +371,10 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
                 <div className="text-sm">
                   <Badge tone={Number(req.amount) >= 0 ? "success" : "danger"}>{Number(req.amount) >= 0 ? "Credit" : "Debit"}</Badge>{" "}
                   <span className="text-[var(--text-1)] font-mono">
-                    {Number(req.amount) >= 0 ? "+" : ""}
-                    {req.amount}
+                    {formatSigned(req.amount)}
                   </span>{" "}
                   <span className="text-[var(--text-1)]">
-                    {req.account.accountNumber}, {req.account.fullName} (balance {req.account.balance})
+                    {req.account.accountNumber}, {req.account.fullName} (balance {formatMoney(req.account.balance)})
                   </span>
                   <span className="block text-xs text-[var(--text-3)] mt-0.5">
                     Requested by {req.requestedByName} · {new Date(req.createdAt).toLocaleString()} · &quot;{req.note}&quot;
@@ -417,20 +412,13 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
           <TableHeaderCell align="right" className="min-w-[110px]" title="Reject new orders once today's realized loss reaches this amount">
             Max daily loss
           </TableHeaderCell>
-          <TableHeaderCell
-            align="center"
-            className="min-w-[110px]"
-            title="Per-account swap-free override (Account.swapFree). Resolution order is this account > its Account Type > its Group > charged. Applied at fill/swap-rollover time once your broker's pricing engine is enabled."
-          >
-            Swap-free
-          </TableHeaderCell>
           <TableHeaderCell className="min-w-[140px]" />
         </TableHead>
         <TableBody>
           {loadError ? (
-            <TableErrorState colSpan={13} onRetry={() => reloadRows().catch(() => setLoadError(true))} />
+            <TableErrorState colSpan={12} onRetry={() => reloadRows().catch(() => setLoadError(true))} />
           ) : filtered.length === 0 ? (
-            <TableEmptyState colSpan={13}>No accounts match.</TableEmptyState>
+            <TableEmptyState colSpan={12}>No accounts match.</TableEmptyState>
           ) : (
             filtered.map((row) => (
               <TableRow key={row.id}>
@@ -511,7 +499,7 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
                   )}
                 </TableCell>
                 <TableCell align="right" mono className="min-w-[100px]">
-                  {row.balance}
+                  {formatMoney(row.balance)}
                 </TableCell>
                 <TableCell align="right" mono className="min-w-[100px]">
                   {row.credit}
@@ -542,14 +530,6 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
                   ) : (
                     row.maxDailyLoss ?? ""
                   )}
-                </TableCell>
-                <TableCell align="center" className="min-w-[110px]">
-                  <SwapFreeSelect
-                    value={row.swapFree}
-                    onChange={(v) => changeSwapFree(row, v)}
-                    inheritLabel="Inherit (Type)"
-                    disabled={busyId === row.id}
-                  />
                 </TableCell>
                 <TableCell className="min-w-[140px] whitespace-nowrap">
                   {canManageFinance ? (

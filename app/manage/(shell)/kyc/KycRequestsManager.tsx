@@ -8,6 +8,7 @@ import { FormField } from "@/components/ui/FormField";
 import { Modal, ModalActions } from "@/components/ui/Modal";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
 import { formatDateTime } from "@/lib/format";
+import { plainError } from "@/lib/plain-error";
 
 export type KycRequestRow = {
   id: string;
@@ -56,7 +57,7 @@ export default function KycRequestsManager() {
     setBusyId(null);
     if (!response.ok) {
       const body = await response.json().catch(() => ({}));
-      setErrors((prev) => ({ ...prev, [id]: body.error ?? `${action.toLowerCase()} failed` }));
+      setErrors((prev) => ({ ...prev, [id]: plainError(body, "Could not save the decision. Try again.", { audience: "staff" }) }));
       return;
     }
     setRejectTarget(null);

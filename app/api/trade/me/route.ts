@@ -20,6 +20,7 @@ export async function GET() {
       balance: true,
       credit: true,
       status: true,
+      tradingRights: true,
       fullName: true,
       twoFactorEnabled: true,
       // 2026-09-05 P0 fix -- WebTrader's own margin-call banner/toast used
@@ -43,7 +44,11 @@ export async function GET() {
   const { group, broker, ...rest } = account;
   // Batch 5: whether this account can trade right now (the broker's or its group's halt / close-only; halted wins),
   // re-read by the terminal on every ConfigChanged so a halt shows at once
-  const tradingState = broker?.tradingHaltedAt || group?.tradingHaltedAt ? "halted" : broker?.closeOnlyAt || group?.closeOnlyAt ? "close_only" : "open";
+  // Per-account trading rights (2026-09-28): READ_ONLY reads as "halted" and CLOSE_ONLY as "close_only", so an installed
+  // terminal (which knows open / close_only / halted) already disables what the server refuses; tradingRights below
+  // is the exact value for the wording
+  const tradingState = broker?.tradingHaltedAt || group?.tradingHaltedAt || rest.tradingRights === "READ_ONLY" ? "halted"
+    : broker?.closeOnlyAt || group?.closeOnlyAt || rest.tradingRights === "CLOSE_ONLY" ? "close_only" : "open";
   // stopOutLevel (audit 2026-09-24): the terminal shows and warns at stop-out too, not only at margin call
   // Phase 2 batch 9 (issue 363, owner decision): the broker's trading day / week start (the charts' D1 boundary), so the
   // terminal's DAY P/L and WEEK P/L are counted from the same instants the server and the charts use

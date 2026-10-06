@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
+import { plainError } from "@/lib/plain-error";
 import styles from "@/components/portal/PortalShell.module.css";
 
 type ClientProfile = {
@@ -85,7 +86,7 @@ export default function ProfileView({ initialClient }: { initialClient: ClientPr
       });
       const body = await response.json().catch(() => ({}));
       if (!response.ok) {
-        setPersonalError(body.error ?? `Could not save (HTTP ${response.status})`);
+        setPersonalError(plainError(body, "Could not save. Try again."));
         return;
       }
       setClient(body);
@@ -131,7 +132,7 @@ export default function ProfileView({ initialClient }: { initialClient: ClientPr
       });
       const body = await response.json().catch(() => ({}));
       if (!response.ok) {
-        setPasswordError(body.error ?? `Could not update the password (HTTP ${response.status})`);
+        setPasswordError(plainError(body, "Could not update the password. Try again."));
         return;
       }
       cancelPasswordChange();

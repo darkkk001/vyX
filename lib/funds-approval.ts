@@ -58,7 +58,13 @@ export type MarkResult = { transactionId: string; markedByAdminId: string };
 // The first APPROVE on a withdrawal -- marks only, no balance change.
 export async function markFundsRequestForApproval(
   tx: Tx,
-  params: { transactionId: string; brokerId: string; adminId: string }
+  params: {
+    transactionId: string;
+    brokerId: string;
+    adminId: string;
+    /** true when staff marks a CLIENT withdrawal whose KYC is not approved (owner 2026-10-06): recorded in the audit row */
+    withoutKyc?: boolean;
+  }
 ): Promise<MarkResult> {
   const claimed = await tx.transaction.updateMany({
     // status-guarded (audit 2026-09-24): only a PENDING, unmarked request can be marked
@@ -76,7 +82,7 @@ export async function markFundsRequestForApproval(
       action: "FUNDS_REQUEST_MARKED_FOR_APPROVAL",
       entityType: "Transaction",
       entityId: params.transactionId,
-      newValue: { markedByAdminId: params.adminId },
+      newValue: { markedByAdminId: params.adminId, ...(params.withoutKyc ? { kycApproved: false, override: "marked without approved KYC" } : {}) },
     },
   });
   return { transactionId: params.transactionId, markedByAdminId: params.adminId };
@@ -150,16 +156,25 @@ export async function approveFundsRequest(
     markedByAdminId?: string | null;
     /** false only for a row staff recorded themselves (lib/staff-funds.ts, owner 2026-10-06): no KYC gate. Default true. */
     requireKyc?: boolean;
+    /**
+     * Owner 2026-10-06: staff paying a CLIENT-filed withdrawal. KYC is not required (overrides requireKyc), but when the
+     * account's KYC is not approved the payout is recorded as an override (FUNDS_REQUEST_PAID_WITHOUT_KYC audit row).
+     */
+    kycOverride?: boolean;
   }
 ): Promise<ApproveResult> {
   const balanceBefore = await lockAccountBalance(tx, params.accountId); // row lock: lib/account-lock.ts
   const balanceAfter = balanceBefore.add(params.amount); // amount already signed (negative for withdrawal)
+  let kycApproved = true;
 
   if (params.type === "WITHDRAWAL") {
     // Phase 2 batch 8 (issue 132, owner decision): no payout without approved KYC -- checked here, inside the paying
     // transaction, so every path to COMPLETED of a CLIENT request goes through it. Staff-recorded rows skip it (owner
     // 2026-10-06: staff deposit/withdraw is the broker's own decision).
-    if (params.requireKyc !== false && !(await withdrawalKycApproved(tx, params.accountId))) return { ok: false, error: WITHDRAWAL_KYC_ADMIN_MESSAGE, code: "KYC_REQUIRED" };
+    // A client request staff pay anyway (kycOverride) is allowed and audited below (owner 2026-10-06).
+    const kycChecked = params.kycOverride === true || params.requireKyc !== false;
+    kycApproved = kycChecked ? await withdrawalKycApproved(tx, params.accountId) : true;
+    if (!params.kycOverride && params.requireKyc !== false && !kycApproved) return { ok: false, error: WITHDRAWAL_KYC_ADMIN_MESSAGE, code: "KYC_REQUIRED" };
     // Audit 2026-09-24 (money): not only balance >= 0 -- a payout must not leave open positions under-margined.
     // Checked on the LOCKED balance (lib/margin.ts checkBalanceDebit).
     const debit = await checkBalanceDebit(tx, { accountId: params.accountId, amount: params.amount.neg(), balance: balanceBefore });
@@ -211,6 +226,27 @@ export async function approveFundsRequest(
       },
     },
   });
+
+  if (params.type === "WITHDRAWAL" && params.kycOverride && !kycApproved) {
+    const account = await tx.account.findUnique({ where: { id: params.accountId }, select: { accountNumber: true } });
+    await tx.auditLog.create({
+      data: {
+        brokerId: params.brokerId,
+        actorAdminId: params.adminId,
+        action: "FUNDS_REQUEST_PAID_WITHOUT_KYC",
+        entityType: "Transaction",
+        entityId: params.transactionId,
+        newValue: {
+          override: "paid without approved KYC",
+          transactionId: params.transactionId,
+          accountId: params.accountId,
+          accountNumber: account?.accountNumber ?? null,
+          amount: params.amount.toString(),
+          kycApproved: false,
+        },
+      },
+    });
+  }
 
   return { ok: true, transactionId: updated.id, balanceAfter };
 }

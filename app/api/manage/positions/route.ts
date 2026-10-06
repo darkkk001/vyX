@@ -18,6 +18,8 @@ import {
   checkTradingSession,
   checkLotStep,
   checkGroupMaxLot,
+  checkGroupMinLot,
+  riskCode,
   checkGroupTradingRestriction,
   checkGroupTradingHalted,
   checkAccountStatusForOpen,
@@ -27,6 +29,7 @@ import {
   checkSymbolExposure,
   checkBrokerExposure,
   checkMaxDailyLoss,
+  checkAccountTradingRights,
 } from "@/lib/risk";
 import * as mirror from "@/lib/mirror";
 
@@ -326,7 +329,10 @@ export async function POST(request: NextRequest) {
     checkTradingSession(brokerSymbol.tradingSessions, new Date(), brokerSymbol.symbol.category) ??
     checkLotStep(volume, brokerSymbol.minLot, brokerSymbol.lotStep) ??
     (account.group ? checkGroupMaxLot(volume, account.group.maxLotSize) : null) ??
+    (account.group ? checkGroupMinLot(volume, account.group.minLotSize, brokerSymbol.minLot) : null) ??
     (account.group ? checkGroupTradingRestriction(account.group.tradingRestriction, side) : null) ??
+    // per-account trading rights + status (2026-09-28): a close-only / read-only / suspended account opens nothing
+    checkAccountTradingRights(account, "open") ??
     (account.group ? checkGroupTradingHalted(account.group) : null) ??
     // account status (2026-09-29): a suspended / closed account opens nothing
     checkAccountStatusForOpen(account) ??
@@ -343,7 +349,7 @@ export async function POST(request: NextRequest) {
     (await checkBrokerExposure(prisma, brokerId, volume, broker.totalExposureLimit)) ??
     (await checkMaxDailyLoss(prisma, accountId, account.maxDailyLoss));
   if (riskError) {
-    return NextResponse.json({ error: riskError }, { status: 400 });
+    return NextResponse.json({ error: riskError, ...riskCode(riskError) }, { status: 400 });
   }
 
   let fillPrice: Prisma.Decimal;

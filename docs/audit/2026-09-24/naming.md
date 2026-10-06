@@ -4,6 +4,16 @@
 
 The labels come from `ui-map.md` (the bo-* and term-* sections). They were checked read-only against the source: `DealingScreen.cs`, `ClientsScreen.cs`, `Vyx.Backoffice.App\Screens\*.cs`, `Controls\PricingPanel.cs`, `Vyx.Trader.App` and `Vyx.Shared.Ui\Charting`. The first drafts are in `_naming-part1.md` to `_naming-part3.md` and `_naming-glossary.md`. This file merges them and adds one consistency pass across every screen. The rules: plain broker words with no internal codes (RAW, INHERIT, SOURCE, MODE, B_BOOK, COV, SDM, MU, NBP, APR, LAR, PSP, and KYC, LP or IB on their own). Every quantity carries its unit in the name: ($), (lots), (points), (%), ($ per lot), (UTC). Leverage is written 1:N. Screen codes are never the main label. One concept always gets one word (see Glossary). Names are in sentence case. **1788 rows** in total (1340 backoffice, 448 terminal): **455 keep** and **1333 renamed**. The renamed count includes 11 fixture or internal labels marked `remove` and 1 cross-reference row. The consistency pass made 39 decisions. They are listed at the end.
 
+## Number rules (owner 2026-10-05 / 2026-10-06)
+
+One shared formatter in every app (backoffice, terminal, WebTrader, statements, CSV):
+- **Never "-0.00".** A negative zero shows `0.00`.
+- **Signs:** positive values carry "+", negative values "−"; zero shows `0.00` with no sign. Colour: profit green, loss red, zero neutral.
+- **Volume** always 2 decimals (`1.00`, `0.50`, `0.02`).
+- **Prices** in each symbol's own digits (XAUUSD `4139.80`, EURUSD `1.08425`, ETHUSD `2703.00`).
+- **Whose view:** the backoffice always shows the **broker's view**: commission and swap are revenue (positive), client withdrawals are negative, deposits positive, Book P/L is the broker's side. The terminal and the account statement show the **client's view**: commission and swap are negative charges and profit is the client's.
+- **Per-trade tables** (Closed trades, positions, history, statements): default column order Account · Client · Group · Ticket · Symbol · Type · Volume · Open time · Open price · SL · TP · Close time · Close price · Commission · Swap · Profit (a client statement leaves out the Account / Client / Group columns it never shows); text left-aligned, numbers right-aligned; default sort close time, newest first; the Columns menu may hide columns but never reorders them. Aggregate tables: identifier first, then time, then amounts.
+
 ## Empty and zero values (owner 2026-10-05)
 
 This rule applies to every app (backoffice, terminal, WebTrader) and every CSV export. It overrides any row below that shows a dash as a value.
@@ -28,6 +38,27 @@ never clipped and never overlap. When the panel is too narrow for all columns, t
 Every dialog, toast and confirm in every app (backoffice, terminal, WebTrader, portal) is short and direct: one line
 where possible. Say what happened or what will happen, nothing else. Longer text only when something went wrong and
 the user must act, and then say exactly what to do.
+
+## Owner decisions D1 to D6 (2026-10-05)
+
+These override every row below that still shows the older wording.
+
+- **D1 Book.** "Broker book (B-book)" is **Book** everywhere ("Book P/L ($)", "Book positions (lots)", "Market book / Book"). "Broker hedge account" is **Hedge account**.
+- **D2 For all clients.** "broker-wide" is **for all clients** (or dropped where the sentence is already clear).
+- **D3 Company.** The firm-name label is **Company** (SEC, CFG "This company"). The top bar has **no label**: it shows only the firm name.
+- **D4 No actor in install refusals.** "...retired by your broker", "Contact VyxTrader support" lose the actor: "This installation has been retired. Install the latest version." Trader-facing text keeps "your broker" where it means the client's broker.
+- **D5 Staff note.** "Broker note" / "BROKER: {review}" on Deposits & withdrawals is **Staff note**.
+- **D6 Same as dealing switch.** "Same as broker dealing switch" is **Same as dealing switch**.
+
+## Plain errors and infrastructure (owner 2026-10-06)
+
+Brokers and traders never see infrastructure: no MT5, Caddy, engine, gateway, NATS, Neon, database, timeouts, "ms"
+latencies (execution time is the one exception), HTTP codes, endpoint paths, counters, raw error text, internal ids or
+restart controls. The upstream price source is the **Source feed**. The one infrastructure line a broker sees is a
+plain "liquidity provider is disconnected". On the web, every error a broker or trader reads goes through
+`lib/plain-error.ts` (one table of plain sentences; unknown text becomes a plain fallback and goes to the log), and
+every number through `lib/format.ts`. CSV exports follow the number rules but keep numbers machine-readable (ASCII
+"-", no "+", no thousands separators) so a spreadsheet can add them up.
 
 ## Glossary
 
@@ -70,7 +101,7 @@ the user must act, and then say exactly what to do.
 | Value of buy minus sell volume | Net exposure ($) | $ | NOTIONAL, NET $ EXP |
 | Value of all open client volume | Exposure ($) | $ | OPEN EXPOSURE |
 | Most lots one account may hold open in a symbol (enforced per account, total of its buys and sells) | Max lots per account (lots) | lots | NET LIMIT, MAXIMUM EXPOSURE, max exposure |
-| Most lots all clients may hold open together (broker-wide, enforced in lots, D7) | Max open volume (lots) | lots | TOTAL EXPOSURE, Exposure limit ($), exposure in USD |
+| Most lots all clients may hold open together (enforced in lots, D7) | Max open volume (lots) | lots | TOTAL EXPOSURE, Exposure limit ($), exposure in USD |
 | Trade size limits | Min volume (lots) / Max volume (lots) / Volume step (lots) | lots | Min lot, Max lot, Lot step, STEP |
 | Symbol | Symbol | — | instrument, SYM |
 | Symbol category (metals, FX…) | Asset class | — | CATEGORY (for symbols) |
@@ -85,15 +116,15 @@ the user must act, and then say exactly what to do.
 | How a spread is set | Spread setting | — | MODE, pricing mode |
 | Overnight fee | Swap long (per lot) / Swap short (per lot); per trade: Swap ($) | per lot (account currency) | rollover, Swap Long / Swap Short without unit |
 | Fee per trade | Commission (per lot); per trade: Commission ($) | per lot (account currency) | COMM |
-| Price change limit on fill | Max slippage (points) (broker-wide value: after the pips → points conversion) | points | SLIP, deviation, pips |
+| Price change limit on fill | Max slippage (points) (value for all clients: after the pips → points conversion) | points | SLIP, deviation, pips |
 | Automatic accept/reject by slippage | Auto-accept slippage (%) / Auto-reject slippage (%) | % | Smart dealer, Auto accept / reject |
 | Stop loss / take profit | Stop loss / Take profit (SL / TP only in narrow table headers) | — | S/L, T/P |
 | Minimum SL/TP distance | Min stop distance (points) | points | stop level |
 | Setting that takes the group's value | Same as group | — | INHERIT, inherit, GROUP DEFAULT, per group |
 | Setting that takes the symbol's value | Same as symbol (exception: the GRP Pricing column says Source, owner 2026-10-05) | — | INHERIT |
-| Group setting that follows the broker-wide dealing switch | Same as broker dealing switch | — | BROKER DEFAULT, DESK-CONTROLLED, Same as broker switch |
+| Group setting that follows the dealing switch | Same as dealing switch | — | BROKER DEFAULT, DESK-CONTROLLED, Same as broker switch |
 | Group ignores the broker dealing switch | Ignore broker dealing switch | — | Force dealer mode, FORCED |
-| Broker keeps the client's risk | Broker book (B-book) on first use, then Broker book | — | B_BOOK, BOOK, B-BOOK alone, dealing-group |
+| Broker keeps the client's risk | Book | — | B_BOOK, BOOK, B-BOOK alone, dealing-group |
 | Trades passed to a liquidity provider | Market book (A-book) on first use, then Market book | — | A_BOOK, LP book |
 | Group whose trades are reversed into a master account | Reverse trading | — | REVERSAL, MIR |
 | How a group's (or a row's) trades are handled | Trade handling | — | CATEGORY, ROUTING, TYPE, groupType, Book, Handling |
@@ -102,16 +133,16 @@ the user must act, and then say exactly what to do.
 | Copy volume factor | Volume multiplier | — | MULTIPLIER alone |
 | Copy rule stopped by its own limit | Stopped by limit | — | KILLED |
 | Price a copied trade fills at | Original price / Current price | — | SOURCE PRICE, MARKET |
-| Broker's own hedge account | Broker hedge account | — | coverage account, COV, COVERAGE |
+| Broker's own hedge account | Hedge account | — | coverage account, COV, COVERAGE |
 | Place / undo a hedge for a client position | Hedge / Remove hedge | — | BOOK, UNBOOK, cover |
-| Broker book volume hedged / not hedged | Hedged (lots) / Unhedged (lots) | lots | COVERED, OPEN RISK, BOOKED, UNBOOKED |
+| Book volume hedged / not hedged | Hedged (lots) / Unhedged (lots) | lots | COVERED, OPEN RISK, BOOKED, UNBOOKED |
 | Hedge / unhedge panel | Hedge manager | — | SDM, Smart dealer manager |
-| P/L of the broker hedge account | Hedge account P/L ($) (open part: Hedge account floating P/L ($)) | $ | COVERAGE P/L, Hedge P/L |
-| P/L of Broker book positions, broker's side | Broker book P/L ($) | $ | DEALING-GROUP P/L, Dealer P/L (for this) |
-| Broker book P/L + hedge account P/L | Dealer P/L ($) | $ | DEALER NET P/L, Net P/L |
+| P/L of the hedge account | Hedge account P/L ($) (open part: Hedge account floating P/L ($)) | $ | COVERAGE P/L, Hedge P/L |
+| P/L of Book positions, broker's side | Book P/L ($) | $ | DEALING-GROUP P/L, Dealer P/L (for this) |
+| Book P/L + hedge account P/L | Dealer P/L ($) | $ | DEALER NET P/L, Net P/L |
 | Hedge automatically on every fill | Auto-hedge | — | (AUTO-HEDGE in caps is fine as a switch label) |
 | Dealer reviews every order / orders fill automatically | Manual dealing / Automatic dealing | — | DEALER ON, desk on, AUTO-FILL, desk off |
-| The broker-wide or group dealing setting | Dealing | — | Dealing mode, DEALER MODE, Execution, MODE |
+| The dealing setting for all clients or for one group | Dealing | — | Dealing mode, DEALER MODE, Execution, MODE |
 | Groups with manual dealing | Manual-dealing groups | — | DEALING GROUP, dealing-group |
 | Stop all new trading (control, screen) | Trading halt | — | HALT, kill, Emergency, PANIC |
 | State after a halt | Trading halted | — | HALTED alone, Trading halt (as a state) |
@@ -134,7 +165,7 @@ the user must act, and then say exactly what to do.
 | Balance-after-transaction chart | Balance history ($) | $ | BALANCE CURVE, EQ |
 | Staff user | Staff | — | admin user, USR, team member, Team |
 | Latest staff actions on the dashboard | Staff activity | — | ACTIVITY |
-| Tenant / tenant tier | Broker (Broker name) / Plan | — | tenant, TENANT, Tier |
+| Tenant / tenant tier | Company (Company name) / Plan | — | tenant, TENANT, Tier |
 | 2FA | Two-step sign-in (2FA) | — | 2-step login, Two-factor |
 | Signing in / list of sign-ins | Sign-in / Sign-in history | — | login, LOGIN, SESSIONS |
 | Finance rights | Can approve money | — | finance rights |
@@ -198,7 +229,7 @@ the user must act, and then say exactly what to do.
 | SHELL | {BrokerName} Backoffice (window title) | keep | — | Broker name and app name. |
 | SHELL | BACKOFFICE (brand tile) | keep | — | This is the broker's back office. |
 | SHELL | search · Ctrl+K | Search (Ctrl+K) | — | Find a client, order, position, transaction, symbol or screen. |
-| SHELL | BROKER | keep | — | The broker you are signed in to. |
+| SHELL | BROKER | remove (no label: the cell shows only the firm name) | — | The firm you are signed in to (owner D3 2026-10-05). |
 | SHELL | LIVE (badge by broker name) | Signed in | — | You are signed in to this broker's server. |
 | SHELL | SERVER | keep | — | Server address this app is connected to. |
 | SHELL | OK (server state) | Connected | — | The server answered the last check. |
@@ -301,14 +332,14 @@ the user must act, and then say exactly what to do.
 | DASH | WITHDRAWALS · PENDING | Withdrawals waiting ($) | $ | Withdrawal requests waiting for a decision. |
 | DASH | ACTIVE TRADERS | keep | — | Accounts with at least one open position. |
 | DASH | OPEN VOLUME | Open volume (lots) | lots | Total volume of all open positions. |
-| DASH | B-BOOK P/L · FLOATING | Broker book (B-book) floating P/L ($) | $ | Floating P/L of positions the broker keeps, seen from the broker's side. |
+| DASH | B-BOOK P/L · FLOATING | Book floating P/L ($) | $ | Floating P/L of positions the broker keeps, seen from the broker's side. |
 | DASH | MARGIN CALLS | keep | — | Accounts at or below the margin call level. |
 | DASH | NEW CLIENTS · 7D | New clients, 7 days | — | Accounts opened in the last 7 days. |
 | DASH | DEALER QUEUE | Orders waiting for dealer | — | Orders that need a dealer's decision now. |
 | DASH | 1) CLI  CLIENTS | Clients | — | All client accounts. |
 | DASH | {n} TOTAL | keep | — | Number of accounts. |
 | DASH | 2) EXP  OPEN BOOK | Live exposure | — | Open positions by symbol. |
-| DASH | A / B BOOK (stat) | Market book / Broker book (lots) | lots | Open volume passed to a liquidity provider vs kept by the broker. |
+| DASH | A / B BOOK (stat) | Market book / Book (lots) | lots | Open volume passed to a liquidity provider vs kept by the broker. |
 | DASH | NET $ EXP (stat) | Net exposure ($) | $ | Value of client longs minus shorts across all symbols. |
 | DASH | 3) APPR  APPROVALS QUEUE | Deposits & withdrawals waiting | — | Deposit and withdrawal requests waiting for a decision. |
 | DASH | dep / wdr (stat) | Deposits / withdrawals | — | Count of each waiting. |
@@ -326,7 +357,7 @@ the user must act, and then say exactly what to do.
 | DASH | CLIENT | keep | — | Client name. |
 | DASH | COUNTRY | keep | — | — |
 | DASH | KYC (column) | ID check | — | ID check status. |
-| DASH | CATEGORY | Trade handling | — | Broker book, Market book or Reverse trading, set by the group. |
+| DASH | CATEGORY | Trade handling | — | Book, Market book or Reverse trading, set by the group. |
 | DASH | GROUP | keep | — | — |
 | DASH | BALANCE | Balance ($) | $ | — |
 | DASH | EQUITY | Equity ($) | $ | Balance + credit + floating P/L. |
@@ -347,7 +378,7 @@ the user must act, and then say exactly what to do.
 | DASH | SHORT | Sell volume (lots) | lots | Client sell volume. |
 | DASH | NET | Net volume (lots) | lots | Buy minus sell volume. |
 | DASH | PROFIT / LOSS (exposure) | Floating P/L ($) | $ | Clients' floating P/L on this symbol. |
-| DASH | A / B POS | Market book / Broker book positions | — | Number of positions in each book. |
+| DASH | A / B POS | Market book / Book positions | — | Number of positions in each book. |
 | DASH | Live exposure · this symbol | Live exposure for this symbol | — | Open Live exposure filtered to this symbol. |
 | DASH | Symbol settings | keep | — | — |
 | DASH | TYPE | keep | — | Deposit or withdrawal. |
@@ -360,23 +391,23 @@ the user must act, and then say exactly what to do.
 | DASH | Open in Deposits · withdrawals (approve / reject) | Open in Deposits & withdrawals (approve / reject) | — | — |
 | DASH | COLUMNS (header menu) | keep | — | Show or hide columns. |
 | DASH | Reset columns | keep | — | — |
-| DASH | KPI tiles (layout, new) | Net deposits · 7D / Deposits · 30D / Withdrawals waiting / Active traders / Open volume / Broker book P/L / Margin calls / New clients · 7D / Waiting for dealer / Risk flags | — | Short labels; the full naming.md words are each tile's tooltip; ten tiles in one row from 1600 px, two rows of five below; every tile opens its screen (DEP, DEP, DEP, CLI, EXP, EXP, MRG, CLI, DEAL, RDR) and ends in "›" (owner 2026-09-30). |
+| DASH | KPI tiles (layout, new) | Net deposits · 7D / Deposits · 30D / Withdrawals waiting / Active traders / Open volume / Book P/L / Margin calls / New clients · 7D / Waiting for dealer / Risk flags | — | Short labels; the full naming.md words are each tile's tooltip; ten tiles in one row from 1600 px, two rows of five below; every tile opens its screen (DEP, DEP, DEP, CLI, EXP, EXP, MRG, CLI, DEAL, RDR) and ends in "›" (owner 2026-09-30). |
 | DASH | KPI money notes (new) | {CCY} · … / MIXED CCY · … | — | The server's money totals add currencies together: a tile names the one currency, or says MIXED CCY; never "($)" (owner 2026-09-30). |
 | DASH | 1) CLI  CLIENTS (panel) | remove | — | The full client list is replaced by 1) ATT Needs attention; the Clients screen holds the full list (owner 2026-09-30). |
 | DASH | 1) ATT  NEEDS ATTENTION (panel, new) | Needs attention | — | Live client accounts with a reason; header link "All clients in CLI ›"; each row carries the Clients Account menu (owner 2026-09-30). |
 | DASH | Needs attention chips (new) | All / Margin / Risk flags / ID check / New 7D / Largest open | — | Filters, with counts (owner 2026-09-30). |
 | DASH | Needs attention columns (new) | Account / Client / Group (hidden by default) / Balance / Equity / Open (lots) / Floating P/L / Ccy / Margin level (%) / Why | — | Money in the account's currency (the Ccy column) (owner 2026-09-30). |
 | DASH | WHY tag (new) | Stop-out / Margin call / Martingale / Scalping / Latency arbitrage / News trading / ID check waiting / New 7D / Largest open; "{reason} +{n} more" | — | The tag's tooltip lists every reason: "Why: Margin call · Martingale · Largest open" (owner 2026-09-30). |
-| DASH | 2) EXP  OPEN BOOK (panel) | Open book | — | Client exposure per symbol and account currency; stat "Lots · Broker book {x}%" (owner 2026-09-30). |
+| DASH | 2) EXP  OPEN BOOK (panel) | Open book | — | Client exposure per symbol and account currency; stat "Lots · Book {x}%" (owner 2026-09-30). |
 | DASH | Open book columns (new) | Symbol / Buy / Sell / Net / Client P/L / Ccy | lots in the panel stat | "(lots)" is in the panel stat, not each header, to fit 1366 (owner 2026-09-30). |
-| DASH | Open book facts (new) | Nearest stop-out / Market book (A-book): 0.00 lots · no liquidity provider connected / Totals: broker hedge account excluded | — | Nothing implies a connected LP (owner 2026-09-30). |
+| DASH | Open book facts (new) | Nearest stop-out / Market book (A-book): 0.00 lots · no liquidity provider connected / Totals: hedge account excluded | — | Nothing implies a connected LP (owner 2026-09-30). |
 | DASH | 3) APR  APPROVALS (panel) | Approvals | — | Waiting deposits and withdrawals; header link "APR ›"; one line "Nothing waiting for approval." when empty (owner 2026-09-30). |
 | DASH | MARKED (status chip) | Marked sent | — | Short form of "Client marked sent"; the Waiting column is hidden by default (owner 2026-09-30). |
 | DASH | 4) FLOW  DEPOSITS VS WITHDRAWALS · 7D | keep | — | Header link "DEP ›"; one line "No deposits or withdrawals in the last 7 days." when empty; day labels "24 Sep" (invariant, UTC) (owner 2026-09-30). |
 | DASH | 5) ACT  STAFF ACTIVITY (panel) | Staff activity | — | Chips STAFF (default: staff actions and direct database changes) / ALL (adds the system's fills, stop-outs, client actions); header link "AUD ›"; a row opens the entry in the Audit log (owner 2026-09-30). |
 | DASH | Activity kind tags (new) | Settings / Withdraw / Deposit / Funds / Account / Trade / Stop-out / ID check / Apply / Lead / Partner / Client / Staff | — | By the kind of record changed: any broker / group / symbol / pricing / approval-mode / routing change is Settings; Withdraw and Deposit only for money requests and payouts (owner 2026-09-30). |
 | DASH | Empty panels (new) | one line: Nothing needs attention. / No open client positions. / Nothing waiting for approval. / No deposits or withdrawals in the last 7 days. / No staff activity yet. | — | An empty panel collapses to its header and one line (owner 2026-09-30). |
-| DASH | System accounts (new) | broker hedge account excluded | — | The broker hedge account is left out of every DASH tile, list and total (owner 2026-09-30). |
+| DASH | System accounts (new) | hedge account excluded | — | The hedge account is left out of every DASH tile, list and total (owner 2026-09-30). |
 
 ### Reports (RPT)
 
@@ -483,10 +514,10 @@ the user must act, and then say exactly what to do.
 
 | Screen | Current label | Proposed name | Unit | Tooltip (one line) |
 |---|---|---|---|---|
-| EXP | 1) EXP  EXPOSURE BY SYMBOL | Exposure by symbol | — | Open client volume per symbol, broker-wide. |
+| EXP | 1) EXP  EXPOSURE BY SYMBOL | Exposure by symbol | — | Open client volume per symbol, for all clients. |
 | EXP | <n> POSITIONS · <lots> LOTS · CLIENT P/L ±x | {n} positions · {x} lots · Floating P/L ($) | lots / $ | Totals for everything shown. |
 | EXP | BOOK (label) | Trade handling | — | Filter by how the positions are handled. |
-| EXP | ALL · A-BOOK · B-BOOK | All · Market book (A-book) · Broker book (B-book) | — | Show all, market-book or broker-book positions. |
+| EXP | ALL · A-BOOK · B-BOOK | All · Market book (A-book) · Book | — | Show all, market-book or book positions. |
 | EXP | GROUP (label) + group chips | Group | — | Filter by client group. |
 | EXP | SYMBOL | keep | — | Symbol. |
 | EXP | POSITIONS | keep | — | Number of open positions. |
@@ -494,7 +525,7 @@ the user must act, and then say exactly what to do.
 | EXP | SELL VOLUME | Sell volume (lots) | lots | Total lots clients hold short. |
 | EXP | NET | Net volume (lots) | lots | Buy minus sell volume; the broker's exposure. |
 | EXP | NOTIONAL | Net exposure ($) | $ | Net volume × contract size × current price. |
-| EXP | A / B POS | Market book / Broker book positions | — | Number of positions in each book. |
+| EXP | A / B POS | Market book / Book positions | — | Number of positions in each book. |
 | EXP | AVERAGE OPEN | Average open price | — | Volume-weighted open price of the net volume. |
 | EXP | CLIENT PROFIT / LOSS | Floating P/L ($) | $ | Clients' profit/loss on open positions now. |
 | EXP | PRICE | Current price | — | Latest price of the symbol. |
@@ -502,12 +533,12 @@ the user must act, and then say exactly what to do.
 | EXP | Filter positions to this symbol | keep | — | Show only this symbol in Open Positions. |
 | EXP | Close every position on this symbol… | Close all positions on this symbol… | — | Close all clients' positions on the symbol at market. |
 | EXP | Symbol settings | keep | — | Open this symbol's settings. |
-| EXP | 2) LIM  RISK LIMITS | Risk limits | — | Broker-wide limits from the Risk screen. |
+| EXP | 2) LIM  RISK LIMITS | Risk limits | — | For all clients limits from the Risk screen. |
 | EXP | EDIT ON RISK | Edit on Risk screen | — | Change these limits on the Risk screen. |
 | EXP | TOTAL EXPOSURE | Max open volume (lots) | lots | Client open volume against the most lots all clients may hold open together. |
 | EXP | MAX POSITIONS / ACCOUNT | Max positions per account | — | Open-position cap per account. |
 | EXP | DEALING MODE | Dealing | — | Manual dealing or Automatic dealing. |
-| EXP | TRADING (OPEN / CLOSE-ONLY / HALTED) | Trading (Open / Close-only / Trading halted) | — | Broker-wide trading state. |
+| EXP | TRADING (OPEN / CLOSE-ONLY / HALTED) | Trading (Open / Close-only / Trading halted) | — | For all clients trading state. |
 | EXP | RISK SETTINGS UNAVAILABLE | keep | — | Limits could not be loaded. |
 | EXP | 3) POS  OPEN POSITIONS · DEALER VIEW | Open positions | — | Every client position, with dealer actions. |
 | EXP | <shown> SHOWN OF <total> | {n} shown of {m} | — | Positions matching the filters. |
@@ -524,7 +555,7 @@ the user must act, and then say exactly what to do.
 | EXP | S/L | SL | — | Stop loss price. |
 | EXP | T/P | TP | — | Take profit price. |
 | EXP | PROFIT / LOSS | Floating P/L ($) | $ | Profit/loss of the position now. |
-| EXP | BOOK ("A"/"B") | Trade handling | — | Market book (A) or Broker book (B). |
+| EXP | BOOK ("A"/"B") | Trade handling | — | Market book (A) or Book (B). |
 | EXP | OPENED | Opened (UTC) | UTC | When the position opened. |
 | EXP | ACTIONS | keep | — | Row actions. |
 | EXP | Modify SL / TP… | Change stop loss / take profit… | — | Set new SL/TP prices. |
@@ -557,20 +588,20 @@ the user must act, and then say exactly what to do.
 | DEAL | 1) MW  MARKET WATCH | Market Watch | — | — |
 | DEAL | 2) QUEUE  PENDING QUEUE | Waiting orders | — | Orders waiting for dealer, offers waiting for client, and pending orders. |
 | DEAL | 3) ACT  DEALING ACTIVITY | Dealing activity | — | Latest dealing events. |
-| DEAL | 4) chart | Chart | — | Broker hedge account legs are drawn on it. |
-| DEAL | 5) COV  COVERAGE ACCOUNT | Broker hedge account | — | The broker's own account for hedges. |
-| DEAL | 6) MODE  DEALER MODE | Dealing | — | Manual or automatic dealing, broker-wide. |
-| DEAL | 7) GRP  DEALING-GROUP | Broker book positions | — | Every open Broker book (B-book) position. |
-| DEAL | 8) TICKET  ORDER TICKET | Hedge order | — | Order on the broker hedge account. |
+| DEAL | 4) chart | Chart | — | Hedge account legs are drawn on it. |
+| DEAL | 5) COV  COVERAGE ACCOUNT | Hedge account | — | The broker's own account for hedges. |
+| DEAL | 6) MODE  DEALER MODE | Dealing | — | Manual or automatic dealing, for all clients. |
+| DEAL | 7) GRP  DEALING-GROUP | Book positions | — | Every open Book position. |
+| DEAL | 8) TICKET  ORDER TICKET | Hedge order | — | Order on the hedge account. |
 | DEAL | 9) PANIC  EMERGENCY · DEALING GROUP | Trading halt · manual-dealing groups | — | — |
-| DEAL | 10) SDM  SMART DEALER MANAGER | Hedge manager | — | Hedge or unhedge Broker book positions and see dealer P/L. |
-| DEAL | TOTAL "n · L lot" (net strip) | Broker book positions (lots) | lots | — |
+| DEAL | 10) SDM  SMART DEALER MANAGER | Hedge manager | — | Hedge or unhedge Book positions and see dealer P/L. |
+| DEAL | TOTAL "n · L lot" (net strip) | Book positions (lots) | lots | — |
 | DEAL | COVERED | Hedged (lots) | lots | — |
-| DEAL | OPEN RISK | Unhedged (lots) | lots | Broker book volume not hedged. |
+| DEAL | OPEN RISK | Unhedged (lots) | lots | Book volume not hedged. |
 | DEAL | NET (net strip) | Net volume (lots) | lots | Client buy minus sell volume. |
-| DEAL | DEALING-GROUP P/L | Broker book P/L ($) | $ | — |
+| DEAL | DEALING-GROUP P/L | Book P/L ($) | $ | — |
 | DEAL | COVERAGE P/L | Hedge account P/L ($) | $ | — |
-| DEAL | DEALER NET P/L | Dealer P/L ($) | $ | Broker book P/L plus hedge account P/L. |
+| DEAL | DEALER NET P/L | Dealer P/L ($) | $ | Book P/L plus hedge account P/L. |
 | DEAL | search symbols… | keep | — | — |
 | DEAL | + ADD | Add symbol | — | — |
 | DEAL | ADD SYMBOL | keep | — | — |
@@ -640,7 +671,7 @@ the user must act, and then say exactly what to do.
 | DEAL | SELL / BUY | keep | — | — |
 | DEAL | lots (one-click) | Volume (lots) | lots | — |
 | DEAL | <price> · below/above market | keep | — | — |
-| DEAL | Buy Limit / Sell Stop / Sell Limit / Buy Stop @ P | Buy limit / Sell stop / Sell limit / Buy stop at P | — | Pending order on the broker hedge account. |
+| DEAL | Buy Limit / Sell Stop / Sell Limit / Buy Stop @ P | Buy limit / Sell stop / Sell limit / Buy stop at P | — | Pending order on the hedge account. |
 | DEAL | Set SL P | Set stop loss at P | — | — |
 | DEAL | Set TP P | Set take profit at P | — | — |
 | DEAL | Alert below/above P | Alert when price falls to P / rises to P | — | — |
@@ -678,25 +709,25 @@ the user must act, and then say exactly what to do.
 | DEAL | AUTO-FILL | Automatic dealing | — | Market orders fill at the current price with no dealer. |
 | DEAL | SWITCH TO AUTO-FILL / SWITCH TO DEALER ON | Switch to automatic dealing / Switch to manual dealing | — | — |
 | DEAL | AUTO-FILL / DEALER ON (confirm) | Automatic dealing / Manual dealing | — | — |
-| DEAL | Auto-hedge | keep | — | Hedge every Broker book fill on the broker hedge account. |
+| DEAL | Auto-hedge | keep | — | Hedge every Book fill on the hedge account. |
 | DEAL | TURN AUTO-HEDGE ON / OFF | Turn auto-hedge on / off | — | — |
 | DEAL | AUTO-HEDGE ON / OFF (confirm) | keep | — | — |
 | DEAL | Dealing-group accounts | Accounts in manual-dealing groups | — | — |
 | DEAL | Smart dealer | Auto-accept / auto-reject slippage (%) | % | Accept or reject orders automatically by how far the price moved. |
 | DEAL | accept ≤ a% · reject ≥ r% | keep | % | — |
-| DEAL | MAX SLIPPAGE | Max slippage (points) | points | Largest price change allowed on fill, broker-wide; "unlimited" when no cap is set (stored in points since 2026-10-01). |
+| DEAL | MAX SLIPPAGE | Max slippage (points) | points | Largest price change allowed on fill, for all clients; "unlimited" when no cap is set (stored in points since 2026-10-01). |
 | DEAL | EDIT | keep | — | — |
 | DEAL | MAX SLIPPAGE (form) · "Pips (blank = platform default…, 0 = reject any slippage)" | Max slippage (points) · "above 0 · blank = unlimited (no broker cap)" | points | No "platform default" text anywhere (issues.md 424 / 466 / 472; owner 2026-10-01). |
-| DEAL | COVERAGE ACCOUNT (section / form) / Coverage account | Broker hedge account | — | — |
+| DEAL | COVERAGE ACCOUNT (section / form) / Coverage account | Hedge account | — | — |
 | DEAL | not set | keep | — | — |
-| DEAL | SET / CHANGE COVERAGE ACCOUNT | Set / Change broker hedge account | — | — |
+| DEAL | SET / CHANGE COVERAGE ACCOUNT | Set / Change hedge account | — | — |
 | DEAL | SET | keep | — | — |
 | DEAL | Symbol ▾ / SYMBOL (menu header) | keep | — | — |
 | DEAL | MKT / LIMIT / STOP | Market / Limit / Stop | — | — |
 | DEAL | Volume | Volume (lots) | lots | — |
 | DEAL | Take profit / Stop loss | keep | — | — |
 | DEAL | SELL LIMIT / BUY STOP (captions) | keep | — | — |
-| DEAL | Fills on the coverage account at the live price. | Fills on the broker hedge account at the current price. | — | — |
+| DEAL | Fills on the coverage account at the live price. | Fills on the hedge account at the current price. | — | — |
 | DEAL | Limit and stop need the coverage bridge. | Limit and stop orders are not available yet. | — | — |
 | DEAL | no dealing groups | No manual-dealing groups | — | — |
 | DEAL | h/N HALTED | h/N halted | — | — |
@@ -709,17 +740,17 @@ the user must act, and then say exactly what to do.
 | DEAL | RESUME (button / confirm) | keep | — | Lift halt and close-only. |
 | DEAL | P/L (filter label) | Dealer P/L ($) | $ | — |
 | DEAL | 1D / 5D / 7D / 1M | 1 day / 5 days / 7 days / 1 month | — | — |
-| DEAL | DEALER P/L · 1D | Dealer P/L ($), 1 day | $ | Broker book P/L plus hedge account P/L. |
+| DEAL | DEALER P/L · 1D | Dealer P/L ($), 1 day | $ | Book P/L plus hedge account P/L. |
 | DEAL | open … · booked … · closed … (1D) | open … · hedged … · closed … (1 day) | $ | — |
 | DEAL | UNBOOKED · n | Not hedged · n | — | — |
-| DEAL | BOOK ALL · n | Hedge all · n | — | Hedge every unhedged Broker book position on the broker hedge account. |
-| DEAL | CLIENT / DEALER P&L | Client P/L ($) / Broker book P/L ($) | $ | — |
+| DEAL | BOOK ALL · n | Hedge all · n | — | Hedge every unhedged Book position on the hedge account. |
+| DEAL | CLIENT / DEALER P&L | Client P/L ($) / Book P/L ($) | $ | — |
 | DEAL | BOOK | Hedge | — | — |
 | DEAL | BOOKED · n | Hedged · n | — | — |
 | DEAL | COVERAGE (P/L) | Hedge account P/L ($) | $ | — |
-| DEAL | NET (SDM P/L) | Dealer P/L ($) | $ | Broker book P/L plus hedge account P/L. |
+| DEAL | NET (SDM P/L) | Dealer P/L ($) | $ | Book P/L plus hedge account P/L. |
 | DEAL | UNBOOK | Remove hedge | — | — |
-| DEAL | hedge leg not found on the coverage account | Hedge not found on the broker hedge account | — | — |
+| DEAL | hedge leg not found on the coverage account | Hedge not found on the hedge account | — | — |
 | DEAL | CLOSED · n / CLOSED MM-DD HH:mm | Closed · n / Closed MM-DD HH:mm (UTC) | UTC | — |
 | DEAL | COVERAGE (OPEN) | Hedge account floating P/L ($) | $ | — |
 | DEAL | AWAITING DEALER · close the coverage leg | Waiting for dealer · close the hedge | — | — |
@@ -814,22 +845,22 @@ the user must act, and then say exactly what to do.
 |---|---|---|---|---|
 | GRP | 1) GRP  GROUPS | Groups | — | Client groups: pricing, leverage and handling. |
 | GRP | <n> GROUPS · <n> HALTED | {n} groups · {n} trading halted | — | Group totals. |
-| GRP | DESK <state> | Dealing: Manual / Automatic | — | Broker-wide dealing switch. |
+| GRP | DESK <state> | Dealing: Manual / Automatic | — | For all clients dealing switch. |
 | GRP | + GROUP | Add group | — | Create a new group. |
 | GRP | NAME | keep | — | Group name. |
-| GRP | ROUTING | Trade handling | — | Broker book, Market book or Reverse trading. |
+| GRP | ROUTING | Trade handling | — | Book, Market book or Reverse trading. |
 | GRP | A-BOOK · LP | Market book (A-book) | — | Trades passed to a liquidity provider. |
-| GRP | B-BOOK | Broker book (B-book) | — | The broker keeps the client's risk. |
-| GRP | DEALING DESK | Broker book · Manual dealing | — | Broker book where a dealer reviews every order. |
+| GRP | B-BOOK | Book | — | The broker keeps the client's risk. |
+| GRP | DEALING DESK | Book · Manual dealing | — | Book where a dealer reviews every order. |
 | GRP | REVERSAL | Reverse trading | — | Trades reversed into a master account. |
-| GRP | COVERAGE · SYS | Broker hedge account | — | Group holding the broker's own hedge account. |
+| GRP | COVERAGE · SYS | Hedge account | — | Group holding the own hedge account. |
 | GRP | PRICING ("Source" / "Custom (n symbols)") | Pricing ("Source" / "Custom · n symbols") | — | Whether the group has its own spreads. Owner 2026-10-05 (broker tester): "Source" when the group uses the symbol settings, "Custom · 1 symbol" / "Custom · 5 symbols" otherwise. |
 | GRP | SYMBOLS (column, new) | Symbols ("All 30" / "5 of 30") | — | How many of the broker's enabled symbols the group trades; click opens the group's pricing panel, where each row has Show (owner 2026-10-05). |
 | GRP | Allowed symbols (side panel) | removed | — | Superseded by the Show column in Group pricing (owner 2026-10-05). |
 | GRP | DEALER | Dealing | — | How this group's orders are filled. |
 | GRP | AUTO-FILL | Automatic dealing | — | Orders fill automatically. |
 | GRP | MANUAL | Manual dealing | — | Dealer reviews every order. |
-| GRP | BROKER DEFAULT | Same as broker dealing switch | — | Follows the broker-wide dealing switch. |
+| GRP | BROKER DEFAULT | Same as dealing switch | — | Follows the dealing switch. |
 | GRP | · FORCED | · Forced | — | Group ignores the broker switch. |
 | GRP | · MIRROR | · Copy rule | — | Group has a copy rule. |
 | GRP | TRADING (BOTH SIDES / BUY ONLY / SELL ONLY) | Allowed sides | — | Which sides the group may open. |
@@ -862,11 +893,11 @@ the user must act, and then say exactly what to do.
 | GRP | Leverage | keep | — | Written 1:N. |
 | GRP | Margin call % | Margin call level (%) | % | Level that triggers the warning. |
 | GRP | Stop out % | Stop-out level (%) | % | Level that auto-closes positions. |
-| GRP | Book / routing | Trade handling | — | Broker book, Market book or Broker book with manual dealing. |
+| GRP | Book / routing | Trade handling | — | Book, Market book or Book with manual dealing. |
 | GRP | Account mode (LIVE + DEMO / LIVE ONLY / DEMO ONLY) | Account kinds allowed (Live and demo / Live only / Demo only) | — | Which accounts may join. |
 | GRP | Advanced dealing options | keep | — | Show the dealing override. |
 | GRP | Dealer | Dealing | — | How orders fill for this group. |
-| GRP | DESK-CONTROLLED (queues when the desk is on) | Same as broker dealing switch | — | Waits for a dealer only while Manual dealing is on. |
+| GRP | DESK-CONTROLLED (queues when the desk is on) | Same as dealing switch | — | Waits for a dealer only while Manual dealing is on. |
 | GRP | NEVER QUEUE (ignores the desk) | Always automatic dealing | — | Never waits for a dealer. |
 | GRP | ALWAYS QUEUE | Always manual dealing | — | Every order waits for a dealer. |
 | GRP | Trading | Allowed sides | — | Which sides this group may open. |
@@ -987,7 +1018,7 @@ the user must act, and then say exactly what to do.
 | RISK | Smart dealer accept % | Auto-accept slippage (%) | % | Orders with less slippage fill without a dealer. |
 | RISK | Smart dealer reject % | Auto-reject slippage (%) | % | Orders with more slippage are rejected without a dealer. |
 | RISK | EDIT | ⋯ (settings menu) | — | No EDIT buttons: Edit auto-accept / auto-reject slippage…, Edit limits…, Clear slippage rules…, Remove limits… in the menu (owner 2026-09-30). |
-| RISK | EXPOSURE & POSITION LIMITS (section) | Limits | — | Broker-wide caps. |
+| RISK | EXPOSURE & POSITION LIMITS (section) | Limits | — | For all clients caps. |
 | RISK | Total exposure limit | Max open volume (lots) | lots | The most lots all clients may hold open together. |
 | RISK | Max open positions / account | Max positions per account | — | Cap on open positions per account. |
 | RISK | TRADING STATE (section) | Trading state | — | Open, close-only or halted. |
@@ -1013,7 +1044,7 @@ the user must act, and then say exactly what to do.
 | RISK | STATUS (NO POSITIONS / NO PRICE / STOP-OUT / MARGIN CALL / OK) | keep | — | Where the margin level sits. |
 | RISK | Open client 360 | Open client | — | Open the client's account page. |
 | RISK | Live exposure · this account | Live exposure for this account | — | Open Live Exposure filtered to it. |
-| RISK | Close all <n> positions… | keep | — | Close every position of the account at market; disabled for the broker hedge account with the reason "hedge: close from Dealing" (full text on hover) (owner 2026-09-30). |
+| RISK | Close all <n> positions… | keep | — | Close every position of the account at market; disabled for the hedge account with the reason "hedge: close from Dealing" (full text on hover) (owner 2026-09-30). |
 | RISK | CLOSE ALL POSITIONS (dialog) | keep | — | Confirm dialog title. |
 
 ### Risk radar (RDR)
@@ -1061,9 +1092,9 @@ the user must act, and then say exactly what to do.
 
 | Screen | Current label | Proposed name | Unit | Tooltip (one line) |
 |---|---|---|---|---|
-| EMG | 1) HALT  HALT ALL NEW TRADING | Trading halt | — | Stop all new trades broker-wide. |
-| EMG | status (TRADING NORMALLY / HALTED · NO NEW TRADING) | Status (Trading normally / Trading halted: no new trades) | — | Broker-wide trading state. |
-| EMG | HALT ALL NEW TRADING | Halt all new trading | — | Refuse every new order broker-wide. |
+| EMG | 1) HALT  HALT ALL NEW TRADING | Trading halt | — | Stop all new trades for all clients. |
+| EMG | status (TRADING NORMALLY / HALTED · NO NEW TRADING) | Status (Trading normally / Trading halted: no new trades) | — | For all clients trading state. |
+| EMG | HALT ALL NEW TRADING | Halt all new trading | — | Refuse every new order for all clients. |
 | EMG | RESUME ALL TRADING | keep | — | Allow new orders again. |
 | EMG | type the tenant name to confirm | Type <host> to confirm | — | Safety check. Shows the exact text to type, e.g. "Type futurix.vyxtrader.com to confirm" (the broker's host) (owner 2026-09-29). |
 | EMG | KICK ALL CLIENT SESSIONS · INCIDENT TIMELINE — not available yet | Sign out all clients · Incident log (not available yet) | — | Planned controls. |
@@ -1074,7 +1105,7 @@ the user must act, and then say exactly what to do.
 | EMG | 3) GROUPS  HALT ONE GROUP | Halt a group | — | Stop new trades for one group. |
 | EMG | {n} OF {m} HALTED | {n} of {m} halted | — | Groups halted. |
 | EMG | GROUP (· default) | Group | — | Group name; default group marked. |
-| EMG | TYPE | Trade handling | — | Broker book, Market book… |
+| EMG | TYPE | Trade handling | — | Book, Market book… |
 | EMG | LEVERAGE | keep | — | 1:N. |
 | EMG | STATUS (TRADING / CLOSE-ONLY / HALTED) | Status (Trading / Close-only / Trading halted) | — | Group state (owner 2026-09-29). |
 | EMG | Set close-only… / Allow new trades again… | keep (Groups words) | — | Group close-only on or off (owner 2026-09-29). |
@@ -1114,14 +1145,14 @@ the user must act, and then say exactly what to do.
 | MRG | STATUS (NO POSITIONS / NO PRICE / STOP-OUT / MARGIN CALL / OK) | keep | — | Where the margin level sits. |
 | MRG | Open client 360 | Open client | — | Open the client's account page. |
 | MRG | Live exposure · this account | Live exposure for this account | — | Open Live Exposure filtered to it. |
-| MRG | Close all <n> positions… | keep | — | Close every position of the account; disabled for the broker hedge account with the reason "hedge: close from Dealing" (full text on hover) (owner 2026-09-30). |
+| MRG | Close all <n> positions… | keep | — | Close every position of the account; disabled for the hedge account with the reason "hedge: close from Dealing" (full text on hover) (owner 2026-09-30). |
 
 ### Liquidity providers (LP)
 
 | Screen | Current label | Proposed name | Unit | Tooltip (one line) |
 |---|---|---|---|---|
 | LP | 1) LP  LIQUIDITY PROVIDERS | Liquidity providers | — | Provider records; none is connected until an LP bridge exists (owner 2026-09-30). |
-| LP | Banner (new) | No liquidity provider is connected · every order is filled in the broker book (market-book groups are refused) · the status below is your record of each relationship | — | Always shown while there is no LP bridge (owner 2026-09-30). |
+| LP | Banner (new) | No liquidity provider is connected · every order is filled in the book (market-book groups are refused) · the status below is your record of each relationship | — | Always shown while there is no LP bridge (owner 2026-09-30). |
 | LP | <n> LPS · <n> ACTIVE | {n} providers · none connected | — | Totals; a record status is not a connection, so it always reads none connected until an LP bridge exists (owner 2026-09-30). |
 | LP | ROUTING | remove | — | Routing rules are merged into this screen and hidden until an LP bridge exists (owner 2026-09-30). |
 | LP | Routing rules line (new) | Routing rules: hidden until an LP bridge exists ({n} saved, not used for trading) | — | Count only; "none saved" when there are none (owner 2026-09-30). |
@@ -1138,14 +1169,14 @@ the user must act, and then say exactly what to do.
 | LP | Add new LP… | Add liquidity provider… | — | Create a provider record. |
 | LP | 2) NOW  HOW ORDERS FILL TODAY (panel, new) | How orders fill today | — | One row per group: what happens to a client order today (replaces the routing screen's "how orders route today · by group") (owner 2026-09-30). |
 | LP | GROUP / TRADE HANDLING / WHAT HAPPENS TO A CLIENT ORDER | Group / Trade handling / What happens to a client order | — | Columns; trade handling uses the Groups names (owner 2026-09-30). |
-| LP | What happens to a client order (values) | Filled at once (broker book) / Queued for the dealer (desk on) / Filled at once (desk off) / Always sent to the dealer / Refused until a liquidity provider is connected / Filled at once, then copied reversed (copy rule) / System only (broker hedge account) | — | Only the variant for the actual desk state is shown (owner 2026-09-30). |
+| LP | What happens to a client order (values) | Filled at once (book) / Queued for the dealer (desk on) / Filled at once (desk off) / Always sent to the dealer / Refused until a liquidity provider is connected / Filled at once, then copied reversed (copy rule) / System only (hedge account) | — | Only the variant for the actual desk state is shown (owner 2026-09-30). |
 | LP | DEALER DESK (stat) | Dealer desk: On · reviewing orders / Off · filled at once | — | Only the actual desk state is shown (owner 2026-09-30). |
 | LP | Open in Groups / Copy group name (group row menu) | keep | — | Group row menu (owner 2026-09-30). |
-| LP | 2) BOOK  BOOK EXPOSURE · OPEN LOTS | Exposure by trade handling | — | Open volume in the market book vs the broker book; panel 3 now (owner 2026-09-30). |
-| LP | A <x> / B <x> | Market book {x} lots / Broker book {x} lots | lots | Totals (shown as money today; should be lots). |
+| LP | 2) BOOK  BOOK EXPOSURE · OPEN LOTS | Exposure by trade handling | — | Open volume in the market book vs the book; panel 3 now (owner 2026-09-30). |
+| LP | A <x> / B <x> | Market book {x} lots / Book {x} lots | lots | Totals (shown as money today; should be lots). |
 | LP | SYMBOL | keep | — | Symbol. |
 | LP | A-BOOK LOTS | Market book (lots) | lots | Open volume passed to a liquidity provider. |
-| LP | B-BOOK LOTS | Broker book (lots) | lots | Open volume the broker keeps. |
+| LP | B-BOOK LOTS | Book (lots) | lots | Open volume the broker keeps. |
 | LP | TOTAL | Total (lots) | lots | Both books. |
 | LP | A-BOOK % | Market book (%) | % | Share of volume in the market book; hidden by default (can be shown from Columns), it reads 0 while there is no LP bridge (owner 2026-09-30). |
 | LP | Live exposure · this symbol | Live exposure for this symbol | — | Open Live Exposure filtered to it. |
@@ -1363,9 +1394,9 @@ Hidden until an LP bridge exists: the screen is merged into Liquidity providers,
 | CLI·360 | OPENED | Opened (UTC) | UTC | — |
 | CLI·360 | CLOSED | Closed (UTC) | UTC | — |
 | CLI·360 | PROFIT / LOSS | P/L ($) | $ | Floating P/L for positions, closed P/L for closed trades. |
-| CLI·360 | NOTE | Trade handling | — | Market book or Broker book; "Voided" for voided trades. |
+| CLI·360 | NOTE | Trade handling | — | Market book or Book; "Voided" for voided trades. |
 | CLI·360 | OPEN (chip in CLOSED) | Still open | — | — |
-| CLI·360 | A-BOOK / B-BOOK | Market book / Broker book | — | — |
+| CLI·360 | A-BOOK / B-BOOK | Market book / Book | — | — |
 | CLI·360 | VOIDED | keep | — | — |
 | CLI·360 | Open in Live exposure (modify / close / reverse) | keep | — | — |
 | CLI·360 | Open in Deals (replay / void / delete) | Open in Closed trades (fill details / void / delete) | — | — |
@@ -1747,7 +1778,7 @@ Hidden until an LP bridge exists: the screen is merged into Liquidity providers,
 | SEC | signed in as | keep | — | Your e-mail. |
 | SEC | role | keep | — | Your role. |
 | SEC | tenant | Web address | — | The host you are signed in to (owner 2026-09-30). |
-| SEC | broker | Broker | — | The broker's name (owner 2026-09-30). |
+| SEC | broker | Company | — | The firm's name (owner D3 2026-10-05). |
 | SEC | since | Signed in (UTC) | UTC | When you signed in. |
 | SEC | 2FA challenged this sign-in (YES · AUTHENTICATOR CODE / NO) | Two-step sign-in used (Yes / No) | — | Whether a code was asked. |
 | SEC | finance rights (YES/NO) | Can approve money (Yes / No) | — | Deposit/withdrawal/fund rights. |
@@ -1768,7 +1799,7 @@ Hidden until an LP bridge exists: the screen is merged into Liquidity providers,
 
 | Screen | Current label | Proposed name | Unit | Tooltip (one line) |
 |---|---|---|---|---|
-| CFG | 1) TENANT  THIS BROKER | This broker | — | Broker record. |
+| CFG | 1) TENANT  THIS BROKER | This company | — | The firm's record (owner D3 2026-10-05). |
 | CFG | Broker / Host / Subdomain / Custom domain | Broker / Web address / Subdomain / Custom domain | — | Where the broker is reached. |
 | CFG | Tier | Plan | — | Broker's platform plan. |
 | CFG | Status | keep | — | Active or not. |
@@ -1828,6 +1859,34 @@ Hidden until an LP bridge exists: the screen is merged into Liquidity providers,
 | AUD | PASSWORD_REVEALED | Password revealed | — | Who clicked SHOW PASSWORD on whose account, and when. |
 | AUD | ACCOUNT_PASSWORD_SET · ACCOUNT_INTERNAL_FLAG_CHANGED · STAFF_VERIFICATION_RESENT | Set trader password · Changed internal account flag · Resent verification e-mail | — | Audit log wording (owner 2026-10-05). |
 | SHELL | VYXTRADER BACKOFFICE (login window of a broker build) | <BROKER> BACKOFFICE | — | Login window title, logo, colours and window title come from the build's brand pin before sign-in (owner 2026-10-05); same for the terminal login. |
+
+### Backoffice 1.0.63 step 3: Groups, group form, credit and trading rights (owner 2026-10-06)
+
+| Screen | Was | Label | Unit | Notes |
+|---|---|---|---|---|
+| GRP | ROUTING / TRADE HANDLING (column) | DEALING DESK | — | One checkbox column (D0 = B). Checked = every order from the group waits for manual dealing (category DEALING + forceDealingMode true); unchecked = Book (B_BOOK). In between (a bar) = a Dealing desk group that follows the dealing switch (set before this rule); a click makes it always wait. Dimmed for a read-only role; a bridge, reverse-trading or hedge group is shown unchecked and dimmed, its tooltip says why. |
+| GRP | (cell tooltips, new) | Every order waits for manual dealing. Click to switch off. · Orders wait for manual dealing while the dealing switch is Manual. Click to make them always wait. · Orders fill automatically. Click to make every order wait for manual dealing. | — | One line each. |
+| GRP | (cell tooltip for other groups, new) | Routed by bridge · Reverse trading · Hedge account | — | The checkbox is not offered: those groups are routed elsewhere and keep their category; a click toasts the same words. |
+| GRP | (confirm, new) | TURN ON DEALING DESK / TURN OFF DEALING DESK | — | Rows: Group · Dealing desk now · After. After reads "Yes: every order waits for manual dealing" / "No: orders fill automatically". Buttons TURN ON / TURN OFF. Toast "{group} · dealing desk on / off". |
+| GRP | Trade handling (inspector, menu header, halt / delete confirm rows, CSV) | Dealing desk | — | Value: Yes · No · Same as dealing switch · Routed by bridge · Reverse trading · Hedge account. Menu header "{group} · Dealing desk: Yes". |
+| GRP | Clients can choose at signup (inspector) | removed | — | S2: the server publishes a new Book or Dealing desk group to clients by itself; the backoffice no longer shows or sends the flag. |
+| GRP | (inspector, new) | Min volume (lots) | lots | The group's own minimum; "symbol's own" when empty. CSV column "Min volume (lots)" before "Max volume (lots)". |
+| GRP | NEW GROUP / EDIT GROUP (form) | New group / Edit group | — | Two columns, labels only, no helper sentences; fits 1366 x 768 without scrolling. Order: Name · Leverage / Margin call level (%) · Stop-out level (%) / Minimum volume (lots) · Maximum volume (lots) / Account kinds allowed · Allowed sides / Dealing desk · Swap-free / Default group for new accounts. |
+| GRP | Min lot (new field) | Minimum volume (lots) | lots | Empty clears the group minimum (sent as null); the stored value is kept when the form does not send it. The effective minimum is the larger of the symbol's and the group's. |
+| GRP | Max lot | Maximum volume (lots) | lots | Sits beside Minimum volume (lots). Empty = no cap. |
+| GRP | Book / routing (picker) · Always send to dealer · Dealing | Dealing desk | — | One checkbox, text only, no field label. Not offered for a bridge, reverse-trading or hedge group: no category is sent for them, forceDealingMode and dealingMode go back as stored. |
+| GRP | Swap-free (INHERIT / ON / OFF choice) | Swap-free | — | One checkbox; the group decides (S1). Unchecked = swaps charged. |
+| GRP | Default group for new accounts (toggle) | Default group for new accounts | — | A normal checkbox. |
+| GRP | MIN_VOLUME_STEP (refusal in the form) | This minimum does not fit the volume steps of {symbols}. | — | Shown inside the window; the server lists the symbols. |
+| GRP | GROUP_MIN_VOLUME (refusal) | Below this group's minimum volume ({n} lots). | — | Backoffice wording; the trader reads "The smallest trade allowed for this account is {n} lots." |
+| GRP | (form checks, new) | Minimum volume must be a number, for example 0.10. · Minimum volume must be more than 0. · Minimum volume can have at most 2 decimals. · Minimum volume cannot be above the maximum. | — | One line, shown in the window before anything is sent. |
+| CLI | Risk limits… form: Swap-free (NO / YES / SAME AS GROUP) | removed | — | S1: swap-free is the group's decision only. The form keeps Max daily loss. The server refuses an account-level swap-free change (SWAP_FREE_GROUP_ONLY); scripts/clear-account-swapfree-overrides.ts clears the stored ones. |
+| CLI | SWAP-FREE (account tag, client page and inspector) | removed | — | No account-level override can exist any more. |
+| CLI | No group can take accounts. On GROUPS, let clients choose one at signup. | No group can take accounts. Add a Book or Dealing desk group on GROUPS. | — | Also the longer form "(an A-book group needs a connected LP)" on Add account. |
+| CLI | Amount ($) · Credit now ($) · Credit after ($) · Balance ($) (credit form and confirm) | Amount (USD) · Credit now (USD) · Credit after (USD) · Balance (USD) | account currency | The account's own currency code, never "($)". The form carries no helper sentences: Amount, Reason. An empty client name shows the account number only. |
+| CLI | Add credit… · Remove credit… · Trading rights ▸ (Account menu) | keep | — | Back in the menu now their server routes exist (web migration 20261006120000). Remove credit… is disabled "no credit to remove" at zero credit. |
+| CLI | Trading rights ▸ items | Full · Close-only · Read-only | — | Close-only: the client can close but not open. Read-only: no trading at all; pending orders are cancelled when it is set. Tag on the client page: CLOSE-ONLY · READ-ONLY. |
+| TERM | (trading state) | Close-only · Read-only | — | The terminal shows the account's rights state; a broker halt still wins. |
 
 ## Terminal
 

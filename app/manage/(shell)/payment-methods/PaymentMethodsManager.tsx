@@ -5,6 +5,7 @@ import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell } fro
 import { Input } from "@/components/ui/Input";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { Button } from "@/components/ui/Button";
+import { plainError } from "@/lib/plain-error";
 
 export type PaymentMethodType = "USDT_TRC20" | "USDT_BEP20" | "BTC" | "ETH" | "BANK_TRANSFER";
 
@@ -81,7 +82,7 @@ export default function PaymentMethodsManager() {
 
     if (!response.ok) {
       const body = await response.json().catch(() => ({}));
-      setErrors((prev) => ({ ...prev, [row.type]: body.error ?? "save failed" }));
+      setErrors((prev) => ({ ...prev, [row.type]: plainError(body, "Could not save. Try again.", { audience: "staff" }) }));
       return;
     }
 
