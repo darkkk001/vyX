@@ -1003,6 +1003,9 @@ model Group {
   // Null = no override, falls through to the existing per-symbol
   // minLot/maxLot check unchanged -- see lib/risk.ts's checkGroupMaxLot.
   maxLotSize         Decimal?             @db.Decimal(10, 2)
+  // Group minimum volume per order (owner S3, 2026-10-06). Null = the symbol's own minLot. Effective minimum =
+  // max(BrokerSymbol.minLot, minLotSize); it must sit on each symbol's lot-step grid (checked at save).
+  minLotSize         Decimal?             @db.Decimal(10, 2)
   // Same enum/semantics as BrokerSymbol.tradingMode -- see
   // lib/risk.ts's checkGroupTradingRestriction.
   tradingRestriction TradingMode          @default(BOTH)
@@ -1877,6 +1880,11 @@ model Position {
   // Stamped from BrokerSymbol.defaultBookType at fill time -- record-
   // keeping only, see that field's schema comment.
   bookType        BookType       @default(B_BOOK)
+  // The account's group category at the moment this position opened (owner 2026-10-06). Set by a database
+  // trigger on INSERT (migration 20261006090000_book_pnl_group_min_volume) so every open path, web or engine,
+  // stamps it; Book P/L (lib/book-pnl.ts) counts only B_BOOK / DEALING here, so moving an account to another group
+  // later never rewrites past results. NULL only for rows older than the migration until the backfill runs.
+  groupCategoryAtOpen RoutingCategory?
   closedByAdminId String?
   closedByAdmin   AdminUser?     @relation("PositionClosedBy", fields: [closedByAdminId], references: [id])
   // Idempotency key for the daily swap rollover job (lib/swap-rollover.ts)
