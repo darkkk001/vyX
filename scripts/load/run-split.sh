@@ -16,10 +16,16 @@
 # --drill: variant must be rust-all. After the engine's first closes the brokers are flipped RUST -> WEB with one UPDATE (the
 #   runbook's SQL) in the middle of the run; the web takes over the rest. Checked on top: every engine close started before the
 #   flip, every web action came after it, both sides worked, and the end state still equals the web reference.
+# --stall: the ENGINE-DOWN WATCHDOG drill (docs/STAGE6-PLAN.md section 14; variant rust-all). A beater (the engine's heartbeat) keeps the heartbeat fresh (window 6 s)
+#   while the engine's walkers run. After DRILL_AFTER engine closes the harness STALLS the engine: the beater stops and ONE statement makes the last beat
+#   60 s old (stale). The engine's walkers go on trying (a stalled engine that wakes up inside what it started) and must act on nothing; the web takes over
+#   (the heartbeat, not a flag, is what hands it the accounts). After 10 more closes by the web the engine RETURNS: the beater restarts, a new engine run
+#   starts while the web is still working. Checked on top of (a)-(c): every engine close started before the stall or after the return, every web action
+#   came after the stall (and none later than a grace after the return), no position closed twice, the end state equals the web reference.
 # Scratch ONLY: 127.0.0.1:5499, vyx_load_web / vyx_load_split.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-SEED=1; N=100; K=2; VARIANT=mixed; DRILL=0; DRILL_AFTER=10
+SEED=1; N=100; K=2; VARIANT=mixed; DRILL=0; DRILL_AFTER=10; STALL=0; RESUME_AFTER=10
 while [ $# -gt 0 ]; do
   case "$1" in
     --seed) SEED=$2; shift 2 ;;
@@ -28,16 +34,19 @@ while [ $# -gt 0 ]; do
     --variant) VARIANT=$2; shift 2 ;;
     --drill) DRILL=1; shift ;;
     --drill-after) DRILL_AFTER=$2; shift 2 ;;
+    --stall) STALL=1; shift ;;
+    --resume-after) RESUME_AFTER=$2; shift 2 ;;
     *) echo "unknown arg $1"; exit 2 ;;
   esac
 done
 if [ "$DRILL" = 1 ] && [ "$VARIANT" != "rust-all" ]; then echo "--drill needs --variant rust-all"; exit 2; fi
+if [ "$STALL" = 1 ] && { [ "$VARIANT" != "rust-all" ] || [ "$DRILL" = 1 ]; }; then echo "--stall needs --variant rust-all and not --drill"; exit 2; fi
 PSQL=/d/pg-scratch/pgsql/bin/psql.exe
 PG="$PSQL -h 127.0.0.1 -p 5499 -U postgres -Atq"
 BASE=postgresql://postgres@127.0.0.1:5499
 WEB=$BASE/vyx_load_web
 SPLIT=$BASE/vyx_load_split
-TAG="$VARIANT$(if [ "$DRILL" = 1 ]; then echo -drill; fi)-s$SEED-n$N-k$K"
+TAG="$VARIANT$(if [ "$DRILL" = 1 ]; then echo -drill; fi)$(if [ "$STALL" = 1 ]; then echo -stall; fi)-s$SEED-n$N-k$K"
 OUT="$ROOT/engine/parity/out/load/split-$TAG"
 rm -rf "$OUT"; mkdir -p "$OUT"
 cd "$ROOT"
@@ -70,6 +79,7 @@ DATABASE_URL=$SPLIT DIRECT_URL=$SPLIT POST_CLOSE_SECRET=$PC_SECRET PARITY_POST_C
 PC_PID=$!
 WEB_PID=""
 stop_all() {
+  rm -f "$BEAT_FLAG" 2>/dev/null || true
   kill $PC_PID 2>/dev/null || true
   [ -n "$WEB_PID" ] && kill $WEB_PID 2>/dev/null || true
   if command -v powershell.exe >/dev/null 2>&1; then
@@ -84,6 +94,17 @@ for _ in $(seq 1 60); do
 done
 grep -q "listening" "$OUT/post-close-server.log" || { echo "[split] post-close server did not start"; exit 2; }
 
+BEAT_FLAG="$OUT/beater.run"; BEAT_PID=""
+start_beater() { # the engine's heartbeat task: one beat a second while the flag file exists
+  touch "$BEAT_FLAG"
+  ( while [ -f "$BEAT_FLAG" ]; do $PG -d $SPLIT -c "update \"RiskEngineHeartbeat\" set \"beatAt\" = clock_timestamp() where name = 'risk'" >/dev/null 2>&1; sleep 1; done ) &
+  BEAT_PID=$!
+}
+stop_beater() { rm -f "$BEAT_FLAG"; [ -n "$BEAT_PID" ] && { kill $BEAT_PID 2>/dev/null || true; wait $BEAT_PID 2>/dev/null || true; BEAT_PID=""; }; }
+if [ "$STALL" = 1 ]; then
+  $PG -d $SPLIT -c "update \"RiskEngineHeartbeat\" set \"staleAfterSecs\" = 6, \"beatAt\" = clock_timestamp() where name = 'risk'" >/dev/null
+  start_beater
+fi
 WEB_TRACE="$OUT/web-trace.jsonl"; ENG_TRACE="$OUT/engine-trace.jsonl"; STOP="$OUT/web.stop"
 : > "$WEB_TRACE"; : > "$ENG_TRACE"
 DATABASE_URL=$SPLIT DIRECT_URL=$SPLIT VYX_RISK_ACTION_TRACE="$WEB_TRACE" LOAD_WEB_STOP_FILE="$STOP" $TSX scripts/load/run-web.ts "$OUT/split-web-report.json" > "$OUT/split-web.log" 2>&1 &
@@ -96,7 +117,46 @@ engine_run() {
 }
 
 FLIPS="$OUT/flips.json"
-if [ "$DRILL" = 1 ]; then
+stop_count() { $PG -d $SPLIT -c "select count(*) from \"Transaction\" where type = 'TRADE_PNL' and note like 'Stop%'"; }
+if [ "$STALL" = 1 ]; then
+  engine_run "$OUT/split-engine-report.json" > "$OUT/split-engine.log" 2>&1 &
+  ENG_PID=$!
+  STALLED=0
+  for _ in $(seq 1 600); do
+    DONE="$(stop_count)"
+    if [ "$DONE" -ge "$DRILL_AFTER" ]; then
+      # the engine stalls: its beater stops, and the last beat is made 60 s old by ONE statement (the lock it needs waits for every
+      # engine transaction that already read the heartbeat, like the flip). The engine's walkers keep trying; they must act on nothing.
+      stop_beater
+      for _try in 1 2 3; do
+        ROWS="$($PG -d $SPLIT -c "with u as (update \"RiskEngineHeartbeat\" set \"beatAt\" = clock_timestamp() - interval '60 seconds' where name = 'risk' returning 1) select (extract(epoch from clock_timestamp()) * 1000)::bigint from u" | tr -d '\r')"
+        sleep 0.25
+        [ "$($PG -d $SPLIT -c "select count(*) from \"RiskEngineHeartbeat\" where name = 'risk' and clock_timestamp() - \"beatAt\" > interval '30 seconds'" | tr -d '\r')" = 1 ] && break
+      done
+      STALL_MS="$ROWS"; STALL_AT_COUNT="$DONE"
+      echo "[split] STALLED the engine after $DONE engine stop-out closes (heartbeat made stale at $STALL_MS)"
+      STALLED=1
+      break
+    fi
+    kill -0 $ENG_PID 2>/dev/null || break
+    sleep 0.1
+  done
+  [ "$STALLED" = 1 ] || { echo "[split] the engine finished before $DRILL_AFTER closes: nothing to stall under (use more accounts)"; wait $ENG_PID || true; exit 2; }
+  # the engine's walkers go on until they find nothing of theirs (a stale engine owns nothing): then the web is alone
+  wait $ENG_PID || true
+  for _ in $(seq 1 1200); do
+    DONE="$(stop_count)"
+    [ "$DONE" -ge $((STALL_AT_COUNT + RESUME_AFTER)) ] && break
+    sleep 0.1
+  done
+  # the engine returns: its first beat, then a new engine run while the web is still working
+  RESUME_MS="$($PG -d $SPLIT -c "with u as (update \"RiskEngineHeartbeat\" set \"beatAt\" = clock_timestamp() where name = 'risk' returning 1) select (extract(epoch from clock_timestamp()) * 1000)::bigint from u" | tr -d '\r')"
+  start_beater
+  echo "[split] the engine RETURNED (first beat at $RESUME_MS) with $(stop_count) stop-out closes done"
+  BROKERS="$($PG -d $SPLIT -c "select id from \"Broker\"" | tr -d '\r')"
+  node -e "const b=process.argv[1].split('\n').filter(Boolean).map(broker=>({broker,tsMs:Number(process.argv[2])}));require('fs').writeFileSync(process.argv[4],JSON.stringify({flips:b,resumeMs:Number(process.argv[3])},null,1))" "$BROKERS" "$STALL_MS" "$RESUME_MS" "$FLIPS"
+  engine_run "$OUT/split-engine-resumed.json" > "$OUT/split-engine-resumed.log" 2>&1 || true
+elif [ "$DRILL" = 1 ]; then
   # the drill: the engine runs; once it has closed DRILL_AFTER positions, ONE statement flips every RUST broker to WEB (the
   # runbook's step "WEB fallback"); the web, polling all along, takes over what is left
   engine_run "$OUT/split-engine-report.json" > "$OUT/split-engine.log" 2>&1 &
@@ -130,18 +190,19 @@ done
 stop_all
 trap - EXIT
 
+[ "$STALL" = 1 ] && stop_beater
 DATABASE_URL=$SPLIT DIRECT_URL=$SPLIT $TSX scripts/load/snapshot.ts "$OUT/split-snapshot.json" >/dev/null
 RC=0
 DATABASE_URL=$SPLIT DIRECT_URL=$SPLIT $TSX scripts/load/exactly-once.ts | tee "$OUT/exactly-once.txt" || RC=1
 if grep -q "FAIL" "$OUT/exactly-once.txt"; then RC=1; fi
-DATABASE_URL=$SPLIT DIRECT_URL=$SPLIT $TSX scripts/load/split-check.ts "$OUT/world.json" "$VARIANT" "$WEB_TRACE" "$ENG_TRACE" "$OUT/split-snapshot.json" $(if [ "$DRILL" = 1 ]; then echo "$FLIPS"; fi) | tee "$OUT/split-check.txt" || RC=1
+DATABASE_URL=$SPLIT DIRECT_URL=$SPLIT $TSX scripts/load/split-check.ts "$OUT/world.json" "$VARIANT" "$WEB_TRACE" "$ENG_TRACE" "$OUT/split-snapshot.json" $(if [ "$DRILL" = 1 ] || [ "$STALL" = 1 ]; then echo "$FLIPS"; fi) | tee "$OUT/split-check.txt" || RC=1
 if [ "$VARIANT" = "cross-topo" ]; then
   echo "[split] cross-topo: invariants only (a cascade across two concurrent actors is not the web's id order); end state not compared with the web reference"
 else
   node scripts/load/diff.mjs "$OUT/world.json" "$OUT/web-snapshot.json" "$OUT/split-snapshot.json" | tee "$OUT/diff.txt" || RC=1
 fi
 if [ $RC -ne 0 ]; then
-  echo "[split] FAILED variant=$VARIANT drill=$DRILL seed=$SEED accounts=$N walkers=$K commit=$(git rev-parse --short HEAD) out=$OUT"
+  echo "[split] FAILED variant=$VARIANT drill=$DRILL stall=$STALL seed=$SEED accounts=$N walkers=$K commit=$(git rev-parse --short HEAD) out=$OUT"
   exit 1
 fi
-echo "[split] OK variant=$VARIANT drill=$DRILL seed=$SEED accounts=$N walkers=$K"
+echo "[split] OK variant=$VARIANT drill=$DRILL stall=$STALL seed=$SEED accounts=$N walkers=$K"

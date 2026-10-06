@@ -33,7 +33,10 @@ async function main() {
   if (!isSplitVariant(variant)) throw new Error(`unknown variant ${variant}`);
   const world: World = JSON.parse(fs.readFileSync(worldPath, "utf8"));
   const snapshot = JSON.parse(fs.readFileSync(snapshotPath, "utf8")) as { positions: Record<string, { status: string; closedBy: string | null }> };
-  const flips: { broker: string; tsMs: number }[] = flipsPath ? JSON.parse(fs.readFileSync(flipsPath, "utf8")).flips : [];
+  const flipsFile = flipsPath ? JSON.parse(fs.readFileSync(flipsPath, "utf8")) : { flips: [] };
+  const flips: { broker: string; tsMs: number }[] = flipsFile.flips;
+  // the stall drill (run-split.sh --stall): the "flip" is the moment the heartbeat went stale; resumeMs = the engine's first beat after it
+  const resumeMs: number | undefined = typeof flipsFile.resumeMs === "number" ? flipsFile.resumeMs : undefined;
   const flipOf = new Map(flips.map((f) => [f.broker, f.tsMs] as const));
   const owners = ownersOf(world, variant);
   const brokerOf = new Map(world.accounts.map((a) => [a.id, a.broker] as const));
@@ -103,12 +106,14 @@ async function main() {
     const rows = await prisma.transaction.findMany({ where: { type: "TRADE_PNL", referenceId: { in: engineCloses.map((t) => t.ref) } }, select: { referenceId: true, accountId: true, createdAt: true } });
     const startedAt = new Map(rows.map((r) => [r.referenceId!, r.createdAt.getTime()] as const));
     let engineBefore = 0;
+    let engineAfterReturn = 0;
     for (const t of engineCloses) {
       const flip = flipOf.get(brokerOf.get(t.accountId) ?? "");
       const s = startedAt.get(t.ref);
       if (flip === undefined || s === undefined) continue;
-      if (s >= flip) fail(`the engine closed ${t.ref} in a transaction that started at ${s}, not before the flip at ${flip}`);
-      else engineBefore++;
+      if (s >= flip && (resumeMs === undefined || s < resumeMs)) fail(`the engine closed ${t.ref} in a transaction that started at ${s}, after the ${resumeMs === undefined ? "flip" : "stall"} at ${flip} and before its return`);
+      else if (s < flip) engineBefore++;
+      else engineAfterReturn++;
     }
     let webAfter = 0;
     for (const t of web) {
@@ -118,13 +123,16 @@ async function main() {
         continue;
       }
       if (t.ts <= flip) fail(`the web acted (${t.kind} ${t.ref}) at ${t.ts}, not after the flip at ${flip}`);
+      else if (resumeMs !== undefined && t.ts > resumeMs + 3000) fail(`the web acted (${t.kind} ${t.ref}) at ${t.ts}, more than 3 s after the engine's return at ${resumeMs}: its accounts are the engine's again`);
       else webAfter++;
     }
     if (engineBefore === 0) fail("the drill proved nothing: the engine closed nothing before the flip");
     if (webAfter === 0) fail("the drill proved nothing: the web took over nothing after the flip");
     // no engine action traced after its flip commit by owner rule: an engine close whose transaction started before the flip is allowed
     void ownerAt;
-    drill = `; drill: ${engineBefore} engine close(s) before the flip, ${webAfter} web action(s) after it`;
+    drill = resumeMs === undefined
+      ? `; drill: ${engineBefore} engine close(s) before the flip, ${webAfter} web action(s) after it`
+      : `; stall drill: ${engineBefore} engine close(s) before the stall, ${webAfter} web action(s) while the engine was down, ${engineAfterReturn} engine close(s) after its return`;
     await prisma.$disconnect();
   }
 

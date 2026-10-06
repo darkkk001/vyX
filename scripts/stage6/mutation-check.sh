@@ -14,6 +14,13 @@
 #   M7  the demo-only scope ignored, web rule
 #   M8  the live fire still PINNED (it evaluates the account as it stood at the fire, not its current positions)
 #   M9  the announced reload no longer evaluates the engine-owned accounts at once (a position opened just before a gap waits for the 5 s pass)
+#   M10 the engine-down watchdog: the engine's IN-TRANSACTION heartbeat check removed (a stalled engine that wakes up inside what it started acts)
+#   M11 the watchdog, every engine heartbeat check removed (in-transaction and prefilter): a stalled engine acts, the web's takeover is doubled
+#   M12 the watchdog: the web's IN-TRANSACTION heartbeat check removed (the web refuses a stale engine's accounts: nothing handles them)
+#   M13 the watchdog: the web's prefilter ignores the heartbeat (the web skips a dead engine's accounts)
+#   M14 the watchdog: the engine's heartbeat row is read without the share lock (a beat can land between the reading and the action)
+#   M15 the watchdog: same on the web side
+#   M16 the startup WARNING for a live mode without a flip marker is never produced
 #
 # Needs a clean working tree for the files it touches; restores them on exit. Scratch database only (vyx_test).
 set -uo pipefail
@@ -37,7 +44,7 @@ db_cleanup() {
 finish() { restore; db_cleanup; }
 trap finish EXIT
 
-WANT="${*:-M1 M2 M3 M4 M5 M6 M7 M8 M9}"
+WANT="${*:-M1 M2 M3 M4 M5 M6 M7 M8 M9 M10 M11 M12 M13 M14 M15 M16}"
 MISSED=0
 web_tests() { env $WEBENV npx vitest run "$@" > /tmp/mutation-web.log 2>&1; }
 engine_tests() { (cd engine && cargo test -q -p order-management "$@" -- --test-threads=1) >> /tmp/mutation-engine.log 2>&1; }
@@ -110,6 +117,47 @@ if want M9; then
                     }' \
   && engine_tests --test risk_split_db
   report "M9 the announced reload does not evaluate the engine-owned accounts at once" $?; restore
+fi
+ALIVE_IN_TX='alive.is_some_and(|(a,)| a)'
+ALIVE_SQL_ENGINE="EXISTS (SELECT 1 FROM \"RiskEngineHeartbeat\" h WHERE h.name = 'risk' AND clock_timestamp() - h.\"beatAt\" <= make_interval(secs => h.\"staleAfterSecs\"))"
+if want M10; then
+  $MUT engine/order-management/src/authority.rs "$ALIVE_IN_TX" '{ let _ = &alive; true }' \
+  && engine_tests --test risk_split_db
+  report "M10 engine in-transaction heartbeat check removed" $?; restore
+fi
+if want M11; then
+  $MUT engine/order-management/src/authority.rs "$ALIVE_IN_TX" '{ let _ = &alive; true }' \
+  && $MUT engine/order-management/src/authority.rs "$ALIVE_SQL_ENGINE" 'true' \
+  && engine_tests --test risk_split_db
+  report "M11 every engine heartbeat check removed (a stalled engine acts; the takeover would be doubled)" $?; restore
+fi
+if want M12; then
+  $MUT lib/risk-owner.ts 'beat[0]?.alive === true' 'true' \
+  && web_tests lib/risk-watchdog.test.ts
+  report "M12 web in-transaction heartbeat check removed" $?; restore
+fi
+if want M13; then
+  $MUT lib/risk-owner.ts 'COALESCE((SELECT clock_timestamp() - h."beatAt" <= make_interval(secs => h."staleAfterSecs") FROM "RiskEngineHeartbeat" h WHERE h.name = '"'"'risk'"'"'), false) AS alive' 'true AS alive' \
+  && web_tests lib/risk-watchdog.test.ts
+  report "M13 web prefilter ignores the heartbeat" $?; restore
+fi
+if want M14; then
+  $MUT engine/order-management/src/authority.rs "FROM \"RiskEngineHeartbeat\" WHERE name = 'risk' FOR SHARE\"#," "FROM \"RiskEngineHeartbeat\" WHERE name = 'risk'\"#," \
+  && engine_tests --test risk_split_db
+  report "M14 engine reads the heartbeat without the share lock" $?; restore
+fi
+if want M15; then
+  $MUT lib/risk-owner.ts "FROM \"RiskEngineHeartbeat\" WHERE name = 'risk' FOR SHARE" "FROM \"RiskEngineHeartbeat\" WHERE name = 'risk'" \
+  && web_tests lib/risk-watchdog.test.ts
+  report "M15 web reads the heartbeat without the share lock" $?; restore
+fi
+if want M16; then
+  $MUT engine/order-management/src/authority.rs '    let intent = intent.map(str::trim).unwrap_or("");' '    let intent = intent.map(str::trim).unwrap_or("");
+    if intent.len() < 1000 {
+        return None;
+    }' \
+  && engine_tests --lib authority
+  report "M16 the startup warning is never produced" $?; restore
 fi
 echo
 [ $MISSED -eq 0 ] && echo "every mutation was detected" || echo "AT LEAST ONE MUTATION WAS MISSED"

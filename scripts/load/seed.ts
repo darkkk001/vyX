@@ -22,6 +22,9 @@ export async function seedWorld(world: World, split?: string) {
   const tables = await prisma.$queryRaw<{ tablename: string }[]>`
     SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename <> '_prisma_migrations'`;
   await prisma.$executeRawUnsafe(`TRUNCATE ${tables.map((t) => `"${t.tablename}"`).join(", ")} CASCADE`);
+  // the engine-down watchdog (Stage 6): the truncate removed the heartbeat row, and no row = a dead engine = every account WEB-owned. The split harness
+  // stands for a healthy engine: fresh for a year (scripts/load/run-split.sh --stall replaces this with a short window and a beater of its own).
+  await prisma.$executeRaw`INSERT INTO "RiskEngineHeartbeat" (name, "beatAt", "staleAfterSecs") VALUES ('risk', clock_timestamp(), 31536000) ON CONFLICT (name) DO UPDATE SET "beatAt" = clock_timestamp(), "staleAfterSecs" = 31536000`;
 
   for (const b of world.brokers) {
     await prisma.broker.create({
