@@ -584,3 +584,20 @@ The marker is `VYX_RISK_FLIP_INTENT=<broker subdomain>:<YYYY-MM-DD>` (who is bei
 * They are gates on the OPEN paths only (client order, requote accept, pending trigger, dealer accept, desk flush, admin open, copy-rule open, reverse). They run inside the shared open functions, after the ownership claim where there is one (the pending-trigger claim `assertRiskActorInTx`), so they are owner-agnostic: the same refusal whether the broker is WEB or RUST, and the engine places and fills no order in risk mode (the resting-order fill stays the web's routine, so the engine needs no copy of these gates).
 * **Risk closes are never blocked by them.** `lib/risk.ts` says so (staff closes and the automatic actions never call `checkAccountTradingRights`); proven by `lib/risk-closes-ignore-rights.test.ts` (a stop-out closes a READ_ONLY + SUSPENDED or CLOSE_ONLY + ACTIVE account of a WEB broker and, with a dead engine, a READ_ONLY + CLOSED or SUSPENDED account of a RUST broker, below the group minimum volume; the open gates still refuse the same accounts; a source guard that `lib/risk-monitor.ts` and `lib/position-close.ts` never call them) and its engine twin `risk_closes_ignore_trading_rights_status_and_the_group_minimum_volume` (engine stop-out of READ_ONLY / SUSPENDED / CLOSED accounts, group minimum 5 lots, position of 1 lot).
 * `Position.groupCategoryAtOpen` (trigger-stamped): the engine's risk path inserts no position, so the cutover gate "engine opens carry the group category" stays as logged in `docs/RUST-CUTOVER-PLAN.md` 6.1 (NOT BUILT, only relevant once the engine opens positions).
+
+### 13.2 Verification record (2026-10-07, the merged HEAD, scratch databases at D:\pg-scratch :5499 only)
+
+| Gate | Result |
+|---|---|
+| cargo test, all crates (`scripts/test-engine.sh`) | **388 passed, 0 failed, 1 ignored** (baseline 377 before the watchdog; +5 idle-gap / rights engine tests here, the rest from the merge) |
+| parity `run-db.sh` | **27 of 27 MATCH**, 0 expected divergence, 0 FAIL |
+| `shadow-gate.sh` | GREEN seed 1 (100 accounts): 221 decisions, 114 MATCH, 45 PREEMPTED, 62 TIMING, **0 unexplained** |
+| load `run.sh` seeds 1, 2, 3 (100 accounts, 2 walkers) | 0 differences, 0 gated, each |
+| split matrix (`run-split-matrix.sh`): 6 variants x seeds 1-3, the WEB-fallback drill x 3, the **`--stall` watchdog drill x 3** (the matrix now includes them) | **24 of 24 PASS** (the 21-run matrix of the first pass plus the 3 stall runs, run on their own: every engine close started before the stall or after the return, no position closed twice, end state equals the web reference) |
+| post-close gate (`lib/post-close.test.ts` on the harness DB) | 29 of 29 |
+| web vitest, full, `REDIS_URL=redis://localhost:6379`, on a scratch DB migrated to the merged HEAD | **2135 passed, 1 skipped, 0 failed** (146 files passed, 1 skipped) |
+| `npx tsc --noEmit` | clean |
+| `npm run build` | passes (`/api/internal/risk-fallback` listed) |
+| mutation check, M1 to M25 (M17-M25 new: idle-gap beats, fallback gating and cache, alert debounce) | **25 of 25 DETECTED**, 0 missed |
+| local 7-path sweep (`sweep-7path.sh`): rust-all seeds 1-3, mixed, WEB-fallback drill, stall drill | **6 of 6 runs PASS, 7 of 7 paths each** (engine-owned runs: 0 web actions) |
+| migrations in order, on a scratch database restored to the pre-merge state | `migrate deploy` applied `20261006120000_credit_and_trading_rights`, `20261007090000_broker_risk_authority`, `20261007100000_risk_engine_heartbeat`, in that order (`finished_at` increasing); `migrate status` up to date |

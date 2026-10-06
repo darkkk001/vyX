@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stage 6 gate: the split harness over every variant and seeds 1-3, then the WEB-fallback drill on seeds 1-3.
+# Stage 6 gate: the split harness over every variant and seeds 1-3, then the WEB-fallback drill and the engine-stall (watchdog) drill on seeds 1-3.
 #
 #   bash scripts/load/run-split-matrix.sh [accounts] [walkers]        (default 100 accounts, 2 walkers)
 #
@@ -29,6 +29,9 @@ for seed in 1 2 3; do
 done
 for seed in 1 2 3; do
   run "seed=$seed DRILL rust-all -> WEB mid-run" --seed "$seed" --accounts "$((N + 50))" --walkers "$K" --variant rust-all --drill
+done
+for seed in 1 2 3; do
+  run "seed=$seed STALL rust-all (engine stalls, web takes over, engine returns)" --seed "$seed" --accounts "$((N + 50))" --walkers "$K" --variant rust-all --stall
 done
 echo
 printf '%s\n' "${RESULTS[@]}"
