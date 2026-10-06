@@ -340,6 +340,12 @@ impl MarginWatch {
                 if asked || !watch.loaded.load(Ordering::Acquire) || (due && market_data::activity::reload_due(&cache, chrono::Utc::now())) {
                     watch.reload(&pool).await;
                     last = Some(tokio::time::Instant::now());
+                    // Stage 6 (cutover gate, owner 2026-10-01): a reload the web ASKED for (a fill, a close, a change it announced)
+                    // may have put a new position in the book that the last tick already moved against: evaluate the
+                    // engine-owned accounts at the latest prices NOW, not on the next flush (or the next 5 s pass)
+                    if asked {
+                        watch.decide_engine_now(&cache, Instant::now());
+                    }
                 }
                 let nap = interval().min(Duration::from_secs(1));
                 asked = tokio::select! {
@@ -350,8 +356,28 @@ impl MarginWatch {
         });
     }
 
+    /// Stage 6: the decision for the ENGINE-OWNED accounts of the current book at the latest tick of every symbol it holds, outside
+    /// a flush: what a fill (or any announced book change) needs to be seen at once. Fires go to the engine's channel exactly as
+    /// `decide` sends them (same damping: an account that just fired does not fire again inside its window); WEB-owned accounts are
+    /// not looked at (their path is the web's hook, unchanged). Nothing without a live engine (set_live).
+    pub fn decide_engine_now(&self, cache: &TickCache, now: Instant) {
+        if self.live.get().is_none() {
+            return;
+        }
+        let book = Arc::clone(&self.book.read().unwrap());
+        let latest: Vec<Tick> = book.by_symbol.keys().filter_map(|s| cache.latest(s).map(|(t, _)| t)).collect();
+        if !latest.is_empty() {
+            let _ = self.decide_with(&latest, cache, now, true);
+        }
+    }
+
     /// The decision, testable with an explicit `now`. Returns the flushed symbols to evaluate.
     pub fn decide(&self, flushed: &[Tick], cache: &TickCache, now: Instant) -> Vec<String> {
+        self.decide_with(flushed, cache, now, false)
+    }
+
+    /// `engine_only` = look at engine-owned accounts only (decide_engine_now).
+    fn decide_with(&self, flushed: &[Tick], cache: &TickCache, now: Instant, engine_only: bool) -> Vec<String> {
         let book = Arc::clone(&self.book.read().unwrap());
         let mut tracks = self.tracks.lock().unwrap();
         let mut seen: HashSet<usize> = HashSet::new();
@@ -363,6 +389,12 @@ impl MarginWatch {
                     continue;
                 }
                 let account = &book.accounts[i];
+                if engine_only {
+                    let engine_owned = self.live.get().is_some_and(|(oracle, _)| book.owners.get(&account.id).is_some_and(|(broker, mode)| oracle.engine_owns(broker, mode)));
+                    if !engine_owned {
+                        continue;
+                    }
+                }
                 let (equity, used) = measure(account, cache);
                 let action = margin::evaluate(equity, used, account.thresholds);
                 let track = tracks.entry(account.id.clone()).or_default();

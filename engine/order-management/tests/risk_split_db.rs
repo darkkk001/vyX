@@ -489,3 +489,64 @@ async fn an_s3_ramp_sends_the_margin_call_notice_from_the_fire_and_stops_out_on_
     assert_eq!(status(&pool, &live_pos[0]).await, "OPEN", "the web account is the web's to stop out");
     cleanup(&pool, &w).await;
 }
+
+/// CUTOVER GATE (docs/RUST-CUTOVER-PLAN.md 6.1, owner 2026-10-01): a position opened just before a gap is not in the trigger's in-memory
+/// book when the gap tick arrives (the book learns of a fill by a reload). In RUST mode the engine used to stop it out only at its next
+/// 5 s pass. Now a reload the web ASKED for (a fill announcement) evaluates the engine-owned accounts at the latest prices at once.
+/// CONTROL: the gap tick alone does not see the new position. Then the announced reload does, without any further tick and without a pass.
+#[tokio::test]
+async fn a_position_opened_just_before_a_gap_is_stopped_out_by_the_engine_on_the_announced_reload() {
+    let Some(pool) = pool().await else { return };
+    let _x = exclusive().await;
+    let mut w = broker_and_symbol(&pool, "RUST", false).await;
+    // a healthy account (balance 1000, leverage 10) with one 1-lot position 100: at the gap (80) it holds 12250 %
+    let (account, first) = add_account(&pool, &w, "LIVE", dec!(1000), None, 1).await;
+    sqlx::query(r#"UPDATE "Account" SET leverage = 10 WHERE id = $1"#).bind(&account).execute(&pool).await.unwrap();
+    w.accounts.push(Acct { id: account.clone(), mode: "LIVE", kind: Kind::MarginCall, position: first[0].clone() });
+
+    let cache = cache_at(&w.symbol_name, dec!(100));
+    let sender = monitor::spawn_live_trigger(pool.clone(), book::PriceSource::Ticks(cache.clone()), None, Arc::new(|| {}));
+    let authority = authority::AuthorityCache::with_rust_brokers(&[(w.broker.as_str(), false)]);
+    let watch = order_management::margin_watch::MarginWatch::new();
+    watch.set_live(authority, sender);
+    // the real reload loop (a long safety interval: only an announced change reloads it): its first load is the book as of before the fill
+    watch.spawn_reload_loop_with(pool.clone(), cache.clone(), Arc::new(|| Duration::from_secs(600)));
+    for _ in 0..200 {
+        if watch.book_symbols().is_some_and(|s| s.contains(&w.symbol_name)) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(watch.book_symbols().is_some_and(|s| s.contains(&w.symbol_name)), "the first load");
+
+    // the fill: 100 lots at 100 (opened after the book was loaded)
+    let tag = Uuid::new_v4().simple().to_string()[..8].to_string();
+    sqlx::query(r#"INSERT INTO "Order" (id, "brokerId", "accountId", "symbolId", side, type, volume, status, "idempotencyKey", "updatedAt") VALUES ($1, $2, $3, $4, 'BUY', 'MARKET', 100, 'FILLED', $1, now())"#)
+        .bind(format!("gap-o-{tag}")).bind(&w.broker).bind(&account).bind(&w.symbol).execute(&pool).await.unwrap();
+    let ticket: i32 = (u32::from_str_radix(&tag[..7], 16).unwrap() % 2_000_000_000) as i32;
+    sqlx::query(r#"INSERT INTO "Position" (id, "brokerId", "accountId", "symbolId", "originOrderId", side, volume, "openPrice", ticket, "openedAt") VALUES ($1, $2, $3, $4, $5, 'BUY', 100, 100, $6, now() + interval '5 seconds')"#)
+        .bind(format!("gap-p-{tag}")).bind(&w.broker).bind(&account).bind(&w.symbol).bind(format!("gap-o-{tag}")).bind(ticket).execute(&pool).await.unwrap();
+
+    // the gap tick: the book does not hold the new position yet, so the tick alone fires nothing (the 2026-10-01 a4 case)
+    cache.set(&tick(&w.symbol_name, dec!(80)), chrono::Utc::now());
+    assert!(watch.decide(&[tick(&w.symbol_name, dec!(80))], &cache, std::time::Instant::now()).is_empty());
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(status(&pool, &format!("gap-p-{tag}")).await, "OPEN", "control: nothing has acted on the gap tick alone");
+
+    // the web announces the fill (book_events -> request_reload): the loop reloads the book and evaluates the engine-owned accounts
+    // at the latest prices at once
+    watch.request_reload();
+    let mut closed = false;
+    for _ in 0..200 {
+        if status(&pool, &format!("gap-p-{tag}")).await == "CLOSED" {
+            closed = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(closed, "the new position was stopped out on the announced reload, with no further tick and no pass");
+    let (close_price,): (Decimal,) = sqlx::query_as(r#"SELECT "closePrice" FROM "Position" WHERE id = $1"#).bind(format!("gap-p-{tag}")).fetch_one(&pool).await.unwrap();
+    assert_eq!(close_price, dec!(80), "at the gap price");
+    // a WEB-owned account in the same situation is not looked at by this path
+    cleanup(&pool, &w).await;
+}

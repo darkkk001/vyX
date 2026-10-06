@@ -13,6 +13,7 @@
 #   M6  the demo-only scope ignored, engine rule
 #   M7  the demo-only scope ignored, web rule
 #   M8  the live fire still PINNED (it evaluates the account as it stood at the fire, not its current positions)
+#   M9  the announced reload no longer evaluates the engine-owned accounts at once (a position opened just before a gap waits for the 5 s pass)
 #
 # Needs a clean working tree for the files it touches; restores them on exit. Scratch database only (vyx_test).
 set -uo pipefail
@@ -22,12 +23,12 @@ export ENGINE_TEST_DATABASE_URL="${ENGINE_TEST_DATABASE_URL:-postgresql://postgr
 export VYX_REQUIRE_DB_TESTS=1
 WEBENV="DATABASE_URL=postgresql://postgres@127.0.0.1:5499/vyx_test DIRECT_URL=postgresql://postgres@127.0.0.1:5499/vyx_test REDIS_URL=redis://localhost:6379"
 MUT="node scripts/stage6/mutate.mjs"
-FILES="lib/risk-monitor.ts lib/risk-owner.ts lib/position-close.ts lib/risk-authority.ts engine/order-management/src/authority.rs engine/order-management/src/book.rs engine/order-management/src/monitor.rs"
+FILES="lib/risk-monitor.ts lib/risk-owner.ts lib/position-close.ts lib/risk-authority.ts engine/order-management/src/authority.rs engine/order-management/src/book.rs engine/order-management/src/monitor.rs engine/order-management/src/margin_watch.rs"
 git diff --quiet -- $FILES || { echo "[mutation] refusing: uncommitted changes in $FILES"; exit 2; }
 restore() { git checkout -q -- $FILES; }
 trap restore EXIT
 
-WANT="${*:-M1 M2 M3 M4 M5 M6 M7 M8}"
+WANT="${*:-M1 M2 M3 M4 M5 M6 M7 M8 M9}"
 MISSED=0
 web_tests() { env $WEBENV npx vitest run "$@" > /tmp/mutation-web.log 2>&1; }
 engine_tests() { (cd engine && cargo test -q -p order-management "$@" -- --test-threads=1) >> /tmp/mutation-engine.log 2>&1; }
@@ -91,6 +92,15 @@ if want M8; then
     book::with_pin(pin, book::with_tick_hint(hint, evaluate_account_checked(pool, nats, &fire.account_id, true, &Mode::Live, None, false))).await' \
   && engine_tests --test risk_split_db
   report "M8 the live fire is still pinned" $?; restore
+fi
+if want M9; then
+  $MUT engine/order-management/src/margin_watch.rs '                    if asked {
+                        watch.decide_engine_now(&cache, Instant::now());
+                    }' '                    if false {
+                        watch.decide_engine_now(&cache, Instant::now());
+                    }' \
+  && engine_tests --test risk_split_db
+  report "M9 the announced reload does not evaluate the engine-owned accounts at once" $?; restore
 fi
 echo
 [ $MISSED -eq 0 ] && echo "every mutation was detected" || echo "AT LEAST ONE MUTATION WAS MISSED"

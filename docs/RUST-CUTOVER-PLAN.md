@@ -1405,6 +1405,10 @@ Per-broker `riskAuthority = WEB | SHADOW | RUST`, read by both sides so exactly 
 first; in RUST mode every web evaluator (cron, hook, backstop, price-feed) skips that broker. Drill:
 flip back to WEB and watch the web take the next stop-out. The Vercel cron stays until then.
 
+**BUILT 2026-10-06 on branch `engine/stage6` (not merged, not deployed, migration not applied): see `docs/STAGE6-PLAN.md`** (the per-account rule
+`riskOwnerOf`, the engine's risk mode, the web skip with an in-transaction handoff check, the split and drill harnesses, the runbook, the gates split into
+blockers for RISK authority vs ORDERS-only). Per-broker values are `WEB | RUST` plus `riskAuthorityDemoOnly` (the SHADOW value became the engine's shadow mode).
+
 #### 6.1 Cutover gates (must hold before a broker goes RUST)
 
 - **CUTOVER GATE (owner, 2026-10-05): swap-free.** The engine's swap charge (`engine/order-management/src/swap.rs`
@@ -1412,14 +1416,14 @@ flip back to WEB and watch the web take the next stop-out. The Vercel cron stays
   swap-free account would be charged. Today the web's nightly `lib/swap-rollover.ts` resolves swap-free (account >
   group, only when `Broker.pricingEngineEnabled`; after the next backoffice batch: the group alone, owner S1). Either the
   engine resolves swap-free exactly like the web, or swap rollover stays on the web for RUST brokers. Gate test: a
-  swap-free group's position pays 0 at rollover in RUST mode; a non-swap-free one pays the symbol rate. NOT BUILT.
+  swap-free group's position pays 0 at rollover in RUST mode; a non-swap-free one pays the symbol rate. NOT BUILT. **Stage 6 risk mode does not start the swap roller, so this gate applies only when the engine handles ORDERS (STAGE6-PLAN section 10).**
 - **CUTOVER GATE (owner, 2026-10-05): group volume limits.** The engine checks only the symbol's volume range
   (`engine/order-management/src/lib.rs` -> `engine/risk/src/lib.rs`); it does not check `Group.maxLotSize`, nor the new
   group minimum volume (next backoffice batch, owner S3: effective min = max(symbol min, group min), on the symbol's
   lot-step grid). The web checks the max at 6 places (client order, requote accept, pending trigger, dealer accept, desk
   flush, staff open: `lib/risk.ts checkGroupMaxLot`). Either the engine enforces both at every open path, or those paths
   stay on the web for RUST brokers. Gate test: an order above the group max / below the group min is refused by the
-  engine with the same code as the web. NOT BUILT.
+  engine with the same code as the web. NOT BUILT. **Stage 6 risk mode places and fills no order (the resting-order fill stays the web's routine), so this gate applies only when the engine handles ORDERS (STAGE6-PLAN section 10).**
 
 - **Margin-trigger fires evaluated by the engine, unpinned and live (owner, 2026-09-29).** Today a margin-trigger fire
   (market_data::risk_hook::after_flush -> MarginWatch::decide) only calls the web's `margin-monitor?symbols=` route and
@@ -1427,10 +1431,11 @@ flip back to WEB and watch the web take the next stop-out. The Vercel cron stays
   margin-call notice (and the stop-out) would wait for the engine's next 4 s pass. In RUST mode every fire must route to
   the engine's own `evaluate_account` in Mode::Live, UNPINNED (live read, the `marginCallNotifiedAt` edge and
   `apply_margin_call_edge` -> outbox), so the notice goes out on the tick. Gate test: an S3-shaped ramp in RUST mode
-  sends the margin-call notice from the fire (not the pass) and stops out on the crossing tick. NOT BUILT.
+  sends the margin-call notice from the fire (not the pass) and stops out on the crossing tick. **BUILT on `engine/stage6`:** `risk_split_db::an_s3_ramp_sends_the_margin_call_notice_from_the_fire_and_stops_out_on_the_crossing_tick`; SL / TP touches and resting-order crossings take the same route (`LiveFire`).
 - Open question before cutover (owner, 2026-09-29): the hook's 1 s per-symbol limit on web calls (after_flush
   `last_fired`). A margin-call fire and a stop-out fire on the same symbol less than 1 s apart make ONE web call; the
   shadow is unaffected (the fire is sent before the limit). What it means in RUST mode depends on the route above.
+  **Answered on `engine/stage6`:** engine-owned accounts never go through that web call. Margin fires (stop-out and margin-call edge) go to the engine's channel with their own damping (stop-out backoff, 5 s edge window) and no 1 s limit; SL / TP touches are limited per (account, symbol) to one a second, the same granularity the web call had per symbol.
 - **CUTOVER GATE (owner, 2026-10-01; was a non-blocking follow-up since 2026-09-29): evaluate an account on its own
   fill event / put the new position in the trigger's book immediately.** Evidence 2026-10-01: S2 07:00 UTC, 49990004 (a4)
   BUY 1.99 vIDX opened 07:00:04.129, stopped out by the web at 07:00:10.871 at 19680 (level 45.48 %) on the jump tick;
