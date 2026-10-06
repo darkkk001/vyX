@@ -8,6 +8,17 @@ The order is fixed: **pre-checks, migration, web, engine (shadow), flip, watch, 
 The migration must precede the web (the web's Prisma client reads every `Broker` column), and the web must precede the engine (an engine in
 risk mode with a web that still acts on everything would double-act).
 
+**The order, explicit (updated 2026-10-07 after the merge of `newrepo/main`; nothing may be reordered):**
+
+1. **Migration `20261007090000_broker_risk_authority`** (`riskAuthority`, `riskAuthorityDemoOnly`).
+2. **Migration `20261007100000_risk_engine_heartbeat`** (the heartbeat table). Both with `prisma migrate deploy` (section 2): `migrate status` FIRST (it must list them, after main's `20261006120000_credit_and_trading_rights` if that one is still pending), BOTH `DATABASE_URL` and `DIRECT_URL` set to the live database, never `migrate dev`. Prisma applies pending migrations in timestamp order, so 1 then 2 is guaranteed; 2.3 proves it from `_prisma_migrations`.
+3. **Web** (section 3): merge, push, Vercel Ready. This ships the 5-minute margin-monitor cron unchanged AND the new 1-minute `risk-fallback` cron, and the ops alert (needs `OPS_ALERT_EMAIL`, 3.1).
+4. **Engine on the VPS, still shadow** (section 4).
+5. **Live bot sweep** (5.3 / 10.2): zzshadowbot, the 7 paths, on the exact build.
+6. **The flip** (5.4): Futurix RUST + demo-only.
+
+Verification of the 1-minute fallback cron and of the stale-heartbeat alert is part of 3.3 (the cron is registered and cheap), 6 (what to watch) and 7.B (the alert fires on the drill and recovers).
+
 | Step | Where | What | Undo |
 |---|---|---|---|
 | 1 | read-only | pre-checks: soak gate, migration status, engine version | nothing to undo |
@@ -120,7 +131,10 @@ if ($env:DATABASE_URL -notmatch 'ep-morning-glade' -or $env:DIRECT_URL -notmatch
 "BOTH set, both ep-morning-glade: $([bool]$env:DATABASE_URL) $([bool]$env:DIRECT_URL)"
 ```
 
-### 2.2 Deploy
+### 2.2 Status first, then deploy
+
+`migrate status` BEFORE `migrate deploy`, every time: it must list exactly the pending migrations you expect (the two above, plus `20261006120000_credit_and_trading_rights` only if main's release has not reached this database yet) and report nothing "not found locally" or failed.
+If it lists anything else, STOP.
 
 The checkout must contain the two migration folders (they come with the merge of step 3 if you merge first; for the migration alone, check out `engine/stage6` in a separate worktree, **never** in a checkout with uncommitted work):
 
@@ -129,6 +143,7 @@ git fetch newrepo
 git worktree add D:\vyx-stage6-migrate newrepo/engine/stage6 --detach
 cd D:\vyx-stage6-migrate
 npm ci
+npx prisma migrate status      # first: the pending list must be what 2 says
 npx prisma migrate deploy
 ```
 
@@ -145,6 +160,15 @@ SELECT t.typname, string_agg(e.enumlabel, ',' ORDER BY e.enumsortorder) FROM pg_
 '@
 $q | psql -X -q -d $Live
 ```
+
+```powershell
+@'
+SELECT migration_name, finished_at FROM _prisma_migrations WHERE migration_name >= '20261006' ORDER BY finished_at, migration_name;
+'@ | psql -X -q -d $Live
+```
+
+**Verify the order:** `20261006120000_credit_and_trading_rights` (if it was pending) then `20261007090000_broker_risk_authority` then `20261007100000_risk_engine_heartbeat`, `finished_at` increasing, none with a null `finished_at`.
+(Proven on a scratch database in the Stage 6 verification record: plan section 13.2.)
 
 **Verify:** every broker row reads `WEB | t`; one heartbeat row `risk` with `beatAt = 1970-01-01` and `staleAfterSecs = 30` (born stale: nobody counts an engine as alive yet); the enum is `WEB,RUST`.
 `migrate status` says up to date. The old web and the old engine keep working (check `https://<web>/api/trade/prices` or the site as usual).
@@ -185,7 +209,10 @@ $PostCloseSecret | npx vercel env add POST_CLOSE_SECRET production
 "length $($PostCloseSecret.Length)"      # 48; keep this shell open until 5.2, or store the value in the owner's password manager now
 ```
 
-If it already exists, you must be able to give the VPS the same value in 5.2; if you cannot, remove and re-add it here with a new value (and the engine gets that one).
+Also needed (the stale-heartbeat alert of plan section 14.3 goes here, ops only, never to a broker): `npx vercel env ls production | Select-String 'OPS_ALERT_EMAIL'` must show it
+(the Caddy check already uses it). Without it the alert is logged and not e-mailed.
+
+If `POST_CLOSE_SECRET` already exists, you must be able to give the VPS the same value in 5.2; if you cannot, remove and re-add it here with a new value (and the engine gets that one).
 
 ### 3.2 Merge
 
@@ -217,6 +244,8 @@ foreach ($p in '/api/internal/pending-trigger', '/api/internal/post-close') { "$
 ```
 
 **Verify:** the deployment is `Ready` and built from `<MERGE>`; `/api/internal/pending-trigger` answers **401** (the new route exists and wants its bearer), `/api/internal/post-close` answers 401/405 (not 404/500). Within 5 minutes the cron `margin-monitor` shows `200` in `npx vercel logs <deployment-url>`.
+**The 1-minute fallback cron:** Vercel project, Settings, Cron Jobs must list `/api/internal/risk-fallback` with `* * * * *` next to `/api/internal/margin-monitor` `*/5 * * * *`. (Vercel allows a 1-minute cron on the Pro plan; the existing `*/5` entries show the project is not on Hobby, where only daily crons deploy.)
+Within 2 minutes `npx vercel logs <deployment-url>` shows `GET /api/internal/risk-fallback 200` once a minute. With no broker RUST yet it must return at once and cost no database read (it answers "no broker is on the engine"), and over a quiet weekend it returns at the idle gate before any database read.
 The site works (login page loads, a trader can see prices). Check the migration-first rule held: no `riskAuthority` errors in the logs (`npx vercel logs <deployment-url> | Select-String 'riskAuthority|risk-owner'` returns nothing).
 
 ## 4. Engine deploy on the VPS (shadow mode, risk mode NOT active)
@@ -409,6 +438,8 @@ Margin calls of engine-owned accounts arrive as `MARGIN_CALL` / `MARGIN_CALL_CLE
 | web still healthy | `npx vercel logs <deployment-url>`: `margin-monitor` 200 every 5 min, no `risk-owner` errors | |
 | margin calls | the `MARGIN_CALL` rows and the demo trader's notification | one call per episode, one "over" notice |
 | the engine's own view | log lines `risk authority: N broker(s)`, `idle gate:` | |
+| the 1-minute fallback | Vercel log `risk-fallback`: 200 every minute | while the heartbeat is fresh it answers "engine heartbeat fresh" and runs no pass; a `ran: true` line means the engine was counted as down at that minute |
+| the ops alert | the ops mailbox (`OPS_ALERT_EMAIL`) | silence while healthy; ONE "Risk engine heartbeat is STALE" mail per outage and ONE "back" mail after a minute of fresh beats; never any broker notification |
 
 **How long:** the whole first trading day closely; then a full trading week of demo that includes a Friday close and the Sunday reopen, before step 9 is even discussed. **Failure signs, any one of which means: set the broker back to WEB (8), keep the evidence, tell me:**
 a duplicate `TRADE_PNL`; a close by the wrong side; a `DEAD` follow-up; a position that stayed open while its price was past its SL / stop-out for more than a few seconds (backoffice Risk Radar); `RISK MODE REFUSED` or `risk heartbeat: beat failed` in the log; a heartbeat older than 60 s during market hours with a position held.
@@ -464,7 +495,11 @@ Remove-Item C:\vyxtrader\risk-heartbeat.pause
    Within a few seconds the heartbeat `age` drops (the timer beats again while the idle gate is open; a fire or a pass touches it) and the ownership query says `ENGINE` again.
 6. **No duplicate after the return:** open a SECOND drill position with a tight SL: it is closed by the **engine** (`closed_by = ENGINE`, a `PostCloseEffect` row, delivered `DONE`), and the duplicate query still returns no rows. Both sides handled one stop-out each, once.
 
-**PASS** = steps 3, 4 and 6 hold. **FAIL** (any duplicate, an engine close while stale, a stop-out nobody closed for more than ~40 s after the touch) = set the broker WEB (8) and tell me.
+7. **The ops alert (plan 14.3):** the web evaluates the heartbeat once a minute while a broker is RUST and trading is active. After the pause file has held the heartbeat stale for two consecutive minute-checks (about 2 minutes) exactly ONE mail arrives at `OPS_ALERT_EMAIL`, subject "Risk engine heartbeat is STALE: the web has taken over"; no second mail while it stays stale; the broker's backoffice shows nothing new.
+   After step 5 (the file removed) a minute of fresh checks later exactly ONE "Risk engine heartbeat is back" mail arrives. A pause shorter than 2 minutes raises nothing (debounce).
+8. **The 1-minute fallback in the same drill:** the Vercel log shows `risk-fallback` answering `ran: true` while the heartbeat is stale (that pass is what took the stop-out in step 3 if the touch came between two backstop calls) and `skipped: engine heartbeat fresh` after the return.
+
+**PASS** = steps 3, 4, 6, 7 and 8 hold. **FAIL** (any duplicate, an engine close while stale, a stop-out nobody closed for more than ~40 s after the touch) = set the broker WEB (8) and tell me.
 
 Latency note, honestly: the web's fallback reaches the account at the next web risk evaluation. While the engine's process is alive that is the engine's own 5 s backstop calling the web's full pass (as in this drill). If the whole engine
 process is dead, its backstop is dead too and the only web trigger left is the Vercel cron (every 5 minutes), and its price feed is dead as well (the engine hosts the price ingest, so no fresh price reaches anyone). See plan section 14.

@@ -914,3 +914,27 @@ async fn an_idle_gap_with_nothing_to_do_acts_on_nothing_on_either_side_and_owner
     assert_eq!(count(&pool, r#"SELECT count(*) FROM "PostCloseEffect" WHERE "accountId" = $1"#, &account).await, 0);
     cleanup(&pool, &w).await;
 }
+
+/// The credit / trading-rights batch (Account.tradingRights, account status) and the group minimum volume gate sit on the OPEN paths. The engine
+/// has no such gate on its risk path: a stop-out closes a READ_ONLY / SUSPENDED / CLOSED account's positions, below the group minimum or not.
+#[tokio::test]
+async fn risk_closes_ignore_trading_rights_status_and_the_group_minimum_volume() {
+    let Some(pool) = pool().await else { return };
+    let _x = exclusive(&pool).await;
+    let mut w = broker_and_symbol(&pool, "RUST", false).await;
+    sqlx::query(r#"UPDATE "Group" SET "minLotSize" = 5 WHERE id = $1"#).bind(&w.group).execute(&pool).await.unwrap();
+    let cache = cache_at(&w.symbol_name, dec!(90));
+    for (rights, status) in [("READ_ONLY", "SUSPENDED"), ("CLOSE_ONLY", "ACTIVE"), ("READ_ONLY", "CLOSED")] {
+        let (account, positions) = add_account(&pool, &w, "LIVE", dec!(20), None, 1).await;
+        sqlx::query(r#"UPDATE "Account" SET "tradingRights" = $2::"TradingRights", status = $3::"AccountStatus" WHERE id = $1"#).bind(&account).bind(rights).bind(status).execute(&pool).await.unwrap();
+        w.accounts.push(Acct { id: account.clone(), mode: "LIVE", kind: Kind::StopOut, position: positions[0].clone() });
+        let r = book::with_price_source(book::PriceSource::Ticks(cache.clone()), monitor::evaluate_account(&pool, None, &account)).await.unwrap().unwrap();
+        assert!(!r.not_owner && !r.closed.is_empty(), "{rights} {status}: the engine stops the account out: {r:?}");
+        assert_eq!(status_of(&pool, &positions[0]).await, "CLOSED");
+    }
+    cleanup(&pool, &w).await;
+}
+
+async fn status_of(pool: &PgPool, position: &str) -> String {
+    status(pool, position).await
+}

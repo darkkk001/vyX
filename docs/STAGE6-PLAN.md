@@ -483,6 +483,62 @@ Commits on `engine/stage6` (pushed to `newrepo` after each): `ad778c9` web skip 
 
 **Gate list entry.** The watchdog is a HARD GATE for `riskAuthorityDemoOnly = false` (section 10 and runbook section 9). The demo phase may be watched by hand.
 
+### 14.1 Owner decision (a): the heartbeat beats only while trading is active; what an idle gap does (2026-10-07)
+
+**Decision.** Unchanged behaviour: the timer beats only while the idle gate is open; a quiet market lets the heartbeat go stale on purpose and Neon sleep. This section proves that the idle gap, and the first tick after it, can never act twice or miss an action.
+
+**The idle gap itself.** While idle (no fresh tick on anything the book holds) nothing can be decided by either side: every SL / TP, stop-out and pending trigger needs a price at most 15 s old. The heartbeat is stale, so the web counts as owner of the RUST accounts, and nothing happens because nothing can move. Test: `an_idle_gap_with_nothing_to_do_acts_on_nothing_on_either_side_and_ownership_returns_with_the_first_beat` (three stale/beat cycles over a healthy account: no close, no outbox row, no margin-call edge).
+
+**The first tick after the idle gap.**
+
+| Claim | How it holds | Test |
+|---|---|---|
+| the first FIRE restores RUST ownership BEFORE it evaluates, within the same batch | `spawn_live_trigger` calls `authority::touch` before it builds the batch; the evaluation then reads a fresh heartbeat | `the_first_fire_after_an_idle_gap_beats_before_it_evaluates_and_acts_as_the_owner`: heartbeat two days old, a gapped stop-out, every close is the engine's, `beatAt` is not later than the first close, every action traced RUST, one `TRADE_PNL` per position |
+| the first PASS does the same | `spawn_risk_passes` touches before `run_pass_guarded` lists the engine's accounts, so the stale heartbeat never hides them | `the_first_pass_after_an_idle_gap_beats_before_it_lists_and_acts_as_the_owner` |
+| a web pass at that very moment cannot double-act | the in-transaction check: the web reads the heartbeat `FOR SHARE` inside its acting transaction, after locking the account; the engine's beat (an UPDATE of that row) waits for it; the account lock totally orders the two sides' actions; a position's status-and-volume guard stands underneath | `weekend_gap_the_engine_fire_and_a_web_pass_race_and_exactly_one_side_acts_once`: heartbeat two days old, three positions gapped through a stop-out plus an account in the margin-call band, the web's closes and the engine's fire started at 8 different relative offsets (0 to 80 ms): over the 8 rounds the web closed first in 7 and the engine in 1; in every round exactly one `TRADE_PNL` per position, never two actions on one position, the account fully closed, and exactly one margin-call outbox row |
+| the web's own real code does it too | the real web evaluation, stale heartbeat, RUST broker | `lib/risk-watchdog.test.ts`, `lib/risk-fallback.test.ts` (stale: the web stops the account out exactly once, a second pass finds nothing), and `run-split.sh --stall` |
+
+**Weekend gap, said plainly.** Positions held over the weekend, heartbeat stale since Friday, first Sunday tick gaps through stop-outs. Whichever side's transaction takes the account lock first reads the heartbeat in that transaction: the engine's `touch` has committed a fresh beat only if it ran first. Either way there is exactly one actor per position, and what the first actor leaves is what the second reads (the engine re-reads the book for every evaluation, the web's `closePositionInTx` guards on status and volume). The weekend race test above is that scenario.
+
+**Is there a flapping hazard? No harmful one found.** Looked for: (1) a beat that fails or is rate-limited while the DB row is stale: `touch` skips only when THIS process committed a beat in the last second, and only this process writes the row (the tests wait that second out; the drill file bypasses beats entirely and can only move ownership toward the WEB); (2) the idle gate closing for a few seconds in an active market: the heartbeat window is 30 s and the gate needs no fresh tick for 15 s, so a gate gap shorter than 15 s never even approaches the window, and a longer one is a market in which nothing can be decided; (3) a fire arriving at a RUST broker's account while the heartbeat is stale: it is routed to the engine, which touches first; (4) the web's cron firing in the first milliseconds after a reopen: harmless, proven by the race test (the web may act, once, on what the engine would have decided identically). The only cost of the design is the one stated in section 14 (finding 3): the web may evaluate a RUST account in the first moments after a reopen. No code change was needed. If the owner prefers a heartbeat that never goes stale, that is open decision 6 (it keeps Neon awake all weekend).
+
+Mutation checks: M17 (the fire worker does not beat first) and M18 (the pass does not beat first) are both DETECTED by the two first-tick tests.
+
+### 14.2 Owner decision (b): the web fallback every minute while any broker is RUST (2026-10-07)
+
+**Built.** A second Vercel cron, `/api/internal/risk-fallback`, schedule `* * * * *` (`vercel.json`). The 5-minute `margin-monitor` cron is unchanged and is the only schedule for WEB-only operation (its body moved to `lib/margin-pass.ts`, one function used by both routes; behaviour identical).
+
+The fallback is a no-op unless all three hold, checked in this order so Neon is not woken for nothing:
+
+1. **Trading is active**: the engine's own book gate over HTTP (`marginPassGate`, no database). "Closed" returns immediately, no database read. An unreadable engine counts as active (that is when the fallback matters most).
+2. **At least one broker is RUST**: `lib/risk-fallback.ts anyBrokerRust`, an indexed `SELECT 1 FROM "Broker" WHERE "riskAuthority" = 'RUST' LIMIT 1`, cached per server instance (120 s while the answer is "none", 30 s while it is "some"). A flip to RUST is therefore noticed within 2 minutes at worst, and the engine is the primary owner anyway: the fallback only has work when the engine is already failing.
+3. **The engine's heartbeat is stale** (one row, database clock). Fresh = the engine acts; the web's other triggers (the engine's 5 s backstop, the 5-minute cron) cover the accounts the web owns. Stale = the web runs the full pass (`runFullMarginPass`; the owner prefilter inside it makes every RUST account WEB-owned for that pass).
+
+**Neon trade-off, stated.** A quiet market (weekend, feed down while the engine answers) costs no database read: step 1 returns. While trading is active and NO broker is RUST the cost is one indexed read per warm instance per 2 minutes (the database is awake in that period anyway: the engine's shadow reads it every pass, the hook calls and the 5-minute cron too). While a broker is RUST and the market is active the engine's own beats keep Neon awake, and the fallback adds one single-row read per minute. The fallback cannot hold Neon open by itself. Residual cost to accept: a serverless invocation every minute (Vercel cost, not Neon); the 5-minute cron stays as the floor if the owner wants to cut it.
+
+**Vercel cron frequency.** `vercel.json` already carries `*/5 * * * *`, and Vercel's Hobby plan only deploys crons that run once a day, so this project is on a plan that allows sub-daily crons (Pro: down to every minute, 40 cron jobs per project). `* * * * *` is the Pro minimum. The repo cannot show the plan itself: confirm in the Vercel dashboard (Settings, Cron Jobs) after the deploy (runbook 3.3). `maxDuration` is 15 s.
+
+**Where the fallback is slower than the engine's backstop.** With a live engine process the engine's own backstop calls the web's pass every 5 s; the 1-minute cron is the floor under it when the process is dead (and then prices are dead too). Worst case from heartbeat stale to a web action, process dead: N (30 s) plus up to a minute of cron phase.
+
+Tests: `lib/risk-fallback.test.ts` (8): the secret; idle market = zero database reads; no RUST broker = no pass and a cached answer (the second call reads nothing); the cache expiry both ways; fresh heartbeat = no pass; stale heartbeat = the web stops the account out exactly once and a second call does nothing more; an unreadable engine still runs the fallback; the ops alert end to end. Mutations M19 (pass despite a fresh heartbeat), M20 (idle gate ignored), M21 (no cache) are DETECTED.
+
+### 14.3 Owner decision (c): the stale-heartbeat alert, super-admin only (2026-10-07)
+
+**Channel.** The existing ops mechanism: `OPS_ALERT_EMAIL` through `sendPlatformEmail`, the one the Caddy health check already uses (`lib/infra-health.ts`). It is NOT the broker notification path (`prisma.notification`, used by the price-source alert): brokers never see infrastructure, and a test asserts the alert code writes no `Notification` row and never calls the notification helpers. State is in Redis (shared by every serverless instance), the transitions are single atomic commands (`lib/risk-engine-alert.ts`).
+
+**Rule.** Evaluated once a minute by the fallback route, only when at least one broker is RUST AND trading is active (the idle gate is open or unreadable; a stale heartbeat over a weekend raises nothing).
+
+| Event | Condition | Sent |
+|---|---|---|
+| alert | stale (older than the row's own `staleAfterSecs`, N = 30 s) on 2 consecutive checks, and not inside the 10-minute cooldown after a recovery | ONE mail "Risk engine heartbeat is STALE: the web has taken over"; the incident is "open", nothing more is sent however long it lasts |
+| recovery | while open, fresh on checks spanning 60 s | ONE mail "Risk engine heartbeat is back"; the incident closes and the cooldown starts |
+| flapping | a stale check between fresh ones restarts the recovery clock; a new outage inside the cooldown waits and alerts when it persists | no spam, no lost persistent outage |
+| idle market | `active` false | nothing counts, nothing opens or closes (an open incident stays open) |
+| no broker RUST | flipped back to WEB | counters cleared, an open incident cleared silently |
+| mail fails | | the state is left as before, the next check retries |
+
+Tests: `lib/risk-engine-alert.test.ts` (9) plus the end-to-end case in `lib/risk-fallback.test.ts`; mutations M22 (no debounce), M23 (idle counted), M24 (recovery without the fresh minute), M25 (one mail per stale check) are DETECTED. The drill (runbook 7.B steps 7 and 8) proves it on the live system.
+
 ## 15. Could the shadow run alongside risk mode for WEB-owned accounts? (answer (a): how, and what it would cost; not built)
 
 **Yes, in principle.** Today the modes are exclusive: `ENGINE_ORDER_MANAGEMENT=risk` takes one branch of `server/src/main.rs` and `shadow` another, and the shadow refuses to start when the post-close variables are set (a guard so a shadow can never deliver).
@@ -516,3 +572,15 @@ The marker is `VYX_RISK_FLIP_INTENT=<broker subdomain>:<YYYY-MM-DD>` (who is bei
 | full web vitest, `tsc --noEmit`, mutation check M1-M16 | still running when this was written; M10-M16 were run on their own earlier and all DETECTED (see section 14); the web watchdog tests, the 4 split suites and `tsc` passed individually |
 | `npm run build` | not yet run on the final commit |
 | local 7-path sweep (`scripts/stage6/sweep-7path.sh`) | rust-all seeds 1-3: all 7 paths taken by the engine, 0 web actions, PASS; mixed, WEB-fallback drill, stall drill: end state equals reference, every path covered by either side (the first full run failed only on an over-strict per-path rule in the drill run, fixed with `--either`; rerun on the final commit pending) |
+
+## 17. The merge of `newrepo/main` into `engine/stage6` (2026-10-07)
+
+`newrepo/main` was 23 commits ahead (steps 1 to 3, the credit / trading-rights migration `20261006120000`, group minimum volume, the backoffice and terminal 1.0.63 feeds). One conflict, in `docs/RUST-CUTOVER-PLAN.md` (both sides edited the group-volume gate paragraph: both kept). Everything else merged cleanly.
+
+**Migration order.** Main's `20261006090000_book_pnl_group_min_volume` and `20261006120000_credit_and_trading_rights` sort before this branch's `20261007090000_broker_risk_authority` and `20261007100000_risk_engine_heartbeat`; all are idempotent. Proven on a scratch database restored to the pre-merge state (13.2): `migrate deploy` applied the three pending ones in exactly that order.
+
+**Trading rights, status and group minimum volume against the RUST / WEB split.**
+
+* They are gates on the OPEN paths only (client order, requote accept, pending trigger, dealer accept, desk flush, admin open, copy-rule open, reverse). They run inside the shared open functions, after the ownership claim where there is one (the pending-trigger claim `assertRiskActorInTx`), so they are owner-agnostic: the same refusal whether the broker is WEB or RUST, and the engine places and fills no order in risk mode (the resting-order fill stays the web's routine, so the engine needs no copy of these gates).
+* **Risk closes are never blocked by them.** `lib/risk.ts` says so (staff closes and the automatic actions never call `checkAccountTradingRights`); proven by `lib/risk-closes-ignore-rights.test.ts` (a stop-out closes a READ_ONLY + SUSPENDED or CLOSE_ONLY + ACTIVE account of a WEB broker and, with a dead engine, a READ_ONLY + CLOSED or SUSPENDED account of a RUST broker, below the group minimum volume; the open gates still refuse the same accounts; a source guard that `lib/risk-monitor.ts` and `lib/position-close.ts` never call them) and its engine twin `risk_closes_ignore_trading_rights_status_and_the_group_minimum_volume` (engine stop-out of READ_ONLY / SUSPENDED / CLOSED accounts, group minimum 5 lots, position of 1 lot).
+* `Position.groupCategoryAtOpen` (trigger-stamped): the engine's risk path inserts no position, so the cutover gate "engine opens carry the group category" stays as logged in `docs/RUST-CUTOVER-PLAN.md` 6.1 (NOT BUILT, only relevant once the engine opens positions).
