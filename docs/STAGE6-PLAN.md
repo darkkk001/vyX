@@ -4,6 +4,8 @@ _Written 2026-10-06 on branch `engine/stage6` (worktree `D:\vyx-stage6`). Everyt
 NOT merged to main, NOT deployed (VPS or Vercel), the migration NOT applied to any production or Neon database (scratch Postgres
 `127.0.0.1:5499` only). The owner reviews this document and the diffs first._
 
+_Updated 2026-10-06 with the owner's review answers (a) to (e): the engine-down watchdog is built and is a HARD GATE before `riskAuthorityDemoOnly = false` (section 14), the shadow-alongside question is answered (section 15), the startup flip marker is built (section 16). The exact Futurix procedure, in order, with copy-paste commands and a check after every step, is `docs/STAGE6-RUNBOOK-FUTURIX-DEMO.md`._
+
 What "authoritative for risk" means here: for the accounts the per-broker rule assigns to RUST, the **engine** decides and acts on
 SL / TP touches, margin calls (the notice), stop-outs and the trigger of resting orders; the **web** does none of those for them.
 For every other account nothing changes, byte for byte.
@@ -31,6 +33,8 @@ of the run). Eight mutations that break a safeguard are each caught.
 | 5 | Flip during a pass never double-acts or misses; handoff defined | built + proven | section 6 |
 | 6 | Cross-account effects follow the account that set them off | stated + tested | section 5 |
 | 7 | WEB-fallback drill as a test, under load | built + passed | section 8.3, runbook section 9 |
+| 8 | **Engine-down watchdog**: a heartbeat; stale = every RUST account is WEB on both sides, re-checked inside every acting transaction | built + proven (HARD GATE for demo-only off) | section 14 |
+| 9 | Startup WARNING when a live mode is set without a flip marker | built + tested | section 16 |
 
 The owner's flip sequence the build is designed for:
 
@@ -241,6 +245,8 @@ exactly-once holds (a position closed in the flip window was closed by exactly o
 
 Everything is `psql` against the live database as the owner. Replace `<S>` with the broker's subdomain. NOTHING here has been run on production.
 
+**The exact Futurix procedure, in order, with a verification after each step, an audited flip and the engine-down drills, is `docs/STAGE6-RUNBOOK-FUTURIX-DEMO.md`; this section is the generic form.** One difference since the first draft: ownership now also needs a LIVE engine (section 14), so the ownership query of 9.1 should be read with the heartbeat counted (the runbook's 5.4 query does).
+
 ### 9.0 Before the first flip (read only)
 
 ```sql
@@ -343,6 +349,15 @@ Returning to RUST afterwards is the 9.1 / 9.3 statement again.
 | fill-event evaluation: a position opened just before a gap is stopped out at once (the 2026-10-01 owner gate) | built here (`MarginWatch::decide_engine_now`, test `risk_split_db::a_position_opened_just_before_a_gap...`, mutation M9) | in RUST mode nobody else would catch it before the engine's next 5 s pass: the web skips the account |
 | torn-read-safe snapshot, flap damping of margin-call edges, tick price source, FX age limit, idle gate | already deployed | the engine's decisions must equal the web's |
 | soak: 7 clean days, 2 weekend reopens (the 2nd is Sun 2026-10-11 21:00-22:00 UTC), 1 NFP, then the final 7-scenario sweep on the exact cutover build | the owner's gate, unchanged | evidence |
+| the heartbeat table (migration `20261007100000_risk_engine_heartbeat`) and the engine's write privilege on it | deploy step (runbook 2.4) | without a heartbeat nobody counts the engine as alive: every account is WEB. Risk mode refuses to start without the privilege |
+
+### Hard gate before `riskAuthorityDemoOnly = false` (the owner's answer (b), 2026-10-06)
+
+| Gate | Status | Reason |
+|---|---|---|
+| **Engine-down watchdog**: heartbeat row, stale = WEB on both sides, in-transaction re-check on both sides | **built here** (section 14) | with a broker on RUST and the engine unable to act, nobody would act on its accounts. The demo phase may use manual monitoring; the LIVE accounts may not |
+| the watchdog drill passed on the live system in demo (runbook 7.B) | runbook | proof on the real deployment, not only on scratch |
+| a full trading week of demo clean, the final sweep clean (runbook 9) | runbook | evidence |
 
 ### Needed only when the engine handles ORDERS (NOT in Stage 6: these paths stay on the web)
 
@@ -361,7 +376,7 @@ Returning to RUST afterwards is the 9.1 / 9.3 statement again.
 
 Deploy order (after the soak gate, not before):
 
-1. **Migration** `20261007090000_broker_risk_authority` (additive, idempotent, every broker defaults to WEB and demo-only: it changes nothing by itself; it must precede the web), with
+1. **Migrations** `20261007090000_broker_risk_authority` and `20261007100000_risk_engine_heartbeat` (both additive and idempotent; every broker defaults to WEB and demo-only and the heartbeat row is born stale: they change nothing by themselves; they must precede the web), with
    `prisma migrate deploy` and BOTH `DATABASE_URL` and `DIRECT_URL` set to the live database (never `migrate dev`). Then the one-line grants of `deploy/neon-shadow-readonly.sql` for the
    shadow role if the shadow keeps running elsewhere.
 2. **Web** (Vercel, main): the web with the skip and the in-transaction check. **The migration MUST be applied first**: the generated Prisma client selects every `Broker` column
@@ -392,16 +407,16 @@ Found and fixed while building (all additive, none touches a WEB-owned account):
 
 Open decisions (none blocks the build; each changes the deploy):
 
-1. **Shadow beside risk mode.** Risk mode replaces the shadow in the process. To keep soaking the WEB-owned (LIVE) accounts after the first flip, the shadow would have to run next to
-   risk mode and evaluate only WEB-owned accounts (it refuses today when the post-close variables are set, a guard that exists so a shadow can never deliver). Not built; say if you want it before step 1.
-2. **Engine liveness watchdog.** With a broker on RUST and the engine down, nobody acts on its accounts until the owner flips to WEB (an automatic flip by the web would be unsafe while the
-   engine might still be alive and acting, which is the double-action case). Proposed instead: an alert (not an action) when RUST accounts hold open positions and the engine
-   has not heartbeat for N seconds. Not built.
+1. **Shadow beside risk mode: answered (a), accepted for now** (risk mode replaces the shadow; the bot sweep is the regression check). The "could it run alongside" question is section 15. Not built.
+2. **Engine liveness watchdog: built (answer (b)).** Not an alert but an automatic fallback to the web, made safe by checking the heartbeat inside every acting transaction (the objection recorded in the first draft, that an automatic flip while the engine might still be alive is the double-action case, is what the in-transaction check closes). Section 14.
 3. **Resting-order fills for engine-owned accounts stay web code** (the engine decides WHEN, the web's routine decides WHETHER), because the fill is an order action with every order gate. Porting
    the fill to Rust is the ORDERS stage; say if you want it earlier.
 4. **Cascades across sides** are not in the web's id order (section 5). If a broker ever configures a mirror or coverage chain whose accounts sit on different sides, the result can differ from the web-only
    result in the order-dependent cases (never in the exactly-once invariants). The product answer is to keep a chain on one side (same broker authority AND the same account mode).
-5. The legacy `ENGINE_ORDER_MANAGEMENT=1` mode now also enforces ownership (it would otherwise act on every account it is handed). It acts on nothing until a broker is RUST.
+5. The legacy `ENGINE_ORDER_MANAGEMENT=1` mode now also enforces ownership (it would otherwise act on every account it is handed). It acts on nothing until a broker is RUST, and (answer (e)) it logs the flip-marker WARNING like `risk`. It never writes a heartbeat, so with a RUST broker it counts as a dead engine: the web owns everything.
+6. **Heartbeat window and cadence (new, section 14):** N = 30 s, beat every 3 s, written only while the idle gate is open (Neon). Alternatives: a longer window, or beating always (28,800 one-row writes a day, Neon compute never suspends; the 2026-09-26 quota outage was exactly that kind of leak). Say if you want it always-on.
+7. **Vercel cron cadence while any broker is RUST (new, section 14):** the web's own floor when the engine is down is the cron every 5 minutes. One minute is possible on the current plan; not changed.
+8. **A stale-heartbeat alert (new):** the watchdog acts by itself, but nobody is TOLD. A page or a mail when the heartbeat is older than 60 s during market hours is the obvious companion; not built (the demo phase watches by hand, runbook 6).
 
 ## 13. Verification record (2026-10-06, scratch databases only)
 
@@ -426,3 +441,78 @@ demo-only scope ignored (engine rule); M7 the same (web rule); M8 the live fire 
 
 Commits on `engine/stage6` (pushed to `newrepo` after each): `ad778c9` web skip and handoff, `da941fd` engine risk mode and fire channel, `2ecc12b` split harness and drill,
 `9634b5d` margin-call parity, then the fill-event evaluation, the verification scripts, the test hygiene and this document.
+
+## 14. The engine-down watchdog (HARD GATE before `riskAuthorityDemoOnly = false`)
+
+**The problem.** With a broker on RUST and the engine unable to act, nobody acts on its accounts: the web skips them, the engine does nothing. The first draft proposed an alert only, because an automatic flip to the web while the engine might still be alive and acting is the double-action case. The owner's answer (b) asks for the automatic fallback; the in-transaction check below is what makes it safe.
+
+**The design.**
+
+| Piece | Choice |
+|---|---|
+| the heartbeat | one row, `"RiskEngineHeartbeat"` name `risk` (migration `20261007100000_risk_engine_heartbeat`): `beatAt` (timestamptz), `staleAfterSecs`, `engineVersion`, `instance`. Seeded born-stale (epoch): until an engine has beaten, nobody counts it as alive |
+| who writes | the engine only: `authority::beat` is one upsert, `beatAt = clock_timestamp()` (the DATABASE clock: one clock for both sides, no skew between the VPS and Vercel) |
+| **N** | `staleAfterSecs`, **default 30 s**, one value in the row, read by both sides (change it with one `UPDATE`, no deploy; minimum 5 by a CHECK). Beat interval 3 s (`VYX_RISK_HEARTBEAT_SECS`): ten beats fit in the window, and the engine warns at startup if N is under three beats. 30 s is above any normal pass (5 s), a slow Neon round trip (about 10 s at worst) and the web's own 15 s price freshness, and short enough that a hung engine is out of the way before a stop-out ramp finishes |
+| the rule | `effectiveRiskOwner(broker, mode, engineAlive)` (web, `lib/risk-authority.ts`) and `effective_owner` (engine): when the heartbeat is stale or missing the owner is WEB for every account, whatever `riskAuthority` says. The three forms of the split rule (TypeScript, Rust, SQL) are unchanged; the liveness is one more input, SQL form `ENGINE_ALIVE_SQL` |
+| where it applies | the web prefilter (`loadRiskOwners`, so every batch path), the web's acting transactions (`assertRiskActorInTx`); the engine's prefilter (`owner_of_account`), its pass listing (`rust_owned_account_ids_with_open_positions`), and its acting transactions (`lock_owner_in_tx`: every close and margin-call edge) |
+| the handoff | the acting transaction locks the heartbeat row `FOR SHARE` (after the account and broker rows, so no new lock cycle) and judges it with `clock_timestamp()`, never `now()` (a transaction's `now()` is its START: a long-running transaction would judge a stale heartbeat fresh). A beat is an UPDATE of that row, so it **waits for every acting transaction that has already read it**: a stale reading cannot turn fresh under an action decided on it |
+| the engine returns | it **beats first**: the fire worker and the pass call `touch` (a rate-limited beat) before they evaluate, the timer beats while the idle gate is open, and the first beat is written at startup before anything can act. What it acts on afterwards is read fresh (every evaluation re-reads the book) |
+| the drill switch | `VYX_RISK_HEARTBEAT_PAUSE_FILE`: while that file exists the engine writes no heartbeat (timer and touch both go through `beat`), everything else keeps running. Unset = no such switch. It can only move ownership toward the WEB. Runbook 7.B uses it |
+
+**No double action, argued.** An action is a transaction that locks the account row (`FOR NO KEY UPDATE`), so for one account the two sides' actions are totally ordered by the database. Each checks, after taking that lock, who owns the account at that instant: the engine acts only if it reads a fresh heartbeat, the web only if it reads a stale one (or the broker is WEB). The heartbeat row's share lock keeps a beat from landing between a reading and its action. The one boundary instant (the age crosses N while an engine transaction is open) is serialized by the account lock: the second transaction reads the state the first left, and the position's status-and-volume guard (unchanged, underneath) means no position can be closed twice by anyone. What can differ across the boundary is WHICH side takes the next, different action on the account, never the same action twice.
+
+**Where the web's own triggers are when the engine is down: findings, stated plainly.**
+
+1. The engine hosts the market-data ingest. If the whole engine process is dead, no fresh price reaches anybody (the web's decisions need a price at most 15 s old too), so there is nothing to close until the engine returns, and it beats before it acts. The watchdog's real work is the case where the process lives and its RISK subsystem does not: the beat fails (database error, lost privilege), a task is wedged, the pool is exhausted, or an operator pauses it.
+2. The web's triggers in that case: the engine's own backstop calls the web's full margin-monitor pass every 5 s (alive as long as the process is), and the Vercel cron every 5 minutes. With the backstop alive the fallback is N + 5 s at worst (measured by the drill in the harness; runbook 7.B proves it on the live system). With the whole process dead the floor is the cron every 5 minutes, and prices are dead anyway. Open decision 7.
+3. **Idle gate and Neon.** The timer beats only while the idle gate is open (a fresh quote on a symbol the book holds): a beat every 3 s all weekend would keep the live Neon compute awake (the 2026-09-26 quota outage). So at a quiet time the heartbeat goes stale on purpose, the web "owns" the RUST accounts, and nothing happens because nothing can move. The first fire or pass after the quiet `touch`es before it acts; a fire right after a reopen is never refused as stale. The web may evaluate a RUST account for the first moments after a reopen, which is harmless (both decide the same, and the in-transaction check keeps them in order). Open decision 6 if you prefer always-on.
+4. Risk mode only. The shadow and the legacy mode (`=1`) never write a heartbeat.
+
+**Proof.**
+
+| Claim | Test |
+|---|---|
+| a stale or missing heartbeat hands every account to the web in every engine form (prefilter, pass listing, in-transaction read, close, margin-call edge, whole evaluation, fire); a beat hands them back | `risk_split_db::a_stale_heartbeat_hands_every_account_to_the_web_in_every_form_and_a_beat_hands_them_back` |
+| a beat waits for a transaction that has read the heartbeat (engine side) | `risk_split_db::a_beat_waits_for_a_transaction_that_has_read_the_heartbeat` |
+| **engine stalls, the web stops the account out exactly once, the engine returns, nothing is duplicated** (engine half) | `risk_split_db::an_engine_stall_the_web_stops_out_once_and_the_returning_engine_duplicates_nothing` |
+| the same, web half: the web leaves a fresh engine's account alone, stops a stale engine's account out (every position once), skips it again after the return, leaves no engine follow-up row | `lib/risk-watchdog.test.ts` |
+| web prefilter and in-transaction check follow the heartbeat (stale, missing, the row's threshold); a beat waits for a web transaction | `lib/risk-watchdog.test.ts` |
+| the pause file stops the beats and removing it resumes them | `risk_split_db::the_pause_file_stops_the_heartbeat_and_removing_it_resumes_it` |
+| **the real web and the real engine walking one database: the engine stalls mid-run, the web takes over, the engine returns while the web is still working** | `scripts/load/run-split.sh --variant rust-all --stall`, seeds 1 to 3 (section 13): every engine close started before the stall or after the return, every web action came after the stall (none later than 3 s after the return), no position closed twice, the end state equals the web-only reference |
+| mutations that break the watchdog are caught (M10 to M16, section 13) | `scripts/stage6/mutation-check.sh` |
+
+**Gate list entry.** The watchdog is a HARD GATE for `riskAuthorityDemoOnly = false` (section 10 and runbook section 9). The demo phase may be watched by hand.
+
+## 15. Could the shadow run alongside risk mode for WEB-owned accounts? (answer (a): how, and what it would cost; not built)
+
+**Yes, in principle.** Today the modes are exclusive: `ENGINE_ORDER_MANAGEMENT=risk` takes one branch of `server/src/main.rs` and `shadow` another, and the shadow refuses to start when the post-close variables are set (a guard so a shadow can never deliver).
+
+**How it would work.**
+
+1. Run both in one process: the shadow on its OWN read-only pool (`VYX_SHADOW_DATABASE_URL`, role `vyx_shadow_ro`, the same as today), risk mode on the write pool. Two pools, one tick cache, one idle gate.
+2. Relax the refusal guard: it keys on the mere presence of the post-close variables; it should key on "this pool can write".
+3. The shadow evaluates only the accounts the web still acts on: add `NOT RUST_OWNED` (the SQL form of the rule, with liveness) to the shadow's pass listing and to its per-tick snapshot routing. For a RUST-owned account there is no web close to pair with, so a shadow decision about it would be unpairable noise.
+4. The reconciler pairs only web closes, as now. Nothing about pairing changes.
+
+**What it would cost.**
+
+* *Neon load.* The shadow's measured cost after the 2026-10-05 deploy is 4 statements per pass (1.04 calls/s at a 4 s pass, idle-gated), read-only, plus the per-tick snapshot reads. Next to risk mode's own pass (a similar 4 to 5 statements per 5 s, plus the reads of each fire) that roughly doubles the engine's steady-state reads while WEB-owned accounts hold positions. No extra writes. With Futurix's LIVE accounts WEB-owned (demo-only) it runs only while they hold positions on a moving symbol (the idle gate); a flat or closed book costs nothing, as today.
+* *Code.* Estimated 1 to 2 days: the wiring in `main.rs` (two pools, two gates), the listing filter, the relaxed guard, tests (the shadow never touches an engine-owned account; it never writes the book; the reconciler pairs only web closes; the two run together without disturbing each other) and two mutation checks.
+* *Value.* It keeps the soak evidence coming for the WEB-owned accounts (Futurix LIVE during the demo-only phase, every other broker) and gives regression evidence for any later engine change. For the demo phase the bot sweep is enough (the owner's answer); it becomes worth building at the first engine change after the flip, or when WEB-owned LIVE volume is large.
+
+## 16. The startup flip marker (answer (e))
+
+`ENGINE_ORDER_MANAGEMENT` stays `shadow` until the flip. A live mode (`risk`, or the legacy `1` / `true` / `on` / `yes`) without an explicit marker is most likely a mistake (a stray variable, a copied service file), so the server logs at startup:
+
+> `WARNING: ENGINE_ORDER_MANAGEMENT=risk is a LIVE mode (the engine writes to the book) but VYX_RISK_FLIP_INTENT is not set. Until the flip the engine stays in shadow. If this flip is intended, set VYX_RISK_FLIP_INTENT=<broker subdomain>:<YYYY-MM-DD> (e.g. futurixglobal:2026-10-12); if not, set ENGINE_ORDER_MANAGEMENT=shadow and restart.`
+
+The marker is `VYX_RISK_FLIP_INTENT=<broker subdomain>:<YYYY-MM-DD>` (who is being flipped and on which day). With a valid marker the server logs `flip marker present: a live mode is intended for this process` instead. It authorises nothing (the per-broker flag in the database is the switch); it records that a person meant it. A malformed marker counts as no marker. Built as `authority::flip_marker_warning` (pure, unit-tested for every live mode, every malformed marker and every non-live mode; mutation M16 removes the warning and the test fails) and wired in `server/src/main.rs` before the mode branches. `deploy/engine-stage6.ps1` refuses to run when `start-engine.cmd` already carries a marker or is not in shadow, and restores the old exe when the new build prints the warning.
+
+### 13.1 Watchdog verification record (2026-10-06, scratch databases only)
+
+| Gate | Result |
+|---|---|
+| `scripts/stage6/verify-all.sh`: cargo test all crates, parity run-db, shadow-gate, load seeds 1-3, split matrix (now incl. the `--stall` drill, seeds 1-3), post-close gate | **PASS** (6 of 8 gates finished at the time of writing) |
+| full web vitest, `tsc --noEmit`, mutation check M1-M16 | still running when this was written; M10-M16 were run on their own earlier and all DETECTED (see section 14); the web watchdog tests, the 4 split suites and `tsc` passed individually |
+| `npm run build` | not yet run on the final commit |
+| local 7-path sweep (`scripts/stage6/sweep-7path.sh`) | rust-all seeds 1-3: all 7 paths taken by the engine, 0 web actions, PASS; mixed, WEB-fallback drill, stall drill: end state equals reference, every path covered by either side (the first full run failed only on an over-strict per-path rule in the drill run, fixed with `--either`; rerun on the final commit pending) |

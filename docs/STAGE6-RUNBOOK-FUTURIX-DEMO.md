@@ -279,7 +279,7 @@ Copy-Item $EngineCmd "$EngineCmd.pre-stage6-$(Get-Date -Format yyyyMMdd-HHmmss)"
 function Set-CmdVar([string]$Path, [string]$Name, [string]$Value) {
   $lines = @(Get-Content $Path); $pat = '^\s*set\s+"?' + [regex]::Escape($Name) + '='; $new = 'set "' + $Name + '=' + $Value + '"'
   if ($lines -match $pat) { $lines = $lines | ForEach-Object { if ($_ -match $pat) { $new } else { $_ } } }
-  else { $i = ($lines | Select-String '^\s*set\s' | Select-Object -Last 1).LineNumber; $lines = $lines[0..($i-1)] + $new + $lines[$i..($lines.Count-1)] }
+  else { $i = ($lines | Select-String '^\s*set\s' | Select-Object -Last 1).LineNumber; $list = [System.Collections.ArrayList]@($lines); $list.Insert($i, $new); $lines = $list.ToArray() }   # a new line right after the last `set` line
   Set-Content -Path $Path -Value $lines -Encoding ASCII
 }
 $sec = Read-Host "POST_CLOSE_SECRET (the value of 3.1)" -AsSecureString
