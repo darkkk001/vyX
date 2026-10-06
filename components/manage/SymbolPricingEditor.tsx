@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 import { Button } from "@/components/ui/Button";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell } from "@/components/ui/Table";
+import { plainError } from "@/lib/plain-error";
 
 // Shared per-symbol pricing editor -- backs all three levels of the
 // Phase 2 pricing engine's per-symbol override tables (GroupSymbolConfig,
@@ -133,7 +134,7 @@ export function SymbolPricingEditor({
     setSavingId(null);
     if (!response.ok) {
       const b = await response.json().catch(() => ({}));
-      setErrors((prev) => ({ ...prev, [row.symbolId]: b.error ?? "save failed" }));
+      setErrors((prev) => ({ ...prev, [row.symbolId]: plainError(b, "Could not save. Try again.", { audience: "staff" }) }));
       return;
     }
     const saved: ApiRow = await response.json();
@@ -151,7 +152,7 @@ export function SymbolPricingEditor({
     setSavingId(null);
     if (!response.ok) {
       const b = await response.json().catch(() => ({}));
-      setErrors((prev) => ({ ...prev, [row.symbolId]: b.error ?? "reset failed" }));
+      setErrors((prev) => ({ ...prev, [row.symbolId]: plainError(b, "Could not reset. Try again.", { audience: "staff" }) }));
       return;
     }
     update(row.symbolId, {

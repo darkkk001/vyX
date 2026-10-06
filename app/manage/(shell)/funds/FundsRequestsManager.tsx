@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/Badge";
 import { Modal, ModalActions } from "@/components/ui/Modal";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
 import { formatDateTime, formatSigned, viewAmount } from "@/lib/format";
+import { plainError } from "@/lib/plain-error";
 
 export type FundsRequestRow = {
   id: string;
@@ -59,7 +60,7 @@ export default function FundsRequestsManager() {
     setBusyId(null);
     if (!response.ok) {
       const body = await response.json().catch(() => ({}));
-      setErrors((prev) => ({ ...prev, [row.id]: body.error ?? `${action.toLowerCase()} failed` }));
+      setErrors((prev) => ({ ...prev, [row.id]: plainError(body, "Could not save the decision. Try again.", { audience: "staff" }) }));
       setConfirmTarget(null);
       return;
     }

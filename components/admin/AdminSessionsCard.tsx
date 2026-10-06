@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Alert } from "@/components/ui/Alert";
+import { plainError } from "@/lib/plain-error";
 
 type AdminSession = {
   sessionId: string;
@@ -55,7 +56,7 @@ export default function AdminSessionsCard({
     setRevokingId(null);
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
-      setError(body.error ?? "failed to revoke session");
+      setError(plainError(body, "Could not sign out that session. Try again.", { audience: "staff" }));
       return;
     }
     if (session.current) {

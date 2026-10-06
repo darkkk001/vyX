@@ -4,6 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import styles from "../PortalAuth.module.css";
 import ResendVerification from "../ResendVerification";
+import { plainError } from "@/lib/plain-error";
 
 export default function RegisterForm({ brokerName, brokerLogoUrl }: { brokerName: string; brokerLogoUrl: string | null }) {
   const [email, setEmail] = useState("");
@@ -36,7 +37,7 @@ export default function RegisterForm({ brokerName, brokerLogoUrl }: { brokerName
     setSubmitting(false);
 
     if (!response.ok) {
-      setError(body.error ?? "registration failed");
+      setError(plainError(body, "Registration failed. Try again."));
       setNeedsVerification(response.status === 409 && typeof body.error === "string" && body.error.includes("verification link"));
       return;
     }

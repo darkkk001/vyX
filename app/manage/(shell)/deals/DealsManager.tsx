@@ -9,7 +9,8 @@ import { Modal, ModalActions } from "@/components/ui/Modal";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
 import { TableSkeleton, TableErrorState, useTableSort, SortableHeaderCell } from "@/components/ui/TableExtras";
 import DealingReplayPanel from "@/components/admin/DealingReplayPanel";
-import { formatDateTime, formatNumber, formatPnl, formatPrice, formatSigned, formatVolume, viewAmount } from "@/lib/format";
+import { formatDateTime, formatPnl, formatPrice, formatSigned, formatVolume, viewAmount } from "@/lib/format";
+import { plainError } from "@/lib/plain-error";
 
 export type DealRow = {
   id: string;
@@ -108,7 +109,7 @@ export default function DealsManager() {
       return;
     }
     if (!response.ok) {
-      setDeleteError(body.error ?? "delete failed");
+      setDeleteError(plainError(body, "Could not delete. Try again.", { audience: "staff" }));
       return;
     }
     setDeleteConfirm(null);

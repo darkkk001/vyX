@@ -13,6 +13,7 @@ import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, Tabl
 import { useToast } from "@/lib/toast";
 import { SwapFreeSelect } from "@/components/manage/SwapFreeSelect";
 import { SymbolPricingEditor } from "@/components/manage/SymbolPricingEditor";
+import { plainError } from "@/lib/plain-error";
 
 type SettingsData = {
   name: string;
@@ -174,7 +175,7 @@ export default function SettingsManager() {
     setTypeSaving(false);
     if (!response.ok) {
       const b = await response.json().catch(() => ({}));
-      setTypeFormError(b.error ?? "save failed");
+      setTypeFormError(plainError(b, "Could not save. Try again.", { audience: "staff" }));
       return;
     }
     setTypeModalTarget(null);
@@ -200,7 +201,7 @@ export default function SettingsManager() {
     setTypeBusyId(null);
     if (!response.ok) {
       const b = await response.json().catch(() => ({}));
-      showToast(b.error ?? "update failed", "danger");
+      showToast(plainError(b, "Could not save the change. Try again.", { audience: "staff" }), "danger");
       return;
     }
     reloadAccountTypes().catch(() => {});
@@ -225,7 +226,7 @@ export default function SettingsManager() {
     setTypeBusyId(null);
     if (!response.ok) {
       const b = await response.json().catch(() => ({}));
-      showToast(b.error ?? "update failed", "danger");
+      showToast(plainError(b, "Could not save the change. Try again.", { audience: "staff" }), "danger");
       return;
     }
     reloadAccountTypes().catch(() => {});
@@ -245,7 +246,7 @@ export default function SettingsManager() {
     setSaving(false);
     if (!response.ok) {
       const b = await response.json().catch(() => ({}));
-      setError(b.error ?? "save failed");
+      setError(plainError(b, "Could not save. Try again.", { audience: "staff" }));
       return;
     }
     const updated = await response.json();

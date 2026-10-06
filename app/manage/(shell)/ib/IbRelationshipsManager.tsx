@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/Button";
 import { Modal, ModalActions } from "@/components/ui/Modal";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
 import { formatDateTime } from "@/lib/format";
+import { plainError } from "@/lib/plain-error";
 
 export type IbRelationshipRow = {
   id: string;
@@ -144,7 +145,7 @@ export default function IbRelationshipsManager() {
     setCreating(false);
     if (!response.ok) {
       const body = await response.json().catch(() => ({}));
-      setCreateError(body.error ?? "failed to create relationship");
+      setCreateError(plainError(body, "Could not create the partner link. Try again.", { audience: "staff" }));
       return;
     }
     setCommissionRate("");
@@ -174,7 +175,7 @@ export default function IbRelationshipsManager() {
     setSavingId(null);
     if (!response.ok) {
       const body = await response.json().catch(() => ({}));
-      setEditErrors((prev) => ({ ...prev, [row.id]: body.error ?? "save failed" }));
+      setEditErrors((prev) => ({ ...prev, [row.id]: plainError(body, "Could not save. Try again.", { audience: "staff" }) }));
       return;
     }
     setSavedId(row.id);
@@ -197,7 +198,7 @@ export default function IbRelationshipsManager() {
     setPayingId(null);
     if (!response.ok) {
       const body = await response.json().catch(() => ({}));
-      setPayErrors((prev) => ({ ...prev, [row.id]: body.error ?? "payout failed" }));
+      setPayErrors((prev) => ({ ...prev, [row.id]: plainError(body, "Could not pay out. Try again.", { audience: "staff" }) }));
       setPayTarget(null);
       return;
     }

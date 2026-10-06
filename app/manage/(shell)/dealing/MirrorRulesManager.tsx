@@ -8,6 +8,7 @@ import { FormField } from "@/components/ui/FormField";
 import { Modal, ModalActions } from "@/components/ui/Modal";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
 import { formatDateTime } from "@/lib/format";
+import { plainError } from "@/lib/plain-error";
 
 type RuleRow = {
   id: string;
@@ -134,7 +135,7 @@ export default function MirrorRulesManager() {
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        setFormError(body.error ?? "Failed to create rule.");
+        setFormError(plainError(body, "Could not create the copy rule. Try again.", { audience: "staff" }));
         return;
       }
       setCreateOpen(false);

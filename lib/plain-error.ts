@@ -60,7 +60,7 @@ const CODES: Record<string, string | ((c: Ctx) => string)> = {
   SLIPPAGE_EXCEEDED: "The price moved. Order not placed.",
   MARKET_CLOSED: "The market is closed for this symbol.",
   BALANCE_BELOW_ZERO: "This would take the balance below zero.",
-  KYC_REQUIRED: "Complete the ID check first.",
+  // KYC_REQUIRED: no mapping on purpose; the server sentence ("KYC not verified") is shown as written (hotfix 2026-10-06)
   RATE_LIMITED: "Too many requests. Wait a moment and try again.",
   FORBIDDEN: "You don't have access to this.",
   UNAUTHORIZED: "Your session has ended. Sign in again.",

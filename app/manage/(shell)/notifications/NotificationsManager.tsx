@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/Badge";
 import { Modal } from "@/components/ui/Modal";
 import { Alert } from "@/components/ui/Alert";
 import { formatDateTime } from "@/lib/format";
+import { plainError } from "@/lib/plain-error";
 
 export type NotificationRow = {
   id: string;
@@ -128,7 +129,7 @@ export default function NotificationsManager({
     setResetting(false);
     if (!response.ok) {
       const body = await response.json().catch(() => ({}));
-      setResetError(body.error ?? "failed to reset password");
+      setResetError(plainError(body, "Could not reset the password. Try again.", { audience: "staff" }));
       return;
     }
     const body = await response.json();

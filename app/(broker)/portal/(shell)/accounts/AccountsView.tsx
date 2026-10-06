@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import styles from "@/components/portal/PortalShell.module.css";
 import { formatMoney } from "@/lib/format";
+import { plainError } from "@/lib/plain-error";
 
 type Account = {
   id: string;
@@ -95,7 +96,7 @@ export default function AccountsView() {
     const body = await response.json().catch(() => ({}));
     setSubmitting(false);
     if (!response.ok) {
-      setFormError(body.error ?? "failed to create account");
+      setFormError(plainError(body, "Could not create the account. Try again."));
       return;
     }
     setNewDemoCredentials({ accountNumber: body.accountNumber, password: body.password });
@@ -113,7 +114,7 @@ export default function AccountsView() {
     const body = await response.json().catch(() => ({}));
     setSubmitting(false);
     if (!response.ok) {
-      setFormError(body.error ?? "failed to submit request");
+      setFormError(plainError(body, "Could not send the request. Try again."));
       return;
     }
     setLiveRequestSubmitted(true);

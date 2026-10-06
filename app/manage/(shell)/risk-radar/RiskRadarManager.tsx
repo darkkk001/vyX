@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Badge } from "@/components/ui/Badge";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
-import { formatNumber, formatPercent, formatPnl, formatVolume } from "@/lib/format";
+import { formatPercent, formatPnl, formatVolume } from "@/lib/format";
 
 export type RiskRadarRow = {
   accountId: string;

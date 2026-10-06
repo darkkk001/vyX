@@ -28,7 +28,7 @@ async function patchRisk(body: Record<string, unknown>) {
     body: JSON.stringify(body),
   });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error ?? "update failed");
+  if (!response.ok) throw new Error(plainError(data, "Could not save the change. Try again.", { audience: "staff" }));
   return data as RiskSettings;
 }
 

@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/Badge";
 import { FormField } from "@/components/ui/FormField";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
 import { formatDateTime, formatMoney } from "@/lib/format";
+import { plainError } from "@/lib/plain-error";
 
 export type TransferRow = {
   id: string;
@@ -63,7 +64,7 @@ export default function TransfersManager() {
     setBusy(false);
     if (!response.ok) {
       const b = await response.json().catch(() => ({}));
-      setError(b.error ?? "transfer failed");
+      setError(plainError(b, "Could not transfer. Try again.", { audience: "staff" }));
       return;
     }
     // 202 = a MANAGER's transfer, filed for a second admin's approval (Approvals); nothing moved yet

@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { Badge } from "@/components/ui/Badge";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
-import { formatMarginLevel, formatNumber, formatPercent, formatPnl } from "@/lib/format";
+import { formatMarginLevel, formatNumber, formatPnl } from "@/lib/format";
 
 export type MarginRow = {
   accountId: string;

@@ -63,6 +63,9 @@ describe("step 1 codes", () => {
 });
 
 describe("codes with amounts and staff audience", () => {
+  it("KYC_REQUIRED keeps the server's own sentence (hotfix wording owned elsewhere)", () => {
+    expect(plainError({ error: "KYC not verified", code: "KYC_REQUIRED" })).toBe("KYC not verified");
+  });
   it("INSUFFICIENT_MARGIN with required / available from the body", () => {
     const err = new ApiError("INSUFFICIENT_MARGIN", 400, { error: "INSUFFICIENT_MARGIN", required: "120.00", available: "80.00" });
     expect(plainError(err)).toBe("Not enough free margin: this order needs 120.00, 80.00 is free.");

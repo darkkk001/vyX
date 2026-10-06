@@ -4,6 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import styles from "../PortalAuth.module.css";
+import { plainError } from "@/lib/plain-error";
 
 export default function ResetPasswordForm({ brokerName, brokerLogoUrl }: { brokerName: string; brokerLogoUrl: string | null }) {
   const searchParams = useSearchParams();
@@ -39,7 +40,7 @@ export default function ResetPasswordForm({ brokerName, brokerLogoUrl }: { broke
     setSubmitting(false);
 
     if (!response.ok) {
-      setError(body.error ?? "failed to reset password");
+      setError(plainError(body, "Could not reset the password. Try again."));
       return;
     }
 

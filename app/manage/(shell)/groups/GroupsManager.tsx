@@ -16,6 +16,7 @@ import { Modal, ModalActions, ModalSection } from "@/components/ui/Modal";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, TableEmptyState } from "@/components/ui/Table";
 import { SwapFreeSelect } from "@/components/manage/SwapFreeSelect";
 import { SymbolPricingEditor } from "@/components/manage/SymbolPricingEditor";
+import { plainError } from "@/lib/plain-error";
 
 export type GroupRow = {
   id: string;
@@ -193,7 +194,7 @@ export default function GroupsManager() {
       // Stays open with the block reason visible (e.g. "N accounts are
       // assigned...") instead of closing on failure -- the whole point of
       // this guard is to make the admin actually read why, not just retry.
-      setDeleteError(b.error ?? "delete failed");
+      setDeleteError(plainError(b, "Could not delete. Try again.", { audience: "staff" }));
       return;
     }
     setRows((prev) => (prev ?? []).filter((r) => r.id !== deleteTarget.id));
@@ -431,7 +432,7 @@ function GroupFormModal({
     setSaving(false);
     if (!response.ok) {
       const b = await response.json().catch(() => ({}));
-      setError(b.error ?? "save failed");
+      setError(plainError(b, "Could not save. Try again.", { audience: "staff" }));
       return;
     }
     const saved: GroupRow = await response.json();
@@ -660,7 +661,7 @@ function SymbolsPanel({ groupId }: { groupId: string }) {
     setSaving(false);
     if (!response.ok) {
       const b = await response.json().catch(() => ({}));
-      setError(b.error ?? "save failed");
+      setError(plainError(b, "Could not save. Try again.", { audience: "staff" }));
       return;
     }
     setSaved(true);

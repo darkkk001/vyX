@@ -32,6 +32,7 @@ import { useLiveTicks } from "@/lib/price-stream";
 import { formatDateTime, formatNumber, formatPnl, formatPrice, formatVolume } from "@/lib/format";
 import { useUnsavedChangesWarning } from "@/lib/use-unsaved-changes-warning";
 import { effectiveAsk, spreadRuleFromPrice } from "@/lib/trade-api";
+import { plainError } from "@/lib/plain-error";
 
 export type PositionRow = {
   id: string;
@@ -473,7 +474,7 @@ export default function PositionsManager() {
     setOpening(false);
     if (!response.ok) {
       const body = await response.json().catch(() => ({}));
-      setOpenError(body.error ?? "failed to open position");
+      setOpenError(plainError(body, "Could not open the position. Try again.", { audience: "staff" }));
       return;
     }
     setOpenModalOpen(false);
@@ -525,7 +526,7 @@ export default function PositionsManager() {
     setModifying(false);
     if (!response.ok) {
       const body = await response.json().catch(() => ({}));
-      setModifyError(body.error ?? "modify failed");
+      setModifyError(plainError(body, "Could not modify. Try again.", { audience: "staff" }));
       return;
     }
     setModifyTarget(null);
@@ -553,7 +554,7 @@ export default function PositionsManager() {
 
     if (!response.ok) {
       const body = await response.json().catch(() => ({}));
-      setCloseErrors((prev) => ({ ...prev, [row.id]: body.error ?? "close failed" }));
+      setCloseErrors((prev) => ({ ...prev, [row.id]: plainError(body, "Could not close. Try again.", { audience: "staff" }) }));
       return;
     }
     setCloseConfirm(null);
@@ -600,7 +601,7 @@ export default function PositionsManager() {
       return;
     }
     if (!response.ok) {
-      setReverseVoidErrors((prev) => ({ ...prev, [row.id]: body.error ?? "reverse failed" }));
+      setReverseVoidErrors((prev) => ({ ...prev, [row.id]: plainError(body, "Could not reverse. Try again.", { audience: "staff" }) }));
       return;
     }
     setReverseConfirm(null);
@@ -620,7 +621,7 @@ export default function PositionsManager() {
       return;
     }
     if (!response.ok) {
-      setReverseVoidErrors((prev) => ({ ...prev, [row.id]: body.error ?? "void failed" }));
+      setReverseVoidErrors((prev) => ({ ...prev, [row.id]: plainError(body, "Could not void. Try again.", { audience: "staff" }) }));
       return;
     }
     setVoidConfirm(null);
@@ -730,7 +731,7 @@ export default function PositionsManager() {
     setReviewingId(null);
     if (!response.ok) {
       const body = await response.json().catch(() => ({}));
-      setPendingActionErrors((prev) => ({ ...prev, [id]: body.error ?? `${decision} failed` }));
+      setPendingActionErrors((prev) => ({ ...prev, [id]: plainError(body, "Could not save the decision. Try again.", { audience: "staff" }) }));
       return;
     }
     reloadPendingActions().catch(() => {});
@@ -759,7 +760,7 @@ export default function PositionsManager() {
     setBulkClosing(false);
     if (!response.ok) {
       const body = await response.json().catch(() => ({}));
-      setBulkCloseError(body.error ?? "close failed");
+      setBulkCloseError(plainError(body, "Could not close. Try again.", { audience: "staff" }));
       return;
     }
     setBulkCloseConfirm(false);

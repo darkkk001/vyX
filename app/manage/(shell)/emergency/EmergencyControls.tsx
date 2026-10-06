@@ -20,7 +20,7 @@ async function patchTradingHalted(tradingHalted: boolean): Promise<{ tradingHalt
     body: JSON.stringify({ tradingHalted }),
   });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error ?? "update failed");
+  if (!response.ok) throw new Error(plainError(data, "Could not save the change. Try again.", { audience: "staff" }));
   return data as { tradingHalted: boolean };
 }
 

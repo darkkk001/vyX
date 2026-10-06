@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import styles from "@/components/portal/PortalShell.module.css";
+import { plainError } from "@/lib/plain-error";
 
 type KycRecordView = {
   status: string;
@@ -105,7 +106,7 @@ export default function KycForm({ initialRecord }: { initialRecord: KycRecordVie
     const body = await response.json().catch(() => ({}));
     setSubmitting(false);
     if (!response.ok) {
-      setError(body.error ?? "failed to submit");
+      setError(plainError(body, "Could not send. Try again."));
       return;
     }
     setRecord({

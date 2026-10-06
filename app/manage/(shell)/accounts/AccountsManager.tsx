@@ -15,6 +15,7 @@ import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, Tabl
 import { TableSkeleton, TableErrorState } from "@/components/ui/TableExtras";
 import { useToast } from "@/lib/toast";
 import { formatMoney, formatSigned } from "@/lib/format";
+import { plainError } from "@/lib/plain-error";
 
 export type AccountRow = {
   id: string;
@@ -169,7 +170,7 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
     setAddBusy(false);
     if (!response.ok) {
       const b = await response.json().catch(() => ({}));
-      setAddError(b.error ?? "failed to create account");
+      setAddError(plainError(b, "Could not create the account. Try again.", { audience: "staff" }));
       return;
     }
     const created = await response.json();
@@ -202,7 +203,7 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
     setBusyId(null);
     if (!response.ok) {
       const b = await response.json().catch(() => ({}));
-      setErrors((prev) => ({ ...prev, [id]: b.error ?? "update failed" }));
+      setErrors((prev) => ({ ...prev, [id]: plainError(b, "Could not save the change. Try again.", { audience: "staff" }) }));
       return false;
     }
     reloadRows().catch(() => {});
@@ -277,7 +278,7 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
     }
     if (!response.ok) {
       const b = await response.json().catch(() => ({}));
-      setAdjustError(b.error ?? "adjustment failed");
+      setAdjustError(plainError(b, "Could not save the balance change. Try again.", { audience: "staff" }));
       return;
     }
     setAdjustTarget(null);
@@ -317,7 +318,7 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
     setReviewingAdjustmentId(null);
     if (!response.ok) {
       const body = await response.json().catch(() => ({}));
-      setPendingAdjustmentErrors((prev) => ({ ...prev, [id]: body.error ?? `${decision} failed` }));
+      setPendingAdjustmentErrors((prev) => ({ ...prev, [id]: plainError(body, "Could not save the decision. Try again.", { audience: "staff" }) }));
       return;
     }
     reloadPendingAdjustments().catch(() => {});
