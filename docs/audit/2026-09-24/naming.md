@@ -1860,6 +1860,34 @@ Hidden until an LP bridge exists: the screen is merged into Liquidity providers,
 | AUD | ACCOUNT_PASSWORD_SET · ACCOUNT_INTERNAL_FLAG_CHANGED · STAFF_VERIFICATION_RESENT | Set trader password · Changed internal account flag · Resent verification e-mail | — | Audit log wording (owner 2026-10-05). |
 | SHELL | VYXTRADER BACKOFFICE (login window of a broker build) | <BROKER> BACKOFFICE | — | Login window title, logo, colours and window title come from the build's brand pin before sign-in (owner 2026-10-05); same for the terminal login. |
 
+### Backoffice 1.0.63 step 3: Groups, group form, credit and trading rights (owner 2026-10-06)
+
+| Screen | Was | Label | Unit | Notes |
+|---|---|---|---|---|
+| GRP | ROUTING / TRADE HANDLING (column) | DEALING DESK | — | One checkbox column (D0 = B). Checked = every order from the group waits for manual dealing (category DEALING + forceDealingMode true); unchecked = Book (B_BOOK). In between (a bar) = a Dealing desk group that follows the dealing switch (set before this rule); a click makes it always wait. Dimmed for a read-only role; a bridge, reverse-trading or hedge group is shown unchecked and dimmed, its tooltip says why. |
+| GRP | (cell tooltips, new) | Every order waits for manual dealing. Click to switch off. · Orders wait for manual dealing while the dealing switch is Manual. Click to make them always wait. · Orders fill automatically. Click to make every order wait for manual dealing. | — | One line each. |
+| GRP | (cell tooltip for other groups, new) | Routed by bridge · Reverse trading · Hedge account | — | The checkbox is not offered: those groups are routed elsewhere and keep their category; a click toasts the same words. |
+| GRP | (confirm, new) | TURN ON DEALING DESK / TURN OFF DEALING DESK | — | Rows: Group · Dealing desk now · After. After reads "Yes: every order waits for manual dealing" / "No: orders fill automatically". Buttons TURN ON / TURN OFF. Toast "{group} · dealing desk on / off". |
+| GRP | Trade handling (inspector, menu header, halt / delete confirm rows, CSV) | Dealing desk | — | Value: Yes · No · Same as dealing switch · Routed by bridge · Reverse trading · Hedge account. Menu header "{group} · Dealing desk: Yes". |
+| GRP | Clients can choose at signup (inspector) | removed | — | S2: the server publishes a new Book or Dealing desk group to clients by itself; the backoffice no longer shows or sends the flag. |
+| GRP | (inspector, new) | Min volume (lots) | lots | The group's own minimum; "symbol's own" when empty. CSV column "Min volume (lots)" before "Max volume (lots)". |
+| GRP | NEW GROUP / EDIT GROUP (form) | New group / Edit group | — | Two columns, labels only, no helper sentences; fits 1366 x 768 without scrolling. Order: Name · Leverage / Margin call level (%) · Stop-out level (%) / Minimum volume (lots) · Maximum volume (lots) / Account kinds allowed · Allowed sides / Dealing desk · Swap-free / Default group for new accounts. |
+| GRP | Min lot (new field) | Minimum volume (lots) | lots | Empty clears the group minimum (sent as null); the stored value is kept when the form does not send it. The effective minimum is the larger of the symbol's and the group's. |
+| GRP | Max lot | Maximum volume (lots) | lots | Sits beside Minimum volume (lots). Empty = no cap. |
+| GRP | Book / routing (picker) · Always send to dealer · Dealing | Dealing desk | — | One checkbox, text only, no field label. Not offered for a bridge, reverse-trading or hedge group: no category is sent for them, forceDealingMode and dealingMode go back as stored. |
+| GRP | Swap-free (INHERIT / ON / OFF choice) | Swap-free | — | One checkbox; the group decides (S1). Unchecked = swaps charged. |
+| GRP | Default group for new accounts (toggle) | Default group for new accounts | — | A normal checkbox. |
+| GRP | MIN_VOLUME_STEP (refusal in the form) | This minimum does not fit the volume steps of {symbols}. | — | Shown inside the window; the server lists the symbols. |
+| GRP | GROUP_MIN_VOLUME (refusal) | Below this group's minimum volume ({n} lots). | — | Backoffice wording; the trader reads "The smallest trade allowed for this account is {n} lots." |
+| GRP | (form checks, new) | Minimum volume must be a number, for example 0.10. · Minimum volume must be more than 0. · Minimum volume can have at most 2 decimals. · Minimum volume cannot be above the maximum. | — | One line, shown in the window before anything is sent. |
+| CLI | Risk limits… form: Swap-free (NO / YES / SAME AS GROUP) | removed | — | S1: swap-free is the group's decision only. The form keeps Max daily loss. The server refuses an account-level swap-free change (SWAP_FREE_GROUP_ONLY); scripts/clear-account-swapfree-overrides.ts clears the stored ones. |
+| CLI | SWAP-FREE (account tag, client page and inspector) | removed | — | No account-level override can exist any more. |
+| CLI | No group can take accounts. On GROUPS, let clients choose one at signup. | No group can take accounts. Add a Book or Dealing desk group on GROUPS. | — | Also the longer form "(an A-book group needs a connected LP)" on Add account. |
+| CLI | Amount ($) · Credit now ($) · Credit after ($) · Balance ($) (credit form and confirm) | Amount (USD) · Credit now (USD) · Credit after (USD) · Balance (USD) | account currency | The account's own currency code, never "($)". The form carries no helper sentences: Amount, Reason. An empty client name shows the account number only. |
+| CLI | Add credit… · Remove credit… · Trading rights ▸ (Account menu) | keep | — | Back in the menu now their server routes exist (web migration 20261006120000). Remove credit… is disabled "no credit to remove" at zero credit. |
+| CLI | Trading rights ▸ items | Full · Close-only · Read-only | — | Close-only: the client can close but not open. Read-only: no trading at all; pending orders are cancelled when it is set. Tag on the client page: CLOSE-ONLY · READ-ONLY. |
+| TERM | (trading state) | Close-only · Read-only | — | The terminal shows the account's rights state; a broker halt still wins. |
+
 ## Terminal
 
 ### Shell (term-shell)
