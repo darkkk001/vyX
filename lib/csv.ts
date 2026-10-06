@@ -15,7 +15,9 @@ export function toCsv(rows: Record<string, unknown>[], columns: { key: string; l
     // as literal text instead, and the quote itself is invisible in the
     // rendered spreadsheet (Excel/Sheets both strip a leading apostrophe
     // used this way, same convention as forcing a text-formatted cell).
-    if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
+    // A plain number (lib/format.ts formatCsvNumber: "-12.50") cannot be a formula, so it keeps its "-" and stays a
+    // number the spreadsheet can sum (step 2, 2026-10-06; it used to be turned into the text "'-12.50").
+    if (/^[=+\-@\t\r]/.test(s) && !/^-\d+(\.\d+)?$/.test(s)) s = `'${s}`;
     return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   }
   const header = columns.map((c) => cell(c.label)).join(",");

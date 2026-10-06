@@ -56,6 +56,17 @@ export class ApiError extends Error {
   }
 }
 
+// Step 2 (owner rule 2026-10-06): a failed request without a server sentence used to throw "request to /api/... failed
+// (502)", which about 25 WebTrader toasts showed as it was. The endpoint path and the status code now go to the console
+// only; the thrown message is a plain sentence (lib/plain-error.ts maps whatever reaches a toast).
+function failedText(path: string, status: number): string {
+  console.warn(`[api] request to ${path} failed (${status})`);
+  if (status === 401) return "Your session has ended. Sign in again.";
+  if (status === 403) return "You don't have access to this.";
+  if (status === 429) return "Too many requests. Wait a moment and try again.";
+  return "Could not complete the request. Try again.";
+}
+
 export async function apiCall<T>(path: string, init?: RequestInit): Promise<T> {
   const desktop = typeof window !== "undefined" ? window.vyxDesktop : undefined;
   if (desktop?.apiCall) {
@@ -63,7 +74,7 @@ export async function apiCall<T>(path: string, init?: RequestInit): Promise<T> {
     const { status, body, date } = await desktop.apiCall(path, init?.method ?? "GET", parsedBody);
     recalibrateFromDateHeader(date);
     if (status < 200 || status >= 300) {
-      throw new ApiError((body as { error?: string } | null)?.error ?? `request to ${path} failed (${status})`, status, body);
+      throw new ApiError((body as { error?: string } | null)?.error ?? failedText(path, status), status, body);
     }
     return body as T;
   }
@@ -86,7 +97,7 @@ export async function apiCall<T>(path: string, init?: RequestInit): Promise<T> {
   recalibrateFromResponse(response);
   const body = await response.json().catch(() => null);
   if (!response.ok) {
-    throw new ApiError(body?.error ?? `request to ${path} failed (${response.status})`, response.status, body);
+    throw new ApiError(body?.error ?? failedText(path, response.status), response.status, body);
   }
   return body as T;
 }
@@ -135,7 +146,7 @@ export async function apiCallForm<T>(path: string, body: FormData): Promise<T> {
     const fields = await formDataToFields(body);
     const { status, body: responseBody } = await desktop.apiCallMultipart(path, fields);
     if (status < 200 || status >= 300) {
-      throw new Error((responseBody as { error?: string } | null)?.error ?? `request to ${path} failed (${status})`);
+      throw new ApiError((responseBody as { error?: string } | null)?.error ?? failedText(path, status), status, responseBody);
     }
     return responseBody as T;
   }
@@ -143,7 +154,7 @@ export async function apiCallForm<T>(path: string, body: FormData): Promise<T> {
   const response = await fetch(path, { method: "POST", body });
   const responseBody = await response.json().catch(() => null);
   if (!response.ok) {
-    throw new Error(responseBody?.error ?? `request to ${path} failed (${response.status})`);
+    throw new ApiError(responseBody?.error ?? failedText(path, response.status), response.status, responseBody);
   }
   return responseBody as T;
 }
