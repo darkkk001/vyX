@@ -6,7 +6,6 @@ import { Select } from "@/components/ui/Select";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { Card } from "@/components/ui/Card";
-import { SwapFreeSelect } from "@/components/manage/SwapFreeSelect";
 import { FormField } from "@/components/ui/FormField";
 import { LeverageInput } from "@/components/ui/LeverageInput";
 import { Modal, ModalActions } from "@/components/ui/Modal";
@@ -234,11 +233,6 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
     await patchAccount(row.id, { maxDailyLoss: value.trim() === "" ? null : value.trim() }, `${row.accountNumber} max daily loss updated`);
   }
 
-  async function changeSwapFree(row: AccountRow, swapFree: boolean | null) {
-    const label = swapFree === null ? "set to inherit" : swapFree ? "enabled" : "set to charge swap";
-    await patchAccount(row.id, { swapFree }, `${row.accountNumber} swap-free override ${label}`);
-  }
-
   function openAdjustModal(row: AccountRow) {
     setAdjustTarget(row);
     setAdjustType("credit");
@@ -418,20 +412,13 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
           <TableHeaderCell align="right" className="min-w-[110px]" title="Reject new orders once today's realized loss reaches this amount">
             Max daily loss
           </TableHeaderCell>
-          <TableHeaderCell
-            align="center"
-            className="min-w-[110px]"
-            title="Per-account swap-free override (Account.swapFree). Resolution order is this account > its Account Type > its Group > charged. Applied at fill and swap time once custom pricing is enabled."
-          >
-            Swap-free
-          </TableHeaderCell>
           <TableHeaderCell className="min-w-[140px]" />
         </TableHead>
         <TableBody>
           {loadError ? (
-            <TableErrorState colSpan={13} onRetry={() => reloadRows().catch(() => setLoadError(true))} />
+            <TableErrorState colSpan={12} onRetry={() => reloadRows().catch(() => setLoadError(true))} />
           ) : filtered.length === 0 ? (
-            <TableEmptyState colSpan={13}>No accounts match.</TableEmptyState>
+            <TableEmptyState colSpan={12}>No accounts match.</TableEmptyState>
           ) : (
             filtered.map((row) => (
               <TableRow key={row.id}>
@@ -543,14 +530,6 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
                   ) : (
                     row.maxDailyLoss ?? ""
                   )}
-                </TableCell>
-                <TableCell align="center" className="min-w-[110px]">
-                  <SwapFreeSelect
-                    value={row.swapFree}
-                    onChange={(v) => changeSwapFree(row, v)}
-                    inheritLabel="Inherit (Type)"
-                    disabled={busyId === row.id}
-                  />
                 </TableCell>
                 <TableCell className="min-w-[140px] whitespace-nowrap">
                   {canManageFinance ? (

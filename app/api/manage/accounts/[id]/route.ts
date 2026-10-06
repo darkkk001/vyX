@@ -54,17 +54,18 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   // change, so MANAGER can reassign it same as group.
   const hasAccountTypeChange = body != null && "accountTypeId" in body;
   const hasFinanceChange = body != null && ("leverage" in body || "status" in body || "maxDailyLoss" in body);
-  // Same permission tier as groupId/accountTypeId -- a rate-category flag
-  // (see Account.swapFree's own schema comment), not a balance/leverage
-  // magnitude, so MANAGER can toggle it same as group/type.
-  const hasSwapFreeChange = body != null && "swapFree" in body;
+  // Owner 2026-10-06 (S1): swap-free is decided by the GROUP only. The account-level override can no longer be set
+  // (scripts/clear-account-swapfree-overrides.ts cleared the stored ones), so a body carrying it is refused, not ignored.
+  if (body != null && "swapFree" in body) {
+    return NextResponse.json({ error: "Swap-free is set on the group, not on the account.", code: "SWAP_FREE_GROUP_ONLY" }, { status: 400 });
+  }
   // Owner 2026-10-05: the internal (test / staff) account flag, left out of every broker-wide figure. BROKER_ADMIN only.
   const hasInternalChange = body != null && "isInternal" in body;
   // Per-account trading rights (2026-09-28, owner decision 4): a risk control, BROKER_ADMIN or the Client trading
   // permission, applied at once (no second admin).
   const hasRightsChange = body != null && "tradingRights" in body;
 
-  if (!hasGroupChange && !hasAccountTypeChange && !hasFinanceChange && !hasSwapFreeChange && !hasInternalChange && !hasRightsChange) {
+  if (!hasGroupChange && !hasAccountTypeChange && !hasFinanceChange && !hasInternalChange && !hasRightsChange) {
     return NextResponse.json({ error: "nothing to update" }, { status: 400 });
   }
   if (hasInternalChange && typeof body.isInternal !== "boolean") {
@@ -196,7 +197,6 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       leverage?: number;
       status?: typeof status;
       maxDailyLoss?: Prisma.Decimal | null;
-      swapFree?: boolean | null;
       isInternal?: boolean;
     } = {};
     const auditEntries: { action: string; oldValue: Prisma.InputJsonValue; newValue: Prisma.InputJsonValue }[] = [];
@@ -250,18 +250,6 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         newValue: { maxDailyLoss: maxDailyLoss?.toString() ?? null },
       });
     }
-    if (hasSwapFreeChange) {
-      // Tri-state (2026-09-07 Stage 5) -- explicit null means "inherit
-      // from AccountType/Group," true/false are explicit overrides.
-      const swapFree: boolean | null = body.swapFree === null ? null : body.swapFree === true;
-      data.swapFree = swapFree;
-      auditEntries.push({
-        action: "ACCOUNT_SWAP_FREE_CHANGED",
-        oldValue: { swapFree: account.swapFree },
-        newValue: { swapFree },
-      });
-    }
-
     if (hasInternalChange && body.isInternal !== account.isInternal) {
       data.isInternal = body.isInternal;
       auditEntries.push({

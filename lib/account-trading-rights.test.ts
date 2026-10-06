@@ -315,6 +315,11 @@ describe("credit add / remove (DB)", () => {
     const mgr = await admin(f.brokerId, "MANAGER", ["ACCOUNT_FINANCE"]);
     as(mgr);
     const { POST } = await import("@/app/api/manage/accounts/[id]/credit/route");
+    // a broker whose only other staff cannot approve (web5, main 2026-09-30): the request is refused when filed
+    const refused = await call(POST, "/x", "POST", { amount: "300", note: "promo" }, { id: f.acc.id });
+    expect(refused.status).toBe(400);
+    expect(String(refused.json.error)).toContain("needs a broker admin");
+    await admin(f.brokerId); // an eligible approver now exists
     const r = await call(POST, "/x", "POST", { amount: "300", note: "promo" }, { id: f.acc.id });
     expect(r).toMatchObject({ status: 202, json: { pending: true } });
     expect((await prisma.account.findUniqueOrThrow({ where: { id: f.acc.id } })).credit.toString()).toBe("0");

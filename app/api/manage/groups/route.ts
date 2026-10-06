@@ -185,8 +185,6 @@ async function postHandler(request: NextRequest) {
   const forceDealingModeRequested = body?.forceDealingMode === true;
   const dealingMode = GROUP_DEALING_MODES.includes(body?.dealingMode) ? (body.dealingMode as GroupDealingMode) : "INHERIT";
   const tier = GROUP_TIERS.includes(body?.tier) ? (body.tier as GroupTier) : "STANDARD";
-  // Phase 2 batch 1: a group created here can be offered to clients at signup (it never could before)
-  const isClientSelectable = body?.isClientSelectable === true;
   // Two axes since Stage 1 of docs/ACCOUNT-STRUCTURE-MIGRATION.md (§0.1):
   // `category` is ROUTING (where the order goes, who holds the risk) and
   // `modeRestriction` is which account MODES may sit in this group. A body
@@ -198,6 +196,9 @@ async function postHandler(request: NextRequest) {
   const { category, modeRestriction } = routing;
   const groupType = legacyGroupTypeFor(routing);
   const forceDealingMode = category === "DEALING" && forceDealingModeRequested;
+  // Owner 2026-10-06 (S2): a new B_BOOK / DEALING group is offered to clients automatically; the backoffice no longer
+  // shows the flag. A_BOOK / REVERSAL / COVERAGE groups stay unpublished, an explicit true from an older build still wins.
+  const isClientSelectable = body?.isClientSelectable === true || category === "B_BOOK" || category === "DEALING";
 
   try {
     const group = await prisma.$transaction(async (tx) => {

@@ -348,6 +348,27 @@ describe("closes respect DEALER mode (live DB)", () => {
     expect(await prisma.auditLog.count({ where: { brokerId: fx.brokerId, action: "DEALING_DESK_AUTO_FLUSHED_CLOSE" } })).toBe(1);
   });
 
+  it("trading rights (2026-10-06): a CLOSE_ONLY account's close queues and the dealer's ACCEPT executes it; a READ_ONLY account's queued close still executes", async () => {
+    if (!dbReachable) return;
+    const fx = await createFixture();
+    const pos = await openPosition(fx, { openPrice: "90.00" });
+    await refreshPrice(fx);
+    await prisma.account.update({ where: { id: fx.accountId }, data: { tradingRights: "CLOSE_ONLY" } });
+    const q = await clientClose(fx, pos.id, { closePrice: "100.00" });
+    expect(q.status).toBe(202);
+    // rights tightened after the close was queued: closing is the desk's risk management, so it still executes
+    await prisma.account.update({ where: { id: fx.accountId }, data: { tradingRights: "READ_ONLY" } });
+    const { status, json } = await dealer(fx, q.json.order.id, { action: "ACCEPT" });
+    expect(status).toBe(200);
+    expect(json.closed).toBe(true);
+    expect((await prisma.position.findUniqueOrThrow({ where: { id: pos.id } })).status).toBe("CLOSED");
+    // a READ_ONLY client cannot ask for a new close
+    const pos2 = await openPosition(fx, { openPrice: "90.00" });
+    const refused = await clientClose(fx, pos2.id, { closePrice: "100.00" });
+    expect(refused.status).toBeGreaterThanOrEqual(400);
+    expect(String(refused.json.error ?? "")).toContain("read-only");
+  });
+
   it("with dealer mode OFF the same close executes immediately, as before", async () => {
     if (!dbReachable) return;
     const fx = await createFixture({ dealerOn: false });
