@@ -298,6 +298,17 @@ describe("staff withdraw on a suspended / closed account (payout), staff deposit
     expect(await balanceOf(fx.accountId)).toBe("1000.00");
   });
 
+  it("staff deposit on a CLOSED account is refused with ACCOUNT_NOT_ACTIVE, nothing written", async () => {
+    if (!dbReachable) return;
+    const fx = await fundsFixture({ status: "CLOSED" });
+    asAdmin(fx.brokerId, fx.adminA);
+    const { POST } = await import("@/app/api/manage/accounts/[id]/funds/route");
+    const r = await call(POST, "POST", staffFunds("DEPOSIT", "10"), { id: fx.accountId });
+    expect(r).toMatchObject({ status: 409, json: { code: "ACCOUNT_NOT_ACTIVE" } });
+    expect(await prisma.transaction.count({ where: { accountId: fx.accountId } })).toBe(0);
+    expect(await balanceOf(fx.accountId)).toBe("1000.00");
+  });
+
   it("the balance guard still refuses an overdraw on a CLOSED account", async () => {
     if (!dbReachable) return;
     const fx = await fundsFixture({ approval: "SINGLE", status: "CLOSED" });
