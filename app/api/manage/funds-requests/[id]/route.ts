@@ -5,7 +5,7 @@ import { forbidUnlessBrokerAdminOrPermission } from "@/lib/permissions";
 import { hasEligibleApprover, NEEDS_BROKER_ADMIN } from "@/lib/approvers";
 import { publishTradingEvent } from "@/lib/nats";
 import { publishFundsRequestChanged, notifyFundsRequestResolved } from "@/lib/funds-events";
-import { withdrawalKycApproved, WITHDRAWAL_KYC_ADMIN_MESSAGE, WITHDRAWAL_KYC_CODE } from "@/lib/withdrawal-kyc";
+import { withdrawalKycApproved } from "@/lib/withdrawal-kyc";
 import {
   resolveFundsApprovalStep,
   markFundsRequestForApproval,
@@ -104,19 +104,21 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   if (step.step === "error") {
     return NextResponse.json({ error: step.error }, { status: 400 });
   }
-  // Phase 2 batch 8 (issue 132): no withdrawal is marked or paid without approved KYC (approveFundsRequest checks it
-  // again inside the paying transaction)
-  if (existing.type === "WITHDRAWAL" && !(await withdrawalKycApproved(prisma, existing.accountId))) {
-    return NextResponse.json({ error: WITHDRAWAL_KYC_ADMIN_MESSAGE, code: WITHDRAWAL_KYC_CODE }, { status: 409 });
-  }
+  // Owner 2026-10-06: staff MAY mark or pay a CLIENT withdrawal request whose KYC is not approved, as an audited
+  // override (the mark's audit row says so; approveFundsRequest writes a FUNDS_REQUEST_PAID_WITHOUT_KYC row on payout).
+  // The client's own request is still refused without KYC (app/api/trade/funds-requests). A row staff recorded
+  // (createdByAdminId set, lib/staff-funds.ts) is the broker's own decision and never checks KYC.
+  const staffRecorded = existing.createdByAdminId !== null;
+  const clientWithdrawal = existing.type === "WITHDRAWAL" && !staffRecorded;
   if (step.step === "mark") {
     // web5 (issues.md 71): marking starts a two-person approval; with no other eligible staff member it could never
     // be completed -- refused with the same words as every other maker-checker request
     if (!(await hasEligibleApprover(prisma, brokerId, session!.adminId, "FUNDS_APPROVAL"))) {
       return NextResponse.json({ error: NEEDS_BROKER_ADMIN }, { status: 409 });
     }
+    const withoutKyc = clientWithdrawal && !(await withdrawalKycApproved(prisma, existing.accountId));
     const marked = await prisma
-      .$transaction((tx) => markFundsRequestForApproval(tx, { transactionId: id, brokerId, adminId: session!.adminId }))
+      .$transaction((tx) => markFundsRequestForApproval(tx, { transactionId: id, brokerId, adminId: session!.adminId, withoutKyc }))
       .catch(raced);
     if (!marked) return racedResponse();
     await publishFundsRequestChanged({ brokerId, accountId: existing.accountId, transactionId: id, change: "marked" });
@@ -135,6 +137,8 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         type: existing.type as "DEPOSIT" | "WITHDRAWAL",
         approvalMode: step.single ? "SINGLE" : "DUAL",
         markedByAdminId: existing.markedByAdminId,
+        requireKyc: false,
+        kycOverride: clientWithdrawal,
       })
     )
     .catch(raced);

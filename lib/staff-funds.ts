@@ -2,7 +2,6 @@ import "server-only";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { lockAccountBalance } from "@/lib/account-lock";
 import { checkBalanceDebit } from "@/lib/margin";
-import { withdrawalKycApproved } from "@/lib/withdrawal-kyc";
 import { hasEligibleApprover } from "@/lib/approvers";
 import { approveFundsRequest, FundsRequestRaceError } from "@/lib/funds-approval";
 import { nextPspStatusOnMark } from "@/lib/psp/adapter";
@@ -167,7 +166,9 @@ export async function recordStaffFunds(
   if (prior) return outcomeOf(prior, true, []);
 
   const account = await prisma.account.findUniqueOrThrow({ where: { id: accountId }, select: { status: true, balance: true } });
-  if (account.status !== "ACTIVE") throw new StaffFundsError("ACCOUNT_NOT_ACTIVE", "the account is not active");
+  // Owner 2026-10-06: a staff WITHDRAWAL is allowed on a SUSPENDED or CLOSED account (paying the client out); a staff
+  // DEPOSIT into one is refused. Every other withdrawal guard (balance, margin, approval) still applies.
+  if (account.status !== "ACTIVE" && input.type === "DEPOSIT") throw new StaffFundsError("ACCOUNT_NOT_ACTIVE", "the account is not active: deposits are refused");
 
   // Payment method (decision 3): the built-in MANUAL method is always accepted; any other id must be one of the
   // broker's enabled methods. Its min/max are NOT enforced for staff, only reported back as warnings.
@@ -186,11 +187,8 @@ export async function recordStaffFunds(
     input.type === "DEPOSIT" ? actor.role === "BROKER_ADMIN" : actor.role === "BROKER_ADMIN" && broker.withdrawalApproval === "SINGLE";
   const marked = input.type === "WITHDRAWAL" && !completesNow; // the creator's own entry is the first approval
 
-  if (input.type === "WITHDRAWAL") {
-    if (!(await withdrawalKycApproved(prisma, accountId))) {
-      throw new StaffFundsError("KYC_REQUIRED", "withdrawal refused: this account's KYC is not approved");
-    }
-  }
+  // Owner 2026-10-06: no KYC check here. A staff deposit or withdrawal is the broker's own decision; the KYC rule is
+  // for the client's own withdrawal requests only (app/api/trade/funds-requests).
   // a request nobody else could ever approve is refused when filed (web5, lib/approvers.ts)
   if (!completesNow && !(await hasEligibleApprover(prisma, actor.brokerId, actor.adminId, "FUNDS_APPROVAL"))) {
     throw new StaffFundsError("NO_APPROVER", "needs a broker admin: no other staff member of this broker can approve this request");
@@ -269,6 +267,7 @@ export async function recordStaffFunds(
         type: input.type,
         approvalMode: input.type === "WITHDRAWAL" ? "SINGLE" : undefined,
         markedByAdminId: null,
+        requireKyc: false,
       });
       // a refusal rolls back the row created above: nothing is left behind
       if (!approved.ok) throw new StaffFundsError(approved.code, approved.error);

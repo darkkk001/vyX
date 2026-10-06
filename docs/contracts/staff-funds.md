@@ -50,9 +50,10 @@ A Waiting entry that no other staff member could ever approve is refused when fi
 - `idempotencyKey`: required, at most 100 characters, unique per broker. A repeated key returns the ORIGINAL result
   (same `transactionId`), never a second row, even when sent concurrently.
 
-Withdrawals: approved KYC is required (account KYC or its portal client's), and the balance after the withdrawal must
-be at least 0 with the margin level staying above the group's margin-call level. Checked when filed (also for a
-Waiting withdrawal) and again when completed.
+Withdrawals: KYC is NOT checked (owner 2026-10-06: a staff deposit or withdrawal is the broker's own decision, also
+when a second admin completes it; the KYC rule is for the client's own withdrawal requests only). The balance after the
+withdrawal must be at least 0 with the margin level staying above the group's margin-call level. Checked when filed
+(also for a Waiting withdrawal) and again when completed. `kycApproved` in the form data is information only.
 
 ### Responses
 
@@ -67,7 +68,7 @@ Errors are `{error, code}`:
 | Status | code |
 |---|---|
 | 400 | `TYPE_INVALID`, `AMOUNT_INVALID`, `NOTE_REQUIRED`, `NOTE_TOO_LONG`, `METHOD_INVALID`, `REFERENCE_TOO_LONG`, `IDEMPOTENCY_KEY_REQUIRED` |
-| 403 | `FORBIDDEN`, `KYC_REQUIRED` |
+| 403 | `FORBIDDEN` |
 | 404 | `NOT_FOUND` |
 | 409 | `INSUFFICIENT_BALANCE`, `MARGIN_TOO_LOW`, `NO_CONVERSION_RATE` (an open position cannot be valued right now, try again), `ACCOUNT_NOT_ACTIVE`, `NO_APPROVER` |
 
