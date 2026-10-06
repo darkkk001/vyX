@@ -113,7 +113,7 @@ export function traceRiskAction(actor: RiskOwner, kind: string, accountId: strin
   const file = process.env.VYX_RISK_ACTION_TRACE;
   if (!file) return;
   try {
-    fs.appendFileSync(file, JSON.stringify({ actor, kind, accountId, ref: reference }) + "\n");
+    fs.appendFileSync(file, JSON.stringify({ actor, kind, accountId, ref: reference, ts: Date.now() }) + "\n");
   } catch {
     // a trace that cannot be written never changes what the action does
   }

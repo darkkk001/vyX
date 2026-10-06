@@ -4,6 +4,8 @@
 export const LOAD_DBS = {
   web: "postgresql://postgres@127.0.0.1:5499/vyx_load_web",
   engine: "postgresql://postgres@127.0.0.1:5499/vyx_load_engine",
+  // Stage 6 split harness: the web and the engine act on the SAME database, each on the accounts it owns
+  split: "postgresql://postgres@127.0.0.1:5499/vyx_load_split",
 } as const;
 
 const url = process.env.DATABASE_URL;

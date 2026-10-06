@@ -274,7 +274,7 @@ pub fn trace_action(actor: RiskOwner, kind: &str, account_id: &str, reference: &
     });
     if let Some(f) = file {
         use std::io::Write;
-        let line = serde_json::json!({ "actor": actor.as_str(), "kind": kind, "accountId": account_id, "ref": reference });
+        let line = serde_json::json!({ "actor": actor.as_str(), "kind": kind, "accountId": account_id, "ref": reference, "ts": chrono::Utc::now().timestamp_millis() });
         let _ = writeln!(f.lock().unwrap_or_else(|p| p.into_inner()), "{line}");
     }
 }
