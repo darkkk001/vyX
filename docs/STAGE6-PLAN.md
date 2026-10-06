@@ -212,14 +212,30 @@ position has no action (the NEITHER case), or a side that owns work took none.
 Variants: `web`, `rust-demo`, `rust-all`, `mixed` (brokers alternate WEB / RUST demo-only / RUST all), `cross` (clients DEMO, masters and coverage LIVE: every
 effect crosses sides), `cross-topo` (cascade topologies split per account: invariants only, see the known limit in section 5).
 
-Results (2026-10-06, 100 clients + topologies, K = 2 walkers, seeds 1-3): __MATRIX_RESULT__
+Results (2026-10-06, 100 clients + topologies, K = 2 walkers, seeds 1-3): all 18 runs PASS (web, rust-demo, rust-all, mixed, cross, cross-topo x seeds 1-3; the verification run and a re-run of cross for seeds 2-3 after the last check was added). For
+the same 147 / 128 / 123 risk-closed positions of seeds 1 / 2 / 3, the split of who closed them:
+
+| variant (accounts: engine-owned / web-owned) | seed 1 web / engine closes | seed 2 | seed 3 |
+|---|---|---|---|
+| web (0 / 152) | 147 / 0 | 128 / 0 | 123 / 0 |
+| rust-demo (63 / 89) | 81 / 66 | 70 / 58 | 73 / 50 |
+| rust-all (152 / 0) | 0 / 147 | 0 / 128 | 0 / 123 |
+| mixed (58 / 94) | 83 / 64 | 67 / 61 | 75 / 48 |
+| cross (112 / 40), effects across sides | 35 / 112 (66 effect closes landed on web-owned accounts from engine-owned sources) | 35 / 93 (70) | 35 / 88 (63) |
+| cross-topo (86 / 66), invariants only | 56 / 93 | 45 / 85 | 48 / 77 |
+
+In every run: the end state equals the web reference id by id (except cross-topo, invariants only), 0 differences, every outbox row DONE exactly once, no position closed by two actions,
+no action by the wrong side, every risk-closed position has exactly one action by its owner. The `web` and `rust-all` rows are the two ends of the airtight claim: a side that owns nothing took
+ZERO actions while the other side was running at full speed on the same database.
 
 ### 8.3 The WEB-fallback drill under load
 
 `run-split.sh --variant rust-all --drill`: broker flags RUST (all accounts engine-owned), the engine running; after its first 10 stop-out closes ONE statement
 flips every RUST broker to WEB (the runbook's SQL, timestamp taken from the database clock by the statement itself). The web, polling all along, takes
 over the rest. Checked on top of (a)-(c): every engine close started before the flip, every web action came after it, BOTH sides worked, and the end state
-still equals the web reference. Result: __DRILL_RESULT__
+still equals the web reference. Result: all three seeds PASS (150 + topologies, 212 accounts, every account engine-owned at the start). Seed 1: 24 engine closes before the flip, then the web took 188 closes and 38 margin-call writes;
+seed 2: 16 engine / 174 web; seed 3: 16 engine / 169 web. In each: every engine close started before the flip, every web action came after it, the end state equals the web reference, and
+exactly-once holds (a position closed in the flip window was closed by exactly one side).
 
 ## 9. Runbook: the flip sequence, the fallback, and how to confirm
 
@@ -345,11 +361,12 @@ Returning to RUST afterwards is the 9.1 / 9.3 statement again.
 
 Deploy order (after the soak gate, not before):
 
-1. **Migration** `20261007090000_broker_risk_authority` (additive, idempotent, every broker defaults to WEB and demo-only: it changes nothing by itself), with
+1. **Migration** `20261007090000_broker_risk_authority` (additive, idempotent, every broker defaults to WEB and demo-only: it changes nothing by itself; it must precede the web), with
    `prisma migrate deploy` and BOTH `DATABASE_URL` and `DIRECT_URL` set to the live database (never `migrate dev`). Then the one-line grants of `deploy/neon-shadow-readonly.sql` for the
    shadow role if the shadow keeps running elsewhere.
-2. **Web** (Vercel, main): the web with the skip and the in-transaction check. Before the migration it answers WEB for every account (a missing column is handled), so the order
-   migration then web is safe, and web then migration is safe too. Set `POST_CLOSE_SECRET` (the same value the VPS will use). Verify: `/api/internal/pending-trigger` answers 401 without the bearer, a
+2. **Web** (Vercel, main): the web with the skip and the in-transaction check. **The migration MUST be applied first**: the generated Prisma client selects every `Broker` column
+   (`riskAuthority`, `riskAuthorityDemoOnly` included) in every unrestricted broker query, so a web built from this branch against a database without the columns fails on those queries
+   (the web's own risk helpers tolerate the missing column and answer WEB, but that does not save the rest of the app). Set `POST_CLOSE_SECRET` (the same value the VPS will use). Verify: `/api/internal/pending-trigger` answers 401 without the bearer, a
    margin-monitor pass logs 200.
 3. **Engine** (VPS): `ENGINE_ORDER_MANAGEMENT=risk`, `VYX_POST_CLOSE_URL`, `VYX_POST_CLOSE_SECRET` (and, optionally, `VYX_PENDING_TRIGGER_URL`; it defaults to the hook URL with
    `/pending-trigger`). Risk mode REPLACES the shadow in the same process (the shadow refuses when the post-close variables are set): the soak instrumentation for WEB-owned accounts stops
@@ -385,3 +402,27 @@ Open decisions (none blocks the build; each changes the deploy):
 4. **Cascades across sides** are not in the web's id order (section 5). If a broker ever configures a mirror or coverage chain whose accounts sit on different sides, the result can differ from the web-only
    result in the order-dependent cases (never in the exactly-once invariants). The product answer is to keep a chain on one side (same broker authority AND the same account mode).
 5. The legacy `ENGINE_ORDER_MANAGEMENT=1` mode now also enforces ownership (it would otherwise act on every account it is handed). It acts on nothing until a broker is RUST.
+
+## 13. Verification record (2026-10-06, scratch databases only)
+
+| Gate | Baseline (60baeda) | This branch |
+|---|---|---|
+| `cargo test --no-fail-fast`, all crates (`scripts/test-engine.sh` stops at the first failing binary, so the counts need `--no-fail-fast`) | 360 passed, 0 failed, 1 ignored | **377 passed, 0 failed, 1 ignored** (+17: 2 authority, 6 hook partition, 9 `risk_split_db`) |
+| known flake `reconcile_soak_gate_db::pairs_stored_without_a_broker_since_the_soak_start_get_it_filled_in` | fails in some full runs, passes alone | same, unrelated to this branch (seen in the fail-fast run, passes alone) |
+| parity `scripts/parity/run-db.sh` | 27 / 27 | **27 / 27 MATCH**, 0 FAIL |
+| `scripts/load/shadow-gate.sh` | green | **GREEN**, 0 unexplained |
+| `scripts/load/run.sh` seeds 1-3, 100 accounts, 2 walkers (Stage 4, engine alone) | 0 differences | **0 differences**, 3 / 3 |
+| split matrix (section 8) | n/a | 18 / 18 + 3 / 3 drills PASS |
+| post-close gate (`lib/post-close.test.ts` on the harness DB) | 27 tests | **29 passed** (the margin-call event and end-of-episode delivery) |
+| web `vitest run` with `REDIS_URL=redis://localhost:6379` | 127 files passed + 1 skipped, 1910 tests | **131 files passed + 1 skipped, 1935 tests passed** (+4 files: risk-owner, risk-split, risk-split-stale, risk-split-flip) |
+| `npx tsc --noEmit` | clean | clean |
+| `npm run build` | n/a | passes |
+| mutation check (`scripts/stage6/mutation-check.sh`) | n/a | **9 / 9 detected** |
+
+The 9 mutations, each caught by a named test (the script prints which): M1 a web path that does not skip engine-owned accounts; M2 the web's in-transaction check removed; M3 both
+(the web acts on engine-owned accounts: detected as a double action by the trace); M4 the engine acts on a WEB-owned account; M5 the engine's in-transaction check removed; M6 the
+demo-only scope ignored (engine rule); M7 the same (web rule); M8 the live fire still PINNED; M9 the announced reload not evaluating at once.
+`bash scripts/stage6/verify-all.sh` runs the whole record in one go.
+
+Commits on `engine/stage6` (pushed to `newrepo` after each): `ad778c9` web skip and handoff, `da941fd` engine risk mode and fire channel, `2ecc12b` split harness and drill,
+`9634b5d` margin-call parity, then the fill-event evaluation, the verification scripts, the test hygiene and this document.

@@ -20,10 +20,10 @@ import { riskOwnerOf, type RiskOwner } from "@/lib/risk-authority";
 //    (engine/order-management/src/authority.rs lock_owner_in_tx). The lock order Position -> Account -> Broker is the
 //    one every close already follows (no new deadlock cycle), and FOR SHARE does not conflict with the FK checks.
 //
-// Pre-migration safety: before the Stage 6 migration there are no riskAuthority columns, and every broker is WEB by
-// definition. A missing column therefore answers "WEB" instead of failing the whole risk path (deploy order is
-// migration -> web -> engine, but a web that lands first must not stop acting on risk). It is re-probed every 30 s
-// while absent and never again once seen.
+// Pre-migration tolerance: before the Stage 6 migration there are no riskAuthority columns, and every broker is WEB by
+// definition. A missing column therefore answers "WEB" here instead of failing the risk path. This is NOT a licence to deploy the web
+// first: the generated Prisma client selects every Broker column in unrestricted broker queries, so the deploy order is migration ->
+// web -> engine (docs/STAGE6-PLAN.md section 11). The probe is re-run every 30 s while the columns are absent and never again once seen.
 
 type Db = Pick<PrismaClient, "$queryRaw"> | Pick<Prisma.TransactionClient, "$queryRaw">;
 
