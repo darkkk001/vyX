@@ -2508,3 +2508,6 @@ Resolved 2026-10-01 (owner): broker-wide **Max slippage** (DEAL, CFG) is stored 
 | GRP | System groups hidden (picker footer) | Hedge groups hidden | — | — |
 | DLS | Void trade… / VOID CLOSED TRADE / VOID TRADE | keep | — | A closed trade's result, commission and swap are taken back from the account. A manager's void waits for an admin. Refused when the balance would go below 0 or the account is closed. |
 | CFG | Session timeout (minutes) · Audit log kept for (days) · Auto-approve withdrawals up to ({CCY}) · Hedging allowed | keep | minutes / days / broker currency | Live (step 3b item 2). Session timeout counts from sign-in. Audit log: at least 365 days, empty = kept forever. Auto-approve: empty = off, client KYC still applies. |
+
+| SEC | Session timeout / Password change interval / Allowed IP addresses | Session timeout (minutes) / Password change interval (days) / Allowed IP addresses | minutes / days | Live (step 3b item 3), admin only; empty = off. The list must contain your own address when you save it. The address is the first hop of x-forwarded-for. A person whose password is older than the interval can only change it. |
+| SEC | Passkeys & security keys, API keys | hidden | — | Not built: passkeys need an operating system sign-in call the native app does not have yet; API keys have no user (owner 2026-10-07). |

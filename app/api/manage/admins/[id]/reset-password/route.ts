@@ -38,7 +38,7 @@ export async function POST(_request: NextRequest, { params }: { params: Promise<
   const passwordHash = await bcrypt.hash(password, 10);
 
   await prisma.$transaction([
-    prisma.adminUser.update({ where: { id: admin.id }, data: { passwordHash } }),
+    prisma.adminUser.update({ where: { id: admin.id }, data: { passwordHash, passwordChangedAt: null } }),
     prisma.auditLog.create({
       data: {
         brokerId,

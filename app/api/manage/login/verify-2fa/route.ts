@@ -1,3 +1,4 @@
+import { staffAddressAllowed, STAFF_IP_REFUSED } from "@/lib/staff-access";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { createSessionToken, SESSION_COOKIE_NAME, sessionCookieOptions } from "@/lib/auth";
@@ -62,6 +63,7 @@ export async function POST(request: NextRequest) {
   }
 
   await Promise.all([deletePendingAdmin2faChallenge(pendingToken), clearFailures(lockoutKey!)]);
+  if (!(await staffAddressAllowed(admin.brokerId, request.headers))) return NextResponse.json(STAFF_IP_REFUSED, { status: 403 });
 
   // Phase 2 batch 4: device metadata (same as the password-only path in
   // ../route.ts) -- without it a 2FA-verified session was never indexed, so it

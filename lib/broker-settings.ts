@@ -1,4 +1,5 @@
 import { Prisma } from "@prisma/client";
+import { MAX_PASSWORD_MAX_AGE_DAYS, MIN_PASSWORD_MAX_AGE_DAYS } from "@/lib/ip-allowlist";
 
 // Step 3b item 2 (owner 2026-10-07): validation of the four new broker settings (PATCH /api/manage/settings).
 export const MIN_AUDIT_RETENTION_DAYS = 365; // owner: never under a year
@@ -11,6 +12,7 @@ export type NewSettings = {
   auditRetentionDays?: number | null;
   autoApproveWithdrawalMax?: Prisma.Decimal | null;
   hedgingAllowed?: boolean;
+  passwordMaxAgeDays?: number | null;
 };
 export type ParseResult = { ok: true; data: NewSettings } | { ok: false; error: string };
 
@@ -54,6 +56,15 @@ export function parseNewSettings(body: Record<string, unknown> | null): ParseRes
         return { ok: false, error: "auto-approve amount must be more than 0, with at most 2 decimals" };
       }
       data.autoApproveWithdrawalMax = d;
+    }
+  }
+  if ("passwordMaxAgeDays" in body) {
+    const v = body.passwordMaxAgeDays;
+    if (v === null || v === "") data.passwordMaxAgeDays = null;
+    else {
+      const n = wholeNumber(v);
+      if (n === null || n < MIN_PASSWORD_MAX_AGE_DAYS || n > MAX_PASSWORD_MAX_AGE_DAYS) return { ok: false, error: `password change interval must be ${MIN_PASSWORD_MAX_AGE_DAYS} to ${MAX_PASSWORD_MAX_AGE_DAYS} days, or off` };
+      data.passwordMaxAgeDays = n;
     }
   }
   if ("hedgingAllowed" in body) {

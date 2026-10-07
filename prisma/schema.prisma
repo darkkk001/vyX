@@ -454,6 +454,13 @@ model Broker {
   // false = no account may hold both sides of one symbol (lib/hedging.ts, every open path). Default true = today.
   hedgingAllowed Boolean @default(true)
 
+  // Step 3b item 3 (owner 2026-10-07), set by BROKER_ADMIN only, audited (app/api/manage/settings).
+  // Staff must change their own password when it is older than this many days; null = no interval (lib/ip-allowlist.ts passwordExpired).
+  passwordMaxAgeDays Int?
+  // Staff sign-in and every staff request must come from one of these addresses (IPv4, IPv4 /8 to /32, IPv6 exact); empty = off.
+  // The address is the first hop of x-forwarded-for (lib/ip-allowlist.ts clientIpFromHeaders). Super Admin is never limited by it.
+  staffIpAllowlist String[] @default([])
+
   // Phase 2 pricing engine (2026-09-07) -- false (default) = every fill
   // site and lib/swap-rollover.ts keep resolving pricing exactly as
   // before (Group/GroupSymbolConfig only, via lib/group-pricing.ts's
@@ -565,6 +572,9 @@ model AdminUser {
   role             AdminRole
   status           AdminStatus @default(ACTIVE)
   lastLoginAt      DateTime?   @db.Timestamptz(3)
+  // Step 3b item 3: when this person last set their own password (null = never recorded: the account's creation date counts; an admin's
+  // reset sets it back to null, so a temporary password is replaced at the next sign-in when the broker has a change interval).
+  passwordChangedAt DateTime? @db.Timestamptz(3)
   // Extra BROKER_ADMIN-only capabilities delegated to a MANAGER-role
   // admin -- see lib/permissions.ts's PERMISSIONS list. Meaningless for
   // BROKER_ADMIN (already has everything implicitly) and SUPPORT (no

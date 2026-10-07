@@ -5,6 +5,7 @@ import { createSessionToken, SESSION_COOKIE_NAME, sessionCookieOptions, TWO_FACT
 import { checkRateLimit } from "@/lib/rate-limit";
 import { checkClientBuild, clientBuildErrorMessage } from "@/lib/client-builds";
 import { issuePendingAdmin2faChallenge } from "@/lib/totp";
+import { staffAddressAllowed, STAFF_IP_REFUSED } from "@/lib/staff-access";
 
 // Manager's own login route, not app/api/admin/login/route.ts — that one
 // has no broker-match check (fine for Super Admin, which always runs on
@@ -67,6 +68,9 @@ export async function POST(request: NextRequest) {
   if (!passwordMatches) {
     return invalid();
   }
+
+  // step 3b item 3: the broker's staff IP allowlist (after the password, so nothing leaks to a stranger)
+  if (!(await staffAddressAllowed(admin.brokerId, request.headers))) return NextResponse.json(STAFF_IP_REFUSED, { status: 403 });
 
   // Password alone isn't enough once 2FA is turned on -- issue a
   // short-lived pending challenge instead of a real session; POST

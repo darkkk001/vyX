@@ -7,6 +7,7 @@ import type { AdminRole } from "@prisma/client";
 import { getRedis } from "@/lib/redis";
 import { prisma } from "@/lib/prisma";
 import { cookieScopeDomain } from "@/lib/cookie-domain";
+import { clientIpFromHeaders, ipAllowed, passwordExpired } from "@/lib/ip-allowlist";
 
 export const SESSION_COOKIE_NAME = "vyx_admin_session";
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 7; // 7 days -- Redis TTL backstop, same as lib/account-auth.ts's own
@@ -49,6 +50,16 @@ export const STAFF_ENROLLMENT_API_ALLOWLIST: ReadonlySet<string> = new Set([
   "/api/manage/shell-info",
 ]);
 
+export const PASSWORD_CHANGE_REQUIRED = "PASSWORD_CHANGE_REQUIRED";
+export const PASSWORD_CHANGE_REQUIRED_PATH = "/api/manage/password-change-required";
+export const PASSWORD_CHANGE_API_ALLOWLIST: ReadonlySet<string> = new Set([
+  "/api/admin/change-password",
+  "/api/admin/logout",
+  "/api/admin/sessions",
+  "/api/admin/theme",
+  "/api/manage/shell-info",
+]);
+
 export type AdminSessionPayload = {
   adminId: string;
   role: AdminRole;
@@ -69,6 +80,9 @@ export type AdminSessionPayload = {
   // enrolment path (see STAFF_ENROLLMENT_API_ALLOWLIST) or a web page (the
   // manage shell layout steers those to /manage/security).
   twoFactorSetupRequired?: boolean;
+  // Set (never stored) by getAdminSession when the broker's password change interval has run out for this person (step 3b item 3):
+  // the session may only change the password, read its shell-info and sign out.
+  passwordChangeRequired?: boolean;
 };
 
 export type SessionMetadata = {
@@ -330,7 +344,7 @@ export async function getAdminSession(): Promise<AdminSessionPayload | null> {
   // traffic is low enough for this to be cheap.
   const liveAdmin = await prisma.adminUser.findUnique({
     where: { id: session.adminId },
-    select: { status: true, role: true, twoFactorEnabled: true, broker: { select: { sessionTimeoutMinutes: true } } },
+    select: { status: true, role: true, twoFactorEnabled: true, passwordChangedAt: true, createdAt: true, broker: { select: { sessionTimeoutMinutes: true, staffIpAllowlist: true, passwordMaxAgeDays: true } } },
   });
   if (!liveAdmin || liveAdmin.status !== "ACTIVE" || liveAdmin.role !== session.role) {
     if (liveAdmin && liveAdmin.status !== "ACTIVE") {
@@ -343,6 +357,12 @@ export async function getAdminSession(): Promise<AdminSessionPayload | null> {
   // Session timeout (step 3b item 2a): broker staff only, applied on every request so a lowered limit bites at once.
   if (sessionExpired(session.iat, liveAdmin.broker?.sessionTimeoutMinutes ?? null, Date.now())) {
     await revokeSessionToken(token).catch(() => {});
+    return null;
+  }
+
+  // Staff IP allowlist (step 3b item 3): broker staff only, checked on every request (the address is the first hop of x-forwarded-for).
+  if (liveAdmin.broker && liveAdmin.broker.staffIpAllowlist.length > 0 && !ipAllowed(clientIpFromHeaders(await headers()), liveAdmin.broker.staffIpAllowlist)) {
+    console.error("[auth] getAdminSession: address not on the staff allowlist", { adminId: session.adminId });
     return null;
   }
 
@@ -371,6 +391,13 @@ export async function getAdminSession(): Promise<AdminSessionPayload | null> {
       redirect(TWO_FACTOR_SETUP_REQUIRED_PATH);
     }
     return { ...session, twoFactorSetupRequired: true };
+  }
+
+  // Password change interval (step 3b item 3): an expired password confines the session to changing it.
+  if (liveAdmin.broker && passwordExpired(liveAdmin.passwordChangedAt, liveAdmin.createdAt, liveAdmin.broker.passwordMaxAgeDays, new Date())) {
+    const path = (await headers()).get("x-pathname") ?? "";
+    if (path.startsWith("/api/") && !PASSWORD_CHANGE_API_ALLOWLIST.has(path)) redirect(PASSWORD_CHANGE_REQUIRED_PATH);
+    return { ...session, passwordChangeRequired: true };
   }
 
   return session;
