@@ -2499,3 +2499,12 @@ Resolved 2026-10-01 (owner): broker-wide **Max slippage** (DEAL, CFG) is stored 
 
 ## Note (2026-09-25, after Batch 3)
 - The symbol limit is enforced per account as the total of its open lots (lib/risk.ts checkSymbolExposure), not as a broker-wide net: rows above were corrected to "Max lots per account (lots)". Backoffice 1.0.26 already shows the largest account against it.
+
+## Step 3b additions (owner 2026-10-07)
+
+| Screen | Old label | New label | Unit | Note |
+|---|---|---|---|---|
+| GRP | DEALING (column) and DEALING DESK (checkbox column) | ROUTING | — | One column. Values: Book (B-book, and a Dealing desk group that is not forced) · Book · Dealer (the Dealing desk box is checked) · the LP's name (A-book group with a connected LP) · No LP (red, A-book group without one) · Copy rule (reverse trading) · Hedge (the broker's hedge group). The Dealing desk checkbox stays in the group form. "Automatic dealing" and "System" are not used in the Groups list or form. |
+| GRP | System groups hidden (picker footer) | Hedge groups hidden | — | — |
+| DLS | Void trade… / VOID CLOSED TRADE / VOID TRADE | keep | — | A closed trade's result, commission and swap are taken back from the account. A manager's void waits for an admin. Refused when the balance would go below 0 or the account is closed. |
+| CFG | Session timeout (minutes) · Audit log kept for (days) · Auto-approve withdrawals up to ({CCY}) · Hedging allowed | keep | minutes / days / broker currency | Live (step 3b item 2). Session timeout counts from sign-in. Audit log: at least 365 days, empty = kept forever. Auto-approve: empty = off, client KYC still applies. |
