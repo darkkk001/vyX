@@ -91,6 +91,7 @@ export const MANIFEST: Row[] = [
   { mod: "accounts/[id]/reset-2fa/route", method: "POST", perm: "BROKER_ADMIN_ONLY", needsId: true, body: {} },
   { mod: "admins/[id]/reset-2fa/route", method: "POST", perm: "BROKER_ADMIN_ONLY", needsId: true, body: {} },
   { mod: "admins/[id]/sign-out/route", method: "POST", perm: "BROKER_ADMIN_ONLY", needsId: true, body: {} },
+  { mod: "admins/[id]/sign-ins/route", method: "GET", perm: "BROKER_ADMIN_ONLY", needsId: true },
   { mod: "emergency/sign-out-clients/route", method: "POST", perm: "BROKER_ADMIN_ONLY", body: {} },
   { mod: "mirror-rules/[id]/route", method: "DELETE", perm: "MIRROR_MANAGE", needsId: true },
   { mod: "liquidity-providers/[id]/route", method: "DELETE", perm: "BROKER_ADMIN_ONLY", needsId: true },

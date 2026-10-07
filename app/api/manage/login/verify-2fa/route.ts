@@ -1,4 +1,5 @@
 import { staffAddressAllowed, STAFF_IP_REFUSED } from "@/lib/staff-access";
+import { recordStaffSignIn } from "@/lib/staff-devices";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { createSessionToken, SESSION_COOKIE_NAME, sessionCookieOptions } from "@/lib/auth";
@@ -63,7 +64,10 @@ export async function POST(request: NextRequest) {
   }
 
   await Promise.all([deletePendingAdmin2faChallenge(pendingToken), clearFailures(lockoutKey!)]);
-  if (!(await staffAddressAllowed(admin.brokerId, request.headers))) return NextResponse.json(STAFF_IP_REFUSED, { status: 403 });
+  if (!(await staffAddressAllowed(admin.brokerId, request.headers))) {
+    await recordStaffSignIn({ adminId: admin.id, brokerId: admin.brokerId, headers: request.headers, outcome: "IP_BLOCKED" });
+    return NextResponse.json(STAFF_IP_REFUSED, { status: 403 });
+  }
 
   // Phase 2 batch 4: device metadata (same as the password-only path in
   // ../route.ts) -- without it a 2FA-verified session was never indexed, so it
@@ -74,6 +78,7 @@ export async function POST(request: NextRequest) {
   const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? null;
   const token = await createSessionToken({ adminId: admin.id, role: admin.role, brokerId: admin.brokerId }, remember, { userAgent, ip });
   await prisma.adminUser.update({ where: { id: admin.id }, data: { lastLoginAt: new Date() } });
+  await recordStaffSignIn({ adminId: admin.id, brokerId: admin.brokerId, headers: request.headers, outcome: "SIGNED_IN" });
 
   const response = NextResponse.json({ id: admin.id, email: admin.email, role: admin.role, brokerId: admin.brokerId });
   response.cookies.set(SESSION_COOKIE_NAME, token, await sessionCookieOptions(remember));

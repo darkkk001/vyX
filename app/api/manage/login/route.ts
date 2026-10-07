@@ -6,6 +6,7 @@ import { checkRateLimit } from "@/lib/rate-limit";
 import { checkClientBuild, clientBuildErrorMessage } from "@/lib/client-builds";
 import { issuePendingAdmin2faChallenge } from "@/lib/totp";
 import { staffAddressAllowed, STAFF_IP_REFUSED } from "@/lib/staff-access";
+import { recordStaffSignIn } from "@/lib/staff-devices";
 
 // Manager's own login route, not app/api/admin/login/route.ts — that one
 // has no broker-match check (fine for Super Admin, which always runs on
@@ -70,7 +71,10 @@ export async function POST(request: NextRequest) {
   }
 
   // step 3b item 3: the broker's staff IP allowlist (after the password, so nothing leaks to a stranger)
-  if (!(await staffAddressAllowed(admin.brokerId, request.headers))) return NextResponse.json(STAFF_IP_REFUSED, { status: 403 });
+  if (!(await staffAddressAllowed(admin.brokerId, request.headers))) {
+    await recordStaffSignIn({ adminId: admin.id, brokerId: admin.brokerId, headers: request.headers, outcome: "IP_BLOCKED" });
+    return NextResponse.json(STAFF_IP_REFUSED, { status: 403 });
+  }
 
   // Password alone isn't enough once 2FA is turned on -- issue a
   // short-lived pending challenge instead of a real session; POST
@@ -95,6 +99,7 @@ export async function POST(request: NextRequest) {
   );
 
   await prisma.adminUser.update({ where: { id: admin.id }, data: { lastLoginAt: new Date() } });
+  await recordStaffSignIn({ adminId: admin.id, brokerId: admin.brokerId, headers: request.headers, outcome: "SIGNED_IN" });
 
   // Phase 2 batch 4: 2FA is mandatory for every backoffice staff member. Reaching
   // here means this admin has NOT enrolled yet (an enrolled one got the TOTP

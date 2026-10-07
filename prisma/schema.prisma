@@ -575,6 +575,7 @@ model AdminUser {
   // Step 3b item 3: when this person last set their own password (null = never recorded: the account's creation date counts; an admin's
   // reset sets it back to null, so a temporary password is replaced at the next sign-in when the broker has a change interval).
   passwordChangedAt DateTime? @db.Timestamptz(3)
+  signIns           AdminSignIn[]
   // Extra BROKER_ADMIN-only capabilities delegated to a MANAGER-role
   // admin -- see lib/permissions.ts's PERMISSIONS list. Meaningless for
   // BROKER_ADMIN (already has everything implicitly) and SUPPORT (no
@@ -637,6 +638,21 @@ model AdminUser {
 // each code is consumed (usedAt set) the moment it's used to complete a
 // login, never deleted, so "was this code already used" survives a
 // re-generation cycle's own delete-then-recreate.
+// Step 3b item 5 (owner 2026-10-07): one row per staff sign-in (and per sign-in an IP allowlist refused): the address is the first hop of
+// x-forwarded-for (lib/ip-allowlist.ts). Read by a broker admin on Staff (devices and IP addresses); the newest 200 per person are kept.
+model AdminSignIn {
+  id        String    @id @default(cuid())
+  adminId   String
+  adminUser AdminUser @relation(fields: [adminId], references: [id], onDelete: Cascade)
+  brokerId  String?
+  ip        String
+  userAgent String
+  outcome   String // SIGNED_IN | IP_BLOCKED
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+
+  @@index([adminId, createdAt])
+}
+
 model AdminBackupCode {
   id        String    @id @default(cuid())
   adminId   String
