@@ -42,7 +42,7 @@ export async function POST(request: NextRequest) {
         error:
           existing.status === "PENDING"
             ? "you already have a submission under review"
-            : "your identity is already verified",
+            : "your KYC is already verified",
       },
       { status: 409 }
     );

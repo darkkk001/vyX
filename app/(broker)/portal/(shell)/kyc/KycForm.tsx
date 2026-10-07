@@ -1,5 +1,6 @@
 "use client";
 
+import { kycWord } from "@/lib/kyc-words";
 import { useState } from "react";
 import styles from "@/components/portal/PortalShell.module.css";
 import { plainError } from "@/lib/plain-error";
@@ -125,11 +126,11 @@ export default function KycForm({ initialRecord }: { initialRecord: KycRecordVie
     <div className={styles.panel} style={{ maxWidth: 640 }}>
       {record && record.status !== "REJECTED" ? (
         <>
-          <h2 className={styles.panelTitle}>Identity verification</h2>
+          <h2 className={styles.panelTitle}>KYC</h2>
           <p className={styles.panelText} style={{ marginBottom: 14 }}>
             {record.status === "PENDING"
               ? "Your documents are under review. This usually takes 1-2 business days."
-              : "Your identity is verified. You can open a Live account any time."}
+              : "Your KYC is verified. You can open a Live account any time."}
           </p>
           <span
             className={styles.statusBadge}
@@ -138,12 +139,12 @@ export default function KycForm({ initialRecord }: { initialRecord: KycRecordVie
               background: record.status === "APPROVED" ? "color-mix(in srgb, var(--accent) 16%, transparent)" : "var(--bg-2)",
             }}
           >
-            {record.status}
+            {kycWord(record.status)}
           </span>
         </>
       ) : (
         <>
-          <h2 className={styles.panelTitle}>Verify your identity</h2>
+          <h2 className={styles.panelTitle}>Complete your KYC</h2>
           <p className={styles.panelText} style={{ marginBottom: 18 }}>
             Submit your ID and a short suitability questionnaire once. Every Live account you open later reuses this approval.
           </p>

@@ -6,6 +6,8 @@ The labels come from `ui-map.md` (the bo-* and term-* sections). They were check
 
 ## Owner decision 2026-10-07: KYC wording
 
+EVERYWHERE (owner, 2026-10-07, widened the same day): backoffice, terminal, WebTrader, client portal, staff and client route messages, and every e-mail. One word, "KYC"; values Not verified, Pending, Verified, Rejected; no "ID check", "Identity verification", "Verify identity", "Not started" or "Not submitted" anywhere user-visible. Wording: client withdrawal refusal stays "KYC not verified"; portal "Upload again" stays. E-mails (to be built after step 7) use: subjects "Your KYC is approved" / "Your KYC needs new documents"; headings "KYC approved" / "KYC not approved" (lib/kyc-words.ts KYC_EMAIL). Guards: tests/kyc-wording.test.ts (web) and HotfixUiSweepTests (backoffice, terminal, shared code).
+
 The backoffice says "KYC" (column, chips, filters, menu, inspector, dialogs, nav). Values: Not verified, Pending, Verified, Rejected. "ID check" and "Not started" are dropped ("Not started" is now "Not verified"). Menu items: Approve KYC…, Reject KYC…. Rows below that still say "ID check" in the old-label column are history; the new-label column is replaced. Places outside the backoffice that still say "ID check" are listed in the step 3b report, for the owner to decide.
 
 ## Number rules (owner 2026-10-05 / 2026-10-06)

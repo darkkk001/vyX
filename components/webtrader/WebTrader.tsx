@@ -1,5 +1,6 @@
 "use client";
 
+import { kycWord } from "@/lib/kyc-words";
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import {
   SYMBOL_DEFS,
@@ -5529,25 +5530,25 @@ export default function WebTrader({
         </div>
       ) : null}
 
-      {/* ---------- Verify identity (KYC) modal ---------- */}
+      {/* ---------- KYC modal ---------- */}
       {kycModalOpen ? (
         <div className="modal-overlay show" onClick={(e) => { if (e.target === e.currentTarget) setKycModalOpen(false); }}>
           <div className="modal-wrap">
             <button className="modal-close" aria-label="Close" onClick={() => setKycModalOpen(false)}>✕</button>
             <div className="generic-modal-card" style={{ width: 320 }}>
-              <div className="generic-modal-title">Verify identity</div>
+              <div className="generic-modal-title">KYC</div>
               {kycStatus && kycStatus.status !== "REJECTED" ? (
                 <>
                   <p style={{ fontSize: 13, margin: "8px 0" }}>
                     Status:{" "}
                     <strong style={{ color: kycStatus.status === "APPROVED" ? "var(--buy)" : undefined }}>
-                      {kycStatus.status}
+                      {kycWord(kycStatus.status)}
                     </strong>
                   </p>
                   <p style={{ fontSize: 12, color: "var(--text-3)" }}>
                     {kycStatus.status === "PENDING"
                       ? "Your documents are under review."
-                      : "Your identity is verified."}
+                      : "Your KYC is verified."}
                   </p>
                   <div className="modal-actions" style={{ marginTop: 16 }}>
                     <button type="button" className="modal-btn secondary" onClick={() => setKycModalOpen(false)}>Close</button>
@@ -5565,7 +5566,7 @@ export default function WebTrader({
                     setKycSubmitting(true);
                     try {
                       await tradeApi.submitKyc(kycDocumentType, kycFront, kycBack);
-                      pushToast("Identity documents submitted, pending review");
+                      pushToast("KYC documents sent. Pending.");
                       setKycFront(null);
                       setKycBack(null);
                       await refreshKycStatus();

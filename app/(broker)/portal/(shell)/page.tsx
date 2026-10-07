@@ -1,3 +1,4 @@
+import { kycWord } from "@/lib/kyc-words";
 import Link from "next/link";
 import { getClientSession } from "@/lib/client-auth";
 import { prisma } from "@/lib/prisma";
@@ -43,7 +44,7 @@ export default async function PortalDashboardPage() {
         <div className={styles.statCard}>
           <div className={styles.statLabel}>KYC status</div>
           <div className={styles.statValue} style={{ fontSize: 15 }}>
-            {kyc?.status === "APPROVED" ? "Approved" : kyc?.status === "REJECTED" ? "Rejected" : kyc ? "Pending review" : "Not submitted"}
+            {kycWord(kyc?.status)}
           </div>
         </div>
       </div>

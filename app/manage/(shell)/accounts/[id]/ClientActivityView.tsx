@@ -1,5 +1,6 @@
 "use client";
 
+import { kycWord } from "@/lib/kyc-words";
 import { useEffect, useState } from "react";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Badge } from "@/components/ui/Badge";
@@ -77,7 +78,7 @@ export default function ClientActivityView({ accountId, backLink }: { accountId:
     <main className="mx-auto max-w-[1000px]">
       <PageHeader
         title={`${account.fullName} - ${account.accountNumber}`}
-        description={`${account.email} · ${account.accountMode} · ${account.status} · Group: ${account.groupName ?? "ungrouped"} · KYC: ${account.kycStatus ?? "none"}`}
+        description={`${account.email} · ${account.accountMode} · ${account.status} · Group: ${account.groupName ?? "ungrouped"} · KYC: ${kycWord(account.kycStatus)}`}
         action={account.accountTypeName ? <Badge tone="accent">{account.accountTypeName}</Badge> : null}
       />
       <p className="mb-4">

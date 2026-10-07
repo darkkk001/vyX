@@ -1,5 +1,6 @@
 "use client";
 
+import { kycWord } from "@/lib/kyc-words";
 import { useEffect, useState } from "react";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
@@ -471,7 +472,7 @@ export default function AccountsManager({ onOpenAccount }: { onOpenAccount?: (ac
                   </Select>
                 </TableCell>
                 <TableCell className="min-w-[90px]">{row.country ?? ""}</TableCell>
-                <TableCell className="min-w-[90px]">{row.kycStatus ? <Badge tone={kycTone[row.kycStatus]}>{row.kycStatus}</Badge> : <Badge tone="neutral">NO KYC</Badge>}</TableCell>
+                <TableCell className="min-w-[90px]">{row.kycStatus ? <Badge tone={kycTone[row.kycStatus]}>{kycWord(row.kycStatus)}</Badge> : <Badge tone="neutral">{kycWord(null)}</Badge>}</TableCell>
                 <TableCell className="min-w-[160px]">
                   <Select
                     value={row.groupId ?? ""}

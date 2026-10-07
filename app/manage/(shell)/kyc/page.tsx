@@ -22,7 +22,7 @@ export default async function ManagerKycPage() {
     <main className="mx-auto max-w-6xl">
       <PageHeader
         title="KYC"
-        description="Every verification waiting for review. Client Portal submissions (identity documents + suitability) first; in-app WebTrader submissions below."
+        description="Every KYC pending review. Client Portal submissions (documents + suitability) first; in-app WebTrader submissions below."
       />
       {/* 2026-09-11 Futurix live testing: a portal KYC only ever appeared under the separate
           "Client KYC" page (ClientKycRecord) while this page listed KycRecord (the in-app
