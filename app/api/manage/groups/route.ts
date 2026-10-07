@@ -1,4 +1,3 @@
-import { isLpConnected } from "@/lib/liquidity";
 import { NextRequest, NextResponse } from "next/server";
 import { withConfigEvent } from "@/lib/config-events";
 import { Prisma, GroupTier, GroupDealingMode } from "@prisma/client";
@@ -99,7 +98,9 @@ export async function GET() {
       isClientSelectable: g.isClientSelectable,
       // Phase 2 batch 2: may a client account be placed in / moved to this group right now -- published to clients, not
       // the system coverage group, and not an A_BOOK group while no liquidity provider is connected (lib/liquidity.ts)
-      acceptsAccounts: g.isClientSelectable && g.category !== "COVERAGE" && (g.category !== "A_BOOK" || isLpConnected(g)),
+      // Owner 2026-10-07: every non-system group is offered to STAFF (add account, change group, approval, lead
+      // conversion); isClientSelectable only limits the client's own signup choice (app/api/portal/groups).
+      acceptsAccounts: g.category !== "COVERAGE",
       maxLotSize: g.maxLotSize ? g.maxLotSize.toString() : "",
       // group minimum volume per order ("" = none: the symbol minimum applies)
       minLotSize: g.minLotSize ? g.minLotSize.toString() : "",

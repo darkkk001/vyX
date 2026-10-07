@@ -176,6 +176,7 @@ describe("A_BOOK without a connected LP takes no accounts; COVERAGE is system on
     const manage = await import("@/app/api/manage/groups/route");
     const list = (await (await (manage.GET as unknown as () => Promise<Response>)()).json()) as { id: string; acceptsAccounts: boolean }[];
     const flag = (id: string) => list.find((g) => g.id === id)?.acceptsAccounts;
-    expect([flag(ids.B_BOOK), flag(ids.A_BOOK), flag(ids.COVERAGE)]).toEqual([true, false, false]);
+    // owner 2026-10-07: staff pickers offer every non-system group (A_BOOK too); only COVERAGE is never offered
+    expect([flag(ids.B_BOOK), flag(ids.A_BOOK), flag(ids.COVERAGE)]).toEqual([true, true, false]);
   });
 });
