@@ -108,12 +108,8 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     // Same rule as account creation -- moving an existing client into the
     // reverse-mirror book is the same act as opening them there. The structural
     // check downstream still owns the more specific refusals.
-    if (!found.isClientSelectable && found.category !== "COVERAGE") {
-      return NextResponse.json(
-        { error: "that group is not available for client accounts", code: "GROUP_NOT_CLIENT_SELECTABLE" },
-        { status: 400 }
-      );
-    }
+    // Owner 2026-10-07: staff may move a client to any non-system group (isClientSelectable only limits signup);
+    // the structural check downstream still refuses COVERAGE and mode mismatches.
     group = { id: found.id, leverage: found.leverage, category: found.category, modeRestriction: found.modeRestriction };
   }
 
