@@ -29,6 +29,7 @@ const LABELS: Record<string, string> = {
   FUNDS_REQUEST_MARK_CANCELLED: "Cancelled withdrawal mark",
   MANUAL_POSITION_REVERSE: "Reversed position (close & reopen)",
   MANUAL_POSITION_VOID: "Voided position",
+  CLOSED_TRADE_VOID: "Voided closed trade",
   POSITION_REVERSED_IN_PLACE: "Reversed position (in-place flip)",
   POSITION_DELETED: "Deleted position",
   POSITION_ACTION_REQUESTED: "Requested position action (pending approval)",

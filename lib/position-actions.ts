@@ -8,7 +8,7 @@ import { computeRealizedPnl } from "@/lib/trading";
 import { resolveBookType } from "@/lib/group-pricing";
 import { closePositionInTx } from "@/lib/position-close";
 import { randomUUID } from "node:crypto";
-import { lockAccountBalance } from "@/lib/account-lock";
+import { lockAccountBalance, lockAccountFunds } from "@/lib/account-lock";
 import { accountClosePrice, loadAccountAskRules } from "@/lib/ask-markup";
 
 type Tx = Prisma.TransactionClient;
@@ -57,6 +57,22 @@ async function loadOpenPosition(tx: Tx, brokerId: string, positionId: string) {
   });
   if (!position || position.brokerId !== brokerId) throw new PositionActionError("position not found");
   if (position.status !== "OPEN") throw new PositionActionError("position is not open");
+  return position;
+}
+
+// Void accepts an OPEN position (cancel it as if it never produced a P/L) or a CLOSED one (reverse its booked result,
+// owner decision 2026-10-07). Nothing else: a VOIDED position is already void.
+async function loadVoidablePosition(tx: Tx, brokerId: string, positionId: string) {
+  const position = await tx.position.findUnique({
+    where: { id: positionId },
+    include: {
+      symbol: { select: { name: true, category: true, contractSize: true, quoteCurrency: true } },
+      account: { select: { accountNumber: true, groupId: true, currency: true, status: true, tradingRights: true } },
+    },
+  });
+  if (!position || position.brokerId !== brokerId) throw new PositionActionError("position not found");
+  if (position.status === "VOIDED") throw new PositionActionError("trade is already voided");
+  if (position.status === "CLOSED" && position.account.status === "CLOSED") throw new PositionActionError("account is closed");
   return position;
 }
 
@@ -409,7 +425,8 @@ export type VoidResult = {
 };
 
 export async function executeVoid(tx: Tx, params: { brokerId: string; positionId: string; adminId: string }): Promise<VoidResult> {
-  const position = await loadOpenPosition(tx, params.brokerId, params.positionId);
+  const position = await loadVoidablePosition(tx, params.brokerId, params.positionId);
+  if (position.status === "CLOSED") return executeVoidClosed(tx, params, position);
 
   // Claim the position BEFORE any money moves (2026-09-23): the status flip is conditioned on the row
   // still being exactly what was read (OPEN, same volume), so a concurrent void or close makes this one
@@ -477,6 +494,83 @@ export async function executeVoid(tx: Tx, params: { brokerId: string; positionId
     },
   });
 
+  return { kind: "VOID", accountId: position.accountId, position: updated, reversalAmount, balanceBefore, balanceAfter };
+}
+
+// ---------- Void a CLOSED trade (owner decision 2026-10-07) ----------
+// Reverses every balance effect the trade booked: its commission and realized P/L (TRADE_PNL rows, partial closes
+// included), the credit a loss used (the balance part reversed, the credit pool restored) and the negative-balance
+// write-off, plus its accrued swap. One ADJUSTMENT row carries the net change; the position becomes VOIDED. Refused when
+// the balance would end below zero (a profitable trade whose money was withdrawn cannot be undone) or the account is
+// CLOSED. SUSPENDED is allowed. MANAGER files a request, BROKER_ADMIN executes (same rule as the open void).
+async function executeVoidClosed(
+  tx: Tx,
+  params: { brokerId: string; positionId: string; adminId: string },
+  position: Awaited<ReturnType<typeof loadVoidablePosition>>
+): Promise<VoidResult> {
+  // claim first: a concurrent void stops here instead of reversing twice
+  const claim = await tx.position.updateMany({ where: { id: position.id, status: "CLOSED" }, data: { status: "VOIDED" } });
+  if (claim.count === 0) throw new PositionActionError("position was changed by another action, refresh and try again");
+
+  const rows = await tx.transaction.groupBy({
+    by: ["type"],
+    where: { accountId: position.accountId, referenceType: "Position", referenceId: position.id, status: "COMPLETED", type: { in: ["COMMISSION", "TRADE_PNL", "CREDIT", "NEGATIVE_BALANCE_PROTECTION"] } },
+    _sum: { amount: true },
+  });
+  const sum = (t: string) => rows.find((r) => r.type === t)?._sum.amount ?? new Prisma.Decimal(0);
+  const creditUsed = sum("CREDIT");
+  // every one of these rows added its amount to the balance (credit used and the write-off included)
+  const booked = sum("COMMISSION").add(sum("TRADE_PNL")).add(creditUsed).add(sum("NEGATIVE_BALANCE_PROTECTION"));
+  const reversalAmount = booked.neg().sub(position.swap);
+
+  const funds = await lockAccountFunds(tx, position.accountId);
+  const balanceBefore = funds.balance;
+  const balanceAfter = balanceBefore.add(reversalAmount);
+  if (balanceAfter.isNegative()) {
+    throw new PositionActionError(`cannot void: the balance would go below zero (balance ${balanceBefore.toFixed(2)}, reversal ${reversalAmount.toFixed(2)})`);
+  }
+
+  await tx.account.update({
+    where: { id: position.accountId },
+    data: creditUsed.gt(0) ? { balance: balanceAfter, credit: funds.credit.add(creditUsed) } : { balance: balanceAfter },
+  });
+  if (!reversalAmount.isZero()) {
+    await tx.transaction.create({
+      data: {
+        brokerId: params.brokerId,
+        accountId: position.accountId,
+        type: "ADJUSTMENT",
+        status: "COMPLETED",
+        amount: reversalAmount,
+        balanceBefore,
+        balanceAfter,
+        referenceType: "Position",
+        referenceId: position.id,
+        note: "Void of closed trade: reverses its result, commission and swap",
+      },
+    });
+  }
+  const updated = await tx.position.findUniqueOrThrow({ where: { id: position.id } });
+  await tx.auditLog.create({
+    data: {
+      brokerId: params.brokerId,
+      actorAdminId: params.adminId,
+      action: "CLOSED_TRADE_VOID",
+      entityType: "Position",
+      entityId: position.id,
+      oldValue: { status: "CLOSED", balance: balanceBefore.toString(), credit: funds.credit.toString(), realizedPnl: position.realizedPnl?.toString() ?? null },
+      newValue: {
+        status: "VOIDED",
+        accountNumber: position.account.accountNumber,
+        symbol: position.symbol.name,
+        side: position.side,
+        volume: position.volume.toString(),
+        reversalAmount: reversalAmount.toString(),
+        creditRestored: creditUsed.toString(),
+        balanceAfter: balanceAfter.toString(),
+      },
+    },
+  });
   return { kind: "VOID", accountId: position.accountId, position: updated, reversalAmount, balanceBefore, balanceAfter };
 }
 
@@ -566,6 +660,8 @@ export async function requestPositionAction(
     if (!position || position.brokerId !== params.brokerId) throw new PositionActionError("position not found");
     if (position.status === "OPEN") throw new PositionActionError("cannot delete an open position, void or close it first");
     if (position.deletedAt) throw new PositionActionError("position already deleted");
+  } else if (params.actionType === "VOID") {
+    await loadVoidablePosition(tx, params.brokerId, params.positionId);
   } else {
     await loadOpenPosition(tx, params.brokerId, params.positionId);
   }
