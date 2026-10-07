@@ -134,7 +134,7 @@ async function main() {
     rec("symbol disable: test order refused", od.status >= 400, `HTTP ${od.status} ${JSON.stringify(od.json).slice(0, 120)}`);
     await change("symbol re-enable", "PATCH", "/api/manage/symbols", { ...symBody, enabled: true }, "symbols");
     // 5. trading halt (group)
-    await change("trading halt", "PATCH", `/api/manage/groups/${group.id}/halt`, { halted: true }, "groups");
+    await change("trading halt", "PATCH", `/api/manage/groups/${group.id}/halt`, { halted: true, reason: "e2e check" }, "groups");
     const me = (await req("GET", "/api/trade/me", undefined, traderCookie)).json;
     rec("trading halt: /me tradingState", me.tradingState === "halted", `tradingState ${me.tradingState}`);
     const oh = await buy(4456.65);

@@ -4,6 +4,7 @@ import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { revokeAllAccountSessions } from "@/lib/account-auth";
 import { revokeAllClientSessions } from "@/lib/client-auth";
 import { brokerHosts } from "@/lib/broker-hosts";
+import { parseIncidentReason } from "@/lib/incident-reason";
 
 // Step 2 (owner 2026-09-30): EMG "Sign out all clients". Ends every session of every trading account (WebTrader +
 // desktop terminal) and every client-portal session of THIS broker. Staff sessions are not touched.
@@ -26,6 +27,9 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: `type ${hosts[0]} to confirm`, expected: hosts[0] }, { status: 400 });
   }
 
+  const parsedReason = parseIncidentReason(body?.reason, true);
+  if (!parsedReason.ok) return NextResponse.json({ error: parsedReason.error, code: "REASON_REQUIRED" }, { status: 400 });
+
   const [accounts, clients] = await Promise.all([
     prisma.account.findMany({ where: { brokerId }, select: { id: true } }),
     prisma.client.findMany({ where: { brokerId }, select: { id: true } }),
@@ -37,7 +41,7 @@ export async function POST(request: NextRequest) {
       action: "BROKER_CLIENT_SESSIONS_REVOKED",
       entityType: "Broker",
       entityId: brokerId,
-      newValue: { confirm, accounts: accounts.length, portalClients: clients.length },
+      newValue: { confirm, reason: parsedReason.reason, accounts: accounts.length, portalClients: clients.length },
     },
   });
 

@@ -23,7 +23,17 @@ export type Incident = {
   endedBy: string | null;
   durationSeconds: number | null;
   active: boolean;
+  reason: string | null;       // the one-line reason given when it started (null on rows from before reasons existed)
+  endReason: string | null;    // the optional reason given when it was switched off
 };
+
+function reasonOf(v: unknown): string | null {
+  if (v && typeof v === "object" && "reason" in (v as Record<string, unknown>)) {
+    const x = (v as Record<string, unknown>).reason;
+    if (typeof x === "string" && x.trim().length > 0) return x.trim();
+  }
+  return null;
+}
 
 export const INCIDENT_ACTIONS = ["RISK_HALT_TOGGLED", "RISK_CLOSE_ONLY_TOGGLED", "GROUP_HALT_TOGGLED", "GROUP_CLOSE_ONLY_TOGGLED", "BROKER_CLIENT_SESSIONS_REVOKED"] as const;
 
@@ -43,7 +53,7 @@ export function buildIncidents(rows: IncidentAuditRow[], groupNames: ReadonlyMap
   for (const r of asc) {
     const who = r.actorEmail ?? "system";
     if (r.action === "BROKER_CLIENT_SESSIONS_REVOKED") {
-      out.push({ id: r.id, kind: "SIGN_OUT_CLIENTS", scope: "All clients", startedAt: r.createdAt.toISOString(), endedAt: r.createdAt.toISOString(), startedBy: who, endedBy: who, durationSeconds: 0, active: false });
+      out.push({ id: r.id, kind: "SIGN_OUT_CLIENTS", scope: "All clients", startedAt: r.createdAt.toISOString(), endedAt: r.createdAt.toISOString(), startedBy: who, endedBy: who, durationSeconds: 0, active: false, reason: reasonOf(r.newValue), endReason: null });
       continue;
     }
     let kind: IncidentKind; let key: string; let scope: string; let on: boolean | null;
@@ -56,10 +66,10 @@ export function buildIncidents(rows: IncidentAuditRow[], groupNames: ReadonlyMap
     const cur = open.get(key);
     if (on) {
       if (cur) continue;   // already on: a repeated switch-on starts nothing new
-      const inc: Incident = { id: r.id, kind, scope, startedAt: r.createdAt.toISOString(), endedAt: null, startedBy: who, endedBy: null, durationSeconds: null, active: true };
+      const inc: Incident = { id: r.id, kind, scope, startedAt: r.createdAt.toISOString(), endedAt: null, startedBy: who, endedBy: null, durationSeconds: null, active: true, reason: reasonOf(r.newValue), endReason: null };
       open.set(key, inc); out.push(inc);
     } else if (cur) {
-      cur.endedAt = r.createdAt.toISOString(); cur.endedBy = who; cur.active = false;
+      cur.endedAt = r.createdAt.toISOString(); cur.endedBy = who; cur.active = false; cur.endReason = reasonOf(r.newValue);
       cur.durationSeconds = Math.max(0, Math.round((r.createdAt.getTime() - new Date(cur.startedAt).getTime()) / 1000));
       open.delete(key);
     }

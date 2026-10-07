@@ -284,10 +284,40 @@ export async function revokeAllAdminSessions(adminId: string): Promise<number> {
 // token. Super Admin (brokerId: null) skips this — it's not broker-scoped
 // and today never runs where x-broker-id is even set (admin.<ROOT_DOMAIN>
 // short-circuits before middleware.ts's broker resolution).
-/** True when a session signed in at `iat` is older than the broker's timeout (null timeout or unknown sign-in time: never). */
-export function sessionExpired(iat: number | undefined, timeoutMinutes: number | null, now: number): boolean {
-  if (timeoutMinutes === null || timeoutMinutes <= 0 || typeof iat !== "number") return false;
-  return now - iat > timeoutMinutes * 60_000;
+/** True when a session whose last activity was at `lastActivity` has been idle past the broker's timeout (null timeout or unknown time: never). */
+export function sessionExpired(lastActivity: number | undefined, timeoutMinutes: number | null, now: number): boolean {
+  if (timeoutMinutes === null || timeoutMinutes <= 0 || typeof lastActivity !== "number") return false;
+  return now - lastActivity > timeoutMinutes * 60_000;
+}
+
+// Idle session timeout (step 3b, owner 2026-10-07): the clock is time since the last ACTIVE request, not since sign-in.
+// Last activity lives in its own Redis key (the session record itself is never rewritten), with a TTL of the timeout plus
+// a minute so it cleans itself up; a write happens at most once per ACTIVITY_WRITE_EVERY_MS, so a busy session costs one
+// GET per request and about one SET a minute, and the database is never touched. Requests the backoffice marks
+// X-Vyx-Background (live refreshes and safety reads fired while nobody is at the keyboard) and the event stream do not
+// count as activity: they are checked against the limit but never extend it.
+export const BACKGROUND_REQUEST_HEADER = "x-vyx-background";
+const ACTIVITY_WRITE_EVERY_MS = 15_000;
+function sessionActivityKey(sessionId: string) {
+  return `admin_session_activity:${sessionId}`;
+}
+/** Reads the last-activity time (falls back to sign-in), refuses an idle session, otherwise extends it. Returns true when the session is still valid. */
+export async function checkIdleSession(
+  session: { sessionId?: string; iat?: number },
+  timeoutMinutes: number | null,
+  background: boolean,
+  now: number = Date.now(),
+): Promise<boolean> {
+  if (timeoutMinutes === null || timeoutMinutes <= 0 || !session.sessionId) return true; // no timeout set: today's behaviour
+  const redis = getRedis();
+  const key = sessionActivityKey(session.sessionId);
+  const stored = Number(await redis.get(key));
+  const last = Number.isFinite(stored) && stored > 0 ? stored : session.iat;
+  if (sessionExpired(last, timeoutMinutes, now)) return false;
+  if (!background && (typeof last !== "number" || now - last >= ACTIVITY_WRITE_EVERY_MS)) {
+    await redis.set(key, String(now), "EX", timeoutMinutes * 60 + 60).catch(() => {});
+  }
+  return true;
 }
 
 export async function getAdminSession(): Promise<AdminSessionPayload | null> {
@@ -354,8 +384,8 @@ export async function getAdminSession(): Promise<AdminSessionPayload | null> {
     return null;
   }
 
-  // Session timeout (step 3b item 2a): broker staff only, applied on every request so a lowered limit bites at once.
-  if (sessionExpired(session.iat, liveAdmin.broker?.sessionTimeoutMinutes ?? null, Date.now())) {
+  // Session timeout (step 3b item 2a): idle time, broker staff only, applied on every request so a lowered limit bites at once.
+  if (!(await checkIdleSession(session, liveAdmin.broker?.sessionTimeoutMinutes ?? null, (await headers()).get(BACKGROUND_REQUEST_HEADER) === "1"))) {
     await revokeSessionToken(token).catch(() => {});
     return null;
   }

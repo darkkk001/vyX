@@ -83,3 +83,65 @@ describe("GET /api/manage/emergency/incidents", () => {
     as(support); expect((await GET()).status).toBe(403);
   });
 });
+
+import { parseIncidentReason } from "@/lib/incident-reason";
+
+describe("incident reason (one line, required when a restriction goes on)", () => {
+  it("required when switching on: empty and whitespace refused; over 200 characters refused; off is optional", () => {
+    expect(parseIncidentReason(undefined, true)).toMatchObject({ ok: false });
+    expect(parseIncidentReason("   \n\t ", true)).toMatchObject({ ok: false });
+    expect(parseIncidentReason(42, true)).toMatchObject({ ok: false });
+    expect(parseIncidentReason("x".repeat(201), true)).toMatchObject({ ok: false });
+    expect(parseIncidentReason("x".repeat(200), true)).toEqual({ ok: true, reason: "x".repeat(200) });
+    expect(parseIncidentReason("", false)).toEqual({ ok: true, reason: null });
+  });
+  it("one line: line breaks and runs of spaces collapse", () => {
+    expect(parseIncidentReason("  Feed\nwrong   gold  price ", true)).toEqual({ ok: true, reason: "Feed wrong gold price" });
+  });
+  it("the incident carries the reason it started with and the one it ended with", () => {
+    const r = buildIncidents([
+      row("1", "RISK_HALT_TOGGLED", 10, { tradingHalted: true, reason: "Gold feed wrong" }),
+      row("2", "RISK_HALT_TOGGLED", 20, { tradingHalted: false, reason: "Feed fixed" }),
+      row("3", "BROKER_CLIENT_SESSIONS_REVOKED", 30, { reason: "Suspected breach" }),
+      row("4", "RISK_CLOSE_ONLY_TOGGLED", 40, { closeOnly: true }),
+    ], new Map(), t(60));
+    const by = (k: string) => r.find((x) => x.kind === k)!;
+    expect(by("HALT")).toMatchObject({ reason: "Gold feed wrong", endReason: "Feed fixed" });
+    expect(by("SIGN_OUT_CLIENTS")).toMatchObject({ reason: "Suspected breach" });
+    expect(by("CLOSE_ONLY")).toMatchObject({ reason: null, endReason: null });
+  });
+});
+
+describe("halt routes demand a reason", () => {
+  it("broker halt / close-only and group halt: no reason = 400 and nothing changes; with a reason it is stored and shown in the log; resuming needs none", async () => {
+    if (!dbReachable) return;
+    const sfx = randomUUID().replace(/-/g, "").slice(0, 10);
+    const b = await prisma.broker.create({ data: { name: `IncR ${sfx}`, subdomain: `incr-${sfx}` } }); brokers.push(b.id);
+    const g = await prisma.group.create({ data: { brokerId: b.id, name: `IncRG-${sfx}`, leverage: 100 } });
+    const admin = await prisma.adminUser.create({ data: { brokerId: b.id, email: `incr-${randomUUID().slice(0, 8)}@test.local`, passwordHash: "x", role: "BROKER_ADMIN" } });
+    vi.mocked(getAdminSession).mockResolvedValue({ adminId: admin.id, role: "BROKER_ADMIN", brokerId: b.id } as never);
+    const risk = await import("@/app/api/manage/risk/route");
+    const halt = await import("@/app/api/manage/groups/[id]/halt/route");
+    const patch = (h: unknown, url: string, body: object, ctx?: unknown) =>
+      (h as (r: NextRequest, c?: unknown) => Promise<Response>)(new NextRequest(`https://t.local${url}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }), ctx);
+    const gctx = { params: Promise.resolve({ id: g.id }) };
+    for (const bad of [{ tradingHalted: true }, { tradingHalted: true, reason: "   " }, { closeOnly: true, reason: "x".repeat(201) }]) {
+      const r = await patch(risk.PATCH, "/api/manage/risk", bad);
+      expect(r.status).toBe(400);
+      expect((await r.json()).code).toBe("REASON_REQUIRED");
+    }
+    expect((await patch(halt.PATCH, `/api/manage/groups/${g.id}/halt`, { halted: true }, gctx)).status).toBe(400);
+    expect((await prisma.broker.findUniqueOrThrow({ where: { id: b.id } })).tradingHaltedAt).toBeNull();
+    expect((await prisma.group.findUniqueOrThrow({ where: { id: g.id } })).tradingHaltedAt).toBeNull();
+    expect(await prisma.auditLog.count({ where: { brokerId: b.id } })).toBe(0);
+
+    expect((await patch(risk.PATCH, "/api/manage/risk", { tradingHalted: true, reason: "  Gold feed\nwrong " })).status).toBe(200);
+    expect((await patch(halt.PATCH, `/api/manage/groups/${g.id}/halt`, { closeOnly: true, reason: "Group review" }, gctx)).status).toBe(200);
+    expect((await patch(risk.PATCH, "/api/manage/risk", { tradingHalted: false })).status).toBe(200);   // resume: no reason needed
+
+    const { GET } = await import("@/app/api/manage/emergency/incidents/route");
+    const rows = (await (await GET()).json()).rows as { kind: string; reason: string | null; active: boolean }[];
+    expect(rows.find((x) => x.kind === "HALT")).toMatchObject({ reason: "Gold feed wrong", active: false });
+    expect(rows.find((x) => x.kind === "GROUP_CLOSE_ONLY")).toMatchObject({ reason: "Group review", active: true });
+  });
+});

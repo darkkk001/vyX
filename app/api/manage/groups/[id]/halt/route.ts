@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { publishAccountsUpdatedAfterResponse } from "@/lib/account-events";
 import { getAdminSession } from "@/lib/auth";
 import { forbidUnlessBrokerAdminOrPermission } from "@/lib/permissions";
+import { parseIncidentReason } from "@/lib/incident-reason";
 
 // Per-group full trading halt -- see Group.tradingHaltedAt's own schema
 // comment (the "stop this group entirely" gate Group.tradingRestriction
@@ -39,6 +40,10 @@ async function patchHandler(request: NextRequest, { params }: { params: Promise<
   const halted: boolean = hasHalted ? body.halted : existing.tradingHaltedAt != null;
   const closeOnly: boolean = hasCloseOnly ? body.closeOnly : existing.closeOnlyAt != null;
 
+  // incident log (step 3b): switching a halt / close-only ON needs a one-line reason, stored in the audit row
+  const parsedReason = parseIncidentReason(body?.reason, (hasHalted && halted) || (hasCloseOnly && closeOnly));
+  if (!parsedReason.ok) return NextResponse.json({ error: parsedReason.error, code: "REASON_REQUIRED" }, { status: 400 });
+
   const group = await prisma.$transaction(async (tx) => {
     const updated = await tx.group.update({
       where: { id },
@@ -55,7 +60,7 @@ async function patchHandler(request: NextRequest, { params }: { params: Promise<
         entityType: "Group",
         entityId: id,
         oldValue: { tradingHalted: existing.tradingHaltedAt != null, closeOnly: existing.closeOnlyAt != null },
-        newValue: { ...(hasHalted ? { tradingHalted: halted } : {}), ...(hasCloseOnly ? { closeOnly } : {}) },
+        newValue: { ...(hasHalted ? { tradingHalted: halted } : {}), ...(hasCloseOnly ? { closeOnly } : {}), ...(parsedReason.reason ? { reason: parsedReason.reason } : {}) },
       },
     });
     return updated;

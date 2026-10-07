@@ -17,7 +17,8 @@ vi.mock("@/lib/account-auth", () => ({ getAccountSession: vi.fn() }));
 vi.mock("@/lib/nats", () => ({ publishTradingEvent: vi.fn().mockResolvedValue(undefined), publishAlertConfig: vi.fn().mockResolvedValue(undefined) }));
 vi.mock("@/lib/email/adapter", () => ({ sendBrokerEmail: vi.fn().mockResolvedValue({ usedMock: true }) }));
 import { getAccountSession } from "@/lib/account-auth";
-import { getAdminSession, sessionExpired } from "@/lib/auth";
+import { getAdminSession, sessionExpired, checkIdleSession } from "@/lib/auth";
+import { getRedis } from "@/lib/redis";
 import { parseNewSettings } from "@/lib/broker-settings";
 import { purgeExpiredAuditLogs } from "@/lib/audit-retention";
 import { checkHedgingAllowed } from "@/lib/hedging";
@@ -101,13 +102,43 @@ describe("parseNewSettings", () => {
   });
 });
 
-describe("session timeout (counted from sign-in)", () => {
+describe("session timeout (idle time)", () => {
   it("expires only past the limit; no limit or unknown sign-in time never expires", () => {
     const now = 10_000_000;
     expect(sessionExpired(now - 29 * 60_000, 30, now)).toBe(false);
     expect(sessionExpired(now - 31 * 60_000, 30, now)).toBe(true);
     expect(sessionExpired(now - 99 * 3_600_000, null, now)).toBe(false);
     expect(sessionExpired(undefined, 30, now)).toBe(false);
+  });
+  const sid = () => `idle-${randomUUID()}`;
+  const MIN = 60_000;
+  it("activity extends the session: a request every 20 minutes keeps a 30 minute session alive for hours", async () => {
+    const session = { sessionId: sid(), iat: 1_000_000 };
+    let t = session.iat;
+    for (let i = 0; i < 12; i++) {
+      t += 20 * MIN;
+      expect(await checkIdleSession(session, 30, false, t)).toBe(true);
+    }
+    // 4 hours after sign-in, still valid; then 31 idle minutes ends it
+    expect(await checkIdleSession(session, 30, false, t + 31 * MIN)).toBe(false);
+  });
+  it("idle past the limit is refused, and stays refused", async () => {
+    const session = { sessionId: sid(), iat: 2_000_000 };
+    expect(await checkIdleSession(session, 30, false, session.iat + 29 * MIN)).toBe(true);
+    expect(await checkIdleSession(session, 30, false, session.iat + 29 * MIN + 31 * MIN)).toBe(false);
+    expect(await checkIdleSession({ sessionId: sid(), iat: 3_000_000 }, 30, false, 3_000_000 + 31 * MIN)).toBe(false);
+  });
+  it("background requests (live refreshes, safety reads) never extend the session", async () => {
+    const session = { sessionId: sid(), iat: 4_000_000 };
+    expect(await checkIdleSession(session, 30, false, session.iat + 20 * MIN)).toBe(true); // real activity at +20
+    expect(await checkIdleSession(session, 30, true, session.iat + 40 * MIN)).toBe(true);  // background at +40: valid, not counted
+    expect(await checkIdleSession(session, 30, true, session.iat + 55 * MIN)).toBe(false); // 35 min after the last real activity
+  });
+  it("a broker with no timeout keeps today's behaviour and writes nothing", async () => {
+    const session = { sessionId: sid(), iat: 5_000_000 };
+    expect(await checkIdleSession(session, null, false, session.iat + 999 * 60 * MIN)).toBe(true);
+    expect(await checkIdleSession(session, 0, false, session.iat + 999 * 60 * MIN)).toBe(true);
+    expect(await getRedis().get(`admin_session_activity:${session.sessionId}`)).toBeNull();
   });
 });
 

@@ -184,7 +184,7 @@ export const MANIFEST: Row[] = [
   { mod: "risk/route", method: "GET", perm: "RISK_OR_EMERGENCY" },
   { mod: "risk-radar/marks/[accountId]/route", method: "PUT", perm: "ANY_MANAGER", needsId: true, body: { note: "x" } },
   { mod: "emergency/incidents/route", method: "GET", perm: "RISK_OR_EMERGENCY" },
-  { mod: "risk/route", method: "PATCH", perm: "EMERGENCY_CONTROLS", body: { tradingHalted: true } },
+  { mod: "risk/route", method: "PATCH", perm: "EMERGENCY_CONTROLS", body: { tradingHalted: true, reason: "test" } },
   { mod: "risk/route", method: "PATCH", perm: "RISK_SETTINGS", body: { maxOpenPositionsPerAccount: 10 } },
   { mod: "search/route", method: "GET", perm: "ANY_MANAGER" },
   { mod: "settings/route", method: "GET", perm: "BROKER_ADMIN_ONLY" },

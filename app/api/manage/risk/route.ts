@@ -1,3 +1,4 @@
+import { parseIncidentReason } from "@/lib/incident-reason";
 import { NextRequest, NextResponse } from "next/server";
 import { brokerSlippageCapPoints } from "@/lib/risk";
 import { withConfigEvent } from "@/lib/config-events";
@@ -78,6 +79,15 @@ async function patchHandler(request: NextRequest) {
     "defaultMaxSlippagePoints" in body;
   if (touchesRiskFields && permissions.forbidUnless("RISK_SETTINGS")) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  }
+
+  // incident log (step 3b): switching a halt / close-only ON needs a one-line reason, stored in the audit row
+  let incidentReason: string | null = null;
+  if ("tradingHalted" in body || "closeOnly" in body) {
+    const switchingOn = body.tradingHalted === true || body.closeOnly === true;
+    const parsed = parseIncidentReason(body.reason, switchingOn);
+    if (!parsed.ok) return NextResponse.json({ error: parsed.error, code: "REASON_REQUIRED" }, { status: 400 });
+    incidentReason = parsed.reason;
   }
 
   const data: Prisma.BrokerUpdateInput = {};
@@ -222,7 +232,7 @@ async function patchHandler(request: NextRequest) {
                 : "RISK_LIMITS_UPDATED",
         entityType: "Broker",
         entityId: brokerId,
-        newValue: auditNewValue,
+        newValue: incidentReason ? { ...auditNewValue, reason: incidentReason } : auditNewValue,
       },
     });
     return broker;
