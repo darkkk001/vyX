@@ -1813,15 +1813,15 @@ Hidden until an LP bridge exists: the screen is merged into Liquidity providers,
 | CFG | Margin call (PER GROUP · GRP) | Margin call level (%) (set per group) | % | Set on the Groups screen. |
 | CFG | Stop-out (PER GROUP · GRP) | Stop-out level (%) (set per group) | % | Set on the Groups screen. |
 | CFG | Negative balance protection | keep | — | Not available yet. |
-| CFG | Hedging allowed | keep | — | Not available yet. |
+| CFG | Hedging allowed | keep | — | Live (step 3b, owner 2026-10-07): when off, no account can hold both sides of one symbol. |
 | CFG | Max slippage | Max slippage (points) | points | The broker's cap, edited on DEAL; "unlimited" when none is set. |
 | CFG | FUNDING (section) | Deposits & withdrawals | — | Money defaults. |
 | CFG | Min deposit (PER METHOD · PSP) | Min deposit ({CCY}) (set per payment method) | broker currency | Money labels carry the broker's own currency code (Broker.defaultAccountCurrency), e.g. "Min deposit (USD)"; no suffix when unknown; never "($)" (owner 2026-09-30). |
-| CFG | Withdrawal auto-approve ≤ | Auto-approve withdrawals up to ({CCY}) | broker currency | Not available yet (owner 2026-09-30). |
+| CFG | Withdrawal auto-approve ≤ | Auto-approve withdrawals up to ({CCY}) | broker currency | Live (step 3b): a client withdrawal at or under it is paid at once; empty = off. Client KYC still applies. |
 | CFG | Require KYC L1 to deposit | Require ID check level 1 to deposit | — | Not available yet. |
 | CFG | Require KYC L2 above | Require ID check level 2 above ({CCY}) | broker currency | Not available yet (owner 2026-09-30). |
 | CFG | BRANDING · TENANT (section): Broker · Domain · Tier · status · Accent · Terminal theme · Desktop build | Branding: Accent colour · Terminal theme · Backoffice app version (Broker · Domain · Plan · Status only on the Staff page's panel; the CFG screen shows them once, in THIS BROKER) | — | No duplicate rows; the version is this backoffice app's own release version, "development build" for an unreleased build (owner 2026-09-30). |
-| CFG | SECURITY (section): Staff 2FA mandatory · Session timeout · Audit retention | Security: Two-step sign-in required · Session timeout · Audit log kept for | — | Not available yet. |
+| CFG | SECURITY (section): Staff 2FA mandatory · Session timeout · Audit retention | Security: Two-step sign-in required · Session timeout (minutes) · Audit log kept for (days, at least 365) | — | Live (step 3b): the session timeout counts from sign-in. |
 | CFG | note "Default leverage and currency…" | keep | — | Only new accounts get these defaults. |
 | CFG | SETTINGS UNAVAILABLE / LOADING SETTINGS… | keep | — | Error / loading states. |
 | CFG | WITHDRAWAL APPROVAL · <x> (dialog) / SWITCH TO <x> | Withdrawal approval · <x> / Switch to <x> | — | One-admin or two-admin payouts. |

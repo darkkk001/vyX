@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { accountClosePrice, askRuleWire, loadAskRules } from "@/lib/ask-markup";
+import { checkHedgingAllowed } from "@/lib/hedging";
 import { Prisma } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { prisma } from "@/lib/prisma";
@@ -344,6 +345,7 @@ export async function POST(request: NextRequest) {
           brokerSymbol.symbolId
         )
       : null) ??
+    (await checkHedgingAllowed(prisma, broker, { accountId: accountId, symbolId: symbolId, side: side })) ??
     (await checkMaxOpenPositions(prisma, accountId, broker.maxOpenPositionsPerAccount)) ??
     (await checkSymbolExposure(prisma, accountId, symbolId, volume, brokerSymbol.maxExposure)) ??
     (await checkBrokerExposure(prisma, brokerId, volume, broker.totalExposureLimit)) ??

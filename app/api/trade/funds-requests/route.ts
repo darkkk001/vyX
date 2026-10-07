@@ -5,6 +5,9 @@ import { getAccountSession } from "@/lib/account-auth";
 import { createNotification } from "@/lib/notifications";
 import { resolvePspAdapter } from "@/lib/psp/adapter";
 import { publishFundsRequestChanged } from "@/lib/funds-events";
+import { approveFundsRequest } from "@/lib/funds-approval";
+import { publishTradingEvent } from "@/lib/nats";
+import { notifyFundsRequestResolved } from "@/lib/funds-events";
 import { withdrawalKycApproved, WITHDRAWAL_KYC_CODE, WITHDRAWAL_KYC_MESSAGE } from "@/lib/withdrawal-kyc";
 
 // Deposit/withdrawal requests -- see components/webtrader/WebTrader.tsx's
@@ -172,11 +175,34 @@ export async function POST(request: NextRequest) {
   });
   await publishFundsRequestChanged({ brokerId: session.brokerId, accountId: session.accountId, transactionId: created.id, change: "created" });
 
+  // Step 3b item 2c (owner 2026-10-07): a CLIENT withdrawal at or under Broker.autoApproveWithdrawalMax is completed at
+  // once, with its own audit row. KYC was required above (a client without approved KYC never gets here); the same
+  // balance + margin check as an admin payout runs inside the paying transaction, and when it refuses (or the limit is
+  // off) the request simply stays PENDING for staff. Never applies to staff-recorded rows (lib/staff-funds.ts).
+  let status = created.status;
+  if (type === "WITHDRAWAL") {
+    const cfg = await prisma.broker.findUnique({ where: { id: session.brokerId }, select: { autoApproveWithdrawalMax: true } });
+    const limit = cfg?.autoApproveWithdrawalMax;
+    if (limit && requestedAmount.lte(limit)) {
+      const done = await prisma
+        .$transaction((tx) =>
+          approveFundsRequest(tx, { transactionId: created.id, brokerId: session.brokerId, accountId: session.accountId, amount, adminId: null, note: null, type: "WITHDRAWAL", approvalMode: "SINGLE", auto: { limit: limit.toString() }, requireKyc: true })
+        )
+        .catch((err) => { console.error("[funds-requests] auto-approve failed, left pending", err); return null; });
+      if (done?.ok) {
+        status = "COMPLETED";
+        await publishTradingEvent("BalanceChanged", { account_id: session.accountId, broker_id: session.brokerId, transaction_id: created.id }).catch(() => {});
+        await publishFundsRequestChanged({ brokerId: session.brokerId, accountId: session.accountId, transactionId: created.id, change: "approved" });
+        await notifyFundsRequestResolved({ brokerId: session.brokerId, accountId: session.accountId, transactionId: created.id, kind: "WITHDRAWAL", outcome: "APPROVED", amount: requestedAmount.toString(), reviewNote: null });
+      }
+    }
+  }
+
   return NextResponse.json(
     {
       id: created.id,
       type: created.type,
-      status: created.status,
+      status,
       amount: created.amount.toString(),
       pspStatus: created.pspStatus,
       pspReference: created.pspReference,

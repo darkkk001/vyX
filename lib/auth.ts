@@ -60,6 +60,10 @@ export type AdminSessionPayload = {
   // migration had). See lib/account-auth.ts's identical field for the
   // full reasoning -- this mirrors it exactly.
   sessionId?: string;
+  // Sign-in time (ms since epoch). Step 3b item 2a (owner 2026-10-07): the broker's session timeout ends a staff session
+  // that many minutes after SIGN-IN, not after the last click (the backoffice polls, so "idle" would never be reached).
+  // Absent on a session minted before this field: no timeout is applied to it until its next sign-in.
+  iat?: number;
   // Set (never stored) by getAdminSession for a broker staff session whose
   // admin has not enrolled 2FA yet -- the session reached an allowlisted
   // enrolment path (see STAFF_ENROLLMENT_API_ALLOWLIST) or a web page (the
@@ -108,7 +112,7 @@ export async function createSessionToken(
 
   await redis.set(
     sessionKey(token),
-    JSON.stringify({ ...payload, sessionId } satisfies AdminSessionPayload),
+    JSON.stringify({ ...payload, sessionId, iat: Date.now() } satisfies AdminSessionPayload),
     "EX",
     ttlSeconds
   );
@@ -266,6 +270,12 @@ export async function revokeAllAdminSessions(adminId: string): Promise<number> {
 // token. Super Admin (brokerId: null) skips this — it's not broker-scoped
 // and today never runs where x-broker-id is even set (admin.<ROOT_DOMAIN>
 // short-circuits before middleware.ts's broker resolution).
+/** True when a session signed in at `iat` is older than the broker's timeout (null timeout or unknown sign-in time: never). */
+export function sessionExpired(iat: number | undefined, timeoutMinutes: number | null, now: number): boolean {
+  if (timeoutMinutes === null || timeoutMinutes <= 0 || typeof iat !== "number") return false;
+  return now - iat > timeoutMinutes * 60_000;
+}
+
 export async function getAdminSession(): Promise<AdminSessionPayload | null> {
   const cookieStore = await cookies();
   const token = cookieStore.get(SESSION_COOKIE_NAME)?.value;
@@ -320,13 +330,19 @@ export async function getAdminSession(): Promise<AdminSessionPayload | null> {
   // traffic is low enough for this to be cheap.
   const liveAdmin = await prisma.adminUser.findUnique({
     where: { id: session.adminId },
-    select: { status: true, role: true, twoFactorEnabled: true },
+    select: { status: true, role: true, twoFactorEnabled: true, broker: { select: { sessionTimeoutMinutes: true } } },
   });
   if (!liveAdmin || liveAdmin.status !== "ACTIVE" || liveAdmin.role !== session.role) {
     if (liveAdmin && liveAdmin.status !== "ACTIVE") {
       // best-effort: clear the now-dead sessions so they stop lingering
       await revokeAllAdminSessions(session.adminId).catch(() => {});
     }
+    return null;
+  }
+
+  // Session timeout (step 3b item 2a): broker staff only, applied on every request so a lowered limit bites at once.
+  if (sessionExpired(session.iat, liveAdmin.broker?.sessionTimeoutMinutes ?? null, Date.now())) {
+    await revokeSessionToken(token).catch(() => {});
     return null;
   }
 

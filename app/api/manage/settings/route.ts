@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
+import type { Prisma } from "@prisma/client";
 import { withConfigEvent } from "@/lib/config-events";
 import { prisma } from "@/lib/prisma";
 import { LEVERAGE_RULE, parseLeverage } from "@/lib/leverage";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
+import { parseNewSettings } from "@/lib/broker-settings";
 
 async function requireBrokerAdmin() {
   const session = await getAdminSession();
@@ -34,6 +36,11 @@ export async function GET() {
     withdrawalApproval: broker.withdrawalApproval,
     // Phase 2 batch 7 (issue 82): shown read-only in the backoffice's Settings screen; applied on every stop-out close
     negativeBalanceProtection: broker.negativeBalanceProtection,
+    // step 3b item 2 (owner 2026-10-07)
+    sessionTimeoutMinutes: broker.sessionTimeoutMinutes,
+    auditRetentionDays: broker.auditRetentionDays,
+    autoApproveWithdrawalMax: broker.autoApproveWithdrawalMax?.toString() ?? null,
+    hedgingAllowed: broker.hedgingAllowed,
   });
 }
 
@@ -45,7 +52,10 @@ async function patchHandler(request: NextRequest) {
   const brokerId = session.brokerId!;
 
   const body = await request.json().catch(() => null);
-  const data: { defaultAccountCurrency?: string; defaultAccountLeverage?: number; withdrawalApproval?: "SINGLE" | "DUAL" } = {};
+  const data: { defaultAccountCurrency?: string; defaultAccountLeverage?: number; withdrawalApproval?: "SINGLE" | "DUAL"; sessionTimeoutMinutes?: number | null; auditRetentionDays?: number | null; autoApproveWithdrawalMax?: Prisma.Decimal | null; hedgingAllowed?: boolean } = {};
+  const extra = parseNewSettings(body && typeof body === "object" ? (body as Record<string, unknown>) : null);
+  if (!extra.ok) return NextResponse.json({ error: extra.error }, { status: 400 });
+  Object.assign(data, extra.data);
 
   if (typeof body?.defaultAccountCurrency === "string" && body.defaultAccountCurrency.trim()) {
     const defaultAccountCurrency = body.defaultAccountCurrency.trim().toUpperCase();
@@ -86,7 +96,7 @@ async function patchHandler(request: NextRequest) {
 
   // audited (audit 2026-09-24: broker-settings saves wrote no AuditLog row); old and new value of every field sent
   const updated = await prisma.$transaction(async (tx) => {
-    const before = await tx.broker.findUniqueOrThrow({ where: { id: brokerId }, select: { defaultAccountCurrency: true, defaultAccountLeverage: true, withdrawalApproval: true } });
+    const before = await tx.broker.findUniqueOrThrow({ where: { id: brokerId }, select: { defaultAccountCurrency: true, defaultAccountLeverage: true, withdrawalApproval: true, sessionTimeoutMinutes: true, auditRetentionDays: true, autoApproveWithdrawalMax: true, hedgingAllowed: true } });
     const after = await tx.broker.update({ where: { id: brokerId }, data });
     const keys = Object.keys(data) as (keyof typeof data)[];
     await tx.auditLog.create({
@@ -106,6 +116,10 @@ async function patchHandler(request: NextRequest) {
     defaultAccountCurrency: updated.defaultAccountCurrency,
     defaultAccountLeverage: updated.defaultAccountLeverage,
     withdrawalApproval: updated.withdrawalApproval,
+    sessionTimeoutMinutes: updated.sessionTimeoutMinutes,
+    auditRetentionDays: updated.auditRetentionDays,
+    autoApproveWithdrawalMax: updated.autoApproveWithdrawalMax?.toString() ?? null,
+    hedgingAllowed: updated.hedgingAllowed,
   });
 }
 

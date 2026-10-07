@@ -1429,6 +1429,18 @@ flip back to WEB and watch the web take the next stop-out. The Vercel cron stays
 
 #### 6.1 Cutover gates (must hold before a broker goes RUST)
 
+- **CUTOVER GATE (owner, 2026-10-07): hedging allowed.** `Broker.hedgingAllowed` (default true). When false, the web refuses
+  an OPEN that would put one account on both sides of one symbol (`lib/hedging.ts checkHedgingAllowed`, code
+  `HEDGING_NOT_ALLOWED`) at every open path: client order and pending order, requote accept, dealer accept, desk flush,
+  staff open, pending trigger, copy-rule open. The engine has no such check. Either the engine enforces the same rule at
+  every open it performs (same text and code, closes never refused, the broker's coverage account exempt), or those
+  paths stay on the web for RUST brokers. Gate test: with hedgingAllowed false, an opposite-side open on a symbol the
+  account already holds is refused by the engine; a same-side open and an open on another symbol are filled. NOT BUILT.
+- **CUTOVER GATE (owner, 2026-10-07): auto-approve withdrawals.** The engine does not complete funds requests; if a funds
+  path ever moves to the engine it must honour `Broker.autoApproveWithdrawalMax` exactly like
+  `app/api/trade/funds-requests` (client requests only, KYC first, balance and margin check in the paying transaction).
+  Nothing to build while funds stay on the web.
+
 - **CUTOVER GATE (owner, 2026-10-05): swap-free.** The engine's swap charge (`engine/order-management/src/swap.rs`
   with `db.rs`) uses the BrokerSymbol swap rates and never reads `Account.swapFree` / `Group.swapFree`, so in RUST mode a
   swap-free account would be charged. Today the web's nightly `lib/swap-rollover.ts` resolves swap-free (account >

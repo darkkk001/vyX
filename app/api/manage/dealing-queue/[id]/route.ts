@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { accountClosePrice, loadAccountAskRules } from "@/lib/ask-markup";
+import { checkHedgingAllowed } from "@/lib/hedging";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { forbidUnlessBrokerAdminOrPermission, PERMISSION_LABELS } from "@/lib/permissions";
@@ -307,6 +308,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
           order.symbolId
         )
       : null) ??
+    (await checkHedgingAllowed(prisma, broker, { accountId: order.accountId, symbolId: order.symbolId, side: order.side })) ??
     (await checkMaxOpenPositions(prisma, order.accountId, broker.maxOpenPositionsPerAccount)) ??
     (await checkSymbolExposure(prisma, order.accountId, order.symbolId, order.volume, brokerSymbol.maxExposure)) ??
     (await checkBrokerExposure(prisma, brokerId, order.volume, broker.totalExposureLimit)) ??

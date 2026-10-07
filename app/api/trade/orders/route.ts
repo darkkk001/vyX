@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { canonicalSymbolName } from "@/lib/synthetic-symbols";
+import { checkHedgingAllowed } from "@/lib/hedging";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
@@ -281,6 +282,7 @@ async function handlePlaceOrder(request: NextRequest, session: Session) {
   const [riskResults, pricing, marginState] = await Promise.all([
     Promise.all([
       checkMaxOpenPositions(prisma, session.accountId, broker.maxOpenPositionsPerAccount),
+      checkHedgingAllowed(prisma, broker, { accountId: session.accountId, symbolId: brokerSymbol.symbolId, side }),
       checkSymbolExposure(prisma, session.accountId, brokerSymbol.symbolId, volume, brokerSymbol.maxExposure),
       checkBrokerExposure(prisma, session.brokerId, volume, broker.totalExposureLimit),
       checkMaxDailyLoss(prisma, session.accountId, account.maxDailyLoss),

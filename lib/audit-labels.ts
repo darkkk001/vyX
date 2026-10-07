@@ -112,6 +112,8 @@ const LABELS: Record<string, string> = {
   IB_RELATIONSHIP_UPDATED: "Updated IB relationship",
   FUNDS_REQUEST_REJECTED: "Rejected funds request",
   FUNDS_REQUEST_APPROVED: "Approved funds request",
+  FUNDS_REQUEST_AUTO_APPROVED: "Auto-approved withdrawal",
+  AUDIT_LOG_PURGED: "Deleted old audit log rows",
   KYC_APPROVAL: "Approved KYC",
   KYC_REJECTION: "Rejected KYC",
   CLIENT_KYC_APPROVAL: "Approved client KYC",

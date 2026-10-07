@@ -442,6 +442,18 @@ model Broker {
   // mode. Set by BROKER_ADMIN only (CFG screen, app/api/manage/settings), audited.
   withdrawalApproval WithdrawalApproval @default(DUAL)
 
+  // Step 3b item 2 (owner 2026-10-07). All four set by BROKER_ADMIN only (CFG / SEC, app/api/manage/settings), audited.
+  // Staff idle session limit in minutes; null = no idle limit (the 7 / 30 day session lifetime still applies).
+  sessionTimeoutMinutes Int?
+  // Audit rows older than this many days are purged daily (app/api/internal/audit-retention); null = keep forever.
+  // Never under 365 (lib/broker-settings.ts).
+  auditRetentionDays Int?
+  // A CLIENT withdrawal request at or under this amount (account currency) is completed at once; null = off (default).
+  // KYC still applies to client requests; staff routes never block on KYC (owner rule). lib/funds-approval.ts.
+  autoApproveWithdrawalMax Decimal? @db.Decimal(18, 2)
+  // false = no account may hold both sides of one symbol (lib/hedging.ts, every open path). Default true = today.
+  hedgingAllowed Boolean @default(true)
+
   // Phase 2 pricing engine (2026-09-07) -- false (default) = every fill
   // site and lib/swap-rollover.ts keep resolving pricing exactly as
   // before (Group/GroupSymbolConfig only, via lib/group-pricing.ts's

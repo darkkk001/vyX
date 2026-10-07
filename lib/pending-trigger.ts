@@ -1,5 +1,6 @@
 import "server-only";
 import { plainError } from "@/lib/plain-error";
+import { checkHedgingAllowed } from "@/lib/hedging";
 import { loadAskRules, markedUpAsk, RAW_ASK } from "@/lib/ask-markup";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
@@ -157,6 +158,7 @@ export async function triggerPendingOrder(orderId: string, triggerPrice: string,
     (account.group ? checkGroupTradingHalted(account.group) : null) ??
     (account.group ? checkGroupCloseOnly(account.group) : null) ??
     (account.group ? checkGroupAllowedSymbol(account.group.restrictSymbols, account.group.allowedSymbols.map((s) => s.symbolId), order.symbolId) : null) ??
+    (await checkHedgingAllowed(prisma, broker, { accountId: order.accountId, symbolId: order.symbolId, side: order.side })) ??
     (await checkMaxOpenPositions(prisma, order.accountId, broker.maxOpenPositionsPerAccount)) ??
     (await checkSymbolExposure(prisma, order.accountId, order.symbolId, order.volume, brokerSymbol.maxExposure)) ??
     (await checkBrokerExposure(prisma, order.brokerId, order.volume, broker.totalExposureLimit)) ??
