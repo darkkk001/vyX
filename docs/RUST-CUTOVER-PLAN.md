@@ -1436,6 +1436,17 @@ flip back to WEB and watch the web take the next stop-out. The Vercel cron stays
   every open it performs (same text and code, closes never refused, the broker's coverage account exempt), or those
   paths stay on the web for RUST brokers. Gate test: with hedgingAllowed false, an opposite-side open on a symbol the
   account already holds is refused by the engine; a same-side open and an open on another symbol are filled. NOT BUILT.
+- **CUTOVER GATE (owner, 2026-10-07): coverage resting orders.** A dealer's LIMIT / STOP on the broker's hedge (coverage) account is a
+  PENDING Order on that account (`lib/coverage-pending.ts`, POST `/api/manage/coverage/orders` with type LIMIT / STOP and price). The web
+  fills it in `lib/pending-trigger.ts` (`fillCoverageOrder`): the full gate list of any resting order (halt, close-only, allowed sides,
+  hours, volume step and range, group min / max volume, trading rights and status, group halt / close-only / allowed symbols, slippage,
+  pre-trade margin) EXCEPT max open positions, symbol / broker exposure, daily loss and no-hedging; the RAW market price (BUY ask, SELL bid),
+  zero commission, A_BOOK, never mirrored, never auto-hedged. The engine's own pending-order trigger (`engine/order-management`
+  `pending_orders.rs`) reads every PENDING order, hedge account included, so in RUST mode it would fill it as a client order (markup,
+  commission, mirror, auto-hedge). Either the engine fills an order on `Broker.coverageAccountId` exactly like `fillCoverageOrder`, or
+  coverage resting orders stay on the web trigger for RUST brokers. Gate test: a resting BUY LIMIT on the hedge account fills at the raw
+  ask with commission 0 and bookType A_BOOK, creates no mirror copy and no auto-hedge leg, and is refused (kept pending / rejected) in a
+  halted or close-only broker. NOT BUILT on the engine side.
 - **CUTOVER GATE (owner, 2026-10-07): auto-approve withdrawals.** The engine does not complete funds requests; if a funds
   path ever moves to the engine it must honour `Broker.autoApproveWithdrawalMax` exactly like
   `app/api/trade/funds-requests` (client requests only, KYC first, balance and margin check in the paying transaction).

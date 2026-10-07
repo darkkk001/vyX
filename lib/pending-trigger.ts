@@ -14,6 +14,7 @@ import { resolveBookType, applySpreadMarkup, pipSize, chargeCommission } from "@
 import { resolveFillPricing, logSpreadWarning } from "@/lib/pricing-engine";
 import { checkAccountPreTradeMargin } from "@/lib/margin";
 import { orderAuditFields } from "@/lib/order-audit";
+import { hedgeAccountHoldsFunds } from "@/lib/coverage-pending";
 import { getLivePriceRow, getFreshPrices } from "@/lib/live-price";
 import {
   checkTradingHalted,
@@ -140,6 +141,9 @@ export async function triggerPendingOrder(orderId: string, triggerPrice: string,
   if (!brokerSymbol || !brokerSymbol.enabled) return fail("symbol is no longer available");
   if (account.status !== "ACTIVE") return fail("account is not active");
 
+  // Step 3b item 7: the broker's own hedge account. Its resting orders pass every gate below except the CLIENT limits (max open
+  // positions, symbol / broker exposure, daily loss) and the no-hedging rule, as its MARKET orders do (lib/coverage-pending.ts).
+  const isCoverage = broker.coverageAccountId === order.accountId;
   const riskError =
     checkTradingHalted(broker) ??
     checkCloseOnly(broker) ??
@@ -158,17 +162,18 @@ export async function triggerPendingOrder(orderId: string, triggerPrice: string,
     (account.group ? checkGroupTradingHalted(account.group) : null) ??
     (account.group ? checkGroupCloseOnly(account.group) : null) ??
     (account.group ? checkGroupAllowedSymbol(account.group.restrictSymbols, account.group.allowedSymbols.map((s) => s.symbolId), order.symbolId) : null) ??
-    (await checkHedgingAllowed(prisma, broker, { accountId: order.accountId, symbolId: order.symbolId, side: order.side })) ??
-    (await checkMaxOpenPositions(prisma, order.accountId, broker.maxOpenPositionsPerAccount)) ??
-    (await checkSymbolExposure(prisma, order.accountId, order.symbolId, order.volume, brokerSymbol.maxExposure)) ??
-    (await checkBrokerExposure(prisma, order.brokerId, order.volume, broker.totalExposureLimit)) ??
-    (await checkMaxDailyLoss(prisma, order.accountId, account.maxDailyLoss));
+    (isCoverage ? null : await checkHedgingAllowed(prisma, broker, { accountId: order.accountId, symbolId: order.symbolId, side: order.side })) ??
+    (isCoverage ? null : await checkMaxOpenPositions(prisma, order.accountId, broker.maxOpenPositionsPerAccount)) ??
+    (isCoverage ? null : await checkSymbolExposure(prisma, order.accountId, order.symbolId, order.volume, brokerSymbol.maxExposure)) ??
+    (isCoverage ? null : await checkBrokerExposure(prisma, order.brokerId, order.volume, broker.totalExposureLimit)) ??
+    (isCoverage ? null : await checkMaxDailyLoss(prisma, order.accountId, account.maxDailyLoss));
   if (riskError) return fail(riskError, riskCode(riskError));
 
   // Phase 2 batch 2: an A_BOOK group without a connected LP / the system coverage account never fills a trigger
   const route = orderRoute(account.group, deskIsOn(broker));
   if (route === "NO_LP") return fail(LP_NOT_CONNECTED.code, { message: LP_NOT_CONNECTED.error });
-  if (route === "SYSTEM") return fail(SYSTEM_ACCOUNT_ORDER.code, { message: SYSTEM_ACCOUNT_ORDER.error });
+  if (route === "SYSTEM" && !isCoverage) return fail(SYSTEM_ACCOUNT_ORDER.code, { message: SYSTEM_ACCOUNT_ORDER.error });
+  if (isCoverage) return fillCoverageOrder({ order, account, brokerSymbol, livePrice, triggerPrice, origin, fail });
   const wantsQueue = route === "QUEUE";
 
   if (wantsQueue) {
@@ -327,6 +332,61 @@ export async function triggerPendingOrder(orderId: string, triggerPrice: string,
     orderId: order.id,
     positionId: result.position.id,
   });
+  return { kind: "filled", order: result.order, position: result.position, fillPrice: fillPrice.toString() };
+}
+
+/**
+ * Step 3b item 7: a dealer's resting order on the hedge account reached its entry. Fills at the RAW market price (a BUY at the ask, a
+ * SELL at the bid; no markup), zero commission, A_BOOK; never mirrored, never auto-hedged, never queued. The slippage guard and the
+ * pre-trade margin check are the same as for every resting order. The gates ran in triggerPendingOrder just before this.
+ */
+async function fillCoverageOrder(args: {
+  order: NonNullable<Awaited<ReturnType<typeof prisma.order.findUnique>>> & { symbol: { name: string } };
+  account: { id: string; accountNumber: string; leverage: number; balance: Prisma.Decimal; credit: Prisma.Decimal; group: { marginCallLevel: Prisma.Decimal } | null };
+  brokerSymbol: { symbol: { digits: number; contractSize: Prisma.Decimal; quoteCurrency: string } };
+  livePrice: { bid: Prisma.Decimal; ask: Prisma.Decimal } | null;
+  triggerPrice: string;
+  origin: "server" | "client";
+  fail: (reason: string, detail?: Record<string, string>) => Promise<TriggerOutcome>;
+}): Promise<TriggerOutcome> {
+  const { order, account, brokerSymbol, livePrice, triggerPrice, origin, fail } = args;
+  const fillPrice = livePrice ? (order.side === "BUY" ? livePrice.ask : livePrice.bid) : new Prisma.Decimal(triggerPrice);
+  const slippageError = checkSlippage({ clientReferencePrice: triggerPrice, serverFillPrice: fillPrice, maxSlippagePoints: PENDING_TRIGGER_MAX_SLIPPAGE_POINTS, digits: brokerSymbol.symbol.digits });
+  if (slippageError) return { kind: "kept", reason: slippageError };
+  // margin applies once the hedge account holds funds (an unfunded hedge ledger has no margin to check; lib/coverage-pending.ts)
+  const marginError = !hedgeAccountHoldsFunds(account) ? null : await checkAccountPreTradeMargin(prisma, {
+    accountId: order.accountId,
+    leverage: account.leverage,
+    marginCallLevel: account.group?.marginCallLevel ?? new Prisma.Decimal(100),
+    newOrderContractSize: brokerSymbol.symbol.contractSize,
+    newOrderQuoteCurrency: brokerSymbol.symbol.quoteCurrency,
+    newOrderVolume: order.volume,
+    newOrderFillPrice: fillPrice,
+    newOrderSide: order.side,
+    newOrderSymbolId: order.symbolId,
+  });
+  if (marginError) return fail(marginError.error, marginError.required != null && marginError.available != null ? { required: marginError.required, available: marginError.available } : undefined);
+  const result = await prisma.$transaction(async (tx) => {
+    const claimed = await tx.order.updateMany({ where: { id: order.id, status: "PENDING" }, data: { status: "FILLED", filledPrice: fillPrice, filledAt: new Date() } });
+    if (claimed.count === 0) return null;
+    const filledOrder = await tx.order.findUniqueOrThrow({ where: { id: order.id } });
+    const position = await tx.position.create({
+      data: { brokerId: order.brokerId, accountId: order.accountId, symbolId: order.symbolId, originOrderId: order.id, side: order.side, volume: order.volume, openPrice: fillPrice, slPrice: order.slPrice, tpPrice: order.tpPrice, bookType: "A_BOOK" },
+    });
+    await tx.auditLog.create({
+      data: {
+        brokerId: order.brokerId,
+        action: "COVERAGE_PENDING_ORDER_FILLED",
+        entityType: "Position",
+        entityId: position.id,
+        oldValue: { ...orderAuditFields(order, order.symbol.name, account.accountNumber), requestedPrice: order.requestedPrice?.toString() ?? null, status: "PENDING" },
+        newValue: { triggerPrice, filledPrice: fillPrice.toString(), status: "FILLED", origin },
+      },
+    });
+    return { order: filledOrder, position };
+  });
+  if (!result) return { kind: "skipped", reason: "already handled" };
+  await publishTradingEvent("OrderFilled", { order_id: order.id, account_id: order.accountId, broker_id: order.brokerId, price: fillPrice.toString(), volume: order.volume.toString(), remaining_volume: "0" });
   return { kind: "filled", order: result.order, position: result.position, fillPrice: fillPrice.toString() };
 }
 

@@ -416,12 +416,13 @@ export async function getDealingDeskRestingOrders(brokerId: string): Promise<Res
       },
       orderBy: { createdAt: "desc" },
     }),
-    prisma.broker.findUnique({ where: { id: brokerId }, select: { dealingModeAt: true, dealingDeskAutoFillAt: true } }),
+    prisma.broker.findUnique({ where: { id: brokerId }, select: { dealingModeAt: true, dealingDeskAutoFillAt: true, coverageAccountId: true } }),
   ]);
   const dealingDeskAutoFillOn = !!broker?.dealingDeskAutoFillAt;
 
   return orders
-    .filter((o) => isDealingManagedAccount({ group: o.account.group, deskOn: !dealingDeskAutoFillOn }))
+    // step 3b item 7: the dealer's own resting orders on the hedge account are on the desk too
+    .filter((o) => o.account.id === broker?.coverageAccountId || isDealingManagedAccount({ group: o.account.group, deskOn: !dealingDeskAutoFillOn }))
     .map((o) => ({
       orderId: o.id,
       accountId: o.account.id,
