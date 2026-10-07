@@ -163,7 +163,7 @@ function discoverManageRoutes(): { mod: string; method: Row["method"] }[] {
       if (entry.isDirectory()) walk(full);
       else if (entry.name === "route.ts") {
         const mod = path.relative(root, full).split(path.sep).join("/").replace(/\.ts$/, "");
-        if (mod.startsWith("two-factor-required/")) continue;
+        if (mod.startsWith("two-factor-required/") || mod.startsWith("password-change-required/")) continue;
         const src = fs.readFileSync(full, "utf8");
         for (const m of src.matchAll(/export\s+(?:async\s+function|const)\s+(GET|POST|PATCH|PUT|DELETE)\b/g)) {
           out.push({ mod, method: m[1] as Row["method"] });
