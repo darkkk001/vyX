@@ -4,6 +4,10 @@
 
 The labels come from `ui-map.md` (the bo-* and term-* sections). They were checked read-only against the source: `DealingScreen.cs`, `ClientsScreen.cs`, `Vyx.Backoffice.App\Screens\*.cs`, `Controls\PricingPanel.cs`, `Vyx.Trader.App` and `Vyx.Shared.Ui\Charting`. The first drafts are in `_naming-part1.md` to `_naming-part3.md` and `_naming-glossary.md`. This file merges them and adds one consistency pass across every screen. The rules: plain broker words with no internal codes (RAW, INHERIT, SOURCE, MODE, B_BOOK, COV, SDM, MU, NBP, APR, LAR, PSP, and KYC, LP or IB on their own). Every quantity carries its unit in the name: ($), (lots), (points), (%), ($ per lot), (UTC). Leverage is written 1:N. Screen codes are never the main label. One concept always gets one word (see Glossary). Names are in sentence case. **1788 rows** in total (1340 backoffice, 448 terminal): **455 keep** and **1333 renamed**. The renamed count includes 11 fixture or internal labels marked `remove` and 1 cross-reference row. The consistency pass made 39 decisions. They are listed at the end.
 
+## Owner decision 2026-10-07: KYC wording
+
+The backoffice says "KYC" (column, chips, filters, menu, inspector, dialogs, nav). Values: Not verified, Pending, Verified, Rejected. "ID check" and "Not started" are dropped ("Not started" is now "Not verified"). Menu items: Approve KYC…, Reject KYC…. Rows below that still say "ID check" in the old-label column are history; the new-label column is replaced. Places outside the backoffice that still say "ID check" are listed in the step 3b report, for the owner to decide.
+
 ## Number rules (owner 2026-10-05 / 2026-10-06)
 
 One shared formatter in every app (backoffice, terminal, WebTrader, statements, CSV):
@@ -85,7 +89,7 @@ every number through `lib/format.ts`. CSV exports follow the number rules but ke
 | A trade that is open | Position | — | trade (for open), deal |
 | A closed position in history | Closed trade (screen: Closed trades) | — | deal, DLS, Trade history |
 | Limit/stop order not filled yet | Pending order | — | resting order, RESTING |
-| Request waiting for a staff decision (money, ID check, application, approval) | Waiting | — | Pending, PENDING, WAIT, AWAITING |
+| Request waiting for a staff decision (money, KYC, application, approval) | Waiting | — | Pending, PENDING, WAIT, AWAITING |
 | Time since a request or order arrived | Waiting time | — | AGE |
 | Order waiting for a dealer's decision | Order waiting for dealer / Waiting for dealer | — | queued, QUEUE, awaiting dealer, DEALER QUEUE |
 | Dealer panel with dealer, client-offer and pending rows | Waiting orders | — | PENDING QUEUE |
@@ -151,8 +155,8 @@ every number through `lib/format.ts`. CSV exports follow the number rules but ke
 | When a symbol can trade | Trading hours (UTC) | UTC | SESSIONS (for symbol hours) |
 | Client group (pricing + leverage tier) | Group | — | tier, category (for the group itself) |
 | Negative balance protection | Negative balance protection | — | NBP, Neg-bal protect |
-| Know-your-customer check | ID check (KYC) on first use, then ID check | — | KYC alone, KYC WAIT |
-| ID check level / number | ID check level / Check # | — | LEVEL, KYC L1, ID |
+| Know-your-customer check | KYC (owner 2026-10-07: the label is KYC everywhere; values Not verified / Pending / Verified / Rejected) | — | ID check, Not started, KYC WAIT |
+| KYC level / number | KYC level / Check # | — | LEVEL, KYC L1, ID |
 | Live account application | Live account application | — | LAR, account request |
 | Deposit/withdrawal method | Payment method | — | PSP |
 | Introducing broker | Partner (IB) on first use, then Partner | — | IB alone, introducing broker |
@@ -242,7 +246,7 @@ every number through `lib/format.ts`. CSV exports follow the number rules but ke
 | SHELL | TRADING (nav group) | keep | — | Positions, dealing and trading setup. |
 | SHELL | RISK (nav group) | keep | — | Risk checks and trading halt. |
 | SHELL | LIQUIDITY (nav group) | keep | — | Liquidity providers and price feed. |
-| SHELL | CLIENTS (nav group) | keep | — | Clients, leads, partners and ID checks. |
+| SHELL | CLIENTS (nav group) | keep | — | Clients, leads, partners and KYC. |
 | SHELL | FINANCE (nav group) | keep | — | Money in and out of client accounts. |
 | SHELL | SYSTEM (nav group) | keep | — | Staff, audit log and settings. |
 | SHELL | Nav codes (DASH, RPT, NTF, EXP, DEAL…) | remove (show on hover only) | — | — |
@@ -266,7 +270,7 @@ every number through `lib/format.ts`. CSV exports follow the number rules but ke
 | SHELL | Clients | keep | — | All client accounts. |
 | SHELL | Leads | keep | — | Prospects not yet clients. |
 | SHELL | IB partners | Partners (IB) | — | Introducing brokers and their clients. |
-| SHELL | KYC review | ID checks (KYC) | — | Client ID documents waiting for review. |
+| SHELL | KYC review | KYC | — | Client ID documents waiting for review. |
 | SHELL | Account requests | Live account applications | — | Requests to open a live account. |
 | SHELL | Deposits · withdrawals | Deposits & withdrawals | — | Client deposit and withdrawal requests. |
 | SHELL | Approvals | Approvals (needs a second admin) | — | Changes waiting for a second admin to approve. |
@@ -286,7 +290,7 @@ every number through `lib/format.ts`. CSV exports follow the number rules but ke
 | SHELL | F3 EXPOSURE | F3 Live exposure | — | Go to Live exposure. |
 | SHELL | F4 DEPOSITS | F4 Deposits & withdrawals | — | Go to Deposits & withdrawals. |
 | SHELL | F5 DEALING | keep | — | Go to Dealing. |
-| SHELL | F6 KYC | F6 ID checks | — | Go to ID checks. |
+| SHELL | F6 KYC | F6 KYC | — | Go to KYC. |
 | SHELL | F7 IB | F7 Partners | — | Go to Partners. |
 | SHELL | F8 SYMBOLS | keep | — | Go to Symbols. |
 | SHELL | F9 RISK | keep | — | Go to Risk. |
@@ -350,13 +354,13 @@ every number through `lib/format.ts`. CSV exports follow the number rules but ke
 | DASH | ALL (chip) | keep | — | — |
 | DASH | LIVE (chip) | keep | — | Live accounts only. |
 | DASH | DEMO (chip) | keep | — | Demo accounts only. |
-| DASH | KYC WAIT (chip) | ID check waiting | — | Accounts whose ID check is waiting for review. |
+| DASH | KYC WAIT (chip) | KYC pending | — | Accounts whose KYC is waiting for review. |
 | DASH | SUSPENDED (chip) | Suspended or closed | — | Accounts that are not active. |
 | DASH | IB (chip) | Referred clients | — | Clients brought in by a partner (IB). |
 | DASH | ID (column) | Account | — | Account number. |
 | DASH | CLIENT | keep | — | Client name. |
 | DASH | COUNTRY | keep | — | — |
-| DASH | KYC (column) | ID check | — | ID check status. |
+| DASH | KYC (column) | KYC | — | KYC status. |
 | DASH | CATEGORY | Trade handling | — | Book, Market book or Reverse trading, set by the group. |
 | DASH | GROUP | keep | — | — |
 | DASH | BALANCE | Balance ($) | $ | — |
@@ -366,7 +370,7 @@ every number through `lib/format.ts`. CSV exports follow the number rules but ke
 | DASH | INTRODUCING BROKER | Partner | — | Partner (IB) who brought this client. |
 | DASH | STATUS | keep | — | — |
 | DASH | ACTIONS | Open | — | Click the row to open the client. |
-| DASH | OK / WAIT / REJ / FLAG (ID check chip) | Verified / Waiting / Rejected / Flagged | — | — |
+| DASH | OK / WAIT / REJ / FLAG (KYC chip) | Verified / Pending / Rejected / Flagged | — | — |
 | DASH | SUSP / CLSD (status chip) | Suspended / Closed | — | — |
 | DASH | OPEN (row action) | keep | — | Open this client. |
 | DASH | Open client 360 | Open client | — | Open the client's account page. |
@@ -395,9 +399,9 @@ every number through `lib/format.ts`. CSV exports follow the number rules but ke
 | DASH | KPI money notes (new) | {CCY} · … / MIXED CCY · … | — | The server's money totals add currencies together: a tile names the one currency, or says MIXED CCY; never "($)" (owner 2026-09-30). |
 | DASH | 1) CLI  CLIENTS (panel) | remove | — | The full client list is replaced by 1) ATT Needs attention; the Clients screen holds the full list (owner 2026-09-30). |
 | DASH | 1) ATT  NEEDS ATTENTION (panel, new) | Needs attention | — | Live client accounts with a reason; header link "All clients in CLI ›"; each row carries the Clients Account menu (owner 2026-09-30). |
-| DASH | Needs attention chips (new) | All / Margin / Risk flags / ID check / New 7D / Largest open | — | Filters, with counts (owner 2026-09-30). |
+| DASH | Needs attention chips (new) | All / Margin / Risk flags / KYC / New 7D / Largest open | — | Filters, with counts (owner 2026-09-30). |
 | DASH | Needs attention columns (new) | Account / Client / Group (hidden by default) / Balance / Equity / Open (lots) / Floating P/L / Ccy / Margin level (%) / Why | — | Money in the account's currency (the Ccy column) (owner 2026-09-30). |
-| DASH | WHY tag (new) | Stop-out / Margin call / Martingale / Scalping / Latency arbitrage / News trading / ID check waiting / New 7D / Largest open; "{reason} +{n} more" | — | The tag's tooltip lists every reason: "Why: Margin call · Martingale · Largest open" (owner 2026-09-30). |
+| DASH | WHY tag (new) | Stop-out / Margin call / Martingale / Scalping / Latency arbitrage / News trading / KYC pending / New 7D / Largest open; "{reason} +{n} more" | — | The tag's tooltip lists every reason: "Why: Margin call · Martingale · Largest open" (owner 2026-09-30). |
 | DASH | 2) EXP  OPEN BOOK (panel) | Open book | — | Client exposure per symbol and account currency; stat "Lots · Book {x}%" (owner 2026-09-30). |
 | DASH | Open book columns (new) | Symbol / Buy / Sell / Net / Client P/L / Ccy | lots in the panel stat | "(lots)" is in the panel stat, not each header, to fit 1366 (owner 2026-09-30). |
 | DASH | Open book facts (new) | Nearest stop-out / Market book (A-book): 0.00 lots · no liquidity provider connected / Totals: hedge account excluded | — | Nothing implies a connected LP (owner 2026-09-30). |
@@ -405,7 +409,7 @@ every number through `lib/format.ts`. CSV exports follow the number rules but ke
 | DASH | MARKED (status chip) | Marked sent | — | Short form of "Client marked sent"; the Waiting column is hidden by default (owner 2026-09-30). |
 | DASH | 4) FLOW  DEPOSITS VS WITHDRAWALS · 7D | keep | — | Header link "DEP ›"; one line "No deposits or withdrawals in the last 7 days." when empty; day labels "24 Sep" (invariant, UTC) (owner 2026-09-30). |
 | DASH | 5) ACT  STAFF ACTIVITY (panel) | Staff activity | — | Chips STAFF (default: staff actions and direct database changes) / ALL (adds the system's fills, stop-outs, client actions); header link "AUD ›"; a row opens the entry in the Audit log (owner 2026-09-30). |
-| DASH | Activity kind tags (new) | Settings / Withdraw / Deposit / Funds / Account / Trade / Stop-out / ID check / Apply / Lead / Partner / Client / Staff | — | By the kind of record changed: any broker / group / symbol / pricing / approval-mode / routing change is Settings; Withdraw and Deposit only for money requests and payouts (owner 2026-09-30). |
+| DASH | Activity kind tags (new) | Settings / Withdraw / Deposit / Funds / Account / Trade / Stop-out / KYC / Apply / Lead / Partner / Client / Staff | — | By the kind of record changed: any broker / group / symbol / pricing / approval-mode / routing change is Settings; Withdraw and Deposit only for money requests and payouts (owner 2026-09-30). |
 | DASH | Empty panels (new) | one line: Nothing needs attention. / No open client positions. / Nothing waiting for approval. / No deposits or withdrawals in the last 7 days. / No staff activity yet. | — | An empty panel collapses to its header and one line (owner 2026-09-30). |
 | DASH | System accounts (new) | hedge account excluded | — | The hedge account is left out of every DASH tile, list and total (owner 2026-09-30). |
 
@@ -489,13 +493,13 @@ every number through `lib/format.ts`. CSV exports follow the number rules but ke
 | NTF | TITLE | keep | — | Short headline. |
 | NTF | BODY | Message | — | Full notification text. |
 | NTF | ENTITY | Related record | — | The account/request it is about; hidden by default so the table fits at 1366 (in Columns and the side panel) (owner 2026-09-30). |
-| NTF | Open the record | Open {record} | — | One label naming the record (Open client, Open closed trade, Review ID check …) in the menu, right-click and side panel; "Open the record" only as the disabled item when there is no screen (owner 2026-09-30). |
+| NTF | Open the record | Open {record} | — | One label naming the record (Open client, Open closed trade, Review KYC …) in the menu, right-click and side panel; "Open the record" only as the disabled item when there is no screen (owner 2026-09-30). |
 | NTF | Mark read | keep | — | Mark this notification as read; disabled "already read" when read (owner 2026-09-30). |
 | NTF | Reset trader password… | Reset client password… | — | Generate a new password for the client (shown once). |
 | NTF | 2) DETAIL  NOTIFICATION | Notification | — | The selected notification. |
 | NTF | state · type · entity · created | Status · Type · Related record · Received (UTC) | UTC | Details of the notification. |
 | NTF | OPEN {CODE} | Open {record} | — | Same label as the menu item (owner 2026-09-30). |
-| NTF | REVIEW KYC | Review ID check | — | Open the ID check (KYC) for this client. |
+| NTF | REVIEW KYC | Review KYC | — | Open the KYC for this client. |
 | NTF | MARK READ | Mark read | — | Mark this notification as read. |
 | NTF | RESET PASSWORD | Reset client password | — | Generate a new client password. |
 | NTF | NO LINKED SCREEN | no related screen | — | Reason on the disabled "Open the record" item (owner 2026-09-30). |
@@ -1278,7 +1282,7 @@ Hidden until an LP bridge exists: the screen is merged into Liquidity providers,
 | CLI | {n} TOTAL | keep | — | — |
 | CLI | + ACCOUNT | Add account | — | Open a new client account. |
 | CLI | ALL / LIVE / DEMO (chips) | keep | — | — |
-| CLI | KYC WAIT | ID check waiting | — | Accounts whose ID check is waiting for review. |
+| CLI | KYC WAIT | KYC pending | — | Accounts whose KYC is waiting for review. |
 | CLI | SUSPENDED | Suspended or closed | — | Accounts that are not active. |
 | CLI | IB | Referred clients | — | Clients brought in by a partner (IB). |
 | CLI | account · name · e-mail (search) | keep | — | — |
@@ -1288,14 +1292,14 @@ Hidden until an LP bridge exists: the screen is merged into Liquidity providers,
 | CLI | ACCOUNT MODE | Live / Demo | — | Live or demo account. |
 | CLI | ACCOUNT TYPE | removed (D4, owner 2026-10-01) | — | — |
 | CLI | COUNTRY | keep | — | — |
-| CLI | KYC | ID check | — | ID check status. |
+| CLI | KYC | KYC | — | KYC status. |
 | CLI | GROUP | keep | — | — |
 | CLI | LEVERAGE | keep | — | Written 1:N. |
 | CLI | BALANCE | Balance ($) | $ | — |
 | CLI | CREDIT | Credit ($) | $ | Bonus money the broker lends to trade with. |
 | CLI | STATUS | keep | — | — |
 | CLI | ACTIONS | Open | — | Click the row to open the client. |
-| CLI | VERIFIED / NONE (ID check value) | Verified / Not started | — | — |
+| CLI | VERIFIED / NONE (KYC value) | Not verified / Pending / Verified / Rejected | — | — |
 | CLI | Open client 360 | Open client | — | Open the client's account page. |
 | CLI | Live exposure | keep | — | — |
 | CLI | Deposits · withdrawals | Deposit & withdrawal history | — | Opens Deposits & withdrawals filtered to this account (owner 2026-10-05). |
@@ -1360,7 +1364,7 @@ Hidden until an LP bridge exists: the screen is merged into Liquidity providers,
 | CLI·360 | 1) CLI  CLIENT | Client | — | — |
 | CLI·360 | CLIENTS (breadcrumb) | ← Clients | — | Back to the list. |
 | CLI·360 | CLIENT <no> · <mode> · <country> | keep | — | — |
-| CLI·360 | KYC <status> (tag) | ID check <status> | — | — |
+| CLI·360 | KYC <status> (tag) | KYC <status> | — | — |
 | CLI·360 | IB (tag) | Referred client | — | Brought in by a partner (IB). |
 | CLI·360 | SWAP-FREE (tag) | Swap-free | — | — |
 | CLI·360 | CUSTOM PRICING (tag) | keep | — | This account has its own pricing. |
@@ -1486,11 +1490,11 @@ Hidden until an LP bridge exists: the screen is merged into Liquidity providers,
 | IB | PAY (button) | Pay | — | Confirm button. |
 | IB | EDIT PLAN (dialog) + TYPE · RATE + APPLY | Edit pay plan · Type and rate · Apply | — | Type (per lot or % of commission) and rate, e.g. 5 per lot or 40%. |
 
-### ID checks (KYC)
+### KYC
 
 | Screen | Current label | Proposed name | Unit | Tooltip (one line) |
 |---|---|---|---|---|
-| KYC | 1) KYC  VERIFICATION QUEUE | ID checks (KYC) | — | Clients waiting for identity approval. |
+| KYC | 1) KYC  VERIFICATION QUEUE | KYC | — | Clients waiting for identity approval. |
 | KYC | NOTHING WAITING / <n> WAITING · OLDEST <age> | keep | — | Queue size and oldest wait. |
 | KYC | IN-APP · <n> (tab) | In-app · {n} | — | Checks sent from the trading app. |
 | KYC | CLIENT PORTAL · <n> (tab) | Client portal · {n} | — | Checks sent from the website. |
@@ -1498,26 +1502,26 @@ Hidden until an LP bridge exists: the screen is merged into Liquidity providers,
 | KYC | ID | Account | — | The client's account number (portal checks: —); the check ID itself is in the CSV as "Check ID" (owner 2026-09-30). |
 | KYC | CLIENT | keep | — | Client name. |
 | KYC | COUNTRY | keep | — | Client's country. |
-| KYC | LEVEL | ID check level | — | Level requested/granted. |
+| KYC | LEVEL | KYC level | — | Level requested/granted. |
 | KYC | DOCUMENTS | keep | — | Documents uploaded. |
 | KYC | STATUS | keep | — | Waiting, approved or rejected. |
 | KYC | AGE | Waiting time | — | How long it has waited. |
 | KYC | ACTIONS (REVIEW) | ⋯ (row menu) | — | Review documents (Enter) · Open client · Copy · DECISION: Approve… · Reject… (last) (owner 2026-09-30). |
 | KYC | Review (documents + decision) | Review documents | — | Open the documents and decide. |
-| KYC | Approve… / Reject… | keep | — | Decide the ID check. |
+| KYC | Approve… / Reject… | keep | — | Decide the KYC. |
 | KYC | Open client 360 | Open client | — | Open the client's account page. |
 | KYC | 2) DOC  <ACC> · <NAME> / SELECT A RECORD | Documents · <account> · <name> / Select a check | — | Detail panel title. |
 | KYC | DOCUMENTS (section) · FRONT · BACK | Documents · Front · Back | — | ID images. |
 | KYC | CHECKS (section) | Checks | — | Automatic checks on the documents. |
 | KYC | DECISION (section) | Decision | — | Approve or reject. |
-| KYC | Level to grant | ID check level to grant | — | Level given on approval. |
+| KYC | Level to grant | KYC level to grant | — | Level given on approval. |
 | KYC | APPROVE / REJECT | keep | — | Decide. |
 | KYC | ALREADY <STATUS> | keep | — | Already decided. |
 | KYC | SUITABILITY (section) | Suitability | — | Client's experience and finances. |
 | KYC | IDENTITY (section) · ADDRESS PROOF | Identity · Proof of address | — | Portal documents. |
 | KYC | NO RECORD SELECTED | keep | — | Empty detail state. |
-| KYC | APPROVE KYC (dialog) | Approve ID check | — | Confirm dialog title. |
-| KYC | REJECT KYC (dialog) | Reject ID check | — | Confirm dialog title. |
+| KYC | APPROVE KYC (dialog) | Approve KYC | — | Confirm dialog title. |
+| KYC | REJECT KYC (dialog) | Reject KYC | — | Confirm dialog title. |
 | KYC | REASON (SENT TO THE CLIENT) | Reason (sent to the client) | — | Why it was rejected. |
 
 ### Live account applications (LAR)
@@ -1540,7 +1544,7 @@ Hidden until an LP bridge exists: the screen is merged into Liquidity providers,
 | LAR | Open account <no> | keep | — | Open the created account. |
 | LAR | APPROVE LIVE ACCOUNT (dialog) | Approve live account application | — | Confirm dialog title. |
 | LAR | REJECT LIVE ACCOUNT REQUEST (dialog) | Reject live account application | — | Confirm dialog title. |
-| LAR / KYC | REJECT <n> APPLICATIONS / REJECT <n> ID CHECKS (dialog) | Reject {n} applications / Reject {n} ID checks | — | Bulk reject titles; one reason for all; decided ones skipped (owner 2026-09-30). |
+| LAR / KYC | REJECT <n> APPLICATIONS / REJECT <n> KYC (dialog) | Reject {n} applications / Reject {n} KYC | — | Bulk reject titles; one reason for all; decided ones skipped (owner 2026-09-30). |
 | all screens | row-menu section headings | DECISION · LEAD · MONEY · TRADING · MANAGE · ACCOUNT · SECURITY | — | A heading names what is under it: approve/reject under DECISION, lead stages under LEAD, delete/suspend under MANAGE (Delete group…, Delete copy rule…, Suspend partner…); ACCOUNT only for account actions (owner 2026-09-30). |
 | LAR | REASON (SENT TO THE CLIENT) | Reason (sent to the client) | — | Why it was refused. |
 
@@ -1708,7 +1712,7 @@ Hidden until an LP bridge exists: the screen is merged into Liquidity providers,
 | USR | SELECT A MANAGER TO DELEGATE / CLICK A CELL IN {NAME} TO STAGE / {ROLE} · NOTHING TO DELEGATE | Select a manager to give extra permissions / Click a cell to change / Nothing to give | — | Hint. |
 | USR | SAVE / REVERT | Save / Undo | — | Save or discard permission changes. |
 | USR | PERMISSION / ADMIN / MANAGER / SUPPORT | keep | — | Matrix columns. |
-| USR | KYC review | ID check review | — | Permission. |
+| USR | KYC review | KYC review | — | Permission. |
 | USR | Risk settings / Emergency controls / Internal transfers | Risk settings / Trading halt / Internal transfers | — | Permissions. |
 | USR | Funds approval | Deposit & withdrawal approval | — | Permission. |
 | USR | IB payouts | Partner payouts | — | Permission. |
@@ -1818,8 +1822,8 @@ Hidden until an LP bridge exists: the screen is merged into Liquidity providers,
 | CFG | FUNDING (section) | Deposits & withdrawals | — | Money defaults. |
 | CFG | Min deposit (PER METHOD · PSP) | Min deposit ({CCY}) (set per payment method) | broker currency | Money labels carry the broker's own currency code (Broker.defaultAccountCurrency), e.g. "Min deposit (USD)"; no suffix when unknown; never "($)" (owner 2026-09-30). |
 | CFG | Withdrawal auto-approve ≤ | Auto-approve withdrawals up to ({CCY}) | broker currency | Live (step 3b): a client withdrawal at or under it is paid at once; empty = off. Client KYC still applies. |
-| CFG | Require KYC L1 to deposit | Require ID check level 1 to deposit | — | Not available yet. |
-| CFG | Require KYC L2 above | Require ID check level 2 above ({CCY}) | broker currency | Not available yet (owner 2026-09-30). |
+| CFG | Require KYC L1 to deposit | Require KYC level 1 to deposit | — | Not available yet. |
+| CFG | Require KYC L2 above | Require KYC level 2 above ({CCY}) | broker currency | Not available yet (owner 2026-09-30). |
 | CFG | BRANDING · TENANT (section): Broker · Domain · Tier · status · Accent · Terminal theme · Desktop build | Branding: Accent colour · Terminal theme · Backoffice app version (Broker · Domain · Plan · Status only on the Staff page's panel; the CFG screen shows them once, in THIS BROKER) | — | No duplicate rows; the version is this backoffice app's own release version, "development build" for an unreleased build (owner 2026-09-30). |
 | CFG | SECURITY (section): Staff 2FA mandatory · Session timeout · Audit retention | Security: Two-step sign-in required · Session timeout (minutes) · Audit log kept for (days, at least 365) | — | Live (step 3b): the session timeout counts from sign-in. |
 | CFG | note "Default leverage and currency…" | keep | — | Only new accounts get these defaults. |
@@ -1834,8 +1838,8 @@ Hidden until an LP bridge exists: the screen is merged into Liquidity providers,
 | CLI | Deposit… / Withdraw… (Account menu, two items) | Deposit / Withdraw… | — | One item; opens one window with tabs DEPOSIT · WITHDRAW. "Deposit & withdrawal history" stays as it is (owner 2026-10-05). |
 | CLI | (window tabs, new) | DEPOSIT · WITHDRAW | — | The window opens on the tab of the action the user chose. |
 | DEP | NEW DEPOSIT… · NEW WITHDRAWAL… (header, two buttons) | NEW DEPOSIT / WITHDRAWAL… | — | One button; opens the account picker, then the same window (owner 2026-10-05). |
-| CLI | Withdraw: ID check not approved (status bar only) | Withdrawals need an approved ID check | — | Shown inside the WITHDRAW tab with the submit button disabled; never only in the status bar (owner 2026-10-05, rule: every refusal shows where the user clicked). |
-| CLI | (link, new) | Open ID check | — | Next to the line above; opens the client's ID check. |
+| CLI | Withdraw: KYC not approved (status bar only) | Withdrawals need an approved KYC | — | Shown inside the WITHDRAW tab with the submit button disabled; never only in the status bar (owner 2026-10-05, rule: every refusal shows where the user clicked). |
+| CLI | (link, new) | Open KYC | — | Next to the line above; opens the client's KYC. |
 | CLI | (action, new) | Resend verification e-mail | — | Client-portal login whose e-mail is not verified; Account menu and the client page. Hidden when there is no portal login or it is verified (owner 2026-10-05). |
 | CLI | (result, new) | Verification e-mail sent to z***@gmail.com | — | Toast after a send. |
 | CLI | (refusals, new) | Already verified · This client is not active · E-mail is not set up for this broker · Too many resends for this client, try again in an hour · The e-mail could not be sent: <reason> | — | Shown in the action's own dialog or as the disabled item's reason, never only in the status bar. |
@@ -2453,7 +2457,7 @@ Each item lists the old variants, then the final word. The glossary above is the
 2. **Buy / sell / net volume**: `Long (lots)`, `Short (lots)`, `Net (lots)` (DASH, DEAL) → `Buy volume (lots)`, `Sell volume (lots)`, `Net volume (lots)`, as on EXP and SYM.
 3. **Total open volume**: `Exposure (lots)` (RPT, RISK, MRG) → `Open volume (lots)`, as on DASH. "Exposure" is now only a money figure or a limit.
 4. **Net value**: EXP `NOTIONAL` `Exposure ($)` → `Net exposure ($)`, as on DASH.
-5. **Waiting vs pending**: `Pending withdrawals ($)`, `Pending deposits & withdrawals`, `ID check pending`, `Pending` chips (DASH, CLI) → `Withdrawals waiting ($)`, `Deposits & withdrawals waiting`, `ID check waiting`, `Waiting`, as on DEP, KYC, LAR and APR. "Pending" now means a pending order only.
+5. **Waiting vs pending**: `Pending withdrawals ($)`, `Pending deposits & withdrawals`, `KYC pending`, `Pending` chips (DASH, CLI) → `Withdrawals waiting ($)`, `Deposits & withdrawals waiting`, `KYC pending`, `Waiting`, as on DEP, KYC, LAR and APR. "Pending" now means a pending order only.
 6. **Age**: `AGE` (DASH, DEAL, kept as-is) → `Waiting time`, as on KYC.
 7. **Partner clients**: `Partner clients` / `Partner client` (DASH, CLI, CLI·360) → `Referred clients` / `Referred client`, as on IB and RPT.
 8. **Partner pay**: `Owed ($)`, `Owed now ($)` (IB) → `Partner pay owed ($)`. `Partner pay rate` and `Rate` now carry `($ per lot or %)`.
