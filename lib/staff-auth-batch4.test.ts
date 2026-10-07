@@ -151,7 +151,7 @@ describe("mandatory staff 2FA: enrolment-only sessions", () => {
     // a real data route never runs its body
     as(token, "/api/manage/accounts");
     const accounts = await import("@/app/api/manage/accounts/route");
-    expect(await thrownRedirect(() => accounts.GET())).toBe(TWO_FACTOR_SETUP_REQUIRED_PATH);
+    expect(await thrownRedirect(() => accounts.GET(new Request("https://t.local/api/manage/accounts") as never))).toBe(TWO_FACTOR_SETUP_REQUIRED_PATH);
     // ... and the route it lands on answers 403 with the code, for every method
     const refusal = await import("@/app/api/manage/two-factor-required/route");
     for (const h of [refusal.GET, refusal.POST, refusal.PATCH, refusal.PUT, refusal.DELETE]) {
@@ -194,7 +194,7 @@ describe("mandatory staff 2FA: enrolment-only sessions", () => {
     const full = await getAdminSession();
     expect(full?.adminId).toBe(m.id);
     expect(full?.twoFactorSetupRequired).toBeUndefined();
-    const acc = await accounts.GET();
+    const acc = await accounts.GET(new Request("https://t.local/api/manage/accounts") as never);
     expect(acc.status).toBe(200);
     as(token, "/api/manage/shell-info");
     const si2 = await (await (await import("@/app/api/manage/shell-info/route")).GET()).json();
@@ -270,7 +270,7 @@ describe("SUPPORT is read-only; the menu follows role + permissions", () => {
     const sup = await makeAdmin("SUPPORT", { twoFactor: true });
     const token = await sessionFor(sup);
     const reads: [string, () => Promise<Response>][] = [
-      ["/api/manage/accounts", async () => (await import("@/app/api/manage/accounts/route")).GET()],
+      ["/api/manage/accounts", async () => (await import("@/app/api/manage/accounts/route")).GET(new Request("https://t.local/api/manage/accounts") as never)],
       ["/api/manage/kyc-requests", async () => (await import("@/app/api/manage/kyc-requests/route")).GET()],
       ["/api/manage/client-kyc-requests", async () => (await import("@/app/api/manage/client-kyc-requests/route")).GET()],
       ["/api/manage/notifications", async () => (await import("@/app/api/manage/notifications/route")).GET()],

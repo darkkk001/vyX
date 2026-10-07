@@ -27,7 +27,7 @@ async function requireReader() {
   return canReadAsManagerOrSupport(session) ? session! : null;
 }
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   const session = await requireReader();
   if (!session) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
@@ -35,7 +35,8 @@ export async function GET() {
 
   const [accounts, mirrorRules, broker] = await Promise.all([
     prisma.account.findMany({
-      where: { brokerId: session.brokerId! },
+      // step 3b item A: ?accountId= answers one account (the backoffice's slice after an event of that account)
+      where: { brokerId: session.brokerId!, ...(new URL(request.url).searchParams.get("accountId")?.trim() ? { id: new URL(request.url).searchParams.get("accountId")!.trim() } : {}) },
       include: {
         group: { select: { id: true, name: true, category: true } },
         ibLinkAsClient: { select: { id: true } },

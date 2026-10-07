@@ -1,3 +1,4 @@
+import { NextRequest } from "next/server";
 import "dotenv/config";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -46,7 +47,7 @@ describe("client link fields for the staff resend action", () => {
     const a3 = await prisma.account.create({ data: { ...base, accountNumber: `91${s.replace(/\D/g, "1").slice(0, 6)}3`, email: `none-${s}@t.local` } });
     await asAdmin(broker.id, admin.id);
     const { GET } = await import("./route");
-    const rows = (await (await GET()).json()) as Array<{ id: string; client: unknown }>;
+    const rows = (await (await GET(new NextRequest("https://t.local/api/manage/accounts"))).json()) as Array<{ id: string; client: unknown }>;
     const byId = new Map(rows.map((r) => [r.id, r.client]));
     expect(byId.get(a1.id)).toEqual({ id: unverified.id, email: unverified.email, emailVerified: false });
     expect(byId.get(a2.id)).toEqual({ id: verified.id, email: verified.email, emailVerified: true });

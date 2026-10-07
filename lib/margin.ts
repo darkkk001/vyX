@@ -30,9 +30,10 @@ export type AccountMarginSnapshot = {
 // left out before), and every figure is summed in Decimal, turned into a number only in the returned
 // snapshot (it used to add JS numbers). floatingPnl is returned on its own, because equity - balance is no
 // longer the floating P&L once credit is in equity.
-export async function computeAccountMarginSnapshots(prisma: PrismaClient, brokerId: string): Promise<AccountMarginSnapshot[]> {
+// accountId (step 3b item A, owner 2026-10-07): one account's snapshot only, for the backoffice's per-event slice; omitted = the broker.
+export async function computeAccountMarginSnapshots(prisma: PrismaClient, brokerId: string, accountId?: string): Promise<AccountMarginSnapshot[]> {
   const positions = await prisma.position.findMany({
-    where: { brokerId, status: "OPEN" },
+    where: { brokerId, status: "OPEN", ...(accountId ? { accountId } : {}) },
     include: {
       account: {
         select: { id: true, accountNumber: true, balance: true, credit: true, leverage: true, currency: true, group: { select: { marginCallLevel: true, stopOutLevel: true } } },
