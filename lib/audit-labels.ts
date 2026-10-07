@@ -114,6 +114,7 @@ const LABELS: Record<string, string> = {
   FUNDS_REQUEST_APPROVED: "Approved funds request",
   FUNDS_REQUEST_AUTO_APPROVED: "Auto-approved withdrawal",
   AUDIT_LOG_PURGED: "Deleted old audit log rows",
+  RISK_MARK_UPDATED: "Changed risk radar flag, whitelist or note",
   KYC_APPROVAL: "Approved KYC",
   KYC_REJECTION: "Rejected KYC",
   CLIENT_KYC_APPROVAL: "Approved client KYC",

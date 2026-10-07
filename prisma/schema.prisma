@@ -653,6 +653,24 @@ model AdminSignIn {
   @@index([adminId, createdAt])
 }
 
+// Step 3b item 6 (owner 2026-10-07): what staff decided about an account on the Risk radar. One row per account, only while it holds
+// something (a flag, a whitelist, or a note); the row is deleted when all three are empty. A flag keeps the account in the flagged list
+// (and the RDR badge) whatever the patterns say; a whitelist takes it out of both; the two never hold together. lib/risk-marks.ts.
+model RiskAccountMark {
+  id                 String     @id @default(cuid())
+  brokerId           String
+  accountId          String     @unique
+  account            Account    @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  flagged            Boolean    @default(false)
+  whitelisted        Boolean    @default(false)
+  note               String     @default("")
+  updatedByAdminId   String?
+  createdAt          DateTime   @default(now()) @db.Timestamptz(3)
+  updatedAt          DateTime   @updatedAt @db.Timestamptz(3)
+
+  @@index([brokerId])
+}
+
 model AdminBackupCode {
   id        String    @id @default(cuid())
   adminId   String
@@ -669,6 +687,7 @@ model AdminBackupCode {
 // ─────────────────────────────────────────────────────────────────────────
 
 model Account {
+  riskMark RiskAccountMark?
   id            String        @id @default(cuid())
   brokerId      String
   broker        Broker        @relation(fields: [brokerId], references: [id])
