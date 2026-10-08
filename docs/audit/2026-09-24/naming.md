@@ -2537,4 +2537,5 @@ Every line or flow chart in the backoffice, the terminal, WebTrader and the stat
 | Zero line | Drawn only when the series crosses zero. |
 | Balance | A STEP line: it changes only at events (horizontal to the event, then vertical). |
 | Equity | A straight line, point to point. |
-| Migration | Backoffice client page "Balance history": done in 1.0.67. The rest of the list is in docs/CHARTS.md (E: repo) for the next release. |
+| Flows vs balances | Flows = bars (thin, two neutral shades: in = dark blue, out = grey); balances = lines (step for balance, straight for equity). Never red or green, no amber net line. |
+| Migration | Backoffice client page "Balance history": done in 1.0.67. Dashboard FLOW (bars, bar mode of the shared control): done in 1.0.68. The rest of the list is in docs/CHARTS.md (E: repo) for the next release. |
