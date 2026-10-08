@@ -4,6 +4,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
 import { closePositionInTx } from "@/lib/position-close";
+import { withDeadlockRetry } from "@/lib/tx-retry";
 import { publishTradingEvent } from "@/lib/nats";
 import { recordDealerActivity } from "@/lib/dealer-activity";
 import { isDealingManagedAccount, resolveWantsDealingQueue } from "@/lib/dealing-routing";
@@ -258,7 +259,7 @@ async function handleClose(request: NextRequest, params: Promise<{ id: string }>
     return NextResponse.json({ error: slippageError, serverPrice: closePrice.toString() }, { status: 400 });
   }
 
-  const outcome = await prisma.$transaction((tx) =>
+  const outcome = await withDeadlockRetry(() => prisma.$transaction((tx) =>
     closePositionInTx(tx, {
       position: {
         id: position.id,
@@ -272,7 +273,7 @@ async function handleClose(request: NextRequest, params: Promise<{ id: string }>
       closePrice,
       closeVolume,
     })
-  );
+  ));
 
   if (!outcome.closed) {
     // Lost a race with a concurrent close (another tab, or the risk

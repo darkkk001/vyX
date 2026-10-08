@@ -45,7 +45,7 @@ export async function setAccountTradingRights(
   params: { brokerId: string; accountId: string; to: TradingRights; adminId: string; note?: string }
 ): Promise<TradingRightsChange> {
   // row lock: two admins changing the rights at once apply in turn, each against the other's result
-  const rows = await tx.$queryRaw<{ tradingRights: TradingRights; brokerId: string }[]>`SELECT "tradingRights", "brokerId" FROM "Account" WHERE id = ${params.accountId} FOR UPDATE`;
+  const rows = await tx.$queryRaw<{ tradingRights: TradingRights; brokerId: string }[]>`SELECT "tradingRights", "brokerId" FROM "Account" WHERE id = ${params.accountId} FOR NO KEY UPDATE`;
   if (rows.length === 0 || rows[0].brokerId !== params.brokerId) throw new Error("account not found");
   const from = rows[0].tradingRights;
   if (from === params.to) return { changed: false, from, to: params.to, cancelledOrderIds: [] };

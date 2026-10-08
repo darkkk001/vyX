@@ -7,6 +7,7 @@ import { getAccountSession } from "@/lib/account-auth";
 import { validateSlTp, validatePendingOrderDirection, validatePendingPriceDistance } from "@/lib/trading";
 import { createNotification } from "@/lib/notifications";
 import { openPositionFromOrder } from "@/lib/dealing";
+import { withDeadlockRetry } from "@/lib/tx-retry";
 import { resolveBookType, applySpreadMarkup, pipSize, chargeCommission } from "@/lib/group-pricing";
 import { resolveFillPricing, logSpreadWarning } from "@/lib/pricing-engine";
 import { loadAccountMarginState, evaluatePreTradeMargin } from "@/lib/margin";
@@ -478,7 +479,7 @@ async function handlePlaceOrder(request: NextRequest, session: Session) {
           // clear the accept threshold.
           const marginError = marginGate(fillPrice);
           if (!marginError) {
-            const position = await prisma.$transaction(async (tx) => {
+            const position = await withDeadlockRetry(() => prisma.$transaction(async (tx) => {
               const pos = await openPositionFromOrder(tx, order, fillPrice, bookType, pricing.commissionPerLot);
               await tx.auditLog.create({
                 data: {
@@ -491,7 +492,7 @@ async function handlePlaceOrder(request: NextRequest, session: Session) {
                 },
               });
               return pos;
-            });
+            }));
             // the rare auto-accept path re-reads the full row (commission, ticket) instead of rebuilding it
             const [dto, balanceRow] = await Promise.all([
               prisma.position.findUniqueOrThrow({ where: { id: position.id }, include: POSITION_DTO_INCLUDE }),
@@ -639,7 +640,7 @@ async function handlePlaceOrder(request: NextRequest, session: Session) {
         return NextResponse.json(marginError, { status: 400 });
       }
       const bookType = resolveBookType(account.group.category);
-      const result = await prisma.$transaction(async (tx) => {
+      const result = await withDeadlockRetry(() => prisma.$transaction(async (tx) => {
         const order = await tx.order.create({
           data: {
             brokerId: session.brokerId,
@@ -693,7 +694,7 @@ async function handlePlaceOrder(request: NextRequest, session: Session) {
           position: commission.gt(0) ? { ...position, commission: position.commission.add(commission) } : position,
           balanceAfter,
         };
-      });
+      }));
       const dto = positionDto(result.position, brokerSymbol.symbol, orderSource);
       // the balance moves on an open only when a commission is charged; otherwise it is left out (contract)
       const balance = result.balanceAfter?.toString();

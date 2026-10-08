@@ -21,7 +21,7 @@ export class IbPartnerError extends Error {
 
 async function loadPartner(tx: Tx, brokerId: string, ibAccountId: string) {
   // row lock on the partner's account: suspend / resume / release of the same partner serialize
-  await tx.$queryRaw`SELECT id FROM "Account" WHERE id = ${ibAccountId} FOR UPDATE`;
+  await tx.$queryRaw`SELECT id FROM "Account" WHERE id = ${ibAccountId} FOR NO KEY UPDATE`;
   const account = await tx.account.findUnique({
     where: { id: ibAccountId },
     select: { id: true, brokerId: true, accountNumber: true, fullName: true, status: true, ibSuspendedAt: true, ibSuspendedById: true },
