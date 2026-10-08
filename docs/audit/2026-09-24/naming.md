@@ -2522,3 +2522,19 @@ Resolved 2026-10-01 (owner): broker-wide **Max slippage** (DEAL, CFG) is stored 
 | CLI | Deposit & withdrawal history (opened the Deposits screen) | HISTORY tab: chips ALL · DEPOSITS · WITHDRAWALS · ADJUSTMENTS · CREDIT · TRANSFERS, a totals line, the last 200 rows | broker currency | Broker view, stored sign. An adjustment total reads "(not counted in deposits)". |
 | CLI | Mark as internal account / Unmark internal account (menu) · INTERNAL (chip) | Test account (excluded from totals and reports) (checkbox on the client page, admin only) · TEST (chip) | — | The menu items are removed. Confirm: "Mark {n} as a test account? It is left out of totals and reports." / "Take {n} out of the test accounts? It counts in totals and reports again." Done: "{n} is a test account" / "{n} is no longer a test account". The chip shows in the Clients list (LIVE · TEST) and on the page. |
 | CLI | Greyed menu rows with a reason in brackets | not drawn | — | The hide rule (owner 2026-10-07): an action that cannot run now is not in the menu or the inspector. No greyed row, no reason text. |
+
+## Charts (owner rule 2026-10-08)
+
+Every line or flow chart in the backoffice, the terminal, WebTrader and the statements follows the MT5 account-history chart, drawn by ONE shared chart control per app.
+
+| Part | Rule |
+|---|---|
+| Line | 1 px, one neutral blue (a theme token, light and dark), never green or red. No fill, no gradient, no smoothing, no thick strokes. |
+| Grid | Thin and light. |
+| Y axis | Values on the RIGHT, written with the shared number formatter (1,234.56, minus sign −). |
+| X axis | Dates; deal # for statements. |
+| Title | Top-left corner of the chart. |
+| Zero line | Drawn only when the series crosses zero. |
+| Balance | A STEP line: it changes only at events (horizontal to the event, then vertical). |
+| Equity | A straight line, point to point. |
+| Migration | Backoffice client page "Balance history": done in 1.0.67. The rest of the list is in docs/CHARTS.md (E: repo) for the next release. |
