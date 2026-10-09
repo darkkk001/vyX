@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { verifyDesktopGateToken } from "@/lib/desktop-gate";
 import { createBrokerResolver } from "@/lib/broker-resolve-cache";
+import { createSchemaGate, schemaGuardExempt, UPDATING_BODY } from "@/lib/schema-guard-edge";
 
 // Resolves which Broker a request belongs to, from the Host header:
 //   - subdomain:      brokername.<ROOT_DOMAIN>
@@ -125,8 +126,27 @@ const PATH_ALIASES: Record<string, string> = {
   "/traders/login": "/trade/login",
 };
 
+// Startup schema guard (lib/schema-guard.ts): while the database is behind this build, refuse everything with a 503.
+const schemaGate = createSchemaGate();
+
+async function askSchemaBehind(request: NextRequest): Promise<boolean> {
+  const secret = process.env.INTERNAL_SERVICE_SECRET ?? "";
+  if (!secret) return false;
+  const res = await fetch(new URL("/api/internal/schema-status", request.url), {
+    headers: { "x-internal-request": "middleware", "x-internal-secret": secret },
+  });
+  if (!res.ok) return false;
+  return ((await res.json()) as { behind?: boolean }).behind === true;
+}
+
 export async function middleware(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
+  if (!schemaGuardExempt(pathname) && (await schemaGate.isBehind(() => askSchemaBehind(request)))) {
+    const headers = { "Retry-After": "30", "Cache-Control": "no-store" };
+    return pathname.startsWith("/api/")
+      ? NextResponse.json(UPDATING_BODY, { status: 503, headers })
+      : new NextResponse(UPDATING_BODY.error, { status: 503, headers });
+  }
   const effectivePathname = PATH_ALIASES[pathname] ?? pathname;
   const isManagePage = effectivePathname === "/manage" || effectivePathname.startsWith("/manage/");
   const isSuperAdminPage = SUPER_ADMIN_PAGE_PATHS.has(effectivePathname);

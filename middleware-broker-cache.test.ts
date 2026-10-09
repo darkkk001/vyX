@@ -12,6 +12,7 @@ beforeAll(async () => {
   vi.stubEnv("INTERNAL_SERVICE_SECRET", "s");
   vi.stubGlobal("fetch", async (input: URL | string) => {
     const url = new URL(String(input));
+    if (url.pathname === "/api/internal/schema-status") return Response.json({ behind: false });
     calls.push(url.search);
     await new Promise((r) => setTimeout(r, 20));
     if (url.searchParams.get("subdomain") === "known") {
