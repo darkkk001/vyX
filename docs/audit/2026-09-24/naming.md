@@ -2539,3 +2539,36 @@ Every line or flow chart in the backoffice, the terminal, WebTrader and the stat
 | Equity | A straight line, point to point. |
 | Flows vs balances | Flows = bars (thin, two neutral shades: in = dark blue, out = grey); balances = lines (step for balance, straight for equity). Never red or green, no amber net line. |
 | Migration | Backoffice client page "Balance history": done in 1.0.67. Dashboard FLOW (bars, bar mode of the shared control): done in 1.0.68. The rest of the list is in docs/CHARTS.md (E: repo) for the next release. |
+
+## Table text (owner rule 2026-10-09)
+
+Every backoffice table and every inspector panel follows ONE text rule, set once in the shared table control (DataTable) and the shared inspector row, never per screen. All colours are theme tokens (no hex outside the token file).
+
+| Part | Rule |
+|---|---|
+| Headers | Small, grey, uppercase (as before). |
+| Data cells | Full contrast: token BrushCell, #e6e9ee in the dark theme, #111 in the light theme. Not grey. |
+| Identifiers | Semi-bold: account #, ticket / deal / order #, symbol, client name. |
+| Numbers | Tabular figures, normal weight. Only the profit / loss colour (green up, red down) recolours a number. |
+| Secondary text | Grey: currency (CCY), units, sub-labels. |
+| Where it is decided | A column is classified by its header words (Vyx.Shared TableTextRule), so a new screen follows the rule without any code of its own. |
+
+## Tabbed dialogs (owner rule 2026-10-09)
+
+A dialog with tabs has ONE fixed size, the size of its largest tab. Switching tabs changes the content only, never the window and never the size of a table inside it. Everything a tab can add (the line under the header, an in-window refusal, an error, the preview line) lives inside the fixed content area, which scrolls if a tab ever needs more.
+
+| Dialog | Tabs | Size |
+|---|---|---|
+| Funds window (Account menu, client page) | Deposit · Withdraw · Adjustment · Credit · Transfer · History (by right) | 620 px wide, content area 400 px; the same on every tab and every state |
+| Deposit / Withdraw window (New deposit / withdrawal) | Deposit · Withdraw | the same fixed size |
+| KYC document viewer | Front · Back · Address | one window (1100 x 820) whatever the page |
+
+## Deposits & withdrawals tabs (backoffice 1.0.70, owner 2026-10-09)
+
+| Screen | Old | New | Note |
+|---|---|---|---|
+| DEP | one list with DEPOSITS / WITHDRAWALS filter chips | tabs: Deposits · Withdrawals · Transfers · Adjustments | Deposits and Withdrawals are the request list split by type (the tab shows the number waiting). The status chips stay (WAITING, APPROVED BY FIRST ADMIN, COMPLETED, REJECTED, ALL). |
+| DEP | Transfers (TRX) sidebar item and screen | Transfers tab with a NEW TRANSFER… button | The TRX item is gone from the sidebar. Its permission is kept: the Transfers tab shows for a person with the Transfers right, the other tabs follow Deposits & withdrawals. |
+| DEP | TRX form: From account · To account · Amount · Note · PREVIEW · TRANSFER | NEW TRANSFER dialog: From account · To account · Amount · Note · TRANSFER | Transfers are between the SAME client's accounts only (owner 2026-10-07): the To list holds only the From account's client's other accounts. A client with no other account: refused in the dialog in plain words ("This client has no other account to transfer to."); nobody has two: "No client has a second account to move money between.". Cross-currency, demo / live and a not-active target are refused in the dialog at once. Same transfer route and rules as the Funds window's Transfer tab. |
+| DEP | Use as From account / Use as To account (entry menu) | New transfer from this account… | Opens the dialog with the From account filled in. |
+| DEP | (none) | Adjustments tab | Read-only: every balance correction filed on the broker (filed by, reviewed by, reason, status). Corrections are made in the Funds window and decided in Approvals. |
