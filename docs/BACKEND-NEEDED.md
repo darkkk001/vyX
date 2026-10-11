@@ -1,10 +1,113 @@
 # Backend needed
 
-The backoffice Phase 3 rollout shows these actions **disabled, marked "backend needed"**, because no server endpoint
-does them yet. Each row is what the screen needs from the web API before the action can be switched on. Labels follow
+The backoffice Phase 3 rollout showed these actions **disabled, marked "backend needed"**, because no server endpoint
+does them yet; since 2026-10-06 they are hidden instead (next section). Each row is what the screen needs from the web API before the action can be switched on. Labels follow
 `docs/audit/2026-09-24/naming.md`. Owner decisions are dated.
 
-## Actions shown disabled
+## Hidden until built (2026-10-06)
+
+Since the backoffice hotfix UI sweep (E: `3695602` + `abc6aee`, branch `hotfix/bo-ui-sweep`, shipped in backoffice
+1.0.62 via `hotfix/bo-blink-kyc`), an unbuilt item is **hidden**, never shown greyed with "backend needed" / "not
+available yet" (`HotfixUiSweepTests`). The table "Actions shown disabled" below is kept as the record of what each one
+needs; none of them is on screen any more.
+
+**Owner rule (2026-10-06): each item shows in the menu again ONLY when its backend is live** (route deployed, migration
+applied to the live database). No item comes back greyed or with a dev label.
+
+| # | Item | Screen | Where it was hidden (E:) |
+|---|---|---|---|
+| 1 | Add credit… / Remove credit… | CLI account menu | `Phase3Ui.cs` `AccountMenu.Hidden` |
+| 2 | Trading rights… | CLI account menu | same |
+| 3 | Void trade… (a CLOSED trade) | DLS / CLI closed trade menu | `Phase3Deals.cs` `ClosedTradeMenu` |
+| 4 | Connect (FIX session)… | LP provider menu | `Phase3Liquidity.cs` `LpMenu` |
+| 5 | Status "Connected" (unless already the current status) | LP provider menu | same |
+| 6 | RESTART PRICE FEED | FEED | `LiquidityScreens.cs` `FeedHealthScreen` |
+| 7 | Feed internals: samples, received / waiting / rejected / sent prices, save failures, round trip, clock offset, alert counters | FEED | same (not a backlog item: an ops view) |
+| 8 | INCIDENT LOG | EMG | `SecurityEmergencyScreens.cs` |
+| 9 | LIMIT / STOP order tickets (MARKET only) | DEALING ticket | `DealingScreen.cs` |
+| 10 | Chart right-click: Buy / Sell limit / stop at a price; Alert above / below | DEALING chart | `CandleChartControl.cs` (offered only when the host subscribes) |
+| 11 | Session timeout, Password change interval, Passkeys & security keys, API keys (personal tokens), Allowed IP addresses | SEC | `SecurityEmergencyScreens.cs` |
+| 12 | Hedging allowed | CFG | `SettingsScreen.cs` |
+| 13 | Auto-approve withdrawals up to (ccy) | CFG | same |
+| 14 | Require ID check level 1 to deposit; Require ID check level 2 above (ccy) | CFG | same |
+| 15 | Session timeout; Audit log kept for | CFG | same |
+| 16 | Sanctions / PEP; Duplicate identity | KYC review | `KycScreen.cs` |
+| 17 | REFERRAL FUNNEL THIS MONTH | IB detail | `IbReportsScreens.cs` |
+| 18 | Sub-partners · Referral link · Pay schedule | IB inspector | `Phase3Clients.cs` |
+| 19 | Devices · IP addresses | USR (staff) inspector | `Phase3Staff.cs` |
+| 20 | FLAG · WHITELIST · NOTE | RDR detail | `LiquidityScreens.cs` `RiskRadarScreen` |
+
+### Build order, step 3b (after Groups)
+
+Each line: what the server needs and what already exists. "Cutover" = touches an order or risk path, so it must respect
+`docs/RUST-CUTOVER-PLAN.md` §6.1 (the engine enforces the same gate, or that path stays on the web for RUST brokers).
+
+1. **Add / Remove credit.** BUILT, not merged: web `be/credit-rights` `861fb98` (`POST /api/manage/accounts/[id]/credit`,
+   `lib/credit-adjustment.ts`, CREDIT_IN / CREDIT_OUT ledger rows, MANAGER files a CREDIT request), native E:
+   `be/credit-rights` `0afb2d5`. Migration `20260928150000_credit_and_trading_rights` (additive) is older than migrations
+   already live (up to `20261005120000`; `20261006090000` on `batch/s2-foundations`): re-date it when rebasing. Both
+   branches are ~130 commits behind and conflict (web: `accounts/[id]/route.ts`, `balance-adjustment.ts`,
+   `pending-trigger.ts`, `position-actions.ts`, `risk.ts`; native: `Program.cs`, `ApprovalsMirrorScreens.cs`,
+   `ApiClient.ManageG1.cs`, `Phase3Ui.cs`): a manual rebase, not a clean one. Cutover: the engine's pinned ledger read
+   (`book.rs` `load_book_state`) must count CREDIT_IN / CREDIT_OUT rows.
+2. **Trading rights (Full / Close-only / Read-only).** BUILT on the same branches (`Account.tradingRights`,
+   `lib/account-trading-rights.ts`, `checkAccountTradingRights` at every open gate, rights drop cancels pending opens,
+   suspend revokes sessions). Cutover: the branch adds a §6.1 gate table (engine must refuse on market, pending placement
+   and pending trigger; READ_ONLY also close / modify / cancel). That gate is NOT built in the engine.
+3. **Void trade (closed).** Not built. `POST /api/manage/positions/[id]/void` voids OPEN positions only. Needs a route
+   (or a CLOSED branch of `executeVoid`) that reverses the close's TRADE_PNL, commission, swap, credit used, the IB
+   commission fixed at close and any NBP write-off, marks VOIDED, handles the coverage leg and mirror links, goes through
+   the PositionActionRequest maker-checker, and is audited. Probably no migration (VOIDED and VOID exist). Cutover: money
+   rows the engine's pinned ledger reads; must not race the post-close outbox.
+4. **Settings rows.** One migration on Broker:
+   - session timeout (staff idle / absolute timeout read by `lib/auth.ts`, today a fixed 7 / 30-day TTL);
+   - audit log retention (days + a purge job; owner sets a floor, regulators usually want years);
+   - auto-approve withdrawals up to X (client withdrawal completes alone under X; money path: adversarial test, KYC gate
+     and the D5 SINGLE / DUAL rule still apply);
+   - hedging allowed: overlaps the Hedging / Netting plan (group Position Mode). Decide broker flag vs group mode first.
+     Cutover: an open-path gate the engine must enforce.
+5. **Security rows.** Password change interval (AdminUser.passwordChangedAt + policy), Allowed IP addresses (checked at
+   staff login and on every session read; lock-out guard for the last admin), Passkeys (WebAuthn credentials table),
+   API keys (hashed personal tokens, scopes, revocation, an auth path beside the cookie). Migrations for each. The
+   session timeout row is the same setting as the CFG one.
+6. **Trading halt incident log.** Smallest version: `GET /api/manage/emergency/incidents`, a read over the AuditLog rows
+   of halt / close-only / group halt / symbol disable / sign-out-all, no migration. With notes and an open / closed
+   state: an Incident table (migration).
+7. **Staff devices / IPs.** Redis session metadata already has ip + userAgent, but `listAdminSessions` is self-only
+   (`GET /api/admin/sessions`). Needs `GET /api/manage/admins/[id]/sessions` (admin only) and, for IP history after a
+   session ends, a durable staff login table like LoginEvent (migration).
+8. **Risk radar flag / whitelist / note.** A per-account mark table (FLAG / WHITELIST, note, staff, time; migration),
+   routes, and `GET /api/manage/risk-radar` leaving whitelisted accounts out of the lists. Read-only for trading.
+9. **Dealing limit / stop orders.** `POST /api/manage/coverage/orders` refuses anything but MARKET, and
+   `lib/pending-trigger.ts` never fills a trigger on the system coverage account. Needs resting LIMIT / STOP on the
+   coverage account (A_BOOK, zero commission), cancel / modify, the dealer's pending list. Cutover: a new order type on a
+   system account that the engine's `pending_orders.rs` trigger must also honour (or it stays on the web). The chart's
+   Alert above / below is separate: PriceAlert is per client account and notifies the client; a dealer alert needs a
+   staff target (or alerts on the coverage account routed to staff).
+
+### External provider (stay hidden)
+
+- **LP Connect (FIX session) and status "Connected":** the LP bridge (a real FIX session, heartbeat, status). Blocked on
+  a real LP relationship; "Connected" is set by the bridge, never by hand.
+- **Sanctions / PEP:** a screening vendor (e.g. a KYC / AML provider) called on the ID check, with its result stored.
+- **Duplicate identity:** a vendor match, or an internal check. Internal is possible without a vendor but KycRecord /
+  ClientKycRecord store no document number today (migration). Owner keeps it with the vendor work.
+- **KYC levels** (the two CFG rows "Require ID check level 1 to deposit" / "level 2 above X"): KYC has one status, no
+  levels; tiers usually come with the KYC vendor. Note: staff deposit / withdraw never blocks on KYC (owner 2026-10-06);
+  these rows gate the client.
+- **Referral funnel:** needs referral links and click / sign-up tracking on the website (an analytics source); counts
+  per partner per month.
+
+### Unclassified, owner to decide
+
+- **Sub-partners · Referral link · Pay schedule** (IB inspector): no vendor needed. IbRelationship has no parent partner,
+  no link / code and no schedule (migration). The referral link is also what the funnel needs.
+- **RESTART PRICE FEED** (FEED): an infra control. Owner rule: brokers never see restart controls, so it belongs on the
+  super-admin ops view, not back in the backoffice.
+- **Feed internals** (counters, save failures, round trip, clock offset): hidden from brokers on purpose; the same ops
+  view, super-admin only.
+
+## Actions shown disabled (hidden since 2026-10-06)
 
 | Screen | Action | Needs | Since |
 |---|---|---|---|
