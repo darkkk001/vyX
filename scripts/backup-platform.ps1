@@ -115,10 +115,14 @@ function Read-EnvValue([string] $file, [string] $name) {
 }
 
 function Count-Rows([string] $psql, [string] $url) {
+    # Via a file: PowerShell 5.1 drops the inner double quotes of a native argument ("Account" -> account).
     $q = ($Tables | ForEach-Object { "select '$_', count(*) from `"$_`"" }) -join " union all "
+    $sql = Join-Path $env:TEMP ("vyx-count-" + [guid]::NewGuid().ToString("N") + ".sql")
+    Set-Content -LiteralPath $sql -Value "$q;" -Encoding ASCII
     $env:PGOPTIONS = "-c default_transaction_read_only=on"
-    $rows = & $psql -X -At -F "=" -c $q -d $url 2>$null
+    $rows = & $psql -X -At -F "=" -f $sql -d $url 2>$null
     Remove-Item Env:PGOPTIONS -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $sql -ErrorAction SilentlyContinue
     $h = @{}
     foreach ($r in $rows) { $p = "$r".Split("="); if ($p.Count -eq 2) { $h[$p[0]] = [int64]$p[1] } }
     return $h
@@ -259,8 +263,11 @@ function Restore-Test($tools, [string] $dump, $live, [string] $gitDir, [string] 
         $data = Join-Path $tmp "pgdata"
         $pg = $tools.Pg
         if ((Run (Join-Path $pg "initdb.exe") @("-D", $data, "-U", "postgres", "-A", "trust", "-E", "UTF8", "--locale=C") (Join-Path $logs "restore.log")) -ne 0) { Fail "initdb for the restore test" }
-        $srv = Start-Process -FilePath (Join-Path $pg "postgres.exe") -ArgumentList @("-D", "`"$data`"", "-p", "$TestPort", "-c", "listen_addresses=127.0.0.1") -WindowStyle Hidden -PassThru `
-            -RedirectStandardError (Join-Path $logs "restore-postgres.log")
+        # pg_ctl, not postgres.exe: postgres refuses an admin account, pg_ctl drops to a restricted token. Started via
+        # Start-Process (no captured pipes) so the server does not inherit and hold this script's output handles.
+        # WaitForExit, not -Wait: -Wait also waits for the server pg_ctl leaves running.
+        $ctlArgs = "start -w -D `"$data`" -l `"$(Join-Path $logs 'restore-postgres.log')`" -o `"-p $TestPort -c listen_addresses=127.0.0.1`""
+        (Start-Process -FilePath (Join-Path $pg "pg_ctl.exe") -ArgumentList $ctlArgs -WindowStyle Hidden -PassThru).WaitForExit(120000) | Out-Null
         $ready = $false
         for ($i = 0; $i -lt 60 -and -not $ready; $i++) {
             & (Join-Path $pg "pg_isready.exe") -h 127.0.0.1 -p $TestPort -U postgres -q
@@ -279,8 +286,7 @@ function Restore-Test($tools, [string] $dump, $live, [string] $gitDir, [string] 
             if ($bad.Count) { Note "restore: WARNING row counts differ for $($bad -join ', ') (rows written between the count and the dump, or a failed restore: check logs\pg_restore.log)" }
             if (@($Tables | Where-Object { $null -eq $got[$_] }).Count) { Fail "restore test: tables missing after pg_restore" }
         } finally {
-            & (Join-Path $pg "pg_ctl.exe") -D $data stop -m fast *> $null
-            if (-not $srv.HasExited) { Stop-Process -Id $srv.Id -Force -ErrorAction SilentlyContinue }
+            (Start-Process -FilePath (Join-Path $pg "pg_ctl.exe") -ArgumentList "stop -m fast -D `"$data`"" -WindowStyle Hidden -PassThru).WaitForExit(60000) | Out-Null
         }
     } finally {
         Start-Sleep -Seconds 1

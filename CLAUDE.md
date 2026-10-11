@@ -55,6 +55,17 @@ simulated/live prices.
   outside comments and test files; comments and test descriptions are
   developer-facing, not user-facing, and are exempt.
 
+## Workspace rules (standing, 2026-10-12)
+
+The old D:/E: drive filled up with ~75 worktrees and ~200 GB of build output before it started failing.
+These apply to this repo and to darkkk001/VyxTrader:
+
+- Checkouts live under `C:\vyx` only (`C:\vyx\web`, `C:\vyx\native`). No builds anywhere else.
+- At most 2 worktrees per repo, also under `C:\vyx`. Run `git worktree remove` as soon as the branch is
+  merged or shipped.
+- Never commit installers, update packages or screenshots. Releases go to the feed host only.
+- Clean dist/bin/obj/.next after every release and report C: free space at the end of every job.
+
 ## Deployment safety
 
 Learned the hard way during the 2026-09-04 Futurix incident (a Neon
