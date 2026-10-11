@@ -8,16 +8,19 @@ import { EXPECTED_MIGRATIONS } from "@/lib/expected-migrations.generated";
 //   ok       every expected migration is applied (extra ones, i.e. the DB is ahead, are fine: info line only)
 //   behind   expected migrations are missing: ONE log line, and middleware answers 503 until they are applied
 //   unknown  the database could not be reached or the query failed: WARNING, never refuses (a transient DB problem
-//            must not take the site down)
+//            must not take the site down), and re-checked like behind so the guard does not stay off for the
+//            instance's lifetime (2026-10-11: Neon wake-ups past the old 5 s limit left instances unknown for good)
 //
-// Cost: one query per instance start. While behind, the check is repeated at most every RECHECK_MS and only when a
-// request asks (so an instance recovers after `prisma migrate deploy` without a redeploy); nothing runs when ok.
+// Cost: one query per instance start. While behind or unknown, the check is repeated at most every RECHECK_MS and
+// only when a request asks (so an instance recovers after `prisma migrate deploy` without a redeploy); nothing runs
+// when ok.
 
 export type SchemaStatus = "unchecked" | "ok" | "behind" | "unknown";
 export type SchemaState = { status: SchemaStatus; missing: string[]; checkedAt: number };
 
 export const RECHECK_MS = 10_000;
-const QUERY_TIMEOUT_MS = 5_000;
+// Long enough for a suspended Neon compute to wake (seen above 5 s in production).
+export const QUERY_TIMEOUT_MS = 15_000;
 const STATE_KEY = "__vyxSchemaGuardState";
 
 type G = typeof globalThis & { [STATE_KEY]?: SchemaState };
@@ -49,7 +52,7 @@ export type AppliedQuery = () => Promise<string[]>;
 async function defaultQuery(): Promise<string[]> {
   const { prisma } = await import("@/lib/prisma");
   const rows = await prisma.$queryRaw<{ migration_name: string }[]>`
-    SELECT migration_name FROM _prisma_migrations WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL`;
+    SELECT DISTINCT migration_name FROM _prisma_migrations WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL`;
   return rows.map((r) => r.migration_name);
 }
 
@@ -72,24 +75,33 @@ export async function runSchemaCheck(
       if (!opts.quiet || previous !== "behind") console.error(behindMessage(missing));
     } else {
       state = { status: "ok", missing: [], checkedAt: Date.now() };
-      const extra = applied.length - expected.length;
+      // Distinct names: the live ledger holds some migrations twice (two rows, one name), which are not "ahead".
+      const known = new Set(expected);
+      const extra = new Set(applied.filter((n) => !known.has(n))).size;
       if (extra > 0) console.info(`SCHEMA GUARD: database has ${extra} more migration(s) than this build; continuing.`);
       if (previous === "behind") console.info("SCHEMA GUARD: database is now up to date; serving again.");
+      if (previous === "unknown") console.info("SCHEMA GUARD: migrations verified after an earlier failed check.");
     }
   } catch (err) {
     state = { status: "unknown", missing: [], checkedAt: Date.now() };
-    console.warn(
-      `SCHEMA GUARD: could not verify migrations (${err instanceof Error ? err.message : String(err)}); serving anyway.`
-    );
+    // Rechecks (quiet) stay silent while still unknown, same as behind.
+    if (!opts.quiet || previous !== "unknown") {
+      console.warn(
+        `SCHEMA GUARD: could not verify migrations (${err instanceof Error ? err.message : String(err)}); serving anyway.`
+      );
+    }
   }
   g[STATE_KEY] = state;
   return state;
 }
 
-/** While behind, re-check at most every RECHECK_MS so the instance recovers after migrate deploy. No-op otherwise. */
-export async function refreshIfBehind(opts: { query?: AppliedQuery; expected?: readonly string[]; now?: number } = {}) {
+/**
+ * While behind or unknown, re-check at most every RECHECK_MS: the instance recovers after migrate deploy, and a check
+ * that failed (timeout, DB asleep) gets another go instead of leaving the guard off. No-op when ok or unchecked.
+ */
+export async function refreshIfStale(opts: { query?: AppliedQuery; expected?: readonly string[]; now?: number } = {}) {
   const s = getSchemaState();
-  if (s.status === "behind" && (opts.now ?? Date.now()) - s.checkedAt >= RECHECK_MS) {
+  if ((s.status === "behind" || s.status === "unknown") && (opts.now ?? Date.now()) - s.checkedAt >= RECHECK_MS) {
     return runSchemaCheck({ query: opts.query, expected: opts.expected, quiet: true });
   }
   return s;

@@ -4,7 +4,14 @@ import path from "node:path";
 import { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { EXPECTED_MIGRATIONS } from "@/lib/expected-migrations.generated";
-import { getSchemaState, resetSchemaState, runSchemaCheck } from "@/lib/schema-guard";
+import {
+  QUERY_TIMEOUT_MS,
+  RECHECK_MS,
+  getSchemaState,
+  refreshIfStale,
+  resetSchemaState,
+  runSchemaCheck,
+} from "@/lib/schema-guard";
 import { GET as schemaStatusGET } from "@/app/api/internal/schema-status/route";
 import { GET as healthGET } from "@/app/api/health/route";
 
@@ -55,7 +62,7 @@ afterEach(async () => {
   vi.restoreAllMocks();
   // Undo whatever the test did to _prisma_migrations: rename the hidden migration back, drop the extra row.
   await prisma.$executeRaw`UPDATE _prisma_migrations SET migration_name = ${LAST} WHERE migration_name = ${"zz_guard_test_" + LAST}`;
-  await prisma.$executeRaw`DELETE FROM _prisma_migrations WHERE id = 'zz-guard-test-ahead'`;
+  await prisma.$executeRaw`DELETE FROM _prisma_migrations WHERE id IN ('zz-guard-test-ahead', 'zz-guard-test-dup')`;
 });
 
 async function unapplyLast() {
@@ -100,8 +107,8 @@ describe("schema guard against the scratch database", () => {
     await unapplyLast();
     await runSchemaCheck();
     await prisma.$executeRaw`UPDATE _prisma_migrations SET migration_name = ${LAST} WHERE migration_name = ${"zz_guard_test_" + LAST}`;
-    const { refreshIfBehind } = await import("@/lib/schema-guard");
-    const s = await refreshIfBehind({ now: Date.now() + 60_000 });
+    const { refreshIfStale } = await import("@/lib/schema-guard");
+    const s = await refreshIfStale({ now: Date.now() + 60_000 });
     expect(s.status).toBe("ok");
     expect(infos.join("\n")).toContain("now up to date");
   });
@@ -145,6 +152,61 @@ describe("schema guard against the scratch database", () => {
     expect(infos.join("\n")).toContain("more migration(s) than this build");
     expect(getSchemaState().status).toBe("ok");
     await prisma.$executeRaw`DELETE FROM _prisma_migrations WHERE id = 'zz-guard-test-ahead'`;
+  });
+
+  it("failed check is re-checked: stays quiet while still failing, then guards again", async () => {
+    const failing = async (): Promise<string[]> => {
+      throw new Error("schema check timed out");
+    };
+    await runSchemaCheck({ query: failing });
+    expect(getSchemaState().status).toBe("unknown");
+    // too soon: no new query
+    let calls = 0;
+    const counting = async () => {
+      calls++;
+      return failing();
+    };
+    await refreshIfStale({ query: counting, now: Date.now() + 1_000 });
+    expect(calls).toBe(0);
+    // still failing after RECHECK_MS: re-queried, no second warning
+    await refreshIfStale({ query: counting, now: Date.now() + RECHECK_MS });
+    expect(calls).toBe(1);
+    expect(warns.length).toBe(1);
+    // the database answers: the guard is on again, and a pending migration is now refused
+    await unapplyLast();
+    const s = await refreshIfStale({ now: Date.now() + RECHECK_MS });
+    expect(s.status).toBe("behind");
+    mockInternalFetch();
+    const middleware = await loadMiddleware();
+    expect((await middleware(apiRequest("/api/trade/orders"))).status).toBe(503);
+  });
+
+  it("unknown recovers to ok with one info line", async () => {
+    await runSchemaCheck({ query: async () => Promise.reject(new Error("connect ECONNREFUSED")) });
+    const s = await refreshIfStale({ now: Date.now() + RECHECK_MS });
+    expect(s.status).toBe("ok");
+    expect(infos.join("\n")).toContain("verified after an earlier failed check");
+  });
+
+  it("timeout allows a slow Neon wake-up", () => {
+    expect(QUERY_TIMEOUT_MS).toBeGreaterThanOrEqual(15_000);
+  });
+
+  it("a migration recorded twice is not counted as ahead", async () => {
+    // The scratch database may already be ahead (migrations from other branches): compare against its own baseline.
+    const extraNow = async () => {
+      infos.length = 0;
+      expect((await runSchemaCheck()).status).toBe("ok");
+      const m = infos.join("\n").match(/database has (\d+) more migration/);
+      return m ? Number(m[1]) : 0;
+    };
+    const baseline = await extraNow();
+    await prisma.$executeRaw`INSERT INTO _prisma_migrations (id, checksum, migration_name, started_at, finished_at, applied_steps_count)
+      VALUES ('zz-guard-test-dup', 'x', ${LAST}, now(), now(), 1)`;
+    expect(await extraNow()).toBe(baseline);
+    await prisma.$executeRaw`INSERT INTO _prisma_migrations (id, checksum, migration_name, started_at, finished_at, applied_steps_count)
+      VALUES ('zz-guard-test-ahead', 'x', 'zz_guard_test_ahead', now(), now(), 1)`;
+    expect(await extraNow()).toBe(baseline + 1);
   });
 
   it("schema-status refuses callers without the internal secret", async () => {

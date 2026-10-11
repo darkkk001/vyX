@@ -1,6 +1,6 @@
 // Edge side of the schema guard: plain code (no Node or Prisma imports) so middleware.ts and the tests can use it.
 // Middleware cannot see the Node instance's state, so it asks /api/internal/schema-status (a route that makes no DB
-// query unless the instance is already behind) and caches the answer: 60 s while ok, 5 s while behind. Any failure to
+// query unless the instance is behind or its last check failed) and caches the answer: 60 s while ok, 5 s while behind. Any failure to
 // ask means "serve" (fail open).
 
 export const SCHEMA_OK_TTL_MS = 60_000;
