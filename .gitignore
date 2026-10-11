@@ -90,3 +90,8 @@ next-env.d.ts
 # is tracked the way icon.ico is, so these are pure build output.
 *-tauri/src-tauri/icons/nsis-*.bmp
 *-tauri/src-tauri/icons/nsis-*.png
+
+# Shadow-bot run logs -- per-run machine output.
+tools/shadow-bot/logs/
+# Audit bundle archives -- packaged copies of the .md files beside them.
+docs/audit/**/*.zip
