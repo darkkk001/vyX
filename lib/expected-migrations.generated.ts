@@ -94,5 +94,6 @@ export const EXPECTED_MIGRATIONS: readonly string[] = [
   "20261007120000_broker_settings_s3b",
   "20261007130000_staff_security_s3b",
   "20261007140000_admin_sign_ins",
-  "20261007150000_risk_account_marks"
+  "20261007150000_risk_account_marks",
+  "20261012130000_close_fields"
 ];
