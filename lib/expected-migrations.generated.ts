@@ -91,6 +91,8 @@ export const EXPECTED_MIGRATIONS: readonly string[] = [
   "20261005120000_account_is_internal",
   "20261006090000_book_pnl_group_min_volume",
   "20261006120000_credit_and_trading_rights",
+  "20261007090000_broker_risk_authority",
+  "20261007100000_risk_engine_heartbeat",
   "20261007120000_broker_settings_s3b",
   "20261007130000_staff_security_s3b",
   "20261007140000_admin_sign_ins",
