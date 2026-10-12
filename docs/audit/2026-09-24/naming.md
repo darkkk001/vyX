@@ -2553,6 +2553,18 @@ Every backoffice table and every inspector panel follows ONE text rule, set once
 | Secondary text | Grey: currency (CCY), units, sub-labels. |
 | Where it is decided | A column is classified by its header words (Vyx.Shared TableTextRule), so a new screen follows the rule without any code of its own. |
 
+## Excel statement number formats (owner rule 2026-10-12)
+
+The terminal's Excel statement keeps every number a NUMBER (so it sorts and sums) and gives it a number format, so it opens reading the way the screen does. CSV stays plain numbers.
+
+| Cell | Format | Reads as |
+|---|---|---|
+| Volume (lots) | 0.00 | 0.20 |
+| Price (open, close) | the symbol's digits: 0.00 for 2 digits, 0.00000 for 5 | 4455.00 · 1.15410 |
+| Money (profit, commission, swap, totals, balance) | #,##0.00 | 25,000.00 |
+| Ticket | General (an integer) | 100001171 |
+| Child rows of a grouped trade | the price and profit formatted as above; "0.03 of 0.10" is text and stays text | |
+
 ## Tabbed dialogs (owner rule 2026-10-09)
 
 A dialog with tabs has ONE fixed size, the size of its largest tab. Switching tabs changes the content only, never the window and never the size of a table inside it. Everything a tab can add (the line under the header, an in-window refusal, an error, the preview line) lives inside the fixed content area, which scrolls if a tab ever needs more.
