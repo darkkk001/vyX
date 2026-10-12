@@ -2557,6 +2557,7 @@ Every backoffice table and every inspector panel follows ONE text rule, set once
 | Numbers | Tabular figures, normal weight. Only the profit / loss colour (green up, red down) recolours a number. |
 | Secondary text | Grey: currency (CCY), units, sub-labels. |
 | Where it is decided | A column is classified by its header words (Vyx.Shared TableTextRule), so a new screen follows the rule without any code of its own. |
+| Terminal exception (owner 2026-10-12) | Market Watch Bid and Ask are the data: full contrast and semi-bold, tabular figures; Spread and Chg% stay regular. In the terminal Account panel the currency code follows each money number, dim; the P/L column header is just "P/L". |
 
 ## Excel statement number formats (owner rule 2026-10-12)
 
