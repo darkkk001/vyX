@@ -15,7 +15,7 @@ while [ $# -gt 0 ]; do
     *) echo "unknown arg $1"; exit 2 ;;
   esac
 done
-PSQL=/d/pg-scratch/pgsql/bin/psql.exe
+PSQL=/c/pg-scratch/pgsql/bin/psql.exe
 WEB=postgresql://postgres@127.0.0.1:5499/vyx_load_web
 OUT="$ROOT/engine/parity/out/shadow/s$SEED-n$N"
 mkdir -p "$OUT"

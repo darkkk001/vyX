@@ -45,7 +45,7 @@ restore() { git checkout -q -- $FILES; }
 # a mutated engine test panics before its own cleanup: remove the rows the engine split tests leave (a leftover RUST broker would be acted on
 # by the next engine test's pass, a leftover symbol shows up in other suites' checks of the shared database)
 db_cleanup() {
-  local P="/d/pg-scratch/pgsql/bin/psql.exe -h 127.0.0.1 -p 5499 -U postgres -d vyx_test -Atq -c"
+  local P="/c/pg-scratch/pgsql/bin/psql.exe -h 127.0.0.1 -p 5499 -U postgres -d vyx_test -Atq -c"
   for t in PostCloseEffect Notification AuditLog Transaction Position Order Account BrokerSymbol Group; do $P "delete from \"$t\" where \"brokerId\" like 'split-%'" >/dev/null 2>&1; done
   $P "delete from \"Broker\" where id like 'split-%'" >/dev/null 2>&1
   $P "delete from \"Symbol\" where id like 'split-s-%'" >/dev/null 2>&1

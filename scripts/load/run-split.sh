@@ -41,7 +41,7 @@ while [ $# -gt 0 ]; do
 done
 if [ "$DRILL" = 1 ] && [ "$VARIANT" != "rust-all" ]; then echo "--drill needs --variant rust-all"; exit 2; fi
 if [ "$STALL" = 1 ] && { [ "$VARIANT" != "rust-all" ] || [ "$DRILL" = 1 ]; }; then echo "--stall needs --variant rust-all and not --drill"; exit 2; fi
-PSQL=/d/pg-scratch/pgsql/bin/psql.exe
+PSQL=/c/pg-scratch/pgsql/bin/psql.exe
 PG="$PSQL -h 127.0.0.1 -p 5499 -U postgres -Atq"
 BASE=postgresql://postgres@127.0.0.1:5499
 WEB=$BASE/vyx_load_web

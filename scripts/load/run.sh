@@ -17,7 +17,7 @@ while [ $# -gt 0 ]; do
     *) echo "unknown arg $1"; exit 2 ;;
   esac
 done
-PSQL=/d/pg-scratch/pgsql/bin/psql.exe
+PSQL=/c/pg-scratch/pgsql/bin/psql.exe
 BASE=postgresql://postgres@127.0.0.1:5499
 WEB=$BASE/vyx_load_web
 ENG=$BASE/vyx_load_engine
