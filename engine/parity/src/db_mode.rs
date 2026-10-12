@@ -10,7 +10,7 @@
 //! an auto-hedged coverage leg) is evaluated in a later cycle, after that follow-up ran -- the web's order. Each
 //! account is evaluated exactly once, like the web's single pass, and the side effects are compared too.
 
-use crate::{AccountOutcome, PositionState, Scenario, ScenarioOutcome, Txn};
+use crate::{AccountOutcome, CloseRow, PositionState, Scenario, ScenarioOutcome, Txn};
 use rust_decimal::Decimal;
 use sqlx::PgPool;
 use std::collections::{BTreeMap, BTreeSet};
@@ -147,6 +147,7 @@ pub async fn evaluate(pool: &PgPool, sc: &Scenario) -> Result<ScenarioOutcome, S
         accounts: out,
         side_effects: Some(side_effects(pool).await?),
         positions: Some(position_states(pool).await?),
+        close_rows: Some(close_rows(pool).await?),
     })
 }
 
@@ -166,15 +167,49 @@ pub async fn side_effects(pool: &PgPool) -> Result<BTreeMap<String, i64>, String
 
 /// Every position's final state (mirror targets and coverage legs included).
 pub async fn position_states(pool: &PgPool) -> Result<BTreeMap<String, PositionState>, String> {
-    let rows: Vec<(String, String, Decimal, Option<Decimal>, Option<Decimal>)> =
-        sqlx::query_as(r#"SELECT id, status::text, volume, "closePrice", "realizedPnl" FROM "Position""#)
-            .fetch_all(pool)
-            .await
-            .map_err(|e| e.to_string())?;
+    let rows: Vec<(String, String, Decimal, Option<Decimal>, Option<Decimal>, Option<Decimal>, Option<Decimal>)> = sqlx::query_as(
+        r#"SELECT id, status::text, volume, "closePrice", "realizedPnl", "closedVolume", "closedSwap" FROM "Position""#,
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
     Ok(rows
         .into_iter()
-        .map(|(id, status, volume, close_price, pnl)| {
-            (id, PositionState { status, volume: money(volume), close_price: close_price.map(money), realized_pnl: pnl.map(money) })
+        .map(|(id, status, volume, close_price, pnl, closed_volume, closed_swap)| {
+            (
+                id,
+                PositionState {
+                    status,
+                    volume: money(volume),
+                    close_price: close_price.map(money),
+                    realized_pnl: pnl.map(money),
+                    closed_volume: closed_volume.map(money),
+                    closed_swap: closed_swap.map(money),
+                },
+            )
         })
         .collect())
+}
+
+/// Close-fields gate: the structured fields on every TRADE_PNL row, per position (the same query as
+/// scripts/parity/run-ts.ts closeRows).
+pub async fn close_rows(pool: &PgPool) -> Result<BTreeMap<String, Vec<CloseRow>>, String> {
+    let rows: Vec<(String, Decimal, Option<Decimal>, Option<Decimal>, Option<Decimal>, Option<String>)> = sqlx::query_as(
+        r#"SELECT "referenceId", amount, "closeVolume", "closePrice", "closeSwap", "closeByPositionId"
+           FROM "Transaction" WHERE type = 'TRADE_PNL' AND "referenceId" IS NOT NULL ORDER BY "createdAt", id"#,
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    let mut out: BTreeMap<String, Vec<CloseRow>> = BTreeMap::new();
+    for (position, amount, close_volume, close_price, close_swap, close_by) in rows {
+        out.entry(position).or_default().push(CloseRow {
+            amount: money(amount),
+            close_volume: close_volume.map(money),
+            close_price: close_price.map(money),
+            close_swap: close_swap.map(money),
+            close_by_position_id: close_by,
+        });
+    }
+    Ok(out)
 }

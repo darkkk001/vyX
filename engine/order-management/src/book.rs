@@ -771,11 +771,46 @@ pub async fn close_position_as(
     realized_pnl: Decimal,
     note: &str,
 ) -> Result<CloseResult, sqlx::Error> {
-    let claimed: Option<(String, String)> = sqlx::query_as(
-        r#"UPDATE "Position"
-           SET status = 'CLOSED', "closePrice" = $1, "realizedPnl" = $2, "closedAt" = now()
-           WHERE id = $3 AND status = 'OPEN' AND volume = $4
-           RETURNING "accountId", "brokerId""#,
+    close_position_full(tx, actor, position_id, expected_volume, close_price, realized_pnl, note, None).await
+}
+
+/// close_position_as plus the close-by partner link: `close_by_position_id` is stored on the TRADE_PNL row's
+/// "closeByPositionId" exactly as lib/position-close.ts does (never parsed from the note). Every engine close path
+/// today (SL / TP, stop-out) passes `None`: the engine has no close-by, no partial close and no queued close.
+///
+/// Structured close fields (docs/POSITION-DEAL-MODEL.md section 0), identical to lib/position-close.ts closePositionInTx
+/// for a FULL close (closeVolume = the whole open remainder):
+/// - Position: "realizedPnl" and "closedVolume" are running totals (+ this close), "closedSwap" takes the unattributed
+///   swap remainder: closeSwap = round2(swap - closedSwap), "closePrice" = this close's price, volume untouched;
+/// - the TRADE_PNL row carries closeVolume, closePrice, closeSwap and closeByPositionId.
+/// The old row values are read in the same statement that closes the row (a CTE with FOR UPDATE), so a concurrent
+/// close sees either all or none of it. Postgres ROUND (half away from zero) is Decimal.js ROUND_HALF_UP.
+#[allow(clippy::too_many_arguments)]
+pub async fn close_position_full(
+    tx: &mut sqlx::PgTransaction<'_>,
+    actor: Option<crate::authority::RiskOwner>,
+    position_id: &str,
+    expected_volume: Decimal,
+    close_price: Decimal,
+    realized_pnl: Decimal,
+    note: &str,
+    close_by_position_id: Option<&str>,
+) -> Result<CloseResult, sqlx::Error> {
+    let claimed: Option<(String, String, Decimal)> = sqlx::query_as(
+        r#"WITH old AS (
+             SELECT id, swap, "closedSwap" FROM "Position"
+             WHERE id = $3 AND status = 'OPEN' AND volume = $4
+             FOR UPDATE
+           )
+           UPDATE "Position" p
+           SET status = 'CLOSED', "closePrice" = $1,
+               "realizedPnl" = COALESCE(p."realizedPnl", 0) + $2,
+               "closedVolume" = COALESCE(p."closedVolume", 0) + p.volume,
+               "closedSwap" = COALESCE(old."closedSwap", 0) + ROUND(old.swap - COALESCE(old."closedSwap", 0), 2),
+               "closedAt" = now()
+           FROM old
+           WHERE p.id = old.id
+           RETURNING p."accountId", p."brokerId", ROUND(old.swap - COALESCE(old."closedSwap", 0), 2)"#,
     )
     .bind(close_price)
     .bind(realized_pnl)
@@ -783,7 +818,7 @@ pub async fn close_position_as(
     .bind(expected_volume)
     .fetch_optional(&mut **tx)
     .await?;
-    let Some((account_id, broker_id)) = claimed else {
+    let Some((account_id, broker_id, close_swap)) = claimed else {
         return Ok(CloseResult::Lost);
     };
 
@@ -824,8 +859,9 @@ pub async fn close_position_as(
     let trade_txn_id = Uuid::new_v4().to_string();
     sqlx::query(
         r#"INSERT INTO "Transaction"
-             (id, "brokerId", "accountId", type, status, amount, "balanceBefore", "balanceAfter", "referenceType", "referenceId", note, "updatedAt")
-           VALUES ($1, $2, $3, 'TRADE_PNL', 'COMPLETED', $4, $5, $6, 'Position', $7, $8, now())"#,
+             (id, "brokerId", "accountId", type, status, amount, "balanceBefore", "balanceAfter", "referenceType", "referenceId", note, "updatedAt",
+              "closeVolume", "closePrice", "closeSwap", "closeByPositionId")
+           VALUES ($1, $2, $3, 'TRADE_PNL', 'COMPLETED', $4, $5, $6, 'Position', $7, $8, now(), $9, $10, $11, $12)"#,
     )
     .bind(&trade_txn_id)
     .bind(&broker_id)
@@ -835,6 +871,10 @@ pub async fn close_position_as(
     .bind(raw_balance_after)
     .bind(position_id)
     .bind(note)
+    .bind(expected_volume)
+    .bind(close_price)
+    .bind(close_swap)
+    .bind(close_by_position_id)
     .execute(&mut **tx)
     .await?;
 

@@ -1,0 +1,76 @@
+{
+  "name": "30-close-fields-negative-swap-rounds-half-away",
+  "why": "Negative swap -3.2250 on an SL close: round2 rounds half away from zero (Decimal.js ROUND_HALF_UP) to -3.23, as Postgres ROUND does. A second position with swap 0.0050 rounds to 0.01.",
+  "knownDivergence": [],
+  "broker": {
+    "negativeBalanceProtection": true
+  },
+  "groups": [
+    {
+      "key": "std",
+      "marginCallLevel": "100",
+      "stopOutLevel": "50"
+    }
+  ],
+  "accounts": [
+    {
+      "key": "a1",
+      "group": "std",
+      "balance": "10000",
+      "credit": "0",
+      "leverage": 100
+    }
+  ],
+  "symbols": [
+    {
+      "name": "XAUUSD",
+      "contractSize": "100",
+      "digits": 2,
+      "quoteCurrency": "USD"
+    },
+    {
+      "name": "EURUSD",
+      "contractSize": "100000",
+      "digits": 5,
+      "quoteCurrency": "USD"
+    }
+  ],
+  "positions": [
+    {
+      "key": "p1",
+      "account": "a1",
+      "symbol": "XAUUSD",
+      "side": "BUY",
+      "volume": "1",
+      "openPrice": "2000",
+      "slPrice": "1990",
+      "tpPrice": null,
+      "swap": "-3.2250"
+    },
+    {
+      "key": "p2",
+      "account": "a1",
+      "symbol": "EURUSD",
+      "side": "SELL",
+      "volume": "0.5",
+      "openPrice": "1.10000",
+      "slPrice": null,
+      "tpPrice": "1.09500",
+      "swap": "0.0050"
+    }
+  ],
+  "prices": [
+    {
+      "symbol": "XAUUSD",
+      "bid": "1989.5",
+      "ask": "1990",
+      "ageSeconds": 0
+    },
+    {
+      "symbol": "EURUSD",
+      "bid": "1.09490",
+      "ask": "1.09500",
+      "ageSeconds": 0
+    }
+  ]
+}

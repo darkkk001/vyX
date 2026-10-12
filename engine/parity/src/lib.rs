@@ -114,6 +114,16 @@ pub struct PositionCfg {
     pub sl_price: Option<Decimal>,
     #[serde(default)]
     pub tp_price: Option<Decimal>,
+    // Close-fields gate (read by scripts/parity/run-ts.ts when it seeds; the engine only reads the seeded rows):
+    // accrued swap and the state a web partial close left behind
+    #[serde(default)]
+    pub swap: Option<Decimal>,
+    #[serde(default)]
+    pub closed_volume: Option<Decimal>,
+    #[serde(default)]
+    pub closed_swap: Option<Decimal>,
+    #[serde(default)]
+    pub realized_pnl: Option<Decimal>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -213,6 +223,20 @@ pub struct PositionState {
     pub volume: String,
     pub close_price: Option<String>,
     pub realized_pnl: Option<String>,
+    /// Close-fields gate: the running totals the close leaves on the position (lib/position-close.ts)
+    pub closed_volume: Option<String>,
+    pub closed_swap: Option<String>,
+}
+
+/// Close-fields gate: the structured fields of one TRADE_PNL ledger row (migration 20261012130000_close_fields).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CloseRow {
+    pub amount: String,
+    pub close_volume: Option<String>,
+    pub close_price: Option<String>,
+    pub close_swap: Option<String>,
+    pub close_by_position_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -226,6 +250,9 @@ pub struct ScenarioOutcome {
     pub side_effects: Option<BTreeMap<String, i64>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub positions: Option<BTreeMap<String, PositionState>>,
+    /// DB mode: the TRADE_PNL rows' structured close fields per position id, in write order
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub close_rows: Option<BTreeMap<String, Vec<CloseRow>>>,
 }
 
 fn account_state(sc: &Scenario, acct: &AccountCfg) -> AccountState {
@@ -383,7 +410,7 @@ pub fn evaluate(sc: &Scenario) -> ScenarioOutcome {
         .map(|g| (g.key.clone(), MarginThresholds { call_level: g.margin_call_level, stop_out_level: g.stop_out_level }))
         .collect();
     let accounts = sc.accounts.iter().map(|a| (a.key.clone(), evaluate_account(sc, a, &by_group))).collect();
-    ScenarioOutcome { scenario: sc.name.clone(), engine: "rust", accounts, side_effects: None, positions: None }
+    ScenarioOutcome { scenario: sc.name.clone(), engine: "rust", accounts, side_effects: None, positions: None, close_rows: None }
 }
 
 #[cfg(test)]
