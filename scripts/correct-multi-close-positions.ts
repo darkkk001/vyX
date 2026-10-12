@@ -13,13 +13,22 @@
 //   - Default = DRY RUN. Every read is inside ONE transaction that starts with SET TRANSACTION READ ONLY (and reads one
 //     snapshot). It reads only columns that exist before the close_fields migration, so it can be dry-run on a database
 //     that does not have the new columns yet.
-//   - The run STOPS (exit code 2, nothing written, --apply refused) if any affected account's balance differs from the
-//     sum of its completed balance-moving ledger rows.
+//   - The run STOPS (exit code 2, nothing written, --apply refused) if any affected account's balance differs from its
+//     opening balance (the balanceBefore of its first completed balance-moving ledger row: seeded demo balances have no
+//     ledger row of their own) plus the sum of its completed balance-moving ledger rows.
+//   - Duplicate closes (owner decision 2026-10-12): a TRADE_PNL row with the same amount as the position's previous one,
+//     both notes null, less than 1 s apart, is a double booking from before the close guard (0228edd), not a partial. It
+//     is left out of the sums and listed separately; nothing is written to it.
+//   - --only-accounts <n,n> limits the run to those accounts (full number or a unique suffix such as 708); every other
+//     affected account is listed as excluded and is neither checked nor written. Owner decision 2026-10-12: apply only
+//     to ***708 and ***001; ***680 and ***704 are excluded (their balances differ from the ledger, see the 2026-10-12
+//     investigation in docs/POSITION-DEAL-MODEL.md).
 //   - Writing needs --apply AND --confirm-host <substring of the database host>, and the new columns must exist. The checks
 //     are re-run inside the write transaction. Every old value is stored first, per position, in an AuditLog row
 //     (POSITION_CLOSE_FIELDS_CORRECTED) so --revert can restore it. Idempotent: a second run changes nothing.
 //
 //   DATABASE_URL=... DIRECT_URL=... npx tsx scripts/correct-multi-close-positions.ts                      (dry run)
+//   ... npx tsx scripts/correct-multi-close-positions.ts --only-accounts 708,001                          (dry run, two accounts)
 //   ... npx tsx scripts/correct-multi-close-positions.ts --apply --confirm-host <host substring>
 //   ... npx tsx scripts/correct-multi-close-positions.ts --revert                                         (dry run of a revert)
 //   ... npx tsx scripts/correct-multi-close-positions.ts --revert --apply --confirm-host <host substring>
@@ -48,6 +57,8 @@ export type Opts = {
   revert: boolean;
   confirmHost: string | null;
   host: string;
+  /** limit to these accounts (full account number or a suffix that matches exactly one affected account) */
+  onlyAccounts?: string[] | null;
   /** test hook: behave as a database without the new columns (never select them) */
   legacySchema?: boolean;
   now?: Date;
@@ -78,11 +89,14 @@ export type Plan = {
   changes: { position: Record<string, string | null>; transactions: { id: string; set: Record<string, string | null> }[] };
   changed: boolean;
   unknownCloses: number;
+  /** TRADE_PNL rows recognised as duplicate bookings: left out of every sum, never written */
+  duplicates: TxRow[];
 };
 
 const PARTIAL = /^(?:Manual partial close by admin|Partial close): ([0-9]+(?:\.[0-9]+)?) lots @ ([0-9]+(?:\.[0-9]+)?)$/;
 const CLOSE_BY = /^Close by (#?)(\S+)$/;
 const PAIR_WINDOW_MS = 5000;
+const DUPLICATE_WINDOW_MS = 1000;
 
 const str = (v: Prisma.Decimal | null | undefined) => (v == null ? null : v.toString());
 const eq = (a: Prisma.Decimal | null | undefined, b: Prisma.Decimal | null | undefined) => (a == null || b == null ? a == null && b == null : a.eq(b));
@@ -134,7 +148,21 @@ export async function buildPlans(tx: Tx, cols: boolean): Promise<Plan[]> {
   return positions.map((pos) => planOne(pos, byPos.get(pos.id) ?? [], counterparts, cols));
 }
 
-function planOne(pos: PosRow, rows: TxRow[], counterparts: Counterpart[], cols: boolean): Plan {
+/** Splits a position's TRADE_PNL rows into real closes and duplicate bookings (same amount as the previous real close,
+ *  both notes null, less than 1 s apart: the double close the guard of 0228edd stopped on 2026-08-27). */
+export function splitDuplicates(rows: TxRow[]): { kept: TxRow[]; duplicates: TxRow[] } {
+  const kept: TxRow[] = []; const duplicates: TxRow[] = [];
+  for (const t of rows) {
+    const prev = kept[kept.length - 1];
+    const dup = prev != null && t.note == null && prev.note == null && D(t.amount).eq(D(prev.amount))
+      && t.createdAt.getTime() - prev.createdAt.getTime() < DUPLICATE_WINDOW_MS;
+    (dup ? duplicates : kept).push(t);
+  }
+  return { kept, duplicates };
+}
+
+function planOne(pos: PosRow, allRows: TxRow[], counterparts: Counterpart[], cols: boolean): Plan {
+  const { kept: rows, duplicates } = splitDuplicates(allRows);
   const isClosed = pos.status === "CLOSED";
   const closes: CloseCalc[] = rows.map((tx, i) => {
     const final = isClosed && i === rows.length - 1;
@@ -200,21 +228,27 @@ function planOne(pos: PosRow, rows: TxRow[], counterparts: Counterpart[], cols: 
   // when the new columns do not exist yet, "changes" is only what the position's realizedPnl needs; the rest is previewed
   // through the new values in the table and is written once the migration is deployed
   const changed = Object.keys(position).length > 0 || transactions.length > 0;
-  return { pos, closes, newRealizedPnl, newClosedVolume, newClosedSwap, changes: { position, transactions }, changed, unknownCloses };
+  return { pos, closes, newRealizedPnl, newClosedVolume, newClosedSwap, changes: { position, transactions }, changed, unknownCloses, duplicates };
 }
 
-type AccountDiff = { accountNumber: string; balance: Prisma.Decimal; ledger: Prisma.Decimal };
+type AccountDiff = { accountNumber: string; balance: Prisma.Decimal; ledger: Prisma.Decimal; opening: Prisma.Decimal };
 
-/** Per affected account: Account.balance against the sum of its completed balance-moving ledger rows. */
+/** Per affected account: Account.balance against its opening balance (the balanceBefore of its first completed
+ *  balance-moving ledger row) plus the sum of its completed balance-moving ledger rows. */
 export async function accountChecks(tx: Tx, accountIds: string[]): Promise<{ checked: number; diffs: AccountDiff[] }> {
   if (accountIds.length === 0) return { checked: 0, diffs: [] };
-  const rows = await tx.$queryRaw<{ accountNumber: string; balance: Prisma.Decimal; ledger: Prisma.Decimal | null }[]>`
+  const rows = await tx.$queryRaw<{ accountNumber: string; balance: Prisma.Decimal; ledger: Prisma.Decimal | null; opening: Prisma.Decimal | null }[]>`
     SELECT a."accountNumber", a.balance,
-           COALESCE(SUM(t.amount) FILTER (WHERE t.status = 'COMPLETED' AND t.type::text = ANY(${[...BALANCE_TYPES]}::text[])), 0) AS ledger
+           COALESCE(SUM(t.amount) FILTER (WHERE t.status = 'COMPLETED' AND t.type::text = ANY(${[...BALANCE_TYPES]}::text[])), 0) AS ledger,
+           (SELECT f."balanceBefore" FROM "Transaction" f
+             WHERE f."accountId" = a.id AND f.status = 'COMPLETED' AND f.type::text = ANY(${[...BALANCE_TYPES]}::text[])
+             ORDER BY f."createdAt", f.id LIMIT 1) AS opening
       FROM "Account" a LEFT JOIN "Transaction" t ON t."accountId" = a.id
      WHERE a.id = ANY(${accountIds}::text[])
      GROUP BY a.id, a."accountNumber", a.balance ORDER BY a."accountNumber"`;
-  const diffs = rows.filter((r) => !D(r.balance).eq(D(r.ledger ?? 0))).map((r) => ({ accountNumber: r.accountNumber, balance: D(r.balance), ledger: D(r.ledger ?? 0) }));
+  const diffs = rows
+    .map((r) => ({ accountNumber: r.accountNumber, balance: D(r.balance), opening: D(r.opening ?? 0), ledger: D(r.opening ?? 0).add(D(r.ledger ?? 0)) }))
+    .filter((r) => !r.balance.eq(r.ledger));
   return { checked: rows.length, diffs };
 }
 
@@ -360,14 +394,24 @@ export async function run(prisma: PrismaClient, opts: Opts): Promise<Result> {
         return { exitCode: 0, lines, changedPositions: writing ? n : 0 };
       }
 
-      const plans = await buildPlans(tx, cols);
-      lines.push(`positions with 2 or more TRADE_PNL rows: ${plans.length}`, "", ...planTable(plans), "");
+      const found = await buildPlans(tx, cols);
+      lines.push(`positions with 2 or more TRADE_PNL rows: ${found.length}`);
+      const plans = selectAccounts(found, opts.onlyAccounts ?? null, lines);
+      lines.push("", ...planTable(plans), "");
+      const dups = found.flatMap((p) => p.duplicates.map((d) => ({ p, d })));
+      lines.push(`duplicate closes (same amount as the previous close, no note, < 1 s apart; left out of every sum, nothing written): ${dups.length}`);
+      for (const { p, d } of dups) {
+        const prev = p.closes.filter((c) => c.tx.createdAt.getTime() <= d.createdAt.getTime()).at(-1)?.tx;
+        const ms = prev ? d.createdAt.getTime() - prev.createdAt.getTime() : null;
+        lines.push(`  ticket ${p.pos.ticket}  ${mask(p.pos.accountNumber)}  amount ${d.amount.toString()}  ${ms ?? "?"} ms after the previous close  ${d.createdAt.toISOString()}${plans.includes(p) ? "" : "  (account excluded)"}`);
+      }
+      lines.push("");
 
       const accountIds = [...new Set(plans.map((p) => p.pos.accountId))];
       const check = await accountChecks(tx, accountIds);
       lines.push(`ledger check: ${check.checked} affected account(s), balance vs the sum of completed balance-moving ledger rows (${BALANCE_TYPES.join(", ")})`);
       if (check.diffs.length > 0) {
-        for (const d of check.diffs) lines.push(`  MISMATCH account ${mask(d.accountNumber)}: balance ${d.balance} vs ledger ${d.ledger} (difference ${d.balance.sub(d.ledger)})`);
+        for (const d of check.diffs) lines.push(`  MISMATCH account ${mask(d.accountNumber)}: balance ${d.balance} vs ledger ${d.ledger} (opening ${d.opening}, difference ${d.balance.sub(d.ledger)})`);
         lines.push("STOPPED: at least one affected account does not reconcile. Nothing written; --apply is refused until this is explained.");
         return { exitCode: 2, lines, changedPositions: 0 };
       }
@@ -391,21 +435,42 @@ export async function run(prisma: PrismaClient, opts: Opts): Promise<Result> {
   );
 }
 
+/** --only-accounts: each entry is a full account number or a suffix matching exactly one affected account. */
+export function selectAccounts(plans: Plan[], only: string[] | null, lines: string[]): Plan[] {
+  if (!only || only.length === 0) return plans;
+  const numbers = [...new Set(plans.map((p) => p.pos.accountNumber))];
+  const chosen = new Set<string>();
+  for (const raw of only) {
+    const want = raw.trim();
+    if (!want) continue;
+    const hits = numbers.filter((n) => n === want || n.endsWith(want));
+    if (hits.length !== 1) throw new CorrectionRefused(`--only-accounts "${want}" matches ${hits.length} affected account(s); give more digits`);
+    chosen.add(hits[0]);
+  }
+  const kept = plans.filter((p) => chosen.has(p.pos.accountNumber));
+  const excluded = numbers.filter((n) => !chosen.has(n));
+  lines.push(`limited to ${chosen.size} account(s) (--only-accounts): ${[...chosen].map(mask).join(", ")}; ${kept.length} position(s)`);
+  if (excluded.length) lines.push(`excluded, not checked and never written: ${excluded.map((n) => `${mask(n)} (${plans.filter((p) => p.pos.accountNumber === n).length} positions)`).join(", ")}`);
+  return kept;
+}
+
 function hostOf(url: string | undefined): string {
   try { return url ? new URL(url).hostname.toLowerCase() : ""; } catch { return ""; }
 }
 
-export function parseArgs(argv: string[]): { apply: boolean; revert: boolean; confirmHost: string | null } {
-  let apply = false; let revert = false; let confirmHost: string | null = null;
+export function parseArgs(argv: string[]): { apply: boolean; revert: boolean; confirmHost: string | null; onlyAccounts: string[] | null } {
+  let apply = false; let revert = false; let confirmHost: string | null = null; let onlyAccounts: string[] | null = null;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--apply") apply = true;
     else if (a === "--revert") revert = true;
     else if (a === "--confirm-host") confirmHost = argv[++i] ?? "";
     else if (a.startsWith("--confirm-host=")) confirmHost = a.slice("--confirm-host=".length);
+    else if (a === "--only-accounts") onlyAccounts = (argv[++i] ?? "").split(",").filter(Boolean);
+    else if (a.startsWith("--only-accounts=")) onlyAccounts = a.slice("--only-accounts=".length).split(",").filter(Boolean);
     else throw new CorrectionRefused(`unknown argument: ${a}`);
   }
-  return { apply, revert, confirmHost };
+  return { apply, revert, confirmHost, onlyAccounts };
 }
 
 async function main() {
