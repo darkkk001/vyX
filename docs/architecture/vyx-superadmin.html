@@ -1,0 +1,694 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>vyX Super Admin — Platform Control Plane</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+  :root{
+    --bg-0:#07090C;
+    --bg-1:#0B0F14;
+    --bg-2:#0E1319;
+    --bg-3:#131A22;
+    --border:#1E242C;
+    --border-strong:#262E38;
+    --text-1:#EDEFF2;
+    --text-2:#8B93A1;
+    --text-3:#5A6472;
+    --buy:#16C784;
+    --buy-bg:#0F2A1E;
+    --sell:#EA3943;
+    --sell-bg:#2A0F11;
+    --warn:#F0B90B;
+    --warn-bg:#2E2408;
+    --accent:#7C6FFF;
+    --accent-bg:#211E42;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{
+    background:var(--bg-0);color:var(--text-1);font-family:'Inter',system-ui,sans-serif;
+    height:100vh;overflow:hidden;-webkit-font-smoothing:antialiased;
+  }
+  .mono{font-family:'JetBrains Mono',ui-monospace,monospace;}
+  ::-webkit-scrollbar{width:7px;height:7px;}
+  ::-webkit-scrollbar-thumb{background:var(--border-strong);border-radius:4px;}
+  ::-webkit-scrollbar-track{background:transparent;}
+
+  #app{display:flex;height:100vh;}
+
+  .sidebar{width:225px;flex-shrink:0;background:var(--bg-1);border-right:1px solid var(--border);display:flex;flex-direction:column;padding:16px 10px;}
+  .sb-brand{display:flex;align-items:center;gap:9px;padding:6px 8px 4px;}
+  .sb-mark{
+    width:26px;height:26px;border-radius:7px;
+    background:linear-gradient(135deg,#9C90FF,#5B4FE0);
+    display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:#0A0714;
+  }
+  .sb-brand-text{font-size:13px;font-weight:600;}
+  .sb-brand-text span{color:var(--text-3);font-weight:500;}
+  .sb-plane-tag{
+    margin:8px 8px 16px;padding:5px 9px;background:var(--accent-bg);border:1px solid rgba(124,111,255,.3);
+    border-radius:6px;font-size:10px;color:var(--accent);font-weight:600;text-align:center;letter-spacing:.03em;
+  }
+
+  .sb-group-label{font-size:10px;color:var(--text-3);text-transform:uppercase;letter-spacing:.05em;padding:14px 10px 6px;}
+  .sb-item{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:7px;font-size:12.5px;color:var(--text-2);cursor:pointer;margin-bottom:1px;position:relative;}
+  .sb-item:hover{background:var(--bg-3);color:var(--text-1);}
+  .sb-item.active{background:var(--bg-3);color:var(--text-1);}
+  .sb-item.active::before{content:'';position:absolute;left:-10px;top:50%;transform:translateY(-50%);width:3px;height:16px;background:var(--accent);border-radius:0 3px 3px 0;}
+  .sb-item svg{flex-shrink:0;opacity:.85;}
+  .sb-badge{margin-left:auto;background:var(--warn);color:#1A1300;font-size:9.5px;font-weight:700;border-radius:9px;padding:1px 6px;}
+  .sb-bottom{margin-top:auto;padding-top:10px;}
+
+  .main{flex:1;display:flex;flex-direction:column;overflow:hidden;}
+  .topbar{height:56px;flex-shrink:0;display:flex;align-items:center;gap:16px;padding:0 22px;border-bottom:1px solid var(--border);background:var(--bg-1);}
+  .tb-title{font-size:15px;font-weight:600;}
+  .tb-right{margin-left:auto;display:flex;align-items:center;gap:14px;}
+  .tb-admin{display:flex;align-items:center;gap:8px;}
+  .tb-admin-avatar{width:30px;height:30px;border-radius:50%;background:var(--accent-bg);border:1px solid rgba(124,111,255,.35);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:600;color:var(--accent);}
+  .tb-admin-info{display:flex;flex-direction:column;line-height:1.25;}
+  .tb-admin-name{font-size:12px;font-weight:600;}
+  .tb-admin-role{font-size:10px;color:var(--text-3);}
+
+  .view{flex:1;overflow-y:auto;padding:22px;display:none;}
+  .view.active{display:block;}
+  .view-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;}
+  .view-heading{font-size:18px;font-weight:600;}
+  .view-sub{font-size:12px;color:var(--text-3);margin-top:2px;}
+
+  .stat-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:22px;}
+  .stat-card{background:var(--bg-1);border:1px solid var(--border);border-radius:11px;padding:16px;}
+  .stat-label{font-size:11px;color:var(--text-3);margin-bottom:8px;}
+  .stat-value{font-size:22px;font-weight:700;font-family:'JetBrains Mono',monospace;}
+  .stat-delta{font-size:11px;margin-top:6px;font-weight:500;}
+  .stat-delta.pos{color:var(--buy);}
+  .stat-delta.warn{color:var(--warn);}
+
+  .panel{background:var(--bg-1);border:1px solid var(--border);border-radius:12px;overflow:hidden;margin-bottom:20px;}
+  .panel-title-row{display:flex;align-items:center;justify-content:space-between;padding:16px 18px;border-bottom:1px solid var(--border);}
+  .panel-title{font-size:13.5px;font-weight:600;}
+
+  .btn{font-size:11.5px;font-weight:500;padding:8px 14px;border-radius:7px;cursor:pointer;border:none;display:inline-flex;align-items:center;gap:6px;}
+  .btn-ghost{background:var(--bg-3);color:var(--text-1);border:1px solid var(--border-strong);}
+  .btn-ghost:hover{border-color:var(--text-3);}
+  .btn-primary{background:var(--accent);color:#fff;}
+  .btn-primary:hover{filter:brightness(1.1);}
+  .btn-danger{background:var(--sell-bg);color:var(--sell);border:1px solid rgba(234,57,67,.3);}
+  .btn-success{background:var(--buy-bg);color:var(--buy);border:1px solid rgba(22,199,132,.3);}
+  .btn-sm{padding:5px 10px;font-size:11px;}
+
+  table{width:100%;border-collapse:collapse;font-size:12.5px;}
+  thead th{text-align:left;font-size:10.5px;color:var(--text-3);text-transform:uppercase;letter-spacing:.03em;padding:10px 18px;border-bottom:1px solid var(--border);font-weight:600;background:var(--bg-2);}
+  tbody td{padding:12px 18px;border-bottom:1px solid var(--bg-2);vertical-align:middle;}
+  tbody tr:last-child td{border-bottom:none;}
+  tbody tr:hover{background:var(--bg-2);}
+  .cell-primary{font-weight:600;}
+  .cell-sub{font-size:11px;color:var(--text-3);margin-top:2px;}
+
+  .tenant-row-brand{display:flex;align-items:center;gap:10px;}
+  .tenant-logo{width:32px;height:32px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;flex-shrink:0;}
+
+  .badge{font-size:10.5px;padding:3px 9px;border-radius:20px;font-weight:600;display:inline-block;}
+  .badge.active{background:var(--buy-bg);color:var(--buy);}
+  .badge.trial{background:var(--warn-bg);color:var(--warn);}
+  .badge.suspended{background:var(--sell-bg);color:var(--sell);}
+  .badge.disabled{background:var(--bg-3);color:var(--text-3);}
+  .badge.standard{background:var(--bg-3);color:var(--text-2);}
+  .badge.whitelabel{background:var(--accent-bg);color:var(--accent);}
+
+  .row-actions{display:flex;gap:6px;}
+  .icon-btn{width:26px;height:26px;border-radius:6px;background:var(--bg-3);border:1px solid var(--border-strong);color:var(--text-2);cursor:pointer;display:flex;align-items:center;justify-content:center;}
+  .icon-btn:hover{color:var(--text-1);border-color:var(--text-3);}
+
+  .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.65);display:none;align-items:center;justify-content:center;z-index:100;}
+  .modal-overlay.show{display:flex;}
+  .modal-card{width:460px;max-height:88vh;overflow-y:auto;background:var(--bg-1);border:1px solid var(--border-strong);border-radius:14px;padding:22px;}
+  .modal-card.wide{width:600px;}
+  .modal-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;}
+  .modal-title{font-size:15px;font-weight:600;}
+  .modal-close{background:none;border:none;color:var(--text-3);cursor:pointer;font-size:16px;}
+  .modal-section-label{font-size:10.5px;color:var(--text-3);text-transform:uppercase;letter-spacing:.04em;margin:16px 0 8px;}
+  .modal-section-label:first-of-type{margin-top:0;}
+  .modal-field{margin-bottom:12px;}
+  .modal-field label{display:block;font-size:11px;color:var(--text-3);margin-bottom:5px;}
+  .modal-field input,.modal-field select,.modal-field textarea{
+    width:100%;background:var(--bg-2);border:1px solid var(--border);border-radius:7px;
+    padding:9px 11px;font-size:12.5px;color:var(--text-1);outline:none;font-family:inherit;
+  }
+  .modal-field input:focus,.modal-field select:focus{border-color:var(--accent);}
+  .modal-row-2{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+  .color-swatch-row{display:flex;align-items:center;gap:8px;}
+  .color-swatch{width:36px;height:36px;border-radius:8px;border:1px solid var(--border-strong);flex-shrink:0;}
+  .logo-upload-box{
+    width:100%;height:80px;border:1.5px dashed var(--border-strong);border-radius:9px;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;
+    color:var(--text-3);font-size:11px;cursor:pointer;
+  }
+  .logo-upload-box:hover{border-color:var(--accent);color:var(--text-2);}
+  .modal-actions{display:flex;gap:8px;margin-top:18px;}
+  .modal-actions .btn{flex:1;justify-content:center;}
+
+  .plan-select-row{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+  .plan-option{
+    border:1.5px solid var(--border);border-radius:10px;padding:12px;cursor:pointer;
+  }
+  .plan-option.sel{border-color:var(--accent);background:var(--accent-bg);}
+  .plan-option-name{font-size:12.5px;font-weight:600;}
+  .plan-option-price{font-size:15px;font-weight:700;font-family:'JetBrains Mono',monospace;margin:4px 0;}
+  .plan-option-desc{font-size:10.5px;color:var(--text-3);}
+
+  .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--bg-3);border:1px solid var(--border-strong);padding:11px 20px;border-radius:9px;font-size:12.5px;opacity:0;pointer-events:none;transition:opacity .2s,transform .2s;z-index:200;}
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(-6px);}
+
+  .admin-chip{display:flex;align-items:center;justify-content:space-between;background:var(--bg-2);border:1px solid var(--border);border-radius:8px;padding:9px 12px;margin-bottom:8px;}
+  .admin-chip-left{display:flex;align-items:center;gap:9px;}
+  .admin-chip-avatar{width:26px;height:26px;border-radius:50%;background:var(--bg-3);display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:600;color:var(--text-2);}
+</style>
+</head>
+<body>
+
+<div id="app">
+
+  <div class="sidebar">
+    <div class="sb-brand">
+      <div class="sb-mark">X</div>
+      <div class="sb-brand-text">vyX <span>Super Admin</span></div>
+    </div>
+    <div class="sb-plane-tag">PLATFORM CONTROL PLANE</div>
+
+    <div class="sb-group-label">Tenants</div>
+    <div class="sb-item active" data-view="tenants" onclick="switchView('tenants')">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+      All brokers
+    </div>
+    <div class="sb-item" data-view="trials" onclick="switchView('trials')">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+      Trials pending
+      <span class="sb-badge" id="trialsBadge">1</span>
+    </div>
+
+    <div class="sb-group-label">Billing</div>
+    <div class="sb-item" data-view="billing" onclick="switchView('billing')">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg>
+      Plans &amp; billing
+    </div>
+
+    <div class="sb-group-label">Platform</div>
+    <div class="sb-item" data-view="health" onclick="switchView('health')">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+      Platform health
+    </div>
+    <div class="sb-item" data-view="global" onclick="switchView('global')">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+      Global symbol catalog
+    </div>
+    <div class="sb-item" data-view="audit" onclick="switchView('audit')">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="15" y2="17"/></svg>
+      Audit log
+    </div>
+
+    <div class="sb-bottom">
+      <div class="sb-item" data-view="team" onclick="switchView('team')">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 21v-1a8 8 0 0 1 16 0v1"/></svg>
+        Platform team
+      </div>
+    </div>
+  </div>
+
+  <div class="main">
+    <div class="topbar">
+      <div class="tb-title" id="tbTitle">All brokers</div>
+      <div class="tb-right">
+        <div class="tb-admin">
+          <div class="tb-admin-avatar">HK</div>
+          <div class="tb-admin-info">
+            <span class="tb-admin-name">Huzaifa Khan</span>
+            <span class="tb-admin-role">Platform Owner — BigFish Technologies</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ TENANTS ============ -->
+    <div class="view active" id="view-tenants">
+      <div class="view-header">
+        <div>
+          <div class="view-heading">All brokers</div>
+          <div class="view-sub">Every broker tenant licensed on VyXTrader</div>
+        </div>
+        <button class="btn btn-primary" onclick="openModal('newBrokerModal')">+ Register new broker</button>
+      </div>
+
+      <div class="stat-grid">
+        <div class="stat-card"><div class="stat-label">Total tenants</div><div class="stat-value">4</div></div>
+        <div class="stat-card"><div class="stat-label">Active (paying)</div><div class="stat-value" style="color:var(--buy)">3</div></div>
+        <div class="stat-card"><div class="stat-label">Trial</div><div class="stat-value" style="color:var(--warn)">1</div></div>
+        <div class="stat-card"><div class="stat-label">MRR</div><div class="stat-value">$2,100</div><div class="stat-delta pos">+$500 this month</div></div>
+        <div class="stat-card"><div class="stat-label">Total end-clients</div><div class="stat-value">6,842</div></div>
+      </div>
+
+      <div class="panel">
+        <table>
+          <thead><tr><th>Broker</th><th>Domain</th><th>Plan</th><th>Clients</th><th>Status</th><th>Created</th><th></th></tr></thead>
+          <tbody id="tenantRows"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ============ TRIALS ============ -->
+    <div class="view" id="view-trials">
+      <div class="view-header">
+        <div><div class="view-heading">Trials pending</div><div class="view-sub">Brokers currently on a trial period</div></div>
+      </div>
+      <div class="panel">
+        <table>
+          <thead><tr><th>Broker</th><th>Trial started</th><th>Trial ends</th><th></th></tr></thead>
+          <tbody id="trialRows"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ============ BILLING ============ -->
+    <div class="view" id="view-billing">
+      <div class="view-header">
+        <div><div class="view-heading">Plans &amp; billing</div><div class="view-sub">Subscription status per broker — billing is separate from the trading ledger</div></div>
+      </div>
+      <div class="panel">
+        <table>
+          <thead><tr><th>Broker</th><th>Plan</th><th>Monthly</th><th>Next invoice</th><th>Billing status</th><th></th></tr></thead>
+          <tbody id="billingRows"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ============ HEALTH ============ -->
+    <div class="view" id="view-health">
+      <div class="view-header">
+        <div><div class="view-heading">Platform health</div><div class="view-sub">Service status across the platform</div></div>
+      </div>
+      <div class="panel">
+        <table>
+          <thead><tr><th>Service</th><th>Status</th><th>Latency</th><th>Uptime (30d)</th></tr></thead>
+          <tbody id="healthRows"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ============ GLOBAL SYMBOLS ============ -->
+    <div class="view" id="view-global">
+      <div class="view-header">
+        <div><div class="view-heading">Global symbol catalog</div><div class="view-sub">Instruments available for brokers to enable</div></div>
+        <button class="btn btn-primary" onclick="showToast('Add-symbol form — coming soon')">+ Add symbol</button>
+      </div>
+      <div class="panel">
+        <table>
+          <thead><tr><th>Symbol</th><th>Class</th><th>Enabled for</th><th>Status</th></tr></thead>
+          <tbody id="globalSymRows"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ============ AUDIT ============ -->
+    <div class="view" id="view-audit">
+      <div class="view-header">
+        <div><div class="view-heading">Audit log</div><div class="view-sub">Every platform-level and cross-tenant action, fully logged</div></div>
+      </div>
+      <div class="panel">
+        <table>
+          <thead><tr><th>Actor</th><th>Action</th><th>Tenant</th><th>Time</th></tr></thead>
+          <tbody id="auditRows"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ============ TEAM ============ -->
+    <div class="view" id="view-team">
+      <div class="view-header">
+        <div><div class="view-heading">Platform team</div><div class="view-sub">People with Super Admin access to BigFish Technologies</div></div>
+        <button class="btn btn-primary" onclick="showToast('Invite form — coming soon')">+ Invite</button>
+      </div>
+      <div class="panel">
+        <table>
+          <thead><tr><th>Name</th><th>Email</th><th>Access level</th><th>Last active</th></tr></thead>
+          <tbody id="teamRows"></tbody>
+        </table>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ============ NEW BROKER MODAL ============ -->
+<div class="modal-overlay" id="newBrokerModal">
+  <div class="modal-card wide">
+    <div class="modal-header">
+      <span class="modal-title">Register new broker</span>
+      <button class="modal-close" onclick="closeModal('newBrokerModal')">✕</button>
+    </div>
+
+    <div class="modal-section-label">Company details</div>
+    <div class="modal-row-2">
+      <div class="modal-field"><label>Legal / company name</label><input id="nbName" placeholder="e.g. Exness"></div>
+      <div class="modal-field"><label>Display name (shown to traders)</label><input id="nbDisplay" placeholder="e.g. Exness"></div>
+    </div>
+    <div class="modal-row-2">
+      <div class="modal-field"><label>Subdomain</label><input id="nbSlug" placeholder="exness" class="mono"></div>
+      <div class="modal-field"><label>Custom domain (optional)</label><input id="nbDomain" placeholder="trade.exness.com" class="mono"></div>
+    </div>
+
+    <div class="modal-section-label">Branding</div>
+    <div class="modal-row-2">
+      <div class="modal-field">
+        <label>Logo</label>
+        <div class="logo-upload-box" onclick="showToast('File picker — connect to upload flow')">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+          Click to upload
+        </div>
+      </div>
+      <div class="modal-field">
+        <label>Primary brand color</label>
+        <div class="color-swatch-row">
+          <div class="color-swatch" id="nbColorSwatch" style="background:#FFCC00"></div>
+          <input id="nbColor" value="#FFCC00" class="mono" oninput="el('nbColorSwatch').style.background=this.value">
+        </div>
+      </div>
+    </div>
+
+    <div class="modal-section-label">Plan</div>
+    <div class="plan-select-row" id="planSelectRow">
+      <div class="plan-option sel" data-plan="standard" onclick="selectPlan(this)">
+        <div class="plan-option-name">Standard</div>
+        <div class="plan-option-price">$500<span style="font-size:10px;color:var(--text-3)">/mo</span></div>
+        <div class="plan-option-desc">Co-branded logo only, no CRM access</div>
+      </div>
+      <div class="plan-option" data-plan="whitelabel" onclick="selectPlan(this)">
+        <div class="plan-option-name">White-Label</div>
+        <div class="plan-option-price">$800<span style="font-size:10px;color:var(--text-3)">/mo</span></div>
+        <div class="plan-option-desc">Full branding + backoffice/CRM access</div>
+      </div>
+    </div>
+
+    <div class="modal-section-label">First Broker Admin account</div>
+    <div class="modal-row-2">
+      <div class="modal-field"><label>Admin full name</label><input id="nbAdminName" placeholder="e.g. Ahmed Raza"></div>
+      <div class="modal-field"><label>Admin email</label><input id="nbAdminEmail" placeholder="admin@exness.com"></div>
+    </div>
+    <div class="modal-field">
+      <label>Access</label>
+      <select id="nbAdminAccess">
+        <option>Send invite link (admin sets their own password)</option>
+        <option>Generate temporary password</option>
+      </select>
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeModal('newBrokerModal')">Cancel</button>
+      <button class="btn btn-primary" onclick="submitNewBroker()">Register broker &amp; send invite</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ TENANT DETAIL MODAL ============ -->
+<div class="modal-overlay" id="tenantDetailModal">
+  <div class="modal-card wide">
+    <div class="modal-header">
+      <span class="modal-title" id="tdTitle">Broker detail</span>
+      <button class="modal-close" onclick="closeModal('tenantDetailModal')">✕</button>
+    </div>
+
+    <div class="modal-section-label">Assigned admins</div>
+    <div id="tdAdminList"></div>
+    <div class="modal-field" style="margin-top:10px;">
+      <label>Assign a new admin</label>
+      <div style="display:flex;gap:8px;">
+        <input id="tdNewAdminEmail" placeholder="email@broker.com" style="flex:1;">
+        <button class="btn btn-primary btn-sm" onclick="assignAdmin()">Assign</button>
+      </div>
+    </div>
+
+    <div class="modal-section-label">Tenant lifecycle</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+      <button class="btn btn-success btn-sm" onclick="setTenantStatus('active')">Set active</button>
+      <button class="btn btn-ghost btn-sm" onclick="setTenantStatus('trial')">Set trial</button>
+      <button class="btn btn-danger btn-sm" onclick="setTenantStatus('suspended')">Suspend</button>
+      <button class="btn btn-danger btn-sm" onclick="setTenantStatus('disabled')">Disable</button>
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeModal('tenantDetailModal')">Close</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const el = id => document.getElementById(id);
+let toastTimeout;
+function showToast(msg){
+  const t = el('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(toastTimeout);
+  toastTimeout = setTimeout(() => t.classList.remove('show'), 2400);
+}
+
+function openModal(id){ el(id).classList.add('show'); }
+function closeModal(id){ el(id).classList.remove('show'); }
+
+const VIEW_TITLES = {
+  tenants: 'All brokers', trials: 'Trials pending', billing: 'Plans & billing',
+  health: 'Platform health', global: 'Global symbol catalog', audit: 'Audit log', team: 'Platform team',
+};
+function switchView(name){
+  document.querySelectorAll('.sb-item[data-view]').forEach(i => i.classList.toggle('active', i.dataset.view === name));
+  document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+  el('view-' + name).classList.add('active');
+  el('tbTitle').textContent = VIEW_TITLES[name];
+}
+
+// ---------- Seed data ----------
+let tenants = [
+  { id: 1, name: 'Exness', slug: 'exness', domain: 'trade.exness.com', logoColor: '#FFCC00', logoInitials: 'EX', plan: 'whitelabel', clients: 4820, status: 'active', created: 'Jan 12, 2026', admins: [{ name: 'Ahmed Raza', email: 'ahmed@exness.com' }, { name: 'Sara Khan', email: 'sara@exness.com' }] },
+  { id: 2, name: 'IC Markets Pro', slug: 'icmarkets', domain: '—', logoColor: '#3D8BFF', logoInitials: 'IC', plan: 'standard', clients: 1120, status: 'active', created: 'Feb 3, 2026', admins: [{ name: 'Bilal Ahmed', email: 'bilal@icmarkets.com' }] },
+  { id: 3, name: 'GoldRush Capital', slug: 'goldrush', domain: 'app.goldrushcapital.com', logoColor: '#16C784', logoInitials: 'GR', plan: 'whitelabel', clients: 640, status: 'active', created: 'Mar 20, 2026', admins: [{ name: 'Usman Tariq', email: 'usman@goldrush.com' }] },
+  { id: 4, name: 'Northline FX', slug: 'northline', domain: '—', logoColor: '#7C6FFF', logoInitials: 'NF', plan: 'standard', clients: 262, status: 'trial', created: 'Aug 2, 2026', admins: [{ name: 'Fatima Noor', email: 'fatima@northlinefx.com' }] },
+];
+
+const globalSymbols = [
+  { symbol: 'XAUUSD', cls: 'Metals', enabledFor: 4, status: 'active' },
+  { symbol: 'EURUSD', cls: 'Forex', enabledFor: 4, status: 'active' },
+  { symbol: 'BTCUSD', cls: 'Crypto', enabledFor: 3, status: 'active' },
+  { symbol: 'US30', cls: 'Indices', enabledFor: 2, status: 'active' },
+  { symbol: 'XRPUSD', cls: 'Crypto', enabledFor: 0, status: 'disabled' },
+];
+
+const healthServices = [
+  { service: 'API Gateway', status: 'operational', latency: '42ms', uptime: '99.98%' },
+  { service: 'WebSocket Gateway', status: 'operational', latency: '18ms', uptime: '99.95%' },
+  { service: 'PostgreSQL (primary)', status: 'operational', latency: '4ms', uptime: '100%' },
+  { service: 'Execution Engine (VPS)', status: 'degraded', latency: '210ms', uptime: '98.40%' },
+];
+
+const auditLog = [
+  { actor: 'Huzaifa Khan', action: 'Registered new broker "Northline FX"', tenant: 'Northline FX', time: '2 hours ago' },
+  { actor: 'Huzaifa Khan', action: 'Assigned admin ahmed@exness.com', tenant: 'Exness', time: '1 day ago' },
+  { actor: 'System', action: 'Suspended tenant for non-payment', tenant: 'DemoTest Broker', time: '3 days ago' },
+  { actor: 'Huzaifa Khan', action: 'Upgraded plan Standard → White-Label', tenant: 'GoldRush Capital', time: '1 week ago' },
+];
+
+const teamMembers = [
+  { name: 'Huzaifa Khan', email: 'huzaifa@bigfish.tech', access: 'Owner — full access', active: 'Now' },
+];
+
+// ---------- Renderers ----------
+function planBadge(plan){ return plan === 'whitelabel' ? '<span class="badge whitelabel">White-Label</span>' : '<span class="badge standard">Standard</span>'; }
+function statusBadge(status){ return `<span class="badge ${status}">${status}</span>`; }
+
+function renderTenants(){
+  el('tenantRows').innerHTML = tenants.map(t => `
+    <tr>
+      <td>
+        <div class="tenant-row-brand">
+          <div class="tenant-logo" style="background:${t.logoColor}22;color:${t.logoColor}">${t.logoInitials}</div>
+          <div><div class="cell-primary">${t.name}</div><div class="cell-sub mono">${t.slug}.vyxtrader.com</div></div>
+        </div>
+      </td>
+      <td class="cell-sub mono">${t.domain}</td>
+      <td>${planBadge(t.plan)}</td>
+      <td class="mono">${t.clients.toLocaleString()}</td>
+      <td>${statusBadge(t.status)}</td>
+      <td class="cell-sub">${t.created}</td>
+      <td>
+        <div class="row-actions">
+          <button class="icon-btn" title="Manage" onclick="openTenantDetail(${t.id})">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          </button>
+        </div>
+      </td>
+    </tr>
+  `).join('');
+
+  el('trialRows').innerHTML = tenants.filter(t => t.status === 'trial').map(t => `
+    <tr>
+      <td class="cell-primary">${t.name}</td>
+      <td class="cell-sub">${t.created}</td>
+      <td class="cell-sub">14 days from start</td>
+      <td><button class="btn btn-success btn-sm" onclick="quickActivate(${t.id})">Activate now</button></td>
+    </tr>
+  `).join('') || '<tr><td colspan="4" style="text-align:center;color:var(--text-3);padding:24px;">No trials pending</td></tr>';
+  el('trialsBadge').textContent = tenants.filter(t => t.status === 'trial').length;
+
+  el('billingRows').innerHTML = tenants.map(t => `
+    <tr>
+      <td class="cell-primary">${t.name}</td>
+      <td>${planBadge(t.plan)}</td>
+      <td class="mono">${t.plan === 'whitelabel' ? '$800' : '$500'}</td>
+      <td class="cell-sub">${t.status === 'trial' ? 'Trial — no charge yet' : 'Sep 1, 2026'}</td>
+      <td>${t.status === 'trial' ? statusBadge('trial') : statusBadge('active')}</td>
+      <td><button class="icon-btn" title="View invoices" onclick="showToast('Invoice history — coming soon')">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+      </button></td>
+    </tr>
+  `).join('');
+}
+
+function renderGlobalSymbols(){
+  el('globalSymRows').innerHTML = globalSymbols.map(s => `
+    <tr>
+      <td class="cell-primary">${s.symbol}</td>
+      <td>${s.cls}</td>
+      <td class="mono">${s.enabledFor} brokers</td>
+      <td>${statusBadge(s.status)}</td>
+    </tr>
+  `).join('');
+}
+
+function renderHealth(){
+  el('healthRows').innerHTML = healthServices.map(h => `
+    <tr>
+      <td class="cell-primary">${h.service}</td>
+      <td><span class="badge ${h.status === 'operational' ? 'active' : 'trial'}">${h.status}</span></td>
+      <td class="mono">${h.latency}</td>
+      <td class="mono">${h.uptime}</td>
+    </tr>
+  `).join('');
+}
+
+function renderAudit(){
+  el('auditRows').innerHTML = auditLog.map(a => `
+    <tr>
+      <td class="cell-primary">${a.actor}</td>
+      <td>${a.action}</td>
+      <td class="cell-sub">${a.tenant}</td>
+      <td class="cell-sub">${a.time}</td>
+    </tr>
+  `).join('');
+}
+
+function renderTeam(){
+  el('teamRows').innerHTML = teamMembers.map(m => `
+    <tr>
+      <td class="cell-primary">${m.name}</td>
+      <td class="cell-sub">${m.email}</td>
+      <td>${m.access}</td>
+      <td class="cell-sub">${m.active}</td>
+    </tr>
+  `).join('');
+}
+
+// ---------- New broker flow ----------
+function selectPlan(elem){
+  document.querySelectorAll('.plan-option').forEach(p => p.classList.remove('sel'));
+  elem.classList.add('sel');
+}
+
+function submitNewBroker(){
+  const name = el('nbName').value.trim();
+  const slug = el('nbSlug').value.trim();
+  const adminEmail = el('nbAdminEmail').value.trim();
+  if(!name || !slug || !adminEmail){ showToast('Company name, subdomain, and admin email are required'); return; }
+
+  const plan = document.querySelector('.plan-option.sel').dataset.plan;
+  const initials = name.split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase();
+
+  tenants.push({
+    id: tenants.length + 1, name, slug, domain: el('nbDomain').value.trim() || '—',
+    logoColor: el('nbColor').value || '#7C6FFF', logoInitials: initials, plan,
+    clients: 0, status: 'trial', created: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+    admins: [{ name: el('nbAdminName').value.trim() || 'Admin', email: adminEmail }],
+  });
+
+  renderTenants();
+  closeModal('newBrokerModal');
+  showToast(`${name} registered — invite sent to ${adminEmail}`);
+
+  ['nbName','nbDisplay','nbSlug','nbDomain','nbAdminName','nbAdminEmail'].forEach(id => el(id).value = '');
+}
+
+// ---------- Tenant detail ----------
+let activeTenantId = null;
+function openTenantDetail(id){
+  activeTenantId = id;
+  const t = tenants.find(t => t.id === id);
+  el('tdTitle').textContent = t.name + ' — manage';
+  renderAdminList(t);
+  openModal('tenantDetailModal');
+}
+
+function renderAdminList(t){
+  el('tdAdminList').innerHTML = t.admins.map((a, i) => `
+    <div class="admin-chip">
+      <div class="admin-chip-left">
+        <div class="admin-chip-avatar">${a.name.split(' ').map(w=>w[0]).join('').toUpperCase()}</div>
+        <div><div style="font-size:12px;font-weight:500;">${a.name}</div><div class="cell-sub">${a.email}</div></div>
+      </div>
+      <button class="icon-btn" title="Remove" onclick="removeAdmin(${i})">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+  `).join('') || '<div style="color:var(--text-3);font-size:12px;padding:8px 0;">No admins assigned yet</div>';
+}
+
+function assignAdmin(){
+  const email = el('tdNewAdminEmail').value.trim();
+  if(!email){ showToast('Enter an email address'); return; }
+  const t = tenants.find(t => t.id === activeTenantId);
+  t.admins.push({ name: email.split('@')[0], email });
+  renderAdminList(t);
+  el('tdNewAdminEmail').value = '';
+  showToast(`Invite sent to ${email}`);
+}
+
+function removeAdmin(idx){
+  const t = tenants.find(t => t.id === activeTenantId);
+  const removed = t.admins.splice(idx, 1)[0];
+  renderAdminList(t);
+  showToast(`${removed.email} removed from ${t.name}`);
+}
+
+function setTenantStatus(status){
+  const t = tenants.find(t => t.id === activeTenantId);
+  t.status = status;
+  renderTenants();
+  showToast(`${t.name} set to ${status}`);
+}
+
+function quickActivate(id){
+  const t = tenants.find(t => t.id === id);
+  t.status = 'active';
+  renderTenants();
+  showToast(`${t.name} activated`);
+}
+
+// ---------- Init ----------
+renderTenants();
+renderGlobalSymbols();
+renderHealth();
+renderAudit();
+renderTeam();
+</script>
+
+</body>
+</html>
