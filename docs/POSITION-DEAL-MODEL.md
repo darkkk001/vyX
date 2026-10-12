@@ -10,6 +10,21 @@ the position row keeps only the last piece.
 
 ---
 
+## 0. Owner decisions (2026-10-12)
+
+1. **Ship the hotfix first** (section 5, step 0). Its scope is wider than first estimated: every close path
+   (terminal, WebTrader, dealer-queued, staff, SL / TP / stop-out, close-by) writes the closed lots, close price, P/L
+   and pro-rata swap as structured fields instead of note text. `Position` keeps cumulative realised P/L and
+   closed volume, and close-by links both legs by id on every path. There are tests for each path.
+2. **Swap on a partial close is pro rata by closed volume**: the remainder stays on the position, and the statement's
+   parent row shows the total (section 3.2).
+3. **The historical correction of the 25 multi-close positions is approved** with conditions:
+   - a dry run first, printing per-position old -> new P/L and volume;
+   - a per-account check that the ledger sum equals the balance, which stops the run if any account differs;
+   - total Book P/L before and after.
+   
+   The owner runs it on live after reviewing the dry run.
+
 ## 1. Current model
 
 ### 1.1 Tables
@@ -196,9 +211,12 @@ model Deal {
 (close-and-reopen link). `Position.volume` keeps meaning "open now". After the switch `realizedPnl` means the sum
 of the position's OUT profits and `closePrice` the volume-weighted average exit price (MT5's position view).
 
-Swap: the ledger keeps one SWAP row per account per day and `Position.swap` keeps the per-position share. The final
-OUT deal carries the position's accumulated swap (a partial OUT carries the share accrued to its lots at that moment)
-so a statement can be built from deals alone. Owner decision: confirm this, or keep swap on the position only.
+Swap (owner decision 2026-10-12): the ledger keeps one SWAP row per account per day, so swap is already paid and
+nothing moves on a close. A partial close is attributed swap **pro rata by closed volume**: closed lots / open lots
+before the close x the swap accrued on the position and not yet attributed. The remainder stays on the position and
+goes to the next close. The final close takes whatever is left. `Position.swap` stays the position's total accrued
+swap, and the statement's parent row shows that total. The OUT deals (and, in the hotfix, the close fields on the
+TRADE_PNL row) carry each close's share, and the shares add up to the total.
 
 ### 3.3 Migration and backfill (no data loss, reversible)
 
