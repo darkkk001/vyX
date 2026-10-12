@@ -5,6 +5,7 @@ import { bearerMatches } from "@/lib/internal-auth";
 import { drainPostCloseBackstop } from "@/lib/post-close";
 import { evaluatePendingTriggers } from "@/lib/pending-trigger";
 import { marginPassGate } from "@/lib/live-price";
+import { excludeDemoByBrokerRelation } from "@/lib/demo-policy";
 
 // 2026-09-05 P0 fix -- the reliable floor beneath the tick-ingest trigger
 // (lib/price-feed.ts's ingestTicks -> evaluateRiskForSymbol), which is
@@ -96,13 +97,16 @@ export async function GET(request: NextRequest) {
     return null;
   });
 
-  const openCount = await prisma.position.count({ where: { status: "OPEN" } });
+  // QoreTrader demo: its guests are replayed lazily from the deterministic path (lib/demo-sweep.ts) and must never be
+  // evaluated here -- at the engine's / cron's "now" they would also raise margin-call notices the shadow reconciler pairs
+  const notDemo = excludeDemoByBrokerRelation();
+  const openCount = await prisma.position.count({ where: { status: "OPEN", ...notDemo } });
   if (openCount === 0) {
     return NextResponse.json({ accountsEvaluated: 0, errors: 0, outbox, pending });
   }
 
   const openAccounts = await prisma.position.findMany({
-    where: { status: "OPEN" },
+    where: { status: "OPEN", ...notDemo },
     select: { accountId: true },
     distinct: ["accountId"],
   });

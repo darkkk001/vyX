@@ -4,6 +4,7 @@ import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession } from "@/lib/auth";
 import { provisionStarterState } from "@/lib/starter-state";
+import { excludeDemoBroker, excludeDemoByBrokerRelation } from "@/lib/demo-policy";
 
 const RESERVED_SUBDOMAINS = new Set(["admin", "www", "api"]);
 const SUBDOMAIN_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
@@ -39,8 +40,9 @@ export async function GET() {
   }
 
   const [brokers, totalEndClients] = await Promise.all([
-    prisma.broker.findMany({ orderBy: { createdAt: "desc" } }),
-    prisma.account.count(),
+    // the QoreTrader demo tenant (and its throwaway guest accounts) is not a customer: it is in no list or count here
+    prisma.broker.findMany({ where: excludeDemoBroker(), orderBy: { createdAt: "desc" } }),
+    prisma.account.count({ where: excludeDemoByBrokerRelation() }),
   ]);
 
   return NextResponse.json({

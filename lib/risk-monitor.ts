@@ -14,6 +14,7 @@ import { conversionRate, loadFxLookup } from "@/lib/fx";
 import * as mirror from "@/lib/mirror";
 import * as coverage from "@/lib/coverage";
 import { loadSellAskRules, valuationAsk } from "@/lib/ask-markup";
+import { excludeDemoByBrokerRelation } from "@/lib/demo-policy";
 
 // The legacy Next.js trading path (the one actually carrying every
 // broker's live traffic today, per docs/decisions.md ADR-003) has never
@@ -411,7 +412,7 @@ async function clearMarginCall(accountId: string, brokerId: string, body: string
 // response itself from succeeding).
 export async function evaluateRiskForSymbol(symbolName: string): Promise<void> {
   const accountIds = await prisma.position.findMany({
-    where: { status: "OPEN", symbol: { name: symbolName } },
+    where: { status: "OPEN", symbol: { name: symbolName }, ...excludeDemoByBrokerRelation() },
     select: { accountId: true },
     distinct: ["accountId"],
   });

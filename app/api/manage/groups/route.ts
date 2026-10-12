@@ -6,7 +6,7 @@ import { LEVERAGE_RULE, parseLeverage } from "@/lib/leverage";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { resolveGroupRouting, legacyGroupTypeFor } from "@/lib/group-routing";
 import { parseGroupMinLot } from "@/lib/group-min-volume";
-import { brokerMaySeeSynthetic, isSyntheticSymbol } from "@/lib/synthetic-symbols";
+import { symbolVisibility } from "@/lib/synthetic-symbols";
 
 const GROUP_TIERS: GroupTier[] = ["STANDARD", "PRO", "ECN", "ZERO"];
 const GROUP_DEALING_MODES: GroupDealingMode[] = ["INHERIT", "AUTO", "MANUAL"];
@@ -62,14 +62,14 @@ export async function GET() {
   // Groups screen SYMBOLS column (owner 2026-10-05, contract docs/contracts/groups-symbol-counts.md): how many of the
   // broker's enabled symbols each group trades. Synthetic v* symbols are hidden exactly as GET /api/manage/symbols
   // hides them from every broker but the shadow-bot tenant. Two queries in total, not one per group.
-  const [enabledRows, seesSynthetic] = await Promise.all([
+  const [enabledRows, symbolVisible] = await Promise.all([
     prisma.brokerSymbol.findMany({
       where: { brokerId: session.brokerId!, enabled: true },
       select: { symbolId: true, symbol: { select: { name: true } } },
     }),
-    brokerMaySeeSynthetic(prisma, session.brokerId!),
+    symbolVisibility(prisma, session.brokerId!),
   ]);
-  const enabledSymbolIds = enabledRows.filter((r) => seesSynthetic || !isSyntheticSymbol(r.symbol.name)).map((r) => r.symbolId);
+  const enabledSymbolIds = enabledRows.filter((r) => symbolVisible(r.symbol.name)).map((r) => r.symbolId);
   const enabledSymbolCount = enabledSymbolIds.length;
   const restrictedGroupIds = groups.filter((g) => g.restrictSymbols).map((g) => g.id);
   const allowedCounts = new Map(

@@ -15,6 +15,8 @@ import * as coverage from "@/lib/coverage";
 import { classifyMissingPrice, getLivePriceRow } from "@/lib/live-price";
 import { afterCloseQueued, queueCloseInTx, ClosePendingError } from "@/lib/queued-close";
 import { runAfterResponse } from "@/lib/after-response";
+import { isDemoTenant } from "@/lib/demo-policy";
+import { demoQuoteTimeRefusal } from "@/lib/demo-prices";
 
 // Closing (fully or partially) is the one place a trade changes the
 // account balance. Realized P&L is computed server-side and applied
@@ -92,7 +94,7 @@ async function handleClose(request: NextRequest, params: Promise<{ id: string }>
     prisma.group.findFirst({ where: { accounts: { some: { positions: { some: { id } } } } }, select: { groupType: true, dealingMode: true, forceDealingMode: true, category: true } }),
     prisma.brokerSymbol.findFirst({ where: { brokerId: session.brokerId, symbol: bySymbolOfPosition } }),
     prisma.tradingSession.findMany({ where: { brokerSymbol: { brokerId: session.brokerId, symbol: bySymbolOfPosition } } }),
-    prisma.broker.findUniqueOrThrow({ where: { id: session.brokerId }, select: { dealingModeAt: true, dealingDeskAutoFillAt: true, defaultMaxSlippagePips: true, defaultMaxSlippagePoints: true } }),
+    prisma.broker.findUniqueOrThrow({ where: { id: session.brokerId }, select: { subdomain: true, dealingModeAt: true, dealingDeskAutoFillAt: true, defaultMaxSlippagePips: true, defaultMaxSlippagePoints: true } }),
     // S4 (docs/market-data.md §8): the engine's own in-memory tick when MARKET_DATA_PRICES=vps, Neon otherwise
     symbolRead.then((s) => (s ? getLivePriceRow(s.name) : null)),
     // the account's ask rule for this symbol (lib/ask-markup.ts): a SELL closes at the marked-up ask a BUY opens at
@@ -131,6 +133,12 @@ async function handleClose(request: NextRequest, params: Promise<{ id: string }>
   if (sessionError) {
     const nextOpenAt = computeNextSessionOpen(tradingSessions, new Date(), position.symbol.category);
     return NextResponse.json({ error: sessionError, nextOpenAt: nextOpenAt.toISOString() }, { status: 400 });
+  }
+
+  // QoreTrader demo: instant execution at the deterministic server price, from a fresh screen
+  const isDemo = isDemoTenant(broker.subdomain);
+  if (isDemo && demoQuoteTimeRefusal(body?.priceAt, Date.now())) {
+    return NextResponse.json({ error: "PRICE_CHANGED", reason: "Price changed, try again", symbol: position.symbol.name }, { status: 400 });
   }
 
   // evaluateLiveMarketPrice keeps the client's reference honest (NO_LIVE_FEED / too far from market) and
@@ -196,7 +204,7 @@ async function handleClose(request: NextRequest, params: Promise<{ id: string }>
   const brokerDealingModeOn = !!broker.dealingModeAt;
   const dealingDeskAutoFillOn = !!broker.dealingDeskAutoFillAt;
   const routing = {
-    wantsQueue: resolveWantsDealingQueue({ group: position.account.group, deskOn: !dealingDeskAutoFillOn }),
+    wantsQueue: !isDemo && resolveWantsDealingQueue({ group: position.account.group, deskOn: !dealingDeskAutoFillOn }),
     brokerDealingModeOn,
     dealingDeskAutoFillOn,
   };
@@ -308,7 +316,7 @@ async function handleClose(request: NextRequest, params: Promise<{ id: string }>
   // app/api/trade/orders/route.ts). `position.volume` here is still this route's own top-of-function read, from before
   // closePositionInTx reduced/closed the row -- exactly the "source volume before this close" onClose needs to compute
   // a proportional close on the mirrored side.
-  await runAfterResponse("close follow-through", async () => {
+  if (!isDemo) await runAfterResponse("close follow-through", async () => {
     if (source === "stm_bulk") {
       await prisma.auditLog.create({
         data: {

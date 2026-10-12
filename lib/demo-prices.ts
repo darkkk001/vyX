@@ -302,3 +302,17 @@ export function demoCandles(name: string, tf: DemoTimeframe, nowMs: number, coun
   }
   return out.reverse();
 }
+
+/**
+ * The age rule for a client's quote (a market order, a close, a modify): the request names the time of the quote it was
+ * made from (priceAt, ms). Missing, older than DEMO_MAX_QUOTE_AGE_MS, or from the future beyond the clock slack = "Price
+ * changed, try again". The server never fills at the client's price: it recomputes at its own clock; this only refuses a
+ * request made on a stale screen.
+ */
+export function demoQuoteTimeRefusal(priceAt: unknown, nowMs: number): "PRICE_CHANGED" | null {
+  const t = typeof priceAt === "number" ? priceAt : typeof priceAt === "string" && priceAt.trim() !== "" ? Number(priceAt) : NaN;
+  if (!Number.isFinite(t)) return "PRICE_CHANGED";
+  if (nowMs - t > DEMO_MAX_QUOTE_AGE_MS) return "PRICE_CHANGED";
+  if (t - nowMs > DEMO_FUTURE_SLACK_MS) return "PRICE_CHANGED";
+  return null;
+}

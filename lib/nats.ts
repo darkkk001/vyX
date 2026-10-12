@@ -1,5 +1,6 @@
 import "server-only";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { isDemoBrokerId } from "@/lib/demo";
 
 // Publish-only relay for the legacy Next.js trade routes — see
 // docs/webtrader-stm-architecture-review.md §4.3 (sequencing item 4).
@@ -127,6 +128,8 @@ export async function publishTradingEvent(
   type: TradingEventType,
   payload: Record<string, unknown> & { broker_id: string }
 ): Promise<void> {
+  // QoreTrader demo: nothing the demo tenant does ever reaches the gateway, NATS, the engine or the VPS (no env var = no cost)
+  if (await isDemoBrokerId(payload.broker_id)) return;
   const buffer = eventBuffer.getStore();
   if (buffer) {
     buffer.push({ type, payload });
@@ -194,6 +197,7 @@ export type AlertConfigMessage =
 // /internal/events accepts any subject string, not just the trading-
 // event ones.
 export async function publishAlertConfig(message: AlertConfigMessage): Promise<void> {
+  if (await isDemoBrokerId(message.broker_id)) return; // QoreTrader demo: never reaches the engine
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 2000);

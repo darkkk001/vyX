@@ -52,6 +52,9 @@ import { filterEventsForSymbol, nextHighImpactEventWithin, type CalendarEvent } 
 import { spreadPoints, DEFAULT_WATCHLIST_COLUMN_PREFS, type WatchlistColumnPrefs } from "@/lib/watchlist-columns";
 import { plainError, tradeActionError, TRADE_TEXT } from "@/lib/plain-error";
 import { formatCsvNumber, formatMarginLevel, formatMoney, formatPercent, formatSigned, formatVolume, tone, viewAmount, TONE_COLOR, type Tone } from "@/lib/format";
+import { DEMO_BANNER_TEXT } from "@/lib/demo-policy";
+import { gridTime } from "@/lib/demo-prices";
+import { demoTicksAt, noteDemoTick } from "@/lib/demo-client";
 // WebTrader colour classes per tone (lib/format.ts): profit green, loss red, zero neutral
 const TONE_CSS: Record<Tone, string> = { profit: "pos", loss: "neg", neutral: "" };
 
@@ -185,6 +188,10 @@ const FILL_PRICE_MAX_AGE_MS = 3000;
 // strategy shared by every realtime stream in the app, not a flat
 // retry here and real backoff there.
 const RECONNECT_INITIAL_BACKOFF_MS = 1000;
+// QoreTrader demo: the browser ticks its own quotes (lib/demo-prices.ts) on the 250 ms grid; the account is re-read every 4 s
+// (the server replays stop losses, take profits, pending orders and stop-outs on those requests)
+const DEMO_TICK_MS = 250;
+const DEMO_POLL_MS = 4000;
 const RECONNECT_MAX_BACKOFF_MS = 15000;
 type StoredLayout = {
   // watchlistOrder deliberately NOT here anymore -- server-side now (see
@@ -246,6 +253,7 @@ export default function WebTrader({
   brokerLogoUrl,
   supportEmail,
   onSessionExpired,
+  demo = false,
 }: {
   brokerName: string;
   brokerLogoUrl: string;
@@ -258,6 +266,9 @@ export default function WebTrader({
   // route) -- the bundled desktop shell has no such route and passes its
   // own handler that shows its local login screen instead.
   onSessionExpired?: () => void;
+  // QoreTrader demo tenant: local quotes and chart (components/demo/DemoTradeShell.tsx installs lib/demo-client.ts first), no
+  // sockets, no account / funds / KYC / security screens, a permanent banner.
+  demo?: boolean;
 }) {
 
   // Bootstrap only (the old hardcoded 10) -- replaced by the real
@@ -1092,12 +1103,12 @@ export default function WebTrader({
       // again.
       if (err instanceof ApiError && err.status === 401) {
         if (onSessionExpired) onSessionExpired();
-        else window.location.href = "/trade/login";
+        else window.location.href = demo ? "/trade" : "/trade/login";
       } else {
         console.error("refreshAccount failed", err);
       }
     }
-  }, [onSessionExpired]);
+  }, [onSessionExpired, demo]);
   // Terminal sounds need the live bid/ask at the moment a position
   // disappears from the open list (see prevPositionsRef below) --
   // refreshPositions is a stable ([]) callback, so it reads this ref
@@ -1322,7 +1333,7 @@ export default function WebTrader({
       window.vyxDesktop.forgetSession?.();
       onSessionExpired?.();
     } else {
-      window.location.href = "/trade/login";
+      window.location.href = demo ? "/trade" : "/trade/login";
     }
   }
 
@@ -1743,9 +1754,9 @@ export default function WebTrader({
     }
     poll();
     pollPricesNowRef.current = () => { void poll(); };
-    const interval = setInterval(poll, 30000);
+    const interval = setInterval(poll, demo ? DEMO_POLL_MS : 30000);
     return () => { cancelled = true; clearInterval(interval); };
-  }, [appendLog, refreshOrders, refreshPositions]);
+  }, [appendLog, refreshOrders, refreshPositions, demo]);
 
   // Pushed ticks from the API Gateway's price-tick WebSocket
   // (services/api-gateway/src/ws.ts, fed by NATS from the Rust Market
@@ -1757,6 +1768,17 @@ export default function WebTrader({
   // environment that hasn't been cut over to the Gateway yet) — this
   // effect fails silently rather than surfacing its own error state.
   useEffect(() => {
+    // QoreTrader demo: the quotes are computed here from the shared deterministic function -- no socket, no price request.
+    if (demo) {
+      const tickAll = () => {
+        const t = gridTime(serverNow());
+        noteDemoTick(t);
+        for (const k of demoTicksAt(t)) acceptCoalescedTick(k.symbol, k.bid, k.ask, k.at);
+      };
+      tickAll();
+      const id = setInterval(tickAll, DEMO_TICK_MS);
+      return () => clearInterval(id);
+    }
     // Desktop: a bundled shell's own browser WebSocket can't carry the
     // session cookie across the local-content/real-host origin boundary
     // (same reason lib/trade-api.ts's call() can't use fetch() there) --
@@ -1943,6 +1965,9 @@ export default function WebTrader({
       refreshAccount();
     }
     let configRefetchTimer: ReturnType<typeof setTimeout> | null = null;
+
+    // QoreTrader demo: nothing is published to a gateway; the 4 s account read is the update path
+    if (demo) return;
 
     // Desktop: same native-relay reasoning as the price-tick effect
     // above -- startLiveStreams isn't called again here, it starts both
@@ -2353,7 +2378,14 @@ export default function WebTrader({
       let hitType: "S/L" | "T/P" | null = null;
       if (sl != null) { if (p.side === "BUY" ? price <= sl : price >= sl) hitType = "S/L"; }
       if (!hitType && tp != null) { if (p.side === "BUY" ? price >= tp : price <= tp) hitType = "T/P"; }
-      if (hitType) {
+      if (hitType && demo) {
+        // QoreTrader demo: the server replays the path and closes at the tick that crossed; just read the result now
+        // (refreshPositions announces a position that disappeared)
+        closingIds.current.add(p.id);
+        Promise.all([refreshPositions(), refreshHistory(), refreshAccount()])
+          .catch(() => {})
+          .finally(() => setTimeout(() => closingIds.current.delete(p.id), 2500));
+      } else if (hitType) {
         closingIds.current.add(p.id);
         tradeApi.closePosition(p.id, price)
           .then((res) => {
@@ -2414,7 +2446,12 @@ export default function WebTrader({
       let shouldFill = false;
       if (o.type === "LIMIT") shouldFill = o.side === "BUY" ? price <= trigger : price >= trigger;
       if (o.type === "STOP") shouldFill = o.side === "BUY" ? price >= trigger : price <= trigger;
-      if (shouldFill) {
+      if (shouldFill && demo) {
+        fillingIds.current.add(o.id);
+        Promise.all([refreshOrders(), refreshPositions(), refreshAccount()])
+          .catch(() => {})
+          .finally(() => setTimeout(() => fillingIds.current.delete(o.id), 2500));
+      } else if (shouldFill) {
         fillingIds.current.add(o.id);
         tradeApi.fillOrder(o.id, fillReferencePrice)
           .then(() => {
@@ -3660,12 +3697,13 @@ export default function WebTrader({
     });
   }
 
-  const serverName = account ? `${brokerName}-${account.accountMode === "LIVE" ? "Live" : "Demo"}` : brokerName;
+  const serverName = account && !demo ? `${brokerName}-${account.accountMode === "LIVE" ? "Live" : "Demo"}` : brokerName;
 
   return (
     <div className="wt-root" data-theme={theme} data-mode={chartSettings.theme}>
       <DesktopTitleBar brokerName={brokerName} brokerLogoUrl={brokerLogoUrl} server={serverName} connected={connected} />
       <div id="app">
+        {demo ? <div className="demo-banner">{DEMO_BANNER_TEXT}</div> : null}
         <div className={`margin-call-banner${account?.tradingState && account.tradingState !== "open" ? " show" : ""}`}>
           {account?.tradingState === "halted" ? "Trading halted: the broker has stopped new trades." : "Close-only: you can close positions but not open new ones."}
         </div>
@@ -3680,9 +3718,9 @@ export default function WebTrader({
                 <div className="item" onClick={() => setTopMenuOpen((id) => (id === "file" ? null : "file"))}>File</div>
                 {topMenuOpen === "file" ? (
                   <div className="account-dropdown show" style={{ top: "100%", left: 0, width: 190 }} onClick={() => setTopMenuOpen(null)}>
-                    <div className="acc-option" style={{ cursor: "pointer", padding: "8px 10px" }} onClick={() => setAccountDropdownOpen(true)}>Accounts ▸</div>
+                    {demo ? null : <div className="acc-option" style={{ cursor: "pointer", padding: "8px 10px" }} onClick={() => setAccountDropdownOpen(true)}>Accounts ▸</div>}
                     <div className="acc-option" style={{ cursor: "pointer", padding: "8px 10px" }} onClick={() => setChartLayout("grid")}>New chart layout</div>
-                    <div className="acc-option" style={{ cursor: "pointer", padding: "8px 10px" }} onClick={handleLogout}>Logout</div>
+                    {demo ? null : <div className="acc-option" style={{ cursor: "pointer", padding: "8px 10px" }} onClick={handleLogout}>Logout</div>}
                     {isDesktopApp ? (
                       <>
                         <div style={{ height: 1, background: "var(--border)", margin: "4px 0" }} />
@@ -3696,7 +3734,7 @@ export default function WebTrader({
                 <div className="item" onClick={() => setTopMenuOpen((id) => (id === "tools" ? null : "tools"))}>Tools</div>
                 {topMenuOpen === "tools" ? (
                   <div className="account-dropdown show" style={{ top: "100%", left: 0, width: 210 }}>
-                    <div className="acc-option" style={{ cursor: "pointer", padding: "8px 10px" }} onClick={() => { setTopMenuOpen(null); setAlertsModalOpen(true); }}>Alerts manager</div>
+                    {demo ? null : <div className="acc-option" style={{ cursor: "pointer", padding: "8px 10px" }} onClick={() => { setTopMenuOpen(null); setAlertsModalOpen(true); }}>Alerts manager</div>}
                     <div className="acc-option" style={{ cursor: "pointer", padding: "8px 10px" }} onClick={() => { setTopMenuOpen(null); setChartSettingsOpen(true); }}>Notification settings</div>
                     <div className="acc-option" style={{ cursor: "pointer", padding: "8px 10px" }} onClick={() => { setTopMenuOpen(null); setChartSettingsOpen(true); }}>Chart settings</div>
                     <div className="acc-option" style={{ cursor: "pointer", padding: "8px 10px" }} onClick={() => { setTopMenuOpen(null); setShortcutsOpen(true); }}>Keyboard shortcuts</div>
@@ -3862,12 +3900,12 @@ export default function WebTrader({
               )}
             </button>
             <div className="account-switcher" ref={accountSwitcherRef}>
-              <div className={`mode-toggle${account?.accountMode === "LIVE" ? " live" : ""}`} onClick={() => setAccountDropdownOpen((v) => !v)}>
+              <div className={`mode-toggle${account?.accountMode === "LIVE" ? " live" : ""}`} onClick={demo ? undefined : () => setAccountDropdownOpen((v) => !v)} style={demo ? { cursor: "default" } : undefined}>
                 <span className="mono mode-toggle-acc-num">{account?.accountNumber ?? "..."}</span>
                 <span className="mode-toggle-label">{account?.accountMode ?? ""}</span>
                 <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ marginLeft: 2 }}><path d="M6 9l6 6 6-6" /></svg>
               </div>
-              {accountDropdownOpen ? (
+              {accountDropdownOpen && !demo ? (
                 <div className="account-dropdown show">
                   <div className="acc-option active">
                     <div className="acc-option-top">
@@ -3921,10 +3959,10 @@ export default function WebTrader({
                 </div>
               ) : null}
             </div>
-            <button className="funds-btn" onClick={() => { setFundsModalOpen(true); refreshFundsHistory(); }}>
+            {demo ? null : <button className="funds-btn" onClick={() => { setFundsModalOpen(true); refreshFundsHistory(); }}>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="2" y="5" width="20" height="14" rx="2" /><line x1="2" y1="10" x2="22" y2="10" /></svg>
               <span className="funds-btn-label">Funds</span>
-            </button>
+            </button>}
             <button
               className="bell-btn"
               onClick={() => changeColorMode(chartSettings.theme === "light" ? "dark" : "light")}
@@ -3936,10 +3974,10 @@ export default function WebTrader({
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41" /></svg>
               )}
             </button>
-            <button className="bell-btn" onClick={() => setAlertsModalOpen(true)} title="Price alerts">
+            {demo ? null : <button className="bell-btn" onClick={() => setAlertsModalOpen(true)} title="Price alerts">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9" /><path d="M13.73 21a2 2 0 0 1-3.46 0" /></svg>
               {alerts.length > 0 ? <span className="bell-count">{alerts.length}</span> : null}
-            </button>
+            </button>}
             <div className="avatar">{account?.accountNumber?.slice(-2) ?? ""}</div>
           </div>
         </div>
@@ -3969,9 +4007,9 @@ export default function WebTrader({
             <button className="rail-item" title="News" onClick={() => setActiveBottomTab("positions")}>
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 22h16a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v16a2 2 0 0 1-2 2Zm0 0a2 2 0 0 1-2-2v-9c0-1.1.9-2 2-2h2" /><line x1="8" y1="7" x2="16" y2="7" /><line x1="8" y1="11" x2="16" y2="11" /></svg>
             </button>
-            <button className="rail-item" title="Alerts" onClick={() => setAlertsModalOpen(true)}>
+            {demo ? null : <button className="rail-item" title="Alerts" onClick={() => setAlertsModalOpen(true)}>
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9" /><path d="M13.73 21a2 2 0 0 1-3.46 0" /></svg>
-            </button>
+            </button>}
             <button className={`rail-item${stmOpen ? " active" : ""}`} title="Smart Trade Manager" onClick={() => setStmOpen((v) => !v)}>
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8Z" /></svg>
             </button>
@@ -5282,6 +5320,7 @@ export default function WebTrader({
           onOpenSecurity={() => { setSettingsModalOpen(false); openSecurityModal(); }}
           onOpenKyc={() => { setSettingsModalOpen(false); setKycModalOpen(true); refreshKycStatus(); }}
           onOpenAlertsManager={() => { setSettingsModalOpen(false); setAlertsModalOpen(true); }}
+          demo={demo}
           onResetLayout={resetLayoutToDefault}
           onClose={() => setSettingsModalOpen(false)}
         />

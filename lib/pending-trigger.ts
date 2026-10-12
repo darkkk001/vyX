@@ -16,6 +16,7 @@ import { checkAccountPreTradeMargin } from "@/lib/margin";
 import { orderAuditFields } from "@/lib/order-audit";
 import { hedgeAccountHoldsFunds } from "@/lib/coverage-pending";
 import { getLivePriceRow, getFreshPrices } from "@/lib/live-price";
+import { excludeDemoByBrokerRelation } from "@/lib/demo-policy";
 import {
   checkTradingHalted,
   checkCloseOnly,
@@ -396,7 +397,8 @@ async function fillCoverageOrder(args: {
  */
 export async function evaluatePendingTriggers(symbols?: string[]): Promise<{ checked: number; filled: number; queued: number; rejected: number; kept: number }> {
   const orders = await prisma.order.findMany({
-    where: { status: "PENDING", type: { in: ["LIMIT", "STOP"] }, requestedPrice: { not: null }, ...(symbols && symbols.length ? { symbol: { name: { in: symbols } } } : {}) },
+    // the demo tenant's resting orders are filled by its own replay (lib/demo-sweep.ts), never by this sweep
+    where: { status: "PENDING", type: { in: ["LIMIT", "STOP"] }, requestedPrice: { not: null }, ...excludeDemoByBrokerRelation(), ...(symbols && symbols.length ? { symbol: { name: { in: symbols } } } : {}) },
     select: { id: true, side: true, type: true, requestedPrice: true, accountId: true, symbolId: true, symbol: { select: { name: true } } },
     orderBy: { createdAt: "asc" },
     take: 500,

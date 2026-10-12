@@ -351,8 +351,13 @@ export function createInitialMarket(defs: SymbolDef[] = SYMBOL_DEFS): Record<str
 // The one weekly rule, lib/market-week.ts (Friday 17:00 -> Sunday 17:00 New York, DST-aware; engine and terminal use the same vectors). Owner
 // rule (2026-09-26): a candle is created only by a real tick, never outside trading hours -- a tick stamped inside
 // this window opens no bar (it can only be the EA's weekend heartbeat of Friday's last price).
+let marketAlwaysOpen = false;
+/** QoreTrader demo: its simulated prices run all week, so no tick is dropped as "weekend". Off everywhere else. */
+export function setMarketAlwaysOpen(on: boolean): void {
+  marketAlwaysOpen = on;
+}
 function isMarketClosed(t: number): boolean {
-  return isWeeklyClosed(new Date(t));
+  return !marketAlwaysOpen && isWeeklyClosed(new Date(t));
 }
 
 // `tickTime` is the tick's OWN time (the engine's tick_ms, else the poll row's tickAt), not the moment it arrived: a

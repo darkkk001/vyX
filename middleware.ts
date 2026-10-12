@@ -3,6 +3,7 @@ import type { NextRequest } from "next/server";
 import { verifyDesktopGateToken } from "@/lib/desktop-gate";
 import { createBrokerResolver } from "@/lib/broker-resolve-cache";
 import { createSchemaGate, schemaGuardExempt, UPDATING_BODY } from "@/lib/schema-guard-edge";
+import { DEMO_ROBOTS_HEADER, demoBlockFor, isDemoTenant } from "@/lib/demo-policy";
 
 // Resolves which Broker a request belongs to, from the Host header:
 //   - subdomain:      brokername.<ROOT_DOMAIN>
@@ -319,6 +320,20 @@ export async function middleware(request: NextRequest) {
     return NextResponse.redirect(redirectUrl, 308);
   }
 
+  // QoreTrader demo tenant (DEMO_BROKER_SUBDOMAIN, lib/demo-policy.ts): no funds, KYC, profile, password, 2FA, linked
+  // accounts, sessions, portal, backoffice or downloads on this host, and the host is never indexed.
+  const isDemo = isDemoTenant(broker.subdomain);
+  if (isDemo) {
+    const block = demoBlockFor(effectivePathname);
+    if (block) {
+      const refused = request.nextUrl.pathname.startsWith("/api/")
+        ? NextResponse.json({ error: block.reason }, { status: block.status })
+        : new NextResponse(block.reason, { status: block.status });
+      refused.headers.set("X-Robots-Tag", DEMO_ROBOTS_HEADER);
+      return refused;
+    }
+  }
+
   const requestHeaders = new Headers(request.headers);
   requestHeaders.set("x-broker-id", broker.id);
   requestHeaders.set("x-broker-slug", broker.subdomain);
@@ -340,10 +355,14 @@ export async function middleware(request: NextRequest) {
   // effectivePathname, exactly like the /broker-not-found rewrite above.
   if (effectivePathname !== pathname) {
     const rewriteUrl = new URL(`${effectivePathname}${request.nextUrl.search}`, request.url);
-    return NextResponse.rewrite(rewriteUrl, { request: { headers: requestHeaders } });
+    const rewritten = NextResponse.rewrite(rewriteUrl, { request: { headers: requestHeaders } });
+    if (isDemo) rewritten.headers.set("X-Robots-Tag", DEMO_ROBOTS_HEADER);
+    return rewritten;
   }
 
-  return NextResponse.next({ request: { headers: requestHeaders } });
+  const next = NextResponse.next({ request: { headers: requestHeaders } });
+  if (isDemo) next.headers.set("X-Robots-Tag", DEMO_ROBOTS_HEADER);
+  return next;
 }
 
 export const config = {

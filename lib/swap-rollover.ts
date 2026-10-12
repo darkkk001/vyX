@@ -1,4 +1,5 @@
 import "server-only";
+import { demoSubdomain } from "@/lib/demo-policy";
 import { Prisma, PrismaClient } from "@prisma/client";
 import { resolvePricingV2 } from "@/lib/pricing-engine";
 import { lockAccountBalance } from "@/lib/account-lock";
@@ -139,6 +140,7 @@ export async function runSwapRollover(
     JOIN "Account" a ON a.id = p."accountId"
     WHERE p.status = 'OPEN' AND (p."lastSwapAt" IS NULL OR p."lastSwapAt"::date < CURRENT_DATE)
       AND (${opts?.accountIdsOverride ?? null}::text[] IS NULL OR p."accountId" = ANY(${opts?.accountIdsOverride ?? null}::text[]))
+      AND (${demoSubdomain()}::text IS NULL OR p."brokerId" NOT IN (SELECT id FROM "Broker" WHERE subdomain = ${demoSubdomain()}::text))
   `;
 
   if (due.length === 0) return { isoWeekday, multiplier: multiplier.toString(), brokers: [] };

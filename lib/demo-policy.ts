@@ -63,3 +63,19 @@ export const DEMO_ROBOTS_HEADER = "noindex, nofollow";
 
 export const DEMO_BANNER_TEXT = "Demo account with simulated prices. QoreTrader is a technology provider, not a broker.";
 export const DEMO_REFUSAL = DEMO_NOT_AVAILABLE;
+
+// ---- keeping the demo out of every cross-tenant view and job ----
+// Prisma filters for "everything except the demo broker". Empty (no filter at all) when no demo tenant is configured, so a
+// deployment without DEMO_BROKER_SUBDOMAIN runs exactly the queries it always ran.
+
+/** For a model with a `broker` relation (Account, Position, Order, AuditLog, Notification, AdminUser ...). */
+export function excludeDemoByBrokerRelation(): { broker?: { subdomain: { not: string } } } {
+  const sub = demoSubdomain();
+  return sub ? { broker: { subdomain: { not: sub } } } : {};
+}
+
+/** For the Broker model itself. */
+export function excludeDemoBroker(): { subdomain?: { not: string } } {
+  const sub = demoSubdomain();
+  return sub ? { subdomain: { not: sub } } : {};
+}
