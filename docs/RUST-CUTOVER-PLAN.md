@@ -1433,6 +1433,21 @@ blockers for RISK authority vs ORDERS-only). Per-broker values are `WEB | RUST` 
 
 #### 6.1 Cutover gates (must hold before a broker goes RUST)
 
+- **CUTOVER GATE (owner, 2026-10-12): close fields. UNMET (the owner decides when it is met).** The engine's close path must write exactly the
+  fields and running totals `lib/position-close.ts closePositionInTx` writes (migration `20261012130000_close_fields`,
+  `docs/POSITION-DEAL-MODEL.md` section 0): on the TRADE_PNL row `closeVolume`, `closePrice`, `closeSwap` (pro rata by closed volume,
+  the final close takes the remainder) and `closeByPositionId` (the close-by partner, on every path that closes by an opposite leg); on the
+  Position `realizedPnl`, `closedVolume` and `closedSwap` as running totals. Status of the code (branch `engine/stage6`): the one engine close
+  path, `book::close_position_as` (SL / TP and stop-out; margin call closes nothing), writes all of it, and `book::close_position_full` takes
+  the close-by partner. The engine has no partial close, no close-by and no queued or staff close, so those stay on the web; if the engine
+  ever performs one, this gate covers it too. Parity evidence: `scripts/parity/run-db.sh` compares every position's totals and every
+  TRADE_PNL row's close fields (scenarios 28 to 31 seed swap and a web partial-close history); the previous engine fails 20 of 31, the
+  current one matches 31 of 31; `engine/order-management/tests/book_db.rs` pins the values. UNMET until the owner signs it off.
+- **CUTOVER GATE (owner, 2026-10-12): position / deal model. UNMET (the owner decides when it is met).** Whatever the position / deal
+  model of `docs/POSITION-DEAL-MODEL.md` becomes (today: sections 0 and 3.2 shipped as the close-fields hotfix; the Deal table and
+  `Position.initialVolume` are proposals), the engine must conform to it: every engine write that opens, reduces, closes or reverses a
+  position produces the same rows and fields as the web's twin, and the model's own conformance tests run against the engine. Nothing
+  beyond the close fields above is built on the engine side. UNMET until the owner signs it off.
 - **CUTOVER GATE (owner, 2026-10-07): hedging allowed.** `Broker.hedgingAllowed` (default true). When false, the web refuses
   an OPEN that would put one account on both sides of one symbol (`lib/hedging.ts checkHedgingAllowed`, code
   `HEDGING_NOT_ALLOWED`) at every open path: client order and pending order, requote accept, dealer accept, desk flush,
