@@ -29,6 +29,13 @@ fn url() -> Option<String> {
     }
 }
 
+/// Serializes the DB tests of this file: the gate test resets `clock_started_at`, which the backfill test reads as its
+/// soak start, so run in parallel the backfill could see a start newer than the pair it just inserted and skip it.
+async fn exclusive() -> tokio::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(())).lock().await
+}
+
 struct Fx {
     pool: PgPool,
     tag: String,
@@ -89,6 +96,7 @@ fn test_tenants_are_the_zz_ones() {
 #[tokio::test]
 async fn the_gate_counts_real_brokers_since_the_clock_and_only_the_owner_can_excuse_a_reset() {
     let Some(url) = url() else { return };
+    let _serial = exclusive().await;
     let recorder = Arc::new(Recorder::connect(&url).await.expect("local store"));
     let pool = recorder.store().unwrap().clone();
     let reconciler = Reconciler::new(pool.clone(), recorder.clone()).await.expect("reconciler").with_timing(60, 0);
@@ -167,6 +175,7 @@ async fn the_gate_counts_real_brokers_since_the_clock_and_only_the_owner_can_exc
 #[tokio::test]
 async fn pairs_stored_without_a_broker_since_the_soak_start_get_it_filled_in() {
     let Some(url) = url() else { return };
+    let _serial = exclusive().await;
     let pool = PgPool::connect(&url).await.unwrap();
     let recorder = Arc::new(Recorder::connect(&url).await.expect("local store"));
     let tag = Uuid::new_v4().simple().to_string()[..10].to_string();
