@@ -51,6 +51,22 @@ describe("guards refuse before any write", () => {
   });
 });
 
+describe("a database before the sandbox migration", () => {
+  it("the dry run still previews (and says what it will set), the apply refuses, nothing is written", async () => {
+    await prisma.$executeRawUnsafe(`ALTER TABLE "Broker" DROP COLUMN "isDemoSandbox"`);
+    try {
+      const r = await run(false);
+      const text = r.lines.join(" | ");
+      expect(text).toContain("SET isDemoSandbox true (column added by migration 20261013100000_broker_demo_sandbox)");
+      expect(r.changes).toBe(25);
+      await expect(run(true)).rejects.toThrow(/20261013100000_broker_demo_sandbox/);
+      expect(await prisma.$queryRawUnsafe(`SELECT 1 FROM "Broker" WHERE subdomain = 'qoredemo'`)).toEqual([]);
+    } finally {
+      await prisma.$executeRawUnsafe(`ALTER TABLE "Broker" ADD COLUMN "isDemoSandbox" BOOLEAN NOT NULL DEFAULT false`);
+    }
+  });
+});
+
 describe("dry run, apply, re-apply", () => {
   it("a dry run plans every change and writes nothing", async () => {
     const before = { brokers: await prisma.broker.count(), symbols: await prisma.symbol.count(), groups: await prisma.group.count() };
@@ -66,7 +82,7 @@ describe("dry run, apply, re-apply", () => {
     expect(r.changes).toBe(24);
     const b = await prisma.broker.findUniqueOrThrow({ where: { subdomain: SUBDOMAIN }, include: { groups: true, adminUsers: true, brokerSymbols: { include: { symbol: true, tradingSessions: true } }, accounts: true } });
     expect(b).toMatchObject({
-      name: "QoreTrader Demo", customDomain: "demo.qoretrader.com", status: "ACTIVE", emailEnabled: false, ssoSecret: null, autoHedgeAt: null, dealingDeskAutoFillAt: null,
+      isDemoSandbox: true, name: "QoreTrader Demo", customDomain: "demo.qoretrader.com", status: "ACTIVE", emailEnabled: false, ssoSecret: null, autoHedgeAt: null, dealingDeskAutoFillAt: null,
       negativeBalanceProtection: true, maxOpenPositionsPerAccount: 20, defaultAccountCurrency: "USD", primaryColor: "#7A1A3A", logoUrl: "/qoretrader-demo/qoretrader-lockup-light.svg",
     });
     expect(b.accounts).toHaveLength(0); // the seed creates no accounts

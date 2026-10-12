@@ -65,20 +65,28 @@ export const DEMO_BANNER_TEXT = "Demo account with simulated prices. QoreTrader 
 export const DEMO_REFUSAL = DEMO_NOT_AVAILABLE;
 
 // ---- keeping the demo out of every cross-tenant view and job ----
-// Prisma filters for "everything except the demo broker". Empty (no filter at all) when no demo tenant is configured, so a
-// deployment without DEMO_BROKER_SUBDOMAIN runs exactly the queries it always ran.
+// Prisma filters for "everything except sandbox tenants". They read the BROKER FLAG Broker.isDemoSandbox (migration
+// 20261013100000_broker_demo_sandbox), not the DEMO_BROKER_SUBDOMAIN variable: the variable only says which host is the demo
+// (middleware, the guest door, the replay hook); the flag is what the jobs, the reports and the Rust engine skip.
 
 /** For a model with a `broker` relation (Account, Position, Order, AuditLog, Notification, AdminUser ...). */
-export function excludeDemoByBrokerRelation(): { broker?: { subdomain: { not: string } } } {
-  const sub = demoSubdomain();
-  return sub ? { broker: { subdomain: { not: sub } } } : {};
+export function excludeDemoByBrokerRelation(): { broker: { isDemoSandbox: false } } {
+  return { broker: { isDemoSandbox: false } };
 }
 
 /** For the Broker model itself. */
-export function excludeDemoBroker(): { subdomain?: { not: string } } {
-  const sub = demoSubdomain();
-  return sub ? { subdomain: { not: sub } } : {};
+export function excludeDemoBroker(): { isDemoSandbox: false } {
+  return { isDemoSandbox: false };
 }
+
+// ---- what a person sees of the demo's internal currency ----
+// qUSDJPY is stored with the quote currency "QJP" (see lib/demo-prices.ts); nobody is ever shown that. Every API response a
+// screen renders passes its currency codes and conversion-pair names through here: QJP reads JPY.
+export function displayCurrency(code: string): string {
+  return code.replace(/QJP/g, "JPY");
+}
+/** Any text that may carry the internal code (a pair name, an error sentence). */
+export const scrubInternalCurrency = displayCurrency;
 
 // ---- the reserved range of guest account numbers (pure, so scripts can use it without the server-only modules) ----
 export const GUEST_NUMBER_MIN = 48_000_000;

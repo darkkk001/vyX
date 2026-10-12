@@ -52,7 +52,7 @@ function pricesAnswer(path: string) {
   });
   if (!path.includes("fx=1")) return rows;
   const j = demoQuoteAt("qUSDJPY", t)!;
-  return { prices: rows, fx: { accountCurrency: "USD", quotes: [{ symbol: "USDQJP", bid: j.bid, ask: j.ask, tickAt: iso(t) }], rates: {} } };
+  return { prices: rows, fx: { accountCurrency: "USD", quotes: [{ symbol: "USDJPY", bid: j.bid, ask: j.ask, tickAt: iso(t) }], rates: {} } };
 }
 
 function candlesAnswer(path: string) {

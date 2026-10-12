@@ -233,6 +233,7 @@ impl RiskHook {
             r#"SELECT s.name, s.id AS symbol_id, s.digits, p.id AS position_id, p."accountId" AS account_id, p.side::text AS side,
                       p."slPrice" AS sl, p."tpPrice" AS tp, a."brokerId" AS a_broker, a."groupId" AS a_group
                FROM "Position" p JOIN "Symbol" s ON s.id = p."symbolId" JOIN "Account" a ON a.id = p."accountId"
+                    JOIN "Broker" sb ON sb.id = a."brokerId" AND NOT sb."isDemoSandbox"
                WHERE p.status = 'OPEN' AND (p."slPrice" IS NOT NULL OR p."tpPrice" IS NOT NULL)"#,
         )
         .fetch_all(&mut *conn)
@@ -243,6 +244,7 @@ impl RiskHook {
             r#"SELECT s.name, s.id AS symbol_id, s.digits, o."accountId" AS account_id, o.side::text AS side, o.type::text AS kind,
                       o."requestedPrice" AS entry, a."brokerId" AS a_broker, a."groupId" AS a_group
                FROM "Order" o JOIN "Symbol" s ON s.id = o."symbolId" JOIN "Account" a ON a.id = o."accountId"
+                    JOIN "Broker" sb ON sb.id = a."brokerId" AND NOT sb."isDemoSandbox"
                WHERE o.status = 'PENDING' AND o.type IN ('LIMIT', 'STOP') AND o."requestedPrice" IS NOT NULL"#,
         )
         .fetch_all(&mut *conn)

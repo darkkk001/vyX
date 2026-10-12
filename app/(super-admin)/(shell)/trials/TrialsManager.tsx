@@ -6,7 +6,7 @@ import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, Tabl
 
 export type TrialRow = { id: string; name: string; createdAt: string; trialEndsAt: string };
 
-type BrokerApiRow = { id: string; name: string; status: string; createdAt: string; trialEndsAt: string | null };
+type BrokerApiRow = { id: string; isDemoSandbox?: boolean; name: string; status: string; createdAt: string; trialEndsAt: string | null };
 
 // Self-fetches from the already-existing /api/admin/brokers GET
 // (BrokersManager's own data source) and filters to TRIAL status
@@ -23,7 +23,7 @@ export default function TrialsManager() {
         setRows(
           d.rows
             .filter((b) => b.status === "TRIAL")
-            .map((b) => ({ id: b.id, name: b.name, createdAt: b.createdAt, trialEndsAt: b.trialEndsAt ? b.trialEndsAt.slice(0, 10) : "" }))
+            .map((b) => ({ id: b.id, name: b.isDemoSandbox ? `${b.name} (Sandbox)` : b.name, createdAt: b.createdAt, trialEndsAt: b.trialEndsAt ? b.trialEndsAt.slice(0, 10) : "" }))
         )
       );
   }

@@ -28,7 +28,7 @@ export default function AdminsManager() {
     reloadAdmins().catch(() => setAdmins([]));
     fetch("/api/admin/brokers")
       .then((r) => r.json())
-      .then((d: { rows: { id: string; name: string }[] }) => setBrokers(d.rows.map((b) => ({ id: b.id, name: b.name }))))
+      .then((d: { rows: { id: string; name: string; isDemoSandbox?: boolean }[] }) => setBrokers(d.rows.map((b) => ({ id: b.id, name: b.isDemoSandbox ? `${b.name} (Sandbox)` : b.name }))))
       .catch(() => setBrokers([]));
   }, []);
 

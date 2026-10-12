@@ -40,7 +40,13 @@ fn side_from_prisma(s: &str) -> protocol::OrderSide {
 /// order (Stage 4: a deterministic pass order; the load harness's web reference walks the same order).
 pub async fn account_ids_with_open_positions(pool: &PgPool) -> Result<Vec<String>, sqlx::Error> {
     let rows: Vec<(String,)> =
-        sqlx::query_as(r#"SELECT "accountId" FROM "Position" WHERE status = 'OPEN' GROUP BY "accountId" ORDER BY "accountId" COLLATE "C""#).fetch_all(pool).await?;
+        // QoreTrader demo sandbox (Broker.isDemoSandbox, migration 20261013100000): never part of the book
+        sqlx::query_as(
+            r#"SELECT p."accountId" FROM "Position" p JOIN "Account" a ON a.id = p."accountId" JOIN "Broker" sb ON sb.id = a."brokerId"
+               WHERE p.status = 'OPEN' AND NOT sb."isDemoSandbox" GROUP BY p."accountId" ORDER BY p."accountId" COLLATE "C""#,
+        )
+        .fetch_all(pool)
+        .await?;
     Ok(rows.into_iter().map(|(id,)| id).collect())
 }
 
@@ -249,6 +255,7 @@ const RAW_COLUMNS: &str = r#"p.id, p."accountId" AS account_id, s.id AS symbol_i
 const RAW_FROM: &str = r#"FROM "Position" p
     JOIN "Symbol" s ON s.id = p."symbolId"
     JOIN "Account" a ON a.id = p."accountId"
+    JOIN "Broker" sb ON sb.id = a."brokerId" AND NOT sb."isDemoSandbox"
     LEFT JOIN "BrokerSymbol" bs ON bs."brokerId" = p."brokerId" AND bs."symbolId" = p."symbolId""#;
 
 fn raw_from_row(r: &sqlx::postgres::PgRow) -> Result<RawPosition, sqlx::Error> {

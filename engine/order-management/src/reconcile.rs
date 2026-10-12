@@ -509,6 +509,7 @@ impl Reconciler {
         let closes: Vec<(String, String, String, String, DateTime<Utc>, Decimal, Option<Decimal>)> = sqlx::query_as(
             r#"SELECT t.id, t."accountId", t."referenceId", t.note, t."createdAt", t.amount, p."closePrice"
                FROM "Transaction" t LEFT JOIN "Position" p ON p.id = t."referenceId"
+                    JOIN "Broker" sb ON sb.id = t."brokerId" AND NOT sb."isDemoSandbox"
                WHERE t.type = 'TRADE_PNL' AND t."referenceType" = 'Position'
                  AND (t.note LIKE 'Stop loss hit (automatic)%' OR t.note LIKE 'Take profit hit (automatic)%' OR t.note LIKE 'Stop-out (automatic)%')
                  AND (t."createdAt", t.id) > ($1, $2) AND t."createdAt" < now() - make_interval(secs => $3)
@@ -555,9 +556,9 @@ impl Reconciler {
             .unwrap_or_else(|| Utc::now() - ChronoDuration::minutes(2));
         let mc_id = self.state("web_mc_cursor_id").await.unwrap_or_default();
         let notices: Vec<(String, String, DateTime<Utc>, String)> = sqlx::query_as(
-            r#"SELECT id, "accountId", "createdAt", body FROM "Notification"
-               WHERE type = 'MARGIN_CALL' AND "accountId" IS NOT NULL AND ("createdAt", id) > ($1, $2) AND "createdAt" < now() - make_interval(secs => $3)
-               ORDER BY "createdAt", id LIMIT 500"#,
+            r#"SELECT n.id, n."accountId", n."createdAt", n.body FROM "Notification" n JOIN "Broker" sb ON sb.id = n."brokerId" AND NOT sb."isDemoSandbox"
+               WHERE n.type = 'MARGIN_CALL' AND n."accountId" IS NOT NULL AND (n."createdAt", n.id) > ($1, $2) AND n."createdAt" < now() - make_interval(secs => $3)
+               ORDER BY n."createdAt", n.id LIMIT 500"#,
         )
         .bind(mc_at).bind(&mc_id).bind(settle).fetch_all(&self.book).await?;
         for (nid, account, at, body) in &notices {

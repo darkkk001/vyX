@@ -31,6 +31,7 @@ const MISSING_TTL_MS = 30_000;
 /** Test hook: forget the cached lookup. */
 export function resetDemoBrokerCache(): void {
   demoBrokerCache = null;
+  sandboxCache.clear();
 }
 
 /** The demo broker's id, or null when no demo tenant is configured or its row does not exist. Cached per process. */
@@ -44,9 +45,22 @@ export async function getDemoBrokerId(db: Pick<PrismaClient, "broker"> = prisma)
   return demoBrokerCache.id;
 }
 
+// Is this broker a sandbox tenant? Read from Broker.isDemoSandbox (not from the environment variable), cached per process:
+// a sandbox flag does not flip at run time, and every event publisher and follow-through asks.
+const sandboxCache = new Map<string, { v: boolean; at: number }>();
+const SANDBOX_TTL_MS = 5 * 60_000;
+export function resetSandboxCache(): void {
+  sandboxCache.clear();
+}
 export async function isDemoBrokerId(brokerId: string | null | undefined): Promise<boolean> {
-  if (!brokerId || !demoSubdomain()) return false;
-  return (await getDemoBrokerId()) === brokerId;
+  if (!brokerId) return false;
+  const hit = sandboxCache.get(brokerId);
+  const now = Date.now();
+  if (hit && now - hit.at < SANDBOX_TTL_MS) return hit.v;
+  const row = await prisma.broker.findUnique({ where: { id: brokerId }, select: { isDemoSandbox: true } });
+  const v = row?.isDemoSandbox === true;
+  sandboxCache.set(brokerId, { v, at: now });
+  return v;
 }
 
 // ---- the client address a rate limit counts ----

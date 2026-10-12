@@ -56,6 +56,18 @@ function diff(have: Record<string, unknown>, want: Record<string, unknown>): str
 
 const DAYS = [0, 1, 2, 3, 4, 5, 6];
 
+// The sandbox flag (Broker.isDemoSandbox, migration 20261013100000_broker_demo_sandbox). The seed must PREVIEW on a database
+// that does not have the column yet (production, before the migration is approved and applied), so the broker row is read with an
+// explicit column list and the column is detected, never assumed.
+export const SANDBOX_MIGRATION = "20261013100000_broker_demo_sandbox";
+const BROKER_COLUMNS = [
+  "id", "subdomain", "name", "customDomain", "tier", "status", "executionEngine", "emailEnabled", "ssoSecret", "autoHedgeAt", "dealingDeskAutoFillAt",
+  "dealingModeAt", "smartDealerAcceptPct", "smartDealerRejectPct", "negativeBalanceProtection", "maxOpenPositionsPerAccount", "defaultAccountCurrency",
+  "defaultAccountLeverage", "logoUrl", "primaryColor", "supportEmail", "tradingHaltedAt", "closeOnlyAt", "totalExposureLimit", "hedgingAllowed",
+  "pricingEngineEnabled", "requireAdmin2fa",
+] as const;
+const brokerSelect = Object.fromEntries(BROKER_COLUMNS.map((c) => [c, true])) as Record<(typeof BROKER_COLUMNS)[number], true>;
+
 export async function seedQoreDemo(db: Db, opts: SeedOptions): Promise<SeedResult> {
   const lines: string[] = [];
   let changes = 0;
@@ -68,7 +80,12 @@ export async function seedQoreDemo(db: Db, opts: SeedOptions): Promise<SeedResul
   const NEW = "(new)";
 
   // ---- guards (all before any write) ----
-  const broker = await db.broker.findUnique({ where: { subdomain: SUBDOMAIN } });
+  const flagColumn = await db.$queryRaw<{ n: number }[]>`SELECT 1 AS n FROM information_schema.columns WHERE table_name = 'Broker' AND column_name = 'isDemoSandbox' LIMIT 1`;
+  const hasFlag = flagColumn.length > 0;
+  if (opts.apply && !hasFlag) {
+    throw new SeedRefused(`the column "Broker"."isDemoSandbox" does not exist: apply migration ${SANDBOX_MIGRATION} first (a dry run is fine without it)`);
+  }
+  const broker = await db.broker.findUnique({ where: { subdomain: SUBDOMAIN }, select: { ...brokerSelect, ...(hasFlag ? { isDemoSandbox: true } : {}) } });
   const domainOwner = await db.broker.findUnique({ where: { customDomain: CUSTOM_DOMAIN }, select: { subdomain: true } });
   if (domainOwner && domainOwner.subdomain !== SUBDOMAIN) throw new SeedRefused(`${CUSTOM_DOMAIN} already belongs to the broker ${domainOwner.subdomain}`);
   const sameName = await db.broker.findFirst({ where: { name: BROKER_NAME, subdomain: { not: SUBDOMAIN } }, select: { subdomain: true } });
@@ -102,17 +119,23 @@ export async function seedQoreDemo(db: Db, opts: SeedOptions): Promise<SeedResul
   log(`guards ok: domain free, name free, ${DEMO_SYMBOLS.length} q-symbols consistent, real symbols agree (${realRows.length} found), guest range clean (${rangeAccounts.length} guest account(s) of this tenant)`);
 
   // ---- broker ----
-  const brokerWant = {
+  const brokerWant: Record<string, unknown> = {
+    ...(hasFlag ? { isDemoSandbox: true } : {}),
     name: BROKER_NAME, customDomain: CUSTOM_DOMAIN, tier: "STANDARD", status: "ACTIVE", executionEngine: "LEGACY",
     emailEnabled: false, ssoSecret: null, autoHedgeAt: null, dealingDeskAutoFillAt: null, dealingModeAt: null, smartDealerAcceptPct: null, smartDealerRejectPct: null,
     negativeBalanceProtection: true, maxOpenPositionsPerAccount: 20, defaultAccountCurrency: "USD", defaultAccountLeverage: GROUP.leverage,
     logoUrl: DEMO_LOGO_URL, primaryColor: DEMO_PRIMARY, supportEmail: null, tradingHaltedAt: null, closeOnlyAt: null, totalExposureLimit: null,
     hedgingAllowed: true, pricingEngineEnabled: false, requireAdmin2fa: false,
   };
+  if (!hasFlag) {
+    // the dry run on a database before the migration: say what the apply will do once the column exists (and count it as a change)
+    changes++;
+    log(`SET isDemoSandbox true (column added by migration ${SANDBOX_MIGRATION})`);
+  }
   let brokerId: string;
   if (!broker) {
     brokerId = NEW;
-    await change(`CREATE broker ${SUBDOMAIN} "${BROKER_NAME}" ${CUSTOM_DOMAIN} ACTIVE, 20 open positions per account, NBP on, no e-mail / SSO / dealer desk / auto-hedge, logo ${DEMO_LOGO_URL}, primary ${DEMO_PRIMARY}`, async () => {
+    await change(`CREATE broker ${SUBDOMAIN} "${BROKER_NAME}" ${CUSTOM_DOMAIN} ACTIVE, isDemoSandbox (sandbox, skipped by the engine and every report), 20 open positions per account, NBP on, no e-mail / SSO / dealer desk / auto-hedge, logo ${DEMO_LOGO_URL}, primary ${DEMO_PRIMARY}`, async () => {
       const b = await db.broker.create({ data: { ...(brokerWant as Omit<Prisma.BrokerUncheckedCreateInput, "subdomain">), subdomain: SUBDOMAIN } });
       brokerId = b.id;
     });

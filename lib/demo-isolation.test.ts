@@ -4,7 +4,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { cleanDemoRedis, createOtherBroker, D, seedDemoTenant } from "@/lib/demo-test-fixtures";
-import { createGuestAccount, writeDemoState } from "@/lib/demo";
+import { createGuestAccount, resetSandboxCache, writeDemoState } from "@/lib/demo";
 import { demoQuoteAt } from "@/lib/demo-prices";
 import { runSwapRollover } from "@/lib/swap-rollover";
 import { evaluateRiskForSymbol } from "@/lib/risk-monitor";
@@ -88,19 +88,70 @@ afterAll(async () => {
   delete process.env.DEMO_BROKER_SUBDOMAIN;
 });
 
-describe("super admin: the demo is in no list, count or feed", () => {
-  it("brokers, audit, admins, notifications and health return exactly what they returned before the demo existed", async () => {
+describe("super admin: the demo is listed as a Sandbox and is in no count or feed", () => {
+  type BrokersJson = { rows: { id: string; subdomain: string; isDemoSandbox: boolean }[]; totalEndClients: number };
+  it("the brokers list shows it flagged isDemoSandbox; audit, admins, notifications and health are what they were before the demo existed; no count moves", async () => {
     const after = await superAdminViews();
-    expect(after).toEqual(superJson);
-    expect(JSON.stringify(after)).not.toContain("qoredemo");
-    expect((after.brokers as { totalEndClients: number }).totalEndClients).toBe((superJson.brokers as { totalEndClients: number }).totalEndClients);
+    const b = after.brokers as BrokersJson;
+    const row = b.rows.find((r) => r.subdomain === "qoredemo");
+    expect(row?.isDemoSandbox).toBe(true);
+    expect(b.rows.filter((r) => r.isDemoSandbox)).toHaveLength(1); // nobody else is flagged
+    expect({ ...after, brokers: { ...b, rows: b.rows.filter((r) => !r.isDemoSandbox) } }).toEqual(superJson);
+    expect(b.totalEndClients).toBe((superJson.brokers as BrokersJson).totalEndClients); // the guests are not end clients
+    for (const k of ["audit", "admins", "notifications"] as const) expect(JSON.stringify(after[k])).not.toContain("qoredemo");
   });
-  it("with no demo tenant configured the same endpoints still answer (no filter is added)", async () => {
+  it("the flag, not the environment variable, decides: with the variable unset the answers are the same", async () => {
     const saved = process.env.DEMO_BROKER_SUBDOMAIN;
     delete process.env.DEMO_BROKER_SUBDOMAIN;
     const views = await superAdminViews();
-    expect(JSON.stringify(views.brokers)).toContain("qoredemo"); // the row is a row like any other when the feature is off
+    const b = views.brokers as BrokersJson;
+    expect(b.totalEndClients).toBe((superJson.brokers as BrokersJson).totalEndClients);
+    expect(JSON.stringify(views.audit)).not.toContain("qoredemo");
     process.env.DEMO_BROKER_SUBDOMAIN = saved;
+  });
+});
+
+describe("the flag keeps the sandbox out of every report and job (no environment variable)", () => {
+  it("Book P/L and the risk radar of the sandbox broker are empty even for a LIVE-mode account holding a closed position", async () => {
+    const saved = process.env.DEMO_BROKER_SUBDOMAIN;
+    delete process.env.DEMO_BROKER_SUBDOMAIN;
+    const sym = await prisma.symbol.findUniqueOrThrow({ where: { name: "qXAUUSD" } });
+    const live = await prisma.account.create({ data: { groupId: demo.group.id, brokerId: demo.broker.id, accountNumber: "48990001", email: "l@demo.invalid", passwordHash: "x", fullName: "live-mode in the sandbox", accountMode: "LIVE", balance: D(1000) } });
+    const o = await prisma.order.create({ data: { brokerId: demo.broker.id, accountId: live.id, symbolId: sym.id, side: "BUY", type: "MARKET", volume: D("1"), idempotencyKey: `b:${randomUUID()}`, status: "FILLED", filledPrice: D(4400) } });
+    await prisma.position.create({ data: { brokerId: demo.broker.id, accountId: live.id, symbolId: sym.id, originOrderId: o.id, side: "BUY", volume: D("1"), openPrice: D(4400), status: "CLOSED", closePrice: D(4410), realizedPnl: D(1000), closedAt: new Date(), bookType: "B_BOOK", groupCategoryAtOpen: "B_BOOK" } });
+    const { bookPnlRealized, bookPnlFloating } = await import("@/lib/book-pnl");
+    const scope = { brokerId: demo.broker.id, coverageAccountId: null };
+    expect(await bookPnlRealized(prisma, scope, new Date(Date.now() - 86400000))).toEqual([]);
+    expect(await bookPnlFloating(prisma, scope)).toEqual([]);
+    const { computeRiskRadar, computeSameIpClusters } = await import("@/lib/risk-radar");
+    expect(await computeRiskRadar(prisma, demo.broker.id)).toEqual([]);
+    expect(await computeSameIpClusters(prisma, demo.broker.id)).toEqual([]);
+    process.env.DEMO_BROKER_SUBDOMAIN = saved;
+  });
+  it("margin monitor, pending sweep, swap job and event publishers skip a sandbox broker with the variable unset", async () => {
+    const saved = process.env.DEMO_BROKER_SUBDOMAIN;
+    delete process.env.DEMO_BROKER_SUBDOMAIN;
+    const { resetSandboxCache } = await import("@/lib/demo");
+    resetSandboxCache();
+    const sym = await prisma.symbol.findUniqueOrThrow({ where: { name: "qXAUUSD" } });
+    const g = (await createGuestAccount().catch(() => null)) ?? null;
+    const acct = g ?? (await prisma.account.findFirstOrThrow({ where: { brokerId: demo.broker.id } }));
+    const o = await prisma.order.create({ data: { brokerId: demo.broker.id, accountId: acct.id, symbolId: sym.id, side: "BUY", type: "MARKET", volume: D("0.1"), idempotencyKey: `f:${randomUUID()}`, status: "FILLED", filledPrice: D(4400) } });
+    const pos = await prisma.position.create({ data: { brokerId: demo.broker.id, accountId: acct.id, symbolId: sym.id, originOrderId: o.id, side: "BUY", volume: D("0.1"), openPrice: D(4400), slPrice: D("99999"), bookType: "B_BOOK" } });
+    const { GET } = await import("@/app/api/internal/margin-monitor/route");
+    const res = await GET(new NextRequest("https://x.test/api/internal/margin-monitor", { headers: { authorization: "Bearer cron-iso-secret" } }));
+    const ordinary = await prisma.position.findMany({ where: { status: "OPEN", broker: { isDemoSandbox: false } }, select: { accountId: true }, distinct: ["accountId"] });
+    expect((await res.json()).accountsEvaluated).toBe(ordinary.length);
+    expect((await prisma.position.findUniqueOrThrow({ where: { id: pos.id } })).status).toBe("OPEN");
+    const swap = await runSwapRollover(prisma);
+    expect(swap.brokers.some((b) => b.brokerId === demo.broker.id)).toBe(false);
+    const { publishTradingEvent } = await import("@/lib/nats");
+    const spy = vi.mocked(globalThis.fetch);
+    spy.mockClear();
+    await publishTradingEvent("OrderFilled", { broker_id: demo.broker.id, account_id: "x", order_id: "y" });
+    expect(spy.mock.calls.filter((c) => String(c[0]).includes("gateway.test"))).toHaveLength(0);
+    process.env.DEMO_BROKER_SUBDOMAIN = saved;
+    resetSandboxCache();
   });
 });
 

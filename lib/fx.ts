@@ -1,4 +1,5 @@
 import "server-only";
+import { scrubInternalCurrency } from "@/lib/demo-policy";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { getLivePriceRows } from "@/lib/live-price";
 
@@ -33,7 +34,7 @@ export const FX_RATE_MAX_AGE_MS = 72 * 3600 * 1000;
 
 export class FxRateUnavailableError extends Error {
   constructor(public readonly from: string, public readonly to: string) {
-    super(`no ${from}->${to} conversion rate: none of ${conversionSymbolsFor(from, to).join(", ")} has a price`);
+    super(scrubInternalCurrency(`no ${from}->${to} conversion rate: none of ${conversionSymbolsFor(from, to).join(", ")} has a price`));
   }
 }
 

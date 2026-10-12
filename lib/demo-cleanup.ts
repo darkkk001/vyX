@@ -56,9 +56,10 @@ export async function deleteGuestAccount(accountId: string, opts: { dryRun?: boo
   if (!demoSubdomain()) return refuse("DEMO_BROKER_SUBDOMAIN is not set");
   const demoBrokerId = await getDemoBrokerId(db);
   if (!demoBrokerId) return refuse("the demo broker was not found");
-  const account = await db.account.findUnique({ where: { id: accountId }, select: { id: true, brokerId: true, accountNumber: true } });
+  const account = await db.account.findUnique({ where: { id: accountId }, select: { id: true, brokerId: true, accountNumber: true, broker: { select: { isDemoSandbox: true } } } });
   if (!account) return refuse("no such account");
   if (account.brokerId !== demoBrokerId) return refuse("the account does not belong to the demo broker");
+  if (!account.broker.isDemoSandbox) return refuse("the demo broker is not flagged isDemoSandbox");
   if (!isGuestAccountNumber(account.accountNumber)) return refuse("the account number is outside the guest range 48000000-48999999");
 
   const positions = await db.position.findMany({ where: { accountId }, select: { id: true } });

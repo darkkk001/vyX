@@ -4,7 +4,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession } from "@/lib/auth";
 import { generateTemporaryPassword } from "@/lib/passwords";
-import { demoSubdomain } from "@/lib/demo-policy";
+
 
 // Only Super Admins may list/create AdminUsers across brokers -- this is
 // what actually closes the gap a freshly created broker has: zero admin
@@ -25,9 +25,8 @@ export async function GET() {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
 
-  const demo = demoSubdomain();
   const admins = await prisma.adminUser.findMany({
-    where: demo ? { OR: [{ brokerId: null }, { broker: { subdomain: { not: demo } } }] } : {},
+    where: { OR: [{ brokerId: null }, { broker: { isDemoSandbox: false } }] },
     orderBy: { createdAt: "desc" },
     select: {
       id: true,

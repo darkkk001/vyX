@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { displayCurrency } from "@/lib/demo-policy";
 import { symbolHiddenFromBroker, symbolVisibility } from "@/lib/synthetic-symbols";
 import { missingForSymbol } from "@/lib/symbol-completeness";
 import { withConfigEvent } from "@/lib/config-events";
@@ -287,7 +288,7 @@ async function patchHandler(request: NextRequest) {
   if (enabled && symbol.quoteCurrency !== "USD") {
     return NextResponse.json(
       {
-        error: `${symbol.name} cannot be enabled yet: P/L in ${symbol.quoteCurrency} is not supported.`,
+        error: `${symbol.name} cannot be enabled yet: P/L in ${displayCurrency(symbol.quoteCurrency)} is not supported.`,
       },
       { status: 400 }
     );

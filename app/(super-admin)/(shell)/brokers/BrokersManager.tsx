@@ -15,6 +15,8 @@ import PricingEngineSwitch from "./PricingEngineSwitch";
 
 export type BrokerRow = {
   id: string;
+  // the QoreTrader demo (and any other sandbox tenant): shown with a Sandbox badge, in no billing figure
+  isDemoSandbox?: boolean;
   name: string;
   subdomain: string;
   customDomain: string | null;
@@ -474,6 +476,7 @@ export default function BrokersManager() {
               <TableRow key={broker.id}>
                 <TableCell primary>
                   {broker.name}
+                  {broker.isDemoSandbox ? <span className="ml-2 rounded border border-[var(--border)] px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-[var(--text-3)]">Sandbox</span> : null}
                   <div className="text-xs font-normal text-[var(--text-3)]">{broker.subdomain}.vyxtrader.com</div>
                 </TableCell>
                 <TableCell mono className="text-[var(--text-3)]">

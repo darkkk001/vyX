@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { displayCurrency } from "@/lib/demo-policy";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
@@ -195,12 +196,12 @@ export async function GET(request: Request) {
       .filter((r) => r.tickAt.getTime() > now - FX_RATE_MAX_AGE_MS)
       // server-side asks: a conversion quote of a symbol this account trades carries the account's ask too, so the raw ask
       // cannot be read off the FX block either
-      .map((r) => ({ symbol: r.symbol, bid: r.bid.toString(), ask: (serverSide ? clientAskOf(r.symbol, r.bid, r.ask) : r.ask).toString(), tickAt: r.tickAt.toISOString() }));
+      .map((r) => ({ symbol: displayCurrency(r.symbol), bid: r.bid.toString(), ask: (serverSide ? clientAskOf(r.symbol, r.bid, r.ask) : r.ask).toString(), tickAt: r.tickAt.toISOString() }));
     const lookup = fxLookupFromQuotes(fxRows.values(), now);
     const rates: Record<string, string> = {};
     for (const q of quoteCurrencies) {
       const rate = conversionRate(q, accountCurrency, lookup);
-      if (rate) rates[q] = rate.toString();
+      if (rate) rates[displayCurrency(q)] = rate.toString();
     }
     return NextResponse.json({ prices: rows, fx: { accountCurrency, quotes, rates } }, { headers });
   }

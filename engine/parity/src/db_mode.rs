@@ -167,7 +167,7 @@ pub async fn side_effects(pool: &PgPool) -> Result<BTreeMap<String, i64>, String
 /// Every position's final state (mirror targets and coverage legs included).
 pub async fn position_states(pool: &PgPool) -> Result<BTreeMap<String, PositionState>, String> {
     let rows: Vec<(String, String, Decimal, Option<Decimal>, Option<Decimal>)> =
-        sqlx::query_as(r#"SELECT id, status::text, volume, "closePrice", "realizedPnl" FROM "Position""#)
+        sqlx::query_as(r#"SELECT p.id, p.status::text, p.volume, p."closePrice", p."realizedPnl" FROM "Position" p JOIN "Broker" sb ON sb.id = p."brokerId" AND NOT sb."isDemoSandbox""#)
             .fetch_all(pool)
             .await
             .map_err(|e| e.to_string())?;

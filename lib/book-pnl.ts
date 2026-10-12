@@ -29,6 +29,7 @@ export type CurrencyAmount = { currency: string; amount: Prisma.Decimal; count: 
 // The WHERE part every Book P/L query shares (aliases: p = Position, a = Account, g = the account's Group).
 function heldSql(s: BookScope) {
   return Prisma.sql`p."brokerId" = ${s.brokerId} AND p."deletedAt" IS NULL
+    AND NOT EXISTS (SELECT 1 FROM "Broker" sb WHERE sb.id = p."brokerId" AND sb."isDemoSandbox")
     AND a."accountMode" = 'LIVE' AND a."isInternal" = false
     AND (${s.coverageAccountId}::text IS NULL OR a.id <> ${s.coverageAccountId})
     AND (g.category IS NULL OR g.category <> 'COVERAGE')
