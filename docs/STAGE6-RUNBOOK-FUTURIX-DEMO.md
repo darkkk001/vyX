@@ -229,7 +229,7 @@ npx vitest run
 ```
 
 **Verify:** the merge has no conflicts; `tsc` clean; `npm run build` passes (tsc and tests alone are not enough: Vercel failed once on an optional route argument); vitest green.
-Note the merge commit: `git rev-parse HEAD` (call it `<MERGE>`). It is the engine pin of section 4. Push (**`newrepo/main` is Vercel production**):
+Note the merge commit: `git rev-parse HEAD` (call it `<MERGE>`). It is the commit the web is built from; the engine deploy of section 4 takes its own explicit branch + commit. Push (**`newrepo/main` is Vercel production**):
 
 ```powershell
 git push newrepo main
@@ -250,25 +250,25 @@ The site works (login page loads, a trader can see prices). Check the migration-
 
 ## 4. Engine deploy on the VPS (shadow mode, risk mode NOT active)
 
-Same procedure as `deploy/engine-2026-10-05.ps1`: pinned commit, `engine\` byte-identical to the pin, markers of the reviewed code, build in a separate target dir, swap, `/health`, startup-log checks, automatic restore on any failure. The new script is `deploy/engine-stage6.ps1`.
+Same procedure as `deploy/engine-2026-10-05.ps1`: an explicit approved commit (no pin written in the file), markers of the reviewed code, build in a separate target dir, swap, `/health`, startup-log checks, automatic restore on any failure. The new script is `deploy/engine-stage6.ps1`.
 It refuses to run unless `start-engine.cmd` says `ENGINE_ORDER_MANAGEMENT=shadow` and carries no `VYX_RISK_FLIP_INTENT`, and it fails (and restores the old exe) if the new build starts in risk mode or prints the flip-marker warning.
 
-### 4.1 Pin the script (owner PC, in the merge worktree), push, then run on the VPS
+### 4.1 The owner's go, then run on the VPS
+
+`deploy/engine-stage6.ps1` has no pin inside it and no default that passes. It takes the branch and the full commit as parameters and refuses
+(one line, exit code 1, nothing touched, nothing built) unless the owner's go is given explicitly:
+
+* `-Branch <branch>`, `-Commit <full 40-character sha>` and `-OwnerGo "<branch>@<full sha>"` are all required, and `-OwnerGo` must equal `<Branch>@<Commit>` exactly (case-sensitive);
+* the checked-out `HEAD` must equal `-Commit`, and `-Commit` must be on `-Branch` (an ancestor of the local branch or of any remote's branch of that name).
+
+The commit is whatever the owner approved after reading the test record (for Stage 6: the tip of `engine/stage6`; nothing is merged to `main` for this). On the VPS (elevated PowerShell):
 
 ```powershell
-cd D:\VyXTrader-Tauri\vyX
-(Get-Content deploy\engine-stage6.ps1 -Raw) -replace '<FILL IN: the commit of main that merged engine/stage6>', (git rev-parse HEAD) | Set-Content deploy\engine-stage6.ps1 -NoNewline
-git add deploy/engine-stage6.ps1; git commit -m "Pin deploy/engine-stage6.ps1 to the Stage 6 merge"; git push newrepo main
+cd C:\vyxtrader\repo; git fetch --all; git checkout --detach <full sha>
+powershell -ExecutionPolicy Bypass -File C:\vyxtrader\repo\deploy\engine-stage6.ps1 -Branch engine/stage6 -Commit <full sha> -OwnerGo "engine/stage6@<full sha>"
 ```
 
-On the VPS (elevated PowerShell):
-
-```powershell
-cd C:\vyxtrader\repo; git fetch --all; git checkout --detach newrepo/main
-powershell -ExecutionPolicy Bypass -File C:\vyxtrader\repo\deploy\engine-stage6.ps1
-```
-
-(The pin of the script is the merge commit; a later commit on `main` that changes `engine\` makes the script stop with "differs from the pin": re-pin first.)
+(`-RepoPath` defaults to `C:\vyxtrader\repo`; it exists so the refusals can be tested against another checkout. A different commit later means a new go for that commit.)
 
 **Verify:** the last line is `DEPLOY OK (shadow mode, risk mode NOT active)`; every `OK  ...` check line printed; no `RISK MODE`, no `risk heartbeat`, no `WARNING` line in the startup lines. Then:
 

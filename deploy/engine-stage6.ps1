@@ -1,26 +1,53 @@
-# Engine deploy for Stage 6 (owner go needed, NOT run, NOT pinned yet): ships the risk-authority code in SHADOW mode.
+# Engine deploy for Stage 6 (owner go needed, NOT run): ships the risk-authority code in SHADOW mode.
 #   docs/STAGE6-RUNBOOK-FUTURIX-DEMO.md section 4. Runs AFTER the migration (section 2) and the web (section 3).
 #   What this build adds to the engine: risk mode (ENGINE_ORDER_MANAGEMENT=risk), the per-broker authority, the engine-down watchdog
 #   (heartbeat), the startup flip-marker WARNING. With ENGINE_ORDER_MANAGEMENT=shadow (what this script requires) NONE of it is active:
 #   the shadow behaves exactly as in engine-2026-10-05.ps1. The flip (section 5) is a later, separate step.
-# Run on the VPS in an elevated PowerShell, from the repo, AFTER checking out the pinned code:
-#   cd C:\vyxtrader\repo; git fetch --all; git checkout --detach <remote>/main
-#   powershell -ExecutionPolicy Bypass -File C:\vyxtrader\repo\deploy\engine-stage6.ps1
+# Run on the VPS in an elevated PowerShell, from the repo, AFTER checking out the code the owner approved:
+#   cd C:\vyxtrader\repo; git fetch --all; git checkout --detach <full sha>
+#   powershell -ExecutionPolicy Bypass -File C:\vyxtrader\repo\deploy\engine-stage6.ps1 -Branch engine/stage6 -Commit <full sha> -OwnerGo "engine/stage6@<full sha>"
 #
-# PIN: $Fix must be the commit of main that merged engine/stage6 (fill it in at merge time; the script refuses to run with the placeholder).
-# HEAD must contain $Fix and its engine\ must equal $Fix's; any later engine change on main means re-pinning first.
+# NO PIN IN THE FILE, NO DEFAULT THAT PASSES. The script takes the branch and the 40-character commit as parameters and refuses (one line,
+# exit code 1, nothing touched, nothing built) unless ALL of these hold:
+#   - -Branch, -Commit and -OwnerGo are all given;
+#   - -OwnerGo is exactly "<Branch>@<Commit>" (case-sensitive): the owner's explicit go for that exact code;
+#   - the checked-out HEAD equals -Commit;
+#   - -Commit is on -Branch (an ancestor of the local branch or of any remote's branch of that name).
+# -RepoPath (default C:\vyxtrader\repo) exists so the refusals can be tested against another checkout without deploying.
 #
 # What changes: the engine exe only. No env change: start-engine.cmd, ENGINE_ORDER_MANAGEMENT (stays shadow), every DB URL, every secret
 # all untouched. The running engine keeps serving during the build (separate target dir); downtime = the stop / swap / start only.
 # Stops by itself (and puts the previous exe back) if the build fails, the exe cannot be swapped, /health does not answer, or the startup
 # log shows SHADOW REFUSED / reconciler NOT running / RISK MODE / the flip-marker WARNING / a missing required line.
+param(
+  [string]$Branch = "",
+  [string]$Commit = "",
+  [string]$OwnerGo = "",
+  [string]$RepoPath = "C:\vyxtrader\repo"
+)
 $ErrorActionPreference = "Stop"
 $Nssm   = "C:\vyxtrader\nssm\nssm-2.24\win64\nssm.exe"   # nssm is not on the VPS PATH: always the full path
-$Fix    = "<FILL IN: the commit of main that merged engine/stage6>"
-$Repo   = "C:\vyxtrader\repo"
+$Fix    = $Commit
+$Repo   = $RepoPath
 $Stamp  = Get-Date -Format yyyyMMdd-HHmmss
 $Bk     = "C:\vyxtrader\backup\engine-stage6-$Stamp"
-if ($Fix -match '[^0-9a-f]' -or $Fix.Length -ne 40) { throw "the pin is not filled in (`$Fix = '$Fix'): nothing touched" }
+
+# ---- GATE: the owner's explicit go for exactly this branch + commit; every refusal is one line, exit 1, nothing touched ----
+function Refuse([string]$Reason) { Write-Host "REFUSED: $Reason. Nothing touched."; exit 1 }
+if (-not $Branch -or -not $Commit -or -not $OwnerGo) { Refuse "-Branch, -Commit and -OwnerGo are all required (OwnerGo = '<Branch>@<full commit sha>')" }
+if ($Commit -cnotmatch '^[0-9a-f]{40}$') { Refuse "-Commit must be the full 40-character lower-case sha" }
+if ($OwnerGo -cne "$Branch@$Commit") { Refuse "-OwnerGo does not equal '<Branch>@<Commit>': the owner's go is missing or for other code" }
+if (-not (Test-Path "$Repo\.git")) { Refuse "$Repo is not a git checkout" }
+Set-Location $Repo
+$headSha = (& git rev-parse HEAD 2>$null) -join ""
+if ($headSha -cne $Commit) { Refuse "checked-out HEAD ($(if ($headSha) { $headSha.Substring(0, [Math]::Min(7, $headSha.Length)) } else { 'unknown' })) is not -Commit ($($Commit.Substring(0, 7)))" }
+$onBranch = $false
+foreach ($ref in @(& git for-each-ref --format="%(refname)" "refs/heads/$Branch" "refs/remotes/*/$Branch" 2>$null)) {
+  & git merge-base --is-ancestor $Commit $ref 2>$null
+  if ($LASTEXITCODE -eq 0) { $onBranch = $true; break }
+}
+if (-not $onBranch) { Refuse "commit $($Commit.Substring(0, 7)) is not on branch '$Branch' (git fetch --all first?)" }
+"owner go accepted: $Branch@$($Commit.Substring(0, 7)), HEAD equals it"
 New-Item -ItemType Directory -Force $Bk | Out-Null
 
 function Invoke-Native([scriptblock]$Command, [int]$Tail = 0) {
@@ -44,12 +71,7 @@ if (Get-Content $EngineCmd | Where-Object { $_ -match '^\s*set\s+"?VYX_RISK_FLIP
 # ---- STEP 1: the checked-out code is the fix ----
 Set-Location $Repo
 $head = (Invoke-Native { git rev-parse HEAD }) -join ""
-Invoke-Native { git cat-file -e "$Fix^{commit}" } | Out-Null
-if ($LASTEXITCODE -ne 0) { throw "commit $Fix not found: run git fetch --all first. Nothing touched" }
-Invoke-Native { git merge-base --is-ancestor $Fix HEAD } | Out-Null
-if ($LASTEXITCODE -ne 0) { throw "HEAD $($head.Substring(0,7)) does not contain $($Fix.Substring(0,7)): check out the pinned code first. Nothing touched" }
-Invoke-Native { git diff --quiet $Fix HEAD -- engine } | Out-Null
-if ($LASTEXITCODE -ne 0) { throw "HEAD's engine\ differs from $($Fix.Substring(0,7)): not the reviewed code. Nothing touched" }
+if ($head -cne $Fix) { throw "HEAD $($head.Substring(0,7)) is not the approved commit $($Fix.Substring(0,7)). Nothing touched" }
 # the Stage 6 code is in (code lines, not doc comments), and the 2026-10-05 code it builds on is still in
 $must = @(
   @("order-management\src\authority.rs", 'pub async fn lock_owner_in_tx', "in-transaction owner check"),
@@ -66,7 +88,7 @@ $must = @(
 foreach ($m in $must) {
   if (-not (Select-String -Path "$Repo\engine\$($m[0])" -Pattern $m[1] -SimpleMatch -Quiet)) { throw "$($m[2]) missing ($($m[1]) in $($m[0])): nothing built" }
 }
-"HEAD $($head.Substring(0,7)) carries the pin $($Fix.Substring(0,7)) (engine\ identical), Stage 6 code present"
+"HEAD $($head.Substring(0,7)) is the approved commit $($Fix.Substring(0,7)) on $Branch, Stage 6 code present"
 
 # ---- STEP 2: build (the running exe keeps serving until the swap) ----
 $LiveExe  = "$Repo\engine\target\release\trading-core-server.exe"
