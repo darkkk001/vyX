@@ -16,11 +16,11 @@ beforeAll(async () => {
   admin = new PrismaClient({ datasourceUrl: adminUrl });
   for (const n of names) await admin.$executeRawUnsafe(`DROP DATABASE IF EXISTS "${n}" WITH (FORCE)`);
   for (const n of names) await admin.$executeRawUnsafe(`CREATE DATABASE "${n}" TEMPLATE template0`);
-});
+}, 120_000);
 afterAll(async () => {
   for (const n of names) await admin.$executeRawUnsafe(`DROP DATABASE IF EXISTS "${n}" WITH (FORCE)`).catch(() => {});
   await admin.$disconnect();
-});
+}, 120_000);
 
 describe("dropStaleClones", () => {
   it("drops idle clones of the same base and nothing else", async () => {

@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
+    broker: { findUnique: vi.fn(async () => ({ isDemoSandbox: false })) }, // the publisher asks whether the broker is a sandbox
     account: {
       findMany: vi.fn(async ({ where }: { where: Record<string, string> }) =>
         where.groupId === "g-big" ? Array.from({ length: 45 }, (_, i) => ({ id: `acc${i}` })) : []
