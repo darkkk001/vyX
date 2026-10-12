@@ -25,7 +25,7 @@ export type ProfileUpdateResult =
 export const IDENTITY_FIELDS = ["fullName", "country", "dateOfBirth"] as const;
 
 export const IDENTITY_LOCKED_MESSAGE =
-  "Your name, country and date of birth are locked while your KYC is under review or approved. Contact support to change them.";
+  "Your name, country and date of birth are locked while your KYC is pending or verified. Contact support to change them.";
 
 export function identityLocked(kyc: KycState): boolean {
   return kyc === "PENDING" || kyc === "APPROVED";

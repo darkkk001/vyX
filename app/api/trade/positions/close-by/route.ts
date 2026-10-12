@@ -53,13 +53,13 @@ export async function POST(request: NextRequest) {
           brokerId: session.brokerId, accountId: session.accountId,
           position: { id: a.id, symbolId: a.symbol.id, side: a.side, volume: a.volume, ticket: a.ticket, closePendingOrderId: a.closePendingOrderId },
           closeVolume, requestedPrice: closePrice, idempotencyKey: `close:${a.id}:${batch}`, source: orderSource,
-          symbolName: a.symbol.name, accountNumber: account.accountNumber, note: `Close by #${b.ticket}`,
+          symbolName: a.symbol.name, accountNumber: account.accountNumber, note: `Close by #${b.ticket}`, closeByPositionId: b.id,
         });
         const ob = await queueCloseInTx(tx, {
           brokerId: session.brokerId, accountId: session.accountId,
           position: { id: b.id, symbolId: b.symbol.id, side: b.side, volume: b.volume, ticket: b.ticket, closePendingOrderId: b.closePendingOrderId },
           closeVolume, requestedPrice: closePrice, idempotencyKey: `close:${b.id}:${batch}`, source: orderSource,
-          symbolName: b.symbol.name, accountNumber: account.accountNumber, note: `Close by #${a.ticket}`,
+          symbolName: b.symbol.name, accountNumber: account.accountNumber, note: `Close by #${a.ticket}`, closeByPositionId: a.id,
         });
         return { oa, ob };
       });

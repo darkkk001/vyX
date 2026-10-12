@@ -2,7 +2,8 @@ import "server-only";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { allowedBackofficeScreens } from "@/lib/backoffice-screens";
-import { getRiskRadarPayload, riskRadarBadgeCount } from "@/lib/risk-radar-cache";
+import { getRiskRadarPayload } from "@/lib/risk-radar-cache";
+import { loadRiskMarks, riskRadarBadgeCountWithMarks } from "@/lib/risk-marks";
 
 // GET /api/manage/badges (2026-10-05, live Neon overload): every sidebar badge count the native backoffice shows, in
 // ONE request. Before, RefreshBadgesAsync loaded nine full lists (shell-info, kyc-requests, client-kyc-requests,
@@ -82,7 +83,7 @@ export async function computeBadges(viewer: BadgeViewer): Promise<BadgeCounts> {
         WHERE n."brokerId" = ${brokerId} AND n."accountId" IS NULL AND n."readAt" IS NULL
           AND NOT EXISTS (SELECT 1 FROM "NotificationRead" r WHERE r."notificationId" = n.id AND r."adminId" = ${adminId}))::int AS unread`;
   // RDR is role-only (every MANAGER and BROKER_ADMIN, never SUPPORT), so the cached radar loads alongside the counts
-  const [[row], radar] = await Promise.all([counts, maybe.has("RDR") ? getRiskRadarPayload(brokerId) : null]);
+  const [[row], radar, marks] = await Promise.all([counts, maybe.has("RDR") ? getRiskRadarPayload(brokerId) : null, maybe.has("RDR") ? loadRiskMarks(prisma, brokerId) : null]);
 
   // the exact menu rule shell-info hands the backoffice (role + delegated permissions)
   const allowed = new Set(allowedBackofficeScreens(role, role === "MANAGER" ? (row.perms ?? []) : []));
@@ -91,7 +92,7 @@ export async function computeBadges(viewer: BadgeViewer): Promise<BadgeCounts> {
   return {
     deal: gate("DEAL", row.deal),
     apr: gate("APR", row.bal != null && row.pact != null ? row.bal + row.pact : null),
-    rdr: allowed.has("RDR") && radar ? riskRadarBadgeCount(radar) : null,
+    rdr: allowed.has("RDR") && radar ? riskRadarBadgeCountWithMarks(radar, marks ?? new Map()) : null,
     kyc: gate("KYC", row.kyc != null && row.ckyc != null ? row.kyc + row.ckyc : null),
     lar: gate("LAR", row.lar),
     dep: gate("DEP", row.dep),

@@ -132,6 +132,7 @@ const TRADER_ROUTES = [
   "app/api/trade/positions/close-by/route.ts",
   "app/api/trade/positions/close-bulk/route.ts",
   "app/api/trade/positions/[id]/route.ts",
+  "app/api/trade/positions/modify-bulk/route.ts",
   "app/api/trade/orders/[id]/route.ts",
 ];
 describe("the gate is at every path (static)", () => {

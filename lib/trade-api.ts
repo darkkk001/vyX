@@ -40,6 +40,8 @@ export type ApiPosition = {
   id: string;
   side: "BUY" | "SELL";
   volume: string;
+  // cumulative lots closed (set once a close has happened); a closed position's lots traded are closedVolume ?? volume
+  closedVolume?: string | null;
   openPrice: string;
   slPrice: string | null;
   tpPrice: string | null;

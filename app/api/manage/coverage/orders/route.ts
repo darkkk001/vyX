@@ -8,6 +8,7 @@ import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { getFreshPrice } from "@/lib/live-price";
 import { ensureCoverageAccount } from "@/lib/coverage";
 import { publishTradingEvent } from "@/lib/nats";
+import { placeCoveragePendingOrder } from "@/lib/coverage-pending";
 
 // Dealer order entry on the coverage account (2026-09-22). The dealing
 // screen's order ticket, one-click widget and "order at price" had no
@@ -19,9 +20,9 @@ import { publishTradingEvent } from "@/lib/nats";
 // leg BOOK NOW creates, minus the client position it would be tied to. The
 // dealer uses it to hedge net exposure by hand, or to lift / add coverage.
 //
-// Market only. A LIMIT / STOP on the coverage account needs the resting-
-// order trigger to watch the coverage account, which nothing does today
-// (flagged in docs/COVERAGE-BRIDGE-FEASIBILITY.md as part of the bridge).
+// MARKET fills at once. LIMIT / STOP (step 3b item 7, owner 2026-10-07) rest as PENDING orders on the coverage account, pass every client
+// gate (lib/coverage-pending.ts), and are filled by the same server trigger every resting order goes through (lib/pending-trigger.ts):
+// `price` is the entry. Cancel is POST /api/manage/orders/{id}/cancel.
 export async function POST(request: NextRequest) {
   const session = await getAdminSession();
   if (!requireAdminRole(session, ["MANAGER", "BROKER_ADMIN"]) || !session!.brokerId) {
@@ -34,15 +35,16 @@ export async function POST(request: NextRequest) {
   }
   const brokerId = session!.brokerId;
 
-  let body: { symbol?: string; side?: string; volume?: string | number; slPrice?: string | number | null; tpPrice?: string | number | null; type?: string };
+  let body: { symbol?: string; side?: string; volume?: string | number; slPrice?: string | number | null; tpPrice?: string | number | null; type?: string; price?: string | number | null };
   try {
     body = await request.json();
   } catch {
     return NextResponse.json({ error: "invalid body" }, { status: 400 });
   }
-  if (body.type && body.type !== "MARKET") {
-    return NextResponse.json({ error: "only MARKET orders can be placed on the coverage account (limit / stop need the coverage bridge)" }, { status: 400 });
+  if (body.type && body.type !== "MARKET" && body.type !== "LIMIT" && body.type !== "STOP") {
+    return NextResponse.json({ error: "type must be MARKET, LIMIT or STOP" }, { status: 400 });
   }
+  const orderType = body.type === "LIMIT" || body.type === "STOP" ? body.type : "MARKET";
   const side = body.side === "BUY" || body.side === "SELL" ? body.side : null;
   // synthetic names keep their case (lib/synthetic-symbols.ts); every other name is upper-cased as before
   const symbolName = typeof body.symbol === "string" ? canonicalSymbolName(body.symbol) : "";
@@ -54,6 +56,22 @@ export async function POST(request: NextRequest) {
   }
   if (!side || !symbolName || volume.lte(0)) {
     return NextResponse.json({ error: "symbol, side (BUY|SELL) and a positive volume are required" }, { status: 400 });
+  }
+
+  if (orderType !== "MARKET") {
+    let entry: Prisma.Decimal; let sl: Prisma.Decimal | null = null; let tp: Prisma.Decimal | null = null;
+    try {
+      entry = new Prisma.Decimal(body.price ?? "");
+      sl = body.slPrice == null || body.slPrice === "" ? null : new Prisma.Decimal(body.slPrice);
+      tp = body.tpPrice == null || body.tpPrice === "" ? null : new Prisma.Decimal(body.tpPrice);
+    } catch {
+      return NextResponse.json({ error: "the entry price, SL and TP must be numbers" }, { status: 400 });
+    }
+    const cov = await ensureCoverageAccount(brokerId, session!.adminId);
+    const placed = await placeCoveragePendingOrder({ brokerId, adminId: session!.adminId, coverageAccountId: cov.accountId, symbolName, side, type: orderType, volume, price: entry, slPrice: sl, tpPrice: tp });
+    if (!placed.ok) return NextResponse.json({ error: placed.error, ...(placed.code ? { code: placed.code } : {}) }, { status: placed.status });
+    await publishTradingEvent("OrderAccepted", { order_id: placed.orderId, account_id: cov.accountId, broker_id: brokerId }).catch((err) => console.error("publish coverage pending OrderAccepted failed", err));
+    return NextResponse.json({ orderId: placed.orderId, pending: true, type: orderType, coverageAccountId: cov.accountId, symbol: symbolName, side, volume: volume.toString(), entry: placed.entry }, { status: 201 });
   }
 
   const bs = await prisma.brokerSymbol.findFirst({

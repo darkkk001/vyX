@@ -47,7 +47,7 @@ export async function POST(request: NextRequest) {
 
   const kyc = await prisma.clientKycRecord.findUnique({ where: { clientId: session.clientId } });
   if (!kyc || kyc.status !== "APPROVED") {
-    return NextResponse.json({ error: "complete KYC verification before opening a Live account" }, { status: 403 });
+    return NextResponse.json({ error: "KYC not verified: complete your KYC before opening a Live account" }, { status: 403 });
   }
 
   const existingPending = await prisma.liveAccountRequest.findFirst({

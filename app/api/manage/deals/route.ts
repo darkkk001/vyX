@@ -95,7 +95,8 @@ export async function GET(request: NextRequest) {
       digits: p.symbol.digits,
       side: p.side,
       status: p.status,
-      volume: p.volume.toString(),
+      volume: (p.closedVolume ?? p.volume).toString(), // lots traded (cumulative closed), not the last remaining piece
+      closedVolume: p.closedVolume?.toString() ?? null,
       openPrice: p.openPrice.toFixed(p.symbol.digits),
       closePrice: p.closePrice ? p.closePrice.toFixed(p.symbol.digits) : null,
       commission: p.commission.toFixed(2),

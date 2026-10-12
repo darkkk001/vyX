@@ -275,10 +275,10 @@ export default function AccountsView() {
                 ) : kycStatus !== "APPROVED" ? (
                   <>
                     <p className={styles.panelText} style={{ marginBottom: 14 }}>
-                      A Live account requires identity verification first.
+                      A Live account requires KYC first.
                     </p>
                     <div className={styles.formNotice}>
-                      {kycStatus === "PENDING" ? "Your KYC submission is under review." : "Complete KYC verification to open a Live account."}
+                      {kycStatus === "PENDING" ? "Your KYC is pending." : "Complete your KYC to open a Live account."}
                     </div>
                     <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
                       {kycStatus !== "PENDING" ? (

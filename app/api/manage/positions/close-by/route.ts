@@ -72,6 +72,7 @@ export async function POST(request: NextRequest) {
         position: { id: p.id, accountId: p.accountId, side: p.side, openPrice: p.openPrice, volume: p.volume, symbol: { name: p.symbol.name, contractSize: p.symbol.contractSize }, account: { accountNumber: account.accountNumber } },
         closePrice,
         closeVolume,
+        closeByPositionId: (p === a ? b : a).id,
       });
       // throwing rolls the first leg back too: never one leg without the other
       if (!r.closed) throw new CloseByRaced();

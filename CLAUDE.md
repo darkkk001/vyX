@@ -55,6 +55,22 @@ simulated/live prices.
   outside comments and test files; comments and test descriptions are
   developer-facing, not user-facing, and are exempt.
 
+## Workspace rules (standing, 2026-10-12)
+
+The old D:/E: drive filled up with ~75 worktrees and ~200 GB of build output before it started failing.
+These apply to this repo and to darkkk001/VyxTrader:
+
+- Checkouts live under `C:\vyx` only (`C:\vyx\web`, `C:\vyx\native`). No builds anywhere else.
+- At most 2 worktrees per repo, also under `C:\vyx`. Run `git worktree remove` as soon as the branch is
+  merged or shipped.
+- Never commit installers, update packages or screenshots. One exception: the update feed under
+  `public/native-*-updates/` stays in git until the feed moves to a separate host (tracked in
+  `docs/BACKEND-NEEDED.md`, Infrastructure). Nothing else of that kind, anywhere.
+- Clean dist/bin/obj/.next after every release and report C: free space at the end of every job.
+- Release gate (native, owner 2026-10-12): the 1366 no-clip test must pass before any terminal or backoffice
+  build is packed. It renders Trade / History / Pending at 1366 with every tab showing a count and fails on any
+  clipped column, header, tab label or toolbar button (test name and command: see the VyxTrader repo's tests).
+
 ## Deployment safety
 
 Learned the hard way during the 2026-09-04 Futurix incident (a Neon

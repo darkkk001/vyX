@@ -128,7 +128,7 @@ export async function recordDealerActivity(
 // Position table (any close path writes it); this is the real-time half, called by each close
 // site after its transaction committed. Loads what the feed row needs from the position itself
 // so a caller that only holds an id (the risk monitor, the mirror) can still emit it.
-export type CloseReason = "MANUAL" | "STOP_LOSS" | "TAKE_PROFIT" | "STOP_OUT" | "MIRROR" | "ADMIN";
+export type CloseReason = "MANUAL" | "STOP_LOSS" | "TAKE_PROFIT" | "STOP_OUT" | "MIRROR" | "ADMIN" | "COVERAGE";
 
 export async function emitPositionClosedActivity(
   db: PrismaClient | Prisma.TransactionClient,
@@ -171,7 +171,8 @@ export function closeReasonFromNote(note: string | null | undefined): CloseReaso
   if (n.startsWith("take profit")) return "TAKE_PROFIT";
   if (n.startsWith("stop-out")) return "STOP_OUT";
   if (n.startsWith("mirror close")) return "MIRROR";
-  if (n.startsWith("admin close") || n.startsWith("manual close")) return "ADMIN";
+  if (n.startsWith("coverage auto-close")) return "COVERAGE";
+  if (n.startsWith("admin close") || n.startsWith("manual close") || n.startsWith("manual partial close") || n.startsWith("reversed (close")) return "ADMIN";
   return "MANUAL";
 }
 
@@ -265,6 +266,7 @@ export async function getDealerActivityFeedRows(
         closedAt: true,
         side: true,
         volume: true,
+        closedVolume: true,
         closePrice: true,
         realizedPnl: true,
         symbol: { select: { name: true } },
@@ -298,7 +300,7 @@ export async function getDealerActivityFeedRows(
         action: "POSITION_CLOSED",
         symbol: p.symbol.name,
         side: p.side,
-        volume: p.volume.toString(),
+        volume: (p.closedVolume ?? p.volume).toString(),
         values: {
           closePrice: p.closePrice?.toString(),
           realizedPnl: p.realizedPnl?.toString(),
@@ -416,12 +418,13 @@ export async function getDealingDeskRestingOrders(brokerId: string): Promise<Res
       },
       orderBy: { createdAt: "desc" },
     }),
-    prisma.broker.findUnique({ where: { id: brokerId }, select: { dealingModeAt: true, dealingDeskAutoFillAt: true } }),
+    prisma.broker.findUnique({ where: { id: brokerId }, select: { dealingModeAt: true, dealingDeskAutoFillAt: true, coverageAccountId: true } }),
   ]);
   const dealingDeskAutoFillOn = !!broker?.dealingDeskAutoFillAt;
 
   return orders
-    .filter((o) => isDealingManagedAccount({ group: o.account.group, deskOn: !dealingDeskAutoFillOn }))
+    // step 3b item 7: the dealer's own resting orders on the hedge account are on the desk too
+    .filter((o) => o.account.id === broker?.coverageAccountId || isDealingManagedAccount({ group: o.account.group, deskOn: !dealingDeskAutoFillOn }))
     .map((o) => ({
       orderId: o.id,
       accountId: o.account.id,

@@ -16,13 +16,13 @@ type ClientProfile = {
   emailVerifiedAt: string | null;
   createdAt: string;
   kycStatus: "PENDING" | "APPROVED" | "REJECTED" | null;
-  // name / country / date of birth are locked while KYC is under review or approved (lib/client-profile.ts)
+  // name / country / date of birth are locked while KYC is pending or verified (lib/client-profile.ts)
   identityLocked: boolean;
 };
 
 const KYC_BADGE: Record<string, { label: string; color: string; bg: string }> = {
-  APPROVED: { label: "Approved", color: "var(--accent)", bg: "color-mix(in srgb, var(--accent) 16%, transparent)" },
-  PENDING: { label: "Pending review", color: "var(--text-2)", bg: "var(--bg-2)" },
+  APPROVED: { label: "Verified", color: "var(--accent)", bg: "color-mix(in srgb, var(--accent) 16%, transparent)" },
+  PENDING: { label: "Pending", color: "var(--text-2)", bg: "var(--bg-2)" },
   REJECTED: { label: "Rejected", color: "var(--sell, #EA3943)", bg: "var(--sell-bg, #2A0F11)" },
 };
 
@@ -290,10 +290,10 @@ export default function ProfileView({ initialClient }: { initialClient: ClientPr
       <div className={styles.panel}>
         <div className={styles.cardHeader}>
           <h3 className={styles.panelTitle} style={{ margin: 0 }}>KYC status</h3>
-          <Link href="/portal/kyc" className={styles.linkBtn}>{client.kycStatus ? "View" : "Complete KYC"}</Link>
+          <Link href="/portal/kyc" className={styles.linkBtn}>{client.kycStatus ? "View" : "Complete your KYC"}</Link>
         </div>
         <span className={styles.statusBadge} style={{ color: kycBadge?.color ?? "var(--text-2)", background: kycBadge?.bg ?? "var(--bg-2)" }}>
-          {kycBadge?.label ?? "Not submitted"}
+          {kycBadge?.label ?? "Not verified"}
         </span>
       </div>
 

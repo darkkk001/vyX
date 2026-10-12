@@ -358,12 +358,13 @@ describe("94 / 137: leverage and group choices on account creation", () => {
     expect(fine.status).toBe(201);
   });
 
-  it("137: the approver picks group / type / leverage; a hidden group or an unpermitted leverage changes nothing", async () => {
+  it("137: the approver picks group / type / leverage; the system hedge group or an unpermitted leverage changes nothing", async () => {
     if (!dbReachable) return;
     const b = await broker();
     await group(b, { isDefault: true, leverage: 100 });
     const pro = await group(b, { leverage: 200, name: "Pro" });
-    const hidden = await group(b, { isClientSelectable: false, name: "Reverse" });
+    // owner 2026-10-07: an unpublished group is fine for staff; only the system hedge book (COVERAGE) is refused
+    const hidden = await group(b, { isClientSelectable: false, name: "Dealer Coverage", category: "COVERAGE", modeRestriction: "LIVE_ONLY" });
     const raw = await prisma.accountType.create({ data: { brokerId: b, name: "Raw", enabled: true } });
     const c = await prisma.client.create({ data: { brokerId: b, email: `l8-${randomUUID().slice(0, 8)}@t.local`, passwordHash: "x", fullName: "L8" } });
     clients.push(c.id);

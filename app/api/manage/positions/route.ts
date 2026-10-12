@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { accountClosePrice, askRuleWire, loadAskRules } from "@/lib/ask-markup";
+import { checkHedgingAllowed } from "@/lib/hedging";
 import { Prisma } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { prisma } from "@/lib/prisma";
@@ -67,6 +68,9 @@ export async function GET(request: NextRequest) {
   // Phase 2 batch 7 (issue 93): ?accountId= narrows the open positions to one account (the backoffice's Client 360
   // reloaded every open position of the broker on each event); the pickers below stay broker-wide
   const accountId = request.nextUrl.searchParams.get("accountId")?.trim() || null;
+  // step 3b item A: slim=1 leaves the pickers out (accounts, symbols, groups, IB options): the backoffice's per-event account slice
+  // wants only the positions and their fx quotes
+  const slim = request.nextUrl.searchParams.get("slim") === "1";
 
   const [positions, accountRows, brokerSymbolRows, groupRows, ibRelationships] = await Promise.all([
     prisma.position.findMany({
@@ -89,18 +93,18 @@ export async function GET(request: NextRequest) {
       },
       orderBy: { openedAt: "desc" },
     }),
-    prisma.account.findMany({
+    slim ? Promise.resolve([] as { id: string; accountNumber: string; fullName: string }[]) : prisma.account.findMany({
       where: { brokerId, status: "ACTIVE" },
       select: { id: true, accountNumber: true, fullName: true },
       orderBy: { accountNumber: "asc" },
     }),
-    prisma.brokerSymbol.findMany({
+    slim ? Promise.resolve([] as { symbol: { id: string; name: string } }[]) : prisma.brokerSymbol.findMany({
       where: { brokerId, enabled: true },
       include: { symbol: { select: { id: true, name: true } } },
       orderBy: { symbol: { name: "asc" } },
     }),
-    prisma.group.findMany({ where: { brokerId }, select: { id: true, name: true }, orderBy: { name: "asc" } }),
-    prisma.ibRelationship.findMany({
+    slim ? Promise.resolve([] as { id: string; name: string }[]) : prisma.group.findMany({ where: { brokerId }, select: { id: true, name: true }, orderBy: { name: "asc" } }),
+    slim ? Promise.resolve([] as { ibAccountId: string; ibAccount: { accountNumber: string; fullName: string } }[]) : prisma.ibRelationship.findMany({
       where: { brokerId },
       select: { ibAccountId: true, ibAccount: { select: { accountNumber: true, fullName: true } } },
     }),
@@ -344,6 +348,7 @@ export async function POST(request: NextRequest) {
           brokerSymbol.symbolId
         )
       : null) ??
+    (await checkHedgingAllowed(prisma, broker, { accountId: accountId, symbolId: symbolId, side: side })) ??
     (await checkMaxOpenPositions(prisma, accountId, broker.maxOpenPositionsPerAccount)) ??
     (await checkSymbolExposure(prisma, accountId, symbolId, volume, brokerSymbol.maxExposure)) ??
     (await checkBrokerExposure(prisma, brokerId, volume, broker.totalExposureLimit)) ??

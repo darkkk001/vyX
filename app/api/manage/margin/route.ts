@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { computeAccountMarginSnapshots } from "@/lib/margin";
@@ -7,13 +7,15 @@ import { computeAccountMarginSnapshots } from "@/lib/margin";
 // used to do inline -- exposed as JSON so MarginManager can fetch it
 // itself (both the website and a bundled manager-shell desktop app use
 // this one path now).
-export async function GET() {
+export async function GET(request: NextRequest) {
   const session = await getAdminSession();
   if (!requireAdminRole(session, ["MANAGER", "BROKER_ADMIN"]) || !session!.brokerId) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
 
-  const snapshots = await computeAccountMarginSnapshots(prisma, session!.brokerId!);
+  // step 3b item A: ?accountId= answers one account (the backoffice's slice after an event of that account)
+  const accountId = request.nextUrl.searchParams.get("accountId")?.trim() || undefined;
+  const snapshots = await computeAccountMarginSnapshots(prisma, session!.brokerId!, accountId);
   const accountIds = snapshots.map((s) => s.accountId);
   const accounts = await prisma.account.findMany({ where: { id: { in: accountIds } }, select: { id: true, fullName: true } });
   const nameById = new Map(accounts.map((a) => [a.id, a.fullName]));

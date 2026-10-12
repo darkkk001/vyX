@@ -3,3 +3,6 @@
 # Linux ("bad interpreter"), which matters here since engine/scripts/*.sh
 # is explicitly meant to run unchanged on a Linux VPS later.
 *.sh text eol=lf
+
+# Binary documents: never convert line endings (a PDF without NUL bytes gets detected as text).
+*.pdf binary

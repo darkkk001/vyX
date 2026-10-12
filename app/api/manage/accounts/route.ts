@@ -27,7 +27,7 @@ async function requireReader() {
   return canReadAsManagerOrSupport(session) ? session! : null;
 }
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   const session = await requireReader();
   if (!session) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
@@ -35,7 +35,8 @@ export async function GET() {
 
   const [accounts, mirrorRules, broker] = await Promise.all([
     prisma.account.findMany({
-      where: { brokerId: session.brokerId! },
+      // step 3b item A: ?accountId= answers one account (the backoffice's slice after an event of that account)
+      where: { brokerId: session.brokerId!, ...(new URL(request.url).searchParams.get("accountId")?.trim() ? { id: new URL(request.url).searchParams.get("accountId")!.trim() } : {}) },
       include: {
         group: { select: { id: true, name: true, category: true } },
         ibLinkAsClient: { select: { id: true } },
@@ -266,12 +267,8 @@ async function createAccount(request: NextRequest, session: NonNullable<Awaited<
     if (structural) {
       return NextResponse.json({ error: structural.message, code: structural.code }, { status: 400 });
     }
-    if (!found.isClientSelectable) {
-      return NextResponse.json(
-        { error: "that group is not available for client accounts", code: "GROUP_NOT_CLIENT_SELECTABLE" },
-        { status: 400 }
-      );
-    }
+    // Owner 2026-10-07: staff may place a client in any non-system group; isClientSelectable only limits the client's
+    // own signup choice. COVERAGE stays refused by the structural check above.
     group = { id: found.id, leverage: found.leverage };
   } else {
     const defaultGroup = await prisma.group.findFirst({ where: { brokerId, isDefault: true } });

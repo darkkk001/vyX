@@ -148,9 +148,12 @@ export async function approveFundsRequest(
     brokerId: string;
     accountId: string;
     amount: Prisma.Decimal;
-    adminId: string;
+    /** null only for an automatic approval (Broker.autoApproveWithdrawalMax, `auto` set): no person acts */
+    adminId: string | null;
     note: string | null;
     type: "DEPOSIT" | "WITHDRAWAL";
+    /** Step 3b item 2c: the broker's auto-approve limit completed this CLIENT withdrawal (its own audit action). */
+    auto?: { limit: string };
     /** SINGLE = completed by one BROKER_ADMIN under Broker.withdrawalApproval SINGLE (recorded in the audit row) */
     approvalMode?: "SINGLE" | "DUAL";
     markedByAdminId?: string | null;
@@ -213,7 +216,7 @@ export async function approveFundsRequest(
     data: {
       brokerId: params.brokerId,
       actorAdminId: params.adminId,
-      action: "FUNDS_REQUEST_APPROVED",
+      action: params.auto ? "FUNDS_REQUEST_AUTO_APPROVED" : "FUNDS_REQUEST_APPROVED",
       entityType: "Transaction",
       entityId: params.transactionId,
       oldValue: { status: "PENDING", markedByAdminId: params.markedByAdminId ?? null },
@@ -222,7 +225,8 @@ export async function approveFundsRequest(
         balanceBefore: balanceBefore.toString(),
         balanceAfter: balanceAfter.toString(),
         // D5: which rule completed it -- SINGLE = one BROKER_ADMIN alone, DUAL = marked + confirmed by two admins
-        ...(params.type === "WITHDRAWAL" ? { approvalMode: params.approvalMode ?? "DUAL" } : {}),
+        ...(params.type === "WITHDRAWAL" ? { approvalMode: params.auto ? "AUTO" : (params.approvalMode ?? "DUAL") } : {}),
+        ...(params.auto ? { autoApproveLimit: params.auto.limit } : {}),
       },
     },
   });

@@ -120,7 +120,7 @@ export function checkGroupMinLot(volume: Prisma.Decimal, groupMinLot: Prisma.Dec
 }
 /** The machine-readable code for a risk refusal, when it has one (spread into the JSON error body). */
 export function riskCode(error: string): { code: string } | Record<string, never> {
-  return error.startsWith(GROUP_MIN_VOLUME_TEXT) ? { code: GROUP_MIN_VOLUME } : {};
+  return error.startsWith(GROUP_MIN_VOLUME_TEXT) ? { code: GROUP_MIN_VOLUME } : error.startsWith("hedging is not allowed") ? { code: "HEDGING_NOT_ALLOWED" } : {};
 }
 
 // A group minimum has to sit on each symbol's volume grid (minLot + n x lotStep), or no order could ever meet it

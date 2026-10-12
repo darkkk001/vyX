@@ -7,6 +7,7 @@ import type { AdminRole } from "@prisma/client";
 import { getRedis } from "@/lib/redis";
 import { prisma } from "@/lib/prisma";
 import { cookieScopeDomain } from "@/lib/cookie-domain";
+import { clientIpFromHeaders, ipAllowed, passwordExpired } from "@/lib/ip-allowlist";
 
 export const SESSION_COOKIE_NAME = "vyx_admin_session";
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 7; // 7 days -- Redis TTL backstop, same as lib/account-auth.ts's own
@@ -49,6 +50,16 @@ export const STAFF_ENROLLMENT_API_ALLOWLIST: ReadonlySet<string> = new Set([
   "/api/manage/shell-info",
 ]);
 
+export const PASSWORD_CHANGE_REQUIRED = "PASSWORD_CHANGE_REQUIRED";
+export const PASSWORD_CHANGE_REQUIRED_PATH = "/api/manage/password-change-required";
+export const PASSWORD_CHANGE_API_ALLOWLIST: ReadonlySet<string> = new Set([
+  "/api/admin/change-password",
+  "/api/admin/logout",
+  "/api/admin/sessions",
+  "/api/admin/theme",
+  "/api/manage/shell-info",
+]);
+
 export type AdminSessionPayload = {
   adminId: string;
   role: AdminRole;
@@ -60,11 +71,18 @@ export type AdminSessionPayload = {
   // migration had). See lib/account-auth.ts's identical field for the
   // full reasoning -- this mirrors it exactly.
   sessionId?: string;
+  // Sign-in time (ms since epoch). Step 3b item 2a (owner 2026-10-07): the broker's session timeout ends a staff session
+  // that many minutes after SIGN-IN, not after the last click (the backoffice polls, so "idle" would never be reached).
+  // Absent on a session minted before this field: no timeout is applied to it until its next sign-in.
+  iat?: number;
   // Set (never stored) by getAdminSession for a broker staff session whose
   // admin has not enrolled 2FA yet -- the session reached an allowlisted
   // enrolment path (see STAFF_ENROLLMENT_API_ALLOWLIST) or a web page (the
   // manage shell layout steers those to /manage/security).
   twoFactorSetupRequired?: boolean;
+  // Set (never stored) by getAdminSession when the broker's password change interval has run out for this person (step 3b item 3):
+  // the session may only change the password, read its shell-info and sign out.
+  passwordChangeRequired?: boolean;
 };
 
 export type SessionMetadata = {
@@ -108,7 +126,7 @@ export async function createSessionToken(
 
   await redis.set(
     sessionKey(token),
-    JSON.stringify({ ...payload, sessionId } satisfies AdminSessionPayload),
+    JSON.stringify({ ...payload, sessionId, iat: Date.now() } satisfies AdminSessionPayload),
     "EX",
     ttlSeconds
   );
@@ -266,6 +284,42 @@ export async function revokeAllAdminSessions(adminId: string): Promise<number> {
 // token. Super Admin (brokerId: null) skips this — it's not broker-scoped
 // and today never runs where x-broker-id is even set (admin.<ROOT_DOMAIN>
 // short-circuits before middleware.ts's broker resolution).
+/** True when a session whose last activity was at `lastActivity` has been idle past the broker's timeout (null timeout or unknown time: never). */
+export function sessionExpired(lastActivity: number | undefined, timeoutMinutes: number | null, now: number): boolean {
+  if (timeoutMinutes === null || timeoutMinutes <= 0 || typeof lastActivity !== "number") return false;
+  return now - lastActivity > timeoutMinutes * 60_000;
+}
+
+// Idle session timeout (step 3b, owner 2026-10-07): the clock is time since the last ACTIVE request, not since sign-in.
+// Last activity lives in its own Redis key (the session record itself is never rewritten), with a TTL of the timeout plus
+// a minute so it cleans itself up; a write happens at most once per ACTIVITY_WRITE_EVERY_MS, so a busy session costs one
+// GET per request and about one SET a minute, and the database is never touched. Requests the backoffice marks
+// X-Vyx-Background (live refreshes and safety reads fired while nobody is at the keyboard) and the event stream do not
+// count as activity: they are checked against the limit but never extend it.
+export const BACKGROUND_REQUEST_HEADER = "x-vyx-background";
+const ACTIVITY_WRITE_EVERY_MS = 15_000;
+function sessionActivityKey(sessionId: string) {
+  return `admin_session_activity:${sessionId}`;
+}
+/** Reads the last-activity time (falls back to sign-in), refuses an idle session, otherwise extends it. Returns true when the session is still valid. */
+export async function checkIdleSession(
+  session: { sessionId?: string; iat?: number },
+  timeoutMinutes: number | null,
+  background: boolean,
+  now: number = Date.now(),
+): Promise<boolean> {
+  if (timeoutMinutes === null || timeoutMinutes <= 0 || !session.sessionId) return true; // no timeout set: today's behaviour
+  const redis = getRedis();
+  const key = sessionActivityKey(session.sessionId);
+  const stored = Number(await redis.get(key));
+  const last = Number.isFinite(stored) && stored > 0 ? stored : session.iat;
+  if (sessionExpired(last, timeoutMinutes, now)) return false;
+  if (!background && (typeof last !== "number" || now - last >= ACTIVITY_WRITE_EVERY_MS)) {
+    await redis.set(key, String(now), "EX", timeoutMinutes * 60 + 60).catch(() => {});
+  }
+  return true;
+}
+
 export async function getAdminSession(): Promise<AdminSessionPayload | null> {
   const cookieStore = await cookies();
   const token = cookieStore.get(SESSION_COOKIE_NAME)?.value;
@@ -320,13 +374,25 @@ export async function getAdminSession(): Promise<AdminSessionPayload | null> {
   // traffic is low enough for this to be cheap.
   const liveAdmin = await prisma.adminUser.findUnique({
     where: { id: session.adminId },
-    select: { status: true, role: true, twoFactorEnabled: true },
+    select: { status: true, role: true, twoFactorEnabled: true, passwordChangedAt: true, createdAt: true, broker: { select: { sessionTimeoutMinutes: true, staffIpAllowlist: true, passwordMaxAgeDays: true } } },
   });
   if (!liveAdmin || liveAdmin.status !== "ACTIVE" || liveAdmin.role !== session.role) {
     if (liveAdmin && liveAdmin.status !== "ACTIVE") {
       // best-effort: clear the now-dead sessions so they stop lingering
       await revokeAllAdminSessions(session.adminId).catch(() => {});
     }
+    return null;
+  }
+
+  // Session timeout (step 3b item 2a): idle time, broker staff only, applied on every request so a lowered limit bites at once.
+  if (!(await checkIdleSession(session, liveAdmin.broker?.sessionTimeoutMinutes ?? null, (await headers()).get(BACKGROUND_REQUEST_HEADER) === "1"))) {
+    await revokeSessionToken(token).catch(() => {});
+    return null;
+  }
+
+  // Staff IP allowlist (step 3b item 3): broker staff only, checked on every request (the address is the first hop of x-forwarded-for).
+  if (liveAdmin.broker && liveAdmin.broker.staffIpAllowlist.length > 0 && !ipAllowed(clientIpFromHeaders(await headers()), liveAdmin.broker.staffIpAllowlist)) {
+    console.error("[auth] getAdminSession: address not on the staff allowlist", { adminId: session.adminId });
     return null;
   }
 
@@ -355,6 +421,13 @@ export async function getAdminSession(): Promise<AdminSessionPayload | null> {
       redirect(TWO_FACTOR_SETUP_REQUIRED_PATH);
     }
     return { ...session, twoFactorSetupRequired: true };
+  }
+
+  // Password change interval (step 3b item 3): an expired password confines the session to changing it.
+  if (liveAdmin.broker && passwordExpired(liveAdmin.passwordChangedAt, liveAdmin.createdAt, liveAdmin.broker.passwordMaxAgeDays, new Date())) {
+    const path = (await headers()).get("x-pathname") ?? "";
+    if (path.startsWith("/api/") && !PASSWORD_CHANGE_API_ALLOWLIST.has(path)) redirect(PASSWORD_CHANGE_REQUIRED_PATH);
+    return { ...session, passwordChangeRequired: true };
   }
 
   return session;

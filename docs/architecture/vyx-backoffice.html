@@ -1,0 +1,1101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>vyX Backoffice — Broker Manager</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+  :root{
+    --bg-0:#07090C;
+    --bg-1:#0B0F14;
+    --bg-2:#0E1319;
+    --bg-3:#131A22;
+    --border:#1E242C;
+    --border-strong:#262E38;
+    --text-1:#EDEFF2;
+    --text-2:#8B93A1;
+    --text-3:#5A6472;
+    --buy:#16C784;
+    --buy-bg:#0F2A1E;
+    --sell:#EA3943;
+    --sell-bg:#2A0F11;
+    --warn:#F0B90B;
+    --warn-bg:#2E2408;
+    --accent:#16C784;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{
+    background:var(--bg-0);color:var(--text-1);font-family:'Inter',system-ui,sans-serif;
+    height:100vh;overflow:hidden;-webkit-font-smoothing:antialiased;
+  }
+  .mono{font-family:'JetBrains Mono',ui-monospace,monospace;}
+  ::-webkit-scrollbar{width:7px;height:7px;}
+  ::-webkit-scrollbar-thumb{background:var(--border-strong);border-radius:4px;}
+  ::-webkit-scrollbar-track{background:transparent;}
+
+  #app{display:flex;height:100vh;}
+
+  /* ---------- SIDEBAR ---------- */
+  .sidebar{
+    width:230px;flex-shrink:0;background:var(--bg-1);border-right:1px solid var(--border);
+    display:flex;flex-direction:column;padding:16px 10px;
+  }
+  .sb-brand{display:flex;align-items:center;gap:9px;padding:6px 8px 20px;}
+  .sb-mark{
+    width:26px;height:26px;border-radius:7px;
+    background:radial-gradient(circle at 30% 30%,#2CE89A,#0F8B5C);
+    display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:#03150C;
+  }
+  .sb-brand-text{font-size:13px;font-weight:600;}
+  .sb-brand-text span{color:var(--text-3);font-weight:500;}
+
+  .sb-group-label{font-size:10px;color:var(--text-3);text-transform:uppercase;letter-spacing:.05em;padding:14px 10px 6px;}
+  .sb-item{
+    display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:7px;
+    font-size:12.5px;color:var(--text-2);cursor:pointer;margin-bottom:1px;position:relative;
+  }
+  .sb-item:hover{background:var(--bg-3);color:var(--text-1);}
+  .sb-item.active{background:var(--bg-3);color:var(--text-1);}
+  .sb-item.active::before{
+    content:'';position:absolute;left:-10px;top:50%;transform:translateY(-50%);
+    width:3px;height:16px;background:var(--accent);border-radius:0 3px 3px 0;
+  }
+  .sb-item svg{flex-shrink:0;opacity:.85;}
+  .sb-badge{
+    margin-left:auto;background:var(--sell);color:#fff;font-size:9.5px;font-weight:700;
+    border-radius:9px;padding:1px 6px;
+  }
+  .sb-bottom{margin-top:auto;padding-top:10px;}
+
+  /* ---------- MAIN ---------- */
+  .main{flex:1;display:flex;flex-direction:column;overflow:hidden;}
+
+  .topbar{
+    height:56px;flex-shrink:0;display:flex;align-items:center;gap:16px;
+    padding:0 22px;border-bottom:1px solid var(--border);background:var(--bg-1);
+  }
+  .tb-title{font-size:15px;font-weight:600;}
+  .tb-search{
+    display:flex;align-items:center;gap:8px;background:var(--bg-2);border:1px solid var(--border);
+    border-radius:8px;padding:7px 12px;width:280px;font-size:12px;color:var(--text-3);margin-left:20px;
+  }
+  .tb-search input{background:none;border:none;outline:none;color:var(--text-1);font-size:12px;flex:1;}
+  .tb-search input::placeholder{color:var(--text-3);}
+  .tb-right{margin-left:auto;display:flex;align-items:center;gap:14px;}
+  .tb-broker-pill{
+    display:flex;align-items:center;gap:7px;background:var(--bg-2);border:1px solid var(--border);
+    border-radius:20px;padding:4px 12px 4px 4px;font-size:11.5px;font-weight:500;
+  }
+  .tb-broker-mark{width:20px;height:20px;border-radius:50%;background:#FFCC00;color:#04140C;font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;}
+  .tb-admin{display:flex;align-items:center;gap:8px;}
+  .tb-admin-avatar{width:30px;height:30px;border-radius:50%;background:var(--bg-3);border:1px solid var(--border-strong);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:600;color:var(--text-2);}
+  .tb-admin-info{display:flex;flex-direction:column;line-height:1.25;}
+  .tb-admin-name{font-size:12px;font-weight:600;}
+  .tb-admin-role{font-size:10px;color:var(--text-3);}
+
+  .view{flex:1;overflow-y:auto;padding:22px;display:none;}
+  .view.active{display:block;}
+
+  .view-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;}
+  .view-heading{font-size:18px;font-weight:600;}
+  .view-sub{font-size:12px;color:var(--text-3);margin-top:2px;}
+
+  /* ---------- STAT CARDS ---------- */
+  .stat-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:22px;}
+  .stat-card{background:var(--bg-1);border:1px solid var(--border);border-radius:11px;padding:16px;}
+  .stat-label{font-size:11px;color:var(--text-3);margin-bottom:8px;}
+  .stat-value{font-size:22px;font-weight:700;font-family:'JetBrains Mono',monospace;}
+  .stat-delta{font-size:11px;margin-top:6px;font-weight:500;}
+  .stat-delta.pos{color:var(--buy);}
+  .stat-delta.neg{color:var(--sell);}
+  .stat-delta.warn{color:var(--warn);}
+
+  /* ---------- PANEL / TABLE ---------- */
+  .panel{background:var(--bg-1);border:1px solid var(--border);border-radius:12px;overflow:hidden;margin-bottom:20px;}
+  .panel-title-row{display:flex;align-items:center;justify-content:space-between;padding:16px 18px;border-bottom:1px solid var(--border);}
+  .panel-title{font-size:13.5px;font-weight:600;}
+  .panel-actions{display:flex;gap:8px;}
+
+  .btn{
+    font-size:11.5px;font-weight:500;padding:7px 13px;border-radius:7px;cursor:pointer;border:none;
+    display:inline-flex;align-items:center;gap:6px;
+  }
+  .btn-ghost{background:var(--bg-3);color:var(--text-1);border:1px solid var(--border-strong);}
+  .btn-ghost:hover{border-color:var(--text-3);}
+  .btn-primary{background:var(--accent);color:#04140C;}
+  .btn-primary:hover{filter:brightness(1.08);}
+  .btn-danger{background:var(--sell-bg);color:var(--sell);border:1px solid rgba(234,57,67,.3);}
+  .btn-success{background:var(--buy-bg);color:var(--buy);border:1px solid rgba(22,199,132,.3);}
+  .btn-sm{padding:5px 10px;font-size:11px;}
+
+  table{width:100%;border-collapse:collapse;font-size:12.5px;}
+  thead th{
+    text-align:left;font-size:10.5px;color:var(--text-3);text-transform:uppercase;letter-spacing:.03em;
+    padding:10px 18px;border-bottom:1px solid var(--border);font-weight:600;background:var(--bg-2);
+  }
+  tbody td{padding:12px 18px;border-bottom:1px solid var(--bg-2);}
+  tbody tr:last-child td{border-bottom:none;}
+  tbody tr:hover{background:var(--bg-2);}
+  .cell-primary{font-weight:600;}
+  .cell-sub{font-size:11px;color:var(--text-3);margin-top:2px;}
+
+  .badge{font-size:10.5px;padding:3px 9px;border-radius:20px;font-weight:600;display:inline-block;}
+  .badge.approved{background:var(--buy-bg);color:var(--buy);}
+  .badge.pending{background:var(--warn-bg);color:var(--warn);}
+  .badge.rejected{background:var(--sell-bg);color:var(--sell);}
+  .badge.active{background:var(--buy-bg);color:var(--buy);}
+  .badge.disabled{background:var(--bg-3);color:var(--text-3);}
+
+  .row-actions{display:flex;gap:6px;}
+  .icon-btn{
+    width:26px;height:26px;border-radius:6px;background:var(--bg-3);border:1px solid var(--border-strong);
+    color:var(--text-2);cursor:pointer;display:flex;align-items:center;justify-content:center;
+  }
+  .icon-btn:hover{color:var(--text-1);border-color:var(--text-3);}
+
+  .empty-row td{text-align:center;color:var(--text-3);padding:30px;font-size:12px;}
+
+  /* ---------- MODAL ---------- */
+  .modal-overlay{
+    position:fixed;inset:0;background:rgba(0,0,0,.6);display:none;align-items:center;justify-content:center;z-index:100;
+  }
+  .modal-overlay.show{display:flex;}
+  .modal-card{width:400px;background:var(--bg-1);border:1px solid var(--border-strong);border-radius:14px;padding:20px;}
+  .modal-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;}
+  .modal-title{font-size:14.5px;font-weight:600;}
+  .modal-close{background:none;border:none;color:var(--text-3);cursor:pointer;font-size:16px;}
+  .modal-field{margin-bottom:12px;}
+  .modal-field label{display:block;font-size:11px;color:var(--text-3);margin-bottom:5px;}
+  .modal-field input,.modal-field select,.modal-field textarea{
+    width:100%;background:var(--bg-2);border:1px solid var(--border);border-radius:7px;
+    padding:9px 11px;font-size:12.5px;color:var(--text-1);outline:none;font-family:inherit;
+  }
+  .modal-field input:focus,.modal-field select:focus{border-color:var(--accent);}
+  .modal-actions{display:flex;gap:8px;margin-top:16px;}
+  .modal-actions .btn{flex:1;justify-content:center;}
+
+  .toast{
+    position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--bg-3);
+    border:1px solid var(--border-strong);padding:11px 20px;border-radius:9px;font-size:12.5px;
+    opacity:0;pointer-events:none;transition:opacity .2s,transform .2s;z-index:200;
+  }
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(-6px);}
+</style>
+</head>
+<body>
+
+<div id="app">
+
+  <div class="sidebar">
+    <div class="sb-brand">
+      <div class="sb-mark">X</div>
+      <div class="sb-brand-text">vyX <span>Backoffice</span></div>
+    </div>
+
+    <div class="sb-group-label">Overview</div>
+    <div class="sb-item active" data-view="dashboard" onclick="switchView('dashboard')">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg>
+      Dashboard
+    </div>
+
+    <div class="sb-group-label">Clients</div>
+    <div class="sb-item" data-view="clients" onclick="switchView('clients')">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+      Clients
+    </div>
+    <div class="sb-item" data-view="kyc" onclick="switchView('kyc')">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="m9 15 2 2 4-4"/></svg>
+      KYC review
+      <span class="sb-badge" id="kycBadge">3</span>
+    </div>
+
+    <div class="sb-group-label">Finance</div>
+    <div class="sb-item" data-view="finance" onclick="switchView('finance')">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg>
+      Deposits &amp; withdrawals
+      <span class="sb-badge" id="financeBadge">2</span>
+    </div>
+    <div class="sb-item" data-view="ib" onclick="switchView('ib')">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.6" y1="13.5" x2="15.4" y2="17.5"/><line x1="15.4" y1="6.5" x2="8.6" y2="10.5"/></svg>
+      IB &amp; affiliates
+    </div>
+
+    <div class="sb-group-label">Trading</div>
+    <div class="sb-item" data-view="trading" onclick="switchView('trading')">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="M18.7 8.3 13 14l-4-4-5.3 5.3"/></svg>
+      Live trading
+    </div>
+    <div class="sb-item" data-view="symbols" onclick="switchView('symbols')">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+      Symbols
+    </div>
+    <div class="sb-item" data-view="groups" onclick="switchView('groups')">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+      Client groups
+    </div>
+    <div class="sb-item" data-view="risk" onclick="switchView('risk')">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2 2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+      Risk rules
+    </div>
+
+    <div class="sb-group-label">Organization</div>
+    <div class="sb-item" data-view="reports" onclick="switchView('reports')">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="M7 12l3-3 3 3 5-5"/></svg>
+      Reports
+    </div>
+    <div class="sb-item" data-view="staff" onclick="switchView('staff')">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 21v-1a8 8 0 0 1 16 0v1"/></svg>
+      Staff &amp; roles
+    </div>
+    <div class="sb-item" data-view="audit" onclick="switchView('audit')">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="15" y2="17"/></svg>
+      Audit log
+    </div>
+
+    <div class="sb-bottom">
+      <div class="sb-item" data-view="settings" onclick="switchView('settings')">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        Broker settings
+      </div>
+    </div>
+  </div>
+
+  <div class="main">
+    <div class="topbar">
+      <div class="tb-title" id="tbTitle">Dashboard</div>
+      <div class="tb-search">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input placeholder="Search clients, transactions…">
+      </div>
+      <div class="tb-right">
+        <div class="tb-broker-pill">
+          <span class="tb-broker-mark">EX</span>
+          Exness — VyXTrader
+        </div>
+        <div class="tb-admin">
+          <div class="tb-admin-avatar">HK</div>
+          <div class="tb-admin-info">
+            <span class="tb-admin-name">Huzaifa Khan</span>
+            <span class="tb-admin-role">Broker Admin</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ DASHBOARD ============ -->
+    <div class="view active" id="view-dashboard">
+      <div class="view-header">
+        <div>
+          <div class="view-heading">Dashboard</div>
+          <div class="view-sub">Overview of your brokerage — last updated just now</div>
+        </div>
+      </div>
+
+      <div class="stat-grid">
+        <div class="stat-card">
+          <div class="stat-label">Total clients</div>
+          <div class="stat-value">1,284</div>
+          <div class="stat-delta pos">+18 this week</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Total deposits (30d)</div>
+          <div class="stat-value">$284,910</div>
+          <div class="stat-delta pos">+12.4%</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Active trades</div>
+          <div class="stat-value">342</div>
+          <div class="stat-delta">across 198 clients</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Pending KYC</div>
+          <div class="stat-value" style="color:var(--warn)">3</div>
+          <div class="stat-delta warn">needs review</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Pending withdrawals</div>
+          <div class="stat-value" style="color:var(--warn)">2</div>
+          <div class="stat-delta warn">$4,200 total</div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title-row">
+          <span class="panel-title">Recent activity</span>
+        </div>
+        <table>
+          <thead><tr><th>Event</th><th>Client</th><th>Amount</th><th>Time</th></tr></thead>
+          <tbody id="activityRows"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ============ CLIENTS ============ -->
+    <div class="view" id="view-clients">
+      <div class="view-header">
+        <div>
+          <div class="view-heading">Clients</div>
+          <div class="view-sub">All trading accounts under your brokerage</div>
+        </div>
+        <button class="btn btn-primary" onclick="showToast('Create-account form — coming soon')">+ New account</button>
+      </div>
+      <div class="panel">
+        <table>
+          <thead><tr><th>Account</th><th>Client</th><th>Balance</th><th>Equity</th><th>KYC</th><th>Group</th><th>Status</th><th></th></tr></thead>
+          <tbody id="clientRows"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ============ KYC ============ -->
+    <div class="view" id="view-kyc">
+      <div class="view-header">
+        <div>
+          <div class="view-heading">KYC review</div>
+          <div class="view-sub">Documents awaiting approval</div>
+        </div>
+      </div>
+      <div class="panel">
+        <table>
+          <thead><tr><th>Client</th><th>Document</th><th>Submitted</th><th>Status</th><th></th></tr></thead>
+          <tbody id="kycRows"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ============ FINANCE ============ -->
+    <div class="view" id="view-finance">
+      <div class="view-header">
+        <div>
+          <div class="view-heading">Deposits &amp; withdrawals</div>
+          <div class="view-sub">Requests awaiting processing</div>
+        </div>
+      </div>
+      <div class="panel">
+        <table>
+          <thead><tr><th>Type</th><th>Client</th><th>Method</th><th>Amount</th><th>Requested</th><th>Status</th><th></th></tr></thead>
+          <tbody id="financeRows"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ============ IB ============ -->
+    <div class="view" id="view-ib">
+      <div class="view-header">
+        <div>
+          <div class="view-heading">IB &amp; affiliates</div>
+          <div class="view-sub">Introducing brokers and their referral performance</div>
+        </div>
+        <button class="btn btn-primary" onclick="showToast('IB onboarding form — coming soon')">+ Add IB</button>
+      </div>
+      <div class="panel">
+        <table>
+          <thead><tr><th>IB name</th><th>Referred clients</th><th>Volume (30d)</th><th>Commission rate</th><th>Earned (30d)</th><th>Status</th></tr></thead>
+          <tbody id="ibRows"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ============ TRADING ============ -->
+    <div class="view" id="view-trading">
+      <div class="view-header">
+        <div>
+          <div class="view-heading">Live trading</div>
+          <div class="view-sub">Open positions across all clients — every dealing action is logged to the audit trail</div>
+        </div>
+        <button class="btn btn-primary" onclick="openNewPositionModal()">+ New manual position</button>
+      </div>
+      <div class="panel">
+        <table>
+          <thead><tr><th>Client</th><th>Symbol</th><th>Type</th><th>Volume</th><th>Open price</th><th>Current</th><th>S/L</th><th>T/P</th><th>P/L</th><th></th></tr></thead>
+          <tbody id="tradingRows"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ============ SYMBOLS ============ -->
+    <div class="view" id="view-symbols">
+      <div class="view-header">
+        <div>
+          <div class="view-heading">Symbols</div>
+          <div class="view-sub">Spread markup and leverage per instrument</div>
+        </div>
+      </div>
+      <div class="panel">
+        <table>
+          <thead><tr><th>Symbol</th><th>Class</th><th>Spread markup</th><th>Max leverage</th><th>Enabled</th><th></th></tr></thead>
+          <tbody id="symbolRows"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ============ GROUPS ============ -->
+    <div class="view" id="view-groups">
+      <div class="view-header">
+        <div>
+          <div class="view-heading">Client groups</div>
+          <div class="view-sub">Standard, VIP, ECN, Professional, Demo and custom account tiers</div>
+        </div>
+        <button class="btn btn-primary" onclick="showToast('Create-group form — coming soon')">+ New group</button>
+      </div>
+      <div class="panel">
+        <table>
+          <thead><tr><th>Group</th><th>Clients</th><th>Default leverage</th><th>Commission</th><th>Swap-free</th><th></th></tr></thead>
+          <tbody id="groupRows"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ============ RISK RULES ============ -->
+    <div class="view" id="view-risk">
+      <div class="view-header">
+        <div>
+          <div class="view-heading">Risk rules</div>
+          <div class="view-sub">Limits enforced per account, group and symbol</div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-title-row"><span class="panel-title">Broker-wide defaults</span></div>
+        <div style="padding:18px;display:grid;grid-template-columns:1fr 1fr;gap:14px;">
+          <div class="modal-field"><label>Max lot size per order</label><input value="50.00" class="mono"></div>
+          <div class="modal-field"><label>Max open positions per account</label><input value="200" class="mono"></div>
+          <div class="modal-field"><label>Max exposure per symbol</label><input value="500 lots" class="mono"></div>
+          <div class="modal-field"><label>Daily loss limit</label><input value="20% of equity" class="mono"></div>
+          <div class="modal-field"><label>Margin call level</label><input value="100%" class="mono"></div>
+          <div class="modal-field"><label>Stop-out level</label><input value="50%" class="mono"></div>
+        </div>
+        <div style="padding:0 18px 18px;"><button class="btn btn-primary" onclick="showToast('Risk defaults saved')">Save defaults</button></div>
+      </div>
+      <div class="panel">
+        <div class="panel-title-row"><span class="panel-title">Per-group overrides</span></div>
+        <table>
+          <thead><tr><th>Group</th><th>Max lot</th><th>Max exposure</th><th>Daily loss limit</th><th>Trading restriction</th></tr></thead>
+          <tbody id="riskRows"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ============ AUDIT LOG ============ -->
+    <div class="view" id="view-audit">
+      <div class="view-header">
+        <div>
+          <div class="view-heading">Audit log</div>
+          <div class="view-sub">Every sensitive action taken by broker staff, fully logged</div>
+        </div>
+      </div>
+      <div class="panel">
+        <table>
+          <thead><tr><th>Staff member</th><th>Action</th><th>Target</th><th>Time</th></tr></thead>
+          <tbody id="auditRows"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ============ REPORTS ============ -->
+    <div class="view" id="view-reports">
+      <div class="view-header">
+        <div>
+          <div class="view-heading">Reports</div>
+          <div class="view-sub">Revenue, volume, and client acquisition</div>
+        </div>
+      </div>
+      <div class="stat-grid" style="grid-template-columns:repeat(4,1fr)">
+        <div class="stat-card"><div class="stat-label">Trading volume (30d)</div><div class="stat-value">18,420 lots</div></div>
+        <div class="stat-card"><div class="stat-label">Spread revenue (30d)</div><div class="stat-value">$41,280</div></div>
+        <div class="stat-card"><div class="stat-label">Net deposits (30d)</div><div class="stat-value">$196,700</div></div>
+        <div class="stat-card"><div class="stat-label">New clients (30d)</div><div class="stat-value">64</div></div>
+      </div>
+      <div class="panel">
+        <div class="panel-title-row"><span class="panel-title">Export</span></div>
+        <div style="padding:18px;display:flex;gap:10px;">
+          <button class="btn btn-ghost" onclick="showToast('Exporting trading report…')">Trading report (CSV)</button>
+          <button class="btn btn-ghost" onclick="showToast('Exporting financial report…')">Financial report (CSV)</button>
+          <button class="btn btn-ghost" onclick="showToast('Exporting client report…')">Client report (CSV)</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ STAFF ============ -->
+    <div class="view" id="view-staff">
+      <div class="view-header">
+        <div>
+          <div class="view-heading">Staff &amp; roles</div>
+          <div class="view-sub">Admin users with access to this backoffice</div>
+        </div>
+        <button class="btn btn-primary" onclick="showToast('Invite-staff form — coming soon')">+ Invite staff</button>
+      </div>
+      <div class="panel">
+        <table>
+          <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Last active</th><th>Status</th></tr></thead>
+          <tbody id="staffRows"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ============ SETTINGS ============ -->
+    <div class="view" id="view-settings">
+      <div class="view-header">
+        <div>
+          <div class="view-heading">Broker settings</div>
+          <div class="view-sub">Branding and platform configuration</div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-title-row"><span class="panel-title">Branding</span></div>
+        <div style="padding:18px;">
+          <div class="modal-field" style="max-width:340px;"><label>Company display name</label><input value="Exness"></div>
+          <div class="modal-field" style="max-width:340px;"><label>Primary brand color</label><input value="#FFCC00"></div>
+          <div class="modal-field" style="max-width:340px;"><label>Plan</label><input value="White-Label — $800/mo" disabled></div>
+          <button class="btn btn-primary" onclick="showToast('Branding saved')">Save changes</button>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ============ BALANCE ADJUST MODAL ============ -->
+<!-- ============ MODIFY POSITION MODAL ============ -->
+<div class="modal-overlay" id="modifyModal">
+  <div class="modal-card">
+    <div class="modal-header">
+      <span class="modal-title">Modify position — <span id="modModalRef" class="mono"></span></span>
+      <button class="modal-close" onclick="closeModal('modifyModal')">✕</button>
+    </div>
+    <div class="modal-field">
+      <label>Volume (lots)</label>
+      <input type="text" id="modVolume" class="mono">
+    </div>
+    <div class="modal-field">
+      <label>Stop loss</label>
+      <input type="text" id="modSl" class="mono" placeholder="—">
+    </div>
+    <div class="modal-field">
+      <label>Take profit</label>
+      <input type="text" id="modTp" class="mono" placeholder="—">
+    </div>
+    <div class="modal-field">
+      <label>Reason (required, logged in audit trail)</label>
+      <textarea id="modReason" rows="2" placeholder="e.g. Client requested SL adjustment via support"></textarea>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeModal('modifyModal')">Cancel</button>
+      <button class="btn btn-primary" onclick="submitModify()">Save changes</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ NEW MANUAL POSITION MODAL ============ -->
+<div class="modal-overlay" id="newPositionModal">
+  <div class="modal-card">
+    <div class="modal-header">
+      <span class="modal-title">New manual position</span>
+      <button class="modal-close" onclick="closeModal('newPositionModal')">✕</button>
+    </div>
+    <div class="modal-field">
+      <label>Client account</label>
+      <select id="npAccount"></select>
+    </div>
+    <div class="modal-field">
+      <label>Symbol</label>
+      <select id="npSymbol">
+        <option>XAUUSD</option><option>EURUSD</option><option>BTCUSD</option><option>US30</option>
+      </select>
+    </div>
+    <div class="modal-field">
+      <label>Side</label>
+      <select id="npSide"><option value="Buy">Buy</option><option value="Sell">Sell</option></select>
+    </div>
+    <div class="modal-field">
+      <label>Volume (lots)</label>
+      <input type="text" id="npVolume" class="mono" value="0.10">
+    </div>
+    <div class="modal-field">
+      <label>Open price</label>
+      <input type="text" id="npPrice" class="mono" placeholder="Market price">
+    </div>
+    <div class="modal-field">
+      <label>Reason (required, logged in audit trail)</label>
+      <textarea id="npReason" rows="2" placeholder="e.g. Phone order — client unable to access platform"></textarea>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeModal('newPositionModal')">Cancel</button>
+      <button class="btn btn-primary" onclick="submitNewPosition()">Open position</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="balanceModal">
+  <div class="modal-card">
+    <div class="modal-header">
+      <span class="modal-title">Adjust balance — <span id="balModalAcct" class="mono"></span></span>
+      <button class="modal-close" onclick="closeModal('balanceModal')">✕</button>
+    </div>
+    <div class="modal-field">
+      <label>Adjustment type</label>
+      <select id="balAdjType">
+        <option value="credit">Credit (add funds)</option>
+        <option value="debit">Debit (remove funds)</option>
+      </select>
+    </div>
+    <div class="modal-field">
+      <label>Amount (USD)</label>
+      <input type="text" id="balAdjAmount" class="mono" placeholder="0.00">
+    </div>
+    <div class="modal-field">
+      <label>Reason (required, logged in audit trail)</label>
+      <textarea id="balAdjReason" rows="2" placeholder="e.g. Manual correction for failed deposit"></textarea>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeModal('balanceModal')">Cancel</button>
+      <button class="btn btn-primary" onclick="submitBalanceAdjustment()">Apply adjustment</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const el = id => document.getElementById(id);
+let toastTimeout;
+function showToast(msg){
+  const t = el('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(toastTimeout);
+  toastTimeout = setTimeout(() => t.classList.remove('show'), 2400);
+}
+
+const VIEW_TITLES = {
+  dashboard: 'Dashboard', clients: 'Clients', kyc: 'KYC review', finance: 'Deposits & withdrawals',
+  ib: 'IB & affiliates', trading: 'Live trading', symbols: 'Symbols', groups: 'Client groups',
+  risk: 'Risk rules', audit: 'Audit log', reports: 'Reports', staff: 'Staff & roles', settings: 'Broker settings',
+};
+
+function switchView(name){
+  document.querySelectorAll('.sb-item[data-view]').forEach(i => i.classList.toggle('active', i.dataset.view === name));
+  document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+  el('view-' + name).classList.add('active');
+  el('tbTitle').textContent = VIEW_TITLES[name];
+}
+
+// ---------- Seed data ----------
+let clients = [
+  { acct: '50291843', name: 'Ahmed Raza', email: 'ahmed.raza@mail.com', balance: 12480.50, equity: 12602.10, kyc: 'approved', group: 'Standard', status: 'active' },
+  { acct: '50291844', name: 'Sara Khan', email: 'sara.khan@mail.com', balance: 890.00, equity: 855.40, kyc: 'pending', group: 'Standard', status: 'active' },
+  { acct: '50291845', name: 'Bilal Ahmed', email: 'bilal.a@mail.com', balance: 45210.00, equity: 46110.75, kyc: 'approved', group: 'VIP', status: 'active' },
+  { acct: '50291846', name: 'Fatima Noor', email: 'fatima.noor@mail.com', balance: 0.00, equity: 0.00, kyc: 'rejected', group: 'Standard', status: 'disabled' },
+  { acct: '50291847', name: 'Usman Tariq', email: 'usman.tariq@mail.com', balance: 3200.75, equity: 3150.20, kyc: 'approved', group: 'ECN', status: 'active' },
+];
+
+let kycQueue = [
+  { client: 'Sara Khan', doc: 'Passport + Proof of address', submitted: '2 hours ago', status: 'pending' },
+  { client: 'Zainab Ali', doc: 'National ID', submitted: '5 hours ago', status: 'pending' },
+  { client: 'Hamza Sheikh', doc: 'Driving license', submitted: '1 day ago', status: 'pending' },
+];
+
+let financeQueue = [
+  { type: 'Withdrawal', client: 'Bilal Ahmed', method: 'Bank transfer', amount: 3200.00, requested: '1 hour ago', status: 'pending' },
+  { type: 'Withdrawal', client: 'Usman Tariq', method: 'Crypto (USDT)', amount: 1000.00, requested: '4 hours ago', status: 'pending' },
+];
+
+const ibs = [
+  { name: 'Trading Circle KHI', clients: 42, volume: '820 lots', rate: '$4/lot', earned: '$3,280' },
+  { name: 'GoldRush Community', clients: 18, volume: '310 lots', rate: '$3.5/lot', earned: '$1,085' },
+];
+
+let posIdCounter = 1;
+let openTrades = [
+  { id: posIdCounter++, client: 'Ahmed Raza', acct: '50291843', symbol: 'XAUUSD', type: 'Buy', volume: '0.50', open: 2391.00, current: 2394.20, sl: 2380.00, tp: 2410.00, pnl: 160.00 },
+  { id: posIdCounter++, client: 'Bilal Ahmed', acct: '50291845', symbol: 'BTCUSD', type: 'Sell', volume: '0.10', open: 65100, current: 64210, sl: null, tp: null, pnl: 89.00 },
+  { id: posIdCounter++, client: 'Usman Tariq', acct: '50291847', symbol: 'EURUSD', type: 'Buy', volume: '1.00', open: 1.0791, current: 1.0842, sl: 1.0750, tp: 1.0900, pnl: 510.00 },
+];
+
+const symbolConfig = [
+  { symbol: 'XAUUSD', cls: 'Metals', spread: '+0.4 pips', leverage: '1:200', enabled: true },
+  { symbol: 'EURUSD', cls: 'Forex', spread: '+0.2 pips', leverage: '1:500', enabled: true },
+  { symbol: 'BTCUSD', cls: 'Crypto', spread: '+0.6%', leverage: '1:20', enabled: true },
+  { symbol: 'US30', cls: 'Indices', spread: '+1.2 pips', leverage: '1:100', enabled: false },
+];
+
+const staffList = [
+  { name: 'Huzaifa Khan', email: 'huzaifa@exness.com', role: 'Broker Admin', active: 'Now', status: 'active' },
+  { name: 'Ayesha Malik', email: 'ayesha@exness.com', role: 'Support', active: '2 hours ago', status: 'active' },
+  { name: 'Danish Iqbal', email: 'danish@exness.com', role: 'Finance', active: '3 days ago', status: 'disabled' },
+];
+
+const groupsList = [
+  { name: 'Standard', clients: 890, leverage: '1:100', commission: '$7/lot', swapFree: false },
+  { name: 'VIP', clients: 62, leverage: '1:200', commission: '$4/lot', swapFree: false },
+  { name: 'ECN', clients: 145, leverage: '1:500', commission: '$3/lot', swapFree: false },
+  { name: 'Professional', clients: 28, leverage: '1:30', commission: '$2/lot', swapFree: false },
+  { name: 'Demo', clients: 159, leverage: '1:500', commission: '—', swapFree: true },
+];
+
+const riskByGroup = [
+  { group: 'Standard', maxLot: '20.00', maxExposure: '200 lots', dailyLoss: '15%', restriction: '—' },
+  { group: 'VIP', maxLot: '50.00', maxExposure: '500 lots', dailyLoss: '25%', restriction: '—' },
+  { group: 'ECN', maxLot: '100.00', maxExposure: '1000 lots', dailyLoss: '30%', restriction: '—' },
+  { group: 'Demo', maxLot: '10.00', maxExposure: '100 lots', dailyLoss: '—', restriction: 'No withdrawals' },
+];
+
+const auditLog = [
+  { staff: 'Huzaifa Khan', action: 'Approved withdrawal — $3,200.00', target: 'Bilal Ahmed', time: '18 min ago' },
+  { staff: 'Ayesha Malik', action: 'Approved KYC document', target: 'Sara Khan', time: '2 hours ago' },
+  { staff: 'Huzaifa Khan', action: 'Adjusted balance — Credit $500.00', target: '50291843', time: '5 hours ago' },
+  { staff: 'Danish Iqbal', action: 'Disabled client account', target: 'Fatima Noor', time: '1 day ago' },
+  { staff: 'Huzaifa Khan', action: 'Changed spread markup XAUUSD → +0.4 pips', target: 'Symbol config', time: '2 days ago' },
+];
+
+const activity = [
+  { event: 'Deposit approved', client: 'Ahmed Raza', amount: '+$2,000.00', time: '12 min ago' },
+  { event: 'Position closed (T/P)', client: 'Bilal Ahmed', amount: '+$340.00', time: '38 min ago' },
+  { event: 'KYC submitted', client: 'Zainab Ali', amount: '—', time: '2 hours ago' },
+  { event: 'Withdrawal requested', client: 'Usman Tariq', amount: '-$1,000.00', time: '4 hours ago' },
+  { event: 'New account created', client: 'Hamza Sheikh', amount: '—', time: '6 hours ago' },
+];
+
+// ---------- Renderers ----------
+function fmt(n){ return Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+
+function renderClients(){
+  el('clientRows').innerHTML = clients.map(c => `
+    <tr>
+      <td class="mono cell-primary">${c.acct}</td>
+      <td>${c.name}<div class="cell-sub">${c.email}</div></td>
+      <td class="mono">${fmt(c.balance)}</td>
+      <td class="mono">${fmt(c.equity)}</td>
+      <td><span class="badge ${c.kyc}">${c.kyc}</span></td>
+      <td>${c.group}</td>
+      <td><span class="badge ${c.status}">${c.status}</span></td>
+      <td>
+        <div class="row-actions">
+          <button class="icon-btn" title="Adjust balance" onclick="openBalanceModal('${c.acct}')">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+          </button>
+          <button class="icon-btn" title="${c.status === 'active' ? 'Disable' : 'Enable'}" onclick="toggleClientStatus('${c.acct}')">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="4.9" y1="4.9" x2="19.1" y2="19.1"/></svg>
+          </button>
+        </div>
+      </td>
+    </tr>
+  `).join('');
+}
+
+function renderKyc(){
+  el('kycRows').innerHTML = kycQueue.map((k, i) => `
+    <tr>
+      <td class="cell-primary">${k.client}</td>
+      <td>${k.doc}</td>
+      <td class="cell-sub">${k.submitted}</td>
+      <td><span class="badge ${k.status}">${k.status}</span></td>
+      <td>
+        <div class="row-actions">
+          <button class="btn btn-success btn-sm" onclick="resolveKyc(${i}, 'approved')">Approve</button>
+          <button class="btn btn-danger btn-sm" onclick="resolveKyc(${i}, 'rejected')">Reject</button>
+        </div>
+      </td>
+    </tr>
+  `).join('') || '<tr class="empty-row"><td colspan="5">No pending KYC submissions</td></tr>';
+  el('kycBadge').textContent = kycQueue.filter(k => k.status === 'pending').length;
+  if(kycQueue.filter(k => k.status === 'pending').length === 0) el('kycBadge').style.display = 'none';
+}
+
+function renderFinance(){
+  el('financeRows').innerHTML = financeQueue.map((f, i) => `
+    <tr>
+      <td class="cell-primary">${f.type}</td>
+      <td>${f.client}</td>
+      <td>${f.method}</td>
+      <td class="mono">${fmt(f.amount)}</td>
+      <td class="cell-sub">${f.requested}</td>
+      <td><span class="badge ${f.status}">${f.status}</span></td>
+      <td>
+        <div class="row-actions">
+          <button class="btn btn-success btn-sm" onclick="resolveFinance(${i}, 'approved')">Approve</button>
+          <button class="btn btn-danger btn-sm" onclick="resolveFinance(${i}, 'rejected')">Reject</button>
+        </div>
+      </td>
+    </tr>
+  `).join('') || '<tr class="empty-row"><td colspan="7">No pending requests</td></tr>';
+  el('financeBadge').textContent = financeQueue.filter(f => f.status === 'pending').length;
+  if(financeQueue.filter(f => f.status === 'pending').length === 0) el('financeBadge').style.display = 'none';
+}
+
+function renderIb(){
+  el('ibRows').innerHTML = ibs.map(i => `
+    <tr>
+      <td class="cell-primary">${i.name}</td>
+      <td>${i.clients}</td>
+      <td class="mono">${i.volume}</td>
+      <td class="mono">${i.rate}</td>
+      <td class="mono" style="color:var(--buy)">${i.earned}</td>
+      <td><span class="badge active">active</span></td>
+    </tr>
+  `).join('');
+}
+
+function renderTrading(){
+  el('tradingRows').innerHTML = openTrades.map(t => `
+    <tr>
+      <td class="cell-primary">${t.client}<div class="cell-sub mono">${t.acct}</div></td>
+      <td>${t.symbol}</td>
+      <td><span class="badge ${t.type === 'Buy' ? 'approved' : 'rejected'}">${t.type}</span></td>
+      <td class="mono">${t.volume}</td>
+      <td class="mono">${t.open}</td>
+      <td class="mono">${t.current}</td>
+      <td class="mono cell-sub">${t.sl ?? '—'}</td>
+      <td class="mono cell-sub">${t.tp ?? '—'}</td>
+      <td class="mono" style="color:${t.pnl >= 0 ? 'var(--buy)' : 'var(--sell)'}">${t.pnl >= 0 ? '+' : ''}${fmt(t.pnl)}</td>
+      <td>
+        <div class="row-actions">
+          <button class="icon-btn" title="Modify SL/TP/volume" onclick="openModifyModal(${t.id})">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+          </button>
+          <button class="icon-btn" title="Reverse (${t.type === 'Buy' ? 'switch to Sell' : 'switch to Buy'})" onclick="reverseTrade(${t.id})">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 1l4 4-4 4"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><path d="M7 23l-4-4 4-4"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
+          </button>
+          <button class="btn btn-danger btn-sm" onclick="closeTrade(${t.id})">Close</button>
+          <button class="icon-btn" title="Delete (erroneous entry only)" onclick="deleteTrade(${t.id})">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+      </td>
+    </tr>
+  `).join('') || '<tr class="empty-row"><td colspan="10">No open positions</td></tr>';
+}
+
+function findTrade(id){ return openTrades.find(t => t.id === id); }
+
+function closeTrade(id){
+  const t = findTrade(id);
+  if(!t) return;
+  openTrades = openTrades.filter(t => t.id !== id);
+  renderTrading();
+  showToast(`Closed ${t.symbol} for ${t.client} — ${t.pnl >= 0 ? '+' : ''}${fmt(t.pnl)} USD`);
+}
+
+function deleteTrade(id){
+  const t = findTrade(id);
+  if(!t) return;
+  openTrades = openTrades.filter(t => t.id !== id);
+  renderTrading();
+  showToast(`Deleted erroneous position — ${t.symbol} for ${t.client} (logged to audit trail)`);
+}
+
+function reverseTrade(id){
+  const t = findTrade(id);
+  if(!t) return;
+  t.type = t.type === 'Buy' ? 'Sell' : 'Buy';
+  t.open = t.current;
+  t.sl = null; t.tp = null;
+  t.pnl = 0;
+  renderTrading();
+  showToast(`Reversed ${t.client}'s ${t.symbol} position to ${t.type}`);
+}
+
+let modifyTargetId = null;
+function openModifyModal(id){
+  const t = findTrade(id);
+  if(!t) return;
+  modifyTargetId = id;
+  el('modModalRef').textContent = `${t.symbol} — ${t.client}`;
+  el('modVolume').value = t.volume;
+  el('modSl').value = t.sl ?? '';
+  el('modTp').value = t.tp ?? '';
+  el('modReason').value = '';
+  openModal('modifyModal');
+}
+
+function submitModify(){
+  const reason = el('modReason').value.trim();
+  if(!reason){ showToast('Reason is required for the audit trail'); return; }
+  const t = findTrade(modifyTargetId);
+  t.volume = el('modVolume').value.trim();
+  const sl = parseFloat(el('modSl').value);
+  const tp = parseFloat(el('modTp').value);
+  t.sl = isNaN(sl) ? null : sl;
+  t.tp = isNaN(tp) ? null : tp;
+  renderTrading();
+  closeModal('modifyModal');
+  showToast(`Modified ${t.symbol} position for ${t.client}`);
+}
+
+function openNewPositionModal(){
+  const select = el('npAccount');
+  select.innerHTML = clients.map(c => `<option value="${c.acct}">${c.name} — ${c.acct}</option>`).join('');
+  el('npVolume').value = '0.10';
+  el('npPrice').value = '';
+  el('npReason').value = '';
+  openModal('newPositionModal');
+}
+
+function submitNewPosition(){
+  const reason = el('npReason').value.trim();
+  if(!reason){ showToast('Reason is required for the audit trail'); return; }
+  const acctVal = el('npAccount').value;
+  const client = clients.find(c => c.acct === acctVal);
+  const price = parseFloat(el('npPrice').value) || 1.0000;
+
+  openTrades.push({
+    id: posIdCounter++, client: client ? client.name : 'Unknown', acct: acctVal,
+    symbol: el('npSymbol').value, type: el('npSide').value,
+    volume: el('npVolume').value.trim(), open: price, current: price,
+    sl: null, tp: null, pnl: 0,
+  });
+  renderTrading();
+  closeModal('newPositionModal');
+  showToast(`Manual ${el('npSide').value} position opened for ${client ? client.name : acctVal}`);
+}
+
+function renderSymbols(){
+  el('symbolRows').innerHTML = symbolConfig.map((s, i) => `
+    <tr>
+      <td class="cell-primary">${s.symbol}</td>
+      <td>${s.cls}</td>
+      <td class="mono">${s.spread}</td>
+      <td class="mono">${s.leverage}</td>
+      <td><span class="badge ${s.enabled ? 'active' : 'disabled'}">${s.enabled ? 'enabled' : 'disabled'}</span></td>
+      <td><button class="icon-btn" onclick="toggleSymbol(${i})" title="Toggle">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+      </button></td>
+    </tr>
+  `).join('');
+}
+
+function renderStaff(){
+  el('staffRows').innerHTML = staffList.map(s => `
+    <tr>
+      <td class="cell-primary">${s.name}</td>
+      <td class="cell-sub">${s.email}</td>
+      <td>${s.role}</td>
+      <td class="cell-sub">${s.active}</td>
+      <td><span class="badge ${s.status}">${s.status}</span></td>
+    </tr>
+  `).join('');
+}
+
+function renderGroups(){
+  el('groupRows').innerHTML = groupsList.map(g => `
+    <tr>
+      <td class="cell-primary">${g.name}</td>
+      <td class="mono">${g.clients}</td>
+      <td class="mono">${g.leverage}</td>
+      <td class="mono">${g.commission}</td>
+      <td><span class="badge ${g.swapFree ? 'active' : 'disabled'}">${g.swapFree ? 'yes' : 'no'}</span></td>
+      <td><button class="icon-btn" onclick="showToast('Edit group — coming soon')" title="Edit">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+      </button></td>
+    </tr>
+  `).join('');
+}
+
+function renderRisk(){
+  el('riskRows').innerHTML = riskByGroup.map(r => `
+    <tr>
+      <td class="cell-primary">${r.group}</td>
+      <td class="mono">${r.maxLot}</td>
+      <td class="mono">${r.maxExposure}</td>
+      <td class="mono">${r.dailyLoss}</td>
+      <td class="cell-sub">${r.restriction}</td>
+    </tr>
+  `).join('');
+}
+
+function renderAudit(){
+  el('auditRows').innerHTML = auditLog.map(a => `
+    <tr>
+      <td class="cell-primary">${a.staff}</td>
+      <td>${a.action}</td>
+      <td class="cell-sub">${a.target}</td>
+      <td class="cell-sub">${a.time}</td>
+    </tr>
+  `).join('');
+}
+
+function renderActivity(){
+  el('activityRows').innerHTML = activity.map(a => `
+    <tr>
+      <td class="cell-primary">${a.event}</td>
+      <td>${a.client}</td>
+      <td class="mono" style="color:${a.amount.startsWith('+') ? 'var(--buy)' : a.amount.startsWith('-') ? 'var(--sell)' : 'var(--text-3)'}">${a.amount}</td>
+      <td class="cell-sub">${a.time}</td>
+    </tr>
+  `).join('');
+}
+
+// ---------- Actions ----------
+function resolveKyc(i, decision){
+  const item = kycQueue[i];
+  item.status = decision;
+  showToast(`${item.client}'s KYC ${decision}`);
+  setTimeout(() => { kycQueue = kycQueue.filter(k => k.status === 'pending'); renderKyc(); }, 400);
+  renderKyc();
+}
+
+function resolveFinance(i, decision){
+  const item = financeQueue[i];
+  item.status = decision;
+  showToast(`${item.type} for ${item.client} ${decision}`);
+  setTimeout(() => { financeQueue = financeQueue.filter(f => f.status === 'pending'); renderFinance(); }, 400);
+  renderFinance();
+}
+
+function toggleClientStatus(acct){
+  const c = clients.find(c => c.acct === acct);
+  c.status = c.status === 'active' ? 'disabled' : 'active';
+  renderClients();
+  showToast(`${c.name}'s account ${c.status === 'active' ? 'enabled' : 'disabled'}`);
+}
+
+function toggleSymbol(i){
+  symbolConfig[i].enabled = !symbolConfig[i].enabled;
+  renderSymbols();
+  showToast(`${symbolConfig[i].symbol} ${symbolConfig[i].enabled ? 'enabled' : 'disabled'}`);
+}
+
+let balanceModalAcct = null;
+function openBalanceModal(acct){
+  balanceModalAcct = acct;
+  el('balModalAcct').textContent = acct;
+  el('balAdjAmount').value = '';
+  el('balAdjReason').value = '';
+  el('balanceModal').classList.add('show');
+}
+function closeModal(id){ el(id).classList.remove('show'); }
+function openModal(id){ el(id).classList.add('show'); }
+
+function submitBalanceAdjustment(){
+  const amount = parseFloat(el('balAdjAmount').value);
+  const reason = el('balAdjReason').value.trim();
+  if(isNaN(amount) || amount <= 0){ showToast('Enter a valid amount'); return; }
+  if(!reason){ showToast('Reason is required for the audit trail'); return; }
+
+  const c = clients.find(c => c.acct === balanceModalAcct);
+  const type = el('balAdjType').value;
+  const delta = type === 'credit' ? amount : -amount;
+  c.balance += delta;
+  c.equity += delta;
+  renderClients();
+  closeModal('balanceModal');
+  showToast(`${type === 'credit' ? 'Credited' : 'Debited'} ${fmt(amount)} USD — ${c.name}`);
+}
+
+// ---------- Init ----------
+renderClients();
+renderKyc();
+renderFinance();
+renderIb();
+renderTrading();
+renderSymbols();
+renderStaff();
+renderGroups();
+renderRisk();
+renderAudit();
+renderActivity();
+</script>
+
+</body>
+</html>

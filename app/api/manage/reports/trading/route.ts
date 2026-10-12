@@ -28,7 +28,7 @@ export async function GET() {
       symbol: p.symbol.name,
       side: p.side,
       // step 2 number rules (lib/format.ts): volume 2 dp, prices in the symbol's digits, never -0.00, broker view
-      volume: formatCsvNumber(p.volume.toString(), 2),
+      volume: formatCsvNumber((p.closedVolume ?? p.volume).toString(), 2),
       openPrice: formatCsvNumber(p.openPrice.toString(), p.symbol.digits),
       closePrice: formatCsvNumber(p.closePrice?.toString(), p.symbol.digits),
       commission: formatCsvNumber(viewAmount("commission", p.commission.toString(), "broker")),

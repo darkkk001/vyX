@@ -456,6 +456,25 @@ model Broker {
   // mode. Set by BROKER_ADMIN only (CFG screen, app/api/manage/settings), audited.
   withdrawalApproval WithdrawalApproval @default(DUAL)
 
+  // Step 3b item 2 (owner 2026-10-07). All four set by BROKER_ADMIN only (CFG / SEC, app/api/manage/settings), audited.
+  // Staff idle session limit in minutes; null = no idle limit (the 7 / 30 day session lifetime still applies).
+  sessionTimeoutMinutes Int?
+  // Audit rows older than this many days are purged daily (app/api/internal/audit-retention); null = keep forever.
+  // Never under 365 (lib/broker-settings.ts).
+  auditRetentionDays Int?
+  // A CLIENT withdrawal request at or under this amount (account currency) is completed at once; null = off (default).
+  // KYC still applies to client requests; staff routes never block on KYC (owner rule). lib/funds-approval.ts.
+  autoApproveWithdrawalMax Decimal? @db.Decimal(18, 2)
+  // false = no account may hold both sides of one symbol (lib/hedging.ts, every open path). Default true = today.
+  hedgingAllowed Boolean @default(true)
+
+  // Step 3b item 3 (owner 2026-10-07), set by BROKER_ADMIN only, audited (app/api/manage/settings).
+  // Staff must change their own password when it is older than this many days; null = no interval (lib/ip-allowlist.ts passwordExpired).
+  passwordMaxAgeDays Int?
+  // Staff sign-in and every staff request must come from one of these addresses (IPv4, IPv4 /8 to /32, IPv6 exact); empty = off.
+  // The address is the first hop of x-forwarded-for (lib/ip-allowlist.ts clientIpFromHeaders). Super Admin is never limited by it.
+  staffIpAllowlist String[] @default([])
+
   // Phase 2 pricing engine (2026-09-07) -- false (default) = every fill
   // site and lib/swap-rollover.ts keep resolving pricing exactly as
   // before (Group/GroupSymbolConfig only, via lib/group-pricing.ts's
@@ -567,6 +586,10 @@ model AdminUser {
   role             AdminRole
   status           AdminStatus @default(ACTIVE)
   lastLoginAt      DateTime?   @db.Timestamptz(3)
+  // Step 3b item 3: when this person last set their own password (null = never recorded: the account's creation date counts; an admin's
+  // reset sets it back to null, so a temporary password is replaced at the next sign-in when the broker has a change interval).
+  passwordChangedAt DateTime? @db.Timestamptz(3)
+  signIns           AdminSignIn[]
   // Extra BROKER_ADMIN-only capabilities delegated to a MANAGER-role
   // admin -- see lib/permissions.ts's PERMISSIONS list. Meaningless for
   // BROKER_ADMIN (already has everything implicitly) and SUPPORT (no
@@ -629,6 +652,39 @@ model AdminUser {
 // each code is consumed (usedAt set) the moment it's used to complete a
 // login, never deleted, so "was this code already used" survives a
 // re-generation cycle's own delete-then-recreate.
+// Step 3b item 5 (owner 2026-10-07): one row per staff sign-in (and per sign-in an IP allowlist refused): the address is the first hop of
+// x-forwarded-for (lib/ip-allowlist.ts). Read by a broker admin on Staff (devices and IP addresses); the newest 200 per person are kept.
+model AdminSignIn {
+  id        String    @id @default(cuid())
+  adminId   String
+  adminUser AdminUser @relation(fields: [adminId], references: [id], onDelete: Cascade)
+  brokerId  String?
+  ip        String
+  userAgent String
+  outcome   String // SIGNED_IN | IP_BLOCKED
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+
+  @@index([adminId, createdAt])
+}
+
+// Step 3b item 6 (owner 2026-10-07): what staff decided about an account on the Risk radar. One row per account, only while it holds
+// something (a flag, a whitelist, or a note); the row is deleted when all three are empty. A flag keeps the account in the flagged list
+// (and the RDR badge) whatever the patterns say; a whitelist takes it out of both; the two never hold together. lib/risk-marks.ts.
+model RiskAccountMark {
+  id                 String     @id @default(cuid())
+  brokerId           String
+  accountId          String     @unique
+  account            Account    @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  flagged            Boolean    @default(false)
+  whitelisted        Boolean    @default(false)
+  note               String     @default("")
+  updatedByAdminId   String?
+  createdAt          DateTime   @default(now()) @db.Timestamptz(3)
+  updatedAt          DateTime   @updatedAt @db.Timestamptz(3)
+
+  @@index([brokerId])
+}
+
 model AdminBackupCode {
   id        String    @id @default(cuid())
   adminId   String
@@ -645,6 +701,7 @@ model AdminBackupCode {
 // ─────────────────────────────────────────────────────────────────────────
 
 model Account {
+  riskMark RiskAccountMark?
   id            String        @id @default(cuid())
   brokerId      String
   broker        Broker        @relation(fields: [brokerId], references: [id])
@@ -1505,6 +1562,14 @@ model Transaction {
   markedByAdmin     AdminUser?        @relation("TransactionMarkedBy", fields: [markedByAdminId], references: [id])
   markedAt          DateTime?         @db.Timestamptz(3)
 
+  // Structured close fields (hotfix 2026-10-12, docs/POSITION-DEAL-MODEL.md): set on the TRADE_PNL row a close writes,
+  // so nothing has to parse `note`. closeSwap = this close's pro-rata share of Position.swap (no money moves for it).
+  // closeByPositionId = the opposite leg of a close-by. All null on rows written before this and on non-close rows.
+  closeVolume       Decimal?          @db.Decimal(10, 2)
+  closePrice        Decimal?          @db.Decimal(18, 5)
+  closeSwap         Decimal?          @db.Decimal(18, 2)
+  closeByPositionId String?
+
   // Client cabinet Funds UI (VYX-FUNDS-V0) -- provider-agnostic PSP
   // adapter fields, all nullable/additive so every pre-existing
   // Transaction row (trades, adjustments, swap, the old bare-amount
@@ -1868,6 +1933,8 @@ model Order {
   closesPositionId String?
   closesPosition   Position? @relation("OrderCloses", fields: [closesPositionId], references: [id])
   closeVolume      Decimal?  @db.Decimal(10, 2)
+  // Close-by link for a dealer-queued close-by: the opposite leg's position id, carried through to execution.
+  closeByPositionId String?
 
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
@@ -1908,6 +1975,10 @@ model Position {
   realizedPnl     Decimal?       @db.Decimal(18, 4)
   swap            Decimal        @default(0) @db.Decimal(18, 4)
   commission      Decimal        @default(0) @db.Decimal(18, 4)
+  // Cumulative lots closed and cumulative swap attributed to closes (hotfix 2026-10-12). realizedPnl is cumulative too.
+  // volume stays the open remainder; swap stays the total accrued. NULL on rows closed before the hotfix.
+  closedVolume    Decimal?       @db.Decimal(10, 2)
+  closedSwap      Decimal?       @db.Decimal(18, 2)
   // Stamped from BrokerSymbol.defaultBookType at fill time -- record-
   // keeping only, see that field's schema comment.
   bookType        BookType       @default(B_BOOK)

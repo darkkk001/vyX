@@ -86,7 +86,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     if (!found || found.brokerId !== brokerId) return NextResponse.json({ error: "group not found" }, { status: 404 });
     const structural = checkAccountStructure({ accountMode: "LIVE", group: found, allowCoverage: false });
     if (structural) return NextResponse.json({ error: structural.message, code: structural.code }, { status: 400 });
-    if (!found.isClientSelectable) return NextResponse.json({ error: "that group is not available for client accounts", code: "GROUP_NOT_CLIENT_SELECTABLE" }, { status: 400 });
+    // Owner 2026-10-07: staff approving a request may pick any non-system group (isClientSelectable only limits signup).
     chosenGroup = { id: found.id, leverage: found.leverage };
   }
   // D4 (owner 2026-09-30): the group is the pricing tier -- a new live account gets NO account type, whatever the client

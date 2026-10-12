@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { checkHedgingAllowed } from "@/lib/hedging";
 import { getAccountSession } from "@/lib/account-auth";
 import { openPositionFromOrder } from "@/lib/dealing";
 import { executeQueuedCloseInTx, afterQueuedCloseExecuted } from "@/lib/queued-close";
@@ -181,6 +182,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
           order.symbolId
         )
       : null) ??
+    (await checkHedgingAllowed(prisma, broker, { accountId: order.accountId, symbolId: order.symbolId, side: order.side })) ??
     (await checkMaxOpenPositions(prisma, order.accountId, broker.maxOpenPositionsPerAccount)) ??
     (await checkSymbolExposure(prisma, order.accountId, order.symbolId, order.volume, brokerSymbol.maxExposure)) ??
     (await checkBrokerExposure(prisma, order.brokerId, order.volume, broker.totalExposureLimit)) ??

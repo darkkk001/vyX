@@ -191,7 +191,7 @@ describe("ConfigChanged: every backoffice config write announces itself", () => 
     const me = await import("@/app/api/trade/me/route");
     expect((await (await (me.GET as unknown as () => Promise<Response>)()).json()).tradingState).toBe("open");
     const { PATCH } = await import("@/app/api/manage/groups/[id]/halt/route");
-    const req = new NextRequest(`https://t.local/api/manage/groups/${fx.groupId}/halt`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ halted: true }) });
+    const req = new NextRequest(`https://t.local/api/manage/groups/${fx.groupId}/halt`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ halted: true, reason: "Feed check" }) });
     const res = await (PATCH as unknown as (r: NextRequest, c: unknown) => Promise<Response>)(req, { params: Promise.resolve({ id: fx.groupId }) });
     expect(res.status).toBe(200);
     expect(publishTradingEvent).toHaveBeenCalledWith("ConfigChanged", { broker_id: fx.brokerId, scope: "groups" });

@@ -196,3 +196,48 @@ function resolve(ctx: Ctx, status: number | null, fallback: string): string {
 export function plainReason(err: unknown, fallback: string = PLAIN.notProcessed): string {
   return plainError(err instanceof Error || typeof err === "string" ? err : String(err), fallback, { audience: "staff" });
 }
+
+// ---- Order / close / modify / cancel paths (hotfix 2026-10-08) ----
+// "Could not load. Try again." is the generic fallback for a failed READ. On a trade action it told the trader nothing
+// (live: eleven refused orders, one sentence). Every trade action goes through tradeActionError() instead, which says one
+// of exactly three things: prices are the problem, the server is the problem, or the order was refused and why.
+
+export const TRADE_TEXT = {
+  prices: "Prices unavailable, try again",
+  server: "Server error, try again",
+  rejectedPrefix: "Order rejected: ",
+} as const;
+
+const PRICE_CODES = new Set(["NO_LIVE_FEED", "PRICE_STALE", "NO_CONVERSION_RATE", "NO_PRICE", "PRICE_UNAVAILABLE"]);
+const NETWORK_TEXT = /^network error|failed to fetch|fetch failed|networkerror|load failed|ECONN\w+|ENOTFOUND|EAI_AGAIN|timed out|ETIMEDOUT|request to \S+ failed|could not reach the server|did not answer in time|could not complete the request|could not load|trading is temporarily unavailable|trading is briefly unavailable/i;
+const PRICE_TEXT = /no live feed|live prices? (are )?(unavailable|interrupted)|no live price|price (is )?(out of date|unavailable|stale)|prices? (is |are )?(stale|unavailable)|price feed/i;
+
+/** Full detail of a failed trade request, for the console / log (never shown to the trader). */
+export function tradeErrorDetail(input: unknown): { status: number | null; code: string | null; message: string; requestId: string | null } {
+  const { text, body, status } = extract(input);
+  const o = input && typeof input === "object" ? (input as Record<string, unknown>) : null;
+  const reqId = bodyStr(body, "requestId") ?? bodyStr(body, "request_id") ?? (o ? bodyStr(o, "requestId") : null);
+  return { status, code: bodyStr(body, "code") ?? (CODE_ONLY.test(text.trim()) ? text.trim() : null), message: text, requestId: reqId };
+}
+
+/**
+ * The sentence for a failed order / close / partial close / close-by / modify / cancel. One of:
+ *  - "Prices unavailable, try again": no or stale price;
+ *  - "Order rejected: <reason>": a business refusal (margin, volume, trading rights, market closed, slippage...), the
+ *    reason taken from the server's code or sentence through plainError();
+ *  - "Server error, try again": a 5xx, a dropped connection, a timeout, or anything without a usable reason.
+ * The status, code, raw message and request id go to the console.
+ */
+export function tradeActionError(input: unknown, opts?: { audience?: Audience }): string {
+  const detail = tradeErrorDetail(input);
+  const { status, code, message } = detail;
+  const raw = message.trim();
+  console.error("[trade-error]", JSON.stringify(detail));
+  if ((code && PRICE_CODES.has(code)) || PRICE_TEXT.test(raw)) return TRADE_TEXT.prices;
+  if (status === 401) return plainError(input, TRADE_TEXT.server, opts); // a signed-out session is not a refused order
+  const refused = status !== null && status >= 400 && status < 500;
+  if (!refused || NETWORK_TEXT.test(raw)) return TRADE_TEXT.server;
+  const reason = plainError(input, "", opts).replace(/[.\s]+$/, "");
+  if (!reason || /^(could not load|could not complete the request|could not be processed)/i.test(reason)) return TRADE_TEXT.server;
+  return TRADE_TEXT.rejectedPrefix + reason;
+}

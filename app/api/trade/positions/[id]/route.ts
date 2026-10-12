@@ -1,15 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { tradingRightsRefusal } from "@/lib/account-trading-rights";
-import { accountClosePrice, loadAccountAskRules } from "@/lib/ask-markup";
+import { loadAccountAskRules } from "@/lib/ask-markup";
 import { getLivePriceRow } from "@/lib/live-price";
 import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
-import { validateSlTp } from "@/lib/trading";
-import { checkTradingSession, computeNextSessionOpen } from "@/lib/risk";
-import { publishTradingEvent } from "@/lib/nats";
-import { recordDealerActivity } from "@/lib/dealer-activity";
-import { isDealingManagedAccount, deskIsOn } from "@/lib/dealing-routing";
-import { runAfterResponse } from "@/lib/after-response";
+import { announcePositionModified, refuseModify } from "@/lib/position-modify";
 
 // Inline SL/TP edit on an open position — side-aware validated against the
 // client-reported current price, same rule as order placement.
@@ -56,43 +51,14 @@ async function handleModify(request: NextRequest, params: Promise<{ id: string }
   // per-account trading rights (2026-09-28): a read-only account changes nothing itself
   const rightsRefused = rightsRow ? tradingRightsRefusal(rightsRow, "modify") : null;
   if (rightsRefused) return rightsRefused;
-  if (position.status !== "OPEN") {
-    return NextResponse.json({ error: "position is not open" }, { status: 409 });
-  }
   const brokerSymbol = brokerSymbolRow && symbol ? { ...brokerSymbolRow, symbol, tradingSessions } : null;
 
-  // Same fix as position close (app/api/trade/positions/[id]/close/
-  // route.ts, 2026-09-05): this route had NO server-side market-state
-  // check at all, relying entirely on WebTrader.tsx's own client-side
-  // `mm.live` gate, which conflates "market normally closed" with "feed
-  // down" and always showed "No live feed for this symbol" for both. A
-  // trader modifying SL/TP against a closed market's stale reference price
-  // needs the same real MARKET_CLOSED + next-open-time answer close now
-  // gives, not a false report that the feed itself is broken.
-  const sessionError = checkTradingSession(brokerSymbol?.tradingSessions ?? [], new Date(), brokerSymbol?.symbol.category ?? "FOREX");
-  if (sessionError) {
-    const nextOpenAt = computeNextSessionOpen(brokerSymbol?.tradingSessions ?? [], new Date(), brokerSymbol?.symbol.category ?? "FOREX");
-    return NextResponse.json({ error: sessionError, nextOpenAt: nextOpenAt.toISOString() }, { status: 400 });
-  }
-
-  // what the position closes / triggers at: a BUY at the raw bid, a SELL at its account's ask (lib/ask-markup.ts)
+  // Same fix as position close (app/api/trade/positions/[id]/close/route.ts, 2026-09-05): a server-side market-state
+  // check (real MARKET_CLOSED + next-open time, not "feed down"), then the server's own live close-side price and the
+  // side-aware SL / TP / stops-level rule. All of it lives in lib/position-modify.ts, shared with modify-bulk.
   const askRuleFor = position.side === "SELL" && brokerSymbol && live ? await loadAccountAskRules(prisma, position.accountId, [position.symbolId]) : null;
-  const serverClosePrice = brokerSymbol && live ? accountClosePrice(position.side, live.bid, live.ask, askRuleFor?.(position.symbolId)).toString() : null;
-  if (!serverClosePrice) {
-    // no server price at all right now: refuse rather than trust the client's number
-    return NextResponse.json({ error: "NO_LIVE_FEED", symbol: brokerSymbol?.symbol.name ?? null }, { status: 400 });
-  }
-  const validationError = validateSlTp({
-    side: position.side,
-    referencePrice: serverClosePrice,
-    slPrice: slPrice === undefined ? position.slPrice : slPrice,
-    tpPrice: tpPrice === undefined ? position.tpPrice : tpPrice,
-    digits: brokerSymbol?.symbol.digits,
-    stopLevel: brokerSymbol?.stopLevel,
-  });
-  if (validationError) {
-    return NextResponse.json({ error: validationError }, { status: 400 });
-  }
+  const refused = refuseModify({ position, brokerSymbol, symbolName: brokerSymbol?.symbol.name ?? null, live, askRuleFor, slPrice, tpPrice });
+  if (refused) return NextResponse.json(refused.body, { status: refused.status });
 
   const updated = await prisma.position.update({
     where: { id },
@@ -101,41 +67,7 @@ async function handleModify(request: NextRequest, params: Promise<{ id: string }
       ...(tpPrice !== undefined ? { tpPrice } : {}),
     },
   });
-  // Latency fix 2 (docs/audit/2026-09-24/latency-contract.md): the updated row in the response AND the event, so the
-  // terminal moves the SL/TP line from whichever arrives first.
   const row = { ...updated, symbol: { name: symbol!.name, digits: symbol!.digits, contractSize: symbol!.contractSize } };
-  await runAfterResponse("publish PositionModified", () =>
-    publishTradingEvent("PositionModified", { position_id: id, account_id: session.accountId, broker_id: session.brokerId, position: row })
-  );
-  // the dealer-activity feed (backoffice) after the response; its account / broker lookups with it
-  await runAfterResponse("modify follow-through", async () => {
-    const [account, brokerForActivity] = await Promise.all([
-      prisma.account.findUnique({
-        where: { id: position.accountId },
-        select: { accountNumber: true, fullName: true, group: { select: { groupType: true, dealingMode: true, forceDealingMode: true, category: true } } },
-      }),
-      prisma.broker.findUnique({ where: { id: session.brokerId }, select: { dealingModeAt: true, dealingDeskAutoFillAt: true } }),
-    ]);
-    if (!account) return;
-    await recordDealerActivity(prisma, {
-      brokerId: session.brokerId,
-      accountId: session.accountId,
-      accountNumber: account.accountNumber,
-      accountFullName: account.fullName,
-      isDealingGroup: isDealingManagedAccount({ group: account.group, deskOn: deskIsOn(brokerForActivity) }),
-      action: "ORDER_MODIFIED",
-      symbol: brokerSymbol?.symbol.name ?? "",
-      side: position.side,
-      volume: position.volume.toString(),
-      values: {
-        oldSlPrice: position.slPrice?.toString() ?? null,
-        newSlPrice: slPrice === undefined ? (position.slPrice?.toString() ?? null) : slPrice,
-        oldTpPrice: position.tpPrice?.toString() ?? null,
-        newTpPrice: tpPrice === undefined ? (position.tpPrice?.toString() ?? null) : tpPrice,
-        onOpenPosition: true,
-      },
-      positionId: id,
-    });
-  });
+  await announcePositionModified({ session, before: position, row, symbolName: symbol!.name, slPrice, tpPrice });
   return NextResponse.json(row);
 }

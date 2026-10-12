@@ -44,6 +44,13 @@ Not blocking any screen (each works today with an extra read); ship them with th
 | `GET /api/manage/risk-radar` | Add `computedAt` (the time of the 5-minute server cache) | issues.md 328: RDR shows no "as of" time | 2026-09-30, owner |
 | balance / position requests (`lib/balance-adjustment.ts`, approve routes) | Never self- or peer-approve: when no eligible approver exists (e.g. a manager-only broker) the request is refused with "needs a broker admin" | issues.md 71: a manager-only tenant files requests nobody can approve | 2026-09-30, owner |
 
+## Infrastructure: tracked items
+
+| Item | Needs | Why | Decided |
+|---|---|---|---|
+| Move the update feed off the repo | Serve `public/native-terminal-updates` and `public/native-backoffice-updates` from a separate host (R2, Vercel Blob or GitHub Releases), point the apps and `tools/publish-*.ps1 -FeedRoot` at it, then `git filter-repo` the feed binaries (~4.2 GB) out of history | Every checkout carries 4.2 GB of installers; CLAUDE.md allows the feed under `public/` only until this is done. Not started | 2026-10-12, owner |
+| Shadow bot credentials | Give `SHADOWBOT_PASSWORD` (the zzshadowbot test accounts' trader password) a known home in `C:\vyx-secrets` | SHADOWBOT_PASSWORD not recorded anywhere reachable (C:\vyx-secrets, Vercel env, this PC's env / Credential Manager, C:\shadow-bot; VPS not checked), so nobody but the owner can run a test-tenant smoke test | 2026-10-12, owner |
+
 ## D4 (Account types removal): open item
 
 - **Next item after the D4 + slippage batch (owner 2026-10-01):** portal Standard / Pro / ECN -> client-selectable groups.

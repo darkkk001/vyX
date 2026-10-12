@@ -49,6 +49,8 @@ export async function closePositionInTx(
     // NotRiskOwnerError (the whole transaction rolls back, nothing is written) when the account has changed hands.
     // Manual closes, mirror / coverage follow-ups and staff closes never set it: they are not risk evaluations.
     riskActor?: RiskOwner;
+    // Close-by: the opposite leg's position id, stored on the TRADE_PNL row (never parsed from the note).
+    closeByPositionId?: string | null;
   }
 ): Promise<ClosePositionOutcome> {
   const { position, closePrice, note } = params;
@@ -61,7 +63,14 @@ export async function closePositionInTx(
   // and reads no price.
   const ccy = await tx.position.findUniqueOrThrow({
     where: { id: position.id },
-    select: { symbol: { select: { quoteCurrency: true } }, account: { select: { currency: true } } },
+    select: {
+      symbol: { select: { quoteCurrency: true } },
+      account: { select: { currency: true } },
+      swap: true,
+      realizedPnl: true,
+      closedVolume: true,
+      closedSwap: true,
+    },
   });
   const rate = await quoteToAccountRate(tx, ccy.symbol.quoteCurrency, ccy.account.currency);
   const quotePnl = computeRealizedPnl({
@@ -73,6 +82,19 @@ export async function closePositionInTx(
   });
   const realizedPnl = rate.eq(1) ? quotePnl : quotePnl.mul(rate).toDecimalPlaces(4);
 
+  // Structured close fields (docs/POSITION-DEAL-MODEL.md section 0). Swap is attributed pro rata by closed lots:
+  // closeSwap = round2((swap - closedSwap) * closedLots / openLotsBeforeClose); the final close takes exactly the
+  // remainder, so the shares add up to Position.swap. Nothing moves in the ledger for it (swap is booked daily).
+  const priorClosedSwap = ccy.closedSwap ?? new Prisma.Decimal(0);
+  const swapRemainder = ccy.swap.sub(priorClosedSwap);
+  const closeSwap = isPartial
+    ? swapRemainder.mul(closeVolume).div(position.volume).toDecimalPlaces(2)
+    : swapRemainder.toDecimalPlaces(2);
+  const cumulativePnl = (ccy.realizedPnl ?? new Prisma.Decimal(0)).add(realizedPnl);
+  const cumulativeVolume = (ccy.closedVolume ?? new Prisma.Decimal(0)).add(closeVolume);
+  const cumulativeSwap = priorClosedSwap.add(closeSwap);
+  const cumulative = { realizedPnl: cumulativePnl, closedVolume: cumulativeVolume, closedSwap: cumulativeSwap };
+
   // The guard is status AND the volume the caller read (2026-09-23). Status alone let a caller holding a
   // stale volume apply after a concurrent partial close had already reduced the position: both partials
   // wrote volume = their own stale read minus their lots and both were credited, and a stale FULL close
@@ -81,14 +103,14 @@ export async function closePositionInTx(
   const positionUpdate = isPartial
     ? await tx.position.updateMany({
         where: guard,
-        data: { volume: position.volume.sub(closeVolume) },
+        data: { volume: position.volume.sub(closeVolume), ...cumulative },
       })
     : await tx.position.updateMany({
         where: guard,
         data: {
           status: "CLOSED",
           closePrice: new Prisma.Decimal(closePrice),
-          realizedPnl,
+          ...cumulative,
           closedAt: new Date(),
         },
       });
@@ -164,6 +186,10 @@ export async function closePositionInTx(
       referenceType: "Position",
       referenceId: position.id,
       note: note ?? (isPartial ? `Partial close: ${closeVolume} lots @ ${closePrice}` : null),
+      closeVolume,
+      closePrice: new Prisma.Decimal(closePrice),
+      closeSwap,
+      closeByPositionId: params.closeByPositionId ?? null,
     },
   });
 

@@ -107,7 +107,7 @@ export default function SettingsDialog({
             <div style={{ display: "flex", flexDirection: "column" }}>
               {row(onOpenChangePassword, "Change password")}
               {row(onOpenSecurity, "Two-factor authentication", twoFactorEnabled ? "On" : "Off")}
-              {row(onOpenKyc, "Verify identity")}
+              {row(onOpenKyc, "KYC")}
             </div>
           ) : null}
 

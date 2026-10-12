@@ -1,5 +1,6 @@
 "use client";
 
+import { kycWord } from "@/lib/kyc-words";
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import {
   SYMBOL_DEFS,
@@ -49,7 +50,7 @@ import IndicatorConfigDialog from "./IndicatorConfigDialog";
 import { playSound } from "@/lib/sounds";
 import { filterEventsForSymbol, nextHighImpactEventWithin, type CalendarEvent } from "@/lib/economic-calendar";
 import { spreadPoints, DEFAULT_WATCHLIST_COLUMN_PREFS, type WatchlistColumnPrefs } from "@/lib/watchlist-columns";
-import { plainError } from "@/lib/plain-error";
+import { plainError, tradeActionError, TRADE_TEXT } from "@/lib/plain-error";
 import { formatCsvNumber, formatMarginLevel, formatMoney, formatPercent, formatSigned, formatVolume, tone, viewAmount, TONE_COLOR, type Tone } from "@/lib/format";
 // WebTrader colour classes per tone (lib/format.ts): profit green, loss red, zero neutral
 const TONE_CSS: Record<Tone, string> = { profit: "pos", loss: "neg", neutral: "" };
@@ -1057,39 +1058,16 @@ export default function WebTrader({
   // trader re-open the ticket and re-enter everything.
   const handleOrderError = useCallback((err: unknown, retry?: () => void) => {
     playSound("error", chartSettingsRef.current);
-    if (err instanceof ApiError && (err.message === "PRICE_STALE" || err.message === "SLIPPAGE_EXCEEDED")) {
-      const reason = err.message === "PRICE_STALE" ? "The price is out of date, order not placed" : "Price moved, order not placed";
-      pushToast(reason, false, retry);
-      return;
-    }
     if (err instanceof ApiError && err.message === "MARKET_CLOSED") {
+      console.error("[trade-error]", JSON.stringify({ status: err.status, code: "MARKET_CLOSED", message: err.message }));
       const info = err.body as { nextOpenAt?: string } | null;
       pushToast(formatMarketClosedMessage(activeSymbol, info?.nextOpenAt));
       return;
     }
-    if (err instanceof ApiError && err.message === "NO_LIVE_FEED") {
-      pushToast("Reconnecting to price feed, try again shortly");
-      return;
-    }
-    if (err instanceof ApiError && err.message === "INSUFFICIENT_MARGIN") {
-      const info = err.body as { required?: string; available?: string } | null;
-      pushToast(
-        info?.required && info?.available
-          ? `Insufficient margin, required $${info.required}, available $${info.available}`
-          : "Insufficient margin, order not placed"
-      );
-      return;
-    }
-    if (err instanceof ApiError && err.message === "INSUFFICIENT_BALANCE") {
-      const info = err.body as { required?: string; balance?: string } | null;
-      pushToast(
-        info?.required && info?.balance
-          ? `Insufficient balance, required $${info.required}, balance $${info.balance}`
-          : "Insufficient balance, order not placed"
-      );
-      return;
-    }
-    pushToast(plainError(err, "Order not placed. Try again."));
+    // hotfix 2026-10-08: one mapping for every refusal (lib/plain-error.ts tradeActionError): prices unavailable /
+    // "Order rejected: <reason>" / server error. A stale or missing price keeps its one-click retry.
+    const text = tradeActionError(err);
+    pushToast(text, false, text === TRADE_TEXT.prices ? retry : undefined);
   }, [pushToast, activeSymbol]);
 
   const askPrompt = useCallback((message: string, defaultValue: string, onSubmit: (value: string) => void) => {
@@ -1278,7 +1256,7 @@ export default function WebTrader({
         );
         await Promise.all([refreshOrders(), refreshPositions(), refreshAccount()]);
       } catch (err) {
-        pushToast(plainError(err, "Could not answer the requote. Try again."));
+        pushToast(tradeActionError(err));
       }
     },
     [pushToast, refreshOrders, refreshPositions, refreshAccount]
@@ -1416,7 +1394,7 @@ export default function WebTrader({
     const header = ["Symbol", "Side", "Volume", "Open Price", "Close Price", "Swap", "Commission", "P&L", "Opened At", "Closed At"];
     const lines = reportRows.map((p) =>
       [
-        p.symbol.name, p.side, formatCsvNumber(p.volume, 2), formatCsvNumber(p.openPrice, p.symbol.digits), formatCsvNumber(p.closePrice, p.symbol.digits),
+        p.symbol.name, p.side, formatCsvNumber(p.closedVolume ?? p.volume, 2), formatCsvNumber(p.openPrice, p.symbol.digits), formatCsvNumber(p.closePrice, p.symbol.digits),
         formatCsvNumber(viewAmount("swap", p.swap, "client")), formatCsvNumber(viewAmount("commission", p.commission, "client")), formatCsvNumber(p.realizedPnl), p.openedAt, p.closedAt ?? "",
       ].map((v) => `"${String(v).replace(/"/g, '""')}"`).join(",")
     );
@@ -2634,7 +2612,7 @@ export default function WebTrader({
       } else if (err instanceof ApiError && err.message === "NO_LIVE_FEED") {
         pushToast("Reconnecting to price feed, try again shortly");
       } else {
-        pushToast(plainError(err, "Could not close the position. Try again."));
+        pushToast(tradeActionError(err));
       }
     }
   }
@@ -2705,7 +2683,7 @@ export default function WebTrader({
       } else if (err instanceof ApiError && err.message === "NO_LIVE_FEED") {
         setPartialCloseError("Reconnecting to price feed, try again shortly");
       } else {
-        setPartialCloseError(plainError(err, "Could not close part of the position. Try again."));
+        setPartialCloseError(tradeActionError(err));
       }
     } finally {
       setPartialCloseBusy(false);
@@ -2737,7 +2715,7 @@ export default function WebTrader({
       setCloseByTarget(null);
       await Promise.all([refreshPositions(), refreshHistory(), refreshAccount()]);
     } catch (err) {
-      setCloseByError(plainError(err, "Could not close by. Try again."));
+      setCloseByError(tradeActionError(err));
     } finally {
       setCloseByBusy(false);
     }
@@ -2772,7 +2750,7 @@ export default function WebTrader({
       pushToast(`${p.symbol.name} reversed to ${newSide}`);
       await Promise.all([refreshPositions(), refreshHistory(), refreshAccount()]);
     } catch (err) {
-      pushToast(plainError(err, "Could not reverse the position. Try again."));
+      pushToast(tradeActionError(err));
     }
   }
 
@@ -2833,7 +2811,7 @@ export default function WebTrader({
       pushToast(`Closed all in ${symbolName}, ${result.successful} position${result.successful === 1 ? "" : "s"} closed${result.failed ? `, ${result.failed} failed` : ""}`, result.failed === 0);
       await Promise.all([refreshPositions(), refreshHistory(), refreshAccount()]);
     } catch (err) {
-      pushToast(plainError(err, "Could not close the positions. Try again."));
+      pushToast(tradeActionError(err));
     }
   }
   async function closeManyBy(scope: "ALL" | "PROFIT" | "LOSS", label: string) {
@@ -2843,7 +2821,7 @@ export default function WebTrader({
       pushToast(`${label}, Requested: ${result.requested}, Successful: ${result.successful}, Failed: ${result.failed}`, result.failed === 0);
       await Promise.all([refreshPositions(), refreshHistory(), refreshAccount()]);
     } catch (err) {
-      pushToast(plainError(err, "Could not close the positions. Try again."));
+      pushToast(tradeActionError(err));
     }
   }
 
@@ -2879,7 +2857,7 @@ export default function WebTrader({
         } else if (err instanceof ApiError && err.message === "NO_LIVE_FEED") {
           pushToast("Reconnecting to price feed, try again shortly");
         } else {
-          pushToast(plainError(err, "Could not save the change. Try again."));
+          pushToast(tradeActionError(err));
         }
       }
     } else if (sltpEdit.posId) {
@@ -2899,7 +2877,7 @@ export default function WebTrader({
           } else if (err instanceof ApiError && err.message === "NO_LIVE_FEED") {
             pushToast("Reconnecting to price feed, try again shortly");
           } else {
-            pushToast(plainError(err, "Could not save the change. Try again."));
+            pushToast(tradeActionError(err));
           }
         }
       }
@@ -2941,7 +2919,7 @@ export default function WebTrader({
       } else if (err instanceof ApiError && err.message === "NO_LIVE_FEED") {
         pushToast("Reconnecting to price feed, try again shortly");
       } else {
-        pushToast(plainError(err, "Could not save the change. Try again."));
+        pushToast(tradeActionError(err));
       }
       return false;
     }
@@ -2961,7 +2939,7 @@ export default function WebTrader({
       await refreshOrders();
       return true;
     } catch (err) {
-      pushToast(plainError(err, "Could not save the change. Try again."));
+      pushToast(tradeActionError(err));
       return false;
     }
   }
@@ -2978,7 +2956,7 @@ export default function WebTrader({
       await refreshOrders();
       return true;
     } catch (err) {
-      pushToast(plainError(err, "Could not save the change. Try again."));
+      pushToast(tradeActionError(err));
       return false;
     }
   }
@@ -4779,7 +4757,7 @@ export default function WebTrader({
                                 <button
                                   className="icon-btn"
                                   title={isDealingPending ? "Cancel - withdraw before the dealer reviews it" : "Cancel order"}
-                                  onClick={() => tradeApi.cancelOrder(o.id).then(refreshOrders)}
+                                  onClick={() => tradeApi.cancelOrder(o.id).then(refreshOrders).catch((err) => { handleOrderError(err); })}
                                 >
                                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
                                 </button>
@@ -4875,7 +4853,7 @@ export default function WebTrader({
                               <span className="pos-cell mono" style={{ color: "var(--text-3)", fontSize: 11 }}>{h.id.slice(-8)}</span>
                               <span className="pos-cell pos-symbol">{h.symbol.name}</span>
                               <span className="pos-cell"><span className={`pos-side ${h.side.toLowerCase()}`}>{h.side === "BUY" ? "Buy" : "Sell"}</span></span>
-                              <span className="pos-cell mono">{formatVolume(h.volume)}</span>
+                              <span className="pos-cell mono">{formatVolume(h.closedVolume ?? h.volume)}</span>
                               <span className="pos-cell mono">{fmt(parseFloat(h.openPrice), h.symbol.digits)}</span>
                               <span className="pos-cell mono">{h.closePrice ? fmt(parseFloat(h.closePrice), h.symbol.digits) : ""}</span>
                               <span className="pos-cell" style={{ color: "var(--text-3)", fontSize: 11 }}>{new Date(h.openedAt).toLocaleDateString([], { month: "short", day: "numeric" })} {new Date(h.openedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
@@ -5529,25 +5507,25 @@ export default function WebTrader({
         </div>
       ) : null}
 
-      {/* ---------- Verify identity (KYC) modal ---------- */}
+      {/* ---------- KYC modal ---------- */}
       {kycModalOpen ? (
         <div className="modal-overlay show" onClick={(e) => { if (e.target === e.currentTarget) setKycModalOpen(false); }}>
           <div className="modal-wrap">
             <button className="modal-close" aria-label="Close" onClick={() => setKycModalOpen(false)}>✕</button>
             <div className="generic-modal-card" style={{ width: 320 }}>
-              <div className="generic-modal-title">Verify identity</div>
+              <div className="generic-modal-title">KYC</div>
               {kycStatus && kycStatus.status !== "REJECTED" ? (
                 <>
                   <p style={{ fontSize: 13, margin: "8px 0" }}>
                     Status:{" "}
                     <strong style={{ color: kycStatus.status === "APPROVED" ? "var(--buy)" : undefined }}>
-                      {kycStatus.status}
+                      {kycWord(kycStatus.status)}
                     </strong>
                   </p>
                   <p style={{ fontSize: 12, color: "var(--text-3)" }}>
                     {kycStatus.status === "PENDING"
                       ? "Your documents are under review."
-                      : "Your identity is verified."}
+                      : "Your KYC is verified."}
                   </p>
                   <div className="modal-actions" style={{ marginTop: 16 }}>
                     <button type="button" className="modal-btn secondary" onClick={() => setKycModalOpen(false)}>Close</button>
@@ -5565,7 +5543,7 @@ export default function WebTrader({
                     setKycSubmitting(true);
                     try {
                       await tradeApi.submitKyc(kycDocumentType, kycFront, kycBack);
-                      pushToast("Identity documents submitted, pending review");
+                      pushToast("KYC documents sent. Pending.");
                       setKycFront(null);
                       setKycBack(null);
                       await refreshKycStatus();
@@ -5674,7 +5652,7 @@ export default function WebTrader({
                             <div key={p.id} className="simple-row" style={{ padding: "6px 10px" }}>
                               <div className="simple-left">
                                 <span className="pos-symbol">{p.symbol.name}</span>
-                                <span className="net-pos-detail mono">{p.side} {formatVolume(p.volume)} @ {p.openPrice}{p.closePrice != null ? ` → ${p.closePrice}` : ""}</span>
+                                <span className="net-pos-detail mono">{p.side} {formatVolume(p.closedVolume ?? p.volume)} @ {p.openPrice}{p.closePrice != null ? ` → ${p.closePrice}` : ""}</span>
                               </div>
                               <div className="simple-right mono" style={{ color: parseFloat(p.realizedPnl ?? "0") >= 0 ? "var(--buy)" : "var(--sell)" }}>
                                 {money(parseFloat(p.realizedPnl ?? "0"))}

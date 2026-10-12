@@ -12,14 +12,14 @@ type Tx = Prisma.TransactionClient;
 
 /** Locks one account's row for the rest of the transaction and returns its current balance. */
 export async function lockAccountBalance(tx: Tx, accountId: string): Promise<Prisma.Decimal> {
-  const rows = await tx.$queryRaw<{ balance: Prisma.Decimal }[]>`SELECT balance FROM "Account" WHERE id = ${accountId} FOR UPDATE`;
+  const rows = await tx.$queryRaw<{ balance: Prisma.Decimal }[]>`SELECT balance FROM "Account" WHERE id = ${accountId} FOR NO KEY UPDATE`;
   if (rows.length === 0) throw new Error(`account ${accountId} not found`);
   return new Prisma.Decimal(rows[0].balance);
 }
 
 /** Locks one account's row and returns its balance AND credit (a close may consume credit: Stage 2 F1). */
 export async function lockAccountFunds(tx: Tx, accountId: string): Promise<{ balance: Prisma.Decimal; credit: Prisma.Decimal }> {
-  const rows = await tx.$queryRaw<{ balance: Prisma.Decimal; credit: Prisma.Decimal }[]>`SELECT balance, credit FROM "Account" WHERE id = ${accountId} FOR UPDATE`;
+  const rows = await tx.$queryRaw<{ balance: Prisma.Decimal; credit: Prisma.Decimal }[]>`SELECT balance, credit FROM "Account" WHERE id = ${accountId} FOR NO KEY UPDATE`;
   if (rows.length === 0) throw new Error(`account ${accountId} not found`);
   return { balance: new Prisma.Decimal(rows[0].balance), credit: new Prisma.Decimal(rows[0].credit) };
 }

@@ -37,11 +37,13 @@ export async function GET(req: Request) {
   // directly on Account itself for newClients. Full demo/live separation
   // across every report (not just these four) is deferred to the Phase 2
   // Reporting v2 module -- this is intentionally narrow.
-  const [volumeAgg, commissionAgg, depositsAgg, withdrawalsAgg, newClients] = await Promise.all([
-    prisma.position.aggregate({
-      where: { brokerId, openedAt: { gte: thirtyDaysAgo }, account: { accountMode: "LIVE", isInternal: false } },
-      _sum: { volume: true },
-    }),
+  // lots traded in the window: an OPEN position is its remaining volume plus what was already closed; a closed one is
+  // its cumulative closedVolume (volume is only the last piece), or volume for rows closed before closedVolume existed
+  const volWhere = { brokerId, openedAt: { gte: thirtyDaysAgo }, account: { accountMode: "LIVE" as const, isInternal: false } };
+  const [volOpen, volDoneNew, volDoneOld, commissionAgg, depositsAgg, withdrawalsAgg, newClients] = await Promise.all([
+    prisma.position.aggregate({ where: { ...volWhere, status: "OPEN" }, _sum: { volume: true, closedVolume: true } }),
+    prisma.position.aggregate({ where: { ...volWhere, status: { not: "OPEN" }, closedVolume: { not: null } }, _sum: { closedVolume: true } }),
+    prisma.position.aggregate({ where: { ...volWhere, status: { not: "OPEN" }, closedVolume: null }, _sum: { volume: true } }),
     prisma.position.aggregate({
       where: { brokerId, status: "CLOSED", closedAt: { gte: thirtyDaysAgo }, account: { accountMode: "LIVE", isInternal: false } },
       _sum: { commission: true },
@@ -62,7 +64,8 @@ export async function GET(req: Request) {
   const netDeposits = (depositsAgg._sum.amount?.toNumber() ?? 0) - Math.abs(withdrawalsAgg._sum.amount?.toNumber() ?? 0);
 
   return NextResponse.json({
-    tradingVolume: volumeAgg._sum.volume?.toNumber() ?? 0,
+    tradingVolume:
+      (volOpen._sum.volume?.toNumber() ?? 0) + (volOpen._sum.closedVolume?.toNumber() ?? 0) + (volDoneNew._sum.closedVolume?.toNumber() ?? 0) + (volDoneOld._sum.volume?.toNumber() ?? 0),
     commissionRevenue: commissionAgg._sum.commission?.toNumber() ?? 0,
     netDeposits,
     newClients,

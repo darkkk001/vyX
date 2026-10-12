@@ -117,6 +117,7 @@ export async function closePositionsByEachOther(
       closePrice,
       closeVolume,
       note: `Close by ${b.id}`,
+      closeByPositionId: b.id,
     });
     if (!outcomeA.closed) return null;
     const outcomeB = await closePositionInTx(tx, {
@@ -124,6 +125,7 @@ export async function closePositionsByEachOther(
       closePrice,
       closeVolume,
       note: `Close by ${a.id}`,
+      closeByPositionId: a.id,
     });
     if (!outcomeB.closed) return null;
     return { outcomeA, outcomeB };

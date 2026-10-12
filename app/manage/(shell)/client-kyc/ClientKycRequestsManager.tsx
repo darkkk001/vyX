@@ -1,5 +1,6 @@
 "use client";
 
+import { kycWord } from "@/lib/kyc-words";
 import { Fragment, useEffect, useState } from "react";
 import { Input } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
@@ -137,7 +138,7 @@ export default function ClientKycRequestsManager() {
                     </div>
                   </TableCell>
                   <TableCell>
-                    <Badge tone={statusTone[row.status as keyof typeof statusTone] ?? "neutral"}>{row.status}</Badge>
+                    <Badge tone={statusTone[row.status as keyof typeof statusTone] ?? "neutral"}>{kycWord(row.status)}</Badge>
                     {row.status === "REJECTED" && row.rejectionReason ? (
                       <div className="mt-0.5 text-xs text-[var(--text-3)]">{row.rejectionReason}</div>
                     ) : null}

@@ -1,5 +1,6 @@
 import "server-only";
 import { accountClosePrice, loadAccountAskRules, loadSellAskRules, valuationAsk } from "@/lib/ask-markup";
+import { checkHedgingAllowed } from "@/lib/hedging";
 import { Prisma, PrismaClient, MirrorRule, OrderSide } from "@prisma/client";
 import { openPositionFromOrder } from "@/lib/dealing";
 import { applySpreadMarkup, pipSize, resolveBookType } from "@/lib/group-pricing";
@@ -334,7 +335,7 @@ async function mirrorFillForRule(db: Db, rule: MirrorRule, source: MirrorSourceP
       }),
       db.broker.findUniqueOrThrow({
         where: { id: rule.brokerId },
-        select: { pricingEngineEnabled: true, tradingHaltedAt: true, closeOnlyAt: true },
+        select: { pricingEngineEnabled: true, tradingHaltedAt: true, closeOnlyAt: true, hedgingAllowed: true },
       }),
     ]);
     if (!targetAccount) {
@@ -366,7 +367,8 @@ async function mirrorFillForRule(db: Db, rule: MirrorRule, source: MirrorSourceP
       checkAccountStatusForOpen(targetAccount) ??
       (targetAccount.group ? checkGroupCloseOnly(targetAccount.group) : null) ??
       checkSymbolTradingMode(brokerSymbol.tradingMode, mirrorSide) ??
-      checkTradingSession(brokerSymbol.tradingSessions, new Date(), brokerSymbol.symbol.category);
+      checkTradingSession(brokerSymbol.tradingSessions, new Date(), brokerSymbol.symbol.category) ??
+      (await checkHedgingAllowed(db, broker, { accountId: rule.targetAccountId, symbolId: source.symbolId, side: mirrorSide }));
     if (tradabilityError) {
       await recordMirrorFailure(db, rule, tradabilityError);
       return;

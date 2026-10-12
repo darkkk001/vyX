@@ -5,6 +5,7 @@ import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { Alert } from "@/components/ui/Alert";
+import { Input } from "@/components/ui/Input";
 import { Modal, ModalActions } from "@/components/ui/Modal";
 import { plainError } from "@/lib/plain-error";
 
@@ -13,11 +14,11 @@ import { plainError } from "@/lib/plain-error";
 // splits "Risk" (limits/dealing-mode config) from "Emergency Controls"
 // (the kill switch), so this is a dedicated place for it rather than one
 // more card buried on the Risk page.
-async function patchTradingHalted(tradingHalted: boolean): Promise<{ tradingHalted: boolean }> {
+async function patchTradingHalted(tradingHalted: boolean, reason: string): Promise<{ tradingHalted: boolean }> {
   const response = await fetch("/api/manage/risk", {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ tradingHalted }),
+    body: JSON.stringify({ tradingHalted, reason }),
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(plainError(data, "Could not save the change. Try again.", { audience: "staff" }));
@@ -34,6 +35,7 @@ export default function EmergencyControls() {
   const [tradingHalted, setTradingHalted] = useState<boolean | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [reason, setReason] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -47,9 +49,10 @@ export default function EmergencyControls() {
     setBusy(true);
     setError(null);
     try {
-      const result = await patchTradingHalted(!tradingHalted);
+      const result = await patchTradingHalted(!tradingHalted, reason);
       setTradingHalted(result.tradingHalted);
       setConfirming(false);
+      setReason("");
     } catch (e) {
       setError(plainError(e, "Could not save the change. Try again."));
     } finally {
@@ -91,11 +94,18 @@ export default function EmergencyControls() {
               ? "New orders and manual position opens will be accepted again immediately."
               : "New orders and manual position opens will be rejected until resumed. Existing open positions are untouched."}
           </p>
+          <Input
+            type="text"
+            maxLength={200}
+            placeholder={tradingHalted ? "Reason (optional, one line)" : "Reason (required, one line)"}
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+          />
           <ModalActions>
             <Button variant="ghost" onClick={() => setConfirming(false)}>
               Cancel
             </Button>
-            <Button variant="danger" disabled={busy} onClick={toggle}>
+            <Button variant="danger" disabled={busy || (!tradingHalted && reason.trim().length === 0)} onClick={toggle}>
               {busy ? "Working..." : tradingHalted ? "Confirm: resume trading" : "Confirm: halt trading"}
             </Button>
           </ModalActions>

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { brokerMaySeeSynthetic, isSyntheticSymbol } from "@/lib/synthetic-symbols";
+import { missingForSymbol } from "@/lib/symbol-completeness";
 import { withConfigEvent } from "@/lib/config-events";
 import { Prisma, TradingMode, BookType } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
@@ -84,6 +85,8 @@ export async function GET() {
       // Step 2 (owner 2026-09-30): how many trading-hours rows this broker has for the symbol (0 = the default week),
       // so SYM's hours summary needs no per-symbol sessions read.
       sessionCount: cfg ? cfg._count.tradingSessions : 0,
+      // hotfix 2026-10-08 (lib/symbol-completeness.ts): what this symbol still needs before it can trade, in plain words ([] = complete)
+      missing: cfg ? missingForSymbol({ symbol, brokerSymbol: cfg }) : [],
     };
   });
 

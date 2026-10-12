@@ -79,6 +79,8 @@ export async function GET() {
   return NextResponse.json({
     ...identity,
     twoFactorSetupRequired: false,
+    // step 3b item 3: the broker's password change interval has run out for this person (they may only change the password)
+    passwordChangeRequired: session!.passwordChangeRequired === true,
     unreadNotifications,
     canManageFinance: session!.role === "BROKER_ADMIN" || permissions.includes("ACCOUNT_FINANCE"),
     // the delegated permissions in force (BROKER_ADMIN: all, implicitly; SUPPORT: none)

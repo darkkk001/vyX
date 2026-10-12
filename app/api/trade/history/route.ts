@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
+import { closeByTarget, closesOf, type CloseTx, type Counterpart } from "@/lib/history-closes";
 
 export async function GET(request: NextRequest) {
   const session = await getAccountSession();
@@ -46,7 +47,26 @@ export async function GET(request: NextRequest) {
     // history asks with from = its newest closedAt and gets only what is new.
     take: clampTake(searchParams.get("limit"), from ? 5000 : 1000),
   });
-  return NextResponse.json(trades);
+  // Terminal 1.0.69 (grouped History): a position that was closed in parts, or against another position (close-by), also
+  // carries `closes` -- one entry per close (volume, price, P/L, time, the ticket it was closed against). Derived from the
+  // TRADE_PNL transactions that reference the position (lib/history-closes.ts); absent on a plain single close.
+  const txRows = trades.length === 0 ? [] : await prisma.transaction.findMany({
+    where: { accountId: session.accountId, type: "TRADE_PNL", referenceType: "Position", referenceId: { in: trades.map((t) => t.id) } },
+    select: { referenceId: true, amount: true, createdAt: true, note: true, closeVolume: true, closePrice: true, closeByPositionId: true },
+  });
+  const byPosition = new Map<string, CloseTx[]>();
+  for (const t of txRows) if (t.referenceId) byPosition.set(t.referenceId, [...(byPosition.get(t.referenceId) ?? []), t]);
+  const ids = new Set<string>(); const tickets = new Set<number>();
+  for (const t of txRows) if (t.closeByPositionId) ids.add(t.closeByPositionId);
+  for (const t of txRows) { const target = closeByTarget(t.note); if (target) { if ("id" in target) ids.add(target.id); else tickets.add(target.ticket); } }
+  const counterparts: Counterpart[] = ids.size + tickets.size === 0 ? [] : await prisma.position.findMany({
+    where: { accountId: session.accountId, OR: [{ id: { in: [...ids] } }, { ticket: { in: [...tickets] } }] },
+    select: { id: true, ticket: true, status: true, volume: true, closePrice: true, closedAt: true },
+  });
+  return NextResponse.json(trades.map((t) => {
+    const closes = closesOf(t, byPosition.get(t.id) ?? [], counterparts);
+    return closes ? { ...t, closes } : t;
+  }));
 }
 
 function clampTake(raw: string | null, fallback: number): number {

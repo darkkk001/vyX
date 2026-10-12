@@ -19,7 +19,7 @@ export default async function ManagerClientKycPage() {
     <main className="mx-auto max-w-6xl">
       <PageHeader
         title="Client KYC"
-        description="Client Portal identity verification and suitability questionnaire submissions. View documents before approving or rejecting."
+        description="Client Portal KYC and suitability questionnaire submissions. View documents before approving or rejecting."
       />
       <ClientKycRequestsManager />
     </main>
