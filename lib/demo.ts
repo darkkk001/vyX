@@ -4,21 +4,14 @@ import crypto from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getRedis } from "@/lib/redis";
-import { demoSubdomain } from "@/lib/demo-policy";
+import { demoSubdomain, GUEST_NUMBER_MAX, GUEST_NUMBER_MIN, isGuestAccountNumber } from "@/lib/demo-policy";
 import { assertAccountStructure } from "@/lib/account-structure";
 
 // QoreTrader demo tenant, server side: who the demo broker is, how a guest account is made, and the Redis state the lazy
 // SL/TP sweep keeps per guest. The tenant is marked by DEMO_BROKER_SUBDOMAIN (lib/demo-policy.ts); no schema change.
 
-// ---- the reserved range of guest account numbers ----
-export const GUEST_NUMBER_MIN = 48_000_000;
-export const GUEST_NUMBER_MAX = 48_999_999;
-const GUEST_NUMBER_RE = /^48[0-9]{6}$/;
-
-/** Is this an account number inside the guest range (8 digits, 48000000..48999999)? */
-export function isGuestAccountNumber(n: string | null | undefined): boolean {
-  return typeof n === "string" && GUEST_NUMBER_RE.test(n);
-}
+// ---- the reserved range of guest account numbers (lib/demo-policy.ts) ----
+export { GUEST_NUMBER_MIN, GUEST_NUMBER_MAX, isGuestAccountNumber };
 
 // ---- limits (owner decisions 2026-10-12) ----
 export const GUEST_START_BALANCE = "10000";

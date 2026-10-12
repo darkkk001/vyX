@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import { isDemoBrokerId } from "@/lib/demo";
+import { DEMO_REFUSAL } from "@/lib/demo-policy";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
@@ -24,6 +26,8 @@ export async function GET() {
   if (!session) {
     return NextResponse.json({ error: "not authenticated" }, { status: 401 });
   }
+  // QoreTrader demo: a second check behind middleware.ts's deny list (no funds, KYC, payment methods or password on the demo)
+  if (await isDemoBrokerId(session.brokerId)) return NextResponse.json({ error: DEMO_REFUSAL }, { status: 403 });
 
   // ADJUSTMENT included alongside the trader's own DEPOSIT/WITHDRAWAL
   // requests -- a staff-initiated balance adjustment (Manager backoffice's
@@ -63,6 +67,8 @@ export async function POST(request: NextRequest) {
   if (!session) {
     return NextResponse.json({ error: "not authenticated" }, { status: 401 });
   }
+  // QoreTrader demo: a second check behind middleware.ts's deny list (no funds, KYC, payment methods or password on the demo)
+  if (await isDemoBrokerId(session.brokerId)) return NextResponse.json({ error: DEMO_REFUSAL }, { status: 403 });
 
   const body = await request.json().catch(() => null);
   const type = body?.type === "WITHDRAWAL" ? "WITHDRAWAL" : body?.type === "DEPOSIT" ? "DEPOSIT" : null;

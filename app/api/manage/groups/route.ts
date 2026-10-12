@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { isDemoBrokerId } from "@/lib/demo";
 import { withConfigEvent } from "@/lib/config-events";
 import { Prisma, GroupTier, GroupDealingMode } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
@@ -195,6 +196,10 @@ async function postHandler(request: NextRequest) {
   // dealing-desk readers that have not moved yet.
   const routing = resolveGroupRouting(body, dealingMode);
   const { category, modeRestriction } = routing;
+  // QoreTrader demo: a hard B-book guard (nothing the demo broker owns may route to a liquidity provider or a coverage account)
+  if (category !== "B_BOOK" && (await isDemoBrokerId(brokerId))) {
+    return NextResponse.json({ error: "The demo broker trades the B-book only." }, { status: 400 });
+  }
   const groupType = legacyGroupTypeFor(routing);
   const forceDealingMode = category === "DEALING" && forceDealingModeRequested;
   // Owner 2026-10-06 (S2): a new B_BOOK / DEALING group is offered to clients automatically; the backoffice no longer

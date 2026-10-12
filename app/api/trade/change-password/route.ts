@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import { isDemoBrokerId } from "@/lib/demo";
+import { DEMO_REFUSAL } from "@/lib/demo-policy";
 import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
 import { getAccountSession, revokeAllAccountSessions } from "@/lib/account-auth";
@@ -8,6 +10,8 @@ export async function POST(request: NextRequest) {
   if (!session) {
     return NextResponse.json({ error: "not authenticated" }, { status: 401 });
   }
+  // QoreTrader demo: a second check behind middleware.ts's deny list (no funds, KYC, payment methods or password on the demo)
+  if (await isDemoBrokerId(session.brokerId)) return NextResponse.json({ error: DEMO_REFUSAL }, { status: 403 });
 
   const body = await request.json().catch(() => null);
   const currentPassword = typeof body?.currentPassword === "string" ? body.currentPassword : "";

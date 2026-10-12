@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import { isDemoBrokerId } from "@/lib/demo";
+import { DEMO_REFUSAL } from "@/lib/demo-policy";
 import { publishTradingEvent } from "@/lib/nats";
 import { put } from "@vercel/blob";
 import { prisma } from "@/lib/prisma";
@@ -11,6 +13,8 @@ export async function GET() {
   if (!session) {
     return NextResponse.json({ error: "not authenticated" }, { status: 401 });
   }
+  // QoreTrader demo: a second check behind middleware.ts's deny list (no funds, KYC, payment methods or password on the demo)
+  if (await isDemoBrokerId(session.brokerId)) return NextResponse.json({ error: DEMO_REFUSAL }, { status: 403 });
 
   const record = await prisma.kycRecord.findUnique({ where: { accountId: session.accountId } });
   if (!record) {
@@ -34,6 +38,8 @@ export async function POST(request: NextRequest) {
   if (!session) {
     return NextResponse.json({ error: "not authenticated" }, { status: 401 });
   }
+  // QoreTrader demo: a second check behind middleware.ts's deny list (no funds, KYC, payment methods or password on the demo)
+  if (await isDemoBrokerId(session.brokerId)) return NextResponse.json({ error: DEMO_REFUSAL }, { status: 403 });
 
   const existing = await prisma.kycRecord.findUnique({ where: { accountId: session.accountId } });
   if (existing && (existing.status === "PENDING" || existing.status === "APPROVED")) {

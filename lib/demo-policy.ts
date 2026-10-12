@@ -79,3 +79,13 @@ export function excludeDemoBroker(): { subdomain?: { not: string } } {
   const sub = demoSubdomain();
   return sub ? { subdomain: { not: sub } } : {};
 }
+
+// ---- the reserved range of guest account numbers (pure, so scripts can use it without the server-only modules) ----
+export const GUEST_NUMBER_MIN = 48_000_000;
+export const GUEST_NUMBER_MAX = 48_999_999;
+const GUEST_NUMBER_RE = /^48[0-9]{6}$/;
+
+/** Is this an account number inside the guest range (8 digits, 48000000..48999999)? */
+export function isGuestAccountNumber(n: string | null | undefined): boolean {
+  return typeof n === "string" && GUEST_NUMBER_RE.test(n);
+}
