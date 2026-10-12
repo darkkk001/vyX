@@ -32,3 +32,13 @@ for (const name of ["DATABASE_URL", "DIRECT_URL"]) {
 if (process.env.ALLOW_TEST_DB_WRITES === "true" && !testDbVerdict(readDotEnv("DATABASE_URL")).ok) {
   throw new Error("[db-guard] ALLOW_TEST_DB_WRITES=true is set next to a blocked DATABASE_URL, remove it.");
 }
+
+// Redis (sessions, rate limits, price-source alert state): the tests that touch it need a LOCAL Redis. Default to scratch
+// database 9 on 127.0.0.1 (the convention in scripts/e2e) so a run without REDIS_URL works wherever the local Redis runs,
+// and refuse any non-local REDIS_URL exactly like the database guard above (a real Redis holds real sessions).
+{
+  if (!process.env.REDIS_URL) process.env.REDIS_URL = "redis://127.0.0.1:6379/9";
+  else if (!/^rediss?:\/\/([^@/]*@)?(127\.0\.0\.1|localhost|\[::1\])([:/]|$)/.test(process.env.REDIS_URL)) {
+    throw new Error(`[db-guard] refusing to run tests: REDIS_URL is not a local Redis (${new URL(process.env.REDIS_URL).host}). Unset it or point it at 127.0.0.1.`);
+  }
+}
