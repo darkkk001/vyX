@@ -26,14 +26,14 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
   const since = new Date(Date.now() - WINDOW_DAYS * 24 * 60 * 60 * 1000);
   const positions = await prisma.position.findMany({
     where: { accountId: id, status: "CLOSED", closedAt: { gte: since } },
-    select: { volume: true, realizedPnl: true, openedAt: true, closedAt: true },
+    select: { volume: true, closedVolume: true, realizedPnl: true, openedAt: true, closedAt: true },
   });
   const row = computeRiskRadarRow(
     id,
     account.accountNumber,
     positions.map((p) => ({
       accountId: id,
-      volume: Number(p.volume),
+      volume: Number(p.closedVolume ?? p.volume),
       realizedPnl: p.realizedPnl === null ? null : Number(p.realizedPnl),
       openedAt: p.openedAt,
       closedAt: p.closedAt ?? p.openedAt,

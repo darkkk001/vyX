@@ -1,5 +1,9 @@
 import { Prisma } from "@prisma/client";
 
+// Since the close-fields hotfix (2026-10-12) every close writes its lots, price and close-by link on the TRADE_PNL row
+// (closeVolume / closePrice / closeByPositionId); those are used first. The note parsing below is only the fallback for
+// rows written before that.
+//
 // The closes behind a History row (terminal 1.0.69, grouped History). A partial close does NOT make a second closed
 // Position row: the one Position keeps its id and ticket, its volume is reduced, and every close (partial, close-by,
 // the final one) writes one TRADE_PNL Transaction with referenceType "Position" and referenceId = that Position's id
@@ -31,7 +35,11 @@ export type HistoryPosition = {
   closePrice: Prisma.Decimal | null;
   closedAt: Date | null;
 };
-export type CloseTx = { referenceId: string | null; amount: Prisma.Decimal; createdAt: Date; note: string | null };
+export type CloseTx = {
+  referenceId: string | null; amount: Prisma.Decimal; createdAt: Date; note: string | null;
+  // structured close fields (null on rows written before the hotfix)
+  closeVolume?: Prisma.Decimal | null; closePrice?: Prisma.Decimal | null; closeByPositionId?: string | null;
+};
 export type Counterpart = { id: string; ticket: number; status: string; volume: Prisma.Decimal; closePrice: Prisma.Decimal | null; closedAt: Date | null };
 
 const PARTIAL = /^Partial close: ([0-9]+(?:\.[0-9]+)?) lots @ ([0-9]+(?:\.[0-9]+)?)$/;
@@ -55,6 +63,11 @@ export function closesOf(position: HistoryPosition, txs: CloseTx[], counterparts
   for (let i = 0; i < sorted.length; i++) {
     const tx = sorted[i];
     const final = i === sorted.length - 1;
+    if (tx.closeVolume != null) {
+      const cp = tx.closeByPositionId ? counterparts.find((c) => c.id === tx.closeByPositionId) : undefined;
+      legs.push({ at: tx.createdAt.toISOString(), volume: tx.closeVolume.toString(), price: tx.closePrice?.toString() ?? null, pnl: tx.amount.toString(), closedByTicket: cp ? cp.ticket : null, final });
+      continue;
+    }
     const target = closeByTarget(tx.note);
     const other = target ? counterparts.find((c) => ("ticket" in target ? c.ticket === target.ticket : c.id === target.id)) : undefined;
     const closedByTicket = other ? other.ticket : target && "ticket" in target ? target.ticket : null;
@@ -74,6 +87,6 @@ export function closesOf(position: HistoryPosition, txs: CloseTx[], counterparts
     }
     return null;
   }
-  const grouped = legs.length > 1 || legs.some((l) => l.closedByTicket != null);
+  const grouped = legs.length > 1 || legs.some((l) => l.closedByTicket != null) || sorted.some((t) => t.closeByPositionId);
   return grouped ? legs : null;
 }

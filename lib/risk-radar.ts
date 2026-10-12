@@ -183,7 +183,7 @@ export async function computeRiskRadar(prisma: PrismaClient, brokerId: string): 
 
   const positions = await prisma.position.findMany({
     where: { brokerId, status: "CLOSED", closedAt: { gte: since, not: null }, account: { isInternal: false } },
-    select: { accountId: true, volume: true, realizedPnl: true, openedAt: true, closedAt: true },
+    select: { accountId: true, volume: true, closedVolume: true, realizedPnl: true, openedAt: true, closedAt: true },
   });
 
   const byAccount = new Map<string, RiskRadarPosition[]>();
@@ -192,7 +192,7 @@ export async function computeRiskRadar(prisma: PrismaClient, brokerId: string): 
     const list = byAccount.get(p.accountId) ?? [];
     list.push({
       accountId: p.accountId,
-      volume: (p.volume as Prisma.Decimal).toNumber(),
+      volume: ((p.closedVolume ?? p.volume) as Prisma.Decimal).toNumber(), // lots traded, not the last remaining piece
       realizedPnl: p.realizedPnl ? (p.realizedPnl as Prisma.Decimal).toNumber() : null,
       openedAt: p.openedAt,
       closedAt: p.closedAt,

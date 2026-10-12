@@ -52,11 +52,12 @@ export async function GET(request: NextRequest) {
   // TRADE_PNL transactions that reference the position (lib/history-closes.ts); absent on a plain single close.
   const txRows = trades.length === 0 ? [] : await prisma.transaction.findMany({
     where: { accountId: session.accountId, type: "TRADE_PNL", referenceType: "Position", referenceId: { in: trades.map((t) => t.id) } },
-    select: { referenceId: true, amount: true, createdAt: true, note: true },
+    select: { referenceId: true, amount: true, createdAt: true, note: true, closeVolume: true, closePrice: true, closeByPositionId: true },
   });
   const byPosition = new Map<string, CloseTx[]>();
   for (const t of txRows) if (t.referenceId) byPosition.set(t.referenceId, [...(byPosition.get(t.referenceId) ?? []), t]);
   const ids = new Set<string>(); const tickets = new Set<number>();
+  for (const t of txRows) if (t.closeByPositionId) ids.add(t.closeByPositionId);
   for (const t of txRows) { const target = closeByTarget(t.note); if (target) { if ("id" in target) ids.add(target.id); else tickets.add(target.ticket); } }
   const counterparts: Counterpart[] = ids.size + tickets.size === 0 ? [] : await prisma.position.findMany({
     where: { accountId: session.accountId, OR: [{ id: { in: [...ids] } }, { ticket: { in: [...tickets] } }] },

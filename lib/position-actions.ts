@@ -110,6 +110,7 @@ export async function executeAdminCloseInTx(
     };
     closePrice: Prisma.Decimal;
     closeVolume: Prisma.Decimal;
+    closeByPositionId?: string | null; // staff close-by: the opposite leg
   }
 ): Promise<AdminCloseResult> {
   const { brokerId, adminId, position, closePrice, closeVolume } = params;
@@ -119,6 +120,7 @@ export async function executeAdminCloseInTx(
     closePrice,
     closeVolume,
     note: isPartial ? `Manual partial close by admin: ${closeVolume} lots @ ${closePrice}` : `Manual close by admin @ ${closePrice}`,
+    closeByPositionId: params.closeByPositionId ?? null,
   });
   if (!outcome.closed) return { closed: false };
 

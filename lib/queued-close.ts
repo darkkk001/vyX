@@ -35,6 +35,7 @@ export type QueueCloseInput = {
   symbolName: string;
   accountNumber: string;
   note: string;
+  closeByPositionId?: string | null; // close-by: the opposite leg, kept on the Order so execution can write the link
 };
 
 export class ClosePendingError extends Error {
@@ -72,6 +73,7 @@ export async function queueCloseInTx(tx: Prisma.TransactionClient, input: QueueC
       source: input.source,
       closesPositionId: input.position.id,
       closeVolume: input.closeVolume,
+      closeByPositionId: input.closeByPositionId ?? null,
     },
   });
   const locked = await tx.position.updateMany({
@@ -181,7 +183,7 @@ export type ExecuteQueuedCloseResult =
 export async function executeQueuedCloseInTx(
   tx: Prisma.TransactionClient,
   p: {
-    order: { id: string; brokerId: string; accountId: string; closesPositionId: string | null; closeVolume: Prisma.Decimal | null; volume: Prisma.Decimal };
+    order: { id: string; brokerId: string; accountId: string; closesPositionId: string | null; closeVolume: Prisma.Decimal | null; volume: Prisma.Decimal; closeByPositionId?: string | null };
     fromStatus: "PENDING" | "REQUOTED";
     closePrice: Prisma.Decimal;
     note: string;
@@ -212,6 +214,7 @@ export async function executeQueuedCloseInTx(
     closePrice: p.closePrice,
     closeVolume,
     note: p.note,
+    closeByPositionId: p.order.closeByPositionId ?? null,
   });
   if (!outcome.closed) {
     await tx.order.update({ where: { id: p.order.id }, data: { status: "CANCELLED", rejectionReason: "position already closed" } });

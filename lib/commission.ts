@@ -20,17 +20,21 @@ async function commissionSince(db: Db, relationship: Relationship, since: Date |
   const closedAt: Prisma.DateTimeNullableFilter = {};
   if (since) closedAt.gt = since;
   if (until) closedAt.lte = until;
-  const agg = await db.position.aggregate({
-    where: {
-      accountId: relationship.clientAccountId,
-      status: "CLOSED",
-      ...(since || until ? { closedAt } : {}),
-    },
-    _sum: { volume: true, commission: true },
-  });
+  const where = {
+    accountId: relationship.clientAccountId,
+    status: "CLOSED" as const,
+    ...(since || until ? { closedAt } : {}),
+  };
+  const agg = await db.position.aggregate({ where, _sum: { commission: true } });
 
   if (relationship.commissionType === "PER_LOT") {
-    const lots = agg._sum.volume ?? new Prisma.Decimal(0);
+    // lots traded = the cumulative closed lots; Position.volume of a closed row is only the last remaining piece, so it
+    // is used only for rows closed before closedVolume existed (hotfix 2026-10-12)
+    const [withClosed, legacy] = await Promise.all([
+      db.position.aggregate({ where: { ...where, closedVolume: { not: null } }, _sum: { closedVolume: true } }),
+      db.position.aggregate({ where: { ...where, closedVolume: null }, _sum: { volume: true } }),
+    ]);
+    const lots = (withClosed._sum.closedVolume ?? new Prisma.Decimal(0)).add(legacy._sum.volume ?? new Prisma.Decimal(0));
     return relationship.commissionRate.mul(lots);
   }
 

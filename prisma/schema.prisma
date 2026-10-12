@@ -1548,6 +1548,14 @@ model Transaction {
   markedByAdmin     AdminUser?        @relation("TransactionMarkedBy", fields: [markedByAdminId], references: [id])
   markedAt          DateTime?         @db.Timestamptz(3)
 
+  // Structured close fields (hotfix 2026-10-12, docs/POSITION-DEAL-MODEL.md): set on the TRADE_PNL row a close writes,
+  // so nothing has to parse `note`. closeSwap = this close's pro-rata share of Position.swap (no money moves for it).
+  // closeByPositionId = the opposite leg of a close-by. All null on rows written before this and on non-close rows.
+  closeVolume       Decimal?          @db.Decimal(10, 2)
+  closePrice        Decimal?          @db.Decimal(18, 5)
+  closeSwap         Decimal?          @db.Decimal(18, 2)
+  closeByPositionId String?
+
   // Client cabinet Funds UI (VYX-FUNDS-V0) -- provider-agnostic PSP
   // adapter fields, all nullable/additive so every pre-existing
   // Transaction row (trades, adjustments, swap, the old bare-amount
@@ -1911,6 +1919,8 @@ model Order {
   closesPositionId String?
   closesPosition   Position? @relation("OrderCloses", fields: [closesPositionId], references: [id])
   closeVolume      Decimal?  @db.Decimal(10, 2)
+  // Close-by link for a dealer-queued close-by: the opposite leg's position id, carried through to execution.
+  closeByPositionId String?
 
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
@@ -1951,6 +1961,10 @@ model Position {
   realizedPnl     Decimal?       @db.Decimal(18, 4)
   swap            Decimal        @default(0) @db.Decimal(18, 4)
   commission      Decimal        @default(0) @db.Decimal(18, 4)
+  // Cumulative lots closed and cumulative swap attributed to closes (hotfix 2026-10-12). realizedPnl is cumulative too.
+  // volume stays the open remainder; swap stays the total accrued. NULL on rows closed before the hotfix.
+  closedVolume    Decimal?       @db.Decimal(10, 2)
+  closedSwap      Decimal?       @db.Decimal(18, 2)
   // Stamped from BrokerSymbol.defaultBookType at fill time -- record-
   // keeping only, see that field's schema comment.
   bookType        BookType       @default(B_BOOK)

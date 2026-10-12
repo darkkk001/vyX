@@ -1394,7 +1394,7 @@ export default function WebTrader({
     const header = ["Symbol", "Side", "Volume", "Open Price", "Close Price", "Swap", "Commission", "P&L", "Opened At", "Closed At"];
     const lines = reportRows.map((p) =>
       [
-        p.symbol.name, p.side, formatCsvNumber(p.volume, 2), formatCsvNumber(p.openPrice, p.symbol.digits), formatCsvNumber(p.closePrice, p.symbol.digits),
+        p.symbol.name, p.side, formatCsvNumber(p.closedVolume ?? p.volume, 2), formatCsvNumber(p.openPrice, p.symbol.digits), formatCsvNumber(p.closePrice, p.symbol.digits),
         formatCsvNumber(viewAmount("swap", p.swap, "client")), formatCsvNumber(viewAmount("commission", p.commission, "client")), formatCsvNumber(p.realizedPnl), p.openedAt, p.closedAt ?? "",
       ].map((v) => `"${String(v).replace(/"/g, '""')}"`).join(",")
     );
@@ -4853,7 +4853,7 @@ export default function WebTrader({
                               <span className="pos-cell mono" style={{ color: "var(--text-3)", fontSize: 11 }}>{h.id.slice(-8)}</span>
                               <span className="pos-cell pos-symbol">{h.symbol.name}</span>
                               <span className="pos-cell"><span className={`pos-side ${h.side.toLowerCase()}`}>{h.side === "BUY" ? "Buy" : "Sell"}</span></span>
-                              <span className="pos-cell mono">{formatVolume(h.volume)}</span>
+                              <span className="pos-cell mono">{formatVolume(h.closedVolume ?? h.volume)}</span>
                               <span className="pos-cell mono">{fmt(parseFloat(h.openPrice), h.symbol.digits)}</span>
                               <span className="pos-cell mono">{h.closePrice ? fmt(parseFloat(h.closePrice), h.symbol.digits) : ""}</span>
                               <span className="pos-cell" style={{ color: "var(--text-3)", fontSize: 11 }}>{new Date(h.openedAt).toLocaleDateString([], { month: "short", day: "numeric" })} {new Date(h.openedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
@@ -5652,7 +5652,7 @@ export default function WebTrader({
                             <div key={p.id} className="simple-row" style={{ padding: "6px 10px" }}>
                               <div className="simple-left">
                                 <span className="pos-symbol">{p.symbol.name}</span>
-                                <span className="net-pos-detail mono">{p.side} {formatVolume(p.volume)} @ {p.openPrice}{p.closePrice != null ? ` → ${p.closePrice}` : ""}</span>
+                                <span className="net-pos-detail mono">{p.side} {formatVolume(p.closedVolume ?? p.volume)} @ {p.openPrice}{p.closePrice != null ? ` → ${p.closePrice}` : ""}</span>
                               </div>
                               <div className="simple-right mono" style={{ color: parseFloat(p.realizedPnl ?? "0") >= 0 ? "var(--buy)" : "var(--sell)" }}>
                                 {money(parseFloat(p.realizedPnl ?? "0"))}
