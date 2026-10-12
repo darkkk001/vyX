@@ -2,6 +2,7 @@ import { PrismaClient } from "@prisma/client";
 import type { TestProject } from "vitest/node";
 import { randomUUID } from "node:crypto";
 import { testDbVerdict } from "./scripts/lib/db-host-policy.mjs";
+import { dropStaleClones } from "./vitest.stale-clones";
 
 // web4 (owner 2026-09-30: "fix the test-suite isolation so the full suite is a reliable gate").
 //
@@ -45,6 +46,8 @@ export default async function setup(project: TestProject) {
   prefix = `${baseDb}_t${run}`.toLowerCase();
   const template = `${prefix}_tpl`;
   admin = new PrismaClient({ datasourceUrl: withDb(base, "postgres") });
+  // clones a killed earlier run left behind (same base only, idle, older than 2 h)
+  await dropStaleClones(admin, baseDb).catch(() => []);
   // the base must be idle for a TEMPLATE copy: drop our own idle sessions first (a previous run's leftovers)
   await admin.$executeRawUnsafe(`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '${baseDb}' AND pid <> pg_backend_pid() AND state = 'idle'`);
   await admin.$executeRawUnsafe(`CREATE DATABASE "${template}" TEMPLATE "${baseDb}" STRATEGY FILE_COPY`);

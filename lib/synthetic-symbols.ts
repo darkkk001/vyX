@@ -1,6 +1,5 @@
 import { Prisma, PrismaClient } from "@prisma/client";
 import { isReservedDemoName } from "@/lib/demo-prices";
-import { demoSubdomain } from "@/lib/demo-policy";
 
 type Db = PrismaClient | Prisma.TransactionClient;
 
@@ -51,10 +50,9 @@ export async function brokerMaySeeSynthetic(db: Db, brokerId: string): Promise<b
 
 /** The demo tenant is the only broker that may see or configure a q-symbol. */
 export async function brokerMaySeeDemoSymbols(db: Db, brokerId: string): Promise<boolean> {
-  const sub = demoSubdomain();
-  if (!sub) return false;
-  const b = await db.broker.findUnique({ where: { id: brokerId }, select: { subdomain: true } });
-  return b?.subdomain === sub;
+  // the sandbox FLAG (Broker.isDemoSandbox), not the environment variable
+  const b = await db.broker.findUnique({ where: { id: brokerId }, select: { isDemoSandbox: true } });
+  return b?.isDemoSandbox === true;
 }
 
 /** true = `name` is reserved for a tenant other than `brokerId` (a v* name for non-shadow-bot brokers, a q* name for non-demo brokers). */

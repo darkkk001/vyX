@@ -122,7 +122,7 @@ describe("the flag keeps the sandbox out of every report and job (no environment
     const { bookPnlRealized, bookPnlFloating } = await import("@/lib/book-pnl");
     const scope = { brokerId: demo.broker.id, coverageAccountId: null };
     expect(await bookPnlRealized(prisma, scope, new Date(Date.now() - 86400000))).toEqual([]);
-    expect(await bookPnlFloating(prisma, scope)).toEqual([]);
+    expect((await bookPnlFloating(prisma, scope)).byCurrency).toEqual([]);
     const { computeRiskRadar, computeSameIpClusters } = await import("@/lib/risk-radar");
     expect(await computeRiskRadar(prisma, demo.broker.id)).toEqual([]);
     expect(await computeSameIpClusters(prisma, demo.broker.id)).toEqual([]);

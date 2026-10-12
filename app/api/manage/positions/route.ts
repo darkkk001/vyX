@@ -223,7 +223,7 @@ export async function GET(request: NextRequest) {
     .map((r) => ({ id: r.ibAccountId, accountNumber: r.ibAccount.accountNumber, fullName: r.ibAccount.fullName }))
     .sort((a, b) => a.accountNumber.localeCompare(b.accountNumber));
 
-  return NextResponse.json({ rows, accounts, symbols: tradableSymbols, groups, ibOptions, fx: { quotes: fx.quotes } });
+  return NextResponse.json({ rows, accounts, symbols: tradableSymbols, groups, ibOptions, fx: { quotes: fx.quotes.map((q) => ({ ...q, symbol: displayCurrency(q.symbol) })) } });
 }
 
 // Manual position open -- a dealing desk placing a MARKET trade for an
