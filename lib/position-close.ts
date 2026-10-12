@@ -44,6 +44,9 @@ export async function closePositionInTx(
     note?: string | null;
     // Close-by: the opposite leg's position id, stored on the TRADE_PNL row (never parsed from the note).
     closeByPositionId?: string | null;
+    // When the close happened, if not now: the QoreTrader demo's lazy SL/TP sweep (lib/demo-sweep.ts) books a close that
+    // the deterministic price path made in the past at that moment. Every live caller omits it (= now, as always).
+    at?: Date;
   }
 ): Promise<ClosePositionOutcome> {
   const { position, closePrice, note } = params;
@@ -104,7 +107,7 @@ export async function closePositionInTx(
           status: "CLOSED",
           closePrice: new Prisma.Decimal(closePrice),
           ...cumulative,
-          closedAt: new Date(),
+          closedAt: params.at ?? new Date(),
         },
       });
 
@@ -182,6 +185,7 @@ export async function closePositionInTx(
       closePrice: new Prisma.Decimal(closePrice),
       closeSwap,
       closeByPositionId: params.closeByPositionId ?? null,
+      ...(params.at ? { createdAt: params.at } : {}),
     },
   });
 

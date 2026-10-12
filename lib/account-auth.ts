@@ -6,6 +6,7 @@ import { checkClientBuild, prefetchClientBuild } from "@/lib/client-builds";
 import { prisma } from "@/lib/prisma";
 import { getRedis } from "@/lib/redis";
 import { cookieScopeDomain } from "@/lib/cookie-domain";
+import { demoSessionHook } from "@/lib/demo-hook";
 
 export const ACCOUNT_SESSION_COOKIE_NAME = "vyx_trade_session";
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 7; // 7 days -- Redis TTL backstop, both remembered and not (see createAccountSession's own comment on why this differs from the cookie's own maxAge)
@@ -274,6 +275,10 @@ export async function getAccountSession(): Promise<AccountSessionPayload | null>
   // native-client build binding (lib/client-builds.ts): a revoked / foreign / unregistered build gets no session
   const verdict = await checkClientBuild(session.brokerId, headerList.get("x-broker-slug"), buildLookup);
   if (!verdict.ok) return null;
+
+  // QoreTrader demo (lib/demo-hook.ts): lazy SL/TP, pending orders and stop-out for a guest; a deleted guest has no session.
+  // Returns at once for every other tenant.
+  if (!(await demoSessionHook(session))) return null;
 
   return session;
 }
