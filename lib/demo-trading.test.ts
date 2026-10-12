@@ -143,6 +143,25 @@ describe("an order and a close are filled at the server's price", () => {
     expect(await prisma.postCloseEffect.count({ where: { brokerId: demo.broker.id } })).toBe(0);
   });
 
+  it("USDJPY: margin and P&L are converted to USD through the demo's own conversion pair", async () => {
+    const g = await newGuest();
+    const opened = await placeOrder(g.id, demo.broker.id, marketBody({ symbol: "qUSDJPY", volume: 0.5, price: demoQuoteAt("qUSDJPY", Date.now())!.ask }));
+    expect(opened.status).toBe(201);
+    const pos = await prisma.position.findFirstOrThrow({ where: { accountId: g.id } });
+    const closed = await closeVia(g.id, demo.broker.id, pos.id, { closePrice: demoQuoteAt("qUSDJPY", Date.now())!.bid, priceAt: Date.now(), maxSlippagePips: "unlimited" });
+    expect(closed.status).toBe(200);
+    const after = await prisma.position.findUniqueOrThrow({ where: { id: pos.id } });
+    const txn = await prisma.transaction.findFirstOrThrow({ where: { accountId: g.id, type: "TRADE_PNL" } });
+    const q = demoQuoteAt("qUSDJPY", after.closedAt!.getTime())!;
+    const mid = (Number(q.bid) + Number(q.ask)) / 2;
+    const expectedUsd = ((Number(after.closePrice) - Number(pos.openPrice)) * 100000 * 0.5) / mid;
+    // JPY P&L of 0.5 lot converted at the mid of the pair: within a tenth of a percent of the exact figure (the two reads are a few ms apart)
+    expect(Math.abs(Number(txn.amount) - expectedUsd)).toBeLessThan(Math.max(0.5, Math.abs(expectedUsd) * 0.001));
+    // a USD quote account holds USD only: the balance moved by exactly the booked amount
+    const acct = await prisma.account.findUniqueOrThrow({ where: { id: g.id } });
+    expect(acct.balance.equals(D(10000).add(txn.amount))).toBe(true);
+  });
+
   it("a close from a stale screen is refused and the position stays open", async () => {
     const g = await newGuest();
     await placeOrder(g.id, demo.broker.id, marketBody());

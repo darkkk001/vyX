@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { excludeDemoBroker } from "@/lib/demo-policy";
 
 // Unauthenticated, broker-agnostic — populates the "server" picker on the
 // root-domain launcher (app/launch) and the generic desktop app build, the
@@ -8,7 +9,7 @@ import { prisma } from "@/lib/prisma";
 // to the right subdomain; no balances, no counts, nothing sensitive.
 export async function GET() {
   const brokers = await prisma.broker.findMany({
-    where: { status: "ACTIVE" },
+    where: { status: "ACTIVE", ...excludeDemoBroker() }, // the QoreTrader demo is not listed in the launcher
     select: { name: true, subdomain: true, logoUrl: true },
     orderBy: { name: "asc" },
   });

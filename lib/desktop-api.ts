@@ -48,7 +48,15 @@ function recalibrateFromDateHeader(header: string | null | undefined) {
   const serverMs = Date.parse(header);
   if (Number.isFinite(serverMs)) serverTimeOffsetMs = serverMs - Date.now();
 }
-function recalibrateFromResponse(response: Response) {
+function recalibrateFromResponse(response: Response, sentAt?: number, receivedAt?: number) {
+  // The QoreTrader demo host stamps every response with x-server-time (ms, taken when the request reached the server): with
+  // the send / receive times that is a millisecond-accurate clock estimate (half the round trip is the one-way delay), where
+  // the Date header is only whole seconds. The demo's quotes are a function of the clock, so it matters there.
+  const stamped = Number(response.headers.get("x-server-time"));
+  if (Number.isFinite(stamped) && stamped > 0 && sentAt != null && receivedAt != null) {
+    serverTimeOffsetMs = stamped - (sentAt + receivedAt) / 2;
+    return;
+  }
   recalibrateFromDateHeader(response.headers.get("date"));
 }
 
@@ -118,12 +126,13 @@ export async function apiCall<T>(path: string, init?: RequestInit): Promise<T> {
   // /api/trade/prices's own explicit Cache-Control: no-store response
   // header -- belt and suspenders, since a server-sent no-store already
   // covers a compliant cache regardless of what the client requests.
+  const sentAt = Date.now();
   const response = await fetch(path, {
     ...init,
     cache: "no-store",
     headers: { "Content-Type": "application/json", ...init?.headers },
   });
-  recalibrateFromResponse(response);
+  recalibrateFromResponse(response, sentAt, Date.now());
   const rawBody = await response.json().catch(() => null);
   const body = hook?.response ? hook.response(path, rawBody) : rawBody;
   if (!response.ok) {

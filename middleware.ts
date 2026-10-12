@@ -356,12 +356,19 @@ export async function middleware(request: NextRequest) {
   if (effectivePathname !== pathname) {
     const rewriteUrl = new URL(`${effectivePathname}${request.nextUrl.search}`, request.url);
     const rewritten = NextResponse.rewrite(rewriteUrl, { request: { headers: requestHeaders } });
-    if (isDemo) rewritten.headers.set("X-Robots-Tag", DEMO_ROBOTS_HEADER);
+    if (isDemo) {
+      rewritten.headers.set("X-Robots-Tag", DEMO_ROBOTS_HEADER);
+      rewritten.headers.set("x-server-time", String(Date.now()));
+    }
     return rewritten;
   }
 
   const next = NextResponse.next({ request: { headers: requestHeaders } });
-  if (isDemo) next.headers.set("X-Robots-Tag", DEMO_ROBOTS_HEADER);
+  if (isDemo) {
+    next.headers.set("X-Robots-Tag", DEMO_ROBOTS_HEADER);
+    // the server's clock in ms: the demo's quotes are a function of it (see desktop-api.ts recalibrateFromResponse)
+    next.headers.set("x-server-time", String(Date.now()));
+  }
   return next;
 }
 

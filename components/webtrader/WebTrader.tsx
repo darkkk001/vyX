@@ -53,7 +53,7 @@ import { spreadPoints, DEFAULT_WATCHLIST_COLUMN_PREFS, type WatchlistColumnPrefs
 import { plainError, tradeActionError, TRADE_TEXT } from "@/lib/plain-error";
 import { formatCsvNumber, formatMarginLevel, formatMoney, formatPercent, formatSigned, formatVolume, tone, viewAmount, TONE_COLOR, type Tone } from "@/lib/format";
 import { DEMO_BANNER_TEXT } from "@/lib/demo-policy";
-import { gridTime } from "@/lib/demo-prices";
+import { DEMO_SYMBOLS, demoBucketStart, demoCandleOf, gridTime } from "@/lib/demo-prices";
 import { demoTicksAt, noteDemoTick } from "@/lib/demo-client";
 // WebTrader colour classes per tone (lib/format.ts): profit green, loss red, zero neutral
 const TONE_CSS: Record<Tone, string> = { profit: "pos", loss: "neg", neutral: "" };
@@ -1776,6 +1776,18 @@ export default function WebTrader({
         for (const k of demoTicksAt(t)) acceptCoalescedTick(k.symbol, k.bid, k.ask, k.at);
       };
       tickAll();
+      // today's range and open for every symbol from the same path (the bootstrap placeholders would otherwise stay in Day H / Day L)
+      const t0 = gridTime(serverNow());
+      setMarket((prev) => {
+        const next = { ...prev };
+        const dayStart = demoBucketStart("D1", t0);
+        for (const d of DEMO_SYMBOLS) {
+          const m = next[d.display];
+          const c = demoCandleOf(d.name, "D1", dayStart, t0);
+          if (m && c) next[d.display] = { ...m, high: Math.max(Number(c.high), m.bid), low: Math.min(Number(c.low), m.bid), dayOpen: Number(c.open), dayOpenKnown: true, lastCandleStart: { ...m.lastCandleStart, D1: dayStart } };
+        }
+        return next;
+      });
       const id = setInterval(tickAll, DEMO_TICK_MS);
       return () => clearInterval(id);
     }
@@ -3124,6 +3136,7 @@ export default function WebTrader({
   // bid; every other call site (the watchlist bell, the positions panel's
   // "+ New alert") keeps defaulting to the live bid exactly as before.
   function openPriceAlert(symbolName: string, presetPrice?: number) {
+    if (demo) return; // QoreTrader demo: alerts are watched by the engine, which has no demo prices
     const mm = market[symbolName];
     askPrompt(`Alert me when ${symbolName} reaches:`, fmt(presetPrice ?? mm.bid, mm.def.digits), async (priceStr) => {
       const price = parseFloat(priceStr);
@@ -4120,9 +4133,9 @@ export default function WebTrader({
                     {columnPrefs.spread ? <span className="wl-cell mono" style={{ textAlign: "right" }}>{hasEverTicked ? spreadPoints(effectiveAsk(askMarkupBySymbol, name, row.ask, row.bid), row.bid, row.def.digits) : ""}</span> : null}
                     {columnPrefs.high ? <span className="wl-cell mono">{hasEverTicked ? fmt(row.high, row.def.digits) : ""}</span> : null}
                     {columnPrefs.low ? <span className="wl-cell mono">{hasEverTicked ? fmt(row.low, row.def.digits) : ""}</span> : null}
-                    <button className={`wl-alert-btn${alerts.some((a) => a.symbol === name) ? " active" : ""}`} onClick={(e) => { e.stopPropagation(); openPriceAlert(name); }} title="Set price alert">
+                    {demo ? null : <button className={`wl-alert-btn${alerts.some((a) => a.symbol === name) ? " active" : ""}`} onClick={(e) => { e.stopPropagation(); openPriceAlert(name); }} title="Set price alert">
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9" /></svg>
-                    </button>
+                    </button>}
                   </div>
                 );
               })}
@@ -4515,9 +4528,9 @@ export default function WebTrader({
                           </div>
                         </>
                       )}
-                      <div className="wl-ctx-item" onClick={() => { openPriceAlert(activeSymbol, chartContextMenu.price); setChartContextMenu(null); }}>
+                      {demo ? null : <div className="wl-ctx-item" onClick={() => { openPriceAlert(activeSymbol, chartContextMenu.price); setChartContextMenu(null); }}>
                         <span>Add alert at this price</span>
-                      </div>
+                      </div>}
                       <div className="wl-ctx-item" onClick={() => { copyPriceToClipboard(chartContextMenu.price); setChartContextMenu(null); }}>
                         <span>Copy price</span>
                       </div>
