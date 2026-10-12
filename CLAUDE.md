@@ -63,7 +63,9 @@ These apply to this repo and to darkkk001/VyxTrader:
 - Checkouts live under `C:\vyx` only (`C:\vyx\web`, `C:\vyx\native`). No builds anywhere else.
 - At most 2 worktrees per repo, also under `C:\vyx`. Run `git worktree remove` as soon as the branch is
   merged or shipped.
-- Never commit installers, update packages or screenshots. Releases go to the feed host only.
+- Never commit installers, update packages or screenshots. One exception: the update feed under
+  `public/native-*-updates/` stays in git until the feed moves to a separate host (tracked in
+  `docs/BACKEND-NEEDED.md`, Infrastructure). Nothing else of that kind, anywhere.
 - Clean dist/bin/obj/.next after every release and report C: free space at the end of every job.
 
 ## Deployment safety

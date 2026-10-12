@@ -9,7 +9,7 @@
 #   secrets/    copy of C:\vyx-secrets
 #   vercel/     vercel env pull of the vy-x production environment
 #   website/    the live update feeds (manifests, Setup exe, latest full package, SHA-256 checked against the manifest)
-#   extra/      folders on no repo ($ExtraDirs full, $SourceOnlyDirs without build output); D:/E: are only read
+#   extra/      folders on no repo ($ExtraDirs, without build output: $BuildDirs); D:/E: are only read
 #   vps/        newest C:\vyx-backup-inbox\vps-config-*.zip (made on the VPS by scripts/vps-config-export.ps1)
 #   MANIFEST.txt  what ran, sizes, restore-test results
 #
@@ -33,7 +33,7 @@ param(
         "https://github.com/darkkk001/VyxTrader.git",
         "https://github.com/darkkk001/vyx-mt5-copier.git"
     ),
-    # Folders that are on no repo: copied as-is (name = folder under extra/). Missing ones are noted, not fatal.
+    # Folders that are on no repo, copied without build output (name = folder under extra/). Missing ones are noted, not fatal.
     [hashtable] $ExtraDirs = @{
         "arch-and-design"          = "D:\VyXTrader-Tauri\vyXTrader Arch & Design"
         "vyx-archive"              = "E:\vyx-archive"
@@ -41,12 +41,11 @@ param(
         "vyx-recovery-2026-10-05"  = "C:\vyx-recovery"
         "vyx-terminal-v2"          = "C:\Users\Nvme\Downloads\vyx-terminal-v2"
         "vyx-backoffice-redesign"  = "C:\Users\Nvme\Downloads\vyx-backoffice-redesign"
+        "bigfish-terminal"         = "D:\BigFish Terminal"
+        "bigfish-terminal-2"       = "D:\BigFish terminal 2"
     },
-    # Same, but source only (no node_modules/.next/dist/bin/obj).
-    [hashtable] $SourceOnlyDirs = @{
-        "bigfish-terminal"   = "D:\BigFish Terminal"
-        "bigfish-terminal-2" = "D:\BigFish terminal 2"
-    },
+    # Build output skipped in every extra folder (rebuildable, and it held >260-char paths).
+    [string[]] $BuildDirs = @("node_modules", "target", ".next", "bin", "obj", "dist"),
     [string[]] $Feeds = @(
         "https://www.vyxtrader.com/native-terminal-updates/futurixglobal/",
         "https://www.vyxtrader.com/native-backoffice-updates/futurixglobal/"
@@ -73,6 +72,17 @@ function SizeMB([string] $path) {
     $s = (Get-ChildItem -LiteralPath $path -Recurse -Force -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum
     if (-not $s) { $s = 0 }
     [math]::Round($s / 1MB, 1)
+}
+# Deletes a folder that may hold >260-char paths (Remove-Item fails on those): robocopy /MIR from an empty folder
+# first, then rmdir. Fails if anything is left, because the staging folder holds secrets in plain form.
+function Remove-Tree([string] $path) {
+    if (-not (Test-Path -LiteralPath $path)) { return }
+    $empty = Join-Path $env:TEMP ("vyx-empty-" + [guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Force $empty | Out-Null
+    & robocopy $empty $path /MIR /R:1 /W:1 /NFL /NDL /NJH /NJS *> $null
+    Remove-Item -LiteralPath $empty -Force
+    Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue
+    if (Test-Path -LiteralPath $path) { Fail "could not delete ${path}: delete it by hand" }
 }
 # Runs a native exe, sends its output to a log file (never to the console: some arguments hold the DB URL).
 function Run([string] $exe, [string[]] $argv, [string] $log) {
@@ -130,9 +140,9 @@ function Count-Rows([string] $psql, [string] $url) {
 
 # ---------- stage ----------
 function Stage($tools) {
-    if ((Test-Path $Folder) -and $Force) { Remove-Item -Recurse -Force $Folder }
+    if ((Test-Path $Folder) -and $Force) { Remove-Tree $Folder }
     if (Test-Path (Join-Path $Folder ".staged-ok")) { Step "already staged today: $Folder (use -Force to rebuild)"; return }
-    if (Test-Path $Folder) { Remove-Item -Recurse -Force $Folder }   # half-finished earlier run
+    if (Test-Path $Folder) { Remove-Tree $Folder }   # half-finished earlier run
     if ((FreeGB) -lt 15) { Fail "only $(FreeGB) GB free on C:, need ~15 GB (staging + archive)" }
     New-Item -ItemType Directory -Force $Folder | Out-Null
     $logs = Join-Path $Folder "logs"
@@ -215,18 +225,13 @@ function Stage($tools) {
     # 6. folders on no repo (read only: robocopy reads the source, writes only into the backup folder)
     Step "extra folders"
     $xdir = Join-Path $Folder "extra"
-    foreach ($set in @(@{ Dirs = $ExtraDirs; Exclude = @() }, @{ Dirs = $SourceOnlyDirs; Exclude = @("node_modules", ".next", "dist", "bin", "obj") })) {
-        foreach ($k in ($set.Dirs.Keys | Sort-Object)) {
-            $src = $set.Dirs[$k]
-            if (-not (Test-Path -LiteralPath $src)) { Note "extra: $k MISSING ($src)"; continue }
-            $dst = Join-Path $xdir $k
-            $argv = @($src, $dst, "/E", "/XJ", "/R:1", "/W:1", "/NFL", "/NDL", "/NJH", "/NP")
-            if ($set.Exclude.Count) { $argv += "/XD"; $argv += $set.Exclude }
-            & robocopy @argv *>> (Join-Path $logs "extra.log")
-            if ($LASTEXITCODE -ge 8) { Fail "robocopy $src (exit $LASTEXITCODE, see $logs\extra.log)" }
-            $how = if ($set.Exclude.Count) { "source only" } else { "full copy" }
-            Note "extra: $k <- $src ($how, $(SizeMB $dst) MB)"
-        }
+    foreach ($k in ($ExtraDirs.Keys | Sort-Object)) {
+        $src = $ExtraDirs[$k]
+        if (-not (Test-Path -LiteralPath $src)) { Note "extra: $k MISSING ($src)"; continue }
+        $dst = Join-Path $xdir $k
+        & robocopy $src $dst /E /XJ /R:1 /W:1 /NFL /NDL /NJH /NP /XD @BuildDirs *>> (Join-Path $logs "extra.log")
+        if ($LASTEXITCODE -ge 8) { Fail "robocopy $src (exit $LASTEXITCODE, see $logs\extra.log)" }
+        Note "extra: $k <- $src (no build output, $(SizeMB $dst) MB)"
     }
 
     # 7. VPS config (exported on the VPS by scripts/vps-config-export.ps1, copied into the inbox by hand)
@@ -290,7 +295,7 @@ function Restore-Test($tools, [string] $dump, $live, [string] $gitDir, [string] 
         }
     } finally {
         Start-Sleep -Seconds 1
-        Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
+        Remove-Tree $tmp
     }
 }
 
@@ -318,7 +323,7 @@ function Encrypt($tools) {
         [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($b2)
     }
     Copy-Item (Join-Path $Folder "MANIFEST.txt") "$Archive.manifest.txt"
-    Remove-Item -Recurse -Force $Folder
+    Remove-Tree $Folder
     $hash = (Get-FileHash $Archive -Algorithm SHA256).Hash
     "$hash  $(Split-Path -Leaf $Archive)" | Set-Content "$Archive.sha256" -Encoding ASCII
     Get-ChildItem "C:\vyx-backup-*.7z" | Sort-Object Name -Descending | Select-Object -Skip $Keep | ForEach-Object {
