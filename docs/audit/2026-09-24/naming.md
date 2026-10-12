@@ -2521,7 +2521,12 @@ Resolved 2026-10-01 (owner): broker-wide **Max slippage** (DEAL, CFG) is stored 
 | CLI | Transfers screen only | TRANSFER tab: To account (the client's own accounts) · Other account (search) · Amount · Reason · TRANSFER | broker currency | Refusals shown in the window at once: "Transfers are only between accounts of the same client." · "A demo account and a live account cannot transfer to each other." · "Transfers between accounts in different currencies are not supported (USD to EUR)." · "The other account must be active." |
 | CLI | Deposit & withdrawal history (opened the Deposits screen) | HISTORY tab: chips ALL · DEPOSITS · WITHDRAWALS · ADJUSTMENTS · CREDIT · TRANSFERS, a totals line, the last 200 rows | broker currency | Broker view, stored sign. An adjustment total reads "(not counted in deposits)". |
 | CLI | Mark as internal account / Unmark internal account (menu) · INTERNAL (chip) | Test account (excluded from totals and reports) (checkbox on the client page, admin only) · TEST (chip) | — | The menu items are removed. Confirm: "Mark {n} as a test account? It is left out of totals and reports." / "Take {n} out of the test accounts? It counts in totals and reports again." Done: "{n} is a test account" / "{n} is no longer a test account". The chip shows in the Clients list (LIVE · TEST) and on the page. |
-| CLI | Greyed menu rows with a reason in brackets | not drawn | — | The hide rule (owner 2026-10-07): an action that cannot run now is not in the menu or the inspector. No greyed row, no reason text. |
+| CLI | Greyed menu rows with a reason in brackets | not drawn | — | The hide rule (owner 2026-10-07), for menus and dialogs: an action that cannot run now is not in the menu or the inspector. No greyed row, no reason text. Table action columns are the exception (owner 2026-10-12, see "Action buttons in tables"). |
+
+## Action buttons in tables (owner 2026-10-12)
+
+- **Hide-not-grey applies to menus and dialogs; in table action columns buttons stay in place and disable.** A row action that cannot run (BE when break-even is not possible, PART at the minimum lot) is shown dimmed in its usual place, never hidden, so the other buttons do not move. Its hover says why in one short line, e.g. "Break-even not possible: not in profit". Group rows follow the same rule.
+- **Close buttons are neutral at rest.** The row close X looks like the other row icons (pencil, BE, PART) and turns red only under the pointer. The toolbar CLOSE PROFITABLE / CLOSE LOSING / CLOSE ALL buttons have no outline until hover; their text colour carries the meaning (green profitable, red losing and all).
 
 ## Charts (owner rule 2026-10-08)
 
