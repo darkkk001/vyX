@@ -22,7 +22,6 @@ import { checkPreTradeMargin, hedgedUsedMargin, liveUsedMarginFor, type MarginLe
 // reconciler pairs web closes with those exact texts (engine/order-management/src/reconcile.rs) and must never see a demo.
 
 const D = (v: Prisma.Decimal.Value) => new Prisma.Decimal(v);
-const ZERO = D(0);
 const ONE = D(1);
 
 export type SimPos = {
@@ -174,8 +173,6 @@ function slackEstimate(acct: SimAccount, positions: SimPos[], q: TickQuotes): { 
   }
   return { s: equity - so * used, scale: Math.abs(equity) + used, deltaPerTick: delta * 1.05 };
 }
-
-type Active<T> = { item: T; startTick: number };
 
 export async function simulateSweep(input: {
   account: SimAccount;

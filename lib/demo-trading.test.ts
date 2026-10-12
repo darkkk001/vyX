@@ -20,7 +20,7 @@ const session = vi.hoisted(() => {
   return { current: { accountId: "", brokerId: "" } };
 });
 vi.mock("@/lib/account-auth", async (orig) => ({ ...(await orig<typeof import("@/lib/account-auth")>()), getAccountSession: async () => session.current }));
-const fetchSpy = vi.fn(async () => new Response("{}", { status: 200 }));
+const fetchSpy = vi.fn(async (..._args: unknown[]) => new Response("{}", { status: 200 }));
 vi.stubGlobal("fetch", fetchSpy);
 
 const G = DEMO_GRID_MS;

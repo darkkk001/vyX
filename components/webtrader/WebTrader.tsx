@@ -1893,7 +1893,7 @@ export default function WebTrader({
       if (pingInterval) clearInterval(pingInterval);
       socket?.close();
     };
-  }, []);
+  }, [demo]);
 
   // Pushed order/position/account events (docs/webtrader-stm-architecture-
   // review.md §4.3, sequencing item 4) -- the Gateway
@@ -2034,7 +2034,7 @@ export default function WebTrader({
       if (reconnectTimer) clearTimeout(reconnectTimer);
       socket?.close();
     };
-  }, [refreshOrders, refreshPositions, refreshAccount, refreshAlerts, pushToast, refreshFundsHistory]);
+  }, [refreshOrders, refreshPositions, refreshAccount, refreshAlerts, pushToast, refreshFundsHistory, demo]);
 
   // fix/realtime-sync §7 -- F5/Ctrl+R (Cmd+R on Mac) refetches this tab's
   // own data instead of a full page reload, which used to throw away

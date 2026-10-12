@@ -34,11 +34,11 @@ export async function findCleanupCandidates(db: Pick<PrismaClient, "$queryRaw">,
     WHERE a."brokerId" = ${brokerId}
       AND a."accountNumber" ~ '^48[0-9]{6}$'
       AND (
-        a."createdAt" < now() - make_interval(days => ${GUEST_MAX_AGE_DAYS})
+        a."createdAt" < now() - make_interval(days => ${GUEST_MAX_AGE_DAYS}::int)
         OR (
-          a."createdAt" < now() - make_interval(days => ${GUEST_IDLE_DAYS})
-          AND NOT EXISTS (SELECT 1 FROM "LoginEvent" l WHERE l."accountId" = a.id AND l."createdAt" >= now() - make_interval(days => ${GUEST_IDLE_DAYS}))
-          AND NOT EXISTS (SELECT 1 FROM "Order" o WHERE o."accountId" = a.id AND o."createdAt" >= now() - make_interval(days => ${GUEST_IDLE_DAYS}))
+          a."createdAt" < now() - make_interval(days => ${GUEST_IDLE_DAYS}::int)
+          AND NOT EXISTS (SELECT 1 FROM "LoginEvent" l WHERE l."accountId" = a.id AND l."createdAt" >= now() - make_interval(days => ${GUEST_IDLE_DAYS}::int))
+          AND NOT EXISTS (SELECT 1 FROM "Order" o WHERE o."accountId" = a.id AND o."createdAt" >= now() - make_interval(days => ${GUEST_IDLE_DAYS}::int))
         )
       )
     ORDER BY a."createdAt" ASC
