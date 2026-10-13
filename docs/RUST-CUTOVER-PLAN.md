@@ -1433,7 +1433,20 @@ blockers for RISK authority vs ORDERS-only). Per-broker values are `WEB | RUST` 
 
 #### 6.1 Cutover gates (must hold before a broker goes RUST)
 
-- **CUTOVER GATE (owner, 2026-10-12): close fields. UNMET (the owner decides when it is met).** The engine's close path must write exactly the
+- **CUTOVER GATE (owner, 2026-10-12): close fields. MET (owner, 2026-10-13):** the engine writes the same close fields and running totals
+  as `lib/position-close.ts`, parity 31/31, and migration `20261012130000_close_fields` is on production. **Post-flip check** (after every
+  flip, and in the section 6 watch of `docs/STAGE6-RUNBOOK-FUTURIX-DEMO.md`): engine-closed TRADE_PNL rows with a null close field = 0:
+
+  ```sql
+  SELECT count(*) AS engine_closes_missing_close_fields
+  FROM "Transaction" t
+  JOIN "PostCloseEffect" e ON e."positionId" = t."referenceId" AND e.kind = 'POSITION_CLOSED'
+  WHERE t.type = 'TRADE_PNL'
+    AND (t."closeVolume" IS NULL OR t."closePrice" IS NULL OR t."closeSwap" IS NULL);
+  ```
+
+  (An engine close always queues a `POSITION_CLOSED` follow-up in the same transaction and a web close never does, as in runbook 5.5;
+  `closeByPositionId` is null by design on a close that has no close-by partner.) The original gate text follows. The engine's close path must write exactly the
   fields and running totals `lib/position-close.ts closePositionInTx` writes (migration `20261012130000_close_fields`,
   `docs/POSITION-DEAL-MODEL.md` section 0): on the TRADE_PNL row `closeVolume`, `closePrice`, `closeSwap` (pro rata by closed volume,
   the final close takes the remainder) and `closeByPositionId` (the close-by partner, on every path that closes by an opposite leg); on the
@@ -1442,8 +1455,10 @@ blockers for RISK authority vs ORDERS-only). Per-broker values are `WEB | RUST` 
   the close-by partner. The engine has no partial close, no close-by and no queued or staff close, so those stay on the web; if the engine
   ever performs one, this gate covers it too. Parity evidence: `scripts/parity/run-db.sh` compares every position's totals and every
   TRADE_PNL row's close fields (scenarios 28 to 31 seed swap and a web partial-close history); the previous engine fails 20 of 31, the
-  current one matches 31 of 31; `engine/order-management/tests/book_db.rs` pins the values. UNMET until the owner signs it off.
-- **CUTOVER GATE (owner, 2026-10-12): position / deal model. UNMET (the owner decides when it is met).** Whatever the position / deal
+  current one matches 31 of 31; `engine/order-management/tests/book_db.rs` pins the values.
+- **CUTOVER GATE (owner, 2026-10-12): position / deal model. UNMET (the owner decides when it is met).** Scope (owner, 2026-10-13):
+  **NOT required for the demo-only flip** (`riskAuthorityDemoOnly = true`); **REQUIRED before any live-account flip**
+  (`riskAuthorityDemoOnly = false`, runbook section 9), with the checks of `docs/POSITION-DEAL-MODEL.md` section 4. Whatever the position / deal
   model of `docs/POSITION-DEAL-MODEL.md` becomes (today: sections 0 and 3.2 shipped as the close-fields hotfix; the Deal table and
   `Position.initialVolume` are proposals), the engine must conform to it: every engine write that opens, reduces, closes or reverses a
   position produces the same rows and fields as the web's twin, and the model's own conformance tests run against the engine. Nothing

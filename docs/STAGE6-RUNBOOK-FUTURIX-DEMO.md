@@ -1,6 +1,6 @@
 # Stage 6 runbook: Futurix, demo first (the engine becomes authoritative for risk)
 
-_Written 2026-10-06 on branch `engine/stage6` (worktree `D:\vyx-stage6`). **NOTHING in this document has been run on production.** No merge,
+_Written 2026-10-06 on branch `engine/stage6` (worktree `C:\vyx\wt-stage6`). **NOTHING in this document has been run on production.** No merge,
 no deploy (VPS or Vercel), no migration on any production or Neon database until the owner has reviewed `docs/STAGE6-PLAN.md` and says go.
 Every command below was written to be copied; every step ends with a verification. If a verification fails, STOP and use the rollback of that step (section 8)._
 
@@ -87,6 +87,10 @@ npx prisma migrate status
 **Verify:** both hosts contain `ep-morning-glade`. `migrate status` lists exactly two pending migrations, `20261007090000_broker_risk_authority` and
 `20261007100000_risk_engine_heartbeat`, and nothing else (no failed migration, no drift message). **If anything else is pending or failed, STOP** and send me the output: some other
 migration is in front of this one and must be understood first. (Never answer a drift message with `migrate dev` or `migrate reset`.)
+
+Main's `20261012130000_close_fields` must already be applied on production (confirmed by the owner 2026-10-13). Its timestamp is newer
+than the two Stage 6 migrations, so if it were still pending `migrate deploy` would apply it LAST; with it applied, exactly the two
+Stage 6 migrations are pending and are applied in timestamp order (proven on a scratch database with Prisma 6.19.3).
 
 ### 1.3 The engine version on the VPS
 
@@ -568,10 +572,10 @@ $all | psql -X -q -d $Live
 
 The shadow bot (branch `shadow-bot`, `tools/shadow-bot`, machine `DESKTOP-JQ2J7SM`) drives seven scenarios against the `zzshadowbot` tenant: S1 single stop-out, S2 fan-in, S3 hedge break, S4 hedged + NBP, S5 coverage, S6 mirror, S7 FX. It cannot be pointed at a scratch database (its hosts are hard-coded in `src/guards.ts`), so there are two runs of the same seven paths.
 
-### 10.1 Local first, on the scratch harness DBs (`D:\pg-scratch`, port 5499), on the commit that will be merged
+### 10.1 Local first, on the scratch harness DBs (`C:\pg-scratch`, port 5499), on the commit that will be merged
 
 ```bash
-cd /d/vyx-stage6
+cd /c/vyx/wt-stage6
 bash scripts/stage6/sweep-7path.sh            # about 15 minutes; accounts 150, walkers 2
 ```
 
