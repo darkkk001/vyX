@@ -141,6 +141,7 @@ pub async fn load_book_on(conn: &mut sqlx::PgConnection, pricing: Option<&market
                   s."contractSize" AS contract_size, s."quoteCurrency" AS quote_ccy, COALESCE(bs."hedgedMarginPct", 200) AS hedged_margin_pct
            FROM "Position" p
            JOIN "Account" a ON a.id = p."accountId"
+           JOIN "Broker" sb ON sb.id = a."brokerId" AND NOT sb."isDemoSandbox"
            JOIN "Symbol" s ON s.id = p."symbolId"
            LEFT JOIN "BrokerSymbol" bs ON bs."brokerId" = p."brokerId" AND bs."symbolId" = p."symbolId"
            LEFT JOIN "Group" g ON g.id = a."groupId"

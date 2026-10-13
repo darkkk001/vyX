@@ -575,6 +575,11 @@ model Broker {
   // the broker's own markup). @unique: one coverage account per broker.
   coverageAccountId String?  @unique
   coverageAccount   Account? @relation("BrokerCoverageAccount", fields: [coverageAccountId], references: [id])
+
+  // QoreTrader demo (2026-10-13): true = a SANDBOX tenant (the public demo, guests with simulated prices). Every cross-tenant
+  // job, report and view and the Rust engine skip it, and the engine never loads its positions or orders. Set by
+  // scripts/seed-qoredemo.ts only; never by a form.
+  isDemoSandbox Boolean @default(false)
 }
 
 model AdminUser {

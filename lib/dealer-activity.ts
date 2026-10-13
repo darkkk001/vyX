@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { createNotification } from "@/lib/notifications";
 import { publishTradingEvent } from "@/lib/nats";
 import { isDealingManagedAccount, deskIsOn } from "@/lib/dealing-routing";
+import { isDemoBrokerId } from "@/lib/demo";
 
 // Dealer awareness (2026-09-04 feature) -- a dealer responsible for a
 // DEALING-group account (Group.groupType === "DEALING") needs to see
@@ -93,6 +94,7 @@ export async function recordDealerActivity(
     skipNotification?: boolean;
   }
 ): Promise<void> {
+  if (await isDemoBrokerId(params.brokerId)) return; // QoreTrader demo: no dealer, no feed
   await publishTradingEvent("DealerActivity", {
     broker_id: params.brokerId,
     account_id: params.accountId,
@@ -144,7 +146,7 @@ export async function emitPositionClosedActivity(
         broker: { select: { dealingModeAt: true, dealingDeskAutoFillAt: true } },
       },
     });
-    if (!position) return;
+    if (!position || (await isDemoBrokerId(position.brokerId))) return;
     await recordDealerActivity(db, {
       brokerId: position.brokerId,
       accountId: position.accountId,

@@ -2,6 +2,8 @@ import { headers } from "next/headers";
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import { prisma } from "@/lib/prisma";
+import { isDemoTenant } from "@/lib/demo-policy";
+import { DEMO_ACCENT } from "@/lib/demo-brand";
 
 // Overrides app/layout.tsx's global "VyXTrader" tab title for every
 // broker-facing route -- Next.js's metadata resolution takes the most
@@ -22,6 +24,14 @@ export async function generateMetadata(): Promise<Metadata> {
   if (!brokerId) return {};
   const broker = await prisma.broker.findUnique({ where: { id: brokerId }, select: { name: true } });
   const logoUrl = headerList.get("x-broker-logo-url") || null;
+  // QoreTrader demo: its own favicon, and never indexed (the X-Robots-Tag header in middleware.ts says the same)
+  if (isDemoTenant(headerList.get("x-broker-slug"))) {
+    return {
+      ...(broker ? { title: broker.name } : {}),
+      icons: { icon: "/qoretrader-demo/qoretrader-favicon.svg" },
+      robots: { index: false, follow: false },
+    };
+  }
   return {
     ...(broker ? { title: broker.name } : {}),
     ...(logoUrl ? { icons: { icon: logoUrl } } : {}),
@@ -48,7 +58,7 @@ export default async function BrokerLayout({
       data-broker={brokerSlug}
       data-broker-tier={brokerTier}
       data-broker-logo={logoUrl}
-      style={{ ["--brand-primary" as string]: primaryColor }}
+      style={{ ["--brand-primary" as string]: primaryColor, ...(isDemoTenant(brokerSlug) ? { ["--brand-accent" as string]: DEMO_ACCENT } : {}) }}
     >
       {children}
     </div>

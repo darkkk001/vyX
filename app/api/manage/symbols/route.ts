@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { brokerMaySeeSynthetic, isSyntheticSymbol } from "@/lib/synthetic-symbols";
+import { displayCurrency } from "@/lib/demo-policy";
+import { symbolHiddenFromBroker, symbolVisibility } from "@/lib/synthetic-symbols";
 import { missingForSymbol } from "@/lib/symbol-completeness";
 import { withConfigEvent } from "@/lib/config-events";
 import { Prisma, TradingMode, BookType } from "@prisma/client";
@@ -50,15 +51,16 @@ export async function GET() {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
 
-  const [allSymbols, seesSynthetic] = await Promise.all([
+  const [allSymbols, visible] = await Promise.all([
     prisma.symbol.findMany({
       orderBy: { name: "asc" },
       include: { brokerSymbols: { where: { brokerId: session.brokerId! }, include: { _count: { select: { tradingSessions: true } } } } },
     }),
-    brokerMaySeeSynthetic(prisma, session.brokerId!),
+    symbolVisibility(prisma, session.brokerId!),
   ]);
-  // synthetic symbols (lib/synthetic-symbols.ts) exist for the shadow-bot tenant only: hidden from every other broker
-  const symbols = seesSynthetic ? allSymbols : allSymbols.filter((s) => !isSyntheticSymbol(s.name));
+  // synthetic symbols (lib/synthetic-symbols.ts) exist for the shadow-bot tenant only, the demo's q-symbols for the demo tenant
+  // only: hidden from every other broker
+  const symbols = allSymbols.filter((s) => visible(s.name));
 
   const rows = symbols.map((symbol) => {
     const cfg = symbol.brokerSymbols[0];
@@ -149,7 +151,7 @@ async function patchHandler(request: NextRequest) {
 
   const symbol = await prisma.symbol.findUnique({ where: { id: symbolId } });
   // a synthetic symbol is refused exactly like an unknown one for every broker but the shadow-bot tenant
-  if (!symbol || (isSyntheticSymbol(symbol.name) && !(await brokerMaySeeSynthetic(prisma, session.brokerId!)))) {
+  if (!symbol || (await symbolHiddenFromBroker(prisma, session.brokerId!, symbol.name))) {
     return NextResponse.json({ error: "unknown symbolId" }, { status: 400 });
   }
 
@@ -286,7 +288,7 @@ async function patchHandler(request: NextRequest) {
   if (enabled && symbol.quoteCurrency !== "USD") {
     return NextResponse.json(
       {
-        error: `${symbol.name} cannot be enabled yet: P/L in ${symbol.quoteCurrency} is not supported.`,
+        error: `${symbol.name} cannot be enabled yet: P/L in ${displayCurrency(symbol.quoteCurrency)} is not supported.`,
       },
       { status: 400 }
     );

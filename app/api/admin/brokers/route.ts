@@ -4,6 +4,7 @@ import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession } from "@/lib/auth";
 import { provisionStarterState } from "@/lib/starter-state";
+import { excludeDemoByBrokerRelation } from "@/lib/demo-policy";
 
 const RESERVED_SUBDOMAINS = new Set(["admin", "www", "api"]);
 const SUBDOMAIN_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
@@ -39,13 +40,16 @@ export async function GET() {
   }
 
   const [brokers, totalEndClients] = await Promise.all([
+    // the QoreTrader demo tenant is listed (the super admin sees it, labelled Sandbox: isDemoSandbox below) but is not a customer:
+    // its guest accounts are in no count
     prisma.broker.findMany({ orderBy: { createdAt: "desc" } }),
-    prisma.account.count(),
+    prisma.account.count({ where: excludeDemoByBrokerRelation() }),
   ]);
 
   return NextResponse.json({
     rows: brokers.map((b) => ({
       id: b.id,
+      isDemoSandbox: b.isDemoSandbox,
       name: b.name,
       subdomain: b.subdomain,
       customDomain: b.customDomain,

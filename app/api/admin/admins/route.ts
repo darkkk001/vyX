@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { getAdminSession } from "@/lib/auth";
 import { generateTemporaryPassword } from "@/lib/passwords";
 
+
 // Only Super Admins may list/create AdminUsers across brokers -- this is
 // what actually closes the gap a freshly created broker has: zero admin
 // accounts and no way to give it one. Same requireSuperAdmin shape as
@@ -25,6 +26,7 @@ export async function GET() {
   }
 
   const admins = await prisma.adminUser.findMany({
+    where: { OR: [{ brokerId: null }, { broker: { isDemoSandbox: false } }] },
     orderBy: { createdAt: "desc" },
     select: {
       id: true,

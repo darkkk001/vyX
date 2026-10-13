@@ -57,6 +57,7 @@ const CODES: Record<string, string | ((c: Ctx) => string)> = {
   NO_CONVERSION_RATE: "No conversion rate for this currency right now. Try again in a moment.",
   NO_LIVE_FEED: "No live price for this symbol right now. Try again shortly.",
   PRICE_STALE: "The price is out of date. Order not placed, try again.",
+  PRICE_CHANGED: "Price changed, try again",
   SLIPPAGE_EXCEEDED: "The price moved. Order not placed.",
   MARKET_CLOSED: "The market is closed for this symbol.",
   BALANCE_BELOW_ZERO: "This would take the balance below zero.",

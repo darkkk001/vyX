@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { evaluateAccountsRisk } from "@/lib/risk-monitor";
 import { drainPostCloseBackstop } from "@/lib/post-close";
 import { evaluatePendingTriggers } from "@/lib/pending-trigger";
+import { excludeDemoByBrokerRelation } from "@/lib/demo-policy";
 
 /**
  * The full margin-monitor pass: every account holding an open position, every resting order, and the post-close backstop.
@@ -27,13 +28,16 @@ export async function runFullMarginPass() {
 
   // Cheapest possible check first, index-backed: if nothing is open anywhere on the platform, there is nothing to
   // protect this minute -- bail out immediately rather than even fetching the distinct account list.
-  const openCount = await prisma.position.count({ where: { status: "OPEN" } });
+  // QoreTrader demo: its guests are replayed lazily from the deterministic path (lib/demo-sweep.ts) and must never be
+  // evaluated here -- at the engine's / cron's "now" they would also raise margin-call notices the shadow reconciler pairs
+  const notDemo = excludeDemoByBrokerRelation();
+  const openCount = await prisma.position.count({ where: { status: "OPEN", ...notDemo } });
   if (openCount === 0) {
     return { accountsEvaluated: 0, errors: 0, outbox, pending };
   }
 
   const openAccounts = await prisma.position.findMany({
-    where: { status: "OPEN" },
+    where: { status: "OPEN", ...notDemo },
     select: { accountId: true },
     distinct: ["accountId"],
   });

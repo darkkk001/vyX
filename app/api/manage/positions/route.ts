@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { displayCurrency } from "@/lib/demo-policy";
 import { accountClosePrice, askRuleWire, loadAskRules } from "@/lib/ask-markup";
 import { checkHedgingAllowed } from "@/lib/hedging";
 import { Prisma } from "@prisma/client";
@@ -171,7 +172,7 @@ export async function GET(request: NextRequest) {
       contractSize: p.symbol.contractSize.toString(),
       // FX: floatingPnl above is already in accountCurrency; a live re-price multiplies its quote-currency P/L by the
       // rate recomputed from `fx.quotes` (+ live ticks of those pairs). fxRate null = unpriced, shown "–".
-      quoteCurrency: p.symbol.quoteCurrency,
+      quoteCurrency: displayCurrency(p.symbol.quoteCurrency),
       accountCurrency: p.account.currency,
       fxRate: fxRate ? fxRate.toString() : null,
       // Live Exposure redesign (futurix-live-exposure-design.html): Swap
@@ -222,7 +223,7 @@ export async function GET(request: NextRequest) {
     .map((r) => ({ id: r.ibAccountId, accountNumber: r.ibAccount.accountNumber, fullName: r.ibAccount.fullName }))
     .sort((a, b) => a.accountNumber.localeCompare(b.accountNumber));
 
-  return NextResponse.json({ rows, accounts, symbols: tradableSymbols, groups, ibOptions, fx: { quotes: fx.quotes } });
+  return NextResponse.json({ rows, accounts, symbols: tradableSymbols, groups, ibOptions, fx: { quotes: fx.quotes.map((q) => ({ ...q, symbol: displayCurrency(q.symbol) })) } });
 }
 
 // Manual position open -- a dealing desk placing a MARKET trade for an

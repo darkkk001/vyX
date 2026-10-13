@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { displayCurrency } from "@/lib/demo-policy";
 import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
 import { checkGroupAllowedSymbol, effectiveMinLot } from "@/lib/risk";
@@ -62,8 +63,8 @@ export async function GET() {
       contractSize: bs.symbol.contractSize.toString(),
       // FX batch (docs/contracts/fx-and-market-week.md): money figures come out in the QUOTE currency and are converted
       // to the account currency with the server's rate (lib/fx.ts)
-      quoteCurrency: bs.symbol.quoteCurrency,
-      baseCurrency: bs.symbol.baseCurrency,
+      quoteCurrency: displayCurrency(bs.symbol.quoteCurrency),
+      baseCurrency: displayCurrency(bs.symbol.baseCurrency),
       // Chart interaction pack -- client-side preview only for the
       // draggable SL/TP/pending-entry lines' live red-flash-on-violation;
       // the server's own check (lib/trading.ts's validateSlTp /

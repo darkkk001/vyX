@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server";
+import { isDemoBrokerId } from "@/lib/demo";
+import { DEMO_REFUSAL } from "@/lib/demo-policy";
 import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
 
@@ -13,6 +15,8 @@ export async function GET() {
   if (!session) {
     return NextResponse.json({ error: "not authenticated" }, { status: 401 });
   }
+  // QoreTrader demo: a second check behind middleware.ts's deny list (no funds, KYC, payment methods or password on the demo)
+  if (await isDemoBrokerId(session.brokerId)) return NextResponse.json({ error: DEMO_REFUSAL }, { status: 403 });
 
   const methods = await prisma.paymentMethod.findMany({
     where: { brokerId: session.brokerId, enabled: true },

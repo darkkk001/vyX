@@ -3,6 +3,7 @@ import { Prisma, type LivePrice, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { readVpsPrice, readVpsPrices, type EnginePrice } from "@/lib/market-data-client";
 import { reportPriceSourceDown, reportPriceSourceOk } from "@/lib/price-source-alert";
+import { demoQuoteAt, demoSymbolForPriceName } from "@/lib/demo-prices";
 
 export type FreshPrice = { symbol: string; bid: Prisma.Decimal; ask: Prisma.Decimal };
 
@@ -50,6 +51,19 @@ const FRESH_MAX_AGE_MS = 15_000;
  * transaction wrote, exactly as the direct `db.livePrice.findUnique` did. */
 type Db = PrismaClient | Prisma.TransactionClient;
 
+// QoreTrader demo (lib/demo-prices.ts): the demo's q-symbols have no feed, no engine tick and no database row. Every reader in
+// this file answers them from the shared deterministic function at the server's own clock, stamped fresh (tickAt = now), so
+// each web path that reads a price -- order, close, modify, pending trigger, margin, FX conversion -- gets the price of THIS
+// instant. A real symbol never reaches this branch: only the seven q-names and the "USDQJP" conversion alias match.
+function demoRowFor(name: string, nowMs: number): LivePrice | null {
+  const d = demoSymbolForPriceName(name);
+  if (!d) return null;
+  const q = demoQuoteAt(d.name, nowMs);
+  if (!q) return null;
+  const at = new Date(nowMs);
+  return { symbol: name, bid: new Prisma.Decimal(q.bid), ask: new Prisma.Decimal(q.ask), tickAt: at, updatedAt: at };
+}
+
 /** True when live-price reads go to the engine first (MARKET_DATA_PRICES=vps). */
 export function pricesFromVps(): boolean {
   return (process.env.MARKET_DATA_PRICES ?? "").trim().toLowerCase() === "vps";
@@ -75,6 +89,8 @@ export function toLivePriceRow(p: EnginePrice): LivePrice | null {
  * null = no price known anywhere.
  */
 export async function getLivePriceRow(symbolName: string, db: Db = prisma): Promise<LivePrice | null> {
+  const demo = demoRowFor(symbolName, Date.now());
+  if (demo) return demo;
   if (pricesFromVps()) {
     const r = await readVpsPrice(symbolName);
     if (!r.ok) {
@@ -96,6 +112,21 @@ export type PriceSource = "vps" | "neon" | "vps-unavailable";
  * by /api/trade/prices so the switch can be verified with one curl).
  */
 export async function getLivePriceRowsWithSource(symbolNames: string[], db: Db = prisma): Promise<{ rows: Map<string, LivePrice>; source: PriceSource }> {
+  // the demo's q-symbols come from the shared function; only the rest goes to the engine / Neon
+  const nowMs = Date.now();
+  const demoRows = new Map<string, LivePrice>();
+  const realNames: string[] = [];
+  for (const n of symbolNames) {
+    const r = demoRowFor(n, nowMs);
+    if (r) demoRows.set(n, r);
+    else realNames.push(n);
+  }
+  if (demoRows.size > 0) {
+    if (realNames.length === 0) return { rows: demoRows, source: pricesFromVps() ? "vps" : "neon" };
+    const real = await getLivePriceRowsWithSource(realNames, db);
+    for (const [k, v] of demoRows) real.rows.set(k, v);
+    return real;
+  }
   if (symbolNames.length === 0) return { rows: new Map(), source: pricesFromVps() ? "vps" : "neon" };
   const wanted = new Set(symbolNames);
   if (pricesFromVps()) {
@@ -163,6 +194,18 @@ export async function getLivePriceRows(symbolNames: string[], db: Db = prisma): 
  */
 export async function getFreshPrices(symbolNames: string[]): Promise<Map<string, FreshPrice>> {
   if (symbolNames.length === 0) return new Map();
+  const nowMs = Date.now();
+  const demoMap = new Map<string, FreshPrice>();
+  const realNames: string[] = [];
+  for (const n of symbolNames) {
+    const r = demoRowFor(n, nowMs);
+    if (r) demoMap.set(n, { symbol: n, bid: r.bid, ask: r.ask });
+    else realNames.push(n);
+  }
+  if (demoMap.size > 0) {
+    if (realNames.length > 0) for (const [k, v] of await getFreshPrices(realNames)) demoMap.set(k, v);
+    return demoMap;
+  }
   if (pricesFromVps()) {
     // the engine's rows only (a failed read = none, alerted in getLivePriceRows)
     const rows = await getLivePriceRows(symbolNames);

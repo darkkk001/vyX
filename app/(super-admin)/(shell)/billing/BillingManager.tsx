@@ -26,7 +26,8 @@ export default function BillingManager() {
   useEffect(() => {
     fetch("/api/admin/brokers")
       .then((r) => r.json())
-      .then((d: { rows: BillingRow[] }) => setRows(d.rows))
+      // a sandbox tenant (the demo) is not a customer: it is in no billing row or count
+      .then((d: { rows: (BillingRow & { isDemoSandbox?: boolean })[] }) => setRows(d.rows.filter((r) => !r.isDemoSandbox)))
       .catch(() => setRows([]));
   }, []);
 

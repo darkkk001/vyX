@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { humanizeAction, summarizeAuditDiff } from "@/lib/audit-labels";
 
+
 // Same query app/(super-admin)/(shell)/audit/page.tsx's Server Component
 // used to do inline -- exposed as JSON so a new AuditLogTable client
 // component can fetch it itself (both the website and a bundled
@@ -13,7 +14,9 @@ export async function GET() {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
 
+  // the demo tenant's guests write an audit row per order: they would drown the platform feed (and are not customers)
   const logs = await prisma.auditLog.findMany({
+    where: { OR: [{ brokerId: null }, { broker: { isDemoSandbox: false } }] },
     orderBy: { createdAt: "desc" },
     take: 150,
     include: { actorAdmin: { select: { email: true } }, broker: { select: { name: true } } },

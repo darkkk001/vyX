@@ -24,12 +24,39 @@ let serverTimeOffsetMs = 0;
 export function serverNow(): number {
   return Date.now() + serverTimeOffsetMs;
 }
+/** Sets the server clock estimate from a time the server just told us (the demo page hands over its render time). */
+export function calibrateServerClock(serverMs: number): void {
+  if (Number.isFinite(serverMs)) serverTimeOffsetMs = serverMs - Date.now();
+}
+
+// QoreTrader demo (lib/demo-client.ts): the one place the demo tenant's browser reshapes API traffic. `local` answers a call
+// without touching the network (the quotes and the chart history are computed in the browser), `request` maps the display
+// symbol names to the internal ones on the way out, `response` maps them back on the way in. Installed only by the demo
+// shell; null everywhere else, so every other tenant's calls are exactly what they were.
+export type ApiHook = {
+  local?: (path: string, init?: RequestInit) => { value: unknown } | null;
+  request?: (path: string, init?: RequestInit) => { path: string; init?: RequestInit };
+  response?: (path: string, body: unknown) => unknown;
+};
+let apiHook: ApiHook | null = null;
+export function setApiHook(hook: ApiHook | null): void {
+  apiHook = hook;
+}
+
 function recalibrateFromDateHeader(header: string | null | undefined) {
   if (!header) return;
   const serverMs = Date.parse(header);
   if (Number.isFinite(serverMs)) serverTimeOffsetMs = serverMs - Date.now();
 }
-function recalibrateFromResponse(response: Response) {
+function recalibrateFromResponse(response: Response, sentAt?: number, receivedAt?: number) {
+  // The QoreTrader demo host stamps every response with x-server-time (ms, taken when the request reached the server): with
+  // the send / receive times that is a millisecond-accurate clock estimate (half the round trip is the one-way delay), where
+  // the Date header is only whole seconds. The demo's quotes are a function of the clock, so it matters there.
+  const stamped = Number(response.headers.get("x-server-time"));
+  if (Number.isFinite(stamped) && stamped > 0 && sentAt != null && receivedAt != null) {
+    serverTimeOffsetMs = stamped - (sentAt + receivedAt) / 2;
+    return;
+  }
   recalibrateFromDateHeader(response.headers.get("date"));
 }
 
@@ -68,6 +95,16 @@ function failedText(path: string, status: number): string {
 }
 
 export async function apiCall<T>(path: string, init?: RequestInit): Promise<T> {
+  const hook = apiHook;
+  if (hook) {
+    const local = hook.local?.(path, init);
+    if (local) return local.value as T;
+    if (hook.request) {
+      const mapped = hook.request(path, init);
+      path = mapped.path;
+      init = mapped.init;
+    }
+  }
   const desktop = typeof window !== "undefined" ? window.vyxDesktop : undefined;
   if (desktop?.apiCall) {
     const parsedBody = typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
@@ -89,15 +126,17 @@ export async function apiCall<T>(path: string, init?: RequestInit): Promise<T> {
   // /api/trade/prices's own explicit Cache-Control: no-store response
   // header -- belt and suspenders, since a server-sent no-store already
   // covers a compliant cache regardless of what the client requests.
+  const sentAt = Date.now();
   const response = await fetch(path, {
     ...init,
     cache: "no-store",
     headers: { "Content-Type": "application/json", ...init?.headers },
   });
-  recalibrateFromResponse(response);
-  const body = await response.json().catch(() => null);
+  recalibrateFromResponse(response, sentAt, Date.now());
+  const rawBody = await response.json().catch(() => null);
+  const body = hook?.response ? hook.response(path, rawBody) : rawBody;
   if (!response.ok) {
-    throw new ApiError(body?.error ?? failedText(path, response.status), response.status, body);
+    throw new ApiError((body as { error?: string } | null)?.error ?? failedText(path, response.status), response.status, body);
   }
   return body as T;
 }

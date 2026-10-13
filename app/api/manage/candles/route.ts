@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { brokerMaySeeSynthetic, isSyntheticSymbol } from "@/lib/synthetic-symbols";
+import { symbolHiddenFromBroker } from "@/lib/synthetic-symbols";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
 import { CANDLE_TIMEFRAMES, candleBeforeFrom, candleLimitFrom, fetchCandleHistory, type CandleTimeframe } from "@/lib/candles";
@@ -33,7 +33,7 @@ export async function GET(request: NextRequest) {
   }
 
   // synthetic symbols (lib/synthetic-symbols.ts): the shadow-bot tenant's staff only; others get an empty history
-  if (isSyntheticSymbol(symbol) && !(await brokerMaySeeSynthetic(prisma, session!.brokerId!))) {
+  if (await symbolHiddenFromBroker(prisma, session!.brokerId!, symbol)) {
     return NextResponse.json([], { headers: { "x-market-data-source": "none" } });
   }
   const { candles, source } = await fetchCandleHistory(symbol, timeframe as CandleTimeframe, candleLimitFrom(searchParams.get("limit")), before);

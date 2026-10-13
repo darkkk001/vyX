@@ -13,6 +13,7 @@ import { publishTradingEvent } from "@/lib/nats";
 import { emitPositionClosedActivity } from "@/lib/dealer-activity";
 import { loadRateResolver } from "@/lib/fx";
 import { computeRealizedPnl } from "@/lib/trading";
+import { isDemoBrokerId } from "@/lib/demo";
 
 // Dealer coverage (B-book hedging). A broker hedges a client's B-book
 // position by clicking BOOK NOW (app/api/manage/positions/[id]/book),
@@ -197,6 +198,7 @@ type Db = PrismaClient | Prisma.TransactionClient;
 export class CoverageRetryLater extends Error {}
 
 export async function onClose(db: Db, ev: CoverageCloseEvent, opts?: { retryWithoutPrice?: boolean }): Promise<void> {
+  if (await isDemoBrokerId(ev.brokerId)) return; // QoreTrader demo: never hedged
   const closed = await db.position.findUnique({
     where: { id: ev.positionId },
     select: {
@@ -439,6 +441,7 @@ export async function onFillAutoHedge(
   db: Db,
   ev: { positionId: string; brokerId: string; adminId?: string | null }
 ): Promise<void> {
+  if (await isDemoBrokerId(ev.brokerId)) return; // QoreTrader demo: never hedged
   const broker = await db.broker.findUnique({
     where: { id: ev.brokerId },
     select: { autoHedgeAt: true, dealingDeskAutoFillAt: true, coverageAccountId: true },

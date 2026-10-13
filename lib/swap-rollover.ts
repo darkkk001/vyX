@@ -139,6 +139,7 @@ export async function runSwapRollover(
     JOIN "Account" a ON a.id = p."accountId"
     WHERE p.status = 'OPEN' AND (p."lastSwapAt" IS NULL OR p."lastSwapAt"::date < CURRENT_DATE)
       AND (${opts?.accountIdsOverride ?? null}::text[] IS NULL OR p."accountId" = ANY(${opts?.accountIdsOverride ?? null}::text[]))
+      AND NOT EXISTS (SELECT 1 FROM "Broker" sb WHERE sb.id = p."brokerId" AND sb."isDemoSandbox")
   `;
 
   if (due.length === 0) return { isoWeekday, multiplier: multiplier.toString(), brokers: [] };

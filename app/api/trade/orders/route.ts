@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { canonicalSymbolName } from "@/lib/synthetic-symbols";
+import { isDemoTenant } from "@/lib/demo-policy";
+import { demoQuoteTimeRefusal } from "@/lib/demo-prices";
+import { isDemoBrokerId, markDemoWork } from "@/lib/demo";
 import { checkHedgingAllowed } from "@/lib/hedging";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
@@ -87,7 +90,7 @@ export async function POST(request: NextRequest) {
   const response = await handlePlaceOrder(request, session);
   const appMs = Date.now() - startedAt;
   response.headers.set("Server-Timing", `app;dur=${appMs}`);
-  if (response.status === 201) {
+  if (response.status === 201 && !(await isDemoBrokerId(session.brokerId))) {
     await runAfterResponse("order-ack-latency", () => recordOrderAckLatency(session.brokerId, appMs), { awaitWithoutScope: false });
   }
   return response;
@@ -217,6 +220,12 @@ async function handlePlaceOrder(request: NextRequest, session: Session) {
     throw err;
   }
   const [broker, account] = brokerAccount.v;
+  // QoreTrader demo tenant (DEMO_BROKER_SUBDOMAIN): instant execution on the B-book only, at the deterministic server price;
+  // nothing it does reaches the engine, the gateway, a dealer, a mirror or the coverage account.
+  const isDemo = isDemoTenant(broker.subdomain);
+  if (isDemo && resolveBookType(account.group.category) !== "B_BOOK") {
+    return NextResponse.json({ error: "DEMO_B_BOOK_ONLY", reason: "Demo accounts trade the B-book only." }, { status: 400 });
+  }
 
   const riskResponse = (riskError: string) => {
     // MARKET_CLOSED carries the next session open, exactly like the close / modify routes, so the
@@ -262,7 +271,7 @@ async function handlePlaceOrder(request: NextRequest, session: Session) {
   const route = orderRoute(account.group, deskIsOn(broker));
   if (route === "NO_LP") return NextResponse.json(LP_NOT_CONNECTED, { status: 400 });
   if (route === "SYSTEM") return NextResponse.json(SYSTEM_ACCOUNT_ORDER, { status: 400 });
-  const wantsQueue = route === "QUEUE";
+  const wantsQueue = route === "QUEUE" && !isDemo; // the demo has no dealer: always instant
 
   // Latency fix 1: wave 2 -- the four query-backed risk checks, the fill pricing and the account's margin state (the
   // fill price is applied to it afterwards, synchronously) all at once. The first failing risk check in the old
@@ -343,6 +352,10 @@ async function handlePlaceOrder(request: NextRequest, session: Session) {
   // right now, at placement -- it's a static fact about the order that
   // will never become more or less true while it rests, unlike staleness.
   if (type === "MARKET") {
+    // demo: the screen the click came from must be fresh (the fill itself is at the server's price in any case)
+    if (isDemo && demoQuoteTimeRefusal(body?.priceAt, Date.now())) {
+      return NextResponse.json({ error: "PRICE_CHANGED", reason: "Price changed, try again", symbol: symbolName }, { status: 400 });
+    }
     const priceError = evaluateLiveMarketPrice(livePrice, symbolName, price) ?? checkPriceFreshness(livePrice);
     if (priceError) {
       // NO_LIVE_FEED / PRICE_STALE here mean the schedule says OPEN but this symbol has no fresh tick. If the feed is
@@ -716,7 +729,8 @@ async function handlePlaceOrder(request: NextRequest, session: Session) {
       // docs/briefs/VYX-MIRROR-V0-BRIEF.md -- after this route's own transaction has committed, never inside it: a
       // mirror failure (margin, market closed, kill switch) must never roll back or block the client's own fill. Now
       // also after the response (latency fix 1): none of it changes what the trader is told.
-      await runAfterResponse("fill follow-through", async () => {
+      if (isDemo) await markDemoWork(session.accountId); // the next request replays the price path for this account
+      else await runAfterResponse("fill follow-through", async () => {
         await mirror.onFillPosition(prisma, result.position, brokerSymbol.symbol.name).catch((err) => console.error("mirror.onFill failed", err));
         // auto-hedge (lib/coverage.ts): a no-op unless the desk is in auto-fill with auto-hedge on
         await coverage.onFillAutoHedge(prisma, { positionId: result.position.id, brokerId: session.brokerId });
@@ -772,7 +786,8 @@ async function handlePlaceOrder(request: NextRequest, session: Session) {
     await runAfterResponse("publish OrderAccepted", () =>
       publishTradingEvent("OrderAccepted", { order_id: order.id, account_id: session.accountId, broker_id: session.brokerId })
     );
-    await runAfterResponse("pending follow-through", async () => {
+    if (isDemo) await markDemoWork(session.accountId);
+    else await runAfterResponse("pending follow-through", async () => {
       if (source === "hotkey") await logHotkeyOrder(session.brokerId, order.id);
       await recordDealerActivity(prisma, {
         ...dealerActivityBase,

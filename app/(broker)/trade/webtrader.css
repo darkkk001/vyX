@@ -1032,3 +1032,13 @@ html[data-mode="light"], html[data-mode="light"] body {
   font-size: 10px;
 }
 .mobile-nav-item.active { color: var(--text-1); }
+
+/* QoreTrader demo: the permanent one-line notice above the terminal */
+.demo-banner {
+  flex-shrink: 0; text-align: center; font-size: 11px; line-height: 1.25; padding: 4px 12px;
+  background: var(--bg-2); color: var(--text-2); border-bottom: 1px solid var(--border);
+}
+.demo-banner::before {
+  content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 8px;
+  background: var(--brand-accent, #B06A52); vertical-align: middle;
+}

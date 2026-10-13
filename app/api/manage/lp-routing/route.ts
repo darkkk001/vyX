@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
+import { symbolHiddenFromBroker } from "@/lib/synthetic-symbols";
 
 async function requireBrokerAdmin() {
   const session = await getAdminSession();
@@ -61,7 +62,7 @@ export async function POST(request: NextRequest) {
   let symbolId: string | null = null;
   if (typeof body?.symbolId === "string" && body.symbolId) {
     const symbol = await prisma.symbol.findUnique({ where: { id: body.symbolId } });
-    if (!symbol) {
+    if (!symbol || (await symbolHiddenFromBroker(prisma, brokerId, symbol.name))) {
       return NextResponse.json({ error: "symbol not found" }, { status: 404 });
     }
     symbolId = symbol.id;

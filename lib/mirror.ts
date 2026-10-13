@@ -26,6 +26,7 @@ import { createNotification } from "@/lib/notifications";
 import { deferTradingEvents, publishTradingEvent } from "@/lib/nats";
 import { getLivePriceRow } from "@/lib/live-price";
 import { plainReason } from "@/lib/plain-error";
+import { isDemoBrokerId } from "@/lib/demo";
 
 // docs/briefs/VYX-MIRROR-V0-BRIEF.md -- v0 hooks the legacy order-fill and
 // position-close paths directly (see the two call sites: app/api/trade/
@@ -250,6 +251,7 @@ export async function checkKillSwitch(db: Db, rule: MirrorRule): Promise<{ kille
 /// closed, kill switch) never affects another rule, and never affects the
 /// client's own trade (this function never throws out to its caller).
 export async function onFill(db: Db, source: MirrorSourcePosition): Promise<void> {
+  if (await isDemoBrokerId(source.brokerId)) return; // QoreTrader demo: never mirrored
   const account = await db.account.findUnique({ where: { id: source.accountId }, select: { groupId: true } });
   const sourceMatches: Prisma.MirrorRuleWhereInput[] = [{ sourceType: "ACCOUNT", sourceId: source.accountId }];
   if (account?.groupId) sourceMatches.push({ sourceType: "GROUP", sourceId: account.groupId });
@@ -537,6 +539,7 @@ async function mirrorFillForRule(db: Db, rule: MirrorRule, source: MirrorSourceP
 /// coverage step after it waits. A known outcome (no link, target already closed,
 /// no live price) is final either way.
 export async function onClose(db: Db, closeEvent: MirrorSourceClose, opts?: { rethrow?: boolean }): Promise<void> {
+  if (await isDemoBrokerId(closeEvent.brokerId)) return; // QoreTrader demo: never mirrored
   const link = await db.mirrorLink.findUnique({ where: { sourcePositionId: closeEvent.positionId } });
   if (!link) return;
 

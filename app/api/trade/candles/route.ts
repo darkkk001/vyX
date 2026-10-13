@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { brokerMaySeeSynthetic, isSyntheticSymbol } from "@/lib/synthetic-symbols";
+import { symbolHiddenFromBroker } from "@/lib/synthetic-symbols";
+import { demoCandles, isDemoSymbolName, type DemoTimeframe } from "@/lib/demo-prices";
 import { prisma } from "@/lib/prisma";
 import { getAccountSession } from "@/lib/account-auth";
 import { CANDLE_TIMEFRAMES, candleBeforeFrom, candleLimitFrom, fetchCandleHistory, type CandleTimeframe } from "@/lib/candles";
@@ -33,8 +34,14 @@ export async function GET(request: NextRequest) {
 
   // synthetic symbols (lib/synthetic-symbols.ts): only the shadow-bot tenant's traders read their history; anyone else
   // gets what an unknown symbol gets (an empty history)
-  if (isSyntheticSymbol(symbol) && !(await brokerMaySeeSynthetic(prisma, session.brokerId))) {
+  if (await symbolHiddenFromBroker(prisma, session.brokerId, symbol)) {
     return NextResponse.json([], { headers: { "x-market-data-source": "none" } });
+  }
+  // QoreTrader demo (lib/demo-prices.ts): a q-symbol has no stored history; its candles are the same function the browser runs
+  if (isDemoSymbolName(symbol)) {
+    const limit = candleLimitFrom(searchParams.get("limit"));
+    const list = demoCandles(symbol, timeframe as DemoTimeframe, before instanceof Date ? before.getTime() - 1 : Date.now(), limit);
+    return NextResponse.json(list.map((c) => ({ symbol, timeframe, bucketStart: new Date(c.bucketStart).toISOString(), open: c.open, high: c.high, low: c.low, close: c.close })), { headers: { "x-market-data-source": "demo" } });
   }
   const { candles, source } = await fetchCandleHistory(symbol, timeframe as CandleTimeframe, candleLimitFrom(searchParams.get("limit")), before);
   return NextResponse.json(candles, { headers: { "x-market-data-source": source } });

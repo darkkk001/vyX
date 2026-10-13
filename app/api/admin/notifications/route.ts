@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession, requireAdminRole } from "@/lib/auth";
+import { excludeDemoByBrokerRelation } from "@/lib/demo-policy";
 
 // Mirrors app/api/manage/notifications, scoped to Super Admin's own
 // notification type instead of a single broker -- Notification.brokerId
@@ -15,7 +16,7 @@ export async function GET() {
   }
 
   const notifications = await prisma.notification.findMany({
-    where: { type: "ADMIN_PASSWORD_RESET_REQUESTED" },
+    where: { type: "ADMIN_PASSWORD_RESET_REQUESTED", ...excludeDemoByBrokerRelation() },
     orderBy: { createdAt: "desc" },
     take: 100,
     include: { broker: { select: { name: true } } },

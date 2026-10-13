@@ -37,6 +37,7 @@ export default function SettingsDialog({
   onOpenSecurity,
   onOpenKyc,
   onOpenAlertsManager,
+  demo = false,
   onResetLayout,
   onClose,
 }: {
@@ -51,6 +52,8 @@ export default function SettingsDialog({
   onOpenSecurity: () => void;
   onOpenKyc: () => void;
   onOpenAlertsManager: () => void;
+  // QoreTrader demo: no password, two-factor, KYC or alerts entries
+  demo?: boolean;
   onResetLayout: () => void;
   onClose: () => void;
 }) {
@@ -105,9 +108,15 @@ export default function SettingsDialog({
 
           {tab === "profile" ? (
             <div style={{ display: "flex", flexDirection: "column" }}>
-              {row(onOpenChangePassword, "Change password")}
-              {row(onOpenSecurity, "Two-factor authentication", twoFactorEnabled ? "On" : "Off")}
-              {row(onOpenKyc, "KYC")}
+              {demo ? (
+                <p className="net-pos-detail" style={{ marginTop: 6 }}>Demo account. Profile settings are not available.</p>
+              ) : (
+                <>
+                  {row(onOpenChangePassword, "Change password")}
+                  {row(onOpenSecurity, "Two-factor authentication", twoFactorEnabled ? "On" : "Off")}
+                  {row(onOpenKyc, "KYC")}
+                </>
+              )}
             </div>
           ) : null}
 
@@ -156,7 +165,7 @@ export default function SettingsDialog({
 
           {tab === "notifications" ? (
             <div style={{ display: "flex", flexDirection: "column" }}>
-              {row(onOpenAlertsManager, "Manage price alerts")}
+              {demo ? null : row(onOpenAlertsManager, "Manage price alerts")}
               <div style={{ height: 1, background: "var(--border)", margin: "6px 0 8px" }} />
               <div className="occ-toggle-row">
                 <span className="field-label">Sounds</span>

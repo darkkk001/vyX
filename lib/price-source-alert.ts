@@ -1,4 +1,5 @@
 import "server-only";
+import { excludeDemoBroker } from "@/lib/demo-policy";
 import { prisma } from "@/lib/prisma";
 import { getRedis } from "@/lib/redis";
 
@@ -53,7 +54,7 @@ export function backText(backAt: number, durationMs: number): { title: string; b
 }
 
 async function notifyAllBrokers(type: string, text: { title: string; body: string }): Promise<void> {
-  const brokers = await prisma.broker.findMany({ where: { status: "ACTIVE" }, select: { id: true } });
+  const brokers = await prisma.broker.findMany({ where: { status: "ACTIVE", ...excludeDemoBroker() }, select: { id: true } });
   if (brokers.length === 0) return;
   await prisma.notification.createMany({
     data: brokers.map((b) => ({ brokerId: b.id, type, title: text.title, body: text.body, entityType: "PriceSource", entityId: "outage" })),
