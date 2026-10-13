@@ -52,3 +52,8 @@ GRANT SELECT ("accountTypeId", "symbolId", "spreadMarkup", "targetTotalSpreadPip
 GRANT SELECT ("accountId", "symbolId", "spreadMarkup", "targetTotalSpreadPips") ON "AccountSymbolConfig" TO vyx_shadow_ro;
 GRANT SELECT (id, "accountId", type, "referenceType", "referenceId", note, amount, "createdAt") ON "Transaction" TO vyx_shadow_ro;
 GRANT SELECT (id, "accountId", type, body, "createdAt") ON "Notification" TO vyx_shadow_ro;
+-- QoreTrader demo sandbox (2026-10-13, migration 20261013100000_broker_demo_sandbox): the book, margin watch and reconciler
+-- skip every sandbox broker by joining "Broker" on the row's broker and reading its flag. Not personal data.
+GRANT SELECT ("isDemoSandbox") ON "Broker" TO vyx_shadow_ro;
+GRANT SELECT ("brokerId") ON "Transaction" TO vyx_shadow_ro;
+GRANT SELECT ("brokerId") ON "Notification" TO vyx_shadow_ro;
