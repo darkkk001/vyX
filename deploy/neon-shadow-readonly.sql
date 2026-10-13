@@ -52,3 +52,9 @@ GRANT SELECT ("accountTypeId", "symbolId", "spreadMarkup", "targetTotalSpreadPip
 GRANT SELECT ("accountId", "symbolId", "spreadMarkup", "targetTotalSpreadPips") ON "AccountSymbolConfig" TO vyx_shadow_ro;
 GRANT SELECT (id, "accountId", type, "referenceType", "referenceId", note, amount, "createdAt") ON "Transaction" TO vyx_shadow_ro;
 GRANT SELECT (id, "accountId", type, body, "createdAt") ON "Notification" TO vyx_shadow_ro;
+-- the QoreTrader demo sandbox (migration 20261013100000): the book, margin watch, risk hook and reconciler skip every
+-- sandbox broker by joining Broker.isDemoSandbox, the reconciler through Transaction.brokerId and Notification.brokerId.
+-- Without these columns every read fails with "permission denied" and the shadow dies. Not personal data.
+GRANT SELECT ("isDemoSandbox") ON "Broker" TO vyx_shadow_ro;
+GRANT SELECT ("brokerId") ON "Transaction" TO vyx_shadow_ro;
+GRANT SELECT ("brokerId") ON "Notification" TO vyx_shadow_ro;
