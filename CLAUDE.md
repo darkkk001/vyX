@@ -67,6 +67,10 @@ These apply to this repo and to darkkk001/VyxTrader:
   `public/native-*-updates/` stays in git until the feed moves to a separate host (tracked in
   `docs/BACKEND-NEEDED.md`, Infrastructure). Nothing else of that kind, anywhere.
 - Clean dist/bin/obj/.next after every release and report C: free space at the end of every job.
+- After every native build (owner 2026-10-13): clean `%LOCALAPPDATA%\Temp\claude` scratch output you no longer need and
+  any Visual Studio Installer extracts in `%LOCALAPPDATA%\Temp` (random-named folders containing vswhere.exe /
+  setup.exe, ~140 MB each; 82 of them had piled up to 11.5 GB). `C:\Program Files (x86)\Microsoft Visual Studio\Installer`
+  is on the user PATH so the AOT link step finds vswhere without re-extracting it.
 - Release gate (native, owner 2026-10-12): the 1366 no-clip test must pass before any terminal or backoffice
   build is packed. It renders Trade / History / Pending at 1366 with every tab showing a count and fails on any
   clipped column, header, tab label or toolbar button (test name and command: see the VyxTrader repo's tests).

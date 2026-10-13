@@ -2555,7 +2555,10 @@ Every backoffice table and every inspector panel follows ONE text rule, set once
 | Data cells | Full contrast: token BrushCell, #e6e9ee in the dark theme, #111 in the light theme. Not grey. |
 | Identifiers | Semi-bold: account #, ticket / deal / order #, symbol, client name. |
 | Numbers | Tabular figures, normal weight. Only the profit / loss colour (green up, red down) recolours a number. |
-| Secondary text | Grey: currency (CCY), units, sub-labels. |
+| Currency and units | Full contrast like any data cell: currency (CCY), units, times, durations and other secondary columns (owner 2026-10-12, table contrast audit; was grey). |
+| Placeholders | Dim: the "SL" / "TP" placeholders and empty-state text ("No pending orders"). |
+| Row states | The economic calendar shows today's past events at 50% opacity as a row state (owner 2026-10-12); that is the only dimmed data row. |
+| Applies to | Backoffice and terminal tables alike (one shared colour rule per app, TableTextRule.BrushKey). |
 | Where it is decided | A column is classified by its header words (Vyx.Shared TableTextRule), so a new screen follows the rule without any code of its own. |
 | Terminal exception (owner 2026-10-12) | Market Watch Bid and Ask are the data: full contrast and semi-bold, tabular figures; Spread and Chg% stay regular. In the terminal Account panel the currency code follows each money number, dim; the P/L column header is just "P/L". |
 
